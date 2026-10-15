@@ -388,7 +388,7 @@ describe("multi-stage resume acknowledgement coherence", () => {
 		assert.equal(backend.getWorkflow(runId)?.status, "paused");
 	});
 
-	test("surfaces durable running transition and flush failures after visible resume", async () => {
+	test("surfaces durable running transition failures after visible resume", async () => {
 		class ThrowRunningBackend extends InMemoryDurableBackend {
 			override setWorkflowStatus(
 				workflowId: string,
@@ -400,14 +400,8 @@ describe("multi-stage resume acknowledgement coherence", () => {
 				super.setWorkflowStatus(workflowId, status, pendingPrompts, resumable);
 			}
 		}
-		class ThrowFlushBackend extends InMemoryDurableBackend {
-			async flush(): Promise<void> {
-				throw new Error("durable running flush failed");
-			}
-		}
 		for (const [suffix, backend, failure] of [
 			["set", new ThrowRunningBackend(), /durable running write failed/],
-			["flush", new ThrowFlushBackend(), /durable running flush failed/],
 		] as const) {
 			const runId = `resume-durable-failure-${suffix}`;
 			const seeded = seedPausedRun(runId, ["only"], backend);

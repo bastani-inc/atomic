@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { durableHash, InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { FOREIGN_LIVE_WORKFLOW_WINDOW_MS } from "../../packages/workflows/src/durable/resume-eligibility.js";
 import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
@@ -11,8 +10,8 @@ import { createExtensionRuntime } from "../../packages/workflows/src/extension/r
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
 import { createStore, store } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
-import { createMockSdk, seedMockCheckpoint, seedMockWorkflow } from "./durable-dbos-backend-helpers.js";
 import { mockSession } from "./executor-shared.js";
 import { buildCtx, registerWorkflowCommand } from "./slash-dispatch-utils.js";
 
@@ -86,68 +85,39 @@ describe("targeted durable workflow inspection", () => {
 	});
 
 	// #2603: resolve the durable root once even when its child shares the prefix.
-	test.each([ROOT_ID, ROOT_ID.slice(0, 8)])(
-		"hydrates a stale running DBOS root via %s without writes",
-		async (target) => {
-			const sdk = createMockSdk();
-			const staleAt = Date.now() - FOREIGN_LIVE_WORKFLOW_WINDOW_MS - 1;
-			seedMockWorkflow(sdk, {
-				workflowId: ROOT_ID,
-				name: "paper-writer",
-				status: "PENDING",
-				createdAt: staleAt,
-				inputs: { topic: "durability" },
-			});
-			seedMockCheckpoint(sdk, ROOT_ID, {
-				kind: "stage",
-				workflowId: ROOT_ID,
-				checkpointId: "boundary-start:phase-6",
-				name: "workflow:paper-writer-phase-6",
-				replayKey: "workflow:paper-writer-phase-6:1",
-				completedAt: staleAt,
-				topology: {
+	test.each([ROOT_ID, ROOT_ID.slice(0, 8)])("reads a released journal root via %s without writes", async (target) => {
+		const writer = new JournalTestBackend();
+		const staleAt = Date.now() - FOREIGN_LIVE_WORKFLOW_WINDOW_MS - 1;
+		writer.registerWorkflow({
+			workflowId: ROOT_ID,
+			name: "paper-writer",
+			status: "running",
+			createdAt: staleAt,
+			inputs: { topic: "durability" },
+		});
+		writer.recordCheckpoint({
+			kind: "stage",
+			workflowId: ROOT_ID,
+			checkpointId: "boundary-start:phase-6",
+			name: "workflow:paper-writer-phase-6",
+			replayKey: "workflow:paper-writer-phase-6:1",
+			completedAt: staleAt,
+			topology: {
+				version: 1,
+				stageId: "phase-6-boundary",
+				parentIds: [],
+				sourceOrder: 0,
+				status: "running",
+				run: { runId: ROOT_ID, runName: "paper-writer" },
+				boundary: {
 					version: 1,
-					stageId: "phase-6-boundary",
-					parentIds: [],
-					sourceOrder: 0,
+					event: "start",
 					status: "running",
-					run: { runId: ROOT_ID, runName: "paper-writer" },
-					boundary: {
-						version: 1,
-						event: "start",
-						status: "running",
-						replayScope: "workflow:paper-writer-phase-6:1",
-						alias: "paper-writer-phase-6",
-						workflow: "paper-writer-phase-6",
-						invocationFingerprint: "h00000000000000000000000000000000",
-						child: {
-							runId: CHILD_ID,
-							runName: "paper-writer-phase-6",
-							parentRunId: ROOT_ID,
-							parentStageId: "phase-6-boundary",
-							rootRunId: ROOT_ID,
-						},
-					},
-				},
-			});
-			seedMockCheckpoint(sdk, ROOT_ID, {
-				kind: "stage",
-				workflowId: ROOT_ID,
-				checkpointId: "workflow:paper-writer-phase-6:1:stage-session:draft",
-				name: "draft",
-				replayKey: "workflow:paper-writer-phase-6:1:stage:draft:1",
-				sessionId: "phase-6-session",
-				sessionFile: "/tmp/retained-phase-6.jsonl",
-				startedAt: staleAt - 30_000,
-				durationMs: 30_000,
-				completedAt: staleAt,
-				topology: {
-					version: 1,
-					stageId: "draft",
-					parentIds: [],
-					sourceOrder: 0,
-					status: "running",
-					run: {
+					replayScope: "workflow:paper-writer-phase-6:1",
+					alias: "paper-writer-phase-6",
+					workflow: "paper-writer-phase-6",
+					invocationFingerprint: "h00000000000000000000000000000000",
+					child: {
 						runId: CHILD_ID,
 						runName: "paper-writer-phase-6",
 						parentRunId: ROOT_ID,
@@ -155,90 +125,101 @@ describe("targeted durable workflow inspection", () => {
 						rootRunId: ROOT_ID,
 					},
 				},
-			});
-			const backend = new DbosDurableBackend(sdk, { executorId: "inspection-session" });
-			const durableWritesBeforeInspection = sdk.state.steps.size;
-			setDurableBackend(backend);
-			const runtime = createExtensionRuntime({ store });
-			const execute = makeExecuteWorkflowTool(runtime, () => undefined);
+			},
+		});
+		writer.recordCheckpoint({
+			kind: "stage",
+			workflowId: ROOT_ID,
+			checkpointId: "workflow:paper-writer-phase-6:1:stage-session:draft",
+			name: "draft",
+			replayKey: "workflow:paper-writer-phase-6:1:stage:draft:1",
+			sessionId: "phase-6-session",
+			sessionFile: "/tmp/retained-phase-6.jsonl",
+			startedAt: staleAt - 30_000,
+			durationMs: 30_000,
+			completedAt: staleAt,
+			topology: {
+				version: 1,
+				stageId: "draft",
+				parentIds: [],
+				sourceOrder: 0,
+				status: "running",
+				run: {
+					runId: CHILD_ID,
+					runName: "paper-writer-phase-6",
+					parentRunId: ROOT_ID,
+					parentStageId: "phase-6-boundary",
+					rootRunId: ROOT_ID,
+				},
+			},
+		});
+		const backend = await writer.reopen();
+		const beforeInspection = backend.journal.readEntries(ROOT_ID);
+		setDurableBackend(backend);
+		const runtime = createExtensionRuntime({ store });
+		const execute = makeExecuteWorkflowTool(runtime, () => undefined);
 
-			const result = await execute({ action: "status", runId: target }, {} as never);
+		const result = await execute({ action: "status", runId: target }, {} as never);
 
-			assert.equal(result.action, "statusDetail");
-			if (result.action !== "statusDetail" || "error" in result) assert.fail("expected durable run detail");
-			assert.equal(result.detail.status, "crashed");
-			assert.equal(result.detail.resumable, true);
-			assert.match(result.detail.resumeGuidance ?? "", new RegExp(`/workflow resume ${ROOT_ID}`));
-			assert.deepEqual(
-				result.detail.stages.map((stage) => [stage.name, stage.status, stage.sessionId, stage.sessionFile]),
-				[["draft", "running", "phase-6-session", "/tmp/retained-phase-6.jsonl"]],
-			);
-			const stages = await execute({ action: "stages", runId: target }, {} as never);
-			assert.equal(stages.action, "stages");
-			if (stages.action !== "stages") assert.fail("expected durable stage listing");
-			assert.deepEqual(
-				stages.stages.map((item) => [item.name, item.status]),
-				[["draft", "running"]],
-			);
-			const stage = await execute({ action: "stage", runId: target, stageId: "draft" }, {} as never);
-			assert.equal(stage.action, "stage");
-			if (stage.action !== "stage" || stage.stage === undefined) assert.fail("expected durable stage detail");
-			assert.equal(stage.runId, CHILD_ID);
-			assert.equal(stage.stage.sessionId, "phase-6-session");
+		assert.equal(result.action, "statusDetail");
+		if (result.action !== "statusDetail" || "error" in result) assert.fail("expected durable run detail");
+		assert.equal(result.detail.status, "crashed");
+		assert.equal(result.detail.resumable, true);
+		assert.match(result.detail.resumeGuidance ?? "", new RegExp(`/workflow resume ${ROOT_ID}`));
+		assert.deepEqual(
+			result.detail.stages.map((stage) => [stage.name, stage.status, stage.sessionId, stage.sessionFile]),
+			[["draft", "running", "phase-6-session", "/tmp/retained-phase-6.jsonl"]],
+		);
+		const stages = await execute({ action: "stages", runId: target }, {} as never);
+		assert.equal(stages.action, "stages");
+		if (stages.action !== "stages") assert.fail("expected durable stage listing");
+		assert.deepEqual(
+			stages.stages.map((item) => [item.name, item.status]),
+			[["draft", "running"]],
+		);
+		const stage = await execute({ action: "stage", runId: target, stageId: "draft" }, {} as never);
+		assert.equal(stage.action, "stage");
+		if (stage.action !== "stage" || stage.stage === undefined) assert.fail("expected durable stage detail");
+		assert.equal(stage.runId, CHILD_ID);
+		assert.equal(stage.stage.sessionId, "phase-6-session");
 
-			const transcript = await execute({ action: "transcript", runId: target, stageId: "draft" }, {} as never);
-			assert.equal(transcript.action, "transcript");
-			if (transcript.action !== "transcript") assert.fail("expected durable transcript detail");
-			assert.equal(transcript.runId, CHILD_ID);
-			assert.equal(transcript.source, "snapshot");
-			assert.equal(transcript.sessionFile, "/tmp/retained-phase-6.jsonl");
-			const canonicalId = stages.stages[0]!.id;
-			assert.equal(canonicalId, `${CHILD_ID}:draft`);
-			assert.deepEqual(await execute({ action: "stage", runId: target, stageId: canonicalId }, {} as never), stage);
-			assert.deepEqual(
-				await execute({ action: "transcript", runId: target, stageId: canonicalId }, {} as never),
-				transcript,
-			);
-			assert.deepEqual(store.runs(), [], "targeted durable inspection must not add foreign runs to session status");
-			assert.deepEqual(sdk.state.resumes, [], "inspection must not resume DBOS execution");
-			assert.deepEqual(sdk.state.cancels, [], "inspection must not transition DBOS execution");
-			assert.deepEqual(sdk.state.starts, [], "inspection must not claim DBOS ownership");
-			assert.equal(sdk.state.steps.size, durableWritesBeforeInspection, "inspection must not write DBOS records");
+		const transcript = await execute({ action: "transcript", runId: target, stageId: "draft" }, {} as never);
+		assert.equal(transcript.action, "transcript");
+		if (transcript.action !== "transcript") assert.fail("expected durable transcript detail");
+		assert.equal(transcript.runId, CHILD_ID);
+		assert.equal(transcript.source, "snapshot");
+		assert.equal(transcript.sessionFile, "/tmp/retained-phase-6.jsonl");
+		const canonicalId = stages.stages[0]!.id;
+		assert.equal(canonicalId, `${CHILD_ID}:draft`);
+		assert.deepEqual(await execute({ action: "stage", runId: target, stageId: canonicalId }, {} as never), stage);
+		assert.deepEqual(
+			await execute({ action: "transcript", runId: target, stageId: canonicalId }, {} as never),
+			transcript,
+		);
+		assert.deepEqual(store.runs(), [], "targeted durable inspection must not add foreign runs to session status");
+		assert.deepEqual(backend.journal.readEntries(ROOT_ID), beforeInspection);
 
-			const listing = await execute({ action: "status" }, {} as never);
-			assert.equal(listing.action, "status");
-			if (listing.action === "status") assert.deepEqual(listing.runs, []);
-		},
-	);
+		const listing = await execute({ action: "status" }, {} as never);
+		assert.equal(listing.action, "status");
+		if (listing.action === "status") assert.deepEqual(listing.runs, []);
+	});
 
-	test("distinguishes absent, tombstoned, and malformed exact durable ids", async () => {
+	test("absent and deleted journal roots are absent to a fresh reader", async () => {
 		const absentId = testRunId("targeted-absent");
 		const deletedId = testRunId("targeted-deleted");
-		const malformedId = testRunId("targeted-malformed");
-		const orphanedId = testRunId("targeted-orphaned-records");
-		const sdk = createMockSdk();
-		const seeder = new DbosDurableBackend(sdk, { executorId: "seeder" });
-		seeder.registerWorkflow({ workflowId: deletedId, name: "deleted", inputs: {}, createdAt: 1, status: "paused" });
-		await seeder.flush();
-		await seeder.deleteWorkflow(deletedId);
-		await seeder.flush();
-		seedMockWorkflow(sdk, { workflowId: malformedId, name: "malformed", status: "PENDING", createdAt: 1 });
-		sdk.state.steps.set(`${malformedId}:checkpoint:broken`, { current: false });
-		sdk.state.steps.set(`${orphanedId}:checkpoint:orphan`, { orphaned: true });
-		const observer = new DbosDurableBackend(sdk, { executorId: "observer" });
-
+		const writer = new JournalTestBackend();
+		writer.registerWorkflow({ workflowId: deletedId, name: "deleted", inputs: {}, createdAt: 1, status: "paused" });
+		await writer.deleteWorkflow(deletedId);
+		const observer = await writer.reopen();
 		assert.equal((await inspectTargetedDurableWorkflow(observer, absentId)).kind, "absent");
-		assert.equal((await inspectTargetedDurableWorkflow(observer, deletedId)).kind, "deleted");
-		assert.equal((await inspectTargetedDurableWorkflow(observer, malformedId)).kind, "malformed");
-		assert.equal((await inspectTargetedDurableWorkflow(observer, orphanedId)).kind, "malformed");
+		assert.equal((await inspectTargetedDurableWorkflow(observer, deletedId)).kind, "absent");
 	});
 
 	// #2603: read-only prefix inspection includes live runs owned by another session.
 	test.each([false, true])("protects a fresh foreign owner without writes (prefix: %s)", async (prefix) => {
 		const liveId = testRunId("targeted-foreign-live");
 		const terminalId = testRunId("targeted-terminal");
-		const sdk = createMockSdk();
-		const owner = new DbosDurableBackend(sdk, { executorId: "foreign-owner" });
+		const owner = new JournalTestBackend();
 		for (const [workflowId, status] of [
 			[liveId, "running"],
 			[terminalId, "completed"],
@@ -262,9 +243,8 @@ describe("targeted durable workflow inspection", () => {
 			});
 			if (status === "completed") owner.setWorkflowStatus(workflowId, status, 0, false);
 		}
-		await owner.flush();
-		const writesBeforeInspection = sdk.state.steps.size;
-		const observer = new DbosDurableBackend(sdk, { executorId: "observer" });
+		const beforeInspection = owner.journal.readEntries(liveId);
+		const observer = new JournalTestBackend(owner.databasePath);
 		const live = await inspectTargetedDurableWorkflow(observer, prefix ? liveId.slice(0, 8) : liveId);
 		const terminal = await inspectTargetedDurableWorkflow(observer, terminalId);
 
@@ -276,8 +256,7 @@ describe("targeted durable workflow inspection", () => {
 		}
 		assert.equal(terminal.kind, "found");
 		if (terminal.kind === "found") assert.equal(terminal.detail.status, "completed");
-		assert.equal(sdk.state.steps.size, writesBeforeInspection);
-		assert.deepEqual(sdk.state.resumes, []);
+		assert.deepEqual(owner.journal.readEntries(liveId), beforeInspection);
 	});
 
 	test("fails closed for cyclic, orphaned, and nonreciprocal retained topology", async () => {
@@ -716,12 +695,11 @@ describe("targeted durable workflow inspection", () => {
 		assert.equal((backend.getWorkflow(runId)!.inputs.nested as { value: string }).value, "original");
 	});
 
-	test("replays a process-lost DBOS root exactly once only after explicit resume", async () => {
+	test("replays a process-lost journal root exactly once only after explicit resume", async () => {
 		let clock = 10_000;
 		vi.spyOn(Date, "now").mockImplementation(() => clock);
 		const workflowId = testRunId("targeted-process-loss-replay");
-		const sdk = createMockSdk();
-		const crashedOwner = new DbosDurableBackend(sdk, { executorId: "crashed-owner" });
+		const crashedOwner = new JournalTestBackend();
 		crashedOwner.registerWorkflow({
 			workflowId,
 			name: "process-loss-replay",
@@ -769,14 +747,13 @@ describe("targeted durable workflow inspection", () => {
 				run: { runId: workflowId, runName: "process-loss-replay" },
 			},
 		});
-		await crashedOwner.flush();
 
 		clock += FOREIGN_LIVE_WORKFLOW_WINDOW_MS + 1;
-		const recoverer = new DbosDurableBackend(sdk, { executorId: "recoverer" });
+		const recoverer = new JournalTestBackend(crashedOwner.databasePath);
 		const inspected = await inspectTargetedDurableWorkflow(recoverer, workflowId);
 		assert.equal(inspected.kind, "found");
 		if (inspected.kind === "found") assert.equal(inspected.detail.status, "crashed");
-		assert.deepEqual(sdk.state.resumes, [], "inspection alone must not replay the root");
+		assert.equal(recoverer.workflowOwnership(workflowId), "available");
 
 		let sideEffects = 1;
 		const definition = workflow({
@@ -815,20 +792,21 @@ describe("targeted durable workflow inspection", () => {
 		assert.equal(terminal?.status, "completed");
 		assert.equal(sideEffects, 1, "the completed tool checkpoint must replay without a duplicate effect");
 		assert.equal(terminal?.toolNodes?.[0]?.status, "cached");
-		assert.equal(sdk.state.resumes.length, 1, "only explicit resume may restart DBOS execution");
+		assert.equal(recoverer.workflowOwnership(workflowId), "local");
 	});
 
 	test("routes /workflow status with an exact missing-local id through durable inspection", async () => {
 		const workflowId = testRunId("targeted-slash-status");
 		const staleAt = Date.now() - FOREIGN_LIVE_WORKFLOW_WINDOW_MS - 1;
-		const sdk = createMockSdk();
-		seedMockWorkflow(sdk, {
+		const writer = new JournalTestBackend();
+		writer.registerWorkflow({
 			workflowId,
 			name: "slash-crashed",
-			status: "PENDING",
+			inputs: {},
+			status: "running",
 			createdAt: staleAt,
 		});
-		seedMockCheckpoint(sdk, workflowId, {
+		writer.recordCheckpoint({
 			kind: "tool",
 			workflowId,
 			checkpointId: "tool:done",
@@ -845,7 +823,7 @@ describe("targeted durable workflow inspection", () => {
 				run: { runId: workflowId, runName: "slash-crashed" },
 			},
 		});
-		setDurableBackend(new DbosDurableBackend(sdk, { executorId: "slash-observer" }));
+		setDurableBackend(await writer.reopen());
 		const { workflowCmd, sent } = await registerWorkflowCommand();
 		const { ctx } = buildCtx();
 

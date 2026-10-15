@@ -1,12 +1,8 @@
 import { registerExtensionContextRetirementEffect, sessionScopedExtensionState } from "@bastani/atomic";
-import { getDurableBackendProcessOwner } from "../durable/backend-process-owner.js";
-import { acquireDbosLease, flushDbos } from "../durable/dbos-lifecycle.js";
 import { getAvailableDurableBackend, getDurableBackend } from "../durable/factory.js";
-import { isLiveRunningWorkflow } from "../durable/resume-eligibility.js";
 import { reclaimReleasedRunsOwnedBy, releasePausedRunsOwnedBy } from "../durable/sdk-owner-release.js";
 import { canonicalDirectory, isSdkReleasedRunAdoptable } from "../durable/sdk-recovery-scope.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
-import { settleAdmissionControls } from "../engine/run-durable-admission.js";
 import { quitAllRuns } from "../runs/background/quit.js";
 import { killAllRuns } from "../runs/background/status.js";
 import { installCompactionHook } from "../shared/persistence-compaction-policy.js";
@@ -26,7 +22,6 @@ import { workflowPolicyFromContext } from "./workflow-policy.js";
 
 interface WorkflowLifetime {
 	readonly generations: Set<(boundary?: "quit" | "switch") => Promise<void>>;
-	release?: () => Promise<void>;
 	closing?: Promise<void>;
 	startupStarted?: boolean;
 	/** Runs the departing session released on a session switch, until the successor announces them. */
@@ -169,15 +164,6 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 							.join("; "),
 					);
 			},
-			async () => {
-				if (store.runs().length === 0) return;
-				const backend = getDurableBackend();
-				const runIds = store.runs().map((run) => run.id);
-				await attemptAll([
-					() => settleAdmissionControls(backend, runIds),
-					...runIds.map((runId) => () => backend.flush(runId)),
-				]);
-			},
 			() => stageControlRegistry.clear(),
 		]);
 	lifetime.generations.add(quitAndCheckpointRuns);
@@ -235,7 +221,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 				return (
 					handle.status === "running" &&
 					(handle.pendingPrompts ?? entry.pendingPrompts) === 0 &&
-					!isLiveRunningWorkflow(handle) &&
+					backend.workflowOwnership(entry.workflowId) === "available" &&
 					handle.invocationCwd !== undefined &&
 					canonicalDirectory(handle.invocationCwd) === currentCwd
 				);
@@ -317,7 +303,6 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 				const released = await releasePausedRunsOfSession(sessionCaller);
 				lifetime.releasedRunIds = [...new Set([...(lifetime.releasedRunIds ?? []), ...released])];
 			},
-			flushDbos,
 		]);
 		lifetime.activeSwitchHandoff = switchHandoff;
 		return switchHandoff;
@@ -331,9 +316,6 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		}
 		if (isSessionSwitch(eventReason(event)) && departingHandoff !== undefined && lifetime.closing === undefined)
 			await departingHandoff().catch(() => undefined);
-		// Injected backends remain borrowed; each started lifetime owns one lease.
-		lifetime.release ??=
-			getDurableBackendProcessOwner().injectedBackend === undefined ? acquireDbosLease() : async () => {};
 		const reason =
 			typeof event === "object" && event !== null && "reason" in event
 				? (event as { readonly reason?: string }).reason
@@ -412,13 +394,12 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 				() => {
 					lifetime.generations.clear();
 				},
-				() => lifetime.release?.(),
 			]);
 			await lifetime.closing;
 		} else if (isSessionSwitch(reason)) {
 			await attemptAll([closeGeneration, handOffRunsToSuccessor]);
 		} else {
-			await attemptAll([closeGeneration, () => stageControlRegistry.clearDetached(), flushDbos]);
+			await attemptAll([closeGeneration, () => stageControlRegistry.clearDetached()]);
 		}
 	});
 }

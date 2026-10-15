@@ -6,7 +6,6 @@ import {
 	spawnProcessSync,
 } from "../../packages/coding-agent/src/utils/child-process.js";
 import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
-import { runLocalCommand } from "../../packages/workflows/src/durable/local-command.js";
 
 test("Atomic child environment overrides attribution without mutating its base", () => {
 	const parentEnv: NodeJS.ProcessEnv = { ...process.env, AI_AGENT: "caller" };
@@ -58,17 +57,4 @@ test("worktree child environments use shared Atomic attribution without mutating
 	const gitEnv = createGitEnvironment({}, childEnv);
 	assert.equal(gitEnv.AI_AGENT, "atomic");
 	assert.equal(parentEnv.AI_AGENT, "caller");
-});
-
-test("workflow local-command children identify Atomic and preserve caller environment objects", async () => {
-	const parentEnv: NodeJS.ProcessEnv = { ...process.env, AI_AGENT: "caller" };
-	const childEnv = createChildProcessEnvironment({ AI_AGENT: "explicit-caller" }, parentEnv);
-	assert.equal(childEnv.AI_AGENT, "atomic");
-	assert.equal(parentEnv.AI_AGENT, "caller");
-
-	const result = await runLocalCommand(process.execPath, ["-e", "process.stdout.write(process.env.AI_AGENT ?? '')"], {
-		env: { AI_AGENT: "explicit-caller" },
-	});
-	assert.equal(result.exitCode, 0, result.stderr);
-	assert.equal(result.stdout, "atomic");
 });

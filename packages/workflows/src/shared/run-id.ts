@@ -2,7 +2,7 @@
  * The run identifier contract.
  *
  * A run id is a bare `crypto.randomUUID()` value (see `extension/dispatcher.ts`),
- * and the durable DBOS `workflowId` is that same value. Every user-facing surface
+ * and the durable `workflowId` is that same value. Every user-facing surface
  * renders it in full. User-facing selectors accept either that full UUID or a
  * unique 8-character hexadecimal prefix; every other truncated form is invalid.
  *

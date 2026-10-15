@@ -2,8 +2,6 @@
 
 import type { DurableWorkflowBackend } from "./backend.js";
 
-export type DurabilityWarningSink = (message: string) => void;
-
 const DURABLE_BACKEND_PROCESS_OWNER_KEY = Symbol.for("atomic-workflows/durable-backend-process-owner@1");
 
 export interface DurableBackendProcessOwner {
@@ -11,8 +9,7 @@ export interface DurableBackendProcessOwner {
 	injectedBackend: DurableWorkflowBackend | undefined;
 	initializedBackend: DurableWorkflowBackend | undefined;
 	initializing: Promise<DurableWorkflowBackend> | undefined;
-	warningSink: DurabilityWarningSink | undefined;
-	warningReported: boolean;
+	closeInitializedBackend?: () => Promise<void>;
 }
 
 function emptyOwner(): DurableBackendProcessOwner {
@@ -21,8 +18,6 @@ function emptyOwner(): DurableBackendProcessOwner {
 		injectedBackend: undefined,
 		initializedBackend: undefined,
 		initializing: undefined,
-		warningSink: undefined,
-		warningReported: false,
 	};
 }
 
@@ -41,9 +36,12 @@ export function getDurableBackendProcessOwner(): DurableBackendProcessOwner {
 
 export function resetDurableBackendProcessOwner(): void {
 	const owner = getDurableBackendProcessOwner();
+	void owner.closeInitializedBackend?.().catch((error: Error) => {
+		console.error(error);
+		process.exitCode = 1;
+	});
+	owner.closeInitializedBackend = undefined;
 	owner.injectedBackend = undefined;
 	owner.initializedBackend = undefined;
 	owner.initializing = undefined;
-	owner.warningSink = undefined;
-	owner.warningReported = false;
 }

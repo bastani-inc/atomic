@@ -281,10 +281,10 @@ export type * from "./workflow-run-control.js";
 export {
 	WorkflowRunControlError,
 	WorkflowRunControlUnavailableError,
-	WorkflowRunDatabaseError,
 	WorkflowRunNotFoundError,
 	WorkflowRunNotResumableError,
 	WorkflowRunOwnershipError,
+	WorkflowRunStorageError,
 	WorkflowStageAmbiguousError,
 	WorkflowStageNotFoundError,
 	WorkflowStageResumeUnsupportedError,

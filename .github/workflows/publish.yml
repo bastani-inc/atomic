@@ -431,20 +431,6 @@ jobs:
       - name: Load Intel native binding under Rosetta
         if: matrix.slug == 'darwin-x64'
         run: node -e "require('node:assert/strict').equal(process.arch, 'x64'); require('./packages/natives/native/atomic_natives.darwin-x64.node'); console.log('Intel native binding loaded under Rosetta')"
-      - name: Prove scriptless PostgreSQL persistence on Linux and macOS
-        if: matrix.platform == 'darwin' || endsWith(matrix.slug, '-gnu')
-        shell: bash
-        run: |
-          set -euo pipefail
-          target="${{ matrix.slug }}"
-          target=${target%-gnu}
-          probe="$RUNNER_TEMP/postgres-${{ matrix.slug }}"
-          mkdir -p "$probe/source" "$probe/install"
-          printf '{"name":"@bastani/atomic-natives","version":"0.0.0"}' > "$probe/source/package.json"
-          node scripts/stage-postgres-runtime.mjs "$target" "$probe/source"
-          npm pack "$probe/source" --ignore-scripts --pack-destination "$probe"
-          npm install --prefix "$probe/install" "$probe"/*.tgz --ignore-scripts --offline --no-audit --no-fund
-          node scripts/smoke-postgres-runtime.mjs "$probe/install/node_modules/@bastani/atomic-natives" "$target"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: atomic-natives-${{ matrix.slug }}
@@ -494,7 +480,6 @@ jobs:
           for path in app.js native-modifiers.js image-resize-worker.js builtin/workflows/package.json builtin/subagents/package.json builtin/mcp/package.json builtin/web-access/package.json builtin/intercom/package.json node_modules/@bastani/atomic-natives/package.json node_modules/@bastani/atomic-natives/native/atomic_natives.linux-x64-gnu.node node_modules/@modelcontextprotocol/ext-apps/package.json node_modules/@mozilla/readability/package.json node_modules/@bastani/pi-ai/dist/models.generated.js node_modules/@bastani/pi-ai/dist/providers/data/.manifest.json node_modules/@bastani/pi-ai/dist/providers/data/amazon-bedrock.json node_modules/@bastani/pi-ai/dist/providers/data/anthropic.json node_modules/@bastani/pi-ai/dist/providers/data/kimi-coding.json node_modules/@bastani/pi-ai/dist/providers/data/openrouter.json node_modules/@bastani/pi-ai/dist/auth/oauth/kimi-coding.js node_modules/@bastani/pi-ai/dist/auth/oauth/openrouter.js node_modules/@bastani/pi-ai/dist/bun-oauth.js; do
             test -f "$smoke/atomic/$path" || { echo "Missing release archive path: $path" >&2; exit 1; }
           done
-          node scripts/smoke-postgres-runtime.mjs "$smoke/atomic/node_modules/@bastani/atomic-natives" linux-x64
           mkdir -p "$RUNNER_TEMP/atomic-linux-cwd"
           set +e
           output=$(cd "$RUNNER_TEMP/atomic-linux-cwd" && printf '' | "$smoke/atomic/atomic" --no-session 2>&1)
@@ -560,8 +545,6 @@ jobs:
           foreach ($path in @("app.js", "native-modifiers.js", "image-resize-worker.js", "builtin/workflows/package.json", "builtin/subagents/package.json", "builtin/mcp/package.json", "builtin/web-access/package.json", "builtin/intercom/package.json", "node_modules/@bastani/atomic-natives/package.json", "node_modules/@bastani/atomic-natives/native/atomic_natives.win32-x64-msvc.node", "native/win32/prebuilds/win32-x64/win32-platform.node", "node_modules/@modelcontextprotocol/ext-apps/package.json", "node_modules/@mozilla/readability/package.json", "node_modules/@bastani/pi-ai/dist/models.generated.js", "node_modules/@bastani/pi-ai/dist/providers/data/.manifest.json", "node_modules/@bastani/pi-ai/dist/providers/data/amazon-bedrock.json", "node_modules/@bastani/pi-ai/dist/providers/data/anthropic.json", "node_modules/@bastani/pi-ai/dist/providers/data/kimi-coding.json", "node_modules/@bastani/pi-ai/dist/providers/data/openrouter.json", "node_modules/@bastani/pi-ai/dist/auth/oauth/kimi-coding.js", "node_modules/@bastani/pi-ai/dist/auth/oauth/openrouter.js", "node_modules/@bastani/pi-ai/dist/bun-oauth.js")) {
             if (-not (Test-Path (Join-Path $smoke $path))) { throw "Missing release archive path: $path" }
           }
-          node scripts/smoke-postgres-runtime.mjs (Join-Path $smoke "node_modules/@bastani/atomic-natives") windows-x64
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $cwd = Join-Path $env:RUNNER_TEMP "atomic-windows-cwd"
           New-Item -ItemType Directory -Force -Path $cwd | Out-Null
           Push-Location $cwd
@@ -579,18 +562,6 @@ jobs:
           mv packages/coding-agent/binaries/atomic-windows-x64.zip "$RUNNER_TEMP/atomic-windows-x64.zip"
           ./scripts/build-binaries.sh --skip-install --skip-package-build --offline-model-data --platform windows-arm64
           mv "$RUNNER_TEMP/atomic-windows-x64.zip" packages/coding-agent/binaries/
-      - name: Verify Windows ARM64 emulated PostgreSQL payload
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $payload = Join-Path $env:RUNNER_TEMP "atomic-windows-arm64-payload"
-          Expand-Archive packages/coding-agent/binaries/atomic-windows-arm64.zip $payload -Force
-          $runtime = Join-Path $payload "node_modules/@bastani/atomic-natives/postgres-runtime"
-          foreach ($path in @("bin/initdb.exe", "bin/pg_ctl.exe", "bin/postgres.exe", "POSTGRESQL-LICENSE", "EMBEDDED-POSTGRES-UPSTREAM-LICENSE.md", "runtime-provenance.json")) {
-            if (-not (Test-Path (Join-Path $runtime $path))) { throw "Missing emulated PostgreSQL payload path: $path" }
-          }
-          $env:POSTGRES_EXE = Join-Path $runtime "bin/postgres.exe"
-          bun -e 'import { readPortableExecutableMachine } from "./scripts/probe-windows-bytecode.ts"; const machine = readPortableExecutableMachine(process.env.POSTGRES_EXE); if (machine !== 0x8664) throw new Error(`PostgreSQL PE machine 0x${machine.toString(16)} is not x64`); console.log("Windows ARM64 archive carries x64 PostgreSQL for emulation");'
       - name: Upload Windows release archives
         uses: namespace-actions/upload-artifact@f6ccaacc655aec41b93af180d1d7eef21af862d2 # v1.0.3
         with:
@@ -690,16 +661,6 @@ jobs:
           bun run --cwd packages/natives create-npm-dirs
           bun run --cwd packages/natives artifacts
           bun run --cwd packages/natives prepublish:native -- --skip-optional-publish
-      - name: Stage embedded PostgreSQL in target native packages
-        run: |
-          node scripts/stage-postgres-runtime.mjs linux-x64 packages/natives/npm/linux-x64-gnu
-          node scripts/stage-postgres-runtime.mjs linux-arm64 packages/natives/npm/linux-arm64-gnu
-          node scripts/stage-postgres-runtime.mjs darwin-x64 packages/natives/npm/darwin-x64
-          node scripts/stage-postgres-runtime.mjs darwin-arm64 packages/natives/npm/darwin-arm64
-          node scripts/stage-postgres-runtime.mjs windows-x64 packages/natives/npm/win32-x64-msvc
-          node scripts/stage-postgres-runtime.mjs linux-x64-musl packages/natives/npm/linux-x64-musl
-          node scripts/stage-postgres-runtime.mjs linux-arm64-musl packages/natives/npm/linux-arm64-musl
-          node scripts/stage-postgres-runtime.mjs windows-arm64 packages/natives/npm/win32-arm64-msvc
       - name: Verify installed musl archive tooling
         timeout-minutes: 1
         shell: bash
@@ -747,28 +708,6 @@ jobs:
           bun run --cwd packages/ai build
           for dir in packages/natives/npm/* packages/natives packages/ai packages/coding-agent; do npm pack "./$dir" --pack-destination npm-packages; done
           test "$(find npm-packages -name '*.tgz' -type f | wc -l | tr -d ' ')" = 11
-          for file in npm-packages/*.tgz; do
-            name=$(tar -xOf "$file" package/package.json | jq -r .name)
-            # List once into a file: `tar -tzf | grep -q` closes the pipe on the first
-            # match, tar dies with "stdout: write error", and pipefail fails the step.
-            listing=$(mktemp)
-            tar -tzf "$file" > "$listing"
-            case "$name" in
-              @bastani/atomic-natives-*)
-                grep -q '^package/postgres-runtime/bin/' "$listing"
-                grep -q '^package/postgres-runtime/POSTGRESQL-LICENSE$' "$listing"
-                grep -q '^package/postgres-runtime/runtime-provenance.json$' "$listing"
-                leaf=${name#@bastani/atomic-natives-}
-                target=${leaf%-gnu}
-                case "$leaf" in win32-*) target="windows-${leaf#win32-}"; target=${target%-msvc} ;; esac
-                unpacked=$(mktemp -d)
-                tar -xzf "$file" -C "$unpacked"
-                node scripts/stage-postgres-runtime.mjs "$target" "$unpacked/package" --validate
-                rm -rf "$unpacked"
-                ;;
-            esac
-            rm -f "$listing"
-          done
           bun -e '
             const expected = new Set(["@bastani/atomic-natives-darwin-arm64","@bastani/atomic-natives-darwin-x64","@bastani/atomic-natives-linux-arm64-gnu","@bastani/atomic-natives-linux-arm64-musl","@bastani/atomic-natives-linux-x64-gnu","@bastani/atomic-natives-linux-x64-musl","@bastani/atomic-natives-win32-arm64-msvc","@bastani/atomic-natives-win32-x64-msvc"]);
             const root = await Bun.file("packages/natives/package.json").json();

@@ -42,7 +42,9 @@ async function cleanupJobs(): Promise<void> {
 }
 
 beforeEach(() => {
-	setDurableBackend(createInMemoryTestBackend());
+	const backend = createInMemoryTestBackend();
+	backend.workflowOwnership = () => "available";
+	setDurableBackend(backend);
 });
 
 afterEach(async () => {
@@ -323,6 +325,9 @@ describe("workflow lazy-startup continuation fixes", () => {
 	for (const scenario of ["safe", "safe-ask", "foreign-cwd", "unknown-owner", "concurrent-claim"] as const) {
 		test(`session_start agent recovery ${scenario} preserves ownership fencing (#3468)`, async () => {
 			class ClaimBackend extends InMemoryDurableBackend {
+				override workflowOwnership(): "foreign" | "available" {
+					return scenario === "unknown-owner" ? "foreign" : "available";
+				}
 				override async transitionWorkflowStatus(
 					...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>
 				): Promise<boolean> {
@@ -773,6 +778,10 @@ export default workflow({
 			writeFileSync(join(workflowConfigDir(root), "config.json"), JSON.stringify({ resumeInFlight: "ask" }));
 			process.chdir(root);
 			const backend = getDurableBackend();
+			backend.workflowOwnership = (id) =>
+				id === testRunId("startup-excluded-running") || id === testRunId("startup-live-quiet-owner")
+					? "foreign"
+					: "available";
 			for (const status of ["paused", "failed", "blocked", "running"] as const) {
 				backend.registerWorkflow({
 					workflowId: testRunId(`startup-excluded-${status}`),

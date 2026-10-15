@@ -2,12 +2,6 @@ import assert from "node:assert/strict";
 import { afterEach, describe, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import {
-	DBOS_ADMISSION_TIMEOUT_MS,
-	DbosDependencyError,
-	dbosAdmissionContext,
-} from "../../packages/workflows/src/durable/dbos-admission.js";
-import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import type {
 	ExtensionAPI,
@@ -23,7 +17,6 @@ import {
 } from "../../packages/workflows/src/extension/workflow-tool-registration.js";
 import { jobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { createStore, store as workflowStore } from "../../packages/workflows/src/shared/store.js";
-import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
 const READ_ONLY_ACTIONS = ["models", "list", "get", "inputs", "status", "stages", "stage", "transcript"] as const;
 const MUTATING_ACTIONS = ["reload", "run", "answer", "pause", "resume", "quit"] as const;
@@ -67,175 +60,6 @@ afterEach(() => {
 });
 
 describe("public workflow tool request deadline", () => {
-	test.each([
-		["28P01", 'password authentication failed for user "atomic"'],
-		["42501", 'permission denied for table "dbos"."workflow_status"'],
-	])("%s safe admission rejection is hard and redacted (#3413)", async (code, message) => {
-		vi.useFakeTimers();
-		const sdk = createMockSdk();
-		const startWorkflow = vi.fn(async () => {
-			throw Object.assign(new Error(message), { code });
-		});
-		const backend = new DbosDurableBackend({ ...sdk, startWorkflow });
-		setDurableBackend(backend);
-		let bodyExecutions = 0;
-		const definition = workflow({
-			name: "public-auth-rejected-admission",
-			description: "",
-			inputs: {},
-			outputs: {},
-			run: async () => {
-				bodyExecutions++;
-				return {};
-			},
-		});
-		const runtime = createExtensionRuntime({ definitions: [definition] });
-		const tool = registeredTool(makeExecuteWorkflowTool(runtime, () => undefined));
-		const ctx = {};
-		const pending = tool.execute(
-			"auth-rejection",
-			{ action: "run", workflow: definition.normalizedName },
-			undefined,
-			undefined,
-			ctx,
-		);
-		await vi.advanceTimersByTimeAsync(0);
-		const result = await pending;
-		assert.equal(result.details.action, "run");
-		assert.equal(result.details.status, "failed");
-		const runId = "runId" in result.details ? result.details.runId : undefined;
-		assert.ok(runId);
-		const safeError = "error" in result.details ? result.details.error : undefined;
-		if (code === "28P01") {
-			assert.equal(safeError, 'password authentication failed for user "[redacted]"');
-			assert.doesNotMatch(safeError ?? "", /atomic/u);
-		} else {
-			assert.equal(safeError, message);
-		}
-		assert.equal(workflowStore.runs().length, 0);
-		assert.equal(backend.getWorkflow(runId), undefined);
-		assert.equal(sdk.state.workflows.has(runId), false);
-		assert.equal(sdk.state.steps.size, 0);
-		assert.deepEqual(sdk.state.deletions, []);
-		await vi.advanceTimersByTimeAsync(WORKFLOW_TOOL_REQUEST_TIMEOUT_MS);
-		assert.equal(startWorkflow.mock.calls.length, 1);
-		assert.equal(bodyExecutions, 0);
-		assert.equal(vi.getTimerCount(), 0);
-	});
-
-	// #3072 / verifier F7: failed admission must not re-enter an unavailable DB for cleanup.
-	for (const mode of ["frozen", "refusing"] as const) {
-		test(`preserves the admission failure and identity through a ${mode} database outage (#3428)`, async () => {
-			vi.useFakeTimers();
-			const sdk = createMockSdk();
-			const reads = vi.fn(async (): Promise<never> => {
-				if (mode === "frozen") return new Promise<never>(() => {});
-				throw Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:1"), { code: "ECONNREFUSED" });
-			});
-			const backend = new DbosDurableBackend({
-				...sdk,
-				startWorkflow: async (...args) => {
-					if (mode === "refusing") throw new DbosDependencyError();
-					// Model an accepted identity whose response never arrives; the pool fence
-					// rejects on admission abort, but an unfenced cleanup read would hang.
-					await sdk.startWorkflow(...args);
-					const signal = dbosAdmissionContext.getStore();
-					assert.ok(signal);
-					await new Promise<never>((_, reject) => {
-						signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-					});
-				},
-				listStepRecords: reads,
-				retrieveWorkflow: reads,
-				listAllWorkflows: reads,
-			});
-			setDurableBackend(backend);
-			let bodyExecutions = 0;
-			const definition = workflow({
-				name: `public-admission-outage-${mode}`,
-				description: "",
-				inputs: {},
-				outputs: {},
-				run: async () => {
-					bodyExecutions++;
-					return {};
-				},
-			});
-			const runtime = createExtensionRuntime({ definitions: [definition] });
-			const tool = registeredTool(makeExecuteWorkflowTool(runtime, () => undefined));
-			const ctx = {};
-			let settled = false;
-			const pending = tool
-				.execute(mode, { action: "run", workflow: definition.normalizedName }, undefined, undefined, ctx)
-				.then((result) => {
-					settled = true;
-					return result;
-				});
-			await vi.advanceTimersByTimeAsync(mode === "frozen" ? DBOS_ADMISSION_TIMEOUT_MS : 0);
-			assert.ok(settled, "admission failure must settle before the outer request timeout");
-			const result = await pending;
-			assert.equal(result.details.action, "run");
-			assert.equal(result.details.status, "failed");
-			assert.notEqual("code" in result.details ? result.details.code : undefined, "WORKFLOW_TIMEOUT");
-			const runId = "runId" in result.details ? result.details.runId : undefined;
-			assert.ok(runId);
-			assert.match(runId, /^[0-9a-f-]{36}$/u);
-			const error = "error" in result.details ? (result.details.error ?? "") : "";
-			assert.match(error, /Workflow database (admission timed out|unavailable during admission)/u);
-			assert.match(error, /startup cleanup skipped/u);
-			assert.ok(error.includes(runId), "cleanup diagnostic must preserve the exact identity");
-			assert.match(error, /may remain without admission metadata/u);
-			assert.equal(reads.mock.calls.length, 0, "no unfenced cleanup reads after unavailable admission");
-			assert.equal(workflowStore.runs().find((run) => run.id === runId)?.status, "failed");
-			const status = await tool.execute("inspect-outage", { action: "status", runId }, undefined, undefined, ctx);
-			assert.equal(status.details.action, "statusDetail");
-			assert.equal("detail" in status.details ? status.details.detail.status : undefined, "failed");
-			await vi.advanceTimersByTimeAsync(WORKFLOW_TOOL_REQUEST_TIMEOUT_MS);
-			assert.equal(bodyExecutions, 0);
-			assert.deepEqual(sdk.state.deletions, []);
-			assert.equal(sdk.state.workflows.has(runId), mode === "frozen", "existing durable identity must survive");
-			assert.equal(sdk.state.steps.size, 0, "failed admission publishes no ownership metadata");
-			assert.equal(vi.getTimerCount(), 0);
-		});
-	}
-
-	test("unavailable admission cleanup is scoped to the failed identity until its successful re-admission", async () => {
-		// #3072: an independent healthy root can admit before failed startup cleanup runs.
-		const sdk = createMockSdk();
-		let unavailable = true;
-		const backend = new DbosDurableBackend({
-			...sdk,
-			startWorkflow: async (...args) => {
-				if (args[0] === "failed-root" && unavailable) throw new DbosDependencyError();
-				await sdk.startWorkflow(...args);
-			},
-		});
-		const admit = (workflowId: string) =>
-			backend.admitWorkflow(
-				workflowId,
-				{
-					workflowId,
-					name: workflowId,
-					inputs: {},
-					status: "running",
-					createdAt: Date.now(),
-				},
-				new AbortController().signal,
-			);
-		await assert.rejects(admit("failed-root"), DbosDependencyError);
-		await admit("healthy-root");
-		assert.equal(backend.isAdmissionUnavailable("failed-root"), true, "another root cannot clear the cleanup fence");
-		assert.equal(backend.isAdmissionUnavailable("healthy-root"), false, "unrelated roots retain normal cleanup");
-		assert.equal(backend.isAdmissionUnavailable("unknown-root"), false);
-		unavailable = false;
-		await admit("failed-root");
-		assert.equal(
-			backend.isAdmissionUnavailable("failed-root"),
-			false,
-			"successful same-ID admission clears its fence",
-		);
-	});
-
 	test("times out every public action once at 150 seconds, cancels supported work, and ignores late settlement (#3428)", async () => {
 		assert.equal(WORKFLOW_TOOL_REQUEST_TIMEOUT_MS, 150_000);
 		vi.useFakeTimers();

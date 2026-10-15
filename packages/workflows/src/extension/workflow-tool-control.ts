@@ -66,7 +66,7 @@ async function foreignRunFailure(
 	try {
 		durable = await guard.getRuntime().inspectDurableWorkflow(target);
 	} catch (error) {
-		return controlFailure(action, target, error, "database_unavailable");
+		return controlFailure(action, target, error, "storage_unavailable");
 	}
 	if (durable.kind !== "found") return undefined;
 	const runId = durable.detail.runId;

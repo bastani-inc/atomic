@@ -5,12 +5,6 @@ import { Type } from "typebox";
 import { afterAll, describe, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
-import {
-	encodeMetadata,
-	metadataStepName,
-	parseCurrentMetadataRecord,
-} from "../../packages/workflows/src/durable/dbos-metadata.js";
 import { createInMemoryTestBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { discoverWorkflows } from "../../packages/workflows/src/extension/discovery.js";
@@ -18,6 +12,7 @@ import { dispatch } from "../../packages/workflows/src/extension/dispatcher.js";
 import { coercePossibleStages } from "../../packages/workflows/src/shared/possible-stages.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
 import {
 	makeDirectorySync,
 	makeTempDirectory,
@@ -26,7 +21,6 @@ import {
 	sleep,
 	writeTextSync,
 } from "../helpers/runtime.js";
-import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
 const SCANNED = ["orchestrator-*", "pull-request", "reviewer-error"] as const;
 
@@ -119,30 +113,22 @@ describe("possible-stages persistence (D10)", () => {
 		assert.deepEqual(storeWithoutHandle.runs().find((candidate) => candidate.id === "ps-run-4")?.possibleStages, []);
 	});
 
-	test("possibleStages reaches DBOS metadata and hydrates in a fresh process", async () => {
-		// Regression (review round 1): toMetadata() omitted possibleStages, so
-		// the value lived only in the in-process mirror and a fresh-process
-		// resume hydrated an empty set.
-		const sdk = createMockSdk();
-		const backend = new DbosDurableBackend(sdk);
+	test("possibleStages survives journal reopen", async () => {
+		const backend = new JournalTestBackend();
 		const store = createStore();
 		await run(
 			plain,
 			{},
 			{
-				runId: "ps-dbos-1",
+				runId: "ps-journal-1",
 				store,
 				durableBackend: backend,
 				durableRootBackend: backend,
 				possibleStages: [...SCANNED],
 			},
 		);
-		await backend.flush("ps-dbos-1");
-		// A fresh backend has an empty in-memory mirror; the scan must come
-		// back from the durable metadata payload alone.
-		const fresh = new DbosDurableBackend(sdk);
-		await fresh.hydrateWorkflow("ps-dbos-1");
-		assert.deepEqual(fresh.getWorkflow("ps-dbos-1")?.possibleStages, [...SCANNED]);
+		const fresh = await backend.reopen();
+		assert.deepEqual(fresh.getWorkflow("ps-journal-1")?.possibleStages, [...SCANNED]);
 	});
 
 	test("continuations inherit the source run's persisted scan", async () => {
@@ -209,40 +195,6 @@ describe("possible-stages persistence (D10)", () => {
 		assert.equal(coercePossibleStages({ stages: [] }), undefined);
 		assert.equal(coercePossibleStages(["ok", 42]), undefined);
 		assert.deepEqual(coercePossibleStages(["a-*", "b"]), ["a-*", "b"]);
-
-		const metadata = {
-			workflowId: "ps-meta",
-			name: "possible-stages-meta",
-			inputs: {},
-			status: "running" as const,
-			completedCheckpoints: 0,
-			pendingPrompts: 0,
-			createdAt: 1,
-			promptReservationEpoch: "epoch",
-			updatedAt: 2,
-		};
-		const healthy = parseCurrentMetadataRecord(
-			{
-				stepName: metadataStepName(2),
-				output: encodeMetadata({ ...metadata, possibleStages: [...SCANNED] }),
-				completedAt: 3,
-			},
-			"ps-meta",
-		);
-		assert.deepEqual(healthy?.possibleStages, [...SCANNED]);
-
-		// A corrupt value drops the field but keeps the record loadable: resume
-		// must never fail because the scan metadata is malformed.
-		const corrupted = parseCurrentMetadataRecord(
-			{
-				stepName: metadataStepName(3),
-				output: encodeMetadata({ ...metadata, possibleStages: "garbage" as unknown as readonly string[] }),
-				completedAt: 4,
-			},
-			"ps-meta",
-		);
-		assert.ok(corrupted !== undefined, "corrupt possibleStages must not reject the record");
-		assert.equal(corrupted.possibleStages, undefined);
 	});
 });
 

@@ -8,87 +8,16 @@ import { createToolControlRegistry } from "../../packages/workflows/src/engine/r
 import type { WorkflowToolArgs } from "../../packages/workflows/src/extension/public-types.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
-import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
 import { runDetached } from "../../packages/workflows/src/runs/background/runner.js";
-import { pauseRun, resumeRun } from "../../packages/workflows/src/runs/background/status.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
 import { renderWidgetLines } from "../../packages/workflows/src/tui/widget.js";
+import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 
 afterEach(() => setDurableBackend(undefined));
-
-for (const outcome of ["resolve", "reject"] as const) {
-	test(`caller abort during startup cancels the allocated root before late ${outcome}`, async () => {
-		const entered = Promise.withResolvers<void>();
-		const admission = Promise.withResolvers<void>();
-		class DelayedAdmissionBackend extends InMemoryDurableBackend {
-			override async flush(): Promise<void> {
-				entered.resolve();
-				await admission.promise;
-			}
-		}
-		const backend = new DelayedAdmissionBackend();
-		setDurableBackend(backend);
-		const store = createStore();
-		const cancellation = createCancellationRegistry();
-		const jobs = createJobTracker();
-		let bodyCalls = 0;
-		const definition = workflow({
-			name: "cancel-initialization",
-			description: "",
-			inputs: {},
-			outputs: {},
-			run: async (ctx) => {
-				bodyCalls += 1;
-				await ctx.tool("must-not-start", {}, async () => "done");
-				return {};
-			},
-		});
-		const runtime = createExtensionRuntime({ definitions: [definition], store, cancellation, jobs });
-		const execute = makeExecuteWorkflowTool(runtime, () => undefined);
-		const caller = new AbortController();
-		const reason = new Error("user interrupted startup");
-		let acceptedId: string | undefined;
-		const context = {};
-		const pending = execute({ action: "run", workflow: definition.normalizedName }, context, caller.signal, (id) => {
-			acceptedId = id;
-		});
-		const rejected = assert.rejects(pending, (error) => error === reason);
-		await entered.promise;
-		assert.ok(acceptedId);
-		const job = jobs.get(acceptedId);
-		assert.ok(job);
-		try {
-			assert.equal(store.runs()[0]?.status, "running");
-			assert.deepEqual(store.runs()[0]?.stages, []);
-			assert.deepEqual(store.runs()[0]?.toolNodes, []);
-			caller.abort(reason);
-			await rejected;
-			assert.equal(
-				cancellation.isAborted(acceptedId),
-				true,
-				"request cancellation must reach the initialization owner",
-			);
-			await new Promise<void>((resolve) => setImmediate(resolve));
-			assert.equal(
-				store.runs()[0]?.status,
-				"killed",
-				"a stalled admission write must not pin the local root as running",
-			);
-		} finally {
-			if (outcome === "resolve") admission.resolve();
-			else admission.reject(new Error("late admission failure"));
-			await job.promise;
-		}
-		assert.equal(bodyCalls, 0, "late non-cancellable startup completion must not launch workflow code");
-		assert.equal(store.runs()[0]?.status, "killed");
-		assert.equal(backend.getWorkflow(acceptedId)?.status, "cancelled");
-		assert.equal(jobs.get(acceptedId), undefined);
-	});
-}
 
 test("quit controls a node-less workflow await without inventing graph nodes or admitting late work", async () => {
 	const entered = Promise.withResolvers<void>();
@@ -152,65 +81,6 @@ test("quit controls a node-less workflow await without inventing graph nodes or 
 	);
 	assert.equal(store.runs()[0]?.status, "paused");
 });
-
-for (const control of [quitRun, pauseRun]) {
-	test(`${control.name} settles an initializing root before admission resolves`, async () => {
-		const entered = Promise.withResolvers<void>();
-		const admission = Promise.withResolvers<void>();
-		class DelayedFirstFlush extends InMemoryDurableBackend {
-			calls = 0;
-			override async flush(): Promise<void> {
-				if (++this.calls === 1) {
-					entered.resolve();
-					await admission.promise;
-				}
-			}
-		}
-		setDurableBackend(new DelayedFirstFlush());
-		const store = createStore();
-		const jobs = createJobTracker();
-		const toolControls = createToolControlRegistry();
-		let calls = 0;
-		const definition = workflow({
-			name: "control-initialization",
-			description: "",
-			inputs: {},
-			outputs: {},
-			run: async (ctx) => {
-				calls += 1;
-				await ctx.tool("after-initialization", {}, async () => "done");
-				return {};
-			},
-		});
-		const accepted = runDetached(definition, {}, { store, jobs, toolControlRegistry: toolControls });
-		const job = jobs.get(accepted.runId)!;
-		await entered.promise;
-		try {
-			const result = await control(accepted.runId, { store, toolControlRegistry: toolControls });
-			assert.equal(result.ok, true);
-			assert.equal(store.runs()[0]?.status, "paused");
-			// PR #2885: pause must retain the live initialization owner, not quit it.
-			if (control !== quitRun) {
-				assert.equal(store.runs()[0]?.exitReason, undefined);
-				assert.notEqual(store.runs()[0]?.resumable, false);
-				admission.resolve();
-				await new Promise<void>((resolve) => setImmediate(resolve));
-				assert.equal(calls, 0);
-				assert.equal(jobs.get(accepted.runId), job);
-				assert.deepEqual(store.runs()[0]?.stages, []);
-				assert.deepEqual(store.runs()[0]?.toolNodes, []);
-				await resumeRun(accepted.runId, { store, toolControlRegistry: toolControls });
-				await job.promise;
-				assert.equal(store.runs()[0]?.status, "completed");
-			}
-		} finally {
-			admission.resolve();
-			job.controller.abort();
-			await job.promise;
-		}
-		assert.equal(calls, control === quitRun ? 0 : 1);
-	});
-}
 
 test("a run-start observer failure cannot leave an ownerless running root", async () => {
 	setDurableBackend(new InMemoryDurableBackend());
@@ -282,73 +152,6 @@ test("pre-aborted public reads and mutations never start resource or runtime wor
 	assert.equal(calls, 0);
 });
 
-test("failed-run resume abort cancels startup and leaves the source available", async () => {
-	const entered = Promise.withResolvers<void>();
-	const admission = Promise.withResolvers<void>();
-	class DelayedFirstFlush extends InMemoryDurableBackend {
-		calls = 0;
-		override async flush(): Promise<void> {
-			if (++this.calls === 1) {
-				entered.resolve();
-				await admission.promise;
-			}
-		}
-	}
-	const backend = new DelayedFirstFlush();
-	setDurableBackend(backend);
-	const store = createStore();
-	const jobs = createJobTracker();
-	let calls = 0;
-	const definition = workflow({
-		name: "cancel-resume",
-		description: "",
-		inputs: {},
-		outputs: {},
-		run: async () => {
-			calls += 1;
-			return {};
-		},
-	});
-	const sourceId = crypto.randomUUID();
-	backend.registerWorkflow({
-		workflowId: sourceId,
-		name: definition.name,
-		inputs: {},
-		status: "failed",
-		createdAt: 1,
-		resumable: true,
-	});
-	store.recordRunStart({
-		id: sourceId,
-		name: definition.name,
-		inputs: {},
-		status: "failed",
-		startedAt: 1,
-		endedAt: 2,
-		resumable: true,
-		failedStageId: "retry",
-		toolNodes: [],
-		stages: [{ id: "retry", name: "retry", status: "failed", parentIds: [], toolEvents: [] }],
-	});
-	const runtime = createExtensionRuntime({ definitions: [definition], store, jobs });
-	const caller = new AbortController();
-	const reason = new Error("cancel resume startup");
-	const pending = runtime.resumeFailedRun(sourceId, undefined, { signal: caller.signal }).catch((error) => error);
-	await entered.promise;
-	const job = jobs.get(jobs.runIds()[0]!)!;
-	try {
-		caller.abort(reason);
-		assert.equal(job.controller.signal.aborted, true);
-		assert.equal(await pending, reason);
-	} finally {
-		admission.resolve();
-		await pending;
-		await job.promise;
-	}
-	assert.equal(calls, 0);
-	assert.equal(store.runs().find((run) => run.id === sourceId)?.status, "failed");
-});
-
 test("an aborted public resume never mutates after non-cancellable resource loading completes", async () => {
 	const backend = new InMemoryDurableBackend();
 	setDurableBackend(backend);
@@ -418,7 +221,7 @@ test("durable resume cancellation during its claim restores the source without l
 	const runId = crypto.randomUUID();
 	backend.registerWorkflow({ workflowId: runId, name: definition.name, inputs: {}, status: "paused", createdAt: 1 });
 	backend.setWorkflowStatus(runId, "paused", 1, true);
-	const runtime = createExtensionRuntime({ definitions: [definition], store, jobs });
+	const runtime = createExtensionRuntime({ registry: createRegistry([definition]), store, jobs });
 	const caller = new AbortController();
 	const reason = new Error("cancel durable resume");
 	const pending = runtime.resumeDurableWorkflow(runId, { signal: caller.signal }).catch((error) => error);
@@ -548,138 +351,4 @@ test("a retired node-less executor cannot hydrate cached stages after quit", asy
 	await new Promise<void>((resolve) => setImmediate(resolve));
 	assert.equal(modelCalls, 1);
 	assert.deepEqual(store.runs()[0]?.stages, [], "a late cached stage must not mutate the retired run");
-});
-
-test("a suspended root stays visibly stopped while quit durability is stalled", async () => {
-	const flushing = Promise.withResolvers<void>();
-	const flush = Promise.withResolvers<void>();
-	class DelayedQuitFlush extends InMemoryDurableBackend {
-		calls = 0;
-		override async flush(): Promise<void> {
-			if (++this.calls === 2) {
-				flushing.resolve();
-				await flush.promise;
-			}
-		}
-	}
-	setDurableBackend(new DelayedQuitFlush());
-	const entered = Promise.withResolvers<void>();
-	const body = Promise.withResolvers<void>();
-	const definition = workflow({
-		name: "quit-durability-pending",
-		description: "",
-		inputs: {},
-		outputs: {},
-		run: async () => {
-			entered.resolve();
-			await body.promise;
-			return {};
-		},
-	});
-	const store = createStore();
-	const jobs = createJobTracker();
-	const controls = createToolControlRegistry();
-	const accepted = runDetached(definition, {}, { store, jobs, toolControlRegistry: controls });
-	const job = jobs.get(accepted.runId)!;
-	await entered.promise;
-	const quitting = quitRun(accepted.runId, { store, jobs, toolControlRegistry: controls });
-	await flushing.promise;
-	try {
-		assert.equal(
-			store.runs()[0]?.status,
-			"paused",
-			"pending durability cannot leave a suspended root claiming to run",
-		);
-		assert.equal(store.runs()[0]?.resumable, false);
-	} finally {
-		flush.resolve();
-		body.resolve();
-		await quitting;
-		await job.promise;
-	}
-});
-
-test("quit fences a root waiting for its final pre-completion flush", async () => {
-	const entered = Promise.withResolvers<void>();
-	const release = Promise.withResolvers<void>();
-	let bodyReturned = false;
-	let gated = false;
-	class DelayedCompletionFlush extends InMemoryDurableBackend {
-		override async flush(): Promise<void> {
-			if (bodyReturned && !gated) {
-				gated = true;
-				entered.resolve();
-				await release.promise;
-			}
-		}
-	}
-	const backend = new DelayedCompletionFlush();
-	setDurableBackend(backend);
-	const store = createStore();
-	const jobs = createJobTracker();
-	const controls = createToolControlRegistry();
-	const definition = workflow({
-		name: "quit-completion-flush",
-		description: "",
-		inputs: {},
-		outputs: {},
-		run: async (ctx) => {
-			await ctx.tool("completed", {}, async () => "done");
-			bodyReturned = true;
-			return {};
-		},
-	});
-	const accepted = runDetached(definition, {}, { store, jobs, toolControlRegistry: controls });
-	const job = jobs.get(accepted.runId)!;
-	await entered.promise;
-	const quitting = quitRun(accepted.runId, { store, jobs, toolControlRegistry: controls });
-	try {
-		await new Promise<void>((resolve) => setImmediate(resolve));
-		assert.equal(store.runs()[0]?.status, "paused");
-	} finally {
-		release.resolve();
-		await quitting;
-		await job.promise;
-	}
-	assert.equal(backend.getWorkflow(accepted.runId)?.status, "paused");
-	assert.equal(store.runs()[0]?.toolNodes?.[0]?.status, "completed");
-});
-
-test("a concurrent quit preserves the accepted root while public startup acknowledgement settles", async () => {
-	const entered = Promise.withResolvers<void>();
-	const release = Promise.withResolvers<void>();
-	class DelayedFirstFlush extends InMemoryDurableBackend {
-		calls = 0;
-		override async flush(): Promise<void> {
-			if (++this.calls === 1) {
-				entered.resolve();
-				await release.promise;
-			}
-		}
-	}
-	setDurableBackend(new DelayedFirstFlush());
-	const store = createStore();
-	const jobs = createJobTracker();
-	const definition = workflow({
-		name: "public-init-quit",
-		description: "",
-		inputs: {},
-		outputs: {},
-		run: async () => ({}),
-	});
-	const runtime = createExtensionRuntime({ definitions: [definition], store, jobs });
-	const pending = runtime.dispatch({ action: "run", workflow: definition.name });
-	await entered.promise;
-	const runId = store.runs()[0]!.id;
-	try {
-		const quit = await quitRun(runId, { store, jobs });
-		assert.equal(quit.ok, true);
-		const result = await pending;
-		assert.equal("status" in result ? result.status : undefined, "paused");
-		assert.equal(store.runs()[0]?.status, "paused");
-	} finally {
-		release.resolve();
-		await pending;
-		await jobs.get(runId)?.promise;
-	}
 });

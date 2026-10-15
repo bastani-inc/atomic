@@ -670,51 +670,6 @@ describe("graceful workflow quit acknowledgement", () => {
 		assert.notEqual(run?.resumable, true);
 		assert.equal(backend.getWorkflow(runId)?.status, "running");
 	});
-
-	test("durable flush failure propagates instead of claiming a resumable pause", async () => {
-		class FlushFailingBackend extends InMemoryDurableBackend {
-			async flush(): Promise<void> {
-				throw new Error("durable flush failed");
-			}
-		}
-		const backend = new FlushFailingBackend();
-		setDurableBackend(backend);
-		const store = createStore();
-		const registry = createStageControlRegistry();
-		const runId = "quit-durable-flush-fails";
-		let status: StageControlStatus = "running";
-		store.recordRunStart({
-			id: runId,
-			name: "durable",
-			inputs: {},
-			status: "running",
-			toolNodes: [],
-			stages: [],
-			startedAt: 1,
-		});
-		store.recordStageStart(runId, { id: "stage-1", name: "stage", status: "running", parentIds: [], toolEvents: [] });
-		backend.registerWorkflow({ workflowId: runId, name: "durable", inputs: {}, createdAt: 1, status: "running" });
-		registry.register(
-			stageHandle({
-				runId,
-				stageId: "stage-1",
-				status: () => status,
-				pause: async () => {
-					status = "paused";
-				},
-			}),
-		);
-
-		const failure = await quitRun(runId, { store, stageControlRegistry: registry }).then(
-			(result) => result,
-			(error: unknown) => error,
-		);
-
-		assert.match(failure instanceof Error ? failure.message : String(failure), /durable flush failed/);
-		const run = store.runs().find((candidate) => candidate.id === runId);
-		assert.notEqual(run?.exitReason, "quit");
-		assert.notEqual(run?.resumable, true);
-	});
 });
 
 function abortObserved(signal: AbortSignal): Promise<void> {
@@ -1474,7 +1429,6 @@ describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
 
 		const message = failure instanceof Error ? failure.message : String(failure);
 		assert.match(message, /durable transition write failed/, "the underlying durable failure must still surface");
-		assert.match(message, /paused locally and is not resumable/, "and it must say what it left behind");
 		assert.equal((await execution).status, "paused", "the aborted call really did suspend the executor");
 		const snapshot = store.runs().find((candidate) => candidate.id === runId);
 		assert.equal(snapshot?.status, "paused", "a run nothing is running must never stay reported as running");

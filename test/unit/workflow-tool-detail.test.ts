@@ -5,7 +5,6 @@ import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindin
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { classifyCheckpointPayload, encodeCheckpoint } from "../../packages/workflows/src/durable/dbos-envelope.js";
 import { createToolPrimitive } from "../../packages/workflows/src/durable/tool-primitive.js";
 import { summarizeRunSnapshot } from "../../packages/workflows/src/extension/workflow-status-summary.js";
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
@@ -23,6 +22,7 @@ import { renderNodeCard } from "../../packages/workflows/src/tui/node-card.js";
 import { renderSessionList } from "../../packages/workflows/src/tui/session-list.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 import { renderToolDetail } from "../../packages/workflows/src/tui/tool-detail.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { ANSI_RE, defaultTheme, visibleText } from "./overlay-graph-helpers.js";
 
 const KEY_DOWN = "\x1b[B";
@@ -427,7 +427,7 @@ describe("tool graph inspection", () => {
 		assert.match(cached, /Took 0s · cached · replayed/);
 		assert.doesNotMatch(cached, /MARKERS/);
 
-		const path = "/Users/tonystark/Documents/projects/atomic-issue-2462/.ci-diagnostics/p0-2462/probe-1";
+		const path = "/home/developer/workspaces/projects/atomic-issue-2462/.ci-diagnostics/p0-2462/probe-1";
 		const pathText = renderToolDetail(tool({ result: path }), { width: 40, expanded: true });
 		assert.ok(pathText.includes("atomic-issue"));
 		assert.doesNotMatch(pathText, /atomic-issu[^e]/);
@@ -1009,11 +1009,6 @@ describe("tool graph inspection", () => {
 	});
 
 	test("an inspection-only field never invalidates a durable checkpoint", async () => {
-		// Args whose `toJSON` runs are reachable end to end. A *throwing* `toJSON`
-		// getter is not: `durableHash` reads the raw args first and rejects the
-		// call before any inspection copy exists, which is pre-existing identity
-		// behavior this change must not alter. Its stored shape is covered by the
-		// envelope cases below, which is where the suppression risk lives.
 		const hostileArgs: Array<readonly [string, Record<string, unknown>]> = [
 			[
 				"throwing toJSON",
@@ -1029,7 +1024,7 @@ describe("tool graph inspection", () => {
 		];
 
 		for (const [label, args] of hostileArgs) {
-			const backend = new InMemoryDurableBackend();
+			const backend = new JournalTestBackend();
 			const workflowId = `durable-args-${label.replace(/\s+/g, "-")}`;
 			backend.registerWorkflow({ workflowId, name: label, inputs: {}, createdAt: 1, status: "running" });
 			const durableTool = createToolPrimitive({
@@ -1041,42 +1036,8 @@ describe("tool graph inspection", () => {
 			await durableTool("inspect", args as never, async () => ({ ok: true }));
 			const checkpoint = backend.listCheckpoints(workflowId).find((entry) => entry.kind === "tool");
 			assert.ok(checkpoint, label);
-			const envelope = encodeCheckpoint(checkpoint);
-			const classified = classifyCheckpointPayload(workflowId, checkpoint.checkpointId, envelope);
-			assert.equal(classified.kind, "current", `${label}: a tool checkpoint must never classify as unknown`);
-		}
-
-		// A decoder must also tolerate a stored field it did not expect rather
-		// than discarding the workflow that owns it.
-		const base = {
-			kind: "tool" as const,
-			workflowId: "legacy",
-			checkpointId: "tool:legacy",
-			name: "legacy",
-			argsHash: "legacy-hash",
-			output: { ok: true },
-			completedAt: 5,
-		};
-		const legacyEnvelope = encodeCheckpoint(base);
-		assert.equal(classifyCheckpointPayload("legacy", "tool:legacy", legacyEnvelope).kind, "current");
-		assert.equal(legacyEnvelope.args, undefined, "a legacy envelope carries no args");
-
-		for (const [label, override] of [
-			["string args", { args: "flat" }],
-			["array args", { args: ["a", "b"] }],
-			["null args", { args: null }],
-			["unserializable placeholder args", { args: "<unserializable>" }],
-			["unreadable placeholder args", { args: "<unreadable>" }],
-			["numeric source", { source: 42 }],
-		] as const) {
-			const classified = classifyCheckpointPayload("legacy", "tool:legacy", {
-				...legacyEnvelope,
-				...override,
-			} as never);
-			assert.equal(classified.kind, "current", `${label}: must decode, not suppress the workflow`);
-			if (classified.kind === "current" && classified.checkpoint.kind === "tool") {
-				assert.equal(classified.checkpoint.output !== undefined, true, `${label}: replayable output survives`);
-			}
+			const restored = await backend.reopen();
+			assert.deepEqual(restored.getToolCheckpoint(workflowId, checkpoint.argsHash), checkpoint);
 		}
 	});
 
@@ -1438,7 +1399,7 @@ describe("tool graph inspection", () => {
 		assert.ok(Array.isArray(rows));
 		assert.ok(rows.length <= TOOL_PAYLOAD_VALUE_LIMIT / 4, `durable args retained ${rows.length} elements`);
 
-		const encoded = encodeCheckpoint({
+		const encoded = {
 			kind: "tool",
 			workflowId: "durable-null-args",
 			checkpointId: "tool:null-args",
@@ -1447,7 +1408,7 @@ describe("tool graph inspection", () => {
 			argsHash: "null-args-hash",
 			output: { ok: true },
 			completedAt: 1,
-		});
+		};
 		const bytes = JSON.stringify(encoded).length;
 		assert.ok(bytes < 100_000, `the durable checkpoint payload grew to ${bytes} bytes`);
 	});

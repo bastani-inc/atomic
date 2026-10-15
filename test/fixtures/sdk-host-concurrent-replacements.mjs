@@ -7,11 +7,7 @@ const workflow = process.argv[4] === "workflow";
 if (workflow) {
  const home = process.env.ATOMIC_MANAGED_TEST_HOME;
  assert.ok(home && resolve(homedir()) === resolve(home) && process.env.USERPROFILE === home, "retained workflow fixture requires a disposable managed HOME");
- assert.ok(home.startsWith(tmpdir()) && home.includes("atomic-real-postgres-"), "requires RealPostgresHome");
- assert.equal(process.env.DBOS_SYSTEM_DATABASE_URL, undefined);
- assert.equal(process.env.PGPORT, "0", "Docker fallback must be disabled");
- const metadata = JSON.parse(readFileSync(join(home, ".atomic", "postgres", "v18.shared", "cluster.json"), "utf8"));
- assert.ok(Number.isInteger(metadata.server.port) && metadata.server.port > 0 && metadata.server.port <= 65535, "suite cluster records a listening port; restarts may move it off ATOMIC_POSTGRES_PORT");
+ assert.ok(home.startsWith(tmpdir()) && home.includes("atomic-journal-"), "requires a disposable journal home");
 }
 const { createAgentSession, createAgentSessionRuntime, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } = await import("@bastani/atomic");
 

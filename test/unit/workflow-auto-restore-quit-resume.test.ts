@@ -25,6 +25,7 @@ function seedRestoredShadow(
 	workflowId: string,
 	status: Extract<DurableWorkflowStatus, "paused" | "running">,
 ): void {
+	backend.workflowOwnership = () => "available";
 	backend.registerWorkflow({
 		workflowId,
 		name: "restored-workflow",

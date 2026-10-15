@@ -172,13 +172,7 @@ class RpcCli {
 				...environment,
 				ATOMIC_CODING_AGENT_DIR: agentDir,
 				ISSUE_2078_STATE_DIR: stateDir,
-				// Durability is deliberately in-process: the shared local Postgres
-				// cluster under ~/.atomic is shared by every concurrent Atomic
-				// session, and vitest runs files in parallel. The unreachable URL
-				// selects the shipped in-memory backend, which implements the same
-				// interface, so quit's durable transition and resume's checkpoint
-				// replay are exercised without an external service.
-				DBOS_SYSTEM_DATABASE_URL: "postgresql://issue2078:issue2078@127.0.0.1:1/unreachable",
+				ATOMIC_WORKFLOW_JOURNAL_PATH: join(stateDir, "journal.sqlite"),
 			},
 			stdin: "pipe",
 			stdout: "pipe",

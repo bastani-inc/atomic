@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import { afterEach, describe, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
+import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import { priorRunElapsedMs } from "../../packages/workflows/src/durable/run-timing.js";
 import type { DurableCheckpoint, DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStageSessionHeartbeat } from "../../packages/workflows/src/runs/foreground/stage-session-heartbeat.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
-import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 import { mockSession, type StageSessionRuntime } from "./executor-shared.js";
 
 const HEARTBEAT_MS = 30_000;
@@ -167,8 +167,7 @@ describe("active workflow stage session durability", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(2_000_000);
 		const store = createStore();
-		const sdk = createMockSdk();
-		const backend = new DbosDurableBackend(sdk, { executorId: "nested-heartbeat-owner" });
+		const backend = new JournalTestBackend();
 		const rootId = testRunId("nested-stage-heartbeat");
 		const release = Promise.withResolvers<string>();
 		const session: StageSessionRuntime = {
@@ -216,19 +215,12 @@ describe("active workflow stage session durability", () => {
 				(checkpoint): checkpoint is DurableStageCheckpoint =>
 					checkpoint.kind === "stage" && checkpoint.sessionFile === session.sessionFile,
 			);
-		const metadataWritesBeforeHeartbeat = [...sdk.state.steps.keys()].filter((key) =>
-			key.includes(":checkpoint:__atomic_metadata:"),
-		).length;
 		assert.equal(initial.length, 1);
 		assert.notEqual(initial[0]?.topology?.run?.runId, rootId);
 		assert.equal(initial[0]?.workflowId, rootId);
 		const firstUpdatedAt = backend.getWorkflow(rootId)?.updatedAt;
 
 		await vi.advanceTimersByTimeAsync(HEARTBEAT_MS);
-		assert.ok(
-			[...sdk.state.steps.keys()].filter((key) => key.includes(":checkpoint:__atomic_metadata:")).length >
-				metadataWritesBeforeHeartbeat,
-		);
 		assert.equal(
 			backend
 				.listCheckpoints(rootId)
@@ -241,6 +233,7 @@ describe("active workflow stage session durability", () => {
 		release.resolve("done");
 		await vi.advanceTimersByTimeAsync(0);
 		assert.equal((await execution).status, "completed");
+		await backend.close();
 		assert.equal(vi.getTimerCount(), 0);
 	});
 
@@ -524,30 +517,19 @@ describe("active workflow stage session durability", () => {
 		assert.equal(vi.getTimerCount(), 0);
 	});
 
-	test("surfaces a DBOS sessionless heartbeat failure before the active turn can finish", async () => {
+	test("surfaces a journal sessionless heartbeat failure before the active turn can finish", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(2_750_000);
-		const sdk = createMockSdk();
-		const originalRecordStepOutput = sdk.recordStepOutput.bind(sdk);
-		const failingSdk = {
-			...sdk,
-			async recordStepOutput(...args: Parameters<typeof sdk.recordStepOutput>) {
-				const [workflowId, stepName, output] = args;
-				if (stepName.startsWith("run-timing:")) throw new Error("sessionless timing persistence failed");
-				await originalRecordStepOutput(workflowId, stepName, output);
-			},
-		};
-		const store = createStore();
-		const runId = testRunId("sessionless-heartbeat-failure");
-		let failedBeforeFlush = false;
-		class InspectingFlushBackend extends DbosDurableBackend {
-			override async flush(): Promise<void> {
-				failedBeforeFlush =
-					store.runs().find((candidate) => candidate.id === runId)?.stages[0]?.status === "failed";
-				await super.flush();
+		const failure = new StorageUnavailableError("journal.sqlite", new Error("sessionless timing persistence failed"));
+		class FailingHeartbeatBackend extends JournalTestBackend {
+			override recordCheckpoint(checkpoint: DurableCheckpoint): void {
+				if (checkpoint.checkpointId.startsWith("run-timing:")) throw failure;
+				super.recordCheckpoint(checkpoint);
 			}
 		}
-		const backend = new InspectingFlushBackend(failingSdk, { executorId: "sessionless-heartbeat-owner" });
+		const store = createStore();
+		const runId = testRunId("sessionless-heartbeat-failure");
+		const backend = new FailingHeartbeatBackend();
 		const never = Promise.withResolvers<string>();
 		const promptStarted = Promise.withResolvers<void>();
 		const definition = workflow({
@@ -579,15 +561,15 @@ describe("active workflow stage session durability", () => {
 			},
 		);
 		await vi.advanceTimersByTimeAsync(0);
-		const executionFailure = assert.rejects(execution, /sessionless timing persistence failed/);
+		const executionFailure = assert.rejects(execution, StorageUnavailableError);
 		await promptStarted.promise;
 		await vi.advanceTimersByTimeAsync(HEARTBEAT_MS);
 		await executionFailure;
 
 		const activeStage = store.runs().find((candidate) => candidate.id === runId)?.stages[0];
 		assert.equal(activeStage?.status, "failed");
-		assert.match(activeStage?.error ?? "", /sessionless timing persistence failed/);
-		assert.equal(failedBeforeFlush, true);
+		assert.equal(activeStage?.error, failure.message);
+		await backend.close();
 		assert.equal(vi.getTimerCount(), 0);
 	});
 

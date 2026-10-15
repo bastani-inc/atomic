@@ -63,7 +63,7 @@ export interface DetachedRunOpts extends Omit<RunOpts, "signal" | "cancellation"
 	executionMode?: WorkflowExecutionMode;
 	/**
 	 * Observes the raw executor outcome. Fulfillment includes the executor's
-	 * RunResult; rejection includes the thrown setup/final-flush error. The job
+	 * RunResult; rejection includes the thrown setup or persistence error. The job
 	 * promise still resolves either way.
 	 */
 	onRawSettled?: (ok: boolean, result: RunResult | undefined, error: unknown | undefined) => void | Promise<void>;

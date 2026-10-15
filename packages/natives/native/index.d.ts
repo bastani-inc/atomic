@@ -21,28 +21,6 @@ export declare class PtySession {
   kill(): void
 }
 
-/**
- * Opaque ownership lease for the exact Postgres process spawned by Atomic.
- *
- * Keeping the native child object prevents PID reuse until the process has
- * been observed and reaped. Dropping/releasing the lease deliberately does
- * not terminate the server, preserving abrupt-exit persistence.
- */
-export declare class RetainedPostgres {
-  get pid(): number | null
-  interruptAndWait(timeoutMs: number): Promise<RetainedPostgresWaitResult>
-  wait(timeoutMs: number): Promise<RetainedPostgresWaitResult>
-  /** Relinquish ownership without signaling or waiting for Postgres. */
-  release(): void
-}
-
-/** Available only on Windows. */
-export declare class WindowsPostgresProcessGuard {
-  get status(): 'live' | 'absent' | 'mismatch'
-  exited(): boolean
-  close(): void
-}
-
 export declare class RunnerLease {}
 
 export declare class StdinLease {}
@@ -638,13 +616,6 @@ export interface OwnerSnapshot {
   cursor: Cursor
 }
 
-export interface PostgresProcessIdentity {
-  found: boolean
-  startTime?: number
-}
-
-export declare function postgresProcessStartTime(pid: number): PostgresProcessIdentity
-
 export interface PromptRoute {
   sessionId: string
   promptId: string
@@ -681,21 +652,6 @@ export interface ResourceFailure {
   resource: string
   code: string
   message: string
-}
-
-export interface RetainedPostgresSpawnOptions {
-  executable: string
-  args: Array<string>
-  cwd: string
-  logFile: string
-  env?: Record<string, string>
-  uid?: number
-  gid?: number
-}
-
-export interface RetainedPostgresWaitResult {
-  exited: boolean
-  signaled: boolean
 }
 
 /**
@@ -753,10 +709,6 @@ export interface SettlementReceipt {
   result: TaskResult
   completionId: string
 }
-
-export declare function signalVerifiedPostgres(pid: number, expectedStartTime: number, mode: string): string
-
-export declare function spawnRetainedPostgres(options: RetainedPostgresSpawnOptions): RetainedPostgres
 
 export interface SubscriptionDrain {
   reset: boolean
@@ -830,6 +782,3 @@ export type WaitOutcome =
   | { kind: 'yielded'; taskId: string; waitId: string; reason: YieldReason }
 
 export type YieldReason = 'explicit' | 'default-background' | 'elapsed' | 'intercom-coordination' | 'input-needed'
-
-/** Available only on Windows. */
-export declare function guardWindowsPostgresProcess(pid: number, expectedStartTime: number): WindowsPostgresProcessGuard

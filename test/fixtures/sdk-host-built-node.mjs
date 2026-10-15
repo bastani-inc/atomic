@@ -2,18 +2,13 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 const DURABLE_PHASE_TIMEOUT_MS = 30_000;
 
 const home = process.env.ATOMIC_MANAGED_TEST_HOME;
 assert.ok(home && resolve(homedir()) === resolve(home) && process.env.USERPROFILE === home, "built host fixture requires a disposable managed HOME");
-assert.ok(home.startsWith(tmpdir()) && home.includes("atomic-real-postgres-"), "requires RealPostgresHome");
-assert.equal(process.env.DBOS_SYSTEM_DATABASE_URL, undefined);
-assert.equal(process.env.PGPORT, "0", "Docker fallback must be disabled");
-const metadata = JSON.parse(readFileSync(join(home, ".atomic", "postgres", "v18.shared", "cluster.json"), "utf8"));
-assert.ok(Number.isInteger(metadata.server.port) && metadata.server.port > 0 && metadata.server.port <= 65535, "suite cluster records a listening port; restarts may move it off ATOMIC_POSTGRES_PORT");
+assert.ok(home.startsWith(tmpdir()) && home.includes("atomic-journal-"), "requires a disposable journal home");
 const { AgentSessionRuntime, createAgentSession, createAgentSessionServices, SessionManager, SettingsManager } = await import("@bastani/atomic");
 
 // #3105: actual package export and built builtin assets under non-TTY Node.
@@ -151,50 +146,7 @@ try {
 			const sideEffects = Object.fromEntries(["receipts.jsonl", "effects.jsonl"].map((file) => [
 				file, existsSync(join(cwd, file)) ? readFileSync(join(cwd, file), "utf8") : null,
 			]));
-			const runId = details.runs[0]?.runId;
-			const checkpointPrefix = `${runId}:checkpoint:`;
-			let checkpointRows;
-			let databaseActivity;
-			let databaseLocks;
-			let checkpointReadError;
-			let client;
-			try {
-				const { Client } = createRequire(import.meta.resolve("@bastani/atomic"))("pg");
-				client = new Client({
-					host: "127.0.0.1", port: metadata.server.port, user: "postgres", password: "atomic",
-					database: "atomic_workflows_dbos_sys", ssl: false,
-					connectionTimeoutMillis: 1000, query_timeout: 1000, statement_timeout: 1000,
-				});
-				client.on("error", () => {});
-				await client.connect();
-				checkpointRows = (await client.query(
-					`SELECT workflow_uuid, status, name, created_at, updated_at,
-					 left(inputs::text, 4096) AS inputs, left(output::text, 4096) AS output,
-					 left(error::text, 2048) AS error FROM dbos.workflow_status
-					 WHERE workflow_uuid = $1 OR starts_with(workflow_uuid, $2)
-					 ORDER BY created_at DESC, workflow_uuid LIMIT 64`,
-					[runId, checkpointPrefix],
-				)).rows;
-				databaseActivity = (await client.query(
-					`SELECT pid, application_name, state, wait_event_type, wait_event,
-					 xact_start, query_start, state_change, pg_blocking_pids(pid) AS blocking_pids,
-					 left(query, 1024) AS query FROM pg_stat_activity
-					 WHERE datname = current_database() AND pid <> pg_backend_pid()
-					 ORDER BY query_start LIMIT 32`,
-				)).rows;
-				databaseLocks = (await client.query(
-					`SELECT l.pid, l.locktype, l.mode, l.granted, l.relation::regclass::text AS relation,
-					 l.classid, l.objid, l.objsubid, l.transactionid
-					 FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
-					 WHERE a.datname = current_database() AND a.pid <> pg_backend_pid()
-					 ORDER BY l.granted, l.pid, l.locktype LIMIT 64`,
-				)).rows;
-			} catch (error) {
-				checkpointReadError = String(error);
-			} finally {
-				await client?.end().catch((error) => { checkpointReadError ??= String(error); });
-			}
-			console.error(JSON.stringify({ host: "built-node", observedAt, deadline, checkpointReadAt: Date.now(), sideEffects, details, progression, lastPoll, callbacks, checkpointPrefix, checkpointRows, databaseActivity, databaseLocks, checkpointReadError, diagnostics }));
+			console.error(JSON.stringify({ host: "built-node", observedAt, deadline, sideEffects, details, progression, lastPoll, callbacks, diagnostics }));
 		}
 		assert.equal(details.runs[0]?.status, "completed", JSON.stringify(details));
 		assert.deepEqual(details.snapshots[0].result, { text, approved: true });

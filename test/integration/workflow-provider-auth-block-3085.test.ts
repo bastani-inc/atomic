@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { setTimeout as realSleep } from "node:timers/promises";
 import { afterEach, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
-import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import {
 	installWorkflowLifecycleNotifications,
 	LIFECYCLE_NOTICE_CUSTOM_TYPE,
@@ -19,7 +19,6 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifact-env.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { moduleDir, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
-import { createMockSdk, serializeMockSdkState } from "../unit/durable-dbos-backend-helpers.js";
 import {
 	createIssue3085Definition,
 	ISSUE_3085_WORKFLOW_NAME,
@@ -62,8 +61,8 @@ test(
 		mkdirSync(join(dir, "artifacts"), { recursive: true });
 		const sessions: StageSessionRuntime[] = [];
 		try {
-			const sdk = createMockSdk();
-			const backend = new DbosDurableBackend(sdk, { executorId: "3085-writer" });
+			const journalPath = join(dir, "journal.sqlite");
+			const backend = await JournalDurableBackend.open(journalPath);
 			setDurableBackend(backend);
 
 			const parent = SessionManager.create(dir, join(dir, "parent-sessions"));
@@ -139,10 +138,10 @@ test(
 			assert.equal(readPrefix(dir), 1);
 			assert.equal(notices.filter((notice) => notice.details?.kind === "blocked").length, 1);
 
-			await backend.flush(source.id);
+			await backend.close();
 			const persisted: Issue3085PersistedState = {
 				runId: source.id,
-				sdk: serializeMockSdkState(sdk),
+				journalPath,
 			};
 			writeFileSync(persistPath(dir), `${JSON.stringify(persisted)}\n`);
 			assert.equal(readFileSync(prefixPath(dir), "utf8").trim(), "1");

@@ -12,19 +12,9 @@ const rootLockfilePath = join(repoRoot, "package-lock.json");
 const shrinkwrapPath = join(codingAgentDir, "npm-shrinkwrap.json");
 const internalPackageNames = new Set(["@bastani/atomic-natives", "@bastani/pi-ai"]);
 const defaultNpmRegistry = "https://registry.npmjs.org";
-const embeddedPostgresSymlinkReason =
-	"postinstall rehydrates Postgres native/lib symlinks that npm tarballs cannot contain; Atomic also hydrates them at runtime for script-less installs";
 const allowedInstallScriptPackages = new Map([
 	["@google/genai@2.21.0", "preinstall is a no-op in the published package"],
 	["protobufjs@7.6.6", "postinstall only warns about protobufjs version scheme mismatches"],
-	["@embedded-postgres/darwin-arm64@18.4.0-beta.17", embeddedPostgresSymlinkReason],
-	["@embedded-postgres/darwin-x64@18.4.0-beta.17", embeddedPostgresSymlinkReason],
-	["@embedded-postgres/linux-arm@18.4.0-beta.17", embeddedPostgresSymlinkReason],
-	["@embedded-postgres/linux-arm64@18.4.0-beta.17", embeddedPostgresSymlinkReason],
-	["@embedded-postgres/linux-ia32@18.4.0-beta.17", embeddedPostgresSymlinkReason],
-	["@embedded-postgres/linux-ppc64@18.4.0-beta.17", embeddedPostgresSymlinkReason],
-	["@embedded-postgres/linux-x64@18.4.0-beta.17", embeddedPostgresSymlinkReason],
-	["@embedded-postgres/windows-x64@18.4.0-beta.17", embeddedPostgresSymlinkReason],
 ]);
 
 const args = new Set(process.argv.slice(2));

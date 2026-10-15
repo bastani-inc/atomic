@@ -173,7 +173,7 @@ export type WorkflowRunControlErrorCode =
 	| "WORKFLOW_STAGE_NOT_FOUND"
 	| "WORKFLOW_STAGE_AMBIGUOUS"
 	| "WORKFLOW_STAGE_RESUME_UNSUPPORTED"
-	| "WORKFLOW_RUN_DATABASE"
+	| "WORKFLOW_RUN_STORAGE"
 	| "WORKFLOW_RUN_CONTROL_FAILED"
 	| "WORKFLOW_RUN_CONTROL_UNAVAILABLE";
 
@@ -246,11 +246,11 @@ export class WorkflowStageResumeUnsupportedError extends WorkflowRunControlError
 	}
 }
 
-/** Workflow durability (the run database) is unavailable, shut down, or failed. */
-export class WorkflowRunDatabaseError extends WorkflowRunControlError {
+/** Workflow storage is unavailable, closed, or failed. */
+export class WorkflowRunStorageError extends WorkflowRunControlError {
 	constructor(message: string, options?: WorkflowRunControlErrorOptions) {
-		super("WORKFLOW_RUN_DATABASE", message, options);
-		this.name = "WorkflowRunDatabaseError";
+		super("WORKFLOW_RUN_STORAGE", message, options);
+		this.name = "WorkflowRunStorageError";
 	}
 }
 

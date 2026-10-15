@@ -14,12 +14,12 @@ import {
 } from "../../packages/intercom/broker/send-handler.js";
 import type { BrokerMessage, Message, SessionInfo } from "../../packages/intercom/types.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import { registerPendingStageIntercomBridge } from "../../packages/workflows/src/extension/pending-stage-intercom.js";
 import { createWorkflowPendingStageDelivery } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
 import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
-import { createMockSdk } from "./durable-dbos-backend-helpers.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
 
 const RUN_ID = "4ac72924-c452-4e5f-9e63-2435722109f7";
 const CHILD_RUN_ID = "5bd82a35-c563-4f60-9a74-3546832210a8";
@@ -889,10 +889,8 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 });
 
 test("reloads and drains aliases by durable deposit order rather than sender timestamp exactly once", async () => {
-	const sdk = createMockSdk();
-	const writer = new DbosDurableBackend(sdk, { executorId: "fifo-writer" });
+	const writer = new JournalTestBackend();
 	writer.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
-	await writer.flush();
 	const store = createStore();
 	store.recordRunStart({
 		id: RUN_ID,
@@ -917,7 +915,7 @@ test("reloads and drains aliases by durable deposit order rather than sender tim
 		GROUP,
 		writer,
 	);
-	const reader = new DbosDurableBackend(sdk, { executorId: "fifo-reader" });
+	const reader = await writer.reopen();
 	await reader.hydrateWorkflow(RUN_ID);
 	const reloadedStore = createStore();
 	reloadedStore.recordRunStart({
@@ -1013,10 +1011,8 @@ test("concurrent stage drains claim one queued message exactly once", async () =
 });
 
 test("rejected inbound delivery remains queued and retries after durable reload", async () => {
-	const sdk = createMockSdk();
-	const writer = new DbosDurableBackend(sdk, { executorId: "pending-delivery-writer" });
+	const writer = new JournalTestBackend();
 	writer.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
-	await writer.flush();
 	setDurableBackend(writer);
 	const store = createStore();
 	store.recordRunStart({
@@ -1054,7 +1050,7 @@ test("rejected inbound delivery remains queued and retries after durable reload"
 		/inbound admission rejected/,
 	);
 
-	const fresh = new DbosDurableBackend(sdk, { executorId: "pending-delivery-reader" });
+	const fresh = await writer.reopen();
 	await fresh.hydrateWorkflow(RUN_ID);
 	assert.equal(fresh.getWorkflow(RUN_ID)?.pendingStageMessages?.[0]?.status, "queued");
 	const reloadedStore = createStore();
@@ -1080,21 +1076,17 @@ test("rejected inbound delivery remains queued and retries after durable reload"
 });
 
 test("durable acknowledgement failure replays through the recipient idempotency key without duplicate visibility", async () => {
-	const persistedSdk = createMockSdk();
 	let failNextMetadataWrite = false;
-	const sdk = {
-		...persistedSdk,
-		async recordStepOutput(...args: Parameters<typeof persistedSdk.recordStepOutput>) {
-			if (failNextMetadataWrite) {
-				failNextMetadataWrite = false;
-				throw new Error("simulated durable delivery acknowledgement failure");
-			}
-			await persistedSdk.recordStepOutput(...args);
-		},
+	const writer = new JournalTestBackend();
+	const persist = writer.persistPendingStageMessages.bind(writer);
+	writer.persistPendingStageMessages = async (...args) => {
+		if (failNextMetadataWrite) {
+			failNextMetadataWrite = false;
+			throw new StorageUnavailableError(writer.databasePath, new Error("delivery acknowledgement failed"));
+		}
+		return persist(...args);
 	};
-	const writer = new DbosDurableBackend(sdk, { executorId: "pending-delivery-ack-writer" });
 	writer.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
-	await writer.flush();
 	setDurableBackend(writer);
 	const store = createStore();
 	store.recordRunStart({
@@ -1154,10 +1146,10 @@ test("durable acknowledgement failure replays through the recipient idempotency 
 		]).then(() => undefined);
 	};
 	failNextMetadataWrite = true;
-	await assert.rejects(deliverThroughRecipient(firstRecipient), /simulated durable delivery acknowledgement failure/);
+	await assert.rejects(deliverThroughRecipient(firstRecipient), StorageUnavailableError);
 	assert.equal(senderVisibleDeliveries, 1);
 
-	const reader = new DbosDurableBackend(sdk, { executorId: "pending-delivery-ack-reader" });
+	const reader = await writer.reopen();
 	await reader.hydrateWorkflow(RUN_ID);
 	assert.equal(reader.getWorkflow(RUN_ID)?.pendingStageMessages?.[0]?.status, "queued");
 	const reloadedStore = createStore();

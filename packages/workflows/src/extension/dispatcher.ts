@@ -50,7 +50,6 @@ async function discardUnadmittedRun(runId: string, activeStore: Store): Promise<
 	const handle = backend.getWorkflow(runId);
 	if (handle?.status === "running") {
 		backend.setWorkflowStatus(runId, "failed", handle.pendingPrompts, false);
-		await backend.flush(runId);
 	}
 	const deleted = await backend.deleteWorkflowIfInactive(runId);
 	if (!deleted.ok && deleted.reason !== "not_found") {
@@ -267,13 +266,6 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 					snapshot?.error,
 					`Workflow run ${accepted.runId} ended before startup admission`,
 				);
-				if (getDurableBackend().isAdmissionUnavailable?.(accepted.runId)) {
-					return failedRunResult(
-						accepted.name,
-						accepted.runId,
-						`${error}; startup cleanup skipped: database admission unavailable. Run ${accepted.runId} is retained locally and may remain without admission metadata in PostgreSQL. Restore PostgreSQL and inspect this run before retrying.`,
-					);
-				}
 				try {
 					await discardUnadmittedRun(accepted.runId, activeStore);
 				} catch (cleanupError) {

@@ -1,14 +1,6 @@
 import { type DurableWorkflowBackend, pendingStageMessagesForDurableRun } from "../durable/backend.js";
 import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
-import {
-	boundedAdmission,
-	DBOS_ADMISSION_TIMEOUT_MS,
-	dbosAdmissionContext,
-	isDbosDependencyError,
-} from "../durable/dbos-admission.js";
-import { databaseDependencyMessage } from "../durable/dbos-database-diagnostics.js";
-import { getDbosProcessOwner } from "../durable/dbos-process-owner.js";
 import { getDurableBackend } from "../durable/factory.js";
 import { inheritedRunElapsedMs, priorRunAccounting, recordRunTimingCheckpoint } from "../durable/run-timing.js";
 import { ScopedDurableBackend } from "../durable/scoped-backend.js";
@@ -84,11 +76,8 @@ import { buildExitGatedUiContext } from "./primitives/ui.js";
 import { createChildWorkflowRunner } from "./primitives/workflow.js";
 import { createContinuationReplayIndex } from "./replay.js";
 import { createRunBudgetController, WorkflowBudgetExceededError } from "./run-budget.js";
-import {
-	backgroundAdmissionControl,
-	createDurableAdmissionSettlement,
-	durableRootRegistrationForRun,
-} from "./run-durable-admission.js";
+import { finalizeDurableTerminalStatus } from "./run-durable-finalize.js";
+import { durableRootRegistrationForRun, WorkflowRunControlError } from "./run-durable-registration.js";
 import { createDurableStageSessionRecorder } from "./run-durable-stage-session.js";
 import {
 	createDurableCachedStageRecorder,
@@ -188,9 +177,8 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	const exit = createWorkflowExitManager({ runId, exitScope, controller: ownController });
 	// Durable child operations stay on stacked scoped views, while cached graph
 	// reconstruction keeps the physical root backend through arbitrary depth.
-	// cross-ref: issue #1498 — DBOS-backed cross-session resumability.
 	const sourceBackend = opts.durableBackend ?? getDurableBackend();
-	const backendView: DurableWorkflowBackend = sourceBackend.executionView?.() ?? sourceBackend;
+	const backendView: DurableWorkflowBackend = sourceBackend;
 	const rootBackend: DurableWorkflowBackend = opts.durableRootBackend ?? backendView;
 	const durableBackend: DurableWorkflowBackend =
 		opts.durableScope !== undefined ? new ScopedDurableBackend(backendView, opts.durableScope) : backendView;
@@ -760,8 +748,6 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	};
 	const runtimeSettled = Promise.withResolvers<void>();
 	let durableRootAdmitted = false;
-	let admissionRetryPending = false;
-	let admissionControlError: string | undefined;
 	let pausePersistence: Promise<void> | undefined;
 	let resumePersistence: Promise<void> | undefined;
 	let controlSettlements: Promise<void> = Promise.resolve();
@@ -771,90 +757,40 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		ownController.signal.throwIfAborted();
 		activeStore.recordRunExecutionState(runId, { controlRequestedStatus: status, controlPersistence: "observed" });
 		if (opts.parentRun !== undefined) return;
-		if (!durableRootAdmitted) {
-			// Pause acknowledges locally while its durable registration settles in the background.
-			// Resume releases a failed admission for an explicit same-owner retry.
-			if (status === "running" && admissionRetryPending) return;
-			await durableBackend.settleWorkflowAdmission?.(runId);
-		}
-		if (durableBackend.getWorkflow(runId) === undefined) return;
+		if (!durableRootAdmitted || durableBackend.getWorkflow(runId) === undefined) return;
 		const previous = controlSettlements;
 		const control = ++latestControl;
-		// Acknowledgement bounds local control latency, not the durable round trips.
 		const settlement = (async () => {
-			try {
-				await boundedAdmission(
-					async (signal) => {
-						await raceAbort(previous, signal);
-						await dbosAdmissionContext.run(signal, async () => {
-							if (
-								!(await transitionDurableWorkflowStatus(
-									durableBackend,
-									runId,
-									["running", "paused"],
-									status,
-									undefined,
-									true,
-								))
-							) {
-								throw new Error(`Workflow ${runId} refused the durable ${status} transition`);
-							}
-							signal.throwIfAborted();
-							recordRunTimingCheckpoint(durableBackend, runSnapshot);
-							await durableBackend.flush(runId);
-						});
-					},
-					ownController.signal,
-					DBOS_ADMISSION_TIMEOUT_MS,
-				);
-				ownController.signal.throwIfAborted();
-				if (control !== latestControl) return;
+			await previous;
+			ownController.signal.throwIfAborted();
+			if (
+				!(await transitionDurableWorkflowStatus(
+					durableBackend,
+					runId,
+					["running", "paused"],
+					status,
+					undefined,
+					true,
+				))
+			) {
+				throw new WorkflowRunControlError(runId, status, "transition-refused");
+			}
+			recordRunTimingCheckpoint(durableBackend, runSnapshot);
+			if (control === latestControl) {
 				activeStore.recordRunExecutionState(runId, {
 					controlPersistence: durableBackend.persistent ? "durable" : "observed",
-					...(durableRootAdmitted ? { phase: "executing" as const, dependencyError: undefined } : {}),
 				});
-			} catch (error) {
-				if (control === latestControl && !ownController.signal.aborted && isDbosDependencyError(error)) {
-					activeStore.recordRunExecutionState(runId, {
-						phase: "blocked_dependency",
-						dependencyError: `Workflow database unavailable during ${status === "paused" ? "pause" : "resume"}; persistence not confirmed. ${error.message}`,
-					});
-					if (status === "paused") return;
-				}
-				throw error;
 			}
 		})();
-		controlSettlements = settlement.then(
-			() => undefined,
-			() => undefined,
-		);
-		if (status === "running") return settlement;
-		// Keep observing settlement after the local acknowledgement, including rejection.
-		let acknowledgementTimer: ReturnType<typeof setTimeout> | undefined;
-		try {
-			await Promise.race([
-				settlement,
-				new Promise<void>((resolve) => {
-					acknowledgementTimer = setTimeout(resolve, 500);
-				}),
-			]);
-		} finally {
-			clearTimeout(acknowledgementTimer);
-		}
+		controlSettlements = settlement.catch(() => {});
+		return settlement;
 	};
-	const admission = createDurableAdmissionSettlement(
-		{ runId, runSnapshot, isRoot: opts.parentRun === undefined, durableBackend },
-		ownController.signal,
-	);
 	const unregisterRunControl = toolControls.registerRun(runId, {
 		get paused() {
 			return scheduler.isRunPaused();
 		},
 		get admitting() {
-			return admission.admitting;
-		},
-		get admissionSettlement() {
-			return durableBackend.settleWorkflowAdmission?.(runId);
+			return !durableRootAdmitted;
 		},
 		pause: () => {
 			ownController.signal.throwIfAborted();
@@ -862,42 +798,17 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			scheduler.pauseRun();
 			activeStore.recordRunPaused(runId, undefined, { resumable: true });
 			pausePersistence = persistRunControl("paused");
-			if (!admission.admitting) return pausePersistence;
-			backgroundAdmissionControl(durableBackend, runId, pausePersistence, (error, resumable) => {
-				admissionControlError = databaseDependencyMessage(
-					unknownErrorMessage(error),
-					getDbosProcessOwner().databaseDiagnostics?.(),
-				);
-				runSnapshot.error = admissionControlError;
-				// Keep the paused initialization owner; explicit resume releases its failure.
-				activeStore.recordRunPaused(runId, undefined, { resumable });
-				return runSnapshot.error;
-			});
-			return Promise.resolve();
+			return pausePersistence;
 		},
 		resume: () => {
 			if (resumePersistence !== undefined) return resumePersistence;
 			const generation = pauseGeneration;
 			resumePersistence = (async () => {
-				try {
-					await pausePersistence;
-				} catch (error) {
-					if (admission.failed) {
-						scheduler.releaseRun();
-						throw new Error(
-							admissionControlError ??
-								databaseDependencyMessage(
-									unknownErrorMessage(error),
-									getDbosProcessOwner().databaseDiagnostics?.(),
-								),
-						);
-					}
-					// Retry persistence before releasing an admitted owner's pause barrier.
-				}
-				if (generation !== pauseGeneration) throw new Error("Workflow resume superseded by pause");
+				await pausePersistence;
+				if (generation !== pauseGeneration) throw new WorkflowRunControlError(runId, "running", "superseded");
 				await persistRunControl("running");
 				ownController.signal.throwIfAborted();
-				if (generation !== pauseGeneration) throw new Error("Workflow resume superseded by pause");
+				if (generation !== pauseGeneration) throw new WorkflowRunControlError(runId, "running", "superseded");
 				activeStore.recordRunResumed(runId, undefined, { source: "run_control" });
 				scheduler.releaseRun();
 			})().finally(() => {
@@ -911,7 +822,6 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		},
 	});
 	terminalEvents.register();
-	let durableAdmissionFailure: { error: unknown } | undefined;
 	try {
 		workflowObservationRuntime(activeStore).startRun(runId);
 		activeStore.recordRunStart(runSnapshot);
@@ -944,67 +854,25 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		if (opts.deferWorkflowStart === true) await raceAbort(nextEventLoopTurn(), ownController.signal);
 		while (scheduler.isRunPaused()) await waitForRunRelease();
 		ownController.signal.throwIfAborted();
-		await raceAbort(
-			admission
-				.admit(
-					durableRootRegistration === undefined
-						? undefined
-						: {
-								...durableRootRegistration,
-								modelOwner: runSnapshot.modelOwner,
-								...workflowInvocationMetadata(
-									inputRuntimeDefaults,
-									workflowInvocationCwd,
-									gitWorktreeSetupCache,
-									runSnapshot.origin,
-								),
-							},
-					async (dependencyError) => {
-						activeStore.recordRunExecutionState(runId, { phase: "blocked_dependency", dependencyError });
-						if (!scheduler.isRunPaused()) return false;
-						admissionRetryPending = true;
-						while (scheduler.isRunPaused()) await waitForRunRelease();
-						admissionRetryPending = false;
-						activeStore.recordRunExecutionState(runId, { phase: "starting" });
-						return true;
-					},
-				)
-				.catch((error: unknown) => {
-					// Invalid topology is a failed nonresumable result, not a storage write rejection.
-					const isTopologyError =
-						typeof error === "object" &&
-						error !== null &&
-						"name" in error &&
-						error.name === "DurableNestedTopologyError";
-					if (!isDbosDependencyError(error) && !isTopologyError) {
-						const admissionDetail = unknownErrorMessage(error);
-						const diagnostics = getDbosProcessOwner().databaseDiagnostics?.();
-						const safeMessage = databaseDependencyMessage(admissionDetail, diagnostics);
-						activeStore.recordRunExecutionState(runId, {
-							phase: "blocked_dependency",
-							dependencyError: safeMessage,
-						});
-						const safeError = new Error(safeMessage);
-						durableAdmissionFailure = { error: safeError };
-						classifiedFailures.set(
-							safeError,
-							classifyWorkflowFailure({
-								code: "ATOMIC_DURABLE_ADMISSION_REJECTED",
-								message: safeMessage,
-								cause: safeError,
-							}),
-						);
-						throw safeError;
-					}
-					throw error;
-				}),
-			ownController.signal,
-		);
+		if (opts.parentRun === undefined) {
+			if (durableRootRegistration !== undefined) {
+				durableBackend.registerWorkflow({
+					...durableRootRegistration,
+					modelOwner: runSnapshot.modelOwner,
+					...workflowInvocationMetadata(
+						inputRuntimeDefaults,
+						workflowInvocationCwd,
+						gitWorktreeSetupCache,
+						runSnapshot.origin,
+					),
+				});
+			} else {
+				durableBackend.setWorkflowStatus(runId, "running");
+			}
+		}
 		durableRootAdmitted = true;
-		if (admissionControlError !== undefined && runSnapshot.error === admissionControlError) delete runSnapshot.error;
 		activeStore.recordRunExecutionState(runId, {
 			phase: "executing",
-			dependencyError: undefined,
 			lastProgressAt: Date.now(),
 		});
 		while (scheduler.isRunPaused()) await waitForRunRelease();
@@ -1050,7 +918,6 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		const result = normalizeWorkflowRunOutput(def.name, rawResult);
 		assertWorkflowRunOutputs(def.name, result, def.outputs);
 		assertWorkflowCreatedExecution(runSnapshot);
-		await raceAbort(durableBackend.flush(runId), ownController.signal);
 		while (scheduler.isRunPaused()) await waitForRunRelease();
 		ownController.signal.throwIfAborted();
 		const returned = classifyReturnedRunStatus(result, runSnapshot);
@@ -1059,7 +926,6 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		// Durable identity must reach its terminal state even if the session journal fails.
 		if (opts.parentRun === undefined) recordRunTimingCheckpoint(durableBackend, runSnapshot);
 		durableBackend.setWorkflowStatus(runId, returned.status, undefined, returned.metadata?.resumable);
-		await durableBackend.flush(runId);
 		appendRunEndWhenRecorded(opts.persistence, recorded, {
 			runId,
 			status: returned.status,
@@ -1107,21 +973,6 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			findWorkflowGracefulQuit(err) ??
 			findWorkflowGracefulQuit(ownController.signal.reason);
 		if (gracefulQuit !== undefined) return suspendForGracefulQuit(gracefulQuit);
-		if (
-			isDbosDependencyError(err) &&
-			durableBackend.isCheckpointUnavailable?.(runId) &&
-			(durableBackend.getWorkflow(runId)?.completedCheckpoints ?? 0) > 0
-		) {
-			await admittedTools.closeAndDrain();
-			activeStore.recordRunPaused(runId, undefined, { exitReason: "quit", resumable: true });
-			activeStore.recordRunExecutionState(runId, { phase: "blocked_dependency", dependencyError: err.message });
-			return {
-				runId,
-				status: "paused",
-				stages: [...runSnapshot.stages],
-				toolNodes: [...runSnapshot.toolNodes],
-			};
-		}
 		await admittedTools.closeAndDrain();
 		// Racing the author body must not race past admitted child teardown and
 		// its boundary checkpoint publication on cancellation.
@@ -1211,8 +1062,6 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			...(rejectedToolFrontier === undefined ? {} : { failedToolNode: rejectedToolFrontier }),
 			onRunEnd: opts.onRunEnd,
 		});
-		// Preserve write rejection without retrying persistence in unadmitted cleanup.
-		if (durableAdmissionFailure !== undefined && Object.is(durableAdmissionFailure.error, err)) throw err;
 		return failed;
 	} finally {
 		callerSignal?.removeEventListener("abort", onCallerAbort);
@@ -1220,16 +1069,17 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		runtimeSettled.resolve();
 		unregisterRunControl();
 		try {
-			await admission.settle(terminalEvents.winner()?.kind === "cancellation", () => {
-				activeStore.recordNotice({
-					id: `workflow-cancellation-persistence:${runId}`,
+			if (
+				(durableRootAdmitted || durableBackend.getWorkflow(runId) !== undefined) &&
+				findWorkflowGracefulQuit(ownController.signal.reason) === undefined
+			) {
+				await finalizeDurableTerminalStatus({
 					runId,
-					level: "warning",
-					message:
-						"Workflow cancelled locally; durable cancellation could not be confirmed. Database state is unknown.",
-					createdAt: Date.now(),
+					runSnapshot,
+					isRoot: opts.parentRun === undefined,
+					durableBackend,
 				});
-			});
+			}
 		} finally {
 			try {
 				gitWorktreeSetupCacheOwner.release(() => {

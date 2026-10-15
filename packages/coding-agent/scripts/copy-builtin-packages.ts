@@ -84,11 +84,6 @@ const HOST_PROVIDED_EXTERNALS = [
 	"@sinclair/typebox",
 	"@sinclair/typebox/*",
 	"proper-lockfile",
-	// DBOS loads these optional telemetry integrations only when explicitly enabled.
-	// They are not installed dependencies; keep them optional when bundling its SDK.
-	"@opentelemetry/*",
-	"winston",
-	"winston-transport",
 ];
 
 // Bun.build folds `process.env.NODE_ENV` into a constant taken from the build

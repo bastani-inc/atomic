@@ -1,8 +1,8 @@
 import type { RunSnapshot } from "./store-types.js";
 
-/** Live observations, not proof of a persisted DBOS state or cross-process resumability. */
+/** Live execution observations. */
 export interface RunExecutionState {
-	phase?: "starting" | "blocked_dependency" | "executing" | "ended";
+	phase?: "starting" | "executing" | "ended";
 	phaseStartedAt?: number;
 	dependencyError?: string;
 	lastProgressAt?: number;

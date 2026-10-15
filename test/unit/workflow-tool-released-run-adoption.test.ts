@@ -3,7 +3,6 @@ import { WorkflowRunOwnershipError } from "@bastani/atomic";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { type DurableWorkflowBackend, InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { getAtomicExecutorId } from "../../packages/workflows/src/durable/dbos-sdk-handle.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { releasePausedRunsOwnedBy } from "../../packages/workflows/src/durable/sdk-owner-release.js";
 import type { PiEventContext, PiExecuteContext } from "../../packages/workflows/src/extension/public-types.js";
@@ -73,8 +72,6 @@ function registerRun(
 		completedCheckpoints: 1,
 		modelOwner: PREVIOUS_SESSION,
 		releasedModelOwner: PREVIOUS_SESSION,
-		ownerExecutorId: getAtomicExecutorId(),
-		ownerLiveness: "alive",
 		origin: "agent",
 		invocationCwd: process.cwd(),
 		...overrides,

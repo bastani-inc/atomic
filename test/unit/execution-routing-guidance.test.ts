@@ -382,7 +382,7 @@ describe("agent-decided workflow execution guidance", () => {
 			"Redesign or stop before launch",
 			"distinct tracked work for every iteration",
 			"incremental edge checks",
-			"DBOS hydration validation",
+			"reconstruction validation",
 		]) {
 			expect(authoringGuidance).toContain(phrase);
 		}

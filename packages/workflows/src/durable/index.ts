@@ -1,4 +1,4 @@
-/** DBOS-only durable workflow API. */
+/** Durable workflow API. */
 
 export type { DurableWorkflowBackend, DurableWorkflowCatalogEntries } from "./backend.js";
 export { durableHash, InMemoryDurableBackend } from "./backend.js";
@@ -14,31 +14,6 @@ export {
 	type OpenCompletedDurableResult,
 	openCompletedDurableWorkflow,
 } from "./completed-inspection.js";
-export {
-	type ConfiguredDbosDurability,
-	configureDbosDurableBackend,
-	DbosDurableBackend,
-	type DbosSdkHandle,
-	type DbosStepRecord,
-	type DbosWorkflowInfo,
-} from "./dbos-backend.js";
-export {
-	DBOS_ENVELOPE_VERSION,
-	type DbosCheckpointEnvelope,
-	decodeToCheckpoint,
-	encodeCheckpoint,
-	isCheckpointEnvelope,
-} from "./dbos-envelope.js";
-export {
-	configureDbosOnce,
-	DbosDurabilityError,
-	DbosNotReadyError,
-	DbosShutdownError,
-	flushDbos,
-	getReadyDbosBackend,
-	launchDbosOnce,
-	shutdownDbos,
-} from "./dbos-lifecycle.js";
 export {
 	createInMemoryTestBackend,
 	getDurableBackend,

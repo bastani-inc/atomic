@@ -1,5 +1,5 @@
 /**
- * Durable workflow state types for DBOS-backed cross-session resumability.
+ * Durable workflow state types for cross-session resumability.
  *
  * These types describe the checkpoint records that the durable backend stores
  * for each `ctx.*` operation (tool, ui, stage). Only `ctx.*` blocks produce
@@ -288,10 +288,10 @@ export type UiPromptKind = "input" | "confirm" | "select" | "editor" | "custom";
 export type WorkflowSerializableObject = Readonly<Record<string, WorkflowSerializableValue>>;
 
 // ---------------------------------------------------------------------------
-// DBOS metadata and resume catalog
+// Workflow metadata and resume catalog
 // ---------------------------------------------------------------------------
 
-/** Current workflow metadata persisted in DBOS. */
+/** Current workflow metadata. */
 export interface DurableWorkflowMetadata {
 	readonly workflowId: string;
 	readonly name: string;
@@ -336,7 +336,7 @@ export interface DurableWorkflowMetadata {
 	readonly possibleStages?: readonly string[];
 }
 
-/** Resume catalog entry loaded directly from DBOS metadata. */
+/** Resume catalog entry. */
 export interface ResumableWorkflowEntry {
 	readonly workflowId: string;
 	readonly name: string;

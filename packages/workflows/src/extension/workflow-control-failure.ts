@@ -1,5 +1,5 @@
-import { isDbosDependencyError } from "../durable/dbos-admission.js";
-import { DbosDurabilityError } from "../durable/dbos-lifecycle.js";
+import { DurableBackendNotInitializedError } from "../durable/factory.js";
+import { StorageUnavailableError } from "../durable/journal/types.js";
 import type { ResumeDurableResult } from "../durable/resume-runtime.js";
 import type { ResumeFailedRunResult } from "./runtime.js";
 import { WorkflowInstanceOwnershipError } from "./workflow-instance-owner.js";
@@ -12,7 +12,7 @@ export type WorkflowControlFailureCode =
 	| "stage_not_found"
 	| "stage_ambiguous"
 	| "stage_resume_unsupported"
-	| "database_unavailable"
+	| "storage_unavailable"
 	| "control_failed";
 
 export interface WorkflowControlFailedRun {
@@ -23,7 +23,8 @@ export interface WorkflowControlFailedRun {
 
 export function classifyControlError(error: unknown): WorkflowControlFailureCode {
 	if (error instanceof WorkflowInstanceOwnershipError) return "owned_elsewhere";
-	if (error instanceof DbosDurabilityError || isDbosDependencyError(error)) return "database_unavailable";
+	if (error instanceof StorageUnavailableError || error instanceof DurableBackendNotInitializedError)
+		return "storage_unavailable";
 	return "control_failed";
 }
 

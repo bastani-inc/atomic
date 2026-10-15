@@ -48,7 +48,7 @@ export interface DurableResumeRuntime {
 	listDurableResumable(): readonly ResumableWorkflowEntry[];
 	prepareDurableResumable(workflowId?: string): Promise<readonly ResumableWorkflowEntry[]>;
 	prepareDurableCatalog?(): Promise<DurableWorkflowCatalogEntries>;
-	/** Hydrate a bounded set of known DBOS workflow ids. */
+	/** Refresh a bounded set of known workflow ids. */
 	prepareDurableResumableForIds?(workflowIds: readonly string[]): Promise<readonly ResumableWorkflowEntry[]>;
 	prepareCompletedDurable?(): Promise<readonly ResumableWorkflowEntry[]>;
 	openCompletedDurableWorkflow?(

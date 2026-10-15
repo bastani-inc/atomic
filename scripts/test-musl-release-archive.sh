@@ -37,12 +37,7 @@ for path in \
     atomic/builtin/workflows/package.json \
     atomic/node_modules/@bastani/atomic-natives/package.json \
     atomic/lib/libgcc_s.so.1 \
-    atomic/lib/libstdc++.so.6 \
-    "atomic/node_modules/@bastani/atomic-natives/postgres-runtime/bin/initdb" \
-    "atomic/node_modules/@bastani/atomic-natives/postgres-runtime/bin/pg_ctl" \
-    "atomic/node_modules/@bastani/atomic-natives/postgres-runtime/POSTGRESQL-LICENSE" \
-    "atomic/node_modules/@bastani/atomic-natives/postgres-runtime/ZONKY-APACHE-2.0-LICENSE" \
-    "atomic/node_modules/@bastani/atomic-natives/postgres-runtime/runtime-provenance.json"; do
+    atomic/lib/libstdc++.so.6; do
     [[ -e "$workspace/$path" ]] || {
         echo "Missing musl release archive path: $path" >&2
         exit 1
@@ -71,55 +66,9 @@ fi
 SMOKE
 chmod +x "$workspace/smoke.sh"
 
-cat > "$workspace/postgres-smoke.sh" <<'SMOKE'
-#!/bin/sh
-set -eu
-source_runtime="/smoke/atomic/node_modules/@bastani/atomic-natives/postgres-runtime"
-runtime=/tmp/atomic-postgres-runtime
-cp -R "$source_runtime" "$runtime"
-# The extracted standalone payload must already contain every runtime alias.
-"$runtime/bin/postgres" --version
-"$runtime/bin/pg_ctl" --version
-data=/tmp/atomic-postgres-smoke
-"$runtime/bin/initdb" -D "$data" -U postgres --auth=trust --no-locale >/tmp/initdb.log
-"$runtime/bin/pg_ctl" -D "$data" -o "-h 127.0.0.1 -p 55439" -w start
-trap '"$runtime/bin/pg_ctl" -D "$data" -m fast -w stop >/dev/null 2>&1 || true' EXIT
-# PostgreSQL's SSLRequest handshake proves a real protocol connection without
-# adding a client package to the deliberately minimal Zonky runtime.
-response=$(printf '\000\000\000\010\004\322\026\057' | nc -w 3 127.0.0.1 55439 | head -c 1)
-test "$response" = N
-# A trust-authenticated v3 protocol client using only stock BusyBox. Pipeline
-# startup, query and terminate; the server processes them in wire order.
-query() {
-    sql="$1"
-    length=$((${#sql} + 5))
-    {
-        printf '\000\000\000\051\000\003\000\000user\000postgres\000database\000postgres\000\000'
-        printf 'Q\000\000\000'
-        printf "\\$(printf '%03o' "$length")"
-        printf '%s\000' "$sql"
-        printf 'X\000\000\000\004'
-    } | nc -w 3 127.0.0.1 55439
-}
-query "CREATE TABLE atomic_durability_probe (value text); INSERT INTO atomic_durability_probe VALUES ('persisted-row')" > /tmp/insert.out
-"$runtime/bin/pg_ctl" -D "$data" -m fast -w stop
-"$runtime/bin/pg_ctl" -D "$data" -o "-h 127.0.0.1 -p 55439" -w start
-query "SELECT value FROM atomic_durability_probe" > /tmp/select.out
-grep -aq 'persisted-row' /tmp/select.out
-"$runtime/bin/pg_ctl" -D "$data" -m fast -w stop
-trap - EXIT
-echo "embedded PostgreSQL initdb/start/connect/shutdown succeeded"
-echo "SQL insert/restart/persisted row/final owned stop succeeded"
-SMOKE
-chmod +x "$workspace/postgres-smoke.sh"
 chmod -R a+rX "$workspace"
 
 docker run --rm --platform "$docker_platform" \
     -v "$workspace:/smoke:ro" \
     alpine:3.22 \
     /bin/sh /smoke/smoke.sh
-
-docker run --rm --platform "$docker_platform" --user 65534:65534 \
-    -v "$workspace:/smoke:ro" \
-    alpine:3.22 \
-    /bin/sh /smoke/postgres-smoke.sh

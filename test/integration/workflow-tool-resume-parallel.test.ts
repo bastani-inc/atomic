@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { afterEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import type { WorkflowRunContext } from "../../packages/workflows/src/authoring.js";
-import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { workflowResumeAction } from "../../packages/workflows/src/extension/workflow-tool-control.js";
@@ -11,9 +10,9 @@ import { restoreOnSessionStart, type SessionEntry } from "../../packages/workflo
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { INTERACTIVE_WORKFLOW_POLICY } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { sleep } from "../helpers/runtime.js";
 import { TEST_TIMEOUT_MS } from "../helpers/test-timeout.js";
-import { createMockSdk } from "../unit/durable-dbos-backend-helpers.js";
 
 async function waitFor(predicate: () => boolean): Promise<void> {
 	const deadline = Date.now() + TEST_TIMEOUT_MS / 2;
@@ -33,8 +32,7 @@ type Gates = (ctx: ToolContext) => Promise<unknown>;
 
 /** Runs `gates` until the run fails on a thrown tool, then restarts the host and returns a resumer. */
 async function failThenRestart(initialGates: Gates) {
-	const sdk = createMockSdk();
-	let backend = new DbosDurableBackend(sdk);
+	let backend = new JournalTestBackend();
 	setDurableBackend(backend);
 	let gates = initialGates;
 	const definition = workflow({
@@ -70,10 +68,9 @@ async function failThenRestart(initialGates: Gates) {
 	const source = store.runs().find((run) => run.id === runId)!;
 	assert.equal(source.status, "failed");
 	assert.ok(source.failedToolNodeId !== undefined, "run failed on a tool");
-	await backend.flush(runId);
 
 	const restart = async (): Promise<void> => {
-		backend = new DbosDurableBackend(sdk);
+		backend = await backend.reopen();
 		await backend.hydrateWorkflow(runId);
 		setDurableBackend(backend);
 		store.clear();

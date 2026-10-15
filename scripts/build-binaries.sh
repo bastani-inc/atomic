@@ -383,8 +383,6 @@ stage_musl_runtime() {
     cp -L "$MUSL_RUNTIME_STAGE_DIR/usr/lib/libstdc++.so.6" "$payload_dir/lib/libstdc++.so.6"
 
     local patched_count=0
-    # PostgreSQL already carries its own C++ libraries and relative search paths.
-    # Keep its verified bytes identical to the scriptless npm runtime.
     while IFS= read -r -d '' elf_file; do
         local needed
         if ! needed="$(patchelf --print-needed "$elf_file" 2>/dev/null)"; then
@@ -414,7 +412,7 @@ stage_musl_runtime() {
         esac
         patchelf --set-rpath "$next_rpath" "$elf_file"
         patched_count=$((patched_count + 1))
-    done < <(find "$payload_dir" -type f ! -path "$payload_dir/node_modules/@bastani/atomic-natives/postgres-runtime/*" \( -path "$payload_dir/atomic" -o -name '*.node' -o -name '*.so' -o -name '*.so.*' \) -print0)
+    done < <(find "$payload_dir" -type f \( -path "$payload_dir/atomic" -o -name '*.node' -o -name '*.so' -o -name '*.so.*' \) -print0)
 
     [[ "$patched_count" -gt 0 ]] || {
         echo "No musl payload ELF declared libgcc_s.so.1 or libstdc++.so.6: $platform" >&2
@@ -455,10 +453,6 @@ for platform in "${PLATFORMS[@]}"; do
 
     cp -r "$runtime_deps_dir" "binaries/$platform/node_modules"
     # Acquire by archive target, never by the optional packages installed on this host.
-    # Compiled builtins resolve this filesystem payload without a bare JS import.
-    rm -rf "binaries/$platform/node_modules/@embedded-postgres"
-    echo "==> Staging embedded PostgreSQL runtime for $platform..."
-    node ../../scripts/stage-postgres-runtime.mjs "$platform" "binaries/$platform/node_modules/@bastani/atomic-natives" --standalone
     rm -rf "binaries/$platform/node_modules/@bastani/atomic-natives/npm"
     find "binaries/$platform/node_modules/@bastani/atomic-natives" -maxdepth 1 -type f -name 'atomic_natives.*.node' -delete
     atomic_native="$(atomic_native_filename "$platform")"
@@ -477,7 +471,6 @@ for platform in "${PLATFORMS[@]}"; do
         echo "==> Bundling musl C++ runtime for $platform..."
         stage_musl_runtime "$platform" "binaries/$platform"
     fi
-    node ../../scripts/stage-postgres-runtime.mjs "$platform" "binaries/$platform/node_modules/@bastani/atomic-natives" --validate --standalone
 
     # Last gate before the archive is created: no package staged here may declare a platform
     # this archive cannot run.

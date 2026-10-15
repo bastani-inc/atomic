@@ -1,6 +1,6 @@
 import { Value } from "typebox/value";
-import { isModelAttempts, isRouterSelection } from "../durable/dbos-envelope.js";
 import type { BudgetReport } from "./budget.js";
+import { isModelAttempts, isRouterSelection } from "./model-checkpoint-validation.js";
 import type { NormalizedSessionEntry as SessionEntry } from "./persistence-restore.js";
 import { workflowSerializableObjectSchema } from "./serializable.js";
 import type { Store } from "./store.js";
@@ -92,6 +92,7 @@ export function _buildStageSnapshots(
 			const sessionId = entry.payload.sessionId;
 			const sessionFile = entry.payload.sessionFile;
 			const modelAttempts = entry.payload.modelAttempts;
+			const routerSelection = entry.payload.routerSelection;
 			if (typeof stageId !== "string") continue;
 			endedStages.add(stageId);
 			const snap = stageMap.get(stageId);
@@ -113,8 +114,10 @@ export function _buildStageSnapshots(
 				if (typeof sessionId === "string") snap.sessionId = sessionId;
 				if (typeof sessionFile === "string") snap.sessionFile = sessionFile;
 				if (isModelAttempts(modelAttempts)) snap.modelAttempts = modelAttempts as StageSnapshot["modelAttempts"];
-				if (isRouterSelection(entry.payload.routerSelection))
-					snap.routerSelection = Object.freeze({ ...entry.payload.routerSelection });
+				if (isRouterSelection(routerSelection))
+					snap.routerSelection = Object.freeze({
+						...(routerSelection as NonNullable<StageSnapshot["routerSelection"]>),
+					});
 				Object.assign(snap, replayMetadata(entry.payload), workflowChildMetadata(entry.payload));
 			}
 		}

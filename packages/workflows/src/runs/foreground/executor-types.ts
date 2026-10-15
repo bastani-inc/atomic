@@ -134,7 +134,6 @@ export interface RunOpts
 	 * Durable workflow backend override (for testing). Defaults to the global
 	 * backend resolved by `getDurableBackend()`.
 	 *
-	 * cross-ref: issue #1498 — DBOS-backed cross-session resumability.
 	 */
 	durableBackend?: import("../../durable/backend.js").DurableWorkflowBackend;
 	/** Internal physical backend used to reconstruct full nested topology through stacked scopes. */

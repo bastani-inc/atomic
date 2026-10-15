@@ -110,13 +110,7 @@ export function readWorkflowHeartbeatAnchor(
 /**
  * Persist what a run launched with, once.
  *
- * Uses `recordAdditiveCheckpointBestEffort` rather than the synchronous
- * `recordCheckpoint`, because the DBOS backend updates its in-memory mirror
- * *before* the real write is queued: a synchronous read-back therefore proves
- * only that the mirror holds the row, and would let a rejected storage write be
- * remembered as a success that is never retried. The best-effort path awaits
- * `recordStepOutput` and updates the mirror only after it resolves, and turns a
- * storage rejection into `false` instead of a fatal flush error.
+ * A rejected storage write returns false and remains eligible for retry.
  *
  * Returns `true` only when the record is durably written *and* readable — the
  * backend silently drops a checkpoint for a workflow it has never registered,

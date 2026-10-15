@@ -56,4 +56,4 @@ assert.deepEqual(shutdowns, [operation === "fork" ? "fork" : operation === "new"
 await assert.rejects(session.prompt("retired"), { code: "SessionClosed" });
 console.log(JSON.stringify({ operation, failQuit, finalized: true, creations }));
 rmSync(cwd, { recursive: true, force: true });
-// Natural process exit, no private DBOS cleanup, is part of the oracle.
+// Natural process exit is part of the oracle.

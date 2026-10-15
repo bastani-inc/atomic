@@ -1,6 +1,5 @@
 import { describe } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { classifyCheckpointPayload, encodeCheckpoint } from "../../packages/workflows/src/durable/dbos-envelope.js";
+import { type DurableWorkflowBackend, InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { getDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import {
 	inheritedRunElapsedMs,
@@ -15,7 +14,7 @@ import { restoreOnSessionStart, type SessionEntry } from "../../packages/workflo
 import { appendRunStart } from "../../packages/workflows/src/shared/persistence-session-entries.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { elapsedRunMs } from "../../packages/workflows/src/shared/timing.js";
-import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { assert, createStore, run, Type, test, workflow } from "./executor-shared.js";
 
 const RUN_ID = "wf-run-timing";
@@ -39,7 +38,7 @@ function makeBackend(): InMemoryDurableBackend {
 	return backend;
 }
 
-function recordProgressCheckpoint(backend: InMemoryDurableBackend, workflowId = RUN_ID): void {
+function recordProgressCheckpoint(backend: DurableWorkflowBackend, workflowId = RUN_ID): void {
 	backend.recordCheckpoint({
 		kind: "stage",
 		workflowId,
@@ -108,21 +107,12 @@ describe("durable run-timing checkpoints", () => {
 		assert.equal(priorRunElapsedMs(backend, RUN_ID), 40_000);
 	});
 
-	test("round-trips through the DBOS checkpoint envelope into a fresh process", () => {
-		const backend = makeBackend();
+	test("run timing survives journal reopen", async () => {
+		const backend = new JournalTestBackend();
+		backend.registerWorkflow({ workflowId: RUN_ID, name: "timing", inputs: {}, createdAt: 1, status: "running" });
 		recordProgressCheckpoint(backend);
 		assert.equal(recordRunTimingCheckpoint(backend, makeRun({ startedAt: 0 }), { now: 90_000 }), true);
-		const checkpoint = backend
-			.listCheckpoints(RUN_ID)
-			.find((candidate) => candidate.kind === "tool" && candidate.name === RUN_TIMING_CHECKPOINT_NAME);
-		assert.ok(checkpoint !== undefined);
-
-		const envelope = encodeCheckpoint(checkpoint) as WorkflowSerializableValue;
-		const classified = classifyCheckpointPayload(RUN_ID, checkpoint.checkpointId, envelope);
-		assert.equal(classified.kind, "current");
-
-		const rehydrated = makeBackend();
-		if (classified.kind === "current") rehydrated.recordCheckpoint(classified.checkpoint);
+		const rehydrated = await backend.reopen();
 		assert.equal(priorRunElapsedMs(rehydrated, RUN_ID), 90_000);
 	});
 

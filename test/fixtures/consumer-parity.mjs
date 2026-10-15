@@ -1,21 +1,19 @@
 // #3105: copied unchanged into a real npm installation; never use checkout imports or CLI hosts.
 import assert from "node:assert/strict";
-import { execFile, spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	existsSync,
-	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
-	readdirSync,
 	realpathSync,
 	writeFileSync,
 } from "node:fs";
-import { createRequire, findPackageJSON, syncBuiltinESMExports } from "node:module";
+import { findPackageJSON, syncBuiltinESMExports } from "node:module";
 import net from "node:net";
-import { endianness, tmpdir } from "node:os";
-import { basename, dirname, join, sep } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { ReadStream } from "node:tty";
 import { fileURLToPath } from "node:url";
@@ -26,127 +24,6 @@ import {
 	withoutSqliteExperimentalWarning,
 } from "./sdk-host-fixture-support.mjs";
 const DURABLE_PHASE_TIMEOUT_MS = 30_000;
-async function stopDisposablePostgres() {
-	const consumer = realpathSync(dirname(fileURLToPath(import.meta.url)));
-	assert.match(basename(dirname(consumer)), /^atomic-packed-consumer-/);
-	assert.equal(dirname(dirname(consumer)), realpathSync(tmpdir()));
-	const home = join(consumer, "atomic-real-postgres-home");
-	assert.equal(realpathSync(home), home, "disposable home must not be a symlink");
-	assert.equal(realpathSync(process.env.HOME), realpathSync(home));
-	const base = join(home, ".atomic", "postgres");
-	const data = join(base, "v18");
-	const registry = join(base, "v18.shared");
-	const trusted = (path, directory = false) => {
-		const stat = lstatSync(path, { bigint: true });
-		assert.ok(directory ? stat.isDirectory() : stat.isFile(), `untrusted path: ${path}`);
-		if (process.getuid) assert.equal(stat.uid, BigInt(process.getuid()));
-		if (process.platform !== "win32") assert.equal(stat.mode & 0o022n, 0n);
-		return stat;
-	};
-	if (!existsSync(data) && !existsSync(registry)) return;
-	trusted(base, true);
-	const stat = trusted(data, true);
-	assert.equal(realpathSync(data), join(realpathSync(home), ".atomic", "postgres", "v18"));
-	trusted(registry, true);
-	const metadataPath = join(registry, "cluster.json");
-	trusted(metadataPath);
-	const metadataText = readFileSync(metadataPath, "utf8");
-	const metadata = JSON.parse(metadataText);
-	assert.equal(metadata.version, 1);
-	assert.equal(metadata.major, 18);
-	assert.match(metadata.clusterId, /^[0-9a-f-]{36}$/);
-	assert.equal(metadata.dataDir, realpathSync(data));
-	assert.equal(metadata.directoryIdentity, `${stat.dev}:${stat.ino}`);
-	assert.equal(readFileSync(join(data, "PG_VERSION"), "utf8").trim(), "18");
-	for (const name of readdirSync(registry).filter((name) => name.endsWith(".consumer"))) {
-		trusted(join(registry, name));
-		const lease = JSON.parse(readFileSync(join(registry, name), "utf8"));
-		assert.equal(lease.clusterId, metadata.clusterId);
-		assert.equal(name, `${lease.token}.consumer`);
-		assert.ok(Number.isSafeInteger(lease.pid) && lease.pid > 0);
-		assert.throws(() => process.kill(lease.pid, 0), { code: "ESRCH" }, "database consumer still alive");
-	}
-	const pidPath = join(data, "postmaster.pid");
-	if (!existsSync(pidPath)) return;
-	trusted(pidPath);
-	const pidText = readFileSync(pidPath, "utf8");
-	const [pid, pidData, started, port] = pidText.split(/\r?\n/);
-	assert.deepEqual(
-		{ pid: Number(pid), started: Number(started), port: Number(port) },
-		{
-			pid: metadata.server?.pid,
-			started: metadata.server?.started,
-			port: metadata.server?.port,
-		},
-	);
-	assert.ok(Number.isSafeInteger(Number(pid)) && Number(pid) > 0);
-	assert.equal(realpathSync(pidData), metadata.dataDir);
-	trusted(join(data, "global", "pg_control"));
-	const control = readFileSync(join(data, "global", "pg_control"));
-	assert.equal(
-		(endianness() === "LE" ? control.readBigUInt64LE() : control.readBigUInt64BE()).toString(),
-		metadata.server.systemIdentifier,
-	);
-	trusted(join(data, "postmaster.opts"));
-	const launch =
-		/^(.*[\\/]postgres(?:\.exe)?) "-D" "([^"]+)" "-p" "(\d+)" "-c" "listen_addresses=127\.0\.0\.1"(?: "-c" "logging_collector=on" "-c" "log_directory=log" "-c" "log_filename=postgresql-%a\.log" "-c" "log_truncate_on_rotation=on" "-c" "log_rotation_age=1d" "-c" "log_rotation_size=0")?(?: "-c" "fsync=off" "-c" "synchronous_commit=off" "-c" "full_page_writes=off")?\s*$/.exec(
-			readFileSync(join(data, "postmaster.opts"), "utf8"),
-		);
-	assert.ok(launch, "unrecognized postgres launch options");
-	assert.equal(realpathSync(launch[2]), metadata.dataDir);
-	assert.equal(Number(launch[3]), Number(port));
-	const configuredCache = process.env.ATOMIC_POSTGRES_RUNTIME_CACHE_DIR;
-	const runtime = realpathSync(configuredCache ?? join(base, "pg-runtime"));
-	if (configuredCache) {
-		assert.match(basename(runtime), /^atomic-postgres-runtime-cache-/);
-		assert.equal(dirname(runtime), realpathSync(tmpdir()));
-		trusted(runtime, true);
-	} else assert.equal(runtime, join(base, "pg-runtime"), "runtime must stay inside the disposable home");
-	assert.ok(realpathSync(launch[1]).startsWith(`${runtime}${sep}`));
-	const pgCtl = join(dirname(launch[1]), process.platform === "win32" ? "pg_ctl.exe" : "pg_ctl");
-	assert.ok(realpathSync(pgCtl).startsWith(`${runtime}${sep}`));
-	const { Client } = createRequire(import.meta.resolve("@bastani/atomic"))("pg");
-	const client = new Client({
-		host: "127.0.0.1",
-		port: Number(port),
-		user: "postgres",
-		password: "atomic",
-		database: "postgres",
-		ssl: false,
-		connectionTimeoutMillis: 2000,
-		query_timeout: 2000,
-	});
-	client.on("error", () => {});
-	try {
-		await client.connect();
-		const {
-			rows: [row],
-		} = await client.query(`SELECT current_setting('data_directory') AS data_dir,
-			inet_server_port() AS port, host(inet_server_addr()) AS host,
-			split_part(pg_read_file('postmaster.pid'), E'\\n', 3) AS started,
-			system_identifier::text FROM pg_control_system()`);
-		assert.equal(realpathSync(row.data_dir), metadata.dataDir);
-		assert.equal(row.port, Number(port));
-		assert.equal(row.host, "127.0.0.1");
-		assert.equal(Number(row.started), Number(started));
-		assert.equal(row.system_identifier, metadata.server.systemIdentifier);
-	} finally {
-		await client.end();
-	}
-	assert.equal(readFileSync(pidPath, "utf8"), pidText);
-	assert.equal(readFileSync(metadataPath, "utf8"), metadataText);
-	const stopped = spawnSync(pgCtl, ["-D", data, "-m", "fast", "-w", "-t", "15", "stop"], {
-		encoding: "utf8",
-		timeout: 20_000,
-	});
-	assert.equal(stopped.status, 0, `${stopped.error ?? ""}\n${stopped.stderr}`);
-	assert.equal(existsSync(pidPath), false);
-}
-
-if (process.argv[2] === "cleanup") {
-	await stopDisposablePostgres();
-	process.exit(0);
-}
 assert.equal(process.versions.bun, undefined);
 assert.ok(!process.stdin.isTTY && !process.stdout.isTTY);
 const installedRoot = realpathSync(join(dirname(fileURLToPath(import.meta.url)), "node_modules"));
@@ -293,6 +170,7 @@ try {
 				assert.equal(hash, saved.hash);
 				const resumed = await call(session, "workflow", { action: "resume", runId: saved.runId });
 				assert.notEqual(resumed.isError, true, JSON.stringify(resumed));
+				assert.equal(resumed.details.status, "running", JSON.stringify(resumed));
 				await until(async () => {
 					const details = await status();
 					assert.ok(
@@ -488,52 +366,7 @@ try {
 			const sideEffects = Object.fromEntries(["receipts.jsonl", "effects.jsonl"].map((file) => [
 				file, existsSync(join(root, file)) ? readFileSync(join(root, file), "utf8").slice(0, 4096) : null,
 			]));
-			const runId = details?.runs[0]?.runId;
-			const checkpointPrefix = `${runId}:checkpoint:`;
-			let checkpointRows;
-			let databaseActivity;
-			let databaseLocks;
-			let checkpointReadError;
-			let client;
-			try {
-				const metadata = JSON.parse(readFileSync(join(process.env.HOME, ".atomic", "postgres", "v18.shared", "cluster.json"), "utf8"));
-				const { Client } = createRequire(import.meta.resolve("@bastani/atomic"))("pg");
-				client = new Client({
-					host: "127.0.0.1", port: metadata.server.port, user: "postgres", password: "atomic",
-					database: "atomic_workflows_dbos_sys", ssl: false,
-					connectionTimeoutMillis: 1000, query_timeout: 1000, statement_timeout: 1000,
-				});
-				client.on("error", () => {});
-				await client.connect();
-				await client.query("SET default_transaction_read_only = on");
-				checkpointRows = (await client.query(
-					`SELECT workflow_uuid, status, name, created_at, updated_at,
-					 left(inputs::text, 4096) AS inputs, left(output::text, 4096) AS output,
-					 left(error::text, 2048) AS error FROM dbos.workflow_status
-					 WHERE workflow_uuid = $1 OR starts_with(workflow_uuid, $2)
-					 ORDER BY created_at DESC, workflow_uuid LIMIT 64`,
-					[runId, checkpointPrefix],
-				)).rows;
-				databaseActivity = (await client.query(
-					`SELECT pid, application_name, state, wait_event_type, wait_event,
-					 xact_start, query_start, state_change, pg_blocking_pids(pid) AS blocking_pids,
-					 left(query, 1024) AS query FROM pg_stat_activity
-					 WHERE datname = current_database() AND pid <> pg_backend_pid()
-					 ORDER BY query_start LIMIT 32`,
-				)).rows;
-				databaseLocks = (await client.query(
-					`SELECT l.pid, l.locktype, l.mode, l.granted, l.relation::regclass::text AS relation,
-					 l.classid, l.objid, l.objsubid, l.transactionid
-					 FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
-					 WHERE a.datname = current_database() AND a.pid <> pg_backend_pid()
-					 ORDER BY l.granted, l.pid, l.locktype LIMIT 64`,
-				)).rows;
-			} catch (readError) {
-				checkpointReadError = String(readError);
-			} finally {
-				await client?.end().catch((endError) => { checkpointReadError ??= String(endError); });
-			}
-			console.error(JSON.stringify({ host: "packed-node", reply, observedAt, checkpointReadAt: Date.now(), phases, sideEffects, details, progression, lastPoll, callbacks, checkpointPrefix, checkpointRows, databaseActivity, databaseLocks, checkpointReadError, error: String(error) }));
+			console.error(JSON.stringify({ host: "packed-node", reply, observedAt, phases, sideEffects, details, progression, lastPoll, callbacks, error: String(error) }));
 			throw error;
 		} finally {
 			trueAnswer.resolve(false);
@@ -971,11 +804,8 @@ for await (const line of createInterface({ input: process.stdin })) {
 			await run("./consumer-parity.mjs", ["persist-start", persisted]);
 			await run("./consumer-parity.mjs", ["persist-resume", persisted]);
 			await run("./consumer-parity.mjs", ["children"]);
-			const metadata = JSON.parse(readFileSync(join(process.env.HOME, ".atomic", "postgres", "v18.shared", "cluster.json"), "utf8"));
 			const durable = JSON.parse((await run("./sdk-host-built-node.mjs", [], {
 				ATOMIC_MANAGED_TEST_HOME: process.env.HOME,
-				ATOMIC_POSTGRES_PORT: String(metadata.server.port),
-				PGPORT: "0",
 			})).trim());
 			assert.equal(durable.effects, 1);
 			assert.equal(
@@ -992,7 +822,6 @@ for await (const line of createInterface({ input: process.stdin })) {
 	}
 } finally {
 	await awaitFixtureBrokerExit(join(root, "agent"));
-	if (!mode) await stopDisposablePostgres();
 	if (!mode?.startsWith("persist-")) await removeFixtureRoot(root);
 }
 if (!mode)

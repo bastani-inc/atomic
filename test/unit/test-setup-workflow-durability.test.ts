@@ -8,7 +8,6 @@ const owner = getDurableBackendProcessOwner();
 const original = { ...owner };
 const initialized = new InMemoryDurableBackend();
 const initializing = Promise.resolve(initialized);
-const warningSink = (_message: string): void => {};
 let previousInjected: InMemoryDurableBackend | undefined;
 let previousOverride: InMemoryDurableBackend | undefined;
 let completed = 0;
@@ -31,13 +30,9 @@ for (const ordinal of [0, 1]) {
 		if (ordinal === 1) {
 			assert.equal(owner.initializedBackend, initialized);
 			assert.equal(owner.initializing, initializing);
-			assert.equal(owner.warningSink, warningSink);
-			assert.equal(owner.warningReported, true);
 		}
 		owner.initializedBackend = initialized;
 		owner.initializing = initializing;
-		owner.warningSink = warningSink;
-		owner.warningReported = true;
 		const override = new InMemoryDurableBackend();
 		setDurableBackend(override);
 		assert.equal(getDurableBackend(), override);

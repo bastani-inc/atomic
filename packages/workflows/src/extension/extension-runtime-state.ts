@@ -1,6 +1,5 @@
 import { registerExtensionContextRetirementEffect } from "@bastani/atomic";
-import { getDbosProcessOwner } from "../durable/dbos-process-owner.js";
-import { type DurabilityWarningSink, getDurableBackend } from "../durable/factory.js";
+import { getDurableBackend } from "../durable/factory.js";
 import {
 	InvalidWorkflowHeartbeatAnchorError,
 	readWorkflowHeartbeatAnchor,
@@ -43,7 +42,6 @@ import {
 import type { ExtensionAPI, PiModelContext } from "./public-types.js";
 import { createExtensionRuntime, type ExtensionRuntime } from "./runtime.js";
 import { createStatusWriter, type StatusWriter } from "./status-writer.js";
-import { prepareWorkflowDatabaseSettings } from "./workflow-database-settings.js";
 import { registerWorkflowHeartbeatRenderer } from "./workflow-heartbeat-notice.js";
 import {
 	createWorkflowHeartbeatSchedulerState,
@@ -69,18 +67,11 @@ interface DurabilityWarningContext extends PiModelContext {
 	};
 }
 
-function durabilityWarningSinkFromContext(ctx?: DurabilityWarningContext): DurabilityWarningSink | undefined {
-	if (ctx?.hasUI === false || typeof ctx?.ui?.notify !== "function") return undefined;
-	const notify = ctx.ui.notify.bind(ctx.ui);
-	return (message) => notify(message, "warning");
-}
-
 /**
  * Best-effort durable cadence-anchor store for workflow heartbeats.
  *
- * `getDurableBackend()` throws `DbosNotReadyError` until a backend exists, and
- * the scheduler installs at `session_start`, before any workflow has run — so
- * both sides swallow failure and fall back to the run's own `startedAt`.
+ * The scheduler installs before any workflow has initialized its journal, so
+ * both sides tolerate an unavailable backend and retry on the next pass.
  */
 function durableWorkflowHeartbeatAnchorStore(): WorkflowHeartbeatAnchorStore {
 	return {
@@ -335,41 +326,6 @@ export function createWorkflowExtensionRuntimeState(
 	const resolvePossibleStageEntry = (normalizedName: string): string | undefined =>
 		discoveryRef.current?.sources.find((source) => source.id === normalizedName)?.filePath ??
 		resolveBuiltinDefinitionSource(normalizedName);
-	let databasePreparation: { key: string; promise: Promise<void> } | undefined;
-	const prepareDatabase = (): Promise<void> => {
-		const cwd = resolveCwd();
-		const trusted = pi.getResourceLoaderInheritanceSnapshot?.()?.projectTrusted ?? false;
-		const key = JSON.stringify([cwd, trusted]);
-		if (databasePreparation?.key === key) return databasePreparation.promise;
-		const promise = prepareWorkflowDatabaseSettings(cwd, trusted).catch((error: Error) => {
-			if (databasePreparation?.promise === promise) databasePreparation = undefined;
-			throw error;
-		});
-		databasePreparation = { key, promise };
-		return promise;
-	};
-	const databaseReady = (ctx?: DurabilityWarningContext): void => {
-		const owner = getDbosProcessOwner();
-		const describeDatabase = owner.databaseDiagnostics;
-		if (owner.state !== "ready" || describeDatabase === undefined) return;
-		if (owner.announcedDatabaseDiagnostics === describeDatabase) return;
-		const diagnostics = describeDatabase();
-		const dockerFallback = diagnostics.provider === "docker";
-		let host = "unknown host";
-		try {
-			host = new URL(diagnostics.url).host;
-		} catch {}
-		const message = `Workflow database: ${dockerFallback ? "Docker fallback" : diagnostics.provider} (${host})`;
-		if (ctx?.hasUI && ctx.ui?.notify) {
-			try {
-				ctx.ui.notify(message, "info");
-				owner.announcedDatabaseDiagnostics = describeDatabase;
-			} catch {}
-		} else if (dockerFallback) {
-			owner.announcedDatabaseDiagnostics = describeDatabase;
-			console.error(message);
-		}
-	};
 	const startupDiscovery = discoverStartupWorkflowsSync();
 	const runtimeRef: { current: ExtensionRuntime } = {
 		current: createExtensionRuntime({
@@ -385,8 +341,6 @@ export function createWorkflowExtensionRuntimeState(
 			resolvePossibleStageEntry,
 			resolveDefaultStageSessionDir,
 			beforeRestoreCompleted,
-			prepareDatabase,
-			databaseReady,
 		}),
 	};
 	const configLoadRef: { current: ConfigLoadResult | null } = { current: null };
@@ -435,9 +389,7 @@ export function createWorkflowExtensionRuntimeState(
 
 	function runtimeForContext(ctx?: DurabilityWarningContext): ExtensionRuntime {
 		const models = workflowModelCatalogFromContext(ctx, resolveLiveModelContext);
-		const durabilityWarningSink = durabilityWarningSinkFromContext(ctx);
-		if (models === undefined && durabilityWarningSink === undefined && !ctx?.generateWorkflowSummary)
-			return runtimeProxy;
+		if (models === undefined && !ctx?.generateWorkflowSummary) return runtimeProxy;
 		return createExtensionRuntime({
 			registry: runtimeRef.current.registry,
 			cwd: resolveCwd(),
@@ -451,11 +403,8 @@ export function createWorkflowExtensionRuntimeState(
 			resolvePossibleStageEntry,
 			...(models === undefined ? {} : { models }),
 			summaryContext: ctx,
-			...(durabilityWarningSink === undefined ? {} : { durabilityWarningSink }),
 			resolveDefaultStageSessionDir,
 			beforeRestoreCompleted,
-			prepareDatabase,
-			databaseReady: () => databaseReady(ctx),
 		});
 	}
 
@@ -499,8 +448,6 @@ export function createWorkflowExtensionRuntimeState(
 			resolvePossibleStageEntry,
 			resolveDefaultStageSessionDir,
 			beforeRestoreCompleted,
-			prepareDatabase,
-			databaseReady,
 		});
 	}
 

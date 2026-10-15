@@ -6,8 +6,7 @@ import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-
 import { type BrokerConnectedSession, handleBrokerSend } from "../../packages/intercom/broker/send-handler.js";
 import { SupervisorChannelCache } from "../../packages/intercom/broker/supervisor-channel.js";
 import type { BrokerMessage, Message, SessionInfo } from "../../packages/intercom/types.js";
-import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
-import { createMockSdk } from "./durable-dbos-backend-helpers.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { createStore, mockSession, run, workflow } from "./executor-shared.js";
 
 function capturedGroup(options: CreateAgentSessionOptions): string | undefined {
@@ -261,8 +260,7 @@ test("model fallback replacement sessions keep the workflow invocation group", a
 
 test("fresh durable replay restores a nested stage to the top-level invocation group", async () => {
 	const rootRunId = "durable-invocation-group-root";
-	const sdk = createMockSdk();
-	const firstBackend = new DbosDurableBackend(sdk, { executorId: "group-first" });
+	const firstBackend = new JournalTestBackend();
 	const firstStore = createStore();
 	const promptStarted = Promise.withResolvers<void>();
 	const releasePrompt = Promise.withResolvers<void>();
@@ -315,16 +313,12 @@ test("fresh durable replay restores a nested stage to the top-level invocation g
 		},
 	);
 	await promptStarted.promise;
-	await firstBackend.flush();
 	const firstRoot = firstStore.runs().find((candidate) => candidate.id === rootRunId)!;
 	const childBoundary = firstRoot.stages.find((stage) => stage.name === `workflow:${child.name}`)!;
 	const firstChild = firstStore.runs().find((candidate) => candidate.parentStageId === childBoundary.id)!;
 	assert.ok(initialGroup);
 	assert.equal(initialGroup, `workflow:${rootRunId}`);
 
-	const persisted = createMockSdk();
-	for (const [key, value] of sdk.state.workflows) persisted.state.workflows.set(key, { ...value });
-	for (const [key, value] of sdk.state.steps) persisted.state.steps.set(key, structuredClone(value));
 	firstController.abort(new Error("first process stopped"));
 	releasePrompt.resolve();
 	await firstPromise;
@@ -334,7 +328,7 @@ test("fresh durable replay restores a nested stage to the top-level invocation g
 		workflowRunId?: string;
 		intercomGroup?: string;
 	}> = [];
-	const freshBackend = new DbosDurableBackend(persisted, { executorId: "group-fresh" });
+	const freshBackend = await firstBackend.reopen();
 	await freshBackend.hydrateWorkflow(rootRunId);
 	const resumed = await run(
 		root,
@@ -385,8 +379,7 @@ test("active durable boolean subgroup resume preserves the persisted group ident
 			return {};
 		},
 	});
-	const sdk = createMockSdk();
-	const firstBackend = new DbosDurableBackend(sdk, { executorId: "boolean-group-first" });
+	const firstBackend = new JournalTestBackend();
 	const firstStore = createStore();
 	const firstController = new AbortController();
 	const firstPromise = run(
@@ -414,18 +407,14 @@ test("active durable boolean subgroup resume preserves the persisted group ident
 		},
 	);
 	await promptStarted.promise;
-	await firstBackend.flush();
 	assert.match(initialGroup ?? "", new RegExp(`^workflow:${rootRunId}/[0-9a-f-]{36}$`, "i"));
 
-	const persisted = createMockSdk();
-	for (const [key, value] of sdk.state.workflows) persisted.state.workflows.set(key, { ...value });
-	for (const [key, value] of sdk.state.steps) persisted.state.steps.set(key, structuredClone(value));
 	firstController.abort(new Error("first process stopped"));
 	releasePrompt.resolve();
 	await firstPromise;
 
 	let resumedGroup: string | undefined;
-	const freshBackend = new DbosDurableBackend(persisted, { executorId: "boolean-group-fresh" });
+	const freshBackend = await firstBackend.reopen();
 	await freshBackend.hydrateWorkflow(rootRunId);
 	const resumed = await run(
 		definition,

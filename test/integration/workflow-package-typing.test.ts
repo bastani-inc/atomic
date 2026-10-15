@@ -42,6 +42,7 @@ describe("standalone workflow package typing", () => {
 						compilerOptions: {
 							strict: true,
 							target: "ES2022",
+							lib: ["ES2024"],
 							module: "NodeNext",
 							moduleResolution: "NodeNext",
 							noEmit: true,

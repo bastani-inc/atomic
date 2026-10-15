@@ -3,6 +3,7 @@ import { Type } from "typebox";
 import { describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import type { WorkflowToolPrimitive } from "../../packages/workflows/src/durable/tool-primitive.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
@@ -318,15 +319,15 @@ describe("ctx.tool terminal admission", () => {
 	});
 
 	test("a rejecting durable terminal finalizer cannot leave admission open", async () => {
-		class RejectTerminalFlushBackend extends InMemoryDurableBackend {
-			public flushCalls = 0;
-			override async flush(): Promise<void> {
-				this.flushCalls += 1;
-				if (this.flushCalls === 2) throw new Error("durable terminal finalizer rejected");
+		class RejectTerminalBackend extends InMemoryDurableBackend {
+			override setWorkflowStatus(...args: Parameters<InMemoryDurableBackend["setWorkflowStatus"]>): void {
+				if (args[1] === "failed")
+					throw new StorageUnavailableError("journal.sqlite", new Error("terminal write failed"));
+				super.setWorkflowStatus(...args);
 			}
 		}
 		const store = createStore();
-		const backend = new RejectTerminalFlushBackend();
+		const backend = new RejectTerminalBackend();
 		let retainedTool: WorkflowToolPrimitive | undefined;
 		let runId = "";
 		await assert.rejects(
@@ -351,7 +352,7 @@ describe("ctx.tool terminal admission", () => {
 					},
 				},
 			),
-			/durable terminal finalizer rejected/,
+			StorageUnavailableError,
 		);
 
 		assert.equal(store.runs()[0]?.status, "failed");

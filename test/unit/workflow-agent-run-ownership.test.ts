@@ -4,7 +4,6 @@ import { afterEach, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import type { PiExecuteContext } from "../../packages/workflows/src/extension/public-types.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
@@ -14,7 +13,7 @@ import { createJobTracker } from "../../packages/workflows/src/runs/background/j
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowInputValues } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
-import { createMockSdk, restoreMockSdkState, serializeMockSdkState } from "./durable-dbos-backend-helpers.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { waitForExecutorStagePendingPrompt } from "./executor-shared.js";
 
 afterEach(() => {
@@ -263,15 +262,11 @@ test.each(["pause", "quit"] as const)(
 );
 
 test("terminal ownership survives runtime replacement and durable-only inspection", async () => {
-	const sdk = createMockSdk();
-	const backend = new DbosDurableBackend(sdk);
+	const backend = new JournalTestBackend();
 	const f = fixture(false, false, backend);
 	const runId = runIdOf(await f.launch());
 	await Promise.all(f.jobs.runIds().map((id) => f.jobs.get(id)!.promise));
-	await backend.flush();
-	const restoredSdk = createMockSdk();
-	restoreMockSdkState(restoredSdk, JSON.parse(JSON.stringify(serializeMockSdkState(sdk))));
-	setDurableBackend(new DbosDurableBackend(restoredSdk));
+	setDurableBackend(await backend.reopen());
 	const store = createStore();
 	const jobs = createJobTracker();
 	const runtime = createExtensionRuntime({ registry: createRegistry().register(f.definition), store, jobs });

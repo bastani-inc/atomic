@@ -16,7 +16,7 @@ import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/bac
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { workflowPolicyFromContext } from "../../packages/workflows/src/extension/workflow-policy.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { RealPostgresHome, reserveListener } from "../helpers/real-postgres.js";
+import { WorkflowProcessHome } from "../helpers/workflow-process.js";
 import { attachedCliPresentation, forwardCliDialogs } from "./fixtures/sdk-host-cli.js";
 import { runBuiltNodeFixture } from "./sdk-builtin-host-parity-helpers.js";
 
@@ -577,15 +577,12 @@ test.each(["true", "false", "cancelled", "invalid", "late"] as const)(
 	},
 );
 
-// Two fresh DBOS/Postgres processes, including backend startup and graceful shutdown.
 const REAL_PERSISTED_HOST_HANDOFF_TIMEOUT_MS = 120_000;
 
-// #3105: actual DBOS/Postgres disk reopen, not an in-memory checkpoint copy.
 test.each(["node", "cli"] as const)(
 	"persisted handoff from %s to the other host",
 	async (host) => {
-		const home = new RealPostgresHome();
-		const listener = await reserveListener();
+		const home = new WorkflowProcessHome();
 		type Receipt = {
 			runId: string;
 			hash: string;
@@ -595,7 +592,6 @@ test.each(["node", "cli"] as const)(
 		};
 		try {
 			const first = home.client(
-				listener.port,
 				{ HANDOFF_HOST: host, HANDOFF_PHASE: "start", ATOMIC_WORKFLOW_ARTIFACT_DIR: join(home.path, "artifacts") },
 				"sdk-host-durable-client.ts",
 			);
@@ -604,7 +600,6 @@ test.each(["node", "cli"] as const)(
 			assert.equal(existsSync(join(home.path, "effects.jsonl")), false);
 			await first.exit();
 			const second = home.client(
-				listener.port,
 				{
 					HANDOFF_HOST: host === "node" ? "cli" : "node",
 					HANDOFF_PHASE: "resume",
@@ -631,11 +626,7 @@ test.each(["node", "cli"] as const)(
 				`${JSON.stringify({ text: "  durable text  " })}\n`,
 			);
 		} finally {
-			try {
-				await home.cleanup();
-			} finally {
-				await listener.close();
-			}
+			await home.cleanup();
 		}
 	},
 	REAL_PERSISTED_HOST_HANDOFF_TIMEOUT_MS,
@@ -786,9 +777,6 @@ test(
 	() => {
 		const result = runBuiltNodeFixture("sdk-host-built-node.mjs", [], [], {
 			...process.env,
-			DBOS_SYSTEM_DATABASE_URL: undefined,
-			ATOMIC_POSTGRES_RUNTIME_DIR: undefined,
-			PGPORT: "0",
 		});
 		assert.equal(result.exitCode, 0, result.stderr.toString());
 		const receipt = JSON.parse(result.stdout.toString().trim());
@@ -810,9 +798,6 @@ test(
 	() => {
 		const result = runBuiltNodeFixture("sdk-host-built-node.mjs", ["--replacement-failure"], [], {
 			...process.env,
-			DBOS_SYSTEM_DATABASE_URL: undefined,
-			ATOMIC_POSTGRES_RUNTIME_DIR: undefined,
-			PGPORT: "0",
 		});
 		assert.equal(result.exitCode, 0, result.stderr.toString());
 		assert.deepEqual(JSON.parse(result.stdout.toString().trim()), {

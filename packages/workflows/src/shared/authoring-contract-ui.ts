@@ -123,7 +123,6 @@ export interface WorkflowRunContext<
 	 * Only `ctx.*` blocks (tool, ui, stage, task, chain, parallel, workflow)
 	 * produce durable checkpoints.
 	 *
-	 * cross-ref: issue #1498 — DBOS-backed cross-session resumability.
 	 */
 	tool: WorkflowToolPrimitive;
 }
@@ -293,7 +292,6 @@ export type WorkflowDurability =
 	| { readonly mode: "memory" }
 	| {
 			readonly mode: "durable";
-			/** Postgres URL for the DBOS system database, used when `DBOS_SYSTEM_DATABASE_URL` is unset; otherwise the managed database. */
 			readonly systemDatabaseUrl?: string;
 			/** Maximum connections per workflow database pool; integer of at least 2, defaults to 10. */
 			readonly poolSize?: number;

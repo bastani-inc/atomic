@@ -2,24 +2,23 @@ import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { afterEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore, store as workflowStore } from "../../packages/workflows/src/shared/store.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
-import { createMockSdk, seedMockCheckpoint, seedMockWorkflow } from "./durable-dbos-backend-helpers.js";
 
 afterEach(() => {
 	setDurableBackend(undefined);
 	workflowStore.clear();
 });
 
-test("fresh DBOS active root rejects an occurrence bound to different replay keys before prompt replay", async () => {
+test("fresh journal active root rejects an occurrence bound to different replay keys before prompt replay", async () => {
 	const rootId = testRunId("prompt-occurrence-active-poison");
-	const sdk = createMockSdk();
-	seedMockWorkflow(sdk, { workflowId: rootId, name: rootId, status: "PENDING", createdAt: 1 });
+	const writer = new JournalTestBackend();
+	writer.registerWorkflow({ workflowId: rootId, name: rootId, inputs: {}, status: "running", createdAt: 1 });
 	for (const [index, replayKey] of ["prompt:input:first", "prompt:input:SECOND-DIFFERENT"].entries()) {
-		seedMockCheckpoint(sdk, rootId, {
+		writer.recordCheckpoint({
 			kind: "stage",
 			workflowId: rootId,
 			checkpointId: `active-prompt-poison-${index}`,
@@ -39,7 +38,7 @@ test("fresh DBOS active root rejects an occurrence bound to different replay key
 			},
 		});
 	}
-	const backend = new DbosDurableBackend(sdk, { executorId: "prompt-occurrence-active-fresh" });
+	const backend = await writer.reopen();
 	await backend.hydrateWorkflow(rootId);
 	const store = createStore();
 	const controller = new AbortController();

@@ -25,7 +25,6 @@ import type {
 	DurableInactiveDeleteResult,
 	DurableWorkflowBackend,
 	DurableWorkflowCatalogEntries,
-	DurableWorkflowHydrationResult,
 	WorkflowRegistrationInput,
 } from "./backend.js";
 import {
@@ -167,8 +166,8 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 		return await this.inner.recordAdditiveCheckpointBestEffort(this.remap(checkpoint));
 	}
 
-	flush(workflowId?: string): Promise<void> {
-		return workflowId === undefined ? this.inner.flush() : this.inner.flush(this.scope.rootWorkflowId);
+	workflowOwnership(_workflowId: string): "local" | "foreign" | "available" {
+		return this.inner.workflowOwnership(this.scope.rootWorkflowId);
 	}
 
 	getToolOutput(_workflowId: string, argsHash: string): WorkflowSerializableValue | undefined {
@@ -292,9 +291,6 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 
 	hydrateWorkflow(_workflowId: string): Promise<void> {
 		return Promise.resolve();
-	}
-	hydrateWorkflowForInspection(_workflowId: string): Promise<DurableWorkflowHydrationResult> {
-		return Promise.resolve({ kind: "absent" });
 	}
 
 	hydrateResumableWorkflows(): Promise<void> {

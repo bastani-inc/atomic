@@ -115,7 +115,7 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			if (TERMINAL_STATUSES.has(run.status)) return false;
 			run.status = status;
 			run.endedAt = Date.now();
-			if (run.phase !== undefined && run.phase !== "blocked_dependency") {
+			if (run.phase !== undefined) {
 				run.phase = "ended";
 				run.phaseStartedAt = run.endedAt;
 			}

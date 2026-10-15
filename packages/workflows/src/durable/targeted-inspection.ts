@@ -4,8 +4,6 @@ import { createStore, type Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { durableWorkflowRunSnapshots } from "./completed-catalog.js";
-import { getAtomicExecutorId } from "./dbos-sdk-handle.js";
-import { isForeignLiveWorkflow, isLiveRunningWorkflow } from "./resume-eligibility.js";
 
 export type TargetedDurableInspection =
 	| {
@@ -25,7 +23,6 @@ export type TargetedDurableInspection =
 export async function inspectTargetedDurableWorkflow(
 	backend: DurableWorkflowBackend,
 	workflowId: string,
-	now: number = Date.now(),
 ): Promise<TargetedDurableInspection> {
 	let resolvedWorkflowId = workflowId;
 	if (!isFullRunId(workflowId)) {
@@ -45,11 +42,9 @@ export async function inspectTargetedDurableWorkflow(
 		}
 		resolvedWorkflowId = resolution.runId;
 	}
-	const hydrated = backend.hydrateWorkflowForInspection
-		? await backend.hydrateWorkflowForInspection(resolvedWorkflowId)
-		: await hydrateWithoutClassification(backend, resolvedWorkflowId);
-	if (hydrated.kind !== "current") return hydrationFailure(resolvedWorkflowId, hydrated.kind);
-	const handle = hydrated.handle;
+	await backend.hydrateWorkflow(resolvedWorkflowId);
+	const handle = backend.getLoadableWorkflow(resolvedWorkflowId);
+	if (handle === undefined) return hydrationFailure(resolvedWorkflowId, "absent");
 	if (handle.rootWorkflowId !== undefined && handle.rootWorkflowId !== handle.workflowId) {
 		return malformed(resolvedWorkflowId, "the requested id belongs to a nested workflow rather than a durable root");
 	}
@@ -63,8 +58,9 @@ export async function inspectTargetedDurableWorkflow(
 	const inspected = inspectRun(resolvedWorkflowId, { store: inspectionStore });
 	if (!inspected.ok) return malformed(resolvedWorkflowId, "the durable checkpoint graph has no reciprocal root");
 
-	const foreignLive = isForeignLiveWorkflow(handle, getAtomicExecutorId(), now);
-	const live = isLiveRunningWorkflow(handle, now);
+	const ownership = backend.workflowOwnership(resolvedWorkflowId);
+	const foreignLive = handle.status === "running" && ownership === "foreign";
+	const live = handle.status === "running" && ownership !== "available";
 	const crashed = handle.status === "running" && !live;
 	const resumeGuidance = crashed
 		? inspected.detail.resumable === true
@@ -95,15 +91,6 @@ function terminalGuidance(status: string, workflowId: string, resumable: boolean
 	return `This retained workflow is ${status} and available for read-only inspection.`;
 }
 
-async function hydrateWithoutClassification(
-	backend: DurableWorkflowBackend,
-	workflowId: string,
-): Promise<import("./backend.js").DurableWorkflowHydrationResult> {
-	await backend.hydrateWorkflow(workflowId);
-	const handle = backend.getLoadableWorkflow(workflowId);
-	return handle === undefined ? { kind: "absent" } : { kind: "current", handle };
-}
-
 function hydrationFailure(
 	workflowId: string,
 	kind: Exclude<TargetedDurableInspection["kind"], "found">,
@@ -117,7 +104,7 @@ function hydrationFailure(
 		case "deleted":
 			return { kind, message: `Durable workflow was deleted: ${workflowId}` };
 		case "malformed":
-			return malformed(workflowId, "current DBOS metadata or checkpoints are malformed");
+			return malformed(workflowId, "journal metadata or checkpoints are malformed");
 	}
 }
 

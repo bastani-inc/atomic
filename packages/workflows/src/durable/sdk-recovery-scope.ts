@@ -1,8 +1,6 @@
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
-import { isDatabaseExecutor } from "./dbos-owner-fence.js";
-import { getAtomicExecutorId } from "./dbos-sdk-handle.js";
-import { isLiveRunningWorkflow } from "./resume-eligibility.js";
+import type { DurableWorkflowBackend } from "./backend.js";
 import type { DurableWorkflowHandle } from "./types.js";
 
 export function canonicalDirectory(path: string): string {
@@ -27,15 +25,15 @@ export function isSdkDurableRunInScope<
 	);
 }
 
-export function isSdkCrashedRunAdoptable(handle: DurableWorkflowHandle, cwd: string | undefined): boolean {
+export function isSdkCrashedRunAdoptable(
+	handle: DurableWorkflowHandle,
+	cwd: string | undefined,
+	backend: DurableWorkflowBackend,
+): boolean {
 	return (
 		isSdkDurableRunInScope(handle, cwd) &&
 		handle.status === "running" &&
-		handle.ownerExecutorId !== undefined &&
-		handle.ownerExecutorId !== getAtomicExecutorId() &&
-		!isLiveRunningWorkflow(handle) &&
-		isDatabaseExecutor(handle.ownerExecutorId) &&
-		handle.ownerLiveness === "dead"
+		backend.workflowOwnership(handle.workflowId) === "available"
 	);
 }
 
@@ -50,6 +48,10 @@ export function isSdkReleasedRunAdoptable(handle: DurableWorkflowHandle, cwd: st
 }
 
 /** Another SDK session may take over a run its owner crashed on or disposed its session over. */
-export function isSdkRunAdoptable(handle: DurableWorkflowHandle, cwd: string | undefined): boolean {
-	return isSdkCrashedRunAdoptable(handle, cwd) || isSdkReleasedRunAdoptable(handle, cwd);
+export function isSdkRunAdoptable(
+	handle: DurableWorkflowHandle,
+	cwd: string | undefined,
+	backend: DurableWorkflowBackend,
+): boolean {
+	return isSdkCrashedRunAdoptable(handle, cwd, backend) || isSdkReleasedRunAdoptable(handle, cwd);
 }

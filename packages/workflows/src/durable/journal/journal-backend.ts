@@ -114,6 +114,7 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 	private readonly prompts = new Map<string, PromptReservationState>();
 	private readonly timer: ReturnType<typeof setInterval>;
 	private closed = false;
+	private processExitCleanup: (() => void) | undefined;
 
 	constructor(
 		readonly journal: BackendJournal = new SqliteRunJournal(),
@@ -166,6 +167,18 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 			this.projection.applyWorkflowSnapshot(handle);
 			if (event.type === E.runStarted || previous?.pendingPrompts !== handle.pendingPrompts)
 				this.prompts.delete(entry.runId);
+		}
+		const handle = this.projection.getWorkflow(entry.runId);
+		if (handle?.pendingStageMessages !== undefined) {
+			const messages = handle.pendingStageMessages.map((message) => {
+				if (message.sticky !== true) return message;
+				const count = this.projection.getPendingStageMessageDeliveryCount(entry.runId, message.id, message.runId);
+				return count > (message.deliveryCount ?? message.deliveries?.length ?? 0)
+					? { ...message, deliveryCount: count }
+					: message;
+			});
+			if (messages.some((message, index) => message !== handle.pendingStageMessages?.[index]))
+				this.projection.applyWorkflowSnapshot({ ...handle, pendingStageMessages: messages });
 		}
 		this.sequences.set(entry.runId, entry.seq);
 	}
@@ -316,8 +329,10 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 		}
 	}
 
-	async flush(): Promise<void> {
-		this.ensureOpen();
+	workflowOwnership(runId: string): "local" | "foreign" | "available" {
+		const lease = this.journal.leaseState(runId);
+		if (lease === undefined || Date.now() - lease.renewedAt >= FOREIGN_LIVE_WORKFLOW_WINDOW_MS) return "available";
+		return lease.holderId === this.holderId ? "local" : "foreign";
 	}
 
 	setWorkflowStatus(
@@ -372,6 +387,11 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 				E.statusChanged,
 				seq,
 			);
+			if (releasedModelOwner !== undefined) {
+				const lease = this.leases.get(runId);
+				if (lease !== undefined) this.journal.releaseSync(lease);
+				this.leases.delete(runId);
+			}
 			return true;
 		} catch (error) {
 			if (error instanceof JournalCasConflictError) {
@@ -564,7 +584,25 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 		}
 	}
 
+	/** Only factory-owned journals participate in process shutdown. */
+	closeOnProcessExit(): void {
+		this.ensureOpen();
+		if (this.processExitCleanup !== undefined) return;
+		this.processExitCleanup = () => {
+			// Lease release and SQLite close complete before close() first awaits.
+			void this.close().catch((error: Error) => {
+				console.error(error);
+				process.exitCode = 1;
+			});
+		};
+		process.once("exit", this.processExitCleanup);
+	}
+
 	async close(): Promise<void> {
+		if (this.processExitCleanup !== undefined) {
+			process.off("exit", this.processExitCleanup);
+			this.processExitCleanup = undefined;
+		}
 		if (this.closed) return;
 		clearInterval(this.timer);
 		try {

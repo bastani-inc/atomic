@@ -2,54 +2,47 @@ import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
+import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableCheckpoint, DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { createMockSdk } from "./durable-dbos-backend-helpers.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
 
 describe("tool checkpoint failures", () => {
-	test("DBOS best-effort rejection updates neither mirror nor fatal flush state", async () => {
-		const baseSdk = createMockSdk();
-		const persist = baseSdk.recordStepOutput.bind(baseSdk);
-		let rejectMigration = false;
-		const sdk = {
-			...baseSdk,
-			async recordStepOutput(...args: Parameters<typeof baseSdk.recordStepOutput>) {
-				const [, stepName] = args;
-				if (rejectMigration && stepName.includes("tool-replay-meta:")) throw new Error("dbos additive rejected");
-				await persist(...args);
-			},
-		};
-		const backend = new DbosDurableBackend(sdk);
+	test("journal best-effort storage rejection leaves checkpoints unchanged and permits a later write", async () => {
+		class RejectAdditiveBackend extends JournalTestBackend {
+			rejectWrite = false;
+			override async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+				if (this.rejectWrite) throw new StorageUnavailableError(this.databasePath, new Error("write rejected"));
+				await super.recordCheckpointAsync(checkpoint);
+			}
+		}
+		const backend = new RejectAdditiveBackend();
 		backend.registerWorkflow({
-			workflowId: "dbos-best-effort",
-			name: "dbos",
+			workflowId: "journal-best-effort",
+			name: "journal",
 			inputs: {},
 			createdAt: 1,
 			status: "running",
 		});
-		await backend.flush();
 		const checkpoint: DurableToolCheckpoint = {
 			kind: "tool",
-			workflowId: "dbos-best-effort",
-			checkpointId: "tool-replay-meta:test",
-			name: "legacy",
-			argsHash: "legacy-hash",
+			workflowId: "journal-best-effort",
+			checkpointId: "tool-checkpoint:test",
+			name: "tool",
+			argsHash: "tool-hash",
 			output: "cached",
 			completedAt: 2,
-			topology: { version: 1, nodeId: "tool:legacy", ordinal: 1, order: 1, parentIds: [], endedAt: 2 },
+			topology: { version: 1, nodeId: "tool:tool", ordinal: 1, order: 1, parentIds: [], endedAt: 2 },
 		};
-
-		rejectMigration = true;
+		backend.rejectWrite = true;
 		assert.equal(await backend.recordAdditiveCheckpointBestEffort(checkpoint), false);
-		assert.equal(backend.getToolCheckpoint("dbos-best-effort", "legacy-hash"), undefined);
-		await backend.flush();
-
-		rejectMigration = false;
+		assert.equal(backend.getToolCheckpoint("journal-best-effort", "tool-hash"), undefined);
+		backend.rejectWrite = false;
 		assert.equal(await backend.recordAdditiveCheckpointBestEffort(checkpoint), true);
-		assert.equal(backend.getToolCheckpoint("dbos-best-effort", "legacy-hash")?.output, "cached");
-		await backend.flush();
+		assert.equal(backend.getToolCheckpoint("journal-best-effort", "tool-hash")?.output, "cached");
+		const reopened = await backend.reopen();
+		assert.equal(reopened.getToolCheckpoint("journal-best-effort", "tool-hash")?.output, "cached");
 	});
 
 	test("authoritative fresh checkpoint failures still fail the run", async () => {

@@ -1,7 +1,7 @@
 import type { RunSnapshot, RunStatus, WorkflowFailureRecoverability } from "../shared/store-types.js";
 import type { DurableWorkflowStatus } from "./types.js";
 
-/** Metadata required to classify a current DBOS workflow as resumable. */
+/** Metadata required to classify a workflow as resumable. */
 export interface DurableResumeCandidate {
 	readonly workflowId: string;
 	readonly status: DurableWorkflowStatus;

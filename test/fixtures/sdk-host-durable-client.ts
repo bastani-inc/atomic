@@ -11,7 +11,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "../../packages/coding-agent/src/index.js";
-import { shutdownDbos } from "../../packages/workflows/src/durable/dbos-lifecycle.js";
+import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { initializeDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { bindWorkflowHumanInput } from "../../packages/workflows/src/extension/workflow-human-input.js";
@@ -28,6 +28,7 @@ const definition = loadWorkflowModule(fileURLToPath(new URL("./sdk-host-durable-
 const home = process.env.ATOMIC_FAULT_TEST_HOME!;
 assert.ok(home);
 const backend = await initializeDurableBackend();
+assert.ok(backend instanceof JournalDurableBackend);
 assert.equal(backend.persistent, true, "must use actual on-disk durability");
 const runtime = createExtensionRuntime({ definitions: [definition], store });
 const hash = createHash("sha256")
@@ -101,14 +102,12 @@ for await (const line of lines) {
 				.find((run) => run.id === runId)!
 				.stages.find((stage) => stage.pendingPrompt)!.pendingPrompt;
 			assert.equal(pending!.kind, "confirm");
-			await backend.flush?.(runId);
 			await session.bindExtensions({ humanInput: null });
 			assert.equal(requests[1]!.signal.aborted, true);
 			presentation.lateTrue();
 			late.resolve(true);
 			const paused = await workflowQuitAction({ action: "quit", runId });
 			assert.ok("status" in paused && paused.status === "paused", JSON.stringify(paused));
-			await backend.flush?.(runId);
 			result = { runId, hash, pending, requestId: requests[1]!.requestId, dialogs: presentation.dialogs };
 		} else if (command === "resume") {
 			assert.equal(store.runs().length, 0, "new process has no live run");
@@ -141,14 +140,13 @@ for await (const line of lines) {
 			await until(() => store.runs().some((run) => run.id === sql && run.status === "completed"));
 			assert.equal(requests.length, 1, "completed input must not be asked again");
 			assert.equal(requests[0]!.workflowRunId, sql);
-			await backend.flush?.(sql);
 			assert.deepEqual(store.runs().find((run) => run.id === sql)?.result, { text: "  durable text  ", approved: true });
 			result = { runId: sql, hash, pending, requestId: requests[0]!.requestId, dialogs: presentation.dialogs };
 		} else if (command === "exit") {
 			unbind();
 			await session.dispose();
 			await cli.dispose();
-			await shutdownDbos();
+			await backend.close();
 			console.log(JSON.stringify({ id, result: {} }));
 			lines.close();
 			break;

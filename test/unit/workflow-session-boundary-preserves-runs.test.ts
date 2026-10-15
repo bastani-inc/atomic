@@ -6,12 +6,6 @@ import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.t
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { type DurableWorkflowBackend, InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import {
-	type ConfiguredDbosDurability,
-	DbosDurableBackend,
-	type DbosSdkHandle,
-} from "../../packages/workflows/src/durable/dbos-backend.js";
-import { dbosLifecycleState, resetDbosLifecycleForTests } from "../../packages/workflows/src/durable/dbos-lifecycle.js";
-import {
 	getDurableBackend,
 	initializeDurableBackend,
 	setDurableBackend,
@@ -39,6 +33,7 @@ import {
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { adoptStore, currentWorkflowStore } from "../../packages/workflows/src/shared/store-factory.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { JournalTestBackend } from "../helpers/journal-backend.js";
 
 type SessionEventHandler = (event?: unknown, ctx?: unknown) => Promise<unknown>;
 
@@ -64,46 +59,10 @@ function bindScope(scope: object): void {
 	adoptStageControlRegistry(scope);
 }
 
-function launchHarness() {
-	const events: string[] = [];
-	let launched = false;
-	const noop = async () => {};
-	const sdk: DbosSdkHandle = {
-		launch: async () => {
-			launched = true;
-		},
-		shutdown: async () => {
-			launched = false;
-		},
-		startWorkflow: noop,
-		retrieveWorkflow: async () => undefined,
-		cancelWorkflow: noop,
-		resumeWorkflow: noop,
-		listAllWorkflows: async () => [],
-		listStepRecords: async () => [],
-		recordStepOutput: noop,
-		deleteWorkflowData: noop,
-	};
-	const durability: ConfiguredDbosDurability = {
-		backend: new DbosDurableBackend(sdk),
-		launch: async () => {
-			launched = true;
-			events.push("launch");
-		},
-		shutdown: async () => {
-			launched = false;
-			events.push("shutdown");
-		},
-	};
-	return { events, durability, isLaunched: () => launched };
-}
-
 async function readyDurability() {
-	const harness = launchHarness();
-	setDurableBackend(undefined);
-	resetDbosLifecycleForTests(async () => harness.durability);
-	await initializeDurableBackend();
-	return harness;
+	const backend = new JournalTestBackend();
+	setDurableBackend(backend);
+	return backend;
 }
 
 function captureHandlers(lifecycleScope: object = {}): Map<string, SessionEventHandler> {
@@ -357,7 +316,6 @@ afterEach(() => {
 	stageControlRegistry.clear();
 	store.clear();
 	setDurableBackend(undefined);
-	resetDbosLifecycleForTests();
 });
 
 describe("process-preserving session boundaries leave in-flight runs intact", () => {
@@ -824,22 +782,18 @@ describe("switching sessions releases the previous session's paused runs for the
 			assert.equal(backend.getWorkflow(RELEASE_RUN_A)?.releasedModelOwner, "session-a");
 		});
 
-		test(`session_shutdown(${reason}) releases after the checkpoint and before the DBOS flush (#3569)`, async () => {
-			const harness = await readyDurability();
-			const backend = getDurableBackend() as DbosDurableBackend;
+		test(`session_shutdown(${reason}) durably releases the checkpointed run (#3569)`, async () => {
+			const backend = await readyDurability();
 			registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a");
 			const order: string[] = [];
 			vi.spyOn(backend, "transitionWorkflowStatus").mockImplementation(async (...args) => {
 				order.push(args[7] === undefined ? "transition" : "release");
 				return true;
 			});
-			vi.spyOn(backend, "flush").mockImplementation(async (runId?: string) => {
-				order.push(runId === undefined ? "flush-all" : "flush-run");
-			});
 			const handlers = await startSwitchedSession({}, "session-a", "startup");
 			await handlers.get("session_shutdown")!({ reason });
-			assert.deepEqual(order, ["release", "flush-all"]);
-			assert.equal(harness.isLaunched(), true);
+			assert.deepEqual(order, ["release"]);
+			assert.equal(getDurableBackend(), backend);
 		});
 	}
 
@@ -1035,10 +989,9 @@ describe("clearDetached disposes only detached handles", () => {
 	});
 });
 
-describe("quit still pauses, clears, and shuts DBOS down once", () => {
-	test("session_shutdown(quit) pauses the run, clears every handle, and shuts DBOS down exactly once", async () => {
-		const { events, isLaunched } = await readyDurability();
-		// #3105: a started session owns durability; discovery alone must not.
+describe("quit pauses and clears without closing the shared journal", () => {
+	test("session_shutdown(quit) pauses the run and clears every handle once", async () => {
+		const backend = await readyDurability();
 		const handlers = captureHandlers();
 		await handlers.get("session_start")!({ reason: "startup" });
 		startBareRun("quit-run", "quit-boundary");
@@ -1067,20 +1020,18 @@ describe("quit still pauses, clears, and shuts DBOS down once", () => {
 		assert.equal(run?.endedAt, undefined);
 		assert.equal(stageControlRegistry.get("quit-run", "live"), undefined);
 		assert.equal(disposed, 1);
-		assert.equal(events.filter((event) => event === "shutdown").length, 1);
-		assert.equal(isLaunched(), false);
-		assert.equal(dbosLifecycleState(), "shut_down");
+		assert.equal(getDurableBackend(), backend);
+		assert.ok(await backend.prepareWorkflowCatalog());
 	});
 
 	for (const reason of PRESERVE) {
-		test(`session_shutdown(${reason}) flushes DBOS rather than shutting it down`, async () => {
-			const { events, isLaunched } = await readyDurability();
+		test(`session_shutdown(${reason}) keeps the shared journal open`, async () => {
+			const backend = await readyDurability();
 			const shutdown = captureHandlers().get("session_shutdown");
 			assert.ok(shutdown);
 			await shutdown({ reason });
-			assert.equal(events.includes("shutdown"), false);
-			assert.equal(isLaunched(), true);
-			assert.equal(dbosLifecycleState(), "ready");
+			assert.equal(getDurableBackend(), backend);
+			assert.ok(await backend.prepareWorkflowCatalog());
 		});
 	}
 });

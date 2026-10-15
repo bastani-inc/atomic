@@ -104,8 +104,6 @@ function callThroughStack<T>(depth: number, fn: () => Promise<T>): Promise<T> {
 let savedGitEnv: Map<string, string | undefined> | undefined;
 
 beforeEach(() => {
-	// DBOS-only durability throws before readiness; inject an internal
-	// in-memory test backend so executor tests run without a live DBOS.
 	setDurableBackend(createInMemoryTestBackend());
 	savedGitEnv = new Map<string, string | undefined>();
 	for (const key of Object.keys(process.env).filter((candidate) => candidate.startsWith("GIT_"))) {
