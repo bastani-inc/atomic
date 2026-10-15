@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the OSC 7501 terminal program status showing `working` instead of `blocked` while the main chat waits on an `ask_user_question` prompt. It now reports `blocked` (`kind=question`) while the questionnaire is open and returns to `working` after you answer, matching workflow-stage prompts ([#3616](https://github.com/bastani-inc/atomic/issues/3616)).
+- Fixed workflow approval gates (a run-level `ctx.ui.confirm`) reporting OSC 7501 `blocked` with `kind=question`. They now report `kind=permission`, so terminals can tell an approval apart from a typed question ([#3618](https://github.com/bastani-inc/atomic/issues/3618)).
+- Fixed paused and cancelled workflow runs reporting OSC 7501 `done`. A paused or cancelled run now reports `idle`, and `done` is reserved for a successful completion ([#3617](https://github.com/bastani-inc/atomic/issues/3617)).
+- Fixed the OSC 7501 status disappearing mid-run in terminals that drop it when transcript rendering emits a prompt mark. The reporter now re-sends its current status after the workflow graph and stage-chat overlay render, restoring the status during a run ([#3615](https://github.com/bastani-inc/atomic/issues/3615)).
+
 ## [0.9.38-alpha.2] - 2026-10-15
 
 ### Fixed
