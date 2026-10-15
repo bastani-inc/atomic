@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.38-alpha.3] - 2026-10-15
+
 ### Fixed
 
 - Fixed the OSC 7501 terminal program status showing `working` instead of `blocked` while the main chat waits on an `ask_user_question` prompt. It now reports `blocked` (`kind=question`) while the questionnaire is open and returns to `working` after you answer, matching workflow-stage prompts ([#3616](https://github.com/bastani-inc/atomic/issues/3616)).
