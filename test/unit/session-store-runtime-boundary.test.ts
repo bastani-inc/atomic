@@ -7,6 +7,7 @@ import { readText } from "../helpers/runtime.js";
 test("session storage runtime modules remain portable", async () => {
 	const pending = [
 		new URL("../../packages/coding-agent/src/core/storage/session/memory-session-store.ts", import.meta.url),
+		new URL("../../packages/coding-agent/src/core/storage/session/sql-session-store.ts", import.meta.url),
 		new URL("../../packages/coding-agent/src/core/storage/session/types.ts", import.meta.url),
 	];
 	const checked = new Set<string>();
