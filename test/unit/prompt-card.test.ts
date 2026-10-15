@@ -259,6 +259,7 @@ describe("renderPromptCard", () => {
 		}
 	});
 
+	const LARGEST_ROW_BUDGET = 30;
 	test("never emits more complete rows than the caller's budget for any prompt kind", () => {
 		const kinds: PendingPrompt["kind"][] = ["input", "confirm", "select", "editor"];
 		for (const kind of kinds) {
@@ -272,8 +273,8 @@ describe("renderPromptCard", () => {
 					}),
 				);
 				for (let width = 40; width <= 100; width += 2) {
-					for (let maxRows = 1; maxRows <= 30; maxRows++) {
-						const lines = renderPromptCard({
+					const render = (maxRows: number) =>
+						renderPromptCard({
 							identity: { runId: "current-test-run", name: "current-test-workflow" },
 							state,
 							theme,
@@ -281,10 +282,17 @@ describe("renderPromptCard", () => {
 							cursorOn: false,
 							maxRows,
 						});
-						assert.ok(
-							lines.length <= maxRows,
-							`kind=${kind} choices=${choiceCount} width=${width} maxRows=${maxRows} emitted=${lines.length}`,
-						);
+					const full = render(LARGEST_ROW_BUDGET);
+					const label = `kind=${kind} choices=${choiceCount} width=${width}`;
+					assert.ok(full.length <= LARGEST_ROW_BUDGET, `${label} emitted=${full.length}`);
+					assert.deepEqual(
+						render(full.length),
+						full,
+						`${label}: a budget equal to the card height must not change it`,
+					);
+					for (let maxRows = 1; maxRows < full.length; maxRows++) {
+						const lines = render(maxRows);
+						assert.ok(lines.length <= maxRows, `${label} maxRows=${maxRows} emitted=${lines.length}`);
 					}
 				}
 			}
