@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Workflow discovery now reads only `.atomic` default roots. Discovered workflow modules use `@bastani/atomic/workflows` and `typebox` imports. Removed deprecated imperative API stubs, separate `thinkingLevel` and `fallbackThinkingLevels` authoring fields, old stage-target syntax, and replay without current topology, replay keys, or child exit tags. Put reasoning effort in each model string, such as `provider/model:high`.
 - Execution results always include `toolNodes`, inspection details and status summaries always include `tools`, and custom UI adapters must implement every UI method. Queued stage delivery requires persisted admission order.
+- Heartbeat records require their original launch cadence; incomplete records no longer inherit the current workflow definition. Configuration load results always include `globalConfig` and `projectConfig`, using `null` when a source is absent or invalid.
 
 ## [0.9.38-alpha.1] - 2026-10-15
 

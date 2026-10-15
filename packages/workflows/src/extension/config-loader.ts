@@ -91,16 +91,14 @@ export interface ConfigLoadResult {
 	readonly config: WorkflowExtensionConfig | null;
 	/**
 	 * Pre-merge global config (from <agentDir>/extensions/workflow/config.json).
-	 * null when the global file is absent or invalid. Absent on results from callers
-	 * that constructed ConfigLoadResult before this field was added.
+	 * null when the global file is absent or invalid.
 	 */
-	readonly globalConfig?: WorkflowExtensionConfig | null;
+	readonly globalConfig: WorkflowExtensionConfig | null;
 	/**
 	 * Pre-merge project config (from first valid project-local candidate).
-	 * null when no project-local file is found or all are invalid. Absent on results
-	 * from callers that constructed ConfigLoadResult before this field was added.
+	 * null when no project-local file is found or all are invalid.
 	 */
-	readonly projectConfig?: WorkflowExtensionConfig | null;
+	readonly projectConfig: WorkflowExtensionConfig | null;
 	/** CONFIG_INVALID diagnostics from all sources. Empty when all is well. */
 	readonly diagnostics: readonly ConfigDiagnostic[];
 }

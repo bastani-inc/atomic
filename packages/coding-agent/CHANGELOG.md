@@ -5,6 +5,7 @@
 ### Breaking Changes
 
 - Workflow discovery now uses only `.atomic` default roots, and discovered modules use `@bastani/atomic/workflows` with `typebox`. Removed deprecated workflow API stubs, separate reasoning authoring fields, old stage-target and X10 mouse input formats, and replay without current topology, replay keys, or child exit tags. Use model strings such as `provider/model:high` for reasoning effort. Workflow results, inspection details and status summaries always include their tool collections. Queued stage delivery requires persisted admission order.
+- Workflow heartbeat records require their original launch cadence instead of inheriting the current definition when cadence is missing. Configuration load results always include their global and project source fields, using `null` for absent or invalid sources.
 
 ## [0.9.38-alpha.3] - 2026-10-15
 

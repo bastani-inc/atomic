@@ -17,6 +17,7 @@ import {
 	TOOL_PAYLOAD_VALUE_LIMIT,
 } from "../../packages/workflows/src/shared/tool-payload-bounds.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
+import type { KeybindingsLike } from "../../packages/workflows/src/tui/keybindings-adapter.js";
 import { computeLayout, NODE_H, NODE_W } from "../../packages/workflows/src/tui/layout.js";
 import { renderNodeCard } from "../../packages/workflows/src/tui/node-card.js";
 import { renderSessionList } from "../../packages/workflows/src/tui/session-list.js";
@@ -155,7 +156,7 @@ function tool(overrides: Partial<ToolNodeSnapshot> = {}): ToolNodeSnapshot {
 	};
 }
 
-function viewFor(node: ToolNodeSnapshot, piKeybindings: unknown = s5aKeybindings()): GraphView {
+function viewFor(node: ToolNodeSnapshot, piKeybindings: KeybindingsLike = s5aKeybindings()): GraphView {
 	const store = createStore();
 	store.recordRunStart({
 		id: RUN_ID,

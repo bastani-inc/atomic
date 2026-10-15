@@ -8,7 +8,9 @@ User directive: "remove anything that is legacy".
 
 S5a removes EVERY storage-independent legacy, back-compat, deprecated, migration, upgrade or fallback-reader path anywhere in packages/workflows/src, including UI/TUI, config loading, schema introspection, discovery/module loading, legacy frontier, deprecated aliases, old input/key shapes. Delete tests solely for removed paths. Retain only storage-coupled paths or words not denoting compatibility; EACH retained hit/reason goes directly in commit body. Explicit storage/recovery/journal exclusions remain.
 
-Correction: the original named-target-only deferrals and no-amendment statement are superseded. The fingerprint type conflict is unresolved, not an approved exception. The prior receipt's claim that only this conflict remained was too broad: the next review reproduced positional delivery, omitted child exit tags, display-name continuation and missing tool-collection readers. Those findings are tracked separately below.
+Deferred to S56: invocationFingerprint required (blocked by dbos-envelope.ts, deleted in S34)
+
+Correction: the original named-target-only deferrals and no-amendment statement are superseded. Subsequent reviews reproduced positional delivery, omitted child exit tags, display-name continuation, missing tool collections, configuration result optionality and heartbeat cadence readers. Their repairs and evidence are recorded below. The fingerprint type conflict now has an authoritative approved deferral.
 
 ## Acceptance matrix
 
@@ -23,23 +25,30 @@ Correction: the original named-target-only deferrals and no-amendment statement 
 | Required tool-collection readers | Removed optional-array readers throughout graph, engine, store, status, activity and detail UI. Graph expand/refresh/topology checks reject absent collections with `MissingWorkflowToolNodesError`; explicit empty arrays remain valid. |
 | Current tool replay only | Missing tool topology raises `DurableToolTopologyError` with workflowId/argsHash. Removed topologyless graph reconstruction and sequence-derived tool order. Current interrupted root replay skips the completed callback; rejection tests verify no added record or callback. |
 | Explicit failed tool frontier | Removed abort-message matching and old frontier checkpoint inference. Current frontier test requires `failedToolNodeId`. |
-| Current configuration and discovery | Default roots use only `.atomic`, honoring explicit current agent-directory overrides. Removed old workflow and TypeBox virtual aliases and obsolete builtin scan roots. Current config/discovery/module tests exercise files rather than source shape. |
+| Current configuration and discovery | Default roots use only `.atomic`, honoring explicit current agent-directory overrides. Removed old workflow and TypeBox virtual aliases and obsolete builtin scan roots. ConfigLoadResult always includes globalConfig/projectConfig as null or a value; runtime discovery no longer repairs omitted source fields. |
 | Current API and reasoning options | Removed `runWorkflow` migration stub/declaration, `assertWorkflowCreatedStage`, separate authored `thinkingLevel`/`fallbackThinkingLevels` and scoped-model reasoning fields, old target parser/hints, and ignored `statusRuns.all`. Suffix-based current model failover remains. |
 | Current UI/input behavior | Removed X10 mouse parsing, graph run-level prompt fallback and its obsolete adapter/tests, old quit timestamp inference, old empty reload formatting and zero-argument pause-release adaptation. Current stage-local UI and SGR input remain covered. |
 | Required current DTO fields | Runtime and authoring RunResult.toolNodes, RunDetail.tools and WorkflowRunStatusSummary.tools are required; tool summary runId is required. Custom UI adapters implement every method. Structural and standalone typing fixtures updated. |
-| Required boundary invocation fingerprint | UNRESOLVED. Current writer supplies it and runtime requires exact equality, but the prohibited decoder constructs it conditionally. See exact compiler evidence below. |
+| Current persisted heartbeat cadence | Both anchor and scheduler launch records require intervalMinutes. Missing or invalid persisted cadence raises InvalidWorkflowHeartbeatAnchorError with runId/field and cannot fall back to live definitions. Current no-record initialization, disabled/no-progress guards, write-once cadence and pause/restart scheduling remain covered. |
+| Required boundary invocation fingerprint | Approved deferral to S56. The field remains optional in S5a; the excluded decoder remains unchanged. Runtime exact-identity validation is retained. |
 | Format-version conditional deletion | Retained because excluded current record writers use it; it is not solely an old-format gate. |
-| Typed changed failures | `DurableNestedTopologyError.reason`, `DurableToolTopologyError.workflowId/argsHash`, `WorkflowUIAdapterError.method`, `PendingStageMessageOrderError.runId/messageId` and `MissingWorkflowToolNodesError.runId` use named classes and typed fields. New rejection tests assert classes and fields. |
+| Typed changed failures | Named errors expose typed reason, runId, messageId, workflowId, argsHash, method or field as appropriate. Rejection tests assert classes and fields. Heartbeat decode now uses WorkflowSerializableValue instead of adding unknown. |
 | Obsolete tests removed; current coverage retained | Removed only migration/old-alias/topologyless/graph-prompt tests. Preserved current nested/root/continuation replay, model failover, stage UI, ordering and backend-failure coverage. No new skips. |
 | Complete residual classification | Inventory below covers every `legacy|compat|deprecat|migrat|upgrade|back-?compat|fallback` hit, grouped by file with every line named. The same inventory is included directly in the repair commit body. |
-| Boat checks and full unit gate | Latest remaining-reader source gates passed: npm run check; 930 unit files/10,315 tests; four integration files/54 tests; final seven focused/docs files/70 tests. Formatting and diff checks passed. No project execution on the Mac. |
+| Boat checks and full unit gate | Current config/cadence repair passes npm run check and the prescribed unit gate: 930 files/10,317 tests, 26 pre-existing skips. Current focused and type checks are recorded below; no project execution on the Mac. |
 | Scope, branch and commit | Only S5a on `feat/workflow-journal-s5a-legacy-replay`. Explicit storage/recovery/journal exclusions are unchanged. No dependency changes, push, PR or lease lifecycle operations. |
 
-## Required boundary type conflict
+### Current config and cadence repair acceptance
 
-The excluded `durable/dbos-envelope.ts` function `boundaryTopology` is explicitly annotated to return `DurableWorkflowBoundaryTopology | undefined`. It accepts missing invocationFingerprint and builds identity with a conditional spread. Requiring the public field therefore makes that concrete return value unassignable. Making a union accept that object would still accept omission; a cast would be unsound; a replacement storage type would require editing the excluded decoder. No in-scope exact solution was found.
+The latest review also reproduced old-only optional configuration result fields and heartbeat records without cadence. This repair requires both ConfigLoadResult source fields with existing null-or-value semantics, persisted positive heartbeat cadence, precise keybinding types, baseline/current regression evidence, Boat gates and an exact refreshed inventory. Fingerprint requiredness is now covered by the approved deferral above.
 
-Current source-only Boat probe in `/tmp/s5a-repair-gates5-run.log` changed only `readonly invocationFingerprint?: string` to required, then compiled a temporary tsconfig extending the repository config with `include: ["packages/workflows/src/**/*.ts"]`. `FINGERPRINT_SOURCE_EXIT=1`, with exactly TS2322 at `durable/dbos-envelope.ts:440:25` and `:441:2`. Both report `string | undefined` not assignable to `string`. The probe restored the current source and removed its temporary config before normal checks. No prohibited source was modified in this checkout. This finding needs a real contract resolution; passing gates with the optional field does not close it.
+Heartbeat states are no record, current persisted launch record, resumed schedule and terminal cleanup. No record may resolve the current definition and write after genuine durable progress. A persisted record retains its first anchor and cadence across pauses and restarts; malformed or missing stored cadence must never be replaced with a live definition. Disabled and no-progress runs write no anchor. Tests cover missing cadence rejection, fresh initialization, write-once behavior, resumed cadence and terminal cleanup.
+
+The added GraphView test parameter now uses the existing KeybindingsLike type. The new diff introduces no any/unknown annotations. Configuration values, explicit nulls, cadence numbers and current result identity are preserved without normalization. Legitimate optional current configuration inputs and the optional presence of an entire heartbeat record remain unchanged.
+
+## Approved boundary type deferral
+
+The excluded `durable/dbos-envelope.ts` function `boundaryTopology` explicitly returns `DurableWorkflowBoundaryTopology | undefined` and conditionally constructs invocationFingerprint. The source-only Boat probe in `/tmp/s5a-repair-gates5-run.log` made only that field required and produced exactly TS2322 at decoder lines 440–441. No excluded source was modified. The authoritative supervisor resolution defers requiredness to S56 and preserves the optional field and decoder in S5a. This deferral is not a remaining acceptance blocker.
 
 ## Current behavior and retained distinctions
 
@@ -80,6 +89,16 @@ The first repair unit gate exposed obsolete aliases, fixtures and old-path tests
 - Fresh source inventory found 442 lines in 121 files, all classified. Only two row line-number updates were needed after these reader edits; the full refreshed inventory is repeated directly in this commit body. Scope-excluded sources remain unchanged. The fingerprint probe is not rerun because no change affects that established contract conflict.
 - User guides already describe current required result collections and replay usage; this repair adds no new configuration or troubleshooting procedure. Unreleased breaking-change entries now explicitly name current replay keys, child exit tags, status tool collections and admission order.
 
+## Configuration and cadence validation
+
+- Current source gates in `run_6fe5098a38330722ce7c5e40c0fd21b8`, `/tmp/s5a-cadence-final-gates.log`: ordinary `npm run format` processed 3,424 files with no edits; `npm run check`, exact prescribed two-exclusion unit gate, scoped qlty metrics and `git diff --check` all exited 0. Unit result: 930 files/10,317 tests, 26 pre-existing skips, 118.76 seconds.
+- Exact baseline/current evidence in `run_2de2d7f6d9cbeda15d6cd5cb3a4134c3`, `/tmp/s5a-cadence-red-green.log`: restoring the three config/heartbeat modules from origin/main made both missing-cadence regressions fail with missing expected exception. The four required-field assertions each failed with TS2322 against baseline. Restoring current source made root typecheck pass and all 88 tests across three focused files pass. No excluded module was changed.
+- Five focused files, including the full scheduler, config provenance, current type/config contracts and tool detail, passed 148 tests in `run_690b321c791f87d7db92784d4bc7bf14`. An initial current typecheck found one tracking-anchor fixture with optional cadence; the fixture now uses the required field. No new skips or suppressed failures.
+- Retained scheduler scenarios exercise no-record initialization, first durable progress, pause/resume, fresh scheduler state with persisted cadence and an edited live definition, write-once behavior, disabled runs and terminal cleanup. Missing cadence raises InvalidWorkflowHeartbeatAnchorError at both the stored reader and scheduler interface, without consulting live configuration. Existing best-effort handling for an unavailable backend remains distinct from malformed records.
+- The new annotation audit found no added any/unknown types. The GraphView fixture uses KeybindingsLike; the heartbeat parser uses WorkflowSerializableValue. Existing qlty configuration was preserved; cached metrics ran only on the changed anchor/config modules. The gh-commit skill was absent from the available paths; existing signed-commit conventions and exact spec trailers are used.
+- Final all-heartbeat/config/type/tool-detail/docs tests passed 13 files/242 tests in `run_9440741e0c51290ba85f51ff7f0c7d2b`, `/tmp/s5a-cadence-final-focused-run.log`. The same run proved the inventory exactly matches all 442 source lines across 121 files.
+- User-facing configuration procedures are unchanged; both package changelogs record required configuration result fields and persisted cadence. The approved fingerprint deferral leaves source unchanged, so its historical compiler probe was not repeated. Current batch implementation and validation are complete; independent review remains.
+
 ## Residual source-hit inventory
 
 Inventory command: `git grep -nEi 'legacy|compat|deprecat|migrat|upgrade|back-?compat|fallback' -- packages/workflows/src`. Each listed line is a retained hit; its row's reason applies to every listed line.
@@ -113,7 +132,7 @@ Inventory command: `git grep -nEi 'legacy|compat|deprecat|migrat|upgrade|back-?c
 | extension/companions.ts | 23, 25 | Live companion capability detection by registered commands/tools, not old persisted records. |
 | extension/dispatcher.ts | 95 | Current optional model catalog for execution failover. |
 | extension/extension-factory.ts | 61, 62 | Current graph selection when no run is active. |
-| extension/extension-runtime-state.ts | 284, 354, 359, 365 | Current surface precedence plus storage-coupled Docker diagnostics; old resource-loader method was removed. |
+| extension/extension-runtime-state.ts | 287, 357, 362, 368 | Current surface precedence plus storage-coupled Docker diagnostics; old resource-loader method was removed. |
 | extension/hil-answer-notifications.ts | 354 | Printable notification text for a narrow terminal, not a previous record reader. |
 | extension/lifecycle-notifications.ts | 702, 712, 743 | Printable notification text for a narrow terminal; old single-warning reader removed. |
 | extension/public-types.ts | 10, 262 | Current AI package import path and explicitly excluded recovery argument. |

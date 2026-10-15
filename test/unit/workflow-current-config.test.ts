@@ -16,11 +16,15 @@ test("loads only current project and global workflow configuration roots", async
 		await writeFileEnsuringDir(join(projectRoot, ".pi/extensions/workflow/config.json"), '{"defaultConcurrency":9}');
 		const absent = await loadWorkflowConfig({ homeDir, projectRoot });
 		assert.equal(absent.config, null);
+		assert.equal(absent.globalConfig, null);
+		assert.equal(absent.projectConfig, null);
 		await writeFileEnsuringDir(join(homeDir, ".atomic/agent/extensions/workflow/config.json"), '{"maxDepth":3}');
 		await writeFileEnsuringDir(join(projectRoot, ".atomic/extensions/workflow/config.json"), '{"maxDepth":4}');
 		const current = await loadWorkflowConfig({ homeDir, projectRoot });
 		assert.equal(current.config?.maxDepth, 4);
 		assert.equal(current.config?.defaultConcurrency, undefined);
+		assert.deepEqual(current.globalConfig, { maxDepth: 3 });
+		assert.deepEqual(current.projectConfig, { maxDepth: 4 });
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
