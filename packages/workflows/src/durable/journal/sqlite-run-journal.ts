@@ -11,6 +11,7 @@ import {
 	type JournalEventRow,
 	JournalInvalidTextError,
 	type JournalLeaseRow,
+	JournalMetaCorruptError,
 	JournalSchemaVersionError,
 	type Lease,
 	type LeaseOutcome,
@@ -29,7 +30,8 @@ export function workflowJournalPath(): string {
 }
 
 function validateText(field: JournalInvalidTextError["field"], value: string): void {
-	if (value.includes("\u0000")) throw new JournalInvalidTextError(field);
+	if (value.includes("\u0000")) throw new JournalInvalidTextError(field, "nul-character");
+	if (!value.isWellFormed()) throw new JournalInvalidTextError(field, "ill-formed-unicode");
 }
 
 function entryFromRow(row: JournalEventRow): JournalEntry {
@@ -55,6 +57,7 @@ export class SqliteRunJournal implements RunJournal {
 			this.db.transaction(() => {
 				this.db.exec(`CREATE TABLE IF NOT EXISTS ${t.meta}(${c.schemaVersion} INTEGER NOT NULL)`);
 				const versions = this.db.all<{ [c.schemaVersion]: number }>(`SELECT ${c.schemaVersion} FROM ${t.meta}`);
+				if (versions.length > 1) throw new JournalMetaCorruptError(path, versions.length);
 				for (const version of versions) {
 					if (version[c.schemaVersion] !== JOURNAL_SCHEMA_VERSION)
 						throw new JournalSchemaVersionError(version[c.schemaVersion]);

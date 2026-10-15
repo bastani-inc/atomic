@@ -169,13 +169,17 @@ test(
 );
 
 test(
-	"Node and Bun reject NUL holder suffixes without confusing prefix ownership and preserve JSON NULs",
+	"Node and Bun reject invalid NUL/Unicode identifiers while preserving JSON NULs",
 	async () => {
 		const directory = makeTempDirectory("journal-nul-rejection-");
 		const path = join(directory, "journal.sqlite");
 		const journal = new SqliteRunJournal(path);
 		try {
-			const raw = { ...header, runId: "prefix", inputs: { "input\u0000key": "é\u0000💡" } };
+			const raw = {
+				...header,
+				runId: "prefix",
+				inputs: { "input\u0000key": "é\u0000💡", "\u0000": "\u0000", "\ud800": "\ud800", "a\udfffb": "a\udfffb" },
+			};
 			await journal.createRun(raw);
 			const acquired = await journal.acquire(raw.runId, "prefix");
 			assert.equal(acquired.status, "acquired");
@@ -208,7 +212,15 @@ test(
 					assert.equal(entry?.key, key);
 					assert.equal(entry?.seq, index + 1);
 					assert.equal(entry?.epoch, index + 1);
-					assert.deepEqual(entry?.event, { type: e.summaryRecorded, payload: { "text\u0000key": "é\u0000💡" } });
+					assert.deepEqual(entry?.event, {
+						type: e.summaryRecorded,
+						payload: {
+							"text\u0000key": "é\u0000💡",
+							"\u0000": "\u0000",
+							"\ud800": "\ud800",
+							"a\udfffb": "a\udfffb",
+						},
+					});
 				} finally {
 					await reader.close();
 				}

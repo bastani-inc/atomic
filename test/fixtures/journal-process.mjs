@@ -39,8 +39,14 @@ if (mode === "crash") {
 			await assert.rejects(() => journal.release(forged), invalid("holderId"));
 			await assert.rejects(() => journal.append(lease, { type: e.runStarted, payload: null }, { key: `${key}\u0000suffix` }), invalid("key"));
 			await assert.rejects(() => journal.append(lease, { type: e.statusChanged, payload: { status: "status\u0000suffix" } }), invalid("status"));
+			for (const text of ["\ud800", "\udfff", "a\ud800b"]) {
+				const malformed = field => error => error.constructor === JournalInvalidTextError && error.field === field && error.reason === "ill-formed-unicode";
+				await assert.rejects(() => journal.acquire(lease.runId, text), malformed("holderId"));
+				await assert.rejects(() => journal.takeover(lease.runId, text, lease.holderId), malformed("holderId"));
+				await assert.rejects(() => journal.append({ ...lease, holderId: text }, { type: e.runStarted, payload: null }), malformed("holderId"));
+			}
 			assert.deepEqual(await journal.acquire(lease.runId, lease.holderId), { status: "acquired", lease });
-			const event = { type: e.summaryRecorded, payload: { "text\u0000key": "é\u0000💡" } };
+			const event = { type: e.summaryRecorded, payload: { "text\u0000key": "é\u0000💡", "\u0000": "\u0000", "\ud800": "\ud800", "a\udfffb": "a\udfffb" } };
 			const appended = await journal.append(lease, event, { key });
 			assert.equal(appended.status, "appended");
 			assert.deepEqual(appended.entry.event, event);

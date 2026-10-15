@@ -137,11 +137,22 @@ export interface RunJournal {
 export class JournalError extends Error {}
 
 export class JournalInvalidTextError extends JournalError {
-	readonly reason: "nul-character" = "nul-character";
-
-	constructor(readonly field: "runId" | "holderId" | "key" | "status" | "name" | "cwd" | "expectedHolder") {
-		super(`NUL character in journal ${field}`);
+	constructor(
+		readonly field: "runId" | "holderId" | "expectedHolder" | "key" | "status" | "name" | "cwd",
+		readonly reason: "nul-character" | "ill-formed-unicode",
+	) {
+		super(`Invalid journal ${field}: ${reason}`);
 		this.name = "JournalInvalidTextError";
+	}
+}
+
+export class JournalMetaCorruptError extends JournalError {
+	constructor(
+		readonly path: string,
+		readonly rowCount: number,
+	) {
+		super(`Journal metadata at ${path} has ${rowCount} rows`);
+		this.name = "JournalMetaCorruptError";
 	}
 }
 

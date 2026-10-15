@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@bastani/atomic";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { JournalDatabase } from "../../packages/workflows/src/durable/journal/node-sqlite.js";
 import {
 	SqliteRunJournal,
@@ -18,6 +18,7 @@ import {
 	type JournalEntry,
 	JournalError,
 	JournalInvalidTextError,
+	JournalMetaCorruptError,
 	JournalSchemaVersionError,
 	type Lease,
 	type RunEvent,
@@ -29,6 +30,7 @@ import {
 import { makeTempDirectory, removeTempDirectory, writeTextSync } from "../helpers/runtime.js";
 
 const header = { runId: "run", name: "workflow", cwd: " /raw/../cwd ", createdAt: 0, status: "running" };
+const illFormedExamples = ["\ud800", "\udfff", "a\ud800b"] as const;
 
 async function withJournal(body: (journal: SqliteRunJournal) => Promise<void>): Promise<void> {
 	const directory = makeTempDirectory("journal-unit-");
@@ -83,6 +85,111 @@ test("createRun rejects a NUL runId with typed fields before writing", async () 
 					assert.ok(error instanceof JournalInvalidTextError);
 					assert.equal(error.field, "runId");
 					assert.equal(error.reason, "nul-character");
+					return true;
+				},
+			);
+			assert.deepEqual(snapshot(db), before);
+		} finally {
+			db.close();
+		}
+	});
+});
+
+test.each([{ versions: [1, 1] }, { versions: [1, 2] }, { versions: [1, 1, 1] }])(
+	"meta %j rejects before creating any other journal tables",
+	async ({ versions }) => {
+		const directory = makeTempDirectory("journal-meta-corrupt-");
+		const path = join(directory, "journal.sqlite");
+		const db = new JournalDatabase(path);
+		let opened: SqliteRunJournal | undefined;
+		try {
+			db.exec(`CREATE TABLE ${t.meta}(${c.schemaVersion} INTEGER NOT NULL)`);
+			db.run(`INSERT INTO ${t.meta} VALUES ${versions.map(() => "(?)").join(", ")}`, ...versions);
+			const schema = db.all<{ name: string; sql: string }>("SELECT name, sql FROM sqlite_master ORDER BY name");
+			const rows = db.all<{ [c.schemaVersion]: number }>(`SELECT * FROM ${t.meta} ORDER BY rowid`);
+			assert.throws(
+				() => {
+					opened = new SqliteRunJournal(path);
+				},
+				(error: Error) => {
+					assert.equal(error.constructor, JournalMetaCorruptError);
+					assert.ok(error instanceof JournalMetaCorruptError);
+					assert.ok(error instanceof JournalError);
+					assert.equal(error.path, path);
+					assert.equal(error.rowCount, versions.length);
+					return true;
+				},
+			);
+			assert.deepEqual(db.all("SELECT name, sql FROM sqlite_master ORDER BY name"), schema);
+			assert.deepEqual(db.all(`SELECT * FROM ${t.meta} ORDER BY rowid`), rows);
+		} finally {
+			await opened?.close();
+			db.close();
+			removeTempDirectory(directory);
+		}
+	},
+);
+
+test("empty meta initializes once and a single current version reopens without metadata changes", async () => {
+	const directory = makeTempDirectory("journal-meta-empty-");
+	const path = join(directory, "journal.sqlite");
+	const db = new JournalDatabase(path);
+	try {
+		db.exec(`CREATE TABLE ${t.meta}(${c.schemaVersion} INTEGER NOT NULL)`);
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const journal = new SqliteRunJournal(path);
+			await journal.close();
+			assert.deepEqual(
+				db.all<{ [c.schemaVersion]: number }>(`SELECT * FROM ${t.meta}`).map((row) => row[c.schemaVersion]),
+				[JOURNAL_SCHEMA_VERSION],
+			);
+		}
+	} finally {
+		db.close();
+		removeTempDirectory(directory);
+	}
+});
+
+test("corrupt meta rejects without changing existing runs, events or leases", async () => {
+	await withJournal(async (journal) => {
+		await journal.createRun(header);
+		const lease = await acquire(journal);
+		await journal.append(lease, { type: e.summaryRecorded, payload: "retained" });
+		await journal.close();
+		const db = new JournalDatabase(journal.path);
+		try {
+			db.run(`INSERT INTO ${t.meta} VALUES (?)`, JOURNAL_SCHEMA_VERSION);
+			const before = snapshot(db);
+			assert.throws(
+				() => new SqliteRunJournal(journal.path),
+				(error: Error) => {
+					assert.equal(error.constructor, JournalMetaCorruptError);
+					assert.ok(error instanceof JournalMetaCorruptError);
+					assert.equal(error.path, journal.path);
+					assert.equal(error.rowCount, 2);
+					return true;
+				},
+			);
+			assert.deepEqual(snapshot(db), before);
+		} finally {
+			db.close();
+		}
+	});
+});
+
+test("createRun rejects ill-formed runId before SQL", async () => {
+	await withJournal(async (journal) => {
+		const db = new JournalDatabase(journal.path);
+		try {
+			const before = snapshot(db);
+			await assert.rejects(
+				() => journal.createRun({ ...header, runId: "\ud800" }),
+				(error: Error) => {
+					assert.equal(error.constructor, JournalInvalidTextError);
+					assert.ok(error instanceof JournalInvalidTextError);
+					assert.ok(error instanceof JournalError);
+					assert.equal(error.field, "runId");
+					assert.equal(error.reason, "ill-formed-unicode");
 					return true;
 				},
 			);
@@ -289,6 +396,122 @@ for (const scenario of invalidTextCases) {
 		});
 	});
 }
+
+for (const scenario of invalidTextCases) {
+	test.each([...illFormedExamples, "\ud800\u0000"])(
+		`${scenario.name} rejects invalid Unicode %j before SQL, including on a closed journal`,
+		async (text) => {
+			await withJournal(async (journal) => {
+				await journal.createRun({ ...header, runId: "prefix" });
+				const lease = await acquire(journal, "prefix", "prefix");
+				await journal.append(lease, { type: e.summaryRecorded, payload: "original" }, { key: "prefix" });
+				const db = new JournalDatabase(journal.path);
+				const invalid = (error: Error): boolean => {
+					assert.equal(error.constructor, JournalInvalidTextError);
+					assert.ok(error instanceof JournalInvalidTextError);
+					assert.ok(error instanceof JournalError);
+					assert.equal(error.field, scenario.field);
+					assert.equal(error.reason, text.includes("\u0000") ? "nul-character" : "ill-formed-unicode");
+					return true;
+				};
+				try {
+					const before = snapshot(db);
+					for (const state of ["open", "closed"]) {
+						if (state === "closed") await journal.close();
+						const calls = (
+							["transaction", "exec", "get", "all", "getCounters", "allCounters", "run"] as const
+						).map((method) => vi.spyOn(JournalDatabase.prototype, method));
+						try {
+							await assert.rejects(() => scenario.call(journal, lease, text), invalid);
+							for (const call of calls) assert.equal(call.mock.calls.length, 0);
+						} finally {
+							for (const call of calls) call.mockRestore();
+						}
+						assert.deepEqual(snapshot(db), before);
+					}
+				} finally {
+					db.close();
+				}
+			});
+		},
+	);
+}
+
+test.each(illFormedExamples)(
+	"invalid holder %j never acquires a replacement-character holder's authority",
+	async (text) => {
+		await withJournal(async (journal) => {
+			await journal.createRun(header);
+			const db = new JournalDatabase(journal.path);
+			try {
+				const before = snapshot(db);
+				await assert.rejects(
+					() => journal.acquire(header.runId, text),
+					(error: Error) => {
+						assert.equal(error.constructor, JournalInvalidTextError);
+						assert.ok(error instanceof JournalInvalidTextError);
+						assert.equal(error.field, "holderId");
+						assert.equal(error.reason, "ill-formed-unicode");
+						return true;
+					},
+				);
+				assert.deepEqual(snapshot(db), before);
+				const replacement = await acquire(journal, header.runId, text.toWellFormed());
+				assert.equal(replacement.epoch, 1);
+				const event = { type: e.summaryRecorded, payload: "legitimate" } as const;
+				assert.deepEqual((await journal.append(replacement, event)).entry.event, event);
+				assert.deepEqual(await acquire(journal, header.runId, replacement.holderId), replacement);
+			} finally {
+				db.close();
+			}
+		});
+	},
+);
+
+test("well-formed identifiers retain controls, noncharacters and distinct Unicode normalization forms", async () => {
+	await withJournal(async (journal) => {
+		const texts = ["", " \n\t ", "\ufffd", "\u0001\u001f", "é", "e\u0301", "\udbff\udfff", "\ufffe", "\uffff"];
+		for (const text of texts) {
+			const raw = { runId: text, name: text, cwd: text, status: text, createdAt: 0 };
+			assert.equal(await journal.createRun(raw), "created");
+			const lease = await acquire(journal, text, text);
+			const entry = (
+				await journal.append(lease, { type: e.statusChanged, payload: { status: text } }, { key: text })
+			).entry;
+			assert.equal(entry.key, text);
+			assert.deepEqual(await journal.readKey(text, text), entry);
+			assert.deepEqual(await journal.listRuns({ cwd: text }), [raw]);
+		}
+		assert.equal((await journal.listRuns()).length, texts.length);
+	});
+});
+
+test.each(["\u0000", ...illFormedExamples, "a\udfffb"])(
+	"reopened header/event JSON preserves %j as values and property names",
+	async (text) => {
+		await withJournal(async (journal) => {
+			await journal.createRun({ ...header, inputs: { [text]: [text, "JSON\u0000"] } });
+			const lease = await acquire(journal);
+			for (const payload of [text, { value: [text] }, { [text]: "valid\u0000" }]) {
+				assert.equal(JSON.stringify(payload).isWellFormed(), true);
+				const event = { type: e.summaryRecorded, payload } as const;
+				const appended = await journal.append(lease, event);
+				assert.deepEqual(appended.entry.event, event);
+			}
+			await journal.close();
+			const reader = new SqliteRunJournal(journal.path);
+			try {
+				assert.deepEqual(await reader.listRuns(), [{ ...header, inputs: { [text]: [text, "JSON\u0000"] } }]);
+				assert.deepEqual(
+					(await read(reader)).map(({ event }) => event.payload),
+					[text, { value: [text] }, { [text]: "valid\u0000" }],
+				);
+			} finally {
+				await reader.close();
+			}
+		});
+	},
+);
 
 test("JSON NUL strings and property names survive fresh/reopened read, list, readKey and replay", async () => {
 	await withJournal(async (journal) => {
