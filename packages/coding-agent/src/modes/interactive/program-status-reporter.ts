@@ -1,6 +1,7 @@
 import type { ProgramStatus, Terminal } from "@earendil-works/pi-tui";
 import { APP_NAME } from "../../config.js";
 import type { AgentSessionEvent } from "../../core/agent-session.js";
+import type { UIPromptEndEvent, UIPromptStartEvent } from "../../core/extensions/agent-events.js";
 import type { WorkflowActivityFrame, WorkflowRootActivity } from "../../core/extensions/workflow-events.js";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 
@@ -86,6 +87,19 @@ export class ProgramStatusReporter {
 				return;
 		}
 		this.report();
+	}
+
+	handleUIPrompt(event: UIPromptStartEvent | UIPromptEndEvent | undefined): void {
+		if (event?.reason === "project_trust") return;
+		this.setBlocked(
+			"ui-prompt",
+			event?.type === "ui_prompt_start"
+				? {
+						kind: event.kind === "confirm" ? "permission" : "question",
+						message: event.kind === "confirm" ? "Waiting for approval" : "Waiting for input",
+					}
+				: undefined,
+		);
 	}
 
 	handleWorkflowActivity(frame: WorkflowActivityFrame): void {

@@ -9,6 +9,7 @@ import type { EngineInputFormService } from "../interactive-engine/engine-input-
 import type { EngineRenderService } from "../interactive-engine/engine-render-service.ts";
 import type { EngineSessionPickerService } from "../interactive-engine/engine-session-picker.ts";
 import { forwardWorkflowActivity } from "../interactive-engine/engine-workflow-activity.ts";
+import { serializeInteractiveEngineMessage } from "../interactive-engine/protocol.js";
 import { toJsonEvent } from "../json-event.ts";
 import { createRpcExtensionUIContext, type RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
 import type { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";
@@ -124,6 +125,11 @@ export class RpcSessionBinding {
 
 		try {
 			await session.bindExtensions({
+				onUIPrompt: (event) => {
+					if (event.reason === "ui_prompt") {
+						this.writeEngineLine?.(serializeInteractiveEngineMessage({ type: "engine_ui_prompt", event }));
+					}
+				},
 				uiContext: createRpcExtensionUIContext({
 					output: this.output,
 					pendingExtensionRequests: this.pendingExtensionRequests,
@@ -224,6 +230,12 @@ export class RpcSessionBinding {
 		this.unsubscribeTasks = undefined;
 		this.unsubscribeWorkflowActivity?.();
 		this.unsubscribeWorkflowActivity = undefined;
+		this.writeEngineLine?.(
+			serializeInteractiveEngineMessage({
+				type: "engine_ui_prompt",
+				event: { type: "ui_prompt_end", reason: "ui_prompt", kind: "custom" },
+			}),
+		);
 		this.footerDataProvider?.dispose();
 		this.unsubscribe = undefined;
 		this.unsubscribeBackpressure = undefined;
