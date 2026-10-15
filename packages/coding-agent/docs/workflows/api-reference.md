@@ -1403,6 +1403,8 @@ One process uses one workflow database: DBOS runs a single executor per process,
 
 While DBOS remains configured, a request for a different `poolSize` rejects. Repeating the same size or omitting it keeps the current configuration.
 
+You can await multiple durable `run()` calls in sequence in the same process. Each call sets up durability again if the previous call shut it down.
+
 ```ts
 import { run, WorkflowDurabilityRequiredError } from "@bastani/atomic/workflows";
 

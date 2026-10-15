@@ -1,3 +1,4 @@
+import { getDurableBackendProcessOwner } from "./backend-process-owner.js";
 import { type ConfiguredDbosDurability, configureDbosDurableBackend, type DbosDurableBackend } from "./dbos-backend.js";
 import {
 	provisionResolvedLocalDbos,
@@ -185,6 +186,8 @@ export async function shutdownDbos(): Promise<void> {
 		// Configuration and launch failures are intentionally not rethrown during
 		// session disposal, but local provisioning may already have started an
 		// owned cluster. Always attempt that cleanup exactly once.
+		const backendOwner = getDurableBackendProcessOwner();
+		const initializingAtShutdown = backendOwner.initializing;
 		const durability = await configuredPromise.catch(() => undefined);
 		if (durability === undefined) {
 			await shutdownLocalDbos();
@@ -213,6 +216,8 @@ export async function shutdownDbos(): Promise<void> {
 			slot.configured = undefined;
 			slot.active = undefined;
 			slot.wrappers = undefined;
+			if (backendOwner.initializedBackend === durability.backend) backendOwner.initializedBackend = undefined;
+			if (backendOwner.initializing === initializingAtShutdown) backendOwner.initializing = undefined;
 		}
 	})().catch(async (error: unknown) => {
 		slot.failure = await durabilityFailure("shutdown", error);
