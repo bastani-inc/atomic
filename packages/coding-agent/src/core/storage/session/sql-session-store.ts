@@ -9,7 +9,12 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
-import { summarizeSession } from "./session-summary.js";
+import {
+	applySessionSummaryEntries,
+	materializeSessionSummaryMetadata,
+	type SessionSummaryState,
+	type SessionSummaryText,
+} from "./session-summary.js";
 import type {
 	SessionListQuery,
 	SessionRecordHeader,
@@ -22,10 +27,16 @@ import type {
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 export const SESSION_SCHEMA_VERSION = 1;
-export const SESSION_TABLES = Object.freeze({ meta: "meta", sessions: "sessions", entries: "entries" });
+export const SESSION_TABLES = Object.freeze({
+	meta: "meta",
+	sessions: "sessions",
+	entries: "entries",
+	searchTexts: "search_texts",
+});
 
 type Tables = Readonly<Record<keyof typeof SESSION_TABLES, string>>;
 type HeaderRow = SqliteRow & { header_json: string; last_seq: number };
+type SummaryStateRow = HeaderRow & { summary_state: string };
 type SummaryRow = HeaderRow & {
 	modified_at: string;
 	message_count: number;
@@ -34,7 +45,7 @@ type SummaryRow = HeaderRow & {
 	has_name: number;
 	summary: string | null;
 	summarized_through_id: string | null;
-	search_text: string;
+	search_texts_json: string;
 };
 
 export class SqlSessionStore implements SessionStore {
@@ -66,11 +77,15 @@ export class SqlSessionStore implements SessionStore {
 					first_message TEXT NOT NULL CHECK(json_valid(first_message)),
 					name TEXT CHECK(name IS NULL OR json_valid(name)), has_name INTEGER NOT NULL,
 					summary TEXT CHECK(summary IS NULL OR json_valid(summary)), summarized_through_id TEXT,
-					search_text TEXT NOT NULL CHECK(json_valid(search_text))
+					summary_state TEXT NOT NULL CHECK(json_valid(summary_state))
 				) STRICT;
 				CREATE TABLE IF NOT EXISTS ${tables.entries} (
 					session_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL,
 					entry_json TEXT NOT NULL CHECK(json_valid(entry_json)), PRIMARY KEY(session_id, seq)
+				) STRICT;
+				CREATE TABLE IF NOT EXISTS ${tables.searchTexts} (
+					session_id TEXT NOT NULL, seq INTEGER NOT NULL,
+					text_json TEXT NOT NULL CHECK(json_valid(text_json)), PRIMARY KEY(session_id, seq)
 				) STRICT;
 			`);
 		});
@@ -89,8 +104,8 @@ export class SqlSessionStore implements SessionStore {
 			if (await tx.get(`SELECT id FROM ${this.tables.sessions} WHERE id = ?`, header.id)) {
 				throw new SessionExistsError(header.id);
 			}
-			await this.saveSummary(tx, header.id, { header, entries, lastSeq: entries.length });
-			await this.insertEntries(tx, header.id, entries, 0);
+			const texts = await this.saveSummary(tx, header.id, { header, entries, lastSeq: entries.length });
+			await this.insertEntries(tx, header.id, entries, 0, texts);
 			return { lastSeq: entries.length };
 		});
 	}
@@ -103,15 +118,16 @@ export class SqlSessionStore implements SessionStore {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		return this.database.transaction(async (tx) => {
-			const previous = await this.forWrite(tx, sessionId, options);
+			const previous = await this.forWrite(tx, sessionId, options, true);
 			validateSessionEntries(entries);
-			const lastSeq = previous.lastSeq + entries.length;
-			await this.saveSummary(tx, sessionId, {
-				header: previous.header,
-				entries: [...previous.entries, ...entries],
-				lastSeq,
-			});
-			await this.insertEntries(tx, sessionId, entries, previous.lastSeq);
+			const lastSeq = previous.last_seq + entries.length;
+			const texts = await this.saveSummary(
+				tx,
+				sessionId,
+				{ header: JSON.parse(previous.header_json) as SessionRecordHeader, entries, lastSeq },
+				JSON.parse(previous.summary_state) as SessionSummaryState,
+			);
+			await this.insertEntries(tx, sessionId, entries, previous.last_seq, texts);
 			return { lastSeq };
 		});
 	}
@@ -128,9 +144,10 @@ export class SqlSessionStore implements SessionStore {
 			await this.forWrite(tx, sessionId, options);
 			validateSessionHeader(header);
 			validateSessionEntries(entries);
+			await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.entries} WHERE session_id = ?`, sessionId);
-			await this.saveSummary(tx, sessionId, { header, entries, lastSeq: entries.length });
-			await this.insertEntries(tx, sessionId, entries, 0);
+			const texts = await this.saveSummary(tx, sessionId, { header, entries, lastSeq: entries.length });
+			await this.insertEntries(tx, sessionId, entries, 0, texts);
 			return { lastSeq: entries.length };
 		});
 	}
@@ -155,6 +172,7 @@ export class SqlSessionStore implements SessionStore {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		await this.database.transaction(async (tx) => {
+			await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.entries} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.sessions} WHERE id = ?`, sessionId);
 		});
@@ -163,8 +181,13 @@ export class SqlSessionStore implements SessionStore {
 	async *list(query: SessionListQuery): AsyncIterable<SessionSummary> {
 		this.assertListing(query);
 		const cwd = query.cwd;
+		// Combine encoded strings only at read time, preserving NUL and lone surrogates verbatim.
 		const rows = await this.database.all<SummaryRow>(
-			`SELECT * FROM ${this.tables.sessions} WHERE (? IS NULL OR cwd = ?) AND (? = 1 OR internal = 0)`,
+			`SELECT s.*, (
+				SELECT COALESCE('[' || group_concat(text_json, ',') || ']', '[]')
+				FROM (SELECT text_json FROM ${this.tables.searchTexts} WHERE session_id = s.id ORDER BY seq)
+			) AS search_texts_json
+			FROM ${this.tables.sessions} AS s WHERE (? IS NULL OR cwd = ?) AND (? = 1 OR internal = 0)`,
 			cwd ?? null,
 			cwd ?? null,
 			query.includeInternal ? 1 : 0,
@@ -187,7 +210,7 @@ export class SqlSessionStore implements SessionStore {
 				firstMessage: JSON.parse(row.first_message) as string,
 				...(row.summary !== null ? { summary: JSON.parse(row.summary) as string } : {}),
 				...(row.summarized_through_id !== null ? { summarizedThroughId: row.summarized_through_id } : {}),
-				searchText: JSON.parse(row.search_text) as string,
+				searchText: (JSON.parse(row.search_texts_json) as string[]).join(" "),
 			};
 		}
 		this.assertListing(query);
@@ -235,32 +258,57 @@ export class SqlSessionStore implements SessionStore {
 		};
 	}
 
+	private forWrite(
+		tx: SqliteExecutor,
+		sessionId: string,
+		options: SessionWriteOptions,
+		includeSummaryState: true,
+	): Promise<SummaryStateRow>;
+	private forWrite(
+		tx: SqliteExecutor,
+		sessionId: string,
+		options: SessionWriteOptions,
+		includeSummaryState?: false,
+	): Promise<HeaderRow>;
 	private async forWrite(
 		tx: SqliteExecutor,
 		sessionId: string,
 		options: SessionWriteOptions,
-	): Promise<SessionSnapshot> {
-		const snapshot = await this.read(tx, sessionId);
-		if (snapshot.lastSeq !== options.expectSeq) {
-			throw new SessionConflictError(sessionId, options.expectSeq, snapshot.lastSeq);
+		includeSummaryState = false,
+	): Promise<HeaderRow> {
+		const row = await tx.get<HeaderRow>(
+			`SELECT header_json, last_seq${includeSummaryState ? ", summary_state" : ""}
+			 FROM ${this.tables.sessions} WHERE id = ?`,
+			sessionId,
+		);
+		if (!row) throw new SessionNotFoundError(sessionId);
+		if (row.last_seq !== options.expectSeq) {
+			throw new SessionConflictError(sessionId, options.expectSeq, row.last_seq);
 		}
-		return snapshot;
+		return row;
 	}
 
-	private async saveSummary(tx: SqliteExecutor, sessionId: string, snapshot: SessionSnapshot): Promise<void> {
+	private async saveSummary(
+		tx: SqliteExecutor,
+		sessionId: string,
+		snapshot: SessionSnapshot,
+		previous?: SessionSummaryState,
+	): Promise<readonly SessionSummaryText[]> {
 		const { header, lastSeq } = snapshot;
-		const summary = summarizeSession(snapshot);
+		const { state, texts } = applySessionSummaryEntries(previous, snapshot.entries);
+		const summary = materializeSessionSummaryMetadata(header, state);
 		await tx.run(
 			`INSERT INTO ${this.tables.sessions}
 				(id, cwd, created_at, header_json, internal, last_seq, modified_at, message_count,
-				 first_message, name, has_name, summary, summarized_through_id, search_text)
+				 first_message, name, has_name, summary, summarized_through_id, summary_state)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				ON CONFLICT(id) DO UPDATE SET
 				cwd = excluded.cwd, created_at = excluded.created_at, header_json = excluded.header_json,
 				internal = excluded.internal, last_seq = excluded.last_seq, modified_at = excluded.modified_at,
 				message_count = excluded.message_count, first_message = excluded.first_message, name = excluded.name,
 				has_name = excluded.has_name, summary = excluded.summary,
-				summarized_through_id = excluded.summarized_through_id, search_text = excluded.search_text`,
+				summarized_through_id = excluded.summarized_through_id,
+				summary_state = excluded.summary_state`,
 			sessionId,
 			header.cwd,
 			header.createdAt,
@@ -274,8 +322,9 @@ export class SqlSessionStore implements SessionStore {
 			summary.hasName ? 1 : 0,
 			summary.summary === undefined ? null : this.encode(summary.summary),
 			summary.summarizedThroughId ?? null,
-			this.encode(summary.searchText),
+			this.encode(state),
 		);
+		return texts;
 	}
 
 	private async insertEntries(
@@ -283,6 +332,7 @@ export class SqlSessionStore implements SessionStore {
 		sessionId: string,
 		entries: readonly SessionEntry[],
 		lastSeq: number,
+		texts: readonly SessionSummaryText[],
 	): Promise<void> {
 		for (const [index, entry] of entries.entries()) {
 			await tx.run(
@@ -293,9 +343,17 @@ export class SqlSessionStore implements SessionStore {
 				this.encode(entry),
 			);
 		}
+		for (const { index, text } of texts) {
+			await tx.run(
+				`INSERT INTO ${this.tables.searchTexts} (session_id, seq, text_json) VALUES (?, ?, ?)`,
+				sessionId,
+				lastSeq + index + 1,
+				this.encode(text),
+			);
+		}
 	}
 
-	private encode(value: SessionRecordHeader | SessionEntry | string): string {
+	private encode(value: SessionRecordHeader | SessionEntry | SessionSummaryState | string): string {
 		try {
 			return JSON.stringify(value);
 		} catch (cause) {
