@@ -505,8 +505,10 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 			try {
 				this.journal.deleteOwnedRunSync(this.ownership(runId), expectSeq);
 			} catch (error) {
-				if (error instanceof Error) throw this.mapOwnership(error, runId);
-				throw error;
+				if (!(error instanceof RunNotFoundError)) {
+					if (error instanceof Error) throw this.mapOwnership(error, runId);
+					throw error;
+				}
 			}
 		}
 		this.leases.delete(runId);

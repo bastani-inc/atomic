@@ -950,6 +950,69 @@ test("backend writes use standard JSON for negative zero across repeated snapsho
 	assert.ok(Object.is(input.value, -0));
 });
 
+test("direct deletion clears all cached state when another deletion wins acquisition", async () => {
+	const path = database();
+	const writer = await open(path);
+	register(writer);
+	writer.recordCheckpoint(checkpoint());
+	await writer.persistSummary("run", "old summary", 1);
+	writer.reservePendingPrompt("run", "old prompt");
+	const message: PendingStageMessage = {
+		id: "old",
+		runId: "run",
+		stageKey: "stage",
+		from: { id: "sender" },
+		message: { id: "old", timestamp: 1, content: { text: "old" } },
+		queuedAt: "raw",
+		status: "queued",
+	};
+	const delivery = {
+		runId: "run",
+		stageId: "stage",
+		sessionId: "session",
+		admission: "context" as const,
+		deliveredAt: "raw",
+	};
+	await writer.persistPendingStageMessages("run", [message]);
+	await writer.archivePendingStageMessage("run", message);
+	await writer.archivePendingStageDeliveryReceipt("run", message.id, delivery, {
+		messageRunId: "run",
+		deliveryCount: 9,
+	});
+	await writer.close();
+	const remover = await open(path);
+	let removal: Promise<void> | undefined;
+	class InterleavedJournal extends SqliteRunJournal {
+		override takeoverExpiredSync(runId: string, holderId: string, expiredBefore: number) {
+			removal = remover.deleteWorkflow(runId);
+			return super.takeoverExpiredSync(runId, holderId, expiredBefore);
+		}
+	}
+	const observer = new JournalDurableBackend(new InterleavedJournal(path));
+	opened.push(observer);
+	assert.ok(observer.getWorkflow("run"));
+	assert.equal(observer.listCheckpoints("run").length, 1);
+	assert.deepEqual(await observer.readSettledPendingStageMessage("run", message.id), message);
+	assert.equal(await observer.hasPendingStageDeliveryReceipt("run", message.id, delivery), true);
+	assert.equal(await observer.readPendingStageMessageDeliveryCount("run", message.id), 9);
+	await observer.deleteWorkflow("run");
+	assert.ok(removal);
+	await removal;
+	assert.equal(observer.getWorkflow("run"), undefined);
+	assert.equal(observer.getLoadableWorkflow("run"), undefined);
+	assert.equal(observer.toMetadata("run"), undefined);
+	assert.deepEqual(observer.listCheckpoints("run"), []);
+	assert.equal(observer.pendingPromptToken("run", "old prompt"), undefined);
+	assert.equal(await observer.readSettledPendingStageMessage("run", message.id), undefined);
+	assert.equal(await observer.hasPendingStageDeliveryReceipt("run", message.id, delivery), false);
+	assert.equal(await observer.readPendingStageMessageDeliveryCount("run", message.id), 0);
+	assert.deepEqual(observer.journal.listRunsSync(), []);
+	assert.deepEqual(observer.journal.readEntries("run"), []);
+	assert.equal(observer.journal.leaseState("run"), undefined);
+	assert.deepEqual(await observer.prepareWorkflowCatalog(), { resumable: [], completed: [], inspectableIds: [] });
+	assert.equal((await open(path)).getWorkflow("run"), undefined);
+});
+
 for (const action of ["claim", "delete"] as const) {
 	test(`${action} preserves absent-run results when deletion wins during acquisition`, async () => {
 		const path = database();
