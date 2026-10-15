@@ -63,24 +63,62 @@ describe("upstream model scope resolution", () => {
 		expect(result.diagnostics).toEqual([]);
 	});
 
-	test("preserves unique and ambiguous bare literal ID behavior", async () => {
+	test("adds every provider for an ambiguous bare literal ID, with a warning", async () => {
 		const unique = model("literal[free]:high", "p");
 		const uniqueResult = await resolve(["literal[free]:high"], [unique]);
 		expect(uniqueResult.scopedModels).toEqual([{ model: unique, thinkingLevel: undefined }]);
 		expect(uniqueResult.diagnostics).toEqual([]);
 
-		const first = model("literal[free]", "p");
-		const second = model("literal[free]", "q");
+		const first = model("literal[free]", "q");
+		const second = model("literal[free]", "p");
 		const ambiguousResult = await resolve(["literal[free]"], [first, second]);
-		expect(ambiguousResult.scopedModels).toEqual([]);
+		expect(ambiguousResult.scopedModels).toEqual([
+			{ model: first, thinkingLevel: undefined },
+			{ model: second, thinkingLevel: undefined },
+		]);
 		expect(ambiguousResult.diagnostics).toEqual([
 			{
 				type: "warning",
-				code: "no-match",
-				message: 'No models match pattern "literal[free]"',
+				code: "ambiguous",
+				message: 'Pattern "literal[free]" matches several providers: p, q. Use provider/id to choose one.',
 				pattern: "literal[free]",
 			},
 		]);
+	});
+
+	test("adds every provider for a pattern matching the same id on several providers, with a warning (#10160)", async () => {
+		const openai = model("gpt-4o", "openai");
+		const azure = model("gpt-4o", "azure");
+		const codexMini = model("gpt-4o-mini", "openai-codex");
+
+		for (const [pattern, thinkingLevel] of [
+			["gpt-4o:high", "high"],
+			["GPT-4o", undefined],
+		] as const) {
+			for (const models of [
+				[openai, azure, codexMini],
+				[codexMini, azure, openai],
+			]) {
+				const result = await resolve([pattern], models);
+
+				expect(
+					result.scopedModels
+						.map((scoped) => [`${scoped.model.provider}/${scoped.model.id}`, scoped.thinkingLevel])
+						.sort(),
+				).toEqual([
+					["azure/gpt-4o", thinkingLevel],
+					["openai/gpt-4o", thinkingLevel],
+				]);
+				expect(result.diagnostics).toEqual([
+					{
+						type: "warning",
+						code: "ambiguous",
+						message: `Pattern "${pattern}" matches several providers: azure, openai. Use provider/id to choose one.`,
+						pattern,
+					},
+				]);
+			}
+		}
 	});
 
 	test("preserves star, question-mark, and bracket glob behavior and catalog order", async () => {

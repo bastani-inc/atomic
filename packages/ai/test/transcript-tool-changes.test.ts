@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { describe, expect, test } from "vitest";
-import { streamSimple } from "../src/compat.ts";
+import { getModel, streamSimple } from "../src/compat.ts";
 import type { Api, Context, Model, Tool } from "../src/types.ts";
 
 class PayloadCaptured extends Error {}
@@ -334,6 +334,30 @@ describe("transcript system messages", () => {
 		expect(payload.messages.filter((message) => message.role === "system").map((message) => message.content)).toEqual(
 			["base prompt", undefined, "updated guidance"],
 		);
+	});
+
+	type KimiPayload = {
+		tools?: Array<{ function?: { name: string } }>;
+		messages: Array<{ role: string; tools?: Array<{ function?: { name: string } }> }>;
+	};
+
+	test.each(["k3", "k3-256k", "kimi-for-coding"] as const)("anchors additions for Kimi Coding %s (#10720)", async (modelId) => {
+		const payload = await capturePayload<KimiPayload>(getModel("kimi-coding", modelId), additionContext);
+
+		expect(payload.tools?.map((value) => value.function?.name)).toEqual(["base_tool"]);
+		expect(payload.messages.find((message) => message.tools)?.tools?.map((value) => value.function?.name)).toEqual([
+			"late_tool",
+		]);
+	});
+
+	test("keeps Kimi Coding Highspeed additions in top-level tools (#10720)", async () => {
+		const payload = await capturePayload<KimiPayload>(
+			getModel("kimi-coding", "kimi-for-coding-highspeed"),
+			additionContext,
+		);
+
+		expect(payload.tools?.map((value) => value.function?.name)).toEqual(["base_tool", "late_tool"]);
+		expect(payload.messages.some((message) => message.tools !== undefined)).toBe(false);
 	});
 
 	test("keeps Kimi K2 system text inline without dynamic tool messages", async () => {

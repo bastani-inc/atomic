@@ -8,7 +8,7 @@ import { test } from "vitest";
 
 // #3105 prerequisite: models.dev renamed the .com coding plan; generation must retain the provider import closure.
 test.each(["kimi-code-plan-cn", "kimi-for-coding"])(
-	"generates Kimi Coding from %s without changing its transport",
+	"generates Kimi Coding from %s with its Chat Completions transport",
 	(provider) => {
 		const root = mkdtempSync(join(tmpdir(), "pi-kimi-catalog-"));
 		try {
@@ -50,13 +50,23 @@ test.each(["kimi-code-plan-cn", "kimi-for-coding"])(
 			assert.deepEqual(Object.keys(models), ["kimi-for-coding"]);
 			const model = models["kimi-for-coding"];
 			assert.equal(model.provider, "kimi-coding");
-			assert.equal(model.api, "anthropic-messages");
-			assert.equal(model.baseUrl, "https://api.kimi.com/coding");
+			assert.equal(model.api, "openai-completions");
+			assert.equal(model.baseUrl, "https://api.kimi.com/coding/v1");
 			assert.deepEqual(model.input, ["text", "image"]);
 			assert.equal(model.contextWindow, 1048576);
 			assert.equal(model.maxTokens, 32768);
 			assert.equal(model.reasoning, true);
-			assert.deepEqual(model.compat, { allowEmptySignature: true, forceAdaptiveThinking: true });
+			assert.deepEqual(model.compat, {
+				supportsStrictMode: false,
+				supportsStore: false,
+				supportsDeveloperRole: false,
+				supportsReasoningEffort: true,
+				maxTokensField: "max_tokens",
+				thinkingFormat: "openai",
+				requiresReasoningContentOnAssistantMessages: true,
+				supportsMidConvoSystemMessages: true,
+				supportsMidConvoToolAdditions: true,
+			});
 			assert.deepEqual(model.cost, { input: 0.95, output: 4, cacheRead: 0.19, cacheWrite: 0 });
 		} finally {
 			rmSync(root, { recursive: true, force: true });

@@ -406,6 +406,13 @@ export const OpenAIResponsesCompatSchema = Type.Object(
 				default: false,
 			}),
 		),
+		supportsMidConvoEffort: Type.Optional(
+			Type.Boolean({
+				description:
+					"Whether thinking level changes are sent as configuration_update input items instead of changing reasoning.effort, so a change keeps the prompt cache. Only used by the openai-responses API, and ignored with Sign in with ChatGPT on the openai provider.",
+				default: false,
+			}),
+		),
 		supportsMaxOutputTokens: Type.Optional(
 			Type.Boolean({
 				description: "Whether the provider accepts max_output_tokens. Some Codex-protocol gateways reject it.",
@@ -534,7 +541,8 @@ export const BedrockCompatSchema = Type.Object(
 			default: true,
 		}),
 		supportsTemperature: optionalCompatBoolean({
-			description: "Whether the model accepts inferenceConfig.temperature. When false, the provider omits the field.",
+			description:
+				"Whether the model accepts inferenceConfig.temperature. When false, the provider omits the field.",
 			default: true,
 		}),
 	},
@@ -563,6 +571,11 @@ const ProviderCompatPropertyOverrides = {
 	}),
 	sessionAffinityFormat: optionalSessionAffinityFormat({
 		description: "Session-affinity header format. Defaults are API-specific or auto-detected.",
+	}),
+	supportsMidConvoEffort: optionalCompatBoolean({
+		description:
+			"Whether thinking level changes are sent inside the conversation instead of changing the request's effort, so a change keeps the prompt cache. Used by the anthropic-messages and openai-responses APIs.",
+		default: false,
 	}),
 	supportsLongCacheRetention: optionalCompatBoolean({
 		description:

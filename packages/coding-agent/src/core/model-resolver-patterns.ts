@@ -3,103 +3,249 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { isValidThinkingLevel } from "../cli/args.ts";
 import { normalizeModelReference } from "./azure-provider-compat.js";
 import { defaultModelPerProvider } from "./model-resolver-defaults.ts";
-import type { ParsedModelResult } from "./model-resolver-types.ts";
 
-/**
- * Helper to check if a model ID looks like an alias (no date suffix)
- * Dates are typically in format: -20241022 or -20250929
+/*
+ * Model reference resolution. Candidates are collected before a provider is chosen, so catalog order
+ * never decides the provider and an ambiguous match is reported instead of falling through to a
+ * weaker one.
  */
-function isAlias(id: string): boolean {
-	if (id.endsWith("-latest")) return true;
 
-	const datePattern = /-\d{8}$/;
-	return !datePattern.test(id);
+export interface ModelReferenceRequest {
+	/** Bare model id or `provider/id`, optionally followed by `:<thinking>`. */
+	text: string;
+	/** Only consider models from this provider. */
+	provider?: string;
+	/**
+	 * A trailing `:<suffix>` is only considered when the full text matches no model, since ids such as
+	 * OpenRouter's `qwen/qwen3-coder:exacto` contain colons.
+	 * - `none`: the suffix stays part of the id
+	 * - `strict`: a valid thinking level is parsed; any other suffix stays part of the id
+	 * - `lenient`: like `strict`, but an invalid suffix is dropped with a warning
+	 */
+	thinkingSuffix: "none" | "strict" | "lenient";
+	/** Match id and name substrings when no exact match exists. */
+	fuzzy: boolean;
+}
+
+export type ModelReferenceResult =
+	| { status: "resolved"; model: Model<Api>; thinkingLevel?: ThinkingLevel; warning?: string }
+	| {
+			status: "ambiguous";
+			candidates: Model<Api>[];
+			usableCount: number;
+			thinkingLevel?: ThinkingLevel;
+			warning?: string;
+	  }
+	| {
+			status: "not-found";
+			/** Set when a provider is explicit or named by a `provider/` prefix, for building a custom model id. */
+			target?: ModelReferenceTarget;
+	  };
+
+export interface ModelReferenceTarget {
+	provider: string;
+	providerModels: [Model<Api>, ...Model<Api>[]];
+	/** Text after the provider prefix as typed, including any `:<suffix>`. */
+	modelText: string;
+	/** `modelText` without a valid thinking suffix (unless `thinkingSuffix` is `none`). */
+	modelId: string;
+	thinkingLevel?: ThinkingLevel;
+}
+
+type ResolvedOrAmbiguous = Exclude<ModelReferenceResult, { status: "not-found" }>;
+
+function splitThinkingSuffix(text: string): { base: string; thinkingLevel: ThinkingLevel } | undefined {
+	const colonIndex = text.lastIndexOf(":");
+	const suffix = text.substring(colonIndex + 1);
+	if (colonIndex <= 0 || !isValidThinkingLevel(suffix)) return undefined;
+	return { base: text.substring(0, colonIndex), thinkingLevel: suffix };
+}
+
+function splitProviderPrefix(
+	text: string,
+	models: readonly Model<Api>[],
+): { provider: string; modelText: string } | undefined {
+	const slashIndex = text.indexOf("/");
+	if (slashIndex === -1) return undefined;
+	const prefix = text.substring(0, slashIndex).trim().toLowerCase();
+	const modelText = text.substring(slashIndex + 1).trim();
+	if (!prefix || !modelText) return undefined;
+	const provider = models.find((model) => model.provider.toLowerCase() === prefix)?.provider;
+	return provider ? { provider, modelText } : undefined;
+}
+
+/** Duplicate entries from one provider must not look like several providers. */
+function uniqueByReference(models: readonly Model<Api>[]): Model<Api>[] {
+	const seen = new Set<string>();
+	return models.filter((model) => {
+		const key = `${model.provider.toLowerCase()}/${model.id.toLowerCase()}`;
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
 }
 
 /**
- * Find an exact model reference match.
- * Supports either a bare model id or a canonical provider/modelId reference.
- * When matching by bare id, ambiguous matches across providers are rejected.
+ * `usable` only breaks ties between providers, so a unique match resolves even without credentials
+ * (`--api-key` first-time setup).
  */
+export function resolveModelReference(
+	request: ModelReferenceRequest,
+	models: readonly Model<Api>[],
+	usable: (provider: string) => boolean,
+): ModelReferenceResult {
+	const text = normalizeModelReference(request.text.trim());
+	if (!text) return { status: "not-found" };
+	const constraint = request.provider?.toLowerCase();
+	const pool = constraint ? models.filter((model) => model.provider.toLowerCase() === constraint) : models;
+	const result = resolveText(text, request, pool, usable);
+	if (result.status !== "not-found") return result;
+
+	const split = splitProviderPrefix(text, pool);
+	const anchor = constraint ? pool[0] : pool.find((model) => model.provider === split?.provider);
+	if (!anchor) return result;
+	const modelText = split?.modelText ?? text;
+	const suffix = request.thinkingSuffix === "none" ? undefined : splitThinkingSuffix(modelText);
+	return {
+		status: "not-found",
+		target: {
+			provider: anchor.provider,
+			providerModels: [anchor, ...pool.filter((model) => model.provider === anchor.provider && model !== anchor)],
+			modelText,
+			modelId: suffix?.base ?? modelText,
+			thinkingLevel: suffix?.thinkingLevel,
+		},
+	};
+}
+
+/** Exact `provider/id` or bare id lookup without thinking suffixes or fuzzy matching. */
 export function findExactModelReferenceMatch(
 	modelReference: string,
-	availableModels: Model<Api>[],
+	models: readonly Model<Api>[],
 ): Model<Api> | undefined {
-	const trimmedReference = normalizeModelReference(modelReference.trim());
-	if (!trimmedReference) {
-		return undefined;
-	}
-
-	const normalizedReference = trimmedReference.toLowerCase();
-	const canonicalMatches = availableModels.filter(
-		(model) => `${model.provider}/${model.id}`.toLowerCase() === normalizedReference,
+	const result = resolveModelReference(
+		{ text: modelReference, thinkingSuffix: "none", fuzzy: false },
+		models,
+		() => true,
 	);
-	if (canonicalMatches.length === 1) {
-		return canonicalMatches[0];
-	}
-	if (canonicalMatches.length > 1) {
-		return undefined;
+	return result.status === "resolved" ? result.model : undefined;
+}
+
+function resolveText(
+	text: string,
+	request: ModelReferenceRequest,
+	pool: readonly Model<Api>[],
+	usable: (provider: string) => boolean,
+): ModelReferenceResult {
+	const reference = selectReference(text, pool, request.fuzzy, usable);
+	if (reference) return reference;
+
+	if (request.fuzzy) {
+		const fuzzy = selectFuzzy(fuzzyMatches(text, pool), usable);
+		if (fuzzy) return fuzzy;
 	}
 
-	const slashIndex = trimmedReference.indexOf("/");
-	if (slashIndex !== -1) {
-		const provider = trimmedReference.substring(0, slashIndex).trim();
-		const modelId = trimmedReference.substring(slashIndex + 1).trim();
-		if (provider && modelId) {
-			const providerMatches = availableModels.filter(
-				(model) =>
-					model.provider.toLowerCase() === provider.toLowerCase() &&
-					model.id.toLowerCase() === modelId.toLowerCase(),
-			);
-			if (providerMatches.length === 1) {
-				return providerMatches[0];
-			}
-			if (providerMatches.length > 1) {
-				return undefined;
-			}
-		}
+	if (request.thinkingSuffix === "none") return { status: "not-found" };
+	const thinking = splitThinkingSuffix(text);
+	if (thinking) {
+		const inner = resolveText(thinking.base, request, pool, usable);
+		if (inner.status === "not-found") return inner;
+		// An inner warning means an invalid inner suffix, which discards the thinking level
+		return { ...inner, thinkingLevel: inner.warning ? undefined : thinking.thinkingLevel };
 	}
+	// Keep an invalid suffix as part of the id and fail, rather than resolve a different model
+	if (request.thinkingSuffix === "strict") return { status: "not-found" };
+	const colonIndex = text.lastIndexOf(":");
+	if (colonIndex <= 0) return { status: "not-found" };
 
-	const idMatches = availableModels.filter((model) => model.id.toLowerCase() === normalizedReference);
-	return idMatches.length === 1 ? idMatches[0] : undefined;
+	const suffix = text.substring(colonIndex + 1);
+	const inner = resolveText(text.substring(0, colonIndex), request, pool, usable);
+	if (inner.status === "not-found") return inner;
+	return {
+		...inner,
+		thinkingLevel: undefined,
+		warning: `Invalid thinking level "${suffix}" in pattern "${text}". Using default instead.`,
+	};
 }
 
 /**
- * Try to match a pattern to a model from the available models list.
- * Returns the matched model or undefined if no match found.
+ * `provider/rest` is only a hint: the whole text may also be a model id on another provider, such as
+ * gateway id `zai/glm-5` or commandcode id `xiaomi/mimo-v2.5-pro`. The named provider wins when usable,
+ * since that is what the syntax usually means; otherwise a sole usable raw match wins, since the named
+ * provider could not serve the request. An unusable named match is still preferred over unusable raw
+ * matches, so `--api-key` can set up the named provider.
  */
-function tryMatchModel(modelPattern: string, availableModels: Model<Api>[]): Model<Api> | undefined {
-	const exactMatch = findExactModelReferenceMatch(modelPattern, availableModels);
-	if (exactMatch) {
-		return exactMatch;
+function selectReference(
+	text: string,
+	pool: readonly Model<Api>[],
+	fuzzy: boolean,
+	usable: (provider: string) => boolean,
+): ResolvedOrAmbiguous | undefined {
+	const lowerText = text.toLowerCase();
+	const raw = uniqueByReference(pool.filter((model) => model.id.toLowerCase() === lowerText));
+	const split = splitProviderPrefix(text, pool);
+	let named: Model<Api> | undefined;
+	if (split) {
+		const providerModels = pool.filter((model) => model.provider === split.provider);
+		const lowerModelText = split.modelText.toLowerCase();
+		// The provider's own literal id (OpenRouter's `openrouter/free`) beats its fuzzy matches
+		named =
+			providerModels.find((model) => model.id.toLowerCase() === lowerModelText) ??
+			raw.find((model) => model.provider === split.provider) ??
+			(fuzzy ? bestFuzzyMatch(fuzzyMatches(split.modelText, providerModels)) : undefined);
 	}
 
-	const matches = availableModels.filter(
-		(m) =>
-			m.id.toLowerCase().includes(modelPattern.toLowerCase()) ||
-			m.name?.toLowerCase().includes(modelPattern.toLowerCase()),
+	const others = raw.filter((model) => model !== named);
+	const candidates = named ? [named, ...others] : others;
+	if (candidates.length === 0) return undefined;
+	if (new Set(candidates.map((model) => model.provider)).size === 1) {
+		return { status: "resolved", model: candidates[0] };
+	}
+	if (named && usable(named.provider)) return { status: "resolved", model: named };
+	const usableOthers = others.filter((model) => usable(model.provider));
+	if (usableOthers.length === 1) return { status: "resolved", model: usableOthers[0] };
+	if (usableOthers.length === 0 && named) return { status: "resolved", model: named };
+	return { status: "ambiguous", candidates, usableCount: usableOthers.length };
+}
+
+function fuzzyMatches(text: string, models: readonly Model<Api>[]): Model<Api>[] {
+	const lowerText = text.toLowerCase();
+	return models.filter(
+		(model) => model.id.toLowerCase().includes(lowerText) || model.name?.toLowerCase().includes(lowerText),
 	);
+}
 
-	if (matches.length === 0) {
-		return undefined;
-	}
+function selectFuzzy(matches: Model<Api>[], usable: (provider: string) => boolean): ResolvedOrAmbiguous | undefined {
+	if (matches.length === 0) return undefined;
+	const multipleProviders = new Set(matches.map((model) => model.provider)).size > 1;
+	const usableMatches = multipleProviders ? matches.filter((model) => usable(model.provider)) : [];
+	const pool = usableMatches.length > 0 ? usableMatches : matches;
+	const best = bestFuzzyMatch(pool);
+	if (!best) return undefined;
+	// The same id on several providers would otherwise be decided by catalog order
+	const tied = uniqueByReference(pool.filter((model) => model.id === best.id));
+	if (new Set(tied.map((model) => model.provider)).size === 1) return { status: "resolved", model: best };
+	return {
+		status: "ambiguous",
+		candidates: tied,
+		usableCount: usableMatches.length > 0 ? tied.length : 0,
+	};
+}
 
-	const aliases = matches.filter((m) => isAlias(m.id));
-	const datedVersions = matches.filter((m) => !isAlias(m.id));
+/** Prefer aliases (`claude-sonnet-4-5`) over dated versions (`claude-sonnet-4-5-20250929`), then the latest. */
+function bestFuzzyMatch(matches: readonly Model<Api>[]): Model<Api> | undefined {
+	const aliases = matches.filter((model) => isAlias(model.id));
+	return [...(aliases.length > 0 ? aliases : matches)].sort((a, b) => b.id.localeCompare(a.id))[0];
+}
 
-	if (aliases.length > 0) {
-		aliases.sort((a, b) => b.id.localeCompare(a.id));
-		return aliases[0];
-	}
-
-	datedVersions.sort((a, b) => b.id.localeCompare(a.id));
-	return datedVersions[0];
+function isAlias(id: string): boolean {
+	return id.endsWith("-latest") || !/-\d{8}$/.test(id);
 }
 
 export function buildFallbackModel(
 	provider: string,
 	modelId: string,
-	availableModels: Model<Api>[],
+	availableModels: readonly Model<Api>[],
 ): Model<Api> | undefined {
 	const providerModels = availableModels.filter((m) => m.provider === provider);
 	if (providerModels.length === 0) return undefined;
@@ -116,63 +262,4 @@ export function buildFallbackModel(
 		name: modelId,
 		contextWindow: fallbackContextWindow,
 	};
-}
-
-/**
- * Parse a pattern to extract model and thinking level.
- * Handles models with colons in their IDs (e.g., OpenRouter's :exacto suffix).
- *
- * Algorithm:
- * 1. Try to match full pattern as a model
- * 2. If found, return it with "off" thinking level
- * 3. If not found and has colons, split on last colon:
- *    - If suffix is valid thinking level, use it and recurse on prefix
- *    - If suffix is invalid, warn and recurse on prefix with "off"
- *
- * @internal Exported for testing
- */
-export function parseModelPattern(
-	pattern: string,
-	availableModels: Model<Api>[],
-	options?: { allowInvalidThinkingLevelFallback?: boolean },
-): ParsedModelResult {
-	const exactMatch = tryMatchModel(pattern, availableModels);
-	if (exactMatch) {
-		return { model: exactMatch, thinkingLevel: undefined, warning: undefined };
-	}
-
-	const lastColonIndex = pattern.lastIndexOf(":");
-	if (lastColonIndex === -1) {
-		return { model: undefined, thinkingLevel: undefined, warning: undefined };
-	}
-
-	const prefix = pattern.substring(0, lastColonIndex);
-	const suffix = pattern.substring(lastColonIndex + 1);
-
-	if (isValidThinkingLevel(suffix)) {
-		const result = parseModelPattern(prefix, availableModels, options);
-		if (result.model) {
-			return {
-				model: result.model,
-				thinkingLevel: result.warning ? undefined : (suffix as ThinkingLevel),
-				warning: result.warning,
-			};
-		}
-		return result;
-	}
-
-	const allowFallback = options?.allowInvalidThinkingLevelFallback ?? true;
-	if (!allowFallback) {
-		return { model: undefined, thinkingLevel: undefined, warning: undefined };
-	}
-
-	const result = parseModelPattern(prefix, availableModels, options);
-	if (result.model) {
-		return {
-			model: result.model,
-			thinkingLevel: undefined,
-			warning: `Invalid thinking level "${suffix}" in pattern "${pattern}". Using default instead.`,
-		};
-	}
-	return result;
 }

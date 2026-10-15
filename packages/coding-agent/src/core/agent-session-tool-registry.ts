@@ -11,6 +11,7 @@ import { isRegisteredToolAllowed, activatesOnRegistration as toolActivatesOnRegi
 import { createLocalBashOperations } from "./tools/bash.js";
 import { buildMutationRequester } from "./tools/file-mutation-coordinator.ts";
 import { createAllToolDefinitions, getDefaultToolNames } from "./tools/index.js";
+import { rejectMalformedToolArguments } from "./tools/malformed-tool-arguments.ts";
 import { createLocalPowerShellOperations } from "./tools/powershell.ts";
 import { resolveSessionTempDirPath } from "./tools/session-temp-dir.ts";
 import { scheduleToolExecution } from "./tools/tool-concurrency.ts";
@@ -98,7 +99,8 @@ export function _refreshToolRegistry(
 							? hostInputError("HumanInputCancelled")
 							: new Error("Operation aborted")
 				: undefined;
-		toolRegistry.set(tool.name, scheduleToolExecution(tool, this._toolExecutionScheduler, abortError));
+		const guarded = rejectMalformedToolArguments(tool, () => this.agent.state.messages);
+		toolRegistry.set(tool.name, scheduleToolExecution(guarded, this._toolExecutionScheduler, abortError));
 	}
 	this._toolRegistry = toolRegistry;
 

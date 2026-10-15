@@ -8,12 +8,18 @@
  * - Edge cases and integration between parsing and substitution
  */
 
+import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterAll, describe, expect, test } from "vitest";
 import { getAgentDir } from "../src/config.ts";
-import { loadPromptTemplates, parseCommandArgs, substituteArgs } from "../src/core/prompt-templates.ts";
+import {
+	expandPromptTemplate,
+	loadPromptTemplates,
+	parseCommandArgs,
+	substituteArgs,
+} from "../src/core/prompt-templates.ts";
 
 // ============================================================================
 // substituteArgs
@@ -336,9 +342,10 @@ describe("parseCommandArgs", () => {
 	test("should handle tabs as separators", () => {
 		expect(parseCommandArgs("a\tb\tc")).toEqual(["a", "b", "c"]);
 	});
-	test("should handle quoted empty string", () => {
-		// Note: Empty quotes are skipped by current implementation
-		expect(parseCommandArgs('"" " "')).toEqual([" "]);
+	test("should preserve empty quoted argument positions (#10867)", () => {
+		assert.deepEqual(parseCommandArgs('"" " "'), ["", " "]);
+		assert.deepEqual(parseCommandArgs("a '' c"), ["a", "", "c"]);
+		assert.deepEqual(parseCommandArgs('a ""'), ["a", ""]);
 	});
 	test("should handle arguments with special characters", () => {
 		expect(parseCommandArgs("$100 @user #tag")).toEqual(["$100", "@user", "#tag"]);
@@ -348,6 +355,7 @@ describe("parseCommandArgs", () => {
 	});
 	test("should handle newlines in arguments", () => {
 		expect(parseCommandArgs('"line1\nline2" second')).toEqual(["line1\nline2", "second"]);
+		assert.deepEqual(parseCommandArgs('""\tline1\nline2'), ["", "line1\nline2"]);
 	});
 	test("should handle escaped quotes inside quoted strings", () => {
 		// Note: This implementation doesn't handle escaped quotes - backslash is literal
@@ -364,6 +372,22 @@ describe("parseCommandArgs", () => {
 // Integration
 // ============================================================================
 describe("parseCommandArgs + substituteArgs integration", () => {
+	test("should apply positional defaults without shifting empty quoted arguments (#10867)", () => {
+		const template = {
+			name: "review",
+			description: "test",
+			content: `Review $2. Focus: \${1:-correctness}.`,
+			sourceInfo: { path: "/tmp/review.md", source: "local", scope: "temporary", origin: "top-level" } as const,
+			filePath: "/tmp/review.md",
+		};
+
+		for (const quote of ['""', "''"]) {
+			assert.equal(
+				expandPromptTemplate(`/review ${quote} src/index.ts`, [template]),
+				"Review src/index.ts. Focus: correctness.",
+			);
+		}
+	});
 	test("should parse and substitute together correctly", () => {
 		const input = 'Button "onClick handler" "disabled support"';
 		const args = parseCommandArgs(input);
