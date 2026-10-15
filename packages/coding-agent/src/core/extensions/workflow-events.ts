@@ -86,6 +86,7 @@ export interface WorkflowRootActivity {
 	reason: WorkflowActivityReason;
 	activeExecutionCount: number;
 	actionableBlockCount: number;
+	blockedPromptKind?: WorkflowGraphNodePrompt["kind"];
 	needsAttention: boolean;
 	/** Graph topology and node statuses; absent when the publisher reports no graph. */
 	graph?: WorkflowRootGraph;

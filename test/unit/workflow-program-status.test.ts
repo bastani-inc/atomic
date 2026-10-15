@@ -8,6 +8,8 @@ import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/bac
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createWorkflowObservation } from "../../packages/workflows/src/extension/workflow-observation.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import type { PendingPrompt, RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { projectWorkflowActivity } from "../../packages/workflows/src/shared/workflow-activity.js";
 import { sleep } from "../helpers/runtime.js";
 
 const STEP_MS = 15;
@@ -239,4 +241,69 @@ test("a run whose stage fails recoverably is blocked without an earlier done (#3
 		completeUnlessFail(true),
 	);
 	assert.deepEqual(states, ["idle", "working", "blocked"]);
+});
+
+test("projects run and stage approvals ahead of stage questions in either order (#3618)", () => {
+	const prompt = (kind: PendingPrompt["kind"]): PendingPrompt => ({
+		id: kind,
+		kind,
+		message: "Private prompt",
+		createdAt: 0,
+	});
+	const reports: ProgramStatus[] = [];
+	const reporter = new ProgramStatusReporter(
+		() =>
+			({
+				setProgramStatus: (status: ProgramStatus) => {
+					reports.push(status);
+				},
+			}) as Terminal,
+		() => undefined,
+	);
+	for (const runPromptKind of ["confirm", "input", undefined] as const) {
+		for (const stagePromptKinds of [["input"], ["select"], [], ["input", "confirm"], ["confirm", "input"]] as const) {
+			const snapshotRun: RunSnapshot = {
+				id: "root",
+				name: "workflow",
+				inputs: {},
+				status: "running",
+				startedAt: 0,
+				...(runPromptKind ? { pendingPrompt: prompt(runPromptKind) } : {}),
+				stages: (stagePromptKinds.length > 0 ? stagePromptKinds : [undefined]).map((stagePromptKind, index) => ({
+					id: `question-${index}`,
+					name: "question",
+					status: "awaiting_input",
+					parentIds: [],
+					toolEvents: [],
+					...(stagePromptKind ? { pendingPrompt: prompt(stagePromptKind) } : {}),
+				})),
+			};
+			const roots = projectWorkflowActivity({
+				snapshot: { runs: [snapshotRun], notices: [], version: 0 },
+				ownership: {
+					ownerSessionId: "owner",
+					executingStageIds: new Set<string>(),
+					executingToolNodeIds: new Set<string>(),
+					stoppingRunIds: new Set<string>(),
+					retryingStageIds: new Set<string>(),
+					acknowledgedFailureRunIds: new Set<string>(),
+				},
+			});
+			const stagePromptKind = stagePromptKinds.find((kind) => kind === "confirm") ?? stagePromptKinds[0];
+			const blockedPromptKind = runPromptKind ?? stagePromptKind;
+			assert.equal(roots[0].blockedPromptKind, blockedPromptKind);
+			reporter.handleWorkflowActivity({
+				kind: "snapshot",
+				cursor: { epoch: "approval", revision: 0 },
+				availability: "ready",
+				roots,
+			});
+			assert.equal(reports.at(-1)?.state, "blocked");
+			assert.equal(reports.at(-1)?.kind, blockedPromptKind === "confirm" ? "permission" : "question");
+			assert.equal(
+				reports.at(-1)?.message,
+				blockedPromptKind === "confirm" ? "Workflow needs approval" : "Workflow waiting for input",
+			);
+		}
+	}
 });
