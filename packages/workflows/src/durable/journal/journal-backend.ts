@@ -478,7 +478,7 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 	}
 
 	private async deleteOwned(runId: string, expectSeq?: number): Promise<void> {
-		if (this.projection.getWorkflow(runId)) {
+		if (this.leases.has(runId) || this.journal.listRunsSync().some((run) => run.runId === runId)) {
 			try {
 				this.journal.deleteOwnedRunSync(this.ownership(runId), expectSeq);
 			} catch (error) {

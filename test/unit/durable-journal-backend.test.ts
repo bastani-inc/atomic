@@ -5,9 +5,12 @@ import {
 	JournalDurableBackend,
 	JournalOwnershipError,
 } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import { JournalDatabase } from "../../packages/workflows/src/durable/journal/node-sqlite.js";
 import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import type { Lease, RunEvent } from "../../packages/workflows/src/durable/journal/types.js";
 import {
+	JOURNAL_COLUMNS,
+	JOURNAL_TABLES,
 	JournalCounterRangeError,
 	RUN_EVENT_TYPES,
 	StaleLeaseError,
@@ -658,3 +661,130 @@ for (const mutation of ["status claim", "delivery receipt"] as const) {
 		assert.equal(observer.getWorkflow("run")!.completedCheckpoints, 1);
 	});
 }
+
+for (const change of ["late registration", "external deletion"] as const) {
+	test(`direct deletion first after ${change} uses durable existence without hydration`, async () => {
+		const path = database();
+		const writer = await open(path);
+		if (change === "external deletion") {
+			register(writer);
+			writer.recordCheckpoint(checkpoint("old"));
+		}
+		const observer = await open(path);
+		if (change === "late registration") register(writer);
+		else await writer.deleteWorkflow("run");
+		await writer.close();
+		await observer.deleteWorkflow("run");
+		assert.equal(observer.getWorkflow("run"), undefined);
+		assert.deepEqual(observer.listCheckpoints("run"), []);
+		const fresh = await open(path);
+		assert.equal(fresh.getWorkflow("run"), undefined);
+		assert.deepEqual(await observer.prepareWorkflowCatalog(), await fresh.prepareWorkflowCatalog());
+		assert.deepEqual(await fresh.prepareWorkflowCatalog(), { resumable: [], completed: [], inspectableIds: [] });
+		const db = new JournalDatabase(path);
+		try {
+			for (const table of [JOURNAL_TABLES.runs, JOURNAL_TABLES.events]) {
+				assert.equal(db.get<{ count: number }>(`SELECT COUNT(*) AS count FROM ${table}`)?.count, 0);
+			}
+			assert.equal(
+				db.get<{ holder: string | null }>(
+					`SELECT ${JOURNAL_COLUMNS.holderId} AS holder FROM ${JOURNAL_TABLES.leases}`,
+				)?.holder,
+				null,
+			);
+		} finally {
+			db.close();
+		}
+		await observer.deleteWorkflow("run");
+		assert.deepEqual(await observer.deleteWorkflowIfInactive("run"), { ok: false, reason: "not_found" });
+		register(observer);
+		observer.recordCheckpoint({ ...checkpoint("new"), checkpointId: "new" });
+		const recreated = await open(path);
+		assert.deepEqual(observer.getWorkflow("run"), recreated.getWorkflow("run"));
+		assert.deepEqual(observer.listCheckpoints("run"), recreated.listCheckpoints("run"));
+		assert.deepEqual(
+			observer.listCheckpoints("run").map((entry) => entry.checkpointId),
+			["new"],
+		);
+	});
+}
+
+test("direct deletion first after recreation removes the current run and its checkpoints", async () => {
+	const path = database();
+	const writer = await open(path);
+	register(writer);
+	writer.recordCheckpoint(checkpoint("old"));
+	const observer = await open(path);
+	await writer.deleteWorkflow("run");
+	register(writer);
+	writer.recordCheckpoint({ ...checkpoint("new"), checkpointId: "new" });
+	const epoch = writer.journal.leaseState("run")!.epoch;
+	await writer.close();
+	await observer.deleteWorkflow("run");
+	const fresh = await open(path);
+	assert.equal(observer.getWorkflow("run"), undefined);
+	assert.equal(fresh.getWorkflow("run"), undefined);
+	assert.deepEqual(fresh.listCheckpoints("run"), []);
+	assert.deepEqual(fresh.journal.listRunsSync(), []);
+	assert.deepEqual(fresh.journal.readEntries("run"), []);
+	register(observer);
+	assert.equal(observer.journal.leaseState("run")!.epoch, epoch + 2);
+	await observer.deleteWorkflow("run");
+	assert.deepEqual(observer.journal.listRunsSync(), []);
+	assert.equal(observer.journal.leaseState("run"), undefined);
+});
+
+test("late registration deletion refuses a fresh foreign holder before deleting after release", async () => {
+	const path = database();
+	const observer = await open(path);
+	const writer = await open(path);
+	register(writer);
+	const before = writer.journal.readEntries("run");
+	const lease = writer.journal.leaseState("run");
+	await assert.rejects(observer.deleteWorkflow("run"), (error: Error) => {
+		assert.ok(error instanceof JournalOwnershipError);
+		assert.equal(error.runId, "run");
+		assert.equal(error.holderId, writer.holderId);
+		assert.equal(error.cause, undefined);
+		return true;
+	});
+	assert.deepEqual(writer.journal.readEntries("run"), before);
+	assert.deepEqual(writer.journal.leaseState("run"), lease);
+	assert.deepEqual((await open(path)).getWorkflow("run"), writer.getWorkflow("run"));
+	await writer.close();
+	await observer.deleteWorkflow("run");
+	assert.equal((await open(path)).getWorkflow("run"), undefined);
+	assert.deepEqual(observer.journal.listRunsSync(), []);
+});
+
+test("direct deletion retains stale held-lease fencing even with an empty cached projection", async () => {
+	vi.useFakeTimers({ toFake: ["Date"] });
+	vi.setSystemTime(1_000);
+	const path = database();
+	const stale = await open(path);
+	register(stale);
+	const heldEpoch = stale.journal.leaseState("run")!.epoch;
+	vi.setSystemTime(1_000 + FOREIGN_LIVE_WORKFLOW_WINDOW_MS + 1);
+	const writer = await open(path);
+	writer.recordCheckpoint(checkpoint("current"));
+	await writer.deleteWorkflow("run");
+	await stale.hydrateWorkflow("run");
+	assert.equal(stale.getWorkflow("run"), undefined);
+	register(writer);
+	const currentEpoch = writer.journal.leaseState("run")!.epoch;
+	const before = writer.journal.readEntries("run");
+	await assert.rejects(stale.deleteWorkflow("run"), (error: Error) => {
+		assert.ok(error instanceof JournalOwnershipError);
+		assert.equal(error.runId, "run");
+		assert.equal(error.holderId, writer.holderId);
+		assert.ok(error.cause instanceof StaleLeaseError);
+		assert.equal(error.cause.runId, "run");
+		assert.equal(error.cause.heldEpoch, heldEpoch);
+		assert.equal(error.cause.currentEpoch, currentEpoch);
+		return true;
+	});
+	assert.deepEqual(writer.journal.readEntries("run"), before);
+	await writer.close();
+	await assert.rejects(stale.deleteWorkflow("run"), JournalOwnershipError);
+	assert.deepEqual(writer.getWorkflow("run"), (await open(path)).getWorkflow("run"));
+});
