@@ -1,4 +1,4 @@
-import type { WorkflowSerializableValue } from "../../shared/types.js";
+import type { WorkflowSerializableValue } from "../../shared/authoring-contract-stage.js";
 
 export const JOURNAL_SCHEMA_VERSION = 1;
 export type JournalSchemaVersion = typeof JOURNAL_SCHEMA_VERSION;
@@ -150,83 +150,123 @@ export interface SynchronousRunJournal {
 
 export class JournalError extends Error {}
 
+export class JournalConfigurationError extends JournalError {
+	readonly source: "settings";
+	readonly setting: "workflows.journal";
+	readonly reason: "path-and-memory";
+
+	constructor(source: "settings", setting: "workflows.journal", reason: "path-and-memory") {
+		super(`Invalid journal configuration at ${source}.${setting}: ${reason}`);
+		this.name = "JournalConfigurationError";
+		this.source = source;
+		this.setting = setting;
+		this.reason = reason;
+	}
+}
+
 export class JournalInvalidTextError extends JournalError {
-	constructor(
-		readonly field: "runId" | "holderId" | "expectedHolder" | "key" | "status" | "name" | "cwd",
-		readonly reason: "nul-character" | "ill-formed-unicode",
-	) {
+	readonly field: "runId" | "holderId" | "expectedHolder" | "key" | "status" | "name" | "cwd";
+	readonly reason: "nul-character" | "ill-formed-unicode";
+
+	constructor(field: JournalInvalidTextError["field"], reason: JournalInvalidTextError["reason"]) {
 		super(`Invalid journal ${field}: ${reason}`);
 		this.name = "JournalInvalidTextError";
+		this.field = field;
+		this.reason = reason;
 	}
 }
 
 export class JournalMetaCorruptError extends JournalError {
-	constructor(
-		readonly path: string,
-		readonly rowCount: number,
-	) {
+	readonly path: string;
+	readonly rowCount: number;
+
+	constructor(path: string, rowCount: number) {
 		super(`Journal metadata at ${path} has ${rowCount} rows`);
 		this.name = "JournalMetaCorruptError";
+		this.path = path;
+		this.rowCount = rowCount;
 	}
 }
 
 export class JournalCounterRangeError extends JournalError {
+	readonly runId: string;
+	readonly field: "seq" | "epoch";
+	readonly value: number;
+	readonly reason: "overflow" | "negative" | "unsafe-integer";
+
 	constructor(
-		readonly runId: string,
-		readonly field: "seq" | "epoch",
-		readonly value: number,
-		readonly reason: "overflow" | "negative" | "unsafe-integer",
+		runId: string,
+		field: JournalCounterRangeError["field"],
+		value: number,
+		reason: JournalCounterRangeError["reason"],
 	) {
 		super(`Unsafe journal ${field} counter for run ${runId}: ${value}`);
 		this.name = "JournalCounterRangeError";
+		this.runId = runId;
+		this.field = field;
+		this.value = value;
+		this.reason = reason;
 	}
 }
 
 export class StaleLeaseError extends JournalError {
-	constructor(
-		readonly runId: string,
-		readonly heldEpoch: number,
-		readonly currentEpoch: number,
-	) {
+	readonly runId: string;
+	readonly heldEpoch: number;
+	readonly currentEpoch: number;
+
+	constructor(runId: string, heldEpoch: number, currentEpoch: number) {
 		super(`Stale lease for run ${runId}`);
 		this.name = "StaleLeaseError";
+		this.runId = runId;
+		this.heldEpoch = heldEpoch;
+		this.currentEpoch = currentEpoch;
 	}
 }
 
 export class JournalCasConflictError extends JournalError {
-	constructor(
-		readonly runId: string,
-		readonly expectedSeq: number,
-		readonly actualSeq: number,
-	) {
+	readonly runId: string;
+	readonly expectedSeq: number;
+	readonly actualSeq: number;
+
+	constructor(runId: string, expectedSeq: number, actualSeq: number) {
 		super(`Journal sequence conflict for run ${runId}`);
 		this.name = "JournalCasConflictError";
+		this.runId = runId;
+		this.expectedSeq = expectedSeq;
+		this.actualSeq = actualSeq;
 	}
 }
 
 export class JournalSchemaVersionError extends JournalError {
-	constructor(
-		readonly found: number | bigint | string | Uint8Array | null,
-		readonly supported = JOURNAL_SCHEMA_VERSION,
-	) {
+	readonly found: number | bigint | string | Uint8Array | null;
+	readonly supported: number;
+
+	constructor(found: JournalSchemaVersionError["found"], supported = JOURNAL_SCHEMA_VERSION) {
 		super(`Unsupported journal schema version ${String(found)}`);
 		this.name = "JournalSchemaVersionError";
+		this.found = found;
+		this.supported = supported;
 	}
 }
 
 export class RunNotFoundError extends JournalError {
-	constructor(readonly runId: string) {
+	readonly runId: string;
+
+	constructor(runId: string) {
 		super(`Run not found: ${runId}`);
 		this.name = "RunNotFoundError";
+		this.runId = runId;
 	}
 }
 
 export class StorageUnavailableError extends JournalError {
-	constructor(
-		readonly path: string,
-		override readonly cause: Error,
-	) {
+	readonly path: string;
+	override readonly cause: Error;
+
+	constructor(path: string, cause: Error) {
 		super(`Journal storage unavailable: ${path}`, { cause });
 		this.name = "StorageUnavailableError";
+		this.path = path;
+		this.cause = cause;
 	}
 }

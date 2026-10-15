@@ -498,6 +498,33 @@
               },
               "description": "Workflow resource paths."
             },
+            "journal": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Journal file path, relative to the Atomic home directory."
+                },
+                "memory": {
+                  "type": "boolean",
+                  "description": "Keep workflow journal records in memory."
+                }
+              },
+              "not": {
+                "required": [
+                  "path",
+                  "memory"
+                ],
+                "properties": {
+                  "path": {
+                    "minLength": 1
+                  },
+                  "memory": {
+                    "const": true
+                  }
+                }
+              }
+            },
             "durability": {
               "type": "object",
               "properties": {

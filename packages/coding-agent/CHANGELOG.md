@@ -11,6 +11,7 @@
 ### Added
 
 - Added the async SQLite facade and node adapter through `@bastani/atomic/storage`, with typed storage errors, prefix and schema-version helpers, and an adapter conformance suite in `@bastani/atomic/storage/testing`. String bindings containing NUL are rejected with `StorageInvalidTextError`; zero bytes remain supported in binary values.
+- Added the `workflows.journal.path` and `workflows.journal.memory` settings schema, plus SDK `RunOpts.journal` types for a file, caller-owned SQLite connection, explicit memory journal, or supplied journal. Journal selection is exposed through `resolveRunJournal`; runtime wiring is deferred.
 
 ### Fixed
 

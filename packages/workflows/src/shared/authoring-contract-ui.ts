@@ -3,6 +3,7 @@
 import type { AgentSessionEvent, KeybindingsManager, ModelRouterOutput, Theme } from "@bastani/atomic";
 import type { Component, OverlayHandle, OverlayOptions, TUI } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
+import type { RunJournalOption } from "../durable/journal/resolution.js";
 import type {
 	RunStatus,
 	StageAdapters,
@@ -322,6 +323,7 @@ export interface RunOpts {
 	readonly budget?: WorkflowBudget;
 	/** Select the durable backend for this run. `"durable"` fails fast instead of falling back to memory. */
 	readonly durability?: WorkflowDurability;
+	readonly journal?: RunJournalOption;
 	readonly models?: WorkflowModelCatalogPort;
 	readonly registry?: object;
 	readonly depth?: number;
