@@ -12,6 +12,10 @@
 
 - Added the async SQLite facade and node adapter through `@bastani/atomic/storage`, with typed storage errors, prefix and schema-version helpers, and an adapter conformance suite in `@bastani/atomic/storage/testing`. String bindings containing NUL are rejected with `StorageInvalidTextError`; zero bytes remain supported in binary values.
 
+### Fixed
+
+- Fixed Xiaomi MiMo and all regional Token Plan providers defaulting to a deprecated model omitted from the generated catalog. They now select MiMo V2.6 Pro (`mimo-v2.6-pro`) by default.
+
 ## [0.9.38-alpha.3] - 2026-10-15
 
 ### Fixed
