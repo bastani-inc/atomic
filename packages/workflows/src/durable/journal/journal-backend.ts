@@ -359,7 +359,7 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 			return false;
 		const seq = this.sequences.get(runId) ?? 0;
 		draft.setWorkflowStatus(runId, status, pendingPrompts, resumable);
-		const { modelOwner: _oldOwner, releasedModelOwner: _oldRelease, ...handle } = draft.getWorkflow(runId)!;
+		const { releasedModelOwner: _oldRelease, ...handle } = draft.getWorkflow(runId)!;
 		try {
 			this.snapshot(
 				{

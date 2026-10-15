@@ -4,7 +4,7 @@
 
 Implement only the unwired `JournalDurableBackend`, persist before returning, rebuild its projection from journal events, verify it on Boat, and commit on `feat/workflow-journal-s2-journal-backend`.
 
-The table records the unchanged acceptance clauses. The current five-entry, three-reviewer batch is review-round-latest.json:1155–1259 against designated S1 baseline `6c21d5927b0f1ee2b7e6613205870a9770dc043d`. `C` denotes current format/check gates, `F` focused tests and independent probes, `U` the standalone unit gate, and `D` baseline/artifact audits, recorded in the current repair section below. Earlier receipts are historical, not current-source validation. Their broad readiness and baseline-fidelity claims were incomplete: the newer baseline's empty-path fallback and exact unheld stale-error assertions had been dropped. No objective or contract amendment is introduced.
+The table records the unchanged acceptance clauses. The current work rebases all six S2 commits onto verified S1 `be33554f91632b16a2dab9ea290322fe91af34f6`, then verifies that combined checkout. The current goal ledger contains no review artifacts. `C` denotes current format/check gates, `F` focused tests and runtime probes, `U` the standalone unit gate, and `D` baseline/artifact audits, recorded in the rebase verification section below. Earlier receipts are historical, not current-source validation.
 
 | Contract clause | Verification |
 | --- | --- |
@@ -44,13 +44,13 @@ The table records the unchanged acceptance clauses. The current five-entry, thre
 | `seq` and `epoch` remain safe integers in `0..Number.MAX_SAFE_INTEGER` | F: inherited range matrix; expiry grant uses the same checked increment |
 | Range errors retain exact class and fields | F: `JournalCounterRangeError { runId, field, value, reason }`; additive checkpoint path propagates it rather than hiding it |
 | Identifier Unicode/NUL rules and NUL precedence remain unchanged | F: inherited kernel and Node/Bun process matrices; D: synchronous companions delegate shared validation bodies |
-| Payload/header JSON preserves accepted values, NUL, lone surrogates and negative zero | F: exact retained S1 native JSON assertions plus backend native lexemes, caller serialization counts, frozen inputs/FWW, repeated status/prompt/message/summary snapshots, hydration/reopen/getters; no construction/fold stringify round trips |
-| Surviving S1 tests, process fixture and notes remain intact relative to designated baseline | D: all 171 baseline kernel cases and exact assertions from `6c21d5927b0f1ee2b7e6613205870a9770dc043d` retained verbatim; only imports and two persistent default-path process cases added; adapter, contention file, journal-process.mjs and S1 notes byte-identical |
+| Payload/header JSON follows verified S1 serialization | F: round trips match `JSON.parse(JSON.stringify(original))`, including ordinary negative zero becoming zero; retain accepted native JSON lexemes, NUL and lone surrogates; D: plain stringify plus lone-surrogate escape |
+| Surviving S1 tests, process fixture and notes remain intact relative to verified baseline | D: retain every kernel assertion from `be33554f91632b16a2dab9ea290322fe91af34f6`; only imports and two persistent default-path process cases added; adapter, contention file, journal-process.mjs and S1 notes byte-identical |
 | Exactly one metadata row and typed corruption error | F: cardinality before any version decoding; nine multirow combinations include both int64 extrema and mixed types; exact JournalMetaCorruptError path/rowCount, no schema or row changes |
 | `StatusChanged` is a full snapshot, latest sequence wins | F: direct metadata payload, conflicting claim and reopened handle checks |
 | Optional absent fields omitted from JSON | F: raw status payload lacks owner, release, failure, session and resumability fields when absent |
 | No invented null or `"undefined"` optional metadata values | F: raw payload key checks; D: normal JSON omission, no sentinel substitution |
-| Omitted owner means no owner | F: status claim omits owner and reopened projection has no owner |
+| Owner fields follow the existing in-memory merge | F: release retains previous `modelOwner`, sets supplied `releasedModelOwner`; reclaim retains `modelOwner` and removes old release; explicit new owner replaces old owner; full snapshot omission still means no owner |
 | Keep named return shapes | C and F: existing `RunJournal` Promise methods and AsyncIterable read retained; lease outcomes retain exact fields |
 | Preserve raw text, array order and duplicates | F: NUL/surrogate strings, `[2, 1, 2]`, duplicate pending messages and verbatim timestamp strings |
 | Preserve existing projection checkpoint ordering | F: reverse completion timestamps reopen in the same completion order; journal fold remains sequence ordered |
@@ -66,7 +66,7 @@ The table records the unchanged acceptance clauses. The current five-entry, thre
 | `npm run format` on touched files | C: clean formatter rerun; exact formatting changes applied locally through file edits |
 | No unnecessary explanatory source comments | D: no new source comments |
 | `npm run check` | C: Biome, workspace/root typechecks and shrinkwrap check |
-| Unit gate | U: exact command below, only the two established exclusions |
+| Unit gate | U: exact amended command `npm run test:unit -- --exclude test/unit/durable-embedded-postgres-root.test.ts --exclude test/unit/durable-embedded-postgres.test.ts` |
 | Slice-specific tests | F: selected durable suites plus kernel process integration |
 | `git diff --check` | D and C: whitespace audit |
 | Correct slice branch and conventional breaking subject | D: signed commit inspection on `feat/workflow-journal-s2-journal-backend` |
@@ -78,14 +78,17 @@ The table records the unchanged acceptance clauses. The current five-entry, thre
 | No push, PR, main changes or additional worktree | D: only designated branch and checkout used |
 | Heavy commands only on assigned Boat lease, from worktree root | C, F, U: supplied implementer wrapper; no local npm/compiler/formatter/tests |
 | No lease creation, stopping, deletion or handoff | D: only `crabbox run --keep` on the assigned static lease |
-| Ignored scratch setup occurs inline on Boat | D: optional qlty executable downloaded into remote `.crabbox/`; no repository config changes |
+| Ignored scratch setup occurs inline on Boat | D: probes created inline on the assigned lease; preserve existing qlty config |
 | User guides/changelog remain scoped | D: unwired S2 adds no actionable user guidance; S6 documentation remains untouched |
+| Rebase all six S2 commits onto verified S1 | D: requested `git rebase --onto feat/workflow-journal-s1-kernel 30bb916093d74fb09db3ef07852f84ba1b1a47ab`; all six commits replayed, ancestry and kernel fidelity checked |
+| New owner parity regression survives reopen | F: same release/reclaim sequence on both backends, exact complete handles before/after journal reopen |
+| No additional S1 journal edits | D: only approved serializer restoration in this amendment; kernel types, adapter, constants and assertions preserved |
 
 ## Interface and state decisions
 
 The supervisor approved `SynchronousRunJournal` companion operations because the runtime backend requires synchronous registration, status, checkpoint and prompt operations. Existing Promise-returning `RunJournal` methods and AsyncIterable `read()` remain unchanged and share operation bodies with the companions. Asynchronous open rebuilds through `read()`; synchronous writes and incremental refresh use `readEntries()`. No schema, event, encoding or lease constant changed.
 
-Required/optional workflow fields keep their existing types. Status events contain direct full metadata snapshots. Owner omission clears ownership metadata on fold. No identifiers, caller paths or payload text are normalized. Checkpoint identity remains `(kind, checkpointId)` within one run. Duplicate checkpoint writes preserve the first payload; other lists retain their order and duplicate values. Completion-order getters retain their current behavior, while journal replay uses sequence order.
+Required/optional workflow fields keep their existing types. Status events contain direct full metadata snapshots. Full-snapshot owner omission clears ownership metadata on fold. During a status claim, an omitted modelOwner argument preserves the current modelOwner; releasedModelOwner is dropped unless explicitly supplied. No identifiers, caller paths or payload text are normalized. Checkpoint identity remains `(kind, checkpointId)` within one run. Duplicate checkpoint writes preserve the first payload; other lists retain their order and duplicate values. Completion-order getters retain their current behavior, while journal replay uses sequence order. JSON values use verified S1 serialization, including ordinary negative zero becoming zero.
 
 Legal ownership states and transitions:
 
@@ -362,15 +365,29 @@ All 19 selected unit filenames are enumerated here and in the commit body. Fifte
 
 ## Contract amendments received
 
-None during implementation. The launch contract explicitly requires `Assistant-workflow: dbos-journal-stack`.
+The launch contract explicitly requires `Assistant-workflow: dbos-journal-stack`.
+
+The current user amendment is: "S1 was verified after this slice started. Rebase feat/workflow-journal-s2-journal-backend onto the verified feat/workflow-journal-s1-kernel (git rebase --onto feat/workflow-journal-s1-kernel 30bb916093d74fb09db3ef07852f84ba1b1a47ab), resolve every conflict keeping S1's verified journal contract, and re-verify on Boat."
+
+The supervising session relayed this binding user amendment:
+
+> 1. Owner fields in JournalDurableBackend.setWorkflowStatus (journal-backend.ts around 341-368) must follow exactly the same merge semantics as InMemoryDurableBackend (backend.ts around 665-681). Keep the previous `modelOwner` unless a new `modelOwner` is supplied. Always drop the previous `releasedModelOwner`, then set it only if supplied. Today the journal path drops BOTH, so a release (sdk-owner-release.ts:19-28, which supplies only releasedModelOwner) and a reclaim (:60-67, which supplies neither) lose modelOwner. The persisted StatusChanged payload is the full snapshot AFTER this merge. Add a parity regression running the same release-then-reclaim sequence on both backends and asserting identical handles, including modelOwner, before and after reopening the journal.
+>
+> 2. Do NOT change S1's verified serializer. Revert the -0 `JSON.rawJSON("-0")` replacer in sqlite-run-journal.ts serializeJson back to S1's gated form: plain `JSON.stringify(value)`, followed only by the lone-surrogate escape. Stored payload and header bytes follow standard JSON (`-0` is written as `0`). Round-trip tests compare against `JSON.parse(JSON.stringify(original))`. If a parity test relied on -0, fix the test expectation, not the serializer. Any future change to S1's journal files needs a "Journal contract change:" line and supervisor approval.
+
+The supervising session also relayed this boundary clarification: "Do not otherwise change S1’s journal files."
+
+The owner merge is implemented by the existing `transitionWorkflowStatus` method named by the supplied line references and SDK release/reclaim callers. Earlier negative-zero-preservation and omitted-transition-owner expectations are superseded by this amendment, not retained as requirements.
+
+The supervising session subsequently replaced this turn's full-unit requirement: "those 8 failures are the known environment-dependent embedded-Postgres root tests (durable-embedded-postgres-root.test.ts and durable-embedded-postgres.test.ts). They fail on Boat at origin/main too, S2’s deterministic gate excludes them by design, and S3+S4 deletes them. Do NOT chase umask or ownership. Use exactly the gate’s unit command: npm run test:unit -- --exclude test/unit/durable-embedded-postgres-root.test.ts --exclude test/unit/durable-embedded-postgres.test.ts (the box script applies the excludes). Record it as such and spend the time on the two amendments."
 
 ## Deferred observations
 
-Five unrelated Biome informational diagnostics, the exact-formula serializer style information and 26 established unit skips are not suppressed. No other slice work is added. User guides and release notes remain assigned to S6. Current completion requires the current-baseline path/assertion repair and fresh gates below, not historical reduced-suite or metadata-only receipts.
+Six existing Biome informational diagnostics and 26 established unit skips remain unsuppressed. The final unit gate uses only the two user-authorized exclusions. No additional product work is deferred; wiring, user guides and release notes remain outside S2. Historical intermittent unit failures are retained as observations, not treated as fixed by this change.
 
-## Current repair: five findings, two baseline-preservation roots
+## Earlier path and assertion repair
 
-The current designated S1 commit is `6c21d5927b0f1ee2b7e6613205870a9770dc043d`, inspected by full SHA and `git show`. It changes only `sqlite-run-journal.ts` and `durable-sqlite-run-journal.test.ts`: empty override fallback, two stronger stale-lease assertion blocks, and formatting of already-retained metadata code/tests. The objective is unchanged. This repair applies its required behavior in this checkout rather than replacing S2 or replaying unrelated slices.
+That repair's designated S1 commit was `6c21d5927b0f1ee2b7e6613205870a9770dc043d`, inspected by full SHA and `git show`. It changed only `sqlite-run-journal.ts` and `durable-sqlite-run-journal.test.ts`: empty override fallback, two stronger stale-lease assertion blocks, and formatting of already-retained metadata code/tests. The repair applied that required behavior in this checkout. Its evidence below predates the rebase and binding amendments.
 
 | Consolidated finding | Reviewer | Root, fix and closure evidence |
 | --- | --- | --- |
@@ -412,3 +429,55 @@ D: `run_26594dc395ca6165b99cfb132eb2881b`, `/tmp/s2-path-audit-2.log`, exported 
 The same run replayed the exact evidence-reviewer source on Node/Bun: **15/15** groups each, with `EMPTY_REOPEN_RUNS 1`. The exact risk-reviewer default-backend source retained `persistent:true`, one event and the run before and after close/reopen on both runtimes. Canonical source hashes are `b352b632e9799007ed45e67c39b8d1cdeee586ae` and `64900ee5188099206ac2bb711ab7df5561848f35`. A preceding audit-only attempt, `run_6a0fdf105b579030303a19e4763d7d88` (`/tmp/s2-path-audit.log`), failed on an extra closing parenthesis in the scratch comparison script. Only that scratch syntax was fixed; no product code, tests or assertions changed. The successful rerun also formatted 3431 files without fixes or diff and passed whitespace validation.
 
 All five findings are closed by the two focused repairs and current executable evidence. The resolved issues.md is removed. This batch changes only the path function, the kernel test file and these implementation notes; no API/type/schema changes, new dependencies, runtime wiring or other slices. The final note-inclusive local/Boat hash and whitespace audit is recorded in the signed commit receipt. The backend remains unwired: no UI, video or wired-runtime result is claimed. Remaining caveats are the historical unexplained unit failures, six informational diagnostics, 26 established skips and unbenchmarked full-replay/header-scan costs.
+
+## Rebase onto verified S1
+
+Initial checkout was clean at `c469c00236b2c246bb8574cc68c2299f8d9324f7`; no rebase was active. Verified S1 resolved to `be33554f91632b16a2dab9ea290322fe91af34f6`. The requested command replayed all six S2 commits, producing `108548502`, `bff300487`, `79425b56c`, `0d0b8530a`, `fbed3e1f7` and `2bbfc0d25`, each with a valid Git signature.
+
+Two conflicts occurred in `sqlite-run-journal.ts`. At `f20045927`, retained S1's `storedVersion` function rather than deleting it. At `cb0750286`, retained S1's `SqliteStoredValue` import and S2's `WorkflowSerializableValue` import. No other conflict required manual resolution. Git reported transient pack-index warnings near completion, then completed the rebase successfully; the target ancestry, replayed signatures and final file contents were readable afterward.
+
+Immediately after the rebase, the journal source/types, kernel suite, process fixture and contention suite were byte-identical to their pre-rebase S2 counterparts. Relative to verified S1, the adapter, process fixture, contention suite and S1 notes had no changes. The later user amendment below restores S1's serializer and changes only S2 owner merging and its tests. Schema names, encoding, constants, Promise/AsyncIterable interface, path fallback and metadata checks remain preserved. No runtime wiring, manifests, lockfiles, configuration or user guides changed.
+
+The first verification attempt ran the literal full unit gate because this turn's launch did not explicitly grant the historical exclusions. The subsequent binding amendment below supplies that authority and replaces the final unit criterion. No new regression was claimed merely from replaying unchanged S2 source and tests.
+
+### Pre-amendment rebase verification
+
+`C` and `F`: Boat `run_b4724a0123a065ecd48d7fb2c4df75f6`, remote log `.crabbox/s2-rebase-gates.log`, passed with `ATOMIC_JOURNAL_GATE_EXIT=0` on Node22.19.0 and Bun1.4.2. The wrapper rebuilt the updated base before checking it. `npm run format` formatted 3438 files with no fixes, `git diff --exit-code` passed, and `npm run check` passed Biome, both typecheck configurations and shrinkwrap with six informational diagnostics. The exact 19-file selector in the commands section plus journal process integration passed **20 files / 366 tests**, no skips. The literal `npx vitest --run test/unit/durable-sqlite-run-journal.test.ts` passed **173/173**. The 62 backend cases include fresh-process catalog/checkpoint reconstruction, eight real Node/Bun acquisition schedules, first-writer-wins, lease expiry, stale fencing, CAS claims, omission/JSON and deletion/recreation. Five integration cases include SIGKILL rollback/integrity, 400 concurrent child appends and accepted native JSON across processes. No interactive UI is claimed for this unwired backend.
+
+`D`: before the amendments, local `git diff --exit-code` confirmed the complete journal directory, backend regression suite, kernel suite and three relevant process fixtures unchanged from pre-rebase S2. A second exact diff confirmed the adapter, journal process fixture, contention suite and S1 notes unchanged from verified S1. The verified-base kernel test diff adds only helper imports and two persistent-default-path cases; it removes no assertion. All six replayed commits report signature status `G`. Whitespace checks passed. Current post-amendment evidence follows below.
+
+### Binding amendment verification
+
+The original literal full-unit attempt `run_975d688104e4cfab6a9045b62beef483` failed eight unchanged environment-sensitive cases in the two files now explicitly excluded by the user: 930 files passed, two failed; 10,709 tests passed, eight failed, 26 pre-existing skips, 124.91s. Every failure reported an untrusted runtime-cache ancestor. Read-only inspection `run_f6b8f30f9a654f39f8e297c59d9f31fe` observed normal uid/gid1000 and umask0002 and ran cached qlty0.654.0 metrics. No setup or trust behavior was changed. The subsequent user direction ends that investigation and authorizes exactly the established two exclusions.
+
+The first owner-parity tracer `run_9b93955e542190cbc86732eff4732e2f` was not valid defect evidence: the paused fixture lacked progress, so the SDK helper found no resumable run. The fixture now supplies one completed checkpoint in its registration metadata, and all cases run before claiming the intended RED result. The parity check compares complete journal handles with the in-memory handle's JSON representation, since the latter contains undefined optional properties omitted by the journal. It does not remove modelOwner or other defined fields from comparisons.
+
+Owner RED `run_8fc51c05144310224f61df98a3b083e8` ran all 63 backend cases: 62 passed and the parity case failed because the released journal handle omitted `modelOwner: "owner"`. The minimal change removes only the destructuring of modelOwner before applying the merge. GREEN `run_7a6f9e68edd8509dc53f04e4007cc991` passed all 63 cases without skips. The omission test now starts without a modelOwner and still verifies that genuinely absent metadata stays omitted. The parity case covers old release replacement, release, reclaim, explicit owner replacement, persisted full snapshots and reopen at each phase.
+
+The standard-JSON regression replaces the S2-only negative-zero-preservation expectation. It compares ordinary numeric inputs and checkpoint outputs with `JSON.parse(JSON.stringify(original))`, checks header/event bytes for zero rather than negative zero, exercises repeated status/prompt/message/summary snapshots and reopens, and verifies that caller input remains unchanged. S1's native raw-JSON tests remain untouched.
+
+JSON RED `run_80b094c0c52efe95e16bbba16da1cc8e` ran all 63 backend cases: 62 passed and the standard-JSON case observed `-0` instead of `0`. Restored the exact verified S1 `serializeJson` body and removed its now-unused type import. No other S1 journal code or tests were changed. The native-lexeme S2 test now compares a later full snapshot with the standard JSON representation; its original raw checkpoint lexemes and caller serialization counts remain checked. GREEN `run_94d9eaeb3b76e9e4147fbcb732dee1d7` passed all **241 tests** across backend63, kernel173 and process5, no skips. Remote formatting changed one loop layout in the S2 test; that exact formatting was applied locally.
+
+The serializer restoration is supervisor-approved and is identified by a `Journal contract change:` commit-body line; it restores the verified contract rather than introducing a new encoding.
+
+### Current post-amendment evidence
+
+`C`, `F`: Boat `run_b0f7b86c61a296862ee1eb29296d946d`, `.crabbox/s2-amended-gates.log`, completed with `ATOMIC_JOURNAL_GATE_EXIT=0`.
+
+| Check | Current result |
+| --- | --- |
+| `npm run format`; `git diff --exit-code` | 3438 files, no fixes; no formatter diff |
+| `npm run check` | Biome, root and package typechecks, published shrinkwrap passed; six informational diagnostics |
+| Exact 19 durable suites plus journal process integration | 20 files, 367 tests passed, no skips; includes all 63 backend, 173 kernel and five process cases |
+| `npx vitest --run test/unit/durable-sqlite-run-journal.test.ts` | 173/173 passed, no skips |
+| `npx --no-install tsc -p .crabbox/completion5-tsconfig.json --noEmit` | Passed exact Promise, AsyncIterable, header, lease, outcome, backend registration, schema/version and stored-value identities |
+| Node22.19.0 and Bun1.4.2 `.crabbox/s2-amended-runtime.mjs` | Five groups passed on each runtime: exact stale fields/tombstone, metadata widths/cardinality, durable native values and schema, ownership fencing, complete fresh-process rebuild |
+| Node and Bun `.crabbox/s2-standard-json.mjs` | Both passed direct journal/backend standard-JSON bytes, owner release/reclaim merge, fresh reopen and caller preservation |
+| Node and Bun `.crabbox/completion5-path.mjs` | Both passed default-path persistence with separate temporary agent roots |
+| `.crabbox/qlty/qlty metrics --functions` on both production files | Cached qlty0.654.0 executed successfully with unchanged config; pre-amendment baseline is `.crabbox/s2-rebase-qlty.log`, current metrics `.crabbox/s2-amended-qlty.log` |
+
+The amended runtime probe is a separately named copy of the inspected retained probe. Its single changed assertion expects retained modelOwner under the new binding merge rule, rather than the superseded omission rule; no check is removed. Probe hashes: `bd8dbf2cf06359a0064560da98dcb491f7a93cd2` for that copy, `d4b701e1d2274430069cfa1cd16da94be7f6adcc` for the new standard-JSON probe. The original probe remains unchanged. All probe databases and agent roots are isolated temporary directories. These supplement permanent regressions rather than replacing them.
+
+`U`: Boat `run_92a7832545ea426119d5e10d7882453e`, `.crabbox/s2-amended-unit.log`, ran exactly `npm run test:unit -- --exclude test/unit/durable-embedded-postgres-root.test.ts --exclude test/unit/durable-embedded-postgres.test.ts` alone. The wrapper applied exactly two exclusions. **930 files / 10,612 tests passed**, 26 pre-existing skips, 128.33s, `ATOMIC_JOURNAL_GATE_EXIT=0`. No test, assertion, concurrency, timeout, environment identity or cache-trust setting was changed to obtain this pass.
+
+`D`: the final local diff against verified S1 preserves its serializer, path, metadata logic and all original kernel assertions; only the previously approved synchronous companions remain additive. The amendment changes one owner-merge line, restores the serializer body/removes its unused import, adds owner parity coverage and adjusts S2 JSON expectations. The adapter, event/schema types beyond the existing companion interface, process fixtures and S1 notes remain unchanged. The final note-inclusive Boat hash/format audit and signed commit identifier are recorded in the completion receipt. No implementation or executable gate remains unresolved.

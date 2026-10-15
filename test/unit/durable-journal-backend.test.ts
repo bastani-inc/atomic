@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { join, resolve } from "node:path";
 import { afterEach, test, vi } from "vitest";
+import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import {
 	JournalDurableBackend,
 	JournalOwnershipError,
@@ -16,6 +17,11 @@ import {
 	StaleLeaseError,
 } from "../../packages/workflows/src/durable/journal/types.js";
 import { FOREIGN_LIVE_WORKFLOW_WINDOW_MS } from "../../packages/workflows/src/durable/resume-eligibility.js";
+import {
+	reclaimReleasedRunsOwnedBy,
+	releasePausedRunsOwnedBy,
+} from "../../packages/workflows/src/durable/sdk-owner-release.js";
+import type { DurableWorkflowHandle } from "../../packages/workflows/src/durable/types.js";
 import { classifyControlError } from "../../packages/workflows/src/extension/workflow-control-failure.js";
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../../packages/workflows/src/runs/foreground/stage-session-heartbeat.js";
 import type { PendingStageMessage } from "../../packages/workflows/src/shared/store-types.js";
@@ -170,7 +176,6 @@ test("status claims use full snapshots, omit absent fields and clear omitted own
 		inputs: {},
 		createdAt: 1,
 		status: "running",
-		modelOwner: "owner",
 		releasedModelOwner: "old",
 	});
 	const previous = backend.getWorkflow("run")!;
@@ -196,6 +201,47 @@ test("status claims use full snapshots, omit absent fields and clear omitted own
 		false,
 	);
 	assert.deepEqual(backend.journal.readEntries("run"), before);
+});
+
+test("owner release and reclaim match the in-memory backend before and after reopen", async () => {
+	vi.useFakeTimers({ toFake: ["Date"] });
+	vi.setSystemTime(1_000);
+	const path = database();
+	let journal = await open(path);
+	const memory = new InMemoryDurableBackend();
+	const input = {
+		workflowId: "run",
+		name: "owned",
+		inputs: {},
+		createdAt: 1,
+		status: "paused" as const,
+		completedCheckpoints: 1,
+		modelOwner: "owner",
+		releasedModelOwner: "old-release",
+	};
+	for (const backend of [memory, journal]) backend.registerWorkflow(input);
+	const verify = async (releasedModelOwner?: string, modelOwner = "owner") => {
+		const expected = JSON.parse(JSON.stringify(memory.getWorkflow("run"))) as DurableWorkflowHandle;
+		assert.deepEqual(journal.getWorkflow("run"), expected);
+		assert.equal(expected.modelOwner, modelOwner);
+		assert.equal(expected.releasedModelOwner, releasedModelOwner);
+		const snapshot = journal.journal.readEntries("run").at(-1)!;
+		assert.deepEqual(snapshot.event.payload, expected);
+		await journal.close();
+		journal = await open(path);
+		assert.deepEqual(journal.getWorkflow("run"), expected);
+	};
+	await verify("old-release");
+	for (const backend of [memory, journal]) assert.deepEqual(await releasePausedRunsOwnedBy(backend, "owner"), ["run"]);
+	await verify("owner");
+	for (const backend of [memory, journal]) await reclaimReleasedRunsOwnedBy(backend, "owner");
+	await verify();
+	for (const backend of [memory, journal])
+		assert.equal(
+			await backend.transitionWorkflowStatus("run", ["paused"], "paused", undefined, undefined, undefined, "new"),
+			true,
+		);
+	await verify(undefined, "new");
 });
 
 test("checkpoint payloads preserve unusual text, duplicate arrays and completion ordering on reopen", async () => {
@@ -853,22 +899,22 @@ test("inactive deletion rechecks the acquired equal-sequence incarnation", async
 	assert.equal(observer.journal.readEntries("run").length, 1);
 });
 
-test("native negative zero survives backend events, folds and repeated snapshots", async () => {
+test("backend writes use standard JSON for negative zero across repeated snapshots", async () => {
 	const path = database();
-	const nativeJson = JSON as typeof JSON & { rawJSON(text: string): Readonly<{ rawJSON: string }> };
-	const raw = nativeJson.rawJSON("-0");
-	const input = Object.freeze({ value: raw });
+	const input = Object.freeze({ value: -0 });
+	const expected = JSON.parse(JSON.stringify(input)) as { value: number };
+	const output = JSON.parse(JSON.stringify(-0)) as number;
 	const backend = await open(path);
 	backend.registerWorkflow({ workflowId: "run", name: "zero", inputs: input, createdAt: 0, status: "running" });
-	backend.recordCheckpoint({ ...checkpoint(), output: raw });
+	backend.recordCheckpoint({ ...checkpoint(), output: -0 });
 	const verify = (reader: JournalDurableBackend) => {
-		assert.deepEqual(reader.getWorkflow("run")!.inputs, { value: -0 });
-		assert.ok(Object.is(reader.getToolOutput("run", "hash"), -0));
-		assert.deepEqual(reader.toMetadata("run")!.inputs, { value: -0 });
-		assert.ok(Object.is(reader.getToolCheckpoint("run", "hash")!.output, -0));
+		assert.deepEqual(reader.getWorkflow("run")!.inputs, expected);
+		assert.ok(Object.is(reader.getToolOutput("run", "hash"), output));
+		assert.deepEqual(reader.toMetadata("run")!.inputs, expected);
+		assert.ok(Object.is(reader.getToolCheckpoint("run", "hash")!.output, output));
 		const stored = reader.listCheckpoints("run")[0]!;
 		assert.ok(stored.kind === "tool");
-		assert.ok(Object.is(stored.output, -0));
+		assert.ok(Object.is(stored.output, output));
 	};
 	verify(backend);
 	for (let repeat = 0; repeat < 2; repeat++) {
@@ -888,13 +934,20 @@ test("native negative zero survives backend events, folds and repeated snapshots
 			handle?: { inputs: { value: number } };
 			output?: number;
 		};
-		if (entry.event.type === RUN_EVENT_TYPES.checkpointRecorded) assert.ok(Object.is(payload.output, -0));
-		else assert.ok(Object.is((payload.handle ?? payload).inputs!.value, -0));
+		if (entry.event.type === RUN_EVENT_TYPES.checkpointRecorded) assert.ok(Object.is(payload.output, output));
+		else assert.deepEqual((payload.handle ?? payload).inputs, expected);
+	}
+	const db = new JournalDatabase(path);
+	try {
+		assert.ok(db.get<{ json: string }>("SELECT header_json AS json FROM runs")!.json.includes('"value":0'));
+		for (const row of db.all<{ json: string }>("SELECT payload AS json FROM events"))
+			assert.equal(row.json.includes(":-0"), false);
+	} finally {
+		db.close();
 	}
 	await backend.close();
 	verify(await open(path));
-	assert.equal(input.value, raw);
-	assert.equal(raw.rawJSON, "-0");
+	assert.ok(Object.is(input.value, -0));
 });
 
 for (const action of ["claim", "delete"] as const) {
@@ -1160,7 +1213,7 @@ test("backend serialization keeps native lexemes and calls caller toJSON once pe
 	backend.setWorkflowStatus("run", "paused");
 	assert.equal(calls, 3);
 	const expected = { values: [123, -0, "a", "\ud800", "💡"] };
-	assert.deepEqual(backend.getWorkflow("run")!.inputs, expected);
+	assert.deepEqual(backend.getWorkflow("run")!.inputs, JSON.parse(JSON.stringify(expected)));
 	assert.deepEqual((await open(path)).getToolOutput("run", "hash"), expected);
 	assert.equal(input.values, values);
 });
