@@ -11,6 +11,7 @@ import type { Store } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot, StoreSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
+import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 import { makeTestTui } from "../unit/overlay-graph-helpers.js";
 
 function stage(
@@ -256,6 +257,7 @@ const store: Store = {
 };
 
 const view = new GraphView({
+	piKeybindings: s5aKeybindings(),
 	mode: "overlay",
 	runId: run?.id ?? null,
 	store,

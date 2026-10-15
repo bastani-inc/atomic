@@ -9,7 +9,7 @@ import { appendProseTurn, mockSession, run, workflow } from "./executor-shared.j
 import type { AgentSessionAdapter, StageSessionCreateOptions } from "./stage-runner-helpers.js";
 import { mkdtemp, rm, tmpdir } from "./stage-runner-helpers.js";
 
-for (const options of [undefined, {}, { thinkingLevel: "low" }] satisfies (StageOptions | undefined)[]) {
+for (const options of [undefined, {}, { model: "provider/model:low" }] satisfies (StageOptions | undefined)[]) {
 	for (const persist of [false, true]) {
 		test(`stages with ${JSON.stringify(options)} inherit invocation cwd with persistence=${persist} (#3551)`, async () => {
 			const cwd = await mkdtemp(join(tmpdir(), "workflow-owner-cwd-"));

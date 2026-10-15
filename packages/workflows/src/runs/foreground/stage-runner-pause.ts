@@ -176,9 +176,6 @@ export class StageSessionPause {
 				admitRelease();
 				releasedQueuedMessages = false;
 			} else {
-				// Legacy adapters with no callback parameter linearize at invocation.
-				// Native Atomic sessions call this at their final synchronous release.
-				if (nativeQueuePause.resumeQueuedMessages.length === 0) admitRelease();
 				releasedQueuedMessages = await nativeQueuePause.resumeQueuedMessages(admitRelease);
 				admitRelease();
 			}

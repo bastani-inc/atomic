@@ -86,7 +86,7 @@ export interface WorkflowUIAdapter {
 	confirm(message: string): Promise<boolean>;
 	select<T extends string>(message: string, options: readonly T[]): Promise<T>;
 	editor(initial?: string): Promise<string>;
-	custom?<T>(factory: WorkflowCustomUiFactory<T>, options?: WorkflowCustomUiOptions): Promise<T>;
+	custom<T>(factory: WorkflowCustomUiFactory<T>, options?: WorkflowCustomUiOptions): Promise<T>;
 }
 
 export interface WorkflowRunContext<
@@ -423,7 +423,6 @@ export interface ToolNodeSnapshot extends WorkflowSerializableObject {
 	readonly ordinal: number;
 	readonly parentIds: readonly string[];
 	readonly status: "pending" | "running" | "completed" | "failed" | "cached" | "cancelled";
-	readonly topologyState?: "unavailable";
 	readonly replayed?: boolean;
 	readonly executionOrder?: number;
 	readonly startedAt?: number;
@@ -450,8 +449,7 @@ export interface RunResult<TOutputs extends WorkflowOutputValues = WorkflowOutpu
 	readonly exited?: boolean;
 	readonly exitReason?: string;
 	readonly stages: readonly StageSnapshot[];
-	/** Always populated by the runtime; optional for legacy structural literals. */
-	readonly toolNodes?: readonly ToolNodeSnapshot[];
+	readonly toolNodes: readonly ToolNodeSnapshot[];
 }
 
 export type ResolvedInputs<TInputs extends WorkflowInputValues = WorkflowInputValues> = Readonly<TInputs> &

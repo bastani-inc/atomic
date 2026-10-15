@@ -95,6 +95,7 @@ import type {
   WorkflowCustomUiComponent, WorkflowCustomUiFactory, WorkflowCustomUiKeybindings, WorkflowCustomUiOptions,
   WorkflowCustomUiOverlayHandle, WorkflowCustomUiOverlayOptions, WorkflowCustomUiTheme, WorkflowCustomUiTui,
 } from "@bastani/workflows";
+// @ts-expect-error The removed imperative workflow API is not exported.
 import { runWorkflow } from "@bastani/workflows";
 // @ts-expect-error WorkflowOptions was removed with the object-form runWorkflow API.
 import type { WorkflowOptions } from "@bastani/workflows";
@@ -170,7 +171,7 @@ const authoredWorkflow = workflow({
     const requiredNickname: string = ctx.inputs.nickname;
     // @ts-expect-error stage options do not accept prompt/output-only fields.
     ctx.stage("invalid-stage-output", { output: "stage.md" });
-    const typedStage = ctx.stage("typed-stage", { cwd: ".", fallbackModels: ["fallback-model"], scopedModels: [{ model: "model-a", thinkingLevel: "low" }] });
+    const typedStage = ctx.stage("typed-stage", { cwd: ".", fallbackModels: ["fallback-model"], scopedModels: [{ model: "model-a:low" }] });
     // @ts-expect-error standalone authors cannot supply runtime SessionManager objects without Atomic types.
     ctx.stage("invalid-session-manager", { sessionManager: {} });
     // @ts-expect-error standalone authors cannot supply partial runtime SettingsManager objects without Atomic types.
@@ -478,8 +479,6 @@ void blockedNamedStageStatus;
 void invalidStageStatus;
 void forgedWorkflow;
 run(authoredWorkflow, providedInputs, { adapters, ui, signal: new AbortController().signal, config: runtimeConfig, models: catalog, mcp, persistence, cancellation: cancellationRegistry });
-// @ts-expect-error runWorkflow is a removed runtime stub and must not be called.
-runWorkflow();
 type RemovedWorkflowOptions = WorkflowOptions;
 type RemovedWorkflowRunOptions = WorkflowRunOptions;
 export default workflow;

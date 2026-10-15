@@ -606,7 +606,7 @@ describe("/workflow run-control chat commands", () => {
 	test.sequential("top-level /workflow reload reports reload failures", async () => {
 		const { pi, commands } = buildMockPi();
 		addFactoryStubs(pi);
-		pi.getWorkflowResources = () => {
+		pi.refreshWorkflowResources = async () => {
 			throw new Error("package loader unavailable");
 		};
 
@@ -635,7 +635,7 @@ describe("/workflow run-control chat commands", () => {
 			const { pi, commands } = buildMockPi();
 			addFactoryStubs(pi);
 			let refreshCalls = 0;
-			pi.getWorkflowResources = () => [{ path: existingWorkflow, enabled: true }];
+			pi.refreshWorkflowResources = async () => [{ path: existingWorkflow, enabled: true }];
 			pi.refreshWorkflowResources = async () => {
 				refreshCalls += 1;
 				return [
@@ -660,43 +660,6 @@ describe("/workflow run-control chat commands", () => {
 			const completions = (await workflowCmd.options.getArgumentCompletions?.("refresh-add")) ?? [];
 			assert.equal(
 				completions?.some((completion) => completion.label === "refresh-added"),
-				true,
-			);
-		} finally {
-			await rm(dir, { recursive: true, force: true });
-		}
-	});
-
-	test.sequential("top-level /workflow reload falls back to getWorkflowResources when refresh is unavailable", async () => {
-		const dir = await mkdtemp(join(tmpdir(), "atomic-workflow-refresh-fallback-"));
-		try {
-			const fallbackWorkflow = join(dir, "fallback.ts");
-			await writeWorkflowFixture(fallbackWorkflow, "refresh-fallback");
-
-			const { pi, commands } = buildMockPi();
-			addFactoryStubs(pi);
-			let getCalls = 0;
-			pi.getWorkflowResources = () => {
-				getCalls += 1;
-				return [{ path: fallbackWorkflow, enabled: true }];
-			};
-
-			const factoryModule = await import("../../packages/workflows/src/extension/index.js");
-			factoryModule.default(pi);
-
-			const workflowCmd = commands.find((c) => c.name === "workflow")!;
-			const { ctx, messages } = buildCtx();
-
-			await workflowCmd.options.handler("reload", ctx);
-
-			assert.equal(getCalls, 1);
-			assert.equal(
-				messages.some((message) => message.includes("Reloaded workflow resources.")),
-				true,
-			);
-			const completions = (await workflowCmd.options.getArgumentCompletions?.("refresh-fall")) ?? [];
-			assert.equal(
-				completions?.some((completion) => completion.label === "refresh-fallback"),
 				true,
 			);
 		} finally {

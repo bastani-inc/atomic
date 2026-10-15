@@ -2,14 +2,13 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, test } from "vitest";
+import { afterEach, test } from "vitest";
 import { getWorkflowHostModules } from "../../packages/coding-agent/src/core/extensions/loader-host-modules.js";
 import { extensionLoaderTestHooks } from "../../packages/coding-agent/src/core/extensions/loader-virtual-modules.js";
 import { discoverWorkflows } from "../../packages/workflows/src/extension/discovery.js";
 import {
 	loadWorkflowModule,
 	validateWorkflowDefinitionShape,
-	workflowModuleLoaderTestHooks,
 } from "../../packages/workflows/src/extension/workflow-module-loader.js";
 
 const tempDirs: string[] = [];
@@ -24,63 +23,7 @@ function tempDir(prefix: string): string {
 	return dir;
 }
 
-function isTypeBoxAlias(specifier: string): boolean {
-	return (
-		specifier === "typebox" ||
-		specifier.startsWith("typebox/") ||
-		specifier === "@sinclair/typebox" ||
-		specifier.startsWith("@sinclair/typebox/")
-	);
-}
-
-describe("workflow module host-peer aliases", () => {
-	test("keeps TypeBox parity and only admits the approved workflow host aliases (#3454)", async () => {
-		const extensionVirtualAliases = Object.keys(await extensionLoaderTestHooks.loadVirtualModules());
-		const extensionNodeAliases = Object.keys(extensionLoaderTestHooks.getAliases());
-		const hostModules = await getWorkflowHostModules();
-		const workflowAliases = workflowModuleLoaderTestHooks.getVirtualModuleSpecifiers(hostModules);
-		const workflowTypeBoxAliases = workflowAliases.filter(isTypeBoxAlias).sort();
-
-		assert.deepEqual(
-			workflowTypeBoxAliases,
-			extensionVirtualAliases.filter(isTypeBoxAlias).sort(),
-			"workflow aliases diverged from the extension loader's bundled/virtual path",
-		);
-		assert.deepEqual(
-			workflowTypeBoxAliases,
-			extensionNodeAliases.filter(isTypeBoxAlias).sort(),
-			"workflow aliases diverged from the extension loader's Node/development path",
-		);
-		const workflowSpecificAliases = workflowAliases.filter((specifier) => !isTypeBoxAlias(specifier));
-		assert.ok(workflowSpecificAliases.length > 0);
-		assert.ok(
-			workflowSpecificAliases.every(
-				(specifier) =>
-					Object.hasOwn(hostModules, specifier) ||
-					specifier === "@bastani/atomic/workflows" ||
-					specifier.startsWith("@bastani/atomic/workflows/") ||
-					specifier === "@bastani/workflows" ||
-					specifier.startsWith("@bastani/workflows/"),
-			),
-		);
-		for (const extensionAliases of [extensionVirtualAliases, extensionNodeAliases]) {
-			const sharedNonTypeBoxAliases = workflowAliases.filter(
-				(specifier) => extensionAliases.includes(specifier) && !isTypeBoxAlias(specifier),
-			);
-			assert.deepEqual(
-				sharedNonTypeBoxAliases.sort(),
-				["@bastani/atomic", "@bastani/pi-ai", "@bastani/pi-ai/providers/all"].filter((specifier) =>
-					extensionAliases.includes(specifier),
-				),
-			);
-		}
-		assert.ok(extensionVirtualAliases.includes("@bastani/pi-ai"));
-		assert.ok(extensionNodeAliases.includes("@bastani/pi-ai"));
-		assert.ok(workflowAliases.includes("@bastani/pi-ai/providers/all"));
-	});
-});
-
-test("executes every TypeBox alias while discovering a production-only Git package workflow", () => {
+test("executes current schema modules while discovering a production-only Git package workflow", () => {
 	const packageRoot = tempDir("atomic-git-workflow-module-");
 	const workflowsDir = join(packageRoot, "workflows");
 	mkdirSync(workflowsDir, { recursive: true });
@@ -99,18 +42,11 @@ test("executes every TypeBox alias while discovering a production-only Git packa
 			'import { Type as CanonicalType } from "typebox";',
 			'import { Compile as CanonicalCompile } from "typebox/compile";',
 			'import { Check as CanonicalCheck } from "typebox/value";',
-			'import { Type as LegacyType } from "@sinclair/typebox";',
-			'import { Compile as LegacyCompile } from "@sinclair/typebox/compile";',
-			'import { Check as LegacyCheck } from "@sinclair/typebox/value";',
 			"const canonicalSchema = CanonicalType.String();",
-			"const legacySchema = LegacyType.String();",
 			"export const aliasResults = {",
 			"  canonicalRoot: canonicalSchema.type === 'string',",
 			"  canonicalCompile: CanonicalCompile(canonicalSchema).Check('ok'),",
 			"  canonicalValue: CanonicalCheck(canonicalSchema, 'ok'),",
-			"  legacyRoot: legacySchema.type === 'string',",
-			"  legacyCompile: LegacyCompile(legacySchema).Check('ok'),",
-			"  legacyValue: LegacyCheck(legacySchema, 'ok'),",
 			"};",
 		].join("\n"),
 		"utf-8",
@@ -135,9 +71,6 @@ test("executes every TypeBox alias while discovering a production-only Git packa
 		canonicalRoot: true,
 		canonicalCompile: true,
 		canonicalValue: true,
-		legacyRoot: true,
-		legacyCompile: true,
-		legacyValue: true,
 	});
 });
 

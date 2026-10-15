@@ -64,8 +64,12 @@ function testUi(onEditor: () => void = () => {}): {
 	confirm: (message: string) => Promise<boolean>;
 	select: <T extends string>(message: string, options: readonly T[]) => Promise<T>;
 	editor: (initial?: string) => Promise<string>;
+	custom: () => Promise<never>;
 } {
 	return {
+		custom: async () => {
+			throw new Error("Unexpected custom UI invocation in primitive fixture");
+		},
 		input: async () => "input",
 		confirm: async () => true,
 		select: async <T extends string>(_message: string, options: readonly T[]) => options[0]!,

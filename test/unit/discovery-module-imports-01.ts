@@ -41,7 +41,7 @@ export function registerDiscoveryModuleImportsSuite1(): void {
 			await writeFile(
 				cjsPath,
 				`
-  const { workflow } = require("@bastani/workflows");
+  const { workflow } = require("@bastani/atomic/workflows");
   module.exports = workflow({
     name: "Gamma",
     description: "cjs workflow",

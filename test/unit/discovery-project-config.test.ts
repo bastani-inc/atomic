@@ -126,7 +126,7 @@ describe("discoverWorkflows — package workflows", () => {
 		writeFileSync(
 			fp,
 			[
-				`import { workflow } from "@bastani/workflows";`,
+				`import { workflow } from "@bastani/atomic/workflows";`,
 				``,
 				`export default workflow({`,
 				`  name: "sdk-import",`,

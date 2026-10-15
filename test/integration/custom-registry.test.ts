@@ -57,7 +57,7 @@ const USER_WF_NAME = "User Global Integration Workflow";
 /** Minimal valid WorkflowDefinition as a .js source string. */
 function makeWorkflowSource(normalizedName: string, name: string): string {
 	return `
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 const definition = workflow({
   name: ${JSON.stringify(name)},

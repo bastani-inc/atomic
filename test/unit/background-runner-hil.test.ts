@@ -38,6 +38,9 @@ function makeUISpy(): UISpy {
 	const selectCalls: Array<{ message: string; options: readonly string[] }> = [];
 	const editorCalls: Array<string | undefined> = [];
 	return {
+		custom: async () => {
+			throw new Error("Unexpected custom UI invocation in primitive fixture");
+		},
 		inputCalls,
 		confirmCalls,
 		selectCalls,

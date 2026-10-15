@@ -6,6 +6,7 @@ import { BOLD, RESET } from "../../packages/workflows/src/tui/color-utils.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { renderSwitcher } from "../../packages/workflows/src/tui/switcher.js";
 import { Key, visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
+import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 import * as h from "./overlay-graph-helpers.js";
 
 const { makeStage, makeSnap, makeStore, makeRun, defaultTheme, visibleText, assertVisibleWidths, makeView } = h;
@@ -44,6 +45,7 @@ describe("GraphView keyboard navigation", () => {
 			version: 1,
 		};
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store: makeStore(snap),
@@ -90,6 +92,7 @@ describe("GraphView keyboard navigation", () => {
 		};
 		const attached: Array<{ runId: string; stageId: string }> = [];
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store: makeStore(snap),
@@ -263,6 +266,7 @@ describe("GraphView keyboard navigation", () => {
 		const store = makeStore(snap);
 		const onStageAttach = vi.fn(() => {});
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -422,6 +426,7 @@ describe("GraphView keyboard navigation", () => {
 		const snap = makeSnap(stages);
 		const store = makeStore(snap);
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,

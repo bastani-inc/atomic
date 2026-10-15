@@ -3,20 +3,10 @@
 import assert from "node:assert/strict";
 import { describe, it, vi } from "vitest";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
-import { makeFakeKeybindings } from "../support/fake-keybindings.js";
+import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 import * as h from "./overlay-graph-helpers.js";
 
-const {
-	makeStage,
-	makeSnap,
-	makeRunPromptSnap,
-	makePendingPrompt,
-	makeStore,
-	makeRun,
-	defaultTheme,
-	visibleText,
-	makeView,
-} = h;
+const { makeStage, makeSnap, makeStore, makeRun, defaultTheme, visibleText, makeView } = h;
 
 const CTRL_X_VARIANTS = ["\x18", "\x1b[120;5u", "\x1b[120;5:1u", "\x1b[27;5;120~"];
 
@@ -46,6 +36,7 @@ describe("GraphView return to main chat", () => {
 		let returnedToChat = 0;
 		const before = structuredClone(snap.runs);
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store: makeStore(snap),
@@ -63,36 +54,13 @@ describe("GraphView return to main chat", () => {
 		view.dispose();
 	});
 
-	it("Ctrl+X returns before a visible legacy prompt can consume a conflicting editor binding", () => {
-		const store = makeStore(
-			makeRunPromptSnap([makeStage("prompt-owner")], makePendingPrompt({ id: "legacy-prompt" })),
-		);
-		const resolved: h.PromptResolution[] = [];
-		const onDetach = vi.fn(() => {});
-		const view = new GraphView({
-			mode: "overlay",
-			runId: "run-1",
-			store,
-			graphTheme: defaultTheme,
-			onDetach,
-			onPromptResolve: (runId, promptId, response) => resolved.push({ runId, promptId, response }),
-			piKeybindings: makeFakeKeybindings({ "tui.editor.deleteCharForward": ["\x18"] }),
-		});
-
-		view.handleInput("\x18");
-
-		assert.equal(onDetach.mock.calls.length, 1);
-		assert.equal(view.promptState?.rawText, "");
-		assert.deepEqual(resolved, []);
-		view.dispose();
-	});
-
 	it("Ctrl+X variants return to main chat while the stage switcher is open", () => {
 		for (const key of CTRL_X_VARIANTS) {
 			const store = makeStore(makeSnap([makeStage("A"), makeStage("B")]));
 			const onDetach = vi.fn(() => {});
 			const before = structuredClone(store.runs());
 			const view = new GraphView({
+				piKeybindings: s5aKeybindings(),
 				mode: "overlay",
 				runId: "run-1",
 				store,
@@ -113,6 +81,7 @@ describe("GraphView return to main chat", () => {
 	it("q remains printable in the stage switcher instead of navigating or quitting", () => {
 		const onDetach = vi.fn(() => {});
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store: makeStore(makeSnap([makeStage("A")])),
@@ -129,27 +98,10 @@ describe("GraphView return to main chat", () => {
 		view.dispose();
 	});
 
-	it("q remains printable in a visible legacy prompt", () => {
-		const onDetach = vi.fn(() => {});
-		const view = new GraphView({
-			mode: "overlay",
-			runId: "run-1",
-			store: makeStore(makeRunPromptSnap([makeStage("A")], makePendingPrompt())),
-			graphTheme: defaultTheme,
-			onDetach,
-			piKeybindings: makeFakeKeybindings(),
-		});
-
-		view.handleInput("q");
-
-		assert.equal(onDetach.mock.calls.length, 0);
-		assert.equal(view.promptState?.rawText, "q");
-		view.dispose();
-	});
-
 	it("Ctrl+D no longer returns from the graph", () => {
 		const onDetach = vi.fn(() => {});
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store: makeStore(makeSnap([makeStage("A")])),

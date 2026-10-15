@@ -13,10 +13,7 @@ export interface PromptCallsiteFrame {
 	readonly columnNumber: string;
 }
 
-const PACKAGED_WORKFLOW_RUNTIME_ROOTS = [
-	"/dist/builtin/workflows/src/",
-	"/node_modules/@bastani/workflows/src/",
-] as const;
+const PACKAGED_WORKFLOW_RUNTIME_ROOTS = ["/dist/builtin/workflows/src/"] as const;
 
 function normalizeSlashes(path: string): string {
 	return path.replace(/\\/g, "/");

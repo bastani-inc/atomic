@@ -49,7 +49,6 @@ export function stripWorkflowOnlyOptions(
 		schema: _schema,
 		mcp: _mcp,
 		fallbackModels,
-		fallbackThinkingLevels: _fallbackThinkingLevels,
 		modelConstraints: _modelConstraints,
 		taskNeeds: _taskNeeds,
 		inheritedModelConstraints: _inheritedModelConstraints,

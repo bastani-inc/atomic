@@ -58,8 +58,7 @@ export interface RunDetail extends RunExecutionObservation {
 	readonly accumulatedDurationMs?: number;
 	readonly inputs: Readonly<WorkflowInputValues>;
 	readonly stages: readonly RunSnapshot["stages"][number][];
-	/** Always populated by inspectRun; optional for legacy structural literals. */
-	readonly tools?: readonly NonNullable<RunSnapshot["toolNodes"]>[number][];
+	readonly tools: readonly RunSnapshot["toolNodes"][number][];
 	readonly deliveryStates?: readonly StickyStageDeliveryStatus[];
 	readonly result?: WorkflowOutputValues;
 	readonly error?: string;

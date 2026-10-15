@@ -9,8 +9,6 @@ import {
 } from "../../packages/intercom/workflow-stage-target.js";
 import {
 	formatWorkflowStageTarget as formatWorkflowStageTargetFromWorkflows,
-	legacyWorkflowStageTargetMigrationHint as legacyWorkflowStageTargetMigrationHintFromWorkflows,
-	parseLegacyWorkflowStageTarget as parseLegacyWorkflowStageTargetFromWorkflows,
 	parseWorkflowStageTarget as parseWorkflowStageTargetFromWorkflows,
 	withWorkflowStageTargetFinalSegment as withWorkflowStageTargetFinalSegmentFromWorkflows,
 } from "../../packages/workflows/src/shared/workflow-stage-target.js";
@@ -41,21 +39,12 @@ describe("workflow-stage target grammar", () => {
 	test("keeps the Intercom and workflows grammar mirrors in parity", () => {
 		for (const target of TARGET_FIXTURES) {
 			assert.deepEqual(parseWorkflowStageTargetFromWorkflows(target), parseWorkflowStageTarget(target), target);
-			assert.deepEqual(
-				parseLegacyWorkflowStageTargetFromWorkflows(target),
-				parseLegacyWorkflowStageTarget(target),
-				target,
-			);
 		}
 		const canonical = formatWorkflowStageTarget(ROOT_RUN_ID, CHILD_RUN_ID, "stage-id");
 		assert.equal(formatWorkflowStageTargetFromWorkflows(ROOT_RUN_ID, CHILD_RUN_ID, "stage-id"), canonical);
 		assert.equal(
 			withWorkflowStageTargetFinalSegmentFromWorkflows(canonical, "reviewer-a"),
 			withWorkflowStageTargetFinalSegment(canonical, "reviewer-a"),
-		);
-		assert.equal(
-			legacyWorkflowStageTargetMigrationHintFromWorkflows(canonical),
-			legacyWorkflowStageTargetMigrationHint(canonical),
 		);
 	});
 	test("parses literal stage-name, stage-id, child-run, and boundary paths", () => {

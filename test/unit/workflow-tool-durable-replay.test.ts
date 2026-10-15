@@ -75,6 +75,14 @@ describe("workflow tool durable-only checkpoint replay", () => {
 			argsHash,
 			output: "cached-output",
 			completedAt: 2,
+			topology: {
+				version: 1,
+				nodeId: `tool:${argsHash}`,
+				ordinal: 1,
+				order: 0,
+				parentIds: [],
+				run: { runId: workflowId, runName: "tool-durable-replay" },
+			},
 		});
 		assert.deepEqual(store.runs(), []);
 

@@ -161,7 +161,7 @@ function makeFakeAtomicSdk(
 }
 
 describe("prepareAtomicStageSessionOptions", () => {
-	test("uses the Atomic default agent dir for resource loading without turning it into a user override", async () => {
+	test("uses the current default agent dir explicitly for resource loading", async () => {
 		const projectDir = join("/tmp", "project");
 		const atomicAgentDir = join("/home", "user", ".atomic", "agent");
 		const { sdk, loaderOptions, settingsCalls, reloads } = makeFakeAtomicSdk(atomicAgentDir);
@@ -169,7 +169,7 @@ describe("prepareAtomicStageSessionOptions", () => {
 		const options = await prepareAtomicStageSessionOptions({ cwd: projectDir }, sdk);
 
 		assert.equal(options?.cwd, projectDir);
-		assert.equal(options?.agentDir, undefined);
+		assert.equal(options?.agentDir, atomicAgentDir);
 		assert.equal(loaderOptions[0]?.cwd, projectDir);
 		assert.equal(loaderOptions[0]?.agentDir, atomicAgentDir);
 		assert.equal(settingsCalls[0]?.cwd, projectDir);

@@ -287,7 +287,7 @@ describe("workflow control lifecycle notices", () => {
 				startedAt: 100,
 				budget: { maxDurationMs: 200, warnAtPercent: 80 },
 				budgetState: {
-					warning: { dimension: "duration", reading: 180, ceiling: 200, percent: 90 },
+					warnings: { duration: { dimension: "duration", reading: 180, ceiling: 200, percent: 90 } },
 				},
 			});
 			assert.deepEqual(kinds(sent), ["budget_warning"]);

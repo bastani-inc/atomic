@@ -24,6 +24,7 @@ interface TimerRecord {
 function seedCompletedTool(backend: InMemoryDurableBackend, runId: string, name = "historical workflow"): void {
 	backend.registerWorkflow({ workflowId: runId, name, inputs: {}, createdAt: 1, updatedAt: 3, status: "completed" });
 	backend.recordCheckpoint({
+		topology: { version: 1, nodeId: `tool:${"done-hash"}`, ordinal: 1, order: 1, parentIds: [] },
 		kind: "tool",
 		workflowId: runId,
 		checkpointId: "tool:done",

@@ -563,7 +563,7 @@ export function createWorkflowExtensionRuntimeState(
 		return trackLazyDiscovery(reloadCoordinator.request(workflowDiscoveryGeneration));
 	}
 	async function loadPackageWorkflowPaths(): Promise<string[]> {
-		const packageResources = (await pi.refreshWorkflowResources?.()) ?? pi.getWorkflowResources?.() ?? [];
+		const packageResources = (await pi.refreshWorkflowResources?.()) ?? [];
 		return packageResources.filter((resource) => resource.enabled !== false).map((resource) => resource.path);
 	}
 	async function reloadWorkflowResourcesNow(

@@ -127,7 +127,7 @@ export async function writeWorkflowFixture(filePath: string, name: string): Prom
 	const encodedName = JSON.stringify(name);
 	await writeFile(
 		filePath,
-		`import { workflow } from "@bastani/workflows";
+		`import { workflow } from "@bastani/atomic/workflows";
 export default workflow({
   name: ${encodedName},
   description: "",
@@ -345,7 +345,7 @@ export async function makeRegisteredWorkflowToolWithResource(
 	const { pi, sent } = buildMockPi();
 	addFactoryStubs(pi);
 	pi.disableAsyncDiscovery = false;
-	pi.getWorkflowResources = () => [{ path: filePath, enabled: true }];
+	pi.refreshWorkflowResources = async () => [{ path: filePath, enabled: true }];
 
 	const events = new Map<string, Array<Parameters<NonNullable<ExtensionAPI["on"]>>[1]>>();
 	pi.on = (event, handler) => {

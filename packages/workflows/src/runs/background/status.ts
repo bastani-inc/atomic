@@ -91,13 +91,8 @@ export { type InspectRunResult, inspectRun, type RunDetail } from "./run-inspect
 // statusRuns
 // ---------------------------------------------------------------------------
 
-/**
- * Returns a summary of all retained runs in the current store/session.
- *
- * Terminal snapshots are retained for inspection and are visible by default;
- * the legacy `all` option is accepted as a compatibility no-op.
- */
-export function statusRuns(opts?: { all?: boolean; store?: Store }): RunStatusEntry[] {
+/** Returns all retained runs in the current store/session. */
+export function statusRuns(opts?: { store?: Store }): RunStatusEntry[] {
 	const activeStore = opts?.store ?? defaultStore;
 
 	const snapshot = readGraphStoreSnapshot(activeStore);

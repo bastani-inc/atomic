@@ -983,12 +983,6 @@ test("ctx.ui run prompts and synthetic prompt stages are hidden and broker-refus
 			status: "running",
 			createdAt: 1,
 		});
-		const { buildBackgroundUIAdapter } = await import(
-			"../../packages/workflows/src/extension/background-ui-adapter.js"
-		);
-		const answer = buildBackgroundUIAdapter(store, rootId).confirm("Proceed?");
-		const runPrompt = store.runs().find((run) => run.id === rootId)?.pendingPrompt;
-		assert.ok(runPrompt);
 		assert.equal(store.recordStagePendingPrompt(childId, promptStage.id, footprint), true);
 		assert.equal(store.recordStageAwaitingInput(childId, customStage.id, true), true);
 		assert.equal(
@@ -999,8 +993,7 @@ test("ctx.ui run prompts and synthetic prompt stages are hidden and broker-refus
 		await Promise.all(completions);
 		await sender.start();
 		await raw.register("prompt-observer", group);
-		const runTargets = [`${group}/${runPrompt.id}`, `${group}/${runPrompt.kind}`];
-		const allTargets = [...runTargets, ...nestedTargets];
+		const allTargets = nestedTargets;
 		for (const phase of ["awaiting_input", "completed"]) {
 			if (phase === "completed") {
 				assert.equal(store.resolveStagePendingPrompt(childId, promptStage.id, footprint.id, "answer"), true);
@@ -1103,10 +1096,6 @@ test("ctx.ui run prompts and synthetic prompt stages are hidden and broker-refus
 				true,
 			);
 		}
-		assert.equal(store.resolvePendingPrompt(rootId, runPrompt.id, true), true);
-		assert.equal(await answer, true);
-		await Promise.all(completions);
-		assert.equal(store.runs().find((run) => run.id === rootId)?.pendingPrompt, undefined);
 		// A real model session can be awaiting input even with no model display text.
 		owner.context.model.id = "";
 		await executeIntercom(sender, { action: "join", group: "default" });

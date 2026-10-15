@@ -124,6 +124,16 @@ export interface CreateToolPrimitiveInput {
 	readonly runTopology?: DurableStageRunTopology;
 }
 
+export class DurableToolTopologyError extends Error {
+	constructor(
+		readonly workflowId: string,
+		readonly argsHash: string,
+	) {
+		super(`Missing durable tool topology for ${workflowId}:${argsHash}`);
+		this.name = "DurableToolTopologyError";
+	}
+}
+
 function cloneToolArgs(
 	args: Readonly<Record<string, WorkflowSerializableValue>>,
 ): Readonly<Record<string, WorkflowSerializableValue>> {
@@ -329,7 +339,9 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
 		(input.checkpointSourceWorkflowId === undefined || input.checkpointSourceWorkflowId === input.workflowId
 			? undefined
 			: input.backend.getToolCheckpoint(input.checkpointSourceWorkflowId, argsHash));
-	const fromSource = own === undefined && cached !== undefined;
+	if (cached !== undefined && cached.topology === undefined) {
+		throw new DurableToolTopologyError(input.workflowId, argsHash);
+	}
 	const capturedSource = cached?.source ?? source;
 	const node: ToolNodeSnapshot = {
 		kind: "tool",
@@ -341,7 +353,6 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
 		ordinal: cached?.topology?.ordinal ?? ordinal,
 		parentIds: Object.freeze(cached?.topology?.parentIds ?? []),
 		status: "pending",
-		...(cached !== undefined && cached.topology === undefined ? { topologyState: "unavailable" as const } : {}),
 		...(cached !== undefined ? { replayed: true } : {}),
 		...(cached?.topology?.order !== undefined ? { executionOrder: cached.topology.order } : {}),
 		...(cached?.topology?.startedAt !== undefined ? { startedAt: cached.topology.startedAt } : {}),
@@ -355,7 +366,7 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
 		control.releaseAdmission();
 		const endedAt = cached.topology?.endedAt ?? cached.completedAt;
 		try {
-			await recordReplayedToolTopology(input, node, cached, argsHash, endedAt, fromSource);
+			await recordReplayedToolTopology(input, node, cached, argsHash, endedAt);
 			const returnedOutcome =
 				cached.outcomeKind === undefined ? undefined : workflowToolOutcomeFromValue<T>(cached.output);
 			if (cached.outcomeKind !== undefined && returnedOutcome === undefined) {
@@ -843,35 +854,19 @@ async function recordReplayedToolTopology(
 	cached: DurableToolCheckpoint,
 	argsHash: string,
 	endedAt: number,
-	fromSource: boolean,
 ): Promise<void> {
 	const runTopology = input.runTopology;
 	if (runTopology === undefined) return;
-	// Same-run replay of a pre-#1991 record must not invent topology, even when
-	// this executor also has a continuation source. Only a cache hit that came
-	// from the source run may write topology under the new run id.
-	if (cached.topology === undefined && runTopology.parentRunId === undefined && !fromSource) return;
-	if (cached.topology?.run?.runId === runTopology.runId) return;
-	const topology =
-		cached.topology === undefined
-			? {
-					version: DURABLE_TOOL_TOPOLOGY_VERSION,
-					nodeId: node.id,
-					ordinal: node.ordinal,
-					order: node.executionOrder ?? 0,
-					parentIds: [...node.parentIds],
-					endedAt,
-					run: { ...runTopology },
-				}
-			: {
-					...cached.topology,
-					parentIds: [...node.parentIds],
-					order: node.executionOrder ?? cached.topology.order,
-					endedAt,
-					run: { ...runTopology },
-				};
+	if (cached.topology === undefined) throw new DurableToolTopologyError(input.workflowId, argsHash);
+	if (cached.topology.run?.runId === runTopology.runId) return;
+	const topology = {
+		...cached.topology,
+		parentIds: [...node.parentIds],
+		order: node.executionOrder ?? cached.topology.order,
+		endedAt,
+		run: { ...runTopology },
+	};
 	const unchanged =
-		cached.topology !== undefined &&
 		JSON.stringify(cached.topology.parentIds) === JSON.stringify(topology.parentIds) &&
 		JSON.stringify(cached.topology.run) === JSON.stringify(topology.run) &&
 		cached.topology.endedAt === topology.endedAt;

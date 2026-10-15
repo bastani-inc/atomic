@@ -1,4 +1,4 @@
-import type { BudgetReport } from "../shared/budget.js";
+import type { BudgetDimension, BudgetReport } from "../shared/budget.js";
 import {
 	actionableReturnedStatusText,
 	effectiveRunStatus,
@@ -488,7 +488,7 @@ function budgetWarningReports(run: RunSnapshot): readonly BudgetReport[] {
 	const warnings = Object.values(run.budgetState?.warnings ?? {}).filter(
 		(warning): warning is BudgetReport => warning !== undefined,
 	);
-	return warnings.length > 0 ? warnings : run.budgetState?.warning === undefined ? [] : [run.budgetState.warning];
+	return warnings;
 }
 function makeBudgetWarningNotice(run: RunSnapshot, warning: BudgetReport): WorkflowLifecycleNoticeDetails {
 	return {
@@ -577,7 +577,7 @@ function terminalRunKey(kind: "completed" | "failed" | "blocked", run: RunSnapsh
 	const occurrence = kind === "blocked" ? (run.blockedAt ?? lifecycleOccurrenceAt(run, kind)) : "";
 	return occurrence === undefined ? `${kind}:${run.id}` : `${kind}:${run.id}:${occurrence}`;
 }
-function budgetWarningKey(run: RunSnapshot, dimension = run.budgetState?.warning?.dimension ?? "duration"): string {
+function budgetWarningKey(run: RunSnapshot, dimension: BudgetDimension): string {
 	return `budget_warning:${run.id}:${dimension}`;
 }
 

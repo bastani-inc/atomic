@@ -82,8 +82,7 @@ export interface WorkflowStatusToolNode {
 	readonly resultSummary?: string;
 	readonly error?: string;
 	readonly attachable: false;
-	/** Owning run identity; emitted for summaries, optional for source compatibility. */
-	readonly runId?: string;
+	readonly runId: string;
 	readonly runName?: string;
 	readonly depth?: number;
 }

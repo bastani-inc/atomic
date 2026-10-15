@@ -1492,6 +1492,7 @@ describe("workflow heartbeat anchor checkpoint", () => {
 	/** One ordinary tool checkpoint, so the run has durable progress of its own. */
 	function recordProgress(backend: ReturnType<typeof createInMemoryTestBackend>, runId: string): void {
 		backend.recordCheckpoint({
+			topology: { version: 1, nodeId: `tool:${"some-tool"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: runId,
 			checkpointId: "progress-1",
@@ -1876,6 +1877,7 @@ describe("workflow heartbeat anchor durable acknowledgement", () => {
 			status: "running",
 		});
 		backend.recordCheckpoint({
+			topology: { version: 1, nodeId: `tool:${"some-tool"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: runId,
 			checkpointId: "progress-1",

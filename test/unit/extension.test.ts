@@ -299,7 +299,7 @@ test("session_start warns when discovered workflows fail validation", async () =
 			registerMessageRenderer: () => undefined,
 			registerFlag: () => undefined,
 			registerShortcut: () => undefined,
-			getWorkflowResources: () => [{ path: workflowPath, enabled: true }],
+			refreshWorkflowResources: async () => [{ path: workflowPath, enabled: true }],
 			on: (event, handler) => {
 				handlers.set(event, handler as (event: unknown, ctx: unknown) => Promise<void> | void);
 			},

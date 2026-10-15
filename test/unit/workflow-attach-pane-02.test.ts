@@ -164,64 +164,6 @@ function _assertNextGraphEnterAttaches(pane: WorkflowAttachPane, expectedStageId
 }
 
 describe("WorkflowAttachPane", () => {
-	test("initial workflow connect Enter does not submit a run-level prompt", async () => {
-		const clock = makeClock();
-		const store = createStore();
-		setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
-		const prompt = makePendingPrompt({
-			id: "run-select-prompt",
-			kind: "select",
-			choices: ["first", "second"],
-		});
-		assert.equal(store.recordPendingPrompt("run-1", prompt), true);
-		const pending = store.awaitPendingPrompt("run-1", prompt.id);
-		const pane = new WorkflowAttachPane({
-			store,
-			graphTheme: deriveGraphTheme({}),
-			runId: "run-1",
-			onClose: () => {},
-			now: clock.now,
-		});
-
-		pane.handleInput(Key.enter);
-		assert.equal(store.runs()[0]?.pendingPrompt?.id, prompt.id);
-
-		clock.advance(201);
-		pane.handleInput(Key.enter);
-		assert.equal(await pending, "first");
-		pane.dispose();
-	});
-
-	test("retargeted workflow connect Enter does not submit a run-level prompt", async () => {
-		const clock = makeClock();
-		const store = createStore();
-		setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
-		setupRun(store, "run-2", [{ id: "stage-b", name: "B" }]);
-		const prompt = makePendingPrompt({
-			id: "retarget-run-select-prompt",
-			kind: "select",
-			choices: ["first", "second"],
-		});
-		assert.equal(store.recordPendingPrompt("run-2", prompt), true);
-		const pending = store.awaitPendingPrompt("run-2", prompt.id);
-		const pane = new WorkflowAttachPane({
-			store,
-			graphTheme: deriveGraphTheme({}),
-			runId: "run-1",
-			onClose: () => {},
-			now: clock.now,
-		});
-
-		pane.retarget("run-2");
-		pane.handleInput(Key.enter);
-		assert.equal(store.runs().find((run) => run.id === "run-2")?.pendingPrompt?.id, prompt.id);
-
-		clock.advance(201);
-		pane.handleInput(Key.enter);
-		assert.equal(await pending, "first");
-		pane.dispose();
-	});
-
 	test("slash switcher selection swaps directly to selected stage chat", () => {
 		const store = createStore();
 		setupRun(store, "run-1", [

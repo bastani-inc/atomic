@@ -73,12 +73,9 @@ export function formatWorkflowResourceLoadWarning(error: unknown): string {
 
 export function formatWorkflowReloadReport(report: WorkflowReloadReport, reason?: string): string {
 	const reasonSuffix = reason?.trim() ? ` (${reason.trim()})` : "";
-	const legacySuccess = report.generation === 0 && report.workflowCount === 0 && report.diagnostics.length === 0;
 	const headline =
 		report.outcome === "applied"
-			? legacySuccess
-				? `Reloaded workflow resources${reasonSuffix}.`
-				: `Reloaded workflow resources${reasonSuffix}. ${report.workflowCount} workflow(s), generation ${report.generation}.`
+			? `Reloaded workflow resources${reasonSuffix}. ${report.workflowCount} workflow(s), generation ${report.generation}.`
 			: report.outcome === "failed"
 				? `Workflow resources could not be refreshed; the current registry was retained: ${report.error}`
 				: "Workflow reload was superseded by a newer session; no stale resources were applied.";

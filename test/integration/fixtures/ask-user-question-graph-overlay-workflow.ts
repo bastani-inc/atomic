@@ -14,7 +14,7 @@
  * viewer used to reject outright.
  */
 
-import { workflow } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
 
 export default workflow({
 	name: "ask-user-question-graph-overlay",

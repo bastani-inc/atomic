@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Workflow discovery now uses only `.atomic` default roots, and discovered modules use `@bastani/atomic/workflows` with `typebox`. Removed deprecated workflow API stubs, separate reasoning authoring fields, old stage-target and X10 mouse input formats, and replay of checkpoints without current topology. Use model strings such as `provider/model:high` for reasoning effort. Workflow results and inspection details always include their tool collections.
+
 ## [0.9.38-alpha.3] - 2026-10-15
 
 ### Fixed

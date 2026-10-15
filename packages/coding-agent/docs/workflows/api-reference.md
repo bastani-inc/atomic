@@ -546,16 +546,14 @@ Selects the primary stage model. String values can carry the reasoning suffix de
 
 Use `model: "auto"` for prompt-based selection of an execution model and supported effort before session admission. Omission and concrete models keep prior behavior. Shared chain/parallel defaults accept `auto`; each stage receives one decision. The router sees the final supplied prompt, including interpolated inputs and supplied task context, rather than only a stage name.
 
-`modelConstraints?: ModelConstraints` applies hard restrictions to auto selection and execution/compaction fallbacks. Fields are `allowedModels?: string[]`, `allowedProviders?: string[]`, `excludedProviders?: string[]`, `allowedEfforts?: (string | null)[]`, `maxInputCost?: number`, `maxOutputCost?: number`, `minContextWindow?: number`, and `requiredInputs?: ("text" | "image")[]`. Model IDs are exact provider/model IDs. Costs are catalog USD per million tokens including pricing tiers, not task budgets. Efforts are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `null` for nonreasoning models. Empty allowlists admit nothing. Inherited and stage restrictions all hold; a task override cannot widen shared restrictions. An authored `thinkingLevel` restricts auto selection to that supported effort. The user's [`modelRouting.allowedModels` and `excludedModels`](/settings#modelrouting) settings also apply to every auto stage, including builtin stages that omit a model; `modelConstraints` cannot widen them, and a stage whose filters leave no eligible model fails before launch.
+`modelConstraints?: ModelConstraints` applies hard restrictions to auto selection and execution/compaction fallbacks. Fields are `allowedModels?: string[]`, `allowedProviders?: string[]`, `excludedProviders?: string[]`, `allowedEfforts?: (string | null)[]`, `maxInputCost?: number`, `maxOutputCost?: number`, `minContextWindow?: number`, and `requiredInputs?: ("text" | "image")[]`. Model IDs are exact provider/model IDs. Costs are catalog USD per million tokens including pricing tiers, not task budgets. Efforts are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `null` for nonreasoning models. Empty allowlists admit nothing. Inherited and stage restrictions all hold; a task override cannot widen shared restrictions. Use `allowedEfforts` to restrict automatic reasoning selection. The user's [`modelRouting.allowedModels` and `excludedModels`](/settings#modelrouting) settings also apply to every auto stage, including builtin stages that omit a model; `modelConstraints` cannot widen them, and a stage whose filters leave no eligible model fails before launch.
 
 An auto stage has no session until it receives prompt text. Model-dependent operations such as `compact()` or `cycleModel()` before that point report an error; call `prompt()` first or deliberately select a concrete model with `setModel()`. Session operations after admission keep their normal behavior.
 
-### `fallbackModels` / `fallbackThinkingLevels`
+### `fallbackModels`
 
 ```typescript
 readonly fallbackModels?: readonly string[];
-/** @deprecated Prefer a reasoning suffix on each fallback model. */
-readonly fallbackThinkingLevels?: readonly string[];
 ```
 
 `fallbackModels` tries the primary and each declared fallback in order. If all fail, the stage fails; the current Atomic-selected model is not appended implicitly. To use it as a final fallback, include it explicitly. The chain advances for:
@@ -590,27 +588,16 @@ Resume sends a replacement objective exactly once, including when pause occurred
 
 Workflow-code errors, tool failures, validation failures, refusals, content-filter or safety blocks, cancellations, and task failures do not advance the chain. A reattached finished stage starts on the model that last succeeded; if that model fails retryably, the full chain restarts from the primary.
 
-### `thinkingLevel` (deprecated)
-
-```typescript
-/** @deprecated Prefer suffixing model/fallbackModels entries with `:level`. */
-readonly thinkingLevel?: WorkflowThinkingLevel;
-```
-
-Sets the default reasoning effort for candidates without a suffix. A suffix on the model string wins.
-
 ### `scopedModels`
 
 ```typescript
 readonly scopedModels?: readonly WorkflowScopedModel[];
 interface WorkflowScopedModel {
   readonly model: WorkflowModelValue;
-  /** @deprecated Prefer a model-string reasoning suffix. */
-  readonly thinkingLevel?: WorkflowThinkingLevel;
 }
 ```
 
-Supplies stage-scoped model objects and optional compatibility reasoning levels. The nested `thinkingLevel` field is deprecated.
+Supplies stage-scoped model values. Use a model-string reasoning suffix to select effort.
 
 ### `tools` / `noTools` / `excludedTools`
 
@@ -653,7 +640,7 @@ readonly schema?: TSchema;
 
 Enables one schema-backed `structured_output` call for that item. `ctx.stage`, `ctx.task`, `ctx.chain`, and `ctx.parallel` items accept a TypeBox schema or a plain JSON Schema descriptor object. The calling model supplies `instructions` and a nonempty named `state`, plus optional exact `model` and `fallbackModels` IDs. The tool infers a value matching the schema; that inferred value becomes the schema-backed `stage.prompt(...)` result or `WorkflowTaskResult.structured`. The calling model's arguments are not the result. The inferred result has no fixed size limit beyond the selected model's own output-token limit. Omit `model` to use the current stage chat model. After the primary and explicit fallbacks, the current chat model is tried if it was not already used. Atomic resolves each ID through the stage model registry. A registered classifier is used only when the schema is a finite Choice; otherwise that candidate is skipped and the skip is recorded. A classifier runtime failure advances to the next model unless the request was cancelled or refused for safety.
 
-A schema-backed `StageContext` supports one `prompt()` call, so create another stage for another structured prompt. A missing call, or an inference failure that exhausts the tool's own model chain, receives up to three corrective follow-ups quoting the contract error. That budget is per stage model candidate. A candidate that spends the initial prompt and all three follow-ups without a valid inferred result fails, and the stage advances to the next entry in [`fallbackModels`](#fallbackmodels-/-fallbackthinkinglevels), which receives the original stage prompt and its own fresh budget. With no stage fallback left, the stage fails with the contract error rather than completing. An explicit tool allowlist automatically receives `structured_output`, while items without `schema` do not.
+A schema-backed `StageContext` supports one `prompt()` call, so create another stage for another structured prompt. A missing call, or an inference failure that exhausts the tool's own model chain, receives up to three corrective follow-ups quoting the contract error. That budget is per stage model candidate. A candidate that spends the initial prompt and all three follow-ups without a valid inferred result fails, and the stage advances to the next entry in [`fallbackModels`](#fallbackmodels), which receives the original stage prompt and its own fresh budget. With no stage fallback left, the stage fails with the contract error rather than completing. An explicit tool allowlist automatically receives `structured_output`, while items without `schema` do not.
 
 With both `schema` and `output`, ordinary text from the successful `structured_output` message goes to the artifact. The inferred tool result is the typed value. Corrective attempts and later turns cannot replace that pair. If the successful message has no ordinary text, the artifact uses the most recent earlier assistant text without a `structured_output` call, or stays empty with a warning. The pattern builtins save their inter-stage decisions as JSON separately.
 
@@ -838,11 +825,10 @@ interface CompleteStageOpts {
   readonly model?: WorkflowModelValue;
   readonly maxTokens?: number;
   readonly fallbackModels?: readonly string[];
-  readonly fallbackThinkingLevels?: readonly string[];
 }
 ```
 
-These options apply to `stage.complete(...)`. `fallbackThinkingLevels` is the same deprecated compatibility helper used by stage options.
+These options apply to `stage.complete(...)`.
 
 ### Reasoning levels
 
@@ -856,17 +842,7 @@ await ctx.task("review", {
 });
 ```
 
-The standalone `thinkingLevel` stage option is deprecated. It still applies as a default to any candidate without a suffix, and when both are present the suffix wins, but new workflows should fold the effort into the model strings:
-
-```diff
--  model: "openai/gpt-5.5",
--  fallbackModels: ["anthropic/claude-opus-4-8"],
--  thinkingLevel: "high",
-+  model: "openai/gpt-5.5:high",
-+  fallbackModels: ["anthropic/claude-opus-4-8:high"],
-```
-
-This applies everywhere a stage accepts a model: direct `ctx.task`/`ctx.chain`/`ctx.parallel` options, `ctx.stage` options, builtin workflow stage definitions, and workflow parameters. `fallbackThinkingLevels` is an optional compatibility helper aligned by index to `fallbackModels`; it applies only to fallback entries that do not already carry a suffix. Each `WorkflowModelAttempt` reports the resolved model and the effective reasoning effort used for that attempt.
+Reasoning suffixes apply to direct `ctx.task`/`ctx.chain`/`ctx.parallel` options, `ctx.stage` options, builtin workflow stage definitions, and workflow parameters. Each `WorkflowModelAttempt` reports the resolved model and effective reasoning effort for that attempt. Use suffixes rather than separate reasoning fields.
 
 ## StageContext
 
@@ -1183,9 +1159,9 @@ Each stage snapshot carries its graph position: `parentIds` lists the stages it 
 
 ## Programmatic usage
 
-`@bastani/atomic/workflows` is Atomic's published workflow SDK. Import `workflow` from that specifier, import `Type` from `typebox`, and export the definition returned by `workflow({...})`. Workflow helpers may also import the host TypeBox runtime subpaths `typebox/compile` and `typebox/value`; the legacy `@sinclair/typebox` root and matching subpaths remain supported. Keep runtime helpers such as widget factories and shared utilities in a subdirectory outside the top-level discovery scan, such as `.atomic/workflows/lib/`; see [Workflow Locations](/workflows/operations#workflow-locations).
+`@bastani/atomic/workflows` is Atomic's published workflow SDK. Import `workflow` from that specifier, import `Type` from `typebox`, and export the definition returned by `workflow({...})`. Workflow helpers may also import `typebox/compile` and `typebox/value`. Keep runtime helpers such as widget factories and shared utilities in a subdirectory outside the top-level discovery scan, such as `.atomic/workflows/lib/`; see [Workflow Locations](/workflows/operations#workflow-locations).
 
-Package authors list both `@bastani/atomic` and `typebox` in `peerDependencies`. The `@bastani/atomic` package publishes compiled JavaScript and declarations for `@bastani/atomic/workflows`, `@bastani/atomic/workflows/builtin`, and each `@bastani/atomic/workflows/builtin/*` module. TypeScript resolves those exports directly under `moduleResolution: NodeNext`. When Atomic executes a workflow file or an imported helper, its runtime loader resolves the workflow SDK and supported TypeBox aliases to the same in-memory host modules.
+Package authors list both `@bastani/atomic` and `typebox` in `peerDependencies`. The `@bastani/atomic` package publishes compiled JavaScript and declarations for `@bastani/atomic/workflows`, `@bastani/atomic/workflows/builtin`, and each `@bastani/atomic/workflows/builtin/*` module. TypeScript resolves those exports directly under `moduleResolution: NodeNext`. When Atomic executes a workflow file or an imported helper, its runtime loader supplies the workflow SDK and current TypeBox modules.
 
 The loader also shares the host's modules for the exact specifiers `@bastani/atomic`, `@bastani/pi-ai`, and `@bastani/pi-ai/providers/all`. These exceptions expose Atomic's public root API and the AI compatibility API and provider transports. The host's versions take precedence over project-local copies, including in standalone-binary installs without project packages. Workflow files and relative imports still refresh on reload. Other deep subpaths resolve from disk. The workflow loader does not share the extension loader's remaining host aliases, including the separate agent-core and UI packages, other AI subpaths, and `proper-lockfile`. Older or alternative hosts without [`getWorkflowHostModules()`](/extensions/api-reference#pi-getworkflowhostmodules) retain filesystem resolution for the three specifiers.
 

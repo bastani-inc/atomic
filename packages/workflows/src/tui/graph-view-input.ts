@@ -2,7 +2,6 @@ import { GRAPH_SCROLL_STEP_COLS } from "./graph-view-constants.js";
 import { GraphViewRenderer } from "./graph-view-render.js";
 import { APP_ACTION, isKeybindingsLike, type KeybindingsLike, matchesAction } from "./keybindings-adapter.js";
 import { isTerminalLeftMousePress, parseTerminalMouseInput, terminalMouseWheelDirection } from "./mouse-input.js";
-import { defaultResponseFor, handlePromptCardInput } from "./prompt-card.js";
 import { filterStages, type SwitcherState } from "./switcher.js";
 import { Key, matchesKey } from "./text-helpers.js";
 
@@ -12,8 +11,6 @@ interface MouseWheelDelta {
 }
 
 const GRAPH_SCROLL_WHEEL_LINES = 4;
-/** Raw Ctrl+O is only a compatibility fallback for hosts without keybindings. */
-const TOOL_EXPAND_FALLBACK = "\x0f";
 
 /** Keyboard, mouse, switcher, prompt, and focus navigation handling. */
 export abstract class GraphViewInputController extends GraphViewRenderer {
@@ -28,13 +25,6 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		if (this.switcherOpen) return this._handleSwitcherInput(data);
 		const wheelDelta = this._mouseWheelDelta(data);
 		if (wheelDelta) return this._handleWheelDelta(wheelDelta);
-		// Stage-local HIL is represented by graph nodes and remains graph-first;
-		// only the legacy run-level prompt card sets `promptState`. Keep that
-		// fallback answerable, but let the scrollbar and wheel controls above
-		// continue to belong to the graph instead of leaking to the transcript.
-		// Printable keys such as "/" belong to the prompt card while legacy
-		// run-level text/editor prompts own input.
-		if (this.promptState) return this._handlePromptInput(data);
 		return this._handleGraphInput(data);
 	}
 
@@ -118,7 +108,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		const keybindings = this._promptKeybindings();
 		// Do not run a raw fallback beside a host manager: a user remap must win,
 		// and an explicitly unbound action must remain unbound.
-		return keybindings ? matchesAction(keybindings, data, APP_ACTION.toolsExpand) : data === TOOL_EXPAND_FALLBACK;
+		return matchesAction(keybindings, data, APP_ACTION.toolsExpand);
 	}
 
 	private _isReturnToMainChatInput(data: string): boolean {
@@ -128,32 +118,6 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 	private _returnToMainChat(): void {
 		if (this.onDetach) this.onDetach();
 		else this.onHide?.();
-	}
-
-	private _handlePromptInput(data: string): boolean {
-		const state = this.promptState;
-		if (!state) return false;
-		const action = handlePromptCardInput(data, state, this._promptKeybindings());
-		if (action.kind === "noop") return true;
-		const runId = this.runId;
-		if (!runId) return true;
-		const response = action.kind === "cancel" ? defaultResponseFor(state.prompt) : action.response;
-		this._resolvePrompt(runId, state.prompt.id, response);
-		return true;
-	}
-
-	private _resolvePrompt(runId: string, promptId: string, response: unknown): void {
-		// Clear local state immediately so the card disappears even if the
-		// host doesn't re-emit a store snapshot between resolve and render.
-		this.promptState = null;
-		if (this.onPromptResolve) {
-			this.onPromptResolve(runId, promptId, response);
-			return;
-		}
-		// Fallback path used by callers that wire GraphView directly without
-		// injecting onPromptResolve. Best-effort — if the store rejects (stale
-		// id) we already cleared local state, so we don't try to re-arm.
-		this.store.resolvePendingPrompt(runId, promptId, response);
 	}
 
 	private _handleGraphInput(data: string): boolean {
@@ -328,12 +292,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		// Tool nodes open a read-only snapshot detail; they never enter the
 		// stage-chat attach path even though they share the graph card shape.
 		if (this._openFocusedToolDetail()) return;
-		// Enter and direct node clicks attach the popup interior to the focused
-		// stage. The attach shell swaps in the stage-chat view without remounting
-		// the overlay; without a callback, fall back to the legacy expand/collapse
-		// toggle so non-attach hosts still work.
-		if (this._attachFocusedStage()) return;
-		this.detailsExpanded = !this.detailsExpanded;
+		this._attachFocusedStage();
 	}
 
 	private _attachFocusedStage(): boolean {

@@ -1,5 +1,6 @@
 import { Value } from "typebox/value";
 import { isModelAttempts, isRouterSelection } from "../durable/dbos-envelope.js";
+import type { BudgetReport } from "./budget.js";
 import type { NormalizedSessionEntry as SessionEntry } from "./persistence-restore.js";
 import { workflowSerializableObjectSchema } from "./serializable.js";
 import type { Store } from "./store.js";
@@ -235,10 +236,7 @@ export function restoreBudgetState(value: unknown): RunBudgetState | undefined {
 	const duration = report(value.duration, "duration") as RunBudgetState["duration"];
 	const tokens = report(value.tokens, "tokens") as RunBudgetState["tokens"];
 	const cost = report(value.cost, "cost") as RunBudgetState["cost"];
-	const warning = isRecord(value.warning)
-		? report(value.warning, value.warning.dimension as "duration" | "tokens" | "cost")
-		: undefined;
-	const warnings: Partial<Record<"duration" | "tokens" | "cost", RunBudgetState["warning"]>> = {};
+	const warnings: Partial<Record<"duration" | "tokens" | "cost", BudgetReport>> = {};
 	const warningValues = isRecord(value.warnings) ? value.warnings : undefined;
 	for (const dimension of ["duration", "tokens", "cost"] as const) {
 		const restored = report(warningValues?.[dimension], dimension);
@@ -258,7 +256,6 @@ export function restoreBudgetState(value: unknown): RunBudgetState | undefined {
 		...(duration !== undefined ? { duration } : {}),
 		...(tokens !== undefined ? { tokens } : {}),
 		...(cost !== undefined ? { cost } : {}),
-		...(warning !== undefined ? { warning } : {}),
 		...(Object.keys(warnings).length > 0 ? { warnings } : {}),
 		...(accounting !== undefined ? { accounting } : {}),
 		...(value.warned === true ? { warned: true } : {}),

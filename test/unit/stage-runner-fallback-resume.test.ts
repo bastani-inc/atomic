@@ -427,7 +427,7 @@ describe("reattached context overflow resumes fallback after the restored tier",
 			stageId: "unsuffixed-resume",
 			stageName: "unsuffixed-resume",
 			runId: "unsuffixed-resume",
-			stageOptions: { model: "openai/gpt-5-mini", thinkingLevel: "low", fallbackModels: ["openai/gpt-5-mini:high"] },
+			stageOptions: { model: "openai/gpt-5-mini", fallbackModels: ["openai/gpt-5-mini:high"] },
 			adapters: {
 				agentSession: {
 					async create(options) {
@@ -461,7 +461,6 @@ describe("reattached context overflow resumes fallback after the restored tier",
 			runId: "reasoning-resume",
 			stageOptions: {
 				model: "openai/gpt-5-mini:low",
-				thinkingLevel: "low",
 				fallbackModels: ["openai/gpt-5-mini:high"],
 			},
 			adapters: {

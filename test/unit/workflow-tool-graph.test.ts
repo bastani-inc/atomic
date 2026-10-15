@@ -186,52 +186,6 @@ describe("ctx.tool workflow graph execution", () => {
 		assert.deepEqual(snapshot.toolNodes?.[1]?.parentIds, [snapshot.stages[0]?.id]);
 	});
 
-	test("replays a legacy tool checkpoint without rerunning and reconstructs cached topology", async () => {
-		const workflowId = testRunId("legacy-tool-only");
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
-			workflowId,
-			name: testRunId("legacy-tool-only"),
-			inputs: {},
-			createdAt: 1,
-			status: "paused",
-			resumable: true,
-		});
-		const { durableHash } = await import("../../packages/workflows/src/durable/backend.js");
-		const argsHash = durableHash({ name: "legacy", args: {}, ordinal: 1 });
-		backend.recordCheckpoint({
-			kind: "tool",
-			workflowId,
-			checkpointId: `tool:${argsHash}`,
-			name: "legacy",
-			argsHash,
-			output: { raw: true },
-			completedAt: 2,
-		});
-		let calls = 0;
-		const definition = workflow({
-			name: testRunId("legacy-tool-only"),
-			description: "",
-			inputs: {},
-			outputs: { raw: Type.Boolean() },
-			run: async (ctx) => {
-				const value = await ctx.tool("legacy", {}, async () => {
-					calls += 1;
-					return { raw: false };
-				});
-				return value;
-			},
-		});
-
-		const result = await run(definition, {}, { runId: workflowId, store: createStore(), durableBackend: backend });
-		assert.equal(result.status, "completed");
-		assert.deepEqual(result.result, { raw: true });
-		assert.equal(calls, 0);
-		assert.equal(result.toolNodes?.[0]?.status, "cached");
-		assert.equal(result.toolNodes?.[0]?.id, `tool:${argsHash}`);
-		assert.equal(result.toolNodes?.[0]?.executionOrder, 1);
-	});
-
 	test("accepts a conditional branch whose only graph execution is ctx.tool", async () => {
 		const definition = workflow({
 			name: "conditional-tool-only",

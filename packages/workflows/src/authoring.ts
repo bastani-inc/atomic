@@ -246,11 +246,6 @@ export interface WorkflowRegistry {
 	all(): AnyWorkflowDefinition[];
 }
 
-/**
- * @deprecated Removed imperative workflow API. This runtime value only throws
- * a migration error; author workflows with workflow({...}).
- */
-export declare const runWorkflow: never;
 export declare function workflow<
 	const TInputs extends WorkflowInputSchemaMap = Record<never, never>,
 	const TOutputs extends WorkflowOutputSchemaMap = WorkflowOutputSchemaMap,

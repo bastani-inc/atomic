@@ -84,8 +84,8 @@ run(child, {}).then((runResult) => {
   void maybe;
 });
 
-const legacyResult: RunResult = { runId: "legacy", status: "completed", stages: [] };
-const failedResult: RunResult = { runId: "failed", status: "failed", stages: [], failedToolNodeId: "tool:failure" };
+const completedResult: RunResult = { runId: "completed", status: "completed", stages: [], toolNodes: [] };
+const failedResult: RunResult = { runId: "failed", status: "failed", stages: [], toolNodes: [], failedToolNodeId: "tool:failure" };
 const inspectedTool: ToolNodeSnapshot = {
   kind: "tool", id: "tool:stable", name: "publish",
   args: { branch: "main", duplicate: ["same", "same"] }, argsHash: "args", ordinal: 2,
@@ -94,7 +94,7 @@ const inspectedTool: ToolNodeSnapshot = {
   result: { ok: true }, source: "async () => ({ ok: true })", resultSummary: "ok", attachable: false,
 };
 const storeTool = createStore().runs()[0]?.toolNodes?.[0];
-const runResultTool = legacyResult.toolNodes?.[0];
+const runResultTool = completedResult.toolNodes[0];
 const failedToolNodeId: string | undefined = createStore().runs()[0]?.failedToolNodeId;
 const stableId: string | undefined = storeTool?.id;
 const toolName: string | undefined = storeTool?.name;
@@ -103,7 +103,6 @@ const ordinal: number | undefined = storeTool?.ordinal;
 const order: number | undefined = storeTool?.executionOrder;
 const parents: readonly string[] | undefined = storeTool?.parentIds;
 const toolStatus: ToolNodeSnapshot["status"] | undefined = storeTool?.status;
-const topologyState: "unavailable" | undefined = storeTool?.topologyState;
 const replayed: boolean | undefined = storeTool?.replayed;
 const startedAt: number | undefined = storeTool?.startedAt;
 const endedAt: number | undefined = storeTool?.endedAt;
@@ -118,7 +117,7 @@ const runResultSource: string | undefined = runResultTool?.source;
 const resultSummary: string | undefined = storeTool?.resultSummary;
 const toolError: string | undefined = storeTool?.error;
 const attachable: false | undefined = storeTool?.attachable;
-void legacyResult;
+void completedResult;
 void failedResult;
 void inspectedTool;
 void failedToolNodeId;
@@ -129,7 +128,6 @@ void ordinal;
 void order;
 void parents;
 void toolStatus;
-void topologyState;
 void replayed;
 void startedAt;
 void endedAt;
@@ -221,7 +219,10 @@ function writeSourceFixture(fixtureRoot: string): void {
 		JSON.stringify(
 			{
 				extends: join(repoRoot, "tsconfig.json"),
-				compilerOptions: { noEmit: true },
+				compilerOptions: {
+					noEmit: true,
+					paths: { "@bastani/workflows": [join(workflowsPackage, "src/authoring.ts")] },
+				},
 				include: ["src/**/*.ts"],
 			},
 			null,

@@ -1,3 +1,5 @@
+// @ts-nocheck
+import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 // @ts-nocheck -- focused GraphView tool-detail input/rendering coverage
 
 import assert from "node:assert/strict";
@@ -153,7 +155,7 @@ function tool(overrides: Partial<ToolNodeSnapshot> = {}): ToolNodeSnapshot {
 	};
 }
 
-function viewFor(node: ToolNodeSnapshot, piKeybindings?: unknown): GraphView {
+function viewFor(node: ToolNodeSnapshot, piKeybindings: unknown = s5aKeybindings()): GraphView {
 	const store = createStore();
 	store.recordRunStart({
 		id: RUN_ID,
@@ -192,6 +194,7 @@ function viewForAtRows(node: ToolNodeSnapshot, rows: number): GraphView {
 		endedAt: 200,
 	});
 	return new GraphView({
+		piKeybindings: s5aKeybindings(),
 		mode: "overlay",
 		runId: RUN_ID,
 		store,
@@ -1354,6 +1357,7 @@ describe("tool graph inspection", () => {
 			endedAt: 2,
 		});
 		const attachable = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: RUN_ID,
 			store,
@@ -1375,6 +1379,7 @@ describe("tool graph inspection", () => {
 			startedAt: 1,
 		});
 		const plain = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: RUN_ID,
 			store: plainStore,
@@ -1388,6 +1393,7 @@ describe("tool graph inspection", () => {
 
 		const emptyStore = createStore();
 		const empty = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: null,
 			store: emptyStore,

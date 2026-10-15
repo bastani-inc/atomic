@@ -24,14 +24,6 @@ describe("prompt callsite stack frame filtering", () => {
 		assert.equal(frame, undefined);
 	});
 
-	test("filters node_modules workflow runtime frames", () => {
-		const frame = normalizedPromptCallsiteFrame(
-			"    at promptReplayKey (/repo/node_modules/@bastani/workflows/src/runs/foreground/executor.ts:262:13)",
-		);
-
-		assert.equal(frame, undefined);
-	});
-
 	test("filters Windows packaged workflow runtime frames after slash normalization", () => {
 		const frame = normalizedPromptCallsiteFrame(
 			"    at promptReplayKey (C:\\repo\\packages\\coding-agent\\dist\\builtin\\workflows\\src\\runs\\foreground\\executor.ts:262:13)",
@@ -78,7 +70,6 @@ describe("prompt callsite stack frame filtering", () => {
 			isWorkflowRuntimeFrame("packages/coding-agent/dist/builtin/workflows/src/runs/foreground/executor.ts"),
 			true,
 		);
-		assert.equal(isWorkflowRuntimeFrame("node_modules/@bastani/workflows/src/runs/foreground/executor.ts"), true);
 		assert.equal(isWorkflowRuntimeFrame(".atomic/workflows/packages/workflows/src/review.ts"), false);
 		assert.equal(isWorkflowRuntimeFrame("packages/workflows/builtin/tournament.ts"), false);
 		assert.equal(isWorkflowRuntimeFrame("packages/coding-agent/dist/builtin/workflows/builtin/tournament.ts"), false);

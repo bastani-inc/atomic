@@ -36,8 +36,6 @@ export interface RunBudgetState
 	readonly duration?: DurationBudgetReport;
 	readonly tokens?: UsageBudgetReport & { readonly dimension: "tokens" };
 	readonly cost?: UsageBudgetReport & { readonly dimension: "cost" };
-	/** Latest warning retained for legacy consumers; `warnings` keeps each dimension. */
-	readonly warning?: BudgetReport;
 	readonly warnings?: Partial<Record<BudgetDimension, BudgetReport>>;
 	readonly accounting?: RunBudgetAccountingState;
 	readonly wrapUpSummary?: string;
@@ -56,8 +54,6 @@ export interface ToolNodeSnapshot {
 	readonly ordinal: number;
 	readonly parentIds: readonly string[];
 	status: ToolNodeStatus;
-	/** Set when a legacy checkpoint lacks persisted topology. */
-	topologyState?: "unavailable";
 	/** True when the callback was skipped in favor of a durable checkpoint. */
 	replayed?: boolean;
 	/** Shared admission order with stages in this run. */
@@ -357,8 +353,6 @@ export interface StageSnapshot {
 	nodeKind?: "stage" | "tool";
 	/** Original tool state when a tool node is projected into stage-compatible graph rendering. */
 	toolStatus?: ToolNodeStatus;
-	/** Set when durable inspection cannot safely determine the original stage lineage. */
-	topologyState?: "unavailable";
 	startedAt?: number;
 	endedAt?: number;
 	durationMs?: number;

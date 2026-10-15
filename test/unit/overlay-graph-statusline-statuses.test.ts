@@ -1,3 +1,4 @@
+import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 /**
  * Statusline chrome of the workflow orchestrator overlay.
  *
@@ -27,6 +28,7 @@ function footerData(statuses: Map<string, string>): ReadonlyFooterDataProvider {
 
 function renderOverlay(statuses: Map<string, string>): string {
 	const view = new GraphView({
+		piKeybindings: s5aKeybindings(),
 		mode: "overlay",
 		runId: "run-1",
 		store: makeStore(makeSnap([{ ...makeStage("stage-1"), status: "running" }])),

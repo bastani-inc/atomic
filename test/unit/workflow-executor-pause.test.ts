@@ -307,6 +307,9 @@ for (const primitive of ["task", "workflow", "ui", "tool"] as const) {
 		const opts = {
 			adapters: { prompt: { prompt: effect } },
 			ui: {
+				custom: async () => {
+					throw new Error("Unexpected custom UI invocation in primitive fixture");
+				},
 				input: async () => {
 					throw new Error("unexpected input");
 				},

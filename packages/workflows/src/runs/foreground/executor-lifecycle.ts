@@ -24,9 +24,6 @@ export function assertWorkflowCreatedExecution(runSnapshot: RunSnapshot): void {
 	throw new Error(EMPTY_WORKFLOW_GRAPH_ERROR_MESSAGE);
 }
 
-/** @deprecated Use assertWorkflowCreatedExecution. */
-export const assertWorkflowCreatedStage = assertWorkflowCreatedExecution;
-
 export function appendRunEndWhenRecorded(
 	persistence: WorkflowPersistencePort | undefined,
 	recorded: boolean,

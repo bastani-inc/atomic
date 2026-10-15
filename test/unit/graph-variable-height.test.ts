@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { computeLayout, NODE_H } from "../../packages/workflows/src/tui/layout.js";
+import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 import { defaultTheme, makeSnap, makeStage, makeStore, visibleText } from "./overlay-graph-helpers.js";
 
 test("variable-height layout spaces vertical tiers by the tallest sibling and stacks horizontal siblings", () => {
@@ -36,6 +37,7 @@ test("graph reflows model-card queues without a snapshot change and updates down
 	let queued = 0;
 	const attached: string[] = [];
 	const view = new GraphView({
+		piKeybindings: s5aKeybindings(),
 		mode: "overlay",
 		runId: "run-1",
 		store: makeStore(makeSnap([model, next])),
@@ -87,6 +89,7 @@ test("queued child cards grow to preserve their full UUID, status and separate b
 	child.workflowChildRun = { alias: "child", workflow: "verify", runId };
 	child.status = "running";
 	const view = new GraphView({
+		piKeybindings: s5aKeybindings(),
 		mode: "overlay",
 		runId: "run-1",
 		store: makeStore(makeSnap([child])),

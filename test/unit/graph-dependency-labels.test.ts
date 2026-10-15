@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
+import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 import { defaultTheme, makeSnap, makeStage, makeStore, visibleText } from "./overlay-graph-helpers.js";
 
 test("graph omits single and multiple dependency counts while retaining edges and authored labels", () => {
@@ -8,6 +9,7 @@ test("graph omits single and multiple dependency counts while retaining edges an
 	stages[1]!.model = "dep-deps";
 	const before = structuredClone(stages);
 	const view = new GraphView({
+		piKeybindings: s5aKeybindings(),
 		mode: "overlay",
 		runId: "run-1",
 		store: makeStore(makeSnap(stages)),
@@ -32,6 +34,7 @@ test("fan-in graph retains branching connectors without a plural dependency labe
 	for (const stage of stages) stage.durationMs = 1200;
 	const before = structuredClone(stages);
 	const view = new GraphView({
+		piKeybindings: s5aKeybindings(),
 		mode: "overlay",
 		runId: "run-1",
 		store: makeStore(makeSnap(stages)),

@@ -1,3 +1,4 @@
+import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 /**
  * Unit tests for the detached queued-message badge (issue #2074).
  *
@@ -97,6 +98,7 @@ describe("graph queued-message badge", () => {
 		makeRunWithStage(store, "run-1", "stage-a");
 		const requests: QueueRequest[] = [];
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -116,6 +118,7 @@ describe("graph queued-message badge", () => {
 		const store = createStore();
 		makeRunWithStage(store, "run-1", "stage-a");
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -141,6 +144,7 @@ describe("graph queued-message badge", () => {
 		});
 		const requests: QueueRequest[] = [];
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -188,6 +192,7 @@ describe("graph queued-message badge", () => {
 		);
 		const requests: QueueRequest[] = [];
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,

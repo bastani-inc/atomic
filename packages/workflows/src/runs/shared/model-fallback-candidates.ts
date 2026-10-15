@@ -179,35 +179,13 @@ function isFailure(value: WorkflowResolvedModelCandidate | ModelResolutionFailur
 export function buildModelCandidates(input: {
 	readonly primaryModel?: WorkflowModelValue;
 	readonly fallbackModels?: readonly string[];
-	readonly fallbackThinkingLevels?: readonly string[];
 	readonly currentModel?: WorkflowModelValue;
 	readonly availableModels?: readonly WorkflowModelInfo[];
 	readonly preferredProvider?: string;
 }): WorkflowResolvedModelCandidate[] {
 	const rawValues: WorkflowModelValue[] = [];
 	if (input.primaryModel !== undefined) rawValues.push(input.primaryModel);
-	for (const [index, fallback] of (input.fallbackModels ?? []).entries()) {
-		// Trim once up front so the suffix split, the validation error input, and the
-		// compat concatenation all operate on the same value. Concatenating the raw
-		// (untrimmed) fallback would push trailing whitespace into the interior of
-		// `id:level`, which `resolveStringModel` can no longer trim away.
-		const trimmedFallback = fallback.trim();
-		const split = splitReasoningSuffix(trimmedFallback);
-		const compatLevel = input.fallbackThinkingLevels?.[index];
-		if (split.level === undefined && compatLevel !== undefined) {
-			if (!WORKFLOW_THINKING_LEVEL_SET.has(compatLevel)) {
-				throw new WorkflowModelValidationError([
-					{
-						input: trimmedFallback,
-						reason: `invalid fallbackThinkingLevels[${index}] "${compatLevel}"; expected one of ${WORKFLOW_THINKING_LEVELS.join(", ")}`,
-					},
-				]);
-			}
-			rawValues.push(`${trimmedFallback}:${compatLevel}`);
-		} else {
-			rawValues.push(trimmedFallback);
-		}
-	}
+	for (const fallback of input.fallbackModels ?? []) rawValues.push(fallback.trim());
 	if (input.currentModel !== undefined) rawValues.push(input.currentModel);
 
 	const failures: ModelResolutionFailure[] = [];
@@ -240,7 +218,6 @@ function catalogUnavailableWarning(): string {
 export async function buildModelCandidatesFromCatalog(input: {
 	readonly primaryModel?: WorkflowModelValue;
 	readonly fallbackModels?: readonly string[];
-	readonly fallbackThinkingLevels?: readonly string[];
 	readonly catalog?: WorkflowModelCatalogPort;
 	readonly includeCurrentModel?: boolean;
 }): Promise<WorkflowResolvedModelCandidate[]> {
@@ -251,7 +228,6 @@ export async function buildModelCandidatesFromCatalog(input: {
 		return buildModelCandidates({
 			primaryModel: input.primaryModel,
 			fallbackModels: input.fallbackModels,
-			fallbackThinkingLevels: input.fallbackThinkingLevels,
 		});
 	}
 
@@ -260,7 +236,6 @@ export async function buildModelCandidatesFromCatalog(input: {
 		return buildModelCandidates({
 			primaryModel: input.primaryModel,
 			fallbackModels: input.fallbackModels,
-			fallbackThinkingLevels: input.fallbackThinkingLevels,
 			currentModel: input.includeCurrentModel === false ? undefined : input.catalog.currentModel,
 			availableModels,
 			preferredProvider: input.catalog.preferredProvider,
@@ -271,7 +246,6 @@ export async function buildModelCandidatesFromCatalog(input: {
 			return buildModelCandidates({
 				primaryModel: input.primaryModel,
 				fallbackModels: input.fallbackModels,
-				fallbackThinkingLevels: input.fallbackThinkingLevels,
 			});
 		}
 		if (input.catalog.currentModel === undefined) {
@@ -286,7 +260,6 @@ export async function validateWorkflowModels(input: {
 	readonly requests: readonly {
 		readonly model?: WorkflowModelValue;
 		readonly fallbackModels?: readonly string[];
-		readonly fallbackThinkingLevels?: readonly string[];
 	}[];
 	readonly catalog?: WorkflowModelCatalogPort;
 }): Promise<readonly string[]> {
@@ -318,7 +291,6 @@ export async function validateWorkflowModels(input: {
 			buildModelCandidates({
 				primaryModel: request.model,
 				fallbackModels: request.fallbackModels,
-				fallbackThinkingLevels: request.fallbackThinkingLevels,
 				currentModel: input.catalog?.currentModel,
 				availableModels,
 				preferredProvider: input.catalog?.preferredProvider,

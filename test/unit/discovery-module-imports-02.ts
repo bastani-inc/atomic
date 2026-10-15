@@ -33,7 +33,7 @@ export function registerDiscoveryModuleImportsSuite2(): void {
 			await createProjectWorkflowFile(
 				"conflict.js",
 				`
-  import { workflow } from "@bastani/workflows";
+  import { workflow } from "@bastani/atomic/workflows";
   export default workflow({
     name: "conflict-alpha",
     description: "conflict-alpha",
@@ -77,7 +77,7 @@ export function registerDiscoveryModuleImportsSuite2(): void {
 			await createProjectWorkflowFile(
 				"mixed-validity.js",
 				`
-  import { workflow } from "@bastani/workflows";
+  import { workflow } from "@bastani/atomic/workflows";
   export default workflow({
     name: "Valid Default",
     description: "",
@@ -130,168 +130,6 @@ export function registerDiscoveryModuleImportsSuite2(): void {
 			assert.equal(result.registry.has("good-workflow"), true);
 			const importFailed = result.errors.filter((e) => e.code === "IMPORT_FAILED");
 			assert.ok(importFailed.length >= 1);
-		});
-
-		test("removed runWorkflow named import stub fails when called during workflow loading", async () => {
-			await createProjectWorkflowFile(
-				"removed-api.js",
-				`
-  import { workflow, runWorkflow } from "@bastani/workflows";
-  runWorkflow();
-  export default workflow({
-    name: "removed-api-import",
-    description: "",
-    inputs: {},
-    outputs: {},
-    run: async () => ({}),
-  });
-  `,
-			);
-			const result = await discoverWorkflows({
-				cwd: join(tmpRoot, "cwd"),
-				homeDir: join(tmpRoot, "home"),
-				includeBundled: false,
-			});
-			assert.equal(result.registry.has("removed-api-import"), false);
-			const importFailed = result.errors.filter((e) => e.code === "IMPORT_FAILED");
-			assert.equal(importFailed.length, 1);
-			assert.match(importFailed[0]!.message, /no longer exports runWorkflow/);
-		});
-
-		test("removed runWorkflow namespace stub fails when called during workflow loading", async () => {
-			await createProjectWorkflowFile(
-				"removed-namespace.js",
-				`
-  import * as workflows from "@bastani/workflows";
-  workflows.runWorkflow();
-  export default workflows.workflow({
-    name: "removed-namespace-import",
-    description: "",
-    inputs: {},
-    outputs: {},
-    run: async () => ({}),
-  });
-  `,
-			);
-			const result = await discoverWorkflows({
-				cwd: join(tmpRoot, "cwd"),
-				homeDir: join(tmpRoot, "home"),
-				includeBundled: false,
-			});
-			assert.equal(result.registry.has("removed-namespace-import"), false);
-			const importFailed = result.errors.filter((e) => e.code === "IMPORT_FAILED");
-			assert.equal(importFailed.length, 1);
-			assert.match(importFailed[0]!.message, /no longer exports runWorkflow/);
-		});
-
-		test("removed runWorkflow CJS destructured stub fails when called during workflow loading", async () => {
-			await createProjectWorkflowFile(
-				"removed-require.cjs",
-				`
-  const { workflow, runWorkflow } = require("@bastani/workflows");
-  runWorkflow();
-  exports.default = workflow({
-    name: "removed-require-destructured",
-    description: "",
-    inputs: {},
-    outputs: {},
-    run: async () => ({}),
-  });
-  `,
-			);
-			const result = await discoverWorkflows({
-				cwd: join(tmpRoot, "cwd"),
-				homeDir: join(tmpRoot, "home"),
-				includeBundled: false,
-			});
-			assert.equal(result.registry.has("removed-require-destructured"), false);
-			const importFailed = result.errors.filter((e) => e.code === "IMPORT_FAILED");
-			assert.equal(importFailed.length, 1);
-			assert.match(importFailed[0]!.message, /no longer exports runWorkflow/);
-		});
-
-		test("removed runWorkflow CJS namespace stub fails when called during workflow loading", async () => {
-			await createProjectWorkflowFile(
-				"removed-require-namespace.cjs",
-				`
-  const workflows = require("@bastani/workflows");
-  workflows.runWorkflow();
-  exports.default = workflows.workflow({
-    name: "removed-require-namespace",
-    description: "",
-    inputs: {},
-    outputs: {},
-    run: async () => ({}),
-  });
-  `,
-			);
-			const result = await discoverWorkflows({
-				cwd: join(tmpRoot, "cwd"),
-				homeDir: join(tmpRoot, "home"),
-				includeBundled: false,
-			});
-			assert.equal(result.registry.has("removed-require-namespace"), false);
-			const importFailed = result.errors.filter((e) => e.code === "IMPORT_FAILED");
-			assert.equal(importFailed.length, 1);
-			assert.match(importFailed[0]!.message, /no longer exports runWorkflow/);
-		});
-
-		test("removed runWorkflow reference-only imports still load", async () => {
-			await createProjectWorkflowFile(
-				"removed-reference-only.ts",
-				`
-  import { workflow, runWorkflow } from "@bastani/workflows";
-  const pattern = /runWorkflow/;
-  const identity = <T,>(value: T): T => value;
-  void pattern;
-  void identity(runWorkflow);
-  export default workflow({
-    name: "removed-reference-only",
-    description: "",
-    inputs: {},
-    outputs: {},
-    run: async () => ({}),
-  });
-  `,
-			);
-			const result = await discoverWorkflows({
-				cwd: join(tmpRoot, "cwd"),
-				homeDir: join(tmpRoot, "home"),
-				includeBundled: false,
-			});
-			assert.equal(result.registry.has("removed-reference-only"), true);
-			const importFailed = result.errors.filter((e) => e.code === "IMPORT_FAILED");
-			assert.equal(importFailed.length, 0);
-		});
-
-		test("comments and strings mentioning removed runWorkflow do not fail workflow loading", async () => {
-			await createProjectWorkflowFile(
-				"removed-comment-string.js",
-				`
-  import { workflow } from "@bastani/workflows";
-  // import { runWorkflow } from "@bastani/workflows"; removed migration note only
-  const docs = [
-    'import { runWorkflow } from "@bastani/workflows";',
-    "const workflows = await import('@bastani/workflows'); workflows.runWorkflow();",
-  ].join("\\n");
-  void docs;
-  export default workflow({
-    name: "removed-comment-string",
-    description: "",
-    inputs: {},
-    outputs: {},
-    run: async () => ({}),
-  });
-  `,
-			);
-			const result = await discoverWorkflows({
-				cwd: join(tmpRoot, "cwd"),
-				homeDir: join(tmpRoot, "home"),
-				includeBundled: false,
-			});
-			assert.equal(result.registry.has("removed-comment-string"), true);
-			const importFailed = result.errors.filter((e) => e.code === "IMPORT_FAILED");
-			assert.equal(importFailed.length, 0);
 		});
 	});
 }

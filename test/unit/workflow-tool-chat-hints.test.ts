@@ -1,3 +1,5 @@
+// @ts-nocheck
+import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 // @ts-nocheck -- focused GraphView rendering/input contract coverage
 
 import assert from "node:assert/strict";
@@ -54,6 +56,7 @@ function viewFor(stages: StageSnapshot[], tools: ToolNodeSnapshot[] = []): Graph
 		startedAt: 1,
 	});
 	return new GraphView({
+		piKeybindings: s5aKeybindings(),
 		mode: "overlay",
 		runId: "hint-run",
 		store: localStore,

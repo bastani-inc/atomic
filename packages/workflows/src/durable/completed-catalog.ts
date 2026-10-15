@@ -61,7 +61,6 @@ export type CompletedWorkflowResolution =
 interface ReconstructionDrafts {
 	readonly stages: readonly StageDraft[];
 	readonly tools: readonly DurableToolCheckpoint[];
-	readonly firstToolSequenceByHash: ReadonlyMap<string, number>;
 }
 
 /** Authoritative completed rows. This path is deliberately separate from resumability. */
@@ -228,7 +227,6 @@ function validatedStageTranscript(stage: StageSnapshot): StageSnapshot {
 function checkpointDrafts(checkpoints: readonly DurableCheckpoint[]): ReconstructionDrafts {
 	const stageByReplayKey = new Map<string, StageDraft>();
 	const toolByHash = new Map<string, DurableToolCheckpoint>();
-	const firstToolSequenceByHash = new Map<string, number>();
 	checkpoints.forEach((checkpoint, index) => {
 		const sequence = index + 1;
 		if (checkpoint.kind === "stage") {
@@ -237,9 +235,6 @@ function checkpointDrafts(checkpoints: readonly DurableCheckpoint[]): Reconstruc
 			return;
 		}
 		if (checkpoint.kind !== "tool" || isReservedRunCheckpointHash(checkpoint.argsHash)) return;
-		if (!firstToolSequenceByHash.has(checkpoint.argsHash)) {
-			firstToolSequenceByHash.set(checkpoint.argsHash, sequence);
-		}
 		const existing = toolByHash.get(checkpoint.argsHash);
 		if (existing === undefined || checkpoint.completedAt >= existing.completedAt) {
 			toolByHash.set(checkpoint.argsHash, checkpoint);
@@ -248,7 +243,6 @@ function checkpointDrafts(checkpoints: readonly DurableCheckpoint[]): Reconstruc
 	return {
 		stages: [...stageByReplayKey.values()],
 		tools: [...toolByHash.values()],
-		firstToolSequenceByHash,
 	};
 }
 
@@ -257,12 +251,12 @@ function completedToolNodes(
 	runId: string,
 	rootRunId: string,
 	sourceIds: ReadonlyMap<string, string>,
-	firstSequenceByHash: ReadonlyMap<string, number>,
 ): ToolNodeSnapshot[] {
-	return checkpoints.flatMap((checkpoint, index) => {
+	return checkpoints.flatMap((checkpoint) => {
 		const topologyRunId = checkpoint.topology?.run?.runId ?? rootRunId;
 		if (topologyRunId !== runId) return [];
 		const topology = checkpoint.topology;
+		if (topology === undefined) return [];
 		const outcome =
 			checkpoint.outcomeKind === undefined ? undefined : workflowToolOutcomeFromValue(checkpoint.output);
 		const failed = checkpoint.outcomeKind === "return_failure" || checkpoint.throwingFailureError !== undefined;
@@ -271,7 +265,7 @@ function completedToolNodes(
 		return [
 			{
 				kind: "tool" as const,
-				id: topology?.nodeId ?? checkpoint.checkpointId,
+				id: topology.nodeId,
 				name: checkpoint.name,
 				// Restored nodes are recorded into the live store, which session and
 				// status surfaces clone and re-serialize, so these inspection copies
@@ -279,19 +273,16 @@ function completedToolNodes(
 				...(checkpoint.args !== undefined ? { args: boundedToolPayloadRecord(checkpoint.args) } : {}),
 				...(checkpoint.source !== undefined ? { source: boundedToolText(checkpoint.source) } : {}),
 				argsHash: checkpoint.argsHash,
-				ordinal: topology?.ordinal ?? index + 1,
-				parentIds: Object.freeze(
-					[...(topology?.parentIds ?? [])].map((parentId) => sourceIds.get(parentId) ?? parentId),
-				),
+				ordinal: topology.ordinal,
+				parentIds: Object.freeze(topology.parentIds.map((parentId) => sourceIds.get(parentId) ?? parentId)),
 				...(checkpoint.throwingFailureError === undefined ? { replayed: true } : {}),
-				...(topology === undefined ? { topologyState: "unavailable" as const } : {}),
 				status:
 					checkpoint.cancelled === true
 						? ("cancelled" as const)
 						: failed
 							? ("failed" as const)
 							: ("cached" as const),
-				executionOrder: topology?.order ?? firstSequenceByHash.get(checkpoint.argsHash)!,
+				executionOrder: topology.order,
 				...(topology?.startedAt !== undefined ? { startedAt: topology.startedAt } : {}),
 				endedAt: topology?.endedAt ?? checkpoint.completedAt,
 				...(topology?.startedAt !== undefined
@@ -367,6 +358,7 @@ function runSnapshotsFromCheckpoints(
 		.sort(compareDraftSourceOrder);
 	const drafts = checkpointDrafts(checkpoints);
 	const toolCheckpoints = drafts.tools;
+	if (toolCheckpoints.some((checkpoint) => checkpoint.topology === undefined)) return [];
 	for (const draft of candidates) {
 		const boundary = draft.topology?.boundary;
 		if (boundary === undefined || childRunIdFromDraft(draft) === undefined) continue;
@@ -480,7 +472,7 @@ function runSnapshotsFromCheckpoints(
 				draft.topology!.parentIds.map((parentId) => ids.get(parentId)!),
 			),
 		);
-		const toolNodes = completedToolNodes(toolCheckpoints, runId, rootRunId, ids, drafts.firstToolSequenceByHash);
+		const toolNodes = completedToolNodes(toolCheckpoints, runId, rootRunId, ids);
 		const run = runTopologyFor(runDrafts, ownedTools);
 		const startedAt = Math.min(
 			...stages.map((stage) => stage.startedAt ?? fallbackCompletedAt),

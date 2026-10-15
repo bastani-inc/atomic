@@ -615,7 +615,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		writeFixture(
 			"wf-child.ts",
 			`
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				export default workflow({
 					name: "child",
 					run: async (ctx) => {
@@ -629,7 +629,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 			"wf-parent.ts",
 			`
 				import child from "./wf-child.js";
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				export default workflow({
 					name: "parent",
 					run: async (ctx) => {
@@ -656,8 +656,8 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		const result = scanFile(
 			"barrel-parent.ts",
 			`
-				import { ralph } from "@bastani/workflows/builtin";
-				import { workflow } from "@bastani/workflows";
+				import { ralph } from "@bastani/atomic/workflows/builtin";
+				import { workflow } from "@bastani/atomic/workflows";
 				export default workflow({
 					name: "barrel-parent",
 					run: async (ctx) => {
@@ -675,7 +675,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		writeFixture(
 			"depth-grandchild.ts",
 			`
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				export default workflow({
 					name: "grandchild",
 					run: async (ctx) => {
@@ -688,7 +688,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 			"depth-child.ts",
 			`
 				import grandchild from "./depth-grandchild.js";
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				export default workflow({
 					name: "depth-child",
 					run: async (ctx) => {
@@ -702,7 +702,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 			"depth-parent.ts",
 			`
 				import child from "./depth-child.js";
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				export default workflow({
 					name: "depth-parent",
 					run: async (ctx) => {
@@ -733,7 +733,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 			"cycle-b.ts",
 			`
 				import a from "./cycle-a.js";
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				export default workflow({
 					name: "cycle-b",
 					run: async (ctx) => {
@@ -747,7 +747,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 			"cycle-a.ts",
 			`
 				import b from "./cycle-b.js";
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				export default workflow({
 					name: "cycle-a",
 					run: async (ctx) => {
@@ -771,7 +771,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		writeFixture(
 			"named-grand.ts",
 			`
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				export const grand = workflow({
 					name: "named-grand",
 					run: async (ctx) => {
@@ -783,7 +783,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		writeFixture(
 			"alias-child.ts",
 			`
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				const child = workflow({
 					name: "alias-child",
 					run: async (ctx) => {
@@ -798,7 +798,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 			`
 				import { grand } from "./named-grand.js";
 				import aliasChild from "./alias-child.js";
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				export default workflow({
 					name: "named-children-parent",
 					run: async (ctx) => {
@@ -820,7 +820,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		writeFixture(
 			"kebab-impl.ts",
 			`
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				export const def = workflow({
 					name: "camel-child",
 					run: async (ctx) => {
@@ -842,7 +842,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 			"kebab-parent.ts",
 			`
 				import camelChild from "./kebab-wrapper.js";
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				export default workflow({
 					name: "kebab-parent",
 					run: async (ctx) => {
@@ -859,7 +859,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		const result = scanFile(
 			"computed-child.ts",
 			`
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				export default workflow({
 					name: "computed-child",
 					run: async (ctx) => {
@@ -905,7 +905,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		writeFixture(
 			"wrapped-impl.ts",
 			`
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				var wrapped_default = workflow({
 					name: "wrapped",
 					run: async (ctx) => {
@@ -932,7 +932,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		writeFixture(
 			"camel-authored.ts",
 			`
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				export default workflow({
 					name: "myCamelChild",
 					run: async (ctx) => {
@@ -945,7 +945,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 			"camel-parent.ts",
 			`
 				import camelChild from "./camel-authored.js";
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				export default workflow({
 					name: "camel-parent",
 					run: async (ctx) => {
@@ -964,7 +964,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		writeFixture(
 			"mixed-def.ts",
 			`
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				async function runGrand(ctx) {
 					await ctx.workflow(grand);
 				}
@@ -980,7 +980,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 			"mixed-parent.ts",
 			`
 				import mixed from "./mixed-def.js";
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				export default workflow({
 					name: "mixed-parent",
 					run: async (ctx) => {
@@ -1011,7 +1011,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		writeFixture(
 			"entry-child.ts",
 			`
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				export default workflow({
 					name: "entry-child",
 					run: async (ctx) => {
@@ -1024,7 +1024,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 			"entry-const-name.ts",
 			`
 				import entryChild from "./entry-child.js";
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				const ENTRY_NAME = "entry-const";
 				export default workflow({
 					name: ENTRY_NAME,
@@ -1044,7 +1044,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 			"entry-generic.ts",
 			`
 				import entryChild from "./entry-child.js";
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				export default workflow<{ task: string }, { done: boolean }>({
 					name: "entry-generic",
 					run: async (ctx) => {
@@ -1065,7 +1065,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		writeFixture(
 			"const-child.ts",
 			`
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				const NAME = "child-const";
 				export default workflow({
 					name: NAME,
@@ -1079,7 +1079,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 			"const-child-parent.ts",
 			`
 				import constChild from "./const-child.js";
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				export default workflow({
 					name: "const-child-parent",
 					run: async (ctx) => {
@@ -1104,7 +1104,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		writeFixture(
 			"barrel-impl.ts",
 			`
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				export const flow = workflow({
 					name: "bar-flow",
 					run: async (ctx) => {
@@ -1117,7 +1117,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 			"barrel-wrapper-parent.ts",
 			`
 				import fooChild from "./barrel-wrapper.js";
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				export default workflow({
 					name: "barrel-wrapper-parent",
 					run: async (ctx) => {
@@ -1139,7 +1139,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		writeFixture(
 			"re-child.ts",
 			`
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				export default workflow({
 					name: "review",
 					run: async (ctx) => {
@@ -1158,7 +1158,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 			"re-barrel-parent.ts",
 			`
 				import { reviewFlow } from "./re-barrel.js";
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				export default workflow({
 					name: "re-barrel-parent",
 					run: async (ctx) => {
@@ -1223,7 +1223,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		writeFixture(
 			"decl-impl.ts",
 			`
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				var decl_default = workflow({
 					name: "decl",
 					run: async (ctx) => {
@@ -1250,7 +1250,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		writeFixture(
 			"alias-child.ts",
 			`
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				export default workflow({
 					name: "alias-child",
 					run: async (ctx) => {
@@ -1262,7 +1262,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 		const result = scanFile(
 			"alias-entry.ts",
 			`
-				import { workflow as wf } from "@bastani/workflows";
+				import { workflow as wf } from "@bastani/atomic/workflows";
 				import aliasChild from "./alias-child.js";
 				export default wf({
 					name: "alias-entry",
@@ -1287,7 +1287,7 @@ describe("possible-stage scan — child definitions and boundaries", () => {
 			"missing-child-parent.ts",
 			`
 				import nothing from "./does-not-exist.js";
-				import { workflow } from "@bastani/workflows";
+				import { workflow } from "@bastani/atomic/workflows";
 				export default workflow({
 					name: "missing-child-parent",
 					run: async (ctx) => {

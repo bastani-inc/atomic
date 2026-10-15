@@ -21,7 +21,7 @@
  */
 
 import { join } from "node:path";
-import { CONFIG_DIR_NAMES, getAgentDirs, getProjectConfigPaths } from "@bastani/atomic";
+import { CONFIG_DIR_NAME, getAgentDir } from "@bastani/atomic";
 import * as bundledManifest from "../../builtin/index.js";
 import { resolveBuiltinDefinitionSource, scanPossibleStagesFromSource } from "../shared/possible-stages.js";
 import type { WorkflowDefinition } from "../shared/types.js";
@@ -128,7 +128,7 @@ export interface DiscoveryConfig {
 export interface DiscoveryOptions {
 	/** Working directory; used as root for project-local discovery. Default: process.cwd() */
 	cwd: string;
-	/** User's home directory; when set, preserves legacy test/compat user-global discovery roots. */
+	/** User's home directory for default user-global discovery. */
 	homeDir: string;
 	/** User agent config directories in precedence order. Defaults to Atomic's configured agent directories. */
 	agentDirs?: readonly string[];
@@ -159,9 +159,9 @@ function workflowAgentDirs(options: Partial<DiscoveryOptions> | undefined): read
 	if (options?.agentDirs !== undefined) return options.agentDirs;
 	if (options?.homeDir !== undefined) {
 		const homeDir = options.homeDir;
-		return CONFIG_DIR_NAMES.map((name) => join(homeDir, name, "agent"));
+		return [join(homeDir, CONFIG_DIR_NAME, "agent")];
 	}
-	return getAgentDirs();
+	return [getAgentDir()];
 }
 
 /**
@@ -368,7 +368,7 @@ export async function discoverWorkflows(options?: Partial<DiscoveryOptions>): Pr
 	}
 
 	// 2. project-local
-	for (const dir of getProjectConfigPaths(cwd, "workflows").reverse()) {
+	for (const dir of [join(cwd, CONFIG_DIR_NAME, "workflows")]) {
 		const candidates = await loadFromDir(dir, "project-local", diagnostics, getWorkflowHostModules);
 		registry = await applyBatch(candidates, registry, sources, diagnostics);
 	}
@@ -383,7 +383,7 @@ export async function discoverWorkflows(options?: Partial<DiscoveryOptions>): Pr
 		}
 	}
 
-	// 4. user-global — configured Atomic agent dir plus legacy/defaults when applicable.
+	// 4. user-global
 	for (const dir of agentDirs.map((agentDir) => join(agentDir, "workflows")).reverse()) {
 		const candidates = await loadFromDir(dir, "user-global", diagnostics, getWorkflowHostModules);
 		registry = await applyBatch(candidates, registry, sources, diagnostics);

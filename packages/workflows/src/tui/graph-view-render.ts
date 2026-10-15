@@ -7,7 +7,6 @@ import type { GraphViewOpts } from "./graph-view-types.js";
 import { renderHeader, renderOutlinePill } from "./header.js";
 import { isKeybindingsLike } from "./keybindings-adapter.js";
 import { NODE_H } from "./layout.js";
-import { renderPromptCard } from "./prompt-card.js";
 import { renderSwitcher } from "./switcher.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 import { renderToolDetailLines } from "./tool-detail.js";
@@ -120,7 +119,6 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 				} else {
 					this._recordGraphNodeHitRects(bodyStart + this.lastGraphTopPad, this.lastGraphVisibleRows);
 					this._renderSwitcherOverlay(lines, run, frameWidth, bodyStart, bodyRows);
-					this._renderPromptOverlay(lines, frameWidth, bodyStart, bodyRows);
 				}
 			} else {
 				this.graphNodeHitRects = [];
@@ -329,33 +327,6 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 				lines[lineIndex] ?? this._blankRow(frameWidth),
 				switcherLines[index]!,
 				switcherLeft,
-				frameWidth,
-			);
-		}
-	}
-
-	private _renderPromptOverlay(lines: string[], frameWidth: number, bodyStart: number, bodyRows: number): void {
-		if (!this.promptState || this.switcherOpen) return;
-		const run = this._currentRenderRun();
-		const cardWidth = Math.min(72, Math.max(40, frameWidth - 6));
-		const cardLines = renderPromptCard({
-			state: this.promptState,
-			theme: this.graphTheme,
-			width: cardWidth,
-			cursorOn: ((Date.now() / 530) | 0) % 2 === 0,
-			identity: run ? { runId: run.id, name: run.name } : undefined,
-			maxRows: bodyRows,
-		});
-		const bodyEnd = bodyStart + bodyRows;
-		const slot = Math.max(bodyStart, bodyStart + Math.floor((bodyRows - cardLines.length) / 2));
-		if (cardLines.length > bodyRows || slot + cardLines.length > bodyEnd) return;
-		const leftPad = Math.max(0, Math.floor((frameWidth - cardWidth) / 2));
-		for (let index = 0; index < cardLines.length; index++) {
-			const lineIndex = slot + index;
-			lines[lineIndex] = this._overlayCard(
-				lines[lineIndex] ?? this._blankRow(frameWidth),
-				cardLines[index]!,
-				leftPad,
 				frameWidth,
 			);
 		}

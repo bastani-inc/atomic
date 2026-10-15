@@ -82,6 +82,7 @@ function registerCompleted(backend: InMemoryDurableBackend, id: string, sessionF
 function registerCompletedTool(backend: InMemoryDurableBackend, id: string): void {
 	backend.registerWorkflow({ workflowId: id, name: `${id}-flow`, inputs: {}, createdAt: 1, status: "completed" });
 	backend.recordCheckpoint({
+		topology: { version: 1, nodeId: `tool:${"done-hash"}`, ordinal: 1, order: 1, parentIds: [] },
 		kind: "tool",
 		workflowId: id,
 		checkpointId: "tool:done",
@@ -360,6 +361,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 			completedCheckpoints: 1,
 		});
 		backend.recordCheckpoint({
+			topology: { version: 1, nodeId: `tool:${"seed"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: root,
 			checkpointId: "tool:seed",
@@ -415,6 +417,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 			completedCheckpoints: 1,
 		});
 		backend.recordCheckpoint({
+			topology: { version: 1, nodeId: `tool:${"seed"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: root,
 			checkpointId: "tool:seed",
@@ -477,6 +480,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 			completedCheckpoints: 1,
 		});
 		backend.recordCheckpoint({
+			topology: { version: 1, nodeId: `tool:${"seed"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: root,
 			checkpointId: "tool:seed",
@@ -514,6 +518,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 			completedCheckpoints: 1,
 		});
 		backend.recordCheckpoint({
+			topology: { version: 1, nodeId: `tool:${"seed"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: root,
 			checkpointId: "tool:seed",
@@ -698,6 +703,7 @@ describe("/workflow resume completed target", () => {
 		registerCompleted(backend, id);
 		backend.setWorkflowStatus(id, "failed", 0, true);
 		backend.recordCheckpoint({
+			topology: { version: 1, nodeId: `tool:${"frontier-hash"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: id,
 			checkpointId: "tool-failure:1",
@@ -741,6 +747,7 @@ describe("/workflow resume completed target", () => {
 		setDurableBackend(backend);
 		backend.registerWorkflow({ workflowId: id, name: "local", inputs: {}, createdAt: 1, status: "paused" });
 		backend.recordCheckpoint({
+			topology: { version: 1, nodeId: `tool:${"proof"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: id,
 			checkpointId: "tool:proof",
@@ -1175,6 +1182,7 @@ describe("/workflow resume completed target", () => {
 			error: "durable tool failed",
 		});
 		backend.recordCheckpoint({
+			topology: { version: 1, nodeId: `tool:${"failed-tool-hash"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: id,
 			checkpointId: "tool-failure:1",

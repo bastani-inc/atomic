@@ -28,22 +28,16 @@ describe("shared workflow terminal mouse parser", () => {
 		});
 	});
 
-	test("parses complete legacy X10 input", () => {
-		assert.deepEqual(parseTerminalMouseInput(x10(64, 9, 4)), {
-			protocol: "x10",
-			action: "press",
-			buttonCode: 64,
-			col: 9,
-			row: 4,
-		});
+	test("does not accept X10 mouse input", () => {
+		assert.equal(parseTerminalMouseInput(x10(64, 9, 4)), null);
 	});
 
 	test("normalizes vertical and horizontal wheel directions", () => {
 		const inputs = [
 			["\x1b[<64;1;1M", "up"],
 			["\x1b[<65;1;1M", "down"],
-			[x10(66, 1, 1), "left"],
-			[x10(67, 1, 1), "right"],
+			["\x1b[<66;2;2M", "left"],
+			["\x1b[<67;2;2M", "right"],
 		] as const;
 		for (const [input, direction] of inputs) {
 			const event = parseTerminalMouseInput(input);

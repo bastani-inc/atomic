@@ -231,7 +231,13 @@ describe("defaultResponseFor", () => {
 describe("renderPromptCard", () => {
 	test("renders multiple lines, each exactly matching the requested width", () => {
 		const state = createPromptCardState(makePrompt({ kind: "input", message: "What's your name?" }));
-		const lines = renderPromptCard({ state, theme, width: 60, cursorOn: true });
+		const lines = renderPromptCard({
+			identity: { runId: "current-test-run", name: "current-test-workflow" },
+			state,
+			theme,
+			width: 60,
+			cursorOn: true,
+		});
 		assert.ok(lines.length > 0);
 		for (const line of lines) {
 			assert.equal(visibleWidth(line), 60, `line width mismatch: ${visibleWidth(line)}`);
@@ -242,7 +248,13 @@ describe("renderPromptCard", () => {
 		const kinds: PendingPrompt["kind"][] = ["input", "confirm", "select", "editor"];
 		for (const kind of kinds) {
 			const state = createPromptCardState(makePrompt({ kind, choices: kind === "select" ? ["a", "b"] : undefined }));
-			const lines = renderPromptCard({ state, theme, width: 50, cursorOn: false });
+			const lines = renderPromptCard({
+				identity: { runId: "current-test-run", name: "current-test-workflow" },
+				state,
+				theme,
+				width: 50,
+				cursorOn: false,
+			});
 			assert.ok(lines.length > 0, `kind ${kind} produced no lines`);
 		}
 	});
@@ -261,7 +273,14 @@ describe("renderPromptCard", () => {
 				);
 				for (let width = 40; width <= 100; width += 2) {
 					for (let maxRows = 1; maxRows <= 30; maxRows++) {
-						const lines = renderPromptCard({ state, theme, width, cursorOn: false, maxRows });
+						const lines = renderPromptCard({
+							identity: { runId: "current-test-run", name: "current-test-workflow" },
+							state,
+							theme,
+							width,
+							cursorOn: false,
+							maxRows,
+						});
 						assert.ok(
 							lines.length <= maxRows,
 							`kind=${kind} choices=${choiceCount} width=${width} maxRows=${maxRows} emitted=${lines.length}`,
@@ -274,7 +293,13 @@ describe("renderPromptCard", () => {
 
 	test("includes the prompt message in the rendered text", () => {
 		const state = createPromptCardState(makePrompt({ message: "UNIQUE-MARKER-XYZ" }));
-		const lines = renderPromptCard({ state, theme, width: 60, cursorOn: false });
+		const lines = renderPromptCard({
+			identity: { runId: "current-test-run", name: "current-test-workflow" },
+			state,
+			theme,
+			width: 60,
+			cursorOn: false,
+		});
 		const joined = lines.join("\n");
 		assert.ok(joined.includes("UNIQUE-MARKER-XYZ"), "message text must appear in output");
 	});
@@ -403,7 +428,13 @@ describe("renderPromptCard", () => {
 
 	test("response field uses rounded border chrome", () => {
 		const state = createPromptCardState(makePrompt({ kind: "input" }));
-		const lines = renderPromptCard({ state, theme, width: 60, cursorOn: false });
+		const lines = renderPromptCard({
+			identity: { runId: "current-test-run", name: "current-test-workflow" },
+			state,
+			theme,
+			width: 60,
+			cursorOn: false,
+		});
 		const plain = lines.map(stripAnsi).join("\n");
 
 		assert.match(plain, /╭ response ─+╮/);
@@ -413,7 +444,13 @@ describe("renderPromptCard", () => {
 
 	test("outer prompt card does not paint a background slab behind the border", () => {
 		const state = createPromptCardState(makePrompt({ kind: "input" }));
-		const lines = renderPromptCard({ state, theme, width: 60, cursorOn: false });
+		const lines = renderPromptCard({
+			identity: { runId: "current-test-run", name: "current-test-workflow" },
+			state,
+			theme,
+			width: 60,
+			cursorOn: false,
+		});
 
 		assert.ok(!lines[0]!.startsWith("\x1b[48;"));
 		assert.ok(!lines.at(-1)!.startsWith("\x1b[48;"));

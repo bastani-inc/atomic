@@ -23,8 +23,7 @@ export interface PromptCardRenderOpts {
 	readonly theme: GraphTheme;
 	readonly width: number;
 	readonly cursorOn: boolean;
-	/** Optional run attribution; absent preserves the legacy prompt card. */
-	readonly identity?: PromptCardIdentity;
+	readonly identity: PromptCardIdentity;
 	/** Maximum rows to emit. Small budgets use a reduced, closed prompt surface. */
 	readonly maxRows?: number;
 	/** Wrapped question-row offset used by scrollable attached prompt surfaces. */
@@ -116,7 +115,6 @@ export function renderPromptCardLayout(opts: PromptCardRenderOpts): PromptCardLa
 		maxRows,
 		messageOffset,
 	);
-	if (opts.identity === undefined) return unattributed;
 
 	const banners = [
 		renderPromptIdentityBanner(opts.identity, theme, width),

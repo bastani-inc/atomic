@@ -32,8 +32,6 @@ export interface WorkflowAttachPaneOpts {
 	onClose: () => void;
 	/** Called when the user requests the host to hide the popup. */
 	onHide?: () => void;
-	/** Called when the user resolves a HIL prompt via the graph view. */
-	onPromptResolve?: (runId: string, promptId: string, response: unknown) => void;
 	/** Live pi-tui host objects used by attached stage chat to reuse coding-agent editor UI. */
 	piTui?: TUI;
 	piTheme?: unknown;

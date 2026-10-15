@@ -148,7 +148,7 @@ export interface DurableToolCheckpoint {
 	/** Inspection-only cancellation, never a replayable tool result. */
 	readonly cancelled?: true;
 	readonly completedAt: number;
-	/** Additive graph topology; omitted by pre-#1991 checkpoints. */
+	/** Graph topology; reserved run-level checkpoints have no graph node. */
 	readonly topology?: DurableToolTopology;
 }
 

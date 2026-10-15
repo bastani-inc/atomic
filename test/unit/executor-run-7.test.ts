@@ -194,6 +194,9 @@ describe("executor.run", () => {
 					store: st,
 					usePromptNodesForUi: true,
 					ui: {
+						custom: async () => {
+							throw new Error("Unexpected custom UI invocation in primitive fixture");
+						},
 						input: async () => "ignored",
 						confirm: async () => true,
 						select: async (_message, options) => options[0]!,

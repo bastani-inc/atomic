@@ -674,6 +674,9 @@ test("missing adapter refuses ordinary dialog and leaves durable approval pendin
 				durableBackend: new InMemoryDurableBackend(),
 				usePromptNodesForUi: false,
 				ui: {
+					custom: async () => {
+						throw new Error("Unexpected custom UI invocation");
+					},
 					input: async (prompt) => (await context.ui.input(prompt))!,
 					confirm: (message) => context.ui.confirm("approval", message),
 					select: async (message, choices) => (await context.ui.select(message, [...choices])) as never,

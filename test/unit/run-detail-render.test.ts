@@ -62,6 +62,7 @@ function detailFromRun(run: RunSnapshot): RunDetail {
 		resumedAt: run.resumedAt,
 		inputs: run.inputs,
 		stages: run.stages,
+		tools: run.toolNodes,
 		result: run.result,
 		error: run.error,
 	};

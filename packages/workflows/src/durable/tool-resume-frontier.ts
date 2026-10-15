@@ -17,14 +17,8 @@ export function resolveToolResumeFrontier(source: RunSnapshot, backend: DurableW
 		ok: false,
 		message: `insufficient_state: ${detail} in run ${source.id}`,
 	});
-	const tools = [...(source.toolNodes ?? [])];
-	const candidates = tools.filter((node) =>
-		source.failedToolNodeId === undefined
-			? (node.status === "cancelled" || node.status === "failed") &&
-				node.error === source.error &&
-				source.error === `atomic-workflows: ctx.tool ${node.name} aborted by node abort`
-			: node.id === source.failedToolNodeId,
-	);
+	const tools = [...source.toolNodes];
+	const candidates = tools.filter((node) => node.id === source.failedToolNodeId);
 	if (candidates.length !== 1) return fail("missing or ambiguous failed tool frontier");
 	const frontier = candidates[0]!;
 	if (
@@ -32,12 +26,7 @@ export function resolveToolResumeFrontier(source: RunSnapshot, backend: DurableW
 		backend.getToolCheckpoint(source.id, frontier.argsHash) !== undefined
 	)
 		return fail("tool frontier is already finished");
-	if (
-		frontier.id !== `tool:${frontier.argsHash}` ||
-		!Number.isInteger(frontier.ordinal) ||
-		frontier.ordinal < 1 ||
-		frontier.topologyState === "unavailable"
-	)
+	if (frontier.id !== `tool:${frontier.argsHash}` || !Number.isInteger(frontier.ordinal) || frontier.ordinal < 1)
 		return fail("invalid tool frontier identity");
 	// Lifecycle restoration retains failed tools, not completed tool nodes. Fill
 	// only absent nodes from typed checkpoints; never replace local graph evidence.
@@ -66,18 +55,6 @@ export function resolveToolResumeFrontier(source: RunSnapshot, backend: DurableW
 	};
 	if (!nodes.every((node) => valid(node.id))) return fail("missing parent or cyclic tool frontier topology");
 	const checkpoints = backend.listCheckpoints(source.id);
-	if (
-		source.failedToolNodeId === undefined &&
-		!checkpoints.some(
-			(checkpoint) =>
-				checkpoint.kind === "tool" &&
-				checkpoint.throwingFailureError === source.error &&
-				checkpoint.argsHash === frontier.argsHash &&
-				checkpoint.topology?.nodeId === frontier.id &&
-				checkpoint.topology.ordinal === frontier.ordinal,
-		)
-	)
-		return fail("missing typed tool failure checkpoint for legacy frontier");
 	for (const stage of source.stages) {
 		if (
 			stage.status !== "completed" ||
@@ -117,7 +94,6 @@ function isRetryableSibling(tool: ToolNodeSnapshot): boolean {
 		(tool.status === "cancelled" || tool.status === "failed") &&
 		tool.id === `tool:${tool.argsHash}` &&
 		Number.isInteger(tool.ordinal) &&
-		tool.ordinal >= 1 &&
-		tool.topologyState !== "unavailable"
+		tool.ordinal >= 1
 	);
 }

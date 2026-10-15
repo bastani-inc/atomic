@@ -15,6 +15,9 @@ describe("executor.run — HIL adapter injection", () => {
 	test("ctx.ui.input delegates to injected adapter", async () => {
 		let capturedPrompt: string | undefined;
 		const uiAdapter = {
+			custom: async () => {
+				throw new Error("Unexpected custom UI invocation in primitive fixture");
+			},
 			input: async (prompt: string) => {
 				capturedPrompt = prompt;
 				return "user-input";
@@ -55,6 +58,9 @@ describe("executor.run — HIL adapter injection", () => {
 
 	test("ctx.ui.confirm delegates to injected adapter", async () => {
 		const uiAdapter = {
+			custom: async () => {
+				throw new Error("Unexpected custom UI invocation in primitive fixture");
+			},
 			input: async (_prompt: string) => "",
 			confirm: async (_message: string) => true,
 			select: async <T extends string>(_message: string, options: readonly T[]) => options[0] as T,
@@ -91,6 +97,9 @@ describe("executor.run — HIL adapter injection", () => {
 
 	test("ctx.ui.select delegates to injected adapter", async () => {
 		const uiAdapter = {
+			custom: async () => {
+				throw new Error("Unexpected custom UI invocation in primitive fixture");
+			},
 			input: async (_prompt: string) => "",
 			confirm: async (_message: string) => false,
 			select: async <T extends string>(_message: string, options: readonly T[]) => options[1] as T,
@@ -127,6 +136,9 @@ describe("executor.run — HIL adapter injection", () => {
 
 	test("ctx.ui.editor delegates to injected adapter", async () => {
 		const uiAdapter = {
+			custom: async () => {
+				throw new Error("Unexpected custom UI invocation in primitive fixture");
+			},
 			input: async (_prompt: string) => "",
 			confirm: async (_message: string) => false,
 			select: async <T extends string>(_message: string, options: readonly T[]) => options[0] as T,
@@ -353,33 +365,6 @@ describe("executor.run — HIL adapter injection", () => {
 				label: "widget",
 			},
 		});
-	});
-
-	test("primitive-only UI adapters reject ctx.ui.custom with the unavailable UI message", async () => {
-		const uiAdapter = {
-			input: async (_prompt: string) => "",
-			confirm: async (_message: string) => false,
-			select: async <T extends string>(_message: string, options: readonly T[]) => options[0] as T,
-			editor: async (_initial?: string) => "",
-		};
-		const def = workflow({
-			name: "hil-custom-adapter-missing-wf",
-			description: "",
-			inputs: {},
-			outputs: {},
-			run: async (ctx) => {
-				await ctx.ui.custom<string>(() => ({ render: () => ["custom"], invalidate: () => undefined }));
-				return {};
-			},
-		});
-
-		const wfResult = await run(def, {}, { ui: uiAdapter, store: createStore() });
-
-		assert.equal(wfResult.status, "failed");
-		assert.equal(
-			wfResult.error,
-			"atomic-workflows: HIL ctx.ui.custom is unavailable because Atomic runtime did not provide a UI adapter",
-		);
 	});
 
 	test("fallback rejects ctx.ui.input with precise missing-adapter error", async () => {

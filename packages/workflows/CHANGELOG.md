@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Workflow discovery now reads only `.atomic` default roots. Discovered workflow modules use `@bastani/atomic/workflows` and `typebox` imports. Removed deprecated imperative API stubs, separate `thinkingLevel` and `fallbackThinkingLevels` authoring fields, old stage-target syntax, and replay of checkpoints without current topology. Put reasoning effort in each model string, such as `provider/model:high`.
+- Execution results always include `toolNodes`, inspection details always include `tools`, and custom UI adapters must implement every UI method.
+
 ## [0.9.38-alpha.1] - 2026-10-15
 
 ### Fixed

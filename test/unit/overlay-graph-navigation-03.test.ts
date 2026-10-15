@@ -12,6 +12,7 @@ import { renderHeader } from "../../packages/workflows/src/tui/header.js";
 import { computeLayout, NODE_H, NODE_W } from "../../packages/workflows/src/tui/layout.js";
 import { renderNodeCard } from "../../packages/workflows/src/tui/node-card.js";
 import { sliceColumns, visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
+import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 import * as h from "./overlay-graph-helpers.js";
 
 const {
@@ -28,7 +29,6 @@ const {
 	SGR_MOUSE_WHEEL_DOWN,
 	visibleText,
 	assertVisibleWidths,
-	typeIntoView,
 } = h;
 
 function sgrMousePress(col: number, row: number, buttonCode = 0, final = "M"): string {
@@ -66,6 +66,7 @@ describe("GraphView keyboard navigation", () => {
 		const store = makeStore(makeSnap(stages));
 		const attached: Array<{ runId: string; stageId: string }> = [];
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -87,6 +88,7 @@ describe("GraphView keyboard navigation", () => {
 		const store = makeStore(makeSnap(stages));
 		const attached: string[] = [];
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -109,6 +111,7 @@ describe("GraphView keyboard navigation", () => {
 		const store = makeStore(makeSnap(stages));
 		const attached: string[] = [];
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -140,6 +143,7 @@ describe("GraphView keyboard navigation", () => {
 		const store = makeStore(makeSnap(stages));
 		const attached: string[] = [];
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -175,6 +179,7 @@ describe("GraphView keyboard navigation", () => {
 		const store = makeStore(makeSnap(stages));
 		const attached: string[] = [];
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -199,6 +204,7 @@ describe("GraphView keyboard navigation", () => {
 		const store = makeStore(makeSnap(stages));
 		const attached: string[] = [];
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -228,6 +234,7 @@ describe("GraphView keyboard navigation", () => {
 		const snap = makeSnap(stages);
 		const store = makeStore(snap);
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -239,99 +246,6 @@ describe("GraphView keyboard navigation", () => {
 		view.handleInput(SGR_MOUSE_WHEEL_DOWN);
 		view.render(96);
 		assert.ok(view._graphScrollOffset > 0);
-		view.dispose();
-	});
-
-	it("lets legacy run-level prompts keep Ctrl+X hierarchy and scroll controls", () => {
-		const stages = [
-			makeStage("stage-0"),
-			makeStage("stage-1", ["stage-0"]),
-			makeStage("stage-2", ["stage-1"]),
-			makeStage("stage-3", ["stage-2"]),
-			makeStage("stage-4", ["stage-3"]),
-			makeStage("stage-5", ["stage-4"]),
-		];
-		const snap = makeRunPromptSnap(stages, makePendingPrompt({ id: "legacy-prompt" }));
-		const store = makeStore(snap);
-		let detached = 0;
-		const view = new GraphView({
-			mode: "overlay",
-			runId: "run-1",
-			store,
-			graphTheme: defaultTheme,
-			piTui: makeTestTui(32),
-			onDetach: () => {
-				detached += 1;
-			},
-		});
-
-		view.render(96);
-		view.handleInput(SGR_MOUSE_WHEEL_DOWN);
-		view.render(96);
-		assert.ok(view._graphScrollOffset > 0);
-
-		view.handleInput("\x18");
-		assert.equal(detached, 1);
-		view.dispose();
-	});
-
-	it("keeps legacy run-level input prompts answerable with literal slash text", () => {
-		const stages = [makeStage("stage-0")];
-		const snap = makeRunPromptSnap(stages, makePendingPrompt({ id: "legacy-prompt" }));
-		const store = makeStore(snap);
-		const resolved: PromptResolution[] = [];
-		const view = new GraphView({
-			mode: "overlay",
-			runId: "run-1",
-			store,
-			graphTheme: defaultTheme,
-			onPromptResolve: (runId, promptId, response) => {
-				resolved.push({ runId, promptId, response });
-			},
-		});
-
-		typeIntoView(view, "/tmp/file");
-		view.handleInput("\r");
-
-		assert.equal(view._switcherOpen, false);
-		assert.deepEqual(resolved, [{ runId: "run-1", promptId: "legacy-prompt", response: "/tmp/file" }]);
-		view.dispose();
-	});
-
-	it("keeps legacy run-level editor prompts answerable with literal slash text", () => {
-		const stages = [makeStage("stage-0")];
-		const snap = makeRunPromptSnap(
-			stages,
-			makePendingPrompt({
-				id: "legacy-editor-prompt",
-				kind: "editor",
-				initial: "https://example.test",
-			}),
-		);
-		const store = makeStore(snap);
-		const resolved: PromptResolution[] = [];
-		const view = new GraphView({
-			mode: "overlay",
-			runId: "run-1",
-			store,
-			graphTheme: defaultTheme,
-			onPromptResolve: (runId, promptId, response) => {
-				resolved.push({ runId, promptId, response });
-			},
-		});
-
-		typeIntoView(view, "/a/b");
-		view.handleInput("\t");
-		view.handleInput("\r");
-
-		assert.equal(view._switcherOpen, false);
-		assert.deepEqual(resolved, [
-			{
-				runId: "run-1",
-				promptId: "legacy-editor-prompt",
-				response: "https://example.test/a/b",
-			},
-		]);
 		view.dispose();
 	});
 
@@ -347,6 +261,7 @@ describe("GraphView keyboard navigation", () => {
 		const snap = makeSnap(stages);
 		const store = makeStore(snap);
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -372,6 +287,7 @@ describe("GraphView keyboard navigation", () => {
 		const snap = makeSnap(stages);
 		const store = makeStore(snap);
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -393,6 +309,7 @@ describe("GraphView keyboard navigation", () => {
 			makeStage(`switcher-scroll-${index}`, index === 0 ? [] : [`switcher-scroll-${index - 1}`]),
 		);
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store: makeStore(makeSnap(stages)),
@@ -417,6 +334,7 @@ describe("GraphView keyboard navigation", () => {
 			makeStage(`scrollbar-${index}`, index === 0 ? [] : [`scrollbar-${index - 1}`]),
 		);
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store: makeStore(makeSnap(stages)),
@@ -449,6 +367,7 @@ describe("GraphView keyboard navigation", () => {
 			makeStage(`prompt-scrollbar-${index}`, index === 0 ? [] : [`prompt-scrollbar-${index - 1}`]),
 		);
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store: makeStore(makeRunPromptSnap(stages, makePendingPrompt({ message: "Continue?" }))),
@@ -473,6 +392,7 @@ describe("GraphView keyboard navigation", () => {
 		const snap = makeSnap([]);
 		const store = makeStore(snap);
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,
@@ -497,6 +417,7 @@ describe("GraphView keyboard navigation", () => {
 		const snap: StoreSnapshot = { runs: [], notices: [], version: 1 };
 		const store = makeStore(snap);
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: null,
 			store,
@@ -557,6 +478,7 @@ describe("GraphView keyboard navigation", () => {
 		};
 		const store = makeStore(snap);
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-1",
 			store,

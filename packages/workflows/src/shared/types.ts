@@ -158,12 +158,7 @@ export type WorkflowCustomUiOptions = AuthoringContract.WorkflowCustomUiOptions;
 
 export interface WorkflowUIContext extends AuthoringContract.WorkflowUIContext {}
 
-/**
- * Adapter supplied by the pi runtime (or test harness) to back the HIL
- * primitives.  The custom-widget method is optional for compatibility with
- * existing primitive-only adapters; the executor normalizes a missing custom
- * method to the same unavailable-UI rejection used in headless mode.
- */
+/** Adapter supplied by the runtime for every HIL primitive. */
 export interface WorkflowUIAdapter extends AuthoringContract.WorkflowUIAdapter {}
 
 // ---------------------------------------------------------------------------
@@ -188,7 +183,10 @@ export interface StageMcpOptions extends AuthoringContract.StageMcpOptions {
  * workflow-owned options such as `mcp` and `gitWorktreeDir` are stripped before SDK session creation.
  */
 export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema | undefined>
-	extends Omit<CreateAgentSessionOptions, "model" | keyof AuthoringContract.StageOptions>,
+	extends Omit<
+			CreateAgentSessionOptions,
+			"model" | "thinkingLevel" | "fallbackThinkingLevels" | keyof AuthoringContract.StageOptions
+		>,
 		Omit<Mutable<AuthoringContract.StageOptions<TSchemaDef>>, "sessionManager" | "settingsManager"> {
 	/** Optional structured final-answer schema. When set, the stage receives a schema-specific final-answer tool. */
 	schema?: TSchemaDef;
@@ -197,7 +195,7 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 	/** Per-stage MCP server gating. No-op when no WorkflowMcpPort is configured. */
 	mcp?: StageMcpOptions;
 	customTools?: ToolDefinition[];
-	scopedModels?: CreateAgentSessionOptions["scopedModels"];
+	scopedModels?: AuthoringContract.StageOptions["scopedModels"];
 	sessionManager?: SessionManager;
 	settingsManager?: SettingsManager;
 	/** Internal durable resume hook: reopen this exact Atomic/Pi session file instead of forking. */

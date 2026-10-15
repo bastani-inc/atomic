@@ -1,3 +1,5 @@
+// @ts-nocheck
+import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 // @ts-nocheck -- intentional white-box GraphView input coverage
 
 import assert from "node:assert/strict";
@@ -79,6 +81,7 @@ describe("non-attachable tool interactions", () => {
 		const graph = expandWorkflowGraph(localStore.snapshot(), testRunId("tool-interaction-run"));
 		const attached: string[] = [];
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: testRunId("tool-interaction-run"),
 			store: localStore,
@@ -122,6 +125,7 @@ describe("non-attachable tool interactions", () => {
 		const graph = expandWorkflowGraph(localStore.snapshot(), testRunId("postmortem-run"));
 		const attached: string[] = [];
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: testRunId("postmortem-run"),
 			store: localStore,

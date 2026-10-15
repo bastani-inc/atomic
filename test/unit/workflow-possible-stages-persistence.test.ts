@@ -262,7 +262,7 @@ describe("possible-stages discovery lint (D10)", () => {
 		writeTextSync(
 			join(workflowsDir, relativeName),
 			[
-				`import { workflow } from "@bastani/workflows";`,
+				`import { workflow } from "@bastani/atomic/workflows";`,
 				`export default workflow({`,
 				`  name: ${JSON.stringify(relativeName.replace(/\.ts$/, ""))},`,
 				`  description: "",`,
@@ -312,7 +312,7 @@ describe("possible-stages admission wiring (D10)", () => {
 		writeTextSync(
 			join(workflowsDir, "wired.ts"),
 			[
-				`import { workflow } from "@bastani/workflows";`,
+				`import { workflow } from "@bastani/atomic/workflows";`,
 				`export default workflow({`,
 				`  name: "wired",`,
 				`  description: "",`,
@@ -388,7 +388,7 @@ describe("possible-stages admission wiring (D10)", () => {
 		writeTextSync(
 			join(workflowsDir, "partial-scan.ts"),
 			[
-				`import { workflow } from "@bastani/workflows";`,
+				`import { workflow } from "@bastani/atomic/workflows";`,
 				`export default workflow({`,
 				`  name: "partial-scan",`,
 				`  description: "",`,

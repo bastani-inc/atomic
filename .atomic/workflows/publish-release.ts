@@ -1,6 +1,6 @@
 import { canonicalReleaseBaseRef } from "../../scripts/release-base.js";
-import { workflow } from "@bastani/workflows";
-import type { Static } from "@bastani/workflows";
+import { workflow } from "@bastani/atomic/workflows";
+import type { Static } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 import {
 	createReleaseBoundary,

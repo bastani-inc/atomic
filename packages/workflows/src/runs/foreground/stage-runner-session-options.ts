@@ -38,7 +38,6 @@ export function buildStageSessionOptions(input: StageSessionOptionsInput): Stage
 	if (options.cwd === undefined && input.defaultCwd !== undefined) options.cwd = input.defaultCwd;
 	if (input.ownsFallbackChain) {
 		options.fallbackModels = [];
-		options.fallbackThinkingLevels = undefined;
 	}
 	if (input.restoreSavedModel === true) delete options.model;
 

@@ -76,7 +76,7 @@ beforeAll(async () => {
 	fixturePath = join(fixtureDirectory, "auto-attach-workflows.ts");
 	await writeFile(
 		fixturePath,
-		`import { workflow } from "@bastani/workflows";
+		`import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 
 export const attachEnabled = workflow({

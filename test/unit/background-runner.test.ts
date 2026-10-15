@@ -377,7 +377,10 @@ describe("statusRuns — lists detached run during active stage", () => {
 		if (job) await job.promise;
 		await new Promise((resolve) => setTimeout(resolve, 5));
 
-		assert.deepEqual(statusRuns({ all: true, store }), statusRuns({ store }));
+		assert.equal(
+			statusRuns({ store }).some((entry) => entry.runId === accepted.runId),
+			true,
+		);
 	});
 });
 

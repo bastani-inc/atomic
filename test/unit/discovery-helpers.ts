@@ -37,7 +37,7 @@ export function writeWorkflowJs(dir: string, filename: string, name: string, nor
 	writeFileSync(
 		filePath,
 		[
-			`import { workflow } from "@bastani/workflows";`,
+			`import { workflow } from "@bastani/atomic/workflows";`,
 			`const definition = workflow({`,
 			`  name: ${JSON.stringify(normalizedName)},`,
 			`  description: ${JSON.stringify(`${name} description`)},`,
@@ -64,7 +64,7 @@ export function writeNoStageWorkflowJs(dir: string, filename: string): string {
 	writeFileSync(
 		filePath,
 		[
-			`import { workflow } from "@bastani/workflows";`,
+			`import { workflow } from "@bastani/atomic/workflows";`,
 			`export default workflow({`,
 			`  name: "No Stage Workflow",`,
 			`  description: "Discovery rejects this because it creates no stages",`,

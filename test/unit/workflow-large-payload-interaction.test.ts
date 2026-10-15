@@ -8,6 +8,7 @@ import type { WorkflowInputValues } from "../../packages/workflows/src/shared/ty
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
+import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 import { ANSI_RE } from "./overlay-graph-helpers.js";
 
 function heavyInput(reads: { count: number }): WorkflowInputValues {
@@ -104,6 +105,7 @@ describe("large workflow interaction isolation", () => {
 		const publicSnapshotCalls = countPublicSnapshotCalls(store);
 		const attached: string[] = [];
 		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
 			mode: "overlay",
 			runId: "run-large",
 			store,

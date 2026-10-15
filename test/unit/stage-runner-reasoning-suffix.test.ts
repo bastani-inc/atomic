@@ -44,7 +44,6 @@ describe("createStageContext — reasoning suffix retry behavior", () => {
 				stageOptions: {
 					model: "anthropic/primary:high",
 					fallbackModels: ["openai/fallback:low"],
-					thinkingLevel: "xhigh",
 				},
 			}),
 		) as InternalStageContext;
@@ -91,44 +90,6 @@ describe("createStageContext — reasoning suffix retry behavior", () => {
 		assert.deepEqual(
 			result.meta.modelAttempts?.map((attempt) => attempt.reasoningLevel),
 			["high", "low"],
-		);
-	});
-
-	test("legacy thinkingLevel applies when candidates have no suffix", async () => {
-		const thinkingLevels: string[] = [];
-		const agentSession: AgentSessionAdapter = {
-			async create(options) {
-				const model = typeof options.model === "string" ? String(options.model) : "object-model";
-				const { session } = makeMockSession({
-					setThinkingLevel(level) {
-						thinkingLevels.push(`${model}:${String(level)}`);
-					},
-					async prompt() {
-						if (model === "anthropic/primary") throw new Error("503 service unavailable");
-					},
-					getLastAssistantText() {
-						return model === "openai/fallback" ? "legacy answer" : undefined;
-					},
-				});
-				return session;
-			},
-		};
-		const ctx = createStageContext(
-			makeOpts({
-				adapters: { agentSession },
-				stageOptions: {
-					model: "anthropic/primary",
-					fallbackModels: ["openai/fallback"],
-					thinkingLevel: "medium",
-				},
-			}),
-		) as InternalStageContext;
-
-		assert.equal(await ctx.prompt("go"), "legacy answer");
-		assert.deepEqual(thinkingLevels, ["anthropic/primary:medium", "openai/fallback:medium"]);
-		assert.deepEqual(
-			ctx.__modelFallbackMeta().modelAttempts?.map((attempt) => attempt.reasoningLevel),
-			["medium", "medium"],
 		);
 	});
 });

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Static, TSchema } from "@bastani/workflows";
+import type { Static, TSchema } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 import { describe, test } from "vitest";
 import * as workflows from "../../packages/workflows/src/index.js";
@@ -13,12 +13,8 @@ import {
 } from "../../packages/workflows/src/index.js";
 
 describe("public entrypoint", () => {
-	test("exports removed runWorkflow as a throwing migration stub", () => {
-		assert.equal("runWorkflow" in workflows, true);
-		assert.throws(
-			() => (workflows.runWorkflow as () => never)(),
-			/@bastani\/workflows no longer exports runWorkflow; author workflows with workflow\(\{\.\.\.\}\)/,
-		);
+	test("does not export the removed imperative workflow API", () => {
+		assert.equal("runWorkflow" in workflows, false);
 		assert.equal("WorkflowOptions" in workflows, false);
 		assert.equal("WorkflowRunOptions" in workflows, false);
 	});

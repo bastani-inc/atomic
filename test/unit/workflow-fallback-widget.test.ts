@@ -9,6 +9,7 @@ import { subscribeStoreInvalidation } from "../../packages/workflows/src/shared/
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { startFallbackWidgetScenario } from "../helpers/workflow-fallback-widget.js";
+import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 import { makeMockSession } from "./stage-runner-helpers.js";
 
 // #3110: use SDK selection and equality guards, including same-model effort fallbacks.
@@ -16,7 +17,13 @@ for (const explicitModel of [true, false]) {
 	test(`applied SDK fallbacks invalidate mounted cards with ${explicitModel ? "explicit" : "inherited"} models`, async () => {
 		const scenario = await startFallbackWidgetScenario(explicitModel);
 		const { store, runId } = scenario;
-		const view = new GraphView({ mode: "overlay", runId, store, graphTheme: deriveGraphTheme({}) });
+		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
+			mode: "overlay",
+			runId,
+			store,
+			graphTheme: deriveGraphTheme({}),
+		});
 		const render = () => stripVTControlCharacters(view.render(140).join("\n"));
 		let text = render();
 		let invalidations = 0;
@@ -115,6 +122,7 @@ test("workflow fallback replacements keep explicit model and effort labels throu
 								thinkingLevel: options.thinkingLevel,
 								async prompt() {
 									view ??= new GraphView({
+										piKeybindings: s5aKeybindings(),
 										mode: "overlay",
 										runId: store.runs()[0]!.id,
 										store,
