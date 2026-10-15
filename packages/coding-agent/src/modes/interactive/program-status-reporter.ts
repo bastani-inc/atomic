@@ -1,7 +1,7 @@
 import type { ProgramStatus, Terminal } from "@earendil-works/pi-tui";
 import { APP_NAME } from "../../config.js";
 import type { AgentSessionEvent } from "../../core/agent-session.js";
-import type { UIPromptEndEvent, UIPromptStartEvent } from "../../core/extensions/agent-events.js";
+import type { UIPromptEndEvent, UIPromptStartEvent } from "../../core/extensions/agent-events.ts";
 import type { WorkflowActivityFrame, WorkflowRootActivity } from "../../core/extensions/workflow-events.js";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 
