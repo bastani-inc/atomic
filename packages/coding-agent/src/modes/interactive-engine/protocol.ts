@@ -231,6 +231,7 @@ const WORKFLOW_ACTIVITY_REASONS: readonly string[] = [
 ];
 
 const WORKFLOW_PROMPT_KINDS: readonly string[] = ["input", "confirm", "select", "editor", "custom"];
+const WORKFLOW_ENDED_STATUSES: readonly string[] = ["completed", "cancelled", "killed", "failed"];
 
 function parseWorkflowRoot(value: JsonValue): WorkflowRootActivity | undefined {
 	if (
@@ -245,7 +246,9 @@ function parseWorkflowRoot(value: JsonValue): WorkflowRootActivity | undefined {
 		typeof value.actionableBlockCount !== "number" ||
 		typeof value.needsAttention !== "boolean" ||
 		(value.blockedPromptKind !== undefined &&
-			(typeof value.blockedPromptKind !== "string" || !WORKFLOW_PROMPT_KINDS.includes(value.blockedPromptKind)))
+			(typeof value.blockedPromptKind !== "string" || !WORKFLOW_PROMPT_KINDS.includes(value.blockedPromptKind))) ||
+		(value.endedStatus !== undefined &&
+			(typeof value.endedStatus !== "string" || !WORKFLOW_ENDED_STATUSES.includes(value.endedStatus)))
 	)
 		return undefined;
 	return {
@@ -258,6 +261,9 @@ function parseWorkflowRoot(value: JsonValue): WorkflowRootActivity | undefined {
 		needsAttention: value.needsAttention,
 		...(value.blockedPromptKind !== undefined
 			? { blockedPromptKind: value.blockedPromptKind as WorkflowRootActivity["blockedPromptKind"] }
+			: {}),
+		...(value.endedStatus !== undefined
+			? { endedStatus: value.endedStatus as WorkflowRootActivity["endedStatus"] }
 			: {}),
 	};
 }

@@ -221,6 +221,11 @@ function projectRoot(
 		reason = humanWaits > 0 ? "awaiting_input" : "manual_intervention";
 	}
 	const blockedPromptKind = runPromptKind ?? stagePromptKind;
+	const rootStatus = runById.get(rootRunId)?.status;
+	const endedStatus =
+		rootStatus === "completed" || rootStatus === "cancelled" || rootStatus === "killed" || rootStatus === "failed"
+			? rootStatus
+			: undefined;
 	return {
 		rootRunId,
 		ownerSessionId: ownership.ownerSessionId,
@@ -229,6 +234,7 @@ function projectRoot(
 		activeExecutionCount,
 		actionableBlockCount,
 		...(blockedPromptKind === undefined ? {} : { blockedPromptKind }),
+		...(endedStatus === undefined ? {} : { endedStatus }),
 		needsAttention: actionableBlockCount > 0 || settledFailure,
 	};
 }

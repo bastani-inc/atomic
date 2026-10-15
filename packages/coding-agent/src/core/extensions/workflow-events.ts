@@ -87,6 +87,7 @@ export interface WorkflowRootActivity {
 	activeExecutionCount: number;
 	actionableBlockCount: number;
 	blockedPromptKind?: WorkflowGraphNodePrompt["kind"];
+	endedStatus?: Extract<WorkflowRunStatus, "completed" | "cancelled" | "killed" | "failed">;
 	needsAttention: boolean;
 	/** Graph topology and node statuses; absent when the publisher reports no graph. */
 	graph?: WorkflowRootGraph;
