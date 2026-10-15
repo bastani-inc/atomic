@@ -4,7 +4,7 @@
 
 Implement only the unwired `JournalDurableBackend`, persist before returning, rebuild its projection from journal events, verify it on Boat, and commit on `feat/workflow-journal-s2-journal-backend`.
 
-The table records the original acceptance clauses without adding scope. The current repair is the six metadata findings at review-round-latest.json:1298–1418, against designated S1 baseline `4631156a7a96f8386bb78ee4d200ada81a2add83`. `C` denotes its format/check gate, `F` its focused tests and independent probes, `U` its standalone unit gate, and `D` its baseline/artifact audit. All earlier receipts are historical and do not replace current-source validation. Their broad readiness and baseline-fidelity claims were incomplete because ten surviving metadata cases were absent.
+The table records the unchanged acceptance clauses. The current five-entry, three-reviewer batch is review-round-latest.json:1155–1259 against designated S1 baseline `6c21d5927b0f1ee2b7e6613205870a9770dc043d`. `C` denotes current format/check gates, `F` focused tests and independent probes, `U` the standalone unit gate, and `D` baseline/artifact audits, recorded in the current repair section below. Earlier receipts are historical, not current-source validation. Their broad readiness and baseline-fidelity claims were incomplete: the newer baseline's empty-path fallback and exact unheld stale-error assertions had been dropped. No objective or contract amendment is introduced.
 
 | Contract clause | Verification |
 | --- | --- |
@@ -35,17 +35,17 @@ The table records the original acceptance clauses without adding scope. The curr
 | Prompt state survives status changes and reopen | F: unchanged-count status snapshot retains active token identity; release settles count; old generation cannot release newer reservation; replacement tokens survive while deleted tokens disappear |
 | Catalog, hydration and accepted mutations reflect deletion/recreation | F: prior direct deletion/recreation cases retained; inactivity rechecked after acquisition, acquired sequence used for deletion CAS; deterministic and real Node/Bun child replacement schedules |
 | Local-only `node:sqlite` storage | D: no shared-host store or new runtime selector |
-| Default path remains `join(dirname(getAgentDir()), "workflows", "journal.sqlite")` | F: inherited kernel path tests; D: path function unchanged |
-| `ATOMIC_WORKFLOW_JOURNAL_PATH` override remains unchanged | F: inherited kernel path tests; D: no path normalization added |
+| Default path remains `join(dirname(getAgentDir()), "workflows", "journal.sqlite")` | F: restored baseline expectation plus isolated default-constructor create/append/close/reopen and fresh Node/Bun process regressions for an empty override; D: explicit empty/unset fallback restored |
+| `ATOMIC_WORKFLOW_JOURNAL_PATH` preserves every nonempty override verbatim | F: inherited relative/unusual path expectations; D: no trim, normalization, rejection or new validation; empty is treated as unset |
 | WAL, FULL sync, busy timeout and foreign-key pragmas retained | F: inherited kernel/process tests; D: existing pragmas and counter adapters unchanged |
 | Schema version 1, unknown version hard error, no migration | F: all 171 designated-baseline kernel cases; singleton safe integers, int64 extrema, text and real values report exact typed errors |
 | Exported schema/table/column/event/encoding/lease constants and types retain identity | C, F and D: exact API probes; restored SqliteStoredValue and JournalSchemaVersionError found/constructor union; synchronous capability remains additive |
-| Lease tombstone preserves monotonically increasing epoch after deletion | F: inherited kernel fencing tests and backend stale-deletion regression; D: shared deletion body retains tombstone |
+| Lease tombstone preserves monotonically increasing epoch after deletion | F: restored exact constructor/runId/heldEpoch/currentEpoch checks after release and deletion, inherited fencing and backend stale-deletion regressions; D: shared deletion retains tombstone |
 | `seq` and `epoch` remain safe integers in `0..Number.MAX_SAFE_INTEGER` | F: inherited range matrix; expiry grant uses the same checked increment |
 | Range errors retain exact class and fields | F: `JournalCounterRangeError { runId, field, value, reason }`; additive checkpoint path propagates it rather than hiding it |
 | Identifier Unicode/NUL rules and NUL precedence remain unchanged | F: inherited kernel and Node/Bun process matrices; D: synchronous companions delegate shared validation bodies |
 | Payload/header JSON preserves accepted values, NUL, lone surrogates and negative zero | F: exact retained S1 native JSON assertions plus backend native lexemes, caller serialization counts, frozen inputs/FWW, repeated status/prompt/message/summary snapshots, hydration/reopen/getters; no construction/fold stringify round trips |
-| Surviving S1 tests, process fixture and notes remain intact relative to designated baseline | D: all 171 kernel assertions restored from `4631156a7a96f8386bb78ee4d200ada81a2add83`; only formatter wrapping/trailing comma differs in one multirow block; contention file, journal-process.mjs and S1 notes byte-identical |
+| Surviving S1 tests, process fixture and notes remain intact relative to designated baseline | D: all 171 baseline kernel cases and exact assertions from `6c21d5927b0f1ee2b7e6613205870a9770dc043d` retained verbatim; only imports and two persistent default-path process cases added; adapter, contention file, journal-process.mjs and S1 notes byte-identical |
 | Exactly one metadata row and typed corruption error | F: cardinality before any version decoding; nine multirow combinations include both int64 extrema and mixed types; exact JournalMetaCorruptError path/rowCount, no schema or row changes |
 | `StatusChanged` is a full snapshot, latest sequence wins | F: direct metadata payload, conflicting claim and reopened handle checks |
 | Optional absent fields omitted from JSON | F: raw status payload lacks owner, release, failure, session and resumability fields when absent |
@@ -287,9 +287,9 @@ Historical baseline audit: the S1 unit suite, contention suite, journal-process.
 
 The eight earlier defects have retained regressions, but their green receipts did not close the newly identified metadata gap. Remaining historical caveats include the unproven single untouched-test transient above, six informational diagnostics, 26 existing unit skips and unbenchmarked full replay/current-header scan costs. The backend remains unwired; no UI/video or wired-runtime E2E result is claimed.
 
-## Current metadata repair: six findings, one initialization root
+## Historical metadata repair: six findings, one initialization root
 
-The latest consolidated findings at review-round-latest.json:1298–1418 are required by the unchanged objective, not a user amendment. The initializer decoded every schema_version through a number-valued query before counting rows, and the exported schema error had lost its full stored-value type. Decoding could fail before cardinality validation or round a singleton value. A reduced 161-case suite hid this loss of baseline behavior.
+The then-latest consolidated findings at review-round-latest.json:1298–1418 were required by the unchanged objective, not a user amendment. The initializer decoded every schema_version through a number-valued query before counting rows, and the exported schema error had lost its full stored-value type. Decoding could fail before cardinality validation or round a singleton value. A reduced 161-case suite hid this loss of baseline behavior. The following evidence is pinned to the older `4631156a7` reference, not the current designated baseline.
 
 | Finding | Reviewer and facet | Applied repair and proof |
 | --- | --- | --- |
@@ -304,11 +304,11 @@ The repair applies the necessary `babfae6a0..4631156a7` changes in this checkout
 
 TDD authoring gate: the ten restored baseline cases protect existing cardinality and exact singleton-value behavior absent from the 161-case suite. All use the public journal constructor and inspect typed errors and unchanged storage. The entire baseline test file was restored byte-for-byte for RED; required formatting subsequently wrapped one multirow test call and added its trailing comma. No assertion is removed or weakened. Fixtures and S1 notes already match the designated baseline and require no edits.
 
-### Current RED evidence
+### Historical RED evidence
 
 Assigned-Boat run `run_6eb50bba30aefa96b0d2985016c954d1`, `/tmp/s2-meta-red.log`, restored all 171 cases before production edits: **166 passed, five failed**, no skips. Three wide-multirow cases raised StorageUnavailableError instead of JournalMetaCorruptError. Singleton INT64_MAX raised StorageUnavailableError; Node rounded INT64_MIN to -9223372036854776000. Exact retained `.crabbox/completion-turn4-meta.mjs` failed **4/8** on each of Node and Bun; Bun raised StorageUnavailableError for both singleton extrema. The exact `.crabbox/completion-turn4-meta-tsconfig.json` probe failed TS2344 and TS2345. Raw remote logs are `.crabbox/s2-meta-{red,node-red,bun-red,type-red}.log`. The evidence-collection wrapper returned zero deliberately after recording failing subprocess exits; it is not a green test gate.
 
-### Current-source validation
+### Historical metadata validation
 
 Initial GREEN `run_a6abdb590dc6278a3c75339b8df4a907`, `/tmp/s2-meta-green.log`: all **171/171** kernel cases passed, Node/Bun each passed **8/8** exact metadata probes, and the exact metadata typecheck passed. The subsequent formatter changed only the restored metadata helper/initializer layout and one baseline multirow test call (wrapping and trailing comma). Those exact formatting changes were applied locally; assertion bodies are unchanged. Final gates follow.
 
@@ -334,7 +334,7 @@ The retained metadata and earlier six-group probe had one extra terminal LF in t
 
 Two audit-tool attempts are retained rather than counted as successful gates: `run_55b8fac74846d2246475f2023ed526eb` could not read the local-only S1 revision from Boat Git; `run_fe05f28329506f4928ba07fc4c023b7e` discovered that the installed TypeScript package has no JavaScript parser API. Exporting the exact baseline files into ignored scratch storage and comparing the test through the existing repository formatter resolved those audit limitations. No project source, test, dependency or configuration was changed for either limitation.
 
-All six metadata findings are closed by restored persisted coverage and independent runtime/type probes. The resolved issues.md is removed. Remaining caveats are the separately recorded intermittent admission test, six existing informational diagnostics, 26 pre-existing unit skips and unbenchmarked replay/header-scan costs. The backend remains unwired; no wired-runtime E2E or UI result is claimed. The audit is pinned to the explicitly designated S1 revision `4631156a7`, not a later-moving branch reference.
+All six metadata findings were closed by that repair's persisted coverage and independent runtime/type probes. Those changes remain retained. Its `4631156a7` audit did not establish fidelity to the now-designated `6c21d5927` baseline: empty-path and two exact stale-error assertion blocks were missing. The current repair below supersedes that broader readiness claim. The intermittent unit failures remain undiagnosed; the backend remains unwired.
 
 ## Selected durable suites
 
@@ -366,4 +366,49 @@ None during implementation. The launch contract explicitly requires `Assistant-w
 
 ## Deferred observations
 
-Five unrelated Biome informational diagnostics, the exact-formula serializer style information and 26 established unit skips are not suppressed. No other slice work is added. User guides and release notes remain assigned to S6. Current completion rests on the metadata-repair gates and designated-baseline audit, not prior reduced-suite claims.
+Five unrelated Biome informational diagnostics, the exact-formula serializer style information and 26 established unit skips are not suppressed. No other slice work is added. User guides and release notes remain assigned to S6. Current completion requires the current-baseline path/assertion repair and fresh gates below, not historical reduced-suite or metadata-only receipts.
+
+## Current repair: five findings, two baseline-preservation roots
+
+The current designated S1 commit is `6c21d5927b0f1ee2b7e6613205870a9770dc043d`, inspected by full SHA and `git show`. It changes only `sqlite-run-journal.ts` and `durable-sqlite-run-journal.test.ts`: empty override fallback, two stronger stale-lease assertion blocks, and formatting of already-retained metadata code/tests. The objective is unchanged. This repair applies its required behavior in this checkout rather than replacing S2 or replaying unrelated slices.
+
+| Consolidated finding | Reviewer | Root, fix and closure evidence |
+| --- | --- | --- |
+| 1, title at 1158, P1 | Completion | Empty override selected a private temporary SQLite database; restore the exact baseline fallback and persistent Node/Bun regression |
+| 2, title at 1178, P2 | Completion | Release/deletion class-only checks omitted supported diagnostics; restore both verbatim constructor/runId/heldEpoch/currentEpoch blocks |
+| 3, title at 1198, P1 | Evidence | Same empty-path root and persistent regression as finding 1 |
+| 4, title at 1218, P2 | Evidence and risk | Same exact stale-field coverage restoration as finding 2; no production error behavior changed |
+| 5, title at 1239, P1 | Risk | Same empty-path root; default constructor now survives close/reopen and a fresh process |
+
+The only production change is `workflowJournalPath`: undefined and empty select `join(dirname(getAgentDir()), "workflows", "journal.sqlite")`; every nonempty value is returned verbatim, including whitespace and unusual relative paths. No trimming, rejection or validation is added. Both direct journal constructors and backend default/open callers use this function. S2 synchronous companions, private discriminated event union, native JSON/negative-zero preservation, metadata widths/errors, counters, ownership races and deletion semantics remain unchanged.
+
+TDD authoring gate: the inherited path test checked a string, not successful persistence. Two additional public-interface cases create/append/close/reopen using the default constructor and compare a second fresh process on each of Node22.19.0 and Bun1.4.2. Every process receives an isolated temporary `ATOMIC_CODING_AGENT_DIR` and an empty override; no real user database is opened. They use the existing runtime helpers and `bunExecutable`, strict assertions, no skips, mocks or new production seams. The exact baseline test body otherwise remains intact; only helper imports and these cases are added.
+
+### RED and initial GREEN
+
+- `run_7d7060f692b697614ec08eb24917b2ed`, `/tmp/s2-path-initial-red.log`: reran the exact retained `.crabbox/completion5-path.mjs` from the latest completion receipt, with isolated agent directories. Both Node and Bun printed `actual:""`, `reopenedRows:[]` and failed the expected-default assertion with exit1. The diagnostic wrapper returned zero only after recording individual exits; that is not a passing probe. In the same run the exact `.crabbox/completion5-runtime.mjs` passed all five groups on each runtime, including both exact stale-field checks. No artificial RED is claimed for already-correct error behavior.
+- `run_3f2777180f1d63348055e565ce4fbac8`, `/tmp/s2-path-test-red.log`: all 173 persisted kernel cases ran against unfixed production. **170 passed, three failed**, no skips: the restored baseline path expectation and both new default-constructor persistence cases. The new cases reached successful writes, then received an empty reopened run list. Both exact restored stale-error tests passed.
+- `run_4a3d85e92378f428ce28f0ca6ac2d25f`, `/tmp/s2-path-green-format.log`: after the one-function fix, **173/173** kernel cases passed, no skips. The exact reviewer path source passed on both runtimes with matching expected/actual persistent paths and one reopened run. Both exact reviewer runtime sources passed all five groups. `npm run format` processed 3431 files with no fixes or diff; no local formatter was run.
+
+### Current final gates and fidelity
+
+Historical unit failures remain observations, not reasons to add exclusions or reduce assertions. The latest reviewer unit run failed unchanged `interactive-engine-isolation.test.ts:104` (heartbeat 476.2ms against 100ms), while prior attempts failed the unchanged stage-resource test with undefined taskResponse and later passed. No lower-level cause has been established for either observation. The current gates and fidelity audit follow.
+
+| Gate | Current-source evidence |
+| --- | --- |
+| C: format, no diff and check | `run_8ef938d3cff3f2243f0c000c95cc794a`, `/tmp/s2-path-final-gates.log`: `npm run format` processed 3431 files without fixes; `git diff --exit-code` passed; `npm run check` passed Biome, root/workspace typechecks and shrinkwrap with six existing informational diagnostics |
+| F: exact selected durable suites plus process integration | Same run: exact 19-file selector and integration passed **20 files / 366 tests**, no skips; includes 62 backend, 173 kernel and five process cases |
+| F: literal kernel command | Same run: `npx vitest --run test/unit/durable-sqlite-run-journal.test.ts` passed **173/173**, no skips |
+| F: exact API/type compilation | Same run: completion5, prior general API, metadata API and full stored-value/constructor-union configurations passed unchanged |
+| F: independent Node/Bun probes | Same run: exact reviewer path and five-group runtime probes passed; prior eight-case metadata, acquisition guards, seven negative-zero observations, ten ordinary groups and six earlier JSON/deletion groups passed; all eight real-child schedules and fresh-process rebuilds passed |
+| Supplemental metrics | Same run: cached qlty0.654.0 `metrics --functions` passed on the changed journal file, using existing configuration; no config/plugin/dependency changes |
+
+The main gate returned `ATOMIC_JOURNAL_GATE_EXIT=0`. Exact completion path/runtime probe hashes are `130ed9098969691cf4fa55168a8e426a80ddbaf1` and `517347d533602ba47fcccec2c67e2ad01d4cda34`; retained metadata source hash remains `120605b4a29531a6e5334fe28fdebcd14426557f`. Current journal and kernel-test hashes are `69263d8cb2c36c096ecb067aab5c949916837828` and `07fa1509d8e7fc4d1b0d462172c944ca3fdc2d9e`. Final note-inclusive hash comparison follows the unit gate.
+
+U: `run_61eefd1e833ae0282f29a3ed6d573ded`, `/tmp/s2-path-final-unit.log`, ran the exact command `npm run test:unit -- --exclude test/unit/durable-embedded-postgres-root.test.ts --exclude test/unit/durable-embedded-postgres.test.ts` ALONE. It passed **930 files / 10,609 tests**, with only the 26 pre-existing skips, in 127.68s, `ATOMIC_JOURNAL_GATE_EXIT=0`. The wrapper applied exactly two exclusions. Both previously implicated unchanged files passed: interactive-engine-isolation 5/5 and workflow-stage-bundled-resources 10/10. No assertion, exclusion, skip, concurrency or timeout policy was changed to obtain this result. Their historical failures remain undiagnosed rather than reclassified as fixed S2 defects.
+
+D: `run_26594dc395ca6165b99cfb132eb2881b`, `/tmp/s2-path-audit-2.log`, exported the actual designated baseline files into ignored Boat scratch storage and proved the complete 171-case kernel body byte-identical after removing only the added helper imports and two new cases. The path function is exact baseline text. Adapter, process fixture, contention suite and S1 notes remain byte-identical; existing types equal baseline plus the retained S2 synchronous interface. Local file-by-file inspection of the full baseline delta confirms the remaining 15 suite changes are import substitutions only, without changed assertions. All metadata formatting in the new baseline is already retained.
+
+The same run replayed the exact evidence-reviewer source on Node/Bun: **15/15** groups each, with `EMPTY_REOPEN_RUNS 1`. The exact risk-reviewer default-backend source retained `persistent:true`, one event and the run before and after close/reopen on both runtimes. Canonical source hashes are `b352b632e9799007ed45e67c39b8d1cdeee586ae` and `64900ee5188099206ac2bb711ab7df5561848f35`. A preceding audit-only attempt, `run_6a0fdf105b579030303a19e4763d7d88` (`/tmp/s2-path-audit.log`), failed on an extra closing parenthesis in the scratch comparison script. Only that scratch syntax was fixed; no product code, tests or assertions changed. The successful rerun also formatted 3431 files without fixes or diff and passed whitespace validation.
+
+All five findings are closed by the two focused repairs and current executable evidence. The resolved issues.md is removed. This batch changes only the path function, the kernel test file and these implementation notes; no API/type/schema changes, new dependencies, runtime wiring or other slices. The final note-inclusive local/Boat hash and whitespace audit is recorded in the signed commit receipt. The backend remains unwired: no UI, video or wired-runtime result is claimed. Remaining caveats are the historical unexplained unit failures, six informational diagnostics, 26 established skips and unbenchmarked full-replay/header-scan costs.
