@@ -90,6 +90,21 @@ describe("loadEntriesFromFile", () => {
 		assert.equal(readFileSync(file, "utf8"), content);
 	});
 
+	it("preserves record boundaries when appending after a read-only unterminated reopen", () => {
+		const file = join(tempDir, "append-after-reopen.jsonl");
+		const content =
+			'{"type":"session","version":3,"id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
+			'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"first","timestamp":1}}';
+		writeFileSync(file, content);
+		const session = SessionManager.open(file, tempDir);
+		assert.equal(readFileSync(file, "utf8"), content);
+		assert.equal(session.getEntries().length, 1);
+		session.appendMessage({ role: "user", content: "second", timestamp: 2 });
+		assert.equal(session.getEntries().length, 2);
+		assert.equal(SessionManager.open(file, tempDir).getEntries().length, 2);
+		assert.ok(readFileSync(file, "utf8").startsWith(`${content}\n`));
+	});
+
 	it("leaves an unterminated malformed final fragment unchanged", () => {
 		const file = join(tempDir, "malformed-tail.jsonl");
 		const content =

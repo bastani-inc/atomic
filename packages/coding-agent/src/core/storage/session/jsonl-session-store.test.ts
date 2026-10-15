@@ -1,16 +1,33 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, readdir, readFile, rename, rm, truncate, writeFile } from "node:fs/promises";
+import {
+	appendFile,
+	chmod,
+	mkdir,
+	mkdtemp,
+	readdir,
+	readFile,
+	rename,
+	rm,
+	truncate,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it, vi } from "vitest";
 import { registerSessionStoreConformance } from "./conformance.js";
-import { SessionConflictError, StorageUnavailableError, StoreClosedError } from "./errors.js";
+import { SessionConflictError, SessionExistsError, StorageUnavailableError, StoreClosedError } from "./errors.js";
 import { JsonlSessionStore, JsonlStoragePoisonedError, SessionFormatVersionError } from "./jsonl-session-store.js";
 import { SESSION_FORMAT_VERSION } from "./types.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const fs = await importOriginal<typeof import("node:fs/promises")>();
-	return { ...fs, appendFile: vi.fn(fs.appendFile), truncate: vi.fn(fs.truncate), rename: vi.fn(fs.rename) };
+	return {
+		...fs,
+		readFile: vi.fn(fs.readFile),
+		appendFile: vi.fn(fs.appendFile),
+		truncate: vi.fn(fs.truncate),
+		rename: vi.fn(fs.rename),
+	};
 });
 
 afterEach(() => vi.clearAllMocks());
@@ -310,4 +327,128 @@ it("backs up the committed transcript before appending a compaction boundary", a
 		assert.equal(backups.length, 1);
 		assert.equal(await readFile(join(directory, project, backups[0]!), "utf8"), before);
 	});
+});
+
+it("rejects duplicate identity from overlapping handles across different projects", async () => {
+	await withStore(async (store, directory) => {
+		const other = await JsonlSessionStore.open(directory);
+		try {
+			const results = await Promise.allSettled([
+				store.create({ ...header, cwd: "/a" }, []),
+				other.create({ ...header, cwd: "/b", createdAt: "2026-10-16T00:00:00Z" }, []),
+			]);
+			assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+			const rejected = results.find((result) => result.status === "rejected");
+			assert.ok(rejected?.status === "rejected");
+			assert.ok(rejected.reason instanceof SessionExistsError);
+			assert.equal(rejected.reason.sessionId, header.id);
+			assert.equal((await collect(store.list({}))).length, 1);
+		} finally {
+			await other.close();
+		}
+	});
+});
+
+it("admits exactly one overlapping append across opened handles", async () => {
+	await withStore(async (store, directory) => {
+		await store.create(header, []);
+		const other = await JsonlSessionStore.open(directory);
+		try {
+			const results = await Promise.allSettled([
+				store.append(header.id, [entry], { expectSeq: 0 }),
+				other.append(header.id, [{ ...entry, id: "other" }], { expectSeq: 0 }),
+			]);
+			assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+			const rejected = results.find((result) => result.status === "rejected");
+			assert.ok(rejected?.status === "rejected");
+			assert.ok(rejected.reason instanceof SessionConflictError);
+			assert.equal(rejected.reason.expectedSeq, 0);
+			assert.equal(rejected.reason.actualSeq, 1);
+			assert.equal((await store.load(header.id)).lastSeq, 1);
+		} finally {
+			await other.close();
+		}
+	});
+});
+
+for (const id of ["文".repeat(32), "x".repeat(200)]) {
+	it(`round-trips a permitted ${id.length}-character identity without filename limits`, async () => {
+		await withStore(async (store, directory) => {
+			const input = { ...header, id };
+			assert.deepEqual(await store.create(input, [entry]), { lastSeq: 1 });
+			const reopened = await JsonlSessionStore.open(directory);
+			try {
+				assert.deepEqual(await reopened.load(id), { header: input, entries: [entry], lastSeq: 1 });
+				await reopened.replace(id, { ...input, id: `${id}-changed` }, [], { expectSeq: 1 });
+				assert.equal((await store.readHeader(id))?.id, `${id}-changed`);
+				await store.delete(id);
+			} finally {
+				await reopened.close();
+			}
+		});
+	});
+}
+
+it("appends small batches without rereading or parsing the committed 4 MiB transcript", async () => {
+	await withStore(async (store) => {
+		await store.create(header, [{ ...entry, name: "x".repeat(4 * 1024 * 1024) }]);
+		vi.mocked(readFile).mockClear();
+		const parse = vi.spyOn(JSON, "parse");
+		try {
+			for (let index = 1; index <= 3; index++) {
+				assert.deepEqual(await store.append(header.id, [entry], { expectSeq: index }), { lastSeq: index + 1 });
+			}
+			const transcriptReads = vi.mocked(readFile).mock.calls.filter(([path]) => String(path).endsWith(".jsonl"));
+			assert.equal(transcriptReads.length, 0);
+			assert.equal(parse.mock.calls.filter(([text]) => text.length >= 4 * 1024 * 1024).length, 0);
+		} finally {
+			parse.mockRestore();
+		}
+		assert.equal((await store.load(header.id)).lastSeq, 4);
+	});
+});
+
+it("refreshes cached sequence after competing replace, deletion and recreation", async () => {
+	await withStore(async (store, directory) => {
+		await store.create(header, [entry]);
+		const other = await JsonlSessionStore.open(directory);
+		try {
+			const results = await Promise.allSettled([
+				store.append(header.id, [entry], { expectSeq: 1 }),
+				other.replace(header.id, header, [entry, entry], { expectSeq: 1 }),
+			]);
+			assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+			const rejected = results.find((result) => result.status === "rejected");
+			assert.ok(rejected?.status === "rejected");
+			assert.ok(rejected.reason instanceof SessionConflictError);
+			assert.equal(rejected.reason.actualSeq, 2);
+			await other.delete(header.id);
+			await other.create(header, []);
+			assert.deepEqual(await store.append(header.id, [entry], { expectSeq: 0 }), { lastSeq: 1 });
+			assert.equal((await other.load(header.id)).lastSeq, 1);
+			const path = await location(other);
+			const content = await readFile(path, "utf8");
+			await writeFile(path, content.replace('"version":4', '"version":3'));
+			await assert.rejects(store.append(header.id, [entry], { expectSeq: 1 }), SessionFormatVersionError);
+		} finally {
+			await other.close();
+		}
+	});
+});
+
+it("needs write access only inside the configured session root", async () => {
+	const parent = await mkdtemp(join(tmpdir(), "jsonl-parent-"));
+	const directory = join(parent, "sessions");
+	let store: JsonlSessionStore | undefined;
+	try {
+		await mkdir(directory);
+		await chmod(parent, 0o500);
+		store = await JsonlSessionStore.open(directory);
+		await store.create(header, []);
+		assert.deepEqual(await store.readHeader(header.id), header);
+	} finally {
+		await store?.close();
+		await chmod(parent, 0o700);
+		await rm(parent, { recursive: true, force: true });
+	}
 });

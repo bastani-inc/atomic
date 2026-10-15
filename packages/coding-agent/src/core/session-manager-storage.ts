@@ -187,6 +187,16 @@ function appendSessionPayload(filePath: string, payload: string): void {
 	const existed = existsSync(filePath);
 	const offset = existed ? statSync(filePath).size : 0;
 	try {
+		if (offset > 0) {
+			const fd = openSync(filePath, "r");
+			try {
+				const lastByte = Buffer.alloc(1);
+				readSync(fd, lastByte, 0, 1, offset - 1);
+				if (lastByte[0] !== 10) payload = `\n${payload}`;
+			} finally {
+				closeSync(fd);
+			}
+		}
 		appendFileSync(filePath, payload);
 	} catch (writeError) {
 		try {
