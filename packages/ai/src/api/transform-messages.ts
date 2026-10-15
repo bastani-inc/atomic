@@ -230,21 +230,15 @@ export function transformMessages<TApi extends Api>(
 
 				if (block.type === "thinking") {
 					if (precedesFallbackBoundary) return [];
-					// Redacted thinking is opaque encrypted content the client cannot rewrite.
-					// Replay it where the API adjudicates it; otherwise drop it to avoid API errors.
-					if (block.redacted) {
-						return preservesThinking ? block : [];
-					}
-					// Keep signed thinking blocks for replay even when the thinking text is empty
-					// (OpenAI encrypted reasoning, or Anthropic `display: "omitted"`).
-					if (preservesThinking && block.thinkingSignature) return block;
-					// Skip empty thinking blocks, convert others to plain text
+					// Thinking from another model is dropped unless the API adjudicates it. Signatures and
+					// encrypted reasoning are only valid for the model that produced them, and sending
+					// readable thinking as plain text makes the new model treat it as part of the visible reply.
+					if (!preservesThinking) return [];
+					// Keep redacted and signed blocks even if the thinking text is empty
+					// (OpenAI encrypted reasoning, or Anthropic `display: "omitted"`); they are needed for replay.
+					if (block.redacted || block.thinkingSignature) return block;
 					if (!block.thinking || block.thinking.trim() === "") return [];
-					if (preservesThinking) return block;
-					return {
-						type: "text" as const,
-						text: block.thinking,
-					};
+					return block;
 				}
 
 				if (block.type === "text") {

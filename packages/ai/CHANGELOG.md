@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Changed
+
+- Changed model switching to drop thinking blocks from earlier assistant messages produced by a different model, instead of sending them as plain text. The new model previously saw the old model's reasoning as part of its replies and could start writing its own reasoning into the visible answer. Anthropic models that adjudicate thinking-block model binding themselves still receive signed blocks from other models on the same provider ([#10995](https://github.com/earendil-works/pi/issues/10995)).
+
 ### Fixed
 
 - Fixed `closeOpenAICodexWebSocketSessions("")` closing other sessions' cached sockets. Empty keys now do nothing; omitting the key still closes all cached sockets.
