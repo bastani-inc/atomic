@@ -292,15 +292,7 @@
         switch (name) {
           case 'read': {
             const path = shortenPath(String(args.path || args.file_path || ''));
-            const offset = args.offset;
-            const limit = args.limit;
-            let display = path;
-            if (offset !== undefined || limit !== undefined) {
-              const start = offset ?? 1;
-              const end = limit !== undefined ? start + limit - 1 : '';
-              display += `:${start}${end ? `-${end}` : ''}`;
-            }
-            return `[read: ${display}]`;
+            return `[read: ${path}${formatReadLineRange(args.offset, args.limit)}]`;
           }
           case 'write':
             return `[write: ${shortenPath(String(args.path || args.file_path || ''))}]`;

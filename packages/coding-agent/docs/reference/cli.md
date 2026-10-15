@@ -121,10 +121,10 @@ When a print-mode turn correctly finishes by calling an opt-in terminating struc
 | Option | Description |
 |--------|-------------|
 | `--provider <name>` | Provider to search for `--model`, such as `anthropic`, `openai`, or `google`; requires `--model` |
-| `--model <pattern>` | Model pattern or ID; supports `provider/id` and optional `:<thinking>` |
-| `--api-key <key>` | API key, overriding environment variables |
+| `--model <pattern>` | Model pattern or ID; supports `provider/id` and optional `:<thinking>`. If several providers match, Atomic prefers the one with credentials; otherwise it asks for `--provider` |
+| `--api-key <key>` | API key, overriding environment variables. It does not choose between providers that offer the same model |
 | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; model capability mapping still governs availability |
-| `--models <patterns>` | Comma-separated patterns for CTRL+P cycling |
+| `--models <patterns>` | Comma-separated patterns for CTRL+P cycling. A model offered by several providers is added for each, with a warning |
 | `--list-models [search]` | List available models |
 
 ## Session Options

@@ -1,3 +1,5 @@
+import assert from "node:assert/strict";
+import type { Model } from "@bastani/pi-ai";
 import { describe, expect, it } from "vitest";
 import { parseArgs } from "../src/cli/args.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
@@ -27,5 +29,34 @@ describe("buildSessionOptions --provider", () => {
 			"--provider requires --model (for example: --provider anthropic --model <pattern>)",
 		);
 		expect(build([]).diagnostics).toEqual([]);
+	});
+});
+
+describe("buildSessionOptions --api-key", () => {
+	it("does not let stored credentials choose the provider for a bare model id (#3624)", () => {
+		const gateway: Model<"openai-completions"> = {
+			id: "anthropic/claude-opus-5.5",
+			name: "Claude Opus 5.5",
+			api: "openai-completions",
+			provider: "vercel-ai-gateway",
+			baseUrl: "https://gateway.example.com",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 200000,
+			maxTokens: 8192,
+		};
+		const modelRuntime = fakeModelRuntime({
+			getModels: () => [gateway, { ...gateway, provider: "openrouter" }],
+			hasConfiguredAuth: (provider: string) => provider === "vercel-ai-gateway",
+		});
+		const run = (args: string[]) =>
+			buildSessionOptions(parseArgs(args), [], false, modelRuntime, SettingsManager.inMemory());
+
+		assert.equal(run(["--model", "anthropic/claude-opus-5.5"]).options.model?.provider, "vercel-ai-gateway");
+
+		const { options, diagnostics } = run(["--model", "anthropic/claude-opus-5.5", "--api-key", "sk-test"]);
+		assert.equal(options.model, undefined);
+		assert.match(diagnostics.map((d) => d.message).join("\n"), /--api-key does not choose a provider\./);
 	});
 });

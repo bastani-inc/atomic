@@ -1155,6 +1155,28 @@ describe("provider inference", () => {
 });
 
 describe("provider selection", () => {
+	it("resolves --model without --provider only among catalog models of configured providers", async () => {
+		const stub = runtimeStub({
+			credentials: [
+				{ providerId: "anthropic", type: "api_key" },
+				{ providerId: "openai", type: "api_key" },
+			],
+			getAuth: async (model) => ({ auth: { apiKey: `${model.provider}-test-key` } }),
+		});
+		const runtime = {
+			...stub,
+			getModels: () => [
+				{ id: "claude-sonnet-4-5", name: "Claude", provider: "anthropic", api: "anthropic-messages" },
+				{ id: "gpt-5.5", name: "GPT-5.5", provider: "openai", api: "openai-responses" },
+			],
+		} as unknown as ModelRuntime;
+
+		// anthropic has no gpt-5.5; an uncatalogued id on a configured provider must not count as a match.
+		const secret = await resolveCredentialForPrint(args({ model: "gpt-5.5" }), runtime, "api_key");
+
+		expect(secret.take()).toBe("openai-test-key");
+	});
+
 	it("refuses to guess between configured providers and names the candidates (exit 3)", async () => {
 		const runtime = runtimeStub({
 			credentials: [

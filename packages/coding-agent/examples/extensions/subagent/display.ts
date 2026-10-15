@@ -1,4 +1,5 @@
 import * as os from "node:os";
+import { formatReadLineRange } from "@bastani/atomic";
 import type { Message } from "@bastani/pi-ai/compat";
 
 export function formatTokens(count: number): string {
@@ -53,13 +54,10 @@ export function formatToolCall(
 		case "read": {
 			const rawPath = (args.file_path || args.path || "...") as string;
 			const filePath = shortenPath(rawPath);
-			const offset = args.offset as number | undefined;
-			const limit = args.limit as number | undefined;
+			const lineRange = formatReadLineRange(args.offset, args.limit);
 			let text = themeFg("accent", filePath);
-			if (offset !== undefined || limit !== undefined) {
-				const startLine = offset ?? 1;
-				const endLine = limit !== undefined ? startLine + limit - 1 : "";
-				text += themeFg("warning", `:${startLine}${endLine ? `-${endLine}` : ""}`);
+			if (lineRange) {
+				text += themeFg("warning", lineRange);
 			}
 			return themeFg("muted", "read ") + text;
 		}

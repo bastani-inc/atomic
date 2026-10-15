@@ -95,6 +95,8 @@ Summarize the current state in ${1:-7} bullet points.
 
 Usage: `/component Button "onClick handler" "disabled support"`
 
+Use `""` or `''` to pass an empty argument without shifting later positions. For a template containing `Review $2. Focus: ${1:-correctness}.`, `/review "" src/index.ts` expands to `Review src/index.ts. Focus: correctness.`
+
 ## Loading Rules
 
 - Template discovery in `prompts/` is non-recursive.

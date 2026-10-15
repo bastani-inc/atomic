@@ -3,7 +3,7 @@
  *
  * RFC 8628 device authorization grant against https://auth.kimi.com with JSON
  * responses. The access token authenticates requests to
- * https://api.kimi.com/coding as an `Authorization: Bearer` header.
+ * https://api.kimi.com/coding/v1 as an `Authorization: Bearer` header.
  */
 
 import { getProviderEnvValue } from "../../utils/provider-env.ts";

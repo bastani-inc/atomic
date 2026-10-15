@@ -604,9 +604,16 @@ For providers with partial OpenAI compatibility, use the `compat` field.
 | `supportsOpenAIGrammarTools`                  | Canonical Pi capability for OpenAI Lark/regex custom tools. Keep false unless the endpoint passes custom tools through unchanged. |
 | `supportsGrammarTools`                        | Atomic compatibility alias for `supportsOpenAIGrammarTools`; the canonical field wins if both disagree. |
 | `supportsLongCacheRetention`                  | Whether the provider accepts long cache retention when cache retention is `long`: `prompt_cache_options.ttl: "30m"` for GPT-5.6+ Responses models, `prompt_cache_retention: "24h"` for earlier OpenAI models, or `cache_control.ttl: "1h"` when `cacheControlFormat` is `anthropic`. Default: `true`. |
+| `supportsMidConvoEffort`                      | For `openai-responses`, sends thinking-level changes as `configuration_update` input items to preserve the cached prefix. Enabled for built-in OpenAI GPT-6 models with API-key authentication. Ignored for ChatGPT subscription sign-in and thinking off. Set to `false` to disable, and enable on custom endpoints only if they accept these items. |
 | `vllmPriority`                                | vLLM scheduler priority sent as the top-level `priority` request field. Lower values are handled earlier and the server default is `0`, so it only takes effect when vLLM runs with `--scheduling-policy priority`. Off by default; not set on the generated catalog. |
 | `openRouterRouting`                           | OpenRouter provider routing preferences. This object is sent as-is in the `provider` field of the [OpenRouter API request](https://openrouter.ai/docs/guides/routing/provider-selection).                                            |
 | `vercelGatewayRouting`                        | Vercel AI Gateway routing config for provider selection (`only`, `order`)                                                                                                                                                            |
+
+### Changing GPT-6 thinking levels
+
+With an API key on `openai` or `openai-api`, changing the thinking level during a GPT-6 session preserves the prompt-cache prefix. This includes level changes during tool use. ChatGPT subscription sign-in and thinking off use the normal request-level effort instead. Other changes to the prompt, tools, or conversation can still invalidate the cache.
+
+For a custom `openai-responses` model, enable `compat.supportsMidConvoEffort` only if its endpoint accepts `configuration_update` input items. If the endpoint rejects these items, set the flag to `false` in the model's `compat` override.
 
 ### Constrained tool sampling
 

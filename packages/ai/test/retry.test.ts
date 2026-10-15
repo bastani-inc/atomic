@@ -153,6 +153,19 @@ describe("retryAssistantCall", () => {
 		},
 	);
 
+	it.each(["Unable to forward upstream stream", "unable to forward upstream response"])(
+		"retries gateway stream forwarding errors (#10920): %s",
+		async (errorMessage) => {
+			const produce = vi
+				.fn()
+				.mockResolvedValueOnce(fauxAssistantMessage("", { stopReason: "error", errorMessage }))
+				.mockResolvedValueOnce(fauxAssistantMessage("recovered"));
+			const result = await retryAssistantCall(produce, enabled, undefined);
+			assert.equal(result.stopReason, "stop");
+			assert.equal(produce.mock.calls.length, 2);
+		},
+	);
+
 	it("returns a successful response immediately without retrying", async () => {
 		const produce = vi.fn(async () => fauxAssistantMessage("ok"));
 		const res = await retryAssistantCall(produce, enabled, undefined);

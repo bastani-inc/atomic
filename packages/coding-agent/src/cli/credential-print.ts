@@ -25,7 +25,7 @@
 import { inspect } from "node:util";
 import type { Api, AuthType, Model } from "@bastani/pi-ai";
 import { ModelsError } from "@bastani/pi-ai";
-import { resolveCliModel } from "../core/model-resolver.ts";
+import { resolveCliModel, resolveModelReference } from "../core/model-resolver.ts";
 import type { ModelRuntime } from "../core/model-runtime.js";
 import { flushRawStdout, RawStdoutWriteError, writeRawStdoutOnce } from "../core/output-guard.ts";
 import { redactCredentialShapes } from "../utils/credential-redaction.js";
@@ -380,12 +380,15 @@ function candidateModels(args: Args, modelRuntime: ModelRuntime): Model<Api>[] {
 		return [resolved.model];
 	}
 
+	const catalog = modelRuntime.getModels();
 	const models: Model<Api>[] = [];
 	for (const provider of modelRuntime.getProviders()) {
-		const resolved = resolveCliModel({ cliProvider: provider.id, cliModel: args.model, modelRuntime });
-		if (resolved.model && !resolved.error && !resolved.warning?.includes("Using custom model id")) {
-			models.push(resolved.model);
-		}
+		const resolved = resolveModelReference(
+			{ text: args.model ?? "", provider: provider.id, thinkingSuffix: "strict", fuzzy: true },
+			catalog,
+			() => true,
+		);
+		if (resolved.status === "resolved") models.push(resolved.model);
 	}
 	if (models.length === 0) {
 		throw new CredentialPrintError(

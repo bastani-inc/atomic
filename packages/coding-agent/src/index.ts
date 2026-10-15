@@ -37,7 +37,7 @@ export { AgentTaskHost, type AgentTaskHostBinding, type AgentTaskRunnerFactory }
 export type { AgentIntent, OperationId, TaskId, TaskResult, WaitPolicy } from "./core/tasks/contracts.js";
 export { type AdmittedAgentTask, collectAgentTasks } from "./core/tasks/execution-scope.js";
 export { bindOwnerTaskStore, getOwnerTaskStore, OwnerTaskStore } from "./core/tasks/owner-store.js";
-export { formatToolCallWithArgs } from "./core/tools/render-utils.ts";
+export { formatReadLineRange, formatToolCallWithArgs } from "./core/tools/render-utils.ts";
 export {
 	createTranscript,
 	type Transcript,
