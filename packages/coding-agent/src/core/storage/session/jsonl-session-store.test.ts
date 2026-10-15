@@ -507,6 +507,117 @@ for (const terminated of [true, false]) {
 	});
 }
 
+for (const terminated of [true, false]) {
+	it(`opens ready for direct header-only appends (${terminated ? "newline" : "EOF"})`, async () => {
+		const directory = await mkdtemp(join(tmpdir(), "jsonl-direct-reopen-"));
+		let store = await JsonlSessionStore.open(directory);
+		try {
+			const entries = Array.from({ length: 4096 }, (_, index) => ({
+				...entry,
+				id: `entry-${index}`,
+				name: "x".repeat(1024),
+			}));
+			await store.create(header, entries);
+			const path = await location(store);
+			if (!terminated) await truncate(path, (await fs.stat(path)).size - 1);
+			await store.close();
+			store = await JsonlSessionStore.open(directory);
+			vi.mocked(readFile).mockClear();
+			const parse = vi.spyOn(JSON, "parse");
+			const handles: FileHandle[] = [];
+			const originalOpen = fs.open;
+			const opened = vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+				const handle = await originalOpen(...args);
+				vi.spyOn(handle, "read");
+				handles.push(handle);
+				return handle;
+			});
+			try {
+				assert.deepEqual(await store.append(header.id, [], { expectSeq: entries.length }), {
+					lastSeq: entries.length,
+				});
+				await assert.rejects(store.append(header.id, [entry], { expectSeq: 0 }), (error: Error) => {
+					assert.ok(error instanceof SessionConflictError);
+					assert.equal(error.expectedSeq, 0);
+					assert.equal(error.actualSeq, entries.length);
+					return true;
+				});
+				for (let index = 0; index < 2; index++) {
+					assert.deepEqual(await store.append(header.id, [entry], { expectSeq: entries.length + index }), {
+						lastSeq: entries.length + index + 1,
+					});
+				}
+				assert.equal(vi.mocked(readFile).mock.calls.filter(([file]) => String(file).endsWith(".jsonl")).length, 0);
+				assert.equal(parse.mock.calls.filter(([text]) => text.length > 1024).length, 0);
+				const headerBytes = Buffer.byteLength(`${JSON.stringify({ type: "session", ...header })}\n`);
+				assert.equal(handles.length, 4);
+				for (const handle of handles) {
+					let position = 0;
+					const reads = vi.mocked(handle.read);
+					for (const [index, result] of reads.mock.results.entries()) {
+						assert.equal(reads.mock.calls[index]?.at(-1), null);
+						assert.equal(result.type, "return");
+						if (result.type === "return") position += (await result.value).bytesRead;
+						assert.ok(position <= headerBytes);
+					}
+					assert.equal(position, headerBytes);
+				}
+			} finally {
+				parse.mockRestore();
+				opened.mockRestore();
+				for (const handle of handles) vi.mocked(handle.read).mockRestore();
+			}
+			assert.deepEqual((await store.load(header.id)).entries, [...entries, entry, entry]);
+		} finally {
+			await store.close();
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+}
+
+for (const invalid of ["version", "header", "entry"] as const) {
+	it(`preserves deferred ${invalid} failure while initializing valid sessions on reopen`, async () => {
+		await withStore(async (store, directory) => {
+			await store.create(header, [entry]);
+			await store.create({ ...header, id: "valid" }, []);
+			const path = (await collect(store.list({}))).find((summary) => summary.id === header.id)?.location;
+			assert.ok(path);
+			const content =
+				invalid === "header"
+					? "{torn"
+					: `${JSON.stringify({ type: "session", ...header, version: invalid === "version" ? 3 : 4 })}\n{torn`;
+			await writeFile(path, content);
+			const reopened = await JsonlSessionStore.open(directory);
+			try {
+				assert.deepEqual(await reopened.append("valid", [entry], { expectSeq: 0 }), { lastSeq: 1 });
+				const rejected = (error: Error): boolean => {
+					if (invalid === "version") {
+						assert.ok(error instanceof SessionFormatVersionError);
+						assert.equal(error.path, path);
+						assert.equal(error.found, 3);
+						assert.equal(error.supported, 4);
+					} else {
+						assert.ok(error instanceof StorageUnavailableError);
+						assert.ok(error.cause instanceof SyntaxError);
+					}
+					return true;
+				};
+				await assert.rejects(reopened.load(header.id), rejected);
+				await assert.rejects(reopened.append(header.id, [], { expectSeq: 1 }), rejected);
+				if (invalid === "version") {
+					assert.deepEqual(
+						(await collect(reopened.list({}))).map((summary) => summary.id),
+						["valid"],
+					);
+				}
+				assert.equal(await readFile(path, "utf8"), content);
+			} finally {
+				await reopened.close();
+			}
+		});
+	});
+}
+
 it("refreshes cached sequence after competing replace, deletion and recreation", async () => {
 	await withStore(async (store, directory) => {
 		await store.create(header, [entry]);

@@ -91,6 +91,15 @@ export class JsonlSessionStore implements SessionStore {
 	static async open(directory: string): Promise<JsonlSessionStore> {
 		const store = new JsonlSessionStore(directory);
 		await store.run(() => mkdir(store.directory, { recursive: true }).then(() => {}), false);
+		await store.run(async () => {
+			for (const path of await store.paths()) {
+				try {
+					await store.readSnapshot(path);
+				} catch {
+					store.fileStates.delete(path);
+				}
+			}
+		});
 		return store;
 	}
 
