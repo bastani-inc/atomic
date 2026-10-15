@@ -715,6 +715,108 @@ export default workflow({ name: "children", description: "children", inputs: {},
 		const { session } = await createAgentSession({ ...options(), builtins: disabled, resourceLoader: loader });
 		await assert.rejects(session.dispose(), (error) => error.code === "ShutdownFailed");
 		assert.ok(released.includes("first") && released.includes("second"));
+	} else if (mode === "malformed-arguments") {
+		const agentCore = join(installedRoot, "@earendil-works", "pi-agent-core");
+		const validatorPackage = [join(agentCore, "node_modules"), installedRoot]
+			.map((directory) => join(directory, "@earendil-works", "pi-ai", "package.json"))
+			.find((path) => existsSync(path));
+		assert.ok(validatorPackage, "pi-agent-core must resolve an installed @earendil-works/pi-ai");
+		assert.ok(realpathSync(validatorPackage).startsWith(installedRoot), "validator must come from the npm install");
+		const validator = JSON.parse(readFileSync(validatorPackage, "utf8"));
+		const agentCoreManifest = JSON.parse(readFileSync(join(agentCore, "package.json"), "utf8"));
+		assert.equal(validator.name, "@earendil-works/pi-ai");
+		assert.equal(agentCoreManifest.dependencies["@earendil-works/pi-ai"], `^${validator.version}`);
+		const { Type } = await import("@bastani/pi-ai");
+		const { createAssistantMessageEventStream, getModel } = await import("@bastani/pi-ai/compat");
+		const model = { ...getModel("anthropic", "claude-sonnet-4-5"), provider: "packed-malformed" };
+		const malformed = {
+			probe: 'Expected \',\' or \'}\' after property value in JSON at position 12\n\nReceived arguments:\n{"value":"a" "b"}',
+			write: 'Unterminated string in JSON at position 30\n\nReceived arguments:\n{"path":"malformed.txt","content":"cut',
+		};
+		const prepared = [];
+		const executed = [];
+		let requests = 0;
+		modelRuntime.registerProvider(model.provider, {
+			api: model.api,
+			baseUrl: model.baseUrl,
+			apiKey: "fixture",
+			models: [model],
+			streamSimple: () => {
+				const first = requests++ === 0;
+				const stream = createAssistantMessageEventStream();
+				emitAssistant(stream, {
+					role: "assistant",
+					content: first
+						? [
+								...Object.entries(malformed).map(([name, argumentsError]) => ({
+									type: "toolCall",
+									id: `malformed-${name}`,
+									name,
+									arguments: {},
+									argumentsError,
+								})),
+								{ type: "toolCall", id: "well-formed-probe", name: "probe", arguments: { value: "ok" } },
+							]
+						: [{ type: "text", text: "complete" }],
+					api: model.api,
+					provider: model.provider,
+					model: model.id,
+					usage: {
+						input: 1,
+						output: 1,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 2,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: first ? "toolUse" : "stop",
+					timestamp: Date.now(),
+				});
+				return stream;
+			},
+		});
+		const { session } = await createAgentSession({
+			...options(),
+			model,
+			builtins: disabled,
+			customTools: [
+				{
+					name: "probe",
+					label: "Probe",
+					description: "Records executions",
+					parameters: Type.Object({ value: Type.Optional(Type.String()) }),
+					prepareArguments: (args) => {
+						prepared.push(args);
+						return { value: `${args.value}!` };
+					},
+					execute: async (_id, params) => {
+						executed.push(params);
+						return { content: [{ type: "text", text: `probe executed ${params.value}` }], details: {} };
+					},
+				},
+			],
+		});
+		try {
+			assert.ok(session.getActiveToolNames().includes("probe"));
+			await session.prompt("Call tools with malformed arguments.");
+			assert.deepEqual(prepared, [{ value: "ok" }]);
+			assert.deepEqual(executed, [{ value: "ok!" }]);
+			assert.equal(existsSync(join(root, "malformed.txt")), false);
+			const results = session.messages.filter((message) => message.role === "toolResult");
+			assert.deepEqual(
+				results.map((message) => ({ name: message.toolName, isError: message.isError, content: message.content })),
+				[
+					...Object.entries(malformed).map(([name, argumentsError]) => ({
+						name,
+						isError: true,
+						content: [{ type: "text", text: `Invalid arguments for tool "${name}": ${argumentsError}` }],
+					})),
+					{ name: "probe", isError: false, content: [{ type: "text", text: "probe executed ok!" }] },
+				],
+			);
+		} finally {
+			await session.dispose();
+		}
 	} else if (mode === "prompt") {
 		const { createAssistantMessageEventStream, getModel } = await import("@bastani/pi-ai/compat");
 		const mcpReceipt = join(root, "mcp-receipt.json");
@@ -855,6 +957,7 @@ for await (const line of createInterface({ input: process.stdin })) {
 				await run("./consumer-parity.mjs", [`gate-${reply}`]);
 			await run("./consumer-parity.mjs", ["lifecycle"]);
 			await run("./consumer-parity.mjs", ["prompt"]);
+			await run("./consumer-parity.mjs", ["malformed-arguments"]);
 			const persisted = join(root, "persisted");
 			mkdirSync(persisted);
 			await run("./consumer-parity.mjs", ["persist-start", persisted]);
