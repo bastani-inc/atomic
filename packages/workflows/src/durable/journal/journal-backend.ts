@@ -157,7 +157,19 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 		this.sequences.set(entry.runId, entry.seq);
 	}
 
+	private rebuild(runId: string): void {
+		const entries = this.journal.readEntries(runId);
+		void this.projection.deleteWorkflow(runId);
+		this.sequences.delete(runId);
+		this.prompts.delete(runId);
+		for (const entry of entries) this.fold(entry);
+	}
+
 	private refresh(runId: string): void {
+		if (!this.leases.has(runId)) {
+			this.rebuild(runId);
+			return;
+		}
 		for (const entry of this.journal.readEntries(runId, (this.sequences.get(runId) ?? 0) + 1)) this.fold(entry);
 	}
 
@@ -186,6 +198,7 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 			Date.now() - FOREIGN_LIVE_WORKFLOW_WINDOW_MS,
 		);
 		if (result.status === "held") throw new JournalOwnershipError(runId, result.holderId);
+		this.rebuild(runId);
 		this.leases.set(runId, result.lease);
 		return result.lease;
 	}
@@ -453,12 +466,7 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 		return this.getPendingStageMessageDeliveryCount(runId, messageId, logicalRunId);
 	}
 	async hydrateWorkflow(runId: string): Promise<void> {
-		const entries = this.journal.readEntries(runId);
-		const removed = this.projection.deleteWorkflow(runId);
-		this.sequences.delete(runId);
-		this.prompts.delete(runId);
-		for (const entry of entries) this.fold(entry);
-		await removed;
+		this.rebuild(runId);
 	}
 	async hydrateResumableWorkflows(): Promise<void> {
 		const runIds = new Set([...this.sequences.keys(), ...this.journal.listRunsSync().map((run) => run.runId)]);

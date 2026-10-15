@@ -409,3 +409,252 @@ test("catalog and targeted hydration remove deleted runs and rebuild recreated r
 	);
 	assert.equal(reader.getToolOutput("run", "hash"), "recreated");
 });
+
+test("status mutation after recreation rebuilds a shorter journal without explicit hydration", async () => {
+	const path = database();
+	const writer = await open(path);
+	writer.registerWorkflow({
+		workflowId: "run",
+		name: "old",
+		inputs: { identity: "old" },
+		createdAt: 1,
+		status: "running",
+	});
+	writer.recordCheckpoint({ ...checkpoint("old"), checkpointId: "old" });
+	await writer.persistSummary("run", "old summary", 1);
+	writer.setWorkflowStatus("run", "paused");
+	assert.equal(writer.journal.readEntries("run").length, 4);
+	const observer = await open(path);
+	await writer.deleteWorkflow("run");
+	writer.registerWorkflow({
+		workflowId: "run",
+		name: "new",
+		inputs: { identity: "new" },
+		createdAt: 5,
+		status: "running",
+	});
+	writer.recordCheckpoint({ ...checkpoint("new"), checkpointId: "new", completedAt: 6 });
+	await writer.close();
+	observer.setWorkflowStatus("run", "paused");
+	const fresh = await open(path);
+	assert.deepEqual(fresh.getWorkflow("run")!.inputs, { identity: "new" });
+	assert.deepEqual(observer.getWorkflow("run"), fresh.getWorkflow("run"));
+	assert.deepEqual(observer.listCheckpoints("run"), fresh.listCheckpoints("run"));
+	assert.deepEqual(
+		observer.listCheckpoints("run").map((entry) => entry.checkpointId),
+		["new"],
+	);
+	assert.equal(observer.getWorkflow("run")!.completedCheckpoints, 1);
+	assert.equal(observer.getWorkflow("run")!.name, "new");
+	assert.equal(observer.getWorkflow("run")!.createdAt, 5);
+	assert.equal(observer.getWorkflow("run")!.summary, undefined);
+	const latest = observer.journal.readEntries("run").at(-1)!;
+	assert.equal(latest.event.type, RUN_EVENT_TYPES.statusChanged);
+	assert.deepEqual(latest.event.payload, JSON.parse(JSON.stringify(observer.getWorkflow("run"))));
+});
+
+for (const extra of [0, 1]) {
+	test(`recreation with ${extra === 0 ? "an equal" : "a longer"} journal replaces all cached state before mutation`, async () => {
+		const path = database();
+		const writer = await open(path);
+		const message = (identity: string): PendingStageMessage => ({
+			id: identity,
+			runId: "run",
+			stageKey: "stage",
+			from: { id: identity },
+			message: { id: identity, timestamp: 1, content: { text: identity } },
+			queuedAt: identity,
+			status: "queued",
+		});
+		const delivery = {
+			runId: "run",
+			stageId: "stage",
+			sessionId: "session",
+			admission: "context" as const,
+			deliveredAt: "raw",
+		};
+		writer.registerWorkflow({
+			workflowId: "run",
+			name: "old",
+			inputs: { identity: "old" },
+			createdAt: 1,
+			status: "running",
+		});
+		writer.recordCheckpoint({ ...checkpoint("old"), checkpointId: "old" });
+		writer.recordCheckpoint({ ...checkpoint("old two"), checkpointId: "old two" });
+		await writer.persistSummary("run", "old summary", 99);
+		writer.reservePendingPrompt("run", "old prompt");
+		await writer.persistPendingStageMessages("run", [message("old")]);
+		await writer.archivePendingStageMessage("run", message("old"));
+		await writer.archivePendingStageDeliveryReceipt("run", "old", delivery, {
+			messageRunId: "run",
+			deliveryCount: 9,
+		});
+		assert.equal(writer.journal.readEntries("run").length, 8);
+		const observer = await open(path);
+		await writer.deleteWorkflow("run");
+		writer.registerWorkflow({
+			workflowId: "run",
+			name: "new",
+			inputs: { identity: "new" },
+			createdAt: 5,
+			status: "running",
+		});
+		writer.recordCheckpoint({ ...checkpoint("new"), checkpointId: "new", completedAt: 6 });
+		await writer.persistSummary("run", "new summary", 1);
+		const token = writer.reservePendingPrompt("run", "new prompt");
+		await writer.persistPendingStageMessages("run", [message("new")]);
+		await writer.archivePendingStageMessage("run", message("new"));
+		await writer.archivePendingStageDeliveryReceipt("run", "new", delivery, {
+			messageRunId: "run",
+			deliveryCount: 2,
+		});
+		for (let index = 0; index <= extra; index++) writer.setWorkflowStatus("run", "running");
+		assert.equal(writer.journal.readEntries("run").length, 8 + extra);
+		await writer.close();
+		observer.setWorkflowStatus("run", "paused");
+		const fresh = await open(path);
+		for (const backend of [observer, fresh]) {
+			const handle = backend.getWorkflow("run")!;
+			assert.deepEqual(handle.inputs, { identity: "new" });
+			assert.equal(handle.name, "new");
+			assert.equal(handle.createdAt, 5);
+			assert.equal(handle.summary, "new summary");
+			assert.equal(handle.summarizedThrough, 1);
+			assert.equal(handle.completedCheckpoints, 1);
+			assert.equal(handle.pendingPrompts, 1);
+			assert.deepEqual(handle.pendingStageMessages, [message("new")]);
+			assert.deepEqual(
+				backend.listCheckpoints("run").map((entry) => entry.checkpointId),
+				["new"],
+			);
+			assert.equal(await backend.readSettledPendingStageMessage("run", "old"), undefined);
+			assert.deepEqual(await backend.readSettledPendingStageMessage("run", "new"), message("new"));
+			assert.equal(await backend.hasPendingStageDeliveryReceipt("run", "old", delivery), false);
+			assert.equal(await backend.hasPendingStageDeliveryReceipt("run", "new", delivery), true);
+			assert.equal(await backend.readPendingStageMessageDeliveryCount("run", "old"), 0);
+			assert.equal(await backend.readPendingStageMessageDeliveryCount("run", "new"), 2);
+		}
+		assert.deepEqual(observer.getWorkflow("run"), fresh.getWorkflow("run"));
+		assert.deepEqual(observer.listCheckpoints("run"), fresh.listCheckpoints("run"));
+		const latest = observer.journal.readEntries("run").at(-1)!;
+		assert.equal(latest.event.type, RUN_EVENT_TYPES.statusChanged);
+		assert.deepEqual(latest.event.payload, JSON.parse(JSON.stringify(fresh.getWorkflow("run"))));
+		assert.equal(observer.pendingPromptToken("run", "old prompt"), undefined);
+		observer.releasePendingPrompt("run", "new prompt", token);
+		assert.equal(observer.getWorkflow("run")!.pendingPrompts, 0);
+	});
+}
+
+test("a retained stale lease stays lost after deletion and recreation even after hydration", async () => {
+	vi.useFakeTimers({ toFake: ["Date"] });
+	vi.setSystemTime(1_000);
+	const path = database();
+	const stale = await open(path);
+	register(stale);
+	const oldEpoch = stale.journal.leaseState("run")!.epoch;
+	vi.setSystemTime(1_000 + FOREIGN_LIVE_WORKFLOW_WINDOW_MS + 1);
+	const replacement = await open(path);
+	replacement.recordCheckpoint(checkpoint());
+	await replacement.deleteWorkflow("run");
+	register(replacement);
+	replacement.recordCheckpoint({ ...checkpoint("new"), checkpointId: "new" });
+	const currentEpoch = replacement.journal.leaseState("run")!.epoch;
+	await replacement.close();
+	const before = stale.journal.readEntries("run");
+	let lost: JournalOwnershipError | undefined;
+	assert.throws(
+		() => stale.setWorkflowStatus("run", "paused"),
+		(error: Error) => {
+			assert.ok(error instanceof JournalOwnershipError);
+			assert.equal(error.runId, "run");
+			assert.equal(error.holderId, null);
+			assert.ok(error.cause instanceof StaleLeaseError);
+			assert.equal(error.cause.runId, "run");
+			assert.equal(error.cause.heldEpoch, oldEpoch);
+			assert.equal(error.cause.currentEpoch, currentEpoch);
+			lost = error;
+			return true;
+		},
+	);
+	await stale.hydrateWorkflow("run");
+	assert.throws(
+		() => stale.recordCheckpoint(checkpoint("stale")),
+		(error: Error) => error === lost,
+	);
+	assert.deepEqual(stale.journal.readEntries("run"), before);
+	assert.equal(stale.journal.leaseState("run"), undefined);
+});
+
+test("mutation of a deleted unrecreated run clears cached state and preserves absent-run results", async () => {
+	const path = database();
+	const writer = await open(path);
+	register(writer);
+	writer.recordCheckpoint(checkpoint());
+	const observer = await open(path);
+	await writer.deleteWorkflow("run");
+	observer.setWorkflowStatus("run", "paused");
+	observer.recordCheckpoint(checkpoint("ignored"));
+	assert.equal(observer.getWorkflow("run"), undefined);
+	assert.deepEqual(observer.listCheckpoints("run"), []);
+	assert.equal(await observer.transitionWorkflowStatus("run", ["running"], "paused"), false);
+	assert.equal(await observer.persistSummary("run", "ignored", 1), false);
+	assert.equal(await observer.persistPendingStageMessages("run", []), false);
+	assert.deepEqual(await observer.deleteWorkflowIfInactive("run"), { ok: false, reason: "not_found" });
+	await observer.deleteWorkflow("run");
+	assert.deepEqual(observer.journal.readEntries("run"), []);
+	assert.equal(observer.journal.leaseState("run"), undefined);
+	register(observer);
+	assert.equal(observer.getWorkflow("run")!.completedCheckpoints, 0);
+	assert.deepEqual(observer.listCheckpoints("run"), []);
+});
+
+for (const mutation of ["status claim", "delivery receipt"] as const) {
+	test(`${mutation} as the first mutation after recreation folds the replacement without hydration`, async () => {
+		const path = database();
+		const writer = await open(path);
+		register(writer);
+		writer.recordCheckpoint({ ...checkpoint("old"), checkpointId: "old" });
+		writer.setWorkflowStatus("run", "paused");
+		const observer = await open(path);
+		await writer.deleteWorkflow("run");
+		writer.registerWorkflow({
+			workflowId: "run",
+			name: "new",
+			inputs: { identity: "new" },
+			createdAt: 5,
+			status: "running",
+		});
+		writer.recordCheckpoint({ ...checkpoint("new"), checkpointId: "new", completedAt: 6 });
+		await writer.close();
+		if (mutation === "status claim") {
+			assert.equal(
+				await observer.transitionWorkflowStatus("run", ["running"], "completed", undefined, undefined, 6),
+				true,
+			);
+		} else {
+			await observer.archivePendingStageDeliveryReceipt(
+				"run",
+				"new message",
+				{
+					runId: "run",
+					stageId: "stage",
+					sessionId: "session",
+					admission: "context",
+					deliveredAt: "raw",
+				},
+				{ messageRunId: "run", deliveryCount: 2 },
+			);
+			assert.equal(await observer.readPendingStageMessageDeliveryCount("run", "new message"), 2);
+		}
+		const fresh = await open(path);
+		assert.deepEqual(observer.getWorkflow("run")!.inputs, { identity: "new" });
+		assert.deepEqual(observer.getWorkflow("run"), fresh.getWorkflow("run"));
+		assert.deepEqual(observer.listCheckpoints("run"), fresh.listCheckpoints("run"));
+		assert.deepEqual(
+			observer.listCheckpoints("run").map((entry) => entry.checkpointId),
+			["new"],
+		);
+		assert.equal(observer.getWorkflow("run")!.completedCheckpoints, 1);
+	});
+}

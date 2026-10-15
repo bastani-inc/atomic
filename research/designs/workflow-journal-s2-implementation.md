@@ -4,7 +4,7 @@
 
 Implement only the unwired `JournalDurableBackend`, persist before returning, rebuild its projection from journal events, verify it on Boat, and commit on `feat/workflow-journal-s2-journal-backend`.
 
-The table refines the original pre-edit matrix into individual clauses without adding scope. `C` denotes the final check/format run, `F` the final focused run, `U` the established unit gate, and `D` the final diff/commit audit. Their results are recorded below.
+The table refines the original pre-edit matrix into individual clauses without adding scope. `C` denotes the current repair check/format run, `F` its focused run, `U` its established unit gate, and `D` its final diff/commit audit. Historical implementation receipts are explicitly separated below; current results are in the review-repair section.
 
 | Contract clause | Verification |
 | --- | --- |
@@ -31,9 +31,9 @@ The table refines the original pre-edit matrix into individual clauses without a
 | First-writer-wins checkpoint identity | F: changed duplicate `(kind, checkpointId)` returns original output and leaves journal entries unchanged |
 | Two backends on one file, second cannot append to held run | F: default holders differ; typed rejection, unchanged journal and projection checkpoints |
 | Expiry takeover rejects first holder | F: exact old/new epoch and typed cause fields |
-| Lease handoff must not overwrite a newer projection | F: already-open receiver retains checkpoints, summary and prompt tokens before its status write |
-| Prompt state survives status changes and reopen | F: unchanged-count status snapshot retains active token identity; release settles count; old generation cannot release newer reservation |
-| Catalog and required hydration reflect deletion/recreation | F: deleted catalog entries disappear; reused run id rebuilds only its new checkpoints |
+| Lease handoff must not overwrite a newer projection | F: ordinary handoff plus no-hydration deleted/recreated shorter, equal and longer journals; observer/fresh handles, checkpoints and raw status agree |
+| Prompt state survives status changes and reopen | F: unchanged-count status snapshot retains active token identity; release settles count; old generation cannot release newer reservation; replacement tokens survive while deleted tokens disappear |
+| Catalog, hydration and accepted mutations reflect deletion/recreation | F: deleted catalog entries disappear; recreated mutations rebuild all state without caller hydration; stale held leases remain fenced |
 | Local-only `node:sqlite` storage | D: no shared-host store or new runtime selector |
 | Default path remains `join(dirname(getAgentDir()), "workflows", "journal.sqlite")` | F: inherited kernel path tests; D: path function unchanged |
 | `ATOMIC_WORKFLOW_JOURNAL_PATH` override remains unchanged | F: inherited kernel path tests; D: no path normalization added |
@@ -89,20 +89,22 @@ Required/optional workflow fields keep their existing types. Status events conta
 Legal ownership states and transitions:
 
 - Absent run: register header, acquire ownership, append start snapshot.
-- Unheld run: acquire next epoch. Passive reads do not acquire.
+- Unheld run: rebuild the complete current journal before evaluating cached state, acquire next epoch, and rebuild again under the new lease before caching ownership. Passive reads do not acquire.
 - Held/fresh: only its holder/epoch can append, renew or delete. A competitor writes nothing and receives a typed ownership error.
 - Held/expired: atomic expiry-checked takeover grants a higher epoch. Renewal and takeover contend in a transaction.
 - Lost: retain the stale lease and typed error; never silently reacquire that execution's authority.
 - Released/closed: stop renewal, release owned leases, close the connection. Reopen folds persisted events.
-- Deleted/recreated: keep the kernel epoch tombstone; required hydration discards the removed projection and rebuilds the new identity's events.
+- Deleted/recreated: keep the kernel epoch tombstone. Unowned refresh and each new acquisition discard the removed projection, sequence, prompt reservations and message accounting before replaying the replacement. Do not infer incarnation from journal length; equal and longer replacements also need clean replay. Retained stale leases are never cleared or reacquired by this refresh.
 - Status mismatch returns false without a new event. A CAS loser adds no event and refreshes the winner. A successful claim writes a full snapshot with sequence CAS.
 - Prompt generations survive unrelated status snapshots. A changed authoritative pending count resets the reservation projection; unchanged counts retain identities.
 
 ## Commands and evidence
 
-All executable checks ran on Boat using the supplied implementer wrapper. The Mac performed file reads/edits and git operations only. Final source check/format and focused evidence is `run_6cdc9eb220e1acbe89573f59a9bbf814`: formatting reported no fixes, `npm run check` passed, and 20 focused files passed all 298 tests with no skips. That includes 17 new backend tests, 118 existing runtime assertions using temporary journal backends, 151 kernel tests, eight pure helper tests and four process-integration tests. The final unit gate also passed on this source in `run_60ac3775f2250f771efdb0a829c4423e`.
+The original implementation gates below are historical evidence for `e1a64e868a488a68870c2077a87ce67b15d464b4`, not validation of the review repair. They passed but did not prove recreation-safe accepted mutations. The earlier recreation test explicitly hydrated first; the ordinary handoff test did not delete/recreate the id. Neither justified the previous broad recreation claim. Current repair evidence is recorded separately below.
 
-The checked backend, SQLite journal and focused-suite git blob hashes respectively match the local checkout: `1292cc4b54f25e9a9726f3d5bbca2feb4820bda6`, `d2f54bf234344647028be4772bc64019d12a5763`, `eb1ca7312b1a10280d7ab7a13f0efccdfc211243`.
+Original source check/format and focused evidence is `run_6cdc9eb220e1acbe89573f59a9bbf814`: formatting reported no fixes, `npm run check` passed, and 20 focused files passed all 298 tests with no skips. That includes 17 backend tests, 118 existing runtime assertions using temporary journal backends, 151 kernel tests, eight pure helper tests and four process-integration tests. The original unit gate passed in `run_60ac3775f2250f771efdb0a829c4423e`.
+
+The original backend, SQLite journal and focused-suite git blob hashes were respectively `1292cc4b54f25e9a9726f3d5bbca2feb4820bda6`, `d2f54bf234344647028be4772bc64019d12a5763`, `eb1ca7312b1a10280d7ab7a13f0efccdfc211243`. Current repaired artifact hashes are recorded with the repair audit.
 
 Focused command:
 
@@ -133,9 +135,51 @@ Durable regression evidence:
 
 The early typecheck caught four unsafe payload assertions in `run_35d8cb41925d7ac025a65e766f78f032`; subsequent check runs passed. Formatting consistency checks intentionally stopped when formatting patches were pending; those patches were applied before rerunning. Failures were not suppressed.
 
-Qlty 0.654.0 ran built-in function metrics on Boat using the existing `.qlty/qlty.toml`, most recently in `run_6cdc9eb220e1acbe89573f59a9bbf814`. Its executable/archive were installed only in remote ignored scratch storage. No plugin rollout or repository configuration change was made. The new backend has no pre-change baseline; inherited journal method bodies retain their prior behavior. Metrics supplement, not replace, `npm run check`.
+Qlty 0.654.0 originally ran built-in function metrics on Boat using the existing `.qlty/qlty.toml` in `run_6cdc9eb220e1acbe89573f59a9bbf814`. Its executable/archive were installed only in remote ignored scratch storage. No plugin rollout or repository configuration change was made. Metrics supplement, not replace, `npm run check`; the current repair metrics are below.
 
 The local commit skips only the `format` and `check` hooks with documented `PREK_SKIP=format,check`, because those commands must run on Boat. Their full equivalents passed there. Lightweight built-in git checks remain enabled. The completion receipt records the signed commit and clean worktree audit.
+
+## Review repair: all three consolidated P1 findings
+
+The completion, evidence and risk findings at review lines 1134–1193 share one root: an unowned observer used the deleted incarnation's sequence as the replacement's replay cursor. After acquiring the replacement lease, a status mutation copied the deleted handle into a durable full snapshot. Lease epoch fencing worked; cache incarnation isolation did not.
+
+The repair extracts the existing complete hydration replay into a synchronous internal `rebuild`. Unowned refresh rebuilds instead of trusting its old cursor. A newly acquired lease rebuilds again before being cached, so mutations that append directly also start with the current projection. Held leases retain incremental refresh and existing stale-epoch rejection; no schema, constants, Promise/AsyncIterable identity, public interface, dependencies or runtime wiring changed.
+
+Authoring gate: the exact shorter-journal test protects accepted mutations without undocumented hydration; equal/longer variants protect against sequence-length heuristics and leaked checkpoint/prompt/message maps; stale-lease and deleted-only cases protect the ownership/no-op boundaries. Existing hydration-only and ordinary handoff cases do not cover these transitions. All exercise existing public backend/journal methods without adding a production test seam.
+
+| Finding / invariant | Durable regression and evidence |
+| --- | --- |
+| Completion P1: reset cached incarnation before acquisition | Exact cached seq4 → replacement seq2 → direct `setWorkflowStatus` test; independent reviewer executable rerun |
+| Evidence P1: no deleted projection after recreated lease | Observer and fresh reader agree on new inputs, name, creation time, checkpoints/count and summary; raw final status equals the current full snapshot |
+| Risk P1: detect replacement independently of sequence length | Equal seq8 and longer seq9 replacement variants clear old checkpoints, prompt identities, settled messages, receipts and delivery counts; new prompt token still releases |
+
+RED `run_d56087e20655dba186c80ddf3791c712`: independent `bun .crabbox/completion-recreation.ts` and persisted focused regression both failed with identity old instead of new. Focused suite: 17 passed, 1 failed. Raw replacement events were seq1/epoch2 new inputs/createdAt5, seq2/epoch2 new checkpoint, then seq3/epoch3 old inputs/createdAt1/summary old. Observer retained checkpoint old; fresh fold contained checkpoint new. Logs: `.crabbox/s2-repair-scratch-red.log`, `.crabbox/s2-repair-red.log` on Boat.
+
+Initial GREEN `run_7bf6f4531596544cc14c31f81d897973`: all 18 focused tests passed and the independent executable passed. Its raw seq3/epoch3 status retained new inputs/createdAt5 and no old summary; observer/fresh checkpoints were both new. Logs: `.crabbox/s2-repair-green.log`, `.crabbox/s2-repair-scratch-green.log`. Equal/longer variants then passed in `run_7ff9cb460eb57601e11ef5d7c7a8785a` (20 tests; `.crabbox/s2-repair-variants.log`). Final gates and artifact audit follow after all boundary cases.
+
+Expanded baseline confirmation `run_e40f4f2ac1d8a6df4f58fae2cacdd095` temporarily restored the exact original backend blob `1292cc4b54f25e9a9726f3d5bbca2feb4820bda6` on Boat with a restoration trap. Six relevant cases failed as intended (18 passed): shorter/equal metadata corruption, longer stale checkpoints, deleted-only erroneous `RunNotFoundError`, stale status-claim preconditions and skipped delivery accounting. Restoring the repaired backend made all 24 tests pass, including the retained stale-lease case. Logs: `.crabbox/s2-repair-all-baseline-red.log`, `.crabbox/s2-repair-all-green.log`. No failing test was suppressed or weakened.
+
+The stale-lease regression checks exact `JournalOwnershipError`/`StaleLeaseError` fields, unchanged journal, no silently reacquired holder, and the same lost error even after explicit hydration. The deleted-only case preserves absent-run no-op/false/not-found results and permits later registration. The first-mutation claim and receipt variants cover precondition checks and direct append paths independently of the status draft path.
+
+Formatting run `run_ccc42e3ba5e49f45e07727c3921965af` formatted 3431 files and fixed only the touched focused test. Its formatting-only edits were applied locally; backend/test hashes are `e829b7380102f5498cb9e8cea32ede87eb743a38` and `7826bb63a9ea908f24f4324a5c761adac6ba493d`.
+
+### Current repaired-source final gates
+
+All heavy execution used only the supplied implementer Boat wrapper, sequentially, from this checkout. No local npm, compiler, formatter or test command ran. The complete current check/focused log is `/tmp/s2-repair-final-check.log`; the exact unit gate log is `/tmp/s2-repair-final-unit.log`.
+
+| Gate | Current result |
+| --- | --- |
+| C: `npm run format` and no-diff rerun | `run_d7506593d97e647cae3a3dc3ce1f7fcc`: 3431 files, no fixes; `git diff --exit-code` passed |
+| C: `npm run check` | Same run: Biome (five existing informational diagnostics), root/workspace typechecks and published shrinkwrap check passed |
+| F: exact selected durable command above plus process integration | Same run: all 19 selected unit files and the integration file, 20 files / 305 tests passed, no skips; all 24 backend tests executed |
+| Independent reviewer executable | Same run: `bun .crabbox/completion-recreation.ts` passed; observer/fresh inputs and checkpoints are new, raw final status is from the replacement |
+| U: exact established unit command above, run separately alone | `run_edcc38795f1362c5b977310317de1ed7`: 930 files / 10,549 tests passed, 26 pre-existing skips; wrapper logged exactly two authorized exclusions; duration 122.65s |
+| Supplemental qlty metrics | `run_d7506593d97e647cae3a3dc3ce1f7fcc`: cached qlty 0.654.0 built-in function analysis passed with existing config; rebuild cognitive complexity 1, refresh 2, maximum backend cognitive complexity 10 |
+| D: artifact and whitespace audit | Same run: Boat backend/test hashes exactly match local `e829b7380102f5498cb9e8cea32ede87eb743a38` / `7826bb63a9ea908f24f4324a5c761adac6ba493d`; Boat and local `git diff --check` passed; final three-file note-inclusive hash/commit audit is recorded in the completion receipt |
+
+Both final gate runs returned `ATOMIC_JOURNAL_GATE_EXIT=0`. Process evidence still covers fresh Bun rebuild, SIGKILL rollback/integrity, 400 keyed child appends, and Node/Bun identifier/JSON behavior. No runtime/UI scenario applies to this unwired non-UI backend. Required preferences, explicit workflow trailer override, actual model attribution, separate RED evidence and signed commit are retained. The resolved `issues.md` is removed before commit.
+
+The correctness tradeoff is a full replay on unowned refresh and new acquisition; held writes remain incremental. No production-load benchmark was performed. The prior five-commit timing sample (only one measured duration) is anecdotal, not an estimate or replacement for current gate results.
 
 ## Selected durable suites
 
@@ -167,4 +211,4 @@ None during implementation. The launch contract explicitly requires `Assistant-w
 
 ## Deferred observations
 
-Existing unrelated Biome `useTemplate` informational diagnostics were left unchanged. No product additions or other slice work were added. User guides and release notes remain assigned to S6.
+Five existing unrelated Biome informational diagnostics and 26 established unit skips were left unchanged. No product additions or other slice work were added. User guides and release notes remain assigned to S6. No reproduced in-scope failure remains after the current repair gates.
