@@ -1,5 +1,6 @@
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@bastani/atomic";
+import type { WorkflowSerializableValue } from "../../shared/types.js";
 import { JournalDatabase, journalCounter, type SqliteStoredValue, storageBoundary } from "./node-sqlite.js";
 import {
 	type AppendOutcome,
@@ -41,7 +42,10 @@ function validateText(field: JournalInvalidTextError["field"], value: string): v
 }
 
 function serializeJson(value: RunHeader | RunEvent["payload"]): string {
-	const text = JSON.stringify(value);
+	const nativeJson = JSON as typeof JSON & { rawJSON(text: string): Readonly<{ rawJSON: string }> };
+	const text = JSON.stringify(value, (_key: string, item: WorkflowSerializableValue | undefined) =>
+		typeof item === "number" && Object.is(item, -0) ? nativeJson.rawJSON("-0") : item,
+	);
 	return text.replace(/\p{Surrogate}/gu, (unit) => "\\u" + unit.charCodeAt(0).toString(16).padStart(4, "0"));
 }
 

@@ -4,7 +4,7 @@
 
 Implement only the unwired `JournalDurableBackend`, persist before returning, rebuild its projection from journal events, verify it on Boat, and commit on `feat/workflow-journal-s2-journal-backend`.
 
-The table refines the original pre-edit matrix into individual clauses without adding scope. `C` denotes the latest batch check/format run, `F` its focused run, `U` its established unit gate, and `D` its final diff/commit audit. Earlier receipts are historical only; the latest six-finding batch evidence below supersedes their completion claims.
+The table refines the original pre-edit matrix into individual clauses without adding scope. `C` denotes the current eight-finding batch check/format run, `F` its focused run, `U` its established unit gate, and `D` its final diff/commit audit. Earlier receipts and their readiness claims are historical only; the eight-finding batch below supersedes them. No earlier pass replaces current-source validation.
 
 | Contract clause | Verification |
 | --- | --- |
@@ -17,7 +17,7 @@ The table refines the original pre-edit matrix into individual clauses without a
 | Writes resolve only when durable | F: synchronous checkpoint visible to fresh connection before any flush; async checkpoint idempotency |
 | No flush queue | D: synchronous append followed by fold; required `flush()` is a no-op readiness boundary |
 | Status claims use `expectSeq` | F: injected competing append wins, losing claim returns false and adds no second status row |
-| Preserve transition boolean results and expected timestamp/status semantics | F: success, status mismatch, stale timestamp and CAS conflict |
+| Preserve transition boolean results and expected timestamp/status semantics | F: predicates rechecked after acquisition, sequence captured from acquired incarnation; shorter/equal/longer matching and mismatching status/timestamp schedules, missing replacement and held/stale fences |
 | Per-process holder identity | D: process UUID namespace and backend-instance UUID prevent separate backend instances sharing ownership accidentally |
 | Lease renewal uses existing cadence | F: fake-clock renewal at `STAGE_SESSION_HEARTBEAT_INTERVAL_MS`, 30,000 ms |
 | Stale-holder takeover | F: expiry after `FOREIGN_LIVE_WORKFLOW_WINDOW_MS`, 120,000 ms; transaction checks current renewal time |
@@ -33,7 +33,7 @@ The table refines the original pre-edit matrix into individual clauses without a
 | Expiry takeover rejects first holder | F: exact old/new epoch and typed cause fields |
 | Lease handoff must not overwrite a newer projection | F: ordinary handoff plus no-hydration deleted/recreated shorter, equal and longer journals; observer/fresh handles, checkpoints and raw status agree |
 | Prompt state survives status changes and reopen | F: unchanged-count status snapshot retains active token identity; release settles count; old generation cannot release newer reservation; replacement tokens survive while deleted tokens disappear |
-| Catalog, hydration and accepted mutations reflect deletion/recreation | F: no-hydration recreation retained; direct deletion FIRST after late registration, external deletion and recreation, fresh catalog/readers/raw rows; fresh foreign and stale held leases fenced |
+| Catalog, hydration and accepted mutations reflect deletion/recreation | F: prior direct deletion/recreation cases retained; inactivity rechecked after acquisition, acquired sequence used for deletion CAS; deterministic and real Node/Bun child replacement schedules |
 | Local-only `node:sqlite` storage | D: no shared-host store or new runtime selector |
 | Default path remains `join(dirname(getAgentDir()), "workflows", "journal.sqlite")` | F: inherited kernel path tests; D: path function unchanged |
 | `ATOMIC_WORKFLOW_JOURNAL_PATH` override remains unchanged | F: inherited kernel path tests; D: no path normalization added |
@@ -44,7 +44,7 @@ The table refines the original pre-edit matrix into individual clauses without a
 | `seq` and `epoch` remain safe integers in `0..Number.MAX_SAFE_INTEGER` | F: inherited range matrix; expiry grant uses the same checked increment |
 | Range errors retain exact class and fields | F: `JournalCounterRangeError { runId, field, value, reason }`; additive checkpoint path propagates it rather than hiding it |
 | Identifier Unicode/NUL rules and NUL precedence remain unchanged | F: inherited kernel and Node/Bun process matrices; D: synchronous companions delegate shared validation bodies |
-| Payload/header JSON retains NUL and lone surrogates | F: restored exact baseline native rawJSON unit/process assertions, exact JSON TEXT/lexemes/negative zero/astral pairs/toJSON count/frozen inputs/FWW replay; independent Node/Bun header/event probes |
+| Payload/header JSON preserves accepted values, NUL, lone surrogates and negative zero | F: exact retained S1 native JSON assertions plus backend native lexemes, caller serialization counts, frozen inputs/FWW, repeated status/prompt/message/summary snapshots, hydration/reopen/getters; no construction/fold stringify round trips |
 | Surviving S1 tests, process fixture and notes remain intact relative to current baseline | D: byte-identical files compared with `babfae6a0c4f149ecb3bc531aa3f290890732733`; no lost or weakened assertions |
 | Exactly one metadata row and typed corruption error | F: inherited kernel `JournalMetaCorruptError { path, rowCount }` tests |
 | `StatusChanged` is a full snapshot, latest sequence wins | F: direct metadata payload, conflicting claim and reopened handle checks |
@@ -63,7 +63,7 @@ The table refines the original pre-edit matrix into individual clauses without a
 | Runtime helpers and explicit Bun executable | F and D: new helper/fixture tests use `test/helpers/runtime.ts` |
 | Each test owns a temporary database | D: shared cleanup constructor allocates per instance; intentional competing instances share only within one test |
 | No authored skips or soft guards | F: all focused tests execute; D: no skip/guard additions |
-| `npm run format` on touched files | C: clean formatter rerun; formatting patch applied locally using git |
+| `npm run format` on touched files | C: clean formatter rerun; exact formatting changes applied locally through file edits |
 | No unnecessary explanatory source comments | D: no new source comments |
 | `npm run check` | C: Biome, workspace/root typechecks and shrinkwrap check |
 | Unit gate | U: exact command below, only the two established exclusions |
@@ -97,7 +97,7 @@ Legal ownership states and transitions:
 - Released/closed: stop renewal, release owned leases, close the connection. Reopen folds persisted events.
 - Deleted/recreated: keep the kernel epoch tombstone. Unowned refresh and each new acquisition discard the removed projection, sequence, prompt reservations and message accounting before replaying the replacement. Do not infer incarnation from journal length; equal and longer replacements also need clean replay. Retained stale leases are never cleared or reacquired by this refresh.
 - Direct deletion: decide durable existence from current journal headers, not the cached projection. Retained held leases still enter lease-checked SQL deletion even when cached state is empty; never discard stale authority by treating an empty projection as absence. An unowned absent run clears cached workflow/checkpoint/prompt state without acquiring a missing lease. No prior hydration is required. Successful current-owner deletion clears local ownership and retains the kernel tombstone for legal recreation.
-- Status mismatch returns false without a new event. A CAS loser adds no event and refreshes the winner. A successful claim writes a full snapshot with sequence CAS.
+- A pre-acquisition mismatch returns false without acquiring or writing. After acquiring, status claims recheck expected statuses and optional updatedAt against the acquired draft and capture that incarnation's sequence. Inactivity is likewise rechecked against acquired current state before deletion CAS. Matching replacements are allowed even when their journal length differs. A CAS loser adds no event and refreshes the winner. Missing-during-acquisition results preserve false/not_found, without clearing stale/lost execution fences.
 - Prompt generations survive unrelated status snapshots. A changed authoritative pending count resets the reservation projection; unchanged counts retain identities.
 
 ## Commands and evidence
@@ -183,9 +183,9 @@ Both historical gate runs returned `ATOMIC_JOURNAL_GATE_EXIT=0`. They proved the
 
 The correctness tradeoff is a full replay on unowned refresh and new acquisition; held writes remain incremental. No production-load benchmark was performed. The prior five-commit timing sample (only one measured duration) is anecdotal, not an estimate or replacement for current gate results.
 
-## Latest review repair: six findings, two required-contract roots
+## Historical six-finding repair, superseded by the eight-finding batch
 
-The latest consolidated findings at review-round-latest.json:1420–1543 are not scope additions or contract amendments. All three reviewers report the same P1 JSON boundary root and the same P2 direct-deletion root. Prior passing reduced-suite gates did not prove the advanced baseline's accepted native rawJSON behavior; prior deleted-only coverage refreshed through another mutation before deletion and did not prove direct-first deletion. The earlier completion, losslessness and deletion claims are explicitly superseded here.
+The then-current six-finding batch was not a scope addition or contract amendment. All three reviewers reported the same JSON binding root and the same direct-deletion root. Prior passing reduced-suite gates did not prove the advanced baseline's accepted native rawJSON behavior; prior deleted-only coverage refreshed through another mutation before deletion and did not prove direct-first deletion. That repair remains retained, but its broad completion claims are superseded by the current eight-finding batch.
 
 | Finding | Root and applied repair | Persistent prevention |
 | --- | --- | --- |
@@ -196,7 +196,7 @@ The existing no-hydration shorter/equal/longer recreation repair is unchanged. N
 
 Authoring gate: direct-first deletion protects the permanent-removal/no-op contract when cache and storage diverge; the earlier mutation-then-delete case cannot catch it. Fresh/stale lease boundaries protect against silently skipping authority checks when projection state is empty. Existing public backend/journal methods drive each scenario; raw rows add storage-boundary confirmation. Baseline coverage is restored verbatim, not reauthored.
 
-### Latest RED/GREEN and independent probes
+### Historical six-finding RED/GREEN and independent probes
 
 - `run_78a839d7b8d2f212c5c4791f800c8d46`, `/tmp/s2-batch-json-red.log` and Boat `.crabbox/s2-batch-json-red.log`: exact persisted baseline unit/process tests against unfixed current source: **8 failed, 158 passed of 166**, no skips. Independent Node/Bun each failed native rawJSON header/event and both direct deletion probes; each passed durability/duplicate/CAS/omission and the old no-hydration recreation probe. Separate Boat logs are `.crabbox/s2-batch-node-red.log` and `s2-batch-bun-red.log`.
 - `run_a6b70c18b54e8816aa9f7a01d8a72172`, `/tmp/s2-batch-json-green.log`: exact serializer repair passed all **166** restored cases (161 unit/five process), including SIGKILL/integrity, 400 child appends and alternating native JSON children.
@@ -207,7 +207,7 @@ Authoring gate: direct-first deletion protects the permanent-removal/no-op contr
 - `run_6ddf9f0c085cdea90d38feeab8ee8640`, `/tmp/s2-batch-expanded-format.log`: temporarily restored the exact pre-repair backend blob `e829b7380102f5498cb9e8cea32ede87eb743a38` with an EXIT restoration trap and ran all expanded assertions: **4 failed, 25 passed of 29**. Both direct-first cases, fresh-foreign rejection and empty-projection stale-held rejection failed for the expected reasons. Restoring the fixed backend passed **29/29**. Boat logs are `.crabbox/s2-batch-delete-expanded-{red,green}.log`. No assertion was lost or modified between these runs. `npm run format` fixed only two formatting spans in the touched backend test; those exact edits were applied locally.
 - `run_f308436c325caffcc46de5773da18c91`, `/tmp/s2-batch-final-check.log`: no-fix formatting passed; check caught unsorted newly added test imports before typechecking or subsequent gates. Only that import ordering was corrected; no product/assertion changes. The passing rerun below supersedes this failed attempt without hiding it.
 
-### Latest final-source gates
+### Historical six-finding final-source gates
 
 All executable work below ran sequentially through the supplied wrapper on the assigned implementer Boat. Mac work was reads, file edits and git only. No production/test changes followed the no-fix format/check run; subsequent edits only record evidence in this note.
 
@@ -224,6 +224,68 @@ All executable work below ran sequentially through the supplied wrapper on the a
 Final production hashes are backend `ead0169473ab3bae5782c18a3a9292de4522269d`, SQLite journal `24c9acbdfafa8b681cef0bcd47b26b503559eaa0`, backend tests `42703e171b7fea57da339b3ba2fd2ac299e7c357`. Restored baseline unit/process/fixture/notes hashes are respectively `72570e99e3a4e8da73838a74b981284316f3608e`, `6ef88bd8ef616cd7f317e13ea2144113e3e18b69`, `d746e587870b5c4a6d5c3a85c566ef0af8e06c9d`, `64866b03976829c1c508ecb5a408c05cc1fa02fa`; all four have zero diff against the designated current baseline. The S2 baseline delta therefore deletes none of that surviving S1 coverage or note content.
 
 All required executable gates passed with `ATOMIC_JOURNAL_GATE_EXIT=0`. The remaining performance tradeoff is the existing full replay for unowned mutations plus a current-header scan for unowned direct deletion; no production-scale benchmark was run. The backend remains unwired, so no browser/video or wired-runtime end-to-end claim is made. The resolved issues.md is removed. Final note-inclusive no-fix formatting, all 27 S2/baseline-restoration content hashes, independent probe-source fidelity, whitespace, signature and clean-tree evidence accompany the commit receipt. No further product/test edits are made after the passed gates.
+
+## Current eight-finding repair: authoritative acquisition and JSON preservation
+
+The authoritative batch is review-round-latest.json:1512–1675. It contains five P1 entries for guarded acquisition and three P2 entries for lossy JSON conversion. These are existing contract failures, not amendments. The earlier full-readiness claim was wrong: passing ordinary CAS and prior recreation tests did not exercise replacement inside acquisition, and lossless kernel JSON tests did not prove backend construction/fold or repeated snapshots.
+
+| Finding | Reviewer and defect | Repair and durable proof |
+| --- | --- | --- |
+| 1, title at 1515 | Completion: expected status checked before acquisition | Recheck acquired draft status/timestamp, then capture its sequence; exact equal-sequence refusal and expanded predicate matrix |
+| 2, title at 1535 | Completion: inactive deletion checked before acquisition | Recheck acquired current state before deletion CAS; exact running replacement refusal and sequence matrix |
+| 3, title at 1555 | Completion: native negative zero lost | Typed event payload construction/fold without JSON normalization; single-boundary negative-zero preservation and repeated snapshot regression |
+| 4, title at 1575 | Evidence: real-process claim race | Same authoritative claim repair; eight persisted Node/Bun child cases cover both actions and same/longer sequence controls |
+| 5, title at 1595 | Evidence: real-process inactive deletion race | Same acquired inactivity repair; child deletes/registers/closes through public backend operations |
+| 6, title at 1615 | Evidence: native JSON changes between header and projection | Header/event/immediate/reopened inputs and outputs agree; native raw lexemes and caller boundaries checked directly |
+| 7, title at 1635 | Risk: both predicates and sequence bound to old incarnation | Shorter/equal/longer replacement matrix, matching/nonmatching predicates, absent acquisition, fresh competitor and retained stale execution fences |
+| 8, title at 1655 | Risk: construction and fold normalize native JSON | No stringify on fold; status/prompt/message/summary snapshots retain decoded -0 through hydration, getters and reopening |
+
+### Minimal design decisions
+
+- Keep the existing preflight mismatch results. After acquisition, independently validate the authoritative predicate; capture expectSeq only after acquisition/rebuild. Keep journal CAS and epoch checks unchanged. Do not reject a replacement merely because its sequence or incarnation differs if its acquired state satisfies the actual predicate.
+- If deletion wins while an unowned current-state lookup acquires, catch only typed RunNotFoundError, discard the obsolete projection and return absence. No lost execution is silently reacquired; retained stale leases still fail with JournalOwnershipError and exact StaleLeaseError fields, including on repeated attempts after hydration.
+- A private discriminated BackendEvent union describes actual backend payloads. A type-only JSON payload mapping retains already-serializable values and gives domain interfaces structural payload types. Construction is direct; fold reads the already-decoded typed payload. No runtime conversion or caller mutation/freezing is added. Kernel event constants, exported API shapes, schema and encoding are unchanged.
+- The journal still stringifies once per write and escapes only literal lone surrogates afterward. Its replacer emits native JSON.rawJSON("-0") only for a decoded negative-zero number; this is necessary because subsequent full snapshots would otherwise stringify it as positive zero. It does not parse/reserialize native raw fragments, so original accepted number/string lexemes, astral pairs and surrogates remain intact. Existing S1 tests/fixture/notes remain byte-identical; the serializer receives only this focused preservation extension.
+- Backend registration performs two distinct durable writes (header and start event), each invoking caller toJSON once. A checkpoint invokes it once; an existing keyed checkpoint invokes it zero times. Later snapshots use decoded data and do not reinvoke the original caller. Frozen objects retain identity/content.
+
+Authoring gate: each new test protects a required guarded transition or accepted-value round trip missing from prior coverage. Acquisition is injected through the existing journal capability, not a production-only test seam. Real children independently delete/register/close while the observer is paused at acquisition. Matching replacement cases prevent invented incarnation/sequence restrictions; fresh/stale cases retain authority fences. The prior 29 backend cases and every surviving S1 assertion remain intact.
+
+### Current RED/GREEN evidence
+
+All commands ran sequentially on the assigned implementer Boat through the exact supplied wrapper; Mac activity remained read/edit/git only.
+
+| Behavior | RED | GREEN |
+| --- | --- | --- |
+| Equal-sequence status predicate | run_fe83b307fbfe69cef2aee431b0cb319e, /tmp/s2-turn4-status-red.log: true instead of false; focused selection ran one regression (29 other tests unselected) | run_e64d90bdb19b49b70c2ebf37579243f2, /tmp/s2-turn4-status-green.log: 30/30 |
+| Equal-sequence inactive deletion | run_1589425d2e38b91d00b95bc178e0c00d, /tmp/s2-turn4-delete-red.log: 1 failed/30 passed, ok:true instead of running refusal | run_0348dc8ef7449bc5916b36bc2de60380, /tmp/s2-turn4-delete-green.log: 31/31 |
+| Backend native negative zero | run_c94d920161cc775580edf200051c0619, /tmp/s2-turn4-zero-red.log: 1 failed/31 passed; exact independent Node/Bun each saw only header preserve -0 | run_c56be883be88ac2e26d5e8262206ccf2, /tmp/s2-turn4-zero-green.log: 198/198 across backend/kernel/process; exact Node/Bun numeric observations all true; both exact acquisition probes pass |
+| Missing run during acquisition | run_fd45ff53ab63925397f26f49b44cc919, /tmp/s2-turn4-absent-red.log: 2 failed/32 passed with typed RunNotFoundError from acquire | run_fd63388ee3f174385ca7c6656ea02425, /tmp/s2-turn4-absent-green.log: 34/34 |
+
+Expanded runtime coverage first passed 62/62 in run_65716a1d148869ec9887e22f99c830ea (/tmp/s2-turn4-expanded-check.log). Its check correctly rejected insufficient type overlap in the first private event boundary and one unnarrowed new-test checkpoint access. The first type-only mapping then exceeded recursive instantiation in run_1bb6d31700f9dca8d9e4614454695b46 (/tmp/s2-turn4-type-format.log). Stopping the mapping at already-serializable values resolved that type error without changing runtime data. A kind-discriminant assertion narrows the test checkpoint. Formatter output was applied locally via file edits. run_eb5ac1dd88cd22b13faa4d9154661ec7 (/tmp/s2-turn4-type-green.log) passed no-fix formatting, no diff and the complete repository check. These intermediate passes do not replace the final-source gates recorded next.
+
+Expanded preimage proof: run_0f8a682ce8f0d37ebe7f1478f6b27436, /tmp/s2-turn4-expanded-red-green-2.log, temporarily loaded the exact f20045927 backend blob ead0169473ab3bae5782c18a3a9292de4522269d with an EXIT restoration trap. All 62 persisted assertions ran: RED **15 failed / 47 passed**, then restored-source GREEN **62/62**, no skips. The failures include both equal-sequence guards, absent acquisition, timestamp mismatch, valid shorter/longer matching claims, all four same-sequence real-child cases, negative-zero fold and unnecessary caller serialization on a duplicate checkpoint. The independent reviewer child schedule separately failed its four same-sequence Node/Bun cases while passing all four longer-sequence controls; after restoration all eight passed with failures: []. Complete repository check also passed with direct typed event construction. Remote logs: .crabbox/turn4-{expanded,children}-{red,green}.log. The earlier attempt run_8b17620f2506c02834fffc0ad4464492 stopped before executing any tests because scratch heredoc construction added a newline to the preimage and the byte-hash assertion rejected it; the EXIT trap restored source, and the corrected run verified exact bytes before executing. No test assertion was weakened or removed.
+
+### Current final-source acceptance evidence
+
+| Gate | Current-source evidence |
+| --- | --- |
+| C: npm run format, no diff, npm run check | run_ff8cd2c328f39830d3e354a6cfd1f28d, /tmp/s2-turn4-final-gates.log: 3431 files formatted with no fixes; git diff --exit-code passed; Biome, root/workspace typechecks and published shrinkwrap passed with six informational diagnostics and no warnings/errors |
+| F: exact 19-suite selection plus process integration | Same run: **20 files / 354 tests passed**, no skips, including all 62 backend tests, 161 kernel tests and five process scenarios |
+| Literal npx vitest --run test/unit/durable-sqlite-run-journal.test.ts | Same run: **161/161 passed**, no skips |
+| Exact independent turn3 probes on Node22.19.0 and Bun1.4.2 | Same run: each runtime passed both original acquisition actions, all seven negative-zero observations, and all ten ordinary groups; public-backend variant of the acquisition probe also passed on each runtime |
+| Independent real children and retained prior probes | Same run: all eight Node/Bun reviewer child schedules passed, including same-sequence and longer-sequence controls; both runtimes passed all six turn2 groups; prior standalone recreation executable passed |
+| Supplemental cached qlty metrics | Same run: qlty0.654.0 metrics --functions analyzed both production files using existing configuration. Current cognitive complexity is 11 for status claims and 14 for guarded deletion; explicit post-acquisition validation adds branches. No broad refactor, configuration/plugin churn or separate security-audit claim |
+| U: exact npm run test:unit -- --exclude test/unit/durable-embedded-postgres-root.test.ts --exclude test/unit/durable-embedded-postgres.test.ts, ALONE | run_bbb9084508459badbd0a9048ffed64af, /tmp/s2-turn4-final-unit-2.log: **930 files / 10,597 passed**, 26 pre-existing skips, 145.07s. Wrapper applied exactly two authorized exclusions; no other exclusions, concurrency adjustments, guards or retries inside tests |
+
+The exact final commands and raw probe output are retained in /tmp/s2-turn4-final-gates.log and Boat .crabbox/turn4-final-*.log. All gates in that run returned ATOMIC_JOURNAL_GATE_EXIT=0. No product/test/fixture edits followed it. Current code hashes match local: backend 45ce10974f2a1fc2c3256648c2c812ebf8118dc6; SQLite journal cc265c9ba8685650bda18a9b0ea577e4b6c8e9b3; focused tests 9ca92a9b3f5a08853ac3ec21c389b259b43b3f17; new child fixture 5e2a6fa231c92bb6660d8e27e76c012810cd72a9. Final note-inclusive artifact and established unit evidence follow separately.
+
+The first exact established unit attempt, run_c8baf119ba640b2d2c06b2159bd4f4cd (/tmp/s2-turn4-final-unit.log), passed 929 files / 10,596 tests but failed one untouched workflow-stage-bundled-resources assertion at line367: taskResponse was undefined; 26 pre-existing skips remained. All 62 backend tests passed under that same full-suite load. The untouched file's complete ten-test standalone run passed in run_3566ab0b630854dbf732d29b54aada58 (/tmp/s2-turn4-unit-investigation.log). Its source/history were inspected; no assertion, product code, test concurrency, gate exclusions or environment policy was changed. The lower-level cause of that isolated failure is unproven; it is not presented as a repaired S2 defect. The exact unchanged unit gate is rerun alone, with its actual outcome recorded below.
+
+The unchanged full-unit rerun passed, including the earlier failing stage case and all 62 backend cases under ordinary full-suite load. This establishes the required current-source unit gate, not a diagnosis of the earlier unrelated transient. Both outcomes remain in the evidence and commit trailers.
+
+Baseline audit: the S1 unit suite, contention suite, journal-process.mjs fixture and research/notes/workflow-journal-s1.md have zero diff against babfae6a0c4f149ecb3bc531aa3f290890732733. Their hashes remain 72570e99e3a4e8da73838a74b981284316f3608e, 6ef88bd8ef616cd7f317e13ea2144113e3e18b69, d746e587870b5c4a6d5c3a85c566ef0af8e06c9d and 64866b03976829c1c508ecb5a408c05cc1fa02fa. The focused backend suite adds 376 lines and removes zero relative to f20045927: all prior 29 cases remain byte-for-byte. This batch changes only two production files, that focused suite, its new acquisition child fixture and these notes. Existing schema/constants/types, SQLite adapter, manifests/lockfiles/configuration, factory/runtime wiring and unrelated tests are unchanged by this repair. The resolved issues.md is removed after the gates. Final note-inclusive no-fix formatting, exact API compilation, source/probe hashes and signed/clean-tree audit are carried by the final receipt and commit trailers.
+
+All eight reproduced findings are closed by passing persisted regressions and independent process/value scenarios. Remaining caveats are the unproven single untouched-test transient above, six existing informational diagnostics, 26 existing unit skips and unbenchmarked full replay/current-header scan costs. The backend remains unwired; no UI/video or wired-runtime E2E result is claimed. No additional scope, user amendment or broad cleanup is introduced.
 
 ## Selected durable suites
 

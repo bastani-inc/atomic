@@ -788,3 +788,379 @@ test("direct deletion retains stale held-lease fencing even with an empty cached
 	await assert.rejects(stale.deleteWorkflow("run"), JournalOwnershipError);
 	assert.deepEqual(writer.getWorkflow("run"), (await open(path)).getWorkflow("run"));
 });
+
+test("status claims recheck the acquired equal-sequence incarnation", async () => {
+	const path = database();
+	const writer = await open(path);
+	writer.registerWorkflow({
+		workflowId: "run",
+		name: "old",
+		inputs: {},
+		createdAt: 1,
+		updatedAt: 1,
+		status: "paused",
+	});
+	await writer.close();
+	const replacement = await open(path);
+	class InterleavedJournal extends SqliteRunJournal {
+		override takeoverExpiredSync(runId: string, holderId: string, expiredBefore: number) {
+			void replacement.deleteWorkflow(runId);
+			replacement.registerWorkflow({
+				workflowId: runId,
+				name: "replacement",
+				inputs: { identity: "replacement" },
+				createdAt: 2,
+				updatedAt: 2,
+				status: "running",
+			});
+			replacement.journal.releaseSync(replacement.journal.leaseState(runId)!);
+			return super.takeoverExpiredSync(runId, holderId, expiredBefore);
+		}
+	}
+	const observer = new JournalDurableBackend(new InterleavedJournal(path));
+	opened.push(observer);
+	assert.equal(await observer.transitionWorkflowStatus("run", ["paused"], "completed"), false);
+	const fresh = await open(path);
+	assert.equal(fresh.getWorkflow("run")!.status, "running");
+	assert.deepEqual(fresh.getWorkflow("run")!.inputs, { identity: "replacement" });
+	assert.equal(fresh.journal.readEntries("run").length, 1);
+});
+
+test("inactive deletion rechecks the acquired equal-sequence incarnation", async () => {
+	const path = database();
+	const writer = await open(path);
+	writer.registerWorkflow({ workflowId: "run", name: "old", inputs: {}, createdAt: 1, status: "paused" });
+	await writer.close();
+	const replacement = await open(path);
+	class InterleavedJournal extends SqliteRunJournal {
+		override takeoverExpiredSync(runId: string, holderId: string, expiredBefore: number) {
+			void replacement.deleteWorkflow(runId);
+			replacement.registerWorkflow({
+				workflowId: runId,
+				name: "replacement",
+				inputs: {},
+				createdAt: 2,
+				status: "running",
+			});
+			replacement.journal.releaseSync(replacement.journal.leaseState(runId)!);
+			return super.takeoverExpiredSync(runId, holderId, expiredBefore);
+		}
+	}
+	const observer = new JournalDurableBackend(new InterleavedJournal(path));
+	opened.push(observer);
+	assert.deepEqual(await observer.deleteWorkflowIfInactive("run"), { ok: false, reason: "running" });
+	assert.equal((await open(path)).getWorkflow("run")!.status, "running");
+	assert.equal(observer.journal.readEntries("run").length, 1);
+});
+
+test("native negative zero survives backend events, folds and repeated snapshots", async () => {
+	const path = database();
+	const nativeJson = JSON as typeof JSON & { rawJSON(text: string): Readonly<{ rawJSON: string }> };
+	const raw = nativeJson.rawJSON("-0");
+	const input = Object.freeze({ value: raw });
+	const backend = await open(path);
+	backend.registerWorkflow({ workflowId: "run", name: "zero", inputs: input, createdAt: 0, status: "running" });
+	backend.recordCheckpoint({ ...checkpoint(), output: raw });
+	const verify = (reader: JournalDurableBackend) => {
+		assert.deepEqual(reader.getWorkflow("run")!.inputs, { value: -0 });
+		assert.ok(Object.is(reader.getToolOutput("run", "hash"), -0));
+		assert.deepEqual(reader.toMetadata("run")!.inputs, { value: -0 });
+		assert.ok(Object.is(reader.getToolCheckpoint("run", "hash")!.output, -0));
+		const stored = reader.listCheckpoints("run")[0]!;
+		assert.ok(stored.kind === "tool");
+		assert.ok(Object.is(stored.output, -0));
+	};
+	verify(backend);
+	for (let repeat = 0; repeat < 2; repeat++) {
+		backend.setWorkflowStatus("run", "paused");
+		const token = backend.reservePendingPrompt("run", "prompt");
+		backend.releasePendingPrompt("run", "prompt", token);
+		await backend.persistPendingStageMessages("run", []);
+		await backend.persistSummary("run", "summary", repeat);
+		verify(backend);
+		await backend.hydrateWorkflow("run");
+		verify(backend);
+		verify(await open(path));
+	}
+	for (const entry of backend.journal.readEntries("run")) {
+		const payload = entry.event.payload as {
+			inputs?: { value: number };
+			handle?: { inputs: { value: number } };
+			output?: number;
+		};
+		if (entry.event.type === RUN_EVENT_TYPES.checkpointRecorded) assert.ok(Object.is(payload.output, -0));
+		else assert.ok(Object.is((payload.handle ?? payload).inputs!.value, -0));
+	}
+	await backend.close();
+	verify(await open(path));
+	assert.equal(input.value, raw);
+	assert.equal(raw.rawJSON, "-0");
+});
+
+for (const action of ["claim", "delete"] as const) {
+	test(`${action} preserves absent-run results when deletion wins during acquisition`, async () => {
+		const path = database();
+		const writer = await open(path);
+		writer.registerWorkflow({ workflowId: "run", name: "old", inputs: {}, createdAt: 1, status: "paused" });
+		await writer.close();
+		const remover = await open(path);
+		class InterleavedJournal extends SqliteRunJournal {
+			override takeoverExpiredSync(runId: string, holderId: string, expiredBefore: number) {
+				void remover.deleteWorkflow(runId);
+				return super.takeoverExpiredSync(runId, holderId, expiredBefore);
+			}
+		}
+		const observer = new JournalDurableBackend(new InterleavedJournal(path));
+		opened.push(observer);
+		if (action === "claim")
+			assert.equal(await observer.transitionWorkflowStatus("run", ["paused"], "completed"), false);
+		else assert.deepEqual(await observer.deleteWorkflowIfInactive("run"), { ok: false, reason: "not_found" });
+		assert.equal(observer.getWorkflow("run"), undefined);
+		assert.equal((await open(path)).getWorkflow("run"), undefined);
+		assert.deepEqual(observer.journal.readEntries("run"), []);
+		assert.equal(observer.journal.leaseState("run"), undefined);
+	});
+}
+
+async function interleaveAcquisition(change: (replacement: JournalDurableBackend) => void, oldLength = 1) {
+	const path = database();
+	const writer = await open(path);
+	for (let index = 0; index < oldLength; index++) {
+		writer.registerWorkflow({
+			workflowId: "run",
+			name: "old",
+			inputs: { identity: "old" },
+			createdAt: 1,
+			updatedAt: 1,
+			status: "paused",
+		});
+	}
+	await writer.close();
+	const replacement = await open(path);
+	class InterleavedJournal extends SqliteRunJournal {
+		armed = true;
+		override takeoverExpiredSync(runId: string, holderId: string, expiredBefore: number) {
+			if (this.armed) {
+				this.armed = false;
+				change(replacement);
+			}
+			return super.takeoverExpiredSync(runId, holderId, expiredBefore);
+		}
+	}
+	const observer = new JournalDurableBackend(new InterleavedJournal(path));
+	opened.push(observer);
+	return { path, observer, replacement };
+}
+
+for (const [length, oldLength, newLength] of [
+	["shorter", 3, 1],
+	["equal", 1, 1],
+	["longer", 1, 3],
+] as const) {
+	for (const predicate of ["matching", "status mismatch", "timestamp mismatch"] as const) {
+		test(`claim uses acquired ${length} sequence and ${predicate} predicate`, async () => {
+			const { path, observer } = await interleaveAcquisition((replacement) => {
+				void replacement.deleteWorkflow("run");
+				for (let index = 0; index < newLength; index++) {
+					replacement.registerWorkflow({
+						workflowId: "run",
+						name: "replacement",
+						inputs: { identity: "new" },
+						createdAt: 2,
+						updatedAt: predicate === "timestamp mismatch" ? 2 : 1,
+						status: predicate === "status mismatch" ? "running" : "paused",
+					});
+				}
+				void replacement.close();
+			}, oldLength);
+			assert.equal(
+				await observer.transitionWorkflowStatus("run", ["paused", "paused"], "completed", undefined, undefined, 1),
+				predicate === "matching",
+			);
+			const fresh = await open(path);
+			assert.equal(
+				fresh.getWorkflow("run")!.status,
+				predicate === "matching" ? "completed" : predicate === "status mismatch" ? "running" : "paused",
+			);
+			assert.deepEqual(fresh.getWorkflow("run")!.inputs, { identity: "new" });
+			assert.equal(fresh.journal.readEntries("run").length, newLength + (predicate === "matching" ? 1 : 0));
+		});
+	}
+	for (const status of ["running", "paused"] as const) {
+		test(`inactive deletion uses acquired ${length} sequence and ${status} status`, async () => {
+			const { path, observer } = await interleaveAcquisition((replacement) => {
+				void replacement.deleteWorkflow("run");
+				for (let index = 0; index < newLength; index++) {
+					replacement.registerWorkflow({
+						workflowId: "run",
+						name: "replacement",
+						inputs: {},
+						createdAt: 2,
+						status,
+					});
+				}
+				void replacement.close();
+			}, oldLength);
+			assert.deepEqual(
+				await observer.deleteWorkflowIfInactive("run"),
+				status === "paused" ? { ok: true } : { ok: false, reason: "running" },
+			);
+			const fresh = await open(path);
+			assert.equal(fresh.getWorkflow("run")?.status, status === "paused" ? undefined : "running");
+			assert.equal(fresh.journal.readEntries("run").length, status === "paused" ? 0 : newLength);
+		});
+	}
+}
+
+for (const action of ["claim", "delete"] as const) {
+	test(`${action} refuses a fresh competitor acquired during the guard gap`, async () => {
+		const { path, observer, replacement } = await interleaveAcquisition((backend) => {
+			void backend.deleteWorkflow("run");
+			backend.registerWorkflow({
+				workflowId: "run",
+				name: "replacement",
+				inputs: {},
+				createdAt: 2,
+				status: "paused",
+			});
+		});
+		await assert.rejects(
+			action === "claim"
+				? observer.transitionWorkflowStatus("run", ["paused"], "completed")
+				: observer.deleteWorkflowIfInactive("run"),
+			(error: Error) => {
+				assert.ok(error instanceof JournalOwnershipError);
+				assert.equal(error.runId, "run");
+				assert.equal(error.holderId, replacement.holderId);
+				assert.equal(error.cause, undefined);
+				return true;
+			},
+		);
+		assert.equal((await open(path)).getWorkflow("run")!.status, "paused");
+		assert.equal(observer.journal.readEntries("run").length, 1);
+	});
+	test(`${action} cannot silently reacquire a stale execution after replacement`, async () => {
+		const path = database();
+		const stale = await open(path);
+		stale.registerWorkflow({ workflowId: "run", name: "old", inputs: {}, createdAt: 1, status: "paused" });
+		const heldEpoch = stale.journal.leaseState("run")!.epoch;
+		const replacement = await open(path);
+		const takeover = await replacement.journal.takeover("run", replacement.holderId, stale.holderId);
+		assert.equal(takeover.status, "acquired");
+		await replacement.deleteWorkflow("run");
+		replacement.registerWorkflow({
+			workflowId: "run",
+			name: "replacement",
+			inputs: {},
+			createdAt: 2,
+			status: "paused",
+		});
+		const currentEpoch = replacement.journal.leaseState("run")!.epoch;
+		await replacement.close();
+		const before = stale.journal.readEntries("run");
+		let failure: JournalOwnershipError | undefined;
+		for (let repeat = 0; repeat < 2; repeat++) {
+			await assert.rejects(
+				action === "claim"
+					? stale.transitionWorkflowStatus("run", ["paused"], "completed")
+					: stale.deleteWorkflowIfInactive("run"),
+				(error: Error) => {
+					assert.ok(error instanceof JournalOwnershipError);
+					assert.ok(error.cause instanceof StaleLeaseError);
+					assert.equal(error.cause.heldEpoch, heldEpoch);
+					assert.equal(error.cause.currentEpoch, currentEpoch);
+					if (failure) assert.equal(error, failure);
+					failure = error;
+					return true;
+				},
+			);
+			await stale.hydrateWorkflow("run");
+		}
+		assert.deepEqual(stale.journal.readEntries("run"), before);
+		assert.equal(stale.journal.leaseState("run"), undefined);
+	});
+}
+
+for (const runtime of ["node", "bun"] as const) {
+	for (const action of ["claim", "delete"] as const) {
+		for (const length of ["same", "longer"] as const) {
+			test(
+				`${runtime} child replacement during acquisition preserves ${action} guard at ${length} sequence`,
+				async () => {
+					const { path, observer } = await interleaveAcquisition(() => {
+						const child = spawnSyncCollect(
+							[
+								runtime === "bun" ? bunExecutable() : process.execPath,
+								resolve("test/fixtures/journal-backend-acquisition-child.mjs"),
+								path,
+								length,
+							],
+							{ timeout: FRESH_PROCESS_TIMEOUT_MS },
+						);
+						assert.equal(child.exitCode, 0, child.stderr.toString());
+						const snapshot = JSON.parse(child.stdout.toString()) as {
+							handle: { status: string };
+							entries: { seq: number; epoch: number }[];
+						};
+						assert.equal(snapshot.handle.status, "running");
+						assert.equal(snapshot.entries.length, length === "same" ? 1 : 2);
+						assert.equal(snapshot.entries[0]!.epoch, 3);
+					});
+					if (action === "claim")
+						assert.equal(await observer.transitionWorkflowStatus("run", ["paused"], "completed"), false);
+					else assert.deepEqual(await observer.deleteWorkflowIfInactive("run"), { ok: false, reason: "running" });
+					const fresh = await open(path);
+					assert.equal(fresh.getWorkflow("run")!.status, "running");
+					assert.deepEqual(fresh.getWorkflow("run")!.inputs, { identity: "replacement" });
+					assert.equal(fresh.journal.readEntries("run").length, length === "same" ? 1 : 2);
+				},
+				FRESH_PROCESS_TIMEOUT_MS,
+			);
+		}
+	}
+}
+
+test("backend serialization keeps native lexemes and calls caller toJSON once per durable write", async () => {
+	const path = database();
+	const nativeJson = JSON as typeof JSON & { rawJSON(text: string): Readonly<{ rawJSON: string }> };
+	const values = Object.freeze([
+		nativeJson.rawJSON("1.2300e+02"),
+		nativeJson.rawJSON("-0"),
+		nativeJson.rawJSON('"\\u0061"'),
+		nativeJson.rawJSON('"\ud800"'),
+		nativeJson.rawJSON('"💡"'),
+	]);
+	const input = { values };
+	let calls = 0;
+	Object.defineProperty(input, "toJSON", {
+		value: () => {
+			calls++;
+			return { values };
+		},
+	});
+	Object.freeze(input);
+	const backend = await open(path);
+	backend.registerWorkflow({ workflowId: "run", name: "raw", inputs: input, createdAt: 0, status: "running" });
+	assert.equal(calls, 2);
+	backend.recordCheckpoint({ ...checkpoint(), output: input });
+	assert.equal(calls, 3);
+	const before = backend.journal.readEntries("run");
+	backend.recordCheckpoint({ ...checkpoint(), output: input });
+	assert.equal(calls, 3);
+	assert.deepEqual(backend.journal.readEntries("run"), before);
+	const db = new JournalDatabase(path);
+	try {
+		const lexemes = '"values":[1.2300e+02,-0,"\\u0061","\\ud800","💡"]';
+		assert.ok(db.get<{ json: string }>("SELECT header_json AS json FROM runs")!.json.includes(lexemes));
+		for (const row of db.all<{ json: string }>("SELECT payload AS json FROM events"))
+			assert.ok(row.json.includes(lexemes));
+	} finally {
+		db.close();
+	}
+	backend.setWorkflowStatus("run", "paused");
+	assert.equal(calls, 3);
+	const expected = { values: [123, -0, "a", "\ud800", "💡"] };
+	assert.deepEqual(backend.getWorkflow("run")!.inputs, expected);
+	assert.deepEqual((await open(path)).getToolOutput("run", "hash"), expected);
+	assert.equal(input.values, values);
+});

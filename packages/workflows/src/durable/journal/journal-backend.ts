@@ -31,6 +31,7 @@ import {
 	type Lease,
 	type RunEvent,
 	type RunJournal,
+	RunNotFoundError,
 	StaleLeaseError,
 	StorageUnavailableError,
 	type SynchronousRunJournal,
@@ -46,13 +47,23 @@ type DeliveryPayload = {
 	readonly accounting?: { readonly messageRunId: string; readonly deliveryCount: number };
 };
 
-function json(value: object): WorkflowSerializableValue {
-	return JSON.parse(JSON.stringify(value)) as WorkflowSerializableValue;
-}
-
-function decode<Value>(value: WorkflowSerializableValue): Value {
-	return JSON.parse(JSON.stringify(value)) as Value;
-}
+type JsonPayload<Value> = Value extends WorkflowSerializableValue | undefined
+	? Value
+	: Value extends object
+		? { [Key in keyof Value]: JsonPayload<Value[Key]> }
+		: Value;
+type BackendEventOf<Type extends RunEvent["type"], Payload> = {
+	[Tag in Type]: { readonly type: Tag; readonly payload: JsonPayload<Payload> };
+}[Type];
+type BackendEvent =
+	| BackendEventOf<typeof E.checkpointRecorded, DurableCheckpoint>
+	| BackendEventOf<typeof E.messageSettled, { readonly message: PendingStageMessage }>
+	| BackendEventOf<typeof E.messageDelivered, DeliveryPayload>
+	| BackendEventOf<typeof E.promptAsked | typeof E.promptReleased, SnapshotPayload>
+	| BackendEventOf<
+			typeof E.runStarted | typeof E.statusChanged | typeof E.messageQueued | typeof E.summaryRecorded,
+			DurableWorkflowHandle
+	  >;
 
 export class JournalOwnershipError extends WorkflowInstanceOwnershipError {
 	constructor(
@@ -129,14 +140,14 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 	}
 
 	private fold(entry: JournalEntry): void {
-		const { event } = entry;
+		const event = entry.event as BackendEvent;
 		if (event.type === E.checkpointRecorded) {
-			this.projection.recordCheckpoint(decode<DurableCheckpoint>(event.payload));
+			this.projection.recordCheckpoint(event.payload);
 		} else if (event.type === E.messageSettled) {
-			const payload = decode<{ readonly message: PendingStageMessage }>(event.payload);
+			const payload = event.payload;
 			void this.projection.archivePendingStageMessage(entry.runId, payload.message);
 		} else if (event.type === E.messageDelivered) {
-			const payload = decode<DeliveryPayload>(event.payload);
+			const payload = event.payload;
 			void this.projection.archivePendingStageDeliveryReceipt(
 				entry.runId,
 				payload.messageId,
@@ -144,11 +155,11 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 				payload.accounting,
 			);
 		} else if (event.type === E.promptAsked || event.type === E.promptReleased) {
-			const payload = decode<SnapshotPayload>(event.payload);
+			const payload = event.payload;
 			this.projection.applyWorkflowSnapshot(payload.handle);
 			this.prompts.set(entry.runId, new PromptReservationState(payload.handle.pendingPrompts, payload.prompts));
 		} else {
-			const handle = decode<DurableWorkflowHandle>(event.payload);
+			const handle = event.payload;
 			const previous = this.projection.getWorkflow(entry.runId);
 			this.projection.applyWorkflowSnapshot(handle);
 			if (event.type === E.runStarted || previous?.pendingPrompts !== handle.pendingPrompts)
@@ -177,7 +188,13 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 		this.ensureOpen();
 		this.refresh(runId);
 		if (this.projection.getWorkflow(runId) === undefined) return undefined;
-		this.ownership(runId);
+		try {
+			this.ownership(runId);
+		} catch (error) {
+			if (!(error instanceof RunNotFoundError)) throw error;
+			this.rebuild(runId);
+			return undefined;
+		}
 		this.refresh(runId);
 		return this.projection.getWorkflow(runId);
 	}
@@ -212,7 +229,7 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 
 	private append(
 		runId: string,
-		event: RunEvent,
+		event: BackendEvent,
 		options?: { readonly key?: string; readonly expectSeq?: number },
 	): void {
 		const lease = this.ownership(runId);
@@ -234,12 +251,7 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 			| typeof E.summaryRecorded = E.statusChanged,
 		expectSeq?: number,
 	): void {
-		const payload = json(handle);
-		this.append(
-			handle.workflowId,
-			{ type, payload } as RunEvent,
-			expectSeq === undefined ? undefined : { expectSeq },
-		);
+		this.append(handle.workflowId, { type, payload: handle }, expectSeq === undefined ? undefined : { expectSeq });
 	}
 
 	private draft(runId: string): InMemoryDurableBackend {
@@ -271,9 +283,13 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 
 	recordCheckpoint(checkpoint: DurableCheckpoint): void {
 		if (!this.current(checkpoint.workflowId)) return;
-		this.append(checkpoint.workflowId, { type: E.checkpointRecorded, payload: json(checkpoint) } as RunEvent, {
-			key: JSON.stringify([E.checkpointRecorded, checkpoint.kind, checkpoint.checkpointId]),
-		});
+		this.append(
+			checkpoint.workflowId,
+			{ type: E.checkpointRecorded, payload: checkpoint },
+			{
+				key: JSON.stringify([E.checkpointRecorded, checkpoint.kind, checkpoint.checkpointId]),
+			},
+		);
 	}
 
 	async recordCheckpointAsync(
@@ -333,8 +349,15 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 			(expectedUpdatedAt !== undefined && current.updatedAt !== expectedUpdatedAt)
 		)
 			return false;
-		const seq = this.sequences.get(runId) ?? 0;
 		const draft = this.draft(runId);
+		const acquired = draft.getWorkflow(runId);
+		if (
+			!acquired ||
+			!expected.includes(acquired.status) ||
+			(expectedUpdatedAt !== undefined && acquired.updatedAt !== expectedUpdatedAt)
+		)
+			return false;
+		const seq = this.sequences.get(runId) ?? 0;
 		draft.setWorkflowStatus(runId, status, pendingPrompts, resumable);
 		const { modelOwner: _oldOwner, releasedModelOwner: _oldRelease, ...handle } = draft.getWorkflow(runId)!;
 		try {
@@ -368,10 +391,10 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 		const result = change(state);
 		this.append(runId, {
 			type,
-			payload: json({
+			payload: {
 				handle: { ...handle, pendingPrompts: state.pendingPrompts, updatedAt: Date.now() },
 				prompts: state.snapshot(),
-			}),
+			},
 		});
 		return result;
 	}
@@ -429,7 +452,7 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 	async archivePendingStageMessage(runId: string, message: PendingStageMessage): Promise<void> {
 		this.append(
 			runId,
-			{ type: E.messageSettled, payload: json({ message }) },
+			{ type: E.messageSettled, payload: { message } },
 			{ key: JSON.stringify([E.messageSettled, message.runId, message.id]) },
 		);
 	}
@@ -441,7 +464,7 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 	): Promise<void> {
 		this.append(runId, {
 			type: E.messageDelivered,
-			payload: json({ messageId, delivery, ...(accounting === undefined ? {} : { accounting }) }),
+			payload: { messageId, delivery, ...(accounting === undefined ? {} : { accounting }) },
 		});
 	}
 
@@ -502,6 +525,9 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 			const handle = this.projection.getWorkflow(runId);
 			if (!handle) return { ok: false, reason: "not_found" } as const;
 			if (handle.status === "running") return { ok: false, reason: "running" } as const;
+			const acquired = this.current(runId);
+			if (!acquired) return { ok: false, reason: "not_found" } as const;
+			if (acquired.status === "running") return { ok: false, reason: "running" } as const;
 			try {
 				await this.deleteOwned(runId, this.sequences.get(runId) ?? 0);
 				return { ok: true } as const;
