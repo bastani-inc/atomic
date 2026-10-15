@@ -127,14 +127,16 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 
 	static async open(path?: string): Promise<JournalDurableBackend> {
 		const journal = new SqliteRunJournal(path);
+		let backend: JournalDurableBackend | undefined;
 		try {
-			const backend = new JournalDurableBackend(journal, undefined, DEFER_REBUILD);
+			backend = new JournalDurableBackend(journal, undefined, DEFER_REBUILD);
 			for (const run of await journal.listRuns()) {
 				for await (const entry of journal.read(run.runId)) backend.fold(entry);
 			}
 			return backend;
 		} catch (error) {
-			await journal.close();
+			if (backend === undefined) await journal.close();
+			else await backend.close();
 			throw error;
 		}
 	}

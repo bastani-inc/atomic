@@ -215,6 +215,6 @@ for await (const line of createInterface({ input: process.stdin })) {
 		} else throw new Error(`Unknown command ${command}`);
 		console.log(JSON.stringify({ id, result }));
 	} catch (error) {
-		console.log(JSON.stringify({ id, error: serializeFixtureError(error) }));
+		console.log(JSON.stringify({ id, error: serializeFixtureError(error instanceof Error ? error : new Error(String(error))) }));
 	}
 }

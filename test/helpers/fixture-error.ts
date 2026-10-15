@@ -8,15 +8,26 @@ export interface FixtureError {
 }
 
 /** Keep shutdown components and their underlying failures across the fixture's JSON RPC boundary. */
-export function serializeFixtureError(value: unknown): FixtureError {
-	const error = value instanceof Error ? value : new Error(String(value));
+export function serializeFixtureError(error: Error): FixtureError {
 	return {
 		name: error.name,
 		message: error.message,
 		stack: error.stack,
 		...("code" in error && typeof error.code === "string" ? { code: error.code } : {}),
-		...(error.cause === undefined ? {} : { cause: serializeFixtureError(error.cause) }),
-		...(error instanceof AggregateError ? { errors: error.errors.map(serializeFixtureError) } : {}),
+		...(error.cause === undefined
+			? {}
+			: {
+					cause: serializeFixtureError(
+						error.cause instanceof Error ? error.cause : new Error(String(error.cause)),
+					),
+				}),
+		...(error instanceof AggregateError
+			? {
+					errors: error.errors.map((member) =>
+						serializeFixtureError(member instanceof Error ? member : new Error(String(member))),
+					),
+				}
+			: {}),
 	};
 }
 

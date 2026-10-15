@@ -282,6 +282,6 @@ for await (const line of createInterface({ input: process.stdin })) {
 			stopWatchdog();
 		}
 	} catch (error) {
-		console.log(JSON.stringify({ id, error: serializeFixtureError(error) }));
+		console.log(JSON.stringify({ id, error: serializeFixtureError(error instanceof Error ? error : new Error(String(error))) }));
 	}
 }

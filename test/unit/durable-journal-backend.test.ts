@@ -11,13 +11,14 @@ import {
 	JOURNAL_READ_PAGE_SIZE,
 	SqliteRunJournal,
 } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
-import type { JournalEntry, Lease, RunEvent } from "../../packages/workflows/src/durable/journal/types.js";
+import type { Lease, RunEvent } from "../../packages/workflows/src/durable/journal/types.js";
 import {
 	JOURNAL_COLUMNS,
 	JOURNAL_TABLES,
 	JournalCounterRangeError,
 	RUN_EVENT_TYPES,
 	StaleLeaseError,
+	StorageUnavailableError,
 } from "../../packages/workflows/src/durable/journal/types.js";
 import { FOREIGN_LIVE_WORKFLOW_WINDOW_MS } from "../../packages/workflows/src/durable/resume-eligibility.js";
 import {
@@ -88,11 +89,21 @@ test("opening folds every journal event exactly once through paged reads", async
 	const checkpoints = writer.listCheckpoints("run");
 	await writer.close();
 	const unpaged = vi.spyOn(SqliteRunJournal.prototype, "readEntries");
-	const paged = vi.spyOn(SqliteRunJournal.prototype, "read");
-	const fold = vi.spyOn(JournalDurableBackend.prototype as unknown as { fold(entry: JournalEntry): void }, "fold");
+	const readSource = SqliteRunJournal.prototype.read;
+	let consumed = 0;
+	const paged = vi.spyOn(SqliteRunJournal.prototype, "read").mockImplementation(async function* (
+		this: SqliteRunJournal,
+		runId: string,
+		fromSeq?: number,
+	) {
+		for await (const entry of readSource.call(this, runId, fromSeq)) {
+			consumed++;
+			yield entry;
+		}
+	});
 	try {
 		const reader = await open(path);
-		assert.equal(fold.mock.calls.length, events);
+		assert.equal(consumed, events);
 		assert.equal(unpaged.mock.calls.length, 0);
 		assert.deepEqual(paged.mock.calls, [["run"]]);
 		assert.deepEqual(reader.getWorkflow("run"), expected);
@@ -100,7 +111,39 @@ test("opening folds every journal event exactly once through paged reads", async
 	} finally {
 		unpaged.mockRestore();
 		paged.mockRestore();
-		fold.mockRestore();
+	}
+});
+
+test("a replay failure while opening clears the renewal timer and closes the journal", async () => {
+	const path = database();
+	const writer = await open(path);
+	register(writer);
+	writer.recordCheckpoint(checkpoint());
+	await writer.close();
+	const replayFailure = new StorageUnavailableError(path, new Error("replay failed"));
+	const failingRead = vi.spyOn(SqliteRunJournal.prototype, "read").mockImplementation(async function* () {
+		yield* [];
+		throw replayFailure;
+	});
+	const created = vi.spyOn(globalThis, "setInterval");
+	const cleared = vi.spyOn(globalThis, "clearInterval");
+	const closedJournal = vi.spyOn(SqliteRunJournal.prototype, "close");
+	try {
+		for (let attempt = 0; attempt < 3; attempt++) {
+			await assert.rejects(JournalDurableBackend.open(path), (error: Error) => error === replayFailure);
+		}
+		const timers = created.mock.results.map((result) => result.value);
+		assert.equal(timers.length, 3);
+		assert.deepEqual(
+			cleared.mock.calls.map(([timer]) => timer),
+			timers,
+		);
+		assert.equal(closedJournal.mock.calls.length, 3);
+	} finally {
+		failingRead.mockRestore();
+		created.mockRestore();
+		cleared.mockRestore();
+		closedJournal.mockRestore();
 	}
 });
 
