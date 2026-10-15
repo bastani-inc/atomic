@@ -17,9 +17,6 @@
 ### Fixed
 
 - Fixed Xiaomi MiMo and all regional Token Plan providers defaulting to a deprecated model omitted from the generated catalog. They now select MiMo V2.6 Pro (`mimo-v2.6-pro`) by default.
-- Fixed workflow startup failing when ownership and journal modules load in a different order.
-- Resume retries journal persistence after a failed pause without leaving the live executor permanently paused.
-- Standalone SDK runs release their journal lease when execution settles, allowing another holder to claim stopped runs without closing unrelated active runs.
 
 ### Removed
 
