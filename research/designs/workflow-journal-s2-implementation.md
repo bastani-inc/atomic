@@ -4,7 +4,7 @@
 
 Implement only the unwired `JournalDurableBackend`, persist before returning, rebuild its projection from journal events, verify it on Boat, and commit on `feat/workflow-journal-s2-journal-backend`.
 
-The table records the acceptance clauses and binding amendments. The current three-reviewer batch at review-round-latest.json:558–619 requires final S1 `b395408f955c4b1aa5b84f38d28659a4fb7ea9e8`, its 256-row paged reader, and the retained child-process fixture. `C` denotes format/check gates, `F` focused tests and runtime probes, `U` the standalone unit gate, and `D` baseline/artifact audits in the final-S1 section below. Earlier receipts are historical; the previous baseline lacked the newly required paging behavior.
+The table records the acceptance clauses and binding amendments. The current deterministic gate at `gate-s2.md` reports one failure: the last commit lacks `Assistant-workflow: dbos-journal-slices`. The launch contract also requires `Assistant-workflow: dbos-journal-stack`; the repair keeps both as separate trailers. `C` denotes format/check gates, `F` focused tests and runtime probes, `U` the standalone unit gate, and `D` baseline/artifact audits. The latest evidence is in the gate-metadata repair section below; earlier receipts are historical. Final S1 remains `b395408f955c4b1aa5b84f38d28659a4fb7ea9e8`, with its 256-row paged reader and retained child-process fixture.
 
 | Contract clause | Verification |
 | --- | --- |
@@ -71,7 +71,7 @@ The table records the acceptance clauses and binding amendments. The current thr
 | `git diff --check` | D and C: whitespace audit |
 | Correct slice branch and conventional breaking subject | D: signed commit inspection on `feat/workflow-journal-s2-journal-backend` |
 | `Assistant-model` reflects actual model | D: `GPT-6.1 Sol (ultrafast)` |
-| Explicit workflow trailer override | D: `Assistant-workflow: dbos-journal-stack` |
+| Both required workflow trailers | D: separate `Assistant-workflow: dbos-journal-slices` and `Assistant-workflow: dbos-journal-stack` trailers on the repair commit |
 | Verification trailers describe checks actually run | D: passing gates and reproduced RED scenarios identified separately |
 | Required preference and co-author trailers | D: exact three `User-preference` lines and `Co-authored-by: Norin Lavaee <nlavaee@umich.edu>` |
 | All work committed, clean tree | D: final workflow receipt carries commit id and `git status --porcelain` result |
@@ -368,6 +368,8 @@ All 19 selected unit filenames are enumerated here and in the commit body. Fifte
 
 The launch contract explicitly requires `Assistant-workflow: dbos-journal-stack`.
 
+The current gate requires `Assistant-workflow: dbos-journal-slices` as well. Retain both exact values as separate trailers rather than treating either requirement as a replacement. This is commit metadata only; no journal contract or runtime behavior changes.
+
 The current user amendment is: "S1 was verified after this slice started. Rebase feat/workflow-journal-s2-journal-backend onto the verified feat/workflow-journal-s1-kernel (git rebase --onto feat/workflow-journal-s1-kernel 30bb916093d74fb09db3ef07852f84ba1b1a47ab), resolve every conflict keeping S1's verified journal contract, and re-verify on Boat."
 
 The supervising session relayed this binding user amendment:
@@ -595,3 +597,29 @@ The source file `risk-paging-amendment.mjs` is unchanged at blob `93493dbcb4f97b
 `U`: Boat `run_90bcfa6c0de43caf69f4d5d2a3d9d5fc`, remote `.crabbox/s2-final-paging-unit.log`, ran the exact authorized two-exclusion unit command alone. The wrapper applied exactly two exclusions. **930 files / 10,614 tests passed**, 26 pre-existing skips,146.12s, `ATOMIC_JOURNAL_GATE_EXIT=0`. No additional failure, environmental adjustment or test suppression occurred.
 
 The final note-inclusive artifact audit compares all 29 S2/baseline source hashes, exact S1 reader and baseline test bodies, prior S2 source preservation, and current fixture identity. Its run identifier and signed commit are recorded in the completion receipt. All three paging findings are resolved by the retained S1 reader/export/test and the current executable evidence. No implementation work or new deferred work remains; reviewer and reducer approval remain separate. `issues.md` was removed after closure.
+
+## Gate metadata repair
+
+The current `gate-s2.md` reports only a missing `Assistant-workflow: dbos-journal-slices` trailer on `e7ab20a4e`. Its check and unit commands passed. The objective additionally requires `Assistant-workflow: dbos-journal-stack`; the repair commit contains both exact values as separate trailers. No historical commit is amended and no production, test, fixture, dependency, configuration, journal contract or runtime wiring changes are made. Only these implementation notes change.
+
+The repeatable pre-repair check `git log -1 --format=%B | git interpret-trailers --parse | grep -Fx 'Assistant-workflow: dbos-journal-slices'` returned exit1. The same check and its `dbos-journal-stack` counterpart are required to return exit0 on the repair commit. This is a metadata defect, so no new product regression test or production seam is introduced.
+
+### Current acceptance evidence
+
+All heavy commands ran sequentially on the assigned implementer Boat through the supplied `in-box.sh`, from this checkout. Node22.19.0 and Bun1.4.2 were observed. No local npm, formatter, typecheck or test ran. Existing setup and qlty configuration were reused.
+
+| Matrix evidence | Current result |
+| --- | --- |
+| C: `npm run format`; `git diff --exit-code`; `npm run check` | `run_77458a61be06f89319dc9a98563f5362`, `.crabbox/s2-trailer-repair-gates.log`: 3438 files formatted with no fixes; no diff; Biome, root/package typechecks and shrinkwrap passed with six existing informational diagnostics |
+| F: exact selected durable command in the Commands section | Same run: all 19 enumerated durable suites and journal process integration passed, **20 files / 369 tests**, no skips; includes backend64, kernel174, process5 and all eight real acquisition-child schedules |
+| F: `npx vitest --run test/unit/durable-sqlite-run-journal.test.ts` | Same run: **174/174 passed**, no skips |
+| Supplemental qlty | Same run: cached qlty0.654.0 `metrics --functions` on the backend and SQLite journal passed; existing configuration unchanged, no plugins installed; metrics match the prior unchanged-source baseline |
+| U: `npm run test:unit -- --exclude test/unit/durable-embedded-postgres-root.test.ts --exclude test/unit/durable-embedded-postgres.test.ts` | `run_6e5dd1cf3e735823b9da1f681ab8b26d`, `.crabbox/s2-trailer-repair-unit.log`: ran alone with exactly two authorized exclusions; **930 files / 10,614 tests passed**,26 existing skips,140.66s |
+| D: source and baseline preservation | Local exact-body comparisons preserve final-S1 serializer and async paged reader; fixture, adapter, contention suite and S1 notes match final S1; production, tests and configuration are unchanged from `e7ab20a4e`; final S1 remains an ancestor |
+| F: exact API and page-size type checks | `run_29fc980ba1b4195c8d086755744f4a75`, `.crabbox/s2-trailer-repair-probes.log`: retained `completion5-tsconfig.json` and `s2-page-tsconfig.json` passed with `npx --no-install tsc -p <config> --noEmit` |
+| F: retained Node/Bun executable probes | Same run: both engines passed exact paging (515 events, `[256,256,3]`), early/tail paging boundaries (`[256]`, `[256,4]`), all five runtime groups, standard-JSON/owner/reopen, default-path persistence and direct-delete absence; canonical probe hashes match prior evidence |
+| D: synced source hashes and no-diff formatting | Same run: backend `38af6e8baab270752d7362c38991b5cb7eefdfe9`, journal `898b2774b057d746230b069a348198d8d8cae077`, backend tests `516f3b6516e9af586178670b2dbed3987cbba96e`, kernel tests `6d5dd994f5060869a9dccfde53281eacc05096a2`, fixture `0d9730cbeda50f0759a3603d57e206a81784d214` match local; format3438/no fixes, no diff and whitespace passed |
+
+The permanent backend cases cover immediate durability, first-writer-wins checkpoints, lease contention/renewal/expiry/fencing, status CAS, typed ownership mapping, full snapshots, owner release/reclaim before and after reopen, standard JSON, raw text/order/duplicates, catalog reconstruction, and deletion/recreation. The process cases cover fresh-process reconstruction, concurrent append integrity, rollback after SIGKILL and Node/Bun storage boundaries. S2 remains unwired; no UI or new Windows result is claimed. No new deferred work or unresolved product defect was identified. The six informational diagnostics, 26 established unit skips and earlier unbenchmarked replay costs remain observations, not reasons to expand this repair.
+
+All three current Boat runs returned `ATOMIC_JOURNAL_GATE_EXIT=0`. The final repair commit records both workflow trailers, the exact selected-suite enumeration, the checks above, the three required preferences and the co-author. The signed commit and clean-tree audit are reported in the delivery receipt. Local hooks retain the documented `PREK_SKIP=format,check` exception because their heavy equivalents ran on Boat; lightweight Git hooks remain enabled. No source change followed validation.
