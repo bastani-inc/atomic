@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
 import type { AssistantMessage } from "@bastani/pi-ai/compat";
 import type { ProgramStatus, Terminal } from "@earendil-works/pi-tui";
 import { test } from "vitest";
@@ -9,11 +10,14 @@ import { ExtensionRunner } from "../src/core/extensions/runner.js";
 import { noOpUIContext } from "../src/core/extensions/runner-ui.js";
 import type { WorkflowActivityFrame, WorkflowRootActivity } from "../src/core/extensions/workflow-events.js";
 import { SessionManager } from "../src/core/session-manager.js";
+import { createFullscreenTui } from "../src/modes/interactive/interactive-tui.js";
 import { ProgramStatusReporter } from "../src/modes/interactive/program-status-reporter.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import {
 	parseInteractiveEngineMessage,
 	serializeInteractiveEngineFrame,
 } from "../src/modes/interactive-engine/protocol.js";
+import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.js";
 
 function setup() {
 	const reports: ProgramStatus[] = [];
@@ -108,6 +112,66 @@ test("deduplicates reports and follows session rename and replacement (#10607)",
 	assert.equal(last()?.message, "Renamed");
 	reporter.reset();
 	assert.equal(last()?.state, "idle");
+});
+
+test("re-sends the current status while ordinary reports still deduplicate (#3615)", () => {
+	const { reporter, reports, send } = setup();
+	send({ type: "agent_start" });
+	const expected = { state: "working", message: "Session", app: APP_NAME };
+	assert.deepEqual(reports, [expected]);
+	reporter.report();
+	assert.equal(reports.length, 1);
+	reporter.resend();
+	assert.deepEqual(reports, [expected, expected]);
+	reporter.report();
+	assert.equal(reports.length, 2);
+	reporter.resend();
+	assert.deepEqual(reports, [expected, expected, expected]);
+});
+
+test("re-sends status after overlay transcript paints but not ordinary paints (#3615)", () => {
+	initTheme("dark");
+	const terminal: Terminal = new RecordingTerminal();
+	const output: string[] = [];
+	terminal.write = (data) => output.push(data);
+	terminal.setProgramStatus = (status) => output.push(JSON.stringify(status));
+	const reporter = new ProgramStatusReporter(
+		() => terminal,
+		() => "Session",
+	);
+	const expected = JSON.stringify({ state: "working", message: "Session", app: APP_NAME });
+	const reportCount = () => output.filter((data) => data === expected).length;
+	reporter.handleEvent({ type: "agent_start" });
+	const tui = createFullscreenTui({
+		terminal,
+		showHardwareCursor: false,
+		logDirectory: tmpdir(),
+		onOverlayRender: () => reporter.resend(),
+	});
+	try {
+		tui.start();
+		tui.renderNow();
+		assert.equal(reportCount(), 1);
+		let transcript = "stage transcript";
+		const overlay = tui.showOverlay({ render: () => [`\x1b]133;A\x07${transcript}`], invalidate() {} });
+		tui.renderNow();
+		assert.equal(reportCount(), 2);
+		assert.ok(output.at(-2)?.includes(transcript));
+		assert.equal(output.at(-1), expected);
+		transcript = "stage transcript updated";
+		tui.renderNow();
+		assert.equal(reportCount(), 3);
+		assert.ok(output.at(-2)?.includes(transcript));
+		assert.equal(output.at(-1), expected);
+		overlay.setHidden(true);
+		tui.renderNow();
+		assert.equal(reportCount(), 3);
+		overlay.hide();
+		tui.renderNow();
+		assert.equal(reportCount(), 3);
+	} finally {
+		tui.stop();
+	}
 });
 
 const cursor = { epoch: "e", revision: 0 };

@@ -120,6 +120,7 @@ export interface InteractiveTuiOptions {
 	wheelScrollLines?: WheelScrollLines;
 	onRightClickPaste?: () => void;
 	onOverlayInternalUiAction?: (url: string) => InternalUiActionResult;
+	onOverlayRender?: () => void;
 	onInternalUiAction?: (url: string) => InternalUiActionResult;
 	/**
 	 * Return false to let a focused overlay receive viewport input first.
@@ -335,6 +336,8 @@ function replayMouseInput(viewportListener: TuiInputListener, data: string): voi
  * route last so application listeners still receive deferred viewport keys.
  */
 class AtomicTuiAltScreen extends TuiAltScreen {
+	private readonly onOverlayRender: (() => void) | undefined;
+
 	constructor(
 		terminal: Terminal,
 		showHardwareCursor: boolean,
@@ -343,8 +346,10 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		viewportInputGate?: ViewportInputGate,
 		onOverlayUnhandledInput?: (data: string) => boolean,
 		copySelection: NonNullable<InteractiveTuiOptions["copySelection"]> = copySelectionToHostClipboard,
+		onOverlayRender?: () => void,
 	) {
 		super(terminal, showHardwareCursor, logDirectory, options);
+		this.onOverlayRender = onOverlayRender;
 		if (viewportInputGate) viewportInputGates.set(this, viewportInputGate);
 		if (onOverlayUnhandledInput) overlayUnhandledInputHandlers.set(this, onOverlayUnhandledInput);
 		// Adapt the private route rather than returning a truthy error string to
@@ -379,6 +384,11 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 			this.isFocusedOverlay() ? false : handleScrollToEndIndicator(event);
 
 		(this as unknown as TuiOverlayCompositingInternals).compositeLineAt = compositeOverlayLine;
+	}
+
+	protected override doRender(): void {
+		super.doRender();
+		if (!this.stopped && this.hasOverlay()) this.onOverlayRender?.();
 	}
 
 	/**
@@ -642,6 +652,7 @@ export function createFullscreenTui(options: InteractiveTuiOptions): TuiAltScree
 		options.shouldHandleViewportInput,
 		options.onOverlayUnhandledInput,
 		options.copySelection,
+		options.onOverlayRender,
 	);
 }
 
