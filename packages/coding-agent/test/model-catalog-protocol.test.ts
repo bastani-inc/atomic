@@ -114,44 +114,48 @@ describe("model catalog protocol with the current client", () => {
 	});
 
 	it("negotiates the default catalog and applies a remote-only model", async () => {
-		const runtime = await ModelRuntime.create({
-			credentials: new InMemoryCredentialStore(),
-			modelsPath: null,
-			catalogBaseUrl,
-			refreshOnCreate: false,
-		});
-		await runtime.setRuntimeApiKey("openrouter", "test-key", {});
-		const refresh = await runtime.refresh({ allowNetwork: true, force: true, providers: ["openrouter"] });
-		assert.deepEqual([...refresh.errors], []);
-
-		const catalogUrl = "/api/models/providers/openrouter?types=chat%2Cimage%2Cclassifier";
-		assert.deepEqual(requests, [catalogUrl]);
-		const expectedModel = mixedApiModel;
-		const model = runtime.getModel("openrouter", remoteOnlyId);
-		assert.ok(model, `Missing remote-only model: openrouter/${remoteOnlyId}`);
-		assert.equal(model.api, expectedModel.api);
-		assert.equal(model.baseUrl, expectedModel.baseUrl);
-
 		let providerUrl: URL | undefined;
 		const nativeFetch = globalThis.fetch;
 		vi.stubGlobal("fetch", async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
 			const request = new Request(input, init);
-			if (new URL(request.url).origin !== "https://openrouter.ai") return nativeFetch(request);
-			providerUrl = new URL(request.url);
+			const url = new URL(request.url);
+			if (url.origin !== "https://openrouter.ai") return nativeFetch(request);
+			// Refresh personalizes the catalog through OpenRouter's key-scoped model list. Rejecting the
+			// test key keeps the negotiated catalog unchanged instead of filtering it by the live list.
+			if (url.pathname === "/api/v1/models/user") return new Response(null, { status: 401 });
+			providerUrl = url;
 			throw new Error("Provider request captured");
 		});
 		try {
+			const runtime = await ModelRuntime.create({
+				credentials: new InMemoryCredentialStore(),
+				modelsPath: null,
+				catalogBaseUrl,
+				refreshOnCreate: false,
+			});
+			await runtime.setRuntimeApiKey("openrouter", "test-key", {});
+			const refresh = await runtime.refresh({ allowNetwork: true, force: true, providers: ["openrouter"] });
+			assert.deepEqual([...refresh.errors], []);
+
+			const catalogUrl = "/api/models/providers/openrouter?types=chat%2Cimage%2Cclassifier";
+			assert.deepEqual(requests, [catalogUrl]);
+			const expectedModel = mixedApiModel;
+			const model = runtime.getModel("openrouter", remoteOnlyId);
+			assert.ok(model, `Missing remote-only model: openrouter/${remoteOnlyId}`);
+			assert.equal(model.api, expectedModel.api);
+			assert.equal(model.baseUrl, expectedModel.baseUrl);
+
 			await runtime.completeSimple(
 				model,
 				{ messages: [{ role: "user", content: "Hello", timestamp: 0 }] },
 				{ apiKey: "test-key", maxRetries: 0 },
 			);
+			assert.equal(
+				providerUrl?.pathname,
+				expectedModel.api === "anthropic-messages" ? "/api/v1/messages" : "/api/v1/chat/completions",
+			);
 		} finally {
 			vi.unstubAllGlobals();
 		}
-		assert.equal(
-			providerUrl?.pathname,
-			expectedModel.api === "anthropic-messages" ? "/api/v1/messages" : "/api/v1/chat/completions",
-		);
 	});
 });

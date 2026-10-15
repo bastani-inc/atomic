@@ -5,12 +5,18 @@ import type { Api, Context, Model } from "@bastani/pi-ai/compat";
 import { afterEach, beforeEach, describe } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { clearApiKeyCache, type ModelRegistry, type ProviderConfigInput } from "../src/core/model-registry.ts";
+import { createInMemoryModelRegistry } from "./model-runtime-test-utils.ts";
 
 export interface ModelRegistryTestContext {
 	readonly tempDir: string;
 	readonly modelsJsonPath: string;
 	readonly authStorage: AuthStorage;
 	readonly openAiModel: Model<Api>;
+	/**
+	 * Two distinct built-in OpenRouter chat models read from the generated catalog, so tests that
+	 * override or replace built-in models do not depend on specific entries of the daily catalog.
+	 */
+	builtinOpenRouterModels(): Promise<[Model<Api>, Model<Api>]>;
 	readonly emptyContext: Context;
 	providerConfig(baseUrl: string, models: Array<{ id: string; name?: string }>, api?: string): ProviderConfigInput;
 	writeModelsJson(providers: Record<string, ProviderConfigInput>): void;
@@ -105,6 +111,16 @@ export function describeModelRegistry(featureTests: (context: ModelRegistryTestC
 			maxTokens: 4096,
 		};
 
+		async function builtinOpenRouterModels(): Promise<[Model<Api>, Model<Api>]> {
+			const registry = await createInMemoryModelRegistry(authStorage);
+			// Plain chat models only: derived fast variants take overrides keyed by their exact ID.
+			const [first, second] = getModelsForProvider(registry, "openrouter").filter(
+				(model) => model.api === "openai-completions" && model.fastRoute === undefined,
+			);
+			if (!first || !second) throw new Error("Expected at least two built-in OpenRouter chat models");
+			return [first, second];
+		}
+
 		const emptyContext: Context = { messages: [] };
 
 		featureTests({
@@ -118,6 +134,7 @@ export function describeModelRegistry(featureTests: (context: ModelRegistryTestC
 				return authStorage;
 			},
 			openAiModel,
+			builtinOpenRouterModels,
 			emptyContext,
 			providerConfig,
 			writeModelsJson,
