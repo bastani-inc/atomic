@@ -1,4 +1,4 @@
-import type { SessionEntry, SessionWorkflowMetadata } from "@bastani/atomic";
+import type { SessionEntry, SessionWorkflowMetadata } from "../../session-manager-types.ts";
 
 export const SESSION_FORMAT_VERSION = 4;
 

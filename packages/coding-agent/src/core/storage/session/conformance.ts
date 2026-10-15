@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { SessionEntry } from "@bastani/atomic";
+import type { SessionEntry } from "../../session-manager-types.ts";
 import {
 	SessionConflictError,
 	SessionExistsError,

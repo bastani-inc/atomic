@@ -1,3 +1,4 @@
+import type { AssistantMessage, TextContent, UserMessage } from "@bastani/pi-ai/compat";
 import type { SessionSnapshot, SessionSummary } from "./types.js";
 
 export function summarizeSession({ header, entries }: SessionSnapshot): SessionSummary {
@@ -31,8 +32,12 @@ export function summarizeSession({ header, entries }: SessionSnapshot): SessionS
 				typeof message.content === "string"
 					? message.content
 					: message.content
-							.filter((block) => block.type === "text")
-							.map((block) => block.text)
+							.filter(
+								(
+									block: Exclude<(UserMessage | AssistantMessage)["content"], string>[number],
+								): block is TextContent => block.type === "text",
+							)
+							.map((block: TextContent) => block.text)
 							.join(" ");
 			if (text) {
 				texts.push(text);

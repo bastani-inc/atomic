@@ -21,6 +21,7 @@ registerSessionStoreConformance({ describe, it }, "MemorySessionStore", async (b
 });
 
 test("memory sessions commit the header and ordered entries before create resolves", async () => {
+	assert.equal(SESSION_FORMAT_VERSION, 4);
 	const store = new MemorySessionStore();
 	const header = {
 		id: "session",
