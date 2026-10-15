@@ -4,6 +4,7 @@ import {
 	SessionConflictError,
 	SessionExistsError,
 	SessionInvalidTextError,
+	SessionInvalidTimestampError,
 	SessionNotFoundError,
 	type SessionTextField,
 	StoreClosedError,
@@ -296,14 +297,253 @@ export function registerSessionStoreConformance(
 				assert.equal(summary?.searchText, "answer question");
 			});
 
+			for (const timestamp of [-8640000000000001, 8640000000000001]) {
+				check(`rejects out-of-range message timestamp ${timestamp} atomically`, async (store, reload) => {
+					const entry: SessionEntry = {
+						type: "message",
+						id: "invalid",
+						parentId: null,
+						timestamp: createdAt,
+						message: { role: "user", content: "invalid time", timestamp },
+					};
+					const invalid = (error: Error): boolean => {
+						assert.ok(error instanceof SessionInvalidTimestampError);
+						assert.equal(error.field, "entry.message.timestamp");
+						assert.equal(error.value, timestamp);
+						assert.equal(error.reason, "out-of-range");
+						return true;
+					};
+					await assert.rejects(store.create(header("rejected"), [message("valid", "valid"), entry]), invalid);
+					assert.equal(await store.readHeader("rejected"), undefined);
+					const entries = [message("original", "original")];
+					await store.create(header(), entries);
+					await assert.rejects(
+						store.append("session", [message("valid", "valid"), entry], { expectSeq: 1 }),
+						invalid,
+					);
+					await assert.rejects(store.replace("session", header(), [entry], { expectSeq: 1 }), invalid);
+					store = await reload(store);
+					assert.deepEqual(await store.load("session"), { header: header(), entries, lastSeq: 1 });
+					assert.equal(await store.readHeader("rejected"), undefined);
+					assert.equal((await collect(store)).length, 1);
+					assert.equal((await store.findMostRecent({ cwd: "/project" }))?.id, "session");
+				});
+			}
+
+			for (const field of ["header.createdAt", "entry.timestamp"] as const) {
+				check(`rejects invalid ${field} strings without partial writes`, async (store, reload) => {
+					const entries = [message("original", "original")];
+					await store.create(header(), entries);
+					for (const [value, reason] of [
+						["not a timestamp", "unparseable"],
+						["2026-10-15", "unparseable"],
+						["2026-10-15T00:00:00", "unparseable"],
+						["Thu, 15 Oct 2026 00:00:00 GMT", "unparseable"],
+						["2026-10-15T00:00:00.1234567890Z", "unparseable"],
+						["+02026-10-15T00:00:00Z", "unparseable"],
+						["+275760-09-13T00:00:00.001Z", "out-of-range"],
+						["-271821-04-19T23:59:59.999Z", "out-of-range"],
+					] as const) {
+						const invalid = (error: Error): boolean => {
+							assert.ok(error instanceof SessionInvalidTimestampError);
+							assert.equal(error.field, field);
+							assert.equal(error.value, value);
+							assert.equal(error.reason, reason);
+							return true;
+						};
+						const invalidHeader =
+							field === "header.createdAt" ? { ...header("rejected"), createdAt: value } : header("rejected");
+						const invalidEntries: SessionEntry[] =
+							field === "entry.timestamp"
+								? [{ type: "session_info", id: "invalid", parentId: null, timestamp: value, name: "name" }]
+								: entries;
+						await assert.rejects(store.create(invalidHeader, invalidEntries), invalid);
+						if (field === "entry.timestamp") {
+							await assert.rejects(
+								store.append("session", [...entries, ...invalidEntries], { expectSeq: 1 }),
+								invalid,
+							);
+						}
+						await assert.rejects(
+							store.replace("session", invalidHeader, invalidEntries, { expectSeq: 1 }),
+							invalid,
+						);
+						store = await reload(store);
+						assert.equal(await store.readHeader("rejected"), undefined);
+						assert.deepEqual(await store.load("session"), { header: header(), entries, lastSeq: 1 });
+						assert.equal((await collect(store)).length, 1);
+						assert.equal((await store.findMostRecent({ cwd: "/project" }))?.id, "session");
+					}
+				});
+			}
+
+			for (const field of ["entry.message.timestamp", "entry.systemMessage.timestamp"] as const) {
+				check(`rejects invalid ${field} numbers without partial writes`, async (store, reload) => {
+					const entries = [message("original", "original")];
+					await store.create(header(), entries);
+					for (const timestamp of [NaN, -Infinity, Infinity, -8640000000000001, 8640000000000001]) {
+						const entry: SessionEntry =
+							field === "entry.message.timestamp"
+								? {
+										type: "message",
+										id: "invalid",
+										parentId: null,
+										timestamp: createdAt,
+										message: {
+											role: "toolResult",
+											toolCallId: "call",
+											toolName: "test",
+											content: [],
+											isError: false,
+											timestamp,
+										},
+									}
+								: {
+										type: "compaction",
+										id: "invalid",
+										parentId: null,
+										timestamp: createdAt,
+										summary: "summary",
+										firstKeptEntryId: null,
+										tokensBefore: 0,
+										systemMessage: { role: "system", content: "system", timestamp },
+									};
+						const invalid = (error: Error): boolean => {
+							assert.ok(error instanceof SessionInvalidTimestampError);
+							assert.equal(error.field, field);
+							assert.equal(error.value, timestamp);
+							assert.equal(error.reason, "out-of-range");
+							return true;
+						};
+						await assert.rejects(store.create(header("rejected"), [entry]), invalid);
+						await assert.rejects(store.append("session", [...entries, entry], { expectSeq: 1 }), invalid);
+						await assert.rejects(store.replace("session", header(), [entry], { expectSeq: 1 }), invalid);
+						store = await reload(store);
+						assert.equal(await store.readHeader("rejected"), undefined);
+						assert.deepEqual(await store.load("session"), { header: header(), entries, lastSeq: 1 });
+						assert.equal((await collect(store)).length, 1);
+						assert.equal((await store.findMostRecent({ cwd: "/project" }))?.id, "session");
+					}
+				});
+			}
+
+			check(
+				"preserves both Date boundaries and orders valid activity instead of append or creation time",
+				async (store, reload) => {
+					const minimum = -8640000000000000;
+					const maximum = 8640000000000000;
+					const earliestHeader = { ...header("earliest"), createdAt: new Date(maximum).toISOString() };
+					const latestHeader = { ...header("latest"), createdAt: new Date(minimum).toISOString() };
+					const earliestEntries = [message("first", "first", minimum)];
+					const latestEntries = [
+						message("zero", "question", 0),
+						message("maximum", "latest", maximum),
+						message("minimum", "older", minimum),
+					];
+					await store.create(earliestHeader, earliestEntries);
+					await store.create(latestHeader, latestEntries);
+					await store.create(header("fallback"), []);
+					store = await reload(store);
+					assert.deepEqual(await store.load("earliest"), {
+						header: earliestHeader,
+						entries: earliestEntries,
+						lastSeq: 1,
+					});
+					assert.deepEqual(await store.load("latest"), {
+						header: latestHeader,
+						entries: latestEntries,
+						lastSeq: 3,
+					});
+					const summaries = await collect(store);
+					assert.equal(summaries.length, 3);
+					assert.equal(
+						summaries.find((item) => item.id === "earliest")?.modifiedAt,
+						new Date(minimum).toISOString(),
+					);
+					const latest = summaries.find((item) => item.id === "latest");
+					assert.equal(latest?.modifiedAt, new Date(maximum).toISOString());
+					assert.equal(latest?.messageCount, 3);
+					assert.equal(latest?.firstMessage, "question");
+					assert.equal(latest?.searchText, "question latest older");
+					assert.equal(summaries.find((item) => item.id === "fallback")?.modifiedAt, createdAt);
+					assert.equal((await store.findMostRecent({ cwd: "/project" }))?.id, "latest");
+				},
+			);
+
+			check(
+				"preserves accepted ISO instants verbatim and compares their represented times",
+				async (store, reload) => {
+					const timestamps = [
+						"2026-10-15T01:00+01:00",
+						"2026-10-15T01:00:00.123456789+01:00",
+						"+002026-10-15T00:00:00.123Z",
+						"2026-10-15T02:00:00-01:00",
+						"2026-02-30T00:00:00Z",
+					];
+					for (const [index, timestamp] of timestamps.entries()) {
+						const storedHeader = { ...header(String(index)), createdAt: timestamp };
+						const entry: SessionEntry = {
+							type: "custom",
+							id: "entry",
+							parentId: null,
+							timestamp,
+							customType: "data",
+							data: { timestamp: "not a date\u0000\ud800" },
+						};
+						await store.create(storedHeader, [entry]);
+						store = await reload(store);
+						assert.deepEqual(await store.load(storedHeader.id), {
+							header: storedHeader,
+							entries: [entry],
+							lastSeq: 1,
+						});
+					}
+					const summaries = await collect(store);
+					for (const [index, timestamp] of timestamps.entries()) {
+						assert.equal(summaries.find((item) => item.id === String(index))?.modifiedAt, timestamp);
+					}
+					assert.equal((await store.findMostRecent({ cwd: "/project" }))?.id, "3");
+				},
+			);
+
+			check(
+				"keeps compaction system messages optional and preserves valid timestamp boundaries",
+				async (store, reload) => {
+					const compaction: SessionEntry = {
+						type: "compaction",
+						id: "omitted",
+						parentId: null,
+						timestamp: createdAt,
+						summary: "summary",
+						firstKeptEntryId: null,
+						tokensBefore: 0,
+					};
+					const entries: SessionEntry[] = [
+						compaction,
+						...[-8640000000000000, 8640000000000000].map((timestamp) => ({
+							...compaction,
+							id: String(timestamp),
+							systemMessage: { role: "system" as const, content: "system", timestamp },
+						})),
+					];
+					await store.create(header(), entries);
+					store = await reload(store);
+					assert.deepEqual(await store.load("session"), { header: header(), entries, lastSeq: 3 });
+					const [summary] = await collect(store);
+					assert.equal(summary?.modifiedAt, createdAt);
+					assert.equal(summary?.messageCount, 0);
+					assert.equal((await store.findMostRecent({ cwd: "/project" }))?.id, "session");
+				},
+			);
+
 			check("preserves empty values, duplicate entries and absent optional fields", async (store, reload) => {
-				const emptyHeader = { ...header(""), cwd: "", createdAt: "raw creation time" };
+				const emptyHeader = { ...header(""), cwd: "", createdAt: "2026-10-15T01:00+01:00" };
 				assert.deepEqual(await store.create(emptyHeader, []), { lastSeq: 0 });
 				assert.deepEqual(await store.append("", [], { expectSeq: 0 }), { lastSeq: 0 });
 				store = await reload(store);
 				const [summary] = await collect(store, { cwd: "" });
 				assert.ok(summary);
-				assert.equal(summary.modifiedAt, "raw creation time");
+				assert.equal(summary.modifiedAt, emptyHeader.createdAt);
 				assert.equal(summary.hasName, false);
 				assert.equal(summary.messageCount, 0);
 				assert.equal(summary.firstMessage, "(no messages)");
@@ -393,16 +633,16 @@ export function registerSessionStoreConformance(
 				const text = " before\u0000\ud800after ";
 				const storedHeader = {
 					...header(),
-					createdAt: text,
+					createdAt,
 					workflow: { runId: text, stageId: text, stageName: text },
 				};
 				const entries: SessionEntry[] = [
-					{ type: "session_info", id: "name", parentId: null, timestamp: text, name: text },
+					{ type: "session_info", id: "name", parentId: null, timestamp: createdAt, name: text },
 					{
 						type: "session_summary",
 						id: "summary",
 						parentId: null,
-						timestamp: text,
+						timestamp: createdAt,
 						summary: text,
 						summarizedThroughId: "name",
 					},
@@ -413,8 +653,8 @@ export function registerSessionStoreConformance(
 				const [summary] = await collect(store);
 				assert.equal(summary?.name, text);
 				assert.equal(summary?.summary, text);
-				assert.equal(summary?.createdAt, text);
-				assert.equal(summary?.modifiedAt, text);
+				assert.equal(summary?.createdAt, createdAt);
+				assert.equal(summary?.modifiedAt, createdAt);
 				assert.deepEqual(summary?.workflow, storedHeader.workflow);
 			});
 

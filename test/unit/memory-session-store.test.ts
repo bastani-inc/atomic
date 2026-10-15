@@ -38,13 +38,18 @@ test("memory sessions commit the header and ordered entries before create resolv
 
 test("memory handles share records only through reopen and detach descriptors and nested writes", async () => {
 	const store = new MemorySessionStore();
-	const header = { id: "unusual-π", version: SESSION_FORMAT_VERSION, createdAt: "raw", cwd: "" } as const;
+	const header = {
+		id: "unusual-π",
+		version: SESSION_FORMAT_VERSION,
+		createdAt: "2026-10-15T00:00:00Z",
+		cwd: "",
+	} as const;
 	await store.create(header, []);
 	const entry = {
 		type: "custom" as const,
 		id: "entry",
 		parentId: null,
-		timestamp: "raw",
+		timestamp: header.createdAt,
 		customType: "test",
 		data: { values: ["original"] },
 	};

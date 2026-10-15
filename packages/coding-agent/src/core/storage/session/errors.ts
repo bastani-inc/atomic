@@ -80,3 +80,23 @@ export class SessionInvalidTextError extends Error {
 		this.reason = reason;
 	}
 }
+
+export type SessionTimestampField =
+	| "header.createdAt"
+	| "entry.timestamp"
+	| "entry.message.timestamp"
+	| "entry.systemMessage.timestamp";
+
+export class SessionInvalidTimestampError extends Error {
+	readonly field: SessionTimestampField;
+	readonly value: string | number;
+	readonly reason: "out-of-range" | "unparseable";
+
+	constructor(field: SessionTimestampField, value: string | number, reason: "out-of-range" | "unparseable") {
+		super(`Invalid session timestamp: ${field} (${reason})`);
+		this.name = "SessionInvalidTimestampError";
+		this.field = field;
+		this.value = value;
+		this.reason = reason;
+	}
+}
