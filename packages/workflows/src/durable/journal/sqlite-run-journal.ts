@@ -1,6 +1,6 @@
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@bastani/atomic";
-import { JournalDatabase, journalCounter, storageBoundary } from "./node-sqlite.js";
+import { JournalDatabase, journalCounter, type SqliteStoredValue, storageBoundary } from "./node-sqlite.js";
 import {
 	type AppendOutcome,
 	JOURNAL_COLUMNS as c,
@@ -39,6 +39,12 @@ function serializeJson(value: RunHeader | RunEvent["payload"]): string {
 	return text.replace(/\p{Surrogate}/gu, (unit) => "\\u" + unit.charCodeAt(0).toString(16).padStart(4, "0"));
 }
 
+function storedVersion(stored: SqliteStoredValue): SqliteStoredValue {
+	return typeof stored === "bigint" && stored >= BigInt(Number.MIN_SAFE_INTEGER) && stored <= BigInt(Number.MAX_SAFE_INTEGER)
+		? Number(stored)
+		: stored;
+}
+
 function entryFromRow(row: JournalEventRow): JournalEntry {
 	const key = row[c.key];
 	return {
@@ -61,13 +67,17 @@ export class SqliteRunJournal implements RunJournal {
 		try {
 			this.db.transaction(() => {
 				this.db.exec(`CREATE TABLE IF NOT EXISTS ${t.meta}(${c.schemaVersion} INTEGER NOT NULL)`);
-				const versions = this.db.all<{ [c.schemaVersion]: number }>(`SELECT ${c.schemaVersion} FROM ${t.meta}`);
-				if (versions.length > 1) throw new JournalMetaCorruptError(path, versions.length);
-				for (const version of versions) {
-					if (version[c.schemaVersion] !== JOURNAL_SCHEMA_VERSION)
-						throw new JournalSchemaVersionError(version[c.schemaVersion]);
+				const rowCount = this.db.getWide<{ count: bigint }>(`SELECT COUNT(*) AS count FROM ${t.meta}`)?.count ?? 0n;
+				if (rowCount > 1n) throw new JournalMetaCorruptError(path, Number(rowCount));
+				if (rowCount === 1n) {
+					const stored =
+						this.db.getWide<{ [c.schemaVersion]: SqliteStoredValue }>(`SELECT ${c.schemaVersion} FROM ${t.meta}`)?.[
+							c.schemaVersion
+						] ?? null;
+					if (stored !== BigInt(JOURNAL_SCHEMA_VERSION)) throw new JournalSchemaVersionError(storedVersion(stored));
+				} else {
+					this.db.run(`INSERT INTO ${t.meta} VALUES (?)`, JOURNAL_SCHEMA_VERSION);
 				}
-				if (versions.length === 0) this.db.run(`INSERT INTO ${t.meta} VALUES (?)`, JOURNAL_SCHEMA_VERSION);
 				this.db.exec(`
 					CREATE TABLE IF NOT EXISTS ${t.runs}(
 						${c.runId} TEXT PRIMARY KEY, ${c.name} TEXT NOT NULL, ${c.cwd} TEXT NOT NULL,

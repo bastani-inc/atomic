@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { JOURNAL_COLUMNS as c, JournalCounterRangeError, JournalError, StorageUnavailableError } from "./types.js";
 
 export type SqliteValue = string | number | null;
+export type SqliteStoredValue = string | number | bigint | Uint8Array | null;
 
 export function journalCounter(
 	runId: string,
@@ -56,6 +57,14 @@ export class JournalDatabase {
 
 	all<Row>(sql: string, ...values: SqliteValue[]): Row[] {
 		return storageBoundary(this.path, () => this.database.prepare(sql).all(...values) as unknown as Row[]);
+	}
+
+	getWide<Row>(sql: string, ...values: SqliteValue[]): Row | undefined {
+		return storageBoundary(this.path, () => {
+			const statement = this.database.prepare(sql);
+			statement.setReadBigInts(true);
+			return statement.get(...values) as unknown as Row | undefined;
+		});
 	}
 
 	getCounters<Row>(runId: string, sql: string, ...values: SqliteValue[]): Row | undefined {

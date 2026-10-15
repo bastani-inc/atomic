@@ -192,10 +192,10 @@ export class JournalCasConflictError extends JournalError {
 
 export class JournalSchemaVersionError extends JournalError {
 	constructor(
-		readonly found: number,
+		readonly found: number | bigint | string | Uint8Array | null,
 		readonly supported = JOURNAL_SCHEMA_VERSION,
 	) {
-		super(`Unsupported journal schema version ${found}`);
+		super(`Unsupported journal schema version ${String(found)}`);
 		this.name = "JournalSchemaVersionError";
 	}
 }

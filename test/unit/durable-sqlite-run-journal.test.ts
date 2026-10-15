@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { dirname, join } from "node:path";
+import { DatabaseSync, type SQLOutputValue } from "node:sqlite";
 import { getAgentDir } from "@bastani/atomic";
 import { test, vi } from "vitest";
 import { JournalDatabase } from "../../packages/workflows/src/durable/journal/node-sqlite.js";
@@ -95,36 +96,101 @@ test("createRun rejects a NUL runId with typed fields before writing", async () 
 	});
 });
 
-test.each([{ versions: [1, 1] }, { versions: [1, 2] }, { versions: [1, 1, 1] }])(
-	"meta %j rejects before creating any other journal tables",
-	async ({ versions }) => {
-		const directory = makeTempDirectory("journal-meta-corrupt-");
+type MetaSeed = number | bigint | string;
+const INT64_MAX = 9223372036854775807n;
+const INT64_MIN = -9223372036854775808n;
+
+function seedMeta(path: string, versions: readonly MetaSeed[]): void {
+	const raw = new DatabaseSync(path);
+	try {
+		raw.exec(`CREATE TABLE ${t.meta}(${c.schemaVersion} INTEGER NOT NULL)`);
+		const insert = raw.prepare(`INSERT INTO ${t.meta} VALUES (?)`);
+		for (const version of versions) insert.run(version);
+	} finally {
+		raw.close();
+	}
+}
+
+type SqliteRows = Record<string, SQLOutputValue>[];
+
+function rawSnapshot(path: string): { schema: SqliteRows; meta: SqliteRows } {
+	const raw = new DatabaseSync(path);
+	try {
+		const schema = raw.prepare("SELECT name, sql FROM sqlite_master ORDER BY name").all();
+		const meta = raw.prepare(`SELECT * FROM ${t.meta} ORDER BY rowid`);
+		meta.setReadBigInts(true);
+		return { schema, meta: meta.all() };
+	} finally {
+		raw.close();
+	}
+}
+
+test.each([
+	{ versions: [1, 1] },
+	{ versions: [1, 2] },
+	{ versions: [1, 1, 1] },
+	{ versions: [1, INT64_MAX] },
+	{ versions: [INT64_MAX, 1] },
+	{ versions: [INT64_MAX, INT64_MIN, 1] },
+	{ versions: [1, "x"] },
+	{ versions: [1, 2.5] },
+	{ versions: [2, "x"] },
+] satisfies { versions: MetaSeed[] }[])("meta %s rejects before decoding or creating other tables", async ({ versions }) => {
+	const directory = makeTempDirectory("journal-meta-corrupt-");
+	const path = join(directory, "journal.sqlite");
+	let opened: SqliteRunJournal | undefined;
+	try {
+		seedMeta(path, versions);
+		const before = rawSnapshot(path);
+		assert.throws(
+			() => {
+				opened = new SqliteRunJournal(path);
+			},
+			(error: Error) => {
+				assert.equal(error.constructor, JournalMetaCorruptError);
+				assert.ok(error instanceof JournalMetaCorruptError);
+				assert.ok(error instanceof JournalError);
+				assert.equal(error.path, path);
+				assert.equal(error.rowCount, versions.length);
+				return true;
+			},
+		);
+		assert.deepEqual(rawSnapshot(path), before);
+	} finally {
+		await opened?.close();
+		removeTempDirectory(directory);
+	}
+});
+
+test.each([
+	{ version: INT64_MAX, found: INT64_MAX },
+	{ version: INT64_MIN, found: INT64_MIN },
+	{ version: "x", found: "x" },
+	{ version: 2.5, found: 2.5 },
+] satisfies { version: MetaSeed; found: MetaSeed }[])(
+	"single meta row $version is an unsupported schema version, not a storage failure",
+	async ({ version, found }) => {
+		const directory = makeTempDirectory("journal-meta-single-");
 		const path = join(directory, "journal.sqlite");
-		const db = new JournalDatabase(path);
 		let opened: SqliteRunJournal | undefined;
 		try {
-			db.exec(`CREATE TABLE ${t.meta}(${c.schemaVersion} INTEGER NOT NULL)`);
-			db.run(`INSERT INTO ${t.meta} VALUES ${versions.map(() => "(?)").join(", ")}`, ...versions);
-			const schema = db.all<{ name: string; sql: string }>("SELECT name, sql FROM sqlite_master ORDER BY name");
-			const rows = db.all<{ [c.schemaVersion]: number }>(`SELECT * FROM ${t.meta} ORDER BY rowid`);
+			seedMeta(path, [version]);
+			const before = rawSnapshot(path);
 			assert.throws(
 				() => {
 					opened = new SqliteRunJournal(path);
 				},
 				(error: Error) => {
-					assert.equal(error.constructor, JournalMetaCorruptError);
-					assert.ok(error instanceof JournalMetaCorruptError);
-					assert.ok(error instanceof JournalError);
-					assert.equal(error.path, path);
-					assert.equal(error.rowCount, versions.length);
+					assert.equal(error.constructor, JournalSchemaVersionError);
+					assert.ok(error instanceof JournalSchemaVersionError);
+					assert.equal(error.found, found);
+					assert.equal(error.supported, 1);
 					return true;
 				},
 			);
-			assert.deepEqual(db.all("SELECT name, sql FROM sqlite_master ORDER BY name"), schema);
-			assert.deepEqual(db.all(`SELECT * FROM ${t.meta} ORDER BY rowid`), rows);
+			assert.deepEqual(rawSnapshot(path), before);
 		} finally {
 			await opened?.close();
-			db.close();
 			removeTempDirectory(directory);
 		}
 	},
