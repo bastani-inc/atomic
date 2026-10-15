@@ -38,6 +38,8 @@ import {
 } from "./types.js";
 
 const PROCESS_HOLDER_ID = randomUUID();
+/** Module-private construction marker: `open()` folds the journal itself through paged reads. */
+const DEFER_REBUILD = Symbol("defer-rebuild");
 
 type BackendJournal = RunJournal & SynchronousRunJournal;
 type SnapshotPayload = { readonly handle: DurableWorkflowHandle; readonly prompts?: PromptReservationSnapshot };
@@ -116,8 +118,9 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 	constructor(
 		readonly journal: BackendJournal = new SqliteRunJournal(),
 		readonly holderId = `${PROCESS_HOLDER_ID}:${randomUUID()}`,
+		rebuild?: typeof DEFER_REBUILD,
 	) {
-		for (const run of journal.listRunsSync()) this.refresh(run.runId);
+		if (rebuild !== DEFER_REBUILD) for (const run of journal.listRunsSync()) this.refresh(run.runId);
 		this.timer = setInterval(() => this.renewLeases(), STAGE_SESSION_HEARTBEAT_INTERVAL_MS);
 		this.timer.unref();
 	}
@@ -125,10 +128,7 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 	static async open(path?: string): Promise<JournalDurableBackend> {
 		const journal = new SqliteRunJournal(path);
 		try {
-			const backend = new JournalDurableBackend(journal);
-			backend.projection.reset();
-			backend.sequences.clear();
-			backend.prompts.clear();
+			const backend = new JournalDurableBackend(journal, undefined, DEFER_REBUILD);
 			for (const run of await journal.listRuns()) {
 				for await (const entry of journal.read(run.runId)) backend.fold(entry);
 			}
@@ -384,11 +384,14 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 		runId: string,
 		type: typeof E.promptAsked | typeof E.promptReleased,
 		change: (state: PromptReservationState) => T,
+		options?: { readonly skipUnchanged?: boolean },
 	): T | undefined {
 		const handle = this.current(runId);
 		if (!handle) return undefined;
 		const state = new PromptReservationState(handle.pendingPrompts, this.prompts.get(runId)?.snapshot());
+		const before = options?.skipUnchanged ? JSON.stringify(state.snapshot()) : undefined;
 		const result = change(state);
+		if (before !== undefined && before === JSON.stringify(state.snapshot())) return result;
 		this.append(runId, {
 			type,
 			payload: {
@@ -406,7 +409,7 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 		return { rootWorkflowId: runId, scope: "root" };
 	}
 	pendingPromptToken(runId: string, reservationId: string): PromptReservationToken | undefined {
-		return this.promptChange(runId, E.promptAsked, (state) => state.claim(reservationId));
+		return this.promptChange(runId, E.promptAsked, (state) => state.claim(reservationId), { skipUnchanged: true });
 	}
 	reservePendingPrompt(runId: string, reservationId: string): PromptReservationToken {
 		return (

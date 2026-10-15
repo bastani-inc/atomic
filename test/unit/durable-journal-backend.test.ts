@@ -7,8 +7,11 @@ import {
 	JournalOwnershipError,
 } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { JournalDatabase } from "../../packages/workflows/src/durable/journal/node-sqlite.js";
-import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
-import type { Lease, RunEvent } from "../../packages/workflows/src/durable/journal/types.js";
+import {
+	JOURNAL_READ_PAGE_SIZE,
+	SqliteRunJournal,
+} from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+import type { JournalEntry, Lease, RunEvent } from "../../packages/workflows/src/durable/journal/types.js";
 import {
 	JOURNAL_COLUMNS,
 	JOURNAL_TABLES,
@@ -71,6 +74,34 @@ test("journal backend writes checkpoints durably before returning and rebuilds o
 	const reader = await open(path);
 	assert.equal(reader.getToolOutput("run", "hash"), "saved");
 	assert.deepEqual(reader.listCheckpoints("run"), backend.listCheckpoints("run"));
+});
+
+test("opening folds every journal event exactly once through paged reads", async () => {
+	const path = database();
+	const writer = await open(path);
+	register(writer);
+	for (let index = 0; index <= JOURNAL_READ_PAGE_SIZE * 2; index++)
+		writer.recordCheckpoint({ ...checkpoint(`output ${index}`), checkpointId: `checkpoint ${index}` });
+	const events = writer.journal.readEntries("run").length;
+	assert.ok(events > JOURNAL_READ_PAGE_SIZE * 2);
+	const expected = writer.getWorkflow("run");
+	const checkpoints = writer.listCheckpoints("run");
+	await writer.close();
+	const unpaged = vi.spyOn(SqliteRunJournal.prototype, "readEntries");
+	const paged = vi.spyOn(SqliteRunJournal.prototype, "read");
+	const fold = vi.spyOn(JournalDurableBackend.prototype as unknown as { fold(entry: JournalEntry): void }, "fold");
+	try {
+		const reader = await open(path);
+		assert.equal(fold.mock.calls.length, events);
+		assert.equal(unpaged.mock.calls.length, 0);
+		assert.deepEqual(paged.mock.calls, [["run"]]);
+		assert.deepEqual(reader.getWorkflow("run"), expected);
+		assert.deepEqual(reader.listCheckpoints("run"), checkpoints);
+	} finally {
+		unpaged.mockRestore();
+		paged.mockRestore();
+		fold.mockRestore();
+	}
 });
 
 const FRESH_PROCESS_TIMEOUT_MS = 60_000;
@@ -337,6 +368,34 @@ test("prompt reservation generations and releases rebuild from durable events", 
 	assert.equal(resumed.getWorkflow("run")?.pendingPrompts, 0);
 });
 
+test("cache replays of an answered prompt add no journal events while changing claims persist", async () => {
+	vi.useFakeTimers({ toFake: ["Date"] });
+	vi.setSystemTime(1_000);
+	const path = database();
+	const backend = await open(path);
+	register(backend);
+	const answered = backend.reservePendingPrompt("run", "answered");
+	backend.releasePendingPrompt("run", "answered", answered);
+	const events = backend.journal.readEntries("run").length;
+	const updatedAt = backend.getWorkflow("run")!.updatedAt;
+	for (let replay = 1; replay <= 3; replay++) {
+		vi.setSystemTime(1_000 + replay * 1_000);
+		assert.equal(backend.pendingPromptToken("run", "answered"), undefined);
+	}
+	assert.equal(backend.journal.readEntries("run").length, events);
+	assert.equal(backend.getWorkflow("run")!.updatedAt, updatedAt);
+	backend.adjustPendingPrompts("run", 1);
+	const claimed = backend.pendingPromptToken("run", "pending");
+	assert.ok(claimed);
+	assert.equal(backend.journal.readEntries("run").length, events + 2);
+	await backend.close();
+	const resumed = await open(path);
+	assert.deepEqual(resumed.pendingPromptToken("run", "pending"), claimed);
+	assert.equal(resumed.journal.readEntries("run").length, events + 2);
+	resumed.releasePendingPrompt("run", "pending", claimed);
+	assert.equal(resumed.getWorkflow("run")!.pendingPrompts, 0);
+});
+
 test("pending messages, settlement and delivery accounting survive reopen without rewriting text or order", async () => {
 	const path = database();
 	const backend = await open(path);
@@ -348,6 +407,7 @@ test("pending messages, settlement and delivery accounting survive reopen withou
 		from: { id: "sender" },
 		message: { id: "wire", timestamp: 1, content: { text: " raw\u0000\ud800 " } },
 		queuedAt: "verbatim timestamp",
+		admissionOrder: 1,
 		status: "queued",
 	};
 	assert.equal(await backend.persistPendingStageMessages("run", [message, message]), true);
@@ -513,6 +573,7 @@ for (const extra of [0, 1]) {
 			from: { id: identity },
 			message: { id: identity, timestamp: 1, content: { text: identity } },
 			queuedAt: identity,
+			admissionOrder: 1,
 			status: "queued",
 		});
 		const delivery = {
@@ -964,6 +1025,7 @@ test("direct deletion clears all cached state when another deletion wins acquisi
 		from: { id: "sender" },
 		message: { id: "old", timestamp: 1, content: { text: "old" } },
 		queuedAt: "raw",
+		admissionOrder: 1,
 		status: "queued",
 	};
 	const delivery = {
