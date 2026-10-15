@@ -53,6 +53,7 @@ interface Scenario {
 	cancel?: boolean;
 	prepared?: boolean;
 	simple?: boolean;
+	traceHeaders?: boolean;
 	attempts: number;
 	stopReason: AssistantMessage["stopReason"];
 }
@@ -114,6 +115,13 @@ const scenarios: Scenario[] = [
 		stopReason: "error",
 	},
 	{ name: "does not retry unchanged credentials", failure: "401", attempts: 1, stopReason: "error" },
+	{
+		name: "does not retry unchanged credentials when request IDs change",
+		failure: "401",
+		traceHeaders: true,
+		attempts: 1,
+		stopReason: "error",
+	},
 	{
 		name: "does not retry ordinary permission failures",
 		failure: "403 Forbidden",
@@ -190,8 +198,10 @@ for (const scenario of scenarios) {
 				stream,
 				streamSimple: stream,
 			});
+			let requestId = 0;
 			const options = {
 				signal: controller.signal,
+				...(scenario.traceHeaders ? { transformHeaders: () => ({ "X-Request-Id": String(++requestId) }) } : {}),
 				...(scenario.prepared ? { preparedRequestAuth: { resolution: await runtime.getAuth(model) } } : {}),
 			};
 			const response = scenario.simple

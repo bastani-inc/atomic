@@ -49,6 +49,12 @@ export function mergeHeaders(
 /** SDK-owned request-auth result so transport preparation does not start a second deadline. */
 export interface PreparedRequestAuth {
 	readonly resolution: AuthResult | undefined;
+	readonly reprepare?: () => Promise<{ model: Model<Api>; options: ModelRuntimeSimpleStreamOptions }>;
+	readonly streamSimple?: (
+		model: Model<Api>,
+		context: Context,
+		options: SimpleStreamOptions,
+	) => AssistantMessageEventStream;
 }
 
 export type ModelRuntimePreparedStreamOptions = StreamOptions &
@@ -131,12 +137,20 @@ export class ModelRuntimeStreaming {
 				? { ...(resolution.env ?? {}), ...(providerOptions.env ?? {}) }
 				: undefined;
 		const apiKey = providerOptions.apiKey ?? resolution.auth.apiKey;
+		const credentialHeaderNames = new Set(
+			Object.keys(resolution.auth.headers ?? {}).map((name) => name.toLowerCase()),
+		);
 		return {
 			provider,
 			authIdentity: JSON.stringify({
 				apiKey,
 				headers: Object.entries(headers ?? {})
 					.map(([name, value]) => [name.toLowerCase(), value] as const)
+					.filter(
+						([name]) =>
+							credentialHeaderNames.has(name) ||
+							/^(?:authorization|proxy-authorization|x-api-key|api-key|cookie)$/.test(name),
+					)
 					.sort(([left], [right]) => left.localeCompare(right)),
 				env: Object.entries(env ?? {}).sort(([left], [right]) => left.localeCompare(right)),
 				baseUrl: resolution.auth.baseUrl ?? model.baseUrl,
@@ -180,12 +194,15 @@ export class ModelRuntimeStreaming {
 		options?: ModelRuntimeSimpleStreamOptions,
 	): AssistantMessageEventStream {
 		const transcript = normalizeContext(context);
+		const dispatch = options?.preparedRequestAuth?.streamSimple;
 		return this.streamWithCredentialRetry(model, options, (prepared) =>
-			prepared.provider.streamSimple(
-				prepared.model,
-				transcript,
-				this.withCodexRouting(prepared.model, prepared.options) as SimpleStreamOptions,
-			),
+			dispatch
+				? dispatch(prepared.model, context, prepared.options as SimpleStreamOptions)
+				: prepared.provider.streamSimple(
+						prepared.model,
+						transcript,
+						this.withCodexRouting(prepared.model, prepared.options) as SimpleStreamOptions,
+					),
 		);
 	}
 
@@ -206,8 +223,11 @@ export class ModelRuntimeStreaming {
 		const retry = async (previous: Awaited<ReturnType<typeof prepare>>) => {
 			options?.signal?.throwIfAborted();
 			await this.reloadCredentials();
-			const { preparedRequestAuth: _previousAuth, ...retryOptions } = options ?? {};
-			const next = await this.prepareRequest(model, retryOptions);
+			const { preparedRequestAuth: previousAuth, ...callerOptions } = options ?? {};
+			const reprepared = previousAuth?.reprepare ? await previousAuth.reprepare() : undefined;
+			const next = reprepared
+				? await this.prepareRequest(reprepared.model, reprepared.options)
+				: await this.prepareRequest(model, callerOptions);
 			return next.authIdentity !== previous.authIdentity ? next : undefined;
 		};
 		const iterate = async function* (): AsyncGenerator<AssistantMessageEvent> {
