@@ -65,7 +65,7 @@ test("interactive engine host attachment disposes every listener and its editor 
 			manager,
 		);
 		assert.equal(typeof dispose, "function");
-		assert.equal(engineListeners.size, 3);
+		assert.equal(engineListeners.size, 4);
 		assert.equal(stateListeners.size, 1);
 		assert.equal(diagnosticListeners.size, 1);
 		assert.equal(extensionUiListeners.size, 1);

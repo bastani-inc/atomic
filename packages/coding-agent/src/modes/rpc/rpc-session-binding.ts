@@ -9,7 +9,7 @@ import type { EngineInputFormService } from "../interactive-engine/engine-input-
 import type { EngineRenderService } from "../interactive-engine/engine-render-service.ts";
 import type { EngineSessionPickerService } from "../interactive-engine/engine-session-picker.ts";
 import { forwardWorkflowActivity } from "../interactive-engine/engine-workflow-activity.ts";
-import { serializeInteractiveEngineMessage } from "../interactive-engine/protocol.js";
+import { serializeInteractiveEngineMessage } from "../interactive-engine/protocol.ts";
 import { toJsonEvent } from "../json-event.ts";
 import { createRpcExtensionUIContext, type RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
 import type { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";

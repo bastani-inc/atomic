@@ -1,5 +1,5 @@
 import type { CallbackActivity, CallbackActivityKind } from "../../core/callback-activity.ts";
-import type { UIPromptEndEvent, UIPromptStartEvent } from "../../core/extensions/agent-events.js";
+import type { UIPromptEndEvent, UIPromptStartEvent } from "../../core/extensions/agent-events.ts";
 import type {
 	HostInputFormField,
 	HostSessionPickerRow,

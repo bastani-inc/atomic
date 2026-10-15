@@ -2,7 +2,7 @@ import { type KeyId, matchesKey } from "@earendil-works/pi-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
-import type { UIPromptEndEvent, UIPromptStartEvent } from "../../core/extensions/agent-events.js";
+import type { UIPromptEndEvent, UIPromptStartEvent } from "../../core/extensions/agent-events.ts";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
