@@ -634,6 +634,7 @@ export class InteractiveModeBase {
 			shouldHandleViewportInput: this.shouldHandleViewportInput,
 			onOverlayUnhandledInput: this.onOverlayUnhandledInput,
 			onOverlayInternalUiAction: this.onOverlayInternalUiAction,
+			onOverlayRender: () => this.programStatus.resend(),
 			onInternalUiAction: () => {
 				this.jumpToTranscriptEnd();
 				return undefined;
