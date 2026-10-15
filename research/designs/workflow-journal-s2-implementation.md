@@ -4,7 +4,7 @@
 
 Implement only the unwired `JournalDurableBackend`, persist before returning, rebuild its projection from journal events, verify it on Boat, and commit on `feat/workflow-journal-s2-journal-backend`.
 
-The table refines the original pre-edit matrix into individual clauses without adding scope. `C` denotes the current eight-finding batch check/format run, `F` its focused run, `U` its established unit gate, and `D` its final diff/commit audit. Earlier receipts and their readiness claims are historical only; the eight-finding batch below supersedes them. No earlier pass replaces current-source validation.
+The table records the original acceptance clauses without adding scope. The current repair is the six metadata findings at review-round-latest.json:1298–1418, against designated S1 baseline `4631156a7a96f8386bb78ee4d200ada81a2add83`. `C` denotes its format/check gate, `F` its focused tests and independent probes, `U` its standalone unit gate, and `D` its baseline/artifact audit. All earlier receipts are historical and do not replace current-source validation. Their broad readiness and baseline-fidelity claims were incomplete because ten surviving metadata cases were absent.
 
 | Contract clause | Verification |
 | --- | --- |
@@ -37,16 +37,16 @@ The table refines the original pre-edit matrix into individual clauses without a
 | Local-only `node:sqlite` storage | D: no shared-host store or new runtime selector |
 | Default path remains `join(dirname(getAgentDir()), "workflows", "journal.sqlite")` | F: inherited kernel path tests; D: path function unchanged |
 | `ATOMIC_WORKFLOW_JOURNAL_PATH` override remains unchanged | F: inherited kernel path tests; D: no path normalization added |
-| WAL, FULL sync, busy timeout and foreign-key pragmas retained | F: inherited kernel/process tests; D: SQLite boundary unchanged |
-| Schema version 1, unknown version hard error, no migration | F: inherited kernel schema tests; D: schema initialization unchanged |
-| Exported schema/table/column/event/encoding/lease constants and types retain identity | C and D: no constant or existing type changes; synchronous capability is additive |
+| WAL, FULL sync, busy timeout and foreign-key pragmas retained | F: inherited kernel/process tests; D: existing pragmas and counter adapters unchanged |
+| Schema version 1, unknown version hard error, no migration | F: all 171 designated-baseline kernel cases; singleton safe integers, int64 extrema, text and real values report exact typed errors |
+| Exported schema/table/column/event/encoding/lease constants and types retain identity | C, F and D: exact API probes; restored SqliteStoredValue and JournalSchemaVersionError found/constructor union; synchronous capability remains additive |
 | Lease tombstone preserves monotonically increasing epoch after deletion | F: inherited kernel fencing tests and backend stale-deletion regression; D: shared deletion body retains tombstone |
 | `seq` and `epoch` remain safe integers in `0..Number.MAX_SAFE_INTEGER` | F: inherited range matrix; expiry grant uses the same checked increment |
 | Range errors retain exact class and fields | F: `JournalCounterRangeError { runId, field, value, reason }`; additive checkpoint path propagates it rather than hiding it |
 | Identifier Unicode/NUL rules and NUL precedence remain unchanged | F: inherited kernel and Node/Bun process matrices; D: synchronous companions delegate shared validation bodies |
 | Payload/header JSON preserves accepted values, NUL, lone surrogates and negative zero | F: exact retained S1 native JSON assertions plus backend native lexemes, caller serialization counts, frozen inputs/FWW, repeated status/prompt/message/summary snapshots, hydration/reopen/getters; no construction/fold stringify round trips |
-| Surviving S1 tests, process fixture and notes remain intact relative to current baseline | D: byte-identical files compared with `babfae6a0c4f149ecb3bc531aa3f290890732733`; no lost or weakened assertions |
-| Exactly one metadata row and typed corruption error | F: inherited kernel `JournalMetaCorruptError { path, rowCount }` tests |
+| Surviving S1 tests, process fixture and notes remain intact relative to designated baseline | D: all 171 kernel assertions restored from `4631156a7a96f8386bb78ee4d200ada81a2add83`; only formatter wrapping/trailing comma differs in one multirow block; contention file, journal-process.mjs and S1 notes byte-identical |
+| Exactly one metadata row and typed corruption error | F: cardinality before any version decoding; nine multirow combinations include both int64 extrema and mixed types; exact JournalMetaCorruptError path/rowCount, no schema or row changes |
 | `StatusChanged` is a full snapshot, latest sequence wins | F: direct metadata payload, conflicting claim and reopened handle checks |
 | Optional absent fields omitted from JSON | F: raw status payload lacks owner, release, failure, session and resumability fields when absent |
 | No invented null or `"undefined"` optional metadata values | F: raw payload key checks; D: normal JSON omission, no sentinel substitution |
@@ -57,7 +57,7 @@ The table refines the original pre-edit matrix into individual clauses without a
 | No new replay semantics, child journals or session JSONL changes | D: no authoring, session persistence or engine edits |
 | No dependencies or competing lockfiles | D: manifests and lockfiles unchanged; wrapper uses `npm ci --ignore-scripts` when setup is needed |
 | Raw TypeScript, `.js` imports, no build step added | C and D: no generated outputs or build configuration changes |
-| No `any`, no `unknown` added outside SQLite boundary | C and D: authored source/test inspection; adapter unchanged |
+| No `any`, no `unknown` added outside SQLite boundary | C and D: restored getWide uses the existing typed node:sqlite boundary; other source/tests add neither |
 | Named errors, fields and third-party storage causes retained | F: ownership and counter fields; inherited storage boundary tests; D: abort/closed/message-scope errors are named subclasses |
 | Vitest and `node:assert/strict` | F and D: all new assertions use repository style |
 | Runtime helpers and explicit Bun executable | F and D: new helper/fixture tests use `test/helpers/runtime.ts` |
@@ -221,13 +221,13 @@ All executable work below ran sequentially through the supplied wrapper on the a
 | Supplemental cached qlty | `run_cb1e94696805be1a9b22a30970f36110`: qlty0.654.0 `metrics --functions` analyzed both changed production files successfully using existing configuration. No plugins/configuration changes or claim of a separate security audit. |
 | D: whitespace and source fidelity | `run_cb1e94696805be1a9b22a30970f36110`: Boat `git diff --check` passed; final production/test hashes match local files. Final note-inclusive formatting/hash and baseline audit accompanies the signed commit receipt. |
 
-Final production hashes are backend `ead0169473ab3bae5782c18a3a9292de4522269d`, SQLite journal `24c9acbdfafa8b681cef0bcd47b26b503559eaa0`, backend tests `42703e171b7fea57da339b3ba2fd2ac299e7c357`. Restored baseline unit/process/fixture/notes hashes are respectively `72570e99e3a4e8da73838a74b981284316f3608e`, `6ef88bd8ef616cd7f317e13ea2144113e3e18b69`, `d746e587870b5c4a6d5c3a85c566ef0af8e06c9d`, `64866b03976829c1c508ecb5a408c05cc1fa02fa`; all four have zero diff against the designated current baseline. The S2 baseline delta therefore deletes none of that surviving S1 coverage or note content.
+Historical production hashes were backend `ead0169473ab3bae5782c18a3a9292de4522269d`, SQLite journal `24c9acbdfafa8b681cef0bcd47b26b503559eaa0`, backend tests `42703e171b7fea57da339b3ba2fd2ac299e7c357`. The baseline unit/process/fixture/notes hashes were respectively `72570e99e3a4e8da73838a74b981284316f3608e`, `6ef88bd8ef616cd7f317e13ea2144113e3e18b69`, `d746e587870b5c4a6d5c3a85c566ef0af8e06c9d`, `64866b03976829c1c508ecb5a408c05cc1fa02fa`. They matched the older `babfae6a0` baseline, not the designated `4631156a7` metadata baseline; they cannot establish current S1 coverage fidelity.
 
 All required executable gates passed with `ATOMIC_JOURNAL_GATE_EXIT=0`. The remaining performance tradeoff is the existing full replay for unowned mutations plus a current-header scan for unowned direct deletion; no production-scale benchmark was run. The backend remains unwired, so no browser/video or wired-runtime end-to-end claim is made. The resolved issues.md is removed. Final note-inclusive no-fix formatting, all 27 S2/baseline-restoration content hashes, independent probe-source fidelity, whitespace, signature and clean-tree evidence accompany the commit receipt. No further product/test edits are made after the passed gates.
 
-## Current eight-finding repair: authoritative acquisition and JSON preservation
+## Historical eight-finding repair: authoritative acquisition and JSON preservation
 
-The authoritative batch is review-round-latest.json:1512–1675. It contains five P1 entries for guarded acquisition and three P2 entries for lossy JSON conversion. These are existing contract failures, not amendments. The earlier full-readiness claim was wrong: passing ordinary CAS and prior recreation tests did not exercise replacement inside acquisition, and lossless kernel JSON tests did not prove backend construction/fold or repeated snapshots.
+That batch was review-round-latest.json:1512–1675 at the time. It contained five P1 entries for guarded acquisition and three P2 entries for lossy JSON conversion. Those repairs remain retained. Its overall completion claim is superseded by the current metadata repair: ordinary CAS and recreation coverage did not establish fidelity to the advanced S1 metadata baseline.
 
 | Finding | Reviewer and defect | Repair and durable proof |
 | --- | --- | --- |
@@ -250,7 +250,7 @@ The authoritative batch is review-round-latest.json:1512–1675. It contains fiv
 
 Authoring gate: each new test protects a required guarded transition or accepted-value round trip missing from prior coverage. Acquisition is injected through the existing journal capability, not a production-only test seam. Real children independently delete/register/close while the observer is paused at acquisition. Matching replacement cases prevent invented incarnation/sequence restrictions; fresh/stale cases retain authority fences. The prior 29 backend cases and every surviving S1 assertion remain intact.
 
-### Current RED/GREEN evidence
+### Historical eight-finding RED/GREEN evidence
 
 All commands ran sequentially on the assigned implementer Boat through the exact supplied wrapper; Mac activity remained read/edit/git only.
 
@@ -265,7 +265,7 @@ Expanded runtime coverage first passed 62/62 in run_65716a1d148869ec9887e22f99c8
 
 Expanded preimage proof: run_0f8a682ce8f0d37ebe7f1478f6b27436, /tmp/s2-turn4-expanded-red-green-2.log, temporarily loaded the exact f20045927 backend blob ead0169473ab3bae5782c18a3a9292de4522269d with an EXIT restoration trap. All 62 persisted assertions ran: RED **15 failed / 47 passed**, then restored-source GREEN **62/62**, no skips. The failures include both equal-sequence guards, absent acquisition, timestamp mismatch, valid shorter/longer matching claims, all four same-sequence real-child cases, negative-zero fold and unnecessary caller serialization on a duplicate checkpoint. The independent reviewer child schedule separately failed its four same-sequence Node/Bun cases while passing all four longer-sequence controls; after restoration all eight passed with failures: []. Complete repository check also passed with direct typed event construction. Remote logs: .crabbox/turn4-{expanded,children}-{red,green}.log. The earlier attempt run_8b17620f2506c02834fffc0ad4464492 stopped before executing any tests because scratch heredoc construction added a newline to the preimage and the byte-hash assertion rejected it; the EXIT trap restored source, and the corrected run verified exact bytes before executing. No test assertion was weakened or removed.
 
-### Current final-source acceptance evidence
+### Historical eight-finding final-source acceptance evidence
 
 | Gate | Current-source evidence |
 | --- | --- |
@@ -283,9 +283,58 @@ The first exact established unit attempt, run_c8baf119ba640b2d2c06b2159bd4f4cd (
 
 The unchanged full-unit rerun passed, including the earlier failing stage case and all 62 backend cases under ordinary full-suite load. This establishes the required current-source unit gate, not a diagnosis of the earlier unrelated transient. Both outcomes remain in the evidence and commit trailers.
 
-Baseline audit: the S1 unit suite, contention suite, journal-process.mjs fixture and research/notes/workflow-journal-s1.md have zero diff against babfae6a0c4f149ecb3bc531aa3f290890732733. Their hashes remain 72570e99e3a4e8da73838a74b981284316f3608e, 6ef88bd8ef616cd7f317e13ea2144113e3e18b69, d746e587870b5c4a6d5c3a85c566ef0af8e06c9d and 64866b03976829c1c508ecb5a408c05cc1fa02fa. The focused backend suite adds 376 lines and removes zero relative to f20045927: all prior 29 cases remain byte-for-byte. This batch changes only two production files, that focused suite, its new acquisition child fixture and these notes. Existing schema/constants/types, SQLite adapter, manifests/lockfiles/configuration, factory/runtime wiring and unrelated tests are unchanged by this repair. The resolved issues.md is removed after the gates. Final note-inclusive no-fix formatting, exact API compilation, source/probe hashes and signed/clean-tree audit are carried by the final receipt and commit trailers.
+Historical baseline audit: the S1 unit suite, contention suite, journal-process.mjs fixture and research/notes/workflow-journal-s1.md matched only the older `babfae6a0c4f149ecb3bc531aa3f290890732733`, not designated baseline `4631156a7a96f8386bb78ee4d200ada81a2add83`. The earlier assertion of current-baseline fidelity was therefore incorrect. The focused backend suite added 376 lines and removed zero relative to f20045927, retaining its prior 29 cases. The current repair restores all ten missing metadata cases and the corresponding adapter/error behavior while preserving that entire backend suite and its acquisition fixture.
 
-All eight reproduced findings are closed by passing persisted regressions and independent process/value scenarios. Remaining caveats are the unproven single untouched-test transient above, six existing informational diagnostics, 26 existing unit skips and unbenchmarked full replay/current-header scan costs. The backend remains unwired; no UI/video or wired-runtime E2E result is claimed. No additional scope, user amendment or broad cleanup is introduced.
+The eight earlier defects have retained regressions, but their green receipts did not close the newly identified metadata gap. Remaining historical caveats include the unproven single untouched-test transient above, six informational diagnostics, 26 existing unit skips and unbenchmarked full replay/current-header scan costs. The backend remains unwired; no UI/video or wired-runtime E2E result is claimed.
+
+## Current metadata repair: six findings, one initialization root
+
+The latest consolidated findings at review-round-latest.json:1298–1418 are required by the unchanged objective, not a user amendment. The initializer decoded every schema_version through a number-valued query before counting rows, and the exported schema error had lost its full stored-value type. Decoding could fail before cardinality validation or round a singleton value. A reduced 161-case suite hid this loss of baseline behavior.
+
+| Finding | Reviewer and facet | Applied repair and proof |
+| --- | --- | --- |
+| 1, title at 1301 | Completion: cardinality after decoding | Count rows first; all multirow inputs throw exact JournalMetaCorruptError path/rowCount |
+| 2, title at 1321 | Completion: lossy singleton and narrowed error | Read singleton with BigInt enabled; retain exact stored value and full found/constructor union |
+| 3, title at 1341 | Evidence: wide multirow storage errors | Same cardinality repair; all three restored wide-multirow baseline cases |
+| 4, title at 1361 | Evidence: exported schema error regression | Exact independent field/constructor compilation and restored singleton assertions |
+| 5, title at 1381 | Risk: version conversion precedes count | Independent Node/Bun probes and unchanged-row/schema snapshots |
+| 6, title at 1401 | Risk: int64 rounding and type narrowing | Both int64 extrema preserved losslessly; exported SqliteStoredValue restored |
+
+The repair applies the necessary `babfae6a0..4631156a7` changes in this checkout. The adapter is byte-identical to the designated baseline; only its typed boundary gains getWide. The initializer counts without decoding versions, rejects cardinality greater than one, then reads a singleton losslessly. Safe integer versions remain numbers in the error; wide integers remain bigint; text, real, blob and null stay their stored types. The exact exported SqliteStoredValue union is `string | number | bigint | Uint8Array | null`; JournalSchemaVersionError.found and its required constructor argument are `number | bigint | string | Uint8Array | null`. A current singleton version is accepted and an empty/missing table initializes normally. Unsupported versions are hard errors without migration. No schema, contract, counter API, identifier validation, collection identity or runtime wiring change is introduced. S2 synchronous companions, native JSON handling and acquired-state guards remain unchanged.
+
+TDD authoring gate: the ten restored baseline cases protect existing cardinality and exact singleton-value behavior absent from the 161-case suite. All use the public journal constructor and inspect typed errors and unchanged storage. The entire baseline test file was restored byte-for-byte for RED; required formatting subsequently wrapped one multirow test call and added its trailing comma. No assertion is removed or weakened. Fixtures and S1 notes already match the designated baseline and require no edits.
+
+### Current RED evidence
+
+Assigned-Boat run `run_6eb50bba30aefa96b0d2985016c954d1`, `/tmp/s2-meta-red.log`, restored all 171 cases before production edits: **166 passed, five failed**, no skips. Three wide-multirow cases raised StorageUnavailableError instead of JournalMetaCorruptError. Singleton INT64_MAX raised StorageUnavailableError; Node rounded INT64_MIN to -9223372036854776000. Exact retained `.crabbox/completion-turn4-meta.mjs` failed **4/8** on each of Node and Bun; Bun raised StorageUnavailableError for both singleton extrema. The exact `.crabbox/completion-turn4-meta-tsconfig.json` probe failed TS2344 and TS2345. Raw remote logs are `.crabbox/s2-meta-{red,node-red,bun-red,type-red}.log`. The evidence-collection wrapper returned zero deliberately after recording failing subprocess exits; it is not a green test gate.
+
+### Current-source validation
+
+Initial GREEN `run_a6abdb590dc6278a3c75339b8df4a907`, `/tmp/s2-meta-green.log`: all **171/171** kernel cases passed, Node/Bun each passed **8/8** exact metadata probes, and the exact metadata typecheck passed. The subsequent formatter changed only the restored metadata helper/initializer layout and one baseline multirow test call (wrapping and trailing comma). Those exact formatting changes were applied locally; assertion bodies are unchanged. Final gates follow.
+
+| Gate | Current-source evidence |
+| --- | --- |
+| C: npm run format, no diff, npm run check | `run_f41457964947ccbbb62c06b8bb89e349`, `/tmp/s2-meta-final-gates.log`: 3431 files formatted, no fixes; no diff; Biome, root/workspace typechecks and shrinkwrap passed, six existing informational diagnostics |
+| F: exact 19-suite selection plus process integration | Same run: **20 files / 364 tests passed**, no skips; includes 171 kernel cases, 62 retained backend cases and five process cases |
+| Literal npx vitest --run test/unit/durable-sqlite-run-journal.test.ts | Same run: **171/171 passed**, no skips |
+| Exact metadata and general API compilation | Same run: both retained configs passed; supplemental compile proves exact SqliteStoredValue and constructor-parameter unions |
+| Independent runtime probes | Same run: Node22.19.0/Bun1.4.2 each passed all eight metadata cases, both acquisition guards, all seven negative-zero observations, ten ordinary groups and six earlier groups; public-backend guards also passed |
+| Independent process/race probes | Same run: all eight real-child acquisition schedules passed; fresh Node/Bun process rebuild preserved catalog, checkpoint ordering, prompt state and exact text; previous recreation probe passed |
+| Supplemental qlty | Same run: cached qlty0.654.0 analyzed three production files with existing configuration; getWide cognitive complexity0, storedVersion2; no plugins/config changes |
+
+All gates in that run returned `ATOMIC_JOURNAL_GATE_EXIT=0`. Product/test hashes matched the local checkout: adapter `dcea59bbe8101c0f2f655d4c66bc7105551c7de5`, journal `700938349337ce5919e5c4950033ab02f41e669d`, types `bc95fa340f8d118da1c89027d184b05fdedca154`, kernel tests `79a12a51c5f3d3e01d182542b072b5ef628ae4e8`. The backend, its 62 tests and acquisition fixture remained exactly the cb0750286 versions. Only evidence notes changed after these gates. Final standalone unit and note-inclusive artifact receipts follow.
+
+The first current standalone full-unit attempt, `run_c20c7a72abee7a1e5f49948fde4c8be9` (`/tmp/s2-meta-final-unit.log`), ran the exact two-exclusion command alone and returned gate1: **929 files / 10,606 tests passed, one failed, 26 pre-existing skips**, 133.14s. The failure repeated the previously recorded untouched workflow-stage-bundled-resources.test.ts:367 case: taskResponse was undefined. The entire file is unchanged from the designated baseline; its history and stage-session setup were inspected. Its unchanged standalone run, `run_820c734af822feb7677e84177b2cb1b4` (`/tmp/s2-meta-unit-investigation.log`), passed **10/10**, including delegation, gate0. No test assertions, production code, concurrency settings, environment policy or exclusions were changed. This is not a diagnosed or repaired metadata defect; the lower-level cause remains unproven. Both outcomes are retained, and the exact full gate is rerun unchanged.
+
+The unchanged exact full-unit rerun passed in `run_4a3f5883e0c30fdcc73e3e942bd3bfa6` (`/tmp/s2-meta-final-unit-2.log`): **930 files / 10,607 passed**, 26 pre-existing skips, 122.46s, gate0. The previously failing delegation case and all 62 backend cases passed under full-suite load. Exactly the two authorized exclusions were applied, without retries inside tests or configuration changes. This establishes the required gate, not a diagnosis of the earlier admission failure.
+
+Final baseline/probe audit `run_619e00aa90a09ca7f57bd1f8dbf77517` (`/tmp/s2-meta-final-artifact-3.log`) passed. Exact files exported from the designated local commit were compared on Boat: the adapter, process fixture, contention suite and S1 notes are byte-identical; types are identical after removing only the existing S2 synchronous interface; the entire kernel suite equals the designated baseline after the repository formatter, preserving all 171 assertions. All 29 audited file hashes (the complete S2 baseline delta plus unchanged adapter/fixtures/notes) matched local files. The final note-inclusive formatting/hash receipt is recorded with the commit.
+
+The retained metadata and earlier six-group probe had one extra terminal LF in their first scratch copies; local-original-plus-one-LF hashes proved the difference. Removing only that LF and rerunning both exact sources on Node/Bun passed every case. Canonical metadata source hash is `120605b4a29531a6e5334fe28fdebcd14426557f`; exact field/constructor probe source hash is `39ddbd3bb9cb7287999144717017f14fc3ee07b3`. General API, metadata API and complete stored-value/constructor-union compilations also passed. Nine retained probe/source/config hashes match their local originals.
+
+Two audit-tool attempts are retained rather than counted as successful gates: `run_55b8fac74846d2246475f2023ed526eb` could not read the local-only S1 revision from Boat Git; `run_fe05f28329506f4928ba07fc4c023b7e` discovered that the installed TypeScript package has no JavaScript parser API. Exporting the exact baseline files into ignored scratch storage and comparing the test through the existing repository formatter resolved those audit limitations. No project source, test, dependency or configuration was changed for either limitation.
+
+All six metadata findings are closed by restored persisted coverage and independent runtime/type probes. The resolved issues.md is removed. Remaining caveats are the separately recorded intermittent admission test, six existing informational diagnostics, 26 pre-existing unit skips and unbenchmarked replay/header-scan costs. The backend remains unwired; no wired-runtime E2E or UI result is claimed. The audit is pinned to the explicitly designated S1 revision `4631156a7`, not a later-moving branch reference.
 
 ## Selected durable suites
 
@@ -317,4 +366,4 @@ None during implementation. The launch contract explicitly requires `Assistant-w
 
 ## Deferred observations
 
-Five existing unrelated Biome informational diagnostics, the exact-formula serializer style information and 26 established unit skips are not suppressed. No product additions or other slice work are added. User guides and release notes remain assigned to S6. Latest-batch completion is based only on the final-source evidence above, not the prior reduced-suite claims.
+Five unrelated Biome informational diagnostics, the exact-formula serializer style information and 26 established unit skips are not suppressed. No other slice work is added. User guides and release notes remain assigned to S6. Current completion rests on the metadata-repair gates and designated-baseline audit, not prior reduced-suite claims.
