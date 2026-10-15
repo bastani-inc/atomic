@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.38-alpha.1] - 2026-10-15
+
 ### Added
 
 - Added a guide to running local models on NVIDIA RTX GPUs with llama.cpp, including recipe prerequisites, router preset conversion, and connecting Atomic.
