@@ -136,6 +136,15 @@ export interface RunJournal {
 
 export class JournalError extends Error {}
 
+export class JournalInvalidTextError extends JournalError {
+	readonly reason: "nul-character" = "nul-character";
+
+	constructor(readonly field: "runId" | "holderId" | "key" | "status" | "name" | "cwd" | "expectedHolder") {
+		super(`NUL character in journal ${field}`);
+		this.name = "JournalInvalidTextError";
+	}
+}
+
 export class JournalCounterRangeError extends JournalError {
 	constructor(
 		readonly runId: string,

@@ -9,6 +9,7 @@ import {
 	JournalCasConflictError,
 	type JournalEntry,
 	type JournalEventRow,
+	JournalInvalidTextError,
 	type JournalLeaseRow,
 	JournalSchemaVersionError,
 	type Lease,
@@ -25,6 +26,10 @@ import {
 
 export function workflowJournalPath(): string {
 	return process.env.ATOMIC_WORKFLOW_JOURNAL_PATH ?? join(dirname(getAgentDir()), "workflows", "journal.sqlite");
+}
+
+function validateText(field: JournalInvalidTextError["field"], value: string): void {
+	if (value.includes("\u0000")) throw new JournalInvalidTextError(field);
 }
 
 function entryFromRow(row: JournalEventRow): JournalEntry {
@@ -79,6 +84,10 @@ export class SqliteRunJournal implements RunJournal {
 	}
 
 	async createRun(header: RunHeader): Promise<"created" | "exists"> {
+		validateText("runId", header.runId);
+		validateText("name", header.name);
+		validateText("cwd", header.cwd);
+		validateText("status", header.status);
 		return this.db.transaction(() =>
 			this.db.run(
 				`INSERT INTO ${t.runs} VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(${c.runId}) DO NOTHING`,
@@ -95,6 +104,7 @@ export class SqliteRunJournal implements RunJournal {
 	}
 
 	async listRuns(filter?: { cwd?: string }): Promise<readonly RunSummary[]> {
+		if (filter?.cwd !== undefined) validateText("cwd", filter.cwd);
 		return storageBoundary(this.path, () =>
 			this.db
 				.all<{ [c.headerJson]: string; [c.status]: string }>(
@@ -130,6 +140,8 @@ export class SqliteRunJournal implements RunJournal {
 	}
 
 	async acquire(runId: string, holderId: string): Promise<LeaseOutcome> {
+		validateText("runId", runId);
+		validateText("holderId", holderId);
 		return this.db.transaction(() => {
 			this.requireRun(runId);
 			const current = this.leaseRow(runId);
@@ -148,6 +160,9 @@ export class SqliteRunJournal implements RunJournal {
 	}
 
 	async takeover(runId: string, holderId: string, expectedHolder: string): Promise<LeaseOutcome> {
+		validateText("runId", runId);
+		validateText("holderId", holderId);
+		validateText("expectedHolder", expectedHolder);
 		return this.db.transaction(() => {
 			this.requireRun(runId);
 			const current = this.leaseRow(runId);
@@ -173,6 +188,8 @@ export class SqliteRunJournal implements RunJournal {
 	}
 
 	async renew(lease: Lease): Promise<void> {
+		validateText("runId", lease.runId);
+		validateText("holderId", lease.holderId);
 		this.db.transaction(() => {
 			this.checkLease(lease);
 			this.db.run(`UPDATE ${t.leases} SET ${c.renewedAt} = ? WHERE ${c.runId} = ?`, Date.now(), lease.runId);
@@ -180,6 +197,8 @@ export class SqliteRunJournal implements RunJournal {
 	}
 
 	async release(lease: Lease): Promise<void> {
+		validateText("runId", lease.runId);
+		validateText("holderId", lease.holderId);
 		this.db.transaction(() => {
 			this.checkLease(lease);
 			this.db.run(
@@ -191,6 +210,10 @@ export class SqliteRunJournal implements RunJournal {
 	}
 
 	async append(lease: Lease, event: RunEvent, options?: { key?: string; expectSeq?: number }): Promise<AppendOutcome> {
+		validateText("runId", lease.runId);
+		validateText("holderId", lease.holderId);
+		if (options?.key !== undefined) validateText("key", options.key);
+		if (event.type === RUN_EVENT_TYPES.statusChanged) validateText("status", event.payload.status);
 		return this.db.transaction(() => {
 			this.checkLease(lease);
 			const actualSeq =
@@ -235,6 +258,7 @@ export class SqliteRunJournal implements RunJournal {
 	}
 
 	async *read(runId: string, fromSeq = 1): AsyncIterable<JournalEntry> {
+		validateText("runId", runId);
 		const entries = storageBoundary(this.path, () =>
 			this.db
 				.allCounters<JournalEventRow>(
@@ -249,6 +273,8 @@ export class SqliteRunJournal implements RunJournal {
 	}
 
 	async readKey(runId: string, key: string): Promise<JournalEntry | undefined> {
+		validateText("runId", runId);
+		validateText("key", key);
 		return storageBoundary(this.path, () => {
 			const row = this.db.getCounters<JournalEventRow>(
 				runId,
@@ -261,6 +287,7 @@ export class SqliteRunJournal implements RunJournal {
 	}
 
 	async deleteRun(runId: string): Promise<void> {
+		validateText("runId", runId);
 		this.db.transaction(() => {
 			this.leaseRow(runId);
 			this.db.run(`UPDATE ${t.leases} SET ${c.holderId} = ? WHERE ${c.runId} = ?`, JOURNAL_LEASE.unheld, runId);

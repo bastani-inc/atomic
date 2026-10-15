@@ -16,6 +16,8 @@ import {
 	JournalCasConflictError,
 	JournalCounterRangeError,
 	type JournalEntry,
+	JournalError,
+	JournalInvalidTextError,
 	JournalSchemaVersionError,
 	type Lease,
 	type RunEvent,
@@ -66,6 +68,269 @@ test("append is durable when it resolves and readable through a fresh connection
 			assert.equal("key" in appended.entry, false);
 		} finally {
 			await reader.close();
+		}
+	});
+});
+
+test("createRun rejects a NUL runId with typed fields before writing", async () => {
+	await withJournal(async (journal) => {
+		const db = new JournalDatabase(journal.path);
+		try {
+			const before = snapshot(db);
+			await assert.rejects(
+				() => journal.createRun({ ...header, runId: "prefix\u0000suffix" }),
+				(error: Error) => {
+					assert.ok(error instanceof JournalInvalidTextError);
+					assert.equal(error.field, "runId");
+					assert.equal(error.reason, "nul-character");
+					return true;
+				},
+			);
+			assert.deepEqual(snapshot(db), before);
+		} finally {
+			db.close();
+		}
+	});
+});
+
+const invalidTextCases: readonly {
+	name: string;
+	field: JournalInvalidTextError["field"];
+	call: (journal: SqliteRunJournal, lease: Lease, text: string) => Promise<void>;
+}[] = [
+	{
+		name: "createRun.runId",
+		field: "runId",
+		call: async (journal, _lease, text) => {
+			await journal.createRun({ ...header, runId: text });
+		},
+	},
+	{
+		name: "createRun.name",
+		field: "name",
+		call: async (journal, lease, text) => {
+			await journal.createRun({ ...header, runId: lease.runId, name: text });
+		},
+	},
+	{
+		name: "createRun.cwd",
+		field: "cwd",
+		call: async (journal, lease, text) => {
+			await journal.createRun({ ...header, runId: lease.runId, cwd: text });
+		},
+	},
+	{
+		name: "createRun.status",
+		field: "status",
+		call: async (journal, lease, text) => {
+			await journal.createRun({ ...header, runId: lease.runId, status: text });
+		},
+	},
+	{
+		name: "listRuns.cwd",
+		field: "cwd",
+		call: async (journal, _lease, text) => {
+			await journal.listRuns({ cwd: text });
+		},
+	},
+	{
+		name: "acquire.runId",
+		field: "runId",
+		call: async (journal, lease, text) => {
+			await journal.acquire(text, lease.holderId);
+		},
+	},
+	{
+		name: "acquire.holderId",
+		field: "holderId",
+		call: async (journal, lease, text) => {
+			await journal.acquire(lease.runId, text);
+		},
+	},
+	{
+		name: "takeover.runId",
+		field: "runId",
+		call: async (journal, lease, text) => {
+			await journal.takeover(text, "next", lease.holderId);
+		},
+	},
+	{
+		name: "takeover.holderId",
+		field: "holderId",
+		call: async (journal, lease, text) => {
+			await journal.takeover(lease.runId, text, lease.holderId);
+		},
+	},
+	{
+		name: "takeover.expectedHolder",
+		field: "expectedHolder",
+		call: async (journal, lease, text) => {
+			await journal.takeover(lease.runId, "next", text);
+		},
+	},
+	{
+		name: "renew.runId",
+		field: "runId",
+		call: async (journal, lease, text) => {
+			await journal.renew({ ...lease, runId: text });
+		},
+	},
+	{
+		name: "renew.holderId",
+		field: "holderId",
+		call: async (journal, lease, text) => {
+			await journal.renew({ ...lease, holderId: text });
+		},
+	},
+	{
+		name: "release.runId",
+		field: "runId",
+		call: async (journal, lease, text) => {
+			await journal.release({ ...lease, runId: text });
+		},
+	},
+	{
+		name: "release.holderId",
+		field: "holderId",
+		call: async (journal, lease, text) => {
+			await journal.release({ ...lease, holderId: text });
+		},
+	},
+	{
+		name: "append.runId",
+		field: "runId",
+		call: async (journal, lease, text) => {
+			await journal.append({ ...lease, runId: text }, { type: e.runStarted, payload: null });
+		},
+	},
+	{
+		name: "append.holderId",
+		field: "holderId",
+		call: async (journal, lease, text) => {
+			await journal.append({ ...lease, holderId: text }, { type: e.runStarted, payload: null });
+		},
+	},
+	{
+		name: "append.key",
+		field: "key",
+		call: async (journal, lease, text) => {
+			await journal.append(lease, { type: e.runStarted, payload: null }, { key: text });
+		},
+	},
+	{
+		name: "append.status",
+		field: "status",
+		call: async (journal, lease, text) => {
+			await journal.append(lease, { type: e.statusChanged, payload: { status: text } }, { key: "prefix" });
+		},
+	},
+	{
+		name: "read.runId",
+		field: "runId",
+		call: async (journal, _lease, text) => {
+			await read(journal, text);
+		},
+	},
+	{
+		name: "readKey.runId",
+		field: "runId",
+		call: async (journal, _lease, text) => {
+			await journal.readKey(text, "prefix");
+		},
+	},
+	{
+		name: "readKey.key",
+		field: "key",
+		call: async (journal, lease, text) => {
+			await journal.readKey(lease.runId, text);
+		},
+	},
+	{
+		name: "deleteRun.runId",
+		field: "runId",
+		call: async (journal, _lease, text) => {
+			await journal.deleteRun(text);
+		},
+	},
+];
+
+for (const scenario of invalidTextCases) {
+	test(`${scenario.name} rejects NUL before SQL without changing prefix ownership or records`, async () => {
+		await withJournal(async (journal) => {
+			await journal.createRun({ ...header, runId: "prefix" });
+			const lease = await acquire(journal, "prefix", "prefix");
+			const appended = await journal.append(
+				lease,
+				{ type: e.summaryRecorded, payload: "original\u0000JSON" },
+				{ key: "prefix" },
+			);
+			const db = new JournalDatabase(journal.path);
+			const invalid = (error: Error): boolean => {
+				assert.ok(error instanceof JournalInvalidTextError);
+				assert.ok(error instanceof JournalError);
+				assert.equal(error.constructor, JournalInvalidTextError);
+				assert.equal(error.field, scenario.field);
+				assert.equal(error.reason, "nul-character");
+				return true;
+			};
+			try {
+				const before = snapshot(db);
+				for (const text of ["prefix\u0000suffix", "\u0000prefix", "prefix\u0000"]) {
+					await assert.rejects(() => scenario.call(journal, lease, text), invalid);
+					assert.deepEqual(snapshot(db), before);
+					assert.deepEqual(await acquire(journal, "prefix", "prefix"), lease);
+					assert.deepEqual(await read(journal, "prefix"), [appended.entry]);
+				}
+				await journal.close();
+				await assert.rejects(() => scenario.call(journal, lease, "prefix\u0000suffix"), invalid);
+			} finally {
+				db.close();
+			}
+		});
+	});
+}
+
+test("JSON NUL strings and property names survive fresh/reopened read, list, readKey and replay", async () => {
+	await withJournal(async (journal) => {
+		const inputs = {
+			"input\u0000key": ["\u0000", "middle\u0000suffix", "tail\u0000", "é💡"],
+			status: "JSON\u0000status",
+		};
+		const raw = {
+			...header,
+			runId: " é💡 ",
+			name: " workflow\n ",
+			cwd: " ./raw/../é ",
+			status: " arbitrary status ",
+			inputs,
+		};
+		await journal.createRun(raw);
+		const lease = await acquire(journal, raw.runId, "");
+		const event = { type: e.summaryRecorded, payload: inputs } as const;
+		const first = await journal.append(lease, event, { key: "" });
+		assert.deepEqual(first.entry.event, event);
+		const changedEvent = { type: e.statusChanged, payload: { status: " é paused ", detail: inputs } } as const;
+		const changed = await journal.append(lease, changedEvent);
+		assert.deepEqual(changed.entry.event, changedEvent);
+		assert.equal("key" in changed.entry, false);
+		for (const connection of ["fresh", "reopened"]) {
+			if (connection === "reopened") await journal.close();
+			const reader = new SqliteRunJournal(journal.path);
+			try {
+				assert.deepEqual(await reader.listRuns({ cwd: raw.cwd }), [
+					{ ...raw, status: changedEvent.payload.status },
+				]);
+				assert.deepEqual(await reader.listRuns(), [{ ...raw, status: changedEvent.payload.status }]);
+				assert.deepEqual(await read(reader, raw.runId), [first.entry, changed.entry]);
+				assert.deepEqual(await reader.readKey(raw.runId, ""), first.entry);
+				assert.deepEqual(
+					await reader.append(lease, { type: e.runFinished, payload: "replacement\u0000JSON" }, { key: "" }),
+					{ status: "exists", entry: first.entry },
+				);
+				assert.deepEqual(await read(reader, raw.runId), [first.entry, changed.entry]);
+			} finally {
+				await reader.close();
+			}
 		}
 	});
 });

@@ -167,3 +167,56 @@ test(
 	},
 	JOURNAL_PROCESS_TEST_TIMEOUT_MS,
 );
+
+test(
+	"Node and Bun reject NUL holder suffixes without confusing prefix ownership and preserve JSON NULs",
+	async () => {
+		const directory = makeTempDirectory("journal-nul-rejection-");
+		const path = join(directory, "journal.sqlite");
+		const journal = new SqliteRunJournal(path);
+		try {
+			const raw = { ...header, runId: "prefix", inputs: { "input\u0000key": "é\u0000💡" } };
+			await journal.createRun(raw);
+			const acquired = await journal.acquire(raw.runId, "prefix");
+			assert.equal(acquired.status, "acquired");
+			if (acquired.status !== "acquired") assert.fail("lease not acquired");
+			let lease = acquired.lease;
+			for (const [index, executable] of [
+				process.execPath,
+				bunExecutable(),
+				process.execPath,
+				bunExecutable(),
+			].entries()) {
+				const nextHolder = `holder-${index}`;
+				const key = `key-${index}`;
+				const result = spawnSyncCollect([
+					executable,
+					fixture,
+					"nul-rejection",
+					path,
+					JSON.stringify({ lease, nextHolder, key }),
+				]);
+				assert.equal(result.exitCode, 0, result.stderr.toString());
+				assert.equal(result.stdout.toString(), "nul-rejection-json=ok\n");
+				lease = { ...lease, holderId: nextHolder, epoch: lease.epoch + 1 };
+				assert.deepEqual(await journal.acquire(raw.runId, nextHolder), { status: "acquired", lease });
+				const reader = new SqliteRunJournal(path);
+				try {
+					assert.deepEqual(await reader.listRuns(), [raw]);
+					const entry = await reader.readKey(raw.runId, key);
+					assert.equal(entry?.runId, raw.runId);
+					assert.equal(entry?.key, key);
+					assert.equal(entry?.seq, index + 1);
+					assert.equal(entry?.epoch, index + 1);
+					assert.deepEqual(entry?.event, { type: e.summaryRecorded, payload: { "text\u0000key": "é\u0000💡" } });
+				} finally {
+					await reader.close();
+				}
+			}
+		} finally {
+			await journal.close();
+			removeTempDirectory(directory);
+		}
+	},
+	JOURNAL_PROCESS_TEST_TIMEOUT_MS,
+);
