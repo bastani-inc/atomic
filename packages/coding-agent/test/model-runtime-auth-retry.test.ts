@@ -210,3 +210,63 @@ for (const scenario of scenarios) {
 		}
 	});
 }
+
+for (const credentialOverride of ["explicit header", "transformed header", "explicit api key", "rotating header"]) {
+	test(`compares effective credentials after ${credentialOverride} precedence (#3620)`, async () => {
+		const dir = mkdtempSync(join(tmpdir(), "auth-retry-precedence-"));
+		try {
+			const path = join(dir, "auth.json");
+			const writer = AuthStorage.create(path);
+			await writer.modify(model.provider, async () => ({ type: "api_key", key: "old-fixture" }));
+			const runtime = await ModelRuntime.create({ authPath: path, modelsPath: null });
+			const attempts: (string | undefined)[] = [];
+			const headerAuth = credentialOverride !== "explicit api key";
+			const stream: Provider["stream"] = (_model, _context, options) => {
+				attempts.push(headerAuth ? options?.headers?.Authorization : options?.apiKey);
+				writeFileSync(path, JSON.stringify({ [model.provider]: { type: "api_key", key: "new-fixture" } }));
+				const output = createAssistantMessageEventStream();
+				output.push({ type: "error", reason: "error", error: message("401 Unauthorized") });
+				return output;
+			};
+			runtime.registerNativeProvider({
+				id: model.provider,
+				name: "Auth probe",
+				auth: {
+					apiKey: {
+						name: "Auth probe key",
+						resolve: async ({ credential }) =>
+							credential?.key
+								? {
+										auth: headerAuth
+											? { headers: { Authorization: `Bearer ${credential.key}` } }
+											: { apiKey: credential.key },
+										source: "stored",
+									}
+								: undefined,
+					},
+				},
+				models: [model],
+				stream,
+				streamSimple: stream,
+			});
+			const response = runtime.streamSimple(
+				model,
+				{ messages: [] },
+				{
+					...(credentialOverride === "explicit header" ? { headers: { Authorization: "fixed-fixture" } } : {}),
+					...(credentialOverride === "transformed header"
+						? { transformHeaders: () => ({ Authorization: "fixed-fixture" }) }
+						: {}),
+					...(credentialOverride === "explicit api key" ? { apiKey: "fixed-fixture" } : {}),
+				},
+			);
+			assert.equal((await response.result()).stopReason, "error");
+			assert.deepEqual(
+				attempts,
+				credentialOverride === "rotating header" ? ["Bearer old-fixture", "Bearer new-fixture"] : ["fixed-fixture"],
+			);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+}

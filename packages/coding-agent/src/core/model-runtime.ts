@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
 	type AnyModel,
 	type Api,
@@ -172,6 +173,7 @@ export class ModelRuntime implements Models {
 	private catalogInputsGeneration = 0;
 	private observedModelsFileToken: string | undefined;
 	private readonly externalProviderAuthStatuses = new Map<string, AuthStatus>();
+	private readonly externalStatusCredentials = new Map<string, Credential | undefined>();
 	private availabilityRefreshSeq = 0;
 	private availabilityErrorSeq = 0;
 	private readonly providerAvailabilitySeq = new Map<string, number>();
@@ -665,12 +667,21 @@ export class ModelRuntime implements Models {
 			...this.snapshot.storedProviders,
 		]);
 		let snapshot = this.snapshot;
+		const changedProviderIds = new Set<string>();
 		const removedProviderIds: string[] = [];
 		for (const providerId of providerIds) {
 			if (this.credentials.hasRuntimeApiKey(providerId)) continue;
-			const type = this.credentials.peek(providerId)?.type;
+			const credential = this.credentials.peek(providerId);
+			const type = credential?.type;
 			if (type === snapshot.storedCredentialTypes.get(providerId)) continue;
+			if (
+				this.externalProviderAuthStatuses.has(providerId) &&
+				isDeepStrictEqual(credential, this.externalStatusCredentials.get(providerId))
+			)
+				continue;
 			this.externalProviderAuthStatuses.delete(providerId);
+			this.externalStatusCredentials.delete(providerId);
+			changedProviderIds.add(providerId);
 			if (type) {
 				snapshot = addStoredCredentialProvider(snapshot, providerId, type);
 			} else {
@@ -678,12 +689,36 @@ export class ModelRuntime implements Models {
 				removedProviderIds.push(providerId);
 			}
 		}
-		if (snapshot === this.snapshot) return;
+		if (changedProviderIds.size === 0) return;
+		this.markCatalogInputsChanged();
 		this.snapshotGeneration += 1;
-		this.snapshot = snapshot;
+		this.snapshot = this.withCredentialAvailability(this.snapshot, snapshot, changedProviderIds);
 		for (const providerId of removedProviderIds) {
 			void this.refreshRemainingAuthAfterLogout(providerId, this.snapshotGeneration);
 		}
+	}
+
+	private withCredentialAvailability(
+		previous: ModelRuntimeSnapshot,
+		next: ModelRuntimeSnapshot,
+		providerIds: ReadonlySet<string>,
+	): ModelRuntimeSnapshot {
+		const availableByKey = new Map(
+			previous.available
+				.filter((model) => !providerIds.has(model.provider))
+				.map((model) => [snapshotModelKey(model), model]),
+		);
+		for (const providerId of providerIds) {
+			const provider = this.models.getProvider(providerId);
+			if (!provider || !next.configuredProviders.has(providerId)) continue;
+			const models = provider.getModels();
+			for (const model of provider.filterModels?.(models, this.credentials.peek(providerId)) ?? models)
+				availableByKey.set(snapshotModelKey(model), model);
+		}
+		return {
+			...next,
+			available: next.all.flatMap((model) => availableByKey.get(snapshotModelKey(model)) ?? []),
+		};
 	}
 
 	/** Return stored credential metadata synchronously without refreshing auth. */
@@ -872,7 +907,11 @@ export class ModelRuntime implements Models {
 				}),
 			]);
 			if (logoutGeneration === this.snapshotGeneration && !this.snapshot.storedProviders.has(providerId)) {
-				this.snapshot = removeStoredCredentialProvider(this.snapshot, providerId, remainingAuth);
+				this.snapshot = this.withCredentialAvailability(
+					this.snapshot,
+					removeStoredCredentialProvider(this.snapshot, providerId, remainingAuth),
+					new Set([providerId]),
+				);
 			}
 		} finally {
 			if (timeout) clearTimeout(timeout);
@@ -983,6 +1022,7 @@ export class ModelRuntime implements Models {
 				: undefined;
 		this.snapshot = removeStoredCredentialProvider(this.snapshot, providerId, remainingAuth);
 		this.externalProviderAuthStatuses.set(providerId, status);
+		this.externalStatusCredentials.set(providerId, this.credentials.peek(providerId));
 	}
 
 	stream<TApi extends Api>(

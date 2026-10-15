@@ -130,13 +130,21 @@ export class ModelRuntimeStreaming {
 			resolution.env || providerOptions.env
 				? { ...(resolution.env ?? {}), ...(providerOptions.env ?? {}) }
 				: undefined;
+		const apiKey = providerOptions.apiKey ?? resolution.auth.apiKey;
 		return {
 			provider,
-			authIdentity: JSON.stringify({ auth: resolution.auth, env: resolution.env }),
+			authIdentity: JSON.stringify({
+				apiKey,
+				headers: Object.entries(headers ?? {})
+					.map(([name, value]) => [name.toLowerCase(), value] as const)
+					.sort(([left], [right]) => left.localeCompare(right)),
+				env: Object.entries(env ?? {}).sort(([left], [right]) => left.localeCompare(right)),
+				baseUrl: resolution.auth.baseUrl ?? model.baseUrl,
+			}),
 			model: resolution.auth.baseUrl ? { ...model, baseUrl: resolution.auth.baseUrl } : model,
 			options: {
 				...providerOptions,
-				apiKey: providerOptions.apiKey ?? resolution.auth.apiKey,
+				apiKey,
 				headers,
 				env,
 			},
