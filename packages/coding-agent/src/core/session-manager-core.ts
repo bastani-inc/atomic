@@ -38,7 +38,6 @@ import {
 	getBranchPath,
 } from "./session-manager-history.ts";
 import { listAllSessions, listProjectSessions } from "./session-manager-list.ts";
-import { migrateToCurrentVersion } from "./session-manager-migrations.ts";
 import { getDefaultSessionDir, getDefaultSessionDirPath } from "./session-manager-paths.ts";
 import {
 	ensureDirectory,
@@ -113,9 +112,6 @@ export class SessionManager {
 		if (header) {
 			this.fileEntries = entries;
 			this.sessionId = header.id;
-			if (migrateToCurrentVersion(this.fileEntries)) {
-				this._rewriteFile();
-			}
 		} else {
 			this.newSession(options);
 			this.fileEntries = this.fileEntries.concat(entries);
@@ -148,10 +144,6 @@ export class SessionManager {
 
 			const header = this.fileEntries.find((entry) => entry.type === "session") as SessionHeader | undefined;
 			this.sessionId = header?.id ?? createSessionId();
-
-			if (migrateToCurrentVersion(this.fileEntries)) {
-				this._rewriteFile();
-			}
 
 			this._buildIndex();
 			this.flushed = true;

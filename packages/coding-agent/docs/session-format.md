@@ -18,13 +18,7 @@ Atomic also supports deleting sessions interactively from `/resume` (select a se
 
 ## Session Version
 
-Sessions have a version field in the header:
-
-- **Version 1**: Linear entry sequence (legacy, auto-migrated on load)
-- **Version 2**: Tree structure with `id`/`parentId` linking
-- **Version 3**: Renamed `hookMessage` role to `custom` (extensions unification)
-
-Existing sessions are automatically migrated to the current version (v3) when loaded.
+SessionManager writes version 3 headers. Session-format migrations have been removed; older formats are not converted on load. Start a new session instead of relying on automatic conversion. Reading a file also leaves its bytes unchanged, including an unterminated final line.
 
 ## Source Files
 

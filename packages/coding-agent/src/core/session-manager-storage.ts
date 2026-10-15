@@ -70,14 +70,21 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 		closeSync(fd);
 	}
 
-	// Validate session header before repairing the file.
 	if (entries.length === 0) return entries;
 	const header = entries[0];
 	if (header.type !== "session" || !("id" in header) || typeof header.id !== "string") {
 		return [];
 	}
 
-	if (pending) appendFileSync(resolvedFilePath, "\n");
+	return entries;
+}
+
+export function parseSessionEntries(content: string): FileEntry[] {
+	const entries: FileEntry[] = [];
+	for (const line of content.trim().split("\n")) {
+		const entry = parseSessionEntryLine(line);
+		if (entry) entries.push(entry);
+	}
 	return entries;
 }
 

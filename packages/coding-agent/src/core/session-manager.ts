@@ -7,9 +7,13 @@ export {
 	getLatestCompactionBoundaryEntry,
 	sessionEntryToContextMessages,
 } from "./session-manager-history.ts";
-export { migrateSessionEntries, parseSessionEntries } from "./session-manager-migrations.ts";
 export { getDefaultSessionDir } from "./session-manager-paths.ts";
-export { findMostRecentSession, isInternalHeader, loadEntriesFromFile } from "./session-manager-storage.ts";
+export {
+	findMostRecentSession,
+	isInternalHeader,
+	loadEntriesFromFile,
+	parseSessionEntries,
+} from "./session-manager-storage.ts";
 export type {
 	BranchSummaryEntry,
 	CompactionEntry,

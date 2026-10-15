@@ -8,9 +8,13 @@ import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { classifiedWorkflowMetadata } from "./session-manager-classification.ts";
 import { getLatestSessionSummary } from "./session-manager-entries.ts";
-import { parseSessionEntries } from "./session-manager-migrations.ts";
 import { getDefaultSessionDir, getDefaultSessionDirPath } from "./session-manager-paths.ts";
-import { isInternalHeader, readSessionHeader, sessionCwdMatches } from "./session-manager-storage.ts";
+import {
+	isInternalHeader,
+	parseSessionEntries,
+	readSessionHeader,
+	sessionCwdMatches,
+} from "./session-manager-storage.ts";
 import type {
 	FileEntry,
 	SessionEntryBase,

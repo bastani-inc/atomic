@@ -4,12 +4,12 @@ import { createInterface } from "node:readline";
 import { join } from "path";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { createLabelEntry, createSessionFilePath, createSessionHeader } from "./session-manager-entries.ts";
-import { migrateToCurrentVersion, parseSessionEntries } from "./session-manager-migrations.ts";
 import { getDefaultSessionDirPath } from "./session-manager-paths.ts";
 import {
 	ensureDirectory,
 	hasConversationMessage,
 	loadEntriesFromFile,
+	parseSessionEntries,
 	serializeSessionEntries,
 	writeSessionEntries,
 } from "./session-manager-storage.ts";
@@ -238,7 +238,6 @@ function prepareFork(
 	if (sourceHeader.type !== "session" || typeof sourceHeader.id !== "string") {
 		throw new Error(`Cannot fork: source session has no header: ${resolvedSourcePath}`);
 	}
-	migrateToCurrentVersion(sourceEntries);
 	const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDirPath(resolvedTargetCwd);
 	if (options?.id !== undefined) assertValidSessionId(options.id);
 	const newSessionId = options?.id ?? createSessionId();
