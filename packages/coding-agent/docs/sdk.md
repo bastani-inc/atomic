@@ -24,6 +24,8 @@ This page covers the SDK quick start, its core concepts, and one complete exampl
 
 For a custom host that runs background work, see [Owner-bound task supervisor](/sdk/reference#owner-bound-task-supervisor-s1), [Supervised command SDK](/sdk/reference#supervised-command-sdk), and [Task transcript references](/sdk/reference#task-transcript-references).
 
+For the standalone SQLite facade and adapter conformance suite, see [SQLite storage API](/storage).
+
 Not sure the SDK is the right integration mode? Compare it with RPC and JSON mode on [Programmatic use](/programmatic).
 
 To serve an agent over HTTP, see [Embedding Atomic in a web server](/sdk/web-server), which walks through a Next.js App Router route that streams session output to a browser.

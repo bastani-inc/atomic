@@ -204,6 +204,7 @@
               "extensions/api-reference",
               "custom-provider/api-reference",
               "sdk/reference",
+              "storage",
               "sdk/structured-decisions",
               "rpc/protocol",
               "tui/reference"

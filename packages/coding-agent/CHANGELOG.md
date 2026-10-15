@@ -8,6 +8,10 @@
 - Workflow heartbeat records require their original launch cadence instead of inheriting the current definition when cadence is missing. Configuration load results always include their global and project source fields, using `null` for absent or invalid sources.
 - Workflow run snapshots require `toolNodes`, and inline forms require injected keybindings without obsolete submit-choice state. Removed the ignored workflow text-truncation `preserveAnsi` argument; ANSI-aware rendering is unchanged.
 
+### Added
+
+- Added the async SQLite facade and node adapter through `@bastani/atomic/storage`, with typed storage errors, prefix and schema-version helpers, and an adapter conformance suite in `@bastani/atomic/storage/testing`. String bindings containing NUL are rejected with `StorageInvalidTextError`; zero bytes remain supported in binary values.
+
 ## [0.9.38-alpha.3] - 2026-10-15
 
 ### Fixed
