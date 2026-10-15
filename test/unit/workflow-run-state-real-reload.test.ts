@@ -411,6 +411,7 @@ function recordGenerationState(
 		name: "reload-survive",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: 1,
 	});
@@ -948,6 +949,7 @@ test(
 			inputs: {},
 			status: "running",
 			startedAt: 1,
+			toolNodes: [],
 			stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
 		});
 		assert.equal(
@@ -1005,6 +1007,7 @@ test(
 			inputs: {},
 			status: "running",
 			startedAt: 1,
+			toolNodes: [],
 			stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
 		});
 		assert.equal(

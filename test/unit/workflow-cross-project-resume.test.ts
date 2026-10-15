@@ -350,6 +350,7 @@ test("forked sticky messages reach stages under the fork root (#3577)", async ()
 		name: "sticky",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: 1,
 	});
@@ -380,6 +381,7 @@ test("forked sticky messages reach stages under the fork root (#3577)", async ()
 		inputs: {},
 		status: "running",
 		startedAt: 1,
+		toolNodes: [],
 		stages: [{ id: "review-stage", name: "review-one", status: "pending", parentIds: [], toolEvents: [] }],
 		pendingStageMessages: pending === undefined ? undefined : [...pending],
 	});

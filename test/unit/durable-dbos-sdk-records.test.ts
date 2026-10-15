@@ -488,6 +488,7 @@ test("bounds metadata snapshots while restoring the latest state and checkpoints
 						id: "pending",
 						runId: "root",
 						stageKey: "future",
+						admissionOrder: 1,
 						from: { id: "sender" },
 						message: { id: "pending", timestamp: 1, content: { text: `pending-${index}` } },
 						queuedAt: "now",

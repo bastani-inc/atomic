@@ -41,6 +41,7 @@ function fixture(
 		startedAt: 1,
 		endedAt: 2,
 		status: "running" as const,
+		toolNodes: [],
 		stages: [],
 	};
 	store.recordRunStart(source);

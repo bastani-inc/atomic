@@ -33,6 +33,7 @@ function makeRun(over: Partial<RunSnapshot>): RunSnapshot {
 		name: over.name ?? "demo",
 		inputs: over.inputs ?? {},
 		status: over.status ?? "running",
+		toolNodes: [],
 		stages: over.stages ?? [],
 		startedAt: over.startedAt ?? 1000,
 		endedAt: over.endedAt,

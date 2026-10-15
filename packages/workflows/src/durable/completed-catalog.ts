@@ -213,7 +213,7 @@ export function durableNestedRunSnapshots(
 		rootWorkflowId,
 		handle.name,
 		handle.updatedAt,
-		LEGACY_ACTIVE_RECONSTRUCTION,
+		ACTIVE_INSPECTION_RECONSTRUCTION,
 	).filter((run) => run.id !== rootWorkflowId);
 }
 
@@ -224,7 +224,7 @@ function validatedStageTranscript(stage: StageSnapshot): StageSnapshot {
 	return withoutSessionFile;
 }
 
-/** Enumerate the backend sequence once so legacy stages and tools share one order domain. */
+/** Enumerate checkpoints once so stage and tool nodes share one order domain. */
 function checkpointDrafts(checkpoints: readonly DurableCheckpoint[]): ReconstructionDrafts {
 	const stageByReplayKey = new Map<string, StageDraft>();
 	const toolByHash = new Map<string, DurableToolCheckpoint>();
@@ -320,32 +320,19 @@ function summarizeCompletedToolResult(value: WorkflowSerializableValue): string 
 
 interface ReconstructionPolicy {
 	readonly requireTerminal: boolean;
-	readonly failClosed: boolean;
 	readonly retainActive: boolean;
 	readonly failOnUnreachable: boolean;
-	readonly requireActiveBoundaryFingerprint: boolean;
 }
 
 const COMPLETED_RECONSTRUCTION: ReconstructionPolicy = {
 	requireTerminal: true,
-	failClosed: true,
 	retainActive: false,
 	failOnUnreachable: false,
-	requireActiveBoundaryFingerprint: false,
 };
 const ACTIVE_INSPECTION_RECONSTRUCTION: ReconstructionPolicy = {
 	requireTerminal: false,
-	failClosed: true,
 	retainActive: true,
 	failOnUnreachable: true,
-	requireActiveBoundaryFingerprint: true,
-};
-const LEGACY_ACTIVE_RECONSTRUCTION: ReconstructionPolicy = {
-	requireTerminal: false,
-	failClosed: false,
-	retainActive: true,
-	failOnUnreachable: false,
-	requireActiveBoundaryFingerprint: false,
 };
 
 function runSnapshotsFromCheckpoints(
@@ -355,7 +342,7 @@ function runSnapshotsFromCheckpoints(
 	fallbackCompletedAt: number,
 	policy: ReconstructionPolicy = COMPLETED_RECONSTRUCTION,
 ): RunSnapshot[] {
-	if (!validBoundaryRecordSet(checkpoints, policy.requireTerminal, policy.requireActiveBoundaryFingerprint)) return [];
+	if (!validBoundaryRecordSet(checkpoints, policy.requireTerminal)) return [];
 	const stageRecords = checkpoints.filter(
 		(checkpoint): checkpoint is DurableStageCheckpoint => checkpoint.kind === "stage",
 	);
@@ -377,46 +364,27 @@ function runSnapshotsFromCheckpoints(
 				draft.endedAt !== undefined ||
 				draft.output !== undefined,
 		)
-		.map(
-			(draft): StageDraft =>
-				draft.topology !== undefined
-					? draft
-					: {
-							...draft,
-							topology: {
-								version: DURABLE_STAGE_TOPOLOGY_VERSION,
-								stageId: `completed-stage-${draft.firstSequence}`,
-								parentIds: [],
-								order: draft.firstSequence,
-							},
-						},
-		)
 		.sort(compareDraftSourceOrder);
 	const drafts = checkpointDrafts(checkpoints);
 	const toolCheckpoints = drafts.tools;
-	if (policy.failClosed) {
-		for (const draft of candidates) {
-			const boundary = draft.topology?.boundary;
-			if (boundary === undefined || childRunIdFromDraft(draft) === undefined) continue;
-			if (boundary.replayScope !== draft.replayKey) return [];
-			const expectedChildRun = {
-				runId: boundary.child.runId,
-				runName: boundary.child.runName,
-				parentRunId: boundary.child.parentRunId,
-				parentStageId: boundary.child.parentStageId,
-				rootRunId: boundary.child.rootRunId,
-			};
-			const childToolIds = new Set(
-				toolCheckpoints.flatMap((checkpoint) =>
-					checkpoint.topology?.run?.runId === expectedChildRun.runId ? [checkpoint.topology.nodeId] : [],
-				),
-			);
-			if (
-				directChildTopologyError(stageRecords, boundary.replayScope, expectedChildRun, true, childToolIds) !==
-				undefined
-			)
-				return [];
-		}
+	for (const draft of candidates) {
+		const boundary = draft.topology?.boundary;
+		if (boundary === undefined || childRunIdFromDraft(draft) === undefined) continue;
+		if (boundary.replayScope !== draft.replayKey) return [];
+		const expectedChildRun = {
+			runId: boundary.child.runId,
+			runName: boundary.child.runName,
+			parentRunId: boundary.child.parentRunId,
+			parentStageId: boundary.child.parentStageId,
+			rootRunId: boundary.child.rootRunId,
+		};
+		const childToolIds = new Set(
+			toolCheckpoints.flatMap((checkpoint) =>
+				checkpoint.topology?.run?.runId === expectedChildRun.runId ? [checkpoint.topology.nodeId] : [],
+			),
+		);
+		if (directChildTopologyError(stageRecords, boundary.replayScope, expectedChildRun, childToolIds) !== undefined)
+			return [];
 	}
 	if (candidates.length === 0 && toolCheckpoints.length === 0) {
 		const supportedNonGraphState = checkpoints.every(
@@ -424,18 +392,15 @@ function runSnapshotsFromCheckpoints(
 				checkpoint.kind === "ui" ||
 				(checkpoint.kind === "tool" && isReservedRunCheckpointHash(checkpoint.argsHash)),
 		);
-		if (policy.failClosed && supportedNonGraphState) {
+		if (supportedNonGraphState) {
 			return [emptyGraphRun(rootRunId, rootRunName, fallbackCompletedAt)];
 		}
-		return policy.failClosed ? [] : [syntheticRun(rootRunId, rootRunName, checkpoints.length, fallbackCompletedAt)];
+		return [];
 	}
 
 	const grouped = new Map<string, StageDraft[]>();
 	for (const draft of candidates) {
-		if (draft.topology?.version !== DURABLE_STAGE_TOPOLOGY_VERSION) {
-			if (policy.failClosed) return [];
-			continue;
-		}
+		if (draft.topology?.version !== DURABLE_STAGE_TOPOLOGY_VERSION) return [];
 		const runId = draft.topology.run?.runId ?? rootRunId;
 		const group = grouped.get(runId) ?? [];
 		group.push(draft);
@@ -463,8 +428,7 @@ function runSnapshotsFromCheckpoints(
 				!isSyntheticExitedChild(draft, parentRunId, child.runId, rootRunId) ||
 				childScopedEvidenceExists(checkpoints, draft.replayKey, child.runId)
 			) {
-				if (policy.failClosed) return [];
-				continue;
+				return [];
 			}
 			syntheticChildren.push({ parentRunId, owner: draft, child });
 		}
@@ -487,11 +451,7 @@ function runSnapshotsFromCheckpoints(
 				else ids.set(sourceId, completedId);
 			}
 		});
-		if (hasIdentityConflict) {
-			if (policy.failClosed) return [];
-			grouped.delete(runId);
-			continue;
-		}
+		if (hasIdentityConflict) return [];
 		for (const checkpoint of toolCheckpoints) {
 			const ownerRunId = checkpoint.topology?.run?.runId ?? rootRunId;
 			const sourceId = checkpoint.topology?.nodeId ?? checkpoint.checkpointId;
@@ -512,10 +472,7 @@ function runSnapshotsFromCheckpoints(
 			ownedTools.some(
 				(checkpoint) => checkpoint.topology?.parentIds.some((parentId) => !ids.has(parentId)) === true,
 			);
-		if (hasUnknownParents) {
-			if (policy.failClosed) return [];
-			continue;
-		}
+		if (hasUnknownParents) return [];
 		const stages = runDrafts.map((draft) =>
 			stageSnapshotFromDraft(
 				draft,
@@ -569,17 +526,11 @@ function runSnapshotsFromCheckpoints(
 		emittedRunIds.add(runId);
 	}
 	for (const { parentRunId, owner, child } of syntheticChildren) {
-		if (!emittedRunIds.has(parentRunId)) {
-			if (policy.failClosed) return [];
-			continue;
-		}
+		if (!emittedRunIds.has(parentRunId)) return [];
 		const topology = owner.topology!;
 		const boundary = topology.boundary!;
 		const parentStageId = idMaps.get(parentRunId)?.get(topology.stageId);
-		if (parentStageId === undefined) {
-			if (policy.failClosed) return [];
-			continue;
-		}
+		if (parentStageId === undefined) return [];
 		const startedAt = owner.startedAt ?? owner.firstCompletedAt;
 		const endedAt = owner.endedAt ?? owner.firstCompletedAt;
 		runs.push({
@@ -661,34 +612,5 @@ function emptyGraphRun(runId: string, runName: string, completedAt: number): Run
 		endedAt: completedAt,
 		durationMs: 0,
 		resumable: false,
-	};
-}
-
-function syntheticRun(runId: string, runName: string, checkpointCount: number, completedAt: number): RunSnapshot {
-	return {
-		id: runId,
-		name: runName,
-		inputs: {},
-		status: "completed",
-		stages: [syntheticCheckpointStage(checkpointCount, completedAt)],
-		startedAt: completedAt,
-		endedAt: completedAt,
-		durationMs: 0,
-		resumable: false,
-	};
-}
-
-function syntheticCheckpointStage(checkpointCount: number, completedAt: number): StageSnapshot {
-	return {
-		id: "completed-checkpoints",
-		name: "durable checkpoints",
-		status: "completed",
-		parentIds: [],
-		startedAt: completedAt,
-		endedAt: completedAt,
-		durationMs: 0,
-		result: `${checkpointCount} durable checkpoint${checkpointCount === 1 ? "" : "s"}`,
-		toolEvents: [],
-		attachable: false,
 	};
 }

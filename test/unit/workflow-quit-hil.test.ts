@@ -135,6 +135,7 @@ test.each(["direct", "slash", "tool", "nested-tool", "answer-race"] as const)(
 			name: "unrelated",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});

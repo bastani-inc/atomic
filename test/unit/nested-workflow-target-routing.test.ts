@@ -38,6 +38,7 @@ function stage(id: string, name = id): StageSnapshot {
 function run(overrides: Partial<RunSnapshot> & Pick<RunSnapshot, "id" | "name" | "stages">): RunSnapshot {
 	return {
 		inputs: {},
+		toolNodes: [],
 		status: "running",
 		startedAt: 1,
 		...overrides,

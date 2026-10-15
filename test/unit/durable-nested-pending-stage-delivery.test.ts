@@ -51,6 +51,7 @@ test("a child run hydrates and drains only its logical pending messages through 
 		name: "root",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [
 			{
 				id: "child-boundary",
@@ -311,6 +312,7 @@ test("root, siblings, and arbitrarily nested children isolate dedupe, capacity, 
 		name: "root",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [
 			stage("shared-stage", "shared"),
 			{
@@ -336,6 +338,7 @@ test("root, siblings, and arbitrarily nested children isolate dedupe, capacity, 
 		parentRunId: ROOT_RUN_ID,
 		parentStageId: "child-boundary",
 		rootRunId: ROOT_RUN_ID,
+		toolNodes: [],
 		stages: [
 			stage("shared-stage", "shared"),
 			{
@@ -355,6 +358,7 @@ test("root, siblings, and arbitrarily nested children isolate dedupe, capacity, 
 		parentRunId: ROOT_RUN_ID,
 		parentStageId: "sibling-boundary",
 		rootRunId: ROOT_RUN_ID,
+		toolNodes: [],
 		stages: [stage("shared-stage", "shared")],
 		startedAt: 3,
 	});
@@ -366,6 +370,7 @@ test("root, siblings, and arbitrarily nested children isolate dedupe, capacity, 
 		parentRunId: CHILD_RUN_ID,
 		parentStageId: "grandchild-boundary",
 		rootRunId: ROOT_RUN_ID,
+		toolNodes: [],
 		stages: [stage("shared-stage", "shared")],
 		startedAt: 4,
 	});
@@ -434,6 +439,7 @@ test("root, siblings, and arbitrarily nested children isolate dedupe, capacity, 
 		inputs: {},
 		status: "running",
 		rootRunId: ROOT_RUN_ID,
+		toolNodes: [],
 		stages: [stage("shared-stage", "shared")],
 		startedAt: 5,
 	});

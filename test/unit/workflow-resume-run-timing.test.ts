@@ -26,6 +26,7 @@ function makeRun(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
 		name: "timing",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: 0,
 		...overrides,

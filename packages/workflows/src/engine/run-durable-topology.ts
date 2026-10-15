@@ -10,7 +10,7 @@ import {
 import { durableStageCheckpointMetadata } from "../durable/stage-topology.js";
 import { promptOccurrenceIdentityError } from "../durable/stage-topology-validation.js";
 import type { DurableStageCheckpoint, DurableStageRunTopology, DurableStageTopology } from "../durable/types.js";
-import { parseLegacyWorkflowChildResult, parseWorkflowChildResult } from "../durable/workflow-child-result.js";
+import { parseWorkflowChildResult } from "../durable/workflow-child-result.js";
 import type { ParallelFailFastScope, RunOpts } from "../runs/foreground/executor-types.js";
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
@@ -282,14 +282,5 @@ function rootMatches(rootRunId: string | undefined, expectedRootRunId: string): 
 }
 
 function workflowChildRunId(checkpoint: DurableCompletedStageCheckpoint): string | undefined {
-	const topology = checkpoint.topology;
-	const hasCurrentIdentity =
-		topology?.sourceOrder !== undefined ||
-		topology?.status !== undefined ||
-		topology?.occurrenceKey !== undefined ||
-		topology?.boundary !== undefined;
-	return (
-		parseWorkflowChildResult(checkpoint.output) ??
-		(hasCurrentIdentity ? undefined : parseLegacyWorkflowChildResult(checkpoint.output))
-	)?.runId;
+	return parseWorkflowChildResult(checkpoint.output)?.runId;
 }

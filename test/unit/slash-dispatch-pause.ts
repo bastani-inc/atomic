@@ -715,6 +715,7 @@ describe("/workflow run-control chat commands", () => {
 			...makeInflightRun(runId),
 			startedAt: 0,
 			budget: { maxDurationMs: 10, warnAtPercent: 80 },
+			toolNodes: [],
 			stages: [
 				{
 					id: "review",

@@ -327,57 +327,8 @@ exTest("mixed cached and live child resume remains inspectable after completion"
 
 exTest("mixed cached and live repeated child calls keep boundary replay keys in sync", async () => {
 	const backend = new InMemoryDurableBackend();
-	backend.registerWorkflow({
-		workflowId: "wf-mixed-child",
-		name: "mixed-parent",
-		inputs: {},
-		createdAt: Date.now(),
-		status: "running",
-	});
-	backend.recordCheckpoint({
-		kind: "stage",
-		workflowId: "wf-mixed-child",
-		checkpointId: "workflow:workflow:workflow:mixed-child:1",
-		name: "workflow:mixed-child",
-		replayKey: "workflow:workflow:mixed-child:1",
-		output: {
-			workflow: "mixed-child",
-			runId: "cached-child",
-			status: "completed",
-			exited: false,
-			outputs: { value: "cached" },
-		},
-		completedAt: 10,
-		result: "completed",
-		topology: {
-			version: 1,
-			stageId: "cached-boundary",
-			parentIds: [],
-			run: { runId: "wf-mixed-child", runName: "mixed-parent" },
-		},
-	});
-	backend.recordCheckpoint({
-		kind: "stage",
-		workflowId: "wf-mixed-child",
-		checkpointId: "workflow:workflow:mixed-child:1:stage:legacy-child",
-		name: "legacy-child-stage",
-		replayKey: "workflow:workflow:mixed-child:1:stage:legacy-child:1",
-		output: "cached",
-		completedAt: 9,
-		topology: {
-			version: 1,
-			stageId: "legacy-child-stage",
-			parentIds: [],
-			run: {
-				runId: "cached-child",
-				runName: "mixed-child",
-				parentRunId: "wf-mixed-child",
-				parentStageId: "cached-boundary",
-				rootRunId: "wf-mixed-child",
-			},
-		},
-	});
 	let childRuns = 0;
+	let interrupted = true;
 	const child = workflow({
 		name: "mixed-child",
 		description: "",
@@ -385,7 +336,7 @@ exTest("mixed cached and live repeated child calls keep boundary replay keys in 
 		outputs: { value: Type.String() },
 		run: async (ctx) => {
 			childRuns += 1;
-			return { value: await ctx.stage("child-live").complete(`live-${childRuns}`) };
+			return { value: await ctx.stage("child-live").complete(childRuns === 1 ? "cached" : `live-${childRuns - 1}`) };
 		},
 	});
 	const parent = workflow({
@@ -395,29 +346,27 @@ exTest("mixed cached and live repeated child calls keep boundary replay keys in 
 		outputs: { first: Type.String(), second: Type.String() },
 		run: async (ctx) => {
 			const first = await ctx.workflow(child);
+			if (interrupted) throw new Error("interrupt before second child");
 			const second = await ctx.workflow(child);
 			if (first.exited || second.exited) throw new Error("child exited");
 			return { first: first.outputs.value, second: second.outputs.value };
 		},
 	});
-
-	const store = createStore();
-	const result = await run(
-		parent,
-		{},
-		{
-			runId: "wf-mixed-child",
-			store,
-			durableBackend: backend,
-			adapters: { complete: { complete: async (text) => text } },
-		},
-	);
-
-	assert.equal(result.status, "completed");
-	assert.deepEqual(result.result, { first: "cached", second: "live-1" });
+	const options = {
+		runId: "wf-mixed-child",
+		durableBackend: backend,
+		adapters: { complete: { complete: async (text: string) => text } },
+	};
+	assert.equal((await run(parent, {}, { ...options, store: createStore() })).status, "failed");
 	assert.equal(childRuns, 1);
+	interrupted = false;
+	const store = createStore();
+	const result = await run(parent, {}, { ...options, store });
+	assert.equal(result.status, "completed", result.error);
+	assert.deepEqual(result.result, { first: "cached", second: "live-1" });
+	assert.equal(childRuns, 2);
 	const boundaries = store.runs()[0]?.stages.filter((item) => item.name === "workflow:mixed-child") ?? [];
-	assert.equal(boundaries[0]?.replayKey, "workflow:workflow:mixed-child:1");
+	assert.match(boundaries[0]?.replayKey ?? "", /^workflow:workflow:mixed-child:h[0-9a-f]{32}:1$/);
 	const liveReplayKey = boundaries[1]?.replayKey;
 	assert.ok(liveReplayKey);
 	assert.match(liveReplayKey, /^workflow:workflow:mixed-child:h[0-9a-f]{32}:2$/);

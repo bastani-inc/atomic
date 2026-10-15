@@ -257,6 +257,7 @@ function startRun(
 		name: opts.name ?? "heartbeat-workflow",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: opts.startedAt ?? STARTED_AT,
 		...(opts.parentRunId === undefined ? {} : { parentRunId: opts.parentRunId }),
@@ -2408,6 +2409,7 @@ describe("workflow heartbeat terminal cleanup and recovery", () => {
 			name: "heartbeat-workflow",
 			inputs: {},
 			status: "completed",
+			toolNodes: [],
 			stages: [],
 			startedAt: STARTED_AT,
 		});
@@ -2438,6 +2440,7 @@ describe("workflow heartbeat terminal cleanup and recovery", () => {
 			name: "heartbeat-workflow",
 			inputs: {},
 			status: "failed",
+			toolNodes: [],
 			stages: [],
 			startedAt: STARTED_AT,
 		});

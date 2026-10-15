@@ -39,6 +39,7 @@ function activeRun(): RunSnapshot {
 		inputs: { prompt: "How does session persistence work?" },
 		status: "running",
 		startedAt: Date.now() - 42_000,
+		toolNodes: [],
 		stages: [
 			stage("scout", "completed", [], 42_000, 12_000),
 			stage("auth-specialist", "completed", ["scout"], 30_000, 9_000),
@@ -57,6 +58,7 @@ function completedRun(): RunSnapshot {
 		status: "completed",
 		startedAt: Date.now() - 65_000,
 		durationMs: 64_000,
+		toolNodes: [],
 		stages: [stage("summarize", "completed", [], 65_000, 64_000)],
 	};
 }
@@ -70,6 +72,7 @@ function failedRun(): RunSnapshot {
 		startedAt: Date.now() - 12_000,
 		durationMs: 11_500,
 		error: "ECONNRESET while talking to provider",
+		toolNodes: [],
 		stages: [
 			stage("plan", "completed", [], 12_000, 4_000),
 			{ ...stage("execute", "failed", ["plan"], 8_000, 7_000), error: "ECONNRESET" },
@@ -84,6 +87,7 @@ function bigRun(): RunSnapshot {
 		inputs: {},
 		status: "running",
 		startedAt: Date.now() - 8_000,
+		toolNodes: [],
 		stages: [
 			stage("root", "completed", [], 8_000, 1_000),
 			stage("a", "running", ["root"], 7_000),
@@ -106,6 +110,7 @@ function chainRun(): RunSnapshot {
 		inputs: {},
 		status: "running",
 		startedAt: Date.now() - 18_000,
+		toolNodes: [],
 		stages: [
 			stage("discover", "completed", [], 18_000, 2_000),
 			stage("plan", "completed", ["discover"], 16_000, 4_000),
@@ -123,6 +128,7 @@ function fanoutEvenRun(): RunSnapshot {
 		inputs: {},
 		status: "running",
 		startedAt: Date.now() - 15_000,
+		toolNodes: [],
 		stages: [
 			stage("root", "completed", [], 15_000, 1_000),
 			stage("api", "running", ["root"], 14_000),
@@ -140,6 +146,7 @@ function fanoutOddRun(): RunSnapshot {
 		inputs: {},
 		status: "running",
 		startedAt: Date.now() - 15_000,
+		toolNodes: [],
 		stages: [
 			stage("root", "completed", [], 15_000, 1_000),
 			stage("linux", "running", ["root"], 14_000),
@@ -156,6 +163,7 @@ function faninRun(): RunSnapshot {
 		inputs: {},
 		status: "running",
 		startedAt: Date.now() - 25_000,
+		toolNodes: [],
 		stages: [
 			stage("spec", "completed", [], 25_000, 2_000),
 			stage("frontend", "completed", ["spec"], 23_000, 8_000),

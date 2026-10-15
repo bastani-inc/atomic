@@ -50,6 +50,7 @@ function setupReviewerResume(overrides: Partial<RunSnapshot> = {}) {
 		failureDisposition: "active_blocked",
 		failureMessage: "CleanupFailed",
 		failedStageId: "reviewer-source",
+		toolNodes: [],
 		stages: [
 			{
 				id: "prepare-source",

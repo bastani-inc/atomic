@@ -1159,6 +1159,7 @@ test.each(childHostBindingModes)(
 			name: "precedence",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});

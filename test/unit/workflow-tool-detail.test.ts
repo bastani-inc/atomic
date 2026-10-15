@@ -109,6 +109,7 @@ function storeWithToolResult(result: unknown, runId = RUN_ID): ReturnType<typeof
 		name: "hostile run",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: Date.now(),
 	});
@@ -1091,6 +1092,7 @@ describe("tool graph inspection", () => {
 			name: "replay run",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -1336,6 +1338,7 @@ describe("tool graph inspection", () => {
 			name: "stage run",
 			inputs: {},
 			status: "completed",
+			toolNodes: [],
 			stages: [
 				{
 					id: "retained",
@@ -1367,6 +1370,7 @@ describe("tool graph inspection", () => {
 			name: "stage run",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [{ id: "pending", name: "pending", status: "pending", parentIds: [], toolEvents: [] }],
 			startedAt: 1,
 		});
@@ -1452,6 +1456,7 @@ describe("tool graph inspection", () => {
 					name: "second",
 					inputs: {},
 					status: "running",
+					toolNodes: [],
 					stages: [],
 					startedAt: Date.now(),
 				});

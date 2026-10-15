@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { durableChildInvocationFingerprint } from "../../packages/workflows/src/durable/child-invocation.js";
 import { completedWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
 import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
@@ -151,6 +152,7 @@ test.sequential("colliding child-local stage IDs and names require an exact virt
 		status: "completed",
 		startedAt: 1,
 		endedAt: 2,
+		toolNodes: [],
 		stages: [
 			{
 				id: "boundary-first",
@@ -187,6 +189,7 @@ test.sequential("colliding child-local stage IDs and names require an exact virt
 			parentRunId: rootId,
 			parentStageId: childRunId === firstRunId ? "boundary-first" : "boundary-second",
 			rootRunId: rootId,
+			toolNodes: [],
 			stages: [
 				{
 					id: "shared-local-id",
@@ -529,7 +532,8 @@ test("workflow exit persists one skipped child boundary without a child attachme
 test("fresh DBOS replay rejects stale nonreciprocal boundary ownership before child code", async () => {
 	const sdk = createMockSdk();
 	const runId = "wf-stale-boundary";
-	const replayKey = "workflow:workflow:stale-child:1";
+	const fingerprint = durableChildInvocationFingerprint({ name: "stale-child", normalizedName: "stale-child" }, {});
+	const replayKey = `workflow:workflow:stale-child:${fingerprint}:1`;
 	seedMockWorkflow(sdk, { workflowId: runId, name: "stale-parent", status: "PENDING" });
 	seedMockCheckpoint(sdk, runId, {
 		kind: "stage",
@@ -551,6 +555,7 @@ test("fresh DBOS replay rejects stale nonreciprocal boundary ownership before ch
 				replayScope: replayKey,
 				alias: "stale-child",
 				workflow: "stale-child",
+				invocationFingerprint: fingerprint,
 				status: "running",
 				child: {
 					runId: "stale-child-run",

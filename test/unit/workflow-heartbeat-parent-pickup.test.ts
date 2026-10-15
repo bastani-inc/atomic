@@ -277,7 +277,7 @@ describe("workflow heartbeat context invalidation", () => {
 	}
 
 	function startRun(store: ReturnType<typeof createStore>, id: string, startedAt = 0): void {
-		store.recordRunStart({ id, name: "probe", inputs: {}, status: "running", stages: [], startedAt });
+		store.recordRunStart({ id, name: "probe", inputs: {}, status: "running", toolNodes: [], stages: [], startedAt });
 	}
 
 	test("a card parked while its run becomes recoverably blocked still reaches the model", async () => {

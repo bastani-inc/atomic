@@ -253,7 +253,7 @@ export interface PendingStageMessage {
 	readonly message: PendingStageIntercomMessage;
 	readonly queuedAt: string;
 	/** Durable workflow admission sequence; sender clocks never determine delivery order. */
-	readonly admissionOrder?: number;
+	readonly admissionOrder: number;
 	readonly status: "queued" | "delivered" | "undeliverable";
 	readonly deliveredAt?: string;
 	readonly undeliverableReason?: string;
@@ -496,8 +496,8 @@ export interface RunSnapshot extends RunExecutionState {
 	readonly inputs: Readonly<WorkflowInputValues>;
 	status: RunStatus;
 	readonly stages: StageSnapshot[];
-	/** Durable ctx.tool execution nodes. Optional only for legacy/restored snapshots. */
-	readonly toolNodes?: ToolNodeSnapshot[];
+	/** Durable ctx.tool execution nodes. */
+	readonly toolNodes: ToolNodeSnapshot[];
 	/** Resolved duration budget and persisted wrap-up state; omitted when unbudgeted. */
 	budget?: RunBudgetSnapshot;
 	budgetState?: RunBudgetState;
@@ -526,9 +526,7 @@ export interface RunSnapshot extends RunExecutionState {
 	/** Which path performed the most recent resume. */
 	resumeSource?: RunResumeSource;
 	/**
-	 * Who launched this run. Set once at dispatch and inherited by a continuation
-	 * from the run it continues. Absent on legacy and restored runs that never
-	 * recorded it, in which case attribution is omitted rather than guessed.
+	 * Who launched this run, when the launcher was attributable.
 	 */
 	origin?: WorkflowActor;
 	/** Model-tool caller/session bound at admission; retained through every lifecycle transition. */

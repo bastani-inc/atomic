@@ -14,14 +14,13 @@ import type { DurableWorkflowBackend } from "./backend.js";
 import {
 	type DurableBoundaryDescriptor,
 	type DurableChildInvocation,
-	DurableNestedTopologyError,
 	prepareDurableChildInvocation,
 	validateDurableChildInvocation,
 	validateDurableCompletedBoundary,
 } from "./boundary-topology.js";
 import { durableChildInvocationFingerprint } from "./child-invocation.js";
 import { type DurableCompletedStageCheckpoint, stageCheckpointWithOutput } from "./stage-primitive.js";
-import type { DurableCheckpoint, DurableStageRunTopology, WorkflowSerializableObject } from "./types.js";
+import type { DurableStageRunTopology, WorkflowSerializableObject } from "./types.js";
 import { isWorkflowChildResult, parseWorkflowChildResult } from "./workflow-child-result.js";
 
 export function createDurableChildWorkflowPrimitive(input: {
@@ -44,12 +43,6 @@ export function createDurableChildWorkflowPrimitive(input: {
 		...args: WorkflowRunChildArgs<TChildRunInputs>
 	) => Promise<WorkflowChildResult<TChildOutputs>>;
 }) {
-	const legacyReplayCounts = new Map<string, number>();
-	const nextLegacyReplayKey = (name: string): string => {
-		const next = (legacyReplayCounts.get(name) ?? 0) + 1;
-		legacyReplayCounts.set(name, next);
-		return `workflow:${name}:${next}`;
-	};
 	return async <
 		TChildInputs extends WorkflowInputValues,
 		TChildOutputs extends WorkflowOutputValues,
@@ -76,15 +69,7 @@ export function createDurableChildWorkflowPrimitive(input: {
 			child,
 			validatedInputs as WorkflowSerializableObject,
 		);
-		const newReplayKey = input.nextReplayKey(boundaryName, invocationFingerprint);
-		const legacyReplayKey = nextLegacyReplayKey(boundaryName);
-		const checkpoints = input.backend.listCheckpoints(input.workflowId);
-		const hasNew = hasInvocationData(checkpoints, newReplayKey);
-		const hasLegacy = hasInvocationData(checkpoints, legacyReplayKey);
-		if (hasNew && hasLegacy) {
-			throw new DurableNestedTopologyError(`new and legacy invocation scopes conflict at ${newReplayKey}`);
-		}
-		const replayKey = hasNew ? newReplayKey : hasLegacy ? legacyReplayKey : newReplayKey;
+		const replayKey = input.nextReplayKey(boundaryName, invocationFingerprint);
 		const descriptor: DurableBoundaryDescriptor = {
 			workflowId: input.workflowId,
 			rootWorkflowId: input.rootWorkflowId,
@@ -115,13 +100,4 @@ export function createDurableChildWorkflowPrimitive(input: {
 			inputs: validatedInputs,
 		} as never)) as WorkflowChildResult<TChildOutputs>;
 	};
-}
-
-function hasInvocationData(checkpoints: readonly DurableCheckpoint[], replayKey: string): boolean {
-	const prefix = `${replayKey}:`;
-	return checkpoints.some((checkpoint) =>
-		checkpoint.kind === "stage"
-			? checkpoint.replayKey === replayKey || checkpoint.replayKey.startsWith(prefix)
-			: checkpoint.checkpointId.startsWith(prefix),
-	);
 }

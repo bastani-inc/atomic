@@ -16,6 +16,7 @@ function workflowRun(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
 		name: "Test workflow",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: Date.now(),
 		...overrides,

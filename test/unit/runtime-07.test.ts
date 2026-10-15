@@ -184,6 +184,7 @@ describe("renderResult — run variant", () => {
 					name: "wf",
 					inputs: {},
 					status: "running",
+					toolNodes: [],
 					stages: [],
 					startedAt: Date.now() - 1_000,
 				},
@@ -199,6 +200,7 @@ describe("renderResult — run variant", () => {
 			name: "wf-tick-test",
 			inputs: {},
 			status: "running" as const,
+			toolNodes: [],
 			stages: [],
 			startedAt: 0,
 		};

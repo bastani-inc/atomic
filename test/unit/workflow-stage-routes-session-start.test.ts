@@ -16,6 +16,7 @@ test("re-announces live stage-name and stage-ID routes on session_start after re
 		inputs: {},
 		status: "running",
 		startedAt: 1,
+		toolNodes: [],
 		stages: [
 			{
 				id: stageId,

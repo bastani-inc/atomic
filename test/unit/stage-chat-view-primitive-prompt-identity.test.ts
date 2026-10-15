@@ -205,6 +205,7 @@ test("primitive prompt stage labels truncate wide Unicode names without overflow
 			name: WORKFLOW_NAME,
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});

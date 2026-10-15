@@ -98,7 +98,7 @@ function _installWithState(
 }
 
 function startRun(store: ReturnType<typeof createStore>, id: string, name = id): void {
-	store.recordRunStart({ id, name, inputs: {}, status: "running", stages: [], startedAt: 1 });
+	store.recordRunStart({ id, name, inputs: {}, status: "running", toolNodes: [], stages: [], startedAt: 1 });
 }
 
 describe("installWorkflowLifecycleNotifications", () => {
@@ -152,6 +152,7 @@ describe("installWorkflowLifecycleNotifications", () => {
 			name: "candidate-gate",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -277,6 +278,7 @@ describe("installWorkflowLifecycleNotifications", () => {
 			name: "turn",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -296,7 +298,15 @@ describe("installWorkflowLifecycleNotifications", () => {
 				options.push(sendOptions ?? {});
 			},
 		});
-		store.recordRunStart({ id: "run-7", name: "turn", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: "run-7",
+			name: "turn",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		store.recordRunEnd("run-7", "completed", {});
 		assert.deepEqual(options, [{ triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true }]);
 	});
@@ -323,6 +333,7 @@ describe("installWorkflowLifecycleNotifications", () => {
 				name: "debug",
 				inputs: {},
 				status: "running",
+				toolNodes: [],
 				stages: [],
 				startedAt: 1,
 			});
@@ -363,6 +374,7 @@ describe("installWorkflowLifecycleNotifications", () => {
 				name: "debug off",
 				inputs: {},
 				status: "running",
+				toolNodes: [],
 				stages: [],
 				startedAt: 1,
 			});
@@ -399,6 +411,7 @@ describe("installWorkflowLifecycleNotifications", () => {
 			name: "throw",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -431,6 +444,7 @@ describe("installWorkflowLifecycleNotifications", () => {
 			name: "reject",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -536,6 +550,7 @@ describe("installWorkflowLifecycleNotifications", () => {
 			name: id,
 			inputs: {},
 			status: "completed" as const,
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			endedAt: 2,

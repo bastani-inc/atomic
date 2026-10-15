@@ -91,6 +91,7 @@ describe("completed inspection lifecycle delivery state", () => {
 			name: "original live",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -141,6 +142,7 @@ describe("completed inspection lifecycle delivery state", () => {
 				name: "original live",
 				inputs: {},
 				status: "running",
+				toolNodes: [],
 				stages: [],
 				startedAt: 1,
 			});

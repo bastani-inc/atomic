@@ -1064,6 +1064,7 @@ export default workflow({
 			name: "paused workflow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -1085,6 +1086,7 @@ export default workflow({
 			name: "paused tool workflow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -1136,6 +1138,7 @@ export default workflow({
 				name: "slash-resume-lazy",
 				inputs: {},
 				status: "running",
+				toolNodes: [],
 				stages: [],
 				startedAt: Date.now(),
 			});
@@ -1195,6 +1198,7 @@ export default workflow({
 			name: def.name,
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});

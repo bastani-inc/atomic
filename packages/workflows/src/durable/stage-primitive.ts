@@ -18,7 +18,7 @@ import { durableHash } from "./backend.js";
 import { activeStageTopology, durableStageCheckpointMetadata } from "./stage-topology.js";
 import { recordCheckpointDurably } from "./tool-primitive.js";
 import type { DurableStageCheckpoint, DurableStageRunTopology } from "./types.js";
-import { parseLegacyWorkflowChildResult, parseWorkflowChildResult } from "./workflow-child-result.js";
+import { parseWorkflowChildResult } from "./workflow-child-result.js";
 export type DurableCompletedStageCheckpoint = DurableStageCheckpoint & { readonly output: WorkflowSerializableValue };
 
 export interface DurableStageDeps {
@@ -632,9 +632,6 @@ export function cachedStageId(runId: string, replayKey: string): string {
 function stageMetadataCheckpointId(replayKey: string, stage: StageSnapshot): string {
 	return `${stableCheckpointId("stage-meta", replayKey)}:${durableHash({
 		stageId: stage.id,
-		// Replay metadata may upgrade legacy topology while retaining identical timing.
-		// Keep it separate from the original execution record, stable across replays.
-		...(stage.replayed === true ? { replayed: true } : {}),
 		status: stage.status,
 		endedAt: stage.endedAt ?? 0,
 		durationMs: stage.durationMs ?? 0,
@@ -655,13 +652,7 @@ export function recordCachedStageIntoStore(
 	const sourceStageId = checkpoint?.topology?.run?.runId === runId ? checkpoint.topology.stageId : undefined;
 	const stageId = sourceStageId ?? cachedStageId(runId, replayKey);
 	const result = checkpoint?.result ?? (typeof output === "string" ? output : JSON.stringify(output));
-	const hasCurrentIdentity =
-		checkpoint?.topology?.sourceOrder !== undefined ||
-		checkpoint?.topology?.status !== undefined ||
-		checkpoint?.topology?.occurrenceKey !== undefined ||
-		checkpoint?.topology?.boundary !== undefined;
-	const childResult =
-		parseWorkflowChildResult(output) ?? (hasCurrentIdentity ? undefined : parseLegacyWorkflowChildResult(output));
+	const childResult = parseWorkflowChildResult(output);
 	const workflowChild = childResult === undefined ? undefined : workflowChildSnapshotFromResult(childResult);
 	const executionOrder = checkpoint?.topology?.order ?? checkpoint?.topology?.sourceOrder;
 	const snapshot: StageSnapshot = {

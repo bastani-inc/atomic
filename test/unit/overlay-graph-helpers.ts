@@ -69,6 +69,7 @@ export function makeRun(stages: StageSnapshot[]): RunSnapshot {
 		name: "Test Run",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages,
 		startedAt: Date.now(),
 	};

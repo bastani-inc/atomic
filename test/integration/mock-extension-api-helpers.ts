@@ -155,6 +155,7 @@ export function recordWorkflowRun(
 		id,
 		name,
 		inputs: {},
+		toolNodes: [],
 		stages: [],
 		status: "running",
 		startedAt: Date.now(),

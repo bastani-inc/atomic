@@ -19,8 +19,8 @@ export { boundaryTransitionError } from "./boundary-lifecycle.js";
 import { directChildTopologyError, owningBoundaryIdError, sameRun, sameStrings } from "./stage-topology-validation.js";
 
 export class DurableNestedTopologyError extends Error {
-	constructor(message: string) {
-		super(`atomic-workflows: durable nested topology is non-resumable: ${message}`);
+	constructor(readonly reason: string) {
+		super(`atomic-workflows: durable nested topology is non-resumable: ${reason}`);
 		this.name = "DurableNestedTopologyError";
 	}
 }
@@ -196,37 +196,7 @@ export function validateDurableCompletedBoundary(
 		return;
 	}
 
-	// Current-format compatibility: a completed boundary written before the
-	// additive start record is safe only when child checkpoints prove ownership.
-	const topology = checkpoint.topology;
-	if (topology?.run?.runId !== input.workflowId || topology.stageId.length === 0) {
-		throw invalid(input, "completed fallback lacks owning-run topology");
-	}
-	const expectedChildRun: DurableStageRunTopology = {
-		runId: output.runId,
-		runName: input.childRunName,
-		parentRunId: input.workflowId,
-		parentStageId: topology.stageId,
-		rootRunId: input.rootWorkflowId,
-	};
-	const topologyError = directChildTopologyError(
-		allStages,
-		input.replayKey,
-		expectedChildRun,
-		false,
-		toolNodeIds(checkpoints, expectedChildRun.runId),
-	);
-	if (topologyError !== undefined) throw invalid(input, topologyError);
-	const ownership = reciprocalChildOwnership(
-		childStageRecords(allStages, input.replayKey),
-		output.runId,
-		input.workflowId,
-		topology.stageId,
-		input.rootWorkflowId,
-	);
-	if (!ownership.valid || ownership.directGroups === 0) {
-		throw invalid(input, "completed fallback lacks reciprocal child ownership");
-	}
+	throw invalid(input, "completed boundary lacks boundary topology");
 }
 
 function validateStartRecord(
@@ -258,18 +228,7 @@ function validateStartRecord(
 		throw invalid(input, "malformed or stale boundary-start ownership");
 	const transitionError = boundaryTransitionError(start, stages, false);
 	if (transitionError !== undefined) throw invalid(input, transitionError);
-	if (boundary.invocationFingerprint === undefined) {
-		const completedLegacy =
-			stages.some(
-				(stage) =>
-					stage.replayKey === input.replayKey &&
-					stage.topology?.boundary?.event === "terminal" &&
-					stage.topology.boundary.status === "completed",
-			) && boundaryTransitionError(start, stages, true) === undefined;
-		if (!completedLegacy) {
-			throw invalid(input, "active older boundary lacks a provable invocation identity");
-		}
-	} else if (boundary.invocationFingerprint !== input.invocationFingerprint) {
+	if (boundary.invocationFingerprint !== input.invocationFingerprint) {
 		throw invalid(input, "boundary invocation fingerprint does not match the validated call inputs");
 	}
 	const ownerError = owningBoundaryIdError(stages, input.workflowId);
@@ -295,7 +254,6 @@ function validateStartRecord(
 		stages,
 		input.replayKey,
 		expectedChildRun,
-		true,
 		toolNodeIds(checkpoints, expectedChildRun.runId),
 	);
 	if (childError !== undefined) throw invalid(input, childError);
@@ -415,8 +373,7 @@ function validateScopedIdentities(
 				: checkpoint.kind === "ui"
 					? checkpoint.promptHash
 					: checkpoint.replayKey;
-		// The boundary start/terminal (including the safe legacy fallback) owns
-		// the scope key itself rather than a descendant key.
+		// Boundary lifecycle records own the scope key rather than a descendant key.
 		if (checkpoint.kind === "stage" && lookupIdentity === input.replayKey) continue;
 		if (checkpoint.checkpointId.startsWith(prefix) !== lookupIdentity.startsWith(prefix)) {
 			throw invalid(input, "scoped checkpoint identity is not reciprocal");
@@ -437,17 +394,12 @@ function toolNodeIds(checkpoints: readonly DurableCheckpoint[], runId: string): 
 	);
 }
 
-function hasPriorInvocationData(
-	checkpoints: readonly DurableCheckpoint[],
-	replayKey: string,
-	invocationFingerprint: string,
-): boolean {
+function hasPriorInvocationData(checkpoints: readonly DurableCheckpoint[], replayKey: string): boolean {
 	const prefix = `${replayKey}:`;
-	const currentScope = replayKey.includes(`:${invocationFingerprint}:`);
 	return checkpoints.some((checkpoint) =>
 		checkpoint.kind === "stage"
 			? checkpoint.replayKey === replayKey || checkpoint.replayKey.startsWith(prefix)
-			: !currentScope && checkpoint.kind === "tool" && checkpoint.checkpointId.startsWith(prefix),
+			: checkpoint.checkpointId.startsWith(prefix),
 	);
 }
 
@@ -467,7 +419,7 @@ function validatedInvocationRecords(input: DurableBoundaryDescriptor): {
 	);
 	if (starts.length > 1) throw invalid(input, "duplicate boundary-start records");
 	const start = starts[0];
-	if (start === undefined && hasPriorInvocationData(checkpoints, input.replayKey, input.invocationFingerprint)) {
+	if (start === undefined && hasPriorInvocationData(checkpoints, input.replayKey)) {
 		throw invalid(input, "active scoped checkpoints exist without a boundary-start record");
 	}
 	if (start !== undefined) validateStartRecord(input, start, stages, checkpoints);

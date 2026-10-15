@@ -66,6 +66,7 @@ function setupAnimatingRun(store: ReturnType<typeof createStore>, runId: string)
 		name: "wf",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: Date.now(),
 	});

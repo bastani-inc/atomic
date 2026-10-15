@@ -58,6 +58,7 @@ function run(id: string, stages: StageSnapshot[], overrides: Partial<RunSnapshot
 		name: `${id}-name`,
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages,
 		startedAt: 1,
 		...overrides,

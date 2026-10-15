@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { durableChildInvocationFingerprint } from "../../packages/workflows/src/durable/child-invocation.js";
 import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import type { DurableCheckpoint, DurableStageRunTopology } from "../../packages/workflows/src/durable/types.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
@@ -11,7 +12,8 @@ import { createMockSdk, seedMockCheckpoint, seedMockWorkflow } from "./durable-d
 
 const CHILD = "round2-identity-child";
 const PARENT = "round2-identity-parent";
-const SCOPE = `workflow:workflow:${CHILD}:1`;
+const FINGERPRINT = durableChildInvocationFingerprint({ name: CHILD, normalizedName: CHILD }, {});
+const SCOPE = `workflow:workflow:${CHILD}:${FINGERPRINT}:1`;
 
 type UnsafeRecordFactory = (runId: string) => readonly DurableCheckpoint[];
 
@@ -37,6 +39,7 @@ function boundaryStart(runId: string): DurableCheckpoint {
 				replayScope: SCOPE,
 				alias: CHILD,
 				workflow: CHILD,
+				invocationFingerprint: FINGERPRINT,
 				status: "running",
 				child: {
 					runId: childRunId,

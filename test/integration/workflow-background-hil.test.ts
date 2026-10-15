@@ -31,6 +31,7 @@ function makeRun(seed: string, name: string, startedAt = Date.now()) {
 		name,
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }] as StageSnapshot[],
 		startedAt,
 	});

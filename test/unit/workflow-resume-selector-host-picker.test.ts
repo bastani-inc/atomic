@@ -65,6 +65,7 @@ function pausedLiveRun(id = "live-paused", activityAt = 100): RunSnapshot {
 		name: "live-workflow",
 		inputs: {},
 		status: "paused",
+		toolNodes: [],
 		stages: [],
 		startedAt: 1,
 		pausedAt: activityAt,

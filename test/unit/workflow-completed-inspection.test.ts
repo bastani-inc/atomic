@@ -244,6 +244,7 @@ describe("completed workflow inspection", () => {
 			name: "active",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -281,6 +282,7 @@ describe("completed workflow inspection", () => {
 			name: "stale-local-name",
 			inputs: {},
 			status: "completed",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			endedAt: 2,
@@ -629,6 +631,7 @@ describe("completed workflow inspection", () => {
 			name: "live tool",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});

@@ -122,6 +122,7 @@ describe("replayed durable stage graph lineage (issue #1498)", () => {
 			name: "wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -156,6 +157,7 @@ describe("replayed durable stage graph lineage (issue #1498)", () => {
 			name: "wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -174,6 +176,7 @@ test("parallel replay uses fail-fast scope parents instead of flattening fanout"
 		name: "wf",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: Date.now(),
 	});
@@ -233,6 +236,7 @@ test("cached replay hydrates persisted stage timing, result, session, and model 
 		name: "wf",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: Date.now(),
 	});

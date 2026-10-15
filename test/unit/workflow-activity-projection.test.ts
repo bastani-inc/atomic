@@ -33,7 +33,16 @@ function tool(id = "tool"): ToolNodeSnapshot {
 }
 
 function run(patch: Partial<RunSnapshot> = {}): RunSnapshot {
-	return { id: "root", name: "workflow", inputs: {}, status: "running", startedAt: 0, stages: [], ...patch };
+	return {
+		id: "root",
+		name: "workflow",
+		inputs: {},
+		status: "running",
+		startedAt: 0,
+		toolNodes: [],
+		stages: [],
+		...patch,
+	};
 }
 
 function ownership(patch: Partial<WorkflowActivityOwnership> = {}): WorkflowActivityOwnership {

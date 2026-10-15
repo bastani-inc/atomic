@@ -95,7 +95,7 @@ describe("recordStageCheckpoint", () => {
 			await recordStageCheckpoint(deps(), { ...stage, replayed: true }, { metadataOnly: true });
 		}
 		const checkpoints = backend.listCheckpoints(WORKFLOW_ID);
-		assert.equal(checkpoints.length, 2);
+		assert.equal(checkpoints.length, 1);
 		assert.equal(
 			JSON.stringify(checkpoints.find((entry) => entry.checkpointId === original.checkpointId)),
 			originalBytes,

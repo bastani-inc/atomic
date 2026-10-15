@@ -7,7 +7,7 @@ import {
 	type DurableStageRunTopology,
 	type DurableToolCheckpoint,
 } from "./types.js";
-import { parseLegacyWorkflowChildResult, parseWorkflowChildResult } from "./workflow-child-result.js";
+import { parseWorkflowChildResult } from "./workflow-child-result.js";
 
 export interface StageDraft {
 	readonly replayKey: string;
@@ -30,11 +30,7 @@ export interface StageDraft {
 	readonly topology?: DurableStageCheckpoint["topology"];
 }
 
-export function validBoundaryRecordSet(
-	checkpoints: readonly DurableCheckpoint[],
-	strict: boolean,
-	requireActiveFingerprint = false,
-): boolean {
+export function validBoundaryRecordSet(checkpoints: readonly DurableCheckpoint[], strict: boolean): boolean {
 	const stages = checkpoints.filter((item): item is DurableStageCheckpoint => item.kind === "stage");
 	const boundaries = stages.filter((item) => item.topology?.boundary !== undefined);
 	const startsByReplay = new Map<string, DurableStageCheckpoint[]>();
@@ -56,15 +52,7 @@ export function validBoundaryRecordSet(
 	return [...startsByReplay.values()].every((starts) => {
 		const start = starts[0]!;
 		if (boundaryTransitionError(start, stages, strict) !== undefined) return false;
-		if (!requireActiveFingerprint || start.topology!.boundary!.invocationFingerprint !== undefined) return true;
-		return (
-			stages.some(
-				(stage) =>
-					stage.replayKey === start.replayKey &&
-					stage.topology?.boundary?.event === "terminal" &&
-					stage.topology.boundary.status === "completed",
-			) && boundaryTransitionError(start, stages, true) === undefined
-		);
+		return start.topology!.boundary!.invocationFingerprint !== undefined;
 	});
 }
 
@@ -365,27 +353,15 @@ function valueOrExisting<
 }
 
 export function workflowChildFromDraft(draft: StageDraft): StageSnapshot["workflowChild"] | undefined {
-	const strict = parseWorkflowChildResult(draft.output);
-	const legacy = hasCurrentStageIdentity(draft) ? undefined : parseLegacyWorkflowChildResult(draft.output);
-	const child = strict ?? legacy;
+	const child = parseWorkflowChildResult(draft.output);
 	if (child === undefined) return undefined;
-	const exited = strict?.exited ?? false;
 	return {
 		alias: child.workflow,
 		workflow: child.workflow,
 		runId: child.runId,
 		status: child.status,
-		exited,
+		exited: child.exited,
 		outputs: child.outputs,
 		...(typeof child.exitReason === "string" ? { exitReason: child.exitReason } : {}),
 	};
-}
-
-function hasCurrentStageIdentity(draft: StageDraft): boolean {
-	return (
-		draft.topology?.sourceOrder !== undefined ||
-		draft.topology?.status !== undefined ||
-		draft.topology?.occurrenceKey !== undefined ||
-		draft.topology?.boundary !== undefined
-	);
 }

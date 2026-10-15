@@ -79,6 +79,7 @@ test("nested post-mortem chat reopens in the durable root cwd while retaining ch
 			name: "nested-workflow",
 			inputs: {},
 			status: "completed",
+			toolNodes: [],
 			stages: [stage],
 			startedAt: 2,
 			endedAt: 3,

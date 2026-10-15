@@ -106,6 +106,7 @@ describe("non-attachable tool interactions", () => {
 			status: "completed",
 			startedAt: 1,
 			endedAt: 2,
+			toolNodes: [],
 			stages: [
 				{
 					id: "retained-stage",
@@ -212,6 +213,7 @@ describe("non-attachable tool interactions", () => {
 			name: "failed-author-exit-tool-flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -263,6 +265,7 @@ describe("non-attachable tool interactions", () => {
 			name: "budget-tool-resume-flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [{ id: stageId, name: "frontier", status: "completed", parentIds: [], toolEvents: [] }],
 			startedAt: 1,
 			endedAt: 2,
@@ -352,6 +355,7 @@ describe("non-attachable tool interactions", () => {
 			name: "missing-author-exit-tool-flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});

@@ -26,6 +26,7 @@ describe("workflow lifecycle parent reconciliation teardown", () => {
 			name: "permanent-persistence",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});

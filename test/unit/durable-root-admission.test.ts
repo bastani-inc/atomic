@@ -200,6 +200,7 @@ test.each(["deadline", "caller cancellation"] as const)(
 					name: runId,
 					inputs: {},
 					status: cause === "deadline" ? "failed" : "killed",
+					toolNodes: [],
 					stages: [],
 					startedAt: 1,
 					endedAt: Date.now(),

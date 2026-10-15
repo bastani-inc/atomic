@@ -43,7 +43,15 @@ test("transport confirmation heals committed context receipt accounting after a 
 		pendingStageDeliveryAvailable: true,
 		sessionId,
 	};
-	store.recordRunStart({ id: runId, name: "flow", inputs: {}, status: "running", stages: [stage], startedAt: 1 });
+	store.recordRunStart({
+		id: runId,
+		name: "flow",
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [stage],
+		startedAt: 1,
+	});
 	const queued = await store.queueStickyStageMessage(
 		{
 			runId,

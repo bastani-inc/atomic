@@ -288,6 +288,7 @@ describe("/workflow resume — durable regression coverage", () => {
 			name: "live-select-wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: now,
 		});
@@ -324,6 +325,7 @@ describe("/workflow resume — durable regression coverage", () => {
 			name: "missing-continuation-wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: now,
 		});
@@ -378,6 +380,7 @@ describe("/workflow resume — durable regression coverage", () => {
 			name: "failed-author-exit-wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: now,
 		});

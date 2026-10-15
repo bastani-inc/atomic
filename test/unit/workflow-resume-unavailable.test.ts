@@ -71,6 +71,7 @@ for (const sourceStatus of ["blocked", "failed"] as const) {
 				name: "resume-flow",
 				inputs: {},
 				status: "running",
+				toolNodes: [],
 				stages: [],
 				startedAt: 1,
 			});

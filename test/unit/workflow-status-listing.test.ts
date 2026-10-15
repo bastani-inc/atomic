@@ -588,6 +588,7 @@ describe("pending stage status target form", () => {
 			name: "root",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "child-boundary",
@@ -608,6 +609,7 @@ describe("pending stage status target form", () => {
 			parentRunId: rootRunId,
 			parentStageId: "child-boundary",
 			rootRunId,
+			toolNodes: [],
 			stages: [
 				{
 					id: "reviewer-id",

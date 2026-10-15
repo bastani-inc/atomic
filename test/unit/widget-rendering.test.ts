@@ -55,6 +55,7 @@ function makeRun(
 		name,
 		inputs: {},
 		status,
+		toolNodes: [],
 		stages,
 		startedAt,
 		endedAt,
@@ -1539,6 +1540,7 @@ describe("renderWidgetLines — awaiting-input affordances", () => {
 			inputs: {},
 			status: "running",
 			startedAt: Date.now() - 5_000,
+			toolNodes: [],
 			stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
 		});
 		assert.equal(
@@ -1571,6 +1573,7 @@ describe("renderWidgetLines — awaiting-input affordances", () => {
 			inputs: {},
 			status: "running",
 			startedAt: Date.now() - 5_000,
+			toolNodes: [],
 			stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
 		});
 		assert.equal(
@@ -1611,6 +1614,7 @@ describe("renderWidgetLines — awaiting-input affordances", () => {
 			inputs: {},
 			status: "running",
 			startedAt: Date.now() - 5_000,
+			toolNodes: [],
 			stages: [
 				{
 					id: "fanout",
@@ -1631,6 +1635,7 @@ describe("renderWidgetLines — awaiting-input affordances", () => {
 			parentRunId: rootId,
 			parentStageId: "fanout",
 			rootRunId: rootId,
+			toolNodes: [],
 			stages: [{ id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] }],
 		});
 		assert.equal(

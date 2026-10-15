@@ -177,7 +177,15 @@ describe("graceful quit at user-input boundaries", () => {
 		const runId = "quit-controllerless-prompt";
 		const stageId = "prompt-stage";
 		const prompt = { id: "prompt-id", kind: "input" as const, message: "Value?", createdAt: 2 };
-		store.recordRunStart({ id: runId, name: "prompt", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: runId,
+			name: "prompt",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		store.recordStageStart(runId, { id: stageId, name: "input", status: "running", parentIds: [], toolEvents: [] });
 		assert.equal(store.recordStagePendingPrompt(runId, stageId, prompt), true);
 		backend.registerWorkflow({
@@ -210,7 +218,15 @@ describe("graceful quit at user-input boundaries", () => {
 		const stageId = "awaiting-stage";
 		let status: StageControlStatus = "awaiting_input";
 		let pauseCalls = 0;
-		store.recordRunStart({ id: runId, name: "awaiting", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: runId,
+			name: "awaiting",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		store.recordStageStart(runId, {
 			id: stageId,
 			name: stageId,

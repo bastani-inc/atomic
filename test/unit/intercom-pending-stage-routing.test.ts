@@ -198,6 +198,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			name: "flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "reviewer-id",
@@ -381,6 +382,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			name: "root",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "root-reviewer-id",
@@ -411,6 +413,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			parentRunId: RUN_ID,
 			parentStageId: "child-boundary",
 			rootRunId: RUN_ID,
+			toolNodes: [],
 			stages: [
 				{
 					id: "child-reviewer-id",
@@ -530,6 +533,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			name: "root",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "child-boundary",
@@ -551,6 +555,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			parentRunId: RUN_ID,
 			parentStageId: "child-boundary",
 			rootRunId: RUN_ID,
+			toolNodes: [],
 			stages: [
 				{
 					id: "grandchild-boundary",
@@ -572,6 +577,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			parentRunId: childRunId,
 			parentStageId: "grandchild-boundary",
 			rootRunId: RUN_ID,
+			toolNodes: [],
 			stages: [
 				{
 					id: "grandchild-reviewer-id",
@@ -664,6 +670,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			name: "root",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "child-boundary",
@@ -685,6 +692,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			parentRunId: RUN_ID,
 			parentStageId: "child-boundary",
 			rootRunId: RUN_ID,
+			toolNodes: [],
 			stages: [
 				{
 					id: "live-reviewer-id",
@@ -891,6 +899,7 @@ test("reloads and drains aliases by durable deposit order rather than sender tim
 		name: "flow",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [{ id: "stage-id", name: "reviewer", status: "pending", parentIds: [], toolEvents: [] }],
 		startedAt: 1,
 	});
@@ -916,6 +925,7 @@ test("reloads and drains aliases by durable deposit order rather than sender tim
 		name: "flow",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [{ id: "stage-id", name: "reviewer", status: "pending", parentIds: [], toolEvents: [] }],
 		startedAt: 1,
 		pendingStageMessages: [...(reader.getWorkflow(RUN_ID)?.pendingStageMessages ?? [])],
@@ -961,7 +971,15 @@ test("concurrent stage drains claim one queued message exactly once", async () =
 	const backend = new InMemoryDurableBackend();
 	backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 	setDurableBackend(backend);
-	store.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+	store.recordRunStart({
+		id: RUN_ID,
+		name: "flow",
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [],
+		startedAt: 1,
+	});
 	await store.queueStageMessage(
 		{
 			runId: RUN_ID,
@@ -1001,7 +1019,15 @@ test("rejected inbound delivery remains queued and retries after durable reload"
 	await writer.flush();
 	setDurableBackend(writer);
 	const store = createStore();
-	store.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+	store.recordRunStart({
+		id: RUN_ID,
+		name: "flow",
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [],
+		startedAt: 1,
+	});
 	await store.queueStageMessage(
 		{
 			runId: RUN_ID,
@@ -1037,6 +1063,7 @@ test("rejected inbound delivery remains queued and retries after durable reload"
 		name: "flow",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: 1,
 		pendingStageMessages: [...(fresh.getWorkflow(RUN_ID)?.pendingStageMessages ?? [])],
@@ -1070,7 +1097,15 @@ test("durable acknowledgement failure replays through the recipient idempotency 
 	await writer.flush();
 	setDurableBackend(writer);
 	const store = createStore();
-	store.recordRunStart({ id: RUN_ID, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+	store.recordRunStart({
+		id: RUN_ID,
+		name: "flow",
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [],
+		startedAt: 1,
+	});
 	await store.queueStageMessage(
 		{
 			runId: RUN_ID,
@@ -1131,6 +1166,7 @@ test("durable acknowledgement failure replays through the recipient idempotency 
 		name: "flow",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: 1,
 		pendingStageMessages: [...(reader.getWorkflow(RUN_ID)?.pendingStageMessages ?? [])],
@@ -1183,6 +1219,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 			name: "flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "reviewer-id",
@@ -1227,6 +1264,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 				parentRunId: RUN_ID,
 				parentStageId: "boundary-id",
 				rootRunId: RUN_ID,
+				toolNodes: [],
 				stages: [
 					{
 						id: "child-stage-id",

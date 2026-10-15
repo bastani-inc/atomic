@@ -138,7 +138,7 @@ export interface DurableToolCheckpoint {
 	readonly argsHash: string;
 	/** Cached tool output (JSON-serializable). */
 	readonly output: WorkflowSerializableValue;
-	/** Explicit return-mode result kind; absent for legacy/default successful tools. */
+	/** Explicit return-mode result kind; absent for default successful tools. */
 	readonly outcomeKind?: "return_success" | "return_failure";
 	/**
 	 * Inspection-only message for a non-replayable tool failure or cancellation;
@@ -195,7 +195,7 @@ interface DurableWorkflowBoundaryIdentity {
 	readonly replayScope: string;
 	readonly alias: string;
 	readonly workflow: string;
-	/** Definition + exact validated inputs; absent only on compatible completed legacy records. */
+	/** Definition + exact validated inputs. */
 	readonly invocationFingerprint?: string;
 	readonly child: DurableBoundaryChildTopology;
 }
@@ -330,7 +330,7 @@ export interface DurableWorkflowMetadata {
 	readonly repositoryRoot?: string;
 	readonly gitWorktreeRoot?: string;
 	readonly updatedAt: number;
-	/** Optional additive field; legacy metadata hydrates this as an empty collection. */
+	/** Durable pre-start stage messages, when present. */
 	readonly pendingStageMessages?: readonly PendingStageMessage[];
 	/** Possible stage targets from the D1 static scan, frozen at root-run admission (D10). */
 	readonly possibleStages?: readonly string[];

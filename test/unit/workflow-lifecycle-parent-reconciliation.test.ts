@@ -35,6 +35,7 @@ describe("workflow lifecycle parent reconciliation", () => {
 			name: "fast-final",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -146,6 +147,7 @@ describe("workflow lifecycle parent reconciliation", () => {
 			name: "finalized-first",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -235,6 +237,7 @@ describe("workflow lifecycle parent reconciliation", () => {
 			name: "clear-in-flight",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -315,6 +318,7 @@ describe("workflow lifecycle parent reconciliation", () => {
 			name: "persist-retry",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -381,6 +385,7 @@ describe("workflow lifecycle parent reconciliation", () => {
 			name: "dispose-retry",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -477,7 +482,7 @@ describe("workflow lifecycle parent reconciliation", () => {
 			["run-transfer-a", "transfer-a"],
 			["run-transfer-b", "transfer-b"],
 		] as const) {
-			store.recordRunStart({ id, name, inputs: {}, status: "running", stages: [], startedAt: 1 });
+			store.recordRunStart({ id, name, inputs: {}, status: "running", toolNodes: [], stages: [], startedAt: 1 });
 		}
 		const source = await createHarness();
 		const target = await createHarness();

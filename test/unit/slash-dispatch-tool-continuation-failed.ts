@@ -84,6 +84,7 @@ describe("tool run-control actions", () => {
 			inputs: {},
 			status: "running",
 			startedAt: Date.now(),
+			toolNodes: [],
 			stages: [],
 		});
 		store.recordStageStart(sourceRunId, {

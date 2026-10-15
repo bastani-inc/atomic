@@ -49,7 +49,15 @@ async function lifecycleFixture(runStatus: RunStatus, stageStatus: StageStatus =
 	const activeStore = createStore();
 	const backend = new InMemoryDurableBackend();
 	const runId = testRunId(`pending-delivery-${runStatus}-${stageStatus}`);
-	activeStore.recordRunStart({ id: runId, name: "flow", inputs: {}, status: runStatus, stages: [], startedAt: 1 });
+	activeStore.recordRunStart({
+		id: runId,
+		name: "flow",
+		inputs: {},
+		status: runStatus,
+		toolNodes: [],
+		stages: [],
+		startedAt: 1,
+	});
 	activeStore.recordStageStart(runId, {
 		id: "review-stage",
 		name: "reviewer",
@@ -77,7 +85,15 @@ async function renamedLifecycleFixture(runStatus: RunStatus, restoredStageStatus
 	backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 	setDurableBackend(backend);
 	const writerStore = createStore();
-	writerStore.recordRunStart({ id: runId, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+	writerStore.recordRunStart({
+		id: runId,
+		name: "flow",
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [],
+		startedAt: 1,
+	});
 	writerStore.recordStageStart(runId, {
 		id: "stable-stage-id",
 		name: "old-reviewer-name",
@@ -99,6 +115,7 @@ async function renamedLifecycleFixture(runStatus: RunStatus, restoredStageStatus
 		name: "flow",
 		inputs: {},
 		status: runStatus,
+		toolNodes: [],
 		stages: [
 			{
 				id: "stable-stage-id",
@@ -164,7 +181,15 @@ describe("pending workflow stage delivery lifecycle", () => {
 		const runId = testRunId("pending-delivery-after-empty-startup");
 		backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		setDurableBackend(backend);
-		activeStore.recordRunStart({ id: runId, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		activeStore.recordRunStart({
+			id: runId,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		activeStore.recordStageStart(runId, {
 			id: "review-stage",
 			name: "reviewer",
@@ -222,6 +247,7 @@ describe("pending workflow stage delivery lifecycle", () => {
 			name: "orphan",
 			inputs: {},
 			status: "completed",
+			toolNodes: [],
 			stages: [],
 			startedAt: 0,
 			parentRunId: testRunId("missing-parent"),
@@ -314,6 +340,7 @@ describe("pending workflow stage delivery lifecycle", () => {
 			name: "root",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "child-boundary",
@@ -335,6 +362,7 @@ describe("pending workflow stage delivery lifecycle", () => {
 			parentRunId: rootRunId,
 			parentStageId: "child-boundary",
 			rootRunId,
+			toolNodes: [],
 			stages: [
 				{
 					id: "child-review-stage",
@@ -381,7 +409,15 @@ describe("pending workflow stage delivery lifecycle", () => {
 		backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		setDurableBackend(backend);
 		const writerStore = createStore();
-		writerStore.recordRunStart({ id: runId, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		writerStore.recordRunStart({
+			id: runId,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		writerStore.recordStageStart(runId, {
 			id: "stable-stage-id",
 			name: "old-reviewer-name",
@@ -421,6 +457,7 @@ describe("pending workflow stage delivery lifecycle", () => {
 			name: "flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "stable-stage-id",
@@ -469,6 +506,7 @@ describe("pending workflow stage delivery lifecycle", () => {
 			name: "flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "recreated-stage-id",
@@ -521,6 +559,7 @@ describe("pending workflow stage delivery lifecycle", () => {
 			name: "flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "legacy-stage-id",
@@ -637,7 +676,15 @@ test("a crash after sender-visible failure notification reloads to exactly one n
 	await writer.flush();
 	setDurableBackend(writer);
 	const activeStore = createStore();
-	activeStore.recordRunStart({ id: runId, name: "flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+	activeStore.recordRunStart({
+		id: runId,
+		name: "flow",
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [],
+		startedAt: 1,
+	});
 	activeStore.recordStageStart(runId, {
 		id: "review-stage",
 		name: "reviewer",
@@ -756,6 +803,7 @@ test("a crash after sender-visible failure notification reloads to exactly one n
 		name: "flow",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [
 			{
 				id: "review-stage",

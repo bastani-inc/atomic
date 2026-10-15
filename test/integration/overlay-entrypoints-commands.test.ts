@@ -169,6 +169,7 @@ describe("/workflow resume — overlay integration", () => {
 			name: "done",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -206,6 +207,7 @@ describe("/workflow resume — overlay integration", () => {
 			name: "paused-wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -244,6 +246,7 @@ describe("/workflow resume — overlay integration", () => {
 			name: "live-wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -286,6 +289,7 @@ describe("/workflow resume — overlay integration", () => {
 			name: "stale-local",
 			inputs: {},
 			status: "completed",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			endedAt: 2,
@@ -315,6 +319,7 @@ describe("/workflow resume — overlay integration", () => {
 			name: "active-wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -407,6 +412,7 @@ describe("/workflow resume — paused vs non-paused branching", () => {
 			name: "snap-only-wf",
 			inputs: {},
 			status: "completed",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			endedAt: 2,
@@ -440,6 +446,7 @@ describe("/workflow attach — top-level command", () => {
 			name: "attach-wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -484,6 +491,7 @@ describe("/workflow attach — top-level command", () => {
 			name: "live-older-wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: now,
 		});
@@ -525,6 +533,7 @@ describe("/workflow attach — top-level command", () => {
 			name: "only-live-wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -552,6 +561,7 @@ describe("/workflow attach — top-level command", () => {
 			name: "live-wf-dismiss",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});
@@ -595,6 +605,7 @@ describe("/workflow attach — top-level command", () => {
 			name: "live-hydrate-wf",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});

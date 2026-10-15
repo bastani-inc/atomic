@@ -27,6 +27,7 @@ function seedRun(s: Store, id = "r1"): RunSnapshot {
 		name: `run-${id}`,
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: Date.now(),
 	};

@@ -75,6 +75,7 @@ describe("GraphView animation timer", () => {
 			name: "animation transition",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -153,6 +154,7 @@ describe("GraphView animation timer", () => {
 			name: "retained awaiting input",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [{ ...makeStage("A"), status: "running", startedAt: 1 }],
 			startedAt: 1,
 		});

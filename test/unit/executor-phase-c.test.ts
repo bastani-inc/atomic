@@ -387,6 +387,7 @@ describe("executor input resolution — Phase C", () => {
 			name: "handoff",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "setup",

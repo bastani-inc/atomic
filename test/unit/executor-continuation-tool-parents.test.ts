@@ -600,6 +600,7 @@ describe("continuation tool-parent identity map", () => {
 			name: "deeper-replayed-parent",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 			resumedFromRunId: "source",

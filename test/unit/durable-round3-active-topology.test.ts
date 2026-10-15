@@ -12,7 +12,7 @@ import { createMockSdk, seedMockCheckpoint, seedMockWorkflow } from "./durable-d
 
 const CHILD = "round3-active-child";
 const PARENT = "round3-active-parent";
-const SCOPE = `workflow:workflow:${CHILD}:1`;
+const SCOPE = `workflow:workflow:${CHILD}:${fingerprint()}:1`;
 const BOUNDARY_ID = "round3-boundary";
 
 function fingerprint(): string {

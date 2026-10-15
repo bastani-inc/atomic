@@ -87,6 +87,7 @@ describe("large workflow interaction isolation", () => {
 			name: "large-workflow",
 			inputs: heavyInput(payloadReads),
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "target-stage",
@@ -126,6 +127,7 @@ describe("large workflow interaction isolation", () => {
 			name: "large-workflow",
 			inputs: heavyInput(payloadReads),
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "question-stage",

@@ -379,6 +379,7 @@ describe("StageChatView", () => {
 				name: "test-wf",
 				inputs: {},
 				status: "running",
+				toolNodes: [],
 				stages: [],
 				startedAt: 1_000,
 			});

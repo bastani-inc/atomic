@@ -411,11 +411,9 @@ function matchesPendingStage(
 
 function nextAdmissionOrder(messages: readonly PendingStageMessage[], runId: string): number {
 	let greatest = 0;
-	let legacyPosition = 0;
 	for (const entry of messages) {
 		if (entry.runId !== runId) continue;
-		legacyPosition += 1;
-		greatest = Math.max(greatest, entry.admissionOrder ?? legacyPosition);
+		greatest = Math.max(greatest, entry.admissionOrder);
 	}
 	return greatest + 1;
 }

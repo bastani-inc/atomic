@@ -11,6 +11,7 @@ export function setupSequentialRun(store: ReturnType<typeof createStore>, runId:
 		name: "wf",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: Date.now(),
 	});
@@ -59,6 +60,7 @@ export function setupRunFromStages(
 		name: "wf",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: Date.now(),
 	});

@@ -180,6 +180,7 @@ function createGraphStore(stages: StageSnapshot[]) {
 		name: "large",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages,
 		startedAt: 1,
 	});

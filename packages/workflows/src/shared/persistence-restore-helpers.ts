@@ -494,9 +494,8 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
 			inputs: start.inputs,
 			status: "running",
 			stages,
-			...(typeof failedToolNodeId === "string" && failedToolNode?.id === failedToolNodeId
-				? { toolNodes: [failedToolNode] }
-				: {}),
+			toolNodes:
+				typeof failedToolNodeId === "string" && failedToolNode?.id === failedToolNodeId ? [failedToolNode] : [],
 			startedAt: start.startTs,
 			...(runMeta.parentRunId !== undefined ? { parentRunId: runMeta.parentRunId } : {}),
 			...(runMeta.parentStageId !== undefined ? { parentStageId: runMeta.parentStageId } : {}),

@@ -25,6 +25,7 @@ function runWithStages(seed: string, stageNames: readonly string[]): string {
 		inputs: {},
 		status: "running",
 		startedAt: 1,
+		toolNodes: [],
 		stages: stageNames.map((name) => ({
 			id: `stage-${name}`,
 			name,

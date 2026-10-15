@@ -35,6 +35,7 @@ describe("GraphView return to main chat", () => {
 					name: "child-workflow",
 					inputs: {},
 					status: "running",
+					toolNodes: [],
 					stages: [makeStage("child-first")],
 					startedAt: Date.now(),
 				},

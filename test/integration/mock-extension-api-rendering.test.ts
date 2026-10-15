@@ -385,6 +385,7 @@ describe("renderResult — all action branches", () => {
 					name: "wf",
 					inputs: {},
 					status: "running",
+					toolNodes: [],
 					stages: [],
 					startedAt: Date.now() - 1_000,
 				},

@@ -50,6 +50,7 @@ function makeRun(over: Partial<RunSnapshot>): RunSnapshot {
 		name: over.name ?? "refactor-auth",
 		inputs: over.inputs ?? {},
 		status: over.status ?? "running",
+		toolNodes: [],
 		stages: over.stages ?? [],
 		startedAt: over.startedAt ?? Date.now() - 5000,
 		endedAt: over.endedAt,
@@ -90,6 +91,7 @@ describe("renderStatusList — populated", () => {
 				name: "refactor-auth",
 				status: "running",
 				startedAt: now - 117_000,
+				toolNodes: [],
 				stages: [
 					makeStage("s1", "scout", "completed", {
 						startedAt: now - 117_000,
@@ -105,6 +107,7 @@ describe("renderStatusList — populated", () => {
 				name: "doc-update",
 				status: "running",
 				startedAt: now - 42_000,
+				toolNodes: [],
 				stages: [makeStage("w1", "writer", "running", { startedAt: now - 42_000 })],
 			}),
 			makeRun({
@@ -114,6 +117,7 @@ describe("renderStatusList — populated", () => {
 				startedAt: now - 16_000,
 				endedAt: now - 8_000,
 				durationMs: 8_000,
+				toolNodes: [],
 				stages: [makeStage("z1", "primer", "completed", { durationMs: 8_000 })],
 			}),
 		];
@@ -242,6 +246,7 @@ describe("renderStatusList — populated", () => {
 					startedAt: now - 10_000,
 					endedAt: now - 1_000,
 					failedStageId: "reviewer-a",
+					toolNodes: [],
 					stages: [
 						makeStage("reviewer-a", "reviewer-a", "failed", {
 							error: "A required model provider API key is missing. Configure the provider credentials and resume the workflow.",
@@ -277,6 +282,7 @@ describe("renderStatusList — populated", () => {
 					status: "completed",
 					startedAt: now - 10_000,
 					endedAt: now - 1_000,
+					toolNodes: [],
 					stages: [
 						makeStage("reviewer-a", "reviewer-a", "failed", {
 							error: "A required model provider API key is missing. Configure the provider credentials and resume the workflow.",
@@ -358,6 +364,7 @@ describe("renderStatusList — populated", () => {
 				name: "active-wf",
 				status: "running",
 				startedAt: now - 4_000,
+				toolNodes: [],
 				stages: [makeStage("r1", "worker", "running", { startedAt: now - 4_000 })],
 			}),
 			makeRun({
@@ -366,6 +373,7 @@ describe("renderStatusList — populated", () => {
 				status: "paused",
 				startedAt: now - 10_000,
 				pausedAt: now - 6_000,
+				toolNodes: [],
 				stages: [makeStage("p1", "review", "paused", { startedAt: now - 10_000, pausedAt: now - 6_000 })],
 			}),
 		];
@@ -398,6 +406,7 @@ describe("renderStatusList — populated", () => {
 			status: "paused",
 			startedAt: now - 10_000,
 			pausedAt: now - 6_000,
+			toolNodes: [],
 			stages: [makeStage("p1", "worker", "paused", { startedAt: now - 10_000, pausedAt: now - 6_000 })],
 		});
 
@@ -442,6 +451,7 @@ describe("renderStatusList — populated", () => {
 			name: "scratch",
 			status: "running",
 			startedAt: Date.now() - 1000,
+			toolNodes: [],
 			stages: [makeStage("x", "worker", "running")],
 		});
 		const out = renderStatusList([run], { width: 80 });
@@ -462,6 +472,7 @@ describe("renderStatusList — populated", () => {
 			status: "killed",
 			startedAt: now - 4_000,
 			endedAt: now - 1_000,
+			toolNodes: [],
 			stages: [
 				makeStage("s1", "scout", "completed", { durationMs: 22_000 }),
 				makeStage("s2", "partition", "failed", { durationMs: 0 }),
@@ -484,6 +495,7 @@ describe("renderStatusList — populated", () => {
 				exitReason: "guard completed early",
 				startedAt: now - 12_000,
 				endedAt: now - 2_000,
+				toolNodes: [],
 				stages: [makeStage("c1", "guard", "completed", { durationMs: 10_000 })],
 			}),
 			makeRun({
@@ -494,6 +506,7 @@ describe("renderStatusList — populated", () => {
 				exitReason: "nothing to process",
 				startedAt: now - 8_000,
 				endedAt: now - 1_000,
+				toolNodes: [],
 				stages: [makeStage("s1", "scan", "skipped", { durationMs: 7_000 })],
 			}),
 		];
@@ -534,6 +547,7 @@ describe("renderStatusList — populated", () => {
 			name: "ent-deep-research",
 			status: "running",
 			startedAt: now - 60_000,
+			toolNodes: [],
 			stages,
 		});
 		const out = renderStatusList([run], { theme: deriveGraphTheme({}), now, width: 60 });
@@ -550,6 +564,7 @@ describe("renderStatusList — populated", () => {
 			name: `${"研究".repeat(18)}-status-list-overflow`,
 			status: "running",
 			startedAt: now - 60_000,
+			toolNodes: [],
 			stages: [
 				makeStage("s1", "scout", "completed", { durationMs: 10_000 }),
 				makeStage("s2", "正在运行".repeat(12), "running", { startedAt: now - 30_000 }),
@@ -610,6 +625,7 @@ describe("renderStatusList — populated", () => {
 			id: runId,
 			name: "release-docs",
 			startedAt: now - 5_000,
+			toolNodes: [],
 			stages: [
 				makeStage("s-build", "build", "completed", { durationMs: 1_000 }),
 				makeStage("s-verify", "verify", "running", { startedAt: now - 4_000 }),

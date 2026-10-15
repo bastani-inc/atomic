@@ -140,7 +140,7 @@ describe("completed catalog reviewer regressions", () => {
 		};
 		backend.recordCheckpoint(
 			stage(workflowId, "boundary", "child-boundary", 10, {
-				output: { workflow: "child", runId: childRunId, status: "completed", outputs: {} },
+				output: { workflow: "child", runId: childRunId, status: "completed", exited: false, outputs: {} },
 				topology: { version: 1, stageId: "boundary", parentIds: [], order: 1, run: rootRun },
 			}),
 		);
@@ -286,7 +286,13 @@ describe("completed catalog reviewer regressions", () => {
 			parentStageId: "boundary",
 			rootRunId: workflowId,
 		};
-		const childOutput = { workflow: "child", runId: childRunId, status: "completed", outputs: {} } as const;
+		const childOutput = {
+			workflow: "child",
+			runId: childRunId,
+			status: "completed",
+			exited: false,
+			outputs: {},
+		} as const;
 		for (const checkpoint of [
 			stage(workflowId, "right", "right", 10, {
 				output: "right",

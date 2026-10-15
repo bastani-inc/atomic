@@ -498,6 +498,7 @@ describe("GraphView keyboard navigation", () => {
 			name: "Test Run",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: Date.now(),
 		});

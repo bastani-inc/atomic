@@ -77,7 +77,15 @@ function setup() {
 			options.push(sendOptions ?? {});
 		},
 	});
-	store.recordRunStart({ id: "run-1", name: "release", inputs: {}, status: "running", stages: [], startedAt: 1 });
+	store.recordRunStart({
+		id: "run-1",
+		name: "release",
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [],
+		startedAt: 1,
+	});
 	store.recordStageStart("run-1", runningStage());
 	return { store, broker, sent, options, unsubscribe };
 }

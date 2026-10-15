@@ -300,7 +300,15 @@ test("owner quit attempts all generation cleanup after a disposal failure", asyn
 });
 
 function startBareRun(id: string, name: string): void {
-	store.recordRunStart({ id, name, inputs: {}, status: "running", stages: [], startedAt: 1 } satisfies RunSnapshot);
+	store.recordRunStart({
+		id,
+		name,
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [],
+		startedAt: 1,
+	} satisfies RunSnapshot);
 }
 
 function seedRun(runId: string, stageId: string, promptId: string) {

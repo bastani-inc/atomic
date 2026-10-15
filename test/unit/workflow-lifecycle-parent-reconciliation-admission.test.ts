@@ -39,6 +39,7 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 				name: "tool-pending",
 				inputs: {},
 				status: "running",
+				toolNodes: [],
 				stages: [],
 				startedAt: 1,
 			});
@@ -213,6 +214,7 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 			name: "between-tools",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -272,7 +274,15 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 
 	test("an idle parent starts one lifecycle prompt with the durable terminal card", async () => {
 		const store = createStore();
-		store.recordRunStart({ id: "run-idle", name: "idle", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: "run-idle",
+			name: "idle",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
 		const harness = await createHarness();
 		harnesses.push(harness);
 		let delivery: Promise<void> | undefined;
@@ -330,6 +340,7 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 			name: "prompt-start-retry",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -410,6 +421,7 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 			name: "abort-survival",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -516,6 +528,7 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 			name: "crash-reconciliation",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});
@@ -571,6 +584,7 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 			name: "crash-reconciliation",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [],
 			startedAt: 1,
 		});

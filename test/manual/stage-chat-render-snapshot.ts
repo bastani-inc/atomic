@@ -28,6 +28,7 @@ function setupRun(
 		name: "review-fix-loop",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [],
 		startedAt: Date.now() - 38_000,
 	});

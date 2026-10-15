@@ -607,6 +607,7 @@ test("the real two-session route owner is hidden and rejects ordinary messages w
 			inputs: {},
 			status: "running",
 			startedAt: 1,
+			toolNodes: [],
 			stages: [
 				{
 					id: "reviewer-id",
@@ -943,6 +944,7 @@ test("ctx.ui run prompts and synthetic prompt stages are hidden and broker-refus
 			inputs: {},
 			status: "running",
 			startedAt: 1,
+			toolNodes: [],
 			stages: [
 				{
 					id: "boundary-id",
@@ -971,6 +973,7 @@ test("ctx.ui run prompts and synthetic prompt stages are hidden and broker-refus
 			inputs: {},
 			status: "running",
 			startedAt: 1,
+			toolNodes: [],
 			stages: [promptStage, customStage, restoredStage, agentStage],
 		});
 		backend.registerWorkflow({
@@ -1385,6 +1388,7 @@ test.each(["tool", "prompt"] as const)(
 			inputs: {},
 			status: "running",
 			startedAt: 1,
+			toolNodes: [],
 			stages: [
 				...stages,
 				...(kind === "prompt"
@@ -1672,6 +1676,7 @@ test.each([
 			inputs: {},
 			status: "running" as const,
 			startedAt: 1,
+			toolNodes: [],
 			stages: [
 				{
 					id: "agent-id",
@@ -1923,6 +1928,7 @@ test("nested known tools are broker-refused through every supported boundary and
 			inputs: {},
 			status: "running",
 			startedAt: 1,
+			toolNodes: [],
 			stages: [boundary("boundary-one", "outer", childId)],
 			possibleStages: [
 				...toolTargets.map((target) => target.slice(group.length + 1)),
@@ -1940,6 +1946,7 @@ test("nested known tools are broker-refused through every supported boundary and
 			parentRunId: rootId,
 			parentStageId: "boundary-one",
 			rootRunId: rootId,
+			toolNodes: [],
 			stages: [boundary("boundary-two", "inner", grandId)],
 		});
 		store.recordRunStart({
@@ -2564,6 +2571,7 @@ test("one composite workflow-stage target transitions atomically from durable qu
 			name: "flow",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "reviewer-id",
@@ -2854,6 +2862,7 @@ test("route-neutral store churn preserves durable queueing and live delivery for
 			name: "burst",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "reviewer-id",
@@ -3178,6 +3187,7 @@ test("an identical durable delivered retry is acknowledged as delivered through 
 		name: "delivered-retry",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [
 			{
 				id: "reviewer-id",
@@ -3231,6 +3241,7 @@ test("an identical durable delivered retry is acknowledged as delivered through 
 			name: "delivered-retry",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "reviewer-id",
@@ -3294,6 +3305,7 @@ test("a drained message ID is revalidated by its durable owner after a broker re
 		name: "live-conflict",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [stage("reviewer-id", "reviewer", "pending"), stage("other-id", "other", "pending")],
 		startedAt: 1,
 	});
@@ -3471,6 +3483,7 @@ test("a drained message ID is revalidated by its durable owner after a broker re
 			name: "live-conflict",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				stage("reviewer-id", "reviewer", "running", "durable-stage-session"),
 				stage("other-id", "other", "running", "other-session"),
@@ -3581,6 +3594,7 @@ test("raw malformed messages are rejected before durable mutation and valid opti
 		name: "wire-validation",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [
 			{
 				id: "reviewer-id",
@@ -3699,6 +3713,7 @@ test("an ordinary queued send receives one correlated failure when its stage bec
 			name: "undeliverable",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "reviewer-id",
@@ -3776,6 +3791,7 @@ test("the workflow owner session receives its own undeliverable notice when it i
 			name: "self-notice",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "reviewer-id",
@@ -3858,6 +3874,7 @@ test("a reconnected logical sender receives its durable undeliverable notice aft
 		name: "sender-reconnect",
 		inputs: {},
 		status: "running",
+		toolNodes: [],
 		stages: [
 			{
 				id: "reviewer-id",
@@ -3923,6 +3940,7 @@ test("a reconnected logical sender receives its durable undeliverable notice aft
 			name: "sender-reconnect",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "reviewer-id",
@@ -4006,6 +4024,7 @@ test("a reconnected logical sender receives its durable undeliverable notice aft
 			name: "sender-reconnect",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "reviewer-id",
@@ -4068,6 +4087,7 @@ test("a sticky pattern preludes every materializing iteration and ** broadcasts 
 			inputs: {},
 			status: "running",
 			possibleStages: ["orchestrator-*", "pull-request"],
+			toolNodes: [],
 			stages: [
 				{
 					id: "orchestrator-2-id",
@@ -4402,6 +4422,7 @@ test("retired real startup context cannot acknowledge a dropped sticky message (
 			name: "retired-startup",
 			inputs: {},
 			status: "running",
+			toolNodes: [],
 			stages: [
 				{
 					id: "retired-id",

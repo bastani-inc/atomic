@@ -470,6 +470,7 @@ test("prompt-node continuation UI waits for the node-less pause barrier", async 
 					status: "failed",
 					startedAt: 1,
 					endedAt: 2,
+					toolNodes: [],
 					stages: [],
 				},
 			},
