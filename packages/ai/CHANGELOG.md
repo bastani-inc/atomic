@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.38-alpha.1] - 2026-10-15
+
 ### Breaking Changes
 
 - Removed `AssistantMessageFrame`, `AssistantMessageFrameEncoder`, and `reduceAssistantMessageFrames()`. Use `AssistantMessageEventStream` events for streaming progress and `result()` for the final message instead.
