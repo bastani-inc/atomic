@@ -361,7 +361,7 @@ describe("Models with classifier models", () => {
 		for (const id of ["jev-1.13", "jev-1.13-free"]) {
 			expect(models.getModelOfType("classifier", "opencode", id)).toMatchObject({
 				api: "typesafe-system-one",
-				baseUrl: "https://opencode.ai/zen/v1",
+				baseUrl: "https://opencode.ai/inference/v1",
 			});
 			expect(models.getModel("opencode", id)).toBeUndefined();
 		}

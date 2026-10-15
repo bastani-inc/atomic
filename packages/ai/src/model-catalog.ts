@@ -60,10 +60,41 @@ function flattenModelCatalog(groups: ModelGroups, type: ModelType): Record<strin
 }
 
 export function flattenChatModelCatalog<const TProvider extends ProviderId, const TGroups extends ModelGroups>(
-	_provider: TProvider,
+	provider: TProvider,
 	groups: TGroups,
 ): ChatModelCatalog<TGroups, TProvider> {
-	return flattenModelCatalog(groups, "chat") as ChatModelCatalog<TGroups, TProvider>;
+	const catalog = flattenModelCatalog(groups, "chat") as ChatModelCatalog<TGroups, TProvider>;
+	if (
+		provider === "xiaomi" ||
+		provider === "xiaomi-token-plan-cn" ||
+		provider === "xiaomi-token-plan-ams" ||
+		provider === "xiaomi-token-plan-sgp"
+	) {
+		for (const [id, entry] of Object.entries(catalog)) {
+			const model = entry as Model<Api>;
+			if (model.api !== "openai-completions") continue;
+			Object.assign(catalog, {
+				[id]: {
+					...model,
+					compat: { ...model.compat, supportsReasoningEffort: false },
+					...(model.reasoning
+						? {
+								thinkingLevelMap: {
+									off: "off",
+									minimal: null,
+									low: null,
+									medium: null,
+									high: "high",
+									xhigh: null,
+									max: null,
+								},
+							}
+						: {}),
+				},
+			});
+		}
+	}
+	return catalog;
 }
 
 export function flattenImageModelCatalog<const TProvider extends ProviderId, const TGroups extends ModelGroups>(

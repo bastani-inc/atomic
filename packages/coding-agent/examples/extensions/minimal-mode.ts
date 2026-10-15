@@ -63,14 +63,7 @@ export default function (pi: ExtensionAPI) {
 
 		renderCall(args, theme, _context) {
 			const path = shortenPath(args.path || "");
-			let pathDisplay = path ? theme.fg("accent", path) : theme.fg("toolOutput", "...");
-
-			// Show line range if specified
-			if (args.offset !== undefined || args.limit !== undefined) {
-				const startLine = args.offset ?? 1;
-				const endLine = args.limit !== undefined ? startLine + args.limit - 1 : "";
-				pathDisplay += theme.fg("warning", `:${startLine}${endLine ? `-${endLine}` : ""}`);
-			}
+			const pathDisplay = path ? theme.fg("accent", path) : theme.fg("toolOutput", "...");
 
 			return new Text(`${theme.fg("toolTitle", theme.bold("read"))} ${pathDisplay}`, 0, 0);
 		},

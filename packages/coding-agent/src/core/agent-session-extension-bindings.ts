@@ -1,8 +1,10 @@
 import { basename, dirname } from "node:path";
+import { getCurrentSystemMessage } from "@bastani/pi-ai";
 import { resetApiProviders } from "@bastani/pi-ai/compat";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { executeNestedToolCall, getCallableTools } from "./agent-session-nested-tools.js";
 import { recoverProtectedStreamingCustomMessages } from "./agent-session-persistent-custom-messages.ts";
+import { preservesInitialToolLoadout } from "./agent-session-state.ts";
 import { replaceSessionTaskOwner } from "./agent-session-tasks.js";
 import type { AgentSessionReloadOptions, ExtensionBindings } from "./agent-session-types.js";
 import { generateWorkflowSummary } from "./compaction/session-summarization.ts";
@@ -367,6 +369,7 @@ export function _bindExtensionCore(
 	this: AgentSession,
 	runner: ExtensionRunner,
 	publication?: ExtensionPublicationGate,
+	startupToolNames?: readonly string[],
 ): void {
 	runner.bindWorkOwner(this);
 	if (publication) {
@@ -405,12 +408,13 @@ export function _bindExtensionCore(
 		}
 		return definitions;
 	};
-	let candidateActiveTools = this.getActiveToolNames();
+	let candidateActiveTools = startupToolNames ? [...startupToolNames] : this.getActiveToolNames();
 	const candidateRegistryNames = new Set(this._baseToolDefinitions.keys());
 	const refreshCandidateTools = () => {
 		const definitions = candidateDefinitions();
 		for (const [name, { definition }] of definitions) {
 			if (
+				startupToolNames === undefined &&
 				!candidateRegistryNames.has(name) &&
 				activatesOnRegistration(this, name, definition, this._toolRegistry.has(name))
 			)
@@ -833,6 +837,7 @@ async function reloadOwnedGeneration(
 			flagValues: previousFlagValues,
 			includeAllExtensionTools: true,
 		});
+		if (reason === "startup") this._restoreToolsFromTranscript({ startup: true });
 		this._appliedDefaultTools = new Set(defaultTools);
 		retainedRuntimes.add(this._resourceLoader.getExtensions().runtime);
 		for (const extension of this._resourceLoader.getExtensions().extensions)
@@ -895,7 +900,17 @@ async function reloadOwnedGeneration(
 			throw Object.assign(new AggregateError(discoveryFailures, "Reload discovery cleanup failed"), {
 				code: "ShutdownFailed",
 			});
-		this._bindExtensionCore(candidateRunner, publication);
+		const recordedTools =
+			reason === "startup" && this._usesDefaultTools && !preservesInitialToolLoadout(this)
+				? getCurrentSystemMessage(this.sessionManager.buildSessionContext().messages)
+				: undefined;
+		const startupToolNames = recordedTools
+			? applyToolModifiers(
+					(recordedTools.toolsAdded ?? []).map((tool) => tool.name),
+					this._defaultToolModifiers,
+				)
+			: undefined;
+		this._bindExtensionCore(candidateRunner, publication, startupToolNames);
 		candidateRunner.setHostBindings(
 			this._extensionHumanInput,
 			this._extensionDiagnosticListener,
@@ -973,6 +988,7 @@ async function reloadOwnedGeneration(
 			includeAllExtensionTools: true,
 			preserveRunner: true,
 		});
+		if (reason === "startup") this._restoreToolsFromTranscript({ startup: true });
 		this._appliedDefaultTools = new Set(defaultTools);
 		candidateRunner.reportUnhandledMcpServers();
 	} catch (error) {
@@ -1018,7 +1034,9 @@ export async function completeStartupResources(this: AgentSession, resourceLoade
 		const startNewcomers = this._extensionRunner.attachStartupExtensions(resourceLoader.getExtensions().extensions);
 		this._buildRuntime({
 			activeToolNames: this.getActiveToolNames(),
-			includeAllExtensionTools: true,
+			includeAllExtensionTools:
+				preservesInitialToolLoadout(this) ||
+				getCurrentSystemMessage(this.sessionManager.buildSessionContext().messages) === undefined,
 			preserveRunner: true,
 		});
 		this.refreshCurrentModelFromRegistry();

@@ -4,13 +4,13 @@ import chalk from "chalk";
 import { minimatch } from "minimatch";
 import { isValidThinkingLevel } from "../cli/args.ts";
 import { normalizeModelReference } from "./azure-provider-compat.js";
-import { findExactModelReferenceMatch, parseModelPattern } from "./model-resolver-patterns.ts";
+import { type ModelReferenceResult, resolveModelReference } from "./model-resolver-patterns.ts";
 import type { ScopedModel } from "./model-resolver-types.ts";
 import type { ModelRuntime } from "./model-runtime.js";
 
 export interface ModelScopeDiagnostic {
 	type: "warning";
-	code: "no-match" | "invalid-thinking-level";
+	code: "no-match" | "invalid-thinking-level" | "ambiguous";
 	message: string;
 	pattern: string;
 }
@@ -38,87 +38,86 @@ function parseGlobThinkingLevel(pattern: string): { globPattern: string; thinkin
 	return { globPattern: pattern.substring(0, colonIdx), thinkingLevel: suffix };
 }
 
+function resolveExactReference(text: string, models: readonly Model<Api>[]): ModelReferenceResult {
+	return resolveModelReference({ text, thinkingSuffix: "none", fuzzy: false }, models, () => true);
+}
+
 /**
- * Resolve model patterns to actual Model objects with optional thinking levels
- * Format: "pattern:level" where :level is optional
- * For each pattern, finds all matching models and picks the best version:
- * 1. Prefer alias (e.g., claude-sonnet-4-5) over dated versions (claude-sonnet-4-5-20250929)
- * 2. If no alias, pick the latest dated version
+ * Resolve scope patterns (`--models`, `enabledModels`) to models with optional thinking levels.
  *
- * Supports models with colons in their IDs (e.g., OpenRouter's model:exacto).
- * The algorithm tries to match the full pattern first, then progressively
- * strips colon-suffixes to find a match.
+ * A complete literal reference is tried first, then glob patterns, then fuzzy matching with an
+ * optional `:<thinking>` suffix. Every model in `models` is usable, so credentials cannot choose
+ * between providers offering the same id. All of them are added, with a warning so the user can pick
+ * one with `provider/id`.
  */
 export function resolveModelScopeFromModels(
 	patterns: string[],
 	models: readonly Model<Api>[],
 ): ResolveModelScopeResult {
-	const availableModels = [...models];
 	const scopedModels: ScopedModel[] = [];
 	const diagnostics: ModelScopeDiagnostic[] = [];
+	const add = (model: Model<Api>, thinkingLevel: ThinkingLevel | undefined) => {
+		if (!scopedModels.some((scoped) => modelsAreEqual(scoped.model, model))) {
+			scopedModels.push({ model, thinkingLevel });
+		}
+	};
+	const noMatch = (pattern: string) =>
+		diagnostics.push({ type: "warning", code: "no-match", message: `No models match pattern "${pattern}"`, pattern });
+	const ambiguous = (pattern: string, candidates: readonly Model<Api>[]) => {
+		const providers = [...new Set(candidates.map((model) => model.provider))].sort((a, b) => a.localeCompare(b));
+		diagnostics.push({
+			type: "warning",
+			code: "ambiguous",
+			message: `Pattern "${pattern}" matches several providers: ${providers.join(", ")}. Use provider/id to choose one.`,
+			pattern,
+		});
+	};
+	const addResult = (
+		pattern: string,
+		result: ModelReferenceResult,
+		thinkingLevel: ThinkingLevel | undefined,
+	): boolean => {
+		if (result.status === "not-found") return false;
+		if (result.status === "ambiguous") ambiguous(pattern, result.candidates);
+		const matches = result.status === "resolved" ? [result.model] : result.candidates;
+		for (const model of matches) add(model, thinkingLevel);
+		return true;
+	};
+
 	for (const rawPattern of patterns) {
 		const pattern = normalizeModelReference(rawPattern);
-		const completeExactMatch = findExactModelReferenceMatch(pattern, availableModels);
-		if (completeExactMatch) {
-			if (!scopedModels.find((scoped) => modelsAreEqual(scoped.model, completeExactMatch))) {
-				scopedModels.push({ model: completeExactMatch, thinkingLevel: undefined });
-			}
-			continue;
-		}
+		if (addResult(pattern, resolveExactReference(pattern, models), undefined)) continue;
 
 		if (hasGlobCharacters(pattern)) {
 			const { globPattern, thinkingLevel } = parseGlobThinkingLevel(pattern);
-			const exactMatch = findExactModelReferenceMatch(globPattern, availableModels);
-			if (exactMatch) {
-				if (!scopedModels.find((scoped) => modelsAreEqual(scoped.model, exactMatch))) {
-					scopedModels.push({ model: exactMatch, thinkingLevel });
-				}
-				continue;
-			}
-			const matchingModels = availableModels.filter((model) => {
-				const fullId = `${model.provider}/${model.id}`;
-				return (
-					minimatch(fullId, globPattern, { nocase: true }) || minimatch(model.id, globPattern, { nocase: true })
-				);
-			});
+			// Ids such as `bracketed-model[1m]` are not globs
+			if (addResult(pattern, resolveExactReference(globPattern, models), thinkingLevel)) continue;
 
-			if (matchingModels.length === 0) {
-				diagnostics.push({
-					type: "warning",
-					code: "no-match",
-					message: `No models match pattern "${pattern}"`,
-					pattern,
-				});
-				continue;
-			}
-
-			for (const model of matchingModels) {
-				if (!scopedModels.find((scoped) => modelsAreEqual(scoped.model, model))) {
-					scopedModels.push({ model, thinkingLevel });
-				}
-			}
+			// Match against "provider/modelId" format OR just model ID
+			// This allows "*sonnet*" to match without requiring "anthropic/*sonnet*"
+			const matches = models.filter(
+				(model) =>
+					minimatch(`${model.provider}/${model.id}`, globPattern, { nocase: true }) ||
+					minimatch(model.id, globPattern, { nocase: true }),
+			);
+			if (matches.length === 0) noMatch(pattern);
+			for (const model of matches) add(model, thinkingLevel);
 			continue;
 		}
 
-		const { model, thinkingLevel, warning } = parseModelPattern(pattern, availableModels);
-
-		if (warning) {
-			diagnostics.push({ type: "warning", code: "invalid-thinking-level", message: warning, pattern });
-		}
-
-		if (!model) {
-			diagnostics.push({
-				type: "warning",
-				code: "no-match",
-				message: `No models match pattern "${pattern}"`,
-				pattern,
-			});
+		const result = resolveModelReference(
+			{ text: pattern, thinkingSuffix: "lenient", fuzzy: true },
+			models,
+			() => true,
+		);
+		if (result.status === "not-found") {
+			noMatch(pattern);
 			continue;
 		}
-
-		if (!scopedModels.find((scoped) => modelsAreEqual(scoped.model, model))) {
-			scopedModels.push({ model, thinkingLevel });
+		if (result.warning) {
+			diagnostics.push({ type: "warning", code: "invalid-thinking-level", message: result.warning, pattern });
 		}
+		addResult(pattern, result, result.thinkingLevel);
 	}
 
 	return { scopedModels, diagnostics };

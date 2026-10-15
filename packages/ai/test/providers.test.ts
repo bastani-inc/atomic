@@ -76,6 +76,19 @@ describe("builtin providers", () => {
 		});
 	});
 
+	it("registers an API implementation for every builtin model's api (#3630)", async () => {
+		const models = builtinModels();
+		const aborted = AbortSignal.abort();
+		const missing: string[] = [];
+		for (const provider of models.getProviders()) {
+			for (const model of models.getModels(provider.id)) {
+				const result = await provider.streamSimple(model, context, { signal: aborted, apiKey: "test-key" }).result();
+				if (result.errorMessage?.includes("no API implementation")) missing.push(`${provider.id}/${model.id}`);
+			}
+		}
+		expect(missing).toEqual([]);
+	});
+
 	it("returns empty results for unknown provider ids", () => {
 		const unknownProvider = "not-a-provider" as never;
 		const unknownModel = "x" as never;

@@ -34,6 +34,7 @@ export function buildSessionOptions(
 		const resolved = resolveCliModel({
 			cliProvider: parsed.provider,
 			cliModel: parsed.model,
+			inlineApiKey: Boolean(parsed.apiKey),
 			modelRuntime,
 		});
 		if (resolved.warning) {

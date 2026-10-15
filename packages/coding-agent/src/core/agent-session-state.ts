@@ -4,6 +4,7 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { getCallableTools } from "./agent-session-nested-tools.js";
 import type { ToolDefinition, ToolInfo } from "./extensions/index.js";
+import { applyToolModifiers } from "./settings-merge.js";
 import { getSkillCatalog } from "./skill-catalog.ts";
 import {
 	buildSystemPrompt,
@@ -194,28 +195,38 @@ export function _preparePromptAndToolLoadout(
 	return sections ? { role: "system", content: "", sections, timestamp: Date.now() } : undefined;
 }
 
+export function preservesInitialToolLoadout(session: AgentSession): boolean {
+	return (
+		(!session._usesDefaultTools && session._initialActiveToolNames !== undefined) ||
+		session._orchestrationContext?.kind === "workflow-stage" ||
+		(session._subagentPolicy?.depth ?? 0) >= 1
+	);
+}
+
 /**
  * Restore registered tools from the selected transcript, not another branch's live state.
  *
- * `keepLoadout` is for a session whose creator already chose its loadout (every `createAgentSession`
- * does, from `--tools`, `--no-builtin-tools` and the `defaultTools` setting). That choice stays
- * authoritative for built-in tools, so only the other tools the transcript declared are added to it:
- * the ones an extension or `tool_search` activated, such as MCP tools that are not registered until
- * their server connects. Without it the transcript replaces the loadout.
+ * Explicit tool selections keep their built-in loadout while restoring dynamically registered tools.
+ * Default selections restore the recorded loadout with any CLI modifiers applied.
  */
-export function _restoreToolsFromTranscript(this: AgentSession, options?: { keepLoadout?: boolean }): void {
+export function _restoreToolsFromTranscript(this: AgentSession, options?: { startup?: boolean }): void {
 	this._pendingToolNames.clear();
 	const current = getCurrentSystemMessage(this.sessionManager.buildSessionContext().messages);
 	if (!current) return;
-	const declared = (current.toolsAdded ?? []).map((tool) => tool.name);
-	if (!options?.keepLoadout) {
+	const keepLoadout = options?.startup && preservesInitialToolLoadout(this);
+	const modifiers = options?.startup && this._usesDefaultTools ? this._defaultToolModifiers : [];
+	const declared = applyToolModifiers(
+		(current.toolsAdded ?? []).map((tool) => tool.name),
+		modifiers,
+	);
+	if (!keepLoadout) {
 		this._pendingToolNames = new Set(declared);
 		this._setActiveTools(declared);
 		return;
 	}
 	const restored = declared.filter((name) => !this._baseToolDefinitions.has(name));
 	this._pendingToolNames = new Set(restored);
-	this._setActiveTools([...this.getActiveToolNames(), ...restored]);
+	this._setActiveTools(applyToolModifiers([...this.getActiveToolNames(), ...restored], modifiers));
 }
 
 // =========================================================================

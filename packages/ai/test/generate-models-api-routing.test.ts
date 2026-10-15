@@ -18,7 +18,12 @@ type GeneratedModel = {
 	id: string;
 	api: string;
 	baseUrl: string;
-	compat?: { supportsMidConvoEffort?: boolean };
+	compat?: {
+		supportsMidConvoEffort?: boolean;
+		supportsMidConvoSystemMessages?: boolean;
+		supportsMidConvoToolAdditions?: boolean;
+	};
+	thinkingLevelMap?: Record<string, string | null>;
 	cost: ModelCost;
 };
 type GeneratedProviderCatalog = Record<string, Record<string, GeneratedModel>>;
@@ -190,13 +195,13 @@ test("routes eligible OpenRouter Claude models through anthropic-messages", () =
 });
 
 test.each(["kimi-code-plan-global", "kimi-code-plan-cn", "kimi-for-coding"])(
-	"keeps Kimi Coding models from the %s catalog source",
+	"routes Kimi Coding models from the %s catalog source through Chat Completions (#10720)",
 	(source) => {
 		const catalog = {
 			[source]: {
 				models: {
 					"kimi-for-coding": { id: "kimi-for-coding", ...toolCapable },
-					k2p7: { id: "k2p7", ...toolCapable },
+					"kimi-for-coding-highspeed": { id: "kimi-for-coding-highspeed", ...toolCapable },
 					k3: { id: "k3", ...toolCapable },
 					"no-tools": { id: "no-tools", ...toolCapable, tool_call: false },
 				},
@@ -208,11 +213,16 @@ test.each(["kimi-code-plan-global", "kimi-code-plan-cn", "kimi-for-coding"])(
 				: {}),
 		};
 		const models = generateProviderCatalogs(catalog, ["kimi-coding"])["kimi-coding"];
-		assert.deepEqual(Object.keys(models).sort(), ["k3", "kimi-for-coding"]);
+		assert.deepEqual(Object.keys(models).sort(), ["k3", "kimi-for-coding", "kimi-for-coding-highspeed"]);
 		for (const model of Object.values(models)) {
-			assert.equal(model.api, "anthropic-messages");
-			assert.equal(model.baseUrl, "https://api.kimi.com/coding");
+			assert.equal(model.api, "openai-completions");
+			assert.equal(model.baseUrl, "https://api.kimi.com/coding/v1");
+			assert.equal(model.compat?.supportsMidConvoSystemMessages, true);
+			assert.equal(model.thinkingLevelMap?.off, null);
 		}
+		assert.equal(models.k3.compat?.supportsMidConvoToolAdditions, true);
+		assert.equal(models["kimi-for-coding"].compat?.supportsMidConvoToolAdditions, true);
+		assert.equal(models["kimi-for-coding-highspeed"].compat?.supportsMidConvoToolAdditions, undefined);
 	},
 );
 

@@ -93,7 +93,7 @@ Unified LLM API with provider collections, automatic auth resolution, token and 
 - **OpenCode Zen**
 - **OpenCode Go**
 - **Fireworks** (uses OpenAI- and Anthropic-compatible APIs)
-- **Kimi For Coding** (Moonshot AI subscription endpoint, uses Anthropic-compatible API)
+- **Kimi For Coding** (Moonshot AI subscription endpoint, uses OpenAI Chat Completions)
 - **Meta** (Model API, uses OpenAI Responses-compatible API)
 - **Qwen Token Plan** (separate Individual and existing catalogs, with a separate China provider)
 - **Xiaomi MiMo** (defaults to API billing endpoint, with separate Token Plan providers for `cn`/`ams`/`sgp` regions)

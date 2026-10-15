@@ -3,7 +3,7 @@ import { lazyOAuth } from "../auth/helpers.ts";
 import { loadOpenAICodexOAuth } from "../auth/oauth/load.ts";
 import { createProvider, type Provider } from "../models.ts";
 import { OPENAI_CODEX_MODELS } from "./openai-codex.models.ts";
-import { openaiSubscriptionModels } from "./openai-subscription-models.js";
+import { openaiSubscriptionModels } from "./openai-subscription-models.ts";
 
 export function openaiCodexProvider(): Provider<"openai-codex-responses"> {
 	return createProvider({

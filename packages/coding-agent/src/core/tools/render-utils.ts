@@ -41,6 +41,23 @@ export function str(value: unknown): string | null {
 	return null;
 }
 
+function parseLineNumber(value: unknown): number | undefined {
+	const candidate = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+	return typeof candidate === "number" && Number.isFinite(candidate) ? candidate : undefined;
+}
+
+/** Format finite numbers or numeric strings as a read line range, omitting malformed ranges. */
+export function formatReadLineRange(offset: unknown, limit: unknown): string {
+	if (offset == null && limit == null) return "";
+	const start = offset == null ? 1 : parseLineNumber(offset);
+	if (start === undefined) return "";
+	if (limit == null) return `:${start}`;
+	const count = parseLineNumber(limit);
+	if (count === undefined) return "";
+	const end = start + count - 1;
+	return `:${start}${end ? `-${end}` : ""}`;
+}
+
 export function replaceTabs(text: string): string {
 	return text.replace(/\t/g, "   ");
 }

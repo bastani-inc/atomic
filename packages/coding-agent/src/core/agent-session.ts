@@ -371,7 +371,7 @@ class AgentSessionBase {
 				activeToolNames: this._initialActiveToolNames,
 				includeAllExtensionTools: true,
 			});
-			internals._restoreToolsFromTranscript({ keepLoadout: this._initialActiveToolNames !== undefined });
+			internals._restoreToolsFromTranscript({ startup: true });
 			if (this._workflowStageAdmission?.hasAgentTaskHost() && !isSubagentChildSession(internals))
 				internals.getAgentTaskHost();
 		} catch (error) {

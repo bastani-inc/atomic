@@ -397,6 +397,7 @@ const generatedNavigationInsertions: Record<string, readonly string[]> = {
 		"/computer-use",
 	],
 	"/skills": ["/skills/authoring"],
+	"/llama-cpp": ["/nvidia-rtx-llama-cpp"],
 	"/subagents": ["/subagents/authoring"],
 	"/intercom": ["/intercom/operations"],
 	"/extensions": ["/extensions/authoring", "/extensions/events", "/extensions/ui", "/extensions/examples"],
@@ -640,8 +641,8 @@ describe("docs information architecture (#2847)", () => {
 		const expectedGenerated = Object.values(generatedNavigationInsertions).flat().sort();
 		assert.equal(
 			expectedGenerated.length,
-			36,
-			"migration routes, upstream additions, reader-path orientation pages, /mcp-servers, /sdk/structured-decisions, and /sdk/web-server have insertion points",
+			37,
+			"migration routes, upstream additions, reader-path orientation pages, /mcp-servers, /sdk/structured-decisions, /sdk/web-server, and /nvidia-rtx-llama-cpp have insertion points",
 		);
 		assert.deepEqual(generated, expectedGenerated, "no generated page may fall outside the insertion contract");
 
