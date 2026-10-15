@@ -4,7 +4,7 @@
 
 Implement only the unwired `JournalDurableBackend`, persist before returning, rebuild its projection from journal events, verify it on Boat, and commit on `feat/workflow-journal-s2-journal-backend`.
 
-The table records the unchanged acceptance clauses and binding amendments. The current three-reviewer consolidated batch at review-round-latest.json:1063–1123 requires the current named S1 baseline, `308453289f24f431d63e2b082e2da7d768ae2740`, and its exact child-process fixture. `C` denotes current format/check gates, `F` focused tests and runtime probes, `U` the standalone unit gate, and `D` baseline/artifact audits, recorded in the current-baseline section below. Earlier receipts are historical, not current-source validation. Their ancestry and fixture-preservation claims covered the then-current S1 tip, not this newer baseline.
+The table records the acceptance clauses and binding amendments. The current three-reviewer batch at review-round-latest.json:558–619 requires final S1 `b395408f955c4b1aa5b84f38d28659a4fb7ea9e8`, its 256-row paged reader, and the retained child-process fixture. `C` denotes format/check gates, `F` focused tests and runtime probes, `U` the standalone unit gate, and `D` baseline/artifact audits in the final-S1 section below. Earlier receipts are historical; the previous baseline lacked the newly required paging behavior.
 
 | Contract clause | Verification |
 | --- | --- |
@@ -38,14 +38,14 @@ The table records the unchanged acceptance clauses and binding amendments. The c
 | Default path remains `join(dirname(getAgentDir()), "workflows", "journal.sqlite")` | F: restored baseline expectation plus isolated default-constructor create/append/close/reopen and fresh Node/Bun process regressions for an empty override; D: explicit empty/unset fallback restored |
 | `ATOMIC_WORKFLOW_JOURNAL_PATH` preserves every nonempty override verbatim | F: inherited relative/unusual path expectations; D: no trim, normalization, rejection or new validation; empty is treated as unset |
 | WAL, FULL sync, busy timeout and foreign-key pragmas retained | F: inherited kernel/process tests; D: existing pragmas and counter adapters unchanged |
-| Schema version 1, unknown version hard error, no migration | F: all 171 designated-baseline kernel cases; singleton safe integers, int64 extrema, text and real values report exact typed errors |
+| Schema version 1, unknown version hard error, no migration | F: all 172 final-S1 kernel cases, including paging; singleton safe integers, int64 extrema, text and real values report exact typed errors |
 | Exported schema/table/column/event/encoding/lease constants and types retain identity | C, F and D: exact API probes; restored SqliteStoredValue and JournalSchemaVersionError found/constructor union; synchronous capability remains additive |
 | Lease tombstone preserves monotonically increasing epoch after deletion | F: restored exact constructor/runId/heldEpoch/currentEpoch checks after release and deletion, inherited fencing and backend stale-deletion regressions; D: shared deletion retains tombstone |
 | `seq` and `epoch` remain safe integers in `0..Number.MAX_SAFE_INTEGER` | F: inherited range matrix; expiry grant uses the same checked increment |
 | Range errors retain exact class and fields | F: `JournalCounterRangeError { runId, field, value, reason }`; additive checkpoint path propagates it rather than hiding it |
 | Identifier Unicode/NUL rules and NUL precedence remain unchanged | F: inherited kernel and Node/Bun process matrices; D: synchronous companions delegate shared validation bodies |
 | Payload/header JSON follows verified S1 serialization | F: round trips match `JSON.parse(JSON.stringify(original))`, including ordinary negative zero becoming zero; retain accepted native JSON lexemes, NUL and lone surrogates; D: plain stringify plus lone-surrogate escape |
-| Surviving S1 tests, process fixture and notes remain intact relative to current named baseline | D: retain every kernel assertion from `308453289f24f431d63e2b082e2da7d768ae2740`; only imports and two persistent default-path process cases added; adapter, contention file, journal-process.mjs and S1 notes byte-identical to that baseline |
+| Surviving S1 tests, process fixture and notes remain intact relative to current named baseline | D: retain every kernel assertion from `b395408f955c4b1aa5b84f38d28659a4fb7ea9e8`; only helper imports and two persistent default-path process cases added; adapter, contention file, journal-process.mjs and S1 notes byte-identical |
 | Exactly one metadata row and typed corruption error | F: cardinality before any version decoding; nine multirow combinations include both int64 extrema and mixed types; exact JournalMetaCorruptError path/rowCount, no schema or row changes |
 | `StatusChanged` is a full snapshot, latest sequence wins | F: direct metadata payload, conflicting claim and reopened handle checks |
 | Optional absent fields omitted from JSON | F: raw status payload lacks owner, release, failure, session and resumability fields when absent |
@@ -80,13 +80,14 @@ The table records the unchanged acceptance clauses and binding amendments. The c
 | No lease creation, stopping, deletion or handoff | D: only `crabbox run --keep` on the assigned static lease |
 | Ignored scratch setup occurs inline on Boat | D: probes created inline on the assigned lease; preserve existing qlty config |
 | User guides/changelog remain scoped | D: unwired S2 adds no actionable user guidance; S6 documentation remains untouched |
-| Rebase S2 commits onto the current verified S1 branch | D: initial six-commit rebase retained; all eight current S2 commits replayed onto `308453289f24f431d63e2b082e2da7d768ae2740`, exact range-diff and named-branch ancestry checked |
+| Rebase S2 commits onto the current verified S1 branch | D: nine S2 commits replayed onto final S1 `b395408f955c4b1aa5b84f38d28659a4fb7ea9e8`; current named-branch and `daf1777` main ancestry checked |
 | New owner parity regression survives reopen | F: same release/reclaim sequence on both backends, exact complete handles before/after journal reopen |
-| No additional S1 journal edits | D: current baseline integration changes only the inherited child-process fixture and these notes; S2 production, tests, verified serializer, kernel types and adapter remain byte-identical to the reviewed S2 commit |
+| No additional S1 journal edits | D: retain exact final-S1 read body/export and serializer; only existing S2 synchronous companions remain additive; all other S2 source/tests unchanged |
+| Preserve paged async read and exported `JOURNAL_READ_PAGE_SIZE = 256` | F: retained baseline regression and Node/Bun 515-entry probes; early stop materializes `[256]`, full read `[256,256,3]`, from seq256 `[256,4]`; exact literal type compile |
 
 ## Interface and state decisions
 
-The supervisor approved `SynchronousRunJournal` companion operations because the runtime backend requires synchronous registration, status, checkpoint and prompt operations. Existing Promise-returning `RunJournal` methods and AsyncIterable `read()` remain unchanged and share operation bodies with the companions. Asynchronous open rebuilds through `read()`; synchronous writes and incremental refresh use `readEntries()`. No schema, event, encoding or lease constant changed.
+The supervisor approved `SynchronousRunJournal` companion operations because the runtime backend requires synchronous registration, status, checkpoint and prompt operations. Existing Promise-returning `RunJournal` methods and AsyncIterable `read()` retain their public identities. Asynchronous open rebuilds through final-S1 paged `read()`; synchronous writes and incremental refresh use the existing eager `readEntries()` companion. The paged reader body and exported page-size constant are retained exactly from final S1. No schema, event, encoding or lease constant changed.
 
 Required/optional workflow fields keep their existing types. Status events contain direct full metadata snapshots. Full-snapshot owner omission clears ownership metadata on fold. During a status claim, an omitted modelOwner argument preserves the current modelOwner; releasedModelOwner is dropped unless explicitly supplied. No identifiers, caller paths or payload text are normalized. Checkpoint identity remains `(kind, checkpointId)` within one run. Duplicate checkpoint writes preserve the first payload; other lists retain their order and duplicate values. Completion-order getters retain their current behavior, while journal replay uses sequence order. JSON values use verified S1 serialization, including ordinary negative zero becoming zero.
 
@@ -542,3 +543,55 @@ The same run passed `npx --no-install tsc -p .crabbox/completion5-tsconfig.json 
 `U`: Boat `run_32e7236e9e8f17796300dac840645120`, remote `.crabbox/s2-current-base-unit.log`, ran exactly `npm run test:unit -- --exclude test/unit/durable-embedded-postgres-root.test.ts --exclude test/unit/durable-embedded-postgres.test.ts` alone. The wrapper applied exactly two authorized exclusions. **930 files / 10,613 tests passed**,26 pre-existing skips,130.59s, `ATOMIC_JOURNAL_GATE_EXIT=0`. No test, assertion, concurrency, environment or timeout setting changed.
 
 All three current findings are resolved by the same signed rebase and exact fixture retention. The fixture blob is `0d9730cbeda50f0759a3603d57e206a81784d214` in both S1 and S2. The backend (`38af6e8baab270752d7362c38991b5cb7eefdfe9`), serializer/journal (`9d75d194a649c813c93bdd0a74f9c9697c0ad9b4`) and backend tests (`516f3b6516e9af586178670b2dbed3987cbba96e`) are unchanged from the reviewed S2 head. The final notes/hash audit and signed delivery commit are recorded in the completion receipt. No implementation or required Linux gate remains pending; new Windows execution remains unverified, not claimed. No deferred work was added and no push or PR was performed.
+
+## Final S1 paging integration
+
+### Contract amendment received
+
+"Supervisor: the S1 branch feat/workflow-journal-s1-kernel has a NEW final tip b395408f9. It was rebased onto origin/main daf1777 (which includes the model-catalog test fix) and adds one S1 commit: read() now pages by seq in batches of JOURNAL_READ_PAGE_SIZE = 256 instead of loading the whole history. Rebase S2 onto b395408f9 (not 308453289 or be33554f9), keep S2's production code and amendments unchanged, keep the jiti fixture name-based checks, and re-verify on Boat. If S2 overrides read(), it must keep the paged behavior."
+
+The three consolidated P2 findings at review-round-latest.json:558–619 share this missing baseline and paged-reader cause. Starting HEAD was `1fceba23b2af65ef6f134325672ab25778e6036d`. Rebased only its nine S2 commits from old S1 `308453289` onto final S1 `b395408f955c4b1aa5b84f38d28659a4fb7ea9e8`, not the old S1 history. Current S1 and `daf1777cb55e793eed195fd19f17dfae6edf5ced` are ancestors.
+
+Two conflicts required resolution: keep S1's exact paged async `read()` beside S2's unchanged synchronous `readEntries()`; retain S1's complete paging regression before S2's two existing persistent-default-path cases. The page-size export, reader body and baseline test assertions match final S1. All other S2 production and test files remain unchanged. The jiti child fixture, adapter, contention suite, types and S1 notes retain their required contents. No schema, event, encoding or lease constant changes.
+
+| Old S2 commit | Rebased commit |
+| --- | --- |
+| c54cc529c | 1ef4bb0a2 |
+| 5df67e3fa | 08b4d461a |
+| 8f4bff58d | c0b0f6b19 |
+| 347dad232 | 7aef21e65 |
+| 2d8455e31 | d603557d1 |
+| 344234de9 | e15e2fc7d |
+| 27c1dff83 | 76e6f657e |
+| 166cd2e76 | 6f0df7f18 |
+| 1fceba23b | be0f78380 |
+
+All nine replayed signatures report `G`. Range-diff shows seven identical patches; the other two differ only in the conflict resolutions described above.
+
+RED: `run_e2ef7a70d8f5a342083b4c1f936128ce` reran the exact `risk-paging-amendment.mjs` source on the original S2 checkout. Both Node22.19.0 and Bun1.4.2 reported `exportedPageSize:null`, `queryRowCounts:[515]`, then failed `undefined !== 256`, exit1. The diagnostic wrapper confirmed both failures and returned0; that wrapper outcome is not a passing paging test. The permanent final-S1 paging test is retained unchanged, rather than replaced by scratch-only evidence.
+
+Current final-S1 validation is recorded below after execution. Earlier baseline evidence above is historical and does not establish this new paging requirement.
+
+Initial final-gate attempt `run_9fd686dc6c192ef911cf323e5e8d94e1` passed format/check, all 20 focused files/369 tests, kernel174, both API compilations and Node paging/runtime/JSON/path probes. It then stopped because the expected scratch direct-delete source was absent at its new filename. This is a verification-script setup failure, not a product regression; the exact reviewed source is now explicitly created inline before rerunning the full command. No source/test assertions changed.
+
+### Current final-S1 gates
+
+`C`, `F`: Boat `run_33817da80ba9f9607591faaad40c3b4a`, remote `.crabbox/s2-final-paging-gates-2.log`, passed with `ATOMIC_JOURNAL_GATE_EXIT=0`.
+
+| Check | Result |
+| --- | --- |
+| `npm run format`; `git diff --exit-code` | 3438 files, no fixes or formatter diff |
+| `npm run check` | Biome, root/package typechecks and shrinkwrap passed; six existing informational diagnostics |
+| Exact 19 selected durable suites plus process integration | 20 files / 369 tests passed, no skips; includes backend64, kernel174, process5 and all eight acquisition child schedules |
+| Literal `npx vitest --run test/unit/durable-sqlite-run-journal.test.ts` | 174/174 passed; complete 172-case S1 suite plus two S2 persistence cases |
+| Exact API compilation | `.crabbox/completion5-tsconfig.json` passed; `.crabbox/s2-page-tsconfig.json` also proves the export has literal type `256` |
+| Exact reviewer paging source on Node22.19.0/Bun1.4.2 | Both report page size256, 515 ordered events, query rows `[256,256,3]` |
+| `.crabbox/s2-paging-boundaries.mjs` on both runtimes | Early stop `[256]`; full `[256,256,3]`; from seq256 `[256,4]`; exact dense sequence arrays |
+| Retained runtime probes on both runtimes | Five groups cover stale fields/tombstones, metadata, durable native values, fencing and separate-process reconstruction; standard-JSON/owner/reopen, default-path persistence and exact direct-delete probes all passed |
+| Qlty | Cached0.654.0 `metrics --functions` ran on both production files with unchanged config |
+
+The source file `risk-paging-amendment.mjs` is unchanged at blob `93493dbcb4f97bcbf91202a36e884a268429bf3d`. No assertion, timeout, concurrency, environment identity or exclusion changed during these passes. The backend remains unwired; no UI or new Windows execution is claimed.
+
+`U`: Boat `run_90bcfa6c0de43caf69f4d5d2a3d9d5fc`, remote `.crabbox/s2-final-paging-unit.log`, ran the exact authorized two-exclusion unit command alone. The wrapper applied exactly two exclusions. **930 files / 10,614 tests passed**, 26 pre-existing skips,146.12s, `ATOMIC_JOURNAL_GATE_EXIT=0`. No additional failure, environmental adjustment or test suppression occurred.
+
+The final note-inclusive artifact audit compares all 29 S2/baseline source hashes, exact S1 reader and baseline test bodies, prior S2 source preservation, and current fixture identity. Its run identifier and signed commit are recorded in the completion receipt. All three paging findings are resolved by the retained S1 reader/export/test and the current executable evidence. No implementation work or new deferred work remains; reviewer and reducer approval remain separate. `issues.md` was removed after closure.
