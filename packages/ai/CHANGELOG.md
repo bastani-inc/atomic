@@ -27,6 +27,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - Fixed Gemini 4 Argon requests on Google Vertex failing with "Thinking budget is not supported", and its thinking level being ignored on the Gemini API, by sending `thinkingLevel` for Gemini 4 and later models ([#10890](https://github.com/earendil-works/pi/issues/10890)).
 - Fixed Xiaomi MiMo models failing with a 400 at the `minimal` thinking level by sending only the documented thinking on/off toggle and exposing only the `off` and `high` levels ([#10818](https://github.com/earendil-works/pi/issues/10818)).
 - Fixed tool calls with malformed final JSON arguments silently running with only a parsed prefix. These calls now fail validation with the original arguments so the model can correct them ([#10897](https://github.com/earendil-works/pi/issues/10897)).
+- Fixed `retryAssistantCall()` ignoring server retry hints. A failed response's `Retry-After-Ms`, `Retry-After` (seconds or HTTP date) or Cloudflare body `retry_after` is reported as `AssistantMessage.retryAfterMs` by the OpenAI Responses, OpenAI Completions and ChatGPT (Codex) providers, and replaces the exponential backoff for that retry, capped by the new `RetryPolicy.maxRetryDelayMs` (60 seconds by default). Cloudflare 521-523 responses and connection resets are now retryable ([#3623](https://github.com/bastani-inc/atomic/issues/3623))
 
 ## [0.9.36] - 2026-10-13
 

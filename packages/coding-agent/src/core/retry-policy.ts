@@ -9,19 +9,20 @@
  * handling, sleeping, and whether the chain may advance afterwards.
  */
 
-import { retryDelayMs } from "@bastani/pi-ai";
+import { type AssistantMessage, failureRetryDelayMs } from "@bastani/pi-ai";
 
 export interface RetryPolicySettings {
 	readonly enabled: boolean;
 	readonly maxRetries: number;
 	readonly baseDelayMs: number;
 	readonly maxAgentDelayMs?: number;
+	readonly maxRetryDelayMs?: number;
 }
 
 export interface RetryDecision {
 	/** 1-based number of the retry this decision authorizes. */
 	readonly attempt: number;
-	/** Exponential backoff to wait before that retry. */
+	/** Server retry hint, capped by `maxRetryDelayMs`, or else the exponential backoff to wait before that retry. */
 	readonly delayMs: number;
 }
 
@@ -31,15 +32,17 @@ export interface RetryDecision {
  * @param settings retry settings, or `undefined` when the caller has none
  * @param retriesSpent retries already made for this failure
  * @param eligible whether this failure can be repaired by requesting again
+ * @param failure the failed message, whose server retry hint replaces the backoff
  */
 export function nextRetryDecision(
 	settings: RetryPolicySettings | undefined,
 	retriesSpent: number,
 	eligible: boolean,
+	failure: Pick<AssistantMessage, "retryAfterMs"> = {},
 ): RetryDecision | undefined {
 	if (settings === undefined || !settings.enabled || !eligible || retriesSpent >= settings.maxRetries) {
 		return undefined;
 	}
 	const attempt = retriesSpent + 1;
-	return { attempt, delayMs: retryDelayMs(settings, attempt) };
+	return { attempt, delayMs: failureRetryDelayMs(settings, attempt, failure) };
 }

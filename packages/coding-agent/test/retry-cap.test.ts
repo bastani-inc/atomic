@@ -21,3 +21,13 @@ test("legacy retry.maxDelayMs remains a provider limit, independent of the agent
 	assert.equal(settings.getRetrySettings().maxAgentDelayMs, 60_000);
 	assert.equal(settings.getProviderRetrySettings().maxRetryDelayMs, 1234);
 });
+
+test("a server retry hint replaces the backoff, capped by retry.provider.maxRetryDelayMs, within maxRetries (#3623)", () => {
+	const settings = SettingsManager.inMemory({ retry: { provider: { maxRetryDelayMs: 30_000 } } }).getRetrySettings();
+	assert.equal(nextRetryDecision(settings, 0, true, { retryAfterMs: 12_000 })?.delayMs, 12_000);
+	assert.equal(nextRetryDecision(settings, 1, true, { retryAfterMs: 120_000 })?.delayMs, 30_000);
+	assert.equal(nextRetryDecision(settings, 1, true, {})?.delayMs, 4000);
+	assert.equal(nextRetryDecision(settings, 3, true, { retryAfterMs: 12_000 }), undefined);
+	const defaults = SettingsManager.inMemory().getRetrySettings();
+	assert.equal(nextRetryDecision(defaults, 0, true, { retryAfterMs: 300_000 })?.delayMs, 60_000);
+});

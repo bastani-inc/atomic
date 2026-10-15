@@ -94,6 +94,38 @@ describe("AgentSession retry and event characterization", () => {
 		expect(harness.session.isRetrying).toBe(false);
 	});
 
+	it.each(["520 status code (no body)", "read ECONNRESET"])(
+		"retries %s within maxRetries, waiting for the server retry hint (#3623)",
+		async (errorMessage) => {
+			const harness = await createHarness({
+				settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1, provider: { maxRetryDelayMs: 25 } } },
+			});
+			harnesses.push(harness);
+			const retryEvents: string[] = [];
+			harness.session.subscribe((event) => {
+				if (event.type === "auto_retry_start")
+					retryEvents.push(`start:${event.attempt}/${event.maxAttempts}:${event.delayMs}`);
+				if (event.type === "auto_retry_end") retryEvents.push(`end:${event.success}`);
+			});
+
+			const transientFailure = (retryAfterMs: number) => ({
+				...fauxAssistantMessage("", { stopReason: "error", errorMessage }),
+				retryAfterMs,
+			});
+			harness.setResponses([
+				transientFailure(5),
+				transientFailure(60_000),
+				transientFailure(5),
+				fauxAssistantMessage("ok"),
+			]);
+
+			await harness.session.prompt("test");
+
+			expect(retryEvents).toEqual(["start:1/3:5", "start:2/3:25", "start:3/3:5", "end:true"]);
+			expect(harness.faux.state.callCount).toBe(4);
+		},
+	);
+
 	it("prompt waits for retry completion even when assistant message_end handling is delayed", async () => {
 		const harness = await createHarness({
 			settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } },

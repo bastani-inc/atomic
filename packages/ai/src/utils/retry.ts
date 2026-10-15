@@ -39,6 +39,7 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"503",
 	"504",
 	"520",
+	"\\b52[1-3]\\b",
 	"524",
 	"service.?unavailable",
 	"server.?error",
@@ -57,6 +58,8 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"connection.?error",
 	"connection.?refused",
 	"connection.?lost",
+	"ECONNRESET",
+	"connection.?reset",
 	"other side closed",
 	"fetch failed",
 	"getaddrinfo",
@@ -130,6 +133,11 @@ export interface RetryPolicy {
 	baseDelayMs: number;
 	/** Cap for agent-level retry delays in ms. Defaults to 60 seconds. */
 	maxAgentDelayMs?: number;
+	/**
+	 * Cap for a server retry hint (`Retry-After-Ms`, `Retry-After`, a body `retry_after`).
+	 * Defaults to 60 seconds; 0 caps the hint by `maxAgentDelayMs` instead.
+	 */
+	maxRetryDelayMs?: number;
 }
 
 export const DEFAULT_MAX_AGENT_RETRY_DELAY_MS = 60_000;
@@ -138,6 +146,32 @@ export function retryDelayMs(policy: Pick<RetryPolicy, "baseDelayMs" | "maxAgent
 	const delay = policy.baseDelayMs * 2 ** Math.max(0, attempt - 1);
 	const safeDelay = Number.isSafeInteger(delay) ? delay : Number.MAX_SAFE_INTEGER;
 	return Math.min(safeDelay, policy.maxAgentDelayMs ?? DEFAULT_MAX_AGENT_RETRY_DELAY_MS);
+}
+
+type RetryFailure = Pick<AssistantMessage, "stopReason" | "errorMessage" | "retryAfterMs">;
+
+/**
+ * Wait before retry `attempt` (1-indexed): the server retry hint when the failure
+ * carries one, capped by `maxRetryDelayMs`, otherwise the exponential backoff.
+ */
+export function failureRetryDelayMs(
+	policy: Pick<RetryPolicy, "baseDelayMs" | "maxAgentDelayMs" | "maxRetryDelayMs">,
+	attempt: number,
+	failure: Pick<AssistantMessage, "retryAfterMs">,
+): number {
+	const hintMs = failure.retryAfterMs;
+	if (hintMs === undefined || !Number.isFinite(hintMs) || hintMs <= 0) return retryDelayMs(policy, attempt);
+	const capMs = policy.maxRetryDelayMs || (policy.maxAgentDelayMs ?? DEFAULT_MAX_AGENT_RETRY_DELAY_MS);
+	return Math.min(hintMs, capMs);
+}
+
+/**
+ * Delay before retry `attempt` (1-indexed) of a failed assistant call, or `undefined`
+ * when it is not retryable or `maxRetries` is spent.
+ */
+export function assistantRetryDelayMs(policy: RetryPolicy, attempt: number, message: RetryFailure): number | undefined {
+	if (!policy.enabled || attempt > policy.maxRetries || !isRetryableAssistantError(message)) return undefined;
+	return failureRetryDelayMs(policy, attempt, message);
 }
 
 /** Optional callbacks emitted by {@link retryAssistantCall} around each retry. */
@@ -189,7 +223,8 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  *   too, so callers do not need to care when cancellation happened.
  * - A non-retryable error (per {@link isRetryableAssistantError}, including quota/
  *   billing exhaustion) is returned immediately so deterministic errors fail fast.
- * - Otherwise retries up to `maxRetries` times with exponential backoff, emitting
+ * - Otherwise retries up to `maxRetries` times, waiting for the server retry hint or
+ *   the exponential backoff (see {@link assistantRetryDelayMs}), emitting
  *   `onRetryScheduled` before each sleep, `onRetryAttemptStart` after each sleep before
  *   the retried call starts, and `onRetryFinished` once at the end (whether the loop
  *   ends in success, exhausted retries, or an aborted backoff).
@@ -223,14 +258,14 @@ export async function retryAssistantCall(
 		}
 
 		// Non-retryable, or budget exhausted: return the final error message.
-		if (attempt >= maxAttempts || !isRetryableAssistantError(response)) {
+		const delayMs = policy ? assistantRetryDelayMs(policy, attempt + 1, response) : undefined;
+		if (delayMs === undefined) {
 			if (lastRetry) await callbacks?.onRetryFinished?.(false, lastRetry.attempt, response.errorMessage);
 			return response;
 		}
 
 		attempt++;
 		lastRetry = { attempt, errorMessage: response.errorMessage || "Unknown error" };
-		const delayMs = retryDelayMs(policy!, attempt);
 		await callbacks?.onRetryScheduled?.(attempt, maxAttempts, delayMs, lastRetry.errorMessage);
 
 		// Normalize aborts during retry backoff to the same AssistantMessage shape as
@@ -257,7 +292,7 @@ export async function retryAssistantCall(
  * overflow separately, then apply their own retry budget, backoff, and reporting
  * before restarting the assistant turn.
  */
-export function isRetryableAssistantError(message: AssistantMessage): boolean {
+export function isRetryableAssistantError(message: RetryFailure): boolean {
 	if (message.stopReason !== "error" || !message.errorMessage) return false;
 	const errorMessage = message.errorMessage;
 	if (NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN.test(errorMessage)) return false;
