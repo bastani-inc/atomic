@@ -130,7 +130,7 @@ test("overlay: installed editor accepts pi setup before card render", async () =
 				editor = (factory as (tui: unknown, theme: unknown, kb: unknown) => InlineFormEditor)(
 					{ requestRender: () => {} },
 					{},
-					{},
+					makeFakeKeybindings(),
 				);
 				editor.setUseTerminalCursor(true);
 				editor.setAutocompleteMaxVisible(30);
@@ -341,7 +341,6 @@ test("store: clearForms empties the registry so resumed sessions have no live fo
 		fields: FIELDS,
 		rawText: { prompt: "hi" },
 		focusedIdx: 0,
-		submitChoiceIdx: 0,
 		caret: 0,
 		status: "editing",
 	});

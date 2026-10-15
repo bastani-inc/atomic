@@ -125,7 +125,7 @@ export function renderRoundedBoxLines(opts: RenderRoundedBoxOpts & { width: numb
 
 	const body = opts.bodyLines.length > 0 ? opts.bodyLines : [""];
 	const rows = body.map((line) => {
-		const clipped = truncateToWidth(line, inner, ELLIPSIS, theme !== undefined);
+		const clipped = truncateToWidth(line, inner, ELLIPSIS);
 		const pad = Math.max(0, inner - visibleWidth(clipped));
 		return `${border}│${reset}${clipped}${" ".repeat(pad)}${border}│${reset}`;
 	});

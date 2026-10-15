@@ -68,14 +68,7 @@ export interface InlineFormEditorOpts {
 	theme: GraphTheme;
 	/** Called when the Submit row passes validation or cancel fires. */
 	onExit: (outcome: FormEditorOutcome) => void;
-	/**
-	 * Pi's `KeybindingsManager` injected as the third arg of the editor
-	 * factory. Used to translate raw byte sequences into named Pi actions
-	 * (`tui.editor.deleteWordBackward`, etc.) so user-configured editor
-	 * keybindings are honoured inside workflow fields. Optional only for
-	 * older hosts and tests — production always passes one through.
-	 */
-	keybindings?: KeybindingsLike;
+	keybindings: KeybindingsLike;
 }
 
 import {
@@ -88,19 +81,21 @@ import {
 	PASTE_START,
 	previousGraphemeOffset,
 } from "./inline-form-editor-text.js";
-/**
- * Minimal `PiEditorComponent` implementation. The pi-tui interface requires
- * `getText` / `setText` / `handleInput` / `render` / `invalidate`. We satisfy
- * them with no-ops where the host doesn't really need them during form mode
- * (no autocomplete, no history, no `onSubmit` handler).
- */
+export class InlineFormKeybindingsError extends Error {
+	constructor(readonly formId: string) {
+		super(`Inline form ${formId} requires an injected keybinding manager`);
+		this.name = "InlineFormKeybindingsError";
+	}
+}
+
+/** Headless input router; the chat-history card renders the form. */
 export class InlineFormEditor implements PiEditorComponent {
 	/** Required by Focusable; we always have focus during the form. */
 	focused = true;
 
 	private readonly tui: { requestRender?: () => void };
 	private readonly opts: InlineFormEditorOpts;
-	private readonly kb: KeybindingsLike | undefined;
+	private readonly kb: KeybindingsLike;
 
 	// EditorComponent optional hooks — we don't use them.
 	onSubmit?: (text: string) => void;
@@ -121,7 +116,8 @@ export class InlineFormEditor implements PiEditorComponent {
 	constructor(tui: { requestRender?: () => void }, opts: InlineFormEditorOpts) {
 		this.tui = tui;
 		this.opts = opts;
-		this.kb = isKeybindingsLike(opts.keybindings) ? opts.keybindings : undefined;
+		if (!isKeybindingsLike(opts.keybindings)) throw new InlineFormKeybindingsError(opts.formId);
+		this.kb = opts.keybindings;
 	}
 
 	// ── EditorComponent surface ───────────────────────────────────────────
@@ -477,7 +473,6 @@ export class InlineFormEditor implements PiEditorComponent {
 		state.focusedIdx = (state.focusedIdx + delta + n) % n;
 		if (state.focusedIdx === state.fields.length) {
 			state.caret = 0;
-			state.submitChoiceIdx = 0;
 			return;
 		}
 		const next = state.fields[state.focusedIdx]!;
@@ -486,7 +481,6 @@ export class InlineFormEditor implements PiEditorComponent {
 	private focusFirstInvalid(state: InlineFormState): void {
 		const [idx] = computeInvalid(state.fields, state.rawText);
 		if (idx === undefined) return;
-		state.submitChoiceIdx = 0;
 		state.focusedIdx = idx;
 		state.caret = (state.rawText[state.fields[idx]!.name] ?? "").length;
 	}

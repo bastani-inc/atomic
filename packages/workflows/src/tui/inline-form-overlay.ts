@@ -28,9 +28,10 @@ import type { PiEditorComponent, PiEditorFactory } from "../extension/wiring.js"
 import type { WorkflowInputValues } from "../shared/types.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { renderInlineCard } from "./inline-form-card.js";
-import { InlineFormEditor } from "./inline-form-editor.js";
+import { InlineFormEditor, InlineFormKeybindingsError } from "./inline-form-editor.js";
 import { createForm, finalizeForm, getForm } from "./inline-form-store.js";
 import { coerceValues } from "./inputs-picker.js";
+import { isKeybindingsLike } from "./keybindings-adapter.js";
 
 const CUSTOM_TYPE = "workflows:input-form";
 
@@ -186,7 +187,6 @@ export async function openInlineInputsForm(
 		fields: opts.fields,
 		rawText,
 		focusedIdx,
-		submitChoiceIdx: 0,
 		caret: (rawText[opts.fields[focusedIdx]!.name] ?? "").length,
 		status: "editing",
 	});
@@ -210,9 +210,6 @@ export async function openInlineInputsForm(
 				if (isStaleExtensionContextError(err)) {
 					return false;
 				}
-				// Preserve the previous best-effort behavior for older or unusual hosts:
-				// if introspection fails for a non-stale reason, still try the restore
-				// and let the existing setEditor catch below keep the command safe.
 				return true;
 			}
 		};
@@ -238,15 +235,11 @@ export async function openInlineInputsForm(
 		};
 
 		const factory: PiEditorFactory = (tui, _editorTheme, kb): PiEditorComponent => {
+			if (!isKeybindingsLike(kb)) throw new InlineFormKeybindingsError(formId);
 			activeEditor = new InlineFormEditor(tui as { requestRender?: () => void }, {
 				formId,
 				theme: opts.theme,
-				// Pi injects its `KeybindingsManager` as the third factory arg; the
-				// editor uses it to route text-editing actions (delete word, line
-				// jump, etc.) through the user's resolved keybindings. Older hosts
-				// and tests pass a non-keybindings shape — the editor's
-				// `isKeybindingsLike` guard handles that gracefully.
-				keybindings: kb as ConstructorParameters<typeof InlineFormEditor>[1]["keybindings"],
+				keybindings: kb,
 				onExit: (outcome) => {
 					if (outcome === "submit") {
 						settle({ kind: "run", values: coerceValues(opts.fields, state.rawText) });

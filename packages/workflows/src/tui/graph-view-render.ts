@@ -297,7 +297,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 			const source = lines[row] ?? "";
 			const clean = wrappedRows[row] === true ? stripLayoutWrapper(source) : source;
 			if (visibleWidth(clean) === 0) return this._blankRow(width);
-			if (visibleWidth(clean) > width) return truncateToWidth(clean, width, "…", true);
+			if (visibleWidth(clean) > width) return truncateToWidth(clean, width, "…");
 			return `${clean}${" ".repeat(width - visibleWidth(clean))}`;
 		});
 	}

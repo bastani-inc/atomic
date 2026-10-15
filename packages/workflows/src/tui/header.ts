@@ -114,7 +114,7 @@ export function renderCompactBandHeader(opts: CompactBandHeaderOpts): string[] {
 	const subtitleStyled =
 		subtitleText.length > 0 ? `${chromeBg}  ${muted}${subtitleText}${RESET}${chromeBg}` : `${chromeBg}`;
 	const line = `${labelStyled}${subtitleStyled}${" ".repeat(filler)}${rightStyled}${chromeBg}${" ".repeat(rightEdgePad)}${RESET}`;
-	const fitted = truncateToWidth(line, width, "", true);
+	const fitted = truncateToWidth(line, width, "");
 	const pad = Math.max(0, width - visibleWidth(fitted));
 	return [fillBackground(`${fitted}${chromeBg}${" ".repeat(pad)}${RESET}`, width, chromeBg)];
 }

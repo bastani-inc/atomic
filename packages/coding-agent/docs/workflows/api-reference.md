@@ -1507,6 +1507,8 @@ interface StoreSnapshot {
 
 `createStore()` returns an isolated workflow state store. `store` is the default singleton exported by the SDK authoring surface.
 
+Every `RunSnapshot` passed to `recordRunStart()` must include `toolNodes`. Use `toolNodes: []` when the run has no tool nodes.
+
 `snapshot()` returns a JSON copy of every run and notice; `version` increases on every store change. `graphSnapshot()` returns a cached, size-bounded copy for graph rendering that stays the same object until the store changes. `subscribe(listener)` calls `listener` with a fresh `snapshot()` after each change and returns an unsubscribe function.
 
 Atomic's runtime store also has prompt, session, and pause/resume methods used by embedded integrations; those controls are not part of the published `Store` contract shown here.

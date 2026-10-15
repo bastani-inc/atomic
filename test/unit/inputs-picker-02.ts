@@ -144,7 +144,6 @@ export function registerInputsPickerSuite2(): void {
 		const action = handleInputsPickerInput("\r", s, FIELDS, KB);
 		assert.deepEqual(action, { kind: "noop" });
 		assert.equal(s.focusedIdx, 0);
-		assert.equal(s.submitChoiceIdx, 0);
 		assert.deepEqual(s.invalidIndices, [0]);
 	});
 

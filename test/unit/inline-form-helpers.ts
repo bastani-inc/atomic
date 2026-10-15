@@ -42,7 +42,6 @@ export function makeState(overrides: Partial<Parameters<typeof createForm>[0]> =
 		fields: FIELDS,
 		rawText: { prompt: "", iters: "5", focus: "standard", verbose: "false" },
 		focusedIdx: 0,
-		submitChoiceIdx: 0,
 		caret: 0,
 		status: "editing",
 		...overrides,

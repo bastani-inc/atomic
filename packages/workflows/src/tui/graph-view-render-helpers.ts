@@ -130,7 +130,7 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 	}
 
 	protected _centerCanvasContent(content: string, width: number): string {
-		const truncated = truncateToWidth(content, width, "…", true);
+		const truncated = truncateToWidth(content, width, "…");
 		const leftPad = Math.max(0, Math.floor((width - visibleWidth(truncated)) / 2));
 		return `${" ".repeat(leftPad)}${truncated}`;
 	}
@@ -138,7 +138,7 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 	/** Restore the terminal background around content and trailing fill. */
 	protected _canvasRow(content: string, width: number): string {
 		const bg = DEFAULT_BG;
-		const truncated = truncateToWidth(content, width, "…", true);
+		const truncated = truncateToWidth(content, width, "…");
 		const padLen = Math.max(0, width - visibleWidth(truncated));
 		return `${bg}${truncated}${bg}${" ".repeat(padLen)}${RESET}`;
 	}

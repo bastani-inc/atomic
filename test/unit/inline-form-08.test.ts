@@ -106,32 +106,3 @@ test("editor: user-remapped delete word backward respects injected keybindings",
 	assert.equal(exited, null);
 	editor.dispose?.();
 });
-
-test("editor: without a keybindings manager, only form-level keys still work", () => {
-	// Verifies the "always rely on pi" contract: when no keybindings manager
-	// is wired, action-based keys (arrows, backspace, etc.) do nothing.
-	// Form-level keys (tab, esc, printable insert) still function.
-	const state = makeState();
-	const tui = { requestRender: () => {} };
-	let exited: { outcome: "submit" | "cancel" } | null = null;
-	const editor = new InlineFormEditor(tui, {
-		formId: state.formId,
-		theme: deriveGraphTheme({}),
-		onExit: (outcome) => {
-			exited = { outcome };
-		},
-	});
-	// Printable insert still works (raw byte check).
-	editor.handleInput("h");
-	assert.equal(state.rawText.prompt, "h");
-	// Backspace would normally delete; without kb, it's a no-op.
-	editor.handleInput("\x7f");
-	assert.equal(state.rawText.prompt, "h", "delete action requires kb");
-	// Tab still advances focus (form contract, not Pi action).
-	editor.handleInput("\t");
-	assert.equal(state.focusedIdx, 1);
-	// Esc still cancels.
-	editor.handleInput("\x1b");
-	assert.deepEqual(exited, { outcome: "cancel" });
-	editor.dispose?.();
-});

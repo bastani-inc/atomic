@@ -334,7 +334,6 @@ function attemptPickerSubmit(state: InputsPickerState, fields: readonly Workflow
 	const invalid = computeInvalid(fields, state.rawText);
 	if (invalid.length > 0) {
 		state.invalidIndices = invalid;
-		state.submitChoiceIdx = 0;
 		state.focusedIdx = invalid[0]!;
 		state.caret = (state.rawText[fields[state.focusedIdx]!.name] ?? "").length;
 		return { kind: "noop" };
@@ -349,7 +348,6 @@ function moveFocus(state: InputsPickerState, fields: readonly WorkflowInputEntry
 	state.focusedIdx = (state.focusedIdx + delta + n) % n;
 	if (state.focusedIdx === fields.length) {
 		state.caret = 0;
-		state.submitChoiceIdx = 0;
 		return;
 	}
 	const next = fields[state.focusedIdx]!;

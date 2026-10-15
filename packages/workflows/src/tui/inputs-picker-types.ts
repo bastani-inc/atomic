@@ -12,8 +12,6 @@ export interface InputsPickerState {
 	 * `coerceValues()` converts these into typed objects at submit time.
 	 */
 	rawText: Record<string, string>;
-	/** Reserved for older form snapshots; Submit is now a single final action. */
-	submitChoiceIdx: number;
 	/**
 	 * Set of field indices that failed validation on the most recent submit
 	 * attempt. Used to dim the run hint and to highlight a field if the user
@@ -78,7 +76,6 @@ export function createInputsPickerState(
 	return {
 		focusedIdx,
 		rawText,
-		submitChoiceIdx: 0,
 		invalidIndices: [],
 		caret: (rawText[fields[focusedIdx]?.name ?? ""] ?? "").length,
 	};

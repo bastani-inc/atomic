@@ -33,7 +33,6 @@ test("editor: Submit section validates and submits via visible row", () => {
 	missing.editor.handleInput("\r");
 	assert.equal(missing.getExited(), null);
 	assert.equal(missing.state.focusedIdx, 0);
-	assert.equal(missing.state.submitChoiceIdx, 0);
 	missing.dispose();
 
 	const state = makeState({

@@ -213,7 +213,7 @@ function mergeOrchestratorReturnHintIntoLine(
 	const rightMargin = Math.min(requestedRightMargin, Math.max(0, width - suffixWidth - hintWidth));
 	const hintStart = Math.max(0, width - suffixWidth - rightMargin - hintWidth);
 	const prefixWidth = Math.max(0, hintStart - 1);
-	const prefix = truncateToWidth(line, prefixWidth, "", true);
+	const prefix = truncateToWidth(line, prefixWidth, "");
 	const gap = Math.max(0, hintStart - visibleWidth(prefix));
 	return prefix + " ".repeat(gap) + hint.styled + " ".repeat(rightMargin) + trailingBorder;
 }

@@ -89,6 +89,7 @@ import type {
   AgentSessionAdapter,
   StageAdapters,
   StageOptions, StageSendUserMessageOptions, StageSessionEvent, StageStatus, StageUserMessageContent,
+  RunSnapshot,
   WorkflowDefinition, WorkflowExecutionPolicy, WorkflowInputBindings, WorkflowInputSchemaMap,
   WorkflowMcpPort, WorkflowModelCatalogPort, WorkflowOutputSchemaMap, WorkflowPersistencePort, WorkflowRunOutput,
   WorkflowRuntimeConfig, WorkflowTaskSessionOptions, WorkflowToolError, WorkflowToolOutcome, WorkflowUIAdapter,
@@ -102,6 +103,10 @@ import type { WorkflowOptions } from "@bastani/workflows";
 // @ts-expect-error WorkflowRunOptions was removed with the object-form runWorkflow API.
 import type { WorkflowRunOptions } from "@bastani/workflows";
 declare const extensionUiForTypes: ExtensionUIContext;
+const currentSnapshot: RunSnapshot = { id: "current", name: "current", status: "running", stages: [], toolNodes: [], startedAt: 1 };
+createStore().recordRunStart(currentSnapshot);
+// @ts-expect-error Current snapshots require their tool collection.
+const missingToolCollection: RunSnapshot = { id: "missing", name: "missing", status: "running", stages: [], startedAt: 1 };
 const authoredWorkflow = workflow({
   name: "Standalone Typing Fixture",
   description: "Verifies package export types without declare module shims",

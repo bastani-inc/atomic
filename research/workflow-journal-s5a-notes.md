@@ -10,7 +10,7 @@ S5a removes EVERY storage-independent legacy, back-compat, deprecated, migration
 
 Deferred to S56: invocationFingerprint required (blocked by dbos-envelope.ts, deleted in S34)
 
-Correction: the original named-target-only deferrals and no-amendment statement are superseded. Subsequent reviews reproduced positional delivery, omitted child exit tags, display-name continuation, missing tool collections, configuration result optionality and heartbeat cadence readers. Their repairs and evidence are recorded below. The fingerprint type conflict now has an authoritative approved deferral.
+Correction: the original named-target-only deferrals and no-amendment statement are superseded. Later reviews also exposed a separate public snapshot declaration and unused or old-host form contracts. This round removes those contracts; its current evidence is recorded below. The fingerprint type conflict has an authoritative approved deferral.
 
 ## Acceptance matrix
 
@@ -27,15 +27,16 @@ Correction: the original named-target-only deferrals and no-amendment statement 
 | Explicit failed tool frontier | Removed abort-message matching and old frontier checkpoint inference. Current frontier test requires `failedToolNodeId`. |
 | Current configuration and discovery | Default roots use only `.atomic`, honoring explicit current agent-directory overrides. Removed old workflow and TypeBox virtual aliases and obsolete builtin scan roots. ConfigLoadResult always includes globalConfig/projectConfig as null or a value; runtime discovery no longer repairs omitted source fields. |
 | Current API and reasoning options | Removed `runWorkflow` migration stub/declaration, `assertWorkflowCreatedStage`, separate authored `thinkingLevel`/`fallbackThinkingLevels` and scoped-model reasoning fields, old target parser/hints, and ignored `statusRuns.all`. Suffix-based current model failover remains. |
-| Current UI/input behavior | Removed X10 mouse parsing, graph run-level prompt fallback and its obsolete adapter/tests, old quit timestamp inference, old empty reload formatting and zero-argument pause-release adaptation. Current stage-local UI and SGR input remain covered. |
-| Required current DTO fields | Runtime and authoring RunResult.toolNodes, RunDetail.tools and WorkflowRunStatusSummary.tools are required; tool summary runId is required. Custom UI adapters implement every method. Structural and standalone typing fixtures updated. |
+| Current UI/input behavior | Removed X10 input, run-level prompt fallback, old quit timestamps, old reload formatting, zero-argument pause release, unused submit-choice state and old-host inline-editor adaptation. Current stage-local UI, injected editor actions, single Submit action and SGR input remain covered. |
+| Required current DTO fields | Public RunSnapshot.toolNodes, runtime and authoring RunResult.toolNodes, RunDetail.tools and WorkflowRunStatusSummary.tools are required; tool summary runId is required. Custom UI adapters implement every UI method. Public package compilation and valid empty-tool snapshots are covered. |
+| Current text helper signature | Removed the ignored fourth preserveAnsi argument and related option/forwarders. Current ANSI-aware truncation and raw values are preserved; negative type assertions exclude the retired argument and option. |
 | Current persisted heartbeat cadence | Both anchor and scheduler launch records require intervalMinutes. Missing or invalid persisted cadence raises InvalidWorkflowHeartbeatAnchorError with runId/field and cannot fall back to live definitions. Current no-record initialization, disabled/no-progress guards, write-once cadence and pause/restart scheduling remain covered. |
 | Required boundary invocation fingerprint | Approved deferral to S56. The field remains optional in S5a; the excluded decoder remains unchanged. Runtime exact-identity validation is retained. |
 | Format-version conditional deletion | Retained because excluded current record writers use it; it is not solely an old-format gate. |
 | Typed changed failures | Named errors expose typed reason, runId, messageId, workflowId, argsHash, method or field as appropriate. Rejection tests assert classes and fields. Heartbeat decode now uses WorkflowSerializableValue instead of adding unknown. |
 | Obsolete tests removed; current coverage retained | Removed only migration/old-alias/topologyless/graph-prompt tests. Preserved current nested/root/continuation replay, model failover, stage UI, ordering and backend-failure coverage. No new skips. |
 | Complete residual classification | Inventory below covers every `legacy|compat|deprecat|migrat|upgrade|back-?compat|fallback` hit, grouped by file with every line named. The same inventory is included directly in the repair commit body. |
-| Boat checks and full unit gate | Current config/cadence repair passes npm run check and the prescribed unit gate: 930 files/10,317 tests, 26 pre-existing skips. Current focused and type checks are recorded below; no project execution on the Mac. |
+| Boat checks and full unit gate | Current public/form repair passes npm run check and the prescribed unit gate: 931 files/10,321 tests, 26 pre-existing skips. Current focused and type checks are recorded below; no project execution on the Mac. |
 | Scope, branch and commit | Only S5a on `feat/workflow-journal-s5a-legacy-replay`. Explicit storage/recovery/journal exclusions are unchanged. No dependency changes, push, PR or lease lifecycle operations. |
 
 ### Current config and cadence repair acceptance
@@ -98,6 +99,20 @@ The first repair unit gate exposed obsolete aliases, fixtures and old-path tests
 - The new annotation audit found no added any/unknown types. The GraphView fixture uses KeybindingsLike; the heartbeat parser uses WorkflowSerializableValue. Existing qlty configuration was preserved; cached metrics ran only on the changed anchor/config modules. The gh-commit skill was absent from the available paths; existing signed-commit conventions and exact spec trailers are used.
 - Final all-heartbeat/config/type/tool-detail/docs tests passed 13 files/242 tests in `run_9440741e0c51290ba85f51ff7f0c7d2b`, `/tmp/s5a-cadence-final-focused-run.log`. The same run proved the inventory exactly matches all 442 source lines across 121 files.
 - User-facing configuration procedures are unchanged; both package changelogs record required configuration result fields and persisted cadence. The approved fingerprint deferral leaves source unchanged, so its historical compiler probe was not repeated. Current batch implementation and validation are complete; independent review remains.
+
+## Public snapshot and form validation
+
+The current repair aligns the public package snapshot with its runtime tool collection, removes the ignored truncation flag, deletes unused submit-choice state, and requires an injected inline-editor keybinding manager. Invalid or missing managers raise InlineFormKeybindingsError with the formId; overlay capability failure remains the existing unsupported result. No old-host input is silently mapped to an absent manager.
+
+Form states remain editing -> submitted or cancelled. Editing retains raw text and honors the injected action map. Submit still validates and uses a single final action. Empty tool collections remain valid in public snapshots. Required public fields and removed input keys have compile assertions; no runtime normalization or filtering of unrelated input properties was added.
+
+Incremental Boat checks reproduced the public optional-field assertion failure, emitted submit-choice state and absent-manager acceptance. The initial positive store test used a nonexistent accessor and was corrected to snapshot(); a host setup fixture then needed an actual keybinding manager. The first complete unit gate passed 931 files/10,321 tests with 26 existing skips, while its check failed formatting/import ordering only. These early runs are not claimed as final check evidence.
+
+- Exact baseline/current comparison in `run_9aa1fccd0937cd33826275533103e597`, `/tmp/s5a-ui-final-red-green.log`, reverses only this repair's seven core source diffs to restore the pre-repair declarations/readers. Six isolated type assertions fail on the restored baseline; three runtime regressions fail for emitted or reset submit-choice state and accepted absent keybindings. The standalone package test also fails because the missing-tool collection expect-error becomes unused. Restoring current code passes isolated compilation, all 12 focused tests and the package test. The temporary reverse patch was removed locally after use.
+- Current terminal scenario in `run_5a2573a3f6a68bf673603fac7cf56ff9`, `/tmp/s5a-ui-terminal-run.log`: launch `bun test/fixtures/workflow-inline-form-terminal.ts` in a dedicated 100x30 tmux session, type `draftx`, then the injected delete binding `!`, Tab, Enter. Captures show the empty form, `draft` after deletion, and `FORM_RESULT={"status":"submitted","message":"draft"}` with process exit 0. The committed fixture uses real terminal rendering with a controlled injected key map; no live provider interaction is claimed.
+- Cached qlty metrics ran on inline-form-editor.ts and text-helpers.ts in `run_28bf910197914a1bdf988eefaa759dc4`, exit 0. This is current diagnostic evidence, not a comparative performance or security claim. The same run formatted touched code; its one trailing blank-line change was recovered locally. The gh-commit and tmux skills were read for this repair.
+- Final public/form source gates in `run_e83dd918d88061fecc0bf44f5db115d3`, `/tmp/s5a-ui-final-gates.log`: ordinary npm run format made no edits; npm run check, the prescribed two-exclusion unit gate and standalone public-package typing passed. Unit result: 931 files/10,321 tests with 26 pre-existing skips, 112.74 seconds. An ancillary inventory-generation attempt in that command had a quoting error and did not edit notes; inventory was updated locally and checked independently afterward.
+- Final focused UI, input picker, type and docs checks in `run_6d31de4d63f9265123ff8b904bdfef2e`, `/tmp/s5a-ui-focused-final-run.log`, passed 14 files/191 tests. The same run confirmed an exact inventory of 441 matching lines across 120 files, formatting without edits and git diff --check. The incorrect retained text-helper classification is removed because that source no longer contains a matching compatibility path.
 
 ## Residual source-hit inventory
 
@@ -206,7 +221,7 @@ Inventory command: `git grep -nEi 'legacy|compat|deprecat|migrat|upgrade|back-?c
 | tui/graph-theme.ts | 9 | Current light/no-color palette selection. |
 | tui/graph-view-input.ts | 109, 143 | Current keybindings precedence and current j/k navigation, not old input grammar. |
 | tui/inline-form-editor-text.ts | 99, 107 | Current terminal bracketed-paste capability and live typing burst handling. |
-| tui/inline-form-overlay.ts | 143 | Current capability detection reports unsupported, not an old host adapter. |
+| tui/inline-form-overlay.ts | 144 | Current capability detection reports unsupported, not an old host adapter. |
 | tui/keybindings-adapter.ts | 5, 70 | Current injected key manager and explicit no parallel raw-byte default contract. |
 | tui/node-card.ts | 163 | Current compact/full child-output display projection; both are produced by current writers. |
 | tui/overlay-adapter.ts | 334 | Current overlay local focus state when host inline dialog state is absent. |
@@ -218,7 +233,6 @@ Inventory command: `git grep -nEi 'legacy|compat|deprecat|migrat|upgrade|back-?c
 | tui/stage-chat-view-transcript.ts | 18 | Current plain notification transcript text. |
 | tui/stage-chat-view-types.ts | 16 | Current unhosted viewport size default. |
 | tui/stage-chat-view.ts | 4 | Current re-export facade after file decomposition; no deprecated names or old path decoding. |
-| tui/text-helpers.ts | 37 | Current workflow width/truncation helper delegates to host library, not a deprecated API alias. |
 | tui/tool-detail.ts | 20 | Current collapsed host message preview sizing. |
 | tui/widget-scroll-hint.ts | 4, 7, 20 | Current control-key collision detection: distinct configured keys can share terminal bytes; it is not an old configuration reader. |
 | tui/widget.ts | 339, 340 | Current badge color default. |

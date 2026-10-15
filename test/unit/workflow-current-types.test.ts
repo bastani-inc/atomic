@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import type { RunSnapshot as PublicRunSnapshot } from "../../packages/workflows/src/authoring.js";
 import type { WorkflowHeartbeatAnchorRecord } from "../../packages/workflows/src/durable/workflow-heartbeat-anchor.js";
 import type { ConfigLoadResult } from "../../packages/workflows/src/extension/config-loader.js";
 import type { WorkflowHeartbeatLaunchRecord } from "../../packages/workflows/src/extension/workflow-heartbeat-scheduler.js";
@@ -14,8 +15,14 @@ import type {
 	RunResult as AuthoredRunResult,
 	WorkflowUIAdapter,
 } from "../../packages/workflows/src/shared/authoring-contract-ui.js";
+import type { InlineFormEditorOpts } from "../../packages/workflows/src/tui/inline-form-editor.js";
+import type { InlineFormState } from "../../packages/workflows/src/tui/inline-form-store.js";
+import type { InputsPickerState } from "../../packages/workflows/src/tui/inputs-picker-types.js";
+import type { truncateToWidth, WrappedPrefixedLinesOpts } from "../../packages/workflows/src/tui/text-helpers.js";
 
 test("current execution and inspection collections and UI methods are required", () => {
+	const publicToolNodesOptional: object extends Pick<PublicRunSnapshot, "toolNodes"> ? true : false = false;
+	assert.equal(publicToolNodesOptional, false);
 	const runtimeToolNodesOptional: object extends Pick<RunResult, "toolNodes"> ? true : false = false;
 	const authoredToolNodesOptional: object extends Pick<AuthoredRunResult, "toolNodes"> ? true : false = false;
 	const inspectionToolsOptional: object extends Pick<RunDetail, "tools"> ? true : false = false;
@@ -54,4 +61,17 @@ test("current configuration results and heartbeat records require their written 
 	);
 	assert.equal(emptyConfig.globalConfig, null);
 	assert.equal(emptyConfig.projectConfig, null);
+});
+
+test("current forms do not expose a submit-choice index", () => {
+	const formHasChoice: "submitChoiceIdx" extends keyof InlineFormState ? true : false = false;
+	const pickerHasChoice: "submitChoiceIdx" extends keyof InputsPickerState ? true : false = false;
+	assert.deepEqual([formHasChoice, pickerHasChoice], [false, false]);
+});
+
+test("current text and editor contracts exclude compatibility inputs", () => {
+	const acceptsFourthArgument: 4 extends Parameters<typeof truncateToWidth>["length"] ? true : false = false;
+	const hasPreserveAnsi: "preserveAnsi" extends keyof WrappedPrefixedLinesOpts ? true : false = false;
+	const keybindingsOptional: object extends Pick<InlineFormEditorOpts, "keybindings"> ? true : false = false;
+	assert.deepEqual([acceptsFourthArgument, hasPreserveAnsi, keybindingsOptional], [false, false, false]);
 });
