@@ -177,7 +177,9 @@ export default function blockingToolExtension(api: ExtensionAPI): void {
 				trackDetachedChildPid(grandchild.pid);
 				writeFileSync(grandchildPidFile, String(grandchild.pid), "utf8");
 			}
-			const deadline = performance.now() + 5_000;
+			const deadline = process.env.ATOMIC_BLOCKING_TOOL_UNTIL_TERMINATED === "1"
+				? Number.POSITIVE_INFINITY
+				: performance.now() + 5_000;
 			while (performance.now() < deadline) {
 				// Intentionally never yield.
 			}
