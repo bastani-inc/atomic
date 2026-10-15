@@ -96,6 +96,13 @@ export class JournalOperationAbortedError extends JournalError {
 	}
 }
 
+export class JournalExecutionRetiredError extends JournalError {
+	constructor(readonly runId: string) {
+		super(`Workflow execution for ${runId} is retired`);
+		this.name = "JournalExecutionRetiredError";
+	}
+}
+
 export class JournalMessageScopeError extends JournalError {
 	constructor(
 		readonly runId: string,
@@ -109,6 +116,7 @@ export class JournalMessageScopeError extends JournalError {
 interface WorkflowLeaseExecution {
 	lease?: Lease;
 	users: number;
+	retired: boolean;
 }
 
 export class JournalDurableBackend implements DurableWorkflowBackend {
@@ -209,6 +217,7 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 
 	private current(runId: string): DurableWorkflowHandle | undefined {
 		this.ensureOpen();
+		this.assertExecutionActive(runId);
 		this.refresh(runId);
 		if (this.projection.getWorkflow(runId) === undefined) return undefined;
 		try {
@@ -226,8 +235,15 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 		if (this.closed) throw new JournalBackendClosedError();
 	}
 
+	private assertExecutionActive(runId: string): void {
+		for (const execution of this.executionContext.getStore()?.values() ?? []) {
+			if (execution.retired) throw new JournalExecutionRetiredError(runId);
+		}
+	}
+
 	private ownership(runId: string): Lease {
 		this.ensureOpen();
+		this.assertExecutionActive(runId);
 		const lost = this.lost.get(runId);
 		if (lost) throw lost;
 		const existing = this.leases.get(runId);
@@ -287,6 +303,7 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 	}
 
 	registerWorkflow(input: WorkflowRegistrationInput): void {
+		this.assertExecutionActive(input.workflowId);
 		this.ensureOpen();
 		this.journal.createRunSync({
 			runId: input.workflowId,
@@ -611,12 +628,13 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 	/** Share one acquisition owner across admission, executor and final persistence. */
 	async withWorkflowLease<T>(runId: string, execute: () => Promise<T>): Promise<T> {
 		this.ensureOpen();
+		this.assertExecutionActive(runId);
 		const context = this.executionContext.getStore();
 		const active = this.executions.get(runId);
 		if (active !== undefined && context?.get(runId) !== active) {
 			throw new JournalOwnershipError(runId, this.holderId);
 		}
-		const execution = active ?? { lease: this.leases.get(runId), users: 0 };
+		const execution = active ?? { lease: this.leases.get(runId), users: 0, retired: false };
 		execution.users++;
 		this.executions.set(runId, execution);
 		const ownedContext = new Map(context);
@@ -625,15 +643,33 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 			return await this.executionContext.run(ownedContext, execute);
 		} finally {
 			if (--execution.users === 0) {
-				this.executions.delete(runId);
-				if (execution.lease !== undefined && this.leases.get(runId) === execution.lease)
-					this.releaseWorkflow(runId);
+				this.retireExecution(runId, execution);
 			}
 		}
 	}
 
+	/** Capture identity now; a delayed quit must never retire a replacement execution. */
+	captureWorkflowRetirement(runId: string): () => void {
+		const execution = this.executionContext.getStore()?.get(runId);
+		return () => {
+			if (execution !== undefined) this.retireExecution(runId, execution);
+		};
+	}
+
+	private retireExecution(runId: string, execution: WorkflowLeaseExecution): void {
+		if (execution.retired) return;
+		execution.retired = true;
+		if (this.executions.get(runId) === execution) this.executions.delete(runId);
+		if (execution.lease !== undefined && this.leases.get(runId) === execution.lease) this.releaseLease(runId);
+	}
+
 	/** Release this execution's lease without closing the shared journal. */
 	releaseWorkflow(runId: string): void {
+		this.assertExecutionActive(runId);
+		this.releaseLease(runId);
+	}
+
+	private releaseLease(runId: string): void {
 		const lease = this.leases.get(runId);
 		if (lease === undefined) return;
 		try {

@@ -4,7 +4,10 @@ import { Type } from "typebox";
 import { test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
-import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import {
+	JournalDurableBackend,
+	JournalExecutionRetiredError,
+} from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
 import { run as engineRun } from "../../packages/workflows/src/engine/run.js";
@@ -190,6 +193,153 @@ test("detached quit releases only its own lease after final persistence and perm
 		await unrelated;
 		setDurableBackend(undefined);
 		await contender.close();
+		await backend.close();
+		removeTempDirectory(directory);
+	}
+});
+
+test("quit retires a cancelled tool's executor without waiting for caught-cancellation cleanup (#3647)", async () => {
+	const runId = testRunId("quit-pending-cleanup");
+	const directory = makeTempDirectory("quit-pending-cleanup-");
+	const backend = new DeferredPauseBackend(new SqliteRunJournal(join(directory, "journal.sqlite")));
+	const store = createStore();
+	const controls = createToolControlRegistry();
+	const jobs = createJobTracker();
+	const started = Promise.withResolvers<void>();
+	const caught = Promise.withResolvers<void>();
+	const cleanup = Promise.withResolvers<void>();
+	const resumedStarted = Promise.withResolvers<void>();
+	const resumeBody = Promise.withResolvers<void>();
+	const lateWrites = Promise.withResolvers<void>();
+	const attemptWhileReleased = Promise.withResolvers<void>();
+	const releasedWrites = Promise.withResolvers<void>();
+	const finishRetiredJob = Promise.withResolvers<void>();
+	let executions = 0;
+	let savedEffects = 0;
+	let completion: Promise<void> | undefined;
+	let bodySettled = false;
+	const verifyLateWrites = async (): Promise<void> => {
+		assert.throws(() => backend.setWorkflowStatus(runId, "completed"), JournalExecutionRetiredError);
+		assert.throws(() => backend.releaseWorkflow(runId), JournalExecutionRetiredError);
+		await assert.rejects(
+			backend.withWorkflowLease(runId, async () => backend.setWorkflowStatus(runId, "completed")),
+			JournalExecutionRetiredError,
+		);
+	};
+	const definition = workflow({
+		name: "quit-pending-cleanup",
+		description: "",
+		inputs: {},
+		outputs: {},
+		async run(ctx) {
+			const first = ++executions === 1;
+			await ctx.tool("saved", {}, async () => {
+				savedEffects++;
+				return "saved";
+			});
+			try {
+				await ctx.tool("cancelled", {}, async ({ signal }) => {
+					if (!first) {
+						resumedStarted.resolve();
+						await resumeBody.promise;
+						return "resumed";
+					}
+					started.resolve();
+					return await new Promise<never>((_resolve, reject) => {
+						signal.addEventListener(
+							"abort",
+							() => reject(signal.reason instanceof Error ? signal.reason : new Error("tool aborted")),
+							{ once: true },
+						);
+					});
+				});
+			} catch (error) {
+				assert.ok(error instanceof Error);
+				caught.resolve();
+				await attemptWhileReleased.promise;
+				await verifyLateWrites().then(releasedWrites.resolve, releasedWrites.reject);
+				await cleanup.promise;
+				await verifyLateWrites().then(lateWrites.resolve, lateWrites.reject);
+			}
+			if (first) bodySettled = true;
+			return {};
+		},
+	});
+	setDurableBackend(backend);
+	runDetached(
+		definition,
+		{},
+		{
+			runId,
+			origin: "user",
+			store,
+			durableBackend: backend,
+			toolControlRegistry: controls,
+			jobs,
+			onRawSettled: () => finishRetiredJob.promise,
+		},
+	);
+	const job = jobs.get(runId)!;
+	let quitting: ReturnType<typeof quitRun> | undefined;
+	try {
+		await started.promise;
+		quitting = quitRun(runId, { store, toolControlRegistry: controls, jobs });
+		await Promise.all([caught.promise, backend.pauseWritten.promise]);
+		assert.equal(controls.active(runId).length, 0);
+		assert.equal(backend.getWorkflow(runId)?.status, "paused");
+		backend.finishPause.resolve();
+		// Drain the current turn without releasing author cleanup or using a timeout.
+		const observed = Promise.withResolvers<"pending">();
+		setImmediate(() => observed.resolve("pending"));
+		assert.equal(await Promise.race([quitting.then(() => "quit" as const), observed.promise]), "quit");
+		assert.equal(bodySettled, false);
+		assert.equal((await quitting).ok, true);
+		assert.equal(controls.runControl(runId), undefined);
+		assert.equal(jobs.get(runId), undefined);
+		assert.equal(backend.workflowOwnership(runId), "available");
+		const pausedEntries = backend.journal.readEntries(runId);
+		attemptWhileReleased.resolve();
+		await releasedWrites.promise;
+		assert.deepEqual(backend.journal.readEntries(runId), pausedEntries);
+		assert.equal(backend.workflowOwnership(runId), "available", "retired writes cannot reacquire a free lease");
+		const resumed = await resumeDurableWorkflow(runId, {
+			registry: createRegistry().register(definition),
+			baseRunOpts: { store, toolControlRegistry: controls },
+			durableBackend: backend,
+			jobs,
+			onRunAccepted: (id) => {
+				completion = jobs.get(id)?.promise;
+			},
+		});
+		assert.equal(resumed.ok, true);
+		assert.ok(completion);
+		await resumedStarted.promise;
+		assert.equal(executions, 2);
+		assert.equal(savedEffects, 1, "resume replays the persisted checkpoint");
+		assert.equal(bodySettled, false);
+		const entries = backend.journal.readEntries(runId);
+		const lease = backend.journal.leaseState(runId);
+		cleanup.resolve();
+		await lateWrites.promise;
+		finishRetiredJob.resolve();
+		await job.promise;
+		assert.equal(bodySettled, true);
+		assert.deepEqual(backend.journal.readEntries(runId), entries);
+		assert.deepEqual(backend.journal.leaseState(runId), lease, "late settlement cannot release the resumed lease");
+		resumeBody.resolve();
+		await completion;
+		assert.equal(backend.getWorkflow(runId)?.status, "completed");
+		assert.equal(backend.workflowOwnership(runId), "available");
+	} finally {
+		attemptWhileReleased.resolve();
+		backend.finishPause.resolve();
+		cleanup.resolve();
+		resumeBody.resolve();
+		finishRetiredJob.resolve();
+		await quitting;
+		await job.promise;
+		await completion;
+		setDurableBackend(undefined);
 		await backend.close();
 		removeTempDirectory(directory);
 	}

@@ -121,32 +121,25 @@ export async function quitRunWithAction(
 	const control = controls.runControl(runId);
 	const job = (opts?.jobs ?? defaultJobTracker).get(runId);
 	control?.settlePersistence?.(settled.promise);
-	let result: QuitRunResult;
 	try {
-		result = await executeQuitRunWithAction(runId, opts, action);
+		return await executeQuitRunWithAction(runId, opts, action, () => {
+			control?.retire?.();
+			if (job !== undefined) (opts?.jobs ?? defaultJobTracker).detach(runId, job);
+		});
 	} finally {
 		settled.resolve();
 	}
-	// A cooperative suspension must retire its job before an immediate resume
-	// can mistake it for a live paused executor. Stage-only pauses stay live.
-	if (
-		result.ok &&
-		result.abandonedTools.length === 0 &&
-		(result.cancelledTools.length > 0 || (control !== undefined && controls.runControl(runId) !== control))
-	)
-		await job?.promise;
-	return result;
 }
 
 async function executeQuitRunWithAction(
 	runId: string,
 	opts: Parameters<typeof quitRunWithAction>[1],
 	action: "quit" | "pause",
+	retire: () => void,
 ): Promise<QuitRunResult> {
 	const activeStore = opts?.store ?? defaultStore;
 	const registry = opts?.stageControlRegistry ?? defaultStageControlRegistry;
 	const toolControls = opts?.toolControlRegistry ?? defaultToolControlRegistry;
-	const jobs = opts?.jobs ?? defaultJobTracker;
 	const run = activeStore.runs().find((candidate) => candidate.id === runId);
 	if (!run) return { ok: false, runId, reason: "not_found" };
 	if (run.endedAt !== undefined) return { ok: false, runId, reason: "already_ended" };
@@ -245,12 +238,9 @@ async function executeQuitRunWithAction(
 	const suspendedByAbort = toolHandles.length > 0 || runtimeQuit !== undefined;
 	const publish = (resumable: boolean): void => {
 		publishLocalQuit(activeStore, runId, pausedRunIds, resumable, opts?.actor);
-		// An abandoned callback keeps its executor alive, but that executor is no
-		// longer authoritative for this run id: detach it so `/workflow resume`
-		// relaunches a fresh executor instead of adopting the stale job and
-		// reporting a running run nothing is actually running. Cooperative quits
-		// settle on their own and unregister themselves.
-		if (abandonedTools.length > 0) jobs.detach(runId, jobs.get(runId));
+		// Persistence is settled, so revoke this execution's authority without
+		// waiting for author cleanup. Stage-only pauses retain their live control.
+		if (suspendedByAbort) retire();
 	};
 	const needsProgressCheck = runtimeQuit !== undefined || (current.resumable === false && graph.nodes.length === 0);
 	const resumable = !needsProgressCheck || hasDurableQuitProgress(runId);

@@ -51,6 +51,8 @@ export interface WorkflowRunControlHandle {
 	readonly admissionSettlement?: Promise<void>;
 	/** Keep execution ownership until a control operation's final writes settle. */
 	settlePersistence?(settlement: Promise<void>): void;
+	/** Revoke local control and write ownership after quit's final persistence. */
+	retire?(): void;
 	pause(): Promise<void>;
 	resume(): Promise<void>;
 	quit(): Promise<void>;

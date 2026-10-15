@@ -801,6 +801,10 @@ async function executeRun(
 		controlSettlements = settlement.catch(() => {});
 		return settlement;
 	};
+	const retireJournalExecution =
+		opts.parentRun === undefined && rootBackend instanceof JournalDurableBackend
+			? rootBackend.captureWorkflowRetirement(runId)
+			: undefined;
 	const unregisterRunControl = toolControls.registerRun(runId, {
 		get paused() {
 			return scheduler.isRunPaused();
@@ -812,6 +816,11 @@ async function executeRun(
 			const settled = settlement.catch(() => {});
 			pendingControlPersistence.add(settled);
 			void settled.then(() => pendingControlPersistence.delete(settled));
+		},
+		retire: () => {
+			ownController.abort(new WorkflowGracefulQuitError(runId, "workflow runtime"));
+			unregisterRunControl();
+			retireJournalExecution?.();
 		},
 		pause: () => {
 			ownController.signal.throwIfAborted();
@@ -919,6 +928,8 @@ async function executeRun(
 		budget.rethrowIfSystemOwnedStop(runSnapshot.stages.at(-1)?.name ?? startupFrontierStage);
 		const normalTerminalEvent = terminalEvents.winner();
 		if (normalTerminalEvent?.kind === "cancellation") {
+			const gracefulQuit = findWorkflowGracefulQuit(normalTerminalEvent.reason);
+			if (gracefulQuit !== undefined) return suspendForGracefulQuit(gracefulQuit);
 			const selectedExit = findWorkflowExitSignal(normalTerminalEvent.reason, exitScope);
 			if (selectedExit !== undefined) return await finalizers.finalizeWorkflowExit(selectedExit);
 			const parentExit = parentWorkflowExitAbortReason(normalTerminalEvent.reason);
