@@ -403,6 +403,7 @@ export class JsonlSessionStore implements SessionStore {
 	): Promise<{ path: string; state: SessionFileState }> {
 		const path = await this.locate(sessionId);
 		if (!path) throw new SessionNotFoundError(sessionId);
+		await this.readHeaderAt(path);
 		const stats = await stat(path, { bigint: true });
 		let state = this.fileStates.get(path);
 		if (!state || state.stamp !== this.stamp(stats)) {

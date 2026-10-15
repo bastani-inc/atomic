@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import * as fs from "node:fs/promises";
 import {
 	appendFile,
 	chmod,
@@ -435,6 +436,35 @@ it("refreshes cached sequence after competing replace, deletion and recreation",
 		}
 	});
 });
+
+for (const operation of ["empty append", "append", "stale append", "replace", "stale replace"] as const) {
+	it(`rejects ${operation} after a non-4 rewrite with identical cached metadata`, async () => {
+		await withStore(async (store) => {
+			await store.create(header, [entry]);
+			const path = await location(store);
+			const cachedStats = await fs.stat(path, { bigint: true });
+			const content = (await readFile(path, "utf8")).replace('"version":4', '"version":3');
+			await writeFile(path, content);
+			const metadata = vi.spyOn(fs, "stat").mockResolvedValue(cachedStats);
+			try {
+				const options = { expectSeq: operation.startsWith("stale") ? 0 : 1 };
+				const write = operation.endsWith("replace")
+					? store.replace(header.id, header, [], options)
+					: store.append(header.id, operation === "empty append" ? [] : [entry], options);
+				await assert.rejects(write, (error: Error) => {
+					assert.ok(error instanceof SessionFormatVersionError);
+					assert.equal(error.path, path);
+					assert.equal(error.found, 3);
+					assert.equal(error.supported, 4);
+					return true;
+				});
+				assert.equal(await readFile(path, "utf8"), content);
+			} finally {
+				metadata.mockRestore();
+			}
+		});
+	});
+}
 
 it("needs write access only inside the configured session root", async () => {
 	const parent = await mkdtemp(join(tmpdir(), "jsonl-parent-"));
