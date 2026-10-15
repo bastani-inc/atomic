@@ -9,6 +9,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - Fixed `closeOpenAICodexWebSocketSessions("")` closing other sessions' cached sockets. Empty keys now do nothing; omitting the key still closes all cached sockets.
 - Fixed the root `AssistantMessageEventStream` export being visible only as a type to TypeScript consumers. It can now be imported and constructed as a value, matching the runtime API.
 - Fixed automatic retry not triggering for `The service is temporarily unavailable` errors, which also made compaction fail on the first attempt ([#10965](https://github.com/earendil-works/pi/issues/10965)).
+- Fixed Claude Haiku 5.5 and Claude Opus 5 not offering the `off` thinking level on Anthropic. `off` now sends `thinking: {type: "disabled"}` without effort settings ([#10753](https://github.com/earendil-works/pi/issues/10753)).
 
 ## [0.9.38-alpha.6] - 2026-10-16
 

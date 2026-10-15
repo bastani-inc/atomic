@@ -786,6 +786,20 @@ function supportsAnthropicMidConvoEffort(modelId: string): boolean {
 	);
 }
 
+// Claude models that accept `thinking: {type: "disabled"}` alongside per-message effort.
+// Opus 5.5, Sonnet 5.5, Fable 5.1, and Mythos 5.1 reject it.
+// https://platform.claude.com/docs/en/build-with-claude/thinking#configuring-thinking
+const ANTHROPIC_DISABLED_THINKING_MODELS = new Set(["claude-opus-5", "claude-haiku-5-5", "claude-haiku-5.5"]);
+
+function supportsAnthropicDisabledThinkingWithMidConvoEffort(modelId: string): boolean {
+	// Strip OpenRouter's "anthropic/" or "~anthropic/" prefix and any dated snapshot suffix.
+	const id = modelId
+		.toLowerCase()
+		.replace(/^~?anthropic\//, "")
+		.replace(/-\d{8}$/, "");
+	return ANTHROPIC_DISABLED_THINKING_MODELS.has(id);
+}
+
 function supportsAnthropicMidConvoSystemMessages(modelId: string): boolean {
 	return (
 		/^claude-opus-(?:4[.-]8|5(?:[.-]5)?)(?:-\d{8})?$/.test(modelId) ||
@@ -1008,7 +1022,9 @@ function applyAnthropicMessagesCompatMetadata(model: Model<Api>): void {
 	const compat = getAnthropicMessagesCompat(model.provider, model.id);
 	if (compat) {
 		mergeAnthropicMessagesCompat(model, compat);
-		if (compat.supportsMidConvoEffort) mergeThinkingLevelMap(model, { off: null });
+		if (compat.supportsMidConvoEffort && !supportsAnthropicDisabledThinkingWithMidConvoEffort(model.id)) {
+			mergeThinkingLevelMap(model, { off: null });
+		}
 	}
 }
 
