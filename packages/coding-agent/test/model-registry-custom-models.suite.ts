@@ -63,23 +63,21 @@ describeModelRegistry((context) => {
 		});
 
 		test("custom model with same id replaces built-in model by id", async () => {
+			const [builtin] = await context.builtinOpenRouterModels();
 			writeModelsJson({
-				openrouter: providerConfig(
-					"https://my-proxy.example.com/v1",
-					[{ id: "anthropic/claude-sonnet-4" }],
-					"openai-completions",
-				),
+				openrouter: providerConfig("https://my-proxy.example.com/v1", [{ id: builtin.id }], "openai-completions"),
 			});
 
 			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			const models = getModelsForProvider(registry, "openrouter");
-			const sonnetModels = models.filter((m) => m.id === "anthropic/claude-sonnet-4");
+			const replacedModels = models.filter((m) => m.id === builtin.id);
 
-			expect(sonnetModels).toHaveLength(1);
-			expect(sonnetModels[0].baseUrl).toBe("https://my-proxy.example.com/v1");
+			expect(replacedModels).toHaveLength(1);
+			expect(replacedModels[0].baseUrl).toBe("https://my-proxy.example.com/v1");
 		});
 
 		test("custom models and model overrides carry sampling params", async () => {
+			const [builtin, other] = await context.builtinOpenRouterModels();
 			writeRawModelsJson({
 				openrouter: {
 					baseUrl: "https://my-proxy.example.com/v1",
@@ -102,7 +100,7 @@ describeModelRegistry((context) => {
 								max: { temperature: 1 },
 							},
 						},
-						"anthropic/claude-sonnet-4": {
+						[builtin.id]: {
 							samplingParams: { top_p: 0.9, min_p: 0.05 },
 							samplingParamsByThinkingLevel: { high: { temperature: 0.8 } },
 						},
@@ -122,13 +120,14 @@ describeModelRegistry((context) => {
 			});
 			expect(custom?.compat).toMatchObject({ supportsFinishReason: false, supportsThinkingTokenBudget: true });
 
-			const sonnet = models.find((model) => model.id === "anthropic/claude-sonnet-4");
-			expect(sonnet?.samplingParams).toEqual({ top_p: 0.9, min_p: 0.05 });
-			expect(sonnet?.samplingParamsByThinkingLevel).toEqual({ high: { temperature: 0.8 } });
+			const overridden = models.find((model) => model.id === builtin.id);
+			expect(overridden?.samplingParams).toEqual({ top_p: 0.9, min_p: 0.05 });
+			expect(overridden?.samplingParamsByThinkingLevel).toEqual({ high: { temperature: 0.8 } });
 
-			const opus = models.find((model) => model.id === "anthropic/claude-opus-4.1");
-			expect(opus?.samplingParams).toBeUndefined();
-			expect(opus?.samplingParamsByThinkingLevel).toBeUndefined();
+			const untouched = models.find((model) => model.id === other.id);
+			expect(untouched).toBeDefined();
+			expect(untouched?.samplingParams).toEqual(other.samplingParams);
+			expect(untouched?.samplingParamsByThinkingLevel).toEqual(other.samplingParamsByThinkingLevel);
 		});
 
 		test("rejects malformed sampling params while loading models.json", async () => {
@@ -506,6 +505,7 @@ describeModelRegistry((context) => {
 		});
 
 		test("modelOverrides still apply when provider also defines models", async () => {
+			const [builtin] = await context.builtinOpenRouterModels();
 			writeRawModelsJson({
 				openrouter: {
 					baseUrl: "https://my-proxy.example.com/v1",
@@ -523,8 +523,8 @@ describeModelRegistry((context) => {
 						},
 					],
 					modelOverrides: {
-						"anthropic/claude-sonnet-4": {
-							name: "Overridden Built-in Sonnet",
+						[builtin.id]: {
+							name: "Overridden Built-in Model",
 						},
 					},
 				},
@@ -534,9 +534,7 @@ describeModelRegistry((context) => {
 			const models = getModelsForProvider(registry, "openrouter");
 
 			expect(models.some((m) => m.id === "custom/openrouter-model")).toBe(true);
-			expect(
-				models.some((m) => m.id === "anthropic/claude-sonnet-4" && m.name === "Overridden Built-in Sonnet"),
-			).toBe(true);
+			expect(models.some((m) => m.id === builtin.id && m.name === "Overridden Built-in Model")).toBe(true);
 		});
 
 		test("refresh() reloads merged custom models from disk", async () => {
