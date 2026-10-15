@@ -1,8 +1,11 @@
+import assert from "node:assert/strict";
 import { type Component, Container, type Focusable, TuiMainScreen } from "@earendil-works/pi-tui";
 import { describe, expect, test, vi } from "vitest";
-import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
-import { isOverlayMounted } from "../src/modes/interactive/interactive-tui.ts";
-import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.ts";
+import type { HostCustomUiStateListener } from "../src/core/extensions/types.js";
+import { KeybindingsManager } from "../src/core/keybindings.js";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
+import { isOverlayMounted } from "../src/modes/interactive/interactive-tui.js";
+import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.js";
 
 class RecordingFocusable implements Component, Focusable {
 	focused = false;
@@ -184,6 +187,18 @@ describe("InteractiveMode.showExtensionCustom host custom UI state", () => {
 	});
 });
 
+type OverlayHost = {
+	editor: RecordingFocusable & { getText(): string; setText(text: string): void };
+	editorContainer: Container;
+	keybindings: KeybindingsManager;
+	ui: TuiMainScreen;
+	blockingInlineCustomUiDepth: number;
+	deferredInlineCustomUiFocusDepth: number;
+	pendingInlineCustomUiFocus: undefined;
+	hostCustomUiStateListeners: Set<HostCustomUiStateListener>;
+	showExtensionCustom: InteractiveMode["showExtensionCustom"];
+};
+
 describe("InteractiveMode.showExtensionCustom stacked overlays", () => {
 	test.each([
 		{ lowerKind: "capturing", nonCapturing: false },
@@ -195,29 +210,30 @@ describe("InteractiveMode.showExtensionCustom stacked overlays", () => {
 		const editor = new RecordingFocusable("EDITOR");
 		const lower = new RecordingFocusable("LOWER");
 		const upper = new RecordingFocusable("UPPER");
-		const fakeThis: any = {
+		const fakeThis: OverlayHost = {
 			editor: Object.assign(editor, { getText: () => "", setText: () => {} }),
 			editorContainer,
-			keybindings: {},
+			keybindings: new KeybindingsManager(),
 			ui,
 			blockingInlineCustomUiDepth: 0,
 			deferredInlineCustomUiFocusDepth: 0,
 			pendingInlineCustomUiFocus: undefined,
-			hostCustomUiStateListeners: new Set(),
+			hostCustomUiStateListeners: new Set<HostCustomUiStateListener>(),
+			showExtensionCustom: InteractiveMode.prototype.showExtensionCustom,
 		};
-		Object.setPrototypeOf(fakeThis, (InteractiveMode as any).prototype);
+		Object.setPrototypeOf(fakeThis, InteractiveMode.prototype);
 		const showOverlay = (
 			component: RecordingFocusable,
 			overlayOptions?: { nonCapturing?: boolean },
 		): { promise: Promise<string>; done: (result: string) => void } => {
 			let done: ((result: string) => void) | undefined;
-			const promise = fakeThis.showExtensionCustom(
-				(_tui: unknown, _theme: unknown, _keybindings: unknown, close: (result: string) => void) => {
+			const promise = fakeThis.showExtensionCustom<string>(
+				(_tui, _theme, _keybindings, close) => {
 					done = close;
 					return component;
 				},
 				{ overlay: true, overlayOptions },
-			) as Promise<string>;
+			);
 			if (!done) throw new Error("custom UI factory did not run synchronously");
 			return { promise, done };
 		};
@@ -235,25 +251,25 @@ describe("InteractiveMode.showExtensionCustom stacked overlays", () => {
 			await flush();
 			const upperMount = showOverlay(upper);
 			await flush();
-			expect(upper.focused).toBe(true);
+			assert.equal(upper.focused, true);
 
 			lowerMount.done("lower closed");
-			await expect(lowerMount.promise).resolves.toBe("lower closed");
+			assert.equal(await lowerMount.promise, "lower closed");
 			await flush();
 
-			expect(isOverlayMounted(ui, lower)).toBe(false);
-			expect(isOverlayMounted(ui, upper)).toBe(true);
-			expect(upper.focused).toBe(true);
+			assert.equal(isOverlayMounted(ui, lower), false);
+			assert.equal(isOverlayMounted(ui, upper), true);
+			assert.equal(upper.focused, true);
 			terminal.input("x");
 			await flush();
-			expect(upper.inputs).toEqual(["x"]);
-			expect(lower.inputs).toEqual([]);
+			assert.deepEqual(upper.inputs, ["x"]);
+			assert.deepEqual(lower.inputs, []);
 
 			upperMount.done("upper closed");
-			await expect(upperMount.promise).resolves.toBe("upper closed");
+			assert.equal(await upperMount.promise, "upper closed");
 			await flush();
-			expect(ui.hasOverlay()).toBe(false);
-			expect(editor.focused).toBe(true);
+			assert.equal(ui.hasOverlay(), false);
+			assert.equal(editor.focused, true);
 		} finally {
 			ui.stop();
 		}

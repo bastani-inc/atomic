@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { transformMessages } from "../src/api/transform-messages.ts";
-import type { AssistantMessage, Message, Model } from "../src/types.ts";
+import { transformMessages } from "../src/api/transform-messages.js";
+import type { AssistantMessage, Message, Model } from "../src/types.js";
 
 const kimi: Model<"openai-completions"> = {
 	id: "moonshotai/Kimi-K3",

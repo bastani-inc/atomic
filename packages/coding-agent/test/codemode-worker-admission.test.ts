@@ -1,7 +1,8 @@
+import assert from "node:assert/strict";
 import { Worker } from "node:worker_threads";
 import * as codemode from "@earendil-works/pi-codemode";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { executeCodemode } from "../src/extensions/codemode/execute.ts";
+import { afterEach, beforeEach, describe, it, vi } from "vitest";
+import { executeCodemode } from "../src/extensions/codemode/execute.js";
 
 vi.mock("@earendil-works/pi-codemode", async (importOriginal) => {
 	const actual = await importOriginal<typeof codemode>();
@@ -33,6 +34,11 @@ afterEach(async () => {
 const run = (code: string, signal?: AbortSignal) =>
 	executeCodemode("worker-admission", { code }, signal, undefined, undefined);
 
+function assertErrorText(result: Awaited<ReturnType<typeof run>>, text: string): void {
+	assert.equal(result.isError, true);
+	assert.ok(result.content.some((block) => block.type === "text" && block.text.includes(text)));
+}
+
 describe("codemode worker admission", () => {
 	it.each(["timeout", "abort", "success"] as const)(
 		"holds shared capacity until actual worker exit after %s (earendil-works/pi#10748)",
@@ -51,50 +57,36 @@ describe("codemode worker admission", () => {
 				);
 				if (how === "abort") {
 					await vi.waitFor(() =>
-						expect(once.mock.calls.filter(([event]) => event === "exit").length).toBeGreaterThan(
-							exitListenersBefore,
-						),
+						assert.ok(once.mock.calls.filter(([event]) => event === "exit").length > exitListenersBefore),
 					);
 					controller.abort();
 				}
 				const result = await pending;
-				if (how === "success") expect(result.isError).toBeUndefined();
+				if (how === "success") assert.equal(result.isError, undefined);
 				else {
-					expect(result.isError).toBe(true);
-					expect(result.content).toContainEqual({
-						type: "text",
-						text: expect.stringContaining(
-							how === "timeout" ? "Execution timed out after 200 ms" : "This operation was aborted",
-						),
-					});
+					assertErrorText(
+						result,
+						how === "timeout" ? "Execution timed out after 200 ms" : "This operation was aborted",
+					);
 				}
-				expect(terminations.size).toBe(i + 1);
+				assert.equal(terminations.size, i + 1);
 			}
 
 			const blocked = await run("return 3");
-			expect(blocked).toMatchObject({ isError: true, details: { calls: [] } });
-			expect(blocked.content).toContainEqual({
-				type: "text",
-				text: expect.stringContaining(
-					"Codemode worker limit reached (2 workers are still running or shutting down)",
-				),
-			});
-			expect(terminations.size).toBe(2);
+			assert.deepEqual(blocked.details?.calls, []);
+			assertErrorText(blocked, "Codemode worker limit reached (2 workers are still running or shutting down)");
+			assert.equal(terminations.size, 2);
 
 			const aborted = await run("while (true) {}", AbortSignal.abort());
-			expect(aborted.isError).toBe(true);
-			expect(aborted.content).toContainEqual({
-				type: "text",
-				text: expect.stringContaining("This operation was aborted"),
-			});
-			expect(terminations.size).toBe(2);
+			assertErrorText(aborted, "This operation was aborted");
+			assert.equal(terminations.size, 2);
 
 			// Releasing one actual worker, not its result, permits exactly one new execution.
 			const [worker, resolve] = [...terminations][0];
 			resolve(await terminate.call(worker));
 			terminations.delete(worker);
-			expect((await run("return 42")).isError).toBeUndefined();
-			expect(terminations.size).toBe(2);
+			assert.equal((await run("return 42")).isError, undefined);
+			assert.equal(terminations.size, 2);
 		},
 	);
 
@@ -106,16 +98,12 @@ describe("codemode worker admission", () => {
 			const results = await Promise.all(
 				Array.from({ length: 3 }, () => run('// @options: {"timeout_ms": 20}\nwhile (true) {}')),
 			);
-			expect(results.every((result) => result.isError)).toBe(true);
-			expect(terminations.size).toBe(0);
+			assert.ok(results.every((result) => result.isError));
+			assert.equal(terminations.size, 0);
 			loading.resolve(wasm);
 			const blocked = await run("return 1");
-			expect(blocked.isError).toBe(true);
-			expect(blocked.content).toContainEqual({
-				type: "text",
-				text: expect.stringContaining("Codemode worker limit reached"),
-			});
-			expect(terminations.size).toBe(2);
+			assertErrorText(blocked, "Codemode worker limit reached");
+			assert.equal(terminations.size, 2);
 		} finally {
 			loading.resolve(wasm);
 			vi.mocked(codemode.loadQuickJSWasm).mockReset();
@@ -124,8 +112,8 @@ describe("codemode worker admission", () => {
 
 	it("admits only two workers from a concurrent burst (earendil-works/pi#10748)", async () => {
 		const results = await Promise.all(Array.from({ length: 6 }, () => run("return 1")));
-		expect(results.filter((result) => !result.isError)).toHaveLength(2);
-		expect(results.filter((result) => result.isError)).toHaveLength(4);
-		expect(terminations.size).toBe(2);
+		assert.equal(results.filter((result) => !result.isError).length, 2);
+		assert.equal(results.filter((result) => result.isError).length, 4);
+		assert.equal(terminations.size, 2);
 	});
 });
