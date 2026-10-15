@@ -430,88 +430,115 @@ async function constructAgentSession(
 		},
 		convertToLlm: convertToLlmWithBlockImages,
 		streamFn: async (model, context, streamOptions) => {
-			const authResult = await modelRuntime.getRequestAuth(model, {
-				apiKey: streamOptions?.apiKey,
-				env: streamOptions?.env,
-				signal: streamOptions?.signal,
-			});
-			const compatibility = authResult ? undefined : modelRuntime.getCompatibilityRequestConfig(model);
-			if (!authResult && compatibility?.authHeader) {
-				throw new Error(`No API key found for "${model.provider}"`);
-			}
-			const auth = {
-				apiKey: authResult?.auth.apiKey,
-				headers: authResult?.auth.headers ?? compatibility?.headers,
-				baseUrl: authResult?.auth.baseUrl,
-				env: authResult?.env,
+			const onProviderStreamEvent = streamOptions?.onProviderStreamEvent ?? handleProviderStreamEvent;
+			const prepare = async () => {
+				const authResult = await modelRuntime.getRequestAuth(model, {
+					apiKey: streamOptions?.apiKey,
+					env: streamOptions?.env,
+					signal: streamOptions?.signal,
+				});
+				const compatibility = authResult ? undefined : modelRuntime.getCompatibilityRequestConfig(model);
+				if (!authResult && compatibility?.authHeader) {
+					throw new Error(`No API key found for "${model.provider}"`);
+				}
+				const auth = {
+					apiKey: authResult?.auth.apiKey,
+					headers: authResult?.auth.headers ?? compatibility?.headers,
+					baseUrl: authResult?.auth.baseUrl,
+					env: authResult?.env,
+				};
+				const requestModel =
+					auth.baseUrl !== undefined && auth.baseUrl !== model.baseUrl
+						? { ...model, baseUrl: auth.baseUrl }
+						: model;
+				const providerRetrySettings = settingsManager.getProviderRetrySettings();
+				const httpIdleTimeoutMs = settingsManager.getHttpIdleTimeoutMs();
+				// SDKs treat timeout=0 as 0ms (immediate timeout), not "no timeout".
+				// Use max int32 to effectively disable the timeout.
+				const effectiveTimeoutMs = httpIdleTimeoutMs === 0 ? 2147483647 : httpIdleTimeoutMs;
+				const timeoutMs = streamOptions?.timeoutMs ?? providerRetrySettings.timeoutMs ?? effectiveTimeoutMs;
+				const websocketConnectTimeoutMs =
+					streamOptions?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
+				const streamDeadlineMs = streamOptions?.streamDeadlineMs ?? settingsManager.getStreamDeadlineMs();
+				const requestHeaders = mergeProviderAttributionHeaders(
+					model,
+					settingsManager,
+					streamOptions?.sessionId,
+					auth.headers,
+					streamOptions?.headers,
+				);
+				const mergedHeaders = mergeHeaders(model.headers, requestHeaders);
+				const headerRunner = extensionRunnerRef.current;
+				const assembledHeaders = headerRunner?.hasHandlers("before_provider_headers")
+					? await headerRunner.emitBeforeProviderHeaders(mergedHeaders ?? {})
+					: mergedHeaders;
+				const extensionProvider = modelRuntime.getRegisteredProviderConfig(requestModel.provider);
+				const usesExtensionStream =
+					extensionProvider?.streamSimple !== undefined && requestModel.api === extensionProvider.api;
+				const transportHeaders = usesExtensionStream
+					? assembledHeaders
+					: removeUnownedModelHeaders(assembledHeaders, model.headers, requestHeaders);
+				// Fast-vs-normal is the selected model's own identity, so the canonical `-fast` model is what
+				// dispatch, the recorded assistant message, session state, and usage all see. The provider
+				// adapter reads `fastRoute.upstreamModelId` when it serializes the outbound request.
+				const fastRoute = getModelFastRoute(requestModel);
+				if (fastRoute?.serviceTier !== undefined && !usesExtensionStream && !authResult) {
+					throw new Error(`No API key found for "${model.provider}"`);
+				}
+				const env = auth.env || streamOptions?.env ? { ...auth.env, ...streamOptions?.env } : undefined;
+				const cacheRetentionEnv = getProviderEnvValue("PI_CACHE_RETENTION", env);
+				// Shared by main chat, workflow stages and subagents; provider capability gates still apply.
+				const cacheRetention =
+					streamOptions?.cacheRetention ??
+					(cacheRetentionEnv === "none"
+						? "none"
+						: !cacheRetentionEnv
+							? getDefaultCacheRetention(requestModel)
+							: cacheRetentionEnv === "long"
+								? "long"
+								: "short");
+				const fastRouteStreamOptions = withFastRouteStreamOptions(fastRoute, {
+					...streamOptions,
+					apiKey: auth.apiKey,
+					env,
+					cacheRetention,
+					timeoutMs,
+					websocketConnectTimeoutMs,
+					streamDeadlineMs,
+					maxRetries: streamOptions?.maxRetries ?? providerRetrySettings.maxRetries,
+					maxRetryDelayMs: streamOptions?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
+					headers: transportHeaders,
+				});
+				const nativeFastRoute =
+					fastRoute?.serviceTier !== undefined && !usesExtensionStream && extensionProvider?.aliasOf === undefined;
+				const requestOptions: ModelRuntimeSimpleStreamOptions = {
+					...fastRouteStreamOptions,
+					onProviderStreamEvent,
+					preparedRequestAuth: {
+						resolution: authResult,
+						reprepare: async () => {
+							const next = await prepare();
+							return { model: next.requestModel, options: next.requestOptions };
+						},
+						streamSimple: nativeFastRoute
+							? (routeModel, routeContext, routeOptions) =>
+									streamWithFastRoute(routeModel, routeContext, routeOptions)
+							: undefined,
+					},
+				};
+				return { authResult, requestModel, fastRouteStreamOptions, requestOptions };
 			};
-			const requestModel =
-				auth.baseUrl !== undefined && auth.baseUrl !== model.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
-			const providerRetrySettings = settingsManager.getProviderRetrySettings();
-			const httpIdleTimeoutMs = settingsManager.getHttpIdleTimeoutMs();
-			// SDKs treat timeout=0 as 0ms (immediate timeout), not "no timeout".
-			// Use max int32 to effectively disable the timeout.
-			const effectiveTimeoutMs = httpIdleTimeoutMs === 0 ? 2147483647 : httpIdleTimeoutMs;
-			const timeoutMs = streamOptions?.timeoutMs ?? providerRetrySettings.timeoutMs ?? effectiveTimeoutMs;
-			const websocketConnectTimeoutMs =
-				streamOptions?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
-			const streamDeadlineMs = streamOptions?.streamDeadlineMs ?? settingsManager.getStreamDeadlineMs();
-			const requestHeaders = mergeProviderAttributionHeaders(
-				model,
-				settingsManager,
-				streamOptions?.sessionId,
-				auth.headers,
-				streamOptions?.headers,
-			);
-			const mergedHeaders = mergeHeaders(model.headers, requestHeaders);
-			const headerRunner = extensionRunnerRef.current;
-			const assembledHeaders = headerRunner?.hasHandlers("before_provider_headers")
-				? await headerRunner.emitBeforeProviderHeaders(mergedHeaders ?? {})
-				: mergedHeaders;
-			const extensionProvider = modelRuntime.getRegisteredProviderConfig(requestModel.provider);
-			const usesExtensionStream =
-				extensionProvider?.streamSimple !== undefined && requestModel.api === extensionProvider.api;
-			const transportHeaders = usesExtensionStream
-				? assembledHeaders
-				: removeUnownedModelHeaders(assembledHeaders, model.headers, requestHeaders);
-			// Fast-vs-normal is the selected model's own identity, so the canonical `-fast` model is what
-			// dispatch, the recorded assistant message, session state, and usage all see. The provider
-			// adapter reads `fastRoute.upstreamModelId` when it serializes the outbound request.
-			const fastRoute = getModelFastRoute(requestModel);
-			if (fastRoute?.serviceTier !== undefined && !usesExtensionStream && !authResult) {
-				throw new Error(`No API key found for "${model.provider}"`);
-			}
-			const env = auth.env || streamOptions?.env ? { ...auth.env, ...streamOptions?.env } : undefined;
-			const cacheRetentionEnv = getProviderEnvValue("PI_CACHE_RETENTION", env);
-			// Shared by main chat, workflow stages and subagents; provider capability gates still apply.
-			const cacheRetention =
-				streamOptions?.cacheRetention ??
-				(cacheRetentionEnv === "none"
-					? "none"
-					: !cacheRetentionEnv
-						? getDefaultCacheRetention(requestModel)
-						: cacheRetentionEnv === "long"
-							? "long"
-							: "short");
-			const fastRouteStreamOptions = withFastRouteStreamOptions(fastRoute, {
-				...streamOptions,
-				apiKey: auth.apiKey,
-				env,
-				cacheRetention,
-				timeoutMs,
-				websocketConnectTimeoutMs,
-				streamDeadlineMs,
-				maxRetries: streamOptions?.maxRetries ?? providerRetrySettings.maxRetries,
-				maxRetryDelayMs: streamOptions?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
-				headers: transportHeaders,
-			});
-			const preparedStreamOptions: ModelRuntimeSimpleStreamOptions = {
-				...fastRouteStreamOptions,
-				preparedRequestAuth: { resolution: authResult },
-			};
+			const { authResult, requestModel, fastRouteStreamOptions, requestOptions } = await prepare();
 			if (streamOptions?.sessionId === sessionManager.getSessionId()) {
 				const prefix = [...agent.state.messages];
-				cacheWarmer.start({ model: requestModel, context, options: preparedStreamOptions }, () => {
+				const warmOptions: ModelRuntimeSimpleStreamOptions = {
+					...fastRouteStreamOptions,
+					preparedRequestAuth: {
+						resolution: authResult,
+						reprepare: requestOptions.preparedRequestAuth?.reprepare,
+					},
+				};
+				cacheWarmer.start({ model: requestModel, context, options: warmOptions }, () => {
 					const current = agent.state.model;
 					return (
 						!sessionLifetime(session).aborted &&
@@ -523,14 +550,10 @@ async function constructAgentSession(
 					);
 				});
 			}
-			const onProviderStreamEvent = streamOptions?.onProviderStreamEvent ?? handleProviderStreamEvent;
-			if (fastRoute?.serviceTier !== undefined && !usesExtensionStream && extensionProvider?.aliasOf === undefined) {
-				return streamWithFastRoute(requestModel, context, { ...fastRouteStreamOptions, onProviderStreamEvent });
-			}
 			// The Codex routing identity is attached by ModelRuntimeStreaming, after auth headers are
 			// merged. Applying it here would be inert: `mergeHeaders` copies the header object the
 			// wrapper mutates.
-			return modelRuntime.streamSimple(requestModel, context, { ...preparedStreamOptions, onProviderStreamEvent });
+			return modelRuntime.streamSimple(requestModel, context, requestOptions);
 		},
 		onPayload: async (payload, model) => {
 			const sourceMessages = lastConvertedLlmMessages;

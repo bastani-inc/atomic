@@ -3,6 +3,7 @@ import { containsCredential, containsCredentialValue } from "./credential-screen
 
 interface ReloadableCredentialStore {
 	reload(): void | Promise<void>;
+	reloadIfChanged?(): boolean;
 }
 
 function getReloadableStore(store: CredentialStore): ReloadableCredentialStore | undefined {
@@ -42,6 +43,10 @@ export class RuntimeCredentials implements CredentialStore {
 
 	async reload(): Promise<void> {
 		await getReloadableStore(this.store)?.reload();
+	}
+
+	reloadIfChanged(): void {
+		getReloadableStore(this.store)?.reloadIfChanged?.();
 	}
 
 	hasCredentialSnapshot(): boolean {

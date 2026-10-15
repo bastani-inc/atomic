@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
 	type AnyModel,
 	type Api,
@@ -110,6 +111,12 @@ export type CredentialSynchronizationOperation =
 	| "setRuntimeApiKey"
 	| "removeRuntimeApiKey";
 
+function availabilityCredentialInputs(credential: Credential | undefined) {
+	if (credential?.type !== "oauth") return credential;
+	const { access: _access, refresh: _refresh, expires: _expires, ...inputs } = credential;
+	return inputs;
+}
+
 /** Credentials changed successfully, but local model state could not be synchronized. */
 export class CredentialSynchronizationError extends Error {
 	readonly providerId: string;
@@ -172,6 +179,8 @@ export class ModelRuntime implements Models {
 	private catalogInputsGeneration = 0;
 	private observedModelsFileToken: string | undefined;
 	private readonly externalProviderAuthStatuses = new Map<string, AuthStatus>();
+	private readonly externalStatusCredentials = new Map<string, Credential | undefined>();
+	private readonly availabilityCredentials = new Map<string, Credential | undefined>();
 	private availabilityRefreshSeq = 0;
 	private availabilityErrorSeq = 0;
 	private readonly providerAvailabilitySeq = new Map<string, number>();
@@ -201,6 +210,7 @@ export class ModelRuntime implements Models {
 				const source = this.extensionProviders.get(model.provider)?.aliasOf;
 				return source ? { ...model, provider: source } : model;
 			},
+			() => this.credentials.reload(),
 		);
 		this.rebuildProviders();
 	}
@@ -401,6 +411,8 @@ export class ModelRuntime implements Models {
 		]);
 		if (seq !== this.availabilityRefreshSeq || inputsGeneration !== this.catalogInputsGeneration) return false;
 		this.snapshot = createModelRuntimeSnapshot([...this.models.getModels()], [...available], checks, credentials);
+		this.availabilityCredentials.clear();
+		this.recordAvailabilityCredentials([...this.snapshot.auth.keys(), ...this.snapshot.storedProviders]);
 		if (errorSeq === this.availabilityErrorSeq) this.availabilityError = undefined;
 		return true;
 	}
@@ -459,6 +471,7 @@ export class ModelRuntime implements Models {
 					model,
 				]),
 			);
+			this.recordAvailabilityCredentials([providerId]);
 			this.snapshot = {
 				all,
 				available: all.flatMap((model) => availableById.get(`${model.provider}\0${model.id}`) ?? []),
@@ -647,11 +660,100 @@ export class ModelRuntime implements Models {
 	}
 
 	isUsingOAuth(providerId: string): boolean {
+		this.syncStoredCredentialChanges();
 		return this.snapshot.auth.get(normalizeProviderId(providerId))?.type === "oauth";
 	}
 
 	hasConfiguredAuth(providerId: string): boolean {
+		this.syncStoredCredentialChanges();
 		return this.snapshot.configuredProviders.has(normalizeProviderId(providerId));
+	}
+
+	private syncStoredCredentialChanges(): void {
+		if (!this.credentials.hasCredentialSnapshot()) return;
+		this.credentials.reloadIfChanged();
+		const providerIds = new Set([
+			...this.models.getProviders().map((provider) => provider.id),
+			...this.snapshot.storedProviders,
+		]);
+		let snapshot = this.snapshot;
+		const changedProviderIds = new Set<string>();
+		const removedProviderIds: string[] = [];
+		for (const providerId of providerIds) {
+			if (this.credentials.hasRuntimeApiKey(providerId)) continue;
+			const credential = this.credentials.peek(providerId);
+			const type = credential?.type;
+			if (
+				type === snapshot.storedCredentialTypes.get(providerId) &&
+				!this.availabilityCredentialChanged(providerId, credential)
+			)
+				continue;
+			if (
+				this.externalProviderAuthStatuses.has(providerId) &&
+				isDeepStrictEqual(credential, this.externalStatusCredentials.get(providerId))
+			)
+				continue;
+			this.externalProviderAuthStatuses.delete(providerId);
+			this.externalStatusCredentials.delete(providerId);
+			changedProviderIds.add(providerId);
+			if (type) {
+				snapshot = addStoredCredentialProvider(snapshot, providerId, type);
+			} else {
+				snapshot = removeStoredCredentialProvider(snapshot, providerId);
+				removedProviderIds.push(providerId);
+			}
+		}
+		if (changedProviderIds.size === 0) return;
+		this.markCatalogInputsChanged();
+		this.snapshotGeneration += 1;
+		this.snapshot = this.withCredentialAvailability(this.snapshot, snapshot, changedProviderIds);
+		for (const providerId of removedProviderIds) {
+			void this.refreshRemainingAuthAfterLogout(providerId, this.snapshotGeneration);
+		}
+	}
+
+	private availabilityCredentialChanged(providerId: string, credential: Credential | undefined): boolean {
+		if (!this.availabilityCredentials.has(providerId)) {
+			this.availabilityCredentials.set(providerId, credential);
+			return false;
+		}
+		const published = this.availabilityCredentials.get(providerId);
+		if (credential === published) return false;
+		if (!isDeepStrictEqual(availabilityCredentialInputs(credential), availabilityCredentialInputs(published)))
+			return true;
+		this.availabilityCredentials.set(providerId, credential);
+		return false;
+	}
+
+	private recordAvailabilityCredentials(providerIds: Iterable<string>): void {
+		for (const providerId of providerIds)
+			this.availabilityCredentials.set(providerId, this.credentials.peek(providerId));
+	}
+
+	private withCredentialAvailability(
+		previous: ModelRuntimeSnapshot,
+		next: ModelRuntimeSnapshot,
+		providerIds: ReadonlySet<string>,
+	): ModelRuntimeSnapshot {
+		const availableByKey = new Map(
+			previous.available
+				.filter((model) => !providerIds.has(model.provider))
+				.map((model) => [snapshotModelKey(model), model]),
+		);
+		for (const providerId of providerIds) {
+			const provider = this.models.getProvider(providerId);
+			if (!provider || !next.configuredProviders.has(providerId)) continue;
+			const models = provider.getModels();
+			for (const model of provider.filterModels?.(models, this.credentials.peek(providerId)) ?? models)
+				availableByKey.set(snapshotModelKey(model), model);
+		}
+		this.recordAvailabilityCredentials(providerIds);
+		const all = [...this.models.getModels()];
+		return {
+			...next,
+			all,
+			available: all.flatMap((model) => availableByKey.get(snapshotModelKey(model)) ?? []),
+		};
 	}
 
 	/** Return stored credential metadata synchronously without refreshing auth. */
@@ -775,6 +877,7 @@ export class ModelRuntime implements Models {
 			for (const credential of credentials) this.externalProviderAuthStatuses.delete(credential.providerId);
 			this.snapshotGeneration += 1;
 			this.snapshot = replaceStoredCredentialProviders(this.snapshot, credentials);
+			this.recordAvailabilityCredentials([...this.snapshot.auth.keys(), ...this.snapshot.storedProviders]);
 			return;
 		}
 		await this.queueAvailabilityRefresh();
@@ -840,7 +943,11 @@ export class ModelRuntime implements Models {
 				}),
 			]);
 			if (logoutGeneration === this.snapshotGeneration && !this.snapshot.storedProviders.has(providerId)) {
-				this.snapshot = removeStoredCredentialProvider(this.snapshot, providerId, remainingAuth);
+				this.snapshot = this.withCredentialAvailability(
+					this.snapshot,
+					removeStoredCredentialProvider(this.snapshot, providerId, remainingAuth),
+					new Set([providerId]),
+				);
 			}
 		} finally {
 			if (timeout) clearTimeout(timeout);
@@ -871,6 +978,7 @@ export class ModelRuntime implements Models {
 					this.updateModelSnapshot();
 					this.externalProviderAuthStatuses.delete(providerId);
 					this.snapshot = addStoredCredentialProvider(this.snapshot, providerId, credential.type);
+					this.recordAvailabilityCredentials([providerId]);
 					return;
 				}
 				const result = await this.refresh({ providers: [providerId] });
@@ -884,6 +992,7 @@ export class ModelRuntime implements Models {
 					// Keep credential-filtered model availability from the refresh intact.
 					available: this.snapshot.available,
 				};
+				this.recordAvailabilityCredentials([providerId]);
 			});
 		});
 	}
@@ -923,10 +1032,12 @@ export class ModelRuntime implements Models {
 	}
 
 	getStoredCredentialType(providerId: string): CredentialInfo["type"] | undefined {
+		this.syncStoredCredentialChanges();
 		return this.snapshot.storedCredentialTypes.get(normalizeProviderId(providerId));
 	}
 
 	getProviderAuthStatus(providerId: string): AuthStatus {
+		this.syncStoredCredentialChanges();
 		providerId = normalizeProviderId(providerId);
 		const localStatus = getSnapshotProviderAuthStatus(
 			this.snapshot,
@@ -949,6 +1060,7 @@ export class ModelRuntime implements Models {
 				: undefined;
 		this.snapshot = removeStoredCredentialProvider(this.snapshot, providerId, remainingAuth);
 		this.externalProviderAuthStatuses.set(providerId, status);
+		this.externalStatusCredentials.set(providerId, this.credentials.peek(providerId));
 	}
 
 	stream<TApi extends Api>(
@@ -1052,6 +1164,7 @@ export class ModelRuntime implements Models {
 				this.updateModelSnapshot();
 				this.externalProviderAuthStatuses.delete(providerId);
 				this.snapshot = addStoredCredentialProvider(this.snapshot, providerId, credential.type);
+				this.recordAvailabilityCredentials([providerId]);
 			});
 			return credential;
 		});
@@ -1071,6 +1184,7 @@ export class ModelRuntime implements Models {
 				this.updateModelSnapshot();
 				this.externalProviderAuthStatuses.delete(providerId);
 				this.snapshot = removeStoredCredentialProvider(this.snapshot, providerId);
+				this.recordAvailabilityCredentials([providerId]);
 				generation = this.snapshotGeneration;
 			});
 			return generation;

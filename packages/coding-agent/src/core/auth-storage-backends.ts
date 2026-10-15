@@ -33,6 +33,15 @@ const AUTH_DELETE_LOCK_RETRY_OPTIONS = {
 	randomize: true,
 } as const;
 
+function describeFileVersion(path: string): string {
+	try {
+		const stats = statSync(path, { bigint: true, throwIfNoEntry: false });
+		return stats ? `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}` : "absent";
+	} catch (error) {
+		return `unreadable:${error instanceof Error && "code" in error ? String(error.code) : "unknown"}`;
+	}
+}
+
 export interface AuthStorageBackend {
 	/**
 	 * Read the current credential snapshot WITHOUT acquiring the exclusive write
@@ -48,6 +57,7 @@ export interface AuthStorageBackend {
 	 * `AuthStorage.reload()` falls back to a `withLock`-based read.
 	 */
 	read?(): string | undefined;
+	version?(): string;
 	deleteProvider?(provider: string): string | undefined;
 	deleteProviderAsync?(provider: string): Promise<string | undefined>;
 	modifyProviderAsync?(
@@ -191,6 +201,10 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 
 	read(): string | undefined {
 		return this.readMergedAuth();
+	}
+
+	version(): string {
+		return this.readPaths.map((path) => describeFileVersion(path)).join("|");
 	}
 
 	deleteProvider(provider: string): string | undefined {

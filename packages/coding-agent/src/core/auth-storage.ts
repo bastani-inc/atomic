@@ -11,6 +11,7 @@ import {
 	normalizeProviderId,
 } from "@bastani/pi-ai";
 import { join } from "path";
+import { isDeepStrictEqual } from "util";
 import { getAgentConfigPaths, getAgentDir } from "../config.js";
 import { raceWithAbortSignal } from "../utils/abort.js";
 import { stripBom } from "../utils/text.ts";
@@ -32,6 +33,7 @@ export type AuthStorageData = Record<string, Credential>;
 
 export class AuthStorage implements CredentialStore {
 	private data: AuthStorageData = {};
+	private loadedVersion: string | undefined;
 	private storage: AuthStorageBackend;
 
 	private constructor(storage: AuthStorageBackend) {
@@ -62,23 +64,48 @@ export class AuthStorage implements CredentialStore {
 		return normalizeProviderKeys(JSON.parse(stripBom(content)) as AuthStorageData);
 	}
 
+	private readStorageContent(): string | undefined {
+		if (this.storage.read) return this.storage.read();
+		let content: string | undefined;
+		this.storage.withLock((current) => {
+			content = current;
+			return { result: undefined };
+		});
+		return content;
+	}
+
 	/**
 	 * Reload credentials from storage.
 	 */
 	reload(): void {
+		this.loadFromStorage(this.readStorageVersion());
+	}
+
+	reloadIfChanged(): boolean {
+		if (!this.storage.version && !this.storage.read) return false;
+		const version = this.readStorageVersion();
+		if (version !== undefined && version === this.loadedVersion) return false;
+		return this.loadFromStorage(version);
+	}
+
+	private readStorageVersion(): string | undefined {
 		try {
-			let content: string | undefined;
-			if (this.storage.read) {
-				content = this.storage.read();
-			} else {
-				this.storage.withLock((current) => {
-					content = current;
-					return { result: undefined };
-				});
-			}
-			this.data = this.parseStorageData(content);
+			return this.storage.version?.();
 		} catch {
-			// Preserve the last valid in-memory snapshot.
+			return undefined;
+		}
+	}
+
+	private loadFromStorage(version: string | undefined): boolean {
+		try {
+			const next = this.parseStorageData(this.readStorageContent());
+			this.loadedVersion = version;
+			if (isDeepStrictEqual(next, this.data)) return false;
+			this.data = next;
+			return true;
+		} catch (error) {
+			if (error instanceof SyntaxError) this.loadedVersion = version;
+			return false;
 		}
 	}
 
@@ -89,6 +116,7 @@ export class AuthStorage implements CredentialStore {
 
 	async read(provider: string, options?: AuthOperationOptions): Promise<Credential | undefined> {
 		options?.signal?.throwIfAborted();
+		this.reloadIfChanged();
 		const credential = this.peek(provider);
 		if (credential?.type !== "api_key") return credential;
 		if (credential.key === undefined) return credential;
@@ -118,6 +146,7 @@ export class AuthStorage implements CredentialStore {
 			const snapshot = signal === undefined ? await operation : await raceWithAbortSignal(operation, signal);
 			this.data = this.parseStorageData(snapshot.next);
 			if (snapshot.result !== undefined) this.data[provider] = snapshot.result;
+			this.loadedVersion = undefined;
 			return snapshot.result;
 		}
 		let persistedData: AuthStorageData | undefined;
@@ -138,6 +167,7 @@ export class AuthStorage implements CredentialStore {
 		});
 		const result = signal === undefined ? await operation : await raceWithAbortSignal(operation, signal);
 		if (persistedData) this.data = persistedData;
+		this.loadedVersion = undefined;
 		return result;
 	}
 
@@ -147,6 +177,7 @@ export class AuthStorage implements CredentialStore {
 			if (provider === "azure") await this.storage.deleteProviderAsync(LEGACY_AZURE_PROVIDER);
 			const content = await this.storage.deleteProviderAsync(provider);
 			this.data = this.parseStorageData(content);
+			this.loadedVersion = undefined;
 			return;
 		}
 		let persistedData: AuthStorageData | undefined;
@@ -157,11 +188,13 @@ export class AuthStorage implements CredentialStore {
 			return { result: undefined, next: JSON.stringify(currentData, null, 2) };
 		});
 		if (persistedData) this.data = persistedData;
+		this.loadedVersion = undefined;
 	}
 
 	/** List credential metadata without resolving configured key values. */
 	async list(options?: AuthOperationOptions): Promise<readonly CredentialInfo[]> {
 		options?.signal?.throwIfAborted();
+		this.reloadIfChanged();
 		return Object.entries(this.data).map(([providerId, credential]) => ({ providerId, type: credential.type }));
 	}
 }

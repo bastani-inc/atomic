@@ -36,7 +36,7 @@ for (const scenario of [
 		},
 	},
 ]) {
-	test(`refresh_models reloads child credentials after ${scenario.name}`, async () => {
+	test(`refresh_models publishes models for externally persisted ${scenario.name} (#3620)`, async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "atomic-rpc-model-refresh-"));
 		try {
 			const authPath = join(tempDir, "auth.json");
@@ -58,7 +58,11 @@ for (const scenario of [
 
 			const hostAuth = AuthStorage.create(authPath);
 			await hostAuth.modify(scenario.provider, async () => scenario.credential);
-			assert.equal(await childAuth.read(scenario.provider), undefined);
+			assert.deepEqual(await childAuth.read(scenario.provider), scenario.credential);
+			assert.equal(
+				childRuntime.getAvailableSnapshot().some((model) => model.provider === scenario.provider),
+				false,
+			);
 
 			const response = await handle({ id: scenario.provider, type: "refresh_models", allowNetwork: false });
 
@@ -70,7 +74,7 @@ for (const scenario of [
 	});
 }
 
-test("refresh_models uses newly persisted credentials for forced dynamic discovery", async () => {
+test("refresh_models forces dynamic discovery with externally persisted credentials (#3620)", async () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "atomic-rpc-dynamic-model-refresh-"));
 	try {
 		const authPath = join(tempDir, "auth.json");
@@ -112,7 +116,12 @@ test("refresh_models uses newly persisted credentials for forced dynamic discove
 			type: "api_key",
 			key: "new-dynamic-key",
 		}));
-		assert.equal(await childAuth.read("dynamic-login"), undefined);
+		assert.deepEqual(await childAuth.read("dynamic-login"), { type: "api_key", key: "new-dynamic-key" });
+		assert.equal(observedKey, undefined);
+		assert.equal(
+			childRuntime.getAvailableSnapshot().some((model) => model.provider === "dynamic-login"),
+			false,
+		);
 
 		const response = await handle({ type: "refresh_models", allowNetwork: true, force: true });
 
