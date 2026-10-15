@@ -2,7 +2,7 @@ import { JournalInvalidTextError, type RunEvent, type RunHeader } from "./types.
 
 export function validateText(field: JournalInvalidTextError["field"], value: string): void {
 	if (value.includes("\u0000")) throw new JournalInvalidTextError(field, "nul-character");
-	if (!value.isWellFormed()) throw new JournalInvalidTextError(field, "ill-formed-unicode");
+	if (/\p{Surrogate}/u.test(value)) throw new JournalInvalidTextError(field, "ill-formed-unicode");
 }
 
 export function serializeJson(value: RunHeader | RunEvent["payload"]): string {

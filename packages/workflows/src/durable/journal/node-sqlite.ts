@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import { JOURNAL_COLUMNS as c, JournalCounterRangeError, JournalError, StorageUnavailableError } from "./types.js";
 
 export type SqliteValue = string | number | null;
@@ -37,8 +38,15 @@ export class JournalDatabase {
 		this.path =
 			typeof source === "string" ? source : storageBoundary(":memory:", () => source.location() || ":memory:");
 		this.database = storageBoundary(this.path, () => {
-			if (typeof source === "string") mkdirSync(dirname(source), { recursive: true });
-			const database = typeof source === "string" ? new DatabaseSync(source) : source;
+			let database: DatabaseSync;
+			if (typeof source === "string") {
+				mkdirSync(dirname(source), { recursive: true });
+				// Loading SQLite is deferred so importing the public SDK has no runtime side effects.
+				const sqlite = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
+				database = new sqlite.DatabaseSync(source);
+			} else {
+				database = source;
+			}
 			let initialized = false;
 			try {
 				database.exec(
