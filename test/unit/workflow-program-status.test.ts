@@ -307,3 +307,35 @@ test("projects run and stage approvals ahead of stage questions in either order 
 		}
 	}
 });
+
+test("projects the root terminal disposition without inheriting child cancellation (#3617)", () => {
+	for (const status of ["completed", "cancelled", "killed", "failed", "paused", "running"] as const) {
+		const rootRun: RunSnapshot = {
+			id: "root",
+			name: "workflow",
+			inputs: {},
+			status,
+			startedAt: 0,
+			...(status === "paused" || status === "running" ? {} : { endedAt: 1 }),
+			stages: [],
+		};
+		const [activity] = projectWorkflowActivity({
+			snapshot: {
+				runs: [rootRun, { ...rootRun, id: "child", parentRunId: "root", status: "cancelled" }],
+				notices: [],
+				version: 0,
+			},
+			ownership: {
+				ownerSessionId: "owner",
+				executingStageIds: new Set<string>(),
+				executingToolNodeIds: new Set<string>(),
+				stoppingRunIds: new Set<string>(),
+				retryingStageIds: new Set<string>(),
+				acknowledgedFailureRunIds: new Set<string>(),
+			},
+		});
+		assert.equal(activity.endedStatus, status === "paused" || status === "running" ? undefined : status);
+		assert.equal(activity.state, "idle");
+		assert.equal(activity.reason, status === "paused" ? "paused" : "quiescent");
+	}
+});

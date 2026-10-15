@@ -15,6 +15,10 @@ function isSettledFailure(root: WorkflowRootActivity): boolean {
 	return root.state === "idle" && root.actionableBlockCount === 0 && root.needsAttention;
 }
 
+function isSettledCancellation(root: WorkflowRootActivity): boolean {
+	return root.state === "idle" && (root.endedStatus === "cancelled" || root.endedStatus === "killed");
+}
+
 export class ProgramStatusReporter {
 	private runActive = false;
 	private compacting = false;
@@ -27,6 +31,7 @@ export class ProgramStatusReporter {
 	private readonly failedRoots = new Set<string>();
 	/** Epoch of the source whose ready snapshot is the baseline; frames before it describe history, not new outcomes. */
 	private baselineEpoch: string | undefined;
+	private cancellationAcknowledged = false;
 
 	private readonly getTerminal: () => Terminal;
 	private readonly getSessionName: () => string | undefined;
@@ -44,8 +49,9 @@ export class ProgramStatusReporter {
 				break;
 			case "message_start":
 				// The user's next message answers a held workflow failure; lifecycle notices are custom messages.
-				if (event.message.role !== "user" || this.failedRoots.size === 0) return;
+				if (event.message.role !== "user") return;
 				this.failedRoots.clear();
+				this.cancellationAcknowledged = true;
 				break;
 			case "message_end":
 				if (event.message.role !== "assistant") return;
@@ -85,6 +91,7 @@ export class ProgramStatusReporter {
 	handleWorkflowActivity(frame: WorkflowActivityFrame): void {
 		if (frame.kind === "snapshot") {
 			const sameSource = this.baselineEpoch === frame.cursor.epoch;
+			if (!sameSource) this.cancellationAcknowledged = false;
 			if (frame.availability === "recovering" && sameSource) {
 				this.report();
 				return;
@@ -120,14 +127,23 @@ export class ProgramStatusReporter {
 			return;
 		}
 		this.failedRoots.delete(root.rootRunId);
+		if (
+			isSettledCancellation(root) &&
+			(!previous || !isSettledCancellation(previous) || previous.endedStatus !== root.endedStatus)
+		) {
+			this.cancellationAcknowledged = false;
+		}
 		const finished =
 			previous !== undefined &&
 			previous.state !== "idle" &&
 			previous.reason !== "stopping" &&
 			root.state === "idle" &&
-			root.reason !== "paused" &&
+			root.endedStatus === "completed" &&
 			!root.needsAttention;
-		if (finished && this.restingStatus.state === "idle") this.restingStatus = { state: "done" };
+		if (finished) {
+			this.cancellationAcknowledged = true;
+			if (this.restingStatus.state === "idle") this.restingStatus = { state: "done" };
+		}
 	}
 
 	setBlocked(source: string, status: BlockedStatus | undefined): void {
@@ -161,6 +177,17 @@ export class ProgramStatusReporter {
 		const workflowWorking = [...this.roots.values()].some((root) => root.state === "working");
 		if (!this.runActive && !workflowWorking && this.failedRoots.size > 0) {
 			return { state: "error", message: "Workflow failed" };
+		}
+		if (
+			!this.runActive &&
+			!workflowWorking &&
+			[...this.roots.values()].some(
+				(root) =>
+					root.state === "idle" &&
+					(root.reason === "paused" || (!this.cancellationAcknowledged && isSettledCancellation(root))),
+			)
+		) {
+			return { state: "idle" };
 		}
 		const status = this.runActive || workflowWorking ? { state: "working" as const } : this.restingStatus;
 		if (status.state === "working" || status.state === "done") return { ...status, message: this.getSessionName() };

@@ -78,10 +78,11 @@ test("settled failure needs attention without claiming a user decision wait", ()
 			failureRecoverability: "recoverable",
 			failureDisposition: "active_blocked",
 		});
-		assert.deepEqual(project([stopped]), [activity({ needsAttention: true })]);
-		assert.deepEqual(project([stopped], { acknowledgedFailureRunIds: new Set(["root"]) }), [activity()]);
+		const disposition = status === "failed" ? { endedStatus: status } : {};
+		assert.deepEqual(project([stopped]), [activity({ needsAttention: true, ...disposition })]);
+		assert.deepEqual(project([stopped], { acknowledgedFailureRunIds: new Set(["root"]) }), [activity(disposition)]);
 		assert.deepEqual(project([{ ...stopped, pendingPrompt: prompt }]), [
-			activity({ ...waiting, blockedPromptKind: "confirm" }),
+			activity({ ...waiting, blockedPromptKind: "confirm", ...disposition }),
 		]);
 		assert.equal(stopped.status, status, "pane activity must not rewrite the failed outcome");
 	}
@@ -96,7 +97,7 @@ test("settled budget stops still require approval while unrelated execution rema
 	const sibling = run({ id: "child", parentRunId: "root", stages: [stage("live")] });
 	assert.deepEqual(
 		project([failed, sibling], { executingStageIds: new Set([workflowActivityNodeKey("child", "live")]) }),
-		[activity({ ...executing, needsAttention: true })],
+		[activity({ ...executing, needsAttention: true, endedStatus: "failed" })],
 	);
 });
 // #2891: a tool-only workflow contributes execution without an agent stage.
@@ -131,7 +132,9 @@ test("live author continuation stays working after its tool settles, but not whi
 	assert.deepEqual(project([run({ status: "paused", toolNodes: [completedTool] })], live), [
 		activity({ reason: "paused" }),
 	]);
-	assert.deepEqual(project([run({ status: "completed", toolNodes: [completedTool] })], live), [activity()]);
+	assert.deepEqual(project([run({ status: "completed", toolNodes: [completedTool] })], live), [
+		activity({ endedStatus: "completed" }),
+	]);
 	assert.deepEqual(project([run({ toolNodes: [completedTool] })], { ...live, stoppingRunIds: new Set(["root"]) }), [
 		activity(),
 	]);
@@ -167,7 +170,7 @@ test("a live run stays working between node admissions and settles, but not when
 	assert.deepEqual(project([run({ toolNodes: [{ ...first, status: "failed" }] })]), [activity()]);
 	assert.deepEqual(
 		project([run({ status: "failed", endedAt: 1, toolNodes: [{ ...first, status: "failed" }] })], live),
-		[activity({ needsAttention: true })],
+		[activity({ needsAttention: true, endedStatus: "failed" })],
 	);
 });
 
@@ -209,7 +212,7 @@ test("a live run stays working past a failed or abandoned node, but not when par
 		activity(),
 	]);
 	assert.deepEqual(project([run({ status: "failed", endedAt: 1, stages: [failedStage] })], live), [
-		activity({ needsAttention: true }),
+		activity({ needsAttention: true, endedStatus: "failed" }),
 	]);
 	// A failure parked for a user decision stays a manual wait, never working.
 	assert.deepEqual(
@@ -295,13 +298,13 @@ test("workflow activity state table", () => {
 				executingToolNodeIds: new Set([workflowActivityNodeKey("root", "tool")]),
 				stoppingRunIds: new Set(["root"]),
 			},
-			expected: { ...executing, reason: "stopping" },
+			expected: { ...executing, reason: "stopping", endedStatus: "cancelled" },
 		},
 		{
 			name: "stop drained",
 			run: run({ status: "cancelled", stages: [stage("next", "pending")] }),
 			ownership: { stoppingRunIds: new Set(["root"]) },
-			expected: {},
+			expected: { endedStatus: "cancelled" },
 		},
 		{
 			name: "parked own prompt",
@@ -341,7 +344,13 @@ test("workflow activity state table", () => {
 		{
 			name: "failed",
 			run: run({ status: "failed" }),
-			expected: { state: "blocked", reason: "manual_intervention", actionableBlockCount: 1, needsAttention: true },
+			expected: {
+				state: "blocked",
+				reason: "manual_intervention",
+				actionableBlockCount: 1,
+				needsAttention: true,
+				endedStatus: "failed",
+			},
 		},
 		{
 			name: "blocked",
@@ -352,7 +361,7 @@ test("workflow activity state table", () => {
 			name: "failure acknowledged",
 			run: run({ status: "failed" }),
 			ownership: { acknowledgedFailureRunIds: new Set(["root"]) },
-			expected: {},
+			expected: { endedStatus: "failed" },
 		},
 		{
 			name: "paused",
@@ -365,9 +374,9 @@ test("workflow activity state table", () => {
 			ownership: { executingToolNodeIds: new Set([workflowActivityNodeKey("root", "tool")]) },
 			expected: executing,
 		},
-		{ name: "completed", run: run({ status: "completed" }), expected: {} },
-		{ name: "cancelled", run: run({ status: "cancelled" }), expected: {} },
-		{ name: "killed", run: run({ status: "killed" }), expected: {} },
+		{ name: "completed", run: run({ status: "completed" }), expected: { endedStatus: "completed" } },
+		{ name: "cancelled", run: run({ status: "cancelled" }), expected: { endedStatus: "cancelled" } },
+		{ name: "killed", run: run({ status: "killed" }), expected: { endedStatus: "killed" } },
 		{ name: "skipped stage", run: run({ stages: [stage("skip", "skipped")] }), expected: {} },
 		{
 			name: "skipped parent is not completed",
@@ -394,7 +403,7 @@ test("workflow activity folds nested descendants into roots in snapshot order", 
 		}),
 		[
 			activity({ ...executing, activeExecutionCount: 2, actionableBlockCount: 1, needsAttention: true }),
-			activity({ rootRunId: " other root " }),
+			activity({ rootRunId: " other root ", endedStatus: "completed" }),
 		],
 	);
 });
@@ -414,12 +423,16 @@ test("workflow activity follows prompt answer, pause, stop drain and acknowledge
 	assert.deepEqual(project([current], owned), [activity(executing)]);
 	current.status = "cancelled";
 	assert.deepEqual(project([current], { ...owned, stoppingRunIds: new Set(["root"]) }), [
-		activity({ ...executing, reason: "stopping" }),
+		activity({ ...executing, reason: "stopping", endedStatus: "cancelled" }),
 	]);
-	assert.deepEqual(project([current], { stoppingRunIds: new Set(["root"]) }), [activity()]);
+	assert.deepEqual(project([current], { stoppingRunIds: new Set(["root"]) }), [
+		activity({ endedStatus: "cancelled" }),
+	]);
 	current.status = "failed";
 	assert.equal(project([current])[0].state, "blocked");
-	assert.deepEqual(project([current], { acknowledgedFailureRunIds: new Set(["root"]) }), [activity()]);
+	assert.deepEqual(project([current], { acknowledgedFailureRunIds: new Set(["root"]) }), [
+		activity({ endedStatus: "failed" }),
+	]);
 	assert.equal(current.status, "failed", "acknowledgement must not rewrite the outcome");
 });
 
@@ -458,7 +471,7 @@ test("workflow activity is deterministic and returns independent full replacemen
 test("paused and terminal roots stay idle without draining execution", () => {
 	for (const status of ["paused", "completed", "cancelled", "killed"] as const) {
 		assert.deepEqual(project([run({ status, pendingPrompt: prompt, stages: [stage("wait", "awaiting_input")] })]), [
-			activity({ reason: status === "paused" ? "paused" : "quiescent" }),
+			activity(status === "paused" ? { reason: "paused" } : { endedStatus: status }),
 		]);
 	}
 });
@@ -599,7 +612,7 @@ test("workflow activity retains a paused stage after its parallel sibling comple
 				snapshot: store.graphSnapshot(),
 				ownership: ownership({ acknowledgedFailureRunIds: new Set(["root"]) }),
 			}),
-			[activity()],
+			[activity({ endedStatus: status })],
 		);
 		assert.equal(store.runs()[0].status, status);
 		assert.deepEqual(

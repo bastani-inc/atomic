@@ -123,7 +123,7 @@ const working = (id = "run") => root(id, { state: "working", reason: "executing"
 const awaitingInput = (id = "run") =>
 	root(id, { state: "blocked", reason: "awaiting_input", actionableBlockCount: 1, needsAttention: true });
 const failed = (id = "run") => root(id, { needsAttention: true });
-const completed = (id = "run") => root(id);
+const completed = (id = "run") => root(id, { endedStatus: "completed" });
 const snapshot = (...roots: WorkflowRootActivity[]): WorkflowActivityFrame => ({
 	kind: "snapshot",
 	cursor,
@@ -420,4 +420,140 @@ test("treats a ready snapshot from a new workflow source as history (#3556)", ()
 		roots: [failed()],
 	});
 	assert.equal(last()?.state, "idle");
+});
+
+for (const disposition of ["paused", "cancelled", "killed"] as const) {
+	test(`reports idle after a ${disposition} workflow despite an earlier done (#3617)`, () => {
+		for (const earlierDone of [false, true]) {
+			const { reporter, send, reports, last } = setup();
+			reporter.handleWorkflowActivity(snapshot());
+			if (earlierDone) send({ type: "agent_start" }, assistantEnd("stop"), settled);
+			reporter.handleWorkflowActivity(changed(working()));
+			const start = reports.length;
+			const value = root("run", disposition === "paused" ? { reason: "paused" } : { endedStatus: disposition });
+			reporter.handleWorkflowActivity(changed(value));
+			assert.deepEqual(last(), { state: "idle", app: APP_NAME });
+			assert.deepEqual(
+				reports.slice(start).map((status) => status.state),
+				["idle"],
+			);
+			send({ type: "agent_start" }, assistantEnd("stop"), settled);
+			assert.equal(last()?.state, "idle");
+			reporter.setBlocked("dialog", { kind: "permission", message: "Allow?" });
+			assert.equal(last()?.state, "blocked");
+			reporter.setBlocked("dialog", undefined);
+			reporter.handleWorkflowActivity(changed(working("sibling")));
+			assert.equal(last()?.state, "working");
+			reporter.handleWorkflowActivity(changed(working()));
+			reporter.handleWorkflowActivity({ kind: "removed", cursor, rootRunId: "sibling" });
+			reporter.handleWorkflowActivity(changed(completed()));
+			assert.equal(last()?.state, "done");
+		}
+	});
+}
+
+for (const endedStatus of ["cancelled", "killed"] as const) {
+	for (const stopReason of ["stop", "error"] as const) {
+		test(`reports ${stopReason === "stop" ? "done" : "provider error"} for user work after a ${endedStatus} root (#3617)`, () => {
+			for (const restored of [false, true]) {
+				const { reporter, send, last } = setup();
+				const retained = root("old", { endedStatus });
+				reporter.handleWorkflowActivity(snapshot(...(restored ? [retained] : [working("old")])));
+				if (!restored) reporter.handleWorkflowActivity(changed(retained));
+				send(
+					{ type: "agent_start" },
+					{
+						type: "message_start",
+						message: { role: "custom", customType: "notice", content: endedStatus, display: true, timestamp: 0 },
+					},
+					assistantEnd("stop"),
+					settled,
+				);
+				assert.deepEqual(last(), { state: "idle", app: APP_NAME });
+				send(
+					{ type: "agent_start" },
+					{ type: "message_start", message: { role: "user", content: "next task", timestamp: 1 } },
+					assistantEnd(stopReason, stopReason === "error" ? "Provider failed\nstack" : undefined),
+				);
+				assert.equal(last()?.state, "working");
+				send(settled);
+				const expected: ProgramStatus =
+					stopReason === "error"
+						? { state: "error", message: "Provider failed", app: APP_NAME }
+						: { state: "done", message: "Session", app: APP_NAME };
+				assert.deepEqual(last(), expected);
+				reporter.handleWorkflowActivity(changed({ ...retained, graph: { nodes: [] } }));
+				reporter.handleWorkflowActivity(snapshot(retained));
+				assert.deepEqual(last(), expected, "retained cancellation updates must not hide the user outcome");
+				reporter.handleWorkflowActivity(changed(working("new")));
+				reporter.handleWorkflowActivity(changed(root("new", { endedStatus })));
+				assert.deepEqual(last(), { state: "idle", app: APP_NAME }, "a new cancellation must be held again");
+			}
+		});
+	}
+
+	for (const restored of [false, true]) {
+		test(`reports done after a new root completes beside a ${restored ? "restored" : "live"} ${endedStatus} root (#3617)`, () => {
+			const { reporter, reports, last } = setup();
+			const retained = root("old", { endedStatus });
+			reporter.handleWorkflowActivity(snapshot(...(restored ? [retained] : [])));
+			if (!restored) {
+				reporter.handleWorkflowActivity(changed(working("old")));
+				reporter.handleWorkflowActivity(changed(retained));
+			}
+			assert.equal(last()?.state, "idle");
+			const start = reports.length - 1;
+			reporter.handleWorkflowActivity(changed(working("new")));
+			reporter.handleWorkflowActivity(changed(completed("new")));
+			assert.deepEqual(
+				reports.slice(start).map((status) => status.state),
+				["idle", "working", "done"],
+			);
+			reporter.handleWorkflowActivity(changed(retained));
+			reporter.handleWorkflowActivity(snapshot(retained, completed("new")));
+			assert.equal(last()?.state, "done", "retained cancellation updates must not hide the later completion");
+			reporter.handleWorkflowActivity(changed(working("latest")));
+			reporter.handleWorkflowActivity(changed(root("latest", { endedStatus })));
+			assert.equal(last()?.state, "idle", "a new cancellation must suppress the earlier done");
+		});
+	}
+}
+
+test("requires explicit successful workflow completion before reporting done (#3617)", () => {
+	const { reporter, last } = setup();
+	reporter.handleWorkflowActivity(snapshot(working()));
+	reporter.handleWorkflowActivity(changed(root("run")));
+	assert.equal(last()?.state, "idle");
+	reporter.handleWorkflowActivity(changed(working()));
+	reporter.handleWorkflowActivity(changed(completed()));
+	assert.equal(last()?.state, "done");
+});
+
+test("preserves terminal dispositions through engine activity frames (#3617)", () => {
+	for (const endedStatus of ["completed", "cancelled", "killed", "failed", undefined] as const) {
+		const value = root("run", endedStatus === undefined ? {} : { endedStatus });
+		for (const frame of [snapshot(value), changed(value)]) {
+			const message = parseInteractiveEngineMessage(
+				serializeInteractiveEngineFrame({ type: "engine_workflow_activity", frame }),
+			);
+			assert.equal(message?.type, "engine_workflow_activity");
+			if (message?.type !== "engine_workflow_activity") assert.fail("Expected workflow activity");
+			assert.deepEqual(message.frame, frame);
+		}
+	}
+});
+
+test("rejects invalid terminal dispositions in engine activity frames (#3617)", () => {
+	for (const endedStatus of ["running", "paused", "", null, 1, true, {}, []]) {
+		const value = { ...root("run"), endedStatus };
+		for (const frame of [
+			{ kind: "snapshot", cursor, availability: "ready", roots: [value] },
+			{ kind: "changed", cursor, root: value },
+		]) {
+			assert.equal(
+				parseInteractiveEngineMessage(JSON.stringify({ type: "engine_workflow_activity", frame })),
+				undefined,
+			);
+		}
+	}
 });
