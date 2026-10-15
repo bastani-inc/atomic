@@ -1,10 +1,9 @@
 import { isAbsolute, join } from "node:path";
-import { getBrokerPidPath } from "../../packages/intercom/broker/paths.js";
+import { getBrokerLogPath, getBrokerPidPath } from "../../packages/intercom/broker/paths.js";
 import { deserializeFixtureError, type FixtureError } from "./fixture-error.js";
 import {
 	bunExecutable,
 	decodeStream,
-	fileExists,
 	makeTempDirectory,
 	moduleDir,
 	readText,
@@ -12,10 +11,49 @@ import {
 	type SpawnedProcess,
 	sleep,
 	spawnProcess,
+	spawnSyncCollect,
 } from "./runtime.js";
 
 const REQUEST_TIMEOUT_MS = 30_000;
 const BROKER_EXIT_TIMEOUT_MS = 10_000;
+
+/** Windows redirects broker stderr from a cmd.exe parent that also owns the log handle. */
+function brokerLauncherPid(pid: number, logPath: string): number | undefined {
+	if (process.platform !== "win32") return undefined;
+	const result = spawnSyncCollect(
+		[
+			"powershell.exe",
+			"-NoProfile",
+			"-NonInteractive",
+			"-Command",
+			`$ErrorActionPreference = 'Stop';
+$broker = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}";
+if ($null -ne $broker) {
+  $launcher = Get-CimInstance Win32_Process -Filter "ProcessId = $($broker.ParentProcessId)";
+  if ($null -ne $launcher -and $launcher.Name -eq 'cmd.exe' -and $launcher.CommandLine.IndexOf($env:ATOMIC_FIXTURE_BROKER_LOG, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+    Write-Output $launcher.ProcessId;
+  }
+}`,
+		],
+		{ env: { ...process.env, ATOMIC_FIXTURE_BROKER_LOG: logPath }, timeout: BROKER_EXIT_TIMEOUT_MS },
+	);
+	if (result.exitCode !== 0) throw new Error(`Cannot inspect fixture broker launcher: ${result.stderr.toString()}`);
+	const text = result.stdout.toString().trim();
+	if (text.length === 0) return undefined;
+	const launcherPid = Number(text);
+	if (!Number.isSafeInteger(launcherPid) || launcherPid <= 0) throw new Error("Invalid fixture broker launcher PID");
+	return launcherPid;
+}
+
+function processExited(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return false;
+	} catch (error) {
+		if (error instanceof Error && "code" in error && error.code === "ESRCH") return true;
+		throw error;
+	}
+}
 
 export class WorkflowProcess {
 	private readonly child: SpawnedProcess;
@@ -130,24 +168,28 @@ export class WorkflowProcessHome {
 	}
 
 	async cleanup(): Promise<void> {
+		const agentDir = join(this.path, ".atomic", "agent");
+		const pidText = await readText(getBrokerPidPath(agentDir)).catch((error: NodeJS.ErrnoException) => {
+			if (error.code === "ENOENT") return undefined;
+			throw error;
+		});
+		const pid = pidText === undefined ? undefined : Number(pidText);
+		if (pid !== undefined && (!Number.isSafeInteger(pid) || pid <= 0)) throw new Error("Invalid fixture broker PID");
+		// Capture the launcher before closing clients can let the broker retire.
+		const launcherPid = pid === undefined ? undefined : brokerLauncherPid(pid, getBrokerLogPath(agentDir));
 		const exits = await Promise.allSettled(this.clients.map((client) => client.exit()));
-		// The broker is detached and owns broker.log after every SDK host exits.
-		// Stop this disposable home's broker and await exit before deleting its files.
-		const pidPath = getBrokerPidPath(join(this.path, ".atomic", "agent"));
-		if (await fileExists(pidPath)) {
-			const pid = Number(await readText(pidPath));
-			if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("Invalid fixture broker PID");
+		if (pid !== undefined) {
 			try {
 				process.kill(pid, "SIGTERM");
-				const deadline = Date.now() + BROKER_EXIT_TIMEOUT_MS;
-				for (;;) {
-					process.kill(pid, 0);
-					if (Date.now() >= deadline) throw new Error("Fixture broker did not exit before cleanup");
-					await sleep(20);
-				}
 			} catch (error) {
 				if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
 			}
+		}
+		const processes = [pid, launcherPid].filter((candidate): candidate is number => candidate !== undefined);
+		const deadline = Date.now() + BROKER_EXIT_TIMEOUT_MS;
+		while (!processes.every(processExited)) {
+			if (Date.now() >= deadline) throw new Error("Fixture broker or launcher did not exit before cleanup");
+			await sleep(20);
 		}
 		removeTempDirectory(this.path);
 		for (const exit of exits) {
