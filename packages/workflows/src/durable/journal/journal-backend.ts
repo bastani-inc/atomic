@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../../runs/foreground/stage-session-heartbeat.js";
 import type { PendingStageMessage, PendingStageMessageDelivery } from "../../shared/store-types.js";
@@ -105,11 +106,18 @@ export class JournalMessageScopeError extends JournalError {
 	}
 }
 
+interface WorkflowLeaseExecution {
+	lease?: Lease;
+	users: number;
+}
+
 export class JournalDurableBackend implements DurableWorkflowBackend {
 	readonly persistent = true;
 	private readonly projection = new InMemoryDurableBackend();
 	private readonly sequences = new Map<string, number>();
 	private readonly leases = new Map<string, Lease>();
+	private readonly executions = new Map<string, WorkflowLeaseExecution>();
+	private readonly executionContext = new AsyncLocalStorage<ReadonlyMap<string, WorkflowLeaseExecution>>();
 	private readonly lost = new Map<string, Error>();
 	private readonly prompts = new Map<string, PromptReservationState>();
 	private readonly timer: ReturnType<typeof setInterval>;
@@ -230,8 +238,10 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 			Date.now() - FOREIGN_LIVE_WORKFLOW_WINDOW_MS,
 		);
 		if (result.status === "held") throw new JournalOwnershipError(runId, result.holderId);
-		this.rebuild(runId);
 		this.leases.set(runId, result.lease);
+		const execution = this.executions.get(runId);
+		if (execution !== undefined) execution.lease = result.lease;
+		this.rebuild(runId);
 		return result.lease;
 	}
 
@@ -596,6 +606,30 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 			});
 		};
 		process.once("exit", this.processExitCleanup);
+	}
+
+	/** Share one acquisition owner across admission, executor and final persistence. */
+	async withWorkflowLease<T>(runId: string, execute: () => Promise<T>): Promise<T> {
+		this.ensureOpen();
+		const context = this.executionContext.getStore();
+		const active = this.executions.get(runId);
+		if (active !== undefined && context?.get(runId) !== active) {
+			throw new JournalOwnershipError(runId, this.holderId);
+		}
+		const execution = active ?? { lease: this.leases.get(runId), users: 0 };
+		execution.users++;
+		this.executions.set(runId, execution);
+		const ownedContext = new Map(context);
+		ownedContext.set(runId, execution);
+		try {
+			return await this.executionContext.run(ownedContext, execute);
+		} finally {
+			if (--execution.users === 0) {
+				this.executions.delete(runId);
+				if (execution.lease !== undefined && this.leases.get(runId) === execution.lease)
+					this.releaseWorkflow(runId);
+			}
+		}
 	}
 
 	/** Release this execution's lease without closing the shared journal. */

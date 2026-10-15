@@ -16,6 +16,7 @@ import { type DurableWorkflowBackend, resumableEntryFromHandle } from "./backend
 import { durableWorkflowRunSnapshots } from "./completed-catalog.js";
 import { getDurableBackend } from "./factory.js";
 import { forkDurableWorkflow } from "./fork-workflow.js";
+import { JournalDurableBackend } from "./journal/journal-backend.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import { foreignInstanceMessage } from "./sdk-owner-release.js";
 import { canonicalDirectory, isSdkRunAdoptable } from "./sdk-recovery-scope.js";
@@ -123,7 +124,9 @@ export async function resumeDurableWorkflow(
 		};
 	pending.add(id);
 	try {
-		return await raceAbort(resumeDurableWorkflowClaimed(workflowId, deps, catalog), deps.signal);
+		const resume = () => resumeDurableWorkflowClaimed(workflowId, deps, catalog);
+		const execution = backend instanceof JournalDurableBackend ? backend.withWorkflowLease(id, resume) : resume();
+		return await raceAbort(execution, deps.signal);
 	} finally {
 		pending.delete(id);
 	}

@@ -2,6 +2,7 @@ import { type DurableWorkflowBackend, pendingStageMessagesForDurableRun } from "
 import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
 import { getDurableBackend } from "../durable/factory.js";
+import { JournalDurableBackend } from "../durable/journal/journal-backend.js";
 import { inheritedRunElapsedMs, priorRunAccounting, recordRunTimingCheckpoint } from "../durable/run-timing.js";
 import { ScopedDurableBackend } from "../durable/scoped-backend.js";
 import {
@@ -45,7 +46,7 @@ import { assertWorkflowRunOutputs, normalizeWorkflowRunOutput } from "../runs/fo
 import { buildPromptNodeUiAdapter } from "../runs/foreground/executor-prompt-nodes.js";
 import { createRunFinalizers } from "../runs/foreground/executor-run-finalizers.js";
 import { createStageScheduler } from "../runs/foreground/executor-scheduler.js";
-import type { RunOpts, RunResult } from "../runs/foreground/executor-types.js";
+import type { ResolvedInputs, RunOpts, RunResult } from "../runs/foreground/executor-types.js";
 import { stageControlRegistry as defaultStageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { createRunLimiter } from "../runs/shared/concurrency.js";
 import { raceAbort } from "../shared/abort.js";
@@ -121,13 +122,6 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 ): Promise<RunResult> {
 	if (!isWorkflowDefinition(def))
 		throw new Error(workflowDefinitionRequirementMessage("run(definition, inputs)", def));
-	const activeStore = opts.store ?? defaultStore;
-	const adapters = opts.adapters ?? {};
-	// Prompt-node UI is the graph-mode transport and intentionally takes precedence
-	// over an injected RunOpts.ui adapter; warn because that adapter will be ignored.
-	if (opts.usePromptNodesForUi === true && opts.ui !== undefined) {
-		console.warn("atomic-workflows: usePromptNodesForUi ignores the provided RunOpts.ui adapter");
-	}
 	const depth = opts.depth ?? 0;
 	const maxDepth = opts.config?.maxDepth ?? 4;
 	if (depth >= maxDepth) {
@@ -142,6 +136,27 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 
 	const resolvedInputs = resolveAndValidateInputs(def.inputs, inputs, `workflow "${def.name}"`);
 	const runId = opts.runId ?? crypto.randomUUID();
+	const backend = opts.durableBackend ?? getDurableBackend();
+	const execute = () => executeRun(def, resolvedInputs, { ...opts, runId, durableBackend: backend });
+	return opts.parentRun === undefined && backend instanceof JournalDurableBackend
+		? await backend.withWorkflowLease(runId, execute)
+		: await execute();
+}
+
+async function executeRun(
+	def: WorkflowDefinition,
+	resolvedInputs: ResolvedInputs,
+	opts: RunOpts & { runId: string; durableBackend: DurableWorkflowBackend },
+): Promise<RunResult> {
+	const { runId } = opts;
+	const activeStore = opts.store ?? defaultStore;
+	const adapters = opts.adapters ?? {};
+	const depth = opts.depth ?? 0;
+	// Prompt-node UI is the graph-mode transport and intentionally takes precedence
+	// over an injected RunOpts.ui adapter; warn because that adapter will be ignored.
+	if (opts.usePromptNodesForUi === true && opts.ui !== undefined) {
+		console.warn("atomic-workflows: usePromptNodesForUi ignores the provided RunOpts.ui adapter");
+	}
 	// A budget OBJECT is always materialized by the shipped config defaults, so
 	// presence proves nothing. A positive limit on any dimension means this run
 	// is budgeted; otherwise take the unbudgeted path untouched (R10).
@@ -177,7 +192,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	const exit = createWorkflowExitManager({ runId, exitScope, controller: ownController });
 	// Durable child operations stay on stacked scoped views, while cached graph
 	// reconstruction keeps the physical root backend through arbitrary depth.
-	const sourceBackend = opts.durableBackend ?? getDurableBackend();
+	const sourceBackend = opts.durableBackend;
 	const backendView: DurableWorkflowBackend = sourceBackend;
 	const rootBackend: DurableWorkflowBackend = opts.durableRootBackend ?? backendView;
 	const durableBackend: DurableWorkflowBackend =
@@ -696,8 +711,8 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		baseFromPromptNodes: getPromptNodeUi,
 	});
 	let pausedExit: Promise<never> | undefined;
-	const ctx: WorkflowRunContext<TInputs> = {
-		inputs: resolvedInputs as TInputs,
+	const ctx: WorkflowRunContext = {
+		inputs: resolvedInputs,
 		runId,
 		get cwd() {
 			return resolveWorkflowCwd();
@@ -751,6 +766,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	let pausePersistence: Promise<void> | undefined;
 	let resumePersistence: Promise<void> | undefined;
 	let controlSettlements: Promise<void> = Promise.resolve();
+	const pendingControlPersistence = new Set<Promise<void>>();
 	let latestControl = 0;
 	let pauseGeneration = 0;
 	const persistRunControl = async (status: "paused" | "running"): Promise<void> => {
@@ -791,6 +807,11 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		},
 		get admitting() {
 			return !durableRootAdmitted;
+		},
+		settlePersistence: (settlement) => {
+			const settled = settlement.catch(() => {});
+			pendingControlPersistence.add(settled);
+			void settled.then(() => pendingControlPersistence.delete(settled));
 		},
 		pause: () => {
 			ownController.signal.throwIfAborted();
@@ -1071,6 +1092,8 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		runtimeSettled.resolve();
 		unregisterRunControl();
 		try {
+			await controlSettlements;
+			while (pendingControlPersistence.size > 0) await Promise.all(pendingControlPersistence);
 			if (
 				(durableRootAdmitted || durableBackend.getWorkflow(runId) !== undefined) &&
 				findWorkflowGracefulQuit(ownController.signal.reason) === undefined

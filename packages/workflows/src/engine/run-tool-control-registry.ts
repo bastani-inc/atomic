@@ -49,6 +49,8 @@ export interface WorkflowRunControlHandle {
 	/** Root startup still owns durable registration; controls acknowledge locally. */
 	readonly admitting?: boolean;
 	readonly admissionSettlement?: Promise<void>;
+	/** Keep execution ownership until a control operation's final writes settle. */
+	settlePersistence?(settlement: Promise<void>): void;
 	pause(): Promise<void>;
 	resume(): Promise<void>;
 	quit(): Promise<void>;

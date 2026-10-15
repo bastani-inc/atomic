@@ -116,6 +116,33 @@ export async function quitRunWithAction(
 		| undefined,
 	action: "quit" | "pause",
 ): Promise<QuitRunResult> {
+	const settled = Promise.withResolvers<void>();
+	const controls = opts?.toolControlRegistry ?? defaultToolControlRegistry;
+	const control = controls.runControl(runId);
+	const job = (opts?.jobs ?? defaultJobTracker).get(runId);
+	control?.settlePersistence?.(settled.promise);
+	let result: QuitRunResult;
+	try {
+		result = await executeQuitRunWithAction(runId, opts, action);
+	} finally {
+		settled.resolve();
+	}
+	// A cooperative suspension must retire its job before an immediate resume
+	// can mistake it for a live paused executor. Stage-only pauses stay live.
+	if (
+		result.ok &&
+		result.abandonedTools.length === 0 &&
+		(result.cancelledTools.length > 0 || (control !== undefined && controls.runControl(runId) !== control))
+	)
+		await job?.promise;
+	return result;
+}
+
+async function executeQuitRunWithAction(
+	runId: string,
+	opts: Parameters<typeof quitRunWithAction>[1],
+	action: "quit" | "pause",
+): Promise<QuitRunResult> {
 	const activeStore = opts?.store ?? defaultStore;
 	const registry = opts?.stageControlRegistry ?? defaultStageControlRegistry;
 	const toolControls = opts?.toolControlRegistry ?? defaultToolControlRegistry;

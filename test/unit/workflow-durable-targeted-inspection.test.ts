@@ -8,6 +8,7 @@ import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resu
 import { inspectTargetedDurableWorkflow } from "../../packages/workflows/src/durable/targeted-inspection.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
+import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { createStore, store } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
@@ -756,6 +757,7 @@ describe("targeted durable workflow inspection", () => {
 		assert.equal(recoverer.workflowOwnership(workflowId), "available");
 
 		let sideEffects = 1;
+		const finishResume = Promise.withResolvers<void>();
 		const definition = workflow({
 			name: "process-loss-replay",
 			description: "",
@@ -766,11 +768,14 @@ describe("targeted durable workflow inspection", () => {
 					sideEffects += 1;
 					return "duplicate-effect";
 				});
+				await finishResume.promise;
 				await ctx.stage("long").prompt("continue");
 				return {};
 			},
 		});
 		const resumedStore = createStore();
+		const jobs = createJobTracker();
+		let completion: Promise<void> | undefined;
 		const resumed = await resumeDurableWorkflow(
 			workflowId,
 			{
@@ -780,19 +785,26 @@ describe("targeted durable workflow inspection", () => {
 					adapters: { agentSession: { create: async () => mockSession() } },
 				},
 				durableBackend: recoverer,
+				jobs,
+				onRunAccepted: (id) => {
+					completion = jobs.get(id)?.promise;
+				},
 			},
 			recoverer.listResumableWorkflows(),
 		);
-		assert.equal(resumed.ok, true);
-		for (let attempt = 0; attempt < 100; attempt += 1) {
-			if (resumedStore.runs().find((run) => run.id === workflowId)?.endedAt !== undefined) break;
-			await new Promise((resolve) => setTimeout(resolve, 1));
+		try {
+			assert.equal(resumed.ok, true);
+			assert.equal(recoverer.workflowOwnership(workflowId), "local");
+		} finally {
+			finishResume.resolve();
 		}
+		assert.ok(completion);
+		await completion;
 		const terminal = resumedStore.runs().find((run) => run.id === workflowId);
 		assert.equal(terminal?.status, "completed");
 		assert.equal(sideEffects, 1, "the completed tool checkpoint must replay without a duplicate effect");
 		assert.equal(terminal?.toolNodes?.[0]?.status, "cached");
-		assert.equal(recoverer.workflowOwnership(workflowId), "local");
+		assert.equal(recoverer.workflowOwnership(workflowId), "available");
 	});
 
 	test("routes /workflow status with an exact missing-local id through durable inspection", async () => {

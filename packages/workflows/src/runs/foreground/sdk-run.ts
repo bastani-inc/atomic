@@ -1,7 +1,6 @@
 import { InMemoryDurableBackend } from "../../durable/backend.js";
 import { getDurableBackendProcessOwner } from "../../durable/backend-process-owner.js";
 import { initializeDurableBackend } from "../../durable/factory.js";
-import { JournalDurableBackend } from "../../durable/journal/journal-backend.js";
 import { run as engineRun } from "../../engine/run.js";
 import { createAgentSessionAdapter } from "../../extension/wiring.js";
 import type { WorkflowDefinition, WorkflowInputValues, WorkflowOutputValues } from "../../shared/types.js";
@@ -35,12 +34,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		throw new WorkflowDurabilityRequiredError(def.name, "only an in-memory backend is available.");
 	}
 	const backend = presetBackend ?? (await initializeDurableBackend());
-	const runId = opts.runId ?? crypto.randomUUID();
-	try {
-		return await engineRun(def, inputs, { ...opts, runId, durableBackend: backend });
-	} finally {
-		if (opts.parentRun === undefined && backend instanceof JournalDurableBackend) backend.releaseWorkflow(runId);
-	}
+	return await engineRun(def, inputs, { ...opts, durableBackend: backend });
 }
 
 /** Stage sessions default to in-process Atomic SDK sessions when the caller supplies no session adapter. */
