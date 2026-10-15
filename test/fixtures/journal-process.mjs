@@ -7,6 +7,8 @@ const load = (name) => jiti.import(fileURLToPath(new URL(`../../packages/workflo
 const { SqliteRunJournal } = await load("sqlite-run-journal");
 const { JournalDatabase } = await load("node-sqlite");
 const { JOURNAL_COLUMNS: c, JOURNAL_TABLES: t, RUN_EVENT_TYPES: e, JournalInvalidTextError, StaleLeaseError } = await load("types");
+// jiti may load types.ts once per importer path spelling on Windows, so compare the class name, not identity.
+const isJournalError = (error, journalErrorClass) => error instanceof Error && error.name === journalErrorClass.name;
 const [mode, path, argument] = process.argv.slice(2);
 if (mode === "crash") {
 	const db = new JournalDatabase(path);
@@ -57,7 +59,7 @@ if (mode === "crash") {
 			process.stdout.write("raw-json-lossless=ok\n");
 		} else if (mode === "nul-rejection") {
 			const { lease, nextHolder, key } = JSON.parse(argument);
-			const invalid = field => error => error.constructor === JournalInvalidTextError && error.field === field && error.reason === "nul-character";
+			const invalid = field => error => isJournalError(error, JournalInvalidTextError) && error.field === field && error.reason === "nul-character";
 			const forged = { ...lease, holderId: `${lease.holderId}\u0000suffix` };
 			await assert.rejects(() => journal.acquire(lease.runId, forged.holderId), invalid("holderId"));
 			await assert.rejects(() => journal.takeover(lease.runId, forged.holderId, lease.holderId), invalid("holderId"));
@@ -68,7 +70,7 @@ if (mode === "crash") {
 			await assert.rejects(() => journal.append(lease, { type: e.runStarted, payload: null }, { key: `${key}\u0000suffix` }), invalid("key"));
 			await assert.rejects(() => journal.append(lease, { type: e.statusChanged, payload: { status: "status\u0000suffix" } }), invalid("status"));
 			for (const text of ["\ud800", "\udfff", "a\ud800b"]) {
-				const malformed = field => error => error.constructor === JournalInvalidTextError && error.field === field && error.reason === "ill-formed-unicode";
+				const malformed = field => error => isJournalError(error, JournalInvalidTextError) && error.field === field && error.reason === "ill-formed-unicode";
 				await assert.rejects(() => journal.acquire(lease.runId, text), malformed("holderId"));
 				await assert.rejects(() => journal.takeover(lease.runId, text, lease.holderId), malformed("holderId"));
 				await assert.rejects(() => journal.append({ ...lease, holderId: text }, { type: e.runStarted, payload: null }), malformed("holderId"));
@@ -83,7 +85,7 @@ if (mode === "crash") {
 			const taken = await journal.takeover(lease.runId, nextHolder, lease.holderId);
 			assert.deepEqual(taken, { status: "acquired", lease: { ...lease, holderId: nextHolder, epoch: lease.epoch + 1 } });
 			for (const operation of [() => journal.append(lease, event), () => journal.renew(lease), () => journal.release(lease)]) {
-				await assert.rejects(operation, error => error instanceof StaleLeaseError && error.runId === lease.runId && error.heldEpoch === lease.epoch && error.currentEpoch === taken.lease.epoch);
+				await assert.rejects(operation, error => isJournalError(error, StaleLeaseError) && error.runId === lease.runId && error.heldEpoch === lease.epoch && error.currentEpoch === taken.lease.epoch);
 			}
 			process.stdout.write("nul-rejection-json=ok\n");
 		} else {
