@@ -145,6 +145,7 @@ export async function resumeIssue3085FromPersistedState(dir: string): Promise<Is
 		writeFileSync(resultPath(dir), `${JSON.stringify(result)}\n`);
 		return result;
 	} finally {
+		await backend.close();
 		setDurableBackend(undefined);
 	}
 }

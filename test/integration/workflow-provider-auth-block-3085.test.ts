@@ -63,9 +63,10 @@ test(
 		mkdirSync(join(dir, "agent"), { recursive: true });
 		mkdirSync(join(dir, "artifacts"), { recursive: true });
 		const sessions: StageSessionRuntime[] = [];
+		let backend: JournalDurableBackend | undefined;
 		try {
 			const journalPath = join(dir, "journal.sqlite");
-			const backend = await JournalDurableBackend.open(await openSqlRunJournal(journalPath));
+			backend = await JournalDurableBackend.open(await openSqlRunJournal(journalPath));
 			setDurableBackend(backend);
 
 			const parent = await SessionManager.create(dir, join(dir, "parent-sessions"));
@@ -173,8 +174,12 @@ test(
 			assert.equal(result.resumable, true);
 			assert.equal(readPrefix(dir), 1, "completed prefix must not execute twice");
 		} finally {
-			for (const session of sessions.splice(0).reverse()) await session.dispose();
-			removeTempDirectory(dir);
+			try {
+				for (const session of sessions.splice(0).reverse()) await session.dispose();
+			} finally {
+				await backend?.close();
+				removeTempDirectory(dir);
+			}
 		}
 	},
 	ISOLATED_PROCESS_RESTART_TIMEOUT_MS,
