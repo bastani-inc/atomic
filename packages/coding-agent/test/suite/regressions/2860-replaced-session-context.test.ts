@@ -243,13 +243,13 @@ describe("regression #2860: replaced session callbacks", () => {
 	});
 
 	it("supports withSession for switchSession", async () => {
-		let targetSessionPath = "";
+		let targetSessionId = "";
 		const { runtime } = await createRuntimeForTest(
 			(pi) => {
 				pi.registerCommand("switch-it", {
 					description: "switch-it",
 					handler: async (_args, ctx) => {
-						await ctx.switchSession(targetSessionPath, {
+						await ctx.switchSession(targetSessionId, {
 							withSession: async (replacedCtx) => {
 								await replacedCtx.sendUserMessage("switch callback message");
 							},
@@ -261,16 +261,16 @@ describe("regression #2860: replaced session callbacks", () => {
 		);
 
 		await runtime.session.prompt("root");
-		const originalSessionPath = runtime.session.sessionFile;
+		const originalSessionId = runtime.session.sessionId;
 		const newSessionResult = await runtime.newSession();
 		expect(newSessionResult.cancelled).toBe(false);
 		await runtime.session.prompt("target");
-		targetSessionPath = runtime.session.sessionFile!;
-		await runtime.switchSession(originalSessionPath!);
+		targetSessionId = runtime.session.sessionId;
+		await runtime.switchSession(originalSessionId);
 
 		await runtime.session.prompt("/switch-it");
 
-		expect(runtime.session.sessionFile).toBe(targetSessionPath);
+		expect(runtime.session.sessionId).toBe(targetSessionId);
 		expect(runtime.session.messages.map((message) => `${message.role}:${getText(message)}`)).toEqual([
 			"system:",
 			"user:target",

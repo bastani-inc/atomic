@@ -133,9 +133,10 @@ When a print-mode turn correctly finishes by calling an opt-in terminating struc
 |--------|-------------|
 | `-c`, `--continue` | Continue the most recent session |
 | `-r`, `--resume` | Browse and select a session |
-| `--session <path\|id>` | Use a session file, exact ID, or unique 8-hex UUID prefix |
+| `--session <id\|prefix>` | Use an exact ID or unique 8-hex UUID prefix |
+| `--import <file>` | Import a format-4 JSONL export into session storage |
 | `--session-id <id>` | Use an exact project session ID; warn and create it when missing |
-| `--fork <path\|id>` | Fork a session file, exact ID, or unique 8-hex UUID prefix into a new session |
+| `--fork <id\|prefix>` | Fork an exact ID or unique 8-hex UUID prefix into a new session |
 | `--session-dir <dir>` | Custom session storage directory |
 | `--name <name>`, `-n <name>` | Set the session display name |
 | `--no-session` | Ephemeral mode; do not save |
@@ -261,7 +262,6 @@ Every bash execution receives one execution-time snapshot of the active session.
 | Atomic variable | Exact compatibility alias | Value |
 |-----------------|---------------------------|-------|
 | `ATOMIC_SESSION_ID` | `PI_SESSION_ID` | Active session ID |
-| `ATOMIC_SESSION_FILE` | `PI_SESSION_FILE` | Active session JSONL path; omitted for unsaved sessions |
 | `ATOMIC_PROVIDER` | `PI_PROVIDER` | Active model provider; omitted when no model is selected |
 | `ATOMIC_MODEL` | `PI_MODEL` | Active model ID; omitted when no model is selected |
 | `ATOMIC_REASONING_LEVEL` | `PI_REASONING_LEVEL` | Active reasoning level |

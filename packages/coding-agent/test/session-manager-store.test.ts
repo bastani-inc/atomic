@@ -240,10 +240,10 @@ test("CLI and TUI session defaults stay persistent for create, resume, and fork"
 		const resumed = await create(["--continue"]);
 		assert.equal(resumed.isPersisted(), true);
 		assert.equal(resumed.getSessionId(), initial.getSessionId());
-		const selected = await create(["--session", path]);
+		const selected = await create(["--session", initial.getSessionId()]);
 		assert.equal(selected.isPersisted(), true);
 		assert.equal(selected.getSessionId(), initial.getSessionId());
-		const forked = await create(["--fork", path]);
+		const forked = await create(["--fork", initial.getSessionId()]);
 		assert.equal(forked.isPersisted(), true);
 		assert.notEqual(forked.getSessionId(), initial.getSessionId());
 		assert.equal(forked.getHeader()?.parentSessionId, initial.getSessionId());

@@ -422,12 +422,11 @@ test("isolated session synchronization replaces each engine-selected session exa
 	mkdirSync(cwd);
 	mkdirSync(agentDir);
 	mkdirSync(sessionDir);
-	const createPersistedSession = async (text: string): Promise<string> => {
+	const createPersistedSession = async (text: string): Promise<SessionManager> => {
 		const manager = await SessionManager.create(cwd, sessionDir);
 		await manager.appendMessage({ role: "user", content: [{ type: "text", text }], timestamp: Date.now() });
-		const path = manager.getSessionFile();
-		assert.ok(path);
-		return path;
+		assert.ok(manager.getSessionFile());
+		return manager;
 	};
 	const firstSession = await createPersistedSession("first");
 	const secondSession = await createPersistedSession("second");
@@ -453,10 +452,10 @@ test("isolated session synchronization replaces each engine-selected session exa
 			diagnostics: services.diagnostics,
 		};
 	};
-	const initial = await createRuntime({ cwd, agentDir, sessionManager: SessionManager.inMemory(cwd) });
+	const initial = await createRuntime({ cwd, agentDir, sessionManager: await SessionManager.create(cwd, sessionDir) });
 	runtimeCreations = 0;
 	startReasons.length = 0;
-	let engineSessionFile = firstSession;
+	let engineSessionId = firstSession.getSessionId();
 	const client = {
 		onEvent: () => () => {},
 		// Host-local engine lifecycle surface required by IsolatedInteractiveRuntime.
@@ -468,15 +467,18 @@ test("isolated session synchronization replaces each engine-selected session exa
 			isCompacting: false,
 			steeringMode: "all" as const,
 			followUpMode: "all" as const,
-			sessionId: "engine-session",
-			sessionFile: engineSessionFile,
+			sessionId: engineSessionId,
+			sessionLocation:
+				engineSessionId === firstSession.getSessionId()
+					? firstSession.getSessionFile()
+					: secondSession.getSessionFile(),
 			autoCompactionEnabled: true,
 			messageCount: 1,
 			pendingMessageCount: 0,
 		}),
 		requestInternal: async () => ({ models: [], scopedModels: [], customAuthProviders: [] }),
-		switchSession: async (path: string) => {
-			engineSessionFile = path;
+		switchSession: async (sessionId: string) => {
+			engineSessionId = sessionId;
 			return { cancelled: false };
 		},
 		getCommands: async () => [],
@@ -490,13 +492,13 @@ test("isolated session synchronization replaces each engine-selected session exa
 	});
 	try {
 		await runtime.initializeFromEngine();
-		assert.equal(runtime.session.sessionManager.getSessionFile(), firstSession);
+		assert.equal(runtime.session.sessionManager.getSessionFile(), firstSession.getSessionFile());
 		assert.equal(runtimeCreations, 1, "initial engine binding must replace the local session once");
 		assert.equal(rebinds, 1);
 		assert.deepEqual(startReasons, ["resume"]);
 
-		await runtime.switchSession(secondSession);
-		assert.equal(runtime.session.sessionManager.getSessionFile(), secondSession);
+		await runtime.switchSession(secondSession.getSessionId());
+		assert.equal(runtime.session.sessionManager.getSessionFile(), secondSession.getSessionFile());
 		assert.equal(runtimeCreations, 2, "explicit engine switch must add exactly one local replacement");
 		assert.equal(rebinds, 2);
 		assert.deepEqual(startReasons, ["resume", "resume"]);

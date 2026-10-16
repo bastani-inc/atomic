@@ -34,6 +34,7 @@ export interface Args {
 	name?: string;
 	noSession?: boolean;
 	session?: string;
+	import?: string;
 	sessionId?: string;
 	fork?: string;
 	sessionDir?: string;
@@ -145,6 +146,8 @@ export function parseArgs(args: string[]): Args {
 			result.noSession = true;
 		} else if (arg === "--session" && i + 1 < args.length) {
 			result.session = args[++i];
+		} else if (arg === "--import" && i + 1 < args.length) {
+			result.import = args[++i];
 		} else if (arg === "--session-id" && i + 1 < args.length) {
 			result.sessionId = args[++i];
 		} else if (arg === "--fork" && i + 1 < args.length) {
@@ -302,9 +305,10 @@ ${chalk.bold("Options:")}
   --print, -p                    Non-interactive mode: process prompt and exit
   --continue, -c                 Continue previous session
   --resume, -r                   Select a session to resume
-  --session <path|id>            Use file, exact ID, or unique 8-hex UUID prefix
+  --session <id|prefix>          Use exact ID or unique 8-hex UUID prefix
+  --import <file>                Import a format-4 JSONL export into session storage
   --session-id <id>              Use exact project session ID, creating it if missing
-  --fork <path|id>               Fork file, exact ID, or unique 8-hex UUID prefix into a new session
+  --fork <id|prefix>             Fork exact ID or unique 8-hex UUID prefix into a new session
   --session-dir <dir>            Directory for session storage and lookup
   --no-session                   Don't save session (ephemeral)
   --name, -n <name>              Set session display name

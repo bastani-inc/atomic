@@ -12,15 +12,15 @@ import { theme } from "../theme/theme.js";
 import { keyText } from "./keybinding-hints.js";
 import { filterAndSortSessions, hasSessionName, type NameFilter, type SortMode } from "./session-selector-search.ts";
 import { buildSessionTree, type FlatSessionNode, flattenSessionTree } from "./session-selector-tree.ts";
-import { canonicalizePath, formatSessionDate, shortenPath } from "./session-selector-utils.ts";
+import { formatSessionDate, shortenPath } from "./session-selector-utils.ts";
 
 /**
  * Custom session list component with multi-line items and search
  */
 export class SessionList implements Component, Focusable {
-	public getSelectedSessionPath(): string | undefined {
+	public getSelectedSessionId(): string | undefined {
 		const selected = this.filteredSessions[this.selectedIndex];
-		return selected?.session.path;
+		return selected?.session.id;
 	}
 	private allSessions: SessionInfo[] = [];
 	private filteredSessions: FlatSessionNode[] = [];
@@ -32,8 +32,8 @@ export class SessionList implements Component, Focusable {
 	private keybindings: KeybindingsManager;
 	private showPath = false;
 	private confirmingDeletePath: string | null = null;
-	private currentSessionCanonicalPath?: string;
-	public onSelect?: (sessionPath: string) => void;
+	private currentSessionId?: string;
+	public onSelect?: (sessionId: string) => void;
 	public onCancel?: () => void;
 	public onExit: () => void = () => {};
 	public onToggleScope?: () => void;
@@ -42,7 +42,7 @@ export class SessionList implements Component, Focusable {
 	public onTogglePath?: (showPath: boolean) => void;
 	public onDeleteConfirmationChange?: (path: string | null) => void;
 	public onDeleteSession?: (sessionPath: string) => Promise<void>;
-	public onRenameSession?: (sessionPath: string) => void;
+	public onRenameSession?: (sessionId: string) => void;
 	public onError?: (message: string) => void;
 	private maxVisible: number = 10; // Max sessions visible (one line each)
 
@@ -62,7 +62,7 @@ export class SessionList implements Component, Focusable {
 		sortMode: SortMode,
 		nameFilter: NameFilter,
 		keybindings: KeybindingsManager,
-		currentSessionFilePath?: string,
+		currentSessionId?: string,
 	) {
 		this.allSessions = sessions;
 		this.filteredSessions = [];
@@ -71,7 +71,7 @@ export class SessionList implements Component, Focusable {
 		this.sortMode = sortMode;
 		this.nameFilter = nameFilter;
 		this.keybindings = keybindings;
-		this.currentSessionCanonicalPath = canonicalizePath(currentSessionFilePath);
+		this.currentSessionId = currentSessionId;
 		this.filterSessions("");
 
 		// Handle Enter in search input - select current item
@@ -79,7 +79,7 @@ export class SessionList implements Component, Focusable {
 			if (this.filteredSessions[this.selectedIndex]) {
 				const selected = this.filteredSessions[this.selectedIndex];
 				if (this.onSelect) {
-					this.onSelect(selected.session.path);
+					this.onSelect(selected.session.id);
 				}
 			}
 		};
@@ -133,7 +133,7 @@ export class SessionList implements Component, Focusable {
 		if (!selected) return;
 
 		// Prevent deleting current session
-		if (this.isCurrentSessionPath(selected.session.path)) {
+		if (this.isCurrentSession(selected.session.id)) {
 			this.onError?.("Cannot delete the currently active session");
 			return;
 		}
@@ -141,9 +141,8 @@ export class SessionList implements Component, Focusable {
 		this.setConfirmingDeletePath(selected.session.path);
 	}
 
-	private isCurrentSessionPath(path: string): boolean {
-		if (!this.currentSessionCanonicalPath) return false;
-		return (canonicalizePath(path) ?? path) === this.currentSessionCanonicalPath;
+	private isCurrentSession(sessionId: string): boolean {
+		return sessionId === this.currentSessionId;
 	}
 
 	invalidate(): void {}
@@ -193,7 +192,7 @@ export class SessionList implements Component, Focusable {
 			const session = node.session;
 			const isSelected = i === this.selectedIndex;
 			const isConfirmingDelete = session.path === this.confirmingDeletePath;
-			const isCurrent = this.isCurrentSessionPath(session.path);
+			const isCurrent = this.isCurrentSession(session.id);
 
 			// Build tree prefix
 			const prefix = this.buildTreePrefix(node);
@@ -349,7 +348,7 @@ export class SessionList implements Component, Focusable {
 		if (kb.matches(keyData, "app.session.rename")) {
 			const selected = this.filteredSessions[this.selectedIndex];
 			if (selected) {
-				this.onRenameSession?.(selected.session.path);
+				this.onRenameSession?.(selected.session.id);
 			}
 			return true;
 		}
@@ -387,7 +386,7 @@ export class SessionList implements Component, Focusable {
 		else if (kb.matches(keyData, "tui.select.confirm")) {
 			const selected = this.filteredSessions[this.selectedIndex];
 			if (selected && this.onSelect) {
-				this.onSelect(selected.session.path);
+				this.onSelect(selected.session.id);
 			}
 		}
 		// Escape - cancel

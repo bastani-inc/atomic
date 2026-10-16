@@ -143,7 +143,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			restart: async () => {
 				this.engineRecoveryFailure = undefined;
 				try {
-					await this.client.restart(this.remoteSessionFile);
+					await this.client.restart(this.remoteSessionFile ? super.session.sessionId : undefined);
 					await this.initializeFromEngine();
 				} catch (error) {
 					const failure = markRpcTransportFailure(error);
@@ -226,8 +226,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				allowPartialResources: true,
 			});
 			if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
-			if (state.sessionFile && super.session.sessionManager.getSessionFile() !== state.sessionFile) {
-				await super.switchSession(state.sessionFile);
+			if (state.sessionLocation && state.sessionId !== super.session.sessionId) {
+				await super.switchSession(state.sessionId);
 				if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
 			}
 			const session = super.session;
@@ -251,7 +251,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			this.resourceOverlaps = state.resourceOverlaps ?? [];
 			this.updateResourceExtensions(state.resourceExtensions ?? []);
 			this.remoteSessionName = state.sessionName;
-			this.remoteSessionFile = state.sessionFile;
+			this.remoteSessionFile = state.sessionLocation;
 			this.streaming = state.isStreaming;
 			this.compacting = state.isCompacting;
 			this.compactionReason = state.isCompacting ? state.compactionReason : undefined;
@@ -483,7 +483,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		const generation = this.client.getGeneration();
 		const state = await this.client.getState();
 		if (!this.isCurrentResourceGeneration(generation)) return;
-		this.remoteSessionFile = state.sessionFile;
+		this.remoteSessionFile = state.sessionLocation;
 		this.remoteSessionName = state.sessionName;
 		this.resourceOverlaps = state.resourceOverlaps ?? [];
 		this.updateResourceExtensions(state.resourceExtensions ?? []);
@@ -541,12 +541,12 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	}
 
 	override async switchSession(
-		sessionPath: string,
+		sessionId: string,
 		options?: Parameters<AgentSessionRuntime["switchSession"]>[1],
 	): Promise<{ cancelled: boolean }> {
-		const result = await this.client.switchSession(sessionPath, options?.cwdOverride);
+		const result = await this.client.switchSession(sessionId, options?.cwdOverride);
 		if (!result.cancelled) {
-			await super.switchSession(sessionPath, { cwdOverride: options?.cwdOverride });
+			await super.switchSession(sessionId, { cwdOverride: options?.cwdOverride });
 			await this.initializeFromEngine();
 			if (options?.withSession) await options.withSession(this.session.createReplacedSessionContext());
 		}
@@ -557,7 +557,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		const result = await this.client.newSession(options?.parentSession);
 		if (result.cancelled) return result;
 		const state = await this.client.getState();
-		if (state.sessionFile) await super.switchSession(state.sessionFile);
+		if (state.sessionLocation) await super.switchSession(state.sessionId);
 		else await this.resetUnpersistedSessionView();
 		await this.initializeFromEngine();
 		return result;
@@ -571,7 +571,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		});
 		if (result.cancelled) return result;
 		const state = await this.client.getState();
-		if (state.sessionFile) await super.switchSession(state.sessionFile);
+		if (state.sessionLocation) await super.switchSession(state.sessionId);
 		await this.initializeFromEngine();
 		return result;
 	}
@@ -591,7 +591,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		}
 		if (cancelled) return { cancelled: true };
 		const state = await this.client.getState();
-		if (state.sessionFile) await super.switchSession(state.sessionFile);
+		if (state.sessionLocation) await super.switchSession(state.sessionId);
 		await this.initializeFromEngine();
 		return { cancelled: false, selectedText };
 	}

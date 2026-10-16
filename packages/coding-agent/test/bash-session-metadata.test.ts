@@ -81,8 +81,8 @@ describe("session-aware bash environment", () => {
 		expect(lines).toEqual([
 			session.sessionId,
 			session.sessionId,
-			session.sessionFile,
-			session.sessionFile,
+			"",
+			"",
 			model.provider,
 			model.provider,
 			model.id,
@@ -121,7 +121,7 @@ describe("session-aware bash environment", () => {
 		}
 	});
 
-	it("uses the resumed session's own ID and file", async () => {
+	it("uses the resumed session's own ID without exposing a file identity", async () => {
 		const { cwd, agentDir } = makeRoot();
 		const created = await SessionManager.create(cwd, join(agentDir, "sessions"), { id: "resume-owned-id" });
 		const sessionFile = created.getSessionFile();
@@ -138,7 +138,7 @@ describe("session-aware bash environment", () => {
 		const lines = text(await bash.execute("resumed", { command: printSessionEnvironment }))
 			.trim()
 			.split("\n");
-		expect(lines.slice(0, 4)).toEqual([session.sessionId, session.sessionId, sessionFile, sessionFile]);
+		expect(lines.slice(0, 4)).toEqual([session.sessionId, session.sessionId, "", ""]);
 		await session.dispose();
 	});
 

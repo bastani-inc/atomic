@@ -106,6 +106,6 @@ describe("session selector rename", () => {
 		await flushPromises();
 
 		expect(renameSession).toHaveBeenCalledTimes(1);
-		expect(renameSession).toHaveBeenCalledWith(sessions[0]!.path, "XOld");
+		expect(renameSession).toHaveBeenCalledWith(sessions[0]!.id, "XOld");
 	});
 });

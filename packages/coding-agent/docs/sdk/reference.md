@@ -599,7 +599,7 @@ const runtime = await createAgentSessionRuntime(createRuntime, {
 await runtime.newSession();
 
 // Replace the active session with another saved session
-await runtime.switchSession("/path/to/session.jsonl");
+await runtime.switchSession("session-id");
 
 // Replace the active session with a fork from a specific user entry
 await runtime.fork("entry-id");

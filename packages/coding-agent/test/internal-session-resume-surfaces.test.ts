@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -166,7 +167,7 @@ describe("internal workflow sessions across resume surfaces", () => {
 			sessionManager: {
 				getCwd: () => cwd,
 				getSessionDir: () => dir,
-				getSessionFile: () => undefined,
+				getSessionId: () => "active-interactive",
 				usesDefaultSessionDir: () => false,
 			},
 			keybindings: new KeybindingsManager(),
@@ -194,7 +195,7 @@ describe("internal workflow sessions across resume surfaces", () => {
 			sessionManager: {
 				getCwd: () => cwd,
 				getSessionDir: () => dir,
-				getSessionFile: () => undefined,
+				getSessionId: () => "active-interactive",
 				usesDefaultSessionDir: () => true,
 			},
 			keybindings: new KeybindingsManager(),
@@ -223,7 +224,7 @@ describe("internal workflow sessions across resume surfaces", () => {
 			pickerCalled = true;
 			expect((await current()).map((session) => session.id)).toEqual(["user-picker"]);
 			expect((await all()).map((session) => session.id)).toEqual(["user-picker"]);
-			return userPath;
+			return "user-picker";
 		};
 		const { createSessionManager } = await import("../src/main-session.ts");
 
@@ -232,7 +233,23 @@ describe("internal workflow sessions across resume surfaces", () => {
 		expect(session.getSessionFile()).toBe(userPath);
 	});
 
-	it("opens an internal workflow session when its path is explicitly requested", async () => {
+	it("startup resume opens the selected ID in the default project directory", async () => {
+		const previous = process.env.ATOMIC_CODING_AGENT_DIR;
+		process.env.ATOMIC_CODING_AGENT_DIR = join(dir, "agent");
+		try {
+			const original = await SessionManager.create(cwd);
+			selectSessionImplementation = async () => original.getSessionId();
+			const { createSessionManager } = await import("../src/main-session.ts");
+			const resumed = await createSessionManager(parseArgs(["--resume"]), cwd, undefined, settingsManager);
+			assert.equal(resumed.getSessionId(), original.getSessionId());
+			assert.equal(resumed.getSessionFile(), original.getSessionFile());
+		} finally {
+			if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+			else process.env.ATOMIC_CODING_AGENT_DIR = previous;
+		}
+	});
+
+	it("opens an internal workflow session when its ID is explicitly requested", async () => {
 		const workflowPath = writeSession(dir, "workflow-explicit", cwd, {
 			internal: true,
 			stageId: "stage-explicit",
@@ -240,7 +257,12 @@ describe("internal workflow sessions across resume surfaces", () => {
 		});
 		const { createSessionManager } = await import("../src/main-session.ts");
 
-		const session = await createSessionManager(parseArgs(["--session", workflowPath]), cwd, dir, settingsManager);
+		const session = await createSessionManager(
+			parseArgs(["--session", "workflow-explicit"]),
+			cwd,
+			dir,
+			settingsManager,
+		);
 		expect(session.getSessionFile()).toBe(workflowPath);
 		expect(session.getHeader()).toMatchObject({
 			internal: true,

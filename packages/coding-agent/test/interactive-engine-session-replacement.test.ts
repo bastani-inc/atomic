@@ -143,10 +143,9 @@ describe("isolated interactive engine session replacement", () => {
 	test("replaces a session even when the engine cannot answer abort", async () => {
 		const first = await createHarness();
 		const second = await createHarness();
-		const targetManager = await SessionManager.create(second.tempDir, second.tempDir);
+		const targetManager = await SessionManager.create(first.session.sessionManager.getSessionStore(), second.tempDir);
 
-		const targetSessionPath = targetManager.getSessionFile();
-		if (!targetSessionPath) throw new Error("Missing target session path");
+		const targetSessionId = targetManager.getSessionId();
 
 		const probe = createUnresponsiveEngineClient();
 		const localRuntime = new AgentSessionRuntime(first.session, servicesFor(first) as never, async () => {
@@ -160,7 +159,7 @@ describe("isolated interactive engine session replacement", () => {
 		probe.emit({ type: "agent_start" });
 		expect(runtime.session.isStreaming).toBe(true);
 
-		const replacement = runtime.switchSession(targetSessionPath);
+		const replacement = runtime.switchSession(targetSessionId);
 		try {
 			expect(await completesWithin(replacement, UNRESPONSIVE_REPLACEMENT_GUARD_MS)).toBe(true);
 			expect(probe.abortCalls).toBe(0);

@@ -910,7 +910,7 @@ export class ExtensionRunner {
 			newSession: (options) => this.newSessionHandler(options),
 			fork: (entryId, options) => this.forkHandler(entryId, options),
 			navigateTree: (targetId, options) => this.navigateTreeHandler(targetId, options),
-			switchSession: (sessionPath, options) => this.switchSessionHandler(sessionPath, options),
+			switchSession: (sessionId, options) => this.switchSessionHandler(sessionId, options),
 			reload: () => this.reloadHandler(),
 		};
 	}

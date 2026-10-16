@@ -71,7 +71,7 @@ export default function (pi: ExtensionAPI) {
 			// Convert to LLM format and serialize
 			const llmMessages = convertToLlm(messages);
 			const conversationText = serializeConversation(llmMessages);
-			const currentSessionFile = ctx.sessionManager.getSessionFile();
+			const currentSessionId = ctx.sessionManager.getSessionId();
 
 			// Generate the handoff prompt with loader UI
 			const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
@@ -144,7 +144,7 @@ export default function (pi: ExtensionAPI) {
 			// context for post-switch UI work; the original ctx is stale after a
 			// successful session replacement.
 			const newSessionResult = await ctx.newSession({
-				parentSession: currentSessionFile,
+				parentSession: currentSessionId,
 				withSession: async (replacementCtx) => {
 					replacementCtx.ui.setEditorText(editedPrompt);
 					replacementCtx.ui.notify("Handoff ready. Submit when ready.", "info");

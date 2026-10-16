@@ -101,6 +101,7 @@ describe("regression #3347: closing a committed session", () => {
 		await runtime.session.prompt("earlier");
 		const earlierSessionFile = runtime.session.sessionFile!;
 		expect(existsSync(earlierSessionFile)).toBe(true);
+		const earlierSessionId = runtime.session.sessionId;
 
 		expect((await runtime.newSession()).cancelled).toBe(false);
 		await runtime.session.sessionManager.appendModelChange("faux", "faux-1");
@@ -109,8 +110,7 @@ describe("regression #3347: closing a committed session", () => {
 		expect(existsSync(unsavedSessionFile)).toBe(true);
 		const committed = readFileSync(unsavedSessionFile, "utf8");
 
-		expect((await runtime.switchSession(earlierSessionFile)).cancelled).toBe(false);
-
+		expect((await runtime.switchSession(earlierSessionId)).cancelled).toBe(false);
 		expect(runtime.session.sessionFile).toBe(earlierSessionFile);
 		expect(readFileSync(unsavedSessionFile, "utf8")).toBe(committed);
 	});

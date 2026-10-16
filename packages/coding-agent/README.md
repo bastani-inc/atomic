@@ -244,10 +244,11 @@ Sessions auto-save to `~/.atomic/agent/sessions/` organized by working directory
 atomic -c                  # Continue most recent session
 atomic -r                  # Browse and select from past sessions
 atomic --no-session        # Ephemeral mode (don't save)
-atomic --session <path|id> # Use a file, exact ID, or unique 8-hex UUID prefix
+atomic --session <id|prefix> # Use an exact ID or unique 8-hex UUID prefix
+atomic --import <file>       # Import a format-4 JSONL export into session storage
 atomic --session-id <id>   # Use/create an exact project-local session ID
 atomic --name "Refactor"   # Set the session display name
-atomic --fork <path|id>    # Fork a file, exact ID, or unique 8-hex UUID prefix
+atomic --fork <id|prefix>    # Fork an exact ID or unique 8-hex UUID prefix
 ```
 
 Use `/session` in interactive mode to see the current session ID before reusing it with `--session <id>`, `--session-id <id>`, or `--fork <id>`.
@@ -266,7 +267,7 @@ Use `/session` in interactive mode to see the current session ID before reusing 
 
 **`/clone`** - Duplicate the current active branch into a new session file at the current position. The new session keeps the full active-path history and opens with an empty editor.
 
-**`--fork <path|id>`** - Fork an existing session file or partial session UUID directly from the CLI. This copies the full source session into a new session file in the current project.
+**`--fork <id|prefix>`** copies the selected session into a new session in the current project. Use an exact session ID or a unique eight-character hexadecimal UUID prefix.
 
 ### Compaction
 
@@ -591,9 +592,10 @@ cat README.md | atomic -p "Summarize this text"
 |--------|-------------|
 | `-c`, `--continue` | Continue most recent session |
 | `-r`, `--resume` | Browse and select session |
-| `--session <path\|id>` | Use a session file, exact ID, or unique 8-hex UUID prefix |
+| `--session <id\|prefix>` | Use an exact ID or unique 8-hex UUID prefix |
+| `--import <file>` | Import a format-4 JSONL export into session storage |
 | `--session-id <id>` | Use an exact project session ID; warn and create it when missing |
-| `--fork <path\|id>` | Fork a session file, exact ID, or unique 8-hex UUID prefix |
+| `--fork <id\|prefix>` | Fork an exact ID or unique 8-hex UUID prefix |
 | `--session-dir <dir>` | Custom session storage directory |
 | `--name <name>`, `-n <name>` | Set the session display name |
 | `--no-session` | Ephemeral mode (don't save) |
@@ -707,7 +709,7 @@ atomic --thinking high "Solve this complex problem"
 | `PI_CACHE_RETENTION` | Provider/upstream-specific prompt-cache retention knob; set to `long` where supported. This is not an `ATOMIC_*` alias and has no Atomic-prefixed equivalent. |
 | `VISUAL`, `EDITOR` | External editor for CTRL+G |
 
-Bash and PowerShell commands also receive an execution-time session snapshot through `ATOMIC_SESSION_ID`, `ATOMIC_SESSION_FILE` (omitted for unsaved sessions), `ATOMIC_PROVIDER`, `ATOMIC_MODEL`, and `ATOMIC_REASONING_LEVEL`. The exact `PI_SESSION_ID`, `PI_SESSION_FILE`, `PI_PROVIDER`, `PI_MODEL`, and `PI_REASONING_LEVEL` aliases carry identical values. Unrelated inherited or caller-supplied environment variables are preserved.
+Bash and PowerShell commands receive an execution-time session snapshot through `ATOMIC_SESSION_ID`, `ATOMIC_PROVIDER`, `ATOMIC_MODEL`, and `ATOMIC_REASONING_LEVEL`. The `PI_SESSION_ID`, `PI_PROVIDER`, `PI_MODEL`, and `PI_REASONING_LEVEL` aliases carry identical values. Session file variables are not exposed. Unrelated inherited or caller-supplied environment variables are preserved.
 
 ---
 

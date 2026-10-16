@@ -53,9 +53,10 @@ test("CLI shell environment guidance agrees with foreground/background bash sche
 	assert.match(cli, /Without one, foreground execution waits until completion/);
 	assert.match(cli, /\/background-tasks#choose-how-long-to-wait/);
 	assert.match(cli, /The snapshot is taken when the command executes, not when the tool is created/);
-	for (const name of ["SESSION_ID", "SESSION_FILE", "PROVIDER", "MODEL", "REASONING_LEVEL"]) {
+	for (const name of ["SESSION_ID", "PROVIDER", "MODEL", "REASONING_LEVEL"]) {
 		assert.ok(cli.includes(`| \`ATOMIC_${name}\` | \`PI_${name}\` |`));
 	}
+	assert.doesNotMatch(cli, /ATOMIC_SESSION_FILE|PI_SESSION_FILE/);
 });
 
 // #2847: new upstream guidance remains discoverable through the migrated Learn path.

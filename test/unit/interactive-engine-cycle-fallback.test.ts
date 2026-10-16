@@ -294,8 +294,10 @@ serialTest(
 		assert.ok(sessionFile);
 		const driver = new Driver(
 			[
+				"--session-dir",
+				persisted.getSessionDir(),
 				"--session",
-				sessionFile,
+				persisted.getSessionId(),
 				"--no-extensions",
 				"--no-skills",
 				"--no-prompt-templates",

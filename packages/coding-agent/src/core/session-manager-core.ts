@@ -1,7 +1,8 @@
 import { writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { getCurrentSystemMessage } from "@bastani/pi-ai";
 import type { ImageContent, Message, TextContent, Usage } from "@bastani/pi-ai/compat";
+import { getAgentDir } from "../config.js";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
@@ -56,7 +57,13 @@ import {
 	generateId,
 	validateSessionFileEntries,
 } from "./session-manager-validation.ts";
-import { SessionFormatVersionError, type SessionJsonValue, StorageUnavailableError } from "./storage/session/errors.js";
+import {
+	SessionFormatVersionError,
+	SessionIdMismatchError,
+	type SessionJsonValue,
+	SessionNotFoundError,
+	StorageUnavailableError,
+} from "./storage/session/errors.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import { MemorySessionStore } from "./storage/session/memory-session-store.js";
 import type { SessionRecordHeader, SessionSnapshot, SessionStore } from "./storage/session/types.js";
@@ -238,6 +245,43 @@ export class SessionManager {
 
 	getSessionFile(): string | undefined {
 		return this.sessionFile;
+	}
+
+	getSessionStore(): SessionStore {
+		return this.store;
+	}
+
+	async openSessionById(sessionId: string, cwdOverride?: string): Promise<SessionManager> {
+		let store = this.store;
+		let snapshot: SessionSnapshot;
+		try {
+			snapshot = await store.load(sessionId);
+		} catch (error) {
+			if (!(error instanceof SessionNotFoundError) || !this.usesDefaultSessionDir()) throw error;
+			store = await JsonlSessionStore.open(join(getAgentDir(), "sessions"), { scanExisting: false });
+			snapshot = await store.load(sessionId);
+		}
+		if (snapshot.header.id !== sessionId) throw new SessionIdMismatchError(sessionId, snapshot.header.id);
+		const manager = new SessionManager(store, cwdOverride ?? snapshot.header.cwd, this.sessionDir);
+		manager.restore(snapshot, store instanceof JsonlSessionStore ? await store.findFile(sessionId) : undefined);
+		if (manager.sessionFile) manager.sessionDir = dirname(manager.sessionFile);
+		return manager;
+	}
+
+	async importFromJsonl(inputPath: string, cwdOverride?: string): Promise<SessionManager> {
+		const source = await JsonlSessionStore.open(dirname(resolvePath(inputPath)), {
+			exactDirectory: true,
+			scanExisting: false,
+		});
+		try {
+			const snapshot = await source.loadFile(inputPath);
+			const manager = new SessionManager(this.store, cwdOverride ?? snapshot.header.cwd, this.sessionDir);
+			manager.restore(snapshot);
+			await manager.initialize();
+			return manager;
+		} finally {
+			await source.close();
+		}
 	}
 
 	private async _appendEntry(entry: SessionEntry): Promise<void> {
@@ -610,6 +654,21 @@ export class SessionManager {
 		});
 	}
 
+	async forkTo(cwd: string, sessionDir?: string, options?: NewSessionOptions): Promise<SessionManager> {
+		const directory = sessionDir ?? getDefaultSessionDirPath(cwd);
+		const store = await JsonlSessionStore.open(directory, { exactDirectory: true, scanExisting: false });
+		const manager = new SessionManager(store, cwd, directory, { ...options, parentSession: this.sessionId });
+		manager.fileEntries.push(...this.getEntries());
+		await manager.initialize();
+		manager._buildIndex();
+		return manager;
+	}
+
+	static async importFromJsonl(inputPath: string, cwd: string, sessionDir?: string): Promise<SessionManager> {
+		const directory = sessionDir ?? getDefaultSessionDirPath(cwd);
+		const store = await JsonlSessionStore.open(directory, { exactDirectory: true, scanExisting: false });
+		return new SessionManager(store, cwd, directory).importFromJsonl(inputPath);
+	}
 	static async create(cwd: string, sessionDir?: string, options?: NewSessionOptions): Promise<SessionManager>;
 	static async create(store: SessionStore, cwd: string, options?: NewSessionOptions): Promise<SessionManager>;
 	static async create(
@@ -623,18 +682,24 @@ export class SessionManager {
 				? directoryOrCwd
 					? normalizePath(directoryOrCwd)
 					: getDefaultSessionDirPath(cwd)
-				: "";
+				: cwdOrStore instanceof JsonlSessionStore
+					? cwdOrStore.descriptor.location
+					: "";
 		const store =
 			typeof cwdOrStore === "string"
 				? await JsonlSessionStore.open(directory, { exactDirectory: true, scanExisting: false })
 				: cwdOrStore;
 		const manager = new SessionManager(store, cwd, directory, options);
+		if (typeof cwdOrStore !== "string" && store instanceof JsonlSessionStore) {
+			manager.sessionFile = store.locationFor(manager.recordHeader());
+			manager.sessionDir = dirname(manager.sessionFile);
+		}
 		await manager.initialize();
 		return manager;
 	}
 
 	static async open(path: string, sessionDir?: string, cwdOverride?: string): Promise<SessionManager>;
-	static async open(store: SessionStore, sessionId: string): Promise<SessionManager>;
+	static async open(store: SessionStore, sessionId: string, cwdOverride?: string): Promise<SessionManager>;
 	static async open(
 		pathOrStore: string | SessionStore,
 		directoryOrId?: string,
@@ -642,8 +707,17 @@ export class SessionManager {
 	): Promise<SessionManager> {
 		if (typeof pathOrStore !== "string") {
 			const snapshot = await pathOrStore.load(directoryOrId!);
-			const manager = new SessionManager(pathOrStore, snapshot.header.cwd, "");
-			manager.restore(snapshot);
+			if (snapshot.header.id !== directoryOrId) throw new SessionIdMismatchError(directoryOrId!, snapshot.header.id);
+			const manager = new SessionManager(
+				pathOrStore,
+				cwdOverride ?? snapshot.header.cwd,
+				pathOrStore instanceof JsonlSessionStore ? pathOrStore.descriptor.location : "",
+			);
+			manager.restore(
+				snapshot,
+				pathOrStore instanceof JsonlSessionStore ? await pathOrStore.findFile(directoryOrId!) : undefined,
+			);
+			if (manager.sessionFile) manager.sessionDir = dirname(manager.sessionFile);
 			return manager;
 		}
 		const path = resolvePath(pathOrStore);

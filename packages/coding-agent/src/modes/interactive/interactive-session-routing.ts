@@ -261,10 +261,10 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 				this.sessionManager.usesDefaultSessionDir()
 					? SessionManager.listAll(onProgress)
 					: SessionManager.listAll(this.sessionManager.getSessionDir(), onProgress),
-			async (sessionPath) => {
+			async (sessionId) => {
 				selector.dispose();
 				done();
-				await this.handleResumeSession(sessionPath);
+				await this.handleResumeSession(sessionId);
 			},
 			() => {
 				selector.dispose();
@@ -277,17 +277,21 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 			},
 			() => this.ui.requestRender(),
 			{
-				renameSession: async (sessionFilePath: string, nextName: string | undefined) => {
+				renameSession: async (sessionId: string, nextName: string | undefined) => {
 					const next = (nextName ?? "").trim();
 					if (!next) return;
-					const mgr = await SessionManager.open(sessionFilePath);
-					await mgr.appendSessionInfo(next);
+					if (sessionId === this.sessionManager.getSessionId()) {
+						await this.session.setSessionName(next);
+					} else {
+						const mgr = await this.sessionManager.openSessionById(sessionId);
+						await mgr.appendSessionInfo(next);
+					}
 				},
 				showRenameHint: true,
 				keybindings: this.keybindings,
 			},
 
-			this.sessionManager.getSessionFile(),
+			this.sessionManager.getSessionId(),
 		);
 		return { component: selector, focus: selector };
 	});
@@ -295,14 +299,14 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 
 InteractiveModeBase.prototype.handleResumeSession = async function (
 	this: InteractiveModeBase,
-	sessionPath: string,
+	sessionId: string,
 	options?: Parameters<ExtensionCommandContext["switchSession"]>[1],
 ): Promise<{ cancelled: boolean }> {
 	await this.ensureDeferredStartupComplete();
 	InteractiveModeBase.prototype.clearWorkingLoader.call(this);
 	mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
 	try {
-		const result = await this.runtimeHost.switchSession(sessionPath, {
+		const result = await this.runtimeHost.switchSession(sessionId, {
 			withSession: options?.withSession,
 			projectTrustContextFactory: (cwd) => this.createProjectTrustContext(cwd),
 		});
@@ -322,7 +326,7 @@ InteractiveModeBase.prototype.handleResumeSession = async function (
 				this.showStatus("Resume cancelled");
 				return { cancelled: true };
 			}
-			const result = await this.runtimeHost.switchSession(sessionPath, {
+			const result = await this.runtimeHost.switchSession(sessionId, {
 				cwdOverride: selectedCwd,
 				withSession: options?.withSession,
 				projectTrustContextFactory: (cwd) => this.createProjectTrustContext(cwd),

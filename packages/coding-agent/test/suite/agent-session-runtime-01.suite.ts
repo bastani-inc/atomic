@@ -11,7 +11,7 @@ import {
 	createAgentSessionServices,
 } from "../../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
-import { SessionManager } from "../../src/core/session-manager.ts";
+import { SessionEntryError, SessionManager } from "../../src/core/session-manager.ts";
 import type {
 	ExtensionAPI,
 	ExtensionFactory,
@@ -201,7 +201,7 @@ describe("AgentSessionRuntime characterization", () => {
 		events.length = 0;
 
 		await runtime.session.prompt("hello");
-		const originalSessionFile = runtime.session.sessionFile;
+		const originalSessionId = runtime.session.sessionId;
 		const originalSession = runtime.session;
 
 		const newSessionResult = await runtime.newSession();
@@ -209,22 +209,22 @@ describe("AgentSessionRuntime characterization", () => {
 		await runtime.session.bindExtensions({});
 		expect(runtime.session).not.toBe(originalSession);
 		expect(runtime.session.messages).toEqual([]);
-		const secondSessionFile = runtime.session.sessionFile;
+		const secondSessionId = runtime.session.sessionId;
 		expect(events).toEqual([
-			{ type: "session_before_switch", reason: "new", targetSessionFile: undefined },
-			{ type: "session_shutdown", reason: "new", targetSessionFile: secondSessionFile },
-			{ type: "session_start", reason: "new", previousSessionFile: originalSessionFile },
+			{ type: "session_before_switch", reason: "new", targetSessionId: undefined },
+			{ type: "session_shutdown", reason: "new", targetSessionId: secondSessionId },
+			{ type: "session_start", reason: "new", previousSessionId: originalSessionId },
 		]);
 
 		events.length = 0;
 
-		const switchResult = await runtime.switchSession(originalSessionFile!);
+		const switchResult = await runtime.switchSession(originalSessionId);
 		expect(switchResult.cancelled).toBe(false);
 		await runtime.session.bindExtensions({});
 		expect(events).toEqual([
-			{ type: "session_before_switch", reason: "resume", targetSessionFile: originalSessionFile },
-			{ type: "session_shutdown", reason: "resume", targetSessionFile: originalSessionFile },
-			{ type: "session_start", reason: "resume", previousSessionFile: secondSessionFile },
+			{ type: "session_before_switch", reason: "resume", targetSessionId: originalSessionId },
+			{ type: "session_shutdown", reason: "resume", targetSessionId: originalSessionId },
+			{ type: "session_start", reason: "resume", previousSessionId: secondSessionId },
 		]);
 	});
 	it("honors session_before_switch cancellation for new and resume", async () => {
@@ -259,9 +259,9 @@ describe("AgentSessionRuntime characterization", () => {
 			content: [{ type: "text", text: "other" }],
 			timestamp: Date.now(),
 		});
-		const otherSessionFile = otherSession.getSessionFile();
+		const otherSessionId = otherSession.getSessionId();
 		cancelReason = "resume";
-		const resumeResult = await runtime.switchSession(otherSessionFile!);
+		const resumeResult = await runtime.switchSession(otherSessionId);
 		expect(resumeResult.cancelled).toBe(true);
 		expect(runtime.session.sessionFile).toBe(originalSessionFile);
 	});
@@ -287,7 +287,7 @@ describe("AgentSessionRuntime characterization", () => {
 		events.length = 0;
 		await runtime.session.prompt("hello");
 		const userMessage = runtime.session.getUserMessagesForForking()[0]!;
-		const previousSessionFile = runtime.session.sessionFile;
+		const previousSessionId = runtime.session.sessionId;
 
 		const successResult = await runtime.fork(userMessage.entryId);
 		expect(successResult.cancelled).toBe(false);
@@ -295,8 +295,8 @@ describe("AgentSessionRuntime characterization", () => {
 		await runtime.session.bindExtensions({});
 		expect(events).toEqual([
 			{ type: "session_before_fork", entryId: userMessage.entryId, position: "before" },
-			{ type: "session_shutdown", reason: "fork", targetSessionFile: runtime.session.sessionFile },
-			{ type: "session_start", reason: "fork", previousSessionFile },
+			{ type: "session_shutdown", reason: "fork", targetSessionId: runtime.session.sessionId },
+			{ type: "session_start", reason: "fork", previousSessionId },
 		]);
 
 		events.length = 0;
@@ -463,9 +463,8 @@ describe("AgentSessionRuntime characterization", () => {
 	});
 	it("records canonical parent IDs for new sessions and empty forks", async () => {
 		const { runtime } = await createRuntimeForTest(() => {});
-		const sourcePath = runtime.session.sessionFile!;
 		const sourceId = runtime.session.sessionId;
-		await runtime.newSession({ parentSession: sourcePath });
+		await runtime.newSession({ parentSession: sourceId });
 		expect(runtime.session.sessionManager.getHeader()?.parentSessionId).toBe(sourceId);
 		const parentId = runtime.session.sessionId;
 		await runtime.session.sessionManager.resetLeaf();
@@ -490,6 +489,10 @@ describe("AgentSessionRuntime characterization", () => {
 
 	it("throws when forking with an invalid entry id", async () => {
 		const { runtime } = await createRuntimeForTest(() => {});
-		await expect(runtime.fork("missing-entry")).rejects.toThrow("Invalid entry ID for forking");
+		await assert.rejects(
+			runtime.fork("missing-entry"),
+			(error) =>
+				error instanceof SessionEntryError && error.entryId === "missing-entry" && error.reason === "missing",
+		);
 	});
 });

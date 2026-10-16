@@ -150,8 +150,8 @@ async function switchHost(
 		fork: (entryId: string, options?: Parameters<typeof runtime.fork>[1]) => runtime.fork(entryId, options),
 		navigateTree: (targetId: string, options?: Parameters<typeof runtime.session.navigateTree>[1]) =>
 			runtime.session.navigateTree(targetId, options),
-		switchSession: (sessionPath: string, options?: Parameters<typeof runtime.switchSession>[1]) =>
-			runtime.switchSession(sessionPath, options),
+		switchSession: (sessionId: string, options?: Parameters<typeof runtime.switchSession>[1]) =>
+			runtime.switchSession(sessionId, options),
 		reload: () => runtime.session.reload(),
 	};
 	runtime.setRebindSession((session) => session.bindExtensions({ uiContext, commandContextActions }));
@@ -431,7 +431,7 @@ test(
 		await waitFor(host.reached, "the gate tool node to start");
 
 		await runtime.newSession();
-		await runtime.switchSession(firstFile);
+		await runtime.switchSession(firstId);
 		assert.equal(runtime.session.sessionManager.getSessionId(), firstId);
 		const noticesBefore = host.notices.length;
 

@@ -498,9 +498,9 @@ Moved to [Extension API reference](/extensions/api-reference#ctx-fork-entryid-op
 
 Moved to [Extension API reference](/extensions/api-reference#ctx-navigatetree-targetid-options).
 
-### ctx.switchSession(sessionPath, options?)
+### ctx.switchSession(sessionId, options?)
 
-Moved to [Extension API reference](/extensions/api-reference#ctx-switchsession-sessionpath-options).
+Moved to [Extension API reference](/extensions/api-reference#ctx-switchsession-sessionid-options).
 
 ### Session replacement lifecycle and footguns
 

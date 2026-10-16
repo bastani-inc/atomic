@@ -421,14 +421,14 @@ export class RpcClient extends RpcClientApi {
 	 * window is always observed; cancellation throws rather than returning
 	 * quietly, because callers go on to initialize against the new child.
 	 */
-	async restart(sessionFile: string | undefined): Promise<void> {
+	async restart(sessionId: string | undefined): Promise<void> {
 		const permit = this.restartRevision;
 		await this.stopCurrentGeneration();
 		// Join an in-flight stop before the permit check: waiting after it would
 		// reopen the window this fence exists to close.
 		if (this.stopPromise) await this.stopPromise;
 		if (permit !== this.restartRevision) throw rpcTransportError(RESTART_CANCELLED_MESSAGE);
-		this.options = { ...this.options, args: restartCliArgs(this.options.args, sessionFile) };
+		this.options = { ...this.options, args: restartCliArgs(this.options.args, sessionId) };
 		await this.start();
 		await this.waitForInteractiveEngineBound();
 	}

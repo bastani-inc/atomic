@@ -142,22 +142,22 @@ export function createInteractiveJsonlOptions(enabled: boolean): { maxBytesPerTu
 
 /**
  * CLI args for a replacement engine child: drop whatever session flag the
- * previous generation carried and bind the replacement to `sessionFile`, so a
+ * previous generation carried and bind the replacement to `sessionId`, so a
  * restart resumes the same conversation instead of starting a fresh one.
  */
-export function restartCliArgs(args: readonly string[] | undefined, sessionFile: string | undefined): string[] {
+export function restartCliArgs(args: readonly string[] | undefined, sessionId: string | undefined): string[] {
 	const result: string[] = [];
 	for (let index = 0; index < (args?.length ?? 0); index += 1) {
 		const value = args![index]!;
 		if (value === "--no-session") continue;
-		if (value === "--session") {
+		if (value === "--session" || value === "--import") {
 			index += 1;
 			continue;
 		}
 		result.push(value);
 	}
-	result.push(sessionFile ? "--session" : "--no-session");
-	if (sessionFile) result.push(sessionFile);
+	result.push(sessionId ? "--session" : "--no-session");
+	if (sessionId) result.push(sessionId);
 	return result;
 }
 

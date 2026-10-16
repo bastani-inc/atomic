@@ -280,7 +280,7 @@ pi.registerCommand("my-cmd", {
 Create a new session:
 
 ```typescript
-const parentSession = ctx.sessionManager.getSessionFile();
+const parentSession = ctx.sessionManager.getSessionId();
 const kickoff = "Continue in the replacement session";
 
 const result = await ctx.newSession({
@@ -304,7 +304,7 @@ if (result.cancelled) {
 ```
 
 Options:
-- `parentSession`: parent session file to record in the new session header
+- `parentSession`: parent session ID to record in the new session header
 - `setup`: mutate the new session's `SessionManager` before `withSession` runs
 - `withSession`: run post-switch work against a fresh replacement-session context. Do not use captured old `pi` / command `ctx`; see [Session replacement lifecycle and footguns](#session-replacement-lifecycle-and-footguns).
 
@@ -353,12 +353,12 @@ Options:
 - `replaceInstructions`: If true, `customInstructions` replaces the default prompt instead of being appended
 - `label`: Label to attach to the branch summary entry (or target entry if not summarizing)
 
-### ctx.switchSession(sessionPath, options?)
+### ctx.switchSession(sessionId, options?)
 
-Switch to a different session file:
+Switch to a different session by its exact ID:
 
 ```typescript
-const result = await ctx.switchSession("/path/to/session.jsonl", {
+const result = await ctx.switchSession("my-session-id", {
   withSession: async (ctx) => {
     await ctx.sendUserMessage("Resume work in the replacement session");
   },
@@ -383,7 +383,7 @@ pi.registerCommand("switch", {
     if (sessions.length === 0) return;
     const choice = await ctx.ui.select(
       "Pick session:",
-      sessions.map(s => s.file),
+      sessions.map(s => s.id),
     );
     if (choice) {
       await ctx.switchSession(choice, {

@@ -24,9 +24,8 @@ export function buildInteractiveEngineArgs(
 	resources: InteractiveEngineResourcePaths,
 ): string[] {
 	const args: string[] = [];
-	const sessionFile = sessionManager.getSessionFile();
-	if (parsed.noSession || !sessionFile) args.push("--no-session");
-	else args.push("--session", sessionFile);
+	if (parsed.noSession || !sessionManager.isPersisted()) args.push("--no-session");
+	else args.push("--session", sessionManager.getSessionId());
 	appendValue(args, "--session-dir", parsed.sessionDir);
 	appendValue(args, "--provider", parsed.provider);
 	appendValue(args, "--model", parsed.model);

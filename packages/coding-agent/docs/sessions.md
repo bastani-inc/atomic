@@ -17,13 +17,16 @@ atomic -c                  # Continue most recent session
 atomic -r                  # Browse and select from past sessions
 atomic --no-session        # Ephemeral mode; do not save
 atomic --name "my task"    # Set session display name at startup
-atomic --session <path|id> # Use a file, exact ID, or unique 8-hex UUID prefix
-atomic --fork <path|id>    # Fork a file, exact ID, or unique 8-hex UUID prefix
+atomic --session <id|prefix> # Use an exact ID or unique 8-hex UUID prefix
+atomic --import <file>       # Import a format-4 JSONL export into session storage
+atomic --fork <id|prefix>    # Fork an exact ID or unique 8-hex UUID prefix
 ```
 
 Use `/session` in interactive mode to see the current session file, session ID, message count, tokens, and cost. You can use it while a run is active; its totals update after each completed message, not each streaming text chunk. Detailed cost and cache-waste breakdowns are shown after the run finishes only when the available session history matches those totals; otherwise, only the total cost is shown.
 
 For UUID-backed sessions, `--session` and `--fork` accept either the full UUID or exactly eight hexadecimal prefix characters. A prefix must be unique within the current project (or, if no local session matches, across the global session store); collisions list the matching UUIDs and require the full value. Exact custom session IDs keep their existing priority. `--session-id` remains an exact project-local ID used to open or create a session, not a prefix selector.
+
+Session locations are for display, not selection. Use `--import <file>` or `/import <file>` to copy a format-4 JSONL export into the selected store. The session ID and entries are preserved. An ID already present in that store raises `SessionExistsError`; importing never replaces an existing session. Older session formats are not accepted.
 
 ### Custom session directories
 

@@ -20,7 +20,7 @@ export type NavigateTreeHandler = (
 ) => Promise<{ cancelled: boolean }>;
 
 export type SwitchSessionHandler = (
-	sessionPath: string,
+	sessionId: string,
 	options?: { withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
 ) => Promise<{ cancelled: boolean }>;
 

@@ -32,8 +32,8 @@ export interface SessionStartEvent {
 	type: "session_start";
 	/** Why this session start happened. */
 	reason: "startup" | "reload" | "new" | "resume" | "fork";
-	/** Previously active session file. Present for "new", "resume", and "fork". */
-	previousSessionFile?: string;
+	/** Previously active session ID. Present for "new", "resume", and "fork". */
+	previousSessionId?: string;
 }
 
 /** Fired when the current session metadata changes. */
@@ -47,7 +47,7 @@ export interface SessionInfoChangedEvent {
 export interface SessionBeforeSwitchEvent {
 	type: "session_before_switch";
 	reason: "new" | "resume";
-	targetSessionFile?: string;
+	targetSessionId?: string;
 }
 
 /** Fired before forking a session (can be cancelled) */
@@ -91,8 +91,8 @@ export interface SessionCompactFailedEvent {
 export interface SessionShutdownEvent {
 	type: "session_shutdown";
 	reason: "quit" | "reload" | "new" | "resume" | "fork";
-	/** Destination session file when shutting down due to session replacement. */
-	targetSessionFile?: string;
+	/** Destination session ID when shutting down due to session replacement. */
+	targetSessionId?: string;
 	/** True when a `quit` was caused by a host termination signal (SIGTERM/SIGHUP) rather than an explicit user quit. */
 	fromSignal?: boolean;
 }

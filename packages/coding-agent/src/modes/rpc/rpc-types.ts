@@ -138,7 +138,7 @@ export type RpcCommand =
 	| { id?: string; type: "get_session_stats" }
 	| { id?: string; type: "get_tools" }
 	| { id?: string; type: "export_html"; outputPath?: string }
-	| { id?: string; type: "switch_session"; sessionPath: string; cwdOverride?: string }
+	| { id?: string; type: "switch_session"; sessionId: string; cwdOverride?: string }
 	| { id?: string; type: "import_session"; inputPath: string; cwdOverride?: string }
 	| { id?: string; type: "fork"; entryId: string }
 	| { id?: string; type: "clone" }
@@ -211,7 +211,7 @@ export interface RpcSessionState {
 	compactionReason?: CompactionReason;
 	steeringMode: "all" | "one-at-a-time";
 	followUpMode: "all" | "one-at-a-time";
-	sessionFile?: string;
+	sessionLocation?: string;
 	sessionId: string;
 	sessionName?: string;
 	autoCompactionEnabled: boolean;

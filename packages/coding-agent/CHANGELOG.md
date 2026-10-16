@@ -17,6 +17,7 @@
 - Session headers use the format-4 fields `createdAt` and `parentSessionId`, including the header returned by `SessionManager.getHeader()`. The `timestamp` and `parentSession` header fields are removed.
 - Extension provider registration and removal now return promises too: await `pi.registerProvider`, `pi.registerProviderAlias`, and `pi.unregisterProvider` before dependent model or session work.
 - Workflow SQLite journals now use `SqlRunJournal` with async initialization and `wf_` table names. Use `await openSqlRunJournal(pathOrDatabase?)` or `await SqlRunJournal.open(database, { prefix })`, and await `resolveRunJournal`. Earlier unreleased bare tables are not read or migrated. Workflow `StorageUnavailableError` now provides `adapter`, `location`, and `cause` instead of `path`.
+- Session selection now uses IDs instead of file paths: `--session` and `--fork` accept exact IDs or unique eight-hex UUID prefixes; use `--import <file>` for format-4 JSONL exports. Extension `switchSession` takes an ID, lifecycle events use `previousSessionId` and `targetSessionId`, and RPC `switch_session` takes `sessionId`. RPC state reports `sessionLocation` for optional display instead of `sessionFile`. Shell tools no longer expose `ATOMIC_SESSION_FILE` or `PI_SESSION_FILE`; use `ATOMIC_SESSION_ID` or `PI_SESSION_ID`.
 
 ### Added
 
@@ -32,6 +33,7 @@
 - Fixed failed custom-message writes dropping accepted pending and next-turn messages. Retries now retain the uncommitted messages in order, and overlapping drains do not duplicate saved messages.
 - Fixed overlapping model, thinking-level and session-name changes losing later choices. Model and thinking cycles now advance once per request, and saved defaults retain the last choice.
 - Fixed history refresh failures after a turn escaping error handling. The interactive engine now displays the failure without an unhandled rejection, and label edits await their saved history before reporting success.
+- Renaming the active session in the selector writes through its active manager, so later session writes retain the correct sequence.
 
 ## [0.9.38-alpha.4] - 2026-10-16
 

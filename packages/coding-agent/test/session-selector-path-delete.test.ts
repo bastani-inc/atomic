@@ -295,7 +295,7 @@ describe("session selector path/delete interactions", () => {
 			() => {},
 			() => {},
 			{ keybindings },
-			paths.parentAliasA,
+			"parent",
 		);
 		await flushPromises();
 

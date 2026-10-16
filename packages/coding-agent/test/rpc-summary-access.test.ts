@@ -72,7 +72,16 @@ test(
 			cwd: dir,
 			runtimeExecutable: bunExecutable(),
 			env: { ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: "" },
-			args: ["--session", manager.getSessionFile()!, "--no-extensions", "--extension", extension, "--no-tools"],
+			args: [
+				"--session-dir",
+				manager.getSessionDir(),
+				"--session",
+				manager.getSessionId(),
+				"--no-extensions",
+				"--extension",
+				extension,
+				"--no-tools",
+			],
 		});
 		try {
 			await client.start();

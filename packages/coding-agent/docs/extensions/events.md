@@ -59,13 +59,13 @@ user sends another prompt ◄─────────────────
 /new (new session) or /resume (switch session)
   ├─► session_before_switch (can cancel)
   ├─► session_shutdown
-  ├─► session_start { reason: "new" | "resume", previousSessionFile? }
+  ├─► session_start { reason: "new" | "resume", previousSessionId? }
   └─► resources_discover { reason: "startup" }
 
 /fork or /clone
   ├─► session_before_fork (can cancel)
   ├─► session_shutdown
-  ├─► session_start { reason: "fork", previousSessionFile }
+  ├─► session_start { reason: "fork", previousSessionId }
   └─► resources_discover { reason: "startup" }
 
 /compact or auto-compaction
@@ -141,8 +141,8 @@ Fired when a session is started, loaded, or reloaded.
 ```typescript
 pi.on("session_start", async (event, ctx) => {
   // event.reason - "startup" | "reload" | "new" | "resume" | "fork"
-  // event.previousSessionFile - present for "new", "resume", and "fork"
-  ctx.ui.notify(`Session: ${ctx.sessionManager.getSessionFile() ?? "ephemeral"}`, "info");
+  // event.previousSessionId - present for "new", "resume", and "fork"
+  ctx.ui.notify(`Session: ${ctx.sessionManager.getSessionId()}`, "info");
 });
 ```
 
@@ -164,7 +164,7 @@ Fired before starting a new session (`/new`) or switching sessions (`/resume`).
 ```typescript
 pi.on("session_before_switch", async (event, ctx) => {
   // event.reason - "new" or "resume"
-  // event.targetSessionFile - session we're switching to (only for "resume")
+  // event.targetSessionId - session we're switching to (only for "resume")
 
   if (event.reason === "new") {
     const ok = await ctx.ui.confirm("Clear?", "Delete all messages?");
@@ -173,7 +173,7 @@ pi.on("session_before_switch", async (event, ctx) => {
 });
 ```
 
-After a successful switch or new-session action, Atomic emits `session_shutdown` for the old extension instance, reloads and rebinds extensions for the new session, then emits `session_start` with `reason: "new" | "resume"` and `previousSessionFile`.
+After a successful switch or new-session action, Atomic emits `session_shutdown` for the old extension instance, reloads and rebinds extensions for the new session, then emits `session_start` with `reason: "new" | "resume"` and `previousSessionId`.
 Do cleanup work in `session_shutdown`, then reestablish any in-memory state in `session_start`.
 
 #### session_before_fork
@@ -190,7 +190,7 @@ pi.on("session_before_fork", async (event, ctx) => {
 });
 ```
 
-After a successful fork or clone, Atomic emits `session_shutdown` for the old extension instance, reloads and rebinds extensions for the new session, then emits `session_start` with `reason: "fork"` and `previousSessionFile`.
+After a successful fork or clone, Atomic emits `session_shutdown` for the old extension instance, reloads and rebinds extensions for the new session, then emits `session_start` with `reason: "fork"` and `previousSessionId`.
 Do cleanup work in `session_shutdown`, then reestablish any in-memory state in `session_start`.
 
 #### session_before_compact / session_compact / session_compact_failed
@@ -259,7 +259,7 @@ Fired before a started session runtime is torn down. Use this to clean up resour
 ```typescript
 pi.on("session_shutdown", async (event, ctx) => {
   // event.reason - "quit" | "reload" | "new" | "resume" | "fork"
-  // event.targetSessionFile - destination session for session replacement flows
+  // event.targetSessionId - destination session for session replacement flows
   // event.fromSignal - true when a "quit" came from a host SIGTERM/SIGHUP, not an explicit quit
   // Cleanup, save state, etc.
 });

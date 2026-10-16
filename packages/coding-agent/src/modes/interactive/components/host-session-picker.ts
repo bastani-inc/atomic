@@ -104,7 +104,10 @@ export function mountHostSessionPicker(
 				const selector = new SessionSelectorComponent(
 					loadRows,
 					loadRows,
-					(path) => settle(() => delegate.onSelect(path)),
+					(id) => {
+						const row = currentRows.find((row) => row.id === id);
+						if (row) settle(() => delegate.onSelect(row.path));
+					},
 					() => settle(() => delegate.onCancel()),
 					() => settle(() => delegate.onCancel()),
 					() => ui.requestRender(),

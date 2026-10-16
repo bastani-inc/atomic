@@ -37,7 +37,7 @@ class Driver {
 	private readonly waiters = new Set<() => void>();
 	private stderr = "";
 
-	constructor(args: string[], env: Record<string, string>) {
+	constructor(args: string[], env: Record<string, string>, cwd = join(moduleDir(import.meta.url), "../..")) {
 		const baseEnv: Record<string, string | undefined> = { ...process.env };
 		for (const key of Object.keys(baseEnv)) {
 			if (key.startsWith("ATOMIC_INTERACTIVE_ENGINE_")) delete baseEnv[key];
@@ -45,7 +45,7 @@ class Driver {
 		this.process = spawnProcess(
 			[bunExecutable(), join(moduleDir(import.meta.url), "fixtures", "default-main-interactive-host.ts"), ...args],
 			{
-				cwd: join(moduleDir(import.meta.url), "../.."),
+				cwd,
 				env: { ...baseEnv, ...env },
 				stdin: "pipe",
 				stdout: "pipe",
@@ -290,8 +290,10 @@ serialTest(
 		assert.ok(sessionFile);
 		const driver = new Driver(
 			[
+				"--session-dir",
+				persisted.getSessionDir(),
 				"--session",
-				sessionFile,
+				persisted.getSessionId(),
 				"--no-extensions",
 				"--no-skills",
 				"--no-prompt-templates",
@@ -305,6 +307,7 @@ serialTest(
 				ATOMIC_SKIP_VERSION_CHECK: "1",
 				NO_COLOR: "1",
 			},
+			cwd,
 		);
 		try {
 			const settled = await waitForInputLoopState(driver);

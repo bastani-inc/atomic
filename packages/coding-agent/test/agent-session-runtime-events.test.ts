@@ -286,7 +286,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 				reason === "new"
 					? runtimeHost.newSession()
 					: reason === "resume"
-						? runtimeHost.switchSession(target.getSessionFile()!)
+						? runtimeHost.switchSession(target.getSessionId())
 						: runtimeHost.fork(entry);
 			const error = await replacement.catch((error: unknown) => error);
 			expect(events).toEqual([`first:${reason}`, `second:${reason}`, "first:quit", "second:quit"]);
@@ -312,7 +312,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		const target = await SessionManager.create(runtimeHost.cwd);
 		await target.appendMessage({ role: "user", content: "saved", timestamp: Date.now() });
 		await target.appendMessage(fauxAssistantMessage("saved"));
-		const targetPath = target.getSessionFile()!;
+		const targetId = target.getSessionId();
 		let preparations = 0;
 		createRuntime.prepareResume = async (options) => {
 			preparations++;
@@ -322,7 +322,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			throw new Error("trust preflight failed");
 		};
 		await expect(
-			runtimeHost.switchSession(targetPath, {
+			runtimeHost.switchSession(targetId, {
 				projectTrustContextFactory: (cwd) => ({
 					cwd,
 					mode: "print",
@@ -346,7 +346,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 				return createRuntime(options);
 			};
 		};
-		expect(await runtimeHost.switchSession(targetPath)).toEqual({ cancelled: false });
+		expect(await runtimeHost.switchSession(targetId)).toEqual({ cancelled: false });
 		expect(runtimeHost.session).not.toBe(outgoing);
 	});
 
@@ -387,7 +387,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			await runtimeHost.session.extensionRunner.withProjectTrustPrompt("confirm", "Trust", () => prompt);
 			return () => createRuntime(options);
 		};
-		const replacement = runtimeHost.switchSession(target.getSessionFile()!);
+		const replacement = runtimeHost.switchSession(target.getSessionId());
 		await start;
 		expect(events).toEqual(["start"]);
 		answer();
@@ -416,29 +416,29 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		events.length = 0;
 
 		await runtimeHost.session.prompt("hello");
-		const originalSessionFile = runtimeHost.session.sessionFile;
-		expect(originalSessionFile).toBeTruthy();
+		const originalSessionId = runtimeHost.session.sessionId;
+		expect(originalSessionId).toBeTruthy();
 
 		const newSessionResult = await runtimeHost.newSession();
 		expect(newSessionResult.cancelled).toBe(false);
 		await runtimeHost.session.bindExtensions({});
-		const secondSessionFile = runtimeHost.session.sessionFile;
+		const secondSessionId = runtimeHost.session.sessionId;
 		expect(events).toEqual([
-			{ type: "session_before_switch", reason: "new", targetSessionFile: undefined },
-			{ type: "session_shutdown", reason: "new", targetSessionFile: secondSessionFile },
-			{ type: "session_start", reason: "new", previousSessionFile: originalSessionFile },
+			{ type: "session_before_switch", reason: "new", targetSessionId: undefined },
+			{ type: "session_shutdown", reason: "new", targetSessionId: secondSessionId },
+			{ type: "session_start", reason: "new", previousSessionId: originalSessionId },
 		]);
 
 		events.length = 0;
-		expect(secondSessionFile).toBeTruthy();
+		expect(secondSessionId).toBeTruthy();
 
-		const switchResult = await runtimeHost.switchSession(originalSessionFile!);
+		const switchResult = await runtimeHost.switchSession(originalSessionId);
 		expect(switchResult.cancelled).toBe(false);
 		await runtimeHost.session.bindExtensions({});
 		expect(events).toEqual([
-			{ type: "session_before_switch", reason: "resume", targetSessionFile: originalSessionFile },
-			{ type: "session_shutdown", reason: "resume", targetSessionFile: originalSessionFile },
-			{ type: "session_start", reason: "resume", previousSessionFile: secondSessionFile },
+			{ type: "session_before_switch", reason: "resume", targetSessionId: originalSessionId },
+			{ type: "session_shutdown", reason: "resume", targetSessionId: originalSessionId },
+			{ type: "session_start", reason: "resume", previousSessionId: secondSessionId },
 		]);
 	});
 
@@ -489,7 +489,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		const result = await runtimeHost.newSession();
 		expect(result.cancelled).toBe(true);
 		expect(runtimeHost.session.sessionFile).toBe(originalSessionFile);
-		expect(events).toEqual([{ type: "session_before_switch", reason: "new", targetSessionFile: undefined }]);
+		expect(events).toEqual([{ type: "session_before_switch", reason: "new", targetSessionId: undefined }]);
 	});
 
 	it("runs beforeSessionInvalidate after session_shutdown and before rebindSession", async () => {
@@ -565,7 +565,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 				reason === "new"
 					? ctx.newSession()
 					: reason === "resume"
-						? ctx.switchSession(target.getSessionFile()!)
+						? ctx.switchSession(target.getSessionId())
 						: ctx.fork(forkEntryId);
 			widgets.set("sync", "retiring");
 			runtimeHost.setBeforeSessionInvalidate(() => {
@@ -646,7 +646,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 				reason === "new"
 					? ctx.newSession()
 					: reason === "resume"
-						? ctx.switchSession(target.getSessionFile()!)
+						? ctx.switchSession(target.getSessionId())
 						: ctx.fork(forkEntryId);
 			runtimeHost.setRebindSession(async (session) => {
 				await session.bindExtensions({ commandContextActions, uiContext, mode: "tui" });
@@ -696,7 +696,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			await session.bindExtensions({});
 		});
 
-		await runtimeHost.switchSession(target.getSessionFile()!);
+		await runtimeHost.switchSession(target.getSessionId());
 		const current = runtimeHost.session.sessionManager.getSessionId();
 		assert.deepEqual(phases, [
 			"session_shutdown:resume",
@@ -738,7 +738,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 
 		await runtimeHost.session.prompt("hello");
 		const userMessage = runtimeHost.session.getUserMessagesForForking()[0];
-		const previousSessionFile = runtimeHost.session.sessionFile;
+		const previousSessionId = runtimeHost.session.sessionId;
 
 		const successResult = await runtimeHost.fork(userMessage.entryId);
 		expect(successResult.cancelled).toBe(false);
@@ -746,8 +746,8 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		await runtimeHost.session.bindExtensions({});
 		expect(events).toEqual([
 			{ type: "session_before_fork", entryId: userMessage.entryId, position: "before" },
-			{ type: "session_shutdown", reason: "fork", targetSessionFile: runtimeHost.session.sessionFile },
-			{ type: "session_start", reason: "fork", previousSessionFile },
+			{ type: "session_shutdown", reason: "fork", targetSessionId: runtimeHost.session.sessionId },
+			{ type: "session_start", reason: "fork", previousSessionId },
 		]);
 
 		events.length = 0;
