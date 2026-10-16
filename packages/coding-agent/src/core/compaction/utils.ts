@@ -4,7 +4,7 @@
 
 import type { Message } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { Patch } from "../tools/hashline-engine/index.js";
+import { Patch } from "../tools/hashline-engine/index.ts";
 import type { LineRange } from "./compaction-types.js";
 
 // ============================================================================
