@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import {
+	copyFileSync,
+	cpSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+} from "node:fs";
 import { isBuiltin } from "node:module";
-import { extname, join, relative } from "node:path";
+import { basename, extname, join, relative } from "node:path";
 import { parse } from "acorn";
 import { simple } from "acorn-walk";
 import { test } from "vitest";
@@ -14,6 +25,35 @@ import { moduleDir, npmSpawnPrefix, spawnSyncCollect } from "../helpers/runtime.
 
 const root = join(moduleDir(import.meta.url), "../..");
 const BUILTIN_BUNDLE_BUILD_TIMEOUT_MS = 120_000;
+
+function stageBuiltinBuild(fixture: string): string {
+	const packageRoot = join(fixture, "packages/coding-agent");
+	mkdirSync(join(fixture, "packages"));
+	cpSync(join(root, "packages/coding-agent"), packageRoot, {
+		recursive: true,
+		filter: (path) => !["node_modules", "dist"].includes(basename(path)),
+	});
+	copyFileSync(join(root, "tsconfig.base.json"), join(fixture, "tsconfig.base.json"));
+	// Dependencies and companion sources are read-only inputs; every build output stays in the copy.
+	symlinkSync(join(root, "node_modules"), join(fixture, "node_modules"), "junction");
+	const packageDependencies = join(root, "packages/coding-agent/node_modules");
+	if (existsSync(packageDependencies)) symlinkSync(packageDependencies, join(packageRoot, "node_modules"), "junction");
+	for (const name of readdirSync(join(root, "packages"))) {
+		if (name === "workflows") {
+			const workflows = join(fixture, "packages", name);
+			cpSync(join(root, "packages", name), workflows, {
+				recursive: true,
+				filter: (path) => basename(path) !== "node_modules",
+			});
+			const scope = join(workflows, "node_modules/@bastani");
+			mkdirSync(scope, { recursive: true });
+			symlinkSync(packageRoot, join(scope, "atomic"), "junction");
+		} else if (name !== "coding-agent") {
+			symlinkSync(join(root, "packages", name), join(fixture, "packages", name), "junction");
+		}
+	}
+	return packageRoot;
+}
 
 function isBareSpecifier(specifier: string): boolean {
 	return !specifier.startsWith(".") && !specifier.startsWith("/") && !specifier.startsWith("file:");
@@ -65,37 +105,50 @@ test("specifier permits Node builtins, registered host imports, and relative imp
 test(
 	"installed builtin bundles retain only node builtins and registered host imports",
 	async () => {
-		const build = spawnSyncCollect([...npmSpawnPrefix(), "run", "build", "--workspace=@bastani/atomic"], {
-			cwd: root,
-		});
-		assert.equal(build.exitCode, 0, `${build.stdout.toString()}\n${build.stderr.toString()}`);
+		const sharedBuiltinRoot = join(root, "packages/coding-agent/dist/builtin");
+		const sharedBuiltinMtime = statSync(sharedBuiltinRoot, { throwIfNoEntry: false })?.mtimeMs;
+		const fixture = mkdtempSync(join(root, ".tmp-builtin-bundle-contract-"));
+		try {
+			const packageRoot = stageBuiltinBuild(fixture);
+			const build = spawnSyncCollect([...npmSpawnPrefix(), "--prefix", packageRoot, "run", "build"], {
+				cwd: fixture,
+			});
+			assert.equal(build.exitCode, 0, `${build.stdout.toString()}\n${build.stderr.toString()}`);
+			assert.equal(
+				statSync(sharedBuiltinRoot, { throwIfNoEntry: false })?.mtimeMs,
+				sharedBuiltinMtime,
+				"the contract build must not rewrite the checkout's builtin bundles",
+			);
 
-		const hostSpecifiers = new Set(Object.keys(await getVirtualModules()));
-		const unexpected: string[] = [];
-		const builtinRoot = join(root, "packages/coding-agent/dist/builtin");
-		const emittedArtifacts = [
-			...Object.entries(INSTALLED_EXTENSION_ENTRIES).map(([dirName, entry]) => join(builtinRoot, dirName, entry)),
-			join(builtinRoot, "workflows", WORKFLOWS_SDK_BUNDLE_ENTRY),
-			...listJavaScriptArtifacts(join(builtinRoot, "workflows", "builtin")),
-		];
+			const hostSpecifiers = new Set(Object.keys(await getVirtualModules()));
+			const unexpected: string[] = [];
+			const builtinRoot = join(packageRoot, "dist/builtin");
+			const emittedArtifacts = [
+				...Object.entries(INSTALLED_EXTENSION_ENTRIES).map(([dirName, entry]) => join(builtinRoot, dirName, entry)),
+				join(builtinRoot, "workflows", WORKFLOWS_SDK_BUNDLE_ENTRY),
+				...listJavaScriptArtifacts(join(builtinRoot, "workflows", "builtin")),
+			];
 
-		for (const artifactPath of emittedArtifacts) {
-			const source = readFileSync(artifactPath, "utf8");
-			for (const specifier of collectImportSpecifiers(source)) {
-				if (!isPermittedSpecifier(specifier, hostSpecifiers)) {
-					unexpected.push(`${relative(builtinRoot, artifactPath)}: ${specifier}`);
+			for (const artifactPath of emittedArtifacts) {
+				const source = readFileSync(artifactPath, "utf8");
+				for (const specifier of collectImportSpecifiers(source)) {
+					if (!isPermittedSpecifier(specifier, hostSpecifiers)) {
+						unexpected.push(`${relative(builtinRoot, artifactPath)}: ${specifier}`);
+					}
 				}
 			}
+
+			const notices = join(builtinRoot, "mcp", "native-client-licenses");
+			assert.match(readFileSync(join(notices, "NOTICE"), "utf8"), /MIT License/);
+			assert.match(
+				readFileSync(join(notices, "LICENSES", "modelcontextprotocol-typescript-sdk.txt"), "utf8"),
+				/MIT License/,
+			);
+
+			assert.deepEqual(unexpected, []);
+		} finally {
+			rmSync(fixture, { recursive: true, force: true });
 		}
-
-		const notices = join(builtinRoot, "mcp", "native-client-licenses");
-		assert.match(readFileSync(join(notices, "NOTICE"), "utf8"), /MIT License/);
-		assert.match(
-			readFileSync(join(notices, "LICENSES", "modelcontextprotocol-typescript-sdk.txt"), "utf8"),
-			/MIT License/,
-		);
-
-		assert.deepEqual(unexpected, []);
 	},
 	BUILTIN_BUNDLE_BUILD_TIMEOUT_MS,
 );
