@@ -13,7 +13,7 @@ export class StageSessionReplacement {
 	}
 
 	retire(session: StageSessionRuntime | undefined): void {
-		this.previous = session;
+		if (session) this.previous = session;
 	}
 
 	adopt(session: StageSessionRuntime): void {

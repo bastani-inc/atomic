@@ -23,6 +23,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added `MemoryRunJournal`, public SQLite journal and error exports, and `registerRunJournalConformance` for shared journal contract checks.
 - Added `RunOpts.journal` types and `resolveRunJournal` for explicit journals, caller-owned SQLite connections, memory journals, and configurable files. Resolution prioritizes the explicit option, a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, then journal settings and the default path. Relative settings paths resolve against the Atomic home directory. Runtime wiring is deferred.
 
+### Fixed
+
+- Fixed workflow fallback leaking the original stage session when an intervening candidate fails to initialize. The original session is now disposed exactly once after it becomes idle when a successor is adopted, or during final cleanup if no successor is created ([#3655](https://github.com/bastani-inc/atomic/issues/3655)).
+
 ## [0.9.38-alpha.1] - 2026-10-15
 
 ### Fixed
