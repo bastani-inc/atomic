@@ -3,9 +3,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import chalk from "chalk";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { APP_NAME } from "../../../src/config.ts";
 import type { SessionManager } from "../../../src/core/session-manager.ts";
+import { JsonlSessionStore } from "../../../src/core/storage/session/jsonl-session-store.js";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 
 // Regression for https://github.com/earendil-works/atomic/issues/5080
@@ -34,6 +35,7 @@ type InteractiveModePrototypeWithShutdown = {
 const interactiveModePrototype = InteractiveMode.prototype as unknown;
 const tempDirs: string[] = [];
 const originalStdoutIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+let sessionStore: JsonlSessionStore;
 
 class ProcessExitError extends Error {}
 
@@ -44,6 +46,7 @@ function createSessionManager(options: { sessionFile?: string } = {}): SessionMa
 		getSessionId: () => "test-session",
 		getSessionDir: () => "/tmp/atomic-sessions",
 		usesDefaultSessionDir: () => true,
+		getSessionStore: (): ReturnType<SessionManager["getSessionStore"]> => sessionStore,
 	} as unknown as SessionManager;
 }
 
@@ -100,7 +103,13 @@ async function callShutdown(context: ShutdownThis, options?: { fromSignal?: bool
 }
 
 describe("InteractiveMode.shutdown ordering (#5080)", () => {
-	afterEach(() => {
+	beforeEach(async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-shutdown-resume-store-"));
+		tempDirs.push(dir);
+		sessionStore = await JsonlSessionStore.open(dir, { exactDirectory: true });
+	});
+	afterEach(async () => {
+		await sessionStore.close();
 		vi.restoreAllMocks();
 		restoreStdoutIsTTY();
 		for (const dir of tempDirs.splice(0)) {

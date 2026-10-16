@@ -4,22 +4,26 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ENV_AGENT_DIR } from "../src/config.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
 
 const DIRECTORY_LINK_TYPE = process.platform === "win32" ? "junction" : "dir";
 
 describe("session discovery through linked project directories", () => {
 	let tempDir: string;
 	let sessionsDir: string;
+	let store: JsonlSessionStore;
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		tempDir = mkdtempSync(join(tmpdir(), "atomic-session-discovery-"));
 		const agentDir = join(tempDir, "agent");
 		sessionsDir = join(agentDir, "sessions");
 		mkdirSync(sessionsDir, { recursive: true });
 		vi.stubEnv(ENV_AGENT_DIR, agentDir);
+		store = await JsonlSessionStore.open(sessionsDir);
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
+		await store.close();
 		vi.unstubAllEnvs();
 		rmSync(tempDir, { recursive: true, force: true });
 	});
@@ -44,7 +48,7 @@ describe("session discovery through linked project directories", () => {
 		const aliasDir = join(sessionsDir, "--linked--");
 		symlinkSync(targetDir, aliasDir, DIRECTORY_LINK_TYPE);
 
-		const sessions = await SessionManager.listAll();
+		const sessions = await SessionManager.listAll(store);
 
 		expect(sessions.map((session) => session.id)).toEqual(["linked"]);
 		expect(sessions[0]?.path).toBe(join(aliasDir, "linked.jsonl"));
@@ -57,7 +61,7 @@ describe("session discovery through linked project directories", () => {
 		symlinkSync(targetDir, join(sessionsDir, "--broken--"), DIRECTORY_LINK_TYPE);
 		rmSync(targetDir, { recursive: true });
 
-		const sessions = await SessionManager.listAll();
+		const sessions = await SessionManager.listAll(store);
 
 		expect(sessions.map((session) => session.id)).toEqual(["regular"]);
 	});
@@ -70,7 +74,7 @@ describe("session discovery through linked project directories", () => {
 		rmSync(targetFile, { recursive: true });
 		writeFileSync(targetFile, "");
 
-		const sessions = await SessionManager.listAll();
+		const sessions = await SessionManager.listAll(store);
 
 		expect(sessions.map((session) => session.id)).toEqual(["regular"]);
 	});

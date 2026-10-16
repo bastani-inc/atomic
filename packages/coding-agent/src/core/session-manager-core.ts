@@ -57,7 +57,6 @@ import {
 	generateId,
 	validateSessionFileEntries,
 } from "./session-manager-validation.ts";
-import { resolveSessionStore } from "./session-storage.js";
 import { listSessionStore } from "./session-store-list.js";
 import { type StorageFailureCause, StorageRollbackError } from "./storage/errors.js";
 import {
@@ -70,6 +69,11 @@ import {
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import { MemorySessionStore } from "./storage/session/memory-session-store.js";
 import type { SessionRecordHeader, SessionSnapshot, SessionStore } from "./storage/session/types.js";
+
+async function resolveSessionStore(cwd: string): Promise<SessionStore> {
+	// Selection loads settings and tools, which depend on the completed session module.
+	return (await import("./session-storage.js")).resolveSessionStore(cwd);
+}
 
 /** An in-memory session tree whose mutations await the backing store. */
 export class SessionManager {

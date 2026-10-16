@@ -9,6 +9,7 @@ import { KeybindingsManager } from "../src/core/keybindings.ts";
 import type { SessionHeader, SessionInfo, SessionListProgress } from "../src/core/session-manager.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
 import type { SessionSelectorComponent } from "../src/modes/interactive/components/session-selector.ts";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
@@ -77,21 +78,24 @@ describe("internal workflow sessions across resume surfaces", () => {
 	let dir: string;
 	let cwd: string;
 	let settingsManager: SettingsManager;
+	let selectedStore: JsonlSessionStore;
 
 	beforeAll(() => {
 		initTheme("dark");
 	});
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		dir = mkdtempSync(join(tmpdir(), "atomic-internal-resume-"));
 		cwd = join(dir, "project");
+		selectedStore = await JsonlSessionStore.open(dir, { exactDirectory: true });
 		settingsManager = SettingsManager.inMemory();
 		selectSessionImplementation = async () => null;
 		setKeybindings(new KeybindingsManager());
 		fullTranscriptReadTracking.paths.length = 0;
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
+		await selectedStore.close();
 		vi.restoreAllMocks();
 		rmSync(dir, { recursive: true, force: true });
 	});
@@ -169,6 +173,7 @@ describe("internal workflow sessions across resume surfaces", () => {
 				getSessionDir: () => dir,
 				getSessionId: () => "active-interactive",
 				usesDefaultSessionDir: () => false,
+				getSessionStore: (): ReturnType<SessionManager["getSessionStore"]> => selectedStore,
 			},
 			keybindings: new KeybindingsManager(),
 			ui: { requestRender: () => {} },
@@ -188,7 +193,7 @@ describe("internal workflow sessions across resume surfaces", () => {
 		expect((await all()).map((session) => session.id)).toEqual(["user-interactive"]);
 	});
 
-	it("the interactive /resume surface uses the default listAll overload for default storage", async () => {
+	it("the interactive /resume surface passes its selected store to the all-history loader", async () => {
 		let selector: SessionSelectorComponent | undefined;
 		const listAll = vi.spyOn(SessionManager, "listAll").mockResolvedValue([]);
 		const mode = {
@@ -197,6 +202,7 @@ describe("internal workflow sessions across resume surfaces", () => {
 				getSessionDir: () => dir,
 				getSessionId: () => "active-interactive",
 				usesDefaultSessionDir: () => true,
+				getSessionStore: (): ReturnType<SessionManager["getSessionStore"]> => selectedStore,
 			},
 			keybindings: new KeybindingsManager(),
 			ui: { requestRender: () => {} },
@@ -212,7 +218,7 @@ describe("internal workflow sessions across resume surfaces", () => {
 		const all = Reflect.get(selector!, "allSessionsLoader") as SessionsLoader;
 		const onProgress: SessionListProgress = () => {};
 		await all(onProgress);
-		expect(listAll).toHaveBeenCalledWith(onProgress);
+		expect(listAll).toHaveBeenCalledWith(selectedStore, onProgress);
 	});
 
 	it.each(["-r", "--resume"])("%s passes default-filtered loaders to the startup resume picker", async (flag) => {
@@ -250,20 +256,27 @@ describe("internal workflow sessions across resume surfaces", () => {
 	});
 
 	it("startup resume keeps duplicate IDs bound to the selected project's store", async () => {
-		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", join(dir, "agent"));
+		const foreignStore = await JsonlSessionStore.open(join(dir, "foreign-sessions"), { exactDirectory: true });
 		try {
-			await SessionManager.create(cwd, undefined, { id: "project-local-id" });
+			await SessionManager.create(selectedStore, cwd, { id: "project-local-id" });
 			const foreignCwd = join(dir, "foreign-project");
-			const selected = await SessionManager.create(foreignCwd, undefined, { id: "project-local-id" });
+			const selected = await SessionManager.create(foreignStore, foreignCwd, { id: "project-local-id" });
 			selectSessionImplementation = async (_current, all) =>
 				(await all()).find((session) => session.cwd === foreignCwd)!;
 			const { createSessionManager } = await import("../src/main-session.ts");
-			const resumed = await createSessionManager(parseArgs(["--resume"]), cwd, undefined, settingsManager);
+			const resumed = await createSessionManager(
+				parseArgs(["--resume"]),
+				cwd,
+				undefined,
+				settingsManager,
+				foreignStore,
+			);
 			assert.equal(resumed.getSessionId(), selected.getSessionId());
 			assert.equal(resumed.getSessionFile(), selected.getSessionFile());
 			assert.equal(resumed.getCwd(), foreignCwd);
+			assert.equal(resumed.getSessionStore(), foreignStore);
 		} finally {
-			vi.unstubAllEnvs();
+			await foreignStore.close();
 		}
 	});
 

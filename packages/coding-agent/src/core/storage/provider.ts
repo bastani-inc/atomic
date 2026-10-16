@@ -177,7 +177,8 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 	async openSessionStore(selection: StorageSelection, context: StorageOpenContext): Promise<SessionStore> {
 		return this.open<SessionStore>(selection, context, {
 			memory: async () => new (await import("./session/memory-session-store.js")).MemorySessionStore(),
-			jsonl: async (dir) => (await import("./session/jsonl-session-store.js")).JsonlSessionStore.open(dir),
+			jsonl: async (dir) =>
+				(await import("./session/jsonl-session-store.js")).JsonlSessionStore.open(dir, { exactDirectory: true }),
 			direct: (adapter, options, storage) => adapter.openSessionStore?.(options, context, storage),
 			sql: async (database, options) =>
 				(await import("./session/sql-session-store.js")).SqlSessionStore.open(database, options),

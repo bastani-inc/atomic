@@ -1,3 +1,5 @@
+import { dirname } from "node:path";
+import { canonicalizePath } from "../../utils/paths.ts";
 import { withHostProjectTrustPrompt } from "../interactive-engine/extension-ui-bridge.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
@@ -261,7 +263,11 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 			async (selected) => {
 				selector.dispose();
 				done();
-				await this.handleResumeSession(selected.id);
+				const directory =
+					this.sessionManager.getSessionStore().descriptor.adapter === "jsonl"
+						? dirname(selected.path)
+						: undefined;
+				await this.handleResumeSession(selected.id, undefined, directory);
 			},
 			() => {
 				selector.dispose();
@@ -281,11 +287,21 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 				renameSession: async (selected, nextName) => {
 					const next = (nextName ?? "").trim();
 					if (!next) return;
-					if (selected.id === this.sessionManager.getSessionId()) {
+					const store = this.sessionManager.getSessionStore();
+					const directory = store.descriptor.adapter === "jsonl" ? dirname(selected.path) : undefined;
+					if (
+						selected.id === this.sessionManager.getSessionId() &&
+						(directory === undefined ||
+							canonicalizePath(directory) === canonicalizePath(this.sessionManager.getSessionDir()))
+					) {
 						await this.session.setSessionName(next);
 					} else {
-						const mgr = await this.sessionManager.openSessionById(selected.id);
-						await mgr.appendSessionInfo(next);
+						const mgr = await this.sessionManager.openSessionById(selected.id, undefined, directory);
+						try {
+							await mgr.appendSessionInfo(next);
+						} finally {
+							if (mgr.getSessionStore() !== store) await mgr.getSessionStore().close();
+						}
 					}
 				},
 				showRenameHint: true,
