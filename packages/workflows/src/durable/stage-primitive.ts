@@ -471,6 +471,8 @@ function createCachedStageContext(
 	result?: string,
 	recorded?: void | Promise<void>,
 ): StageContext {
+	const persistence = Promise.resolve(recorded);
+	void persistence.catch(() => {});
 	const text = result ?? (typeof output === "string" ? output : JSON.stringify(output));
 	const unsupported = async (): Promise<never> => {
 		throw new Error(
@@ -480,11 +482,11 @@ function createCachedStageContext(
 	const cached = {
 		name,
 		async prompt() {
-			await recorded;
+			await persistence;
 			return output as Awaited<ReturnType<StageContext["prompt"]>>;
 		},
 		async complete() {
-			await recorded;
+			await persistence;
 			return text;
 		},
 		sendUserMessage: unsupported,

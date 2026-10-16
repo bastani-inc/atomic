@@ -161,6 +161,52 @@ All executable validation ran remotely. Formatting patches were replayed into th
 
 The retired recovery code, docs, changelog, schema and import constraints remain covered by the complete gates and prior source inspections. The only public journal contract change is the explicitly authorized deletion method and shared typed closed cause. Close stays idempotent; closed-state errors precede invalid arguments, while open-journal validation behavior is preserved.
 
+## Async journal review repair
+
+The next consolidated review confirmed the preceding repairs and identified two Promise-result defects. These rows and the final checks below supersede the prior readiness evidence for the changed paths.
+
+| Required behavior | Durable regression | Current result |
+| --- | --- | --- |
+| Delayed cached-stage prompt and complete observe metadata rejection immediately without losing the original typed failure. | `workflow-journal-async-results.test.ts` runs strict Node children through the built public SDK. | Four baseline children terminated with the original storage error; all four cases pass after containment and in final validation. |
+| An unused cached-stage handle and explicit exit cannot discard its already-started metadata write failure. | The same fixture checks workflow failure, one metadata write and no unhandled rejection for unused and exit branches. | Pass, including the complete unit gate. |
+| Valid cross-realm Promise results persist registration before reporting success and retain replay. | `workflow-journal-cross-realm.test.ts` runs shared conformance and backend execution against actual promises from `node:vm`. | Baseline conformance passed 15 cases, but backend registration failed with zero events and an unhandled lease error. All 16 cases pass after repair and in the complete unit gate. |
+
+The test authoring gate protects observable workflow completion and host survival, not internal method calls. Existing tests awaited cached-stage use immediately and used same-realm promises, so neither regression was covered. No production-only test seam or journal restriction is added.
+
+Cached handles immediately observe their one persistence result while preserving it for prompt and complete. The engine tracks those already-started writes in its existing completion and exit lifecycle; it does not defer writes or expose a new queue or flush API. Supervisor guidance on this containment pattern is implementation guidance, not a user amendment.
+
+The two new suites pass 20 tests together, and root TypeScript checking passes. The strict child cases assert zero unhandled rejections, the same typed error in prompt/complete, the original workflow error for all branches, one metadata write and one live callback across execution/replay. All three same-realm Promise checks in the backend were audited and replaced with callable-then detection; yielded results are normalized with `Promise.resolve` before execution continues. No public API or journal schema changes are made by this repair.
+
+| State or transition | Invariant and evidence |
+| --- | --- |
+| Cached handle created; metadata write pending | The write starts once and has an immediate rejection observer. Strict child checks one metadata append. |
+| Pending write rejects before handle use | Delayed prompt and complete rethrow the same stored typed error; the host emits no unhandled rejection. |
+| Rejected write; handle unused or workflow exits | Existing completion/exit finalization produces the storage failure, never successful completion. |
+| Cross-realm promise pending to fulfilled | Backend continuation waits for the fulfilled lease/write value; registration has a persisted RunStarted event and readable projection before success. |
+| Completed custom-journal execution to replay | Tool and stage callbacks each execute once across both runs. |
+
+### Final async repair validation
+
+All executable checks ran remotely. Production source remained unchanged after the complete suite snapshot. The fixture-only formatting replay was rechecked with its 20 focused cases and the complete check gate.
+
+| Command or scenario | Final result |
+| --- | --- |
+| `npm run build` | Pass |
+| `npm run check`, coding-agent `dist` moved aside and restored | Pass, including the post-format check |
+| `npm run test:unit` | 887 files, 10,137 tests passed; 25 existing skips |
+| `npm run test:integration` | 99 files, 1,198 tests passed; 2 files/12 existing skips; ES2022 consumer included |
+| `npm run test --workspace=@bastani/atomic` | 704 files, 6,190 tests passed; 5 files/52 existing skips |
+| `npm --prefix packages/coding-agent run docs:check` | 94 pages passed |
+| `npm run test:scripts` | 15 tests passed |
+| Focused async/default/review/conformance suites | 5 files, 77 tests passed |
+| Final two new suites after formatting replay | 2 files, 20 tests passed |
+| Adapted original reviewer stage scenario in strict Node | Zero unhandled rejections; failed workflow result; one callback across replay |
+| Built public SDK import with a resolver hook refusing `node:sqlite` | Pass |
+| Scoped Biome and fixture stdin-format comparison | Pass; replayed into the checkout |
+| Requested source keyword inventory | Identical to the prior complete inventory; retained in commit body |
+
+The first complete coding-agent attempt timed out in two unchanged SQLite-selector tests. Both files then passed 37 focused tests, and the complete suite passed without edits, exclusions, timeout changes or worker limits. The transient timeout cause was not established. An initial fixture-format comparison failed on whitespace; the formatter output was replayed and the final comparison passed. Existing informational Biome diagnostics remain unchanged; no warnings or errors block the check. No additional quality-CLI setup was attempted after the earlier bounded timeout.
+
 ## Contract amendments received
 
 User amendment received during review repair:
@@ -172,6 +218,8 @@ User amendment received during review repair:
 > draw on upstream pi-durable (@earendil-works/pi-durable, packages/durable) where relevant. Applied to this slice: since you're already extending registerRunJournalConformance for deleteOwnedRun, add the pi-durable storage-conformance cases our session-store suite already has but the run-journal suite lacks (packages/workflows/src/durable/journal/conformance.ts): (1) detachment: mutating an event payload or run header object after append/createRun, and mutating entries returned by read/readKey/listRuns, never changes stored data (re-read and compare); (2) after close(), every operation (including a second close, if the contract says close is idempotent then assert that instead) rejects with the journal's typed closed or storage error, never silently succeeding; (3) all-or-nothing: an append rejected by expectSeq CAS, a stale lease or a text-validation error leaves no partial row, seq gap or status change, and a failed deleteOwnedRun leaves the run and its events intact. Run them against both SqliteRunJournal and MemoryRunJournal. Use typed errors, and add a typed JournalClosedError only if none exists (reuse StorageUnavailableError semantics if that's what closed journals already raise, and keep it consistent across both journals). Don't copy pi-durable's single-process-owner model: Atomic needs leases and epochs because several processes share one journal file.
 
 The latter two user amendments authorize a changed public journal contract and additional conformance cases. The earlier deletion blocker is superseded by this authorization. Code and user guides describe the behavior without comparative implementation discussion.
+
+The latest reviewer artifacts also report a user-authored bounded-review amendment: blocking findings are limited to slice or binding-decision violations and reproduced correctness or data-loss defects in changed code, not hypothetical beyond-contract features or style. This is an inherited summary from reviewer traceability, not a verbatim quotation; exact source wording was unavailable in the current artifacts. Both Promise findings are reproduced correctness defects in changed code.
 
 | Amended requirement | Evidence | Status |
 | --- | --- | --- |

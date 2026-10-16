@@ -66,12 +66,16 @@ type BackendEvent =
 			DurableWorkflowHandle
 	  >;
 
+function isPromise<T>(value: T | Promise<T>): value is Promise<T> {
+	return typeof (value as Promise<T> | undefined)?.then === "function";
+}
+
 function* invoke<T>(action: () => T | Promise<T>): Operation<T> {
 	try {
 		const result = action();
-		if (!(result instanceof Promise)) return result;
+		if (!isPromise(result)) return result;
 		let value: T;
-		yield result.then((resolved) => {
+		yield Promise.resolve(result).then((resolved) => {
 			value = resolved;
 		});
 		return value!;
@@ -206,7 +210,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal & Syn
 		const prior = this.pending.get(runId);
 		if (prior !== undefined) return prior.then(() => this.serialize(runId, action));
 		const result = execute(action());
-		if (!(result instanceof Promise)) return result;
+		if (!isPromise(result)) return result;
 		const settled = result.then(
 			() => {},
 			() => {},
@@ -896,7 +900,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal & Syn
 		if (this.pending.size > 0) await Promise.all(this.pending.values());
 		try {
 			const released = execute(this.releaseAll());
-			if (released instanceof Promise) await released;
+			if (isPromise(released)) await released;
 		} finally {
 			this.closed = true;
 			if (this.ownsJournal) await execute(invoke(() => this.journal.close()));

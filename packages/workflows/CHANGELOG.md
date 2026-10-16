@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Removed `InMemoryDurableBackend` and `createInMemoryTestBackend`. Use `JournalDurableBackend` over `MemoryRunJournal` for an explicitly in-memory backend. Removed the `legacyRecovery` workflow-tool argument and remaining `workflows.durability` settings.
 - Removed the `@bastani/workflows` import alias; use `@bastani/atomic/workflows`.
 - Custom `RunJournal` implementations must provide `deleteOwnedRun(lease)` for atomic lease-fenced deletion.
+- Invocation records require `invocationFingerprint`.
 
 ### Added
 
@@ -42,6 +43,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Added `MemoryRunJournal`, public SQLite journal and error exports, and `registerRunJournalConformance` for shared journal contract checks.
+- Added `RunOpts.journal` types and `resolveRunJournal` for explicit journals, caller-owned SQLite connections, memory journals, and configurable files. Resolution prioritizes the explicit option, a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, then journal settings and the default path. Relative settings paths resolve against the Atomic home directory. Runtime wiring is deferred.
 
 ### Fixed
 

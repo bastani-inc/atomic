@@ -380,6 +380,8 @@ async function executeRun(
 		() => scheduler.rejectReleaseBarriers(ownController.signal.reason ?? new Error("atomic-workflows: run aborted")),
 		{ once: true },
 	);
+	const cachedStagePersistence: Promise<void>[] = [];
+	let cachedStageFailure: Error | undefined;
 	const finalizers = createRunFinalizers({
 		def,
 		runId,
@@ -387,8 +389,14 @@ async function executeRun(
 		activeStore,
 		opts,
 		classifyExecutorFailure,
-		drainWorkflowExitCleanups: exit.drainWorkflowExitCleanups,
-		assertSuccessfulCompletion: () => assertFrontierConsumed(),
+		drainWorkflowExitCleanups: async (reason) => {
+			await Promise.all(cachedStagePersistence);
+			await exit.drainWorkflowExitCleanups(reason);
+		},
+		assertSuccessfulCompletion: () => {
+			if (cachedStageFailure !== undefined) throw cachedStageFailure;
+			assertFrontierConsumed();
+		},
 	});
 	const checkpointIdGenerator = createCheckpointIdGenerator();
 	const stageReplayKeyGenerator = createStageReplayKeyGenerator(runId);
@@ -639,7 +647,15 @@ async function executeRun(
 	});
 	const recordCachedStage: typeof cachedStage.record = (...args) => {
 		ownController.signal.throwIfAborted();
-		return cachedStage.record(...args);
+		const recorded = cachedStage.record(...args);
+		if (recorded !== undefined) {
+			cachedStagePersistence.push(
+				Promise.resolve(recorded).catch((error: Error) => {
+					cachedStageFailure ??= error;
+				}),
+			);
+		}
+		return recorded;
 	};
 	const durableIntercomGroup = (replayKey: string, stageId: string | undefined): string | undefined => {
 		const stages = activeStore.runs().find((candidate) => candidate.id === runId)?.stages ?? [];
@@ -925,6 +941,8 @@ async function executeRun(
 			runWorkflowDefinitionCallback(def.name, runId, () => def.run(ctx)),
 			ownController.signal,
 		);
+		await Promise.all(cachedStagePersistence);
+		if (cachedStageFailure !== undefined) throw cachedStageFailure;
 		while (scheduler.isRunPaused()) await waitForRunRelease();
 		await admittedTools.closeAndDrain();
 		while (scheduler.isRunPaused()) await waitForRunRelease();
