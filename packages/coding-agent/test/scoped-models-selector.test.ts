@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { setKeybindings } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { KeybindingsManager, useWindowsKeybindings } from "../src/core/keybindings.ts";
+import { KeybindingsManager, useWindowsKeybindings } from "../src/core/keybindings.js";
 import { ScopedModelsSelectorComponent } from "../src/modes/interactive/components/scoped-models-selector.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
