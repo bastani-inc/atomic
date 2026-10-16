@@ -974,7 +974,8 @@ class IntercomBroker {
 						});
 						return;
 					}
-					this.pendingQuestions.record(from.info.id, target.info.id, pending.messageId);
+					if (!this.deliveredMessages.isQuestionAnswered(pending.messageId))
+						this.pendingQuestions.record(from.info.id, target.info.id, pending.messageId);
 					if (pending.resolveReplyTarget === true && pending.attemptId !== undefined)
 						writeMessageIfOpen(pending.senderSocket, { type: "question_target", messageId: pending.messageId, attemptId: pending.attemptId, sessionId: target.info.id });
 				}
@@ -1028,7 +1029,8 @@ class IntercomBroker {
 					});
 					return;
 				}
-				this.pendingQuestions.record(from.info.id, target.info.id, pending.messageId);
+				if (!this.deliveredMessages.isQuestionAnswered(pending.messageId))
+					this.pendingQuestions.record(from.info.id, target.info.id, pending.messageId);
 				if (pending.resolveReplyTarget === true && pending.attemptId !== undefined)
 					writeMessageIfOpen(pending.senderSocket, { type: "question_target", messageId: pending.messageId, attemptId: pending.attemptId, sessionId: target.info.id });
 			}
@@ -1091,8 +1093,8 @@ class IntercomBroker {
 		if (pending.message.expectsReply === true) {
 			this.pendingQuestions.record(from.info.id, target.info.id, pending.messageId);
 		}
-		if (pending.message.replyTo !== undefined) {
-			this.pendingQuestions.clearReply(from.info.id, target.info.id, pending.message.replyTo);
+		if (pending.message.replyTo !== undefined && this.pendingQuestions.clearReply(from.info.id, target.info.id, pending.message.replyTo)) {
+			this.deliveredMessages.settleQuestion(pending.message.replyTo);
 		}
 		writeMessageIfOpen(pending.senderSocket, {
 			type: "delivered",

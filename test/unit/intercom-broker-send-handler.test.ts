@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type net from "node:net";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import {
 	DELIVERED_MESSAGE_MAX_ENTRIES,
 	DeliveredMessageCache,
@@ -340,6 +340,67 @@ test("a deduplicated question rebinds only its accepted target and sender group 
 	)?.message;
 	assert.equal(payloadConflict?.type, "delivery_failed");
 });
+
+test.each(["delivery lookup", "reservation"] as const)(
+	"cached unanswered ask retry through %s delivers the first reply after sender reconnect (#3666)",
+	(cachedPath) => {
+		const asker = session("asker-old", "asker", {} as net.Socket, "stable-asker");
+		let target = session("target", "target", {} as net.Socket, "stable-target");
+		const originalTarget = target;
+		const sessions = new Map([
+			[asker.info.id, asker],
+			[target.info.id, target],
+		]);
+		const cache = new DeliveredMessageCache();
+		const pending = new PendingQuestionIndex();
+		const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
+		const send = (sender: BrokerConnectedSession, to: string, outgoing: Message, requirePendingReply = false) =>
+			handleBrokerSend(
+				sender.socket,
+				{ type: "send", to, message: outgoing, ...(requirePendingReply ? { requirePendingReply: true } : {}) },
+				sender.info.id,
+				sessions,
+				cache,
+				(socket, value) => {
+					writes.push({ socket, message: value });
+					return true;
+				},
+				new SupervisorChannelCache(),
+				pending,
+			);
+		const question = { ...message("reconnected-question"), expectsReply: true };
+		send(asker, target.info.id, question);
+		pending.pruneSender(asker.info.id);
+		sessions.delete(asker.info.id);
+		const reconnected = session("asker-new", "asker", {} as net.Socket, "stable-asker");
+		sessions.set(reconnected.info.id, reconnected);
+		sessions.delete(target.info.id);
+		target = session("target-new", "target", {} as net.Socket, "stable-target");
+		sessions.set(target.info.id, target);
+		if (cachedPath === "reservation") vi.spyOn(cache, "lookupForTarget").mockReturnValueOnce("miss");
+		send(reconnected, "target", question);
+		assert.equal(writes.at(-1)?.message.type, "delivered");
+		const reply = { ...message("reconnected-reply"), replyTo: question.id };
+		send(target, reconnected.info.id, reply, true);
+		assert.equal(writes.at(-1)?.message.type, "delivered");
+		assert.deepEqual(
+			writes.filter((entry) => entry.message.type === "message"),
+			[
+				{ socket: originalTarget.socket, message: { type: "message", from: asker.info, message: question } },
+				{ socket: reconnected.socket, message: { type: "message", from: target.info, message: reply } },
+			],
+		);
+		pending.pruneSender(reconnected.info.id);
+		sessions.delete(reconnected.info.id);
+		const afterAnswer = session("asker-after-answer", "asker", {} as net.Socket, "stable-asker");
+		sessions.set(afterAnswer.info.id, afterAnswer);
+		if (cachedPath === "reservation") vi.spyOn(cache, "lookupForTarget").mockReturnValueOnce("miss");
+		send(afterAnswer, "target", question);
+		assert.equal(writes.at(-1)?.message.type, "delivered");
+		send(target, afterAnswer.info.id, { ...reply, id: "second-reconnected-reply" }, true);
+		assert.equal(writes.at(-1)?.message.type, "delivery_failed");
+	},
+);
 
 test("logical target stays stable across recipient transport churn and preserves raw-alias conflicts", () => {
 	const senderSocket = {} as net.Socket;
@@ -1119,6 +1180,65 @@ test("broker records delivered questions and clears them only after routing the 
 	);
 	assert.deepEqual(pending.takeForTarget("target-exact"), []);
 });
+
+test.each(["delivery lookup", "reservation"] as const)(
+	"cached ask retry through %s does not reopen an answered reply route (#3666)",
+	(cachedPath) => {
+		const asker = session("asker", "asker", {} as net.Socket);
+		const target = session("target", "target", {} as net.Socket);
+		const sessions = new Map([
+			[asker.info.id, asker],
+			[target.info.id, target],
+		]);
+		const cache = new DeliveredMessageCache();
+		const pending = new PendingQuestionIndex();
+		const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
+		let targetWritable = false;
+		const send = (sender: BrokerConnectedSession, to: string, outgoing: Message, requirePendingReply = false) =>
+			handleBrokerSend(
+				sender.socket,
+				{ type: "send", to, message: outgoing, ...(requirePendingReply ? { requirePendingReply: true } : {}) },
+				sender.info.id,
+				sessions,
+				cache,
+				(socket, value) => {
+					if (socket === target.socket && !targetWritable) return false;
+					writes.push({ socket, message: value });
+					return true;
+				},
+				new SupervisorChannelCache(),
+				pending,
+			);
+		const question = { ...message("question"), expectsReply: true };
+		send(asker, target.info.id, question);
+		assert.equal(writes.at(-1)?.message.type, "delivery_failed");
+		assert.equal(pending.matchesReply(target.info.id, asker.info.id, question.id), false);
+		targetWritable = true;
+		send(asker, target.info.id, question);
+		assert.equal(pending.matchesReply(target.info.id, asker.info.id, question.id), true);
+		send(asker, target.info.id, question);
+		assert.equal(writes.at(-1)?.message.type, "delivered");
+		assert.equal(pending.matchesReply(target.info.id, asker.info.id, question.id), true);
+		send(target, asker.info.id, { ...message("reply-1"), replyTo: question.id }, true);
+		assert.equal(writes.at(-1)?.message.type, "delivered");
+		assert.equal(pending.matchesReply(target.info.id, asker.info.id, question.id), false);
+		if (cachedPath === "reservation") vi.spyOn(cache, "lookupForTarget").mockReturnValueOnce("miss");
+		send(asker, target.info.id, question);
+		assert.equal(writes.at(-1)?.message.type, "delivered");
+		assert.equal(pending.matchesReply(target.info.id, asker.info.id, question.id), false);
+		send(target, asker.info.id, { ...message("reply-2"), replyTo: question.id }, true);
+		const failure = writes.at(-1)?.message;
+		assert.equal(failure?.type, "delivery_failed");
+		if (failure?.type === "delivery_failed") assert.match(failure.reason, /Pending question route/);
+		assert.deepEqual(
+			writes.filter((entry) => entry.message.type === "message").map((entry) => entry.message),
+			[
+				{ type: "message", from: asker.info, message: question },
+				{ type: "message", from: target.info, message: { ...message("reply-1"), replyTo: question.id } },
+			],
+		);
+	},
+);
 
 test("explicit reply recipient binding is validated, retained in authority, and cannot queue", () => {
 	const sender = session("sender", "sender", {} as net.Socket);

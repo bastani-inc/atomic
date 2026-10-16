@@ -400,7 +400,8 @@ export function handleBrokerSend(
 				});
 				return;
 			}
-			pendingQuestions.record(fromSession.info.id, target.info.id, message.id);
+			if (!deliveredMessages.isQuestionAnswered(message.id))
+				pendingQuestions.record(fromSession.info.id, target.info.id, message.id);
 			if (clientMessage.resolveReplyTarget === true && attemptId !== undefined)
 				write(socket, { type: "question_target", messageId: message.id, attemptId, sessionId: target.info.id });
 		}
@@ -493,7 +494,8 @@ export function handleBrokerSend(
 			});
 			return;
 		}
-		if (message.expectsReply === true) pendingQuestions.record(fromSession.info.id, target.info.id, message.id);
+		if (message.expectsReply === true && !deliveredMessages.isQuestionAnswered(message.id))
+			pendingQuestions.record(fromSession.info.id, target.info.id, message.id);
 		if (message.expectsReply === true && clientMessage.resolveReplyTarget === true && attemptId !== undefined)
 			write(socket, { type: "question_target", messageId: message.id, attemptId, sessionId: target.info.id });
 		write(socket, { type: "delivered", messageId: message.id, attemptId });
@@ -552,8 +554,8 @@ export function handleBrokerSend(
       if (message.expectsReply === true) {
         pendingQuestions.record(fromSession.info.id, target.info.id, message.id);
 	  }
-      if (message.replyTo !== undefined) {
-        pendingQuestions.clearReply(fromSession.info.id, target.info.id, message.replyTo);
+      if (message.replyTo !== undefined && pendingQuestions.clearReply(fromSession.info.id, target.info.id, message.replyTo)) {
+        deliveredMessages.settleQuestion(message.replyTo);
       }
       if (supervisorSend) supervisorCache.record(message.id, fromSession.info.id, target.info.id);
       write(socket, { type: "delivered", messageId: message.id, attemptId });
