@@ -269,10 +269,15 @@ export class SessionManager {
 			store = await JsonlSessionStore.open(join(getAgentDir(), "sessions"), { scanExisting: false });
 			snapshot = await store.load(sessionId);
 		}
+		const location = store instanceof JsonlSessionStore ? await store.findFile(sessionId) : undefined;
+		if (location !== undefined) {
+			store = await JsonlSessionStore.open(dirname(location), { exactDirectory: true, scanExisting: false });
+			snapshot = await store.load(sessionId);
+		}
 		if (snapshot.header.id !== sessionId) throw new SessionIdMismatchError(sessionId, snapshot.header.id);
 		const manager = new SessionManager(store, cwdOverride ?? snapshot.header.cwd, this.sessionDir);
-		manager.restore(snapshot, store instanceof JsonlSessionStore ? await store.findFile(sessionId) : undefined);
-		if (manager.sessionFile) manager.sessionDir = dirname(manager.sessionFile);
+		manager.restore(snapshot, location);
+		if (location !== undefined) manager.sessionDir = dirname(location);
 		return manager;
 	}
 

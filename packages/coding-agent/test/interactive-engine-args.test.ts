@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
@@ -54,3 +54,35 @@ test.each(["", "shared-engine-id"])("engine startup resumes ID %j from the selec
 		rmSync(cwd, { recursive: true, force: true });
 	}
 });
+
+test.each(["", "imported-engine-id"])(
+	"engine imports unsaved context with ID %j without creating session storage (#3683)",
+	async (id) => {
+		const cwd = mkdtempSync(join(tmpdir(), "engine-args-import-"));
+		const directory = join(cwd, "unsaved-sessions");
+		const source = await JsonlSessionStore.open(join(cwd, "exports"), { exactDirectory: true });
+		const header = { id, version: 4 as const, createdAt: new Date().toISOString(), cwd };
+		try {
+			await source.create(header, []);
+			const exported = await SessionManager.open(source, id);
+			await exported.appendMessage({ role: "user", content: "remember this imported context", timestamp: 1 });
+			const path = exported.getSessionFile()!;
+			const original = readFileSync(path, "utf8");
+			const parsed = parseArgs(["--no-session", "--session-dir", directory, "--import", path]);
+			const host = await createSessionManager(parsed, cwd, directory, SettingsManager.inMemory());
+			const childArgs = parseArgs(buildInteractiveEngineArgs(parsed, host, {}));
+			const child = await createSessionManager(childArgs, cwd, childArgs.sessionDir, SettingsManager.inMemory());
+			assert.deepEqual(child.buildSessionContext().messages, exported.buildSessionContext().messages);
+			assert.equal(child.getSessionId(), id);
+			assert.equal(host.isPersisted(), false);
+			assert.equal(child.isPersisted(), false);
+			assert.equal(child.getSessionFile(), undefined);
+			await child.appendMessage({ role: "user", content: "still unsaved", timestamp: 2 });
+			assert.equal(existsSync(directory), false);
+			assert.equal(readFileSync(path, "utf8"), original);
+		} finally {
+			await source.close();
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	},
+);

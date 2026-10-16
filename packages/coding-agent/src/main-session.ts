@@ -68,6 +68,31 @@ async function promptConfirm(message: string): Promise<boolean> {
 	});
 }
 
+export class SessionSelectorConflictError extends Error {
+	readonly code = "SessionSelectorConflict";
+	readonly conflictingFlags: readonly string[];
+
+	constructor(conflictingFlags: readonly string[]) {
+		super(
+			`--import cannot be combined with ${conflictingFlags.join(", ")}. Use --import alone, optionally with --no-session or --session-dir.`,
+		);
+		this.name = "SessionSelectorConflictError";
+		this.conflictingFlags = conflictingFlags;
+	}
+}
+
+export function validateImportFlags(parsed: Args): void {
+	if (parsed.import === undefined) return;
+	const conflictingFlags = [
+		parsed.session !== undefined ? "--session" : undefined,
+		parsed.fork !== undefined ? "--fork" : undefined,
+		parsed.sessionId !== undefined ? "--session-id" : undefined,
+		parsed.continue ? "--continue" : undefined,
+		parsed.resume ? "--resume" : undefined,
+	].filter((flag): flag is string => flag !== undefined);
+	if (conflictingFlags.length > 0) throw new SessionSelectorConflictError(conflictingFlags);
+}
+
 export function validateForkFlags(parsed: Args): void {
 	if (parsed.fork === undefined) return;
 
@@ -153,6 +178,7 @@ export async function createSessionManager(
 	sessionDir: string | undefined,
 	settingsManager: SettingsManager,
 ): Promise<SessionManager> {
+	validateImportFlags(parsed);
 	if (parsed.noSession) {
 		const manager = SessionManager.inMemory(
 			cwd,

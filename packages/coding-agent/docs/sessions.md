@@ -28,6 +28,8 @@ For UUID-backed sessions, `--session` and `--fork` accept either the full UUID o
 
 Session locations are for display, not selection. Use `--import <file>` or `/import <file>` to copy a format-4 JSONL export into the selected store. The session ID and entries are preserved. An ID already present in that store raises `SessionExistsError`; importing never replaces an existing session. Older session formats are not accepted.
 
+Use `atomic --no-session --import <file>` to work with an imported conversation without saving it. `--import` cannot be combined with `--session`, `--fork`, `--session-id`, `--continue`, or `--resume`; choose one way to select the conversation. `--session-dir` remains available when importing into a persistent store.
+
 Imported IDs are kept verbatim, including an empty ID. Resume an imported empty ID with `atomic --session ""` or choose its row in the session picker. Picker actions stay bound to the selected project's store even when another project uses the same ID.
 
 ### Custom session directories

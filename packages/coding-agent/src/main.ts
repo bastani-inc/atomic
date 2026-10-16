@@ -89,7 +89,9 @@ import {
 	applyInheritedWorkflowSessionClassification,
 	createSessionManager,
 	promptForMissingSessionCwd,
+	SessionSelectorConflictError,
 	validateForkFlags,
+	validateImportFlags,
 	validateSessionIdFlags,
 } from "./main-session.ts";
 import { buildSessionOptions } from "./main-session-options.ts";
@@ -370,6 +372,13 @@ export async function main(argv: string[], options?: MainOptions) {
 		process.exit(1);
 	}
 
+	try {
+		validateImportFlags(parsed);
+	} catch (error) {
+		if (!(error instanceof SessionSelectorConflictError)) throw error;
+		console.error(chalk.red(`Error: ${error.message}`));
+		process.exit(1);
+	}
 	validateForkFlags(parsed);
 	validateSessionIdFlags(parsed);
 

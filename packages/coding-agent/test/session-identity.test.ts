@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerSessionResourceCleanup } from "@bastani/pi-ai/compat";
@@ -7,7 +7,7 @@ import { setKeybindings } from "@earendil-works/pi-tui";
 import { afterEach, test, vi } from "vitest";
 import { parseArgs } from "../src/cli/args.ts";
 import { ENV_AGENT_DIR } from "../src/config.js";
-import type { AgentSession } from "../src/core/agent-session.ts";
+import type { AgentSession } from "../src/core/agent-session.js";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
@@ -64,6 +64,69 @@ test("CLI imports a JSONL export into configured storage with its immutable ID a
 	assert.deepEqual((await imported.openSessionById(source.getSessionId())).getEntries(), source.getEntries());
 	await assert.rejects(imported.importFromJsonl(source.getSessionFile()!), SessionExistsError);
 });
+
+test.each([
+	["--session", "source"],
+	["--fork", "source"],
+	["--session-id", "target"],
+	["--continue"],
+	["--resume"],
+	["--fork", "source", "--session-id", "target"],
+	["--session", ""],
+	["--fork", ""],
+	["--session-id", ""],
+])("CLI rejects import selectors %j before writing storage (#3683)", async (...selectors) => {
+	const { cwd, directory } = fixture();
+	const source = await SessionManager.create(cwd, join(cwd, "exports"), { id: "source" });
+	const flags = selectors.filter((value) => value.startsWith("--"));
+	for (const memory of [false, true]) {
+		await assert.rejects(
+			createSessionManager(
+				parseArgs(["--import", source.getSessionFile()!, ...selectors, ...(memory ? ["--no-session"] : [])]),
+				cwd,
+				directory,
+				SettingsManager.inMemory(),
+			),
+			{
+				name: "SessionSelectorConflictError",
+				code: "SessionSelectorConflict",
+				message: `--import cannot be combined with ${flags.join(", ")}. Use --import alone, optionally with --no-session or --session-dir.`,
+			},
+		);
+		assert.equal(existsSync(directory), false);
+	}
+});
+
+test(
+	"CLI reports import conflicts before opening the source (#3683)",
+	async () => {
+		const { cwd, directory } = fixture();
+		const result = await runCliProcess(
+			[
+				"--no-session",
+				"--session-dir",
+				directory,
+				"--import",
+				"missing.jsonl",
+				"--fork",
+				"source",
+				"--session-id",
+				"target",
+				"-p",
+				"unused",
+			],
+			{ cwd, env: { ...process.env, [ENV_AGENT_DIR]: join(cwd, "agent"), FORCE_COLOR: "0", ATOMIC_OFFLINE: "1" } },
+		);
+		assert.equal(result.timedOut, false);
+		assert.equal(result.code, 1);
+		assert.equal(
+			result.stderr.trim(),
+			"Error: --import cannot be combined with --fork, --session-id. Use --import alone, optionally with --no-session or --session-dir.",
+		);
+		assert.equal(existsSync(directory), false);
+	},
+	REAL_RPC_IDENTITY_TIMEOUT_MS,
+);
 
 test("JSONL import writes into an explicitly selected memory store", async () => {
 	const { cwd, directory } = fixture();

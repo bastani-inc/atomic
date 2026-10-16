@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@bastani/pi-ai/compat";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMemoryTestBackend as createInMemoryTestBackend } from "../../../test/helpers/workflow-journal.js";
 import { workflow } from "../../workflows/src/authoring/workflow.js";
 import { makeMcpPort } from "../../workflows/src/extension/workflow-ports.js";
 import { run } from "../../workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../workflows/src/shared/store.js";
+import { ENV_AGENT_DIR } from "../src/config.js";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
@@ -130,6 +131,32 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 
 		return { runtimeHost, faux, createRuntime };
 	}
+
+	it("keeps later duplicate-ID switches and renames in the resolved project (#3683)", async () => {
+		const root = mkdtempSync(join(tmpdir(), "runtime-store-scope-"));
+		vi.stubEnv(ENV_AGENT_DIR, join(root, "agent"));
+		cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+		try {
+			const { runtimeHost } = await createRuntimeHost(() => {});
+			const projectA = runtimeHost.session.sessionManager.getCwd();
+			const projectB = join(projectA, "zzz-project-b");
+			mkdirSync(projectB);
+			const local = await SessionManager.create(projectA, undefined, { id: "shared-conversation" });
+			const foreign = await SessionManager.create(projectB, undefined, { id: "shared-conversation" });
+			const entry = await SessionManager.create(projectB, undefined, { id: "enter-project-b" });
+			await local.appendMessage({ role: "user", content: "project A transcript", timestamp: 1 });
+			await foreign.appendMessage({ role: "user", content: "project B transcript", timestamp: 1 });
+			assert.deepEqual(await runtimeHost.switchSession(entry.getSessionId()), { cancelled: false });
+			assert.equal(runtimeHost.session.sessionManager.getSessionDir(), entry.getSessionDir());
+			assert.deepEqual(await runtimeHost.switchSession(foreign.getSessionId()), { cancelled: false });
+			assert.deepEqual(runtimeHost.session.messages, foreign.buildSessionContext().messages);
+			await runtimeHost.session.setSessionName("renamed in project B");
+			assert.equal((await foreign.openSessionById(foreign.getSessionId())).getSessionName(), "renamed in project B");
+			assert.equal((await local.openSessionById(local.getSessionId())).getSessionName(), undefined);
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
 
 	// #3105: disposal waits for the active provider turn's abort settlement.
 	it("public disposal aborts an active provider without starting another turn", async () => {
