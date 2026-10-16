@@ -159,7 +159,7 @@ function updateCodexWebSocketRoutingState(
 	tier: ModelFastRoute["serviceTier"],
 	closeWebSocketSessions: CloseCodexWebSocketSessions,
 ): void {
-	// Provider caches require a non-empty key; closing an empty key would close every cached session.
+	// Provider caches require a non-empty key; empty session identities have no cached sockets to close.
 	if (options.transport === "sse" || !options.sessionId) return;
 	const signature = `${model.provider}\0${model.baseUrl}\0${codexEnvironmentScope(options.env)}\0${tier ? `${tier}:${routedModel}` : "normal"}`;
 	const previous = codexWebSocketRoutingState.get(options.sessionId);

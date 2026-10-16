@@ -2174,6 +2174,83 @@ describe("openai-codex streaming", () => {
 		});
 	});
 
+	it("keeps cached websockets open for an empty close key while preserving keyed and close-all cleanup", async () => {
+		const sockets: MockWebSocket[] = [];
+		let responseId = 0;
+
+		class MockWebSocket extends EventTarget {
+			readyState = 1;
+
+			constructor() {
+				super();
+				sockets.push(this);
+				queueMicrotask(() => this.dispatchEvent(new Event("open")));
+			}
+
+			send(): void {
+				queueMicrotask(() =>
+					this.dispatchEvent(
+						new MessageEvent<string>("message", {
+							data: JSON.stringify({
+								type: "response.completed",
+								response: {
+									id: `resp_${++responseId}`,
+									status: "completed",
+									usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+								},
+							}),
+						}),
+					),
+				);
+			}
+
+			close(): void {
+				this.readyState = 3;
+			}
+		}
+
+		vi.stubGlobal("WebSocket", MockWebSocket);
+		const model: Model<"openai-codex-responses"> = {
+			id: "gpt-5.1-codex",
+			name: "GPT-5.1 Codex",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 400000,
+			maxTokens: 128000,
+		};
+		const context = normalizeContext({ systemPrompt: "", messages: [] });
+		const request = async (sessionId: string, accountId: string) => {
+			const result = await streamOpenAICodexResponses(model, context, {
+				apiKey: mockToken(accountId),
+				sessionId,
+				transport: "websocket-cached",
+			}).result();
+			assert.equal(result.stopReason, "stop", result.errorMessage);
+		};
+		await request("session-a", "account-a");
+		await request("session-a", "account-b");
+		await request("session-b", "account-a");
+		assert.equal(sockets.length, 3);
+		assert.deepEqual(sockets.map((socket) => socket.readyState), [1, 1, 1]);
+
+		closeOpenAICodexWebSocketSessions("");
+		assert.deepEqual(sockets.map((socket) => socket.readyState), [1, 1, 1]);
+		await request("session-a", "account-a");
+		await request("session-b", "account-a");
+		assert.equal(sockets.length, 3);
+
+		closeOpenAICodexWebSocketSessions("missing-session");
+		assert.deepEqual(sockets.map((socket) => socket.readyState), [1, 1, 1]);
+		closeOpenAICodexWebSocketSessions("session-a");
+		assert.deepEqual(sockets.map((socket) => socket.readyState), [3, 3, 1]);
+		closeOpenAICodexWebSocketSessions();
+		assert.deepEqual(sockets.map((socket) => socket.readyState), [3, 3, 3]);
+	});
+
 	it("closes one-shot websockets when cacheRetention is none", async () => {
 		const token = mockToken();
 		const sentBodies: Array<{ prompt_cache_key?: string }> = [];

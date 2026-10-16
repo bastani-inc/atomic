@@ -1017,12 +1017,13 @@ export function resetOpenAICodexWebSocketDebugStats(sessionId?: string): void {
 	websocketSseFallbackSessions.clear();
 }
 
+/** Close one session's cached sockets; omit sessionId to close all. An empty key is a no-op. */
 export function closeOpenAICodexWebSocketSessions(sessionId?: string): void {
 	const closeEntry = (entry: CachedWebSocketConnection) => {
 		if (entry.idleTimer) clearTimeout(entry.idleTimer);
 		closeWebSocketSilently(entry.socket, 1000, "debug_close");
 	};
-	if (sessionId) {
+	if (sessionId !== undefined) {
 		for (const entry of websocketSessionCache.get(sessionId)?.values() ?? []) closeEntry(entry);
 		websocketSessionCache.delete(sessionId);
 		return;
