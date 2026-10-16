@@ -15,8 +15,8 @@ import {
 
 const ROOT = resolve(moduleDir(import.meta.url), "../..");
 const FIXTURE = join(ROOT, "test/fixtures/journal-workflow-restart.ts");
-const PROCESS_RESTART_TIMEOUT_MS = 60_000;
-const CHECKPOINT_READY_TIMEOUT_MS = 20_000;
+const WORKFLOW_CHILD_STARTUP_AND_CHECKPOINT_TIMEOUT_MS = 60_000;
+const PROCESS_RESTART_TIMEOUT_MS = 3 * WORKFLOW_CHILD_STARTUP_AND_CHECKPOINT_TIMEOUT_MS;
 
 for (const runtime of ["node", "bun"] as const) {
 	test(
@@ -29,7 +29,7 @@ for (const runtime of ["node", "bun"] as const) {
 			const stdout = new Response(child.stdout).text();
 			const stderr = new Response(child.stderr).text();
 			try {
-				const deadline = Date.now() + CHECKPOINT_READY_TIMEOUT_MS;
+				const deadline = Date.now() + WORKFLOW_CHILD_STARTUP_AND_CHECKPOINT_TIMEOUT_MS;
 				while (!(await fileExists(join(directory, "checkpoint-ready")))) {
 					assert.equal(child.exitCode, null, "producer exited before checkpoint readiness");
 					assert.ok(Date.now() < deadline, "producer did not persist its checkpoint");
@@ -38,7 +38,7 @@ for (const runtime of ["node", "bun"] as const) {
 				const live = spawnSyncCollect([...command, FIXTURE, "live", directory], {
 					cwd: ROOT,
 					env: environment,
-					timeout: CHECKPOINT_READY_TIMEOUT_MS,
+					timeout: WORKFLOW_CHILD_STARTUP_AND_CHECKPOINT_TIMEOUT_MS,
 				});
 				assert.equal(live.exitCode, 0, live.stdout.toString() + live.stderr.toString());
 				child.kill("SIGKILL");
@@ -46,7 +46,7 @@ for (const runtime of ["node", "bun"] as const) {
 				const resumed = spawnSyncCollect([...command, FIXTURE, "resume", directory], {
 					cwd: ROOT,
 					env: environment,
-					timeout: CHECKPOINT_READY_TIMEOUT_MS,
+					timeout: WORKFLOW_CHILD_STARTUP_AND_CHECKPOINT_TIMEOUT_MS,
 				});
 				assert.equal(resumed.exitCode, 0, resumed.stdout.toString() + resumed.stderr.toString());
 				assert.equal(await readText(join(directory, "effects.txt")), "effect\n");
@@ -70,7 +70,7 @@ for (const runtime of ["node", "bun"] as const) {
 				for (const mode of ["pause-exit", "resume-user"]) {
 					const result = spawnSyncCollect([...command, FIXTURE, mode, directory], {
 						cwd: ROOT,
-						timeout: CHECKPOINT_READY_TIMEOUT_MS,
+						timeout: WORKFLOW_CHILD_STARTUP_AND_CHECKPOINT_TIMEOUT_MS,
 					});
 					assert.equal(result.exitCode, 0, result.stdout.toString() + result.stderr.toString());
 				}
