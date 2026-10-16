@@ -31,7 +31,7 @@ export function ensureWorkflowSummaryService(store: Store, context: WorkflowSumm
 			store,
 			resolveContext: () => services.get(store)?.context ?? context,
 			persist: async (runId, summary, summarizedThrough) => {
-				await availableStoreDurableBackend(store)?.persistSummary?.(runId, summary, summarizedThrough);
+				await availableStoreDurableBackend(store, runId)?.persistSummary?.(runId, summary, summarizedThrough);
 				store.recordRunSummary?.(runId, summary, summarizedThrough);
 			},
 		}),

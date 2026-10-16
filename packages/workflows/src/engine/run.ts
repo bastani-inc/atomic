@@ -3,6 +3,7 @@ import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
 import { initializeDurableBackend } from "../durable/factory.js";
 import { JournalDurableBackend } from "../durable/journal/journal-backend.js";
+import { bindRunDurableBackend } from "../durable/run-owner-backend.js";
 import { inheritedRunElapsedMs, priorRunAccounting, recordRunTimingCheckpointAsync } from "../durable/run-timing.js";
 import { ScopedDurableBackend } from "../durable/scoped-backend.js";
 import {
@@ -139,9 +140,14 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	const runId = opts.runId ?? crypto.randomUUID();
 	const activeStore = opts.store ?? defaultStore;
 	const preset =
-		opts.durableBackend ?? (opts.journal === undefined ? availableStoreDurableBackend(activeStore) : undefined);
+		opts.durableBackend ??
+		(opts.journal === undefined
+			? availableStoreDurableBackend(activeStore, opts.continuation?.source.id ?? runId)
+			: undefined);
 	const backend = preset ?? (await initializeDurableBackend({ journal: opts.journal, cwd: opts.cwd }));
-	if (opts.parentRun === undefined) bindStoreDurableBackend(activeStore, backend);
+	if (opts.parentRun === undefined && opts.journal === undefined && opts.durableBackend === undefined) {
+		bindStoreDurableBackend(activeStore, backend);
+	}
 	const execute = () =>
 		executeRun(def, resolvedInputs, { ...opts, store: activeStore, runId, durableBackend: backend });
 	return opts.parentRun === undefined && backend instanceof JournalDurableBackend
@@ -296,6 +302,7 @@ async function executeRun(
 		...(budgetSnapshot !== undefined ? { budget: budgetSnapshot } : {}),
 		...(continuationBudgetState !== undefined ? { budgetState: continuationBudgetState } : {}),
 	};
+	if (opts.parentRun === undefined) bindRunDurableBackend(runSnapshot, rootBackend);
 	const usageTree = (): RunUsageTree => {
 		const snapshots = activeStore.runs();
 		const childrenByParent = new Map<string, RunSnapshot[]>();

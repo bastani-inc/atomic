@@ -15,6 +15,7 @@ import { type DurableWorkflowBackend, resumableEntryFromHandle } from "../durabl
 import { initializeDurableBackend } from "../durable/factory.js";
 import type { RunJournalOption } from "../durable/journal/resolution.js";
 import { resumeDurableWorkflow } from "../durable/resume-runtime.js";
+import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
 import { availableStoreDurableBackend, bindStoreDurableBackend } from "../durable/store-backend.js";
 import { resolveToolResumeFrontier } from "../durable/tool-resume-frontier.js";
 import { currentToolControlRegistry, type ToolControlRegistry } from "../engine/run-tool-control-registry.js";
@@ -320,7 +321,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 		if (def === undefined) {
 			return { ok: false, reason: "workflow_not_found", message: `workflow_not_found: ${source.name}` };
 		}
-		const backend = await ensureReady();
+		const backend = availableRunDurableBackend(activeStore.runs(), sourceRunId) ?? (await ensureReady());
 		const resolvedStage = resolveResumeStage(source, backend, stageId);
 		if (!resolvedStage.ok) {
 			return { ok: false, reason: "insufficient_state", message: resolvedStage.message };

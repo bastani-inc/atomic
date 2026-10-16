@@ -77,8 +77,9 @@ test("standalone SDK surfaces the configured journal open failure", async () => 
 test("explicit memory SDK runs do not initialize a persistent journal", async () => {
 	process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = directory;
 	const store = createStore();
-	assert.equal((await run(definition, {}, { store, journal: { memory: true } })).status, "completed");
-	assert.equal(requireStoreDurableBackend(store).persistent, false);
+	const result = await run(definition, {}, { store, journal: { memory: true } });
+	assert.equal(result.status, "completed");
+	assert.equal(requireStoreDurableBackend(store, result.runId).persistent, false);
 });
 
 for (const outcome of ["success", "failure", "stop", "quit"] as const) {

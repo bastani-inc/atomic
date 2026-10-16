@@ -24,12 +24,12 @@ export function workflowCaller(ctx: Pick<PiExecuteContext, "sessionId" | "sessio
 /** Admission metadata, not the disposable routing reservation, owns a live or retained instance. */
 export function assertWorkflowInstanceOwner(id: string, ctx: PiExecuteContext, store: Store): void {
 	const runs = store.runs();
-	const backend = requireStoreDurableBackend(store);
 	const seen = new Set<string>();
 	const assertOne = (runId: string): void => {
 		if (seen.has(runId)) return;
 		seen.add(runId);
 		const local = runs.find((run) => run.id === runId);
+		const backend = requireStoreDurableBackend(store, runId);
 		const durable = backend.getWorkflow(runId);
 		const modelOwner = durable?.modelOwner ?? local?.modelOwner;
 		if (modelOwner !== undefined) {

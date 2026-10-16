@@ -570,6 +570,8 @@ Relative settings paths resolve against the Atomic home directory, normally `~/.
 
 To keep workflow records only in memory, set `"journal": { "memory": true }`. Do not combine `memory: true` with a non-empty `path`. Memory must be selected explicitly and cannot recover runs after the process exits; an environment path still takes precedence over this setting.
 
+Project `workflows.journal` replaces the global journal block as a whole. For example, a project can select `{ "memory": true }` over a global path, or a project path over global memory. Within either settings file, combining `memory: true` with a non-empty `path` is still an error.
+
 Changing the journal selects a different run history. Preserve the original file to inspect or resume its runs. Storage needs no separate server. If the selected journal cannot be opened or written, the action fails with a typed storage error rather than selecting memory. Restore filesystem access and inspect the retained run before retrying. See [Durable workflows](/workflows/operations#durable-workflows-and-cross-session-resume).
 
 #### packages

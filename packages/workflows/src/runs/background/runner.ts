@@ -193,9 +193,14 @@ export function runDetached<TInputs extends WorkflowInputValues, TRunInputs exte
 	try {
 		backgroundPromise = (async () => {
 			const preset =
-				opts.durableBackend ?? (opts.journal === undefined ? availableStoreDurableBackend(store) : undefined);
+				opts.durableBackend ??
+				(opts.journal === undefined
+					? availableStoreDurableBackend(store, opts.continuation?.source.id ?? runId)
+					: undefined);
 			const backend = preset ?? (await initializeDurableBackend({ journal: opts.journal, cwd: opts.cwd }));
-			if (opts.parentRun === undefined) bindStoreDurableBackend(store, backend);
+			if (opts.parentRun === undefined && opts.journal === undefined && opts.durableBackend === undefined) {
+				bindStoreDurableBackend(store, backend);
+			}
 			const execute = async (): Promise<RunResult> => {
 				try {
 					const result = await syncRun(def, inputs, { ...execOpts, durableBackend: backend });

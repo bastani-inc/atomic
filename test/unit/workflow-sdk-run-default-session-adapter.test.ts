@@ -237,7 +237,7 @@ test("standalone SDK adapter reports an unavailable string model without a TypeE
 	}
 });
 
-test("SDK run without an explicit store binds the adopted scope used by pending delivery (#3674)", async () => {
+test("SDK run without an explicit store keeps its journal with the root in the adopted scope (#3674)", async () => {
 	setDurableBackend(undefined);
 	const cwd = makeTempDirectory("atomic-sdk-adopted-store-");
 	const firstScope = {};
@@ -266,8 +266,8 @@ test("SDK run without an explicit store binds the adopted scope used by pending 
 							await delivery.deliverPending((_from, message) => {
 								delivered.push(message.id);
 							});
-							const backend = requireStoreDurableBackend(store);
-							assert.equal(requireStoreDurableBackend(adoptedStore), backend);
+							const backend = requireStoreDurableBackend(store, meta.runId);
+							assert.equal(requireStoreDurableBackend(adoptedStore, meta.runId), backend);
 							assert.equal(backend.getWorkflow(meta.runId)?.workflowId, meta.runId);
 							const group = `workflow:${meta.runId}`;
 							const queued = await store.queueStageMessage(

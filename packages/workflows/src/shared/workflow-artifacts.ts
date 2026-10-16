@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { getAgentDir, getEnvValue } from "@bastani/atomic";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { type WorkflowRunResumeCandidate, workflowRunHasPausedState } from "../durable/resume-eligibility.js";
+import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
 import { requireStoreDurableBackend } from "../durable/store-backend.js";
 import { store } from "./store.js";
 import type { RunSnapshot } from "./store-types.js";
@@ -113,6 +114,7 @@ export function workflowRunResumeCandidate(
 	sessionRuns: readonly RunSnapshot[] = store.runs(),
 	backend?: DurableWorkflowBackend,
 ): WorkflowRunResumeCandidate {
+	backend = availableRunDurableBackend(sessionRuns, run.id) ?? backend;
 	const artifactsIntact = workflowRunArtifactsIntact(run, sessionRuns);
 	let hasDurableCheckpoint: boolean | undefined;
 	try {
@@ -215,7 +217,7 @@ export function createWorkflowArtifactRunStateResolver(): WorkflowArtifactRunSta
 		let durable: WorkflowArtifactRunState | undefined;
 		if (backend !== undefined) {
 			try {
-				durable = durableRunState(backend, runId);
+				durable = durableRunState(availableRunDurableBackend(store.runs(), runId) ?? backend, runId);
 			} catch {
 				backendReady = false;
 				return localState === "protected" ? "protected" : undefined;
@@ -236,7 +238,7 @@ export function resolveWorkflowArtifactRunState(runId: string): WorkflowArtifact
 async function deleteTerminalDurableEntry(runId: string): Promise<boolean> {
 	let backend: DurableWorkflowBackend;
 	try {
-		backend = requireStoreDurableBackend(store);
+		backend = requireStoreDurableBackend(store, runId);
 	} catch {
 		return false;
 	}

@@ -146,7 +146,8 @@ async function executeQuitRunWithAction(
 	workflowObservationRuntime(activeStore).control(runId, action, opts?.actor);
 	const aggregateRootRunId = aggregateWorkflowRootRunId(activeStore, runId);
 	const durableBackend =
-		toolControls.runControl(aggregateRootRunId)?.durableBackend ?? availableStoreDurableBackend(activeStore);
+		toolControls.runControl(aggregateRootRunId)?.durableBackend ??
+		availableStoreDurableBackend(activeStore, aggregateRootRunId);
 	if (aggregateRootRunId !== runId) {
 		const hasTaskTail = expandedControlRunIds(activeStore, runId).some((controlRunId) =>
 			toolControls

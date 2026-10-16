@@ -86,7 +86,7 @@ export function openSessionPicker(
 		let pickerRevision = 0;
 
 		const resumeCandidateCache = createSessionPickerResumeCandidateCache((run, runs) =>
-			workflowRunResumeCandidate(run, runs, availableStoreDurableBackend(store)),
+			workflowRunResumeCandidate(run, runs, availableStoreDurableBackend(store, run.id)),
 		);
 
 		const factory = (

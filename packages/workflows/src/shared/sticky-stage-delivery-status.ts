@@ -1,5 +1,9 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
-import { durableBackendForRun, durableRootRunIdForRun } from "../durable/run-owner-backend.js";
+import {
+	availableRunDurableBackend,
+	durableBackendForRun,
+	durableRootRunIdForRun,
+} from "../durable/run-owner-backend.js";
 import { stageMatchesPathPattern, workflowBoundaryHops } from "./pending-stage-status.js";
 import type { RunSnapshot } from "./store-types.js";
 import { parseWorkflowStageTarget } from "./workflow-stage-target.js";
@@ -29,6 +33,7 @@ export function stickyStageDeliveryStatuses(
 	const root = runs.find((run) => run.id === rootRunId);
 	const entries = (root?.pendingStageMessages ?? []).filter((entry) => entry.sticky === true);
 	const result: StickyStageDeliveryStatus[] = [];
+	availableBackend = availableRunDurableBackend(runs, rootRunId) ?? availableBackend;
 	const backend = availableBackend === undefined ? undefined : durableBackendForRun(availableBackend, runs, rootRunId);
 	for (const run of runs) {
 		if (run.id !== rootRunId && run.rootRunId !== rootRunId && durableRootRunIdForRun(runs, run.id) !== rootRunId)

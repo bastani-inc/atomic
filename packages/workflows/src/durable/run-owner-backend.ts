@@ -1,7 +1,29 @@
+import { resolveRunIdTarget } from "../shared/run-id.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { reciprocalWorkflowRootRunId } from "../shared/workflow-run-ownership.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { ScopedDurableBackend } from "./scoped-backend.js";
+
+const workflowRunBackend = Symbol.for("atomic-workflows/run-journal-backend@1");
+type BackendRun = RunSnapshot & { [workflowRunBackend]?: DurableWorkflowBackend };
+
+/** Execution ownership stays with the root snapshot, not the store's default selection. */
+export function bindRunDurableBackend(run: RunSnapshot, backend: DurableWorkflowBackend): void {
+	Object.defineProperty(run, workflowRunBackend, { value: backend });
+}
+
+export function availableRunDurableBackend(
+	runs: readonly RunSnapshot[],
+	runId: string,
+): DurableWorkflowBackend | undefined {
+	const target = resolveRunIdTarget(
+		runId,
+		runs.map((run) => run.id),
+	);
+	const id = target.kind === "exact" || target.kind === "unique_prefix" ? target.runId : runId;
+	const rootRunId = durableRootRunIdForRun(runs, id);
+	return (runs.find((run) => run.id === rootRunId) as BackendRun | undefined)?.[workflowRunBackend];
+}
 
 /** Resolve the top-level durable owner only through complete reciprocal run/boundary links. */
 export function durableRootRunIdForRun(runs: readonly RunSnapshot[], runId: string): string | undefined {
@@ -17,7 +39,8 @@ export function durableBackendForRun(
 	const rootRunId = durableRootRunIdForRun(runs, runId);
 	if (rootRunId === undefined) return undefined;
 	const runById = new Map(runs.map((run) => [run.id, run]));
-	if (rootRunId === runId) return backend;
+	const rootBackend = availableRunDurableBackend(runs, rootRunId) ?? backend;
+	if (rootRunId === runId) return rootBackend;
 
 	const scopes: string[] = [];
 	let current = runById.get(runId);
@@ -30,7 +53,7 @@ export function durableBackendForRun(
 	}
 	if (current?.id !== rootRunId) return undefined;
 
-	let view = backend;
+	let view = rootBackend;
 	for (const scopePrefix of scopes.reverse()) {
 		view = new ScopedDurableBackend(view, { rootWorkflowId: rootRunId, scopePrefix });
 	}

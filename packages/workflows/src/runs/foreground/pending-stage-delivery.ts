@@ -153,7 +153,7 @@ export function createWorkflowPendingStageDelivery(
 				void Promise.all(
 					entries.map(async (entry) => {
 						const backend = durableBackendForRun(
-							requireStoreDurableBackend(activeStore),
+							requireStoreDurableBackend(activeStore, entry.runId),
 							activeStore.runs(),
 							entry.runId,
 						);
@@ -226,7 +226,7 @@ async function deliverPendingStageMessages(
 		.map(({ entry, index }) => ({ entry, index, order: pendingStageMessageAdmissionOrder(entry) }))
 		.sort((left, right) => left.order - right.order || left.index - right.index)
 		.map(({ entry }) => entry);
-	const rootBackend = requireStoreDurableBackend(activeStore);
+	const rootBackend = requireStoreDurableBackend(activeStore, runId);
 	const backend = durableBackendForRun(rootBackend, runs, runId);
 	if (backend === undefined) {
 		throw new Error(`atomic-workflows: workflow run ${runId} has no durable owner for pending-stage delivery`);

@@ -143,7 +143,7 @@ export function inspectRun(
 		deliveryStates: stickyStageDeliveryStatuses(
 			activeStore.runs(),
 			copy.rootRunId ?? copy.id,
-			availableStoreDurableBackend(activeStore),
+			availableStoreDurableBackend(activeStore, copy.id),
 		).filter((delivery) => copy.id === (copy.rootRunId ?? copy.id) || delivery.runId === copy.id),
 		result: copy.result,
 		error:

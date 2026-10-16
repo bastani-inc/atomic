@@ -35,7 +35,7 @@ export interface PostMortemResolverDeps {
 /** Persisted original/resolved cwd for a durable run tree, when still available. */
 function resolveStageCwd(runId: string, runStore: Store): string | undefined {
 	try {
-		const backend = requireStoreDurableBackend(runStore);
+		const backend = requireStoreDurableBackend(runStore, runId);
 		const owningHandle = backend.getWorkflow(runId);
 		const run = readGraphStoreSnapshot(runStore).runs.find((candidate) => candidate.id === runId);
 		const rootRunId = run?.rootRunId ?? owningHandle?.rootWorkflowId;

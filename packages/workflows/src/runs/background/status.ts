@@ -374,7 +374,7 @@ export async function resumeRun(
 			const transition = await markDurableResumed(
 				aggregateRootRunId,
 				(opts?.toolControlRegistry ?? defaultToolControlRegistry).runControl(aggregateRootRunId)?.durableBackend ??
-					requireStoreDurableBackend(activeStore),
+					requireStoreDurableBackend(activeStore, aggregateRootRunId),
 			);
 			if (transition === "refused") {
 				durabilityFailure = `authoritative durable workflow ${aggregateRootRunId} refused the running transition`;

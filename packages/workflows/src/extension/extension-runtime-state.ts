@@ -78,7 +78,7 @@ function durableWorkflowHeartbeatAnchorStore(store: Store): WorkflowHeartbeatAnc
 	return {
 		readAnchorAt(runId) {
 			try {
-				return readWorkflowHeartbeatAnchor(requireStoreDurableBackend(store), runId);
+				return readWorkflowHeartbeatAnchor(requireStoreDurableBackend(store, runId), runId);
 			} catch (error) {
 				if (error instanceof InvalidWorkflowHeartbeatAnchorError) throw error;
 				return undefined;
@@ -86,7 +86,7 @@ function durableWorkflowHeartbeatAnchorStore(store: Store): WorkflowHeartbeatAnc
 		},
 		async recordAnchorAt(runId, record) {
 			try {
-				return await recordWorkflowHeartbeatAnchor(requireStoreDurableBackend(store), {
+				return await recordWorkflowHeartbeatAnchor(requireStoreDurableBackend(store, runId), {
 					runId,
 					anchorAt: record.anchorAt,
 					intervalMinutes: record.intervalMinutes,

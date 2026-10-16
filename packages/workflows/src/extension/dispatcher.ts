@@ -46,8 +46,8 @@ function failedRunResult(name: string | undefined, runId: string, error: string)
 	};
 }
 async function discardUnadmittedRun(runId: string, activeStore: Store): Promise<void> {
+	const backend = requireStoreDurableBackend(activeStore, runId);
 	activeStore.removeRun(runId);
-	const backend = requireStoreDurableBackend(activeStore);
 	const handle = backend.getWorkflow(runId);
 	if (handle?.status === "running") {
 		await backend.setWorkflowStatus(runId, "failed", handle.pendingPrompts, false);

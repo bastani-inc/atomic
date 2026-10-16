@@ -123,11 +123,11 @@ export function makeExecuteWorkflowTool(
 		}
 		const recoveryCwd = typeof ctx.cwd === "string" ? ctx.cwd : undefined;
 		const adoptsReleasedRun = (id: string): boolean => {
-			const handle = requireStoreDurableBackend(store).getLoadableWorkflow(id);
+			const handle = requireStoreDurableBackend(store, id).getLoadableWorkflow(id);
 			return handle !== undefined && isSdkReleasedRunAdoptable(handle, recoveryCwd);
 		};
 		const authorize = async (id: string): Promise<void> => {
-			const handle = requireStoreDurableBackend(store).getLoadableWorkflow(id);
+			const handle = requireStoreDurableBackend(store, id).getLoadableWorkflow(id);
 			if (
 				(action === "resume" || action === "status" || action === "stages") &&
 				handle !== undefined &&
@@ -141,7 +141,7 @@ export function makeExecuteWorkflowTool(
 					action === "stages" ||
 					(action === "resume" &&
 						handle !== undefined &&
-						(await isSdkCrashedRunAdoptable(handle, recoveryCwd, requireStoreDurableBackend(store))))) &&
+						(await isSdkCrashedRunAdoptable(handle, recoveryCwd, requireStoreDurableBackend(store, id))))) &&
 				!store.runs().some((run) => run.id === id) &&
 				handle !== undefined &&
 				isSdkDurableRunInScope(handle, recoveryCwd)
@@ -177,7 +177,14 @@ export function makeExecuteWorkflowTool(
 			return {
 				...resolved,
 				resumeDurableWorkflow: async (id, options) => {
-					await injectWorkflowResumeSummary(pi, ctx, id, undefined, undefined, requireStoreDurableBackend(store));
+					await injectWorkflowResumeSummary(
+						pi,
+						ctx,
+						id,
+						undefined,
+						undefined,
+						requireStoreDurableBackend(store, id),
+					);
 					return resolved.resumeDurableWorkflow(
 						id,
 						access === "sdk" || adoptsReleasedRun(id) ? { ...options, modelOwner: workflowCaller(ctx) } : options,
@@ -263,7 +270,7 @@ export function makeExecuteWorkflowTool(
 					{
 						toolControlRegistry,
 						durableBackend: availableStoreDurableBackend(store),
-						allRuns: capturedRuns,
+						allRuns: store.runs(),
 						owningRunStatus: (owningRunId) => statusByRunId.get(owningRunId),
 						resolveBoundarySegments: (runId) => workflowBoundarySegments(capturedRuns, runId),
 					},
@@ -314,7 +321,7 @@ export function makeExecuteWorkflowTool(
 								id,
 								store.runs().find((run) => run.id === id),
 								undefined,
-								requireStoreDurableBackend(store),
+								requireStoreDurableBackend(store, id),
 							),
 					}),
 				);

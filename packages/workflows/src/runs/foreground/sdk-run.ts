@@ -1,6 +1,9 @@
 import { initializeDurableBackend } from "../../durable/factory.js";
+import { availableRunDurableBackend } from "../../durable/run-owner-backend.js";
+import { availableStoreDurableBackend, bindStoreDurableBackend } from "../../durable/store-backend.js";
 import { run as engineRun } from "../../engine/run.js";
 import { createAgentSessionAdapter } from "../../extension/wiring.js";
+import { store as defaultStore } from "../../shared/store.js";
 import type { WorkflowDefinition, WorkflowInputValues, WorkflowOutputValues } from "../../shared/types.js";
 import type { RunOpts, RunResult } from "./executor-types.js";
 
@@ -21,11 +24,18 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	callerOpts: RunOpts = {},
 ): Promise<RunResult> {
 	const opts = withDefaultAgentSessionAdapter(callerOpts);
-	const backend =
-		opts.journal === undefined && opts.durableBackend !== undefined
-			? opts.durableBackend
-			: await initializeDurableBackend({ journal: opts.journal, cwd: opts.cwd });
-	return await engineRun(def, inputs, { ...opts, durableBackend: backend });
+	const store = opts.store ?? defaultStore;
+	const sourceRunId = opts.continuation?.source.id ?? opts.runId;
+	const ownedBackend = sourceRunId === undefined ? undefined : availableRunDurableBackend(store.runs(), sourceRunId);
+	const preset =
+		opts.journal === undefined
+			? (opts.durableBackend ?? ownedBackend ?? availableStoreDurableBackend(store))
+			: undefined;
+	const backend = preset ?? (await initializeDurableBackend({ journal: opts.journal, cwd: opts.cwd }));
+	if (opts.journal === undefined && opts.durableBackend === undefined && ownedBackend === undefined) {
+		bindStoreDurableBackend(store, backend);
+	}
+	return await engineRun(def, inputs, { ...opts, store, durableBackend: backend });
 }
 
 /** Stage sessions default to in-process Atomic SDK sessions when the caller supplies no session adapter. */

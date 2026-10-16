@@ -10,6 +10,7 @@
 
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
+import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
 import { availableStoreDurableBackend, requireStoreDurableBackend } from "../durable/store-backend.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
@@ -53,8 +54,18 @@ export function collectResumePickerLiveRuns(runStore: Store, deps?: DurableResum
 	const shadowClassification = new Map(runs.map((run) => [run.id, classifyDurableResumeShadow(run, runStore, deps)]));
 	const isOfferable = (run: RunSnapshot): boolean => shadowClassification.get(run.id) === "not_shadow";
 	const sessionRuns = runStore.runs();
-	const backend = deps?.backend ?? requireStoreDurableBackend(runStore);
-	const resumableById = new Map(runs.map((run) => [run.id, isResumableLiveRun(run, sessionRuns, backend)]));
+	const resumableById = new Map(
+		runs.map((run) => [
+			run.id,
+			isResumableLiveRun(
+				run,
+				sessionRuns,
+				availableRunDurableBackend(sessionRuns, run.id) ??
+					deps?.backend ??
+					requireStoreDurableBackend(runStore, run.id),
+			),
+		]),
+	);
 	const liveRuns = runs.filter((run) => isOfferable(run) && resumableById.get(run.id) === true);
 	const isCurrentlyRunning = (run: RunSnapshot): boolean =>
 		run.endedAt === undefined && run.status === "running" && run.exitReason !== "quit";

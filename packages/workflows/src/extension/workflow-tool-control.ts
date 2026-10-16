@@ -640,7 +640,7 @@ export async function workflowResumeAction(
 			code: requestedStage.code,
 		};
 	}
-	const backend = requireStoreDurableBackend(store);
+	const backend = requireStoreDurableBackend(store, target.runId);
 	const exact = store.runs().find((run) => run.id === target.runId);
 	const shadow =
 		exact === undefined

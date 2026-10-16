@@ -201,7 +201,14 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 				// possible-future rows. Presence replaces, so a terminal root publishes `[]` and
 				// the broker drops the rows.
 				...(run.id === rootRunId
-					? { possibleStages: possibleStageRows(runs, rootRunId, run, availableStoreDurableBackend(activeStore)) }
+					? {
+							possibleStages: possibleStageRows(
+								runs,
+								rootRunId,
+								run,
+								availableStoreDurableBackend(activeStore, rootRunId),
+							),
+						}
 					: {}),
 			};
 			// Compute the signature *before* emitting: the consumer mutates the payload
@@ -662,7 +669,7 @@ async function queueAndPersist(
 		message: event.message,
 		queuedAt: new Date().toISOString(),
 	};
-	const rootBackend = requireStoreDurableBackend(activeStore);
+	const rootBackend = requireStoreDurableBackend(activeStore, event.runId);
 	const backend = durableBackendForRun(rootBackend, activeStore.runs(), event.runId);
 	if (backend === undefined) return { outcome: "refused", reason: "Session not found" };
 	// The broker has already authorized the immutable registration identity.
@@ -743,7 +750,7 @@ async function deliverStickyTarget(
 		? undefined
 		: true;
 	const liveMatches = matchingLiveStages(runs, rootRunId, parsedTarget.segments);
-	const backend = durableBackendForRun(requireStoreDurableBackend(activeStore), runs, rootRunId);
+	const backend = durableBackendForRun(requireStoreDurableBackend(activeStore, rootRunId), runs, rootRunId);
 	if (backend === undefined) return { outcome: "refused", reason: "Session not found" };
 	const senderGroup = event.from.groups?.includes(runGroup) === true ? runGroup : event.from.group;
 	const request: PendingStickyStageMessageInput = {
@@ -859,7 +866,7 @@ async function recordConfirmedStickyDeliveries(activeStore: Store, event: Sticky
 			admission: "transport" as const,
 		}));
 	if (records.length === 0) return false;
-	const backend = durableBackendForRun(requireStoreDurableBackend(activeStore), runs, rootRunId);
+	const backend = durableBackendForRun(requireStoreDurableBackend(activeStore, rootRunId), runs, rootRunId);
 	if (backend === undefined) return false;
 	const unconfirmedRecords = [];
 	for (const record of records) {
@@ -1006,11 +1013,10 @@ export async function settleUndeliverablePendingStageMessages(
 		return 0;
 	}
 	let settled = 0;
-	const rootBackend = requireStoreDurableBackend(activeStore);
 	for (const run of runs) {
 		// Retained/partial runs with no settlement work need no durable owner.
 		if (!run.pendingStageMessages?.some((entry) => needsUndeliverableSettlement(run, entry))) continue;
-		const backend = durableBackendForRun(rootBackend, runs, run.id);
+		const backend = durableBackendForRun(requireStoreDurableBackend(activeStore, run.id), runs, run.id);
 		if (backend === undefined) {
 			throw new Error(`atomic-workflows: workflow run ${run.id} has no durable owner for pending-stage settlement`);
 		}

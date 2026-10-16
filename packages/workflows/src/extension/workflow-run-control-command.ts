@@ -289,7 +289,7 @@ export async function handleRunControlCommand(
 						resolved.runId,
 						run,
 						undefined,
-						requireStoreDurableBackend(store),
+						requireStoreDurableBackend(store, resolved.runId),
 					);
 					const isPaused = run !== undefined && workflowHasPausedState(store, resolved.runId);
 					const isDurableAuthorExit = run?.exited === true && run.status === "failed" && run.resumable === true;
@@ -298,7 +298,7 @@ export async function handleRunControlCommand(
 						!isPaused &&
 						run.exitReason !== "quit" &&
 						isWorkflowRunResumable(
-							workflowRunResumeCandidate(run, store.runs(), requireStoreDurableBackend(store)),
+							workflowRunResumeCandidate(run, store.runs(), requireStoreDurableBackend(store, resolved.runId)),
 						);
 					if (isDurableAuthorExit) {
 						return await handleDurableResume(resolved.runId, ctx, reporter, deps);
@@ -342,13 +342,13 @@ export async function handleRunControlCommand(
 			let backend: DurableWorkflowBackend;
 			try {
 				try {
-					backend = requireStoreDurableBackend(store);
+					backend = requireStoreDurableBackend(store, target);
 				} catch (error) {
 					if (!(error instanceof DurableBackendNotInitializedError)) throw error;
 					// Fresh CLI sessions have no backend until a durable operation prepares it.
 					await ensureWorkflowResourcesVisible();
 					await deps.runtimeForContext(ctx).prepareDurableResumable(target);
-					backend = requireStoreDurableBackend(store);
+					backend = requireStoreDurableBackend(store, target);
 				}
 			} catch (error) {
 				fail(`Failed to resolve workflow resume target: ${error instanceof Error ? error.message : String(error)}`);
@@ -510,7 +510,9 @@ export async function handleRunControlCommand(
 			run !== undefined &&
 			!isPaused &&
 			run.exitReason !== "quit" &&
-			isWorkflowRunResumable(workflowRunResumeCandidate(run, store.runs(), requireStoreDurableBackend(store)));
+			isWorkflowRunResumable(
+				workflowRunResumeCandidate(run, store.runs(), requireStoreDurableBackend(store, stageRunId)),
+			);
 		const isActivelyRunning =
 			run !== undefined &&
 			run.endedAt === undefined &&
@@ -521,14 +523,21 @@ export async function handleRunControlCommand(
 			isActivelyRunning &&
 			!isResumableContinuation &&
 			action === "resume" &&
-			!hasPendingDurableResumeTransition(stageRunId, requireStoreDurableBackend(store))
+			!hasPendingDurableResumeTransition(stageRunId, requireStoreDurableBackend(store, stageRunId))
 		) {
 			fail(
 				`Workflow ${stageRunId} is already running in this session. Attach with \`/workflow connect ${stageRunId}\` instead of resuming.`,
 			);
 			return true;
 		}
-		await injectWorkflowResumeSummary(deps.pi, ctx, stageRunId, run, undefined, requireStoreDurableBackend(store));
+		await injectWorkflowResumeSummary(
+			deps.pi,
+			ctx,
+			stageRunId,
+			run,
+			undefined,
+			requireStoreDurableBackend(store, stageRunId),
+		);
 		if (isDurableAuthorExit) {
 			return await handleDurableResume(stageRunId, ctx, reporter, deps);
 		}
