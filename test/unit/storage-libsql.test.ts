@@ -8,7 +8,15 @@ import { registerSqliteDatabaseConformance } from "../../packages/coding-agent/s
 import { openLibsqlDatabase } from "../fixtures/storage-libsql-wrapper.js";
 import { removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { withLibsqlDatabase } from "../helpers/libsql-database.js";
-import { bunExecutable, makeTempDirectory, moduleDir, spawnSyncCollect } from "../helpers/runtime.js";
+import {
+	bunExecutable,
+	fileExistsSync,
+	makeTempDirectory,
+	moduleDir,
+	readDirectorySync,
+	removeTempDirectory,
+	spawnSyncCollect,
+} from "../helpers/runtime.js";
 
 registerSqliteDatabaseConformance({ describe, it }, "libSQL file", withLibsqlDatabase);
 
@@ -86,12 +94,19 @@ const REAL_BUN_CONFORMANCE_TIMEOUT_MS = 120_000;
 test(
 	"libSQL facade and SQL session conformance pass on Bun",
 	() => {
-		const result = spawnSyncCollect([
-			bunExecutable(),
-			"test",
-			join(moduleDir(import.meta.url), "../fixtures/storage-libsql.bun.ts"),
-		]);
-		assert.equal(result.exitCode, 0, result.stdout.toString() + result.stderr.toString());
+		const directory = makeTempDirectory("atomic-libsql-bun-");
+		try {
+			// The synchronous spawn returns only after the child exits and releases its native file handles.
+			const result = spawnSyncCollect(
+				[bunExecutable(), "test", join(moduleDir(import.meta.url), "../fixtures/storage-libsql.bun.ts")],
+				{ env: { ...process.env, ATOMIC_TEST_LIBSQL_ROOT: directory } },
+			);
+			assert.equal(result.exitCode, 0, result.stdout.toString() + result.stderr.toString());
+			assert.ok(readDirectorySync(directory).length > 0, "child must create its databases under the owned root");
+		} finally {
+			assert.doesNotThrow(() => removeTempDirectory(directory));
+			assert.equal(fileExistsSync(directory), false);
+		}
 	},
 	REAL_BUN_CONFORMANCE_TIMEOUT_MS,
 );

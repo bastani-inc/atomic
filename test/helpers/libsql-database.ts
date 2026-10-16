@@ -4,11 +4,10 @@ import { createClient, type Transaction } from "@libsql/client";
 import { type InArgs, type InStatement, Sqlite3Transaction } from "@libsql/client/sqlite3";
 import type { WithSqliteDatabaseSubject } from "../../packages/coding-agent/src/core/storage/testing.js";
 import { openLibsqlDatabase } from "../fixtures/storage-libsql-wrapper.js";
-import { removeLibsqlDirectory } from "./libsql-cleanup.js";
-import { makeTempDirectory } from "./runtime.js";
+import { makeLibsqlDirectory, removeLibsqlDirectory } from "./libsql-cleanup.js";
 
 export const withLibsqlDatabase: WithSqliteDatabaseSubject = async (body) => {
-	const directory = makeTempDirectory("atomic-libsql-");
+	const directory = makeLibsqlDirectory();
 	const url = pathToFileURL(join(directory, "database.sqlite")).href;
 	let database = await openLibsqlDatabase({ url });
 	// Exercise asynchronous driver binding, rather than relying on the local driver's synchronous fast path.
