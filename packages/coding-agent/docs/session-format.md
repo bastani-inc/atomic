@@ -8,7 +8,7 @@ This page describes format-4 JSONL files used by explicit JSONL stores and expor
 <selected-jsonl-directory>/--<path>--/<timestamp>_<session-id-hash>.jsonl
 ```
 
-Where `<path>` represents the working directory with path separators replaced by `-`; long directory names use a hash. `sessions.storage.dir` selects the JSONL root; `--session-dir` selects an exact directory. Session IDs, not these paths, are used for resume and fork selection. Local artifacts and tool-result files remain on the filesystem even with a database-backed session.
+Where `<path>` represents the working directory with path separators replaced by `-`; long directory names use a hash. `sessions.storage.dir` and `--session-dir` select the JSONL root; files are created in its project-specific subdirectory. The direct `SessionManager.create(cwd, sessionDir)` overload uses the supplied directory exactly. Session IDs, not these paths, are used for resume and fork selection. Local artifacts and tool-result files remain on the filesystem even with a database-backed session.
 
 ## Deleting Sessions
 

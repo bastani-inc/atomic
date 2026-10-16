@@ -1375,7 +1375,7 @@ import type { RunJournalOption } from "@bastani/atomic/workflows";
 - `{ adapter, options?, secrets?, prefix? }` loads your installed adapter module. See [Storage adapters](/storage#selecting-an-adapter).
 - A `RunJournal` instance is used as supplied. `SqlRunJournal`, `openSqlRunJournal`, `MemoryRunJournal`, journal error classes, and `registerRunJournalConformance` are exported from `@bastani/atomic/workflows`.
 
-Use `await openSqlRunJournal(path)` to open a file directly, or omit `path` for the default journal. It also accepts a caller-owned async `SqliteDatabase`; wrap an existing `node:sqlite` connection with `wrapNodeSqliteDatabase` first. `await resolveRunJournal(options)` applies the selection rules below.
+Use `await openSqlRunJournal(path)` to open a file directly, or omit `path` for the default journal. It also accepts a caller-owned `node:sqlite` `DatabaseSync` directly and wraps the connection itself. Pass an async `SqliteDatabase` facade to `SqlRunJournal.open` or `RunOpts.journal.database` instead. `await resolveRunJournal(options)` applies the selection rules below.
 
 To attach your own SQLite-compatible driver, implement the [async SQLite storage API](/storage) and pass its facade to `SqlRunJournal.open`:
 
