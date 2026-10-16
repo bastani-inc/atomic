@@ -507,11 +507,11 @@ Plain names establish a replacement list before its modifiers apply. A project l
 { "sessions": { "storage": { "path": "sessions.sqlite" } } }
 ```
 
-Without configuration, sessions and workflow runs share `~/.atomic/workflows/journal.sqlite`, with separate tables. JSONL is opt-in through `dir`, `--session-dir`, or `ATOMIC_CODING_AGENT_SESSION_DIR`. The `sessionDir` setting has been removed; use `sessions.storage.dir` instead.
+Without configuration, sessions and workflow runs share `~/.atomic/workflows/journal.sqlite`. Session tables use `session_` names; workflow tables use `wf_` names. If `ATOMIC_CODING_AGENT_DIR` changes the agent directory, this default is `workflows/journal.sqlite` under its parent. JSONL is opt-in through `dir`, `--session-dir`, or `ATOMIC_CODING_AGENT_SESSION_DIR`. The `sessionDir` setting has been removed; use `sessions.storage.dir` instead.
 
-Session precedence is SDK `sessionStore`, `--no-session`, `--session-dir`, non-empty `ATOMIC_CODING_AGENT_SESSION_DIR`, `sessions.storage`, shared `storage`, then the default SQLite file. Empty environment values are ignored. Project `sessions.storage` replaces the entire global selection, including options, secrets and prefix; selections are never merged. Relative settings paths resolve against Atomic home, normally `~/.atomic`. CLI and environment directories resolve against the working directory.
+Session precedence is SDK `sessionStore`, `--no-session`, `--session-dir`, non-empty `ATOMIC_CODING_AGENT_SESSION_DIR`, `sessions.storage`, shared `storage`, then the default SQLite file. Empty environment values are ignored. Project selections replace global selections as whole objects, including options, secrets and prefix; fields are never merged. A present empty `sessions.storage` selects the default session database rather than inheriting `storage`. Relative settings paths resolve against Atomic home, normally `~/.atomic`. CLI and environment directories resolve against the working directory.
 
-Memory must be selected explicitly and is lost on exit. Invalid selected configuration raises `StorageConfigError`. If a selected store cannot open, Atomic raises a typed storage error rather than falling back to memory. See [Sessions](/sessions#session-storage).
+Memory must be selected explicitly and is lost on exit. Invalid selected configuration raises `StorageConfigError`, whose `source`, `field`, and `reason` identify the problem. If a selected store cannot open, Atomic raises a typed storage error rather than falling back to memory. See [Sessions](/sessions#session-storage) and [Storage errors](/storage#storage-errors).
 
 ### Models
 

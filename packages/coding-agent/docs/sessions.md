@@ -8,7 +8,7 @@ This page covers working with sessions: storage, commands, resuming, naming, and
 
 ## Session Storage
 
-Sessions auto-save to the local SQLite database at `~/.atomic/workflows/journal.sqlite`. Workflow runs use the same file, with separate tables. Session history remains a tree regardless of the selected store.
+Sessions auto-save to the local SQLite database at `~/.atomic/workflows/journal.sqlite`. Workflow runs use the same file, with `session_` and `wf_` table prefixes separating their records. Session history remains a tree regardless of the selected store.
 
 To choose another store, set `sessions.storage` in settings. Use shared `storage` to select one database for both sessions and workflow runs. JSONL is available only when explicitly selected. Memory is available through `--no-session`, `{ "memory": true }` in settings, or an explicit SDK option; it is never a fallback for a failed persistent store.
 
@@ -96,11 +96,11 @@ In the picker you can:
 - rename with CTRL+R
 - delete with CTRL+D, then confirm
 
-When available, Atomic uses the `trash` CLI for deletion instead of permanently removing files.
+JSONL stores use the `trash` CLI when available. Database stores delete the selected session record, not the database.
 
 ### Session summaries
 
-Each row shows a short generated description of what the session was about in its own column, beside the session name or first message, so you can recognize a conversation without opening it. Atomic writes one after the agent goes idle, using the model the session is already configured with, and stores it in the session file as a `session_summary` entry.
+Each row shows a short generated description of what the session was about in its own column, beside the session name or first message, so you can recognize a conversation without opening it. Atomic writes one after the agent goes idle, using the model the session is already configured with, and saves it as a `session_summary` entry in the selected store.
 
 A summary describes the conversation up to a specific message and remains visible as newer messages arrive. A later branch summary retires it. "No summary available." means no summary has been generated for the current branch, generation failed, or it is still in flight. The session name and first message are never displaced by a summary, and the column only appears once at least one listed session has a summary. Summaries are also searchable along with the rest of the session text.
 
@@ -110,9 +110,7 @@ You can search, navigate, or cancel while the picker loads sessions. Closing it 
 
 ### Internal (workflow) sessions
 
-Sessions created by workflow stage execution are marked as **internal** and are excluded from the standard `/resume`, `atomic -r`, and `--continue` history by default. This keeps the resume picker focused on your interactive coding sessions. Workflow stage sessions remain fully discoverable and resumable through the workflow-specific path: use `/workflow resume <runId>` (or the workflow tool's resume/status actions) to inspect and continue a workflow run and its stages. A workflow stage session can still be opened directly by passing its file path to `--session`.
-
-Legacy workflow sessions created before this behavior lack the internal marker and will continue to appear in the standard history until they age out or are deleted.
+Sessions created by workflow stage execution are marked as **internal** and are excluded from the standard `/resume`, `atomic -r`, and `--continue` history by default. Use `/workflow resume <runId>` or the workflow tool's resume/status actions to inspect and continue a workflow run and its stages. A workflow stage session can also be opened directly by passing its session ID to `--session`.
 
 ## Naming Sessions
 
@@ -133,7 +131,7 @@ Named sessions are easier to find in `/resume` and `atomic -r`.
 
 ## Branching with `/tree`
 
-Sessions are stored as trees. Every entry has an `id` and `parentId`, and the current position is the active leaf. `/tree` lets you jump to any previous point and continue from there without creating a new file.
+Sessions are stored as trees. Every entry has an `id` and `parentId`, and the current position is the active leaf. `/tree` lets you jump to any previous point and continue from there without creating a new session.
 
 <p align="center"><img src="images/tree-view.png" alt="Tree View" width="600" /></p>
 
@@ -186,7 +184,7 @@ Selecting the root user message resets the leaf to an empty conversation and pla
 
 | Feature | `/tree` | `/fork` | `/clone` |
 |---------|---------|---------|----------|
-| Output | Same session file | New session file | New session file |
+| Output | Same session | New session | New session |
 | View | Full tree | User-message selector | Current active branch |
 | Typical use | Explore alternatives in place | Start a new session from an earlier prompt | Duplicate current work before continuing |
 | Summary | Optional branch summary | None | None |

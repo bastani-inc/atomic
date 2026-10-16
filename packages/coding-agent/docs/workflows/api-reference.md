@@ -1367,7 +1367,7 @@ The public authoring declaration intentionally excludes runtime-only executor fi
 import type { RunJournalOption } from "@bastani/atomic/workflows";
 ```
 
-`run()` uses a local SQLite journal by default and releases the run's lease when execution settles. Select a journal with `RunOpts.journal`:
+`run()` uses the local SQLite journal at `~/.atomic/workflows/journal.sqlite` by default, shared with sessions under separate `wf_` and `session_` table prefixes. It releases the run's lease when execution settles. Select a journal with `RunOpts.journal`:
 
 - `{ path }` opens that SQLite file.
 - `{ database, prefix? }` uses a caller-owned async `SqliteDatabase` facade. Atomic initializes the journal schema on it but does not close the database.
@@ -1375,7 +1375,7 @@ import type { RunJournalOption } from "@bastani/atomic/workflows";
 - `{ adapter, options?, secrets?, prefix? }` loads your installed adapter module. See [Storage adapters](/storage#selecting-an-adapter).
 - A `RunJournal` instance is used as supplied. `SqlRunJournal`, `openSqlRunJournal`, `MemoryRunJournal`, journal error classes, and `registerRunJournalConformance` are exported from `@bastani/atomic/workflows`.
 
-Use `await openSqlRunJournal(path)` to open a file directly, or omit `path` for the default journal. It also accepts a caller-owned `DatabaseSync`. `await resolveRunJournal(options)` applies the selection rules below.
+Use `await openSqlRunJournal(path)` to open a file directly, or omit `path` for the default journal. It also accepts a caller-owned async `SqliteDatabase`; wrap an existing `node:sqlite` connection with `wrapNodeSqliteDatabase` first. `await resolveRunJournal(options)` applies the selection rules below.
 
 To attach your own SQLite-compatible driver, implement the [async SQLite storage API](/storage) and pass its facade to `SqlRunJournal.open`:
 
@@ -1425,7 +1425,7 @@ interface RunJournal {
 
 `deleteOwnedRun` atomically deletes a run only while the lease's `runId`, `holderId`, and `epoch` still match; otherwise it rejects with `StaleLeaseError` and preserves the run and its events. An optional `expectSeq` must equal the latest sequence or the operation rejects with `JournalCasConflictError` without deleting anything. Deletion keeps the last epoch so an old lease cannot delete or write a recreated run. `deleteRun` is an unconditional administrative operation. Inputs and returned records must be detached. `close()` is idempotent, and every later operation rejects.
 
-Use `registerRunJournalConformance(runner, name, open, observeRead)` to check a fresh journal per case. Supply a read observer that reports actual page sizes and entries loaded or copied, with a `restore()` method, so the suite can verify lazy reads without consuming the whole history.
+Custom journals need only the async contract; no synchronous journal methods are required. Adapter authors can validate their implementation with `registerRunJournalConformance` from `@bastani/atomic/workflows`.
 
 Precedence is `RunOpts.journal`, non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, `workflows.journal`, shared top-level `storage`, then the default `~/.atomic/workflows/journal.sqlite`. Nearer settings selections replace whole objects, never merge options or secrets. Relative settings paths resolve against Atomic home. Invalid selected values raise `StorageConfigError`; storage failures reject the call without selecting memory. Keep the same journal and working directory when resuming stored runs.
 
@@ -1435,6 +1435,12 @@ import { run } from "@bastani/atomic/workflows";
 await run(helloWorld, { name: "Atomic" }, { journal: { path: "./workflow-runs.sqlite" } });
 await run(helloWorld, { name: "Atomic" }, { journal: { memory: true } });
 ```
+
+#### Durable writes
+
+Await asynchronous workflow operations before using their results. Atomic commits a successful write before publishing its new state, and shutdown drains accepted journal writes before releasing ownership. A write failure rejects with a typed storage error, not an in-memory fallback.
+
+`ctx.stage()` remains synchronous. For a cached stage, Atomic commits its replay metadata before the next async execution boundary; callers do not need an extra checkpoint or flush. See [Storage errors](/storage#storage-errors) for configuration, driver, and ownership failures.
 
 ### `resolveInputs(schema, provided)`
 
