@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.38-alpha.6] - 2026-10-16
+
 ### Fixed
 
 - Intercom tools now await session records before reporting success or clearing pending replies. Failed commits reach the existing error handling, including local subagent relay diagnostics.

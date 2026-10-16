@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.38-alpha.6] - 2026-10-16
+
 ### Breaking Changes
 
 - Removed the SDK `durability` option, `WorkflowDurability`, and `WorkflowDurabilityRequiredError`. Use `RunOpts.journal` to select storage or isolate runs, and handle typed journal errors when storage is unavailable.
