@@ -121,11 +121,7 @@ The reported gate failed only `interactive-engine-default-main.test.ts`: a 420.3
 
 The process regression now deliberately suspends/resumes the host for 300 ms, then requires fresh editor insertion and deletion acknowledgments within 1,500 ms while cooperative abort is pending. This is a functional responsiveness deadline, not a heartbeat scheduling-frequency assertion. The fixture can keep this test's engine synchronously wedged until explicitly terminated, preventing the five-second tool completion from making responsiveness pass accidentally. Other fixture consumers retain their existing finite block. All prior identity, generation, heartbeat-count, process-tree termination, forbidden-text and usable-recovery checks remain. No shipped source or user-facing behavior changes; a separate user workflow/terminal scenario is not needed for this fixture-only repair.
 
-Every executable validation in this repair runs from the worktree root with this exact implementer command, substituting only the single quoted command payload:
-
-```sh
-CRABBOX_SSH_KEY=/Users/tonystark/.ssh/ascii_box_ed25519 CRABBOX_STATIC_ID=aj-586cd6598c83 crabbox run --provider ssh --target linux --static-host 5.39.75.57 --static-port 19034 --static-user user --static-work-root /home/user/crabbox --keep --script /Users/tonystark/.atomic/agent/workflows/dbos-journal-slices/in-box.sh -- origin/main '<command>'
-```
+Every executable validation command below ran from the worktree root on the remote verification box.
 
 - Setup discovery and original isolated run: `run_8f7517a5336beb56ef097a18302b6429`, `/tmp/s5a-heartbeat-discovery.log`. Node 22.19.0, npm 10.9.3, Bun 1.4.2, dependency/build hashes and cached qlty binary were present. `npx vitest --run --project unit test/unit/interactive-engine-default-main.test.ts` passed all six tests.
 - Deterministic RED: `run_31239dcf7cf288eb1fa3670a16c88842`, `/tmp/s5a-heartbeat-red2.log`. `npx vitest --run --project unit test/unit/interactive-engine-default-main.test.ts -t "Escape never terminates"` failed the original maximum-gap assertion at 300.9 ms after the controlled suspension; preceding lifecycle and recovery assertions passed. The first injection attempt occurred before the first measured heartbeat and passed, so it is not RED evidence.

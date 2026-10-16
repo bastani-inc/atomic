@@ -85,7 +85,7 @@ All conformance cases run normally and with close/reopen boundaries. The current
 
 ## Validation status
 
-All heavy commands use the exact implementer Boat wrapper from the goal ledger, lease aj-7bbc9714715b. Mac operations are inspection, editing and Git only.
+All heavy commands ran on the remote verification box. Mac operations are inspection, editing and Git only.
 
 The initial implementation gates below are historical; latest timestamp-repair evidence is recorded separately after this table. They are not a substitute for current-tree validation.
 
