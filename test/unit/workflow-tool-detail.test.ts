@@ -700,7 +700,7 @@ describe("tool graph inspection", () => {
 
 	test("durable tool execution carries exact args and result into snapshots", async () => {
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "durable-detail",
 			name: "detail",
 			inputs: {},
@@ -882,7 +882,7 @@ describe("tool graph inspection", () => {
 
 	test("callback source is captured at registration, persisted, and rendered", async () => {
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "durable-source",
 			name: "source",
 			inputs: {},
@@ -1026,7 +1026,13 @@ describe("tool graph inspection", () => {
 		for (const [label, args] of hostileArgs) {
 			const backend = await JournalTestBackend.create();
 			const workflowId = `durable-args-${label.replace(/\s+/g, "-")}`;
-			await backend.registerWorkflow({ workflowId, name: label, inputs: {}, createdAt: 1, status: "running" });
+			await backend.commitWorkflowRegistration({
+				workflowId,
+				name: label,
+				inputs: {},
+				createdAt: 1,
+				status: "running",
+			});
 			const durableTool = createToolPrimitive({
 				workflowId,
 				backend,
@@ -1043,7 +1049,7 @@ describe("tool graph inspection", () => {
 
 	test("bounding the live store never bounds the replayed durable output", async () => {
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "durable-replay",
 			name: "replay",
 			inputs: {},

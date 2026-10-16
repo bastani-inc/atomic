@@ -27,5 +27,5 @@ export async function transitionDurableWorkflowStatus(
 	pendingPrompts?: number,
 	resumable?: boolean,
 ): Promise<boolean> {
-	return await backend.transitionWorkflowStatus(workflowId, expectedStatuses, status, pendingPrompts, resumable);
+	return await backend.commitWorkflowStatusTransition(workflowId, expectedStatuses, status, pendingPrompts, resumable);
 }

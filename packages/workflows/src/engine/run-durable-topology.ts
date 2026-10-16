@@ -33,12 +33,14 @@ export function createDurableStageDeps(input: {
 	readonly nextCheckpointId: () => string;
 	readonly nextReplayKey: (stageName: string) => string;
 	readonly completedReplayKeys: Map<string, string>;
+	readonly beforeCheckpoint?: () => void | Promise<void>;
 }): DurableStageDeps {
 	return {
 		workflowId: input.run.id,
 		backend: input.backend,
 		nextCheckpointId: input.nextCheckpointId,
 		nextReplayKey: input.nextReplayKey,
+		beforeCheckpoint: input.beforeCheckpoint,
 		replayKeyForCompletedStage: (stage) => input.completedReplayKeys.get(stage.id),
 		runTopology: durableRunTopology(input.run),
 		sourceOrderForStage: (stage) => {
@@ -109,7 +111,8 @@ export async function recordDurableActiveStage(deps: DurableStageDeps, stage: St
 		stage.status === "skipped"
 	)
 		return false;
-	await deps.backend.recordCheckpointAsync({
+	await deps.beforeCheckpoint?.();
+	await deps.backend.commitCheckpoint({
 		kind: "stage",
 		workflowId: deps.workflowId,
 		checkpointId: `stage-active-meta:${durableHash({ replayKey: stage.replayKey, stageId: stage.id })}`,
@@ -182,7 +185,7 @@ export function createDurableCachedStageRecorder(input: {
 			const persistence =
 				stage === undefined
 					? undefined
-					: input.backend.recordCheckpoint({
+					: input.backend.commitCheckpoint({
 							kind: "stage",
 							workflowId: input.run.id,
 							checkpointId: `stage-replay-meta:${durableHash({ replayKey, stageId: stage.id, parentIds: stage.parentIds })}`,

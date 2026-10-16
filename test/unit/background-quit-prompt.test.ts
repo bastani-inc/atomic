@@ -188,7 +188,7 @@ describe("graceful quit at user-input boundaries", () => {
 		});
 		store.recordStageStart(runId, { id: stageId, name: "input", status: "running", parentIds: [], toolEvents: [] });
 		assert.equal(store.recordStagePendingPrompt(runId, stageId, prompt), true);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "prompt",
 			inputs: {},
@@ -234,7 +234,7 @@ describe("graceful quit at user-input boundaries", () => {
 			parentIds: [],
 			toolEvents: [],
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "awaiting",
 			inputs: {},

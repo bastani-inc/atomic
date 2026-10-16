@@ -27,7 +27,13 @@ test("admits targeted and sticky instructions to replacement sessions without br
 	const store = createStore();
 	const backend = await createMemoryTestBackend();
 	bindStoreDurableBackend(store, backend);
-	await backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	await backend.commitWorkflowRegistration({
+		workflowId: runId,
+		name: "flow",
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+	});
 	store.recordRunStart({
 		id: runId,
 		name: "flow",
@@ -142,7 +148,7 @@ for (const sticky of [false, true]) {
 			const store = createStore();
 			const backend = await createMemoryTestBackend();
 			bindStoreDurableBackend(store, backend);
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: runId,
 				name: "flow",
 				inputs: {},

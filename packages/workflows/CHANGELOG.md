@@ -32,6 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - SDK workflow stages now use persistent session storage by default, including stages without `sessionDir`. Ephemeral stages must explicitly supply an in-memory session manager through an adapter. Storage failures do not fall back to memory.
 - Replaced `SqliteRunJournal` with async `SqlRunJournal.open(database, { prefix })` and `openSqlRunJournal(pathOrDatabase?)`; await `resolveRunJournal`. Journal tables now use the `wf_` namespace with no migration of earlier unreleased tables. Journal storage errors use the shared `StorageUnavailableError` fields `adapter`, `location`, and `cause` instead of `path`.
 - Custom journals must return `LeaseState.ageMs`, a non-negative safe-integer renewal age measured by the journal clock in the same read as the lease state. Ownership probes use this age rather than the process clock.
+- Durable backend registration, status, reset, and checkpoint writes now use awaited `commit*` methods. Replace `registerWorkflow` with `commitWorkflowRegistration`, `setWorkflowStatus` with `commitWorkflowStatus`, `transitionWorkflowStatus` with `commitWorkflowStatusTransition`, `adjustPendingPrompts` with `commitPendingPromptAdjustment`, and `reset` with `commitReset`. Use `commitCheckpoint` instead of either checkpoint writer and `commitAdditiveCheckpointBestEffort` for additive writes. Cached `ctx.stage()` declarations remain synchronous; their replay metadata is committed before the next async execution boundary.
 
 ### Added
 

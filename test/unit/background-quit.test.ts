@@ -163,7 +163,7 @@ describe("graceful workflow quit acknowledgement", () => {
 				toolEvents: [],
 			});
 		}
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "reject",
 			inputs: {},
@@ -238,7 +238,13 @@ describe("graceful workflow quit acknowledgement", () => {
 			startedAt: 1,
 		});
 		store.recordStageStart(runId, { id: "stage-1", name: "stage", status: "running", parentIds: [], toolEvents: [] });
-		await backend.registerWorkflow({ workflowId: runId, name: "ack", inputs: {}, createdAt: 1, status: "running" });
+		await backend.commitWorkflowRegistration({
+			workflowId: runId,
+			name: "ack",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
 		registry.register(
 			stageHandle({
 				runId,
@@ -299,7 +305,7 @@ describe("graceful workflow quit acknowledgement", () => {
 				parentIds: [],
 				toolEvents: [],
 			});
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: runId,
 				name: runId,
 				inputs: {},
@@ -641,7 +647,7 @@ describe("graceful workflow quit acknowledgement", () => {
 		async function createTransitionFailingBackend() {
 			const backend = Object.assign(await createMemoryTestBackend(), {});
 			return Object.assign(backend, {
-				async transitionWorkflowStatus(): Promise<boolean> {
+				async commitWorkflowStatusTransition(): Promise<boolean> {
 					throw new Error("durable transition write failed");
 				},
 			});
@@ -662,7 +668,7 @@ describe("graceful workflow quit acknowledgement", () => {
 			startedAt: 1,
 		});
 		store.recordStageStart(runId, { id: "stage-1", name: "stage", status: "running", parentIds: [], toolEvents: [] });
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "durable",
 			inputs: {},
@@ -1363,7 +1369,7 @@ describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
 			startedAt: 1,
 		});
 		store.recordStageStart(runId, { id: "stage-1", name: "stage", status: "running", parentIds: [], toolEvents: [] });
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "stage-only",
 			inputs: {},
@@ -1414,7 +1420,7 @@ describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
 		async function createTransitionFailingBackend() {
 			const backend = Object.assign(await createMemoryTestBackend(), {});
 			return Object.assign(backend, {
-				async transitionWorkflowStatus(): Promise<boolean> {
+				async commitWorkflowStatusTransition(): Promise<boolean> {
 					throw new Error("durable transition write failed");
 				},
 			});
@@ -1471,9 +1477,9 @@ describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
 	test("quit retried after a durable failure upgrades the pause to resumable", async () => {
 		async function createFlakyTransitionBackend() {
 			const backend = Object.assign(await createMemoryTestBackend(), { attempts: 0 });
-			const basetransitionWorkflowStatus = backend.transitionWorkflowStatus.bind(backend);
+			const basetransitionWorkflowStatus = backend.commitWorkflowStatusTransition.bind(backend);
 			return Object.assign(backend, {
-				async transitionWorkflowStatus(
+				async commitWorkflowStatusTransition(
 					workflowId: string,
 					expected: readonly DurableWorkflowStatus[],
 					status: DurableWorkflowStatus,
@@ -1538,7 +1544,7 @@ describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
 		async function createRefusingBackend() {
 			const backend = Object.assign(await createMemoryTestBackend(), {});
 			return Object.assign(backend, {
-				async transitionWorkflowStatus(): Promise<boolean> {
+				async commitWorkflowStatusTransition(): Promise<boolean> {
 					return false;
 				},
 			});

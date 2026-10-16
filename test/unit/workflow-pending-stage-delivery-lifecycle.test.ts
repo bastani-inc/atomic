@@ -67,7 +67,13 @@ async function lifecycleFixture(runStatus: RunStatus, stageStatus: StageStatus =
 		toolEvents: [],
 		...(stageStatus === "skipped" ? { skippedReason: "fail-fast" } : {}),
 	});
-	await backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	await backend.commitWorkflowRegistration({
+		workflowId: runId,
+		name: "flow",
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+	});
 	bindStoreDurableBackend(activeStore, backend);
 	const accepted = await activeStore.queueStageMessage(
 		pendingMessage(runId, "review-stage"),
@@ -83,7 +89,13 @@ async function renamedLifecycleFixture(runStatus: RunStatus, restoredStageStatus
 	const runId = testRunId(`pending-delivery-renamed-${runStatus}-${restoredStageStatus}`);
 	const group = `workflow:${runId}`;
 	const backend = await createMemoryTestBackend();
-	await backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	await backend.commitWorkflowRegistration({
+		workflowId: runId,
+		name: "flow",
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+	});
 	setDurableBackend(backend);
 	const writerStore = createStore();
 	writerStore.recordRunStart({
@@ -179,7 +191,13 @@ describe("pending workflow stage delivery lifecycle", () => {
 
 		const backend = await createMemoryTestBackend();
 		const runId = testRunId("pending-delivery-after-empty-startup");
-		await backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.commitWorkflowRegistration({
+			workflowId: runId,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		bindStoreDurableBackend(activeStore, backend);
 		activeStore.recordRunStart({
 			id: runId,
@@ -374,7 +392,7 @@ describe("pending workflow stage delivery lifecycle", () => {
 			startedAt: 2,
 		});
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: rootRunId,
 			name: "root",
 			inputs: {},
@@ -410,7 +428,13 @@ describe("pending workflow stage delivery lifecycle", () => {
 		const runId = testRunId("pending-delivery-canonical-rename");
 		const group = `workflow:${runId}`;
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.commitWorkflowRegistration({
+			workflowId: runId,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		setDurableBackend(backend);
 		const writerStore = createStore();
 		writerStore.recordRunStart({
@@ -676,7 +700,13 @@ test("a crash after sender-visible failure notification reloads to exactly one n
 		}
 		return persist(...args);
 	};
-	await writer.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	await writer.commitWorkflowRegistration({
+		workflowId: runId,
+		name: "flow",
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+	});
 	setDurableBackend(writer);
 	const activeStore = createStore();
 	activeStore.recordRunStart({

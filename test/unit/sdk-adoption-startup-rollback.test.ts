@@ -12,7 +12,7 @@ import {
 
 async function fixture(
 	backend: Awaited<ReturnType<typeof createMemoryTestBackend>> | undefined = undefined,
-	overrides: Partial<Parameters<InMemoryDurableBackend["registerWorkflow"]>[0]> = {},
+	overrides: Partial<Parameters<InMemoryDurableBackend["commitWorkflowRegistration"]>[0]> = {},
 ) {
 	backend ??= await createMemoryTestBackend();
 
@@ -25,7 +25,7 @@ async function fixture(
 		run: async () => ({}),
 	});
 	const id = crypto.randomUUID();
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: id,
 		name: definition.name,
 		inputs: {},
@@ -75,7 +75,7 @@ for (const status of ["running", "paused", "cancelled", "completed"] as const) {
 				...f.deps.baseRunOpts,
 				persistence: {
 					async appendEntry() {
-						await f.backend.setWorkflowStatus(f.id, status, 2, false);
+						await f.backend.commitWorkflowStatus(f.id, status, 2, false);
 						controlled = { ...f.source, status: status === "cancelled" ? "failed" : status, endedAt: 3 };
 						f.store.recordRunStart(controlled);
 						throw new Error("startup write failed");
@@ -138,7 +138,7 @@ test("synchronous adoption launch refusal preserves newer pause and snapshot (#3
 		...f.deps,
 		jobs: Object.assign(createJobTracker(), {
 			register() {
-				pauseWrite = f.backend.setWorkflowStatus(f.id, "paused", 2, false);
+				pauseWrite = f.backend.commitWorkflowStatus(f.id, "paused", 2, false);
 				f.store.recordRunStart(controlled);
 				throw new Error("startup registration failed");
 			},
@@ -158,9 +158,11 @@ test("aborted adoption claim retains newer running metadata without launching (#
 	const settled = Promise.withResolvers<void>();
 	async function createDelayedClaimBackend() {
 		const backend = Object.assign(await createMemoryTestBackend(), {});
-		const basetransitionWorkflowStatus = backend.transitionWorkflowStatus.bind(backend);
+		const basetransitionWorkflowStatus = backend.commitWorkflowStatusTransition.bind(backend);
 		return Object.assign(backend, {
-			async transitionWorkflowStatus(...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>) {
+			async commitWorkflowStatusTransition(
+				...args: Parameters<InMemoryDurableBackend["commitWorkflowStatusTransition"]>
+			) {
 				const accepted = await basetransitionWorkflowStatus(...args);
 				claimed.resolve();
 				await release.promise;
@@ -176,7 +178,7 @@ test("aborted adoption claim retains newer running metadata without launching (#
 	await claimed.promise;
 	controller.abort(reason);
 	assert.equal(await pending, reason);
-	await f.backend.setWorkflowStatus(f.id, "running", 4, false);
+	await f.backend.commitWorkflowStatus(f.id, "running", 4, false);
 	const controlled = f.backend.getWorkflow(f.id);
 	release.resolve();
 	await settled.promise;

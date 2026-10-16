@@ -32,9 +32,15 @@ function checkpoint(replayKey: string): DurableStageCheckpoint {
 
 test("child invocation always uses the supplied current replay key despite an old scope", async () => {
 	const backend = await createMemoryTestBackend();
-	await backend.registerWorkflow({ workflowId: runId, name: "root", inputs: {}, status: "running", createdAt: 1 });
+	await backend.commitWorkflowRegistration({
+		workflowId: runId,
+		name: "root",
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+	});
 	const child = workflow({ name: "child", description: "", inputs: {}, outputs: {}, run: async () => ({}) });
-	await backend.recordCheckpoint(checkpoint(`workflow:workflow:${child.normalizedName}:1`));
+	await backend.commitCheckpoint(checkpoint(`workflow:workflow:${child.normalizedName}:1`));
 	let scope: string | undefined;
 	const invoke = createDurableChildWorkflowPrimitive({
 		workflowId: runId,
@@ -73,11 +79,17 @@ test("cached child projection requires the current completed result discriminato
 
 test("completed boundaries without lifecycle topology are not replayable", async () => {
 	const backend = await createMemoryTestBackend();
-	await backend.registerWorkflow({ workflowId: runId, name: "root", inputs: {}, status: "running", createdAt: 1 });
+	await backend.commitWorkflowRegistration({
+		workflowId: runId,
+		name: "root",
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+	});
 	const replayKey = "workflow:child:fingerprint:1";
 	const cached = { ...checkpoint(replayKey), output: childResult };
-	await backend.recordCheckpoint(cached);
-	await backend.recordCheckpoint({
+	await backend.commitCheckpoint(cached);
+	await backend.commitCheckpoint({
 		...checkpoint(`${replayKey}:stage:leaf:1`),
 		checkpointId: `${replayKey}:leaf`,
 		topology: {

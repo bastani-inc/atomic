@@ -35,7 +35,7 @@ describe("recordStageCheckpoint", () => {
 
 	beforeEach(async () => {
 		backend = await InMemoryDurableBackend.create();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: WORKFLOW_ID,
 			name: "stage-test",
 			inputs: {},
@@ -157,7 +157,7 @@ describe("recordStageCheckpoint", () => {
 
 	test("schema-backed replay returns structured prompt output", async () => {
 		const replayKey = "stage:structured:1";
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: WORKFLOW_ID,
 			checkpointId: `stage:${replayKey}`,
@@ -183,7 +183,7 @@ describe("recordStageCheckpoint", () => {
 
 	test("replayed stage invokes recordCachedStage for graph/store visibility", async () => {
 		const replayKey = "stage:analyze:1";
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: WORKFLOW_ID,
 			checkpointId: `stage:${replayKey}`,
@@ -217,7 +217,7 @@ describe("recordStageCheckpoint", () => {
 	test("replayed task invokes recordCachedTask for graph/store visibility", async () => {
 		const replayKey = "stage:task:review:1";
 		const cached = { name: "review", stageName: "review", text: "cached task output" };
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: WORKFLOW_ID,
 			checkpointId: `task:${replayKey}`,
@@ -262,9 +262,9 @@ describe("run durable checkpoints", () => {
 	exTest("completed stage checkpoint is awaited before next stage starts", async () => {
 		async function createAsyncStageBackend() {
 			const backend = Object.assign(await InMemoryDurableBackend.create(), { persisted: false });
-			const baserecordCheckpoint = backend.recordCheckpoint.bind(backend);
+			const baserecordCheckpoint = backend.commitCheckpoint.bind(backend);
 			return Object.assign(backend, {
-				async recordCheckpointAsync(
+				async commitCheckpoint(
 					checkpoint: import("../../packages/workflows/src/durable/types.js").DurableCheckpoint,
 				): Promise<void> {
 					await Promise.resolve();
@@ -302,14 +302,14 @@ describe("run durable checkpoints", () => {
 
 	exTest("cached ctx.task replay records a completed store stage", async () => {
 		const backend = await InMemoryDurableBackend.create();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "wf-task-replay",
 			name: "task",
 			inputs: {},
 			createdAt: Date.now(),
 			status: "running",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: "wf-task-replay",
 			checkpointId: "task:stage:task:cached-task:1",
@@ -701,9 +701,9 @@ describe("run durable checkpoints", () => {
 	exTest("child workflow run propagates custom durableBackend", async () => {
 		async function createTrackingBackend() {
 			const backend = Object.assign(await InMemoryDurableBackend.create(), { registered: [] as string[] });
-			const baseregisterWorkflow = backend.registerWorkflow.bind(backend);
+			const baseregisterWorkflow = backend.commitWorkflowRegistration.bind(backend);
 			return Object.assign(backend, {
-				async registerWorkflow(
+				async commitWorkflowRegistration(
 					h: import("../../packages/workflows/src/durable/backend.js").WorkflowRegistrationInput,
 				): Promise<void> {
 					backend.registered.push(h.workflowId);

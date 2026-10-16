@@ -75,7 +75,7 @@ describe("ScopedDurableBackend (child side effects under root)", () => {
 
 	beforeEach(async () => {
 		root = await InMemoryDurableBackend.create();
-		await root.registerWorkflow({
+		await root.commitWorkflowRegistration({
 			workflowId: ROOT,
 			name: "root",
 			inputs: {},
@@ -90,7 +90,7 @@ describe("ScopedDurableBackend (child side effects under root)", () => {
 		const scoped = new ScopedDurableBackend(root, scope);
 		// The child ctx.tool writes with workflowId = child run id; the scoped
 		// backend must remap it to the root.
-		await scoped.recordCheckpoint(toolCheckpoint(CHILD, "raw-hash", "side-effect-result"));
+		await scoped.commitCheckpoint(toolCheckpoint(CHILD, "raw-hash", "side-effect-result"));
 
 		// Root lookup with the scoped key returns the child result.
 		const scopedKey = "workflow:child:1:raw-hash";
@@ -103,7 +103,7 @@ describe("ScopedDurableBackend (child side effects under root)", () => {
 		const scopePrefix = "workflow:child:1";
 		// First (interrupted) child run: records a tool side effect under root.
 		const firstRun = new ScopedDurableBackend(root, { rootWorkflowId: ROOT, scopePrefix });
-		await firstRun.recordCheckpoint(toolCheckpoint(CHILD, "compute-hash", "computed-once"));
+		await firstRun.commitCheckpoint(toolCheckpoint(CHILD, "compute-hash", "computed-once"));
 
 		// Parent is resumed; the child is re-dispatched with the SAME scope key
 		// (stable boundary ordinal). Its ctx.tool reads the prior result from root.
@@ -115,8 +115,8 @@ describe("ScopedDurableBackend (child side effects under root)", () => {
 	test("distinct children with the same tool args do not collide", async () => {
 		const first = new ScopedDurableBackend(root, { rootWorkflowId: ROOT, scopePrefix: "workflow:child:1" });
 		const second = new ScopedDurableBackend(root, { rootWorkflowId: ROOT, scopePrefix: "workflow:child:2" });
-		await first.recordCheckpoint(toolCheckpoint(CHILD, "shared-hash", "first-result"));
-		await second.recordCheckpoint(toolCheckpoint(CHILD, "shared-hash", "second-result"));
+		await first.commitCheckpoint(toolCheckpoint(CHILD, "shared-hash", "first-result"));
+		await second.commitCheckpoint(toolCheckpoint(CHILD, "shared-hash", "second-result"));
 		assert.equal(first.getToolOutput(CHILD, "shared-hash"), "first-result");
 		assert.equal(second.getToolOutput(CHILD, "shared-hash"), "second-result");
 	});
@@ -155,7 +155,7 @@ describe("ScopedDurableBackend (child side effects under root)", () => {
 
 	test("scoped lifecycle methods are no-ops (children are not independently resumable)", async () => {
 		const scoped = new ScopedDurableBackend(root, { rootWorkflowId: ROOT, scopePrefix: "workflow:child:1" });
-		await scoped.registerWorkflow({
+		await scoped.commitWorkflowRegistration({
 			workflowId: CHILD,
 			name: "child",
 			inputs: {},
@@ -163,7 +163,7 @@ describe("ScopedDurableBackend (child side effects under root)", () => {
 			status: "running",
 			rootWorkflowId: ROOT,
 		});
-		await scoped.setWorkflowStatus(CHILD, "completed");
+		await scoped.commitWorkflowStatus(CHILD, "completed");
 		assert.equal(root.getWorkflow(CHILD), undefined);
 		assert.equal(scoped.listResumableWorkflows().length, 0);
 		assert.equal(scoped.toMetadata(CHILD), undefined);
@@ -174,8 +174,8 @@ describe("ScopedDurableBackend (child side effects under root)", () => {
 		const scope2 = "workflow:child:2";
 		const first = new ScopedDurableBackend(root, { rootWorkflowId: ROOT, scopePrefix: scope1 });
 		const second = new ScopedDurableBackend(root, { rootWorkflowId: ROOT, scopePrefix: scope2 });
-		await first.recordCheckpoint(toolCheckpoint(CHILD, "alpha", "first"));
-		await second.recordCheckpoint(toolCheckpoint(CHILD, "beta", "second"));
+		await first.commitCheckpoint(toolCheckpoint(CHILD, "alpha", "first"));
+		await second.commitCheckpoint(toolCheckpoint(CHILD, "beta", "second"));
 
 		const scope1Checkpoints = first.listCheckpoints(CHILD);
 		assert.deepEqual(
@@ -207,7 +207,7 @@ describe("ScopedDurableBackend (child side effects under root)", () => {
 			rootWorkflowId: ROOT,
 			scopePrefix: "workflow:grandchild:1",
 		});
-		await grandchildScope.recordCheckpoint({
+		await grandchildScope.commitCheckpoint({
 			kind: "stage",
 			workflowId: "grandchild-run",
 			checkpointId: "boundary-start:workflow:leaf:1",
@@ -290,7 +290,13 @@ describe("ctx.tool cancellation after side-effect resolves", () => {
 	beforeEach(async () => {
 		backend = await InMemoryDurableBackend.create();
 		cancelled = false;
-		await backend.registerWorkflow({ workflowId: ROOT, name: "t", inputs: {}, createdAt: 1, status: "running" });
+		await backend.commitWorkflowRegistration({
+			workflowId: ROOT,
+			name: "t",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
 	});
 
 	function makeTool(signal?: AbortSignal) {
@@ -406,7 +412,7 @@ describe("run() child ctx.tool is checkpointed under the root workflow", () => {
 
 	test("active child scope without boundary ownership fails closed without rerunning its tool", async () => {
 		const backend = await InMemoryDurableBackend.create();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "wf-interrupted-root",
 			name: "parent-with-tool-child",
 			inputs: {},
@@ -421,7 +427,7 @@ describe("run() child ctx.tool is checkpointed under the root workflow", () => {
 			{},
 		);
 		const scopePrefix = `workflow:workflow:child-with-tool:${fingerprint}:1`;
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "tool",
 			workflowId: "wf-interrupted-root",
 			checkpointId: `${scopePrefix}:tool:${scopePrefix}:${childToolArgsHash}`,

@@ -35,8 +35,14 @@ async function seedPartialRun(runId: string): Promise<InMemoryDurableBackend> {
 		store.recordStagePaused(runId, stageId);
 	}
 	store.recordRunPaused(runId, undefined, { resumable: true, exitReason: "quit" });
-	await backend.registerWorkflow({ workflowId: runId, name: "partial", inputs: {}, createdAt: 1, status: "paused" });
-	await backend.recordCheckpoint({
+	await backend.commitWorkflowRegistration({
+		workflowId: runId,
+		name: "partial",
+		inputs: {},
+		createdAt: 1,
+		status: "paused",
+	});
+	await backend.commitCheckpoint({
 		kind: "tool",
 		workflowId: runId,
 		checkpointId: "progress",
@@ -259,10 +265,10 @@ describe("partial resume command surfaces", () => {
 	test.sequential("workflow tool reports durable resume failure as partial when a stage is running", async () => {
 		async function createThrowRunningBackend() {
 			const backend = Object.assign(await createMemoryTestBackend(), {});
-			const basetransitionWorkflowStatus = backend.transitionWorkflowStatus.bind(backend);
+			const basetransitionWorkflowStatus = backend.commitWorkflowStatusTransition.bind(backend);
 			return Object.assign(backend, {
-				async transitionWorkflowStatus(
-					...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>
+				async commitWorkflowStatusTransition(
+					...args: Parameters<InMemoryDurableBackend["commitWorkflowStatusTransition"]>
 				): Promise<boolean> {
 					if (args[2] === "running") throw new Error("durable running write failed");
 					return await basetransitionWorkflowStatus(...args);
@@ -284,14 +290,14 @@ describe("partial resume command surfaces", () => {
 		store.recordStageStart(runId, { id: "only", name: "only", status: "running", parentIds: [], toolEvents: [] });
 		store.recordStagePaused(runId, "only");
 		store.recordRunPaused(runId, undefined, { resumable: true, exitReason: "quit" });
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "partial",
 			inputs: {},
 			createdAt: 1,
 			status: "paused",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "tool",
 			workflowId: runId,
 			checkpointId: "progress",
@@ -324,10 +330,10 @@ describe("partial resume command surfaces", () => {
 	test.sequential("workflow tool retries transient durable reconciliation on a later resume request", async () => {
 		async function createTransientRunningBackend() {
 			const backend = Object.assign(await createMemoryTestBackend(), { runningAttempts: 0 });
-			const basetransitionWorkflowStatus = backend.transitionWorkflowStatus.bind(backend);
+			const basetransitionWorkflowStatus = backend.commitWorkflowStatusTransition.bind(backend);
 			return Object.assign(backend, {
-				async transitionWorkflowStatus(
-					...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>
+				async commitWorkflowStatusTransition(
+					...args: Parameters<InMemoryDurableBackend["commitWorkflowStatusTransition"]>
 				): Promise<boolean> {
 					if (args[2] === "running" && ++backend.runningAttempts === 1)
 						throw new Error("transient public durable failure");
@@ -350,14 +356,14 @@ describe("partial resume command surfaces", () => {
 		store.recordStageStart(runId, { id: "only", name: "only", status: "running", parentIds: [], toolEvents: [] });
 		store.recordStagePaused(runId, "only");
 		store.recordRunPaused(runId, undefined, { resumable: true, exitReason: "quit" });
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "partial",
 			inputs: {},
 			createdAt: 1,
 			status: "paused",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "tool",
 			workflowId: runId,
 			checkpointId: "progress",
@@ -409,8 +415,14 @@ describe("partial resume command surfaces", () => {
 		store.recordStageStart(runId, { id: "only", name: "only", status: "running", parentIds: [], toolEvents: [] });
 		store.recordStagePaused(runId, "only");
 		store.recordRunPaused(runId, undefined, { resumable: true, exitReason: "quit" });
-		await backend.registerWorkflow({ workflowId: runId, name: "picker", inputs: {}, createdAt: 1, status: "paused" });
-		await backend.recordCheckpoint({
+		await backend.commitWorkflowRegistration({
+			workflowId: runId,
+			name: "picker",
+			inputs: {},
+			createdAt: 1,
+			status: "paused",
+		});
+		await backend.commitCheckpoint({
 			kind: "tool",
 			workflowId: runId,
 			checkpointId: "progress",

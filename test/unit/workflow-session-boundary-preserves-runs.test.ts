@@ -505,7 +505,7 @@ describe("a disposed session releases its paused agent-launched runs for adoptio
 	test("session_shutdown(quit) releases a run that was awaiting human input (#3566)", async () => {
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "release-awaiting-input",
 			name: "release-awaiting-input",
 			inputs: {},
@@ -550,9 +550,9 @@ function registerPausedOwnedRun(
 	backend: DurableWorkflowBackend,
 	runId: string,
 	modelOwner: string,
-	overrides: Partial<Parameters<DurableWorkflowBackend["registerWorkflow"]>[0]> = {},
-): void | Promise<void> {
-	return backend.registerWorkflow({
+	overrides: Partial<Parameters<DurableWorkflowBackend["commitWorkflowRegistration"]>[0]> = {},
+): Promise<void> {
+	return backend.commitWorkflowRegistration({
 		workflowId: runId,
 		name: "reviewer",
 		inputs: {},
@@ -608,7 +608,7 @@ describe("the successor may start before the departing session's shutdown handle
 			assert.equal(notices.length, 1, notices.join("\n---\n"));
 			assert.match(notices[0]!, new RegExp(`/workflow resume ${own}\\b`));
 
-			const releases = vi.spyOn(backend, "transitionWorkflowStatus");
+			const releases = vi.spyOn(backend, "commitWorkflowStatusTransition");
 			await departing.get("session_shutdown")!({ reason });
 			assert.equal(
 				releases.mock.calls.length,
@@ -626,7 +626,7 @@ describe("the successor may start before the departing session's shutdown handle
 		const scope = {};
 		const departing = await startSwitchedSession(scope, "session-a", "startup");
 		await departing.get("session_shutdown")!({ reason: "new" });
-		const releases = vi.spyOn(backend, "transitionWorkflowStatus");
+		const releases = vi.spyOn(backend, "commitWorkflowStatusTransition");
 		const notices: string[] = [];
 		await startSwitchedSession(scope, "session-b", "new", notifyingUi(notices));
 		assert.equal(releases.mock.calls.length, 0);
@@ -640,9 +640,9 @@ describe("the successor may start before the departing session's shutdown handle
 		const scope = {};
 		const departing = await startSwitchedSession(scope, "session-a", "startup");
 		const gate = Promise.withResolvers<void>();
-		const original = backend.transitionWorkflowStatus.bind(backend);
+		const original = backend.commitWorkflowStatusTransition.bind(backend);
 		const calls: string[] = [];
-		vi.spyOn(backend, "transitionWorkflowStatus").mockImplementation(async (...args) => {
+		vi.spyOn(backend, "commitWorkflowStatusTransition").mockImplementation(async (...args) => {
 			calls.push(calls.length === 0 ? "handoff-release" : "later-release");
 			if (calls.length === 1) await gate.promise;
 			return original(...args);
@@ -789,7 +789,7 @@ describe("switching sessions releases the previous session's paused runs for the
 			const backend = await readyDurability();
 			await registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a");
 			const order: string[] = [];
-			vi.spyOn(backend, "transitionWorkflowStatus").mockImplementation(async (...args) => {
+			vi.spyOn(backend, "commitWorkflowStatusTransition").mockImplementation(async (...args) => {
 				order.push(args[7] === undefined ? "transition" : "release");
 				return true;
 			});
@@ -890,7 +890,7 @@ describe("switching sessions releases the previous session's paused runs for the
 		const first = await startSwitchedSession(scope, "session-a", "startup");
 		await first.get("session_shutdown")!({ reason: "new" });
 		assert.equal(
-			await backend.transitionWorkflowStatus(
+			await backend.commitWorkflowStatusTransition(
 				RELEASE_RUN_A,
 				["paused"],
 				"running",

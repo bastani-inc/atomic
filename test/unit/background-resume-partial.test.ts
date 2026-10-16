@@ -42,8 +42,14 @@ async function seedPausedRun(
 		store.recordStagePaused(runId, stageId);
 	}
 	store.recordRunPaused(runId, undefined, { resumable: true, exitReason: "quit" });
-	await backend.registerWorkflow({ workflowId: runId, name: "partial", inputs: {}, createdAt: 1, status: "paused" });
-	await backend.recordCheckpoint({
+	await backend.commitWorkflowRegistration({
+		workflowId: runId,
+		name: "partial",
+		inputs: {},
+		createdAt: 1,
+		status: "paused",
+	});
+	await backend.commitCheckpoint({
 		kind: "tool",
 		workflowId: runId,
 		checkpointId: "progress",
@@ -350,7 +356,7 @@ describe("multi-stage resume acknowledgement coherence", () => {
 		const operation = resumeRun(runId, { store, stageControlRegistry: registry });
 		await Promise.resolve();
 		assert.equal(store.recordRunEnd(runId, "completed", {}), true);
-		await backend.setWorkflowStatus(runId, "completed");
+		await backend.commitWorkflowStatus(runId, "completed");
 		acknowledgement.resolve();
 		const result = await operation;
 		assert.equal(result.ok, true);
@@ -397,10 +403,10 @@ describe("multi-stage resume acknowledgement coherence", () => {
 	test("surfaces durable running transition failures after visible resume", async () => {
 		async function createThrowRunningBackend() {
 			const backend = Object.assign(await createMemoryTestBackend(), {});
-			const basetransitionWorkflowStatus = backend.transitionWorkflowStatus.bind(backend);
+			const basetransitionWorkflowStatus = backend.commitWorkflowStatusTransition.bind(backend);
 			return Object.assign(backend, {
-				async transitionWorkflowStatus(
-					...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>
+				async commitWorkflowStatusTransition(
+					...args: Parameters<InMemoryDurableBackend["commitWorkflowStatusTransition"]>
 				): Promise<boolean> {
 					if (args[2] === "running") throw new Error("durable running write failed");
 					return await basetransitionWorkflowStatus(...args);
@@ -439,10 +445,10 @@ describe("multi-stage resume acknowledgement coherence", () => {
 	test("retries a failed durable running transition after local resume already succeeded", async () => {
 		async function createTransientRunningBackend() {
 			const backend = Object.assign(await createMemoryTestBackend(), { runningAttempts: 0 });
-			const basetransitionWorkflowStatus = backend.transitionWorkflowStatus.bind(backend);
+			const basetransitionWorkflowStatus = backend.commitWorkflowStatusTransition.bind(backend);
 			return Object.assign(backend, {
-				async transitionWorkflowStatus(
-					...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>
+				async commitWorkflowStatusTransition(
+					...args: Parameters<InMemoryDurableBackend["commitWorkflowStatusTransition"]>
 				): Promise<boolean> {
 					if (args[2] === "running" && ++backend.runningAttempts === 1)
 						throw new Error("transient durable failure");
@@ -553,7 +559,7 @@ describe("multi-stage resume acknowledgement coherence", () => {
 					result: "held-answer",
 				});
 				store.recordRunEnd(runId, "completed", { answer: "held-answer" });
-				await backend.setWorkflowStatus(runId, "completed");
+				await backend.commitWorkflowStatus(runId, "completed");
 			},
 		});
 

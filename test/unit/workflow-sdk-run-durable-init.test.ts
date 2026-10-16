@@ -120,7 +120,7 @@ for (const outcome of ["success", "failure", "stop", "quit"] as const) {
 		await started.promise;
 		const backend = requireStoreDurableBackend(store);
 		assert.ok(backend instanceof JournalDurableBackend);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "unrelated",
 			name: "active",
 			inputs: {},
@@ -143,7 +143,7 @@ for (const outcome of ["success", "failure", "stop", "quit"] as const) {
 		try {
 			assert.equal(await contender.workflowOwnership("settled"), "available");
 			assert.equal(
-				await contender.transitionWorkflowStatus(
+				await contender.commitWorkflowStatusTransition(
 					"settled",
 					[result.status === "killed" ? "cancelled" : result.status],
 					"paused",

@@ -68,14 +68,14 @@ test("tool resume requires the persisted failed tool identity, not matching erro
 		error,
 	};
 	const backend = await createMemoryTestBackend();
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: rootId,
 		name: "frontier",
 		inputs: {},
 		createdAt: 1,
 		status: "blocked",
 	});
-	await backend.recordCheckpoint({
+	await backend.commitCheckpoint({
 		kind: "tool",
 		workflowId: rootId,
 		checkpointId: "failure",

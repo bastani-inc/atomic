@@ -454,7 +454,7 @@ describe("non-attachable tool interactions", () => {
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const id = testRunId("failed-author-exit-tool");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: id,
 			name: "failed-author-exit-tool-flow",
 			inputs: {},
@@ -506,7 +506,7 @@ describe("non-attachable tool interactions", () => {
 		setDurableBackend(backend);
 		const id = testRunId("budget-tool-resume");
 		const stageId = `${id}:frontier`;
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: id,
 			name: "budget-tool-resume-flow",
 			inputs: {},

@@ -104,7 +104,7 @@ async function seedNested(
 	}
 	targetStore.recordRunPaused(childId, undefined, { resumable: true, exitReason: "quit" });
 	targetStore.recordRunPaused(rootId, undefined, { resumable: true, exitReason: "quit" });
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: rootId,
 		name: "root",
 		inputs: {},
@@ -112,7 +112,7 @@ async function seedNested(
 		status: "paused",
 		resumable: true,
 	});
-	await backend.recordCheckpoint({
+	await backend.commitCheckpoint({
 		kind: "tool",
 		workflowId: rootId,
 		checkpointId: "progress",
@@ -192,7 +192,13 @@ describe("post-commit quit and nested resume coherence", () => {
 			parentIds: [],
 			toolEvents: [],
 		});
-		await backend.registerWorkflow({ workflowId: runId, name: runId, inputs: {}, createdAt: 1, status: "running" });
+		await backend.commitWorkflowRegistration({
+			workflowId: runId,
+			name: runId,
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
 		registry.register(
 			handle({
 				runId,
@@ -437,7 +443,7 @@ describe("post-commit quit and nested resume coherence", () => {
 		});
 		singletonStore.recordStagePaused(runId, stageId);
 		singletonStore.recordRunPaused(runId, undefined, { resumable: true, exitReason: "quit" });
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: runId,
 			inputs: {},
@@ -445,7 +451,7 @@ describe("post-commit quit and nested resume coherence", () => {
 			status: "paused",
 			resumable: true,
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "tool",
 			workflowId: runId,
 			checkpointId: "progress",
@@ -471,7 +477,7 @@ describe("post-commit quit and nested resume coherence", () => {
 						result: "held-answer",
 					});
 					singletonStore.recordRunEnd(runId, "completed", { answer: "held-answer" });
-					await backend.setWorkflowStatus(runId, "completed");
+					await backend.commitWorkflowStatus(runId, "completed");
 					return undefined;
 				},
 			}),
@@ -522,7 +528,7 @@ describe("post-commit quit and nested resume coherence", () => {
 		});
 		singletonStore.recordStagePaused(runId, stageId);
 		singletonStore.recordRunPaused(runId, undefined, { resumable: true, exitReason: "quit" });
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: runId,
 			inputs: {},
@@ -530,7 +536,7 @@ describe("post-commit quit and nested resume coherence", () => {
 			status: "paused",
 			resumable: true,
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "tool",
 			workflowId: runId,
 			checkpointId: "progress",
@@ -557,7 +563,7 @@ describe("post-commit quit and nested resume coherence", () => {
 						result: "held-answer",
 					});
 					singletonStore.recordRunEnd(runId, "completed", { answer: "held-answer" });
-					await backend.setWorkflowStatus(runId, "completed");
+					await backend.commitWorkflowStatus(runId, "completed");
 					return undefined;
 				},
 			}),
@@ -597,7 +603,7 @@ describe("post-commit quit and nested resume coherence", () => {
 		});
 		singletonStore.recordStagePaused(runId, stageId);
 		singletonStore.recordRunPaused(runId, undefined, { resumable: true, exitReason: "quit" });
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: runId,
 			inputs: {},
@@ -605,7 +611,7 @@ describe("post-commit quit and nested resume coherence", () => {
 			status: "paused",
 			resumable: true,
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "tool",
 			workflowId: runId,
 			checkpointId: "progress",

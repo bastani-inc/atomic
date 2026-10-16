@@ -65,7 +65,13 @@ async function fixture() {
 		startedAt: 1,
 	});
 	const backend = await createMemoryTestBackend();
-	await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	await backend.commitWorkflowRegistration({
+		workflowId: RUN_ID,
+		name: "flow",
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+	});
 	bindStoreDurableBackend(store, backend);
 	return { store, backend };
 }

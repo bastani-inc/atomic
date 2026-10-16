@@ -50,7 +50,7 @@ async function discardUnadmittedRun(runId: string, activeStore: Store): Promise<
 	activeStore.removeRun(runId);
 	const handle = backend.getWorkflow(runId);
 	if (handle?.status === "running") {
-		await backend.setWorkflowStatus(runId, "failed", handle.pendingPrompts, false);
+		await backend.commitWorkflowStatus(runId, "failed", handle.pendingPrompts, false);
 	}
 	const deleted = await backend.deleteWorkflowIfInactive(runId);
 	if (!deleted.ok && deleted.reason !== "not_found") {

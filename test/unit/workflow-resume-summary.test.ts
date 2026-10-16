@@ -72,7 +72,7 @@ test("a later pause can supply fresh resume context without duplicating the live
 
 test("durable resumes without snapshots deliver again after pause or detach, not during a live attachment", async () => {
 	const backend = await createMemoryTestBackend();
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: "durable-summary",
 		name: "Ship feature",
 		inputs: {},
@@ -90,14 +90,14 @@ test("durable resumes without snapshots deliver again after pause or detach, not
 		};
 		const ctx: PiCommandContext = { ui: { notify() {} } };
 		for (const boundary of ["initial", "pause", "detach"]) {
-			if (boundary !== "initial") await backend.setWorkflowStatus("durable-summary", "paused");
+			if (boundary !== "initial") await backend.commitWorkflowStatus("durable-summary", "paused");
 			await injectWorkflowResumeSummary(pi, ctx, "durable-summary", undefined, undefined, backend);
 			await injectWorkflowResumeSummary(pi, ctx, "durable-summary", undefined, undefined, backend);
-			await backend.setWorkflowStatus("durable-summary", "running");
+			await backend.commitWorkflowStatus("durable-summary", "running");
 			await injectWorkflowResumeSummary(pi, ctx, "durable-summary", undefined, undefined, backend);
 			assert.equal(messages.length, ["initial", "pause", "detach"].indexOf(boundary) + 1);
 		}
-		await backend.setWorkflowStatus("durable-summary", "paused");
+		await backend.commitWorkflowStatus("durable-summary", "paused");
 		await injectWorkflowResumeSummary(pi, ctx, "durable-summary", undefined, undefined, backend);
 		await backend.persistSummary("durable-summary", "Updated review context", 2000);
 		await injectWorkflowResumeSummary(pi, ctx, "durable-summary", undefined, undefined, backend);

@@ -71,7 +71,7 @@ for (const method of ["takeoverExpired", "leaseState"] as const) {
 		else journal.leaseState = (...args) => foreign(memory.leaseState(...args));
 		const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
 		try {
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: "run",
 				name: "test",
 				inputs: {},
@@ -102,7 +102,7 @@ for (const method of ["takeoverExpired", "leaseState"] as const) {
 		const journal = asyncJournal(memory);
 		const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
 		const register = async () =>
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: "run",
 				name: "test",
 				inputs: {},
@@ -158,7 +158,7 @@ for (const storage of ["memory", "sqlite"] as const) {
 			storage === "memory" ? new MemoryRunJournal() : await openSqlRunJournal(join(directory, "journal.sqlite"));
 		const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
 		try {
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: "run",
 				name: "boundary",
 				inputs: {},
@@ -198,7 +198,7 @@ for (const storage of ["memory", "sqlite"] as const) {
 			};
 			assert.ok(checkpoint.topology?.boundary);
 			Reflect.deleteProperty(checkpoint.topology.boundary, "invocationFingerprint");
-			await assert.rejects(backend.recordCheckpointAsync(checkpoint), (error: Error) => {
+			await assert.rejects(backend.commitCheckpoint(checkpoint), (error: Error) => {
 				assert.ok(error instanceof DurableNestedTopologyError);
 				assert.equal(error.reason, "missing invocation fingerprint at boundary");
 				return true;
@@ -244,7 +244,7 @@ test("reopened async-only journals resume unheld runs and replay completed tools
 			(await run(definition, {}, { runId, durableBackend: writer, store: createStore() })).status,
 			"completed",
 		);
-		await writer.setWorkflowStatus(runId, "running", 0, true);
+		await writer.commitWorkflowStatus(runId, "running", 0, true);
 		assert.ok(writer.listCheckpoints(runId).some((entry) => entry.kind === "tool" && entry.output === "saved"));
 		await writer.close();
 		reader = await JournalDurableBackend.open(journal, { ownsJournal: false });
@@ -290,7 +290,13 @@ test("async-only ownership inspection is read-only and expired takeover fences t
 	const writer = await JournalDurableBackend.open(journal, { ownsJournal: false });
 	let reader: Awaited<ReturnType<typeof JournalDurableBackend.open>> | undefined;
 	try {
-		await writer.registerWorkflow({ workflowId: "run", name: "test", inputs: {}, createdAt: 1, status: "running" });
+		await writer.commitWorkflowRegistration({
+			workflowId: "run",
+			name: "test",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
 		reader = await JournalDurableBackend.open(journal, { ownsJournal: false });
 		const initial = await memory.leaseState("run");
 		assert.ok(initial);
@@ -301,12 +307,12 @@ test("async-only ownership inspection is read-only and expired takeover fences t
 		vi.setSystemTime(1_000 + FOREIGN_LIVE_WORKFLOW_WINDOW_MS + 1);
 		assert.equal(await reader.workflowOwnership("run"), "available");
 		assertLeaseStateUnchanged(await memory.leaseState("run"), initial);
-		await reader.setWorkflowStatus("run", "paused");
+		await reader.commitWorkflowStatus("run", "paused");
 		const current = await memory.leaseState("run");
 		assert.equal(current?.epoch, initial.epoch + 1);
 		assert.equal(current?.holderId, reader.holderId);
 		await assert.rejects(
-			Promise.resolve().then(async () => await writer.setWorkflowStatus("run", "failed")),
+			Promise.resolve().then(async () => await writer.commitWorkflowStatus("run", "failed")),
 			JournalOwnershipError,
 		);
 		assert.equal((await memory.getRun("run"))?.status, "paused");
@@ -352,7 +358,7 @@ test("release waits for an in-flight heartbeat and permits a fresh resume lease 
 	const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
 	let releasing: Promise<void> | undefined;
 	try {
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "heartbeat",
 			name: "test",
 			inputs: {},
@@ -367,7 +373,7 @@ test("release waits for an in-flight heartbeat and permits a fresh resume lease 
 		finish.resolve();
 		await releasing;
 		assert.equal(releases, 1);
-		await backend.setWorkflowStatus("heartbeat", "running");
+		await backend.commitWorkflowStatus("heartbeat", "running");
 		assert.equal(backend.getWorkflow("heartbeat")?.status, "running");
 		assert.equal(await backend.workflowOwnership("heartbeat"), "local");
 	} finally {

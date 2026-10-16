@@ -72,7 +72,7 @@ test("cross-realm journal registration persists before success and replays compl
 		},
 	});
 	try {
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "registration",
 			name: "registered",
 			inputs: {},

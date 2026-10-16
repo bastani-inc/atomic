@@ -213,7 +213,13 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			startedAt: 1,
 		});
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.commitWorkflowRegistration({
+			workflowId: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		bindStoreDurableBackend(store, backend);
 		const listeners = new Map<string, (payload: unknown) => void>();
 		const emitted: Array<{ event: string; payload: Record<string, unknown> }> = [];
@@ -429,7 +435,13 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			startedAt: 2,
 		});
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({ workflowId: RUN_ID, name: "root", inputs: {}, status: "running", createdAt: 1 });
+		await backend.commitWorkflowRegistration({
+			workflowId: RUN_ID,
+			name: "root",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		bindStoreDurableBackend(store, backend);
 		const rootMessage = message("root-existing", 100);
 		assert.equal(
@@ -593,7 +605,13 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			startedAt: 3,
 		});
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({ workflowId: RUN_ID, name: "root", inputs: {}, status: "running", createdAt: 1 });
+		await backend.commitWorkflowRegistration({
+			workflowId: RUN_ID,
+			name: "root",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		bindStoreDurableBackend(store, backend);
 		const routeAnnouncements: Array<{ runId: string; stages: Array<{ stageId: string; target: string }> }> = [];
 		const listeners = new Map<string, (payload: unknown) => void>();
@@ -891,7 +909,13 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 
 test("reloads and drains aliases by durable deposit order rather than sender timestamp exactly once", async () => {
 	const writer = await JournalTestBackend.create();
-	await writer.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	await writer.commitWorkflowRegistration({
+		workflowId: RUN_ID,
+		name: "flow",
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+	});
 	const store = createStore();
 	store.recordRunStart({
 		id: RUN_ID,
@@ -968,7 +992,13 @@ test("reloads and drains aliases by durable deposit order rather than sender tim
 test("concurrent stage drains claim one queued message exactly once", async () => {
 	const store = createStore();
 	const backend = await createMemoryTestBackend();
-	await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	await backend.commitWorkflowRegistration({
+		workflowId: RUN_ID,
+		name: "flow",
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+	});
 	bindStoreDurableBackend(store, backend);
 	store.recordRunStart({
 		id: RUN_ID,
@@ -1013,7 +1043,13 @@ test("concurrent stage drains claim one queued message exactly once", async () =
 
 test("rejected inbound delivery remains queued and retries after durable reload", async () => {
 	const writer = await JournalTestBackend.create();
-	await writer.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	await writer.commitWorkflowRegistration({
+		workflowId: RUN_ID,
+		name: "flow",
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+	});
 	setDurableBackend(writer);
 	const store = createStore();
 	store.recordRunStart({
@@ -1090,7 +1126,13 @@ test("durable acknowledgement failure replays through the recipient idempotency 
 		}
 		return persist(...args);
 	};
-	await writer.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	await writer.commitWorkflowRegistration({
+		workflowId: RUN_ID,
+		name: "flow",
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+	});
 	setDurableBackend(writer);
 	const store = createStore();
 	store.recordRunStart({
@@ -1274,7 +1316,13 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 			});
 		}
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.commitWorkflowRegistration({
+			workflowId: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		bindStoreDurableBackend(store, backend);
 		const listeners = new Map<string, (payload: unknown) => void>();
 		const emitted: Array<{ event: string; payload: Record<string, unknown> }> = [];

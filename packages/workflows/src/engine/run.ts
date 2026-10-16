@@ -384,7 +384,8 @@ async function executeRun(
 	const whenRunning = <T>(call: () => Promise<T>): Promise<T> => {
 		if (scheduler.isRunPaused()) return waitForRunRelease().then(() => whenRunning(call));
 		if (ownController.signal.aborted) return Promise.reject(ownController.signal.reason);
-		return call();
+		const persistence = drainCachedStagePersistence();
+		return persistence === undefined ? call() : persistence.then(call);
 	};
 	ownController.signal.addEventListener(
 		"abort",
@@ -393,6 +394,23 @@ async function executeRun(
 	);
 	const cachedStagePersistence: Promise<void>[] = [];
 	let cachedStageFailure: Error | undefined;
+	let cachedStageDrain: Promise<void> | undefined;
+	const drainCachedStagePersistence = (): void | Promise<void> => {
+		if (cachedStageDrain !== undefined) return cachedStageDrain;
+		if (cachedStagePersistence.length === 0) {
+			if (cachedStageFailure !== undefined) throw cachedStageFailure;
+			return;
+		}
+		cachedStageDrain = (async () => {
+			try {
+				while (cachedStagePersistence.length > 0) await Promise.all(cachedStagePersistence.splice(0));
+				if (cachedStageFailure !== undefined) throw cachedStageFailure;
+			} finally {
+				cachedStageDrain = undefined;
+			}
+		})();
+		return cachedStageDrain;
+	};
 	const finalizers = createRunFinalizers({
 		def,
 		runId,
@@ -401,8 +419,14 @@ async function executeRun(
 		opts,
 		classifyExecutorFailure,
 		drainWorkflowExitCleanups: async (reason) => {
-			await Promise.all(cachedStagePersistence);
-			await exit.drainWorkflowExitCleanups(reason);
+			try {
+				await drainCachedStagePersistence();
+			} catch (error) {
+				// The successful-exit check reports this failure after cleanup.
+				if (error !== cachedStageFailure) throw error;
+			} finally {
+				await exit.drainWorkflowExitCleanups(reason);
+			}
 		},
 		assertSuccessfulCompletion: () => {
 			if (cachedStageFailure !== undefined) throw cachedStageFailure;
@@ -418,6 +442,7 @@ async function executeRun(
 		nextCheckpointId: checkpointIdGenerator,
 		nextReplayKey: stageReplayKeyGenerator,
 		completedReplayKeys: completedStageReplayKeys,
+		beforeCheckpoint: drainCachedStagePersistence,
 	});
 	const durableOnStageEnd = createDurableStageEndRecorder({
 		rootRunId: runId,
@@ -577,6 +602,7 @@ async function executeRun(
 			toolControls,
 			toolAdmission,
 			budget,
+			beforeToolCall: drainCachedStagePersistence,
 		});
 	let selectedAdmittedToolFailure: ReturnType<typeof admittedTools.firstFailure>;
 	/**
@@ -636,9 +662,11 @@ async function executeRun(
 		workflowId: runId,
 		backend: durableBackend,
 		nextCheckpointId: checkpointIdGenerator,
+		beforeCheckpoint: drainCachedStagePersistence,
 		beforeCall: () => {
 			ownController.signal.throwIfAborted();
-			return scheduler.isRunPaused() ? waitForRunRelease() : undefined;
+			const persistence = drainCachedStagePersistence();
+			return persistence ?? (scheduler.isRunPaused() ? waitForRunRelease() : undefined);
 		},
 		...(opts.usePromptNodesForUi === true
 			? {
@@ -681,6 +709,7 @@ async function executeRun(
 		durableIntercomGroup,
 		task: taskRunners.task,
 		recordCachedTask: recordCachedStage,
+		beforeCheckpoint: drainCachedStagePersistence,
 		signal: ownController.signal,
 		registerTailControl: (registration) => {
 			registration.controller.signal.addEventListener(
@@ -720,6 +749,7 @@ async function executeRun(
 		backend: durableBackend,
 		nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName),
 		durableIntercomGroup,
+		beforeCall: drainCachedStagePersistence,
 		recordCachedStage,
 		stage: (name, options, replayKey) => {
 			const stage = runtime.stage(name, options);
@@ -919,7 +949,7 @@ async function executeRun(
 		ownController.signal.throwIfAborted();
 		if (opts.parentRun === undefined) {
 			if (durableRootRegistration !== undefined) {
-				await durableBackend.registerWorkflow({
+				await durableBackend.commitWorkflowRegistration({
 					...durableRootRegistration,
 					modelOwner: runSnapshot.modelOwner,
 					...workflowInvocationMetadata(
@@ -930,7 +960,7 @@ async function executeRun(
 					),
 				});
 			} else {
-				await durableBackend.setWorkflowStatus(runId, "running");
+				await durableBackend.commitWorkflowStatus(runId, "running");
 			}
 		}
 		durableRootAdmitted = true;
@@ -952,8 +982,7 @@ async function executeRun(
 			runWorkflowDefinitionCallback(def.name, runId, () => def.run(ctx)),
 			ownController.signal,
 		);
-		await Promise.all(cachedStagePersistence);
-		if (cachedStageFailure !== undefined) throw cachedStageFailure;
+		await drainCachedStagePersistence();
 		while (scheduler.isRunPaused()) await waitForRunRelease();
 		await admittedTools.closeAndDrain();
 		while (scheduler.isRunPaused()) await waitForRunRelease();
@@ -992,7 +1021,7 @@ async function executeRun(
 		const recorded = activeStore.recordRunEnd(runId, returned.status, result, returned.error, returned.metadata);
 		// Durable identity must reach its terminal state even if the session journal fails.
 		if (opts.parentRun === undefined) await recordRunTimingCheckpointAsync(durableBackend, runSnapshot);
-		await durableBackend.setWorkflowStatus(runId, returned.status, undefined, returned.metadata?.resumable);
+		await durableBackend.commitWorkflowStatus(runId, returned.status, undefined, returned.metadata?.resumable);
 		await appendRunEndWhenRecorded(opts.persistence, recorded, {
 			runId,
 			status: returned.status,

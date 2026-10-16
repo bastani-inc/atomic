@@ -78,7 +78,13 @@ async function open(path = database()): Promise<JournalDurableBackend> {
 	return backend;
 }
 async function register(backend: JournalDurableBackend): Promise<void> {
-	await backend.registerWorkflow({ workflowId: "run", name: "test", inputs: {}, createdAt: 1, status: "running" });
+	await backend.commitWorkflowRegistration({
+		workflowId: "run",
+		name: "test",
+		inputs: {},
+		createdAt: 1,
+		status: "running",
+	});
 }
 function checkpoint(output = "saved") {
 	return {
@@ -121,7 +127,7 @@ test("journal backend writes checkpoints durably before returning and rebuilds o
 	const path = database();
 	const backend = await open(path);
 	await register(backend);
-	await backend.recordCheckpoint(checkpoint());
+	await backend.commitCheckpoint(checkpoint());
 	const reader = await open(path);
 	assert.equal(reader.getToolOutput("run", "hash"), "saved");
 	assert.deepEqual(reader.listCheckpoints("run"), backend.listCheckpoints("run"));
@@ -177,7 +183,7 @@ test("opening folds every journal event exactly once through paged reads", async
 	const writer = await open(path);
 	await register(writer);
 	for (let index = 0; index <= JOURNAL_READ_PAGE_SIZE * 2; index++)
-		await writer.recordCheckpoint({ ...checkpoint(`output ${index}`), checkpointId: `checkpoint ${index}` });
+		await writer.commitCheckpoint({ ...checkpoint(`output ${index}`), checkpointId: `checkpoint ${index}` });
 	const events = (await entries(writer.journal)).length;
 	assert.ok(events > JOURNAL_READ_PAGE_SIZE * 2);
 	const expected = writer.getWorkflow("run");
@@ -210,7 +216,7 @@ test("a replay failure while opening clears the renewal timer and closes the jou
 	const path = database();
 	const writer = await open(path);
 	await register(writer);
-	await writer.recordCheckpoint(checkpoint());
+	await writer.commitCheckpoint(checkpoint());
 	await writer.close();
 	const replayFailure = new StorageUnavailableError(
 		{ adapter: "node-sqlite", location: path },
@@ -275,9 +281,9 @@ test(
 test("checkpoint identity is first-writer-wins without adding a duplicate event", async () => {
 	const backend = await open();
 	await register(backend);
-	await backend.recordCheckpointAsync(checkpoint());
+	await backend.commitCheckpoint(checkpoint());
 	const before = await entries(backend.journal);
-	await backend.recordCheckpointAsync(checkpoint("changed"));
+	await backend.commitCheckpoint(checkpoint("changed"));
 	assert.equal(backend.getToolOutput("run", "hash"), "saved");
 	assert.deepEqual(await entries(backend.journal), before);
 });
@@ -290,7 +296,7 @@ test("two backends on one file cannot append to the same fresh lease", async () 
 	assert.notEqual(first.holderId, second.holderId);
 	const before = await entries(first.journal);
 	await assert.rejects(
-		async () => await second.recordCheckpoint(checkpoint()),
+		async () => await second.commitCheckpoint(checkpoint()),
 		(error: Error) => {
 			assert.ok(error instanceof JournalOwnershipError);
 			assert.equal(error.runId, "run");
@@ -312,12 +318,12 @@ test("lease expiry takeover fences the previous writer and maps lost ownership",
 	const oldEpoch = (await first.journal.leaseState("run"))!.epoch;
 	expire(path);
 	const second = await open(path);
-	await second.recordCheckpoint(checkpoint("new holder"));
+	await second.commitCheckpoint(checkpoint("new holder"));
 	const currentEpoch = (await second.journal.leaseState("run"))!.epoch;
 	assert.equal(currentEpoch, oldEpoch + 1);
 	const before = await entries(second.journal);
 	await assert.rejects(
-		async () => await first.recordCheckpoint(checkpoint("stale")),
+		async () => await first.commitCheckpoint(checkpoint("stale")),
 		(error: Error) => {
 			assert.ok(error instanceof JournalOwnershipError);
 			assert.ok(error.cause instanceof StaleLeaseError);
@@ -346,11 +352,11 @@ test("lease renewal follows the existing liveness cadence and prevents stale tak
 	assert.ok((await first.journal.leaseState("run"))!.renewedAt >= initial.renewedAt);
 	await vi.advanceTimersByTimeAsync(FOREIGN_LIVE_WORKFLOW_WINDOW_MS);
 	const second = await open(path);
-	await assert.rejects(async () => await second.recordCheckpoint(checkpoint()), JournalOwnershipError);
+	await assert.rejects(async () => await second.commitCheckpoint(checkpoint()), JournalOwnershipError);
 	assert.equal((await first.journal.leaseState("run"))!.epoch, initial.epoch);
 	await first.close();
 	vi.advanceTimersByTime(FOREIGN_LIVE_WORKFLOW_WINDOW_MS);
-	await second.recordCheckpoint(checkpoint());
+	await second.commitCheckpoint(checkpoint());
 	assert.equal(second.getToolOutput("run", "hash"), "saved");
 });
 
@@ -367,7 +373,7 @@ test("heartbeat records lost ownership and drops the lease when renewal and hold
 	const release = vi.spyOn(backend.journal, "release");
 	await vi.advanceTimersByTimeAsync(STAGE_SESSION_HEARTBEAT_INTERVAL_MS);
 	await assert.rejects(
-		async () => await backend.setWorkflowStatus("run", "paused"),
+		async () => await backend.commitWorkflowStatus("run", "paused"),
 		(error: Error) => {
 			assert.ok(error instanceof JournalOwnershipError);
 			assert.equal(error.holderId, null);
@@ -384,7 +390,7 @@ test("heartbeat records lost ownership and drops the lease when renewal and hold
 test("status claims use full snapshots, omit absent fields and clear omitted owners", async () => {
 	const path = database();
 	const backend = await open(path);
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: "run",
 		name: "test",
 		inputs: {},
@@ -394,7 +400,7 @@ test("status claims use full snapshots, omit absent fields and clear omitted own
 	});
 	const previous = backend.getWorkflow("run")!;
 	assert.equal(
-		await backend.transitionWorkflowStatus("run", ["running"], "paused", 0, undefined, previous.updatedAt),
+		await backend.commitWorkflowStatusTransition("run", ["running"], "paused", 0, undefined, previous.updatedAt),
 		true,
 	);
 	const latest = (await entries(backend.journal)).at(-1)!;
@@ -409,9 +415,16 @@ test("status claims use full snapshots, omit absent fields and clear omitted own
 	assert.deepEqual(reader.getWorkflow("run"), backend.getWorkflow("run"));
 	assert.equal(reader.getWorkflow("run")?.modelOwner, undefined);
 	const before = await entries(backend.journal);
-	assert.equal(await backend.transitionWorkflowStatus("run", ["running"], "completed"), false);
+	assert.equal(await backend.commitWorkflowStatusTransition("run", ["running"], "completed"), false);
 	assert.equal(
-		await backend.transitionWorkflowStatus("run", ["paused"], "completed", undefined, undefined, previous.updatedAt),
+		await backend.commitWorkflowStatusTransition(
+			"run",
+			["paused"],
+			"completed",
+			undefined,
+			undefined,
+			previous.updatedAt,
+		),
 		false,
 	);
 	assert.deepEqual(await entries(backend.journal), before);
@@ -433,7 +446,7 @@ test("owner release and reclaim match the in-memory backend before and after reo
 		modelOwner: "owner",
 		releasedModelOwner: "old-release",
 	};
-	for (const backend of [memory, journal]) await backend.registerWorkflow(input);
+	for (const backend of [memory, journal]) await backend.commitWorkflowRegistration(input);
 	const verify = async (releasedModelOwner?: string, modelOwner = "owner") => {
 		const expected = JSON.parse(JSON.stringify(memory.getWorkflow("run"))) as DurableWorkflowHandle;
 		assert.deepEqual(journal.getWorkflow("run"), expected);
@@ -452,7 +465,15 @@ test("owner release and reclaim match the in-memory backend before and after reo
 	await verify();
 	for (const backend of [memory, journal])
 		assert.equal(
-			await backend.transitionWorkflowStatus("run", ["paused"], "paused", undefined, undefined, undefined, "new"),
+			await backend.commitWorkflowStatusTransition(
+				"run",
+				["paused"],
+				"paused",
+				undefined,
+				undefined,
+				undefined,
+				"new",
+			),
 			true,
 		);
 	await verify(undefined, "new");
@@ -462,13 +483,13 @@ test("checkpoint payloads preserve unusual text, duplicate arrays and completion
 	const path = database();
 	const backend = await open(path);
 	await register(backend);
-	await backend.recordCheckpoint({
+	await backend.commitCheckpoint({
 		...checkpoint(),
 		checkpointId: "later",
 		completedAt: 10,
 		output: { raw: "\u0000\ud800", list: [2, 1, 2] },
 	});
-	await backend.recordCheckpoint({ ...checkpoint(), checkpointId: "earlier", completedAt: 5 });
+	await backend.commitCheckpoint({ ...checkpoint(), checkpointId: "earlier", completedAt: 5 });
 	const reader = await open(path);
 	assert.deepEqual(reader.listCheckpoints("run"), backend.listCheckpoints("run"));
 	assert.deepEqual(reader.getToolOutput("run", "hash"), { raw: "\u0000\ud800", list: [2, 1, 2] });
@@ -506,7 +527,7 @@ test("a stale holder cannot delete the new holder's run", async () => {
 	await register(first);
 	expire(path);
 	const second = await open(path);
-	await second.recordCheckpoint(checkpoint());
+	await second.commitCheckpoint(checkpoint());
 	const before = await entries(second.journal);
 	await assert.rejects(first.deleteWorkflow("run"), JournalOwnershipError);
 	assert.deepEqual(await entries(second.journal), before);
@@ -527,7 +548,7 @@ test("a status sequence conflict returns false and refreshes the winning snapsho
 	opened.push(backend);
 	await register(backend);
 	contend = true;
-	assert.equal(await backend.transitionWorkflowStatus("run", ["running"], "paused"), false);
+	assert.equal(await backend.commitWorkflowStatusTransition("run", ["running"], "paused"), false);
 	assert.equal(backend.getWorkflow("run")?.status, "paused");
 	assert.equal((await entries(journal)).length, 2);
 });
@@ -566,7 +587,7 @@ test("cache replays of an answered prompt add no journal events while changing c
 	}
 	assert.equal((await entries(backend.journal)).length, events);
 	assert.equal(backend.getWorkflow("run")!.updatedAt, updatedAt);
-	await backend.adjustPendingPrompts("run", 1);
+	await backend.commitPendingPromptAdjustment("run", 1);
 	const claimed = await backend.pendingPromptToken("run", "pending");
 	assert.ok(claimed);
 	assert.equal((await entries(backend.journal)).length, events + 2);
@@ -629,7 +650,7 @@ test("additive checkpoints propagate typed counter violations instead of hiding 
 	opened.push(backend);
 	await register(backend);
 	fail = true;
-	await assert.rejects(backend.recordAdditiveCheckpointBestEffort(checkpoint()), (error: Error) => {
+	await assert.rejects(backend.commitAdditiveCheckpointBestEffort(checkpoint()), (error: Error) => {
 		assert.ok(error instanceof JournalCounterRangeError);
 		assert.equal(error.runId, "run");
 		assert.equal(error.field, "seq");
@@ -646,7 +667,7 @@ test("status snapshots preserve unchanged active prompt reservations across reop
 	const backend = await open(path);
 	await register(backend);
 	const token = await backend.reservePendingPrompt("run", "prompt");
-	await backend.setWorkflowStatus("run", "paused");
+	await backend.commitWorkflowStatus("run", "paused");
 	await backend.close();
 	const resumed = await open(path);
 	await resumed.releasePendingPrompt("run", "prompt", token);
@@ -658,11 +679,11 @@ test("lease handoff refreshes the projection before writing a status snapshot", 
 	const first = await open(path);
 	await register(first);
 	const second = await open(path);
-	await first.recordCheckpoint(checkpoint());
+	await first.commitCheckpoint(checkpoint());
 	await first.persistSummary("run", "keep summary", 1);
 	const token = await first.reservePendingPrompt("run", "prompt");
 	await first.close();
-	await second.setWorkflowStatus("run", "paused");
+	await second.commitWorkflowStatus("run", "paused");
 	assert.equal(second.getWorkflow("run")?.completedCheckpoints, 1);
 	assert.equal(second.getWorkflow("run")?.summary, "keep summary");
 	assert.equal(second.getWorkflow("run")?.pendingPrompts, 1);
@@ -674,15 +695,15 @@ test("catalog and targeted hydration remove deleted runs and rebuild recreated r
 	const path = database();
 	const writer = await open(path);
 	await register(writer);
-	await writer.recordCheckpoint(checkpoint("old"));
-	await writer.setWorkflowStatus("run", "completed");
+	await writer.commitCheckpoint(checkpoint("old"));
+	await writer.commitWorkflowStatus("run", "completed");
 	const reader = await open(path);
 	assert.equal((await reader.prepareWorkflowCatalog()).completed.length, 1);
 	await writer.deleteWorkflow("run");
 	assert.equal((await reader.prepareWorkflowCatalog()).completed.length, 0);
 	assert.equal(reader.getWorkflow("run"), undefined);
 	await register(writer);
-	await writer.recordCheckpoint({ ...checkpoint("new"), checkpointId: "new" });
+	await writer.commitCheckpoint({ ...checkpoint("new"), checkpointId: "new" });
 	await reader.hydrateWorkflow("run");
 	assert.deepEqual(
 		reader.listCheckpoints("run").map((entry) => entry.checkpointId),
@@ -691,7 +712,7 @@ test("catalog and targeted hydration remove deleted runs and rebuild recreated r
 	assert.equal(reader.getToolOutput("run", "hash"), "new");
 	await writer.deleteWorkflow("run");
 	await register(writer);
-	await writer.recordCheckpoint({ ...checkpoint("recreated"), checkpointId: "recreated" });
+	await writer.commitCheckpoint({ ...checkpoint("recreated"), checkpointId: "recreated" });
 	await reader.hydrateWorkflow("run");
 	assert.deepEqual(
 		reader.listCheckpoints("run").map((entry) => entry.checkpointId),
@@ -703,29 +724,29 @@ test("catalog and targeted hydration remove deleted runs and rebuild recreated r
 test("status mutation after recreation rebuilds a shorter journal without explicit hydration", async () => {
 	const path = database();
 	const writer = await open(path);
-	await writer.registerWorkflow({
+	await writer.commitWorkflowRegistration({
 		workflowId: "run",
 		name: "old",
 		inputs: { identity: "old" },
 		createdAt: 1,
 		status: "running",
 	});
-	await writer.recordCheckpoint({ ...checkpoint("old"), checkpointId: "old" });
+	await writer.commitCheckpoint({ ...checkpoint("old"), checkpointId: "old" });
 	await writer.persistSummary("run", "old summary", 1);
-	await writer.setWorkflowStatus("run", "paused");
+	await writer.commitWorkflowStatus("run", "paused");
 	assert.equal((await entries(writer.journal)).length, 4);
 	const observer = await open(path);
 	await writer.deleteWorkflow("run");
-	await writer.registerWorkflow({
+	await writer.commitWorkflowRegistration({
 		workflowId: "run",
 		name: "new",
 		inputs: { identity: "new" },
 		createdAt: 5,
 		status: "running",
 	});
-	await writer.recordCheckpoint({ ...checkpoint("new"), checkpointId: "new", completedAt: 6 });
+	await writer.commitCheckpoint({ ...checkpoint("new"), checkpointId: "new", completedAt: 6 });
 	await writer.close();
-	await observer.setWorkflowStatus("run", "paused");
+	await observer.commitWorkflowStatus("run", "paused");
 	const fresh = await open(path);
 	assert.deepEqual(fresh.getWorkflow("run")!.inputs, { identity: "new" });
 	assert.deepEqual(observer.getWorkflow("run"), fresh.getWorkflow("run"));
@@ -764,15 +785,15 @@ for (const extra of [0, 1]) {
 			admission: "context" as const,
 			deliveredAt: "raw",
 		};
-		await writer.registerWorkflow({
+		await writer.commitWorkflowRegistration({
 			workflowId: "run",
 			name: "old",
 			inputs: { identity: "old" },
 			createdAt: 1,
 			status: "running",
 		});
-		await writer.recordCheckpoint({ ...checkpoint("old"), checkpointId: "old" });
-		await writer.recordCheckpoint({ ...checkpoint("old two"), checkpointId: "old two" });
+		await writer.commitCheckpoint({ ...checkpoint("old"), checkpointId: "old" });
+		await writer.commitCheckpoint({ ...checkpoint("old two"), checkpointId: "old two" });
 		await writer.persistSummary("run", "old summary", 99);
 		await writer.reservePendingPrompt("run", "old prompt");
 		await writer.persistPendingStageMessages("run", [message("old")]);
@@ -784,14 +805,14 @@ for (const extra of [0, 1]) {
 		assert.equal((await entries(writer.journal)).length, 8);
 		const observer = await open(path);
 		await writer.deleteWorkflow("run");
-		await writer.registerWorkflow({
+		await writer.commitWorkflowRegistration({
 			workflowId: "run",
 			name: "new",
 			inputs: { identity: "new" },
 			createdAt: 5,
 			status: "running",
 		});
-		await writer.recordCheckpoint({ ...checkpoint("new"), checkpointId: "new", completedAt: 6 });
+		await writer.commitCheckpoint({ ...checkpoint("new"), checkpointId: "new", completedAt: 6 });
 		await writer.persistSummary("run", "new summary", 1);
 		const token = await writer.reservePendingPrompt("run", "new prompt");
 		await writer.persistPendingStageMessages("run", [message("new")]);
@@ -800,10 +821,10 @@ for (const extra of [0, 1]) {
 			messageRunId: "run",
 			deliveryCount: 2,
 		});
-		for (let index = 0; index <= extra; index++) await writer.setWorkflowStatus("run", "running");
+		for (let index = 0; index <= extra; index++) await writer.commitWorkflowStatus("run", "running");
 		assert.equal((await entries(writer.journal)).length, 8 + extra);
 		await writer.close();
-		await observer.setWorkflowStatus("run", "paused");
+		await observer.commitWorkflowStatus("run", "paused");
 		const fresh = await open(path);
 		for (const backend of [observer, fresh]) {
 			const handle = backend.getWorkflow("run")!;
@@ -846,16 +867,16 @@ test("a retained stale lease stays lost after deletion and recreation even after
 	const oldEpoch = (await stale.journal.leaseState("run"))!.epoch;
 	expire(path);
 	const replacement = await open(path);
-	await replacement.recordCheckpoint(checkpoint());
+	await replacement.commitCheckpoint(checkpoint());
 	await replacement.deleteWorkflow("run");
 	await register(replacement);
-	await replacement.recordCheckpoint({ ...checkpoint("new"), checkpointId: "new" });
+	await replacement.commitCheckpoint({ ...checkpoint("new"), checkpointId: "new" });
 	const currentEpoch = (await replacement.journal.leaseState("run"))!.epoch;
 	await replacement.close();
 	const before = await entries(stale.journal);
 	let lost: JournalOwnershipError | undefined;
 	await assert.rejects(
-		async () => await stale.setWorkflowStatus("run", "paused"),
+		async () => await stale.commitWorkflowStatus("run", "paused"),
 		(error: Error) => {
 			assert.ok(error instanceof JournalOwnershipError);
 			assert.equal(error.runId, "run");
@@ -870,7 +891,7 @@ test("a retained stale lease stays lost after deletion and recreation even after
 	);
 	await stale.hydrateWorkflow("run");
 	await assert.rejects(
-		async () => await stale.recordCheckpoint(checkpoint("stale")),
+		async () => await stale.commitCheckpoint(checkpoint("stale")),
 		(error: Error) => error === lost,
 	);
 	assert.deepEqual(await entries(stale.journal), before);
@@ -881,14 +902,14 @@ test("mutation of a deleted unrecreated run clears cached state and preserves ab
 	const path = database();
 	const writer = await open(path);
 	await register(writer);
-	await writer.recordCheckpoint(checkpoint());
+	await writer.commitCheckpoint(checkpoint());
 	const observer = await open(path);
 	await writer.deleteWorkflow("run");
-	await observer.setWorkflowStatus("run", "paused");
-	await observer.recordCheckpoint(checkpoint("ignored"));
+	await observer.commitWorkflowStatus("run", "paused");
+	await observer.commitCheckpoint(checkpoint("ignored"));
 	assert.equal(observer.getWorkflow("run"), undefined);
 	assert.deepEqual(observer.listCheckpoints("run"), []);
-	assert.equal(await observer.transitionWorkflowStatus("run", ["running"], "paused"), false);
+	assert.equal(await observer.commitWorkflowStatusTransition("run", ["running"], "paused"), false);
 	assert.equal(await observer.persistSummary("run", "ignored", 1), false);
 	assert.equal(await observer.persistPendingStageMessages("run", []), false);
 	assert.deepEqual(await observer.deleteWorkflowIfInactive("run"), { ok: false, reason: "not_found" });
@@ -905,22 +926,22 @@ for (const mutation of ["status claim", "delivery receipt"] as const) {
 		const path = database();
 		const writer = await open(path);
 		await register(writer);
-		await writer.recordCheckpoint({ ...checkpoint("old"), checkpointId: "old" });
-		await writer.setWorkflowStatus("run", "paused");
+		await writer.commitCheckpoint({ ...checkpoint("old"), checkpointId: "old" });
+		await writer.commitWorkflowStatus("run", "paused");
 		const observer = await open(path);
 		await writer.deleteWorkflow("run");
-		await writer.registerWorkflow({
+		await writer.commitWorkflowRegistration({
 			workflowId: "run",
 			name: "new",
 			inputs: { identity: "new" },
 			createdAt: 5,
 			status: "running",
 		});
-		await writer.recordCheckpoint({ ...checkpoint("new"), checkpointId: "new", completedAt: 6 });
+		await writer.commitCheckpoint({ ...checkpoint("new"), checkpointId: "new", completedAt: 6 });
 		await writer.close();
 		if (mutation === "status claim") {
 			assert.equal(
-				await observer.transitionWorkflowStatus("run", ["running"], "completed", undefined, undefined, 6),
+				await observer.commitWorkflowStatusTransition("run", ["running"], "completed", undefined, undefined, 6),
 				true,
 			);
 		} else {
@@ -956,10 +977,10 @@ for (const change of ["late registration", "external deletion"] as const) {
 		const writer = await open(path);
 		if (change === "external deletion") {
 			await register(writer);
-			await writer.recordCheckpoint(checkpoint("old"));
+			await writer.commitCheckpoint(checkpoint("old"));
 		}
 		const observer = await open(path);
-		if (change === "late registration") register(writer);
+		if (change === "late registration") await register(writer);
 		else await writer.deleteWorkflow("run");
 		await writer.close();
 		await observer.deleteWorkflow("run");
@@ -986,7 +1007,7 @@ for (const change of ["late registration", "external deletion"] as const) {
 		await observer.deleteWorkflow("run");
 		assert.deepEqual(await observer.deleteWorkflowIfInactive("run"), { ok: false, reason: "not_found" });
 		await register(observer);
-		await observer.recordCheckpoint({ ...checkpoint("new"), checkpointId: "new" });
+		await observer.commitCheckpoint({ ...checkpoint("new"), checkpointId: "new" });
 		const recreated = await open(path);
 		assert.deepEqual(observer.getWorkflow("run"), recreated.getWorkflow("run"));
 		assert.deepEqual(observer.listCheckpoints("run"), recreated.listCheckpoints("run"));
@@ -1001,11 +1022,11 @@ test("direct deletion first after recreation removes the current run and its che
 	const path = database();
 	const writer = await open(path);
 	await register(writer);
-	await writer.recordCheckpoint(checkpoint("old"));
+	await writer.commitCheckpoint(checkpoint("old"));
 	const observer = await open(path);
 	await writer.deleteWorkflow("run");
 	await register(writer);
-	await writer.recordCheckpoint({ ...checkpoint("new"), checkpointId: "new" });
+	await writer.commitCheckpoint({ ...checkpoint("new"), checkpointId: "new" });
 	const epoch = (await writer.journal.leaseState("run"))!.epoch;
 	await writer.close();
 	await observer.deleteWorkflow("run");
@@ -1054,7 +1075,7 @@ test("direct deletion retains stale held-lease fencing even with an empty cached
 	const heldEpoch = (await stale.journal.leaseState("run"))!.epoch;
 	expire(path);
 	const writer = await open(path);
-	await writer.recordCheckpoint(checkpoint("current"));
+	await writer.commitCheckpoint(checkpoint("current"));
 	await writer.deleteWorkflow("run");
 	await stale.hydrateWorkflow("run");
 	assert.equal(stale.getWorkflow("run"), undefined);
@@ -1080,7 +1101,7 @@ test("direct deletion retains stale held-lease fencing even with an empty cached
 test("status claims recheck the acquired equal-sequence incarnation", async () => {
 	const path = database();
 	const writer = await open(path);
-	await writer.registerWorkflow({
+	await writer.commitWorkflowRegistration({
 		workflowId: "run",
 		name: "old",
 		inputs: {},
@@ -1092,7 +1113,7 @@ test("status claims recheck the acquired equal-sequence incarnation", async () =
 	const replacement = await open(path);
 	const journal = await interleavedJournal(path, async (runId) => {
 		await replacement.journal.deleteRun(runId);
-		await replacement.registerWorkflow({
+		await replacement.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "replacement",
 			inputs: { identity: "replacement" },
@@ -1104,7 +1125,7 @@ test("status claims recheck the acquired equal-sequence incarnation", async () =
 	});
 	const observer = await JournalDurableBackend.open(journal);
 	opened.push(observer);
-	assert.equal(await observer.transitionWorkflowStatus("run", ["paused"], "completed"), false);
+	assert.equal(await observer.commitWorkflowStatusTransition("run", ["paused"], "completed"), false);
 	const fresh = await open(path);
 	assert.equal(fresh.getWorkflow("run")!.status, "running");
 	assert.deepEqual(fresh.getWorkflow("run")!.inputs, { identity: "replacement" });
@@ -1114,12 +1135,18 @@ test("status claims recheck the acquired equal-sequence incarnation", async () =
 test("inactive deletion rechecks the acquired equal-sequence incarnation", async () => {
 	const path = database();
 	const writer = await open(path);
-	await writer.registerWorkflow({ workflowId: "run", name: "old", inputs: {}, createdAt: 1, status: "paused" });
+	await writer.commitWorkflowRegistration({
+		workflowId: "run",
+		name: "old",
+		inputs: {},
+		createdAt: 1,
+		status: "paused",
+	});
 	await writer.close();
 	const replacement = await open(path);
 	const journal = await interleavedJournal(path, async (runId) => {
 		await replacement.journal.deleteRun(runId);
-		await replacement.registerWorkflow({
+		await replacement.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "replacement",
 			inputs: {},
@@ -1141,8 +1168,14 @@ test("backend writes use standard JSON for negative zero across repeated snapsho
 	const expected = JSON.parse(JSON.stringify(input)) as { value: number };
 	const output = JSON.parse(JSON.stringify(-0)) as number;
 	const backend = await open(path);
-	await backend.registerWorkflow({ workflowId: "run", name: "zero", inputs: input, createdAt: 0, status: "running" });
-	await backend.recordCheckpoint({ ...checkpoint(), output: -0 });
+	await backend.commitWorkflowRegistration({
+		workflowId: "run",
+		name: "zero",
+		inputs: input,
+		createdAt: 0,
+		status: "running",
+	});
+	await backend.commitCheckpoint({ ...checkpoint(), output: -0 });
 	const verify = (reader: JournalDurableBackend) => {
 		assert.deepEqual(reader.getWorkflow("run")!.inputs, expected);
 		assert.ok(Object.is(reader.getToolOutput("run", "hash"), output));
@@ -1154,7 +1187,7 @@ test("backend writes use standard JSON for negative zero across repeated snapsho
 	};
 	verify(backend);
 	for (let repeat = 0; repeat < 2; repeat++) {
-		await backend.setWorkflowStatus("run", "paused");
+		await backend.commitWorkflowStatus("run", "paused");
 		const token = await backend.reservePendingPrompt("run", "prompt");
 		await backend.releasePendingPrompt("run", "prompt", token);
 		await backend.persistPendingStageMessages("run", []);
@@ -1190,7 +1223,7 @@ test("direct deletion clears all cached state when another deletion wins acquisi
 	const path = database();
 	const writer = await open(path);
 	await register(writer);
-	await writer.recordCheckpoint(checkpoint());
+	await writer.commitCheckpoint(checkpoint());
 	await writer.persistSummary("run", "old summary", 1);
 	await writer.reservePendingPrompt("run", "old prompt");
 	const message: PendingStageMessage = {
@@ -1252,7 +1285,13 @@ for (const action of ["claim", "delete"] as const) {
 	test(`${action} preserves absent-run results when deletion wins during acquisition`, async () => {
 		const path = database();
 		const writer = await open(path);
-		await writer.registerWorkflow({ workflowId: "run", name: "old", inputs: {}, createdAt: 1, status: "paused" });
+		await writer.commitWorkflowRegistration({
+			workflowId: "run",
+			name: "old",
+			inputs: {},
+			createdAt: 1,
+			status: "paused",
+		});
 		await writer.close();
 		const remover = await open(path);
 		const journal = await interleavedJournal(path, async (runId) => {
@@ -1261,7 +1300,7 @@ for (const action of ["claim", "delete"] as const) {
 		const observer = await JournalDurableBackend.open(journal);
 		opened.push(observer);
 		if (action === "claim")
-			assert.equal(await observer.transitionWorkflowStatus("run", ["paused"], "completed"), false);
+			assert.equal(await observer.commitWorkflowStatusTransition("run", ["paused"], "completed"), false);
 		else assert.deepEqual(await observer.deleteWorkflowIfInactive("run"), { ok: false, reason: "not_found" });
 		assert.equal(observer.getWorkflow("run"), undefined);
 		assert.equal((await open(path)).getWorkflow("run"), undefined);
@@ -1277,7 +1316,7 @@ async function interleaveAcquisition(
 	const path = database();
 	const writer = await open(path);
 	for (let index = 0; index < oldLength; index++) {
-		await writer.registerWorkflow({
+		await writer.commitWorkflowRegistration({
 			workflowId: "run",
 			name: "old",
 			inputs: { identity: "old" },
@@ -1310,7 +1349,7 @@ for (const [length, oldLength, newLength] of [
 			const { path, observer } = await interleaveAcquisition(async (replacement) => {
 				await replacement.journal.deleteRun("run");
 				for (let index = 0; index < newLength; index++) {
-					await replacement.registerWorkflow({
+					await replacement.commitWorkflowRegistration({
 						workflowId: "run",
 						name: "replacement",
 						inputs: { identity: "new" },
@@ -1322,7 +1361,14 @@ for (const [length, oldLength, newLength] of [
 				await replacement.close();
 			}, oldLength);
 			assert.equal(
-				await observer.transitionWorkflowStatus("run", ["paused", "paused"], "completed", undefined, undefined, 1),
+				await observer.commitWorkflowStatusTransition(
+					"run",
+					["paused", "paused"],
+					"completed",
+					undefined,
+					undefined,
+					1,
+				),
 				predicate === "matching",
 			);
 			const fresh = await open(path);
@@ -1339,7 +1385,7 @@ for (const [length, oldLength, newLength] of [
 			const { path, observer } = await interleaveAcquisition(async (replacement) => {
 				await replacement.journal.deleteRun("run");
 				for (let index = 0; index < newLength; index++) {
-					await replacement.registerWorkflow({
+					await replacement.commitWorkflowRegistration({
 						workflowId: "run",
 						name: "replacement",
 						inputs: {},
@@ -1364,7 +1410,7 @@ for (const action of ["claim", "delete"] as const) {
 	test(`${action} refuses a fresh competitor acquired during the guard gap`, async () => {
 		const { path, observer, replacement } = await interleaveAcquisition(async (backend) => {
 			await backend.journal.deleteRun("run");
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: "run",
 				name: "replacement",
 				inputs: {},
@@ -1374,7 +1420,7 @@ for (const action of ["claim", "delete"] as const) {
 		});
 		await assert.rejects(
 			action === "claim"
-				? observer.transitionWorkflowStatus("run", ["paused"], "completed")
+				? observer.commitWorkflowStatusTransition("run", ["paused"], "completed")
 				: observer.deleteWorkflowIfInactive("run"),
 			(error: Error) => {
 				assert.ok(error instanceof JournalOwnershipError);
@@ -1390,13 +1436,19 @@ for (const action of ["claim", "delete"] as const) {
 	test(`${action} cannot silently reacquire a stale execution after replacement`, async () => {
 		const path = database();
 		const stale = await open(path);
-		await stale.registerWorkflow({ workflowId: "run", name: "old", inputs: {}, createdAt: 1, status: "paused" });
+		await stale.commitWorkflowRegistration({
+			workflowId: "run",
+			name: "old",
+			inputs: {},
+			createdAt: 1,
+			status: "paused",
+		});
 		const heldEpoch = (await stale.journal.leaseState("run"))!.epoch;
 		const replacement = await open(path);
 		const takeover = await replacement.journal.takeover("run", replacement.holderId, stale.holderId);
 		assert.equal(takeover.status, "acquired");
 		await replacement.deleteWorkflow("run");
-		await replacement.registerWorkflow({
+		await replacement.commitWorkflowRegistration({
 			workflowId: "run",
 			name: "replacement",
 			inputs: {},
@@ -1410,7 +1462,7 @@ for (const action of ["claim", "delete"] as const) {
 		for (let repeat = 0; repeat < 2; repeat++) {
 			await assert.rejects(
 				action === "claim"
-					? stale.transitionWorkflowStatus("run", ["paused"], "completed")
+					? stale.commitWorkflowStatusTransition("run", ["paused"], "completed")
 					: stale.deleteWorkflowIfInactive("run"),
 				(error: Error) => {
 					assert.ok(error instanceof JournalOwnershipError);
@@ -1455,7 +1507,7 @@ for (const runtime of ["node", "bun"] as const) {
 						assert.equal(snapshot.entries[0]!.epoch, 3);
 					});
 					if (action === "claim")
-						assert.equal(await observer.transitionWorkflowStatus("run", ["paused"], "completed"), false);
+						assert.equal(await observer.commitWorkflowStatusTransition("run", ["paused"], "completed"), false);
 					else assert.deepEqual(await observer.deleteWorkflowIfInactive("run"), { ok: false, reason: "running" });
 					const fresh = await open(path);
 					assert.equal(fresh.getWorkflow("run")!.status, "running");
@@ -1488,12 +1540,18 @@ test("backend serialization keeps native lexemes and calls caller toJSON once pe
 	});
 	Object.freeze(input);
 	const backend = await open(path);
-	await backend.registerWorkflow({ workflowId: "run", name: "raw", inputs: input, createdAt: 0, status: "running" });
+	await backend.commitWorkflowRegistration({
+		workflowId: "run",
+		name: "raw",
+		inputs: input,
+		createdAt: 0,
+		status: "running",
+	});
 	assert.equal(calls, 2);
-	await backend.recordCheckpoint({ ...checkpoint(), output: input });
+	await backend.commitCheckpoint({ ...checkpoint(), output: input });
 	assert.equal(calls, 3);
 	const before = await entries(backend.journal);
-	await backend.recordCheckpoint({ ...checkpoint(), output: input });
+	await backend.commitCheckpoint({ ...checkpoint(), output: input });
 	assert.equal(calls, 4, "append serializes once at invocation, including keyed replay");
 	assert.deepEqual(await entries(backend.journal), before);
 	const db = new JournalTestDatabase(path);
@@ -1505,7 +1563,7 @@ test("backend serialization keeps native lexemes and calls caller toJSON once pe
 	} finally {
 		db.close();
 	}
-	await backend.setWorkflowStatus("run", "paused");
+	await backend.commitWorkflowStatus("run", "paused");
 	assert.equal(calls, 4, "append serializes once at invocation, including keyed replay");
 	const expected = { values: [123, -0, "a", "\ud800", "💡"] };
 	assert.deepEqual(backend.getWorkflow("run")!.inputs, JSON.parse(JSON.stringify(expected)));

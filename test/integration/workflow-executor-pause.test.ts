@@ -97,9 +97,11 @@ test("already-live children stay held after rejected journal resume persistence 
 	);
 	async function createFailingResumeBackend(...args: Parameters<typeof JournalTestBackend.create>) {
 		const backend = Object.assign(await JournalTestBackend.create(...args), {});
-		const basetransitionWorkflowStatus = backend.transitionWorkflowStatus.bind(backend);
+		const basetransitionWorkflowStatus = backend.commitWorkflowStatusTransition.bind(backend);
 		return Object.assign(backend, {
-			async transitionWorkflowStatus(...args: Parameters<JournalTestBackend["transitionWorkflowStatus"]>) {
+			async commitWorkflowStatusTransition(
+				...args: Parameters<JournalTestBackend["commitWorkflowStatusTransition"]>
+			) {
 				if (failResume && args[2] === "running") throw failure;
 				return basetransitionWorkflowStatus(...args);
 			},

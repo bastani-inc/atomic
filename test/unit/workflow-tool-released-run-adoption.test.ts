@@ -61,9 +61,9 @@ function sessionContext(sessionId: string): PiEventContext {
 async function registerRun(
 	backend: DurableWorkflowBackend,
 	runId: string,
-	overrides: Partial<Parameters<DurableWorkflowBackend["registerWorkflow"]>[0]> = {},
+	overrides: Partial<Parameters<DurableWorkflowBackend["commitWorkflowRegistration"]>[0]> = {},
 ): Promise<void> {
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: runId,
 		name: "session-run-control",
 		inputs: {},
@@ -358,7 +358,7 @@ describe("the model-facing workflow tool adopts runs released by a switched-away
 		await registerRun(backend, runId, { releasedModelOwner: undefined });
 		await releasePausedRunsOwnedBy(backend, PREVIOUS_SESSION);
 		assert.equal(
-			await backend.transitionWorkflowStatus(
+			await backend.commitWorkflowStatusTransition(
 				runId,
 				["paused"],
 				"paused",

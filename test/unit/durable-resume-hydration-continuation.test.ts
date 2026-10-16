@@ -37,8 +37,14 @@ test("schema-backed output checkpoint merges final lifecycle metadata", async ()
 	const backend = await InMemoryDurableBackend.create();
 	const workflowId = "wf-schema-meta";
 	const replayKey = "stage:structured-meta:1";
-	await backend.registerWorkflow({ workflowId, name: "schema-meta", inputs: {}, createdAt: 1, status: "running" });
-	await backend.recordCheckpoint({
+	await backend.commitWorkflowRegistration({
+		workflowId,
+		name: "schema-meta",
+		inputs: {},
+		createdAt: 1,
+		status: "running",
+	});
+	await backend.commitCheckpoint({
 		kind: "stage",
 		workflowId,
 		checkpointId: `stage:${replayKey}`,

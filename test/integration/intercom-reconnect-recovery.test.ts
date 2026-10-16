@@ -669,7 +669,7 @@ test(
 		const workflowGroup = `workflow:${runId}`;
 		const store = createStore();
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "reconnect-flow",
 			inputs: {},

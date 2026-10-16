@@ -154,14 +154,14 @@ test("a fresh-id continuation replays the complete Goal artifact root and reads 
 	const previousRoot = process.env[ENV_WORKFLOW_ARTIFACT_DIR];
 	process.env[ENV_WORKFLOW_ARTIFACT_DIR] = root;
 	const backend = await createMemoryTestBackend();
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: "source-run",
 		name: "goal",
 		inputs: {},
 		createdAt: 1,
 		status: "failed",
 	});
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: "continuation-run",
 		name: "goal",
 		inputs: {},

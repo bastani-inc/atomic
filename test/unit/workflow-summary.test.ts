@@ -69,7 +69,7 @@ for (const status of ["completed", "killed", "skipped"] as const) {
 test("terminal workflow summaries run without heartbeat scheduling and persist in the durable catalog", async () => {
 	const store = fixture();
 	const backend = await createMemoryTestBackend();
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: "summary-run",
 		name: "build",
 		inputs: {},

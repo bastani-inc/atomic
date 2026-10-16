@@ -295,7 +295,7 @@ describe("ctx.tool terminal admission", () => {
 		async function createRejectToolCheckpointBackend() {
 			const backend = Object.assign(await createMemoryTestBackend(), {});
 			return Object.assign(backend, {
-				async recordCheckpointAsync(): Promise<void> {
+				async commitCheckpoint(): Promise<void> {
 					throw new Error("authoritative checkpoint rejected");
 				},
 			});
@@ -327,9 +327,11 @@ describe("ctx.tool terminal admission", () => {
 	test("a rejecting durable terminal finalizer cannot leave admission open", async () => {
 		async function createRejectTerminalBackend() {
 			const backend = Object.assign(await createMemoryTestBackend(), {});
-			const basesetWorkflowStatus = backend.setWorkflowStatus.bind(backend);
+			const basesetWorkflowStatus = backend.commitWorkflowStatus.bind(backend);
 			return Object.assign(backend, {
-				async setWorkflowStatus(...args: Parameters<InMemoryDurableBackend["setWorkflowStatus"]>): Promise<void> {
+				async commitWorkflowStatus(
+					...args: Parameters<InMemoryDurableBackend["commitWorkflowStatus"]>
+				): Promise<void> {
 					if (args[1] === "failed")
 						throw new StorageUnavailableError(
 							{ adapter: "node-sqlite", location: "journal.sqlite" },

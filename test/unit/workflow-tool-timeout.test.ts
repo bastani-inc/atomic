@@ -358,7 +358,7 @@ describe("ctx.tool timeoutMs", () => {
 
 	test("preserves timeout evidence when timeout abort handlers then cancel the run", async () => {
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "timeout-wins-cancellation-race",
 			name: "timeout-wins-cancellation-race",
 			inputs: {},
@@ -461,7 +461,7 @@ describe("ctx.tool timeoutMs", () => {
 		const deadlineTimers = vi.spyOn(globalThis, "setTimeout");
 		try {
 			const backend = await createMemoryTestBackend();
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: "timeout-cached",
 				name: "timeout-cached",
 				inputs: {},

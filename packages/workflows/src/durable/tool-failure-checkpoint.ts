@@ -29,7 +29,7 @@ export async function recordThrowingToolFailure(
 ): Promise<{ readonly message: string; readonly failedAt: number }> {
 	const message = workflowToolFailure(error, attempts, false).error.message;
 	const failedAt = Date.now();
-	await input.backend.recordAdditiveCheckpointBestEffort({
+	await input.backend.commitAdditiveCheckpointBestEffort({
 		kind: "tool",
 		workflowId: input.workflowId,
 		checkpointId: `tool-failure:${identity.argsHash}:${input.nextCheckpointId()}`,

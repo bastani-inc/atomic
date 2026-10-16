@@ -60,6 +60,7 @@ export interface DurableUiDeps {
 	readonly nextCheckpointId: () => string;
 	/** Gate live/replayed UI after capturing the author's synchronous callsite. */
 	readonly beforeCall?: () => Promise<void> | undefined;
+	readonly beforeCheckpoint?: () => void | Promise<void>;
 	readonly onReplay?: (request: DurableUiReplayRequest) => Promise<void>;
 }
 
@@ -103,6 +104,7 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
 			response,
 			completedAt: Date.now(),
 		};
+		await deps.beforeCheckpoint?.();
 		await recordCheckpointDurably(deps.backend, checkpoint);
 	};
 

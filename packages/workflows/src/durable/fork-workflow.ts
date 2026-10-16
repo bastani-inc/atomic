@@ -144,9 +144,9 @@ export async function forkDurableWorkflow(
 			...(message.targetPath === undefined ? {} : { targetPath: mapTarget(message.targetPath) }),
 		})),
 	};
-	await backend.registerWorkflow({ ...fork, status: "running", resumable: false });
-	for (const checkpoint of checkpoints) await backend.recordCheckpointAsync(checkpoint);
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({ ...fork, status: "running", resumable: false });
+	for (const checkpoint of checkpoints) await backend.commitCheckpoint(checkpoint);
+	await backend.commitWorkflowRegistration({
 		...fork,
 		resumable: source.resumable ?? true,
 		completedCheckpoints: backend.getWorkflow(workflowId)!.completedCheckpoints,

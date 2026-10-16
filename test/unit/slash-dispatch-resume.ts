@@ -147,7 +147,7 @@ describe("/workflow resume <runId> — exact live fast path", () => {
 		const handler = commands.find((command) => command.name === "workflow")!.options.handler;
 		const runId = testRunId(`headless-fast-resume-${Date.now()}`);
 		const stageId = "stage-fast-resume";
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "durable-duplicate",
 			inputs: {},
@@ -205,7 +205,7 @@ describe("/workflow resume <runId> — exact live fast path", () => {
 		const handler = commands.find((command) => command.name === "workflow")!.options.handler;
 		const runId = testRunId(`nested-paused-resume-${Date.now()}`);
 		const stageId = "stage-nested-paused";
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "nested-worker",
 			inputs: {},
@@ -358,7 +358,7 @@ describe("/workflow attach <rootRunId> <nestedStageId>", () => {
 			invocationFingerprint: "hydrated-fixture-fingerprint",
 			child,
 		};
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: rootRunId,
 			name: "hydrated-root",
 			inputs: {},
@@ -366,7 +366,7 @@ describe("/workflow attach <rootRunId> <nestedStageId>", () => {
 			updatedAt: 5,
 			status: "completed",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: rootRunId,
 			checkpointId: "hydrated-start",
@@ -383,7 +383,7 @@ describe("/workflow attach <rootRunId> <nestedStageId>", () => {
 				boundary: { ...identity, event: "start", status: "running" },
 			},
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: rootRunId,
 			checkpointId: `${replayKey}:review`,
@@ -401,7 +401,7 @@ describe("/workflow attach <rootRunId> <nestedStageId>", () => {
 				run: child,
 			},
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: rootRunId,
 			checkpointId: "hydrated-terminal",

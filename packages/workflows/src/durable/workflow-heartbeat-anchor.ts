@@ -5,7 +5,7 @@
  * already persisted except one: the *original* run start time. A durable resume
  * re-dispatches under the original workflow id but mints a fresh
  * `RunSnapshot.startedAt` (`engine/run.ts`), and that fresh value is passed to
- * `registerWorkflow` as `createdAt`, which the backend overwrites
+ * `commitWorkflowRegistration` as `createdAt`, which the backend overwrites
  * unconditionally (`durable/backend.ts`). Checkpoints are the only per-run state
  * that survives re-registration, so this record is the sole surviving carrier of
  * the original start — which is what keeps a resumed run on its original
@@ -13,19 +13,19 @@
  *
  * Storage shape: a reserved tool-kind checkpoint (name/argsHash
  * `workflow-heartbeat-anchor`), following `run-timing.ts`. Its `checkpointId` is
- * that same constant with no suffix, so `recordCheckpoint`'s duplicate-key early
+ * that same constant with no suffix, so `commitCheckpoint`'s duplicate-key early
  * return makes the record **write-once and exactly one row per run** rather than
  * one row per boundary.
  *
  * Three properties this shape is chosen for:
  *
- * - **It cannot manufacture resumability.** `recordCheckpoint` sets
+ * - **It cannot manufacture resumability.** `commitCheckpoint` sets
  *   `completedCheckpoints = checkpoints.size`, and `isDurableWorkflowResumable`
  *   gates a running or paused run on `completedCheckpoints > 0`. Writing for a
  *   run with no durable progress of its own would make it look resumable, so the
  *   write is skipped until the run has at least one other checkpoint — the same
  *   guard, and the same reason, as `run-timing.ts`.
- * - **It cannot walk liveness backwards.** `recordCheckpoint` copies
+ * - **It cannot walk liveness backwards.** `commitCheckpoint` copies
  *   `completedAt` onto the handle as `updatedAt`, which the foreign-liveness
  *   window reads, so `completedAt` is the write time and never a cadence
  *   boundary.
@@ -148,7 +148,7 @@ export async function recordWorkflowHeartbeatAnchor(
 		// which the foreign-liveness window reads.
 		completedAt: record.now,
 	};
-	const stored = await backend.recordAdditiveCheckpointBestEffort(checkpoint);
+	const stored = await backend.commitAdditiveCheckpointBestEffort(checkpoint);
 	if (!stored) return false;
 	return readWorkflowHeartbeatAnchor(backend, record.runId) !== undefined;
 }

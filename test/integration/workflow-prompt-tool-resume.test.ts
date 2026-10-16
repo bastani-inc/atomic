@@ -57,11 +57,11 @@ test.each(["valid", "missing-ui", "mismatched-ui"] as const)(
 		assert.ok(prompt.durationMs! > 0);
 		if (mode !== "valid") {
 			const incomplete = await createMemoryTestBackend();
-			await incomplete.registerWorkflow(backend.getWorkflow(original.runId)!);
+			await incomplete.commitWorkflowRegistration(backend.getWorkflow(original.runId)!);
 			for (const checkpoint of backend.listCheckpoints(original.runId)) {
-				if (checkpoint.kind !== "ui") await incomplete.recordCheckpoint(checkpoint);
+				if (checkpoint.kind !== "ui") await incomplete.commitCheckpoint(checkpoint);
 				else if (mode === "mismatched-ui")
-					await incomplete.recordCheckpoint({ ...checkpoint, promptHash: "different-prompt" });
+					await incomplete.commitCheckpoint({ ...checkpoint, promptHash: "different-prompt" });
 			}
 			backend = incomplete;
 			setDurableBackend(backend);

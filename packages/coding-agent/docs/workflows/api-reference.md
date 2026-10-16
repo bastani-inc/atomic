@@ -330,6 +330,8 @@ ctx.stage(name: string, options?: StageOptions): StageContext;
 
 Creates and registers a named stage synchronously; work starts when you call a method such as `prompt()` or `complete()`. Use it when `ctx.task` is too coarse and direct session control is required.
 
+On resume, a cached stage declaration stays synchronous. Its replay metadata is saved before the next checkpoint, prompt, task, tool, or workflow completion. Await those operations and handle their rejection normally; a storage failure is not treated as a successful replay.
+
 ### `ctx.ui`
 
 ```typescript

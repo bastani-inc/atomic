@@ -64,7 +64,7 @@ describe("workflow tool durable-only checkpoint replay", () => {
 		const workflowId = testRunId("tool-durable-replay-original-id");
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId,
 			name: "tool-durable-replay",
 			inputs: {},
@@ -74,7 +74,7 @@ describe("workflow tool durable-only checkpoint replay", () => {
 		});
 		const args = { path: "artifact.txt" };
 		const argsHash = durableHash({ name: "write-once", args, ordinal: 1 });
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "tool",
 			workflowId,
 			checkpointId: `tool:${argsHash}`,

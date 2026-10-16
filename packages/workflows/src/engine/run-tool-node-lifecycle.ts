@@ -166,6 +166,7 @@ export function createTrackedToolPrimitive(input: {
 	readonly toolControls: ToolControlRegistry;
 	readonly toolAdmission: ToolAdmissionBoundary;
 	readonly budget: RunBudgetController;
+	readonly beforeToolCall?: () => void | Promise<void>;
 }): {
 	readonly tool: WorkflowToolPrimitive;
 	readonly admittedTools: AdmittedToolExecutionTracker;
@@ -232,7 +233,12 @@ export function createTrackedToolPrimitive(input: {
 			if (!admission.accepted) observedQuit ??= admission.error;
 			return admission;
 		},
-		...(budgetBoundary !== undefined ? { beforeToolCall: budgetBoundary, afterToolCall: budgetBoundary } : {}),
+		beforeToolCall: () => {
+			const pending = input.beforeToolCall?.();
+			return pending === undefined ? budgetBoundary?.() : pending.then(() => budgetBoundary?.());
+		},
+		beforeCheckpoint: input.beforeToolCall,
+		...(budgetBoundary !== undefined ? { afterToolCall: budgetBoundary } : {}),
 		...lifecycle,
 	});
 	const abandonInFlightAsCancelled = (reason: unknown): readonly string[] => {

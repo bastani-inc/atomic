@@ -107,6 +107,7 @@ export interface CreateToolPrimitiveInput {
 	/** Deterministic boundary hooks before dispatch and after a tool node settles. */
 	readonly beforeToolCall?: () => void | Promise<void>;
 	readonly afterToolCall?: () => void | Promise<void>;
+	readonly beforeCheckpoint?: () => void | Promise<void>;
 	readonly trackExecution?: <T>(execution: Promise<T>) => WorkflowToolExecutionAdmission | undefined;
 	/** Observe a logical throwing-mode failure before graph publication or promise rejection. */
 	readonly onFailureObserved?: (error: unknown, nodeId: string) => void;
@@ -590,6 +591,7 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 				...(input.runTopology !== undefined ? { run: { ...input.runTopology } } : {}),
 			},
 		};
+		await input.beforeCheckpoint?.();
 		await recordCheckpointDurably(input.backend, checkpoint);
 		input.onNodeEnd?.(node.id, {
 			status: "completed",
@@ -671,6 +673,7 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 				},
 			};
 			try {
+				await input.beforeCheckpoint?.();
 				await recordCheckpointDurably(input.backend, checkpoint);
 			} catch (persistenceError) {
 				input.onFailureObserved?.(persistenceError, node.id);
@@ -869,7 +872,7 @@ async function recordReplayedToolTopology(
 		JSON.stringify(cached.topology.run) === JSON.stringify(topology.run) &&
 		cached.topology.endedAt === topology.endedAt;
 	if (unchanged) return;
-	await input.backend.recordAdditiveCheckpointBestEffort({
+	await input.backend.commitAdditiveCheckpointBestEffort({
 		kind: "tool",
 		workflowId: input.workflowId,
 		checkpointId: `tool-replay-meta:${durableHash({ argsHash, topology })}`,
@@ -902,7 +905,7 @@ export async function recordCheckpointDurably(
 	checkpoint: DurableCheckpoint,
 	signal?: AbortSignal,
 ): Promise<void> {
-	await backend.recordCheckpointAsync(checkpoint, signal === undefined ? undefined : { signal });
+	await backend.commitCheckpoint(checkpoint, signal === undefined ? undefined : { signal });
 }
 
 async function executeWithRetries<T>(

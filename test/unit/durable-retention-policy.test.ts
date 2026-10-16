@@ -12,7 +12,7 @@ async function register(
 	workflowId: string,
 	status: "running" | "paused" | "completed",
 ): Promise<void> {
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId,
 		name: `flow-${workflowId}`,
 		inputs: {},
@@ -87,7 +87,7 @@ describe("durable workflow retention policy", () => {
 		try {
 			const backend = await InMemoryDurableBackend.create();
 			await register(backend, "resume-wins", "paused");
-			assert.equal(await backend.transitionWorkflowStatus("resume-wins", ["paused"], "running"), true);
+			assert.equal(await backend.commitWorkflowStatusTransition("resume-wins", ["paused"], "running"), true);
 			assert.deepEqual(await backend.deleteWorkflowIfInactive("resume-wins"), {
 				ok: false,
 				reason: "running",
@@ -95,7 +95,7 @@ describe("durable workflow retention policy", () => {
 
 			await register(backend, "delete-wins", "paused");
 			assert.deepEqual(await backend.deleteWorkflowIfInactive("delete-wins"), { ok: true });
-			assert.equal(await backend.transitionWorkflowStatus("delete-wins", ["paused"], "running"), false);
+			assert.equal(await backend.commitWorkflowStatusTransition("delete-wins", ["paused"], "running"), false);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

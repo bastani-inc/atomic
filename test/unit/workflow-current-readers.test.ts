@@ -70,7 +70,13 @@ test("foreground sticky delivery rejects a missing order before admission", asyn
 	const activeStore = createStore();
 	activeStore.recordRunStart({ ...run(), id: rootId, status: "running", pendingStageMessages: [missing] });
 	const backend = await createMemoryTestBackend();
-	await backend.registerWorkflow({ workflowId: rootId, name: "reader", inputs: {}, createdAt: 1, status: "running" });
+	await backend.commitWorkflowRegistration({
+		workflowId: rootId,
+		name: "reader",
+		inputs: {},
+		createdAt: 1,
+		status: "running",
+	});
 	setDurableBackend(backend);
 	try {
 		const delivery = createWorkflowPendingStageDelivery(activeStore, rootId, "stage", "stage");

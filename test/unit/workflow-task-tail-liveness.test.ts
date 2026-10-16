@@ -75,9 +75,9 @@ async function createDelayedTaskCheckpointBackend() {
 		failTaskCheckpoint: false,
 		taskCheckpoints: 0,
 	});
-	const baserecordCheckpointAsync = backend.recordCheckpointAsync.bind(backend);
+	const baserecordCheckpointAsync = backend.commitCheckpoint.bind(backend);
 	return Object.assign(backend, {
-		async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+		async commitCheckpoint(checkpoint: DurableCheckpoint): Promise<void> {
 			if (checkpoint.kind === "stage" && checkpoint.checkpointId.startsWith("task:")) {
 				backend.taskCheckpoints += 1;
 				await backend.gate.barrier;
@@ -94,9 +94,9 @@ async function createPostTaskUsageCheckpointBackend() {
 		taskResults: [] as Extract<DurableCheckpoint, { readonly kind: "stage" }>[],
 		onAllTaskResultsPersisted: (() => {}) as () => void,
 	});
-	const baserecordCheckpointAsync = backend.recordCheckpointAsync.bind(backend);
+	const baserecordCheckpointAsync = backend.commitCheckpoint.bind(backend);
 	return Object.assign(backend, {
-		async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+		async commitCheckpoint(checkpoint: DurableCheckpoint): Promise<void> {
 			await baserecordCheckpointAsync(checkpoint);
 			if (checkpoint.kind !== "stage" || !checkpoint.checkpointId.startsWith("task:")) return;
 			backend.taskResults.push(checkpoint);
@@ -114,9 +114,9 @@ async function createPostTaskUsageCheckpointBackend() {
 
 async function createDropTaskResultBackend() {
 	const backend = Object.assign(await createMemoryTestBackend(), {});
-	const baserecordCheckpointAsync = backend.recordCheckpointAsync.bind(backend);
+	const baserecordCheckpointAsync = backend.commitCheckpoint.bind(backend);
 	return Object.assign(backend, {
-		async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+		async commitCheckpoint(checkpoint: DurableCheckpoint): Promise<void> {
 			if (checkpoint.kind === "stage" && checkpoint.checkpointId.startsWith("task:")) {
 				throw new Error("task-result checkpoint failed");
 			}
@@ -659,14 +659,14 @@ describe("ctx.task tail liveness", () => {
 
 	test("resumed replay reuses the completed task checkpoint without rerunning it", async () => {
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "wf-task-tail-replay",
 			name: "task-replay-only",
 			inputs: {},
 			createdAt: 1,
 			status: "running",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: "wf-task-tail-replay",
 			checkpointId: "task:stage:task:review:1",
@@ -707,14 +707,14 @@ describe("ctx.task tail liveness", () => {
 
 	test("terminal-only stage checkpoint replays a completed task without rerunning it", async () => {
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "wf-task-terminal-only",
 			name: "task-terminal-only",
 			inputs: {},
 			createdAt: 1,
 			status: "running",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: "wf-task-terminal-only",
 			checkpointId: "stage:stage:task:review:1",
@@ -798,14 +798,14 @@ describe("ctx.task tail liveness", () => {
 				usage: { input: 17, output: 9, cacheRead: 5, cacheWrite: 6, cost: 0.75, turns: 2 },
 			},
 		];
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "wf-task-terminal-only",
 			name: "task-terminal-only",
 			inputs: {},
 			createdAt: 1,
 			status: "running",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: "wf-task-terminal-only",
 			checkpointId: "stage:stage:task:review:1",
@@ -880,14 +880,14 @@ describe("ctx.task tail liveness", () => {
 	test("terminal-only replay returns structured artifacts and warnings without rerunning", async () => {
 		const backend = await createMemoryTestBackend();
 		const replayKey = "stage:task:review:1";
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "wf-task-terminal-fields",
 			name: "task-terminal-fields",
 			inputs: {},
 			createdAt: 1,
 			status: "running",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: "wf-task-terminal-fields",
 			checkpointId: `stage:${replayKey}`,
@@ -922,14 +922,14 @@ describe("ctx.task tail liveness", () => {
 	test("terminal-only replay preserves schema task text", async () => {
 		const backend = await createMemoryTestBackend();
 		const replayKey = "stage:task:review:1";
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "wf-schema-receipt",
 			name: "schema-receipt",
 			inputs: {},
 			createdAt: 1,
 			status: "running",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: "wf-schema-receipt",
 			checkpointId: `stage:${replayKey}`,
@@ -977,14 +977,14 @@ describe("ctx.task tail liveness", () => {
 		const replayKey = "stage:task:review:1";
 		const structured = { approved: true, notes: "line1\nline2\nline3" };
 		const truncated = `{\n\n[workflow output truncated; limits: 204800 bytes, 1 lines]`;
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "wf-schema-max-output",
 			name: "schema-max-output",
 			inputs: {},
 			createdAt: 1,
 			status: "running",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: "wf-schema-max-output",
 			checkpointId: `stage:${replayKey}`,
@@ -1089,14 +1089,14 @@ describe("ctx.task tail liveness", () => {
 	test("direct nested task-tail quit settles the aggregate root", async () => {
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "parent",
 			name: "parent",
 			inputs: {},
 			createdAt: 1,
 			status: "running",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: "parent",
 			checkpointId: "task:stage:task:review:1",

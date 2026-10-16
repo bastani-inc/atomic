@@ -38,12 +38,18 @@ function makeRun(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
 
 async function makeBackend(): Promise<InMemoryDurableBackend> {
 	const backend = await createMemoryTestBackend();
-	await backend.registerWorkflow({ workflowId: RUN_ID, name: "timing", inputs: {}, createdAt: 1, status: "running" });
+	await backend.commitWorkflowRegistration({
+		workflowId: RUN_ID,
+		name: "timing",
+		inputs: {},
+		createdAt: 1,
+		status: "running",
+	});
 	return backend;
 }
 
-function recordProgressCheckpoint(backend: DurableWorkflowBackend, workflowId = RUN_ID): void | Promise<void> {
-	return backend.recordCheckpoint({
+function recordProgressCheckpoint(backend: DurableWorkflowBackend, workflowId = RUN_ID): Promise<void> {
+	return backend.commitCheckpoint({
 		kind: "stage",
 		workflowId,
 		checkpointId: "stage-session:stage:work:1:seed",
@@ -116,7 +122,7 @@ describe("durable run-timing checkpoints", () => {
 
 	test("run timing survives journal reopen", async () => {
 		const backend = await JournalTestBackend.create();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: RUN_ID,
 			name: "timing",
 			inputs: {},
@@ -187,9 +193,15 @@ describe("resumed runs inherit elapsed time", () => {
 	test("durable resume seeds run total and mid-running stage timers", async () => {
 		const runId = "wf-durable-resume-timing";
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({ workflowId: runId, name: "timing", inputs: {}, createdAt: 1, status: "paused" });
+		await backend.commitWorkflowRegistration({
+			workflowId: runId,
+			name: "timing",
+			inputs: {},
+			createdAt: 1,
+			status: "paused",
+		});
 		// Mid-running stage session persisted by the prior session (700ms elapsed).
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: runId,
 			checkpointId: "stage-session:stage:work:1:prior",
@@ -201,7 +213,7 @@ describe("resumed runs inherit elapsed time", () => {
 			completedAt: 5,
 		});
 		// Total run elapsed persisted at quit time (90s).
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "tool",
 			workflowId: runId,
 			checkpointId: "run-timing:90000",
@@ -290,7 +302,7 @@ describe("run elapsed persistence at pause/failure boundaries", () => {
 	test("quitRun persists the exact accumulated run elapsed durably", async () => {
 		const backend = getDurableBackend();
 		const runId = "wf-quit-timing";
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "timing",
 			inputs: {},

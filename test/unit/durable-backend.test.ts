@@ -62,7 +62,7 @@ describe("InMemoryDurableBackend", () => {
 
 	beforeEach(async () => {
 		backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: WORKFLOW_ID,
 			name: "test-workflow",
 			inputs: { topic: "testing" },
@@ -73,34 +73,34 @@ describe("InMemoryDurableBackend", () => {
 
 	test("records and retrieves tool checkpoints", async () => {
 		const hash = durableHash({ name: "fetch", args: { url: "https://example.com" } });
-		await backend.recordCheckpoint(makeToolCheckpoint(WORKFLOW_ID, "fetch", hash, "result-data"));
+		await backend.commitCheckpoint(makeToolCheckpoint(WORKFLOW_ID, "fetch", hash, "result-data"));
 		const output = backend.getToolOutput(WORKFLOW_ID, hash);
 		assert.equal(output, "result-data");
 	});
 
 	test("tool checkpoints are idempotent — no duplicate side effects", async () => {
 		const hash = durableHash({ name: "write-file", args: { path: "/tmp/test" } });
-		await backend.recordCheckpoint(makeToolCheckpoint(WORKFLOW_ID, "write-file", hash, "ok", "cp-1"));
+		await backend.commitCheckpoint(makeToolCheckpoint(WORKFLOW_ID, "write-file", hash, "ok", "cp-1"));
 		// Recording again with same checkpointId should be a no-op.
-		await backend.recordCheckpoint(makeToolCheckpoint(WORKFLOW_ID, "write-file", hash, "DIFFERENT", "cp-1"));
+		await backend.commitCheckpoint(makeToolCheckpoint(WORKFLOW_ID, "write-file", hash, "DIFFERENT", "cp-1"));
 		assert.equal(backend.getToolOutput(WORKFLOW_ID, hash), "ok");
 		assert.equal(backend.getWorkflow(WORKFLOW_ID)!.completedCheckpoints, 1);
 	});
 
 	test("records and retrieves UI response checkpoints", async () => {
 		const hash = durableHash({ message: "What is your name?" });
-		await backend.recordCheckpoint(makeUiCheckpoint(WORKFLOW_ID, hash, "Alice"));
+		await backend.commitCheckpoint(makeUiCheckpoint(WORKFLOW_ID, hash, "Alice"));
 		assert.equal(backend.getUiResponse(WORKFLOW_ID, hash), "Alice");
 	});
 
 	test("records and retrieves stage checkpoints by replay key", async () => {
-		await backend.recordCheckpoint(makeStageCheckpoint(WORKFLOW_ID, "stage:analyze:1", "analysis result"));
+		await backend.commitCheckpoint(makeStageCheckpoint(WORKFLOW_ID, "stage:analyze:1", "analysis result"));
 		assert.equal(backend.getStageOutput(WORKFLOW_ID, "stage:analyze:1"), "analysis result");
 	});
 
 	test("listCheckpoints returns checkpoints in completion order", async () => {
 		const t0 = Date.now();
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "tool",
 			workflowId: WORKFLOW_ID,
 			checkpointId: "cp-1",
@@ -109,7 +109,7 @@ describe("InMemoryDurableBackend", () => {
 			output: "a",
 			completedAt: t0 + 100,
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "tool",
 			workflowId: WORKFLOW_ID,
 			checkpointId: "cp-2",
@@ -130,9 +130,9 @@ describe("InMemoryDurableBackend", () => {
 		// `paused`. Same-session double-resume is filtered by the command layer.
 		assert.equal(backend.listResumableWorkflows().length, 0);
 		assert.equal(backend.listCompletedWorkflows().length, 0);
-		await backend.recordCheckpoint(makeToolCheckpoint(WORKFLOW_ID, "progress", "h-progress", "done"));
+		await backend.commitCheckpoint(makeToolCheckpoint(WORKFLOW_ID, "progress", "h-progress", "done"));
 		assert.equal(backend.listResumableWorkflows().length, 1);
-		await backend.setWorkflowStatus(WORKFLOW_ID, "completed");
+		await backend.commitWorkflowStatus(WORKFLOW_ID, "completed");
 		assert.equal(backend.listResumableWorkflows().length, 0);
 		assert.deepEqual(
 			backend.listCompletedWorkflows().map((entry) => entry.workflowId),
@@ -141,14 +141,14 @@ describe("InMemoryDurableBackend", () => {
 	});
 
 	test("listResumableWorkflows filters children and non-recoverable failures", async () => {
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "root-failed",
 			name: "root",
 			inputs: {},
 			createdAt: 1,
 			status: "failed",
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "root-terminal",
 			name: "terminal",
 			inputs: {},
@@ -156,7 +156,7 @@ describe("InMemoryDurableBackend", () => {
 			status: "failed",
 			resumable: false,
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "child-run",
 			name: "child",
 			inputs: {},
@@ -223,11 +223,11 @@ describe("InMemoryDurableBackend", () => {
 		assert.equal(backend.listResumableWorkflows().length, 0);
 	});
 
-	test("setWorkflowStatus updates status and updatedAt", async () => {
+	test("commitWorkflowStatus updates status and updatedAt", async () => {
 		const before = backend.getWorkflow(WORKFLOW_ID)!.updatedAt;
 		// Ensure updatedAt changes.
 		setTimeout(() => {}, 0);
-		await backend.setWorkflowStatus(WORKFLOW_ID, "failed");
+		await backend.commitWorkflowStatus(WORKFLOW_ID, "failed");
 		const handle = backend.getWorkflow(WORKFLOW_ID)!;
 		assert.equal(handle.status, "failed");
 		assert.ok(handle.updatedAt >= before);
@@ -242,7 +242,7 @@ describe("InMemoryDurableBackend", () => {
 	});
 
 	test("reset clears all state", async () => {
-		await backend.reset();
+		await backend.commitReset();
 		assert.equal(backend.getWorkflow(WORKFLOW_ID), undefined);
 		assert.equal(backend.listResumableWorkflows().length, 0);
 	});
@@ -255,7 +255,7 @@ describe("ctx.tool primitive (durable caching)", () => {
 	beforeEach(async () => {
 		backend = await createMemoryTestBackend();
 		cancelled = false;
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: WORKFLOW_ID,
 			name: "tool-test",
 			inputs: {},
@@ -454,9 +454,9 @@ describe("ctx.tool primitive (durable caching)", () => {
 	test("awaits async checkpoint persistence before returning side-effect result", async () => {
 		async function createAsyncBackend() {
 			const backend = Object.assign(await createMemoryTestBackend(), { persisted: false });
-			const baserecordCheckpoint = backend.recordCheckpoint.bind(backend);
+			const baserecordCheckpoint = backend.commitCheckpoint.bind(backend);
 			return Object.assign(backend, {
-				async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+				async commitCheckpoint(checkpoint: DurableCheckpoint): Promise<void> {
 					await Promise.resolve();
 					await baserecordCheckpoint(checkpoint);
 					backend.persisted = true;
@@ -464,7 +464,7 @@ describe("ctx.tool primitive (durable caching)", () => {
 			});
 		}
 		const asyncBackend = await createAsyncBackend();
-		await asyncBackend.registerWorkflow({
+		await asyncBackend.commitWorkflowRegistration({
 			workflowId: WORKFLOW_ID,
 			name: "async",
 			inputs: {},

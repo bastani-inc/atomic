@@ -391,7 +391,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		return draft;
 	}
 
-	registerWorkflow(input: WorkflowRegistrationInput): Promise<void> {
+	commitWorkflowRegistration(input: WorkflowRegistrationInput): Promise<void> {
 		return this.serialize(input.workflowId, () => this.register(input));
 	}
 	private *register(input: WorkflowRegistrationInput): Operation<void> {
@@ -423,7 +423,14 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		)
 			throw new DurableNestedTopologyError(`missing invocation fingerprint at ${checkpoint.checkpointId}`);
 	}
-	recordCheckpoint(checkpoint: DurableCheckpoint): Promise<void> {
+	commitCheckpoint(checkpoint: DurableCheckpoint, options?: { readonly signal?: AbortSignal }): Promise<void> {
+		if (options?.signal?.aborted)
+			return Promise.reject(
+				new JournalOperationAbortedError(
+					checkpoint.workflowId,
+					options.signal.reason instanceof Error ? options.signal.reason : undefined,
+				),
+			);
 		return this.serialize(checkpoint.workflowId, () => this.checkpoint(checkpoint));
 	}
 	private *checkpoint(checkpoint: DurableCheckpoint): Operation<void> {
@@ -437,20 +444,9 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			},
 		);
 	}
-	async recordCheckpointAsync(
-		checkpoint: DurableCheckpoint,
-		options?: { readonly signal?: AbortSignal },
-	): Promise<void> {
-		if (options?.signal?.aborted)
-			throw new JournalOperationAbortedError(
-				checkpoint.workflowId,
-				options.signal.reason instanceof Error ? options.signal.reason : undefined,
-			);
-		await this.recordCheckpoint(checkpoint);
-	}
-	async recordAdditiveCheckpointBestEffort(checkpoint: DurableCheckpoint): Promise<boolean> {
+	async commitAdditiveCheckpointBestEffort(checkpoint: DurableCheckpoint): Promise<boolean> {
 		try {
-			await this.recordCheckpointAsync(checkpoint);
+			await this.commitCheckpoint(checkpoint);
 			return true;
 		} catch (error) {
 			if (!(error instanceof StorageUnavailableError)) throw error;
@@ -467,7 +463,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			return "available";
 		return lease.holderId === this.holderId ? "local" : "foreign";
 	}
-	setWorkflowStatus(
+	commitWorkflowStatus(
 		runId: string,
 		status: DurableWorkflowStatus,
 		pendingPrompts?: number,
@@ -488,7 +484,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		const handle = draft.getWorkflow(runId);
 		if (handle) yield* this.snapshot(handle);
 	}
-	async transitionWorkflowStatus(
+	async commitWorkflowStatusTransition(
 		runId: string,
 		expected: readonly DurableWorkflowStatus[],
 		status: DurableWorkflowStatus,
@@ -581,7 +577,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		});
 		return result;
 	}
-	adjustPendingPrompts(runId: string, delta: number): Promise<void> {
+	commitPendingPromptAdjustment(runId: string, delta: number): Promise<void> {
 		return this.serialize(runId, () =>
 			this.promptChange(runId, delta >= 0 ? E.promptAsked : E.promptReleased, (state) => state.adjust(delta)),
 		);
@@ -786,7 +782,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			}
 		}
 	}
-	reset(): Promise<void> {
+	commitReset(): Promise<void> {
 		return this.serialize(this.catalogQueue, () => this.resetJournal());
 	}
 	private *resetJournal(): Operation<void> {

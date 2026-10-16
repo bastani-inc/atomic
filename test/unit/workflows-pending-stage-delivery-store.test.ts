@@ -47,7 +47,13 @@ describe("workflow stage messages store", () => {
 	test("terminal sticky status survives bounded metadata and cold archive hydration (#3467)", async () => {
 		const RUN_ID = "4ac72924-c452-4e5f-9e63-2435722109f7";
 		const backend = await JournalTestBackend.create();
-		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.commitWorkflowRegistration({
+			workflowId: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		const store = createStore();
 		store.recordRunStart({
 			id: RUN_ID,
@@ -126,7 +132,13 @@ describe("workflow stage messages store", () => {
 
 	test("bounds settled payloads and deduplicates old delivered IDs after journal reload (#3467)", async () => {
 		const backend = await JournalTestBackend.create();
-		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.commitWorkflowRegistration({
+			workflowId: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		const store = createStore();
 		store.recordRunStart({
 			id: RUN_ID,
@@ -191,7 +203,13 @@ describe("workflow stage messages store", () => {
 			});
 		}
 		const backend = await createFailingBackend();
-		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.commitWorkflowRegistration({
+			workflowId: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		const store = createStore();
 		store.recordRunStart({
 			id: RUN_ID,
@@ -284,7 +302,13 @@ describe("workflow stage messages store", () => {
 
 	test("deduplicates a durable retry across volatile sender presence changes", async () => {
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.commitWorkflowRegistration({
+			workflowId: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		const original = pendingMessage("presence", {
 			senderReturnAddress: "host-session-planner",
 			from: {
@@ -381,7 +405,7 @@ describe("workflow stage messages store", () => {
 
 	test("deduplicates a reconstructed durable retry with a regenerated timestamp", async () => {
 		const writerBackend = await JournalTestBackend.create();
-		await writerBackend.registerWorkflow({
+		await writerBackend.commitWorkflowRegistration({
 			workflowId: RUN_ID,
 			name: "flow",
 			inputs: {},
@@ -501,7 +525,7 @@ describe("workflow stage messages store", () => {
 
 	test("canonicalizes omitted message defaults across durable queued and delivered retries", async () => {
 		const writerBackend = await JournalTestBackend.create();
-		await writerBackend.registerWorkflow({
+		await writerBackend.commitWorkflowRegistration({
 			workflowId: RUN_ID,
 			name: "flow",
 			inputs: {},
@@ -805,7 +829,13 @@ describe("workflow stage messages store", () => {
 
 	test("shares identity, dedupe, positions, and the exact cap across a stage id and unique name", async () => {
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.commitWorkflowRegistration({
+			workflowId: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		const store = createStore();
 		store.recordRunStart({
 			id: RUN_ID,
@@ -886,7 +916,13 @@ describe("workflow stage messages store", () => {
 
 	test("live store methods publish only persisted message transitions", async () => {
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.commitWorkflowRegistration({
+			workflowId: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		const store = createStore();
 		store.recordRunStart({
 			id: RUN_ID,
@@ -927,7 +963,7 @@ describe("durable workflow stage messages metadata", () => {
 
 	async function roundTrip(input: DurableWorkflowMetadata) {
 		const writer = await JournalTestBackend.create();
-		await writer.registerWorkflow(input);
+		await writer.commitWorkflowRegistration(input);
 		return (await JournalTestBackend.create(writer.databasePath)).getWorkflow(input.workflowId);
 	}
 
@@ -978,7 +1014,7 @@ describe("durable workflow stage messages metadata", () => {
 		assert.equal(accepted.ok, true);
 		if (!accepted.ok) return;
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: RUN_ID,
 			name: "flow",
 			inputs: {},
@@ -987,7 +1023,7 @@ describe("durable workflow stage messages metadata", () => {
 			pendingStageMessages: accepted.messages,
 		});
 		assert.deepEqual(backend.toMetadata(RUN_ID)?.pendingStageMessages, accepted.messages);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "empty",
 			name: "empty",
 			inputs: {},
@@ -999,7 +1035,7 @@ describe("durable workflow stage messages metadata", () => {
 
 	test("store lifecycle transitions survive journal reload", async () => {
 		const backend = await JournalTestBackend.create();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: RUN_ID,
 			name: "flow",
 			inputs: {},
@@ -1056,7 +1092,13 @@ describe("durable workflow stage messages metadata", () => {
 
 	test("concurrent queue transitions retain FIFO in live and reloaded metadata", async () => {
 		const backend = await JournalTestBackend.create();
-		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.commitWorkflowRegistration({
+			workflowId: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		const store = createStore();
 		store.recordRunStart({
 			id: RUN_ID,
@@ -1108,7 +1150,13 @@ describe("durable workflow stage messages metadata", () => {
 			});
 		}
 		const backend = await createFailingBackend();
-		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.commitWorkflowRegistration({
+			workflowId: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		const store = createStore();
 		store.recordRunStart({
 			id: RUN_ID,

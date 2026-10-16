@@ -140,10 +140,10 @@ test.each([
 			if (mode === "session-missing-checkpoint") {
 				const retained = backend;
 				backend = await createMemoryTestBackend();
-				await backend.registerWorkflow(retained.getWorkflow(runId)!);
+				await backend.commitWorkflowRegistration(retained.getWorkflow(runId)!);
 				for (const checkpoint of retained.listCheckpoints(runId)) {
 					if (checkpoint.kind === "tool" && checkpoint.name === "prepare") continue;
-					await backend.recordCheckpoint(checkpoint);
+					await backend.commitCheckpoint(checkpoint);
 				}
 				setDurableBackend(backend);
 				runtime = createExtensionRuntime(runtimeOptions);
@@ -348,7 +348,7 @@ test.each(["missing-parent", "cycle", "ambiguous", "completed", "missing", "unre
 			source = { ...source, toolNodes: [{ ...frontier, parentIds: [] }] };
 		}
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: source.id,
 			name: source.name,
 			inputs: {},
@@ -434,7 +434,7 @@ test("tool-only return-mode resume preserves repeated-call ordinals and never re
 test("fresh journal rejects a cyclic persisted tool frontier without executing callbacks", async () => {
 	const writer = await JournalTestBackend.create();
 	const workflowId = "78607844-1088-4e90-83ac-ce1b957689ed";
-	await writer.registerWorkflow({
+	await writer.commitWorkflowRegistration({
 		workflowId,
 		name: "cyclic-tool",
 		inputs: {},
@@ -443,7 +443,7 @@ test("fresh journal rejects a cyclic persisted tool frontier without executing c
 		failedToolNodeId: "tool:bad",
 		resumable: true,
 	});
-	await writer.recordCheckpoint({
+	await writer.commitCheckpoint({
 		kind: "tool",
 		workflowId,
 		checkpointId: "tool-failure:bad:1",
@@ -528,10 +528,10 @@ test.each(
 		await workflowPauseAction({ action: "pause", runId: source.id, stageId: target.id });
 		await waitFor(() => source.endedAt !== undefined);
 		const writer = await JournalTestBackend.create();
-		await writer.registerWorkflow(original.getWorkflow(source.id)!);
+		await writer.commitWorkflowRegistration(original.getWorkflow(source.id)!);
 		for (const checkpoint of original.listCheckpoints(source.id)) {
 			if (!typed && checkpoint.kind === "tool" && checkpoint.throwingFailureError !== undefined) continue;
-			await writer.recordCheckpoint(checkpoint);
+			await writer.commitCheckpoint(checkpoint);
 		}
 		const backend = await writer.reopen();
 		await backend.hydrateWorkflow(source.id);

@@ -75,7 +75,7 @@ async function setupReviewerResume(overrides: Partial<RunSnapshot> = {}) {
 		],
 		...overrides,
 	});
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: sourceId,
 		name: definition.name,
 		inputs: {},

@@ -35,7 +35,7 @@ test("a child run hydrates and drains only its logical pending messages through 
 	const rootEntry = pendingMessage(ROOT_RUN_ID, "root-receiver", "root-message");
 	const childEntry = pendingMessage(CHILD_RUN_ID, "receiver", "child-message");
 	const backend = await createMemoryTestBackend();
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: ROOT_RUN_ID,
 		name: "root",
 		inputs: {},
@@ -368,7 +368,7 @@ test("root, siblings, and arbitrarily nested children isolate dedupe, capacity, 
 		startedAt: 4,
 	});
 	const backend = await createMemoryTestBackend();
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: ROOT_RUN_ID,
 		name: "root",
 		inputs: {},

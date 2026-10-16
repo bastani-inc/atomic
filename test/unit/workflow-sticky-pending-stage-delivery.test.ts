@@ -329,7 +329,7 @@ async function rootFixture(
 		...(possibleStages === undefined ? {} : { possibleStages }),
 	});
 	const backend = await createMemoryTestBackend();
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: ROOT_RUN_ID,
 		name: "flow",
 		inputs: {},
@@ -355,7 +355,7 @@ describe("pre-start sticky drain", () => {
 			stages: [baseStage({ id: "child-stage", status: "failed" })],
 		});
 		const backend = await JournalTestBackend.create();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: ROOT_RUN_ID,
 			name: "flow",
 			inputs: {},
@@ -398,7 +398,7 @@ describe("pre-start sticky drain", () => {
 		const { store } = await rootFixture(baseStage({ status: "failed" }));
 		let failMetadata = false;
 		const backend = await metadataFailureBackend(() => failMetadata, "metadata-only fault");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: ROOT_RUN_ID,
 			name: "flow",
 			inputs: {},
@@ -449,7 +449,7 @@ describe("pre-start sticky drain", () => {
 	test("bounds sticky session receipts while retaining old-session deduplication (#3467)", async () => {
 		const { store } = await rootFixture();
 		const backend = await JournalTestBackend.create();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: ROOT_RUN_ID,
 			name: "flow",
 			inputs: {},
@@ -491,7 +491,7 @@ describe("pre-start sticky drain", () => {
 	test("deduplicates archived no-recipient sticky delivery after failed-stage retry and cold hydration (#3467)", async () => {
 		const { store } = await rootFixture([]);
 		const backend = await JournalTestBackend.create();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: ROOT_RUN_ID,
 			name: "flow",
 			inputs: {},
@@ -557,7 +557,7 @@ describe("pre-start sticky drain", () => {
 		async (admission) => {
 			const { store } = await rootFixture([]);
 			const backend = await JournalTestBackend.create();
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: ROOT_RUN_ID,
 				name: "flow",
 				inputs: {},
@@ -619,7 +619,7 @@ describe("pre-start sticky drain", () => {
 	test("bounds failed-iteration sticky receipts through resume and settlement (#3467)", async () => {
 		const { store } = await rootFixture([]);
 		const backend = await JournalTestBackend.create();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: ROOT_RUN_ID,
 			name: "flow",
 			inputs: {},
@@ -711,7 +711,7 @@ describe("pre-start sticky drain", () => {
 	test("settlement archives sticky receipts whose failed stages are no longer materialized (#3467)", async () => {
 		const { store } = await rootFixture([]);
 		const backend = await JournalTestBackend.create();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: ROOT_RUN_ID,
 			name: "flow",
 			inputs: {},
@@ -862,7 +862,7 @@ describe("pre-start sticky drain", () => {
 			startedAt: 2,
 		});
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: ROOT_RUN_ID,
 			name: "root",
 			inputs: {},
@@ -982,7 +982,7 @@ describe("pre-start sticky drain", () => {
 			startedAt: 2,
 		});
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: ROOT_RUN_ID,
 			name: "root",
 			inputs: {},
@@ -1054,7 +1054,7 @@ describe("sticky entries in durable metadata", () => {
 
 	async function roundTrip(input: DurableWorkflowMetadata) {
 		const writer = await JournalTestBackend.create();
-		await writer.registerWorkflow(input);
+		await writer.commitWorkflowRegistration(input);
 		return (await JournalTestBackend.create(writer.databasePath)).getWorkflow(input.workflowId);
 	}
 
@@ -1110,7 +1110,7 @@ describe("sticky entries in durable metadata", () => {
 
 	test("a sticky delivery ledger survives a journal reload and never redelivers", async () => {
 		const first = await JournalTestBackend.create();
-		await first.registerWorkflow({
+		await first.commitWorkflowRegistration({
 			workflowId: ROOT_RUN_ID,
 			name: "flow",
 			inputs: {},
@@ -1184,7 +1184,7 @@ describe("sticky entries in durable metadata", () => {
 
 	test("a sticky entry survives a journal reload", async () => {
 		const first = await JournalTestBackend.create();
-		await first.registerWorkflow({
+		await first.commitWorkflowRegistration({
 			workflowId: ROOT_RUN_ID,
 			name: "flow",
 			inputs: {},
@@ -1301,7 +1301,7 @@ async function stickyBridgeFixture(
 	}
 	const backend = options.backend ?? (await createMemoryTestBackend());
 	if (backend.getWorkflow(ROOT_RUN_ID) === undefined) {
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: ROOT_RUN_ID,
 			name: "flow",
 			inputs: {},
@@ -1452,7 +1452,7 @@ describe("pending-stage bridge sticky delivery", () => {
 		async (failure) => {
 			let failMetadata = false;
 			const backend = await metadataFailureBackend(() => failMetadata, "mixed metadata fault");
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: ROOT_RUN_ID,
 				name: "flow",
 				inputs: {},
@@ -1594,7 +1594,7 @@ describe("pending-stage bridge sticky delivery", () => {
 	test("preserves sticky receipts and counts when the first metadata save fails (#3467)", async () => {
 		let failMetadata = false;
 		const backend = await metadataFailureBackend(() => failMetadata, "interrupted ledger metadata");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: ROOT_RUN_ID,
 			name: "flow",
 			inputs: {},
@@ -1836,7 +1836,7 @@ describe("pending-stage bridge sticky delivery", () => {
 			startedAt: 1,
 		});
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: ROOT_RUN_ID,
 			name: "flow",
 			inputs: {},
@@ -1944,7 +1944,7 @@ describe("pending-stage bridge sticky delivery", () => {
 			startedAt: 2,
 		});
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: ROOT_RUN_ID,
 			name: "root",
 			inputs: {},
@@ -2049,7 +2049,7 @@ describe("pending-stage bridge sticky delivery", () => {
 		const store = createStore();
 		terminalStickyFixture(store, "sticky-zero", "sticky-delivered");
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: ROOT_RUN_ID,
 			name: "flow",
 			inputs: {},
@@ -2172,7 +2172,7 @@ test("replacement readiness waits for its own sticky admission after prior succe
 		],
 		startedAt: 1,
 	});
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: ROOT_RUN_ID,
 		name: "replacement-ready",
 		inputs: {},

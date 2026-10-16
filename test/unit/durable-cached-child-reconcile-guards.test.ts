@@ -385,7 +385,7 @@ test("nested cached child reconciles only with complete reciprocal legacy-root a
 
 test("cached recorder derives the durable catalog root through rootless parent ancestry", async () => {
 	const backend = await InMemoryDurableBackend.create();
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: ROOT_ID,
 		name: "guard-root-name",
 		inputs: {},
@@ -407,7 +407,7 @@ test("cached recorder derives the durable catalog root through rootless parent a
 		exited: false,
 		outputs: {},
 	} as const;
-	await backend.recordCheckpoint({
+	await backend.commitCheckpoint({
 		kind: "stage",
 		workflowId: ROOT_ID,
 		checkpointId: "root-boundary",
@@ -442,8 +442,8 @@ test("cached recorder derives the durable catalog root through rootless parent a
 			},
 		},
 	};
-	await backend.recordCheckpoint({ ...cachedBoundary, workflowId: ROOT_ID });
-	await backend.recordCheckpoint({
+	await backend.commitCheckpoint({ ...cachedBoundary, workflowId: ROOT_ID });
+	await backend.commitCheckpoint({
 		kind: "stage",
 		workflowId: ROOT_ID,
 		checkpointId: "grand-leaf",

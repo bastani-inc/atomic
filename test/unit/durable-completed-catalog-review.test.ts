@@ -16,7 +16,7 @@ import { testRunId } from "../helpers/run-id.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 async function registerCompleted(backend: DurableWorkflowBackend, workflowId: string): Promise<void> {
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId,
 		name: workflowId,
 		inputs: {},
@@ -91,7 +91,7 @@ describe("completed catalog reviewer regressions", () => {
 		const workflowId = testRunId("public-run-timing-name");
 		await registerCompleted(backend, workflowId);
 		const argsHash = durableHash({ name: RUN_TIMING_CHECKPOINT_NAME, args: {}, ordinal: 1 });
-		await backend.recordCheckpoint(
+		await backend.commitCheckpoint(
 			tool(workflowId, `tool:${argsHash}`, RUN_TIMING_CHECKPOINT_NAME, argsHash, 20, {
 				topology: {
 					version: 1,
@@ -103,7 +103,7 @@ describe("completed catalog reviewer regressions", () => {
 				},
 			}),
 		);
-		await backend.recordCheckpoint(
+		await backend.commitCheckpoint(
 			tool(workflowId, "run-timing:12345", RUN_TIMING_CHECKPOINT_NAME, RUN_TIMING_CHECKPOINT_NAME, 30, {
 				output: { elapsedMs: 12_345 },
 			}),
@@ -146,13 +146,13 @@ describe("completed catalog reviewer regressions", () => {
 			parentStageId: "boundary",
 			rootRunId: workflowId,
 		};
-		await backend.recordCheckpoint(
+		await backend.commitCheckpoint(
 			stage(workflowId, "boundary", "child-boundary", 10, {
 				output: { workflow: "child", runId: childRunId, status: "completed", exited: false, outputs: {} },
 				topology: { version: 1, stageId: "boundary", parentIds: [], order: 1, run: rootRun },
 			}),
 		);
-		await backend.recordCheckpoint(
+		await backend.commitCheckpoint(
 			tool(workflowId, "child:tool:timing-name", RUN_TIMING_CHECKPOINT_NAME, "child:hpublic", 20, {
 				topology: {
 					version: 1,
@@ -189,18 +189,18 @@ describe("completed catalog reviewer regressions", () => {
 		const workflowId = testRunId("topology-over-sequence");
 		await registerCompleted(backend, workflowId);
 		const run = { runId: workflowId, runName: workflowId } as const;
-		await backend.recordCheckpoint(
+		await backend.commitCheckpoint(
 			stage(workflowId, "after", "after", 10, {
 				output: "after",
 				topology: { version: 1, stageId: "after", parentIds: ["middle"], order: 3, run },
 			}),
 		);
-		await backend.recordCheckpoint(
+		await backend.commitCheckpoint(
 			tool(workflowId, "middle", "middle", "middle-hash", 20, {
 				topology: { version: 1, nodeId: "middle", ordinal: 1, order: 2, parentIds: ["before"], run },
 			}),
 		);
-		await backend.recordCheckpoint(
+		await backend.commitCheckpoint(
 			stage(workflowId, "before", "before", 30, {
 				output: "before",
 				topology: { version: 1, stageId: "before", parentIds: [], order: 1, run },
@@ -257,7 +257,7 @@ describe("completed catalog reviewer regressions", () => {
 				topology: { version: 1, stageId: "after", parentIds: ["boundary"], order: 3, run: rootRun },
 			}),
 		])
-			await backend.recordCheckpoint(checkpoint);
+			await backend.commitCheckpoint(checkpoint);
 
 		const { runs } = await reconstructed(backend, workflowId);
 		const graph = expandWorkflowGraph({ runs, notices: [], version: 1 }, workflowId);

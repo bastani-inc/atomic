@@ -16,7 +16,7 @@ export async function releasePausedRunsOwnedBy(
 			.listResumableWorkflows()
 			.filter((entry) => entry.status === "paused" && entry.modelOwner === modelOwner)
 			.map(async (entry) => {
-				const released = await backend.transitionWorkflowStatus(
+				const released = await backend.commitWorkflowStatusTransition(
 					entry.workflowId,
 					["paused"],
 					"paused",
@@ -57,7 +57,7 @@ export async function reclaimReleasedRunsOwnedBy(backend: DurableWorkflowBackend
 				return handle?.releasedModelOwner === modelOwner ? [handle] : [];
 			})
 			.map(async (handle) => {
-				const reclaimed = await backend.transitionWorkflowStatus(
+				const reclaimed = await backend.commitWorkflowStatusTransition(
 					handle.workflowId,
 					["paused"],
 					"paused",

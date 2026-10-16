@@ -643,7 +643,7 @@ describe("nested workflow stage target routing", () => {
 		assert.equal(rightCalls.pauses, 1);
 
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: fixtureRunId("root-run"),
 			rootWorkflowId: fixtureRunId("root-run"),
 			name: "root",
