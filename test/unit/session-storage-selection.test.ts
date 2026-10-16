@@ -4,6 +4,7 @@ import { test } from "vitest";
 import { parseArgs } from "../../packages/coding-agent/src/cli/args.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import {
+	canIsolateSessionStore,
 	resolveSessionStore,
 	type SessionStorageOptions,
 	selectSessionStorage,
@@ -17,6 +18,7 @@ import { createSessionManager } from "../../packages/coding-agent/src/main-sessi
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { stageSessionStore } from "../../packages/workflows/src/shared/stage-session-store.js";
 import {
+	fileExists,
 	makeTempDirectory,
 	moduleDir,
 	readText,
@@ -57,8 +59,12 @@ test("session selection honors SDK, CLI, environment, domain and shared settings
 			await resolveSessionStore(root, { agentDir, settings, sessionStore: supplied, noSession: true }),
 			supplied,
 		);
+		assert.equal(canIsolateSessionStore(supplied), false);
 		const sdk = { kind: "memory" } as const;
 		assert.equal(selectSessionStorage(root, { agentDir, settings, sessionStore: sdk, sessionDir: "cli" }), sdk);
+		const sdkMemory = await resolveSessionStore(root, { agentDir, settings, sessionStore: sdk, noSession: true });
+		assert.equal(canIsolateSessionStore(sdkMemory), false);
+		await sdkMemory.close();
 		assert.deepEqual(selectSessionStorage(root, { agentDir, settings, noSession: true, sessionDir: "cli" }), {
 			kind: "memory",
 		});
@@ -87,9 +93,14 @@ test("session selection honors SDK, CLI, environment, domain and shared settings
 			parseArgs(["--no-session"]),
 			root,
 			"ignored",
-			SettingsManager.inMemory(settings),
+			SettingsManager.inMemory({ sessions: { storage: { path: join(root, "forbidden.sqlite") } } }),
 		);
 		assert.equal(memory.isPersisted(), false);
+		assert.deepEqual(memory.getSessionStore().descriptor, { adapter: "memory", location: ":memory:" });
+		await memory.appendSessionInfo("unsaved isolated session");
+		assert.equal(canIsolateSessionStore(memory.getSessionStore()), true);
+		assert.equal(await fileExists(join(root, "ignored")), false);
+		assert.equal(await fileExists(join(root, "forbidden.sqlite")), false);
 		await memory.getSessionStore().close();
 		await supplied.close();
 	} finally {

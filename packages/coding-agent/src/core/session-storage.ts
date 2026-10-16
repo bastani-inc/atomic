@@ -23,6 +23,7 @@ const provider = new StorageProvider();
 const sources = new WeakMap<StorageSelection, { source: "settings" | "cli" | "env"; field: string }>();
 type EngineSessionStorage = Extract<StorageSelection, { kind: "sqlite" }>;
 const engineSelections = new WeakMap<SessionStore, EngineSessionStorage | null>();
+const isolatedCliMemoryStores = new WeakSet<SessionStore>();
 export const ENGINE_SESSION_STORAGE_FLAG = "--internal-session-storage";
 
 export function getEngineSessionStorage(store: SessionStore): EngineSessionStorage | undefined {
@@ -31,6 +32,7 @@ export function getEngineSessionStorage(store: SessionStore): EngineSessionStora
 
 export function canIsolateSessionStore(store: SessionStore): boolean {
 	return (
+		isolatedCliMemoryStores.has(store) ||
 		getEngineSessionStorage(store) !== undefined ||
 		(store instanceof JsonlSessionStore && !engineSelections.has(store))
 	);
@@ -155,6 +157,9 @@ export async function resolveSessionStore(cwd: string, options: SessionStorageOp
 				...(selection.prefix === undefined ? {} : { prefix: selection.prefix }),
 			});
 		} else if (selection.kind !== "jsonl") engineSelections.set(store, null);
+		if (selection.kind === "memory" && options.noSession && options.sessionStore === undefined) {
+			isolatedCliMemoryStores.add(store);
+		}
 		return store;
 	} catch (error) {
 		if (error instanceof StorageConfigError) {
