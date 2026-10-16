@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { setImmediate as nextEventLoopTurn } from "node:timers/promises";
 import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
 import { test } from "vitest";
 import { parseArgs } from "../src/cli/args.ts";
@@ -315,6 +316,44 @@ test("extension entry events and the visible index wait for commit and stay unch
 	} finally {
 		store.blocked = false;
 		store.failure = undefined;
+		await harness.cleanup();
+	}
+});
+
+test("session disposal waits for an admitted extension entry to commit", async () => {
+	const store = new ControlledStore();
+	const manager = await SessionManager.create(store, "/project");
+	let api!: ExtensionAPI;
+	const harness = await createHarness({
+		sessionManager: manager,
+		extensionFactories: [
+			(pi) => {
+				api = pi;
+			},
+		],
+	});
+	let closing: Promise<void> | undefined;
+	let write: Promise<void> | undefined;
+	try {
+		await harness.session.bindExtensions({ mode: "print" });
+		store.blocked = true;
+		write = api.appendEntry("workflow.run.end", { status: "completed" });
+		await store.entered.promise;
+		let disposed = false;
+		closing = harness.session.dispose().then(() => {
+			disposed = true;
+		});
+		await nextEventLoopTurn();
+		assert.equal(disposed, false, "disposal must retain ownership of the pending session write");
+		store.release.resolve();
+		await Promise.all([write, closing]);
+		assert.ok(
+			manager.getEntries().some((entry) => entry.type === "custom" && entry.customType === "workflow.run.end"),
+		);
+	} finally {
+		store.release.resolve();
+		await write;
+		await closing;
 		await harness.cleanup();
 	}
 });

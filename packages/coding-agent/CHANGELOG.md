@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Session shutdown and replacement now wait for already-admitted extension session entries to finish saving before releasing their resources.
+
 ## [0.9.38-alpha.6] - 2026-10-16
 
 ### Changed
