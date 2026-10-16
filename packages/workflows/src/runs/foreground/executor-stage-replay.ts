@@ -24,14 +24,13 @@ export function createReplayStageContext(input: {
 }): InternalStageContext {
 	const { runId, name, stageId, stageSnapshot, replaySource } = input;
 	workflowObservationRuntime(input.activeStore).replayStageIds.add(workflowActivityNodeKey(runId, stageId));
-	let replayFinalized = false;
+	let replayFinalization: Promise<void> | undefined;
 	let unregisterWorkflowExitCleanup = (): void => {};
-	let stageStartEntryAppended = false;
+	let stageStartEntry: Promise<void> | undefined;
 
-	const appendStageStartOnce = (): void => {
-		if (!input.opts.persistence || stageStartEntryAppended) return;
-		stageStartEntryAppended = true;
-		appendStageStart(input.opts.persistence, {
+	const appendStageStartOnce = (): Promise<void> => {
+		if (!input.opts.persistence) return Promise.resolve();
+		stageStartEntry ??= appendStageStart(input.opts.persistence, {
 			runId,
 			stageId,
 			name,
@@ -39,11 +38,12 @@ export function createReplayStageContext(input: {
 			...stageReplayFields(stageSnapshot),
 			ts: stageSnapshot.startedAt,
 		});
+		return stageStartEntry;
 	};
 
-	const appendReplayStageEnd = (): void => {
+	const appendReplayStageEnd = async (): Promise<void> => {
 		if (!input.opts.persistence) return;
-		appendStageEnd(input.opts.persistence, {
+		await appendStageEnd(input.opts.persistence, {
 			runId,
 			stageId,
 			status: stageSnapshot.status,
@@ -59,27 +59,28 @@ export function createReplayStageContext(input: {
 		});
 	};
 
-	const finalizeReplayStage = (status: "completed" | "skipped", reason?: string): void => {
-		if (replayFinalized) return;
-		replayFinalized = true;
-		unregisterWorkflowExitCleanup();
-		stageSnapshot.status = status;
-		if (status === "skipped") {
-			delete stageSnapshot.result;
-			stageSnapshot.skippedReason = input.workflowExitSkippedReason(reason);
-		}
-		input.activeStore.recordStageEnd(runId, stageSnapshot);
-		input.opts.onStageEnd?.(runId, stageSnapshot);
-		appendReplayStageEnd();
-		input.tracker.onSettle(stageId);
+	const finalizeReplayStage = (status: "completed" | "skipped", reason?: string): Promise<void> => {
+		replayFinalization ??= (async () => {
+			await appendStageStartOnce();
+			unregisterWorkflowExitCleanup();
+			stageSnapshot.status = status;
+			if (status === "skipped") {
+				delete stageSnapshot.result;
+				stageSnapshot.skippedReason = input.workflowExitSkippedReason(reason);
+			}
+			input.activeStore.recordStageEnd(runId, stageSnapshot);
+			input.opts.onStageEnd?.(runId, stageSnapshot);
+			await appendReplayStageEnd();
+			input.tracker.onSettle(stageId);
+		})();
+		return replayFinalization;
 	};
 
 	input.activeStore.recordStageStart(runId, stageSnapshot);
 	input.opts.onStageStart?.(runId, stageSnapshot);
-	appendStageStartOnce();
 	unregisterWorkflowExitCleanup = input.registerWorkflowExitCleanup(stageId, {
-		skipForWorkflowExit(reason?: string): void {
-			finalizeReplayStage("skipped", reason);
+		async skipForWorkflowExit(reason?: string): Promise<void> {
+			await finalizeReplayStage("skipped", reason);
 		},
 	});
 
@@ -87,7 +88,7 @@ export function createReplayStageContext(input: {
 	const replayText = async (): Promise<string> => {
 		await Promise.resolve();
 		input.throwIfWorkflowExitSelected();
-		finalizeReplayStage("completed");
+		await finalizeReplayStage("completed");
 		return replayResult;
 	};
 	const rejectReplayMutation = (action: string): never => {

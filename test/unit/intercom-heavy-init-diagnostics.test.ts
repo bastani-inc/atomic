@@ -136,6 +136,7 @@ function guardedContext(mode: ExtensionContext["mode"]) {
 			if (!active) throw new Error("Extension context is stale");
 		},
 		getMode: () => mode,
+		getSessionSignal: () => new AbortController().signal,
 		hasUI: () => mode === "tui" || mode === "rpc",
 		getUIContext: () => ({
 			notify(message: string, level?: string) {

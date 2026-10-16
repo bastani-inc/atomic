@@ -111,7 +111,7 @@ export interface ExecutionContextData {
 	shareEnabled: boolean;
 	sessionRoot: string;
 	sessionDirForIndex: (idx?: number) => string;
-	sessionFileForIndex: (idx?: number) => string | undefined;
+	sessionFileForIndex: (idx?: number) => Promise<string | undefined>;
 	artifactConfig: ArtifactConfig;
 	artifactsDir: string;
 	parentDepth?: number;

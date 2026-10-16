@@ -1,10 +1,14 @@
 import type { SessionManager } from "../src/core/session-manager.ts";
 
-export function appendTestCompaction(manager: SessionManager, tokensBefore: number, tokensAfter: number): string {
+export async function appendTestCompaction(
+	manager: SessionManager,
+	tokensBefore: number,
+	tokensAfter: number,
+): Promise<string> {
 	const firstKeptEntryId = manager.getBranch()[0]?.id;
 	if (!firstKeptEntryId) throw new Error("Test compaction requires an existing session entry");
 	const compactedText = "[User]: retained test context\n(filtered 1 lines)";
-	return manager.appendCompaction(compactedText, firstKeptEntryId, tokensBefore, {
+	return await manager.appendCompaction(compactedText, firstKeptEntryId, tokensBefore, {
 		strategy: "verbatim-lines",
 		promptVersion: 4,
 		parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },

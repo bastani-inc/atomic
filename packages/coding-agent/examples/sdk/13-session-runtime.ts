@@ -32,7 +32,7 @@ const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionMan
 const runtime = await createAgentSessionRuntime(createRuntime, {
 	cwd: process.cwd(),
 	agentDir: getAgentDir(),
-	sessionManager: SessionManager.create(process.cwd()),
+	sessionManager: await SessionManager.create(process.cwd()),
 });
 
 let unsubscribe: (() => void) | undefined;

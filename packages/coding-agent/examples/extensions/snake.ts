@@ -333,7 +333,9 @@ export default function (pi: ExtensionAPI) {
 					() => done(undefined),
 					(state) => {
 						// Save or clear state
-						pi.appendEntry(SNAKE_SAVE_TYPE, state);
+						void pi
+							.appendEntry(SNAKE_SAVE_TYPE, state)
+							.catch((error: Error) => ctx.ui.notify(error.message, "error"));
 					},
 					savedState,
 				);

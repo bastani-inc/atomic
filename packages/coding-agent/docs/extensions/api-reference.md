@@ -137,6 +137,25 @@ pi.on("tool_result", async (event, ctx) => {
 });
 ```
 
+### ctx.sessionSignal
+
+A read-only `AbortSignal` for the session lifetime, available even while the agent is idle. It aborts when reload or shutdown begins, **before** Atomic drains admitted commands and emits `session_shutdown`. Unlike `ctx.signal`, it does not end when an agent turn finishes. A replacement session generation receives a new signal.
+
+Custom UI mounted through `ctx.ui.custom` is dismissed automatically when the session ends; an explicit caller signal can still dismiss it earlier. Use `ctx.sessionSignal` for other long-running command resources, such as browser windows, instead of waiting for `session_shutdown`, which cannot run until those commands settle. Cancellation should stop waiting for input, not abandon a session write already started: keep awaiting that write so teardown can drain it safely.
+
+```typescript
+import { Text } from "@earendil-works/pi-tui";
+
+pi.registerCommand("monitor", {
+  description: "Keep a monitor open until the session ends",
+  handler: async (_args, ctx) => {
+    await ctx.ui.custom(() => new Text("Monitoring; reload or quit to close."), {
+      signal: ctx.sessionSignal,
+    });
+  },
+});
+```
+
 ### ctx.isIdle() / ctx.abort() / ctx.hasPendingMessages()
 
 Control flow helpers.
@@ -267,7 +286,7 @@ const kickoff = "Continue in the replacement session";
 const result = await ctx.newSession({
   parentSession,
   setup: async (sm) => {
-    sm.appendMessage({
+    await sm.appendMessage({
       role: "user",
       content: [{ type: "text", text: "Context from previous session..." }],
       timestamp: Date.now(),
@@ -633,7 +652,7 @@ See [send-user-message.ts](https://github.com/bastani-inc/atomic/blob/main/packa
 Persist extension state (does NOT participate in LLM context).
 
 ```typescript
-pi.appendEntry("my-state", { count: 42 });
+await pi.appendEntry("my-state", { count: 42 });
 
 // Restore on reload
 pi.on("session_start", async (_event, ctx) => {
@@ -645,7 +664,9 @@ pi.on("session_start", async (_event, ctx) => {
 });
 ```
 
-Appending emits `entry_appended` with the durable entry. This lets extensions react to session entries without polling.
+Await `pi.appendEntry` before using the new entry. The promise resolves after the write commits and rejects with the store's typed error if it fails. Setup entries also commit before the promise resolves. Appending emits `entry_appended` with the committed entry. This lets extensions react to session entries without polling.
+
+During a transactional reload's `session_start` handler, `pi.appendEntry`, `pi.setSessionName`, and `pi.setLabel` stage their writes instead. Awaiting them confirms staging; the writes and their notifications are published in call order only after reload succeeds. Rejected reloads discard these changes. Do not depend on reading the staged changes back during that handler.
 
 ### pi.registerEntryRenderer(customType, renderer)
 
@@ -667,7 +688,7 @@ pi.registerEntryRenderer("status-card", (entry, { expanded }, theme) =>
 Set the session display name (shown in session selector instead of first message).
 
 ```typescript
-pi.setSessionName("Refactor auth module");
+await pi.setSessionName("Refactor auth module");
 ```
 
 ### pi.getSessionName()
@@ -687,10 +708,10 @@ Set or clear a label on an entry. Labels are user-defined markers for bookmarkin
 
 ```typescript
 // Set a label
-pi.setLabel(entryId, "checkpoint-before-refactor");
+await pi.setLabel(entryId, "checkpoint-before-refactor");
 
 // Clear a label
-pi.setLabel(entryId, undefined);
+await pi.setLabel(entryId, undefined);
 
 // Read labels via sessionManager
 const label = ctx.sessionManager.getLabel(entryId);
@@ -895,7 +916,7 @@ Get the current thinking level. Level is clamped to model capabilities (non-reas
 
 ```typescript
 const current = pi.getThinkingLevel();  // "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
-pi.setThinkingLevel("high");
+await pi.setThinkingLevel("high");
 ```
 
 ### pi.events
@@ -919,7 +940,7 @@ In addition to `registerProvider(name, config)`, extensions can register a compl
 
 ### pi.registerProvider(name, config)
 
-Register or override a model provider dynamically. Useful for proxies, custom endpoints, or team-wide model configurations.
+Register or override a model provider dynamically. Await registration, aliases, and removal before starting dependent work. Useful for proxies, custom endpoints, or team-wide model configurations.
 
 Calls made during the extension factory function are queued and applied once the runner initialises. Calls made after that — for example from a command handler following a user setup flow — take effect immediately without requiring a `/reload`.
 
@@ -927,7 +948,7 @@ If you need to discover models from a remote endpoint, prefer an async extension
 
 ```typescript
 // Register a new provider with custom models
-pi.registerProvider("my-proxy", {
+await pi.registerProvider("my-proxy", {
   name: "My Proxy",
   baseUrl: "https://proxy.example.com",
   apiKey: "$PROXY_API_KEY",  // env var reference; omit $ for a literal
@@ -946,12 +967,12 @@ pi.registerProvider("my-proxy", {
 });
 
 // Override baseUrl for an existing provider (keeps all models)
-pi.registerProvider("anthropic", {
+await pi.registerProvider("anthropic", {
   baseUrl: "https://proxy.example.com"
 });
 
 // Register provider with OAuth support for /login
-pi.registerProvider("corporate-ai", {
+await pi.registerProvider("corporate-ai", {
   baseUrl: "https://ai.corp.com",
   api: "openai-responses",
   models: [...],
@@ -976,7 +997,7 @@ pi.registerProvider("corporate-ai", {
 });
 
 // Register provider-owned API-key setup for /login
-pi.registerProvider("local-server", {
+await pi.registerProvider("local-server", {
   name: "Local Server",
   auth: {
     apiKey: {
@@ -1021,7 +1042,7 @@ Like `registerProvider`, this takes effect immediately when called after the ini
 pi.registerCommand("my-setup-teardown", {
   description: "Remove the custom proxy provider",
   handler: async (_args, _ctx) => {
-    pi.unregisterProvider("my-proxy");
+    await pi.unregisterProvider("my-proxy");
   },
 });
 ```

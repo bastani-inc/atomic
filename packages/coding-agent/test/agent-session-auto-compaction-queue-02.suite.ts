@@ -107,7 +107,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 		});
 
 		sessionManager = SessionManager.inMemory();
-		sessionManager.appendMessage({
+		await sessionManager.appendMessage({
 			role: "user",
 			content: [{ type: "text", text: "existing compactable context" }],
 			timestamp: Date.now(),
@@ -381,13 +381,13 @@ describe("AgentSession auto-compaction queue resume", () => {
 		};
 
 		// Record the kept assistant in the session and create a context compaction after it
-		sessionManager.appendMessage({
+		await sessionManager.appendMessage({
 			role: "user",
 			content: [{ type: "text", text: "before compaction" }],
 			timestamp: preCompactionTimestamp - 1000,
 		});
-		sessionManager.appendMessage(keptAssistant);
-		appendTestCompaction(sessionManager, keptAssistant.usage.totalTokens, 50_000);
+		await sessionManager.appendMessage(keptAssistant);
+		await appendTestCompaction(sessionManager, keptAssistant.usage.totalTokens, 50_000);
 
 		// Post-compaction error message
 		const errorAssistant: AssistantMessage = {
@@ -459,13 +459,13 @@ describe("AgentSession auto-compaction queue resume", () => {
 			timestamp: preCompactionTimestamp,
 		};
 
-		sessionManager.appendMessage({
+		await sessionManager.appendMessage({
 			role: "user",
 			content: [{ type: "text", text: "before context compaction" }],
 			timestamp: preCompactionTimestamp - 1000,
 		});
-		sessionManager.appendMessage(keptAssistant);
-		appendTestCompaction(sessionManager, keptAssistant.usage.totalTokens, 50_000);
+		await sessionManager.appendMessage(keptAssistant);
+		await appendTestCompaction(sessionManager, keptAssistant.usage.totalTokens, 50_000);
 
 		const errorAssistant: AssistantMessage = {
 			role: "assistant",

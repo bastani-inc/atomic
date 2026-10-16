@@ -57,7 +57,7 @@ function writeSession(
 		type: "session",
 		version: 4,
 		id,
-		timestamp: new Date(options.mtime).toISOString(),
+		createdAt: new Date(options.mtime).toISOString(),
 		cwd,
 		...(options.internal
 			? {
@@ -95,7 +95,7 @@ describe("internal workflow sessions across resume surfaces", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
-	it("continueRecent skips a newer workflow stage by default and supports explicit internal recovery", () => {
+	it("continueRecent skips a newer workflow stage by default and supports explicit internal recovery", async () => {
 		const now = Date.now();
 		const userPath = writeSession(dir, "user-recent", cwd, { mtime: now - 10_000 });
 		const workflowPath = writeSession(dir, "workflow-newest", cwd, {
@@ -104,11 +104,11 @@ describe("internal workflow sessions across resume surfaces", () => {
 			mtime: now,
 		});
 
-		const regular = SessionManager.continueRecent(cwd, dir);
+		const regular = await SessionManager.continueRecent(cwd, dir);
 		expect(regular.getSessionFile()).toBe(userPath);
 		expect(regular.getHeader()?.internal).toBeUndefined();
 
-		const internal = SessionManager.continueRecent(cwd, dir, { includeInternal: true });
+		const internal = await SessionManager.continueRecent(cwd, dir, { includeInternal: true });
 		expect(internal.getSessionFile()).toBe(workflowPath);
 		expect(internal.getHeader()?.workflow).toEqual({
 			runId: "run-many",
@@ -144,7 +144,7 @@ describe("internal workflow sessions across resume surfaces", () => {
 		const defaultTranscriptReads = fullTranscriptReadTracking.paths.filter((path) => path.endsWith(".jsonl"));
 		expect(defaultTranscriptReads).toEqual([userPath, userPath]);
 		expect(defaultTranscriptReads).not.toEqual(expect.arrayContaining(workflowPaths));
-		expect(SessionManager.continueRecent(cwd, dir).getSessionFile()).toBe(userPath);
+		expect((await SessionManager.continueRecent(cwd, dir)).getSessionFile()).toBe(userPath);
 
 		fullTranscriptReadTracking.paths.length = 0;
 		const all = await SessionManager.listAll(dir, undefined, { includeInternal: true });

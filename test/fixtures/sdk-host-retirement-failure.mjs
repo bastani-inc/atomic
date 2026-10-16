@@ -14,9 +14,8 @@ process.env.ATOMIC_FAULT_TEST_HOME = cwd;
 mkdirSync(join(cwd, ".atomic", "workflows"), { recursive: true });
 writeFileSync(join(cwd, ".atomic", "workflows", "sdk-host-durable.ts"), readFileSync(new URL("./sdk-host-durable-workflow.ts", import.meta.url)));
 const settingsManager = SettingsManager.inMemory();
-const sessionManager = SessionManager.create(cwd, join(cwd, "sessions"));
-const entry = sessionManager.appendMessage({ role: "user", content: "fork me", timestamp: 0 });
-await sessionManager.flush();
+const sessionManager = await SessionManager.create(cwd, join(cwd, "sessions"));
+const entry = await sessionManager.appendMessage({ role: "user", content: "fork me", timestamp: 0 });
 const modelRuntime = await ModelRuntime.create({ authPath: join(cwd, "auth.json"), modelsPath: null, allowModelNetwork: false });
 const shutdowns = [];
 const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, noContextFiles: true,

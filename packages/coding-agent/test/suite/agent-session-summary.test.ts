@@ -57,8 +57,8 @@ describe("session summary generation", () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		for (let turn = 0; turn < 2; turn++) {
-			harness.sessionManager.appendMessage({ role: "user", content: "restore this work", timestamp: turn });
-			harness.sessionManager.appendMessage(fauxAssistantMessage("previous work"));
+			await harness.sessionManager.appendMessage({ role: "user", content: "restore this work", timestamp: turn });
+			await harness.sessionManager.appendMessage(fauxAssistantMessage("previous work"));
 		}
 		harness.setResponses([fauxAssistantMessage("Backfilled summary")]);
 
@@ -70,10 +70,10 @@ describe("session summary generation", () => {
 	it("leaves shared-file opening summaries to the engine rather than its presentation host", async () => {
 		const host = await createHarness();
 		harnesses.push(host);
-		const manager = SessionManager.create(host.tempDir, join(host.tempDir, "sessions"));
+		const manager = await SessionManager.create(host.tempDir, join(host.tempDir, "sessions"));
 		for (let turn = 0; turn < 2; turn++) {
-			manager.appendMessage({ role: "user", content: "old work", timestamp: turn });
-			manager.appendMessage(fauxAssistantMessage("old response"));
+			await manager.appendMessage({ role: "user", content: "old work", timestamp: turn });
+			await manager.appendMessage(fauxAssistantMessage("old response"));
 		}
 		const presentation = await createHarness({ sessionManager: manager });
 		harnesses.push(presentation);
@@ -84,10 +84,10 @@ describe("session summary generation", () => {
 				return fauxAssistantMessage("Stale host summary");
 			},
 		]);
-		const child = await createHarness({ sessionManager: SessionManager.open(manager.getSessionFile()!) });
+		const child = await createHarness({ sessionManager: await SessionManager.open(manager.getSessionFile()!) });
 		harnesses.push(child);
-		child.sessionManager.appendMessage({ role: "user", content: "new engine work", timestamp: 3 });
-		const newest = child.sessionManager.appendMessage(fauxAssistantMessage("new engine response"));
+		await child.sessionManager.appendMessage({ role: "user", content: "new engine work", timestamp: 3 });
+		const newest = await child.sessionManager.appendMessage(fauxAssistantMessage("new engine response"));
 		child.setResponses([fauxAssistantMessage("Engine summary")]);
 
 		await presentation.session.bindExtensions({ mode: "tui", isPresentationOnly: true });
@@ -97,7 +97,7 @@ describe("session summary generation", () => {
 		await settle();
 
 		assert.equal(presentation.getPendingResponseCount(), 1);
-		const reopened = SessionManager.open(manager.getSessionFile()!);
+		const reopened = await SessionManager.open(manager.getSessionFile()!);
 		assert.equal(
 			reopened.getBranch().some((entry) => entry.id === newest),
 			true,
@@ -125,12 +125,16 @@ describe("session summary generation", () => {
 			harnesses.push(harness);
 			harness.session.agent.streamFunction = getApiProvider(harness.faux.api)!.streamSimple;
 			if (stale) {
-				const anchor = harness.sessionManager.appendMessage({ role: "user", content: "earlier", timestamp: 0 });
-				harness.sessionManager.appendSessionSummary("Old summary", anchor);
+				const anchor = await harness.sessionManager.appendMessage({
+					role: "user",
+					content: "earlier",
+					timestamp: 0,
+				});
+				await harness.sessionManager.appendSessionSummary("Old summary", anchor);
 			}
 			for (let turn = 0; turn < 2; turn++) {
-				harness.sessionManager.appendMessage({ role: "user", content: "restore work", timestamp: turn + 1 });
-				harness.sessionManager.appendMessage(fauxAssistantMessage("response"));
+				await harness.sessionManager.appendMessage({ role: "user", content: "restore work", timestamp: turn + 1 });
+				await harness.sessionManager.appendMessage(fauxAssistantMessage("response"));
 			}
 			const started = Promise.withResolvers<void>();
 			harness.setResponses([
@@ -173,11 +177,15 @@ describe("session summary generation", () => {
 	it("refreshes a stale summary when a session is resumed", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
-		const anchor = harness.sessionManager.appendMessage({ role: "user", content: "earlier work", timestamp: 1 });
-		harness.sessionManager.appendSessionSummary("Old summary", anchor);
+		const anchor = await harness.sessionManager.appendMessage({
+			role: "user",
+			content: "earlier work",
+			timestamp: 1,
+		});
+		await harness.sessionManager.appendSessionSummary("Old summary", anchor);
 		for (let turn = 0; turn < 2; turn++) {
-			harness.sessionManager.appendMessage({ role: "user", content: "new work", timestamp: turn + 2 });
-			harness.sessionManager.appendMessage(fauxAssistantMessage("done"));
+			await harness.sessionManager.appendMessage({ role: "user", content: "new work", timestamp: turn + 2 });
+			await harness.sessionManager.appendMessage(fauxAssistantMessage("done"));
 		}
 		harness.setResponses([fauxAssistantMessage("Refreshed summary")]);
 
@@ -194,11 +202,11 @@ describe("session summary generation", () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		for (let turn = 0; turn < 2; turn++) {
-			harness.sessionManager.appendMessage({ role: "user", content: "work", timestamp: turn });
-			harness.sessionManager.appendMessage(fauxAssistantMessage("done"));
+			await harness.sessionManager.appendMessage({ role: "user", content: "work", timestamp: turn });
+			await harness.sessionManager.appendMessage(fauxAssistantMessage("done"));
 		}
 		const anchor = harness.sessionManager.getLeafId()!;
-		harness.sessionManager.appendSessionSummary("Current summary", anchor);
+		await harness.sessionManager.appendSessionSummary("Current summary", anchor);
 		harness.setResponses([fauxAssistantMessage("Unwanted summary")]);
 
 		await harness.session.bindExtensions({ mode: "tui" });
@@ -213,8 +221,8 @@ describe("session summary generation", () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		for (let turn = 0; turn < 2; turn++) {
-			harness.sessionManager.appendMessage({ role: "user", content: "work", timestamp: turn });
-			harness.sessionManager.appendMessage(fauxAssistantMessage("done"));
+			await harness.sessionManager.appendMessage({ role: "user", content: "work", timestamp: turn });
+			await harness.sessionManager.appendMessage(fauxAssistantMessage("done"));
 		}
 		harness.setResponses([fauxAssistantMessage("Unwanted summary")]);
 
@@ -229,8 +237,8 @@ describe("session summary generation", () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		for (let turn = 0; turn < 2; turn++) {
-			harness.sessionManager.appendMessage({ role: "user", content: "work", timestamp: turn });
-			harness.sessionManager.appendMessage(fauxAssistantMessage("done"));
+			await harness.sessionManager.appendMessage({ role: "user", content: "work", timestamp: turn });
+			await harness.sessionManager.appendMessage(fauxAssistantMessage("done"));
 		}
 		const started = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
@@ -338,7 +346,7 @@ describe("session summary generation", () => {
 
 		// Push the leaf past the last assistant with a non-message entry, so navigating back to
 		// that message moves the branch while leaving the anchor untouched.
-		harness.session.setSessionName("pinned");
+		await harness.session.setSessionName("pinned");
 		const assistants = harness.sessionManager
 			.getEntries()
 			.filter((entry) => entry.type === "message" && entry.message.role === "assistant");
@@ -374,7 +382,7 @@ describe("session summary generation", () => {
 		const assistants = harness.sessionManager
 			.getEntries()
 			.filter((entry) => entry.type === "message" && entry.message.role === "assistant");
-		harness.sessionManager.branchWithSummary(assistants[assistants.length - 1]!.id, "the branch was abandoned");
+		await harness.sessionManager.branchWithSummary(assistants[assistants.length - 1]!.id, "the branch was abandoned");
 		harness.session.abortSessionSummary();
 
 		await harness.session._maybeGenerateSessionSummary();
@@ -408,8 +416,8 @@ describe("session summary generation", () => {
 		await harness.session.bindExtensions({ mode: "tui" });
 
 		// Build a branch directly: without credentials the session cannot run real turns.
-		harness.sessionManager.appendMessage({ role: "user", content: "add resume summaries", timestamp: 1 });
-		harness.sessionManager.appendMessage({
+		await harness.sessionManager.appendMessage({ role: "user", content: "add resume summaries", timestamp: 1 });
+		await harness.sessionManager.appendMessage({
 			role: "assistant",
 			content: [{ type: "text", text: "done" }],
 			timestamp: 2,
@@ -419,8 +427,8 @@ describe("session summary generation", () => {
 			api: "anthropic-messages",
 			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
 		});
-		harness.sessionManager.appendMessage({ role: "user", content: "and the picker", timestamp: 3 });
-		harness.sessionManager.appendMessage({
+		await harness.sessionManager.appendMessage({ role: "user", content: "and the picker", timestamp: 3 });
+		await harness.sessionManager.appendMessage({
 			role: "assistant",
 			content: [{ type: "text", text: "done again" }],
 			timestamp: 4,
@@ -657,8 +665,8 @@ describe("session summary generation", () => {
 			harnesses.push(harness);
 			await harness.session.bindExtensions({ mode: "tui" });
 
-			harness.sessionManager.appendMessage({ role: "user", content: "add resume summaries", timestamp: 1 });
-			harness.sessionManager.appendMessage({
+			await harness.sessionManager.appendMessage({ role: "user", content: "add resume summaries", timestamp: 1 });
+			await harness.sessionManager.appendMessage({
 				role: "assistant",
 				content: [{ type: "text", text: "done" }],
 				timestamp: 2,
@@ -668,8 +676,8 @@ describe("session summary generation", () => {
 				api: "anthropic-messages",
 				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
 			});
-			harness.sessionManager.appendMessage({ role: "user", content: "and the picker", timestamp: 3 });
-			harness.sessionManager.appendMessage({
+			await harness.sessionManager.appendMessage({ role: "user", content: "and the picker", timestamp: 3 });
+			await harness.sessionManager.appendMessage({
 				role: "assistant",
 				content: [{ type: "text", text: "done again" }],
 				timestamp: 4,

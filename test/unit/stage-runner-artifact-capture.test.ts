@@ -42,14 +42,14 @@ test("artifact answers survive real pre-prompt compaction and later compaction",
 	});
 	await harness.session.bindExtensions({});
 	for (let index = 0; index < 5; index += 1) {
-		harness.sessionManager.appendMessage({
+		await harness.sessionManager.appendMessage({
 			role: "user",
 			content: `Old question ${index}: ${"context\n".repeat(30)}`,
 			timestamp: Date.now(),
 		});
 		const historicalAnswer = assistantMessageWithUsage(`Old answer ${index}: ${"history\n".repeat(30)}`, usage);
 		assert.ok(historicalAnswer.role === "assistant");
-		harness.sessionManager.appendMessage(historicalAnswer);
+		await harness.sessionManager.appendMessage(historicalAnswer);
 	}
 	harness.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
 	assert.equal(harness.session.messages.length, 10);

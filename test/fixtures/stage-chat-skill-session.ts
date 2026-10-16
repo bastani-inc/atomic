@@ -43,7 +43,7 @@ export async function createStageSkillFixture() {
 		getSkills: () => ({ skills: [stageSkill], diagnostics: [] }),
 		getSkillCatalog: () => catalog,
 	};
-	const stage = await createHarness({ resourceLoader: loader, sessionManager: SessionManager.create(join(directory, "stage-cwd"), join(directory, "sessions")), settings: { retry: { enabled: false } },
+	const stage = await createHarness({ resourceLoader: loader, sessionManager: (await SessionManager.create(join(directory, "stage-cwd"), join(directory, "sessions"))), settings: { retry: { enabled: false } },
 		tools: [{ name: "ask_user_question", label: "Fixture readiness", description: "Deterministic readiness barrier", parameters: Type.Object({}),
 			async execute() { return { content: [{ type: "text", text: "Fixture ready" }], details: {} }; } }],
 	});

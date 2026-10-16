@@ -28,7 +28,7 @@ export interface SearchReturnPayload {
 	details: Record<string, unknown>;
 }
 
-export type SearchReturnBuilder = (opts: SearchReturnOptions) => SearchReturnPayload;
+export type SearchReturnBuilder = (opts: SearchReturnOptions) => Promise<SearchReturnPayload>;
 
 interface BuildSearchReturnDeps {
 	pi: ExtensionAPI;
@@ -36,17 +36,17 @@ interface BuildSearchReturnDeps {
 	startBackgroundFetch(urls: string[]): string | null;
 }
 
-function storeAndPublishSearch(pi: ExtensionAPI, results: QueryResultData[], storage: ResultStorage): string {
+async function storeAndPublishSearch(pi: ExtensionAPI, results: QueryResultData[], storage: ResultStorage): Promise<string> {
 	const id = generateId();
 	const data: StoredSearchData = {
 		id, type: "search", timestamp: Date.now(), queries: results,
 	};
+	await pi.appendEntry("web-search-results", data);
 	storage.storeResult(id, data);
-	pi.appendEntry("web-search-results", data);
 	return id;
 }
 
-export function buildSearchReturn(opts: SearchReturnOptions, deps: BuildSearchReturnDeps): SearchReturnPayload {
+export async function buildSearchReturn(opts: SearchReturnOptions, deps: BuildSearchReturnDeps): Promise<SearchReturnPayload> {
 	const storage = deps.storage ?? createResultStorage();
 	const sc = opts.results.filter(r => !r.error).length;
 	const tr = opts.results.reduce((sum, r) => sum + r.results.length, 0);
@@ -83,8 +83,8 @@ export function buildSearchReturn(opts: SearchReturnOptions, deps: BuildSearchRe
 			timestamp: Date.now(),
 			urls: opts.inlineContent,
 		};
+		await deps.pi.appendEntry("web-search-results", data);
 		storage.storeResult(fetchId, data);
-		deps.pi.appendEntry("web-search-results", data);
 		if (!hasApprovedSummary) {
 			output += `---\nFull content for ${opts.inlineContent.length} sources available [${fetchId}].`;
 		}
@@ -95,7 +95,7 @@ export function buildSearchReturn(opts: SearchReturnOptions, deps: BuildSearchRe
 		}
 	}
 
-	const searchId = storeAndPublishSearch(deps.pi, opts.results, storage);
+	const searchId = await storeAndPublishSearch(deps.pi, opts.results, storage);
 	const isBackgroundFetch = fetchId !== null && !hasInlineReady;
 
 	return {

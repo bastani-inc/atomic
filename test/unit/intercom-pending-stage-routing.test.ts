@@ -1115,7 +1115,7 @@ test("durable acknowledgement failure replays through the recipient idempotency 
 	let senderVisibleDeliveries = 0;
 	const recipientSessionDir = mkdtempSync(join(tmpdir(), "pending-stage-recipient-"));
 	tempDirs.push(recipientSessionDir);
-	let recipientSession = SessionManager.create("/repo", recipientSessionDir);
+	let recipientSession = await SessionManager.create("/repo", recipientSessionDir);
 	const firstRecipient = WorkflowStageAdmissionBoundary.restore(recipientSession.getBranch());
 	const deliverThroughRecipient = (recipient: WorkflowStageAdmissionBoundary) => {
 		const pending = createWorkflowPendingStageDelivery(store, RUN_ID, "reviewer-id", "reviewer");
@@ -1125,9 +1125,9 @@ test("durable acknowledgement failure replays through the recipient idempotency 
 			pending.deliverPending(async (_from, entryMessage) => {
 				await recipient.admit(
 					`intercom:${entryMessage.id}`,
-					() => {
+					async () => {
 						senderVisibleDeliveries++;
-						recipientSession.appendCustomMessageEntry(
+						await recipientSession.appendCustomMessageEntry(
 							"intercom_message",
 							entryMessage.content.text,
 							true,
@@ -1136,7 +1136,6 @@ test("durable acknowledgement failure replays through the recipient idempotency 
 							undefined,
 							`intercom:${entryMessage.id}`,
 						);
-						recipientSession.flush();
 					},
 					() => {
 						throw new Error("unexpected late route");
@@ -1171,7 +1170,7 @@ test("durable acknowledgement failure replays through the recipient idempotency 
 	);
 	const recipientSessionFile = recipientSession.getSessionFile();
 	assert.ok(recipientSessionFile !== undefined);
-	recipientSession = SessionManager.open(recipientSessionFile, recipientSessionDir, "/repo");
+	recipientSession = await SessionManager.open(recipientSessionFile, recipientSessionDir, "/repo");
 	const reloadedRecipient = WorkflowStageAdmissionBoundary.restore(recipientSession.getBranch());
 	assert.deepEqual(
 		recipientSession.getBranch().map((entry) => ("stageAdmissionKey" in entry ? entry.stageAdmissionKey : undefined)),

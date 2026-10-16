@@ -60,14 +60,14 @@ describe("makePersistencePort — happy path", () => {
 		assert.notEqual(port, undefined);
 	});
 
-	test("port.appendEntry delegates to pi.appendEntry", () => {
+	test("port.appendEntry delegates to pi.appendEntry", async () => {
 		const calls: Array<{ type: string; payload: Record<string, unknown> }> = [];
 		const pi = piWithAppendEntry((type, payload) => {
 			calls.push({ type, payload });
 			return "returned-id";
 		});
 		const port = makePersistencePort(pi, true)!;
-		const id = port.appendEntry("workflow.run.start", { runId: "r1" });
+		const id = await port.appendEntry("workflow.run.start", { runId: "r1" });
 		assert.equal(id, "returned-id");
 		assert.deepEqual(calls, [{ type: "workflow.run.start", payload: { runId: "r1" } }]);
 	});
@@ -78,7 +78,7 @@ describe("makePersistencePort — happy path", () => {
 		assert.equal(port.setLabel, undefined);
 	});
 
-	test("port.setLabel delegates to pi.setLabel when present", () => {
+	test("port.setLabel delegates to pi.setLabel when present", async () => {
 		const calls: Array<{ entryId: string; label: string }> = [];
 		const pi = piWithAppendEntry(() => "eid", {
 			setLabel: (entryId, label) => {
@@ -87,7 +87,7 @@ describe("makePersistencePort — happy path", () => {
 		});
 		const port = makePersistencePort(pi, true)!;
 		assert.equal(typeof port.setLabel, "function");
-		port.setLabel!("eid-1", "my-label");
+		await port.setLabel!("eid-1", "my-label");
 		assert.deepEqual(calls, [{ entryId: "eid-1", label: "my-label" }]);
 	});
 
@@ -97,7 +97,7 @@ describe("makePersistencePort — happy path", () => {
 		assert.equal(port.appendCustomMessageEntry, undefined);
 	});
 
-	test("port.appendCustomMessageEntry delegates to pi.appendCustomMessageEntry when present", () => {
+	test("port.appendCustomMessageEntry delegates to pi.appendCustomMessageEntry when present", async () => {
 		const calls: Array<{ content: string; meta?: Record<string, unknown> }> = [];
 		const pi = piWithAppendEntry(() => "eid", {
 			appendCustomMessageEntry: (content, meta) => {
@@ -107,12 +107,12 @@ describe("makePersistencePort — happy path", () => {
 		});
 		const port = makePersistencePort(pi, true)!;
 		assert.equal(typeof port.appendCustomMessageEntry, "function");
-		const id = port.appendCustomMessageEntry!("hello", { key: "val" });
+		const id = await port.appendCustomMessageEntry!("hello", { key: "val" });
 		assert.equal(id, "msg-id");
 		assert.deepEqual(calls, [{ content: "hello", meta: { key: "val" } }]);
 	});
 
-	test("port.appendCustomMessageEntry works without meta arg", () => {
+	test("port.appendCustomMessageEntry works without meta arg", async () => {
 		const calls: string[] = [];
 		const pi = piWithAppendEntry(() => "eid", {
 			appendCustomMessageEntry: (content) => {
@@ -121,7 +121,7 @@ describe("makePersistencePort — happy path", () => {
 			},
 		});
 		const port = makePersistencePort(pi, true)!;
-		port.appendCustomMessageEntry!("bare");
+		await port.appendCustomMessageEntry!("bare");
 		assert.deepEqual(calls, ["bare"]);
 	});
 });
@@ -153,50 +153,50 @@ function throwStale(): never {
 }
 
 describe("makePersistencePort — stale extension context", () => {
-	test("appendEntry swallows isStaleExtensionContextError", () => {
+	test("appendEntry swallows isStaleExtensionContextError", async () => {
 		const port = makePersistencePort(piWithAppendEntry(throwStale), true)!;
-		assert.equal(port.appendEntry("workflow.stage.end", { runId: "r1" }), undefined);
+		assert.equal(await port.appendEntry("workflow.stage.end", { runId: "r1" }), undefined);
 	});
 
-	test("setLabel swallows isStaleExtensionContextError", () => {
+	test("setLabel swallows isStaleExtensionContextError", async () => {
 		const port = makePersistencePort(
 			piWithAppendEntry(() => "eid", { setLabel: throwStale }),
 			true,
 		)!;
-		port.setLabel!("eid-1", "wf:name:r1");
+		await port.setLabel!("eid-1", "wf:name:r1");
 	});
 
-	test("appendCustomMessageEntry swallows isStaleExtensionContextError", () => {
+	test("appendCustomMessageEntry swallows isStaleExtensionContextError", async () => {
 		const port = makePersistencePort(
 			piWithAppendEntry(() => "eid", { appendCustomMessageEntry: throwStale }),
 			true,
 		)!;
-		assert.equal(port.appendCustomMessageEntry!("done", { runId: "r1" }), undefined);
+		assert.equal(await port.appendCustomMessageEntry!("done", { runId: "r1" }), undefined);
 	});
 
-	test("appendEntry rethrows every other error", () => {
+	test("appendEntry rethrows every other error", async () => {
 		const port = makePersistencePort(
 			piWithAppendEntry(() => {
 				throw new Error("disk full");
 			}),
 			true,
 		)!;
-		assert.throws(() => port.appendEntry("workflow.run.end", { runId: "r1" }), { message: "disk full" });
+		await assert.rejects(async () => port.appendEntry("workflow.run.end", { runId: "r1" }), { message: "disk full" });
 	});
 
-	test("setLabel rethrows every other error", () => {
+	test("setLabel rethrows every other error", async () => {
 		const port = makePersistencePort(
 			piWithAppendEntry(() => "eid", {
-				setLabel: () => {
+				setLabel: async () => {
 					throw new Error("label failed");
 				},
 			}),
 			true,
 		)!;
-		assert.throws(() => port.setLabel!("eid-1", "wf:name:r1"), { message: "label failed" });
+		await assert.rejects(async () => port.setLabel!("eid-1", "wf:name:r1"), { message: "label failed" });
 	});
 
-	test("appendCustomMessageEntry rethrows every other error", () => {
+	test("appendCustomMessageEntry rethrows every other error", async () => {
 		const port = makePersistencePort(
 			piWithAppendEntry(() => "eid", {
 				appendCustomMessageEntry: () => {
@@ -205,6 +205,6 @@ describe("makePersistencePort — stale extension context", () => {
 			}),
 			true,
 		)!;
-		assert.throws(() => port.appendCustomMessageEntry!("done"), { message: "message failed" });
+		await assert.rejects(async () => port.appendCustomMessageEntry!("done"), { message: "message failed" });
 	});
 });

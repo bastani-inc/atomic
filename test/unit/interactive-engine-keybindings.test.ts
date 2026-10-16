@@ -284,13 +284,23 @@ test.sequential("direct RPC reload updates one shared global and injected manage
 		await client.waitForInteractiveEngineBound();
 		// Binding can open custom UI before deferred startup publishes its initial keybindings.
 		await client.waitForInteractiveEngineResources();
-		const open = await opened;
+		let open = await opened;
 		assert.equal(await renderCustom(client, open.componentId, 10), "same:true|injected:ctrl+x|global:ctrl+x");
 		assert.match(await renderSkill(client, false, 11), /\(ctrl\+x Expand\)/);
 
 		writeExpandBinding(tempDir, "ctrl+y");
 		const reloaded = nextKeybindingsReload(client);
+		const retiredId = open.componentId;
+		const dismissed = nextMessage(client, "engine_custom_done", (message) => message.componentId === retiredId);
+		const reopened = nextMessage(
+			client,
+			"engine_custom_open",
+			(message) => message.componentId.startsWith("remote_component_") && message.componentId !== retiredId,
+		);
 		await client.requestInternal<void>({ type: "reload" });
+		await dismissed;
+		open = await reopened;
+		assert.notEqual(open.componentId, retiredId);
 		assert.deepEqual(readSessionStartBindings(sessionStartFile), ["startup:ctrl+x", "reload:ctrl+y"]);
 		const committed = await reloaded;
 		assert.equal(committed.state.userBindings["app.tools.expand"], "ctrl+y");
@@ -306,7 +316,21 @@ test.sequential("direct RPC reload updates one shared global and injected manage
 
 		writeExpandBinding(tempDir, []);
 		const unboundReloaded = nextKeybindingsReload(client);
+		const remappedId = open.componentId;
+		const remappedDismissed = nextMessage(
+			client,
+			"engine_custom_done",
+			(message) => message.componentId === remappedId,
+		);
+		const unboundOpened = nextMessage(
+			client,
+			"engine_custom_open",
+			(message) => message.componentId.startsWith("remote_component_") && message.componentId !== remappedId,
+		);
 		await client.requestInternal<void>({ type: "reload" });
+		await remappedDismissed;
+		open = await unboundOpened;
+		assert.notEqual(open.componentId, remappedId);
 		await unboundReloaded;
 		assert.deepEqual(hostKeybindings.getKeys("app.tools.expand"), []);
 		assert.equal(await renderCustom(client, open.componentId, 14), "same:true|injected:|global:");
@@ -351,14 +375,24 @@ test.sequential(
 			);
 			await client.start();
 			await client.waitForInteractiveEngineBound();
-			const open = await opened;
+			let open = await opened;
 			assert.equal(await renderCustom(client, open.componentId, 20), "same:true|injected:ctrl+x|global:ctrl+x");
 			editor.handleInput("\x18");
 			assert.equal(expandDispatches, 1);
 
 			writeExpandBinding(tempDir, "ctrl+y");
 			const reloaded = nextKeybindingsReload(client);
+			const retiredId = open.componentId;
+			const dismissed = nextMessage(client, "engine_custom_done", (message) => message.componentId === retiredId);
+			const reopened = nextMessage(
+				client,
+				"engine_custom_open",
+				(message) => message.componentId.startsWith("remote_component_") && message.componentId !== retiredId,
+			);
 			await client.prompt("/reload-keybindings-fixture");
+			await dismissed;
+			open = await reopened;
+			assert.notEqual(open.componentId, retiredId);
 			await reloaded;
 			assert.deepEqual(readSessionStartBindings(sessionStartFile), ["startup:ctrl+x", "reload:ctrl+y"]);
 			assert.equal(hostKeybindings, hostIdentity);
@@ -371,7 +405,21 @@ test.sequential(
 
 			writeExpandBinding(tempDir, []);
 			const unboundReloaded = nextKeybindingsReload(client);
+			const remappedId = open.componentId;
+			const remappedDismissed = nextMessage(
+				client,
+				"engine_custom_done",
+				(message) => message.componentId === remappedId,
+			);
+			const unboundOpened = nextMessage(
+				client,
+				"engine_custom_open",
+				(message) => message.componentId.startsWith("remote_component_") && message.componentId !== remappedId,
+			);
 			await client.prompt("/reload-keybindings-fixture");
+			await remappedDismissed;
+			open = await unboundOpened;
+			assert.notEqual(open.componentId, remappedId);
 			await unboundReloaded;
 			editor.handleInput("\x19");
 			assert.equal(expandDispatches, 2, "unbound host action must not dispatch the old remap");

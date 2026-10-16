@@ -215,9 +215,15 @@ export interface ExtensionAPI {
 	}>;
 	createAgentSession?: (options?: CreateAgentSessionOptions) => Promise<{ session: StageSessionRuntime }>;
 	disableAsyncDiscovery?: boolean;
-	appendEntry?: (type: string, payload: Record<string, unknown>) => string | undefined;
-	setLabel?: (entryId: string, label: string) => void;
-	appendCustomMessageEntry?: (content: string, meta?: Record<string, unknown>) => string | undefined;
+	appendEntry?: (
+		type: string,
+		payload: Record<string, unknown>,
+	) => string | void | Promise<string | undefined> | Promise<void>;
+	setLabel?: (entryId: string, label: string) => void | Promise<void>;
+	appendCustomMessageEntry?: (
+		content: string,
+		meta?: Record<string, unknown>,
+	) => string | void | Promise<string | undefined> | Promise<void>;
 	on?: (
 		event: string,
 		handler: (

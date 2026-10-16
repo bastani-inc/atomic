@@ -55,7 +55,7 @@ export function registerStartupInputListeners(mode: InteractiveModeBase): void {
 	);
 }
 
-InteractiveModeBase.prototype.setupKeyHandlers = function (this: InteractiveModeBase): void {
+InteractiveModeBase.prototype.setupKeyHandlers = async function (this: InteractiveModeBase): Promise<void> {
 	registerStartupInputListeners(this);
 	// Set up handlers on defaultEditor - they use this.editor for text access
 	// so they work correctly regardless of which editor is active
@@ -92,7 +92,9 @@ InteractiveModeBase.prototype.setupKeyHandlers = function (this: InteractiveMode
 	this.defaultEditor.onAction("app.clear", () => this.handleCtrlC());
 	this.defaultEditor.onCtrlD = () => this.handleCtrlD();
 	this.defaultEditor.onAction("app.suspend", () => this.handleCtrlZ());
-	this.defaultEditor.onAction("app.thinking.cycle", () => this.cycleThinkingLevel());
+	this.defaultEditor.onAction("app.thinking.cycle", () => {
+		void this.cycleThinkingLevel().catch((error: Error) => this.showError(error.message));
+	});
 	this.defaultEditor.onAction("app.model.cycleForward", () => {
 		void (async () => {
 			await this.ensureDeferredStartupComplete();
@@ -263,7 +265,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 			if (text === "/thinking" || text.startsWith("/thinking ")) {
 				this.editor.setText("");
 				await this.ensureDeferredStartupComplete();
-				this.handleThinkingCommand(text.startsWith("/thinking ") ? text.slice(10).trim() : undefined);
+				await this.handleThinkingCommand(text.startsWith("/thinking ") ? text.slice(10).trim() : undefined);
 				return;
 			}
 			if (text === "/export" || text.startsWith("/export ")) {
@@ -287,7 +289,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				return;
 			}
 			if (text === "/name" || text.startsWith("/name ")) {
-				this.handleNameCommand(text);
+				await this.handleNameCommand(text);
 				this.editor.setText("");
 				return;
 			}

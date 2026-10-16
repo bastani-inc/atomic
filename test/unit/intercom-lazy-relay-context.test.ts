@@ -241,7 +241,7 @@ describe("lazy relay lifecycle-context fallback", () => {
 			registerCommand() {},
 			registerShortcut() {},
 			registerMessageRenderer() {},
-			appendEntry() {},
+			async appendEntry() {},
 			getSessionName: () => undefined,
 			sendMessage(message: object, options?: { stageAdmissionKey?: string }) {
 				return boundary.admit(

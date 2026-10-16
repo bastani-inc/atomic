@@ -75,7 +75,7 @@ function getSessionModifiedDate(entries: FileEntry[], header: SessionHeader, sta
 		return new Date(lastActivityTime);
 	}
 
-	const headerTime = typeof header.timestamp === "string" ? new Date(header.timestamp).getTime() : NaN;
+	const headerTime = typeof header.createdAt === "string" ? new Date(header.createdAt).getTime() : NaN;
 	return !Number.isNaN(headerTime) ? new Date(headerTime) : statsMtime;
 }
 
@@ -211,7 +211,7 @@ async function buildSessionInfo(
 		}
 
 		const cwd = typeof (header as SessionHeader).cwd === "string" ? (header as SessionHeader).cwd : "";
-		const parentSessionPath = (header as SessionHeader).parentSession;
+		const parentSessionPath = (header as SessionHeader).parentSessionId;
 		const workflow = classifiedWorkflowMetadata(header as SessionHeader);
 		const internal = workflow ? true : undefined;
 
@@ -228,7 +228,7 @@ async function buildSessionInfo(
 			parentSessionPath,
 			...(internal ? { internal } : {}),
 			...(workflow ? { workflow } : {}),
-			created: new Date((header as SessionHeader).timestamp),
+			created: new Date((header as SessionHeader).createdAt),
 			modified,
 			messageCount,
 			firstMessage: firstMessage || "(no messages)",
@@ -240,6 +240,14 @@ async function buildSessionInfo(
 		signal?.throwIfAborted();
 		return null;
 	}
+}
+
+export function resolveParentSessionPaths(sessions: SessionInfo[]): SessionInfo[] {
+	const paths = new Map(sessions.map((session) => [session.id, session.path]));
+	return sessions.map(({ parentSessionPath: parentId, ...session }) => {
+		const parentSessionPath = parentId === undefined ? undefined : paths.get(parentId);
+		return { ...session, ...(parentSessionPath === undefined ? {} : { parentSessionPath }) };
+	});
 }
 
 export async function listSessionsFromDir(
@@ -267,13 +275,15 @@ export async function listSessionsFromDir(
 					loaded,
 					files.length,
 					loaded === 1 || loaded % 10 === 0 || loaded === files.length
-						? sortSessionInfos([...partial])
+						? sortSessionInfos(resolveParentSessionPaths(partial))
 						: undefined,
 				);
 			},
 			signal,
 		);
-		return results.filter((info): info is SessionInfo => info !== null && (includeInternal || !info.internal));
+		return resolveParentSessionPaths(
+			results.filter((info): info is SessionInfo => info !== null && (includeInternal || !info.internal)),
+		);
 	} catch {
 		signal?.throwIfAborted();
 		return [];
@@ -367,14 +377,16 @@ export async function listAllSessions(
 					loaded,
 					candidates.length,
 					firstCandidateLoaded && (index === 0 || loaded % 100 === 0 || loaded === candidates.length)
-						? sortSessionInfos([...partial])
+						? sortSessionInfos(resolveParentSessionPaths(partial))
 						: undefined,
 				);
 			},
 			signal,
 		);
 		return sortSessionInfos(
-			results.filter((info): info is SessionInfo => info !== null && (includeInternal || !info.internal)),
+			resolveParentSessionPaths(
+				results.filter((info): info is SessionInfo => info !== null && (includeInternal || !info.internal)),
+			),
 		);
 	} catch {
 		signal?.throwIfAborted();

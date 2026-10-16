@@ -4,13 +4,13 @@ import { type CompactionEntry, SessionManager } from "../../../src/core/session-
 import { userMsg } from "../../utilities.ts";
 
 describe("regression #8989", () => {
-	it("preserves compaction context when a fork removes the boundary label", () => {
+	it("preserves compaction context when a fork removes the boundary label", async () => {
 		const session = SessionManager.inMemory();
-		const oldId = session.appendMessage(userMsg("old"));
+		const oldId = await session.appendMessage(userMsg("old"));
 		// findCutPoint() can move a compaction boundary back to this context-invisible label.
-		const labelId = session.appendLabelChange(oldId, "checkpoint");
-		const keptId = session.appendMessage(userMsg("kept"));
-		const compactionId = session.appendCompaction("summary", labelId, 100, {
+		const labelId = await session.appendLabelChange(oldId, "checkpoint");
+		const keptId = await session.appendMessage(userMsg("kept"));
+		const compactionId = await session.appendCompaction("summary", labelId, 100, {
 			strategy: "verbatim-lines",
 			promptVersion: 3,
 			parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
@@ -25,9 +25,9 @@ describe("regression #8989", () => {
 			},
 			rung: "planned",
 		});
-		const leafId = session.appendMessage(userMsg("after"));
+		const leafId = await session.appendMessage(userMsg("after"));
 
-		session.createBranchedSession(leafId);
+		await session.createBranchedSession(leafId);
 
 		assert.equal((session.getEntry(compactionId) as CompactionEntry).firstKeptEntryId, keptId);
 		const messages = session.buildSessionContext().messages;

@@ -29,12 +29,12 @@ function workflowOrchestrationContext(
 	return pendingStageDelivery === undefined ? context : { ...context, pendingStageDelivery };
 }
 
-export function stripWorkflowOnlyOptions(
+export async function stripWorkflowOnlyOptions(
 	options: StageOptions | undefined,
 	defaultSessionDir: string | undefined,
 	meta: StageExecutionMeta,
 	pendingStageDelivery?: NonNullable<CreateAgentSessionOptions["orchestrationContext"]>["pendingStageDelivery"],
-): CreateAgentSessionOptions {
+): Promise<CreateAgentSessionOptions> {
 	const classification = workflowSessionOptions(meta);
 	const orchestrationContext = workflowOrchestrationContext(meta, options, pendingStageDelivery);
 	if (!options) {
@@ -42,7 +42,7 @@ export function stripWorkflowOnlyOptions(
 			? { orchestrationContext }
 			: {
 					orchestrationContext,
-					sessionManager: SessionManager.create(process.cwd(), defaultSessionDir, classification),
+					sessionManager: await SessionManager.create(process.cwd(), defaultSessionDir, classification),
 				};
 	}
 	const {
@@ -71,16 +71,16 @@ export function stripWorkflowOnlyOptions(
 		const cwd = sessionOptions.cwd ?? process.cwd();
 		const effectiveSessionDir = sessionDir ?? defaultSessionDir;
 		if (resumeFromSessionFile !== undefined) {
-			sessionOptions.sessionManager = SessionManager.open(resumeFromSessionFile, effectiveSessionDir, cwd);
+			sessionOptions.sessionManager = await SessionManager.open(resumeFromSessionFile, effectiveSessionDir, cwd);
 		} else if (context === "fork" && forkFromSessionFile !== undefined) {
-			sessionOptions.sessionManager = SessionManager.forkFrom(
+			sessionOptions.sessionManager = await SessionManager.forkFrom(
 				forkFromSessionFile,
 				cwd,
 				effectiveSessionDir,
 				classification,
 			);
 		} else if (effectiveSessionDir !== undefined) {
-			sessionOptions.sessionManager = SessionManager.create(cwd, effectiveSessionDir, classification);
+			sessionOptions.sessionManager = await SessionManager.create(cwd, effectiveSessionDir, classification);
 		}
 	}
 	return {

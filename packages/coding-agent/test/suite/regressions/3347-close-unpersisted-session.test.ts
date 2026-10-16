@@ -13,7 +13,7 @@ import { AuthStorage } from "../../../src/core/auth-storage.ts";
 import { SessionManager } from "../../../src/core/session-manager.ts";
 import type { ExtensionAPI } from "../../../src/index.ts";
 
-describe("regression #3347: closing an unsaved session", () => {
+describe("regression #3347: closing a committed session", () => {
 	const cleanups: Array<() => Promise<void> | void> = [];
 
 	afterEach(async () => {
@@ -81,7 +81,7 @@ describe("regression #3347: closing an unsaved session", () => {
 		const runtime = await createAgentSessionRuntime(createRuntime, {
 			cwd: tempDir,
 			agentDir: tempDir,
-			sessionManager: SessionManager.create(tempDir, sessionDir),
+			sessionManager: await SessionManager.create(tempDir, sessionDir),
 		});
 		await runtime.session.bindExtensions({});
 
@@ -96,42 +96,45 @@ describe("regression #3347: closing an unsaved session", () => {
 		return { runtime };
 	}
 
-	it("switching to an earlier session leaves no header-only file for the unsaved session (#3347)", async () => {
+	it("switching to an earlier session preserves committed setup entries (#3347)", async () => {
 		const { runtime } = await createRuntimeForTest(["earlier reply"]);
 		await runtime.session.prompt("earlier");
 		const earlierSessionFile = runtime.session.sessionFile!;
 		expect(existsSync(earlierSessionFile)).toBe(true);
 
 		expect((await runtime.newSession()).cancelled).toBe(false);
-		runtime.session.sessionManager.appendModelChange("faux", "faux-1");
+		await runtime.session.sessionManager.appendModelChange("faux", "faux-1");
 		const unsavedSessionFile = runtime.session.sessionFile!;
 		expect(unsavedSessionFile).not.toBe(earlierSessionFile);
-		expect(existsSync(unsavedSessionFile)).toBe(false);
+		expect(existsSync(unsavedSessionFile)).toBe(true);
+		const committed = readFileSync(unsavedSessionFile, "utf8");
 
 		expect((await runtime.switchSession(earlierSessionFile)).cancelled).toBe(false);
 
 		expect(runtime.session.sessionFile).toBe(earlierSessionFile);
-		expect(existsSync(unsavedSessionFile)).toBe(false);
+		expect(readFileSync(unsavedSessionFile, "utf8")).toBe(committed);
 	});
 
-	it("disposing a session before any message leaves no session file (#3347)", async () => {
+	it("disposing a session before any message preserves its committed header (#3347)", async () => {
 		const { runtime } = await createRuntimeForTest([]);
 		const unsavedSessionFile = runtime.session.sessionFile!;
+		const committed = readFileSync(unsavedSessionFile, "utf8");
 
 		await runtime.dispose();
 
-		expect(existsSync(unsavedSessionFile)).toBe(false);
+		expect(readFileSync(unsavedSessionFile, "utf8")).toBe(committed);
 	});
 
-	it("disposing a session with saved conversation still flushes it (#3347)", async () => {
+	it("disposing a session leaves the already committed conversation unchanged (#3347)", async () => {
 		const { runtime } = await createRuntimeForTest(["saved reply"]);
 		await runtime.session.prompt("saved");
 		const savedSessionFile = runtime.session.sessionFile!;
-		rmSync(savedSessionFile);
+		const committed = readFileSync(savedSessionFile, "utf8");
 
 		await runtime.dispose();
 
 		const persisted = readFileSync(savedSessionFile, "utf8");
+		expect(persisted).toBe(committed);
 		expect(persisted).toContain('"type":"session"');
 		expect(persisted).toContain("saved reply");
 	});

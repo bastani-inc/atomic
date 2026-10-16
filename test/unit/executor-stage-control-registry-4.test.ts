@@ -1,4 +1,4 @@
-import { describe } from "vitest";
+import { describe, vi } from "vitest";
 import {
 	assert,
 	createStageControlRegistry,
@@ -323,10 +323,74 @@ describe("executor — stage-control registry integration", () => {
 		assert.equal(result.status, "completed");
 	});
 
+	test("a pause selected during async session creation survives attachment", async () => {
+		const store = createStore();
+		const registry = createStageControlRegistry();
+		const creating = deferred();
+		const release = deferred();
+		const attached = deferred();
+		let prompts = 0;
+		let runId = "";
+		let stageId = "";
+		const session: StageSessionRuntime = {
+			...mockSession(),
+			subscribe() {
+				attached.resolve();
+				return () => {};
+			},
+			async prompt() {
+				prompts++;
+				return "done";
+			},
+		};
+		const pending = run(
+			workflow({
+				name: "pause-during-session-create",
+				description: "",
+				inputs: {},
+				outputs: {},
+				async run(ctx) {
+					await ctx.stage("stage").prompt("go");
+					return {};
+				},
+			}),
+			{},
+			{
+				store,
+				stageControlRegistry: registry,
+				adapters: {
+					agentSession: {
+						async create() {
+							creating.resolve();
+							await release.promise;
+							return session;
+						},
+					},
+				},
+				onStageStart(id, stage) {
+					runId = id;
+					stageId = stage.id;
+				},
+			},
+		);
+		await creating.promise;
+		const handle = registry.get(runId, stageId)!;
+		await handle.pause();
+		release.resolve();
+		await attached.promise;
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		assert.equal(store.runs()[0]?.stages[0]?.status, "paused");
+		assert.equal(prompts, 0);
+		await handle.resume("go");
+		assert.equal((await pending).status, "completed");
+		assert.equal(prompts, 1);
+	});
+
 	test("manual pause of one parallel stage keeps the run running until every active stage is paused", async () => {
 		const registry = createStageControlRegistry();
 		const store = createStore();
 		const bothStarted = deferred();
+		let promptStarts = 0;
 		let runId: string | undefined;
 		const stageIds: Record<string, string> = {};
 		const makeSession = (): StageSessionRuntime => {
@@ -336,6 +400,7 @@ describe("executor — stage-control registry integration", () => {
 				...mockSession(),
 				async prompt() {
 					streaming = true;
+					if (++promptStarts === 2) bothStarted.resolve();
 					return new Promise<string | undefined>((_resolve, rej) => {
 						// Resolve on resume-without-message (pause loop returns) is
 						// driven by the executor; abort rejects the in-flight turn.
@@ -381,7 +446,6 @@ describe("executor — stage-control registry integration", () => {
 					if ((stage.name === "a" || stage.name === "b") && stage.startedAt === undefined) {
 						runId = rid;
 						stageIds[stage.name] = stage.id;
-						if (stageIds.a && stageIds.b) bothStarted.resolve();
 					}
 				},
 			},
@@ -395,19 +459,21 @@ describe("executor — stage-control registry integration", () => {
 		assert.equal(store.runs()[0]?.status, "running");
 
 		await handleA!.pause();
-		await waitForMicrotasks();
+		await vi.waitFor(() =>
+			assert.equal(store.runs()[0]?.stages.find((stage) => stage.name === "a")?.status, "paused"),
+		);
 		// One paused, one still running → run must stay running (mirrors pauseRun's
 		// all-active-stages-paused rule).
 		assert.equal(store.runs()[0]?.stages.find((s) => s.name === "a")?.status, "paused");
 		assert.equal(store.runs()[0]?.status, "running");
 
 		await handleB!.pause();
-		await waitForMicrotasks();
+		await vi.waitFor(() => assert.equal(store.runs()[0]?.status, "paused"));
 		// Every active stage is now paused → run becomes paused.
 		assert.equal(store.runs()[0]?.status, "paused");
 
 		await handleA!.resume();
-		await waitForMicrotasks();
+		await vi.waitFor(() => assert.equal(store.runs()[0]?.status, "running"));
 		// Resuming any stage restores run-level running.
 		assert.equal(store.runs()[0]?.status, "running");
 

@@ -75,9 +75,10 @@ export function registerWebSearchFeatures(pi: ExtensionAPI, initConfig: WebSearc
 					timestamp: Date.now(),
 					urls: stripThumbnails(fetched),
 				};
-				storeResult(fetchId, data);
 				try {
-					pi.appendEntry("web-search-results", data);
+					await pi.appendEntry("web-search-results", data);
+					if (!runtimeState.sessionActive || !pendingFetches.has(fetchId)) return;
+					storeResult(fetchId, data);
 					const ok = fetched.filter(f => !f.error).length;
 					// Keep the fetch pending until notification admission settles so session
 					// changes can still clear the entry and abort its controller while admission is in flight.

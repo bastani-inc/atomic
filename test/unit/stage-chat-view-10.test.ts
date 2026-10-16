@@ -1,4 +1,4 @@
-import { describe, test } from "vitest";
+import { describe, test, vi } from "vitest";
 import {
 	type AgentSession,
 	type AgentSessionEvent,
@@ -140,11 +140,11 @@ describe("StageChatView", () => {
 		view.dispose();
 	});
 
-	test("loads persisted session messages when reopening a settled stage without a live handle", () => {
+	test("loads persisted session messages when reopening a settled stage without a live handle", async () => {
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a", "completed");
 		const sessionDir = mkdtempSync(join(tmpdir(), "atomic-stage-session-"));
-		const manager = SessionManager.create(process.cwd(), sessionDir);
+		const manager = await SessionManager.create(process.cwd(), sessionDir);
 		const userMessage: Parameters<SessionManager["appendMessage"]>[0] = {
 			role: "user",
 			content: [{ type: "text", text: "persisted prompt" }],
@@ -173,8 +173,8 @@ describe("StageChatView", () => {
 			stopReason: "stop",
 			timestamp: Date.now(),
 		};
-		manager.appendMessage(userMessage);
-		manager.appendMessage(assistantMessage);
+		await manager.appendMessage(userMessage);
+		await manager.appendMessage(assistantMessage);
 		const sessionFile = manager.getSessionFile();
 		assert.equal(typeof sessionFile, "string");
 		store.recordStageSession("run-1", "stage-a", {
@@ -182,6 +182,7 @@ describe("StageChatView", () => {
 			sessionFile,
 		});
 
+		let renders = 0;
 		const view = new StageChatView({
 			store,
 			graphTheme: deriveGraphTheme({}),
@@ -190,8 +191,15 @@ describe("StageChatView", () => {
 			workflowName: "test-wf",
 			onDetach: () => {},
 			onClose: () => {},
+			requestRender: () => {
+				renders += 1;
+			},
 		});
 
+		await vi.waitFor(() => {
+			assert.match(stripAnsi(view.render(96).join("\n")), /persisted answer/);
+			assert.ok(renders > 0);
+		});
 		const rendered = stripAnsi(view.render(96).join("\n"));
 		assert.match(rendered, /persisted prompt/);
 		assert.match(rendered, /persisted answer/);
@@ -202,12 +210,12 @@ describe("StageChatView", () => {
 		view.dispose();
 	});
 
-	test("reopens persisted tool calls with their original arguments", () => {
+	test("reopens persisted tool calls with their original arguments", async () => {
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a", "completed");
 		const sessionDir = mkdtempSync(join(tmpdir(), "atomic-stage-session-tools-"));
-		const manager = SessionManager.create(process.cwd(), sessionDir);
-		manager.appendMessage({
+		const manager = await SessionManager.create(process.cwd(), sessionDir);
+		await manager.appendMessage({
 			role: "assistant",
 			content: [
 				{
@@ -237,7 +245,7 @@ describe("StageChatView", () => {
 			stopReason: "toolUse",
 			timestamp: Date.now(),
 		} as Parameters<SessionManager["appendMessage"]>[0]);
-		manager.appendMessage({
+		await manager.appendMessage({
 			role: "toolResult",
 			toolCallId: "tool-1",
 			toolName: "bash",
@@ -250,6 +258,7 @@ describe("StageChatView", () => {
 			sessionFile: manager.getSessionFile(),
 		});
 
+		let renders = 0;
 		const view = new StageChatView({
 			store,
 			graphTheme: deriveGraphTheme({}),
@@ -258,8 +267,15 @@ describe("StageChatView", () => {
 			workflowName: "test-wf",
 			onDetach: () => {},
 			onClose: () => {},
+			requestRender: () => {
+				renders += 1;
+			},
 		});
 
+		await vi.waitFor(() => {
+			assert.match(stripAnsi(view.render(96).join("\n")), /\$ echo persisted/);
+			assert.ok(renders > 0);
+		});
 		const rendered = stripAnsi(view.render(96).join("\n"));
 		assert.match(rendered, /\$ echo persisted/);
 		assert.doesNotMatch(rendered, /\$ \.\.\./);

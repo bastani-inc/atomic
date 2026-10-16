@@ -124,10 +124,10 @@ export function statusRuns(opts?: { store?: Store }): RunStatusEntry[] {
  * If the run has already ended (completed/failed/killed), returns ok:false with
  * reason "already_ended". If the runId is unknown, returns ok:false "not_found".
  */
-export function killRun(
+export async function killRun(
 	runId: string,
 	opts?: { store?: Store; cancellation?: CancellationRegistry; persistence?: WorkflowPersistencePort },
-): KillResult {
+): Promise<KillResult> {
 	const activeStore = opts?.store ?? defaultStore;
 
 	// Read run state BEFORE aborting — reject early without side-effects
@@ -161,7 +161,7 @@ export function killRun(
 	} as const;
 	const recorded = activeStore.recordRunEnd(runId, "killed", undefined, errorMessage, metadata);
 	if (recorded && opts?.persistence) {
-		appendRunEnd(opts.persistence, {
+		await appendRunEnd(opts.persistence, {
 			runId,
 			status: "killed",
 			error: errorMessage,
@@ -178,15 +178,17 @@ export function killRun(
  * Appends one `workflow.run.end` with status "killed" per successful kill when
  * persistence is provided.
  */
-export function killAllRuns(opts?: {
+export async function killAllRuns(opts?: {
 	store?: Store;
 	cancellation?: CancellationRegistry;
 	persistence?: WorkflowPersistencePort;
-}): KillResult[] {
+}): Promise<KillResult[]> {
 	const activeStore = opts?.store ?? defaultStore;
 	const inFlight = topLevelWorkflowRuns(activeStore.runs()).filter((r) => r.endedAt === undefined);
-	return inFlight.map((r) =>
-		killRun(r.id, { store: activeStore, cancellation: opts?.cancellation, persistence: opts?.persistence }),
+	return Promise.all(
+		inFlight.map((r) =>
+			killRun(r.id, { store: activeStore, cancellation: opts?.cancellation, persistence: opts?.persistence }),
+		),
 	);
 }
 

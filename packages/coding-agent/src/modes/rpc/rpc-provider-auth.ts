@@ -86,7 +86,7 @@ export class RpcProviderAuth {
 				throw error;
 			}
 			if (controller.signal.aborted) return { provider, cancelled: true };
-			session.refreshCurrentModelFromRegistry();
+			await session.refreshCurrentModelFromRegistry();
 			return { provider, cancelled: false, ...this.catalog(session) };
 		} finally {
 			this.finish(loginId, controller);
@@ -100,7 +100,7 @@ export class RpcProviderAuth {
 		options: SaveCredentialOptions = {},
 	): Promise<RpcModelCatalog> {
 		await session.modelRuntime.saveCredential(provider, credential, options);
-		session.refreshCurrentModelFromRegistry();
+		await session.refreshCurrentModelFromRegistry();
 		return this.catalog(session);
 	}
 	cancel(provider: string, loginId?: string): void {

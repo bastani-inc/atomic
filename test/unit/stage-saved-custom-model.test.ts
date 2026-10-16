@@ -48,9 +48,9 @@ test("reattached stage reconstructs its saved custom model rather than using set
 		allowModelNetwork: false,
 	});
 	const saved = SessionManager.inMemory(cwd);
-	saved.appendModelChange("custom", "saved-not-in-catalog");
-	saved.appendThinkingLevelChange("high");
-	saved.appendMessage({ role: "user", content: "previous turn", timestamp: Date.now() });
+	await saved.appendModelChange("custom", "saved-not-in-catalog");
+	await saved.appendThinkingLevelChange("high");
+	await saved.appendMessage({ role: "user", content: "previous turn", timestamp: Date.now() });
 	const settingsManager = SettingsManager.inMemory({
 		defaultProvider: "custom",
 		defaultModel: "catalog-model",
@@ -94,8 +94,8 @@ test("reattached stage reconstructs its saved custom model rather than using set
 			await session.dispose();
 		}
 		const unavailable = SessionManager.inMemory(cwd);
-		unavailable.appendModelChange("openai", "saved-unavailable");
-		unavailable.appendMessage({ role: "user", content: "previous turn", timestamp: Date.now() });
+		await unavailable.appendModelChange("openai", "saved-unavailable");
+		await unavailable.appendMessage({ role: "user", content: "previous turn", timestamp: Date.now() });
 		await assert.rejects(
 			adapters.agentSession!.create({ sessionManager: unavailable, fallbackModels: [] }),
 			/Workflow stage model unavailable: openai\/saved-unavailable/,

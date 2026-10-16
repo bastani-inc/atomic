@@ -33,7 +33,7 @@ test("shared reporter ignores child shutdown and keeps reporting for its parent"
 		runtime,
 		"herdr",
 	);
-	const parentSession = SessionManager.create(fake.dir, fake.dir);
+	const parentSession = await SessionManager.create(fake.dir, fake.dir);
 	const parent = new ExtensionRunner([extension], runtime, fake.dir, parentSession, {} as never);
 	parent.setUIContext({ ...noOpUIContext }, "tui");
 	const child = new ExtensionRunner(
@@ -296,7 +296,10 @@ test("SDK successor reuses the loaded reporter after owning shutdown and continu
 			compaction: { enabled: false },
 			sessionSummary: { enabled: false },
 		});
-		const managers = [SessionManager.create(fake.dir, fake.dir), SessionManager.create(fake.dir, fake.dir)];
+		const managers = [
+			await SessionManager.create(fake.dir, fake.dir),
+			await SessionManager.create(fake.dir, fake.dir),
+		];
 		for (const [index, sessionManager] of managers.entries()) {
 			const { session } = await createAgentSession({
 				cwd: fake.dir,
@@ -382,7 +385,7 @@ if (args.includes("working")) {
 		runtime,
 		"herdr",
 	);
-	const managers = [SessionManager.create(fake.dir, fake.dir), SessionManager.create(fake.dir, fake.dir)];
+	const managers = [await SessionManager.create(fake.dir, fake.dir), await SessionManager.create(fake.dir, fake.dir)];
 	const [previous, successor] = managers.map((manager) => {
 		const runner = new ExtensionRunner([extension], runtime, fake.dir, manager, {} as never);
 		runner.setUIContext({ ...noOpUIContext }, "tui");

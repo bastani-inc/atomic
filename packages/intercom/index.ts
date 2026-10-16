@@ -484,10 +484,10 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
   pi.on("session_start", async (event, ctx) => {
     const typedIdentity = ctx.subagentPolicy?.intercom;
     if (typedIdentity) {
-      if (typedIdentity.sessionName && typeof pi.setSessionName === "function") pi.setSessionName(typedIdentity.sessionName);
+      if (typedIdentity.sessionName && typeof pi.setSessionName === "function") await pi.setSessionName(typedIdentity.sessionName);
       registerTypedContactSupervisor();
     } else if (inheritedDelegatedSessionName && typeof pi.setSessionName === "function") {
-      pi.setSessionName(inheritedDelegatedSessionName);
+      await pi.setSessionName(inheritedDelegatedSessionName);
     }
     if (activeLease.retired) activeLease = createLifecycleLease<ShutdownSnapshot>(nextLeaseId++, activeLease.cleanupBarrier);
     const lease = activeLease;

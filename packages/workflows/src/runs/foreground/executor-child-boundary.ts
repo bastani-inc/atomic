@@ -32,12 +32,12 @@ export interface WorkflowBoundaryStage {
 	readonly parentIds: readonly string[];
 	readonly sourceOrder: number;
 	readonly replayedChild?: WorkflowChildResult;
-	finalizeReplay(): void;
-	linkChildRun(ref: WorkflowChildRunRef, childController: AbortController): void;
+	finalizeReplay(): Promise<void>;
+	linkChildRun(ref: WorkflowChildRunRef, childController: AbortController): Promise<void>;
 	observeChildRun(promise: Promise<unknown>): void;
-	complete(summary: string, workflowChild: WorkflowChildReplaySnapshot): void;
+	complete(summary: string, workflowChild: WorkflowChildReplaySnapshot): Promise<void>;
 	skipForWorkflowExit(reason?: string): Promise<void>;
-	fail(error: unknown): void;
+	fail(error: unknown): Promise<void>;
 }
 
 function workflowChildResultFromReplay(snapshot: WorkflowChildReplaySnapshot): WorkflowChildResult {
@@ -128,9 +128,11 @@ export function createWorkflowBoundaryFactory(input: {
 		let unregisterWorkflowExitCleanup = (): void => {};
 		let linkedChild: LinkedChildWorkflowExitState | undefined;
 
-		const appendStageStartOnce = (): void => {
-			if (!input.opts.persistence) return;
-			appendStageStart(input.opts.persistence, {
+		let stageStartEntry: Promise<void> | undefined;
+		let finalization: Promise<void> | undefined;
+		const appendStageStartOnce = (): Promise<void> => {
+			if (!input.opts.persistence) return Promise.resolve();
+			stageStartEntry ??= appendStageStart(input.opts.persistence, {
 				runId: input.runId,
 				stageId,
 				name,
@@ -138,11 +140,12 @@ export function createWorkflowBoundaryFactory(input: {
 				...stageReplayFields(stageSnapshot),
 				ts: stageSnapshot.startedAt,
 			});
+			return stageStartEntry;
 		};
 
-		const appendStageEndForSnapshot = (): void => {
+		const appendStageEndForSnapshot = async (): Promise<void> => {
 			if (!input.opts.persistence) return;
-			appendStageEnd(input.opts.persistence, {
+			await appendStageEnd(input.opts.persistence, {
 				runId: input.runId,
 				stageId,
 				status: stageSnapshot.status,
@@ -182,52 +185,58 @@ export function createWorkflowBoundaryFactory(input: {
 			summaryOrError: string,
 			workflowChild?: WorkflowChildReplaySnapshot,
 			failureError?: unknown,
-		): void => {
-			if (finalized) return;
-			finalized = true;
-			unregisterWorkflowExitCleanup();
-			stageSnapshot.status = status;
-			if (status === "completed") {
-				stageSnapshot.result = summaryOrError;
-				if (workflowChild !== undefined) stageSnapshot.workflowChild = workflowChild;
-			} else if (status === "skipped") {
-				clearBoundaryChildMetadata();
-				stageSnapshot.skippedReason = summaryOrError;
-			} else {
-				clearBoundaryChildMetadata();
-				applyFailureToStage(stageSnapshot, input.classifyExecutorFailure(failureError));
-			}
-			if (replayedChild === undefined) {
-				stageSnapshot.endedAt = Date.now();
-				stageSnapshot.durationMs = elapsedStageMs(stageSnapshot, stageSnapshot.endedAt);
-			}
-			input.activeStore.recordStageEnd(input.runId, stageSnapshot);
-			input.opts.onStageEnd?.(input.runId, stageSnapshot);
-			appendStageEndForSnapshot();
-			input.tracker.onSettle(stageId);
+		): Promise<void> => {
+			finalization ??= (async () => {
+				await appendStageStartOnce();
+				finalized = true;
+				unregisterWorkflowExitCleanup();
+				stageSnapshot.status = status;
+				if (status === "completed") {
+					stageSnapshot.result = summaryOrError;
+					if (workflowChild !== undefined) stageSnapshot.workflowChild = workflowChild;
+				} else if (status === "skipped") {
+					clearBoundaryChildMetadata();
+					stageSnapshot.skippedReason = summaryOrError;
+				} else {
+					clearBoundaryChildMetadata();
+					applyFailureToStage(stageSnapshot, input.classifyExecutorFailure(failureError));
+				}
+				if (replayedChild === undefined) {
+					stageSnapshot.endedAt = Date.now();
+					stageSnapshot.durationMs = elapsedStageMs(stageSnapshot, stageSnapshot.endedAt);
+				}
+				input.activeStore.recordStageEnd(input.runId, stageSnapshot);
+				input.opts.onStageEnd?.(input.runId, stageSnapshot);
+				await appendStageEndForSnapshot();
+				input.tracker.onSettle(stageId);
+			})();
+			return finalization;
 		};
 
 		input.activeStore.recordStageStart(input.runId, stageSnapshot);
 		input.opts.onStageStart?.(input.runId, stageSnapshot);
-		appendStageStartOnce();
 
 		unregisterWorkflowExitCleanup = input.registerWorkflowExitCleanup(stageId, {
 			async skipForWorkflowExit(reason?: string): Promise<void> {
 				const child = linkedChild;
 				if (child !== undefined) requestLinkedChildWorkflowExit(child, reason);
-				finalize("skipped", input.workflowExitSkippedReason(reason));
+				await finalize("skipped", input.workflowExitSkippedReason(reason));
 				if (child !== undefined) await waitForLinkedChildWorkflowExit(child);
 			},
 		});
 
-		const finalizeReplay = (): void => {
-			if (replayedChild === undefined || finalized) return;
-			finalized = true;
-			unregisterWorkflowExitCleanup();
-			input.activeStore.recordStageEnd(input.runId, stageSnapshot);
-			input.opts.onStageEnd?.(input.runId, stageSnapshot);
-			appendStageEndForSnapshot();
-			input.tracker.onSettle(stageId);
+		const finalizeReplay = async (): Promise<void> => {
+			if (replayedChild === undefined) return;
+			finalization ??= (async () => {
+				await appendStageStartOnce();
+				finalized = true;
+				unregisterWorkflowExitCleanup();
+				input.activeStore.recordStageEnd(input.runId, stageSnapshot);
+				input.opts.onStageEnd?.(input.runId, stageSnapshot);
+				await appendStageEndForSnapshot();
+				input.tracker.onSettle(stageId);
+			})();
+			return finalization;
 		};
 
 		return {
@@ -236,8 +245,9 @@ export function createWorkflowBoundaryFactory(input: {
 			sourceOrder,
 			...(replayedChild !== undefined ? { replayedChild } : {}),
 			finalizeReplay,
-			linkChildRun(ref: WorkflowChildRunRef, childController: AbortController): void {
+			async linkChildRun(ref: WorkflowChildRunRef, childController: AbortController): Promise<void> {
 				if (finalized) return;
+				await appendStageStartOnce();
 				linkedChild = { ref: { ...ref }, controller: childController };
 				stageSnapshot.workflowChildRun = { ...ref };
 				input.activeStore.recordStageWorkflowChildRun(input.runId, stageId, ref);
@@ -246,17 +256,17 @@ export function createWorkflowBoundaryFactory(input: {
 				if (linkedChild === undefined || finalized) return;
 				linkedChild.runPromise = promise;
 			},
-			complete(summary: string, workflowChild: WorkflowChildReplaySnapshot): void {
-				finalize("completed", summary, workflowChild);
+			async complete(summary: string, workflowChild: WorkflowChildReplaySnapshot): Promise<void> {
+				await finalize("completed", summary, workflowChild);
 			},
 			async skipForWorkflowExit(reason?: string): Promise<void> {
 				const child = linkedChild;
 				if (child !== undefined) requestLinkedChildWorkflowExit(child, reason);
-				finalize("skipped", input.workflowExitSkippedReason(reason));
+				await finalize("skipped", input.workflowExitSkippedReason(reason));
 				if (child !== undefined) await waitForLinkedChildWorkflowExit(child);
 			},
-			fail(error: unknown): void {
-				finalize("failed", error instanceof Error ? error.message : String(error), undefined, error);
+			async fail(error: unknown): Promise<void> {
+				await finalize("failed", error instanceof Error ? error.message : String(error), undefined, error);
 			},
 		};
 	};

@@ -120,7 +120,7 @@ await session.prompt("Hello");
 | `excludedTools` | `[]` | Blocklist tool names across built-in, extension, and custom tools; applied after `tools` |
 | `customTools` | `[]` | Additional tool definitions |
 | `resourceLoader` | DefaultResourceLoader | Resource loader for extensions, skills, prompts, themes |
-| `sessionManager` | `SessionManager.create(cwd)` | Persistence |
+| `sessionManager` | `await SessionManager.create(cwd)` | Persistence |
 | `settingsManager` | `SettingsManager.create(cwd, agentDir)` | Settings overrides |
 
 ## Events

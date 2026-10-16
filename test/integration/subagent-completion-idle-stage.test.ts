@@ -10,7 +10,7 @@ for (const restored of [false, true]) {
 		const manager = SessionManager.inMemory();
 		let completionId = "idle-restored-completion";
 		if (restored) {
-			manager.appendCustomEntry("task-completion-intent", {
+			await manager.appendCustomEntry("task-completion-intent", {
 				completionId,
 				ownerId: "previous-owner",
 				taskId: "previous-task",

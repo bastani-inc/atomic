@@ -113,8 +113,8 @@ export function registerContentTools(pi: ExtensionAPI, deps: RegisterContentTool
 				timestamp: Date.now(),
 				urls: deps.stripThumbnails(fetchResults),
 			};
+			await pi.appendEntry("web-search-results", data);
 			storeResult(responseId, data);
-			pi.appendEntry("web-search-results", data);
 
 			if (urlList.length === 1) {
 				const result = fetchResults[0];

@@ -28,7 +28,6 @@ import {
 	isStaleExtensionContextError,
 	ModelRuntime,
 	resolveRestoredModelReference,
-	SessionManager,
 } from "@bastani/atomic";
 import type {
 	AgentSessionAdapter,
@@ -239,11 +238,11 @@ async function createTestAgentSession(_options?: CreateAgentSessionOptions): Pro
 		sessionFile: undefined,
 		sessionId: `test-session-${crypto.randomUUID()}`,
 		async setModel(_model): Promise<void> {},
-		setThinkingLevel(_level): void {},
+		async setThinkingLevel(_level): Promise<void> {},
 		async cycleModel() {
 			return undefined;
 		},
-		cycleThinkingLevel() {
+		async cycleThinkingLevel() {
 			return undefined;
 		},
 		agent: Object.create(null) as StageSessionRuntime["agent"],
@@ -663,9 +662,9 @@ export function buildRuntimeAdapters(
  * Each stage gets an in-process `createAgentSession` session from
  * `@bastani/atomic` (imported lazily on first stage), with the same stage
  * policy as the workflows extension. `baseOptions` apply to every stage and
- * stage options override them. Each stage gets its own session manager:
- * stages without one get `SessionManager.inMemory(cwd)`. Stages without their
- * own `cwd` use `baseOptions.cwd`, including any session file they record.
+ * stage options override them. Stages without a supplied session manager use
+ * the SDK's persistent default. Stages without their own `cwd` use
+ * `baseOptions.cwd`, including any session file they record.
  */
 export function createAgentSessionAdapter(
 	baseOptions: Omit<CreateAgentSessionOptions, "sessionManager"> = {},
@@ -677,7 +676,6 @@ export function createAgentSessionAdapter(
 				for (const [key, value] of Object.entries(stageOptions)) {
 					if (value !== undefined) Object.assign(options, { [key]: value });
 				}
-				options.sessionManager ??= SessionManager.inMemory(options.cwd ?? process.cwd());
 				return options;
 			},
 		},

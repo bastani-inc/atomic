@@ -126,7 +126,7 @@ function extensionFixture(sessionId: string, name: string, orchestrationContext:
 		registerCommand() {},
 		registerShortcut() {},
 		registerMessageRenderer() {},
-		appendEntry() {},
+		async appendEntry() {},
 		async sendMessage(message: { content?: string }) {
 			injectedMessages.push(message);
 		},

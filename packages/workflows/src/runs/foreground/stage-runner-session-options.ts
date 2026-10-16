@@ -26,7 +26,7 @@ export function agentSessionAdapterDefaultCwd(adapter: object | undefined): stri
 	return adapter === undefined ? undefined : adapterDefaultCwds.get(adapter);
 }
 
-export function buildStageSessionOptions(input: StageSessionOptionsInput): StageOptions | undefined {
+export async function buildStageSessionOptions(input: StageSessionOptionsInput): Promise<StageOptions | undefined> {
 	const options: StageOptions =
 		input.candidate === undefined
 			? { ...(input.effectiveStageOptions ?? {}) }
@@ -46,7 +46,7 @@ export function buildStageSessionOptions(input: StageSessionOptionsInput): Stage
 
 	if (input.reattachSessionFile !== undefined && options.sessionManager === undefined) {
 		const cwd = options.cwd ?? process.cwd();
-		options.sessionManager = SessionManager.open(input.reattachSessionFile, options.sessionDir, cwd);
+		options.sessionManager = await SessionManager.open(input.reattachSessionFile, options.sessionDir, cwd);
 		options.context = undefined;
 		options.forkFromSessionFile = undefined;
 	}

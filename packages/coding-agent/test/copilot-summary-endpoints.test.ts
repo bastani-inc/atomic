@@ -64,8 +64,8 @@ function installCopilotCredential(harness: Harness): Model<Api> {
 	return catalogModel;
 }
 
-function seedCompactableSession(harness: Harness): void {
-	harness.sessionManager.appendMessage({
+async function seedCompactableSession(harness: Harness): Promise<void> {
+	await harness.sessionManager.appendMessage({
 		role: "user",
 		content: [
 			{ type: "text", text: Array.from({ length: 40 }, (_value, index) => `context line ${index}`).join("\n") },
@@ -102,12 +102,12 @@ describe("GitHub Copilot credential endpoints in summaries", () => {
 	it("uses the credential-resolved endpoint for branch summaries", async () => {
 		harness = await createHarness();
 		const catalogModel = installCopilotCredential(harness);
-		const rootId = harness.sessionManager.appendMessage({
+		const rootId = await harness.sessionManager.appendMessage({
 			role: "user",
 			content: [{ type: "text", text: "Explore the alternate Copilot branch." }],
 			timestamp: Date.now(),
 		});
-		harness.sessionManager.appendMessage(assistantMessage(catalogModel, "Alternate branch response."));
+		await harness.sessionManager.appendMessage(assistantMessage(catalogModel, "Alternate branch response."));
 		harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
 		const requests: CapturedRequest[] = [];
 		harness.session.agent.streamFunction = async (requestModel, _context, options) => {

@@ -104,7 +104,7 @@ function fixture(homeGroup = "default") {
 			registerTool(value: Tool) {
 				tool = value;
 			},
-			appendEntry() {},
+			async appendEntry() {},
 		} as never,
 		{
 			ensureConnected: async () => client,

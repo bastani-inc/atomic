@@ -54,7 +54,7 @@ test("nested post-mortem chat reopens in the durable root cwd while retaining ch
 					type: "session",
 					version: 4,
 					id: `${durableCwdField}-session`,
-					timestamp: new Date().toISOString(),
+					createdAt: new Date().toISOString(),
 					cwd: durableCwd,
 				}),
 				JSON.stringify({

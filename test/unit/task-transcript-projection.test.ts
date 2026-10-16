@@ -48,8 +48,8 @@ test("transcript references use authorized session entries and preserve repeated
 			ok: false,
 			error: { code: "TranscriptUnavailable", message: "Transcript unavailable" },
 		});
-		const first = session.appendMessage({ role: "user", content: " raw ", timestamp: 1 });
-		const second = session.appendMessage({ role: "user", content: " raw ", timestamp: 2 });
+		const first = await session.appendMessage({ role: "user", content: " raw ", timestamp: 1 });
+		const second = await session.appendMessage({ role: "user", content: " raw ", timestamp: 2 });
 		const page = await readTaskTranscript(task);
 		assert.ok(page.ok);
 		assert.deepEqual(page.value, {
@@ -79,8 +79,11 @@ test("unbound and unknown task transcripts are unavailable without looking up ar
 // RFC #2884: paging references older records without truncating the authoritative session.
 test("transcript pages have opaque task scoped cursors and omit duplicate source identities only", async () => {
 	const session = SessionManager.inMemory();
-	const ids = Array.from({ length: 105 }, (_, timestamp) =>
-		session.appendMessage({ role: "user", content: "same", timestamp }),
+	const ids = await Promise.all(
+		Array.from(
+			{ length: 105 },
+			async (_, timestamp) => await session.appendMessage({ role: "user", content: "same", timestamp }),
+		),
 	);
 	const source: TaskTranscriptSource = {
 		getSessionId: () => session.getSessionId(),
@@ -114,7 +117,7 @@ test("transcript pages have opaque task scoped cursors and omit duplicate source
 // RFC #2884: tool references keep original toolCallId and never disclose reasoning.
 test("assistant tool calls and results correlate while hidden reasoning is absent", async () => {
 	const session = SessionManager.inMemory();
-	const entryId = session.appendMessage({
+	const entryId = await session.appendMessage({
 		role: "assistant",
 		content: [
 			{ type: "thinking", thinking: "hidden" },
@@ -135,7 +138,7 @@ test("assistant tool calls and results correlate while hidden reasoning is absen
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 	});
-	const resultId = session.appendMessage({
+	const resultId = await session.appendMessage({
 		role: "toolResult",
 		toolCallId: "call",
 		toolName: "bash",
@@ -172,9 +175,9 @@ test("assistant tool calls and results correlate while hidden reasoning is absen
 test("persisted transcript references agree with live source and expose recorded response only", async () => {
 	const directory = makeTempDirectory("task-transcript-");
 	try {
-		const session = SessionManager.create(directory, directory);
-		session.appendMessage({ role: "user", content: " original ", timestamp: 1 });
-		const response = session.appendMessage({
+		const session = await SessionManager.create(directory, directory);
+		await session.appendMessage({ role: "user", content: " original ", timestamp: 1 });
+		const response = await session.appendMessage({
 			role: "assistant",
 			content: [{ type: "text", text: " final " }],
 			api: "openai-completions",
@@ -193,7 +196,7 @@ test("persisted transcript references agree with live source and expose recorded
 		});
 		const file = session.getSessionFile();
 		assert.ok(file);
-		const persisted = SessionManager.open(file);
+		const persisted = await SessionManager.open(file);
 		await withTranscript(session, async (liveTask) => {
 			const live = await readTaskTranscript(liveTask);
 			assert.ok(live.ok);

@@ -47,16 +47,16 @@ test("removed actions are absent from the keybinding registry", () => {
 test("model and thinking commands automatically persist the last user choices", async () => {
 	const mode = await createMode();
 	await InteractiveModeBase.prototype.handleModelCommand.call(mode as never, "second");
-	InteractiveModeBase.prototype.handleThinkingCommand.call(mode as never, "high");
+	await InteractiveModeBase.prototype.handleThinkingCommand.call(mode as never, "high");
 	assertDefaults("second", "high");
-	InteractiveModeBase.prototype.handleThinkingCommand.call(mode as never, "low");
+	await InteractiveModeBase.prototype.handleThinkingCommand.call(mode as never, "low");
 	assertDefaults("second", "low");
 	assert.equal(mode.showError.mock.calls.length, 0);
 });
 
 test("available and scoped model cycling persist the model and effective thinking level", async () => {
 	const mode = await createMode();
-	harness.session.setThinkingLevel("high");
+	await harness.session.setThinkingLevel("high");
 	await InteractiveModeBase.prototype.cycleModel.call(mode as never, "forward");
 	assertDefaults("second", "high");
 	harness.session.setScopedModels([
@@ -65,13 +65,13 @@ test("available and scoped model cycling persist the model and effective thinkin
 	]);
 	await InteractiveModeBase.prototype.cycleModel.call(mode as never, "backward");
 	assertDefaults("first", "low");
-	InteractiveModeBase.prototype.cycleThinkingLevel.call(mode as never);
+	await InteractiveModeBase.prototype.cycleThinkingLevel.call(mode as never);
 	assertDefaults("first", harness.session.thinkingLevel);
 });
 
 test("model switching saves the capability-clamped thinking level", async () => {
 	const mode = await createMode();
-	harness.session.setThinkingLevel("high");
+	await harness.session.setThinkingLevel("high");
 	await InteractiveModeBase.prototype.handleModelCommand.call(mode as never, "plain");
 	assertDefaults("plain", "off");
 });
@@ -79,9 +79,9 @@ test("model switching saves the capability-clamped thinking level", async () => 
 test("programmatic changes do not replace the user's defaults", async () => {
 	const mode = await createMode();
 	await InteractiveModeBase.prototype.handleModelCommand.call(mode as never, "second");
-	InteractiveModeBase.prototype.handleThinkingCommand.call(mode as never, "high");
+	await InteractiveModeBase.prototype.handleThinkingCommand.call(mode as never, "high");
 	await harness.session.setModel(harness.getModel("first")!);
-	harness.session.setThinkingLevel("low");
+	await harness.session.setThinkingLevel("low");
 	assert.equal(harness.settingsManager.getDefaultModel(), "second");
 	assert.equal(harness.settingsManager.getDefaultThinkingLevel(), "high");
 });

@@ -144,12 +144,10 @@ export class TaskCompletionOutbox {
 							entry.customType === "task-completion-intent" &&
 							(entry.data as TaskCompletionEnvelope | undefined)?.completionId === envelope.completionId,
 					);
-				if (!persisted) this.session.appendCustomEntry("task-completion-intent", envelope);
-				this.session.flush();
+				if (!persisted) await this.session.appendCustomEntry("task-completion-intent", envelope);
 				if (!this.isOpen()) return;
 				await this.admit(envelope);
-				this.session.appendCustomEntry("task-completion-ack", { completionId: envelope.completionId });
-				this.session.flush();
+				await this.session.appendCustomEntry("task-completion-ack", { completionId: envelope.completionId });
 				this.entries.delete(envelope.completionId);
 			} catch {
 				// Execution stays terminal. Explicit retry uses this same envelope and identity.

@@ -28,9 +28,9 @@ const detail: WorkflowRunDetail = { ...run, inputs: {}, stages: [] };
 
 test("SDK reads stored session summary entries and list markers when generation is disabled", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "atomic-summary-sdk-"));
-	const manager = SessionManager.create(dir, join(dir, "sessions"));
-	const through = manager.appendMessage({ role: "user", content: "Build a parser", timestamp: 1 });
-	manager.appendSessionSummary("Parser implemented; review remains", through);
+	const manager = await SessionManager.create(dir, join(dir, "sessions"));
+	const through = await manager.appendMessage({ role: "user", content: "Build a parser", timestamp: 1 });
+	await manager.appendSessionSummary("Parser implemented; review remains", through);
 	const harness = await createHarness({ sessionManager: manager, settings: { sessionSummary: { enabled: false } } });
 	try {
 		assert.equal(harness.session.sessionSummary?.summary, "Parser implemented; review remains");
@@ -53,9 +53,9 @@ test(
 		const agentDir = join(dir, "agent");
 		mkdirSync(agentDir);
 		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ sessionSummary: { enabled: false } }));
-		const manager = SessionManager.create(dir, join(dir, "sessions"));
-		const through = manager.appendMessage({ role: "user", content: "Build a parser", timestamp: 1 });
-		manager.appendSessionSummary("Parser implemented; review remains", through);
+		const manager = await SessionManager.create(dir, join(dir, "sessions"));
+		const through = await manager.appendMessage({ role: "user", content: "Build a parser", timestamp: 1 });
+		await manager.appendSessionSummary("Parser implemented; review remains", through);
 		const extension = join(dir, "summary-control.ts");
 		writeFileSync(
 			extension,

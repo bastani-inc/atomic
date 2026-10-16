@@ -34,7 +34,7 @@ writeFileSync(
 initTheme("dark", false);
 const keys = new KeybindingsManager(); setKeybindings(keys);
 const workflow = chat === "workflow" ? await createStageSkillFixture() : undefined;
-const main = workflow ? undefined : await createHarness({ sessionManager: SessionManager.create(process.cwd(), join(directory, "sessions")) });
+const main = workflow ? undefined : await createHarness({ sessionManager: await SessionManager.create(process.cwd(), join(directory, "sessions")) });
 const harness = workflow?.stage ?? main;
 assert.ok(harness);
 harness.appendResponses(Array.from({ length: 24 }, () => fauxAssistantMessage("Acknowledged.")));
@@ -113,7 +113,7 @@ const component = {
 };
 async function startAgent(kind: string): Promise<void> {
 	completion = Promise.withResolvers<void>(); afterYield = Promise.withResolvers<void>(); activity = Promise.withResolvers<void>();
-	child = await createHarness({ sessionManager: SessionManager.create(process.cwd(), join(directory!, "child")), tools: [{ name: "bash", label: "bash", description: "Deterministic task activity", parameters: Type.Object({}), async execute() { await afterYield.promise; assert.ok(context); value(context.reportActivity({ reportId: "after-yield", change: { kind: "action", tool: "bash", text: "Inspect deterministic fixture" } })); activity.resolve(); await completion.promise; return { content: [{ type: "text", text: "fixture output" }], details: {} }; } }] });
+	child = await createHarness({ sessionManager: (await SessionManager.create(process.cwd(), join(directory!, "child"))), tools: [{ name: "bash", label: "bash", description: "Deterministic task activity", parameters: Type.Object({}), async execute() { await afterYield.promise; assert.ok(context); value(context.reportActivity({ reportId: "after-yield", change: { kind: "action", tool: "bash", text: "Inspect deterministic fixture" } })); activity.resolve(); await completion.promise; return { content: [{ type: "text", text: "fixture output" }], details: {} }; } }] });
 	child.setResponses([fauxAssistantMessage(fauxToolCall("bash", {}), { stopReason: "toolUse" }), fauxAssistantMessage("Fixture complete.")]);
 	const started = value(await host.startAgentTask({ kind: "agent", agent: "worker", task: "Inspect deterministic fixture", description: "t17 Inspect deterministic fixture" }, `${runId}:${commandId}` as OperationId, (runner) => { context = runner; assert.ok(child); runner.bindTranscript(child.session.sessionManager); const result = child.session.prompt("Inspect deterministic fixture").then(() => ({ kind: "completed" as const, output: store!.tasks.find((item) => item.ref.taskId === runner.ref.taskId)!.output })); runner.signal.addEventListener("abort", () => { completion.resolve(); afterYield.resolve(); void child?.session.abort(); }, { once: true }); return { result, cleanup: result.then(() => ({ kind: "reaped" as const })) }; }));
 	task = started.lease; taskId = started.taskId;
@@ -136,8 +136,8 @@ async function command(text: string): Promise<void> {
 		const event = nativeEvents.find((item) => item.payload.kind === "task-settled" && item.taskId === taskId)!; assert.equal(event.payload.kind, "task-settled");
 		barrier("terminal", { completionId: event.payload.completionId, terminalSequence: event.cursor.sequence });
 		await until(() => session.sessionManager.getEntries().some((entry) => entry.type === "custom_message" && entry.customType === "task-completion"), "model persistence");
-		session.sessionManager.flush(); const file = session.sessionManager.getSessionFile(); assert.ok(file);
-		const entries = SessionManager.open(file).getEntries().filter((entry) => entry.type === "custom_message" && entry.customType === "task-completion"); assert.equal(entries.length, 1);
+		const file = session.sessionManager.getSessionFile(); assert.ok(file);
+		const entries = (await SessionManager.open(file)).getEntries().filter((entry) => entry.type === "custom_message" && entry.customType === "task-completion"); assert.equal(entries.length, 1);
 		assert.equal(entries[0].type, "custom_message");
 		const persisted = entries[0].details as { completionId: string; taskId: string };
 		assert.equal(persisted.completionId, event.payload.completionId); assert.equal(persisted.taskId, taskId);

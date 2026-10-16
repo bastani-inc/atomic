@@ -138,7 +138,7 @@ function fixture(kind: "intercom" | "supervisor", options: FixtureOptions = {}) 
 		registerTool(value: Tool) {
 			tool = value;
 		},
-		appendEntry() {},
+		async appendEntry() {},
 	};
 	const common = {
 		ensureConnected: async () => {
@@ -976,7 +976,7 @@ for (const kind of ["intercom", "supervisor"] as const) {
 				registerTool(value: Tool) {
 					registered = value;
 				},
-				appendEntry() {},
+				async appendEntry() {},
 			};
 			if (kind === "intercom")
 				registerIntercomTool(

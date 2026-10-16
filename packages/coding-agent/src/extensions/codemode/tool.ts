@@ -29,7 +29,7 @@ export interface CodemodeToolOptions {
 	/** Prompt guidelines shown with tool declarations in describeTool() and ALL_TOOLS. */
 	getToolGuidelines?: () => ReadonlyMap<string, readonly string[]>;
 	models?: boolean;
-	appendEntry?: (type: string, data: CodemodeStoreEntryData) => void;
+	appendEntry?: (type: string, data: CodemodeStoreEntryData) => Promise<void>;
 	getMode?: () => CodemodeMode;
 	getInlineBudget?: () => number | undefined;
 	/** Active model-only tools. Scripts cannot call them, so discovery answers an exact name with a hint. */

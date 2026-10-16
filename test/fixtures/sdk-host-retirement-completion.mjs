@@ -54,7 +54,7 @@ try {
   }, { cwd, agentDir: cwd, sessionManager: options.sessionManager });
   session = runtime.session;
   await session.bindExtensions({ commandContextActions: { waitForIdle: async () => {}, newSession: o => runtime.newSession(o), fork: (id,o) => runtime.fork(id,o), navigateTree: (id,o) => runtime.session.navigateTree(id,o), switchSession: (file,o) => runtime.switchSession(file,o), reload: () => runtime.session.reload() } });
-  session.setThinkingLevel("high"); await peerEntered.promise;
+  await session.setThinkingLevel("high"); await peerEntered.promise;
   const turn = Promise.all(Array.from({ length: count }, () => session.prompt("/replace-me"))); await entered.promise;
   await delay(20); assert.equal(generations, 1); assert.deepEqual(events, []);
   joinReplacement.resolve(); peerRelease.resolve(); await resumed.promise;

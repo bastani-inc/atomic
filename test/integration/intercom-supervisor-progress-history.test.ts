@@ -41,7 +41,7 @@ function fixture() {
 		registerTool() {},
 		registerCommand() {},
 		registerShortcut() {},
-		appendEntry() {},
+		async appendEntry() {},
 		getSessionName: () => undefined,
 		registerMessageRenderer(_name: string, render: typeof renderer) {
 			renderer = render;

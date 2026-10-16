@@ -55,11 +55,11 @@ function childCliSource(): string {
 		const sessionFile = valueAfter("--session");
 		const sessionDir = valueAfter("--session-dir");
 		const manager = sessionFile
-			? SessionManager.open(sessionFile, undefined, process.cwd())
-			: SessionManager.create(process.cwd(), sessionDir);
-		applyInheritedWorkflowSessionClassification(manager);
-		manager.appendMessage({ role: "user", content: "child task", timestamp: Date.now() });
-		manager.appendMessage({
+			? await SessionManager.open(sessionFile, undefined, process.cwd())
+			: await SessionManager.create(process.cwd(), sessionDir);
+		await applyInheritedWorkflowSessionClassification(manager);
+		await manager.appendMessage({ role: "user", content: "child task", timestamp: Date.now() });
+		await manager.appendMessage({
 			role: "assistant", content: [{ type: "text", text: "done" }],
 			api: "openai-responses", provider: "openai", model: "gpt-5.4",
 			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
@@ -151,12 +151,12 @@ describe("workflow subagent persisted session classification", () => {
 	test("same-cwd fork child stays classified through fork resolver and foreground executor", async () => {
 		await withChildCli(async (root, _scriptPath) => {
 			const sessionDir = join(root, "fork-sessions");
-			const parent = SessionManager.create(root, sessionDir, { internal: true, workflow });
-			parent.appendMessage({ role: "user", content: "parent task", timestamp: Date.now() });
-			const leafId = parent.appendMessage(assistantMessage("parent done"));
+			const parent = await SessionManager.create(root, sessionDir, { internal: true, workflow });
+			await parent.appendMessage({ role: "user", content: "parent task", timestamp: Date.now() });
+			const leafId = await parent.appendMessage(assistantMessage("parent done"));
 			assert.ok(parent.getSessionFile());
 			assert.equal(parent.getLeafId(), leafId);
-			const forkFile = createForkContextResolver(parent, "fork").sessionFileForIndex(0);
+			const forkFile = await createForkContextResolver(parent, "fork").sessionFileForIndex(0);
 			assert.ok(forkFile);
 
 			runForegroundInBun(

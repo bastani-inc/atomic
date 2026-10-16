@@ -90,7 +90,7 @@ describe("AgentSession overflow auto-compaction continuation", () => {
 	});
 
 	it("waits for overflow retry continuation before prompt resolves", async () => {
-		session.sessionManager.appendMessage({
+		await session.sessionManager.appendMessage({
 			role: "user",
 			content: [{ type: "text", text: "existing compactable context" }],
 			timestamp: Date.now(),
@@ -150,8 +150,8 @@ describe("AgentSession overflow auto-compaction continuation", () => {
 			errorMessage: "prompt is too long",
 			timestamp: Date.now(),
 		};
-		session.sessionManager.appendMessage(userMessage);
-		session.sessionManager.appendMessage(overflowAssistant);
+		await session.sessionManager.appendMessage(userMessage);
+		await session.sessionManager.appendMessage(overflowAssistant);
 		session.agent.state.messages = [userMessage, overflowAssistant];
 
 		const events: string[] = [];

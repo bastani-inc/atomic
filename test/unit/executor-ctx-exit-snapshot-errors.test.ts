@@ -64,7 +64,7 @@ function fakeAgentSession(): Record<string, unknown> {
 			this.model = "opus";
 			return undefined;
 		},
-		cycleThinkingLevel() {
+		async cycleThinkingLevel() {
 			this.thinkingLevel = "high";
 			return undefined;
 		},

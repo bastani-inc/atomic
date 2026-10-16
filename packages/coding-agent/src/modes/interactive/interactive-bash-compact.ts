@@ -54,7 +54,7 @@ InteractiveModeBase.prototype.handleBashCommand = async function (
 		);
 
 		// Record the result in session
-		this.session.recordBashResult(command, result, { excludeFromContext });
+		await this.session.recordBashResult(command, result, { excludeFromContext });
 		this.bashComponent = undefined;
 		this.ui.requestRender();
 		return;

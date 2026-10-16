@@ -216,7 +216,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
                 details: { messageId: result.id, delivered: false, reason: result.reason },
               };
             }
-            pi.appendEntry("intercom_sent", {
+            await pi.appendEntry("intercom_sent", {
               to: metadata.orchestratorTarget,
               message: { text: message, reason },
               messageId: result.id,
@@ -266,7 +266,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
               details: { error: true },
             };
           }
-          pi.appendEntry("intercom_sent", {
+          await pi.appendEntry("intercom_sent", {
             to: metadata.orchestratorTarget,
             message: {
               text: reason === "interview_request" ? requestText : params.message,
@@ -283,7 +283,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
             ? formatAttachments(replyMessage.content.attachments)
             : "";
           const structuredReply = reason === "interview_request" ? parseStructuredSupervisorReply(replyText, supervisorInterview!) : undefined;
-          pi.appendEntry("intercom_received", {
+          await pi.appendEntry("intercom_received", {
             from: metadata.orchestratorTarget,
             message: { text: replyText, attachments: replyMessage.content.attachments },
             messageId: replyMessage.id,

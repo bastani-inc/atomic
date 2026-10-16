@@ -114,7 +114,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		const runtimeHost = await createAgentSessionRuntime(createRuntime, {
 			cwd: tempDir,
 			agentDir: tempDir,
-			sessionManager: SessionManager.create(tempDir),
+			sessionManager: await SessionManager.create(tempDir),
 		});
 		await runtimeHost.session.bindExtensions({});
 
@@ -272,14 +272,14 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 				},
 			);
 			const { runtimeHost: sibling } = await createRuntimeHost(() => {});
-			const target = SessionManager.create(runtimeHost.cwd);
-			target.appendMessage(fauxAssistantMessage("saved"));
-			const entry = runtimeHost.session.sessionManager.appendMessage({
+			const target = await SessionManager.create(runtimeHost.cwd);
+			await target.appendMessage(fauxAssistantMessage("saved"));
+			const entry = await runtimeHost.session.sessionManager.appendMessage({
 				role: "user",
 				content: "fork",
 				timestamp: Date.now(),
 			});
-			runtimeHost.session.sessionManager.appendMessage(fauxAssistantMessage("saved"));
+			await runtimeHost.session.sessionManager.appendMessage(fauxAssistantMessage("saved"));
 			const models = runtimeHost.session.modelRuntime;
 			rejectCreation = true;
 			const replacement =
@@ -309,9 +309,9 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			});
 		});
 		const outgoing = runtimeHost.session;
-		const target = SessionManager.create(runtimeHost.cwd);
-		target.appendMessage({ role: "user", content: "saved", timestamp: Date.now() });
-		target.appendMessage(fauxAssistantMessage("saved"));
+		const target = await SessionManager.create(runtimeHost.cwd);
+		await target.appendMessage({ role: "user", content: "saved", timestamp: Date.now() });
+		await target.appendMessage(fauxAssistantMessage("saved"));
 		const targetPath = target.getSessionFile()!;
 		let preparations = 0;
 		createRuntime.prepareResume = async (options) => {
@@ -381,8 +381,8 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 				events.push("shutdown");
 			});
 		});
-		const target = SessionManager.create(runtimeHost.cwd);
-		target.appendMessage(fauxAssistantMessage("saved"));
+		const target = await SessionManager.create(runtimeHost.cwd);
+		await target.appendMessage(fauxAssistantMessage("saved"));
 		createRuntime.prepareResume = async (options) => {
 			await runtimeHost.session.extensionRunner.withProjectTrustPrompt("confirm", "Trust", () => prompt);
 			return () => createRuntime(options);
@@ -559,8 +559,8 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			await runtimeHost.session.bindExtensions({ commandContextActions });
 			await runtimeHost.session.prompt("hello");
 			const forkEntryId = runtimeHost.session.getUserMessagesForForking()[0].entryId;
-			const target = SessionManager.create(runtimeHost.cwd);
-			target.appendMessage(fauxAssistantMessage("saved"));
+			const target = await SessionManager.create(runtimeHost.cwd);
+			await target.appendMessage(fauxAssistantMessage("saved"));
 			replace = (ctx) =>
 				reason === "new"
 					? ctx.newSession()
@@ -640,8 +640,8 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			await runtimeHost.session.bindExtensions({ commandContextActions, uiContext, mode: "tui" });
 			await runtimeHost.session.prompt("hello");
 			const forkEntryId = runtimeHost.session.getUserMessagesForForking()[0].entryId;
-			const target = SessionManager.create(runtimeHost.cwd);
-			target.appendMessage(fauxAssistantMessage("saved"));
+			const target = await SessionManager.create(runtimeHost.cwd);
+			await target.appendMessage(fauxAssistantMessage("saved"));
 			replace = (ctx) =>
 				reason === "new"
 					? ctx.newSession()
@@ -684,8 +684,8 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			});
 		});
 		await runtimeHost.session.prompt("hello");
-		const target = SessionManager.create(runtimeHost.cwd);
-		target.appendMessage(fauxAssistantMessage("saved"));
+		const target = await SessionManager.create(runtimeHost.cwd);
+		await target.appendMessage(fauxAssistantMessage("saved"));
 		widgets.set("sync", "retiring");
 		runtimeHost.setBeforeSessionInvalidate(() => {
 			phases.push("beforeSessionInvalidate");

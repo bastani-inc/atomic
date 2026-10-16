@@ -42,7 +42,7 @@ export class RpcBashRequestOwners {
 		owner.completion = completion;
 		try {
 			const result = await completion;
-			session.recordBashResult(request.command, result, {
+			await session.recordBashResult(request.command, result, {
 				excludeFromContext: request.excludeFromContext,
 				persist: session.sessionManager.getSessionId() === startingSessionId,
 				defer: request.isCurrent(),

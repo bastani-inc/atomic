@@ -555,12 +555,12 @@ const { session } = await createAgentSession({
 
 // New persistent session
 const { session: persisted } = await createAgentSession({
-  sessionManager: SessionManager.create(process.cwd()),
+  sessionManager: await SessionManager.create(process.cwd()),
 });
 
 // Continue most recent
 const { session: continued, modelFallbackMessage } = await createAgentSession({
-  sessionManager: SessionManager.continueRecent(process.cwd()),
+  sessionManager: await SessionManager.continueRecent(process.cwd()),
 });
 if (modelFallbackMessage) {
   console.log("Note:", modelFallbackMessage);
@@ -568,7 +568,7 @@ if (modelFallbackMessage) {
 
 // Open specific file
 const { session: opened } = await createAgentSession({
-  sessionManager: SessionManager.open("/path/to/session.jsonl"),
+  sessionManager: await SessionManager.open("/path/to/session.jsonl"),
 });
 
 // List sessions
@@ -592,7 +592,7 @@ const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionMan
 const runtime = await createAgentSessionRuntime(createRuntime, {
   cwd: process.cwd(),
   agentDir: getAgentDir(),
-  sessionManager: SessionManager.create(process.cwd()),
+  sessionManager: await SessionManager.create(process.cwd()),
 });
 
 // Replace the active session with a fresh one
@@ -608,10 +608,12 @@ await runtime.fork("entry-id");
 await runtime.fork("entry-id", { position: "at" });
 ```
 
+`SessionManager.create()`, `open()`, `continueRecent()`, `forkFrom()`, and mutations are asynchronous. `SessionManager.inMemory()` returns an explicitly memory-backed manager synchronously. Await a mutation before reading its result or starting dependent work. A resolved write is committed; a failed write rejects with the store's typed error and leaves the failed entry unpublished. New persistent sessions store their header during creation and commit setup entries immediately. There is no `flush` method. Reads remain synchronous.
+
 **SessionManager tree API:**
 
 ```typescript
-const sm = SessionManager.open("/path/to/session.jsonl");
+const sm = await SessionManager.open("/path/to/session.jsonl");
 
 // Session listing
 const currentProjectSessions = await SessionManager.list(process.cwd());
@@ -627,12 +629,12 @@ const children = sm.getChildren(id);    // Direct children of entry
 
 // Labels
 const label = sm.getLabel(id);          // Get label for entry
-sm.appendLabelChange(id, "checkpoint"); // Set label
+await sm.appendLabelChange(id, "checkpoint"); // Set label
 
 // Branching
-sm.branch(entryId);                     // Move leaf to earlier entry
-sm.branchWithSummary(id, "Summary...");  // Branch with context summary
-sm.createBranchedSession(leafId);       // Extract path to new file
+await sm.branch(entryId);                     // Move leaf to earlier entry
+await sm.branchWithSummary(id, "Summary...");  // Branch with context summary
+await sm.createBranchedSession(leafId);       // Extract path to new file
 ```
 
 > See [examples/sdk/11-sessions.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/sdk/11-sessions.ts) and [Session Format](/session-format)
@@ -770,7 +772,7 @@ const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionMan
 const runtime = await createAgentSessionRuntime(createRuntime, {
   cwd: process.cwd(),
   agentDir: getAgentDir(),
-  sessionManager: SessionManager.create(process.cwd()),
+  sessionManager: await SessionManager.create(process.cwd()),
 });
 
 const mode = new InteractiveMode(runtime, {
@@ -810,7 +812,7 @@ const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionMan
 const runtime = await createAgentSessionRuntime(createRuntime, {
   cwd: process.cwd(),
   agentDir: getAgentDir(),
-  sessionManager: SessionManager.create(process.cwd()),
+  sessionManager: await SessionManager.create(process.cwd()),
 });
 
 await runPrintMode(runtime, {
@@ -847,7 +849,7 @@ const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionMan
 const runtime = await createAgentSessionRuntime(createRuntime, {
   cwd: process.cwd(),
   agentDir: getAgentDir(),
-  sessionManager: SessionManager.create(process.cwd()),
+  sessionManager: await SessionManager.create(process.cwd()),
 });
 
 await runRpcMode(runtime);

@@ -215,8 +215,8 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		if (typeof this._settleFallbackModelScope === "function") await this._settleFallbackModelScope();
 		assertCurrent();
 		// Flush context-only messages deferred until the previous turn's tool results were appended.
-		this._flushPendingBashMessages();
-		this._flushPendingCustomMessages();
+		await this._flushPendingBashMessages();
+		await this._flushPendingCustomMessages();
 
 		// Validate model
 		if (!this.model) {
@@ -296,7 +296,6 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		for (const msg of this._pendingNextTurnMessages) {
 			messages.push(msg);
 		}
-		this._pendingNextTurnMessages = [];
 
 		// Add all custom messages from extensions
 		if (result?.messages) {
@@ -434,7 +433,6 @@ export async function _runAgentPrompt(
 					timestamp: Date.now(),
 				})),
 			];
-			this._pendingNextTurnMessages = [];
 			const updateMessage = this._preparePromptAndToolLoadout(result.systemPromptOptions);
 			this._runSystemPromptOptions = result.systemPromptOptions;
 			if (updateMessage) messages.unshift(updateMessage);
@@ -446,8 +444,8 @@ export async function _runAgentPrompt(
 			return;
 		}
 		if (ownsPreparation) {
-			this._flushPendingBashMessages();
-			this._flushPendingCustomMessages();
+			await this._flushPendingBashMessages();
+			await this._flushPendingCustomMessages();
 			this._isPreparingRun = false;
 		}
 		if (this._disposed || lifetime.aborted || sessionGenerationClosing.has(this))
@@ -480,7 +478,7 @@ export async function _runAgentPrompt(
 		this._runSystemPromptOptions = undefined;
 		this._cacheWarmer?.onAgentSettled();
 		await this._agentEventQueue;
-		this._flushPendingCustomMessages();
+		await this._flushPendingCustomMessages();
 		this._isEmittingAgentSettled = true;
 		try {
 			const aborted = this._agentRunAbortRequested === true;
@@ -644,7 +642,7 @@ async function answerAdmittedQueuedMessage(session: AgentSession): Promise<void>
 
 	// Omit the empty aborted reply from the model projection so `continue()` resumes
 	// from the admitted user message. Raw session history keeps it, as the retry paths do.
-	session._omitRecoveryAttempt(reply);
+	await session._omitRecoveryAttempt(reply);
 	// Publish this turn before it starts. It begins after the pause abort boundary
 	// resolves, so a submission that only waited for that boundary would race it
 	// and be rejected by the streaming guard while the queue is still paused.

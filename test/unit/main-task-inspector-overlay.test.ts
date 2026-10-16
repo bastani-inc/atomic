@@ -67,7 +67,8 @@ async function mountMainInspector(isolated: boolean, populated = true) {
 	const fixture = taskFixture();
 	if (populated) await fixture.start("Fullscreen review");
 	const transcript = SessionManager.inMemory();
-	for (let i = 0; i < 50; i++) transcript.appendMessage({ role: "user", content: `CHILD-MESSAGE-${i}`, timestamp: i });
+	for (let i = 0; i < 50; i++)
+		await transcript.appendMessage({ role: "user", content: `CHILD-MESSAGE-${i}`, timestamp: i });
 	if (populated) fixture.runners[0].context.bindTranscript(transcript);
 	const terminal = new RecordingTerminal();
 	terminal.columns = 80;

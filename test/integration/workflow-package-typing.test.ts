@@ -413,7 +413,7 @@ const adapter: AgentSessionAdapter = {
       async setModel() {},
       setThinkingLevel() {},
       cycleModel() { return null; },
-      cycleThinkingLevel() { return undefined; },
+      async cycleThinkingLevel() { return undefined; },
       agent: {},
       model: null,
       thinkingLevel: undefined,

@@ -237,7 +237,7 @@ test.each(
 		if (ending === "kill") {
 			await waitFor(() => awaitingKill);
 			const pending = store.runs().find((run) => run.id === source.id)!;
-			assert.equal(killRun(pending.id, { store }).ok, true);
+			assert.equal((await killRun(pending.id, { store })).ok, true);
 			beforeKill.resolve();
 		} else if (ending === "caught-cancel" || ending === "quit") {
 			await waitFor(() => targetCalls === 2);

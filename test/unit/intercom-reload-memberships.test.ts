@@ -44,7 +44,7 @@ function loadGeneration(events: ReturnType<typeof createEventBus>) {
 		registerCommand() {},
 		registerShortcut() {},
 		registerMessageRenderer() {},
-		appendEntry() {},
+		async appendEntry() {},
 		getSessionName: () => undefined,
 		events,
 	};

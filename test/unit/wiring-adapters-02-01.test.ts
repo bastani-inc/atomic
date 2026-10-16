@@ -290,7 +290,7 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
 			ready: () => undefined,
 			fail() {},
 		};
-		const options = stripWorkflowOnlyOptions({ group: "reviewers" }, undefined, meta, pending);
+		const options = await stripWorkflowOnlyOptions({ group: "reviewers" }, undefined, meta, pending);
 		let orchestration: CreateAgentSessionOptions["orchestrationContext"];
 		const routed: Array<{ workflowRunId: string; workflowStageId: string; messages: Array<{ content: string }> }> =
 			[];

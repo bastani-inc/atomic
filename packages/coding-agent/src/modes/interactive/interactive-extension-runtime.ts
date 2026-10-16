@@ -1,5 +1,6 @@
 import { copyScopedModels } from "../../core/extensions/runner-context.ts";
 import { ModelRegistry } from "../../core/model-registry.ts";
+import { sessionLifetime } from "../../core/session-lifecycle-work.ts";
 import { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
 import { ScrollWidget } from "./components/scroll-widget.js";
@@ -48,6 +49,7 @@ InteractiveModeBase.prototype.setupExtensionShortcuts = function (
 		isIdle: () => !this.session.isStreaming,
 		isProjectTrusted: () => this.session.settingsManager.isProjectTrusted(),
 		signal: this.session.agent.signal,
+		sessionSignal: sessionLifetime(this.session),
 		abort: () => this.session.abort(),
 		hasPendingMessages: () => this.session.pendingMessageCount > 0,
 		shutdown: () => {

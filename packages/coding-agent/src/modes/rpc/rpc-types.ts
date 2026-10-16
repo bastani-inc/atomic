@@ -418,7 +418,7 @@ export type RpcResponse =
 			success: true;
 			data: { cancelled: boolean; editorText?: string };
 	  }
-	| { id?: string; type: "response"; command: "set_label"; success: true }
+	| { id?: string; type: "response"; command: "set_label"; success: true; data: { entryId: string } }
 	| { id?: string; type: "response"; command: "reload"; success: true }
 	| {
 			id?: string;

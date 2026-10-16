@@ -345,11 +345,10 @@ export function createWorkflowStageFactory(input: {
 			}
 		};
 
-		let stageStartEntryAppended = false;
-		const appendStageStartOnce = (): void => {
-			if (!input.opts.persistence || stageStartEntryAppended) return;
-			stageStartEntryAppended = true;
-			appendStageStart(input.opts.persistence, {
+		let stageStartEntry: Promise<void> | undefined;
+		const appendStageStartOnce = (): Promise<void> => {
+			if (!input.opts.persistence) return Promise.resolve();
+			stageStartEntry ??= appendStageStart(input.opts.persistence, {
 				runId: input.runId,
 				stageId,
 				name,
@@ -359,6 +358,7 @@ export function createWorkflowStageFactory(input: {
 				pendingStageDeliveryAvailable,
 				ts: stageSnapshot.startedAt ?? Date.now(),
 			});
+			return stageStartEntry;
 		};
 
 		const finalizeStageSnapshot = async (): Promise<boolean> => {
@@ -395,8 +395,8 @@ export function createWorkflowStageFactory(input: {
 				);
 			}
 			if (input.opts.persistence) {
-				appendStageStartOnce();
-				appendStageEnd(input.opts.persistence, {
+				await appendStageStartOnce();
+				await appendStageEnd(input.opts.persistence, {
 					runId: input.runId,
 					stageId,
 					status: stageSnapshot.status,

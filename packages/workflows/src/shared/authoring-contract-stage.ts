@@ -242,9 +242,15 @@ export interface WorkflowMcpPort {
 }
 
 export interface WorkflowPersistencePort {
-	appendEntry(type: string, payload: Record<string, unknown>): string | undefined;
-	setLabel?(entryId: string, label: string): void;
-	appendCustomMessageEntry?(content: string, meta?: Record<string, unknown>): string | undefined;
+	appendEntry(
+		type: string,
+		payload: Record<string, unknown>,
+	): string | void | Promise<string | undefined> | Promise<void>;
+	setLabel?(entryId: string, label: string): void | Promise<void>;
+	appendCustomMessageEntry?(
+		content: string,
+		meta?: Record<string, unknown>,
+	): string | void | Promise<string | undefined> | Promise<void>;
 }
 
 /** Stable public identifier used to correlate replayed/overlapping turn lifecycle events. */
@@ -287,9 +293,9 @@ export interface StageSessionRuntime {
 	readonly sessionId: string;
 	/** Atomic's `AgentSession` members are accepted alongside serializable stand-ins for custom adapters. */
 	setModel(model: WorkflowSerializableValue | Parameters<AgentSession["setModel"]>[0]): Promise<void>;
-	setThinkingLevel(level: WorkflowThinkingLevel): void;
+	setThinkingLevel(level: WorkflowThinkingLevel): void | Promise<void>;
 	cycleModel(): WorkflowSerializableValue | ReturnType<AgentSession["cycleModel"]>;
-	cycleThinkingLevel(): WorkflowThinkingLevel | undefined;
+	cycleThinkingLevel(): WorkflowThinkingLevel | undefined | Promise<WorkflowThinkingLevel | undefined>;
 	readonly agent: WorkflowSerializableValue | AgentSession["agent"];
 	readonly model: WorkflowSerializableValue | AgentSession["model"];
 	readonly thinkingLevel: WorkflowThinkingLevel | undefined;
@@ -365,9 +371,9 @@ export interface StageContext<TSchemaDef extends TSchema | undefined = undefined
 	readonly sessionFile: string | undefined;
 	readonly sessionId: string;
 	setModel(model: WorkflowModelValue): Promise<void>;
-	setThinkingLevel(level: WorkflowThinkingLevel): void;
+	setThinkingLevel(level: WorkflowThinkingLevel): void | Promise<void>;
 	cycleModel(): Promise<object | undefined>;
-	cycleThinkingLevel(): WorkflowThinkingLevel | undefined;
+	cycleThinkingLevel(): WorkflowThinkingLevel | undefined | Promise<WorkflowThinkingLevel | undefined>;
 	readonly agent: object;
 	readonly model: WorkflowModelValue | undefined;
 	readonly thinkingLevel: WorkflowThinkingLevel | undefined;

@@ -230,7 +230,7 @@ describe("executor — stage-control registry integration", () => {
 
 			releaseWorkflowPrompt.resolve();
 			await waitForMicrotasks();
-			const killResult = killRun(runId, { store, cancellation });
+			const killResult = await killRun(runId, { store, cancellation });
 			assert.equal(killResult.ok, true);
 			promptResolve?.();
 			const result = await runPromise;
@@ -287,7 +287,7 @@ describe("executor — stage-control registry integration", () => {
 		await waitForMicrotasks();
 		releasePrompt.resolve();
 		await waitForMicrotasks();
-		const killResult = killRun(runId, { store, cancellation });
+		const killResult = await killRun(runId, { store, cancellation });
 		assert.equal(killResult.ok, true);
 
 		const result = await runPromise;

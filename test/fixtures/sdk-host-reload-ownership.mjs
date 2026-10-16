@@ -44,10 +44,10 @@ const resourceLoader = new (acquisitions || mode === "self-ordinary" ? Loader : 
       if (mode === "self-twice") await session.reload();
       enter(); await gate; active.add(id);
     } });
-    pi.on("session_shutdown", (_event, ctx) => {
+    pi.on("session_shutdown", async (_event, ctx) => {
       assert.equal(ctx.cwd, cwd);
       if (id === invoking) {
-        assert.throws(() => pi.setSessionName("retired-cleanup-write"), /stale|no longer active/i);
+        await assert.rejects(() => pi.setSessionName("retired-cleanup-write"), /stale|no longer active/i);
         assert.throws(() => ctx.getAgentTaskHost(), /stale|no longer active/i);
         pi.events.emit("retired-cleanup");
       }
@@ -77,10 +77,10 @@ try {
     else assert.equal(stopped.includes(invoking), false, "invoking generation cannot shut down before its continuation");
     if (!candidate) {
       // External callers are not the admitted continuation whose cleanup is retained.
-      assert.throws(capabilities.get(invoking).write, /stale|no longer active/i);
+      await assert.rejects(capabilities.get(invoking).write, /stale|no longer active/i);
       assert.throws(capabilities.get(invoking).host, /stale|no longer active/i);
       const [freshId, fresh] = [...capabilities].at(-1);
-      fresh.write(); assert.ok(fresh.host());
+      await fresh.write(); assert.ok(fresh.host());
       assert.equal(session.sessionManager.getSessionName(), `generation-${freshId}`);
     }
     let closed = false;

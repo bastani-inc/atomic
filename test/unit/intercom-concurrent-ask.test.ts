@@ -106,7 +106,7 @@ function fixture(
 		registerTool(tool: Tool & { name: string }) {
 			tools.set(tool.name, tool);
 		},
-		appendEntry() {},
+		async appendEntry() {},
 		events: options.claimParent ? claimingEvents : undefined,
 	};
 	const common = {
@@ -275,7 +275,7 @@ describe("concurrent blocking intercom requests", () => {
 			registerTool(tool: Tool & { name: string }) {
 				tools.set(tool.name, tool);
 			},
-			appendEntry() {},
+			async appendEntry() {},
 		};
 		registerIntercomTool(
 			pi as never,
@@ -363,7 +363,7 @@ describe("concurrent blocking intercom requests", () => {
 			registerTool(tool: Tool & { name: string }) {
 				tools.set(tool.name, tool);
 			},
-			appendEntry() {},
+			async appendEntry() {},
 		};
 		registerIntercomTool(
 			pi as never,
@@ -427,7 +427,7 @@ describe("concurrent blocking intercom requests", () => {
 			registerTool(tool: Tool & { name: string }) {
 				tools.set(tool.name, tool);
 			},
-			appendEntry() {},
+			async appendEntry() {},
 		};
 		registerIntercomTool(
 			pi as never,

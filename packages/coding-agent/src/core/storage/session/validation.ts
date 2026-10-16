@@ -29,7 +29,7 @@ function validateSessionTimestamp(field: SessionTimestampField, value: string | 
 
 export function validateSessionText(field: SessionTextField, value: string): void {
 	if (value.includes("\u0000")) throw new SessionInvalidTextError(field, "nul-character");
-	if (!value.isWellFormed()) throw new SessionInvalidTextError(field, "ill-formed-unicode");
+	if (/\p{Surrogate}/u.test(value)) throw new SessionInvalidTextError(field, "ill-formed-unicode");
 }
 
 export function validateSessionHeader(header: SessionRecordHeader): void {

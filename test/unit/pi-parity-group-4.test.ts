@@ -193,10 +193,10 @@ test("ModelRuntime delegates provider login and logout", async () => {
 	assert.equal(await auth.read("anthropic"), undefined);
 });
 
-test("session context helpers preserve custom-message and compaction semantics", () => {
+test("session context helpers preserve custom-message and compaction semantics", async () => {
 	const manager = SessionManager.inMemory();
-	manager.appendMessage({ role: "user", content: "hello", timestamp: Date.now() });
-	manager.appendCustomEntry("state", { count: 1 });
+	await manager.appendMessage({ role: "user", content: "hello", timestamp: Date.now() });
+	await manager.appendCustomEntry("state", { count: 1 });
 	const entries = manager.getEntries();
 	assert.deepEqual(
 		buildContextEntries(entries).map((entry) => entry.type),
@@ -315,7 +315,7 @@ test("entry_appended is emitted and agent_settled follows agent_end", async () =
 		});
 		session.subscribe((event) => observed.push(event.type));
 		assert.ok(extensionApi);
-		extensionApi.appendEntry("state", { ready: true });
+		await extensionApi.appendEntry("state", { ready: true });
 		assert.equal(observed.at(-1), "entry_appended");
 		await session.prompt("hello");
 		assert.ok(observed.indexOf("agent_end") >= 0);

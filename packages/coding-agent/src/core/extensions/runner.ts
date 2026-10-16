@@ -28,6 +28,7 @@ import {
 	assertExtensionAction,
 	bindExtensionWork,
 	drainExtensionWork,
+	extensionSessionSignal,
 	extensionWorkOpen,
 	resumeExtensionWork,
 	revokeExtensionAuthority,
@@ -298,8 +299,9 @@ export class ExtensionRunner {
 		actions: ExtensionActions,
 		contextActions: ExtensionContextActions,
 		providerActions?: {
-			registerProvider?: (providerOrName: Provider | string, config?: ProviderConfig) => void;
-			unregisterProvider?: (name: string) => void;
+			registerProvider?: (providerOrName: Provider | string, config?: ProviderConfig) => Promise<void>;
+			restoreProvider?: (providerOrName: Provider | string, config?: ProviderConfig) => void;
+			unregisterProvider?: (name: string) => Promise<void>;
 		},
 	): void {
 		// Copy actions into the shared runtime (all extension APIs reference this)
@@ -348,12 +350,12 @@ export class ExtensionRunner {
 			try {
 				if ("provider" in registration) {
 					(
-						providerActions?.registerProvider ??
+						providerActions?.restoreProvider ??
 						((provider: Provider) => this.modelRegistry.registerProvider(provider))
 					)(registration.provider);
 				} else {
 					(
-						providerActions?.registerProvider ??
+						providerActions?.restoreProvider ??
 						((name: string, config?: ProviderConfig) => this.modelRegistry.registerProvider(name, config!))
 					)(registration.name, registration.config);
 				}
@@ -370,17 +372,20 @@ export class ExtensionRunner {
 
 		// From this point on, provider registration/unregistration takes effect immediately
 		// without requiring a /reload.
-		this.runtime.registerProvider = ((providerOrName: Provider | string, configOrPath?: ProviderConfig | string) => {
+		this.runtime.registerProvider = (async (
+			providerOrName: Provider | string,
+			configOrPath?: ProviderConfig | string,
+		) => {
 			if (typeof providerOrName === "string") {
 				const config = configOrPath as ProviderConfig;
-				if (providerActions?.registerProvider) providerActions.registerProvider(providerOrName, config);
+				if (providerActions?.registerProvider) await providerActions.registerProvider(providerOrName, config);
 				else this.modelRegistry.registerProvider(providerOrName, config);
-			} else if (providerActions?.registerProvider) providerActions.registerProvider(providerOrName);
+			} else if (providerActions?.registerProvider) await providerActions.registerProvider(providerOrName);
 			else this.modelRegistry.registerProvider(providerOrName);
 		}) as ExtensionRuntime["registerProvider"];
-		this.runtime.unregisterProvider = (name) => {
+		this.runtime.unregisterProvider = async (name) => {
 			if (providerActions?.unregisterProvider) {
-				providerActions.unregisterProvider(name);
+				await providerActions.unregisterProvider(name);
 				return;
 			}
 			this.modelRegistry.unregisterProvider(name);
@@ -512,10 +517,16 @@ export class ExtensionRunner {
 				this.withUIPrompt(binding, "input", title, () => ui.input(title, placeholder, opts)),
 			editor: (title, prefill, opts) =>
 				this.withUIPrompt(binding, "editor", title, () => ui.editor(title, prefill, opts)),
-			custom: (factory, options) =>
-				options?.purpose === "navigation"
-					? ui.custom(factory, options)
-					: this.withUIPrompt(binding, "custom", undefined, () => ui.custom(factory, options)),
+			custom: (factory, options) => {
+				const lifetime = extensionSessionSignal(this.runtime);
+				const scopedOptions = {
+					...options,
+					signal: options?.signal ? AbortSignal.any([options.signal, lifetime]) : lifetime,
+				};
+				return options?.purpose === "navigation"
+					? ui.custom(factory, scopedOptions)
+					: this.withUIPrompt(binding, "custom", undefined, () => ui.custom(factory, scopedOptions));
+			},
 		};
 	}
 
@@ -881,6 +892,7 @@ export class ExtensionRunner {
 			isIdle: () => this.isIdleFn(),
 			isProjectTrusted: () => this.isProjectTrustedFn(),
 			getSignal: () => this.getSignalFn(),
+			getSessionSignal: () => extensionSessionSignal(this.runtime),
 			abort: () => this.abortFn(),
 			hasPendingMessages: () => this.hasPendingMessagesFn(),
 			isSessionSummaryEnabled: () => this.isSessionSummaryEnabledFn?.() ?? false,

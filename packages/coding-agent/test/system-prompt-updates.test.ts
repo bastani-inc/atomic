@@ -86,7 +86,7 @@ describe("system prompt updates", () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "pi-system-prompt-migration-"));
 		try {
 			const sessionManager = SessionManager.inMemory(tempDir);
-			sessionManager.appendMessage({ role: "user", content: "existing", timestamp: 1 });
+			await sessionManager.appendMessage({ role: "user", content: "existing", timestamp: 1 });
 			const created = await createAgentSession({
 				cwd: tempDir,
 				agentDir: join(tempDir, "agent"),

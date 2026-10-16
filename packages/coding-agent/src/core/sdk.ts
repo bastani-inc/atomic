@@ -38,7 +38,8 @@ import { canCloneDefaultResourceDiscovery, DefaultResourceLoader } from "./resou
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-types.ts";
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
 import { sessionGenerationClosing, sessionLifetime, trackSessionWork } from "./session-lifecycle-work.ts";
-import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
+import { SessionManager } from "./session-manager.ts";
+import { getDefaultSessionDirPath } from "./session-manager-paths.ts";
 import { registerStartupRollback, rollbackStartup } from "./session-startup-rollback.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { applyToolModifiers, getToolListError, isToolModifier } from "./settings-merge.js";
@@ -171,7 +172,8 @@ async function constructAgentSession(
 	await modelRuntime.refresh({ allowNetwork: false });
 
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
-	const sessionManager = options.sessionManager ?? SessionManager.create(cwd, getDefaultSessionDir(cwd, agentDir));
+	const sessionManager =
+		options.sessionManager ?? (await SessionManager.create(cwd, getDefaultSessionDirPath(cwd, agentDir)));
 
 	// Mark workflow-created sessions as internal so they are excluded from the
 	// standard `/resume` history while remaining resumable via `/workflow resume`.
@@ -179,7 +181,7 @@ async function constructAgentSession(
 	// reattaching to an already-marked session preserves its existing marker.
 	if (options.orchestrationContext?.kind === "workflow-stage") {
 		const ctx = options.orchestrationContext;
-		sessionManager.markSessionInternal({
+		await sessionManager.markSessionInternal({
 			runId: ctx.workflowRunId,
 			stageId: ctx.workflowStageId,
 			stageName: ctx.workflowStageName,
@@ -601,14 +603,14 @@ async function constructAgentSession(
 	// Restore missing settings metadata for older sessions.
 	if (hasExistingSession) {
 		if (!hasThinkingEntry) {
-			sessionManager.appendThinkingLevelChange(thinkingLevel);
+			await sessionManager.appendThinkingLevelChange(thinkingLevel);
 		}
 	} else {
 		// Save initial model and thinking level for new sessions so they can be restored on resume
 		if (model) {
-			sessionManager.appendModelChange(model.provider, model.id);
+			await sessionManager.appendModelChange(model.provider, model.id);
 		}
-		sessionManager.appendThinkingLevelChange(thinkingLevel);
+		await sessionManager.appendThinkingLevelChange(thinkingLevel);
 	}
 
 	const providerRollback = modelRuntime.createExtensionProviderTransaction();

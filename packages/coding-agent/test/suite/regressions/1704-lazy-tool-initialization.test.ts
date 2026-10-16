@@ -289,7 +289,7 @@ console.log(JSON.stringify({ rejected, initialized: globalThis.webInitialized ==
 		expect(result).toEqual({ rejected: true, initialized: false });
 	});
 
-	it("marks only all-failed search aggregates as errors with provider-stage diagnostics", () => {
+	it("marks only all-failed search aggregates as errors with provider-stage diagnostics", async () => {
 		const make = (errors: Array<string | null>) =>
 			buildSearchReturn(
 				{
@@ -304,10 +304,10 @@ console.log(JSON.stringify({ rejected, initialized: globalThis.webInitialized ==
 					urls: [],
 					includeContent: false,
 				},
-				{ pi: { appendEntry() {} } as never, startBackgroundFetch: () => null },
+				{ pi: { async appendEntry() {} } as never, startBackgroundFetch: () => null },
 			);
-		const failed = make(["one", "two"]);
-		const partial = make([null, "two"]);
+		const failed = await make(["one", "two"]);
+		const partial = await make([null, "two"]);
 		expect(failed.details).toMatchObject({ outcome: "all_failed", stage: "provider_execution", failedQueries: 2 });
 		expect(partial.details).not.toHaveProperty("outcome");
 	});

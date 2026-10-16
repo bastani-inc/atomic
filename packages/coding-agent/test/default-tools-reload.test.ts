@@ -215,9 +215,9 @@ test("SDK rejects mixed tool lists and modifier patterns", async () => {
 	await assert.rejects(createFileSession({ tools: ["-mcp__docs__*"] }), /take exact tool names, not patterns/);
 });
 
-function recordedSession(toolNames: string[]) {
+async function recordedSession(toolNames: string[]) {
 	const sessionManager = SessionManager.inMemory(tempDir);
-	sessionManager.appendMessage({
+	await sessionManager.appendMessage({
 		role: "system",
 		content: "",
 		toolsAdded: toolNames.map((name) => ({ name, description: name, parameters: Type.Object({}) })),
@@ -227,13 +227,13 @@ function recordedSession(toolNames: string[]) {
 }
 
 test("resume restores the recorded built-in and extension loadout (#10785)", async () => {
-	const session = await createFileSession({ sessionManager: recordedSession(["read", "ls", "inactive_tool"]) });
+	const session = await createFileSession({ sessionManager: await recordedSession(["read", "ls", "inactive_tool"]) });
 	assert.deepEqual(session.getActiveToolNames().sort(), ["inactive_tool", "ls", "read"]);
 });
 
 test("resume applies tool modifiers to the recorded loadout (#10785)", async () => {
 	const session = await createFileSession({
-		sessionManager: recordedSession(["read", "ls", "inactive_tool"]),
+		sessionManager: await recordedSession(["read", "ls", "inactive_tool"]),
 		tools: ["-ls", "+write"],
 	});
 	assert.deepEqual(session.getActiveToolNames().sort(), ["inactive_tool", "read", "write"]);
@@ -241,22 +241,22 @@ test("resume applies tool modifiers to the recorded loadout (#10785)", async () 
 
 test("resume respects exclusions and explicit selections (#10785)", async () => {
 	const excluded = await createFileSession({
-		sessionManager: recordedSession(["read", "ls", "inactive_tool"]),
+		sessionManager: await recordedSession(["read", "ls", "inactive_tool"]),
 		excludedTools: ["inactive_tool"],
 	});
 	assert.deepEqual(excluded.getActiveToolNames().sort(), ["ls", "read"]);
 	const allowlisted = await createFileSession({
-		sessionManager: recordedSession(["read", "ls", "inactive_tool"]),
+		sessionManager: await recordedSession(["read", "ls", "inactive_tool"]),
 		tools: ["read", "write"],
 	});
 	assert.deepEqual(allowlisted.getActiveToolNames(), ["read", "write"]);
 	const builtinless = await createFileSession({
-		sessionManager: recordedSession(["read", "ls", "inactive_tool"]),
+		sessionManager: await recordedSession(["read", "ls", "inactive_tool"]),
 		noTools: "builtin",
 	});
 	assert.deepEqual(builtinless.getActiveToolNames(), ["inactive_tool"]);
 	const toolless = await createFileSession({
-		sessionManager: recordedSession(["read", "ls", "inactive_tool"]),
+		sessionManager: await recordedSession(["read", "ls", "inactive_tool"]),
 		noTools: "all",
 	});
 	assert.deepEqual(toolless.getActiveToolNames(), []);
@@ -264,7 +264,7 @@ test("resume respects exclusions and explicit selections (#10785)", async () => 
 
 test("resume keeps defaults when no loadout was recorded (#10785)", async () => {
 	const sessionManager = SessionManager.inMemory(tempDir);
-	sessionManager.appendMessage({ role: "user", content: "hi", timestamp: Date.now() });
+	await sessionManager.appendMessage({ role: "user", content: "hi", timestamp: Date.now() });
 	const session = await createFileSession({ sessionManager });
 	assert.deepEqual(session.getActiveToolNames(), getDefaultToolNames());
 });
@@ -273,7 +273,7 @@ for (const childKind of ["workflow", "subagent"] as const) {
 	test(`forked ${childKind} keeps injected tools with default tool selection (#3624)`, async () => {
 		const toolName = childKind === "workflow" ? "structured_output" : "child_tool";
 		const session = await createFileSession({
-			sessionManager: recordedSession(["read", "bash", "edit", "write"]),
+			sessionManager: await recordedSession(["read", "bash", "edit", "write"]),
 			...(childKind === "workflow"
 				? {
 						orchestrationContext: {
@@ -306,7 +306,7 @@ for (const transactional of [true, false]) {
 		test(`startup restores deferred recorded tools with transactional=${transactional}, modified=${modified} (#3624)`, async () => {
 			const session = await createFileSession(
 				{
-					sessionManager: recordedSession(["read", "ls", "inactive_tool"]),
+					sessionManager: await recordedSession(["read", "ls", "inactive_tool"]),
 					...(modified ? { tools: ["-ls", "+write"], excludedTools: ["inactive_tool"] } : {}),
 				},
 				transactional,
@@ -337,7 +337,7 @@ test("forked child restoration respects modifiers, exclusions, allowlists and pa
 	for (const options of restrictedOptions) {
 		const session = await createFileSession({
 			...options,
-			sessionManager: recordedSession(["read", "bash", "child_tool"]),
+			sessionManager: await recordedSession(["read", "bash", "child_tool"]),
 			subagentPolicy: { depth: 1, managementActions: "restricted", fanoutAuthorized: false },
 			customTools: [
 				{
@@ -359,7 +359,7 @@ test("forked child restoration respects modifiers, exclusions, allowlists and pa
 for (const transactional of [true, false]) {
 	test(`startup handlers see recorded tools and can activate tools with transactional=${transactional} (#3624)`, async () => {
 		const session = await createFileSession(
-			{ sessionManager: recordedSession(["read", "inactive_tool"]) },
+			{ sessionManager: await recordedSession(["read", "inactive_tool"]) },
 			transactional,
 			SettingsManager.create(tempDir, agentDir),
 			true,
@@ -421,7 +421,7 @@ for (const activate of [false, true]) {
 			const { session } = await createAgentSessionFromServices({
 				services: await completeServices(),
 				model: getModel("anthropic", "claude-sonnet-4-5"),
-				sessionManager: recordedSession(["read", "ls", "startup_probe"]),
+				sessionManager: await recordedSession(["read", "ls", "startup_probe"]),
 			});
 			sessions.push(session);
 			assert.deepEqual(

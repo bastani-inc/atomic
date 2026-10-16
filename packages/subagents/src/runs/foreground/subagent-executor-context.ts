@@ -135,7 +135,7 @@ export function prepareExecutionContext(input: {
 			effectiveParams = { ...effectiveParams, task: `${readInstruction}\n\n${effectiveParams.task ?? ""}` };
 	}
 
-	let sessionFileForIndex: (idx?: number) => string | undefined = () => undefined;
+	let sessionFileForIndex: (idx?: number) => Promise<string | undefined> = async () => undefined;
 	try {
 		sessionFileForIndex = createForkContextResolver(ctx.sessionManager, effectiveParams.context).sessionFileForIndex;
 	} catch (error) {
@@ -170,8 +170,8 @@ export function prepareExecutionContext(input: {
 		};
 	}
 	const sessionDirForIndex = (idx?: number) => path.join(sessionRoot, `run-${idx ?? 0}`);
-	const childSessionFileForIndex = (idx?: number) =>
-		sessionFileForIndex(idx) ?? path.join(sessionDirForIndex(idx), "session.jsonl");
+	const childSessionFileForIndex = async (idx?: number) =>
+		(await sessionFileForIndex(idx)) ?? path.join(sessionDirForIndex(idx), "session.jsonl");
 
 	const onUpdateWithContext = onUpdate
 		? (r: SubagentToolResult) => onUpdate(withForkContext(r, effectiveParams.context))

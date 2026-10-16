@@ -262,6 +262,7 @@ export class StageSessionController {
 	private pendingDisposal = false;
 	private disposalPromise: Promise<void> | undefined;
 	private pendingThinkingLevel: Parameters<StageContext["setThinkingLevel"]>[0] | undefined;
+	private requestedThinkingLevel: Parameters<StageContext["setThinkingLevel"]>[0] | undefined;
 	private readonly pendingListeners = new Set<(event: StageSessionEvent) => void>();
 	private readonly listenerUnsubscribes = new Map<(event: StageSessionEvent) => void, () => void>();
 	private readonly pauseControl = new StageSessionPause(() => this.session ?? this.replacement.retiringSession);
@@ -431,9 +432,10 @@ export class StageSessionController {
 		};
 	}
 
-	setThinkingLevel(level: Parameters<StageContext["setThinkingLevel"]>[0]): void {
+	async setThinkingLevel(level: Parameters<StageContext["setThinkingLevel"]>[0]): Promise<void> {
+		if (this.session) await this.session.setThinkingLevel(level);
+		else this.requestedThinkingLevel = level;
 		this.pendingThinkingLevel = level;
-		this.session?.setThinkingLevel(level);
 	}
 
 	get awaitingAutoPrompt(): boolean {
@@ -1588,8 +1590,9 @@ export class StageSessionController {
 			throw this.staleCreationReason(startGeneration);
 		// Saved effort must survive attachment so the restored candidate can be identified.
 		if (resumeOptions?.restoreSavedModel) this.pendingThinkingLevel = undefined;
-		else this.applyCandidateThinking(candidate);
-		const stageOptions = buildStageSessionOptions({
+		else if (candidate?.reasoningLevel !== undefined || this.pendingThinkingLevel === undefined)
+			this.applyCandidateThinking(candidate);
+		const stageOptions = await buildStageSessionOptions({
 			effectiveStageOptions: this.effectiveStageOptions,
 			candidate,
 			ownsFallbackChain: this.hasExplicitModelFallbackConfig,
@@ -1612,12 +1615,12 @@ export class StageSessionController {
 				throw new Error("Workflow stage execution candidate is no longer eligible.");
 			created = this.opts.adapters.agentSession
 				? await this.opts.adapters.agentSession.create(
-						stripWorkflowOnlyOptions(
+						(await stripWorkflowOnlyOptions(
 							stageOptions,
 							this.opts.defaultSessionDir,
 							this.meta,
 							this.opts.pendingStageDelivery,
-						) as StageSessionCreateOptions,
+						)) as StageSessionCreateOptions,
 						{
 							...this.meta,
 							startupSignal: this.startupWait.signal,
@@ -1656,6 +1659,13 @@ export class StageSessionController {
 		const attachedSession = session instanceof Promise ? await session : session;
 		this.reportStartupPhase("delivery-readiness");
 		try {
+			const thinkingLevel =
+				this.requestedThinkingLevel ??
+				(asAgentSession(attachedSession) === undefined ? this.pendingThinkingLevel : undefined);
+			if (thinkingLevel !== undefined) {
+				await attachedSession.setThinkingLevel(thinkingLevel);
+				this.requestedThinkingLevel = undefined;
+			}
 			await this.sharedOrchestrationContext?.pendingStageDelivery?.ready(attachedSession.sessionId);
 			await this.opts.onSessionReady?.();
 			if (this.disposed || this.opts.signal?.aborted || this.abortGeneration !== startGeneration)
@@ -1690,7 +1700,6 @@ export class StageSessionController {
 			const withRegistry = result.session as Partial<Pick<AgentSession, "modelRuntime">>;
 			if (withRegistry.modelRuntime !== undefined) this.sharedModelRuntime = withRegistry.modelRuntime;
 		}
-		if (this.pendingThinkingLevel !== undefined) result.session.setThinkingLevel(this.pendingThinkingLevel);
 		for (const listener of this.pendingListeners) {
 			this.listenerUnsubscribes.set(listener, result.session.subscribe(listener));
 		}

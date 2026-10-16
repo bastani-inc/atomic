@@ -100,7 +100,7 @@ function fixture(firstFailure?: Error, secondFailure?: Error, maxEntries?: numbe
 			registerTool(value: Tool) {
 				tool = value;
 			},
-			appendEntry() {},
+			async appendEntry() {},
 		} as never,
 		{
 			ensureConnected: async () => {
@@ -229,7 +229,7 @@ test("actual send tool refuses fresh capacity before confirmation, target resolu
 			registerTool(value: Tool) {
 				tool = value;
 			},
-			appendEntry() {},
+			async appendEntry() {},
 		} as never,
 		{
 			ensureConnected: async () => client,
@@ -371,7 +371,7 @@ test("ask retains its question identity across a recoverable disconnect during t
 			registerTool(value: Tool) {
 				tool = value;
 			},
-			appendEntry() {},
+			async appendEntry() {},
 		} as never,
 		{
 			ensureConnected: async () => client,

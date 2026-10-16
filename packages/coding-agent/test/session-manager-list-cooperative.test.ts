@@ -33,7 +33,7 @@ function sessionHeader(id: string): string {
 		type: "session",
 		version: 4,
 		id,
-		timestamp: "2020-01-01T00:00:00.000Z",
+		createdAt: "2020-01-01T00:00:00.000Z",
 		cwd: "/tmp/project",
 	});
 }

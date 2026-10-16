@@ -707,7 +707,7 @@ test("a crash after sender-visible failure notification reloads to exactly one n
 	]);
 	const recipientSessionDir = mkdtempSync(join(tmpdir(), "pending-failure-recipient-"));
 	tempDirs.push(recipientSessionDir);
-	let recipientSession = SessionManager.create("/repo", recipientSessionDir);
+	let recipientSession = await SessionManager.create("/repo", recipientSessionDir);
 	let recipientAdmission = new InboundMessageAdmission();
 	let deliveredMessages = new DeliveredMessageCache();
 	let senderVisibleNotifications = 0;
@@ -744,9 +744,9 @@ test("a crash after sender-visible failure notification reloads to exactly one n
 				}
 				if (admission.kind === "duplicate") return true;
 				recipientCompletions.push(
-					Promise.resolve().then(() => {
+					Promise.resolve().then(async () => {
 						senderVisibleNotifications++;
-						recipientSession.appendCustomMessageEntry(
+						await recipientSession.appendCustomMessageEntry(
 							"intercom_message",
 							brokerMessage.message.content.text,
 							true,
@@ -755,7 +755,7 @@ test("a crash after sender-visible failure notification reloads to exactly one n
 							undefined,
 							`intercom:${brokerMessage.message.id}`,
 						);
-						recipientSession.flush();
+
 						recipientAdmission.commit(admission.reservation);
 					}),
 				);
@@ -816,7 +816,7 @@ test("a crash after sender-visible failure notification reloads to exactly one n
 	deliveredMessages = new DeliveredMessageCache();
 	const recipientSessionFile = recipientSession.getSessionFile();
 	assert.ok(recipientSessionFile !== undefined);
-	recipientSession = SessionManager.open(recipientSessionFile, recipientSessionDir, "/repo");
+	recipientSession = await SessionManager.open(recipientSessionFile, recipientSessionDir, "/repo");
 	recipientAdmission = new InboundMessageAdmission();
 	recipientAdmission.restore(recipientSession.getBranch());
 	assert.equal(await settleUndeliverablePendingStageMessages(reloadedStore, notifyThroughBroker), 0);

@@ -9,14 +9,13 @@ test("publishes sorted partial sessions without leaking hidden sessions or other
 	const dir = mkdtempSync(join(tmpdir(), "atomic-progressive-"));
 	try {
 		for (let index = 0; index < 15; index++) {
-			const session = SessionManager.create(index === 14 ? "/other" : process.cwd(), dir, {
+			const session = await SessionManager.create(index === 14 ? "/other" : process.cwd(), dir, {
 				internal: index === 13,
 				...(index === 13
 					? { workflow: { runId: "run-progressive", stageId: "stage-hidden", stageName: "hidden" } }
 					: {}),
 			});
-			session.appendMessage({ role: "user", content: `message ${index}`, timestamp: index + 1 });
-			session.flush();
+			await session.appendMessage({ role: "user", content: `message ${index}`, timestamp: index + 1 });
 		}
 		const partials: SessionInfo[][] = [];
 		const sessions = await SessionManager.list(process.cwd(), dir, (_loaded, _total, partial) => {

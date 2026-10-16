@@ -219,7 +219,7 @@ test("an in-flight child Intercom send reaching a closed stage cannot reach the 
 			registerTool(tool: typeof registered) {
 				registered = tool;
 			},
-			appendEntry() {},
+			async appendEntry() {},
 		} as never,
 		{
 			ensureConnected: async () => client,
@@ -565,7 +565,7 @@ test("the ask tool receives the production-composed correlated revival failure w
 			registerTool(tool: typeof registered) {
 				registered = tool;
 			},
-			appendEntry() {},
+			async appendEntry() {},
 		} as never,
 		{
 			ensureConnected: async () => callerClient,

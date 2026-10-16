@@ -63,7 +63,7 @@ export interface LiveStageRuntime {
 	readonly drainStageSessionHeartbeat: () => Promise<void>;
 	readonly raceStageSessionHeartbeat: <T>(work: Promise<T>) => Promise<T>;
 	readonly applyModelFallbackMeta: (meta: ReturnType<InternalStageContext["__modelFallbackMeta"]>) => void;
-	readonly appendStageStartOnce: () => void;
+	readonly appendStageStartOnce: () => Promise<void>;
 	readonly finalizeStageSnapshot: () => Promise<boolean>;
 	readonly releaseLiveHandle: () => Promise<void>;
 	readonly dropStageControlForCompletion: () => Promise<void>;

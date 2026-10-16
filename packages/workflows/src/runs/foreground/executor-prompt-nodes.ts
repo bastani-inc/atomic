@@ -160,7 +160,7 @@ export function buildPromptNodeUiAdapter(input: {
 				input.activeStore.recordStageEnd(input.runId, stageSnapshot);
 				await input.opts.onStageEnd?.(input.runId, stageSnapshot);
 				if (input.opts.persistence) {
-					appendStageEnd(input.opts.persistence, {
+					await appendStageEnd(input.opts.persistence, {
 						runId: input.runId,
 						stageId,
 						status: stageSnapshot.status,
@@ -238,7 +238,7 @@ export function buildPromptNodeUiAdapter(input: {
 			},
 		});
 		if (input.opts.persistence) {
-			appendStageStart(input.opts.persistence, {
+			await appendStageStart(input.opts.persistence, {
 				runId: input.runId,
 				stageId,
 				name: stageSnapshot.name,

@@ -22,12 +22,12 @@ test("streamed forks retain history and can append without replacing it (#3577)"
 	const dir = await mkdtemp(join(tmpdir(), "session-stream-fork-"));
 	try {
 		const source = join(dir, "source.jsonl");
-		const header = { type: "session", version: 4, id: "source", timestamp: new Date().toISOString(), cwd: dir };
+		const header = { type: "session", version: 4, id: "source", createdAt: new Date().toISOString(), cwd: dir };
 		const entry = {
 			type: "custom",
 			id: "history",
 			parentId: null,
-			timestamp: header.timestamp,
+			timestamp: header.createdAt,
 			customType: "saved",
 			data: "日本語".repeat(100_000),
 		};
@@ -54,20 +54,21 @@ test("streamed forks retain history and can append without replacing it (#3577)"
 		writes.mockClear();
 		let fork: SessionManager;
 		try {
-			fork = await SessionManager.forkFromAsync(source, dir, join(dir, "forks"), { internal: true, workflow });
+			fork = await SessionManager.forkFrom(source, dir, join(dir, "forks"), { internal: true, workflow });
 			assert.equal(reads.mock.calls.length, 1);
 			assert.equal(reads.mock.calls[0][0], source);
 			assert.equal(writes.mock.calls.length, 1);
-			assert.equal(writes.mock.calls[0][0], fork.getSessionFile());
+			assert.equal(String(writes.mock.calls[0][0]).startsWith(`${fork.getSessionFile()}.`), true);
+			assert.equal(String(writes.mock.calls[0][0]).endsWith(".tmp"), true);
 		} finally {
 			for (const spy of spies) spy.mockRestore();
 		}
 		assert.equal(fork.getLeafId(), "history");
 		assert.deepEqual(fork.getEntries(), [entry]);
 		assert.deepEqual(fork.getHeader()?.workflow, workflow);
-		assert.equal(fork.getHeader()?.parentSession, source);
-		fork.appendCustomEntry("after-fork", { saved: true });
-		const reopened = SessionManager.open(fork.getSessionFile()!);
+		assert.equal(fork.getHeader()?.parentSessionId, "source");
+		await fork.appendCustomEntry("after-fork", { saved: true });
+		const reopened = await SessionManager.open(fork.getSessionFile()!);
 		assert.deepEqual(reopened.getEntries(), fork.getEntries());
 		assert.equal(await readFile(source, "utf8"), content);
 	} finally {
@@ -80,9 +81,13 @@ test("streamed forks reject missing and invalid sources without creating a sessi
 	try {
 		const source = join(dir, "source.jsonl");
 		const destination = join(dir, "forks");
-		await assert.rejects(SessionManager.forkFromAsync(source, dir, destination), { code: "ENOENT" });
+		await assert.rejects(SessionManager.forkFrom(source, dir, destination), (error: Error) => {
+			assert.ok(error instanceof StorageUnavailableError);
+			assert.equal((error.cause as NodeJS.ErrnoException).code, "ENOENT");
+			return true;
+		});
 		await writeFile(source, "not a session\n");
-		await assert.rejects(SessionManager.forkFromAsync(source, dir, destination), StorageUnavailableError);
+		await assert.rejects(SessionManager.forkFrom(source, dir, destination), StorageUnavailableError);
 		await assert.rejects(fsPromises.access(destination), { code: "ENOENT" });
 	} finally {
 		await rm(dir, { recursive: true, force: true });
@@ -94,11 +99,11 @@ test("opening a missing explicit session creates its directory and persists at t
 	try {
 		const sessionDir = join(dir, "nested", "sessions");
 		const path = join(sessionDir, "explicit.jsonl");
-		const session = SessionManager.open(path, sessionDir, dir);
+		const session = await SessionManager.open(path, sessionDir, dir);
 		assert.equal(session.getSessionFile(), path);
 		assert.equal((await fsPromises.stat(sessionDir)).isDirectory(), true);
-		session.appendMessage({ role: "user", content: "first message", timestamp: Date.now() });
-		const reopened = SessionManager.open(path);
+		await session.appendMessage({ role: "user", content: "first message", timestamp: Date.now() });
+		const reopened = await SessionManager.open(path);
 		assert.equal(reopened.getSessionId(), session.getSessionId());
 		assert.deepEqual(reopened.getEntries(), session.getEntries());
 	} finally {

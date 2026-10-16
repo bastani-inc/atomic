@@ -19,7 +19,7 @@ function writeSessionFile(path: string, cwd: string): void {
 			type: "session",
 			version: 4,
 			id: "session-id",
-			timestamp: new Date().toISOString(),
+			createdAt: new Date().toISOString(),
 			cwd,
 		})}\n`,
 	);
@@ -34,7 +34,7 @@ describe("session cwd handling", () => {
 		}
 	});
 
-	it("detects missing session cwd from persisted sessions", () => {
+	it("detects missing session cwd from persisted sessions", async () => {
 		const fallbackCwd = createTempDir("pi-session-cwd-fallback");
 		const missingCwd = join(fallbackCwd, "does-not-exist");
 		const sessionDir = createTempDir("pi-session-cwd-session-dir");
@@ -42,7 +42,7 @@ describe("session cwd handling", () => {
 		cleanupPaths.push(fallbackCwd, sessionDir);
 		writeSessionFile(sessionFile, missingCwd);
 
-		const sessionManager = SessionManager.open(sessionFile);
+		const sessionManager = await SessionManager.open(sessionFile);
 		const issue = getMissingSessionCwdIssue(sessionManager, fallbackCwd);
 		expect(issue).toEqual({
 			sessionFile: sessionManager.getSessionFile(),
@@ -51,7 +51,7 @@ describe("session cwd handling", () => {
 		});
 	});
 
-	it("supports overriding the effective cwd when opening a session", () => {
+	it("supports overriding the effective cwd when opening a session", async () => {
 		const fallbackCwd = createTempDir("pi-session-cwd-override");
 		const missingCwd = join(fallbackCwd, "does-not-exist");
 		const sessionDir = createTempDir("pi-session-cwd-override-session-dir");
@@ -59,7 +59,7 @@ describe("session cwd handling", () => {
 		cleanupPaths.push(fallbackCwd, sessionDir);
 		writeSessionFile(sessionFile, missingCwd);
 
-		const sessionManager = SessionManager.open(sessionFile, undefined, fallbackCwd);
+		const sessionManager = await SessionManager.open(sessionFile, undefined, fallbackCwd);
 		expect(sessionManager.getCwd()).toBe(fallbackCwd);
 		expect(getMissingSessionCwdIssue(sessionManager, fallbackCwd)).toBeUndefined();
 	});
@@ -72,7 +72,7 @@ describe("session cwd handling", () => {
 		cleanupPaths.push(fallbackCwd, sessionDir);
 		writeSessionFile(sessionFile, missingCwd);
 
-		const sessionManager = SessionManager.open(sessionFile);
+		const sessionManager = await SessionManager.open(sessionFile);
 		let createRuntimeCalled = false;
 		const createRuntime: CreateAgentSessionRuntimeFactory = async () => {
 			createRuntimeCalled = true;

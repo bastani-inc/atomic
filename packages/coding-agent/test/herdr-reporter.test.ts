@@ -54,7 +54,7 @@ test("real runner reports settled, prompt, workflow and recovery transitions wit
 	const fake = await fakeHerdr();
 	const runtime = createExtensionRuntime();
 	const publisher = runtime.workflowActivityHub.registerWorkflowActivityPublisher();
-	const session = SessionManager.create(fake.dir, fake.dir);
+	const session = await SessionManager.create(fake.dir, fake.dir);
 	const extension = await loadExtensionFromFactory(
 		createHerdrExtension({ env: fake.env, enabled: () => true }),
 		fake.dir,

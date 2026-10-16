@@ -12,7 +12,7 @@ Add OAuth/SSO authentication that integrates with `/login`:
 ```typescript
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@bastani/pi-ai";
 
-pi.registerProvider("corporate-ai", {
+await pi.registerProvider("corporate-ai", {
   baseUrl: "https://ai.corp.com/v1",
   api: "openai-responses",
   models: [...],
@@ -90,7 +90,7 @@ Intentional cancellation is quiet, including native `AbortError`, an aborted sig
 Providers whose catalogs change at runtime can add `refreshModels`. Atomic calls it during the model picker's bounded asynchronous refresh, independently of authentication completion:
 
 ```typescript
-pi.registerProvider("corporate-ai", {
+await pi.registerProvider("corporate-ai", {
   baseUrl: "https://ai.corp.com/v1",
   api: "openai-responses",
   apiKey: "$CORPORATE_AI_KEY",

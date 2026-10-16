@@ -328,7 +328,11 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		runtimeState.resetWorkflowDiscoveryForSession();
 		await runtimeState.ensureWorkflowConfigLoaded();
 		if (stopsWorkflows) {
-			killAllRuns({ store, cancellation: cancellationRegistry, persistence: runtimeState.persistenceRef.current });
+			await killAllRuns({
+				store,
+				cancellation: cancellationRegistry,
+				persistence: runtimeState.persistenceRef.current,
+			});
 			store.clear();
 		}
 		clearForms();

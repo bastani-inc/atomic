@@ -50,14 +50,14 @@ See these complete provider examples:
 ```typescript
 import type { ExtensionAPI } from "@bastani/atomic";
 
-export default function (pi: ExtensionAPI) {
+export default async function (pi: ExtensionAPI) {
   // Override baseUrl for existing provider
-  pi.registerProvider("anthropic", {
+  await pi.registerProvider("anthropic", {
     baseUrl: "https://proxy.example.com"
   });
 
   // Register new provider with models
-  pi.registerProvider("my-provider", {
+  await pi.registerProvider("my-provider", {
     name: "My Provider",
     baseUrl: "https://api.example.com",
     apiKey: "$MY_API_KEY",
@@ -77,14 +77,14 @@ export default function (pi: ExtensionAPI) {
 }
 ```
 
-The extension factory can also be `async`. For dynamic model discovery, fetch and register models in the factory instead of `session_start`. Atomic waits for the factory before startup continues, so the provider is available during interactive startup and to `atomic --list-models`.
+Await provider registration and removal. For dynamic model discovery, fetch and register models in the async extension factory instead of `session_start`. Atomic waits for the factory before startup continues, so the provider is available during interactive startup and to `atomic --list-models`.
 
 Registering only `baseUrl` or `headers` for an existing provider preserves its built-in models. Supplying `models` in the legacy form replaces that provider's models across chat, image, and classifier operations. An omitted `type` means `"chat"`; image and classifier models require explicit discriminants and implementations keyed by their `api` values through the `images` and `classifiers` fields.
 
 For example, a mixed-operation provider can register non-chat models and their implementations together:
 
 ```typescript
-pi.registerProvider("media-tools", {
+await pi.registerProvider("media-tools", {
   apiKey: "$MEDIA_TOOLS_API_KEY",
   models: [
     {

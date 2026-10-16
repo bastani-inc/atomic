@@ -31,8 +31,8 @@ InteractiveModeBase.prototype.updateEditorBorderColor = function (this: Interact
 	this.ui.requestRender();
 };
 
-InteractiveModeBase.prototype.cycleThinkingLevel = function (this: InteractiveModeBase): void {
-	const newLevel = this.session.cycleThinkingLevel({ persist: true });
+InteractiveModeBase.prototype.cycleThinkingLevel = async function (this: InteractiveModeBase): Promise<void> {
+	const newLevel = await this.session.cycleThinkingLevel({ persist: true });
 	if (newLevel === undefined) {
 		this.showStatus("Current model does not support thinking");
 	} else {

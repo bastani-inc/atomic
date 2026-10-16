@@ -46,7 +46,7 @@ modelRuntime.streamSimple = (model) => {
 		usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 0 }));
 	return stream;
 };
-session.sessionManager.appendMessage({ role: "user", content: Array.from({ length: 100 }, (_, i) => `line ${i}`).join("\n"), timestamp: 0 });
+await session.sessionManager.appendMessage({ role: "user", content: Array.from({ length: 100 }, (_, i) => `line ${i}`).join("\n"), timestamp: 0 });
 const before = session.sessionManager.getEntries().length;
 const operation = scenario.startsWith("compact") ? session.compact({ preserve_recent: 0 }) : scenario === "prompt" ? session.prompt("verbatim  ") : session.reload({
 	beforeSessionStart: async () => { entered.resolve(); await release.promise; },

@@ -113,7 +113,7 @@ test("earlier transcript pages remain selected when background activity arrives"
 		await fixture.start("Read history");
 		const child = SessionManager.inMemory();
 		for (let i = 0; i < 120; i++)
-			child.appendMessage({ role: "user", content: `entry-${String(i).padStart(3, "0")}`, timestamp: i });
+			await child.appendMessage({ role: "user", content: `entry-${String(i).padStart(3, "0")}`, timestamp: i });
 		fixture.runners[0].context.bindTranscript(child);
 		inspector.handleInput("\r");
 		inspector.handleInput("\r");
@@ -221,7 +221,7 @@ test("transcript has stable chrome, bounded rows and Home/End navigation at narr
 		await fixture.start("Long transcript");
 		const child = SessionManager.inMemory();
 		for (let i = 0; i < 12; i++)
-			child.appendMessage({ role: "user", content: `MESSAGE-${i} ${"界".repeat(40)}\u001b[2J`, timestamp: i });
+			await child.appendMessage({ role: "user", content: `MESSAGE-${i} ${"界".repeat(40)}\u001b[2J`, timestamp: i });
 		fixture.runners[0].context.bindTranscript(child);
 		inspector.handleInput("\r");
 		inspector.handleInput("\r");

@@ -370,10 +370,10 @@ export function shouldRetryAfterThresholdCompaction(
  * Internal: remove an incomplete assistant from retry context before auto-continuing after compaction.
  */
 
-export function _dropTrailingAutoCompactionRetryAssistantIfPresent(this: AgentSession): void {
+export async function _dropTrailingAutoCompactionRetryAssistantIfPresent(this: AgentSession): Promise<void> {
 	// The attempt stays in raw session history; a durable context edit omits it from
 	// the model projection so the continuation resumes from the preceding input.
-	this._omitTrailingAssistantAttempt(
+	await this._omitTrailingAssistantAttempt(
 		(assistant) => assistant.stopReason === "error" || assistant.stopReason === "length",
 	);
 }

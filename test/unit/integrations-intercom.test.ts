@@ -54,7 +54,7 @@ describe("isIntercomPresent", () => {
 	});
 
 	test("returns true when setSessionName is a function", () => {
-		assert.equal(isIntercomPresent({ setSessionName: () => {} }), true);
+		assert.equal(isIntercomPresent({ setSessionName: async () => {} }), true);
 	});
 
 	test("returns false when setSessionName is not a function", () => {

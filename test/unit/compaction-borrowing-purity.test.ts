@@ -168,8 +168,12 @@ test("a fallback-rescued compaction leaves session model, thinking level, histor
 	try {
 		const now = Date.now();
 		for (let turn = 0; turn < 6; turn++) {
-			manager.appendMessage({ role: "user", content: `task ${turn}\nline a\nline b`, timestamp: now + turn * 2 });
-			manager.appendMessage(assistantMessage(`answer ${turn}\nline c\nline d`, now + turn * 2 + 1));
+			await manager.appendMessage({
+				role: "user",
+				content: `task ${turn}\nline a\nline b`,
+				timestamp: now + turn * 2,
+			});
+			await manager.appendMessage(assistantMessage(`answer ${turn}\nline c\nline d`, now + turn * 2 + 1));
 		}
 		agent.state.messages = manager.buildSessionContext().messages;
 

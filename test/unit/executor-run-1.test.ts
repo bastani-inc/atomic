@@ -474,7 +474,7 @@ describe("executor.run", () => {
 		}
 
 		assert.notEqual(childRunId, undefined);
-		const killed = killRun(childRunId!, { store: st, cancellation });
+		const killed = await killRun(childRunId!, { store: st, cancellation });
 		const wfResult = await running;
 		const childRun = st.runs().find((candidate) => candidate.id === childRunId);
 

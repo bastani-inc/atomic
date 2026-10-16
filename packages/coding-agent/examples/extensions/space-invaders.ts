@@ -490,7 +490,9 @@ export default function (pi: ExtensionAPI) {
 					tui,
 					() => done(undefined),
 					(state) => {
-						pi.appendEntry(INVADERS_SAVE_TYPE, state);
+						void pi
+							.appendEntry(INVADERS_SAVE_TYPE, state)
+							.catch((error: Error) => ctx.ui.notify(error.message, "error"));
 					},
 					savedState,
 				);

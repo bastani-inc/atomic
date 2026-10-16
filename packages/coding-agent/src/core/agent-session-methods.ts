@@ -178,18 +178,18 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 		toolResults: ToolResultMessage[],
 		awaitPersistence?: boolean,
 	): Promise<boolean>;
-	_applyBoundaryDrafts(manager: SessionManager, drafts: SessionBoundaryDraft[]): SessionEntry[];
-	_createBoundaryPreviewManager(drafts: SessionBoundaryDraft[]): SessionManager;
+	_applyBoundaryDrafts(manager: SessionManager, drafts: SessionBoundaryDraft[]): Promise<SessionEntry[]>;
+	_createBoundaryPreviewManager(drafts: SessionBoundaryDraft[]): Promise<SessionManager>;
 	_getPendingBoundaryMessages(): AgentMessage[];
 	_buildBoundaryContext(
 		drafts: SessionBoundaryDraft[],
 		boundary: "turn_end" | "agent_before_settle",
-	): BoundaryContextPreview;
-	_commitBoundaryDrafts(drafts: SessionBoundaryDraft[]): void;
+	): Promise<BoundaryContextPreview>;
+	_commitBoundaryDrafts(drafts: SessionBoundaryDraft[]): Promise<void>;
 	_reportInvalidBoundaryContinuation(event: "turn_end" | "agent_before_settle"): void;
 	_findPersistedMessageEntryId(message: AgentMessage): string | undefined;
-	_omitRecoveryAttempt(message: AssistantMessage, toolResults?: AgentMessage[]): void;
-	_omitTrailingAssistantAttempt(accept?: (message: AssistantMessage) => boolean): boolean;
+	_omitRecoveryAttempt(message: AssistantMessage, toolResults?: AgentMessage[]): Promise<void>;
+	_omitTrailingAssistantAttempt(accept?: (message: AssistantMessage) => boolean): Promise<boolean>;
 	_runBeforeSettleBoundary(): Promise<boolean>;
 	_emit(event: AgentSessionEvent): void;
 	_emitQueueUpdate(): void;
@@ -272,8 +272,8 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	): Promise<void>;
 	_commitAdmittedCustomMessage<T>(message: CustomMessage<T>, options?: SendMessageOptions): Promise<void>;
 	_commitAdmittedCustomMessages<T>(messages: CustomMessage<T>[], options?: SendMessagesOptions): Promise<void>;
-	_appendCustomMessage<T>(message: CustomMessage<T>): void;
-	_flushPendingCustomMessages(): void;
+	_appendCustomMessage<T>(message: CustomMessage<T>): Promise<void>;
+	_flushPendingCustomMessages(): Promise<void>;
 	_enqueueInterruptCustomMessage<T>(message: CustomMessage<T>, options?: SendMessageOptions): Promise<void>;
 	_sendInterruptCustomMessageNow<T>(message: CustomMessage<T>, options?: SendMessageOptions): Promise<void>;
 	_ensureActiveInterruptQueueHold(): InterruptQueueHold;
@@ -311,8 +311,8 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 		direction: "forward" | "backward",
 		options: ModelMutationOptions,
 	): Promise<ModelCycleResult | undefined>;
-	setThinkingLevel(level: ThinkingLevel, options?: ModelMutationOptions): void;
-	cycleThinkingLevel(options?: ModelMutationOptions): ThinkingLevel | undefined;
+	setThinkingLevel(level: ThinkingLevel, options?: ModelMutationOptions): Promise<void>;
+	cycleThinkingLevel(options?: ModelMutationOptions): Promise<ThinkingLevel | undefined>;
 	getAvailableThinkingLevels(): ThinkingLevel[];
 	supportsThinking(): boolean;
 	_getThinkingLevelForModelSwitch(targetModel?: Model<Api>, explicitLevel?: ThinkingLevel): ThinkingLevel;
@@ -344,8 +344,8 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	buildExtensionResourcePaths(entries: ExtensionResourcePathEntry[]): ExtensionResourcePathResult[];
 	getExtensionSourceLabel(extensionPath: string): string;
 	_applyExtensionBindings(runner: ExtensionRunner): void;
-	_refreshCurrentModelFromRegistry(): void;
-	refreshCurrentModelFromRegistry(): void;
+	_refreshCurrentModelFromRegistry(): Promise<void>;
+	refreshCurrentModelFromRegistry(): Promise<void>;
 	_bindExtensionCore(
 		runner: ExtensionRunner,
 		publication?: {
@@ -390,11 +390,11 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 		command: string,
 		result: BashResult,
 		options?: { excludeFromContext?: boolean; persist?: boolean; defer?: boolean },
-	): void;
+	): Promise<void>;
 	abortBash(id?: string): void;
-	_flushPendingBashMessages(): void;
+	_flushPendingBashMessages(): Promise<void>;
 
-	setSessionName(name: string): void;
+	setSessionName(name: string): Promise<void>;
 	navigateTree(
 		targetId: string,
 		options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string },

@@ -85,7 +85,7 @@ const emit = (event: AgentSessionEvent) => {
 function burst() {
 	if (timer) return;
 	record({ kind: "burst-start" });
-	timer = setInterval(() => {
+	timer = setInterval(async () => {
 		const start = performance.now();
 		for (let j = 0; j < 4; j++) {
 			const marker = `LIVE-${String(count++).padStart(4, "0")}`;
@@ -104,7 +104,7 @@ function burst() {
 			const final = assistant(
 				`${marker} delta-0 delta-1 delta-2 delta-3 delta-4 delta-5 delta-6 delta-7\n\n**burst retained markdown**`,
 			);
-			session.appendMessage(final);
+			(await session.appendMessage(final));
 			emit({ type: "message_end", message: final });
 		}
 		record({ kind: "burst", count, eventMs: performance.now() - start });

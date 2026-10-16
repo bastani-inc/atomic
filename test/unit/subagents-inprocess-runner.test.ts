@@ -325,6 +325,34 @@ test("native child identities stay terminal after ok, error, and interrupted att
 	}
 });
 
+test("interrupt during async session construction does not dispatch the child prompt", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-startup-interrupt-"));
+	const promptLogPath = join(root, "prompts.log");
+	try {
+		const control = new SubagentControlRuntime({ path: "startup-parent", depth: 0 }, join(root, "sessions"));
+		control.registerAgents([sampleAgent()]);
+		const admitted = control.admitChildSession(
+			{ ...sampleSpec(root), testSession: { output: "not dispatched", promptLogPath } },
+			{ path: "startup-parent", depth: 0 },
+		).admitted;
+		assert.ok(admitted);
+		const interrupt = new AbortController();
+		const running = control.startAttempt(
+			admitted,
+			{},
+			{
+				abort: new AbortController().signal,
+				interrupt: interrupt.signal,
+			},
+		);
+		interrupt.abort();
+		assert.equal((await running.promise).status, "interrupted");
+		assert.equal(existsSync(promptLogPath), false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("launch metadata preserves the canonical fast model ID and effective thinking level", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-thinking-metadata-"));
 	const gate = Promise.withResolvers<void>();
@@ -351,7 +379,7 @@ test("launch metadata preserves the canonical fast model ID and effective thinki
 		);
 
 		assert.equal(running.currentModel, "openai-codex/gpt-5.6-sol-fast");
-		assert.equal(running.currentThinking, "off");
+		await vi.waitFor(() => assert.equal(running.currentThinking, "off"));
 		assert.deepEqual(control.getChildMetadata(admitted.identity.path), {
 			model: "openai-codex/gpt-5.6-sol-fast",
 			thinking: "off",

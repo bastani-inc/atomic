@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Removed the `@bastani/workflows` import alias; use `@bastani/atomic/workflows`.
 - Custom `RunJournal` implementations must provide `getRun`, `takeoverExpired`, `leaseState`, lazy paged `read`, and `deleteOwnedRun(lease)` for atomic lease-fenced deletion. Synchronous fast paths are internal.
 - Invocation records require `invocationFingerprint`.
+- SDK workflow stages now use persistent session storage by default, including stages without `sessionDir`. Ephemeral stages must explicitly supply an in-memory session manager through an adapter. Storage failures do not fall back to memory.
 
 ### Added
 

@@ -120,14 +120,14 @@ describe("read line range display (#9887)", () => {
 			type: "session",
 			version: CURRENT_SESSION_VERSION,
 			id: "range-test",
-			timestamp: assistant.timestamp,
+			createdAt: assistant.timestamp,
 			cwd: tempDir,
 		} satisfies SessionHeader;
 		const sessionPath = join(tempDir, "session.jsonl");
 		writeFileSync(sessionPath, `${[header, assistant, result].map((entry) => JSON.stringify(entry)).join("\n")}\n`);
 
 		const tree = new TreeSelectorComponent(
-			SessionManager.open(sessionPath).getTree(),
+			(await SessionManager.open(sessionPath)).getTree(),
 			result.id,
 			40,
 			() => {},

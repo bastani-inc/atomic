@@ -58,7 +58,7 @@ describe("loadEntriesFromFile", () => {
 		const file = join(tempDir, "valid.jsonl");
 		writeFileSync(
 			file,
-			'{"type":"session","version":4,"id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
+			'{"type":"session","version":4,"id":"abc","createdAt":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
 				'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}\n',
 		);
 		const entries = loadEntriesFromFile(file);
@@ -71,7 +71,7 @@ describe("loadEntriesFromFile", () => {
 		const file = join(tempDir, "mixed.jsonl");
 		writeFileSync(
 			file,
-			'{"type":"session","version":4,"id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
+			'{"type":"session","version":4,"id":"abc","createdAt":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
 				"not valid json\n" +
 				'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}\n',
 		);
@@ -81,7 +81,7 @@ describe("loadEntriesFromFile", () => {
 	it("reads an unterminated valid record without modifying the file", () => {
 		const file = join(tempDir, "unterminated.jsonl");
 		const content =
-			'{"type":"session","version":4,"id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
+			'{"type":"session","version":4,"id":"abc","createdAt":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
 			'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}';
 		writeFileSync(file, content);
 
@@ -89,25 +89,25 @@ describe("loadEntriesFromFile", () => {
 		assert.equal(readFileSync(file, "utf8"), content);
 	});
 
-	it("preserves record boundaries when appending after a read-only unterminated reopen", () => {
+	it("preserves record boundaries when appending after a read-only unterminated reopen", async () => {
 		const file = join(tempDir, "append-after-reopen.jsonl");
 		const content =
-			'{"type":"session","version":4,"id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
+			'{"type":"session","version":4,"id":"abc","createdAt":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
 			'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"first","timestamp":1}}';
 		writeFileSync(file, content);
-		const session = SessionManager.open(file, tempDir);
+		const session = await SessionManager.open(file, tempDir);
 		assert.equal(readFileSync(file, "utf8"), content);
 		assert.equal(session.getEntries().length, 1);
-		session.appendMessage({ role: "user", content: "second", timestamp: 2 });
+		await session.appendMessage({ role: "user", content: "second", timestamp: 2 });
 		assert.equal(session.getEntries().length, 2);
-		assert.equal(SessionManager.open(file, tempDir).getEntries().length, 2);
+		assert.equal((await SessionManager.open(file, tempDir)).getEntries().length, 2);
 		assert.ok(readFileSync(file, "utf8").startsWith(`${content}\n`));
 	});
 
 	it("leaves an unterminated malformed final fragment unchanged", () => {
 		const file = join(tempDir, "malformed-tail.jsonl");
 		const content =
-			'{"type":"session","version":4,"id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
+			'{"type":"session","version":4,"id":"abc","createdAt":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
 			'{"type":"message"';
 		writeFileSync(file, content);
 
@@ -124,11 +124,11 @@ describe("loadEntriesFromFile", () => {
 		expect(readFileSync(file, "utf8")).toBe(content);
 	});
 
-	it("opens session files larger than Node's max string length", () => {
+	it("opens session files larger than Node's max string length", async () => {
 		const file = join(tempDir, "large.jsonl");
 		writeFileSync(
 			file,
-			'{"type":"session","version":4,"id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n',
+			'{"type":"session","version":4,"id":"abc","createdAt":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n',
 		);
 
 		const fd = openSync(file, "a");
@@ -146,7 +146,7 @@ describe("loadEntriesFromFile", () => {
 			'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}\n',
 		);
 
-		const sessionManager = SessionManager.open(file, tempDir);
+		const sessionManager = await SessionManager.open(file, tempDir);
 		expect(sessionManager.getSessionId()).toBe("abc");
 		expect(sessionManager.getEntries()).toHaveLength(1);
 		expect(sessionManager.buildSessionContext().messages).toEqual([{ role: "user", content: "hi", timestamp: 1 }]);
@@ -165,16 +165,16 @@ describe("SessionManager durable prelude persistence", () => {
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	it("persists each admitted pre-start message once before the first task across restart", () => {
-		const session = SessionManager.create(tempDir, tempDir, {
+	it("persists each admitted pre-start message once before the first task across restart", async () => {
+		const session = await SessionManager.create(tempDir, tempDir, {
 			internal: true,
 			workflow: { runId: "run-2724", stageId: "reviewer-id", stageName: "reviewer" },
 		});
-		session.appendModelChange("test-provider", "test-model");
-		session.appendThinkingLevelChange("high");
+		await session.appendModelChange("test-provider", "test-model");
+		await session.appendThinkingLevelChange("high");
 		const admissionKeys = ["intercom:pending-first", "intercom:pending-second"];
 		for (const stageAdmissionKey of admissionKeys) {
-			session.appendCustomMessageEntry(
+			await session.appendCustomMessageEntry(
 				"intercom_message",
 				stageAdmissionKey,
 				true,
@@ -183,10 +183,9 @@ describe("SessionManager durable prelude persistence", () => {
 				undefined,
 				stageAdmissionKey,
 			);
-			session.flush();
 		}
-		session.appendMessage({ role: "user", content: "review task", timestamp: 1 });
-		session.appendMessage({
+		await session.appendMessage({ role: "user", content: "review task", timestamp: 1 });
+		await session.appendMessage({
 			role: "assistant",
 			content: [{ type: "text", text: "review complete" }],
 			api: "anthropic-messages",
@@ -235,9 +234,9 @@ describe("SessionManager durable prelude persistence", () => {
 			admissionsBeforeTask: [1, 1],
 		});
 
-		const restored = SessionManager.open(sessionFile!, tempDir, tempDir);
-		restored.appendMessage({ role: "user", content: "retry task", timestamp: 3 });
-		restored.appendMessage({
+		const restored = await SessionManager.open(sessionFile!, tempDir, tempDir);
+		await restored.appendMessage({ role: "user", content: "retry task", timestamp: 3 });
+		await restored.appendMessage({
 			role: "assistant",
 			content: [{ type: "text", text: "retry complete" }],
 			api: "anthropic-messages",
@@ -294,7 +293,7 @@ describe("findMostRecentSession", () => {
 		const file = join(tempDir, "session.jsonl");
 		writeFileSync(
 			file,
-			'{"type":"session","version":4,"id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n',
+			'{"type":"session","version":4,"id":"abc","createdAt":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n',
 		);
 		expect(findMostRecentSession(tempDir)).toBe(file);
 	});
@@ -305,13 +304,13 @@ describe("findMostRecentSession", () => {
 
 		writeFileSync(
 			file1,
-			'{"type":"session","version":4,"id":"old","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n',
+			'{"type":"session","version":4,"id":"old","createdAt":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n',
 		);
 		// Small delay to ensure different mtime
 		await new Promise((r) => setTimeout(r, 10));
 		writeFileSync(
 			file2,
-			'{"type":"session","version":4,"id":"new","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n',
+			'{"type":"session","version":4,"id":"new","createdAt":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n',
 		);
 
 		expect(findMostRecentSession(tempDir)).toBe(file2);
@@ -325,7 +324,7 @@ describe("findMostRecentSession", () => {
 		await new Promise((r) => setTimeout(r, 10));
 		writeFileSync(
 			valid,
-			'{"type":"session","version":4,"id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n',
+			'{"type":"session","version":4,"id":"abc","createdAt":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n',
 		);
 
 		expect(findMostRecentSession(tempDir)).toBe(valid);
@@ -339,12 +338,12 @@ describe("findMostRecentSession", () => {
 
 		writeFileSync(
 			fileA,
-			`${JSON.stringify({ type: "session", version: 4, id: "a", timestamp: "2025-01-01T00:00:00Z", cwd: projectA })}\n`,
+			`${JSON.stringify({ type: "session", version: 4, id: "a", createdAt: "2025-01-01T00:00:00Z", cwd: projectA })}\n`,
 		);
 		await new Promise((r) => setTimeout(r, 10));
 		writeFileSync(
 			fileB,
-			`${JSON.stringify({ type: "session", version: 4, id: "b", timestamp: "2025-01-01T00:00:00Z", cwd: projectB })}\n`,
+			`${JSON.stringify({ type: "session", version: 4, id: "b", createdAt: "2025-01-01T00:00:00Z", cwd: projectB })}\n`,
 		);
 
 		expect(findMostRecentSession(tempDir, projectA)).toBe(fileA);
@@ -353,13 +352,13 @@ describe("findMostRecentSession", () => {
 });
 
 describe("SessionManager custom flat session directory", () => {
-	it("reports custom session directories as non-default", () => {
+	it("reports custom session directories as non-default", async () => {
 		const tempDir = join(tmpdir(), `session-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		const projectDir = join(tempDir, "project");
 		try {
 			mkdirSync(projectDir, { recursive: true });
 			mkdirSync(tempDir, { recursive: true });
-			const session = SessionManager.create(projectDir, tempDir);
+			const session = await SessionManager.create(projectDir, tempDir);
 			expect(session.usesDefaultSessionDir()).toBe(false);
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
@@ -382,10 +381,10 @@ describe("SessionManager custom flat session directory", () => {
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	function createPersistedSession(cwd: string, label: string): string {
-		const session = SessionManager.create(cwd, tempDir);
-		session.appendMessage({ role: "user", content: label, timestamp: Date.now() });
-		session.appendMessage({
+	async function createPersistedSession(cwd: string, label: string): Promise<string> {
+		const session = await SessionManager.create(cwd, tempDir);
+		await session.appendMessage({ role: "user", content: label, timestamp: Date.now() });
+		await session.appendMessage({
 			role: "assistant",
 			content: [{ type: "text", text: `reply to ${label}` }],
 			api: "anthropic-messages",
@@ -410,9 +409,9 @@ describe("SessionManager custom flat session directory", () => {
 	}
 
 	it("scopes current-folder APIs by cwd while listing all flat sessions", async () => {
-		const sessionA = createPersistedSession(projectA, "from A");
+		const sessionA = await createPersistedSession(projectA, "from A");
 		await new Promise((r) => setTimeout(r, 10));
-		const sessionB = createPersistedSession(projectB, "from B");
+		const sessionB = await createPersistedSession(projectB, "from B");
 
 		const currentA = await SessionManager.list(projectA, tempDir);
 		expect(currentA.map((session) => session.path)).toEqual([sessionA]);
@@ -420,7 +419,7 @@ describe("SessionManager custom flat session directory", () => {
 		const all = await SessionManager.listAll(tempDir);
 		expect(new Set(all.map((session) => session.path))).toEqual(new Set([sessionA, sessionB]));
 
-		const continuedA = SessionManager.continueRecent(projectA, tempDir);
+		const continuedA = await SessionManager.continueRecent(projectA, tempDir);
 		expect(continuedA.getSessionFile()).toBe(sessionA);
 	});
 });
@@ -437,61 +436,47 @@ describe("SessionManager.setSessionFile with corrupted files", () => {
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	it("truncates and rewrites empty file with valid header", () => {
+	it("rejects an empty file without rewriting it", async () => {
 		const emptyFile = join(tempDir, "empty.jsonl");
 		writeFileSync(emptyFile, "");
-
-		const sm = SessionManager.open(emptyFile, tempDir);
-
-		// Should have created a new session with valid header
-		expect(sm.getSessionId()).toBeTruthy();
-		expect(sm.getHeader()).toBeTruthy();
-		expect(sm.getHeader()?.type).toBe("session");
-
-		// File should now contain a valid header
-		const content = readFileSync(emptyFile, "utf-8");
-		const lines = content.trim().split("\n").filter(Boolean);
-		expect(lines.length).toBe(1);
-		const header = JSON.parse(lines[0]);
-		expect(header.type).toBe("session");
-		expect(header.id).toBe(sm.getSessionId());
+		await expect(SessionManager.open(emptyFile, tempDir)).rejects.toMatchObject({
+			constructor: StorageUnavailableError,
+			cause: expect.any(SyntaxError),
+		});
+		expect(readFileSync(emptyFile, "utf8")).toBe("");
 	});
 
-	it("rejects non-empty file without a valid session header instead of overwriting it", () => {
+	it("rejects non-empty file without a valid session header instead of overwriting it", async () => {
 		const noHeaderFile = join(tempDir, "no-header.jsonl");
 		// File with messages but no session header (corrupted state)
 		const originalContent =
 			'{"type":"message","id":"abc","parentId":"orphaned","timestamp":"2025-01-01T00:00:00Z","message":{"role":"assistant","content":"test"}}\n';
 		writeFileSync(noHeaderFile, originalContent);
 
-		expect(() => SessionManager.open(noHeaderFile, tempDir)).toThrow(SessionFormatVersionError);
+		await expect(SessionManager.open(noHeaderFile, tempDir)).rejects.toThrow(SessionFormatVersionError);
 
 		// The corrupted file must be left untouched.
 		expect(readFileSync(noHeaderFile, "utf-8")).toBe(originalContent);
 	});
 
-	it("preserves explicit session file path when recovering from corrupted file", () => {
-		const explicitPath = join(tempDir, "my-session.jsonl");
+	it("failed file selection preserves the active session path and entries", async () => {
+		const explicitPath = join(tempDir, "empty-selection.jsonl");
 		writeFileSync(explicitPath, "");
-
-		const sm = SessionManager.open(explicitPath, tempDir);
-
-		// The session file path should be preserved
-		expect(sm.getSessionFile()).toBe(explicitPath);
+		const sm = await SessionManager.create(tempDir, tempDir);
+		await sm.appendMessage(userMsg("retained"));
+		const beforePath = sm.getSessionFile();
+		const beforeEntries = sm.getEntries();
+		await expect(sm.setSessionFile(explicitPath)).rejects.toThrow(StorageUnavailableError);
+		expect(sm.getSessionFile()).toBe(beforePath);
+		expect(sm.getEntries()).toEqual(beforeEntries);
 	});
 
-	it("subsequent loads of recovered empty file work correctly", () => {
-		const corruptedFile = join(tempDir, "corrupted.jsonl");
-		writeFileSync(corruptedFile, "");
-
-		// First open recovers the file
-		const sm1 = SessionManager.open(corruptedFile, tempDir);
-		const sessionId = sm1.getSessionId();
-
-		// Second open should load the recovered file successfully
-		const sm2 = SessionManager.open(corruptedFile, tempDir);
-		expect(sm2.getSessionId()).toBe(sessionId);
-		expect(sm2.getHeader()?.type).toBe("session");
+	it("repeated invalid opens preserve the original empty file", async () => {
+		const path = join(tempDir, "empty.jsonl");
+		writeFileSync(path, "");
+		await expect(SessionManager.open(path, tempDir)).rejects.toThrow(StorageUnavailableError);
+		await expect(SessionManager.open(path, tempDir)).rejects.toThrow(StorageUnavailableError);
+		expect(readFileSync(path, "utf8")).toBe("");
 	});
 });
 
@@ -506,29 +491,34 @@ describe("SessionManager session file creation", () => {
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	it("does not create a file for a session with only setup entries", () => {
-		const session = SessionManager.create(tempDir, tempDir);
-		session.appendModelChange("anthropic", "claude-sonnet-4-5");
-		session.appendThinkingLevelChange("off");
+	it("commits the header and setup entries before the first message", async () => {
+		const session = await SessionManager.create(tempDir, tempDir);
+		await session.appendModelChange("anthropic", "claude-sonnet-4-5");
+		await session.appendThinkingLevelChange("off");
 
-		assert.equal(existsSync(session.getSessionFile()!), false);
+		assert.equal(existsSync(session.getSessionFile()!), true);
+		assert.deepEqual(readSessionFileRoles(session.getSessionFile()!), [
+			"session",
+			"model_change",
+			"thinking_level_change",
+		]);
 	});
 
-	it("creates the file when the first user message is appended (#10000)", () => {
-		const session = SessionManager.create(tempDir, tempDir);
-		session.appendModelChange("anthropic", "claude-sonnet-4-5");
-		session.appendMessage(userMsg("first question"));
+	it("creates the file when the first user message is appended (#10000)", async () => {
+		const session = await SessionManager.create(tempDir, tempDir);
+		await session.appendModelChange("anthropic", "claude-sonnet-4-5");
+		await session.appendMessage(userMsg("first question"));
 
 		const file = session.getSessionFile()!;
 		assert.deepEqual(readSessionFileRoles(file), ["session", "model_change", "user"]);
-		assert.equal(SessionManager.open(file, tempDir).buildSessionContext().messages.length, 1);
+		assert.equal((await SessionManager.open(file, tempDir)).buildSessionContext().messages.length, 1);
 	});
 
-	it("appends later entries to the file without rewriting earlier ones", () => {
-		const session = SessionManager.create(tempDir, tempDir);
-		session.appendMessage(userMsg("first question"));
-		session.appendCustomEntry("preset-state", { name: "plan" });
-		session.appendMessage(assistantMsg("first answer"));
+	it("appends later entries to the file without rewriting earlier ones", async () => {
+		const session = await SessionManager.create(tempDir, tempDir);
+		await session.appendMessage(userMsg("first question"));
+		await session.appendCustomEntry("preset-state", { name: "plan" });
+		await session.appendMessage(assistantMsg("first answer"));
 
 		assert.deepEqual(readSessionFileRoles(session.getSessionFile()!), ["session", "user", "custom", "assistant"]);
 	});

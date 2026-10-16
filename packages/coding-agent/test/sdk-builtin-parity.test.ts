@@ -1809,9 +1809,6 @@ test.each(["none", "diagnostic", "error"] as const)(
 			attempts.push("settings");
 			throw new Error("settings flush failed");
 		});
-		const flushSession = vi.spyOn(session.sessionManager, "flushIfStarted").mockImplementationOnce(() => {
-			attempts.push("session");
-		});
 		try {
 			const closing = session.dispose();
 			await assert.rejects(closing, (error: Error & { code?: string }) => {
@@ -1820,7 +1817,7 @@ test.each(["none", "diagnostic", "error"] as const)(
 				assert.equal(error.errors.length, observerFailure === "none" ? 3 : 5);
 				return true;
 			});
-			assert.deepEqual(attempts, ["first", "second", "settings", "session"]);
+			assert.deepEqual(attempts, ["first", "second", "settings"]);
 			assert.equal(session.dispose(), closing);
 			await assert.rejects(session.bindExtensions({}), { code: "SessionClosed" });
 			await sibling.bindExtensions({
@@ -1836,7 +1833,6 @@ test.each(["none", "diagnostic", "error"] as const)(
 			assert.equal(sibling.settingsManager, settingsManager);
 		} finally {
 			flushSettings.mockRestore();
-			flushSession.mockRestore();
 			await sibling.dispose();
 			rmSync(cwd, { recursive: true, force: true });
 		}
@@ -2343,7 +2339,7 @@ test("compaction drains admitted hooks and refuses terminal admission", async ()
 		model: getModel("anthropic", "claude-sonnet-4-5")!,
 		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
 	});
-	sessionManager.appendMessage({
+	await sessionManager.appendMessage({
 		role: "user",
 		content: Array.from({ length: 100 }, (_, i) => `line ${i}`).join("\n"),
 		timestamp: 0,
@@ -2405,8 +2401,8 @@ test("tree navigation drains preflight and refuses a retired generation", async 
 		sessionManager,
 		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
 	});
-	const target = sessionManager.appendMessage({ role: "user", content: "first", timestamp: 0 });
-	sessionManager.appendMessage({ role: "user", content: "second", timestamp: 1 });
+	const target = await sessionManager.appendMessage({ role: "user", content: "first", timestamp: 0 });
+	await sessionManager.appendMessage({ role: "user", content: "second", timestamp: 1 });
 	const leaf = sessionManager.getLeafId();
 	const result = session.navigateTree(target).catch((error: unknown) => error);
 	try {
@@ -2676,8 +2672,8 @@ test.each(["thinking", "name", "bus", "observer", "context", "shortcut"] as cons
 			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
 			tools: [],
 		});
-		if (kind === "thinking") assert.equal(session.setThinkingLevel("high"), undefined);
-		else if (kind === "name") session.setSessionName("raw name  ");
+		if (kind === "thinking") assert.equal(await session.setThinkingLevel("high"), undefined);
+		else if (kind === "name") await session.setSessionName("raw name  ");
 		else if (kind === "bus") emitBus();
 		else if (kind === "observer") session.extensionRunner.createContext().observeWorkflowActivity(suspend);
 		else if (kind === "shortcut")
@@ -3273,7 +3269,7 @@ test.each([1, 2])(
 				reload: () => runtime.session.reload(),
 			},
 		});
-		old.setThinkingLevel("high");
+		await old.setThinkingLevel("high");
 		await peerEntered.promise;
 		const turns = Array.from({ length: count }, () => old.prompt("/replace-me"));
 		const turn = Promise.all(turns);
@@ -3397,10 +3393,11 @@ test.each(["error", "diagnostic"] as const)(
 		const cwd = mkdtempSync(join(tmpdir(), "sdk-commit-observer-failure-"));
 		const settingsManager = SettingsManager.inMemory();
 		const active = new Set<number>();
-		const started: Array<{ id: number; context: ExtensionContext; write: () => void }> = [];
+		const started: Array<{ id: number; context: ExtensionContext; write: () => Promise<void> }> = [];
 		const stopped: number[] = [];
 		const retired: number[] = [];
 		const commits: string[] = [];
+		let remainingWrite: Promise<void> | undefined;
 		const commitError = new Error("candidate commit failed");
 		const observerError = new Error(`${observerFailure} observer failed`);
 		let next = 0;
@@ -3414,7 +3411,7 @@ test.each(["error", "diagnostic"] as const)(
 					const id = ++next;
 					pi.on("session_start", async (_event, ctx) => {
 						active.add(id);
-						started.push({ id, context: ctx, write: () => pi.setSessionName(`generation-${id}`) });
+						started.push({ id, context: ctx, write: async () => await pi.setSessionName(`generation-${id}`) });
 						registerExtensionContextRetirementEffect(ctx, () => retired.push(id));
 						if (started.length === 2) {
 							await publishExtensionContextEffect(
@@ -3429,7 +3426,7 @@ test.each(["error", "diagnostic"] as const)(
 								ctx,
 								() => {
 									commits.push("remaining");
-									pi.setSessionName(`generation-${id}`);
+									remainingWrite = pi.setSessionName(`generation-${id}`);
 								},
 								"commit",
 							);
@@ -3461,6 +3458,7 @@ test.each(["error", "diagnostic"] as const)(
 		const oldRunner = session.extensionRunner;
 		try {
 			const failure = await session.reload().catch((error: Error) => error);
+			await remainingWrite;
 			assert.deepEqual(commits, ["failing", "remaining"]);
 			assert.ok(failure instanceof AggregateError);
 			assert.ok(failure.errors.includes(commitError));
@@ -3469,10 +3467,10 @@ test.each(["error", "diagnostic"] as const)(
 			assert.deepEqual([...active], [successor.id]);
 			assert.ok(retired.includes(predecessor.id));
 			assert.equal(stopped.filter((id) => id === predecessor.id).length, 1);
-			assert.throws(predecessor.write, /stale|no longer active/i);
+			await assert.rejects(predecessor.write, /stale|no longer active/i);
 			assert.throws(() => predecessor.context.getAgentTaskHost(), /stale|no longer active/i);
 			assert.notEqual(session.extensionRunner, oldRunner);
-			successor.write();
+			await successor.write();
 			assert.ok(successor.context.getAgentTaskHost());
 			assert.equal(session.sessionManager.getSessionName(), `generation-${successor.id}`);
 		} finally {
@@ -3597,7 +3595,7 @@ test.each(["shutdown"] as const)("public reload retains commit and %s failures (
 							},
 							"commit",
 						);
-						pi.setSessionName("successor published");
+						await pi.setSessionName("successor published");
 					}
 				});
 				pi.on("session_shutdown", () => {
@@ -3905,7 +3903,7 @@ test.each([false, true])("self reload retains invoking continuation cleanup: %s"
 	let next = 0;
 	const active = new Set<number>();
 	const shutdowns: number[] = [];
-	const capabilities: Array<{ write: () => void; host: () => object }> = [];
+	const capabilities: Array<{ write: () => Promise<void>; host: () => object }> = [];
 	const retiredDeliveries: number[] = [];
 	const resourceLoader = new DefaultResourceLoader({
 		cwd,
@@ -3915,9 +3913,9 @@ test.each([false, true])("self reload retains invoking continuation cleanup: %s"
 		extensionFactories: [
 			(pi) => {
 				const id = ++next;
-				pi.on("session_start", (_event, ctx) => {
+				pi.on("session_start", async (_event, ctx) => {
 					capabilities.push({
-						write: () => pi.setSessionName(`generation-${id}`),
+						write: async () => await pi.setSessionName(`generation-${id}`),
 						host: () => ctx.getAgentTaskHost(),
 					});
 				});
@@ -3933,11 +3931,14 @@ test.each([false, true])("self reload retains invoking continuation cleanup: %s"
 						active.add(id);
 					},
 				});
-				pi.on("session_shutdown", (_event, ctx) => {
+				pi.on("session_shutdown", async (_event, ctx) => {
 					assert.equal(ctx.cwd, cwd, "shutdown retains scoped cleanup capabilities");
 					assert.equal(pi.getSessionName(), "generation-2");
 					if (id === 1) {
-						assert.throws(() => pi.setSessionName("retired-cleanup-write"), /stale|no longer active/i);
+						await assert.rejects(
+							async () => await pi.setSessionName("retired-cleanup-write"),
+							/stale|no longer active/i,
+						);
 						assert.throws(() => ctx.getAgentTaskHost(), /stale|no longer active/i);
 						pi.events.emit("retired-cleanup");
 					}
@@ -3962,9 +3963,9 @@ test.each([false, true])("self reload retains invoking continuation cleanup: %s"
 	try {
 		await Promise.race([returned, prompt.catch(() => {})]);
 		assert.deepEqual(shutdowns, [], "old cleanup cannot precede the command continuation");
-		assert.throws(capabilities[0].write, /stale|no longer active/i);
+		await assert.rejects(capabilities[0].write, /stale|no longer active/i);
 		assert.throws(capabilities[0].host, /stale|no longer active/i);
-		capabilities[1].write();
+		await capabilities[1].write();
 		assert.ok(capabilities[1].host());
 		assert.equal(session.sessionManager.getSessionName(), "generation-2");
 		let closed = false;
@@ -4007,15 +4008,15 @@ test.each(["subset", "none", "all", "startup", "cleanup"])(
 		const started: string[] = [];
 		let calls = 0;
 		let omittedCalls = 0;
-		const writes = new Map<string, () => void>();
+		const writes = new Map<string, () => Promise<void>>();
 		const loader = new DefaultResourceLoader({
 			cwd,
 			agentDir: cwd,
 			settingsManager,
 			noExtensions: true,
-			extensionFactories: ["keep", "omit"].map((name) => (pi) => {
+			extensionFactories: ["keep", "omit"].map((name) => async (pi) => {
 				active.add(name);
-				writes.set(name, () => pi.setSessionName("omitted-write"));
+				writes.set(name, async () => await pi.setSessionName("omitted-write"));
 				pi.events.on("selected-ping", () => {
 					if (name === "keep") calls++;
 					else omittedCalls++;
@@ -4023,7 +4024,7 @@ test.each(["subset", "none", "all", "startup", "cleanup"])(
 				pi.registerCommand(name, {
 					description: name,
 					handler: async (_args, ctx) => {
-						pi.setSessionName("  selected\n");
+						await pi.setSessionName("  selected\n");
 						assert.ok(ctx.getAgentTaskHost());
 						pi.events.emit("selected-ping");
 					},
@@ -4069,7 +4070,7 @@ test.each(["subset", "none", "all", "startup", "cleanup"])(
 					session.extensionRunner.getRegisteredCommands().map((command) => command.name),
 					started,
 				);
-				if (mode !== "all") assert.throws(writes.get("omit")!, /stale|no longer active/i);
+				if (mode !== "all") await assert.rejects(writes.get("omit")!, /stale|no longer active/i);
 				if (mode !== "none") {
 					await session.prompt("/keep");
 					assert.equal(session.sessionManager.getSessionName(), "selected");
@@ -4092,21 +4093,27 @@ test.each(["subset", "none", "all", "rollback", "cleanup"])(
 	async (mode) => {
 		const cwd = mkdtempSync(join(tmpdir(), "sdk-filtered-reload-"));
 		const settingsManager = SettingsManager.inMemory({ sessionSummary: { enabled: false } });
-		const records: Array<{ name: string; generation: number; calls: number; stops: number; write: () => void }> = [];
+		const records: Array<{
+			name: string;
+			generation: number;
+			calls: number;
+			stops: number;
+			write: () => Promise<void>;
+		}> = [];
 		let generation = 0;
 		const loader = new DefaultResourceLoader({
 			cwd,
 			agentDir: cwd,
 			settingsManager,
 			noExtensions: true,
-			extensionFactories: ["keep", "omit"].map((name) => (pi) => {
+			extensionFactories: ["keep", "omit"].map((name) => async (pi) => {
 				if (name === "keep") generation++;
 				const record = {
 					name,
 					generation,
 					calls: 0,
 					stops: 0,
-					write: () => pi.setSessionName(`selected-${generation}`),
+					write: async () => await pi.setSessionName(`selected-${generation}`),
 				};
 				records.push(record);
 				pi.events.on("selected-ping", () => {
@@ -4115,7 +4122,7 @@ test.each(["subset", "none", "all", "rollback", "cleanup"])(
 				pi.registerCommand(name, {
 					description: name,
 					handler: async (_args, ctx) => {
-						record.write();
+						await record.write();
 						assert.ok(ctx.getAgentTaskHost());
 						pi.events.emit("selected-ping");
 					},
@@ -4151,7 +4158,7 @@ test.each(["subset", "none", "all", "rollback", "cleanup"])(
 				assert.equal(records.find((r) => r.generation === 1 && r.name === "keep")!.stops, 0);
 				for (const record of records.filter((r) => r.generation === 2)) {
 					assert.equal(record.stops, 1);
-					assert.throws(record.write, /stale|no longer active/i);
+					await assert.rejects(record.write, /stale|no longer active/i);
 				}
 			} else await reload;
 			if (mode !== "none") {
@@ -4164,7 +4171,7 @@ test.each(["subset", "none", "all", "rollback", "cleanup"])(
 				);
 			}
 			for (const record of records.filter((r) => r.stops > 0))
-				assert.throws(record.write, /stale|no longer active/i);
+				await assert.rejects(record.write, /stale|no longer active/i);
 		} finally {
 			await session.dispose().catch((error) => {
 				assert.equal(mode, "cleanup");
@@ -4241,12 +4248,15 @@ test.each(["close", "reload", "rollback", "cancel"])(
 							},
 						});
 			void operation.catch(() => {});
-			const refuses = () => {
+			const refuses = async () => {
 				assert.throws(
 					() => retired.exec(process.execPath, ["-e", 'throw Error("must not launch")']),
 					/closed|stale|no longer active/i,
 				);
-				assert.throws(() => retired.setSessionName("unadmitted"), /closed|stale|no longer active/i);
+				await assert.rejects(
+					async () => await retired.setSessionName("unadmitted"),
+					/closed|stale|no longer active/i,
+				);
 				assert.throws(
 					() => retired.registerCommand("unadmitted", { description: "forbidden", handler: async () => {} }),
 					/closed|stale|no longer active/i,

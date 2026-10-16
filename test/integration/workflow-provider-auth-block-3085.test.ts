@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { setTimeout as realSleep } from "node:timers/promises";
 import { afterEach, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
@@ -44,6 +45,7 @@ import { createIssue3085StageSession } from "./fixtures/issue-3085-provider-auth
  */
 const ISOLATED_PROCESS_RESTART_TIMEOUT_MS = 150_000;
 const RESUME_CHILD_TIMEOUT_MS = 120_000;
+const SESSION_IO_SETTLE_TIMEOUT_MS = 10_000;
 
 const repositoryRoot = join(moduleDir(import.meta.url), "../..");
 const resumeFixture = join(moduleDir(import.meta.url), "fixtures", "issue-3085-provider-auth-block.ts");
@@ -66,16 +68,16 @@ test(
 			const backend = await JournalDurableBackend.open(new SqliteRunJournal(journalPath));
 			setDurableBackend(backend);
 
-			const parent = SessionManager.create(dir, join(dir, "parent-sessions"));
+			const parent = await SessionManager.create(dir, join(dir, "parent-sessions"));
 			const store = createStore();
 			const notices: Array<{ customType?: string; details?: { kind?: string; status?: string } }> = [];
 			const stopNotices = installWorkflowLifecycleNotifications({
 				store,
 				config: { enabled: true, notifyOn: ["blocked", "completed", "failed"] },
-				sendMessage: (message) => {
+				sendMessage: async (message) => {
 					const details = message.details as { kind?: string; status?: string } | undefined;
 					notices.push({ customType: message.customType, details });
-					parent.appendCustomMessageEntry(
+					await parent.appendCustomMessageEntry(
 						message.customType ?? LIFECYCLE_NOTICE_CUSTOM_TYPE,
 						message.content,
 						message.display !== false,
@@ -120,10 +122,10 @@ test(
 			assert.equal(startedRun.action, "run");
 			assert.ok(startedRun.runId);
 
-			for (
-				let i = 0;
-				i < 60 && effectiveRunStatus(store.runs().find((run) => run.id === startedRun.runId)!) !== "blocked";
-				i++
+			const settleDeadline = performance.now() + SESSION_IO_SETTLE_TIMEOUT_MS;
+			while (
+				performance.now() < settleDeadline &&
+				effectiveRunStatus(store.runs().find((run) => run.id === startedRun.runId)!) !== "blocked"
 			) {
 				await realSleep(5);
 				await vi.advanceTimersByTimeAsync(1000);

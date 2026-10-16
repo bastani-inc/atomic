@@ -1,5 +1,5 @@
 import type { AgentSession } from "@bastani/atomic";
-import { describe, test } from "vitest";
+import { describe, test, vi } from "vitest";
 import type { StageSessionRuntime as PublicStageSessionRuntime } from "../../packages/workflows/src/authoring.ts";
 import type { AgentSessionAdapter, InternalStageContext, StageSessionRuntime } from "./stage-runner-helpers.js";
 import { assert, createStageContext, flushMicrotasks, makeMockSession, makeOpts } from "./stage-runner-helpers.js";
@@ -44,7 +44,7 @@ describe("public workflow queue-pause adapter compatibility", () => {
 		};
 		const ctx = createStageContext(makeOpts({ adapters: { agentSession: adapter } })) as InternalStageContext;
 		const prompt = ctx.prompt("legacy adapter prompt");
-		await flushMicrotasks();
+		await vi.waitFor(() => assert.equal(mock.state.promptCalls, 1));
 
 		await ctx.__requestPause();
 		assert.equal(ctx.__isPaused(), true);
@@ -81,7 +81,7 @@ describe("public workflow queue-pause adapter compatibility", () => {
 		};
 		const ctx = createStageContext(makeOpts({ adapters: { agentSession: adapter } })) as InternalStageContext;
 		const initial = ctx.prompt("initial custom-adapter prompt");
-		await flushMicrotasks();
+		await vi.waitFor(() => assert.equal(mock.state.promptCalls, 1));
 		await ctx.__requestPause();
 
 		let firstSettled = false;

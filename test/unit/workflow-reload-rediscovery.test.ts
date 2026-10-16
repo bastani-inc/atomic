@@ -77,7 +77,7 @@ function fakeSession(prompt?: (text: string) => Promise<string>): StageSessionRu
 		setModel: async () => undefined,
 		setThinkingLevel: () => undefined,
 		cycleModel: async () => undefined,
-		cycleThinkingLevel: () => undefined,
+		cycleThinkingLevel: async () => undefined,
 		agent: {} as StageSessionRuntime["agent"],
 		model: undefined,
 		thinkingLevel: "medium",

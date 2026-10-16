@@ -7,6 +7,7 @@ import { type ModelCycleResult, type ModelMutationOptions, THINKING_LEVELS } fro
 import { formatNoApiKeyFoundMessage } from "./auth-guidance.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { assertSessionOpen, trackSessionWork } from "./session-lifecycle-work.ts";
+import { serializeSessionMutation } from "./session-mutation-queue.ts";
 import { settingsWriteOwner } from "./settings-write-ownership.ts";
 
 export async function _getRequiredRequestAuth(
@@ -115,29 +116,32 @@ export async function setModel(
 ): Promise<void> {
 	assertSessionOpen(this);
 	return trackSessionWork(this, async () => {
-		if (!this._modelRuntime.hasConfiguredAuth(model.provider)) {
-			throw new Error(`No API key for ${model.provider}/${model.id}`);
-		}
-		this._clearFallbackModelScope?.();
+		const previousModel = await serializeSessionMutation(this, async () => {
+			if (!this._modelRuntime.hasConfiguredAuth(model.provider)) {
+				throw new Error(`No API key for ${model.provider}/${model.id}`);
+			}
+			const previousModel = this.model;
+			const thinkingLevel = this._getThinkingLevelForModelSwitch(model);
+			const nextModel = model;
+			await this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
+			this._clearFallbackModelScope?.();
+			this.agent.state.model = nextModel;
+			if (options.persist) {
+				settingsWriteOwner.run(this, () =>
+					this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id),
+				);
+				addPersistedDefaultToNonEmptyScope(this, nextModel);
+			}
 
-		const previousModel = this.model;
-		const thinkingLevel = this._getThinkingLevelForModelSwitch(model);
-		const nextModel = model;
-		this.agent.state.model = nextModel;
-		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
-		if (options.persist) {
-			settingsWriteOwner.run(this, () =>
-				this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id),
-			);
-			addPersistedDefaultToNonEmptyScope(this, nextModel);
-		}
+			// Re-clamp thinking level for new model's capabilities
+			await applyThinkingLevel.call(this, thinkingLevel, options);
+			this._refreshBaseSystemPromptFromActiveTools();
 
-		// Re-clamp thinking level for new model's capabilities
-		this.setThinkingLevel(thinkingLevel, options);
-		this._refreshBaseSystemPromptFromActiveTools();
-
-		this._emitModelChanged(nextModel, previousModel, "set");
-		await this._emitModelSelect(nextModel, previousModel, "set");
+			this._emitModelChanged(nextModel, previousModel, "set");
+			return previousModel;
+		});
+		// Extension callbacks may themselves request a model change; never hold the queue across them.
+		await this._emitModelSelect(model, previousModel, "set");
 	});
 }
 
@@ -155,10 +159,16 @@ export async function cycleModel(
 ): Promise<ModelCycleResult | undefined> {
 	assertSessionOpen(this);
 	return trackSessionWork(this, async () => {
-		if (this._scopedModels.length > 0) {
-			return this._cycleScopedModel(direction, options);
-		}
-		return this._cycleAvailableModel(direction, options);
+		const { previousModel, result } = await serializeSessionMutation(this, async () => {
+			const previousModel = this.model;
+			const result =
+				this._scopedModels.length > 0
+					? await this._cycleScopedModel(direction, options)
+					: await this._cycleAvailableModel(direction, options);
+			return { previousModel, result };
+		});
+		if (result) await this._emitModelSelect(result.model, previousModel, "cycle");
+		return result;
 	});
 }
 
@@ -183,9 +193,9 @@ export async function _cycleScopedModel(
 	const nextModel = next.model;
 
 	// An explicit cycle finishes any active fallback lifecycle before switching.
+	await this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
 	this._clearFallbackModelScope?.();
 	this.agent.state.model = nextModel;
-	this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
 	if (options.persist) {
 		settingsWriteOwner.run(this, () =>
 			this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id),
@@ -197,11 +207,10 @@ export async function _cycleScopedModel(
 	// - Explicit scoped model thinking level overrides current session level
 	// - Undefined scoped model thinking level inherits the current session preference
 	// setThinkingLevel clamps to model capabilities.
-	this.setThinkingLevel(thinkingLevel, options);
+	await applyThinkingLevel.call(this, thinkingLevel, options);
 	this._refreshBaseSystemPromptFromActiveTools();
 
 	this._emitModelChanged(nextModel, currentModel, "cycle");
-	await this._emitModelSelect(nextModel, currentModel, "cycle");
 
 	return { model: nextModel, thinkingLevel: this.thinkingLevel, isScoped: true };
 }
@@ -225,9 +234,9 @@ export async function _cycleAvailableModel(
 
 	const thinkingLevel = this._getThinkingLevelForModelSwitch(selectedModel);
 	// An explicit cycle finishes any active fallback lifecycle before switching.
+	await this.sessionManager.appendModelChange(selectedModel.provider, selectedModel.id);
 	this._clearFallbackModelScope?.();
 	this.agent.state.model = selectedModel;
-	this.sessionManager.appendModelChange(selectedModel.provider, selectedModel.id);
 	if (options.persist) {
 		settingsWriteOwner.run(this, () =>
 			this.settingsManager.setDefaultModelAndProvider(selectedModel.provider, selectedModel.id),
@@ -236,11 +245,10 @@ export async function _cycleAvailableModel(
 	}
 
 	// Re-clamp thinking level for new model's capabilities
-	this.setThinkingLevel(thinkingLevel, options);
+	await applyThinkingLevel.call(this, thinkingLevel, options);
 	this._refreshBaseSystemPromptFromActiveTools();
 
 	this._emitModelChanged(selectedModel, currentModel, "cycle");
-	await this._emitModelSelect(selectedModel, currentModel, "cycle");
 
 	return { model: selectedModel, thinkingLevel: this.thinkingLevel, isScoped: false };
 }
@@ -264,7 +272,21 @@ function persistThinkingLevel(session: AgentSession, level: ThinkingLevel): void
 	settingsWriteOwner.run(session, () => session.settingsManager.setDefaultThinkingLevel(level));
 }
 
-export function setThinkingLevel(this: AgentSession, level: ThinkingLevel, options: ModelMutationOptions = {}): void {
+export async function setThinkingLevel(
+	this: AgentSession,
+	level: ThinkingLevel,
+	options: ModelMutationOptions = {},
+): Promise<void> {
+	return trackSessionWork(this, () =>
+		serializeSessionMutation(this, () => applyThinkingLevel.call(this, level, options)),
+	);
+}
+
+async function applyThinkingLevel(
+	this: AgentSession,
+	level: ThinkingLevel,
+	options: ModelMutationOptions,
+): Promise<void> {
 	const availableLevels = this.getAvailableThinkingLevels();
 	const effectiveLevel = availableLevels.includes(level) ? level : this._clampThinkingLevel(level, availableLevels);
 
@@ -272,16 +294,14 @@ export function setThinkingLevel(this: AgentSession, level: ThinkingLevel, optio
 	const previousLevel = this.agent.state.thinkingLevel;
 	const isChanging = effectiveLevel !== previousLevel;
 
-	this.agent.state.thinkingLevel = effectiveLevel;
-
-	if (options.persist) persistThinkingLevel(this, effectiveLevel);
-
 	if (isChanging) {
 		// A reasoning choice is not a model choice, so it leaves the selected
 		// fallback model in place. Keep the active lifecycle open until the turn
 		// settles. (A no-op assignment from a registry refresh changes nothing.)
+		await this.sessionManager.appendThinkingLevelChange(effectiveLevel);
+		this.agent.state.thinkingLevel = effectiveLevel;
+		if (options.persist) persistThinkingLevel(this, effectiveLevel);
 		if (this._fallbackOriginModel !== undefined) this._fallbackOriginThinkingLevel = effectiveLevel;
-		this.sessionManager.appendThinkingLevelChange(effectiveLevel);
 		this._refreshBaseSystemPromptFromActiveTools();
 		this._emit({ type: "thinking_level_changed", level: effectiveLevel });
 		void this._extensionRunner.emit({
@@ -289,6 +309,8 @@ export function setThinkingLevel(this: AgentSession, level: ThinkingLevel, optio
 			level: effectiveLevel,
 			previousLevel,
 		});
+	} else if (options.persist) {
+		persistThinkingLevel(this, effectiveLevel);
 	}
 }
 
@@ -297,16 +319,23 @@ export function setThinkingLevel(this: AgentSession, level: ThinkingLevel, optio
  * @returns New level, or undefined if model doesn't support thinking
  */
 
-export function cycleThinkingLevel(this: AgentSession, options: ModelMutationOptions = {}): ThinkingLevel | undefined {
-	if (!this.supportsThinking()) return undefined;
+export async function cycleThinkingLevel(
+	this: AgentSession,
+	options: ModelMutationOptions = {},
+): Promise<ThinkingLevel | undefined> {
+	return trackSessionWork(this, () =>
+		serializeSessionMutation(this, async () => {
+			if (!this.supportsThinking()) return undefined;
 
-	const levels = this.getAvailableThinkingLevels();
-	const currentIndex = levels.indexOf(this.thinkingLevel);
-	const nextIndex = (currentIndex + 1) % levels.length;
-	const nextLevel = levels[nextIndex];
+			const levels = this.getAvailableThinkingLevels();
+			const currentIndex = levels.indexOf(this.thinkingLevel);
+			const nextIndex = (currentIndex + 1) % levels.length;
+			const nextLevel = levels[nextIndex];
 
-	this.setThinkingLevel(nextLevel, options);
-	return nextLevel;
+			await applyThinkingLevel.call(this, nextLevel, options);
+			return nextLevel;
+		}),
+	);
 }
 
 /**

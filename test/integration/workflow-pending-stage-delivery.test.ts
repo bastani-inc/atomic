@@ -209,7 +209,7 @@ function extensionFixture(
 		registerCommand() {},
 		registerShortcut() {},
 		registerMessageRenderer() {},
-		appendEntry() {},
+		async appendEntry() {},
 		async sendMessage(message: InjectedMessage, options?: InjectedMessageOptions) {
 			await admitInjected([message], options);
 		},
@@ -2432,7 +2432,7 @@ test("an invocation controls pending and live delivery into an owned isolated st
 					async setModel() {},
 					setThinkingLevel() {},
 					cycleModel: async () => undefined,
-					cycleThinkingLevel: () => undefined,
+					cycleThinkingLevel: async () => undefined,
 					agent: { waitForIdle: async () => {} } as never,
 					model: { provider: "test", id: "model" } as AgentSession["model"],
 					thinkingLevel: "medium",
@@ -3030,7 +3030,7 @@ test("a durable pending admission survives a real stage-session fallback attempt
 					async setModel() {},
 					setThinkingLevel() {},
 					cycleModel: async () => undefined,
-					cycleThinkingLevel: () => undefined,
+					cycleThinkingLevel: async () => undefined,
 					agent: { waitForIdle: async () => {} } as never,
 					model: {
 						provider: model.split("/")[0] ?? "test",
@@ -3307,7 +3307,7 @@ test("a drained message ID is revalidated by its durable owner after a broker re
 	const conflictingSender = new RawBrokerClient();
 	for (const client of [firstStage, controlSender, conflictingSender]) rawClients.add(client);
 	const recipientDir = mkdtempSync(join(tmpdir(), "live-conflict-recipient-"));
-	const recipientSession = SessionManager.create("/repo", recipientDir);
+	const recipientSession = await SessionManager.create("/repo", recipientDir);
 	const firstAdmission = StageAdmissionBoundary.restore(recipientSession.getBranch());
 	let secondOwner: ReturnType<typeof extensionFixture> | undefined;
 	let disposeSecondBridge = (): void => {};
@@ -3368,8 +3368,8 @@ test("a drained message ID is revalidated by its durable owner after a broker re
 		await firstPending.deliverPending(async (from, message) => {
 			const admitted = firstAdmission.admit(
 				`intercom:${message.id}`,
-				() => {
-					recipientSession.appendCustomMessageEntry(
+				async () => {
+					await recipientSession.appendCustomMessageEntry(
 						"intercom_message",
 						message.content.text,
 						true,
@@ -3378,7 +3378,7 @@ test("a drained message ID is revalidated by its durable owner after a broker re
 						undefined,
 						`intercom:${message.id}`,
 					);
-					recipientSession.flush();
+
 					visible += 1;
 				},
 				() => {
@@ -4289,8 +4289,8 @@ for (const scenario of ["startup replacement", "durable acknowledgment replay"] 
 					const stage = await createHarness({
 						sessionManager:
 							replayFile === undefined
-								? SessionManager.create(repoRoot, join(agentDir, "issue-3406-stage"))
-								: SessionManager.open(replayFile),
+								? await SessionManager.create(repoRoot, join(agentDir, "issue-3406-stage"))
+								: await SessionManager.open(replayFile),
 						orchestrationContext: options?.orchestrationContext,
 						settings: { retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 } },
 						extensionFactories: [
@@ -4439,7 +4439,7 @@ test("retired real startup context cannot acknowledge a dropped sticky message (
 			{
 				createAgentSession: async (options) => {
 					stage = await createHarness({
-						sessionManager: SessionManager.create(repoRoot, join(agentDir, "issue-3406-retired-stage")),
+						sessionManager: await SessionManager.create(repoRoot, join(agentDir, "issue-3406-retired-stage")),
 						orchestrationContext: options?.orchestrationContext,
 						extensionFactories: [intercom],
 					});
@@ -4449,9 +4449,9 @@ test("retired real startup context cannot acknowledge a dropped sticky message (
 		);
 		const retiringDelivery: typeof delivery = {
 			...delivery,
-			deliverPending(deliver, recipient) {
+			async deliverPending(deliver, recipient) {
 				assert.ok(stage);
-				stage.sessionManager.newSession();
+				await stage.sessionManager.newSession();
 				return delivery.deliverPending(deliver, recipient);
 			},
 		};

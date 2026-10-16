@@ -146,7 +146,9 @@ describe("AgentSession storage protection", () => {
 				streamFn: streamSimple,
 				initialState: { model, systemPrompt: "You are a helpful assistant.", tools: [], thinkingLevel: "high" },
 			}),
-			sessionManager: sessionDir ? SessionManager.create(process.cwd(), sessionDir) : SessionManager.inMemory(),
+			sessionManager: sessionDir
+				? await SessionManager.create(process.cwd(), sessionDir)
+				: SessionManager.inMemory(),
 			settingsManager: SettingsManager.inMemory(),
 			cwd: process.cwd(),
 			modelRuntime: getModelRuntime(await createInMemoryModelRegistry(authStorage)),

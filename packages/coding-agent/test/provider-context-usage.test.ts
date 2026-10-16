@@ -75,12 +75,12 @@ describe("provider-bound context usage", () => {
 		};
 		const oldAssistant = createAssistantMessage("pre-compaction answer", 1, oldUsage);
 
-		sessionManager.appendMessage(createUserMessage("before", 0));
-		appendTestCompaction(sessionManager, 243_928, 84_731);
+		await sessionManager.appendMessage(createUserMessage("before", 0));
+		await appendTestCompaction(sessionManager, 243_928, 84_731);
 		// Retained pre-boundary messages are concatenated into the boundary text, so the stale
 		// usage anchors that still reach the provider are messages carrying pre-boundary timestamps.
-		sessionManager.appendMessage(oldAssistant);
-		sessionManager.appendMessage(createUserMessage("continue", Date.now() + 1));
+		await sessionManager.appendMessage(oldAssistant);
+		await sessionManager.appendMessage(createUserMessage("continue", Date.now() + 1));
 
 		const authStorage = AuthStorage.inMemory();
 		await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "test-key" }));
@@ -118,17 +118,19 @@ describe("provider-bound context usage", () => {
 		}
 	});
 
-	it("preserves fresh post-compaction usage while scrubbing older retained usage", () => {
+	it("preserves fresh post-compaction usage while scrubbing older retained usage", async () => {
 		const sessionManager = SessionManager.inMemory(cwd);
-		sessionManager.appendMessage(createUserMessage("before", 0));
-		appendTestCompaction(sessionManager, 243_928, 84_731);
+		await sessionManager.appendMessage(createUserMessage("before", 0));
+		await appendTestCompaction(sessionManager, 243_928, 84_731);
 		const boundary = getLatestCompactionBoundaryEntry(sessionManager.getBranch());
 		expect(boundary).not.toBeNull();
 
-		sessionManager.appendMessage(createAssistantMessage("old", 1, createUsage(267_857)));
+		await sessionManager.appendMessage(createAssistantMessage("old", 1, createUsage(267_857)));
 		const postCompactionTimestamp = Date.parse(boundary!.timestamp) + 1;
-		sessionManager.appendMessage(createUserMessage("after", postCompactionTimestamp));
-		sessionManager.appendMessage(createAssistantMessage("fresh", postCompactionTimestamp + 1, createUsage(25_000)));
+		await sessionManager.appendMessage(createUserMessage("after", postCompactionTimestamp));
+		await sessionManager.appendMessage(
+			createAssistantMessage("fresh", postCompactionTimestamp + 1, createUsage(25_000)),
+		);
 
 		const messages = sessionManager.buildSessionContext().messages;
 		const transformed = scrubPreCompactionAssistantUsage(messages, sessionManager.getBranch());

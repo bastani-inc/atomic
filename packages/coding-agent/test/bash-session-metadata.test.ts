@@ -38,7 +38,7 @@ async function createSession(options: { persisted?: boolean; stage?: string } = 
 	const sessionManager =
 		options.persisted === false
 			? SessionManager.inMemory(cwd)
-			: SessionManager.create(cwd, join(agentDir, "sessions"));
+			: await SessionManager.create(cwd, join(agentDir, "sessions"));
 	const orchestrationContext = options.stage
 		? {
 				kind: "workflow-stage" as const,
@@ -90,7 +90,7 @@ describe("session-aware bash environment", () => {
 			"high",
 			"high",
 		]);
-		session.setThinkingLevel("low");
+		await session.setThinkingLevel("low");
 		const refreshed = text(await bash.execute("metadata-2", { command: printSessionEnvironment }))
 			.trim()
 			.split("\n");
@@ -123,10 +123,10 @@ describe("session-aware bash environment", () => {
 
 	it("uses the resumed session's own ID and file", async () => {
 		const { cwd, agentDir } = makeRoot();
-		const created = SessionManager.create(cwd, join(agentDir, "sessions"), { id: "resume-owned-id" });
+		const created = await SessionManager.create(cwd, join(agentDir, "sessions"), { id: "resume-owned-id" });
 		const sessionFile = created.getSessionFile();
 		if (!sessionFile) throw new Error("persisted session fixture did not create a file");
-		const resumed = SessionManager.open(sessionFile, join(agentDir, "sessions"));
+		const resumed = await SessionManager.open(sessionFile, join(agentDir, "sessions"));
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir,
@@ -188,7 +188,7 @@ describe("session-aware bash environment", () => {
 			command: "ignored",
 			env: { KEEP_VERBATIM: "  raw value  ", PI_MODEL: "stale" },
 		});
-		session.setThinkingLevel("minimal");
+		await session.setThinkingLevel("minimal");
 		session.agent.state.model = switchedModel;
 		await bash.execute("factory-2", { command: "ignored" });
 		expect(captures[0]).toMatchObject({

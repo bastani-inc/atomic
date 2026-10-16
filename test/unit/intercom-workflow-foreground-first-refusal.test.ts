@@ -52,7 +52,7 @@ function fixture(acknowledgement: AcknowledgementMode) {
 		registerCommand() {},
 		registerShortcut() {},
 		registerMessageRenderer() {},
-		appendEntry() {},
+		async appendEntry() {},
 		getSessionName: () => undefined,
 		async sendMessage(_message: object, options?: { stageAdmissionBarrier?: () => Promise<void> }) {
 			order.push("agent-session:generation-admission");

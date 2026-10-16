@@ -37,9 +37,9 @@ const started = Promise.withResolvers<TaskExecutionHooks>();
 const boundary = new WorkflowStageAdmissionBoundary();
 const session = SessionManager.inMemory(cwd);
 const outbox = new TaskCompletionOutbox(session, () => boundary.isOpen(), async (envelope) => {
-	await boundary.admit(envelope.completionId, () => {
-		session.appendCustomMessageEntry("task-completion", JSON.stringify(envelope), false, envelope);
-		session.flush();
+	await boundary.admit(envelope.completionId, async () => {
+		(await session.appendCustomMessageEntry("task-completion", JSON.stringify(envelope), false, envelope));
+
 		console.log(`COMPLETION ${JSON.stringify(envelope)}`);
 	}, () => { throw new Error("stage closed"); }).completion;
 });

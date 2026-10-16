@@ -146,7 +146,7 @@ export default function presetExtension(pi: ExtensionAPI) {
 
 		// Apply thinking level if specified
 		if (preset.thinkingLevel) {
-			pi.setThinkingLevel(preset.thinkingLevel);
+			await pi.setThinkingLevel(preset.thinkingLevel);
 		}
 
 		// Apply tools if specified
@@ -271,17 +271,17 @@ export default function presetExtension(pi: ExtensionAPI) {
 
 		if (result === "(none)") {
 			// Clear preset and restore original state
-			activePresetName = undefined;
-			activePreset = undefined;
 			if (originalState) {
 				if (originalState.model) {
 					await pi.setModel(originalState.model);
 				}
-				pi.setThinkingLevel(originalState.thinkingLevel);
+				await pi.setThinkingLevel(originalState.thinkingLevel);
 				pi.setActiveTools(originalState.tools);
 			} else {
 				pi.setActiveTools(["read", "bash", "edit", "write"]);
 			}
+			activePresetName = undefined;
+			activePreset = undefined;
 			ctx.ui.notify("Preset cleared, defaults restored", "info");
 			updateStatus(ctx);
 			return;
@@ -327,17 +327,17 @@ export default function presetExtension(pi: ExtensionAPI) {
 		const nextName = cycleList[nextIndex];
 
 		if (nextName === "(none)") {
-			activePresetName = undefined;
-			activePreset = undefined;
 			if (originalState) {
 				if (originalState.model) {
 					await pi.setModel(originalState.model);
 				}
-				pi.setThinkingLevel(originalState.thinkingLevel);
+				await pi.setThinkingLevel(originalState.thinkingLevel);
 				pi.setActiveTools(originalState.tools);
 			} else {
 				pi.setActiveTools(["read", "bash", "edit", "write"]);
 			}
+			activePresetName = undefined;
+			activePreset = undefined;
 			ctx.ui.notify("Preset cleared, defaults restored", "info");
 			updateStatus(ctx);
 			return;
@@ -432,7 +432,7 @@ export default function presetExtension(pi: ExtensionAPI) {
 	// Persist preset state
 	pi.on("turn_start", async () => {
 		if (activePresetName) {
-			pi.appendEntry("preset-state", { name: activePresetName });
+			await pi.appendEntry("preset-state", { name: activePresetName });
 		}
 	});
 }

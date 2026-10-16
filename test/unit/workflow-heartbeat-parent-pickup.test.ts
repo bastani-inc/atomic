@@ -512,7 +512,7 @@ describe("workflow heartbeat context invalidation", () => {
 
 		// The durable trace a previous process left: a heartbeat card carrying the
 		// protected-reconciliation marker and no persisted hidden completion.
-		harness.sessionManager.appendCustomMessageEntry(
+		await harness.sessionManager.appendCustomMessageEntry(
 			"workflows:workflow-heartbeat",
 			[{ type: "text", text: HEARTBEAT_TEXT }],
 			true,
@@ -521,7 +521,7 @@ describe("workflow heartbeat context invalidation", () => {
 			{ delivery: "steer" },
 			undefined,
 		);
-		harness.sessionManager.appendCustomMessageEntry(
+		await harness.sessionManager.appendCustomMessageEntry(
 			"someone-else:notice",
 			[{ type: "text", text: FOREIGN_TEXT }],
 			true,

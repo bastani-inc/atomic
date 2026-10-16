@@ -59,7 +59,7 @@ function fakeAgentSession(): Record<string, unknown> {
 			this.model = "opus";
 			return undefined;
 		},
-		cycleThinkingLevel() {
+		async cycleThinkingLevel() {
 			this.thinkingLevel = "high";
 			return undefined;
 		},
@@ -366,9 +366,9 @@ describe("ctx.exit", () => {
 		await expectBlockedStageMutation(() => stage.steer("late steer"));
 		await expectBlockedStageMutation(() => stage.followUp("late follow up"));
 		await expectBlockedStageMutation(() => stage.setModel("haiku" as never));
-		await expectBlockedStageMutation(() => stage.setThinkingLevel("high" as never));
+		await expectBlockedStageMutation(async () => await stage.setThinkingLevel("high" as never));
 		await expectBlockedStageMutation(() => stage.cycleModel());
-		await expectBlockedStageMutation(() => stage.cycleThinkingLevel());
+		await expectBlockedStageMutation(async () => await stage.cycleThinkingLevel());
 		await expectBlockedStageMutation(() => stage.navigateTree("node-1"));
 		await expectBlockedStageMutation(() => stage.compact());
 		await expectBlockedStageMutation(() => stage.abortCompaction());

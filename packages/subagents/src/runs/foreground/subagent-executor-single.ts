@@ -223,7 +223,7 @@ export async function runSinglePath(
 			intercomEvents: deps.pi.events,
 			runId,
 			sessionDir: sessionDirForIndex(0),
-			sessionFile: sessionFileForIndex(0),
+			sessionFile: await sessionFileForIndex(0),
 			share: shareEnabled,
 			artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
 			artifactConfig,

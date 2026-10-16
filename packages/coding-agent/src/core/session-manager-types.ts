@@ -10,7 +10,7 @@ import type {
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { CustomMessage } from "./messages.ts";
 import type { SessionManager } from "./session-manager-core.ts";
-import { SESSION_FORMAT_VERSION } from "./storage/session/types.js";
+import { SESSION_FORMAT_VERSION, type SessionRecordHeader } from "./storage/session/types.js";
 
 export const CURRENT_SESSION_VERSION = SESSION_FORMAT_VERSION;
 
@@ -25,17 +25,8 @@ export interface SessionWorkflowMetadata {
 	stageName: string;
 }
 
-export interface SessionHeader {
+export interface SessionHeader extends SessionRecordHeader {
 	type: "session";
-	version: number;
-	id: string;
-	timestamp: string;
-	cwd: string;
-	parentSession?: string;
-	/** Marks sessions created by automated machinery (e.g. workflow stages) so they can be excluded from standard resume history. */
-	internal?: boolean;
-	/** When internal, links the session to its owning workflow run/stage. */
-	workflow?: SessionWorkflowMetadata;
 }
 
 export interface NewSessionOptions {

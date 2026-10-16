@@ -298,8 +298,8 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 			await controller.setModel(model);
 		},
 
-		setThinkingLevel(level) {
-			controller.setThinkingLevel(level);
+		async setThinkingLevel(level) {
+			await controller.setThinkingLevel(level);
 		},
 
 		async cycleModel() {

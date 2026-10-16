@@ -114,6 +114,7 @@ function makeWorkflowStageContext(cwd: string, uiResult?: unknown): ExecutorCont
 		isIdle: () => true,
 		isProjectTrusted: () => true,
 		signal: undefined,
+		sessionSignal: new AbortController().signal,
 		abort: () => {},
 		hasPendingMessages: () => false,
 		shutdown: () => {},

@@ -42,17 +42,17 @@ describe("verbatim compaction persistence and resume", () => {
 		for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 	});
 
-	it("persists the exact string and appends the kept tail to the boundary text across open", () => {
+	it("persists the exact string and appends the kept tail to the boundary text across open", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-verbatim-resume-"));
 		tempDirs.push(cwd);
-		const manager = SessionManager.create(cwd, cwd);
-		manager.appendMessage(userMsg("historical user"));
-		manager.appendMessage(assistantMsg("historical answer"));
-		const firstKeptEntryId = manager.appendMessage(userMsg("kept user"));
-		manager.appendMessage(assistantMsg("kept answer"));
+		const manager = await SessionManager.create(cwd, cwd);
+		await manager.appendMessage(userMsg("historical user"));
+		await manager.appendMessage(assistantMsg("historical answer"));
+		const firstKeptEntryId = await manager.appendMessage(userMsg("kept user"));
+		await manager.appendMessage(assistantMsg("kept answer"));
 		const compactedText = "[User]: historical user\n(filtered 8 lines)";
-		const compactionId = manager.appendCompaction(compactedText, firstKeptEntryId, 100, details());
-		manager.appendMessage(userMsg("post boundary"));
+		const compactionId = await manager.appendCompaction(compactedText, firstKeptEntryId, 100, details());
+		await manager.appendMessage(userMsg("post boundary"));
 
 		const entry = manager.getEntry(compactionId);
 		expect(entry?.type).toBe("compaction");
@@ -82,7 +82,7 @@ describe("verbatim compaction persistence and resume", () => {
 
 		const file = manager.getSessionFile();
 		expect(file).toBeDefined();
-		const resumed = SessionManager.open(file!);
+		const resumed = await SessionManager.open(file!);
 		const resumedContext = resumed.buildSessionContext();
 		expect(isVerbatimCompactionMessage(resumedContext.messages[0] as CustomMessage)).toBe(true);
 		expect(convertToLlm(resumedContext.messages)).toEqual(beforeResume);
@@ -190,25 +190,25 @@ describe("verbatim compaction persistence and resume", () => {
 		expect(content[1]).toEqual({ type: "image", data: "aW1hZ2U=", mimeType: "image/png" });
 	});
 
-	it("durably rebuilds a zero-retention boundary without restoring a hidden message", () => {
+	it("durably rebuilds a zero-retention boundary without restoring a hidden message", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-verbatim-zero-tail-"));
 		tempDirs.push(cwd);
-		const manager = SessionManager.create(cwd, cwd);
-		manager.appendMessage(userMsg("fully compacted user"));
-		manager.appendMessage(assistantMsg("fully compacted answer"));
+		const manager = await SessionManager.create(cwd, cwd);
+		await manager.appendMessage(userMsg("fully compacted user"));
+		await manager.appendMessage(assistantMsg("fully compacted answer"));
 		const compactedText = "[User]: fully compacted user\n(filtered 8 lines)";
-		const compactionId = manager.appendCompaction(compactedText, null, 100, {
+		const compactionId = await manager.appendCompaction(compactedText, null, 100, {
 			...details(),
 			parameters: { compression_ratio: 0.5, preserve_recent: 0, query: "task" },
 		});
-		manager.appendMessage(userMsg("after boundary"));
+		await manager.appendMessage(userMsg("after boundary"));
 
 		const persisted = manager.getEntry(compactionId);
 		expect(persisted?.type === "compaction" && persisted.firstKeptEntryId).toBeNull();
 		const file = manager.getSessionFile();
 		expect(file).toBeDefined();
 		expect(readFileSync(file!, "utf8")).toContain('"firstKeptEntryId":null');
-		const resumed = SessionManager.open(file!);
+		const resumed = await SessionManager.open(file!);
 		const rebuiltMessages = convertToLlm(resumed.buildSessionContext().messages);
 		expect(rebuiltMessages[0]).toMatchObject({
 			role: "user",
@@ -309,23 +309,23 @@ describe("verbatim compaction persistence and resume", () => {
 
 	it.each(["planner", "summary"] as const)(
 		"(#3470) replays only the latest summary across a retained %s boundary after reopen",
-		(previousBackend) => {
+		async (previousBackend) => {
 			const cwd = mkdtempSync(join(tmpdir(), "atomic-summary-replay-"));
 			tempDirs.push(cwd);
-			const manager = SessionManager.create(cwd, cwd);
-			manager.appendMessage(userMsg("compacted history"));
-			const retainedId = manager.appendMessage(assistantMsg("raw retained answer"));
-			const obsoleteId = manager.appendCompaction("obsolete checkpoint", retainedId, 100, {
+			const manager = await SessionManager.create(cwd, cwd);
+			await manager.appendMessage(userMsg("compacted history"));
+			const retainedId = await manager.appendMessage(assistantMsg("raw retained answer"));
+			const obsoleteId = await manager.appendCompaction("obsolete checkpoint", retainedId, 100, {
 				...details(),
 				backend: previousBackend,
 			});
-			const middleId = manager.appendMessage(userMsg("middle raw tail"));
-			const editId = manager.appendContextEdit(retainedId, { content: "edited retained answer" });
-			const latestId = manager.appendCompaction("latest checkpoint", retainedId, 100, {
+			const middleId = await manager.appendMessage(userMsg("middle raw tail"));
+			const editId = await manager.appendContextEdit(retainedId, { content: "edited retained answer" });
+			const latestId = await manager.appendCompaction("latest checkpoint", retainedId, 100, {
 				...details(),
 				backend: "summary",
 			});
-			manager.appendMessage(userMsg("latest user"));
+			await manager.appendMessage(userMsg("latest user"));
 
 			const verify = (session: SessionManager) => {
 				const projection = session.buildSessionProjection();
@@ -364,13 +364,15 @@ describe("verbatim compaction persistence and resume", () => {
 			const messages = verify(manager);
 			const file = manager.getSessionFile();
 			assert.ok(file);
-			assert.deepEqual(verify(SessionManager.open(file)), messages);
+			assert.deepEqual(verify(await SessionManager.open(file)), messages);
 		},
 	);
 
-	it("rejects persistence when firstKeptEntryId is not in the session tree", () => {
+	it("rejects persistence when firstKeptEntryId is not in the session tree", async () => {
 		const manager = SessionManager.inMemory();
-		manager.appendMessage(userMsg("hello"));
-		expect(() => manager.appendCompaction("text", "missing", 1, details())).toThrow("Entry missing not found");
+		await manager.appendMessage(userMsg("hello"));
+		await expect(manager.appendCompaction("text", "missing", 1, details())).rejects.toThrow(
+			"Entry missing not found",
+		);
 	});
 });

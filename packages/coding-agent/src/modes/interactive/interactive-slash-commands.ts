@@ -327,7 +327,10 @@ InteractiveModeBase.prototype.handleCopyCommand = async function (this: Interact
 	}
 };
 
-InteractiveModeBase.prototype.handleNameCommand = function (this: InteractiveModeBase, text: string): void {
+InteractiveModeBase.prototype.handleNameCommand = async function (
+	this: InteractiveModeBase,
+	text: string,
+): Promise<void> {
 	const name = text.replace(/^\/name\s*/, "").trim();
 	if (!name) {
 		const currentName = this.sessionManager.getSessionName();
@@ -341,7 +344,7 @@ InteractiveModeBase.prototype.handleNameCommand = function (this: InteractiveMod
 		return;
 	}
 
-	this.session.setSessionName(name);
+	await this.session.setSessionName(name);
 	this.chatContainer.addChild(new Spacer(1));
 	this.chatContainer.addChild(new Text(theme.fg("dim", `Session name set: ${name}`), 1, 0));
 	this.ui.requestRender();

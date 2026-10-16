@@ -4,6 +4,7 @@ import { fauxAssistantMessage, registerFauxProvider } from "@bastani/pi-ai/compa
 import { Type } from "typebox";
 import { test } from "vitest";
 import { InMemoryCodingAgentModelsStore } from "../../packages/coding-agent/src/core/models-store.js";
+import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/session/errors.js";
 import { AuthStorage, ModelRuntime, SessionManager, SettingsManager } from "../../packages/coding-agent/src/index.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { requireStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
@@ -98,7 +99,8 @@ test("run() executes a ctx.task stage without RunOpts.adapters (#3472)", async (
 		assert.equal(outcome.status, "completed", outcome.error);
 		assert.deepEqual(outcome.reply, { reply: "stage reply from the default adapter" });
 		assert.equal(outcome.callCount, 1);
-		assert.equal(outcome.sessionFile, undefined, "the default stage session must not persist to disk");
+		assert.ok(outcome.sessionFile, "the default stage session must persist to disk");
+		assert.equal((await SessionManager.open(outcome.sessionFile)).getCwd(), cwd);
 	} finally {
 		removeTempDirectory(cwd);
 	}
@@ -119,7 +121,7 @@ for (const [label, runOpts] of [
 
 			assert.equal(outcome.status, "completed", outcome.error);
 			assert.ok(outcome.sessionFile, "a sessionDir stage persists its session");
-			assert.equal(SessionManager.open(outcome.sessionFile).getCwd(), cwd);
+			assert.equal((await SessionManager.open(outcome.sessionFile)).getCwd(), cwd);
 		} finally {
 			removeTempDirectory(cwd);
 		}
@@ -306,6 +308,29 @@ test("SDK run without an explicit store keeps its journal with the root in the a
 	} finally {
 		adoptedStore.clear();
 		adoptStore(firstScope);
+		removeTempDirectory(cwd);
+	}
+});
+
+test("the default workflow adapter rejects an unavailable persistent store instead of selecting memory", async () => {
+	const cwd = makeTempDirectory("atomic-sdk-run-unavailable-session-");
+	try {
+		const agentDir = join(cwd, "agent");
+		await writeFileEnsuringDir(join(agentDir, "sessions"), "not a directory");
+		const adapter = createAgentSessionAdapter({
+			cwd,
+			agentDir,
+			settingsManager: SettingsManager.inMemory(),
+			builtins: BUILTINS,
+			tools: [],
+		});
+		await assert.rejects(adapter.create({}), (error: Error) => {
+			assert.ok(error instanceof StorageUnavailableError);
+			assert.equal(error.adapter, "jsonl");
+			assert.ok(error.location.startsWith(agentDir));
+			return true;
+		});
+	} finally {
 		removeTempDirectory(cwd);
 	}
 });

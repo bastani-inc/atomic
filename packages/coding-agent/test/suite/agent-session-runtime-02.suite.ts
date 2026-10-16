@@ -92,7 +92,7 @@ describe("AgentSessionRuntime characterization", () => {
 		const runtime = await createAgentSessionRuntime(createRuntime, {
 			cwd: tempDir,
 			agentDir: tempDir,
-			sessionManager: SessionManager.create(tempDir),
+			sessionManager: await SessionManager.create(tempDir),
 		});
 		await runtime.session.bindExtensions({});
 
@@ -165,7 +165,7 @@ describe("AgentSessionRuntime characterization", () => {
 		const otherRuntime = await createAgentSessionRuntime(createOtherRuntime, {
 			cwd: secondDir,
 			agentDir: tempDir,
-			sessionManager: SessionManager.create(secondDir),
+			sessionManager: await SessionManager.create(secondDir),
 		});
 		cleanups.push(async () => {
 			await otherRuntime.dispose();
@@ -237,13 +237,13 @@ describe("AgentSessionRuntime characterization", () => {
 		const otherRuntime = await createAgentSessionRuntime(createOtherRuntime, {
 			cwd: otherDir,
 			agentDir: tempDir,
-			sessionManager: SessionManager.create(otherDir),
+			sessionManager: await SessionManager.create(otherDir),
 		});
 		cleanups.push(async () => {
 			await otherRuntime.dispose();
 		});
 		await otherRuntime.session.setModel(faux.getModel("faux-2")!);
-		otherRuntime.session.setThinkingLevel("off");
+		await otherRuntime.session.setThinkingLevel("off");
 		await otherRuntime.session.prompt("hello");
 		const targetSessionFile = otherRuntime.session.sessionFile!;
 

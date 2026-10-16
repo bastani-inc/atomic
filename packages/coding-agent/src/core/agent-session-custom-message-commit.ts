@@ -7,11 +7,10 @@ import {
 	triggerProtectedStreamingCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
 import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.js";
-import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
+import type { CustomMessage } from "./messages.ts";
 
-function appendDurableStageAdmission<T>(session: AgentSession, message: CustomMessage<T>): void {
-	session._appendCustomMessage(message);
-	if ((message as StageAdmittedCustomMessage).stageAdmissionKey !== undefined) session.sessionManager?.flush();
+async function appendDurableStageAdmission<T>(session: AgentSession, message: CustomMessage<T>): Promise<void> {
+	await session._appendCustomMessage(message);
 }
 
 /** Cancel only the receiver's native operation; its original prompt owns continuation. */
@@ -77,7 +76,7 @@ export async function commitAdmittedCustomMessage<T>(
 		} else if (self.isStreaming || self._isPreparingRun) {
 			self._pendingCustomMessages.push(appMessage);
 		} else {
-			appendDurableStageAdmission(self, appMessage);
+			await appendDurableStageAdmission(self, appMessage);
 		}
 	} else if (options?.deliverAs === "interrupt" && options.triggerTurn) {
 		const interrupt = self._enqueueInterruptCustomMessage(appMessage, options);
@@ -89,7 +88,7 @@ export async function commitAdmittedCustomMessage<T>(
 		options.triggerTurn !== true &&
 		options.deliverAs === undefined
 	) {
-		appendDurableStageAdmission(self, appMessage);
+		await appendDurableStageAdmission(self, appMessage);
 	} else if ((self.isStreaming || self._isPreparingRun) && options?.triggerTurn === false) {
 		self._pendingCustomMessages.push(appMessage);
 	} else if ((self.isStreaming || self._isPreparingRun) && useProtectedReconciliation) {
@@ -99,7 +98,7 @@ export async function commitAdmittedCustomMessage<T>(
 			options?.deliverAs === "followUp" ? "followUp" : "steer",
 		);
 	} else if ((self.isStreaming || self._isPreparingRun) && options?.persistWhenStreaming === true) {
-		appendDurableStageAdmission(self, appMessage);
+		await appendDurableStageAdmission(self, appMessage);
 	} else if ((self.isStreaming || self._isPreparingRun) && options?.triggerTurn !== false) {
 		self._queueAgentMessage(appMessage, options?.deliverAs === "followUp" ? "followUp" : "steer");
 	} else if (useProtectedReconciliation && options?.triggerTurn === true && self._workflowStageAdmission) {
@@ -139,7 +138,7 @@ export async function commitAdmittedCustomMessage<T>(
 			void self._continueQueuedAgentMessages().catch(() => {});
 		}
 	} else {
-		appendDurableStageAdmission(self, appMessage);
+		await appendDurableStageAdmission(self, appMessage);
 	}
 }
 
@@ -178,7 +177,7 @@ export async function commitAdmittedCustomMessages<T>(
 		} else if (self.isStreaming || self._isPreparingRun) {
 			self._pendingCustomMessages.push(...appMessages);
 		} else {
-			for (const item of appMessages) self._appendCustomMessage(item);
+			for (const item of appMessages) await self._appendCustomMessage(item);
 		}
 	} else if (
 		(self.isStreaming || self._isPreparingRun) &&
@@ -186,13 +185,13 @@ export async function commitAdmittedCustomMessages<T>(
 		options.triggerTurn !== true &&
 		options.deliverAs === undefined
 	) {
-		for (const item of appMessages) self._appendCustomMessage(item);
+		for (const item of appMessages) await self._appendCustomMessage(item);
 	} else if ((self.isStreaming || self._isPreparingRun) && options?.triggerTurn === false) {
 		self._pendingCustomMessages.push(...appMessages);
 	} else if ((self.isStreaming || self._isPreparingRun) && useProtectedReconciliation) {
 		await queueProtectedStreamingCustomMessages(self, appMessages, delivery);
 	} else if ((self.isStreaming || self._isPreparingRun) && options?.persistWhenStreaming === true) {
-		for (const item of appMessages) self._appendCustomMessage(item);
+		for (const item of appMessages) await self._appendCustomMessage(item);
 	} else if ((self.isStreaming || self._isPreparingRun) && options?.triggerTurn !== false) {
 		for (const item of appMessages) self._queueAgentMessage(item, delivery);
 	} else if (options?.triggerTurn) {
@@ -203,7 +202,7 @@ export async function commitAdmittedCustomMessages<T>(
 			void turn.catch(() => {});
 		}
 	} else {
-		for (const item of appMessages) self._appendCustomMessage(item);
+		for (const item of appMessages) await self._appendCustomMessage(item);
 	}
 }
 

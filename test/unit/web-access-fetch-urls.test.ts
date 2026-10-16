@@ -3,6 +3,7 @@ import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@bastani/at
 import { type JsonObject, validateToolArguments } from "@bastani/pi-ai";
 import { Value } from "typebox/value";
 import { test, vi } from "vitest";
+import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/session/errors.js";
 import { toolContext } from "../helpers/tool-context.js";
 
 interface ExtractedContent {
@@ -51,7 +52,10 @@ const { registerContentTools } = await vi.importActual<ContentToolsModule>(
 );
 const { default: registerWebAccess } = await vi.importActual<WebAccessModule>("../../packages/web-access/index.js");
 
-function capture(register: (pi: ExtensionAPI) => void): ToolDefinition {
+function capture(
+	register: (pi: ExtensionAPI) => void,
+	appendEntry: ExtensionAPI["appendEntry"] = async () => {},
+): ToolDefinition {
 	const tools: ToolDefinition[] = [];
 	const pi: Pick<ExtensionAPI, "registerTool" | "on" | "registerShortcut" | "registerCommand" | "appendEntry"> = {
 		registerTool: (tool) => {
@@ -60,7 +64,7 @@ function capture(register: (pi: ExtensionAPI) => void): ToolDefinition {
 		on: () => () => {},
 		registerShortcut: () => {},
 		registerCommand: () => {},
-		appendEntry: () => {},
+		appendEntry,
 	};
 	register(pi as ExtensionAPI);
 	const tool = tools.find((tool) => tool.name === "fetch_content");
@@ -225,4 +229,32 @@ test("fetch_content preserves successful content retrieval guidance for mixed ba
 	assert.match(text.text, /Good page/);
 	assert.match(text.text, /HTTP 403 Forbidden/);
 	assert.match(text.text, /get_search_content.*to retrieve full content/);
+});
+
+test("fetch_content reports a rejected session commit through its tool error path", async () => {
+	const failure = new StorageUnavailableError({ adapter: "test", location: "fetch" }, new Error("write failed"));
+	const tool = capture(
+		(pi) =>
+			registerContentTools(pi, {
+				maxInlineContent: 1000,
+				stripThumbnails: (results) => results,
+				formatFullResults: () => "",
+			}),
+		async () => {
+			throw failure;
+		},
+	);
+	await assert.rejects(
+		tool.execute(
+			"failed-commit",
+			{ urls: ["https://example.test"] },
+			new AbortController().signal,
+			undefined,
+			toolContext({} as ExtensionContext),
+		),
+		(error: Error) => {
+			assert.equal(error, failure);
+			return true;
+		},
+	);
 });

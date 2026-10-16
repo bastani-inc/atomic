@@ -81,7 +81,7 @@ export function createChildWorkflowRunner(input: {
 			if (boundary.replayedChild !== undefined) {
 				await Promise.resolve();
 				runtime.exit.throwIfWorkflowExitSelected();
-				boundary.finalizeReplay();
+				await boundary.finalizeReplay();
 				await durableInvocation?.recordTerminal("completed", boundary.replayedChild);
 				return boundary.replayedChild as WorkflowChildResult<TChildOutputs>;
 			}
@@ -98,7 +98,7 @@ export function createChildWorkflowRunner(input: {
 			const childController = new AbortController();
 			childControllerForCleanup = childController;
 			const childRef: WorkflowChildRunRef = { alias: childName, workflow: child.normalizedName, runId: childRunId };
-			boundary.linkChildRun(childRef, childController);
+			await boundary.linkChildRun(childRef, childController);
 
 			const abortChildFromParent = (): void => {
 				const parentExit = findWorkflowExitSignal(runtime.signal.reason, runtime.exit.exitScope);
@@ -188,7 +188,7 @@ export function createChildWorkflowRunner(input: {
 					};
 			const workflowChild = workflowChildReplaySnapshot(childName, childResult);
 			const outputKeys = Object.keys(outputs);
-			boundary.complete(
+			await boundary.complete(
 				`Workflow "${child.name}" ${childRun.status} (runId: ${childRun.runId}; outputs: ${outputKeys.length > 0 ? outputKeys.join(", ") : "(none)"})`,
 				workflowChild,
 			);
@@ -206,7 +206,7 @@ export function createChildWorkflowRunner(input: {
 				await durableInvocation?.recordTerminal("skipped");
 				throw exit;
 			}
-			boundary.fail(err);
+			await boundary.fail(err);
 			await durableInvocation?.recordTerminal("failed");
 			throw err;
 		} finally {

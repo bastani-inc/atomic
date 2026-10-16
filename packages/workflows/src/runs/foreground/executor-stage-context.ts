@@ -94,10 +94,11 @@ export function createStageContext(input: {
 			recordStageNotice({ kind: "model", from: noticeValue(innerCtx.model), to: noticeValue(model) });
 			await innerCtx.setModel(model);
 		},
-		setThinkingLevel: (level) => {
+		setThinkingLevel: async (level) => {
 			runtime.throwIfStageMutationBlocked();
-			recordStageNotice({ kind: "thinking", from: noticeValue(innerCtx.thinkingLevel), to: noticeValue(level) });
-			innerCtx.setThinkingLevel(level);
+			const from = noticeValue(innerCtx.thinkingLevel);
+			await innerCtx.setThinkingLevel(level);
+			recordStageNotice({ kind: "thinking", from, to: noticeValue(level) });
 		},
 		cycleModel: async () => {
 			runtime.throwIfStageMutationBlocked();
@@ -106,10 +107,10 @@ export function createStageContext(input: {
 			recordStageNotice({ kind: "model", from, to: noticeValue(innerCtx.model) });
 			return result;
 		},
-		cycleThinkingLevel: () => {
+		cycleThinkingLevel: async () => {
 			runtime.throwIfStageMutationBlocked();
 			const from = noticeValue(innerCtx.thinkingLevel);
-			const result = innerCtx.cycleThinkingLevel();
+			const result = await innerCtx.cycleThinkingLevel();
 			recordStageNotice({ kind: "thinking", from, to: noticeValue(innerCtx.thinkingLevel) });
 			return result;
 		},

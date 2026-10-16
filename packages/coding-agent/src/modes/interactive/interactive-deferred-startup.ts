@@ -134,7 +134,7 @@ export async function applyDeferredModelScope(mode: InteractiveModeBase): Promis
 	if (mode.session.modelRuntime.hasConfiguredAuth(nextScopedModel.model.provider)) {
 		await mode.session.setModel(nextScopedModel.model);
 		if (nextScopedModel.thinkingLevel && !mode.options.deferredModelScopePreserveThinking) {
-			mode.session.setThinkingLevel(nextScopedModel.thinkingLevel);
+			await mode.session.setThinkingLevel(nextScopedModel.thinkingLevel);
 		}
 	}
 }
@@ -182,7 +182,7 @@ InteractiveModeBase.prototype.retryDeferredModelRestore = async function (
 		});
 		if (result.model) {
 			await this.session.setModel(result.model);
-			this.session.setThinkingLevel(result.thinkingLevel);
+			await this.session.setThinkingLevel(result.thinkingLevel);
 			return;
 		}
 		this.showWarning(result.fallbackMessage ?? formatNoModelsAvailableMessage(), targetContainer);

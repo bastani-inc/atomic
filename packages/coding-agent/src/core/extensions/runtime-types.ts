@@ -66,9 +66,9 @@ export type SendUserMessageHandler = (
 	options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
 ) => void;
 
-export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
+export type AppendEntryHandler = <T>(customType: string, data?: T) => Promise<void>;
 
-export type SetSessionNameHandler = (name: string) => void;
+export type SetSessionNameHandler = (name: string) => Promise<void>;
 
 export type GetSessionNameHandler = () => string | undefined;
 
@@ -86,9 +86,9 @@ export type SetModelHandler = (model: Model<Api>) => Promise<boolean>;
 
 export type GetThinkingLevelHandler = () => ThinkingLevel;
 
-export type SetThinkingLevelHandler = (level: ThinkingLevel) => void;
+export type SetThinkingLevelHandler = (level: ThinkingLevel) => Promise<void>;
 
-export type SetLabelHandler = (entryId: string, label: string | undefined) => void;
+export type SetLabelHandler = (entryId: string, label: string | undefined) => Promise<void>;
 
 /**
  * Shared state created by loader, used during registration and runtime.
@@ -162,9 +162,9 @@ export interface ExtensionRuntimeState {
 	 * Before bindCore(): queues registrations / removes from queue.
 	 * After bindCore(): calls ModelRegistry directly for immediate effect.
 	 */
-	registerProvider: ((name: string, config: ProviderConfig, extensionPath?: string) => void) &
-		((provider: Provider, extensionPath?: string) => void);
-	unregisterProvider: (name: string, extensionPath?: string) => void;
+	registerProvider: ((name: string, config: ProviderConfig, extensionPath?: string) => void | Promise<void>) &
+		((provider: Provider, extensionPath?: string) => void | Promise<void>);
+	unregisterProvider: (name: string, extensionPath?: string) => void | Promise<void>;
 }
 
 /**

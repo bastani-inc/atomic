@@ -213,7 +213,7 @@ calculateCost(model, output.usage);
 Register your stream function:
 
 ```typescript
-pi.registerProvider("my-provider", {
+await pi.registerProvider("my-provider", {
   baseUrl: "https://api.example.com",
   apiKey: "$MY_API_KEY",
   api: "my-custom-api",

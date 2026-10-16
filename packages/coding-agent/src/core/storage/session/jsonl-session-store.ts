@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { BigIntStats } from "node:fs";
+import { type BigIntStats, createReadStream } from "node:fs";
 import {
 	appendFile,
 	copyFile,
@@ -7,7 +7,6 @@ import {
 	mkdir,
 	open,
 	readdir,
-	readFile,
 	rename,
 	stat,
 	truncate,
@@ -15,6 +14,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import { StringDecoder } from "node:string_decoder";
 import { setTimeout as delay } from "node:timers/promises";
 import lockfile from "proper-lockfile";
@@ -82,45 +82,60 @@ export class JsonlSessionStore implements SessionStore {
 	private readonly directory: string;
 	private readonly fileStates = new Map<string, SessionFileState>();
 
-	private constructor(directory: string) {
+	private readonly exactDirectory: boolean;
+
+	private constructor(directory: string, exactDirectory: boolean) {
+		this.exactDirectory = exactDirectory;
 		this.directory = resolve(directory);
 	}
 
-	static async open(directory: string): Promise<JsonlSessionStore> {
-		const store = new JsonlSessionStore(directory);
+	static async open(
+		directory: string,
+		options?: { exactDirectory?: boolean; scanExisting?: boolean },
+	): Promise<JsonlSessionStore> {
+		const store = new JsonlSessionStore(directory, options?.exactDirectory === true);
 		await store.run(() => mkdir(store.directory, { recursive: true }).then(() => {}), false);
-		await store.run(async () => {
-			for (const path of await store.paths()) {
-				try {
-					await store.readSnapshot(path);
-				} catch {
-					store.fileStates.delete(path);
+		if (options?.scanExisting !== false) {
+			await store.run(async () => {
+				for (const path of await store.paths()) {
+					try {
+						await store.readSnapshot(path);
+					} catch {
+						store.fileStates.delete(path);
+					}
 				}
-			}
-		});
+			});
+		}
 		return store;
+	}
+
+	locationFor(header: SessionRecordHeader): string {
+		const projectName = `--${resolve(header.cwd)
+			.replace(/^[/\\]/, "")
+			.replace(/[/\\:]/g, "-")}--`;
+		const project = this.exactDirectory
+			? this.directory
+			: join(this.directory, Buffer.byteLength(projectName) <= 180 ? projectName : `--${this.key(header.cwd)}--`);
+		return join(project, `${header.createdAt.replace(/[:.]/g, "-")}_${this.key(header.id)}.jsonl`);
 	}
 
 	get descriptor(): StorageDescriptor {
 		return { adapter: "jsonl", location: this.directory };
 	}
 
-	create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<{ readonly lastSeq: number }> {
+	create(
+		header: SessionRecordHeader,
+		entries: readonly SessionEntry[],
+		location?: string,
+	): Promise<{ readonly lastSeq: number }> {
 		return this.run(async () => {
 			validateSessionHeader(header);
 			validateSessionEntries(entries);
 			const existing = await this.locate(header.id);
 			if (existing) throw new SessionExistsError(header.id);
 			const payload = this.encode(header, entries);
-			const projectName = `--${resolve(header.cwd)
-				.replace(/^[/\\]/, "")
-				.replace(/[/\\:]/g, "-")}--`;
-			const project = join(
-				this.directory,
-				Buffer.byteLength(projectName) <= 180 ? projectName : `--${this.key(header.cwd)}--`,
-			);
-			await mkdir(project, { recursive: true });
-			const path = join(project, `${header.createdAt.replace(/[:.]/g, "-")}_${this.key(header.id)}.jsonl`);
+			const path = location === undefined ? this.locationFor(header) : resolve(location);
+			await mkdir(resolve(path, ".."), { recursive: true });
 			const temporary = `${path}.${randomUUID()}.tmp`;
 			try {
 				await writeFile(temporary, payload, { flag: "wx" });
@@ -213,6 +228,14 @@ export class JsonlSessionStore implements SessionStore {
 			if (!located) throw new SessionNotFoundError(sessionId);
 			return this.readSnapshot(located.path, located.header);
 		});
+	}
+
+	loadFile(path: string): Promise<SessionSnapshot> {
+		return this.run(() => this.readSnapshot(resolve(path)));
+	}
+
+	findFile(sessionId: string): Promise<string | undefined> {
+		return this.run(async () => (await this.locate(sessionId))?.path);
 	}
 
 	readHeader(sessionId: string): Promise<SessionRecordHeader | undefined> {
@@ -350,7 +373,7 @@ export class JsonlSessionStore implements SessionStore {
 		const paths: string[] = [];
 		for (const entry of await readdir(this.directory, { withFileTypes: true })) {
 			const path = join(this.directory, entry.name);
-			if (entry.isDirectory()) {
+			if (entry.isDirectory() && !this.exactDirectory) {
 				for (const child of await readdir(path, { withFileTypes: true })) {
 					if (child.isFile() && child.name.endsWith(".jsonl")) paths.push(join(path, child.name));
 				}
@@ -446,13 +469,39 @@ export class JsonlSessionStore implements SessionStore {
 
 	private async readSnapshot(path: string, header?: SessionRecordHeader): Promise<SessionSnapshot> {
 		header ??= await this.readHeaderAt(path);
-		const content = await readFile(path, "utf8");
-		const lines = content.split("\n");
-		if (lines.at(-1) === "") lines.pop();
-		const entries = lines.slice(1).map((line) => JSON.parse(line) as SessionEntry);
+		const input = createReadStream(path);
+		let witness: Buffer = Buffer.alloc(0);
+		let terminated = false;
+		input.on("data", (chunk: string | Buffer) => {
+			const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+			witness = Buffer.from(Buffer.concat([witness, bytes]).subarray(-64));
+			terminated = bytes.at(-1) === 10;
+		});
+		const lines = createInterface({ input, crlfDelay: Infinity });
+		const entries: SessionEntry[] = [];
+		let first = true;
+		try {
+			for await (const line of lines) {
+				if (first) {
+					first = false;
+					continue;
+				}
+				if (line.trim()) entries.push(JSON.parse(line) as SessionEntry);
+			}
+		} finally {
+			lines.close();
+			input.destroy();
+		}
 		validateSessionEntryStructure(entries, path);
 		validateSessionEntries(entries);
-		await this.remember(path, this.contentState(header, entries, content));
+		await this.remember(path, {
+			headerStamp: JSON.stringify(header),
+			headerId: header.id,
+			lastSeq: entries.length,
+			lastEntryId: entries.at(-1)?.id,
+			witness,
+			terminated,
+		});
 		return { header, entries, lastSeq: entries.length };
 	}
 

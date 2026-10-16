@@ -22,11 +22,17 @@ import type { WorkflowExitStatus, WorkflowInputValues, WorkflowModelAttempt, Wor
 /** Subset of the pi runtime API required for persistence operations. */
 export interface PersistenceAPI {
 	/** Appends a typed entry to the session transcript. Returns the entry ID. */
-	appendEntry?: (type: string, payload: Record<string, unknown>) => string | undefined;
+	appendEntry?: (
+		type: string,
+		payload: Record<string, unknown>,
+	) => string | void | Promise<string | undefined> | Promise<void>;
 	/** Labels an entry for /tree bookmark filtering. */
-	setLabel?: (entryId: string, label: string) => void;
+	setLabel?: (entryId: string, label: string) => void | Promise<void>;
 	/** Appends a synthetic system/assistant message entry. */
-	appendCustomMessageEntry?: (content: string, meta?: Record<string, unknown>) => string | undefined;
+	appendCustomMessageEntry?: (
+		content: string,
+		meta?: Record<string, unknown>,
+	) => string | void | Promise<string | undefined> | Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -155,9 +161,9 @@ export interface RunBlockedPayload {
  * Appends a `workflow.run.start` entry and labels it for /tree filtering.
  * Label format: `wf:<name>:<full-run-id>`.
  */
-export function appendRunStart(api: PersistenceAPI, payload: RunStartPayload): void {
+export async function appendRunStart(api: PersistenceAPI, payload: RunStartPayload): Promise<void> {
 	if (typeof api.appendEntry !== "function") return;
-	const entryId = api.appendEntry("workflow.run.start", {
+	const entryId = await api.appendEntry("workflow.run.start", {
 		runId: payload.runId,
 		name: payload.name,
 		inputs: payload.inputs,
@@ -174,14 +180,14 @@ export function appendRunStart(api: PersistenceAPI, payload: RunStartPayload): v
 		ts: payload.ts,
 	});
 	if (entryId && typeof api.setLabel === "function") {
-		api.setLabel(entryId, `wf:${payload.name}:${payload.runId}`);
+		await api.setLabel(entryId, `wf:${payload.name}:${payload.runId}`);
 	}
 }
 
 /** Appends a `workflow.stage.start` entry. */
-export function appendStageStart(api: PersistenceAPI, payload: StageStartPayload): void {
+export async function appendStageStart(api: PersistenceAPI, payload: StageStartPayload): Promise<void> {
 	if (typeof api.appendEntry !== "function") return;
-	api.appendEntry("workflow.stage.start", {
+	await api.appendEntry("workflow.stage.start", {
 		runId: payload.runId,
 		stageId: payload.stageId,
 		name: payload.name,
@@ -199,9 +205,9 @@ export function appendStageStart(api: PersistenceAPI, payload: StageStartPayload
 }
 
 /** Appends a `workflow.stage.progress` entry (tool calls, message deltas, etc.). */
-export function appendStageProgress(api: PersistenceAPI, payload: StageProgressPayload): void {
+export async function appendStageProgress(api: PersistenceAPI, payload: StageProgressPayload): Promise<void> {
 	if (typeof api.appendEntry !== "function") return;
-	api.appendEntry("workflow.stage.progress", {
+	await api.appendEntry("workflow.stage.progress", {
 		runId: payload.runId,
 		stageId: payload.stageId,
 		kind: payload.kind,
@@ -210,9 +216,13 @@ export function appendStageProgress(api: PersistenceAPI, payload: StageProgressP
 }
 
 /** Appends a `workflow.stage.end` entry. Optionally emits a custom message entry. */
-export function appendStageEnd(api: PersistenceAPI, payload: StageEndPayload, opts?: { emitMessage?: boolean }): void {
+export async function appendStageEnd(
+	api: PersistenceAPI,
+	payload: StageEndPayload,
+	opts?: { emitMessage?: boolean },
+): Promise<void> {
 	if (typeof api.appendEntry !== "function") return;
-	api.appendEntry("workflow.stage.end", {
+	await api.appendEntry("workflow.stage.end", {
 		runId: payload.runId,
 		stageId: payload.stageId,
 		status: payload.status,
@@ -239,7 +249,7 @@ export function appendStageEnd(api: PersistenceAPI, payload: StageEndPayload, op
 			: {}),
 	});
 	if (opts?.emitMessage === true && payload.summary && typeof api.appendCustomMessageEntry === "function") {
-		api.appendCustomMessageEntry(
+		await api.appendCustomMessageEntry(
 			`Workflow stage ${payload.stageId} completed (${payload.status}): ${payload.summary}`,
 			{ runId: payload.runId, stageId: payload.stageId },
 		);
@@ -263,10 +273,10 @@ function sanitizeTerminalRunEndPayload(payload: RunEndPayload): RunEndPayload {
 }
 
 /** Appends a `workflow.run.end` entry. */
-export function appendRunEnd(api: PersistenceAPI, payload: RunEndPayload): void {
+export async function appendRunEnd(api: PersistenceAPI, payload: RunEndPayload): Promise<void> {
 	if (typeof api.appendEntry !== "function") return;
 	const terminalPayload = sanitizeTerminalRunEndPayload(payload);
-	api.appendEntry("workflow.run.end", {
+	await api.appendEntry("workflow.run.end", {
 		runId: terminalPayload.runId,
 		status: terminalPayload.status,
 		...(terminalPayload.result !== undefined ? { result: terminalPayload.result } : {}),
@@ -294,9 +304,9 @@ export function appendRunEnd(api: PersistenceAPI, payload: RunEndPayload): void 
 }
 
 /** Appends a `workflow.run.blocked` entry for active recoverable failures. */
-export function appendRunBlocked(api: PersistenceAPI, payload: RunBlockedPayload): void {
+export async function appendRunBlocked(api: PersistenceAPI, payload: RunBlockedPayload): Promise<void> {
 	if (typeof api.appendEntry !== "function") return;
-	api.appendEntry("workflow.run.blocked", {
+	await api.appendEntry("workflow.run.blocked", {
 		runId: payload.runId,
 		...(payload.failedStageId !== undefined ? { failedStageId: payload.failedStageId } : {}),
 		error: payload.error,

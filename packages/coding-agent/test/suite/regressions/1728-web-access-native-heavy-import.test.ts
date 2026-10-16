@@ -19,7 +19,7 @@ const pi = {
   registerShortcut() {},
   registerMessageRenderer() {},
   on() {},
-  appendEntry() {},
+  async appendEntry() {},
 };
 webAccess(pi);
 // Missing, legacy singular, and empty inputs fail at the host boundary, before execute.

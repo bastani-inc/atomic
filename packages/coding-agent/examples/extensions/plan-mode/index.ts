@@ -88,11 +88,11 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		updateStatus(ctx);
 	}
 
-	function persistState(): void {
-		pi.appendEntry("plan-mode", {
+	async function persistState(todos: TodoItem[], executing = executionMode): Promise<void> {
+		await pi.appendEntry("plan-mode", {
 			enabled: planModeEnabled,
-			todos: todoItems,
-			executing: executionMode,
+			todos,
+			executing,
 		});
 	}
 
@@ -210,10 +210,11 @@ After completing a step, include a [DONE:n] tag in your response.`,
 		if (!isAssistantMessage(event.message)) return;
 
 		const text = getTextContent(event.message);
-		if (markCompletedSteps(text, todoItems) > 0) {
-			updateStatus(ctx);
-		}
-		persistState();
+		const nextTodos = todoItems.map((item) => ({ ...item }));
+		const changed = markCompletedSteps(text, nextTodos);
+		await persistState(nextTodos);
+		todoItems = nextTodos;
+		if (changed > 0) updateStatus(ctx);
 	});
 
 	// Handle plan completion and plan mode UI
@@ -222,15 +223,16 @@ After completing a step, include a [DONE:n] tag in your response.`,
 		if (executionMode && todoItems.length > 0) {
 			if (todoItems.every((t) => t.completed)) {
 				const completedList = todoItems.map((t) => `~~${t.text}~~`).join("\n");
-				pi.sendMessage(
-					{ customType: "plan-complete", content: `**Plan Complete!** ✓\n\n${completedList}`, display: true },
-					{ triggerTurn: false },
-				);
+				// Commit the cleared state before publishing completion, so a failure can be retried.
+				await persistState([], false);
 				executionMode = false;
 				todoItems = [];
 				pi.setActiveTools(NORMAL_MODE_TOOLS);
 				updateStatus(ctx);
-				persistState(); // Save cleared state so resume doesn't restore old execution mode
+				await pi.sendMessage(
+					{ customType: "plan-complete", content: `**Plan Complete!** ✓\n\n${completedList}`, display: true },
+					{ triggerTurn: false },
+				);
 			}
 			return;
 		}

@@ -5,8 +5,8 @@ import { assertSessionOpen } from "./session-lifecycle-work.ts";
 import type { BranchSummaryEntry } from "./session-manager.ts";
 import { createSummarizationRetryCallbacks } from "./summarization-retry.ts";
 
-export function setSessionName(this: AgentSession, name: string): void {
-	this.sessionManager.appendSessionInfo(name);
+export async function setSessionName(this: AgentSession, name: string): Promise<void> {
+	await this.sessionManager.appendSessionInfo(name);
 	const event = { type: "session_info_changed", name: this.sessionManager.getSessionName() } as const;
 	this._emit(event);
 	void this._extensionRunner.emit(event);
@@ -205,7 +205,7 @@ export async function navigateTree(
 		let summaryEntry: BranchSummaryEntry | undefined;
 		if (summaryText) {
 			// Create summary at target position (can be null for root)
-			const summaryId = this.sessionManager.branchWithSummary(
+			const summaryId = await this.sessionManager.branchWithSummary(
 				newLeafId,
 				summaryText,
 				summaryDetails,
@@ -217,19 +217,19 @@ export async function navigateTree(
 
 			// Attach label to the summary entry
 			if (label) {
-				this.sessionManager.appendLabelChange(summaryId, label);
+				await this.sessionManager.appendLabelChange(summaryId, label);
 			}
 		} else if (newLeafId === null) {
 			// No summary, navigating to root - reset leaf
-			this.sessionManager.resetLeaf();
+			await this.sessionManager.resetLeaf();
 		} else {
 			// No summary, navigating to non-root
-			this.sessionManager.branch(newLeafId);
+			await this.sessionManager.branch(newLeafId);
 		}
 
 		// Attach label to target entry when not summarizing (no summary entry to label)
 		if (label && !summaryText) {
-			this.sessionManager.appendLabelChange(targetId, label);
+			await this.sessionManager.appendLabelChange(targetId, label);
 		}
 
 		// Update finalized context from the canonical session projection.

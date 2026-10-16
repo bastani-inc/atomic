@@ -105,7 +105,7 @@ function registerTool(sender: Client, onResolve?: () => void | Promise<void>): T
 			registerTool(value: Tool) {
 				tool = value;
 			},
-			appendEntry() {},
+			async appendEntry() {},
 		} as never,
 		{
 			ensureConnected: async () => {

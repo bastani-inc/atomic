@@ -58,7 +58,7 @@ test("opening a transcript receives the final message queued during its history 
 	setKeybindings(new KeybindingsManager());
 	const fixture = taskFixture();
 	const session = SessionManager.inMemory();
-	session.appendMessage({ role: "user", content: "Inspect the subscription race", timestamp: 0 });
+	await session.appendMessage({ role: "user", content: "Inspect the subscription race", timestamp: 0 });
 	const listeners = new Set<(event: AgentSessionEvent) => void>();
 	let finalDuringRead: string | undefined;
 	let listenersAtFinal = -1;
@@ -77,12 +77,12 @@ test("opening a transcript receives the final message queued during its history 
 				const text = finalDuringRead;
 				finalDuringRead = undefined;
 				if (text !== undefined)
-					queueMicrotask(() => {
+					queueMicrotask(async () => {
 						const message = assistant(text);
 						listenersAtFinal = listeners.size;
 						for (const listener of listeners) listener({ type: "message_end", message });
 						// AgentSession persists after notifying public listeners.
-						finalId = session.appendMessage(message);
+						finalId = await session.appendMessage(message);
 					});
 				return entries;
 			},
@@ -99,7 +99,7 @@ test("opening a transcript receives the final message queued during its history 
 		finalDuringRead = "BEFORE-SUBSCRIBE";
 		const oldPage = await readTaskTranscript(lease);
 		assert.ok(oldPage.ok);
-		assert.ok(finalId);
+		await vi.waitFor(() => assert.ok(finalId));
 		assert.equal(listenersAtFinal, 0);
 		assert.ok(oldPage.value.items.every((item) => item.source.entryId !== finalId));
 

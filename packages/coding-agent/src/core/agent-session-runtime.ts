@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { constants, copyFileSync, existsSync, mkdirSync } from "node:fs";
-import { basename, join, parse, resolve } from "node:path";
+import { basename, dirname, join, parse, resolve } from "node:path";
 import type { AuthInteraction } from "@bastani/pi-ai";
 import { type Api, type Model, modelsAreEqual } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
@@ -28,6 +28,7 @@ import {
 	trackSessionWork,
 } from "./session-lifecycle-work.ts";
 import { SessionManager } from "./session-manager.ts";
+import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 
 /**
  * Result returned by runtime creation.
@@ -353,7 +354,7 @@ export class AgentSessionRuntime {
 				availableIds.has(`${model.provider}\0${model.id}`),
 			);
 			this.session.setScopedModels([...scopedModels]);
-			this.session.refreshCurrentModelFromRegistry();
+			await this.session.refreshCurrentModelFromRegistry();
 			return {
 				provider,
 				authStatus: registry.getProviderAuthStatus(provider),
@@ -553,7 +554,7 @@ export class AgentSessionRuntime {
 			}
 
 			const previousSessionFile = this.session.sessionFile;
-			const sessionManager = SessionManager.open(sessionPath, undefined, options?.cwdOverride);
+			const sessionManager = await SessionManager.open(sessionPath, undefined, options?.cwdOverride);
 			assertSessionCwdExists(sessionManager, this.cwd);
 			const runtimeOptions: CreateAgentSessionRuntimeOptions = {
 				cwd: sessionManager.getCwd(),
@@ -588,10 +589,23 @@ export class AgentSessionRuntime {
 
 			const previousSessionFile = this.session.sessionFile;
 			const sessionDir = this.session.sessionManager.getSessionDir();
-			const sessionManager = SessionManager.create(this.cwd, sessionDir);
+			let parentSession: string | undefined;
 			if (options?.parentSession) {
-				sessionManager.newSession({ parentSession: options.parentSession });
+				if (options.parentSession === previousSessionFile)
+					parentSession = this.session.sessionManager.getSessionId();
+				else {
+					const store = await JsonlSessionStore.open(dirname(resolvePath(options.parentSession)), {
+						exactDirectory: true,
+						scanExisting: false,
+					});
+					try {
+						parentSession = (await store.loadFile(resolvePath(options.parentSession))).header.id;
+					} finally {
+						await store.close();
+					}
+				}
 			}
+			const sessionManager = await SessionManager.create(this.cwd, sessionDir, { parentSession });
 
 			await this.teardownCurrent("new", sessionManager.getSessionFile());
 			await this.apply(
@@ -645,8 +659,9 @@ export class AgentSessionRuntime {
 				}
 				const sessionDir = this.session.sessionManager.getSessionDir();
 				if (!targetLeafId) {
-					const sessionManager = SessionManager.create(this.cwd, sessionDir);
-					sessionManager.newSession({ parentSession: currentSessionFile });
+					const sessionManager = await SessionManager.create(this.cwd, sessionDir, {
+						parentSession: this.session.sessionManager.getSessionId(),
+					});
 					await this.teardownCurrent("fork", sessionManager.getSessionFile());
 					await this.apply(
 						await this.createRuntime({
@@ -663,8 +678,8 @@ export class AgentSessionRuntime {
 				if (!existsSync(currentSessionFile)) {
 					throw new Error("This session has not been saved yet. Send a message before cloning or forking it.");
 				}
-				const sessionManager = SessionManager.open(currentSessionFile, sessionDir);
-				const forkedSessionPath = sessionManager.createBranchedSession(targetLeafId);
+				const sessionManager = await SessionManager.open(currentSessionFile, sessionDir);
+				const forkedSessionPath = await sessionManager.createBranchedSession(targetLeafId);
 				if (!forkedSessionPath) {
 					throw new Error("Failed to create forked session");
 				}
@@ -684,9 +699,9 @@ export class AgentSessionRuntime {
 			const sessionManager = this.session.sessionManager;
 			await this.teardownCurrent("fork", sessionManager.getSessionFile());
 			if (!targetLeafId) {
-				sessionManager.newSession({ parentSession: previousSessionFile });
+				await sessionManager.newSession({ parentSession: sessionManager.getSessionId() });
 			} else {
-				sessionManager.createBranchedSession(targetLeafId);
+				await sessionManager.createBranchedSession(targetLeafId);
 			}
 			await this.apply(
 				await this.createRuntime({
@@ -740,7 +755,7 @@ export class AgentSessionRuntime {
 				copyFileSync(resolvedPath, destinationPath, constants.COPYFILE_EXCL);
 			}
 
-			const sessionManager = SessionManager.open(destinationPath, sessionDir, cwdOverride);
+			const sessionManager = await SessionManager.open(destinationPath, sessionDir, cwdOverride);
 			assertSessionCwdExists(sessionManager, this.cwd);
 			await this.teardownCurrent("resume", sessionManager.getSessionFile());
 			await this.apply(

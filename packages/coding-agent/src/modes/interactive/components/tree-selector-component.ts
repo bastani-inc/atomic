@@ -13,7 +13,10 @@ export class TreeSelectorComponent extends Container implements Focusable {
 	private labelInput: LabelInput | null = null;
 	private labelInputContainer: Container;
 	private treeContainer: Container;
-	private onLabelChangeCallback?: (entryId: string, label: string | undefined) => void;
+	private onLabelChangeCallback?: (entryId: string, label: string | undefined) => void | Promise<void>;
+	private labelPending = false;
+	public onLabelError?: (error: Error) => void;
+	public onLabelUpdate?: () => void;
 
 	// Focusable implementation - propagate to labelInput when active for IME cursor positioning
 	private _focused = false;
@@ -34,7 +37,7 @@ export class TreeSelectorComponent extends Container implements Focusable {
 		terminalHeight: number,
 		onSelect: (entryId: string) => void,
 		onCancel: () => void,
-		onLabelChange?: (entryId: string, label: string | undefined) => void,
+		onLabelChange?: (entryId: string, label: string | undefined) => void | Promise<void>,
 		initialSelectedId?: string,
 		initialFilterMode?: FilterMode,
 	) {
@@ -73,9 +76,7 @@ export class TreeSelectorComponent extends Container implements Focusable {
 	private showLabelInput(entryId: string, currentLabel: string | undefined): void {
 		this.labelInput = new LabelInput(entryId, currentLabel);
 		this.labelInput.onSubmit = (id, label) => {
-			this.treeList.updateNodeLabel(id, label);
-			this.onLabelChangeCallback?.(id, label);
-			this.hideLabelInput();
+			void this.saveLabel(id, label).catch((error: Error) => this.onLabelError?.(error));
 		};
 		this.labelInput.onCancel = () => this.hideLabelInput();
 
@@ -87,6 +88,19 @@ export class TreeSelectorComponent extends Container implements Focusable {
 		this.labelInputContainer.addChild(this.labelInput);
 	}
 
+	private async saveLabel(entryId: string, label: string | undefined): Promise<void> {
+		if (this.labelPending) return;
+		this.labelPending = true;
+		try {
+			await this.onLabelChangeCallback?.(entryId, label);
+			this.treeList.updateNodeLabel(entryId, label);
+			this.hideLabelInput();
+		} finally {
+			this.labelPending = false;
+			this.onLabelUpdate?.();
+		}
+	}
+
 	private hideLabelInput(): void {
 		this.labelInput = null;
 		this.labelInputContainer.clear();
@@ -95,6 +109,7 @@ export class TreeSelectorComponent extends Container implements Focusable {
 	}
 
 	handleInput(keyData: string): boolean {
+		if (this.labelPending) return true;
 		if (this.labelInput) {
 			this.labelInput.handleInput(keyData);
 			return true;

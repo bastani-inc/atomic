@@ -78,7 +78,7 @@ test("recovery snapshots retain unchanged pane activity but a new claim republis
 	);
 	const publisher = loaded.runtime.workflowActivityHub.registerWorkflowActivityPublisher();
 	publisher.publishSnapshot({ availability: "ready", roots: [] });
-	const manager = SessionManager.create(fake.dir, fake.dir);
+	const manager = await SessionManager.create(fake.dir, fake.dir);
 	const runners = [0, 1].map(() => {
 		const runner = new ExtensionRunner(loaded.extensions, loaded.runtime, fake.dir, manager, {} as never);
 		runner.setUIContext({ ...noOpUIContext }, "tui");
@@ -158,7 +158,7 @@ else {
 		);
 		const publisher = loaded.runtime.workflowActivityHub.registerWorkflowActivityPublisher();
 		publisher.publishSnapshot({ availability: "ready", roots: [] });
-		const manager = SessionManager.create(fake.dir, fake.dir);
+		const manager = await SessionManager.create(fake.dir, fake.dir);
 		const runner = new ExtensionRunner(loaded.extensions, loaded.runtime, fake.dir, manager, {} as never);
 		runner.setUIContext({ ...noOpUIContext }, "tui");
 		try {
@@ -252,7 +252,7 @@ test(
 				models: [fauxModel],
 				streamSimple: faux.streamFn,
 			});
-			const sessionManager = SessionManager.create(fake.dir, fake.dir);
+			const sessionManager = await SessionManager.create(fake.dir, fake.dir);
 			const { session } = await createAgentSession({
 				builtins: { subagents: false, mcp: false, "web-access": false },
 				// #3105: startup observers receive the host at factory creation, not by replaying startup.
@@ -375,7 +375,7 @@ if (args.includes("working")) {
 	loaded.runtime.workflowActivityHub
 		.registerWorkflowActivityPublisher()
 		.publishSnapshot({ availability: "ready", roots: [] });
-	const sessionManager = SessionManager.create(fake.dir, fake.dir);
+	const sessionManager = await SessionManager.create(fake.dir, fake.dir);
 	const [retiring, successor] = [0, 1].map(() => {
 		const runner = new ExtensionRunner(loaded.extensions, loaded.runtime, fake.dir, sessionManager, {} as never);
 		runner.setUIContext({ ...noOpUIContext }, "tui");
@@ -550,7 +550,7 @@ test.each(["prepareCommit", "extendResources", "publishProviders"] as const)(
 				models: [fauxModel],
 				streamSimple: faux.streamFn,
 			});
-			const sessionManager = SessionManager.create(fake.dir, fake.dir);
+			const sessionManager = await SessionManager.create(fake.dir, fake.dir);
 			const { session } = await createAgentSession({
 				builtins: { subagents: false, mcp: false, "web-access": false },
 				extensionBindings: { mode: "tui", uiContext: { ...noOpUIContext } },

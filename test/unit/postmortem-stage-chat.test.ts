@@ -43,7 +43,7 @@ function retainedSession(name: string): string {
 				type: "session",
 				version: 4,
 				id: `${name}-session`,
-				timestamp: new Date().toISOString(),
+				createdAt: new Date().toISOString(),
 				cwd: tempDir,
 			}),
 			JSON.stringify({
@@ -135,6 +135,7 @@ describe("ensurePostMortemStageHandle", () => {
 		const registry = createStageControlRegistry();
 		const sessionFile = retainedSession("clear-race");
 		const created = Promise.withResolvers<StageSessionRuntime>();
+		const creating = Promise.withResolvers<void>();
 		let disposeCalls = 0;
 		const session: StageSessionRuntime = {
 			...mockSession(),
@@ -149,6 +150,7 @@ describe("ensurePostMortemStageHandle", () => {
 			adapters: {
 				agentSession: {
 					async create() {
+						creating.resolve();
 						return created.promise;
 					},
 				},
@@ -159,7 +161,7 @@ describe("ensurePostMortemStageHandle", () => {
 		if (!result.ok) return;
 
 		const attaching = result.handle.ensureAttached();
-		await Promise.resolve();
+		await creating.promise;
 		registry.clear();
 		created.resolve(session);
 

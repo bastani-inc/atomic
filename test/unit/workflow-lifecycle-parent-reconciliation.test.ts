@@ -391,7 +391,7 @@ describe("workflow lifecycle parent reconciliation", () => {
 		});
 		const sessionDir = mkdtempSync(join(tmpdir(), "atomic-lifecycle-dispose-"));
 		tempDirs.push(sessionDir);
-		const sessionManager = SessionManager.create(process.cwd(), sessionDir);
+		const sessionManager = await SessionManager.create(process.cwd(), sessionDir);
 		const harness = await createHarness({ sessionManager });
 		harnesses.push(harness);
 		const appendCustomMessageEntry = harness.sessionManager.appendCustomMessageEntry.bind(harness.sessionManager);
@@ -468,7 +468,7 @@ describe("workflow lifecycle parent reconciliation", () => {
 		assert.equal(hiddenPersistenceAttempts, 3, "disposal must make a final persistence attempt before state is lost");
 		const sessionFile = harness.sessionManager.getSessionFile();
 		assert.ok(sessionFile);
-		const reopened = SessionManager.open(sessionFile, harness.sessionManager.getSessionDir());
+		const reopened = await SessionManager.open(sessionFile, harness.sessionManager.getSessionDir());
 		const customEntries = reopened.getEntries().filter((entry) => entry.type === "custom_message");
 		assert.equal(customEntries.filter((entry) => entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE).length, 1);
 		assert.equal(
