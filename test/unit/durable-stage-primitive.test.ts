@@ -33,9 +33,9 @@ function makeStage(overrides: Partial<StageSnapshot> = {}): StageSnapshot {
 describe("recordStageCheckpoint", () => {
 	let backend: InMemoryDurableBackend;
 
-	beforeEach(() => {
-		backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+	beforeEach(async () => {
+		backend = await InMemoryDurableBackend.create();
+		await backend.registerWorkflow({
 			workflowId: WORKFLOW_ID,
 			name: "stage-test",
 			inputs: {},
@@ -157,7 +157,7 @@ describe("recordStageCheckpoint", () => {
 
 	test("schema-backed replay returns structured prompt output", async () => {
 		const replayKey = "stage:structured:1";
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: WORKFLOW_ID,
 			checkpointId: `stage:${replayKey}`,
@@ -183,7 +183,7 @@ describe("recordStageCheckpoint", () => {
 
 	test("replayed stage invokes recordCachedStage for graph/store visibility", async () => {
 		const replayKey = "stage:analyze:1";
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: WORKFLOW_ID,
 			checkpointId: `stage:${replayKey}`,
@@ -217,7 +217,7 @@ describe("recordStageCheckpoint", () => {
 	test("replayed task invokes recordCachedTask for graph/store visibility", async () => {
 		const replayKey = "stage:task:review:1";
 		const cached = { name: "review", stageName: "review", text: "cached task output" };
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: WORKFLOW_ID,
 			checkpointId: `task:${replayKey}`,
@@ -248,7 +248,7 @@ describe("recordStageCheckpoint", () => {
 		assert.deepEqual(recorded, [{ name: "review", replayKey, text: "cached task output" }]);
 	});
 
-	test("replay key generator namespaces by stage name + ordinal", () => {
+	test("replay key generator namespaces by stage name + ordinal", async () => {
 		const gen = createStageReplayKeyGenerator(WORKFLOW_ID);
 		const k1 = gen("analyze", "stage-1");
 		const k2 = gen("analyze", "stage-2");
@@ -266,11 +266,11 @@ describe("run durable checkpoints", () => {
 				checkpoint: import("../../packages/workflows/src/durable/types.js").DurableCheckpoint,
 			): Promise<void> {
 				await Promise.resolve();
-				super.recordCheckpoint(checkpoint);
+				await super.recordCheckpoint(checkpoint);
 				if (checkpoint.kind === "stage" && checkpoint.name === "one") this.persisted = true;
 			}
 		}
-		const backend = new AsyncStageBackend();
+		const backend = await AsyncStageBackend.create();
 		const store = createStore();
 		const def = workflow({
 			name: "stage-order-wf",
@@ -298,15 +298,15 @@ describe("run durable checkpoints", () => {
 	});
 
 	exTest("cached ctx.task replay records a completed store stage", async () => {
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+		const backend = await InMemoryDurableBackend.create();
+		await backend.registerWorkflow({
 			workflowId: "wf-task-replay",
 			name: "task",
 			inputs: {},
 			createdAt: Date.now(),
 			status: "running",
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: "wf-task-replay",
 			checkpointId: "task:stage:task:cached-task:1",
@@ -334,7 +334,7 @@ describe("run durable checkpoints", () => {
 	});
 
 	exTest("ctx.chain and ctx.parallel replay completed task checkpoints", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await InMemoryDurableBackend.create();
 		const def = workflow({
 			name: "durable-chain-parallel",
 			description: "",
@@ -394,7 +394,7 @@ describe("run durable checkpoints", () => {
 	});
 
 	exTest("ctx.workflow replays completed child workflow checkpoints", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await InMemoryDurableBackend.create();
 		const child = workflow({
 			name: "durable-child",
 			description: "",
@@ -450,7 +450,7 @@ describe("run durable checkpoints", () => {
 	});
 
 	exTest("terminal completed status is durable before run returns", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await InMemoryDurableBackend.create();
 		const def = workflow({
 			name: "status-journal-wf",
 			description: "",
@@ -473,7 +473,7 @@ describe("run durable checkpoints", () => {
 	});
 
 	exTest("repeated ctx.workflow(child) calls replay in order without re-execution", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await InMemoryDurableBackend.create();
 		let childRuns = 0;
 		const child = workflow({
 			name: "repeated-child",
@@ -538,7 +538,7 @@ describe("run durable checkpoints", () => {
 	});
 
 	exTest("ctx.exit terminal status persisted to durable metadata", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await InMemoryDurableBackend.create();
 		const def = workflow({
 			name: "exit-wf",
 			description: "",
@@ -555,7 +555,7 @@ describe("run durable checkpoints", () => {
 	});
 
 	exTest("ctx.exit blocked status persisted to durable metadata", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await InMemoryDurableBackend.create();
 		const def = workflow({
 			name: "blocked-wf",
 			description: "",
@@ -571,7 +571,7 @@ describe("run durable checkpoints", () => {
 	});
 
 	exTest("ctx.exit failed status persists durable metadata and opt-in resumability", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await InMemoryDurableBackend.create();
 		const defaultDef = workflow({
 			name: "failed-default-wf",
 			description: "",
@@ -635,7 +635,7 @@ describe("run durable checkpoints", () => {
 	});
 
 	exTest("replays an intentional failed child result without rerunning the child", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await InMemoryDurableBackend.create();
 		let childRuns = 0;
 		const child = workflow({
 			name: "durable-failed-child",
@@ -698,14 +698,14 @@ describe("run durable checkpoints", () => {
 	exTest("child workflow run propagates custom durableBackend", async () => {
 		class TrackingBackend extends InMemoryDurableBackend {
 			registered: string[] = [];
-			registerWorkflow(
+			async registerWorkflow(
 				h: import("../../packages/workflows/src/durable/backend.js").WorkflowRegistrationInput,
-			): void {
+			): Promise<void> {
 				this.registered.push(h.workflowId);
-				super.registerWorkflow(h);
+				await super.registerWorkflow(h);
 			}
 		}
-		const backend = new TrackingBackend();
+		const backend = await TrackingBackend.create();
 		const child = workflow({
 			name: "backend-child",
 			description: "",

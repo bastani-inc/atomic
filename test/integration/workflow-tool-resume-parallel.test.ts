@@ -32,7 +32,7 @@ type Gates = (ctx: ToolContext) => Promise<unknown>;
 
 /** Runs `gates` until the run fails on a thrown tool, then restarts the host and returns a resumer. */
 async function failThenRestart(initialGates: Gates) {
-	let backend = new JournalTestBackend();
+	let backend = await JournalTestBackend.create();
 	setDurableBackend(backend);
 	let gates = initialGates;
 	const definition = workflow({

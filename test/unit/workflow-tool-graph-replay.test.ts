@@ -229,7 +229,7 @@ describe("ctx.tool durable graph replay", () => {
 		assert.equal(cachedChildTool?.kind, "tool");
 		if (cachedChildTool?.kind !== "tool") return;
 		const partialBackend = new InMemoryDurableBackend();
-		partialBackend.registerWorkflow({
+		await partialBackend.registerWorkflow({
 			workflowId: runId,
 			name: parent.name,
 			inputs: {},
@@ -241,8 +241,8 @@ describe("ctx.tool durable graph replay", () => {
 			.listCheckpoints(runId)
 			.find((checkpoint) => checkpoint.kind === "stage" && checkpoint.topology?.boundary?.event === "start");
 		assert.ok(boundaryStart);
-		partialBackend.recordCheckpoint(boundaryStart);
-		partialBackend.recordCheckpoint(cachedChildTool);
+		await partialBackend.recordCheckpoint(boundaryStart);
+		await partialBackend.recordCheckpoint(cachedChildTool);
 		const partialStore = createStore();
 		const partial = await run(parent, {}, { runId, store: partialStore, durableBackend: partialBackend });
 		assert.equal(partial.status, "completed");
@@ -289,7 +289,7 @@ describe("ctx.tool durable graph replay", () => {
 					return { value: 42, labels: ["a", "a", "b"] };
 				}),
 		});
-		const firstBackend = new JournalTestBackend();
+		const firstBackend = await JournalTestBackend.create();
 		const firstStore = createStore();
 		const first = await run(definition, {}, { runId, store: firstStore, durableBackend: firstBackend });
 		assert.equal(first.status, "completed");

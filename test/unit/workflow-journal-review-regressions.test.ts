@@ -8,7 +8,7 @@ import {
 	JournalOwnershipError,
 } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
-import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import {
 	RUN_EVENT_TYPES,
 	type RunJournal,
@@ -26,6 +26,7 @@ import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../../packages/workflows/sr
 import { run, workflow } from "../../packages/workflows/src/sdk-surface.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { assertLeaseStateUnchanged } from "../helpers/journal-lease-state.js";
 import { testRunId } from "../helpers/run-id.js";
 import {
 	bunExecutable,
@@ -88,7 +89,7 @@ for (const method of ["takeoverExpired", "leaseState"] as const) {
 			const state = await memory.leaseState("run");
 			assert.equal(state?.holderId, backend.holderId);
 			assert.equal(await backend.workflowOwnership("run"), "local");
-			assert.deepEqual(await memory.leaseState("run"), state);
+			assertLeaseStateUnchanged(await memory.leaseState("run"), state);
 		} finally {
 			await backend.close();
 			await memory.close();
@@ -120,7 +121,7 @@ for (const method of ["takeoverExpired", "leaseState"] as const) {
 							if (failure instanceof RunNotFoundError) assert.equal(error, failure);
 							else {
 								assert.ok(error instanceof StorageUnavailableError);
-								assert.equal(error.path, "custom journal");
+								assert.equal(error.location, "custom journal");
 								assert.equal(error.cause, failure);
 							}
 							return true;
@@ -148,7 +149,7 @@ for (const storage of ["memory", "sqlite"] as const) {
 	test(`rejected boundary writes preserve a reopenable ${storage} journal`, async () => {
 		const directory = makeTempDirectory("boundary-rejection-");
 		const journal =
-			storage === "memory" ? new MemoryRunJournal() : new SqliteRunJournal(join(directory, "journal.sqlite"));
+			storage === "memory" ? new MemoryRunJournal() : await openSqlRunJournal(join(directory, "journal.sqlite"));
 		const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
 		try {
 			await backend.registerWorkflow({
@@ -290,10 +291,10 @@ test("async-only ownership inspection is read-only and expired takeover fences t
 		vi.setSystemTime(1_001);
 		assert.equal(await writer.workflowOwnership("run"), "local");
 		assert.equal(await reader.workflowOwnership("run"), "foreign");
-		assert.deepEqual(await memory.leaseState("run"), initial);
+		assertLeaseStateUnchanged(await memory.leaseState("run"), initial);
 		vi.setSystemTime(1_000 + FOREIGN_LIVE_WORKFLOW_WINDOW_MS + 1);
 		assert.equal(await reader.workflowOwnership("run"), "available");
-		assert.deepEqual(await memory.leaseState("run"), initial);
+		assertLeaseStateUnchanged(await memory.leaseState("run"), initial);
 		await reader.setWorkflowStatus("run", "paused");
 		const current = await memory.leaseState("run");
 		assert.equal(current?.epoch, initial.epoch + 1);
@@ -311,7 +312,7 @@ test("async-only ownership inspection is read-only and expired takeover fences t
 	}
 });
 
-test("owned deletion rejects takeover between renewal and deletion without erasing the successor", () => {
+test("owned deletion rejects takeover between renewal and deletion without erasing the successor", async () => {
 	const result = spawnSyncCollect([
 		bunExecutable(),
 		"run",

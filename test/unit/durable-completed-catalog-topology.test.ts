@@ -7,12 +7,12 @@ import {
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
 
-test("reconstructs multi-level boundary edges when durable completion order is reverse-topological", () => {
-	const backend = new InMemoryDurableBackend();
+test("reconstructs multi-level boundary edges when durable completion order is reverse-topological", async () => {
+	const backend = await InMemoryDurableBackend.create();
 	const rootId = "durable-root";
 	const childId = "durable-child";
 	const grandId = "durable-grand";
-	backend.registerWorkflow({
+	await backend.registerWorkflow({
 		workflowId: rootId,
 		name: "durable-root",
 		inputs: {},
@@ -115,7 +115,7 @@ test("reconstructs multi-level boundary edges when durable completion order is r
 		},
 	];
 	for (const checkpoint of checkpoints) {
-		backend.recordCheckpoint({ kind: "stage", workflowId: rootId, ...checkpoint });
+		await backend.recordCheckpoint({ kind: "stage", workflowId: rootId, ...checkpoint });
 	}
 
 	const runs = completedWorkflowRunSnapshots(backend, listCompletedFromBackend(backend)[0]!);

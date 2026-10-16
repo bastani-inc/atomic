@@ -117,7 +117,7 @@ describe("possible-stages persistence (D10)", () => {
 	});
 
 	test("possibleStages survives journal reopen", async () => {
-		const backend = new JournalTestBackend();
+		const backend = await JournalTestBackend.create();
 		const store = createStore();
 		await run(
 			plain,
@@ -193,7 +193,7 @@ describe("possible-stages persistence (D10)", () => {
 		assert.equal(snapshot?.possibleStages, undefined);
 	});
 
-	test("corrupt persisted values are dropped, not fatal", () => {
+	test("corrupt persisted values are dropped, not fatal", async () => {
 		assert.equal(coercePossibleStages("not-an-array"), undefined);
 		assert.equal(coercePossibleStages({ stages: [] }), undefined);
 		assert.equal(coercePossibleStages(["ok", 42]), undefined);
@@ -312,7 +312,7 @@ describe("possible-stages admission wiring (D10)", () => {
 		assert.deepEqual(snapshot.possibleStages, ["alpha", "beta-*"]);
 	});
 
-	test("every extension runtime construction site threads the scan resolver", () => {
+	test("every extension runtime construction site threads the scan resolver", async () => {
 		// Regression (review round 4): runtimeForContext built a per-context
 		// runtime without resolvePossibleStageEntry, so workflow-tool launches
 		// persisted an empty set. All construction sites must thread it.

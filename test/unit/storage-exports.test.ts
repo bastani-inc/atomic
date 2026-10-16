@@ -2,8 +2,18 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { parse } from "@babel/parser";
 import { test } from "vitest";
+import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
+import { loadExtensions } from "../../packages/coding-agent/src/core/extensions/loader.js";
+import { clearExtensionCache } from "../../packages/coding-agent/src/core/extensions/loader-virtual-modules.js";
 import * as errors from "../../packages/coding-agent/src/core/storage/errors.js";
-import { moduleDir, readText, spawnSyncCollect } from "../helpers/runtime.js";
+import {
+	makeTempDirectory,
+	moduleDir,
+	readText,
+	removeTempDirectory,
+	spawnSyncCollect,
+	writeFileEnsuringDir,
+} from "../helpers/runtime.js";
 
 const root = join(moduleDir(import.meta.url), "../..");
 
@@ -81,4 +91,34 @@ test("built package exposes the same storage classes through main and storage su
 		{ cwd: join(root, "packages/coding-agent") },
 	);
 	assert.equal(result.exitCode, 0, result.stdout.toString() + result.stderr.toString());
+});
+
+test("transformed extensions resolve the storage subpath and share host storage error classes", async () => {
+	const directory = makeTempDirectory("storage-extension-");
+	const entry = join(directory, "extension.ts");
+	await writeFileEnsuringDir(
+		entry,
+		`
+import { StorageUnavailableError as MainError } from "@bastani/atomic";
+import { StorageUnavailableError } from "@bastani/atomic/storage";
+enum State { Loaded }
+export default function (pi) {
+	pi.events.emit("storage-probe", { MainError, StorageUnavailableError, state: State.Loaded });
+}
+`,
+	);
+	const bus = createEventBus();
+	const observations: { MainError: object; StorageUnavailableError: object; state: number }[] = [];
+	bus.on("storage-probe", (value) => observations.push(value as (typeof observations)[number]));
+	try {
+		const loaded = await loadExtensions([entry], directory, bus);
+		assert.deepEqual(loaded.errors, []);
+		assert.equal(observations.length, 1);
+		assert.equal(observations[0]!.StorageUnavailableError, errors.StorageUnavailableError);
+		assert.equal(observations[0]!.MainError, errors.StorageUnavailableError);
+		assert.equal(observations[0]!.state, 0);
+	} finally {
+		clearExtensionCache();
+		removeTempDirectory(directory);
+	}
 });

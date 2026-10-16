@@ -5,6 +5,7 @@
 ### Changed
 
 - The storage adapter conformance suite now checks call-time binary binding inside transactions.
+- Node SQLite facade transactions opened on the same file now queue asynchronously within a process, including when paths use symlinks, instead of stalling the event loop and failing with a locked database.
 
 ### Breaking Changes
 
@@ -15,11 +16,13 @@
 - `SessionManager.create`, `open`, `continueRecent`, `forkFrom`, and mutations now return promises. Await session writes, branch changes, labels, names, and model/thinking changes before reading their results or continuing dependent work. Extension `pi.appendEntry`, `pi.setSessionName`, `pi.setLabel`, and `pi.setThinkingLevel` must also be awaited. Persistent session creation writes its header immediately, and setup entries commit without waiting for the first message. A failed write rejects that call with its typed storage error without publishing the failed entry; there is no `flush` API. Explicit in-memory sessions remain available synchronously through `SessionManager.inMemory()`.
 - Session headers use the format-4 fields `createdAt` and `parentSessionId`, including the header returned by `SessionManager.getHeader()`. The `timestamp` and `parentSession` header fields are removed.
 - Extension provider registration and removal now return promises too: await `pi.registerProvider`, `pi.registerProviderAlias`, and `pi.unregisterProvider` before dependent model or session work.
+- Workflow SQLite journals now use `SqlRunJournal` with async initialization and `wf_` table names. Use `await openSqlRunJournal(pathOrDatabase?)` or `await SqlRunJournal.open(database, { prefix })`, and await `resolveRunJournal`. Earlier unreleased bare tables are not read or migrated. Workflow `StorageUnavailableError` now provides `adapter`, `location`, and `cause` instead of `path`.
 
 ### Added
 
 - Added the `workflows.journal.path` and `workflows.journal.memory` settings, plus SDK `RunOpts.journal` for a file, caller-owned SQLite connection, explicit memory journal, or supplied journal. TUI, CLI, background, and SDK runs use the selected journal. Relative settings paths resolve against the Atomic home directory.
 - Added `ctx.sessionSignal` so extension commands can close long-running resources when reload or shutdown begins, before admitted work is drained. Custom UI is now dismissed automatically at that boundary while preserving caller-signal cancellation.
+- Added `wrapNodeSqliteDatabase(connection)` for caller-owned connections and facade-backed workflow journals that can share a database with the session store or use a user-supplied SQLite-compatible driver.
 
 ### Fixed
 

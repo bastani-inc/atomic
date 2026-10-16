@@ -41,7 +41,7 @@ const PRESERVE = ["reload", "fork", "new", "resume"] as const;
 const CLEAR_ON_START = ["startup", "mystery"] as const;
 
 // #3105: a known empty host must never reclaim another host's live store on reload.
-test("owner-scoped reload does not reclaim the latest sibling's workflow state", () => {
+test("owner-scoped reload does not reclaim the latest sibling's workflow state", async () => {
 	const scope = {};
 	adoptWorkflowSessionRunState(scope, true);
 	const original = currentWorkflowStore();
@@ -60,7 +60,7 @@ function bindScope(scope: object): void {
 }
 
 async function readyDurability() {
-	const backend = new JournalTestBackend();
+	const backend = await JournalTestBackend.create();
 	setDurableBackend(backend);
 	return backend;
 }
@@ -505,7 +505,7 @@ describe("a disposed session releases its paused agent-launched runs for adoptio
 	test("session_shutdown(quit) releases a run that was awaiting human input (#3566)", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: "release-awaiting-input",
 			name: "release-awaiting-input",
 			inputs: {},
@@ -551,8 +551,8 @@ function registerPausedOwnedRun(
 	runId: string,
 	modelOwner: string,
 	overrides: Partial<Parameters<DurableWorkflowBackend["registerWorkflow"]>[0]> = {},
-): void {
-	backend.registerWorkflow({
+): void | Promise<void> {
+	return backend.registerWorkflow({
 		workflowId: runId,
 		name: "reviewer",
 		inputs: {},
@@ -784,7 +784,7 @@ describe("switching sessions releases the previous session's paused runs for the
 
 		test(`session_shutdown(${reason}) durably releases the checkpointed run (#3569)`, async () => {
 			const backend = await readyDurability();
-			registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a");
+			await registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a");
 			const order: string[] = [];
 			vi.spyOn(backend, "transitionWorkflowStatus").mockImplementation(async (...args) => {
 				order.push(args[7] === undefined ? "transition" : "release");
@@ -944,7 +944,7 @@ describe("startup and unrecognised session starts still clear", () => {
 });
 
 describe("clearDetached disposes only detached handles", () => {
-	test("drops detached handles, retains controlling ones, and prunes emptied run maps", () => {
+	test("drops detached handles, retains controlling ones, and prunes emptied run maps", async () => {
 		const registry = createStageControlRegistry();
 		let detachedDisposes = 0;
 		let liveDisposes = 0;
@@ -1138,7 +1138,7 @@ describe("session-switch confirmation says running workflows will be quit (#3203
 		assert.equal(asked, false);
 	});
 
-	test("confirmation copy uses singular wording for one run (#3203)", () => {
+	test("confirmation copy uses singular wording for one run (#3203)", async () => {
 		assert.deepEqual(sessionSwitchQuitConfirmation("new", 1), {
 			title: "Quit 1 running workflow and start a new session?",
 			message:

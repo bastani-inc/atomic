@@ -4,21 +4,18 @@ import { join } from "node:path";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { initializeDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
-import { FOREIGN_LIVE_WORKFLOW_WINDOW_MS } from "../../packages/workflows/src/durable/resume-eligibility.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
 import { run } from "../../packages/workflows/src/runs/foreground/sdk-run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { sleep } from "../helpers/runtime.js";
+import { expireWorkflowLease } from "../helpers/workflow-lease.js";
 
 const [mode, directory] = process.argv.slice(2);
 assert.ok(directory);
-if (mode === "resume") {
-	const now = Date.now.bind(Date);
-	Date.now = () => now() + FOREIGN_LIVE_WORKFLOW_WINDOW_MS + 10_000;
-}
 const runId = "218af3df-df3d-4c59-8ad4-ae7159f237fb";
 process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = join(directory, "journal.sqlite");
+if (mode === "resume") expireWorkflowLease(process.env.ATOMIC_WORKFLOW_JOURNAL_PATH, runId);
 const backend = await initializeDurableBackend();
 assert.ok(backend instanceof JournalDurableBackend);
 const store = createStore();

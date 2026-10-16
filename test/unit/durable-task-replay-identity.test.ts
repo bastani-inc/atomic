@@ -8,7 +8,7 @@ import { createStore, mockSession, run, tmpdir, workflow } from "./executor-shar
 // #1859: task replay must preserve returned identity, not only the graph snapshot.
 test("public task retains thinking identity through checkpoint serialization and replay", async () => {
 	const runId = "task-thinking-replay";
-	const backend = new JournalTestBackend();
+	const backend = await JournalTestBackend.create();
 	const returned: WorkflowTaskResult[] = [];
 	let creates = 0;
 	let prompts = 0;
@@ -82,8 +82,8 @@ test.each([
 ])("public task replay preserves $label", async ({ base, checkpoint, expected, terminal }) => {
 	const runId = "task-thinking-precedence";
 	const backend = new InMemoryDurableBackend();
-	backend.registerWorkflow({ workflowId: runId, name: runId, inputs: {}, createdAt: 1, status: "failed" });
-	backend.recordCheckpoint({
+	await backend.registerWorkflow({ workflowId: runId, name: runId, inputs: {}, createdAt: 1, status: "failed" });
+	await backend.recordCheckpoint({
 		kind: "stage",
 		workflowId: runId,
 		checkpointId: "recorded-task",

@@ -15,10 +15,10 @@ afterEach(() => {
 
 test("fresh journal active root rejects an occurrence bound to different replay keys before prompt replay", async () => {
 	const rootId = testRunId("prompt-occurrence-active-poison");
-	const writer = new JournalTestBackend();
-	writer.registerWorkflow({ workflowId: rootId, name: rootId, inputs: {}, status: "running", createdAt: 1 });
+	const writer = await JournalTestBackend.create();
+	await writer.registerWorkflow({ workflowId: rootId, name: rootId, inputs: {}, status: "running", createdAt: 1 });
 	for (const [index, replayKey] of ["prompt:input:first", "prompt:input:SECOND-DIFFERENT"].entries()) {
-		writer.recordCheckpoint({
+		await writer.recordCheckpoint({
 			kind: "stage",
 			workflowId: rootId,
 			checkpointId: `active-prompt-poison-${index}`,

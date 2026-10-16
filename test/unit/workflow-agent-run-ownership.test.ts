@@ -262,7 +262,7 @@ test.each(["pause", "quit"] as const)(
 );
 
 test("terminal ownership survives runtime replacement and durable-only inspection", async () => {
-	const backend = new JournalTestBackend();
+	const backend = await JournalTestBackend.create();
 	const f = fixture(false, false, backend);
 	const runId = runIdOf(await f.launch());
 	await Promise.all(f.jobs.runIds().map((id) => f.jobs.get(id)!.promise));

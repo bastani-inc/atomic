@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test, vi } from "vitest";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
-import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { type RunJournal, StaleLeaseError } from "../../packages/workflows/src/durable/journal/types.js";
 import { FOREIGN_LIVE_WORKFLOW_WINDOW_MS } from "../../packages/workflows/src/durable/resume-eligibility.js";
+import { assertLeaseStateUnchanged } from "../helpers/journal-lease-state.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 // Expose only the required asynchronous contract, never the built-in fast path.
@@ -61,7 +63,9 @@ for (const operation of ["inspection", "recovery"] as const) {
 		vi.useFakeTimers({ toFake: ["Date"] });
 		vi.setSystemTime(1_000);
 		const directory = makeTempDirectory("async-sqlite-recovery-");
-		const sqlite = new SqliteRunJournal(join(directory, "journal.sqlite"));
+		const connection = new DatabaseSync(join(directory, "journal.sqlite"));
+		connection.function("unixepoch", { varargs: true }, () => Date.now() / 1000);
+		const sqlite = await openSqlRunJournal(connection);
 		const journal = asyncJournal(sqlite);
 		const writer = await JournalDurableBackend.open(journal, { ownsJournal: false });
 		let reader: Awaited<ReturnType<typeof JournalDurableBackend.open>> | undefined;
@@ -81,11 +85,13 @@ for (const operation of ["inspection", "recovery"] as const) {
 			assert.ok(initial);
 			reader = await JournalDurableBackend.open(journal, { ownsJournal: false });
 			assert.equal(await reader.workflowOwnership("run"), "foreign");
-			assert.deepEqual(await sqlite.leaseState("run"), initial);
+			assertLeaseStateUnchanged(await sqlite.leaseState("run"), initial);
 			vi.setSystemTime(1_000 + FOREIGN_LIVE_WORKFLOW_WINDOW_MS + 1);
 			if (operation === "inspection") {
 				assert.equal(await reader.workflowOwnership("run"), "available");
-				assert.deepEqual(await sqlite.leaseState("run"), initial, "inspection must not renew, acquire, or release");
+				const expired = await sqlite.leaseState("run");
+				assertLeaseStateUnchanged(expired, initial, "inspection must not renew, acquire, or release");
+				assert.ok(expired && expired.ageMs > initial.ageMs);
 				assert.equal(reader.getWorkflow("run")?.status, "running");
 			} else {
 				await reader.setWorkflowStatus("run", "paused");
@@ -105,6 +111,7 @@ for (const operation of ["inspection", "recovery"] as const) {
 			await reader?.close();
 			await writer.close();
 			await sqlite.close();
+			connection.close();
 			removeTempDirectory(directory);
 			vi.useRealTimers();
 		}

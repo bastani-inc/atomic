@@ -2,7 +2,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { getAgentDir } from "@bastani/atomic";
 import { MemoryRunJournal } from "./memory-run-journal.js";
-import { SqliteRunJournal, workflowJournalPath } from "./sqlite-run-journal.js";
+import { openSqlRunJournal, workflowJournalPath } from "./sqlite-run-journal.js";
 import { JournalConfigurationError, type RunJournal } from "./types.js";
 
 export type RunJournalOption = { path: string } | { database: DatabaseSync } | { memory: true } | RunJournal;
@@ -30,12 +30,12 @@ export function selectRunJournal(
 	return { path: workflowJournalPath() };
 }
 
-export function resolveRunJournal(
+export async function resolveRunJournal(
 	options: { journal?: RunJournalOption; settings?: RunJournalSettings } = {},
-): RunJournal {
+): Promise<RunJournal> {
 	const selected = selectRunJournal(options);
 	if ("createRun" in selected) return selected;
-	if ("path" in selected) return new SqliteRunJournal(selected.path);
-	if ("database" in selected) return new SqliteRunJournal(selected.database);
+	if ("path" in selected) return await openSqlRunJournal(selected.path);
+	if ("database" in selected) return await openSqlRunJournal(selected.database);
 	return new MemoryRunJournal();
 }

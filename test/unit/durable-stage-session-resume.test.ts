@@ -58,9 +58,9 @@ function fakeStageContext(text: string) {
 describe("durable stage session resume", () => {
 	let backend: InMemoryDurableBackend;
 
-	beforeEach(() => {
-		backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+	beforeEach(async () => {
+		backend = await InMemoryDurableBackend.create();
+		await backend.registerWorkflow({
 			workflowId: WORKFLOW_ID,
 			name: "stage-test",
 			inputs: {},
@@ -92,7 +92,7 @@ describe("durable stage session resume", () => {
 		// Running (active) workflows are hidden from resume; quitting flips the
 		// durable handle to paused, which is when an in-progress stage session
 		// becomes resumable.
-		backend.setWorkflowStatus(WORKFLOW_ID, "paused");
+		await backend.setWorkflowStatus(WORKFLOW_ID, "paused");
 		assert.equal(backend.listResumableWorkflows().length, 1);
 	});
 
@@ -131,7 +131,7 @@ describe("durable stage session resume", () => {
 		assert.equal(backend.getStageSession(WORKFLOW_ID, replayKey)?.durationMs, 600);
 	});
 
-	test("counts post-resume elapsed time while excluding a new pause exactly once", () => {
+	test("counts post-resume elapsed time while excluding a new pause exactly once", async () => {
 		const resumedAt = 5000;
 		const startedAt = rebasedStageStartedAt(700, resumedAt);
 		const completedAt = 5500;

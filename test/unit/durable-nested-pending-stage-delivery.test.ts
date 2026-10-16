@@ -35,7 +35,7 @@ test("a child run hydrates and drains only its logical pending messages through 
 	const rootEntry = pendingMessage(ROOT_RUN_ID, "root-receiver", "root-message");
 	const childEntry = pendingMessage(CHILD_RUN_ID, "receiver", "child-message");
 	const backend = new InMemoryDurableBackend();
-	backend.registerWorkflow({
+	await backend.registerWorkflow({
 		workflowId: ROOT_RUN_ID,
 		name: "root",
 		inputs: {},
@@ -137,7 +137,7 @@ test("a child run hydrates and drains only its logical pending messages through 
 });
 
 test("actual nested orchestration reloads a child queue from root metadata and delivers it once", async () => {
-	const writer = new JournalTestBackend();
+	const writer = await JournalTestBackend.create();
 	let stageStarted = Promise.withResolvers<void>();
 	let releaseStage = Promise.withResolvers<void>();
 	const child = workflow({

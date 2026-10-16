@@ -286,7 +286,7 @@ function identityOf(send: CapturedSend | undefined): WorkflowHeartbeatIdentity {
 }
 
 describe("workflow heartbeat cadence", () => {
-	test("a disabled (0) interval creates no timer and no schedule record", () => {
+	test("a disabled (0) interval creates no timer and no schedule record", async () => {
 		const runId = testRunId("heartbeat-disabled");
 		const store = createStore();
 		startRun(store, runId);
@@ -307,7 +307,7 @@ describe("workflow heartbeat cadence", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("a positive interval produces recurring boundaries anchored to startedAt", () => {
+	test("a positive interval produces recurring boundaries anchored to startedAt", async () => {
 		const runId = testRunId("heartbeat-recurring");
 		const store = createStore();
 		startRun(store, runId);
@@ -338,7 +338,7 @@ describe("workflow heartbeat cadence", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("nextWorkflowHeartbeatBoundary never derives the cadence from a delivery time", () => {
+	test("nextWorkflowHeartbeatBoundary never derives the cadence from a delivery time", async () => {
 		assert.equal(nextWorkflowHeartbeatBoundary(STARTED_AT, 1, STARTED_AT), STARTED_AT + MINUTE_MS);
 		assert.equal(nextWorkflowHeartbeatBoundary(STARTED_AT, 1, STARTED_AT + 59_999), STARTED_AT + MINUTE_MS);
 		assert.equal(nextWorkflowHeartbeatBoundary(STARTED_AT, 1, STARTED_AT + MINUTE_MS), STARTED_AT + 2 * MINUTE_MS);
@@ -386,7 +386,7 @@ describe("workflow heartbeat cadence", () => {
 		);
 	});
 
-	test("a cadence finer than one ULP at a real epoch anchor still yields its first anchored boundary", () => {
+	test("a cadence finer than one ULP at a real epoch anchor still yields its first anchored boundary", async () => {
 		// At `1.7e12` one ULP is 2^-12 ms = 0.000244140625 ms, and a 1e-9-minute
 		// cadence is 0.00006 ms — so the first representably-greater multiple is
 		// n = 3, which probing only n and n + 1 would miss. The test anchor's ULP
@@ -411,7 +411,7 @@ describe("workflow heartbeat cadence", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("only one pending heartbeat exists per run while a send is in flight", () => {
+	test("only one pending heartbeat exists per run while a send is in flight", async () => {
 		const runId = testRunId("heartbeat-one-pending");
 		const store = createStore();
 		startRun(store, runId);
@@ -440,7 +440,7 @@ describe("workflow heartbeat cadence", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("terminal cleanup does not release an in-flight head before its watchdog", () => {
+	test("terminal cleanup does not release an in-flight head before its watchdog", async () => {
 		const candidateA = testRunId("heartbeat-watchdog-terminal-a");
 		const candidateB = testRunId("heartbeat-watchdog-terminal-b");
 		const firstRunId = candidateA < candidateB ? candidateA : candidateB;
@@ -469,7 +469,7 @@ describe("workflow heartbeat cadence", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("an admitted-but-unread heartbeat keeps its slot, so a later boundary is skipped not stacked", () => {
+	test("an admitted-but-unread heartbeat keeps its slot, so a later boundary is skipped not stacked", async () => {
 		const runId = testRunId("heartbeat-admitted-not-read");
 		const store = createStore();
 		startRun(store, runId);
@@ -485,7 +485,7 @@ describe("workflow heartbeat cadence", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("consuming the card releases the slot and resumes at the first future boundary", () => {
+	test("consuming the card releases the slot and resumes at the first future boundary", async () => {
 		const runId = testRunId("heartbeat-parent-available");
 		const store = createStore();
 		startRun(store, runId);
@@ -510,7 +510,7 @@ describe("workflow heartbeat cadence", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("a parent that never consumes a heartbeat keeps the slot rather than stacking a second card", () => {
+	test("a parent that never consumes a heartbeat keeps the slot rather than stacking a second card", async () => {
 		const runId = testRunId("heartbeat-no-pickup");
 		const store = createStore();
 		startRun(store, runId);
@@ -535,7 +535,7 @@ describe("workflow heartbeat cadence", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("only the exact consumed identity releases its run's slot", () => {
+	test("only the exact consumed identity releases its run's slot", async () => {
 		const runId = testRunId("heartbeat-wrong-consumption");
 		const otherId = testRunId("heartbeat-wrong-consumption-other");
 		const store = createStore();
@@ -564,7 +564,7 @@ describe("workflow heartbeat cadence", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("custom text without a typed heartbeat entry reports no consumed identity", () => {
+	test("custom text without a typed heartbeat entry reports no consumed identity", async () => {
 		assert.equal(
 			workflowHeartbeatConsumedIdentity({ message: { role: "custom", content: "same rendered text" } }, []),
 			undefined,
@@ -578,7 +578,7 @@ describe("workflow heartbeat cadence", () => {
 		);
 	});
 
-	test("a host that reports no consumption releases on admission instead of going silent", () => {
+	test("a host that reports no consumption releases on admission instead of going silent", async () => {
 		const runId = testRunId("heartbeat-no-availability-signal");
 		const store = createStore();
 		startRun(store, runId);
@@ -675,7 +675,7 @@ describe("workflow heartbeat cadence", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("a restarted process rebuilds the identical cadence from the restored run alone", () => {
+	test("a restarted process rebuilds the identical cadence from the restored run alone", async () => {
 		const runId = testRunId("heartbeat-restart-durability");
 		const store = createStore();
 		startRun(store, runId);
@@ -713,7 +713,7 @@ describe("workflow heartbeat cadence", () => {
 });
 
 describe("workflow heartbeat delivery", () => {
-	test("a busy parent queues rather than interrupts", () => {
+	test("a busy parent queues rather than interrupts", async () => {
 		const runId = testRunId("heartbeat-busy-parent");
 		const store = createStore();
 		startRun(store, runId, { name: "audit-auth" });
@@ -771,7 +771,7 @@ describe("workflow heartbeat delivery", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("multiple due heartbeats process in scheduledAt order, then runId", () => {
+	test("multiple due heartbeats process in scheduledAt order, then runId", async () => {
 		const store = createStore();
 		const early = testRunId("heartbeat-order-early");
 		const tied = [testRunId("heartbeat-order-a"), testRunId("heartbeat-order-b")].sort();
@@ -893,7 +893,7 @@ describe("workflow heartbeat delivery", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("a child workflow run never heartbeats the parent chat", () => {
+	test("a child workflow run never heartbeats the parent chat", async () => {
 		const parentId = testRunId("heartbeat-parent");
 		const childId = testRunId("heartbeat-child");
 		const store = createStore();
@@ -908,7 +908,7 @@ describe("workflow heartbeat delivery", () => {
 });
 
 describe("workflow heartbeat pause, restart, and terminal guards", () => {
-	test("a paused run emits nothing and does not backfill on resume", () => {
+	test("a paused run emits nothing and does not backfill on resume", async () => {
 		const runId = testRunId("heartbeat-paused");
 		const store = createStore();
 		startRun(store, runId);
@@ -926,7 +926,7 @@ describe("workflow heartbeat pause, restart, and terminal guards", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("a restarted run selects the next future boundary and never bursts missed ones", () => {
+	test("a restarted run selects the next future boundary and never bursts missed ones", async () => {
 		const runId = testRunId("heartbeat-restart");
 		const store = createStore();
 		// The restore shape: the run's persisted start time is 3.5 intervals ago.
@@ -940,7 +940,7 @@ describe("workflow heartbeat pause, restart, and terminal guards", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("a run that finishes before its boundary is suppressed", () => {
+	test("a run that finishes before its boundary is suppressed", async () => {
 		const runId = testRunId("heartbeat-terminal-before-boundary");
 		const store = createStore();
 		startRun(store, runId);
@@ -955,7 +955,7 @@ describe("workflow heartbeat pause, restart, and terminal guards", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("a run that finishes mid-batch is caught by the pre-enqueue re-read", () => {
+	test("a run that finishes mid-batch is caught by the pre-enqueue re-read", async () => {
 		const store = createStore();
 		const tied = [testRunId("heartbeat-midbatch-a"), testRunId("heartbeat-midbatch-b")].sort();
 		const [firstId, secondId] = [tied[0] as string, tied[1] as string];
@@ -978,7 +978,7 @@ describe("workflow heartbeat pause, restart, and terminal guards", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("enqueue re-reads live status and refuses terminal, missing, and duplicate identities", () => {
+	test("enqueue re-reads live status and refuses terminal, missing, and duplicate identities", async () => {
 		const runId = testRunId("heartbeat-enqueue-guards");
 		const store = createStore();
 		startRun(store, runId);
@@ -1018,7 +1018,7 @@ describe("workflow heartbeat pause, restart, and terminal guards", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("a paused run is refused at enqueue even when a boundary is handed in directly", () => {
+	test("a paused run is refused at enqueue even when a boundary is handed in directly", async () => {
 		const runId = testRunId("heartbeat-enqueue-paused");
 		const store = createStore();
 		startRun(store, runId);
@@ -1039,7 +1039,7 @@ describe("workflow heartbeat pause, restart, and terminal guards", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("a workflow whose definition was never resolvable schedules nothing", () => {
+	test("a workflow whose definition was never resolvable schedules nothing", async () => {
 		const runId = testRunId("heartbeat-unknown-definition");
 		const store = createStore();
 		startRun(store, runId, { name: "deleted-workflow" });
@@ -1053,7 +1053,7 @@ describe("workflow heartbeat pause, restart, and terminal guards", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("a run keeps its launch cadence when its definition changes or disappears mid-run", () => {
+	test("a run keeps its launch cadence when its definition changes or disappears mid-run", async () => {
 		const runId = testRunId("heartbeat-launch-cadence");
 		const store = createStore();
 		startRun(store, runId, { name: "reloadable" });
@@ -1089,7 +1089,7 @@ describe("workflow heartbeat pause, restart, and terminal guards", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("a run observed before discovery finishes picks its cadence up on a later pass", () => {
+	test("a run observed before discovery finishes picks its cadence up on a later pass", async () => {
 		const runId = testRunId("heartbeat-late-discovery");
 		const store = createStore();
 		startRun(store, runId, { name: "warming-up" });
@@ -1105,7 +1105,7 @@ describe("workflow heartbeat pause, restart, and terminal guards", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("a store invalidation between a due boundary and its wake-up does not drop the heartbeat", () => {
+	test("a store invalidation between a due boundary and its wake-up does not drop the heartbeat", async () => {
 		const runId = testRunId("heartbeat-due-survives-invalidation");
 		const store = createStore();
 		startRun(store, runId);
@@ -1132,7 +1132,7 @@ describe("workflow heartbeat pause, restart, and terminal guards", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("dispose clears the armed wake-up and stops the cadence", () => {
+	test("dispose clears the armed wake-up and stops the cadence", async () => {
 		const runId = testRunId("heartbeat-dispose");
 		const store = createStore();
 		startRun(store, runId);
@@ -1175,7 +1175,7 @@ describe("workflow heartbeat durable cadence anchor", () => {
 		};
 	}
 
-	test("a heartbeating run records its anchor and a disabled one records nothing", () => {
+	test("a heartbeating run records its anchor and a disabled one records nothing", async () => {
 		const enabledId = testRunId("heartbeat-anchor-enabled");
 		const disabledId = testRunId("heartbeat-anchor-disabled");
 		const store = createStore();
@@ -1202,7 +1202,7 @@ describe("workflow heartbeat durable cadence anchor", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("the anchor is written at schedule time, long before the first boundary", () => {
+	test("the anchor is written at schedule time, long before the first boundary", async () => {
 		const runId = testRunId("heartbeat-anchor-early");
 		const store = createStore();
 		startRun(store, runId);
@@ -1254,7 +1254,7 @@ describe("workflow heartbeat durable cadence anchor", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("a run resumed before its first boundary still lands on the original series", () => {
+	test("a run resumed before its first boundary still lands on the original series", async () => {
 		const runId = testRunId("heartbeat-anchor-resume-before-first");
 		const originalStart = STARTED_AT;
 		// The run gained durable progress, then paused or crashed before boundary 1
@@ -1281,7 +1281,7 @@ describe("workflow heartbeat durable cadence anchor", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("a durable resume in a later process keeps the launch cadence, not the edited one", () => {
+	test("a durable resume in a later process keeps the launch cadence, not the edited one", async () => {
 		const runId = testRunId("heartbeat-launch-cadence-across-process");
 		// Process 1 launched this run at 1 minute. Process 2 has only the durable
 		// record and a registry that now says 30 — an edit made between the two.
@@ -1308,7 +1308,7 @@ describe("workflow heartbeat durable cadence anchor", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("a persisted record without cadence cannot use the current definition", () => {
+	test("a persisted record without cadence cannot use the current definition", async () => {
 		const runId = testRunId("heartbeat-missing-cadence");
 		const store = createStore();
 		startRun(store, runId);
@@ -1339,7 +1339,7 @@ describe("workflow heartbeat durable cadence anchor", () => {
 		assert.equal(state.scheduled.size, 0);
 	});
 
-	test("a run launched with heartbeats disabled stays disabled and writes no record", () => {
+	test("a run launched with heartbeats disabled stays disabled and writes no record", async () => {
 		const runId = testRunId("heartbeat-launched-disabled");
 		const store = createStore();
 		startRun(store, runId, { name: "launched-off" });
@@ -1361,7 +1361,7 @@ describe("workflow heartbeat durable cadence anchor", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("a sub-ULP cadence schedules one wake-up and does not spin while its slot is held", () => {
+	test("a sub-ULP cadence schedules one wake-up and does not spin while its slot is held", async () => {
 		const runId = testRunId("heartbeat-sub-ulp-run");
 		const store = createStore();
 		startRun(store, runId, { startedAt: EPOCH_ANCHOR });
@@ -1378,7 +1378,7 @@ describe("workflow heartbeat durable cadence anchor", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("a cadence too large to have a representable boundary schedules nothing", () => {
+	test("a cadence too large to have a representable boundary schedules nothing", async () => {
 		const runId = testRunId("heartbeat-overflow-cadence");
 		const store = createStore();
 		startRun(store, runId);
@@ -1393,7 +1393,7 @@ describe("workflow heartbeat durable cadence anchor", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("a far-future boundary never displaces a due heartbeat or delays the wake-up", () => {
+	test("a far-future boundary never displaces a due heartbeat or delays the wake-up", async () => {
 		const store = createStore();
 		const soonId = testRunId("heartbeat-far-future-soon");
 		const farId = testRunId("heartbeat-far-future-far");
@@ -1423,7 +1423,7 @@ describe("workflow heartbeat durable cadence anchor", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("a durable resume with a fresh startedAt stays on the original cadence", () => {
+	test("a durable resume with a fresh startedAt stays on the original cadence", async () => {
 		const runId = testRunId("heartbeat-anchor-durable-resume");
 		// A durable resume re-dispatches under the original workflow id but mints a
 		// new `startedAt`. Without the anchor the run would start a fresh series.
@@ -1458,7 +1458,7 @@ describe("workflow heartbeat durable cadence anchor", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("an anchor later than the run's own start time is ignored", () => {
+	test("an anchor later than the run's own start time is ignored", async () => {
 		const runId = testRunId("heartbeat-anchor-never-advances");
 		const store = createStore();
 		startRun(store, runId, { startedAt: STARTED_AT });
@@ -1471,7 +1471,7 @@ describe("workflow heartbeat durable cadence anchor", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("no anchor store, or one that throws, behaves exactly like the run's own start", () => {
+	test("no anchor store, or one that throws, behaves exactly like the run's own start", async () => {
 		const runId = testRunId("heartbeat-anchor-unavailable");
 		const store = createStore();
 		startRun(store, runId);
@@ -1521,11 +1521,11 @@ describe("workflow heartbeat anchor checkpoint", () => {
 		});
 	}
 
-	test("persisted heartbeat records require the launch cadence", () => {
+	test("persisted heartbeat records require the launch cadence", async () => {
 		const backend = createInMemoryTestBackend();
 		const runId = testRunId("heartbeat-anchor-requires-cadence");
 		registerRun(backend, runId);
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "tool",
 			workflowId: runId,
 			checkpointId: WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME,
@@ -1605,7 +1605,7 @@ describe("workflow heartbeat anchor checkpoint", () => {
 		// durability boundary. This checkpoint is the run's first resumable
 		// progress, after the scheduler has stopped scheduling the paused run.
 		originalStore.recordRunPaused(runId, pauseAt);
-		backend.setWorkflowStatus(runId, "paused");
+		await backend.setWorkflowStatus(runId, "paused");
 		const recordPausedStageSession = createDurableStageSessionRecorder({
 			runId,
 			deps: {
@@ -1648,7 +1648,7 @@ describe("workflow heartbeat anchor checkpoint", () => {
 		// A durable resume re-registers the same workflow id with a freshly minted
 		// startedAt. The next process must still derive from the original series.
 		const resumedStartedAt = STARTED_AT + 7 * MINUTE_MS;
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: runId,
 			name: "heartbeat-workflow",
 			inputs: {},
@@ -1748,7 +1748,7 @@ describe("workflow heartbeat anchor checkpoint", () => {
 		// Neither may reach a run that is already in flight.
 		const resumedStartedAt = STARTED_AT + 7 * MINUTE_MS;
 		const editedIntervalMinutes = 30;
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: runId,
 			name: "heartbeat-workflow",
 			inputs: {},
@@ -1790,7 +1790,7 @@ describe("workflow heartbeat anchor checkpoint", () => {
 		const corruptBackend = createInMemoryTestBackend();
 		const corruptRunId = testRunId("heartbeat-anchor-corrupt-shape");
 		registerRun(corruptBackend, corruptRunId);
-		corruptBackend.recordCheckpoint({
+		await corruptBackend.recordCheckpoint({
 			kind: "tool",
 			workflowId: corruptRunId,
 			checkpointId: WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME,
@@ -1895,15 +1895,15 @@ describe("workflow heartbeat anchor checkpoint", () => {
 });
 
 describe("workflow heartbeat anchor durable acknowledgement", () => {
-	function registerProgress(backend: JournalTestBackend, runId: string): void {
-		backend.registerWorkflow({
+	async function registerProgress(backend: JournalTestBackend, runId: string): Promise<void> {
+		await backend.registerWorkflow({
 			workflowId: runId,
 			name: "heartbeat-workflow",
 			inputs: {},
 			createdAt: STARTED_AT,
 			status: "running",
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			topology: { version: 1, nodeId: `tool:${"some-tool"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: runId,
@@ -1919,20 +1919,23 @@ describe("workflow heartbeat anchor durable acknowledgement", () => {
 	test("a rejected journal write is not acknowledged, and a later pass persists it", async () => {
 		const runId = testRunId("heartbeat-anchor-journal-ack");
 		let failNextAnchorWrite = true;
-		const backend = new JournalTestBackend();
+		const backend = await JournalTestBackend.create();
 		const record = backend.recordCheckpoint.bind(backend);
-		backend.recordCheckpoint = (checkpoint) => {
+		backend.recordCheckpoint = async (checkpoint) => {
 			if (
 				checkpoint.kind === "tool" &&
 				checkpoint.name === WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME &&
 				failNextAnchorWrite
 			) {
 				failNextAnchorWrite = false;
-				throw new StorageUnavailableError(backend.databasePath, new Error("write failed"));
+				throw new StorageUnavailableError(
+					{ adapter: "node-sqlite", location: backend.databasePath },
+					new Error("write failed"),
+				);
 			}
-			record(checkpoint);
+			await record(checkpoint);
 		};
-		registerProgress(backend, runId);
+		await registerProgress(backend, runId);
 		assert.equal(
 			await recordWorkflowHeartbeatAnchor(backend, {
 				runId,
@@ -1944,7 +1947,7 @@ describe("workflow heartbeat anchor durable acknowledgement", () => {
 			"a rejected storage write is not acknowledged",
 		);
 		assert.equal(
-			readWorkflowHeartbeatAnchor(new JournalTestBackend(backend.databasePath), runId),
+			readWorkflowHeartbeatAnchor(await JournalTestBackend.create(backend.databasePath), runId),
 			undefined,
 			"nothing was durably stored",
 		);
@@ -2158,7 +2161,7 @@ describe("workflow heartbeat terminal cleanup and recovery", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("repeat cleanup reports already-clear, creates no state, and never throws", () => {
+	test("repeat cleanup reports already-clear, creates no state, and never throws", async () => {
 		const runId = testRunId("heartbeat-cleanup-repeat");
 		const store = createStore();
 		startRun(store, runId);
@@ -2334,7 +2337,7 @@ describe("workflow heartbeat terminal cleanup and recovery", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("terminal before enqueue: the due boundary is dropped and enqueue refuses it", () => {
+	test("terminal before enqueue: the due boundary is dropped and enqueue refuses it", async () => {
 		const runId = testRunId("heartbeat-cleanup-terminal-before-enqueue");
 		const store = createStore();
 		startRun(store, runId);
@@ -2401,7 +2404,7 @@ describe("workflow heartbeat terminal cleanup and recovery", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("terminal after admission: the held slot is released and a late consumption arms nothing", () => {
+	test("terminal after admission: the held slot is released and a late consumption arms nothing", async () => {
 		const runId = testRunId("heartbeat-cleanup-terminal-after-admission");
 		const store = createStore();
 		startRun(store, runId);
@@ -2425,7 +2428,7 @@ describe("workflow heartbeat terminal cleanup and recovery", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("recovery discards a stale durable anchor without reading or writing it", () => {
+	test("recovery discards a stale durable anchor without reading or writing it", async () => {
 		const runId = testRunId("heartbeat-recovery-stale-anchor");
 		const store = createStore();
 		// The durable-reopen shape: a fresh process, and the run reappears in the
@@ -2457,7 +2460,7 @@ describe("workflow heartbeat terminal cleanup and recovery", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("recovery discards queued records left over for terminal and vanished runs", () => {
+	test("recovery discards queued records left over for terminal and vanished runs", async () => {
 		const terminalId = testRunId("heartbeat-recovery-stale-terminal");
 		const vanishedId = testRunId("heartbeat-recovery-vanished");
 		const store = createStore();
@@ -2501,7 +2504,7 @@ describe("workflow heartbeat terminal cleanup and recovery", () => {
 		harness.scheduler.dispose();
 	});
 
-	test("cleaning up one run leaves an active held slot and a paused run's floor intact", () => {
+	test("cleaning up one run leaves an active held slot and a paused run's floor intact", async () => {
 		const store = createStore();
 		const activeId = testRunId("heartbeat-cleanup-bystander-active");
 		const pausedId = testRunId("heartbeat-cleanup-bystander-paused");
@@ -2572,14 +2575,14 @@ describe("workflow heartbeat consumed-message identity", () => {
 		};
 	}
 
-	test("a well-formed reconciliation resolves its exact identity from details, never from the text", () => {
+	test("a well-formed reconciliation resolves its exact identity from details, never from the text", async () => {
 		assert.deepEqual(workflowHeartbeatConsumedIdentity(reconciliationFor(HEARTBEAT_ENTRY_ID), entries), {
 			runId: "run-under-test",
 			scheduledAt: STARTED_AT + MINUTE_MS,
 		});
 	});
 
-	test("everything that is not a workflow heartbeat's reconciliation resolves to undefined", () => {
+	test("everything that is not a workflow heartbeat's reconciliation resolves to undefined", async () => {
 		const cases: { readonly name: string; readonly event: unknown }[] = [
 			{ name: "a non-object event", event: "message_end" },
 			{ name: "an event with no message", event: {} },
@@ -2604,11 +2607,11 @@ describe("workflow heartbeat consumed-message identity", () => {
 		}
 	});
 
-	test("no session entries means no identity, so the handler has nothing to decide", () => {
+	test("no session entries means no identity, so the handler has nothing to decide", async () => {
 		assert.equal(workflowHeartbeatConsumedIdentity(reconciliationFor(HEARTBEAT_ENTRY_ID), undefined), undefined);
 	});
 
-	test("a heartbeat entry carrying no usable exact identity resolves to undefined", () => {
+	test("a heartbeat entry carrying no usable exact identity resolves to undefined", async () => {
 		const malformed: SessionEntry[] = [
 			{ id: HEARTBEAT_ENTRY_ID, type: "custom_message", customType: WORKFLOW_HEARTBEAT_CUSTOM_TYPE },
 			{
@@ -2635,7 +2638,7 @@ describe("workflow heartbeat consumed-message identity", () => {
 		}
 	});
 
-	test("a stale boundary is invalid even when a current run reuses the same id", () => {
+	test("a stale boundary is invalid even when a current run reuses the same id", async () => {
 		const oldIdentity: WorkflowHeartbeatIdentity = {
 			runId: "run-under-test",
 			scheduledAt: STARTED_AT + MINUTE_MS,
@@ -2663,7 +2666,7 @@ describe("workflow heartbeat consumed-message identity", () => {
 			"same run id does not transfer ownership to an old scheduled boundary",
 		);
 	});
-	test("the invalidation fires for a terminal or absent run and leaves a live one alone", () => {
+	test("the invalidation fires for a terminal or absent run and leaves a live one alone", async () => {
 		const event = reconciliationFor(HEARTBEAT_ENTRY_ID);
 		assert.equal(
 			workflowHeartbeatContextInvalidation(event, entries, () => true),
@@ -2686,7 +2689,7 @@ describe("workflow heartbeat consumed-message identity", () => {
 		);
 	});
 
-	test("a message that is not a heartbeat is never replaced, whatever the run predicate says", () => {
+	test("a message that is not a heartbeat is never replaced, whatever the run predicate says", async () => {
 		const foreign = { message: { role: "custom", customType: "someone-else:notice", details: {} } };
 		assert.equal(
 			workflowHeartbeatContextInvalidation(foreign, entries, () => false),
@@ -2695,7 +2698,7 @@ describe("workflow heartbeat consumed-message identity", () => {
 	});
 });
 
-test("heartbeat boundaries request background summaries separately from the steer card", () => {
+test("heartbeat boundaries request background summaries separately from the steer card", async () => {
 	const store = createStore();
 	const runId = testRunId("summary-boundary");
 	startRun(store, runId);

@@ -322,7 +322,10 @@ describe("ctx.tool terminal admission", () => {
 		class RejectTerminalBackend extends InMemoryDurableBackend {
 			override setWorkflowStatus(...args: Parameters<InMemoryDurableBackend["setWorkflowStatus"]>): void {
 				if (args[1] === "failed")
-					throw new StorageUnavailableError("journal.sqlite", new Error("terminal write failed"));
+					throw new StorageUnavailableError(
+						{ adapter: "node-sqlite", location: "journal.sqlite" },
+						new Error("terminal write failed"),
+					);
 				super.setWorkflowStatus(...args);
 			}
 		}

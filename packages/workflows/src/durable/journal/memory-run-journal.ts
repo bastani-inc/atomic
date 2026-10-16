@@ -1,6 +1,5 @@
 import { JOURNAL_READ_PAGE_SIZE, registerSynchronousJournal } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
-import { journalCounter, storageBoundary } from "./node-sqlite.js";
 import {
 	type AppendOutcome,
 	JOURNAL_LEASE,
@@ -18,7 +17,7 @@ import {
 	StaleLeaseError,
 	StorageUnavailableError,
 } from "./types.js";
-import { serializeJson, validateText } from "./values.js";
+import { journalCounter, serializeJson, storageBoundary, validateText } from "./values.js";
 
 interface MemoryRun {
 	header: RunHeader;
@@ -45,7 +44,8 @@ export class MemoryRunJournal implements RunJournal {
 	}
 
 	private ensureOpen(): void {
-		if (this.closed) throw new StorageUnavailableError(":memory:", new JournalClosedError());
+		if (this.closed)
+			throw new StorageUnavailableError({ adapter: "memory", location: ":memory:" }, new JournalClosedError());
 	}
 
 	async createRun(header: RunHeader): Promise<"created" | "exists"> {
@@ -142,13 +142,9 @@ export class MemoryRunJournal implements RunJournal {
 		validateText("runId", runId);
 		validateText("holderId", holderId);
 		this.requireRun(runId);
-		const current = this.leases.get(runId);
+		const current = this.leaseStateSync(runId);
 		if (current?.holderId === holderId) return this.acquireSync(runId, holderId);
-		if (
-			current?.holderId !== undefined &&
-			current.holderId !== null &&
-			!isWorkflowLeaseExpired(current.renewedAt, staleAfterMs)
-		)
+		if (current !== undefined && !isWorkflowLeaseExpired(0, staleAfterMs, current.ageMs))
 			return { status: "held", holderId: current.holderId, epoch: current.epoch };
 		return this.grant(runId, holderId);
 	}
@@ -163,7 +159,13 @@ export class MemoryRunJournal implements RunJournal {
 		const current = this.leases.get(runId);
 		return current?.holderId === undefined || current.holderId === null
 			? undefined
-			: { runId, holderId: current.holderId, epoch: current.epoch, renewedAt: current.renewedAt };
+			: {
+					runId,
+					holderId: current.holderId,
+					epoch: current.epoch,
+					renewedAt: current.renewedAt,
+					ageMs: Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Date.now() - current.renewedAt)),
+				};
 	}
 
 	private checkLease(lease: Lease): void {
@@ -204,7 +206,6 @@ export class MemoryRunJournal implements RunJournal {
 		validateText("runId", lease.runId);
 		validateText("holderId", lease.holderId);
 		if (options?.key !== undefined) validateText("key", options.key);
-		if (event.type === "StatusChanged") validateText("status", event.payload.status);
 		this.checkLease(lease);
 		const run = this.requireRun(lease.runId);
 		if (options?.key !== undefined) {
@@ -219,16 +220,18 @@ export class MemoryRunJournal implements RunJournal {
 			":memory:",
 			() => JSON.parse(serializeJson(event.payload)) as RunEvent["payload"],
 		);
+		const snapshot = { type: event.type, payload } as RunEvent;
+		if (snapshot.type === "StatusChanged") validateText("status", snapshot.payload.status);
 		const entry: JournalEntry = {
 			runId: lease.runId,
 			seq,
 			epoch: lease.epoch,
 			...(options?.key === undefined ? {} : { key: options.key }),
-			event: { type: event.type, payload } as RunEvent,
+			event: snapshot,
 			at: Date.now(),
 		};
 		run.entries.push(entry);
-		if (event.type === "StatusChanged") run.header = { ...run.header, status: event.payload.status };
+		if (snapshot.type === "StatusChanged") run.header = { ...run.header, status: snapshot.payload.status };
 		return { status: "appended", entry: this.copyEntry(entry) };
 	}
 
@@ -292,11 +295,14 @@ export class MemoryRunJournal implements RunJournal {
 		this.runs.delete(runId);
 	}
 
-	async deleteOwnedRun(lease: Lease): Promise<void> {
+	async deleteOwnedRun(lease: Lease, expectSeq?: number): Promise<void> {
 		this.ensureOpen();
 		validateText("runId", lease.runId);
 		validateText("holderId", lease.holderId);
 		this.checkLease(lease);
+		const actual = this.runs.get(lease.runId)?.entries.at(-1)?.seq ?? 0;
+		if (expectSeq !== undefined && expectSeq !== actual)
+			throw new JournalCasConflictError(lease.runId, expectSeq, actual);
 		this.deleteRunSync(lease.runId);
 	}
 

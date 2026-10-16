@@ -85,7 +85,7 @@ export function registerRunJournalConformance(
 		if (first.status !== "acquired") assert.fail("lease not acquired");
 		const initial = await journal.leaseState(header.runId);
 		assert.ok(initial);
-		assert.deepEqual(initial, { ...first.lease, renewedAt: initial.renewedAt });
+		assert.deepEqual(initial, { ...first.lease, renewedAt: initial.renewedAt, ageMs: initial.ageMs });
 		Reflect.set(initial, "holderId", "changed");
 		assert.equal((await journal.leaseState(header.runId))?.holderId, "first");
 		assert.deepEqual(await journal.takeoverExpired(header.runId, "first", 0), first);
@@ -115,6 +115,24 @@ export function registerRunJournalConformance(
 		assert.equal(reacquired.lease.epoch, next.lease.epoch + 1);
 		await journal.deleteRun(header.runId);
 		assert.equal(await journal.leaseState(header.runId), undefined);
+	});
+	check("reports non-negative safe store-clock lease age that grows and resets on renew", async (journal) => {
+		await journal.createRun(header);
+		const held = await lease(journal);
+		const initial = await journal.leaseState(header.runId);
+		assert.ok(initial);
+		assert.ok(Number.isSafeInteger(initial.ageMs) && initial.ageMs >= 0);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		const aged = await journal.leaseState(header.runId);
+		assert.ok(aged && aged.ageMs > initial.ageMs);
+		assert.equal(aged.renewedAt, initial.renewedAt);
+		await journal.renew(held);
+		const renewed = await journal.leaseState(header.runId);
+		assert.ok(renewed && renewed.renewedAt > initial.renewedAt);
+		assert.ok(Number.isSafeInteger(renewed.ageMs) && renewed.ageMs >= 0);
+		assert.ok(renewed.renewedAt >= aged.renewedAt + aged.ageMs);
+		const observed = await journal.append(held, { type: "SummaryRecorded", payload: null });
+		assert.ok(renewed.ageMs <= Math.max(0, observed.entry.at - renewed.renewedAt));
 	});
 	check("reads lazily in bounded pages and stops loading after early termination", async (journal) => {
 		await journal.createRun(header);
@@ -242,6 +260,28 @@ export function registerRunJournalConformance(
 		assert.deepEqual(await entries(journal), []);
 		assert.equal(await journal.readKey(header.runId, "one"), undefined);
 	});
+	check("owned deletion checks the expected sequence atomically before deleting", async (journal) => {
+		await journal.createRun(header);
+		const held = await lease(journal);
+		const appended = await journal.append(held, { type: "RunStarted", payload: [2, 1, 2] }, { key: "first" });
+		const beforeLease = await journal.leaseState(header.runId);
+		await assert.rejects(journal.deleteOwnedRun(held, 0), (error: Error) => {
+			assert.ok(error instanceof JournalCasConflictError);
+			assert.equal(error.runId, header.runId);
+			assert.equal(error.expectedSeq, 0);
+			assert.equal(error.actualSeq, 1);
+			return true;
+		});
+		assert.deepEqual(await journal.getRun(header.runId), header);
+		assert.deepEqual(await entries(journal), [appended.entry]);
+		const afterLease = await journal.leaseState(header.runId);
+		assert.ok(afterLease && beforeLease && afterLease.ageMs >= beforeLease.ageMs);
+		assert.deepEqual(afterLease, { ...beforeLease, ageMs: afterLease.ageMs });
+		await journal.deleteOwnedRun(held, 1);
+		assert.equal(await journal.getRun(header.runId), undefined);
+		assert.deepEqual(await entries(journal), []);
+		assert.equal(await journal.leaseState(header.runId), undefined);
+	});
 	check("owned deletion rejects a stale lease without changing the successor", async (journal) => {
 		await journal.createRun(header);
 		const first = await lease(journal);
@@ -340,6 +380,51 @@ export function registerRunJournalConformance(
 		assert.deepEqual(await journal.listRuns(), [expectedHeader]);
 		assert.deepEqual(await entries(journal), [expectedEntry]);
 		assert.deepEqual(await journal.readKey(header.runId, "entry"), expectedEntry);
+	});
+	check("snapshots append payloads before yielding and keeps status consistent", async (journal) => {
+		await journal.createRun(header);
+		const held = await lease(journal);
+		const payload = { text: "original", values: [2, 1, 2] };
+		const pending = journal.append(held, { type: "RunStarted", payload }, { key: "snapshot" });
+		payload.text = "changed";
+		payload.values.push(9);
+		const appended = await pending;
+		assert.deepEqual(appended.entry.event.payload, { text: "original", values: [2, 1, 2] });
+		assert.deepEqual(await journal.readKey(header.runId, "snapshot"), appended.entry);
+		const status = { status: "paused", values: [3, 2, 3] };
+		const changing = journal.append(held, { type: "StatusChanged", payload: status });
+		status.status = "failed";
+		status.values.push(9);
+		const changed = await changing;
+		assert.deepEqual(changed.entry.event.payload, { status: "paused", values: [3, 2, 3] });
+		assert.equal((await journal.getRun(header.runId))?.status, "paused");
+		assert.deepEqual((await entries(journal)).at(-1), changed.entry);
+	});
+	check("derives run status from the serialized StatusChanged snapshot", async (journal) => {
+		await journal.createRun(header);
+		const held = await lease(journal);
+		const payload = { status: "running" };
+		Object.defineProperty(payload, "toJSON", { value: () => ({ status: "paused" }) });
+		const appended = await journal.append(held, { type: "StatusChanged", payload });
+		assert.deepEqual(appended.entry.event.payload, { status: "paused" });
+		assert.equal((await journal.getRun(header.runId))?.status, "paused");
+		assert.equal((await journal.listRuns())[0]?.status, "paused");
+		assert.deepEqual(await entries(journal), [appended.entry]);
+		const invalid = { status: "running" };
+		Object.defineProperty(invalid, "toJSON", { value: () => ({ status: "bad\u0000status" }) });
+		await assert.rejects(journal.append(held, { type: "StatusChanged", payload: invalid }), (error: Error) => {
+			assert.ok(error instanceof JournalInvalidTextError);
+			assert.equal(error.field, "status");
+			return true;
+		});
+		assert.deepEqual(await entries(journal), [appended.entry]);
+		assert.equal((await journal.getRun(header.runId))?.status, "paused");
+		const replaced = { status: "bad\u0000status" };
+		Object.defineProperty(replaced, "toJSON", { value: () => ({ status: "done" }) });
+		const finished = await journal.append(held, { type: "StatusChanged", payload: replaced });
+		assert.deepEqual(finished.entry.event.payload, { status: "done" });
+		assert.equal((await journal.getRun(header.runId))?.status, "done");
+		assert.deepEqual(await entries(journal), [appended.entry, finished.entry]);
 	});
 	check("rejected appends leave all rows, sequence and status unchanged", async (journal) => {
 		await journal.createRun(header);
@@ -449,7 +534,7 @@ export function registerRunJournalConformance(
 			await assert.rejects(operation(), (error: Error) => {
 				assert.ok(error instanceof StorageUnavailableError);
 				assert.ok(error.cause instanceof JournalClosedError);
-				assert.ok(error.path.length > 0);
+				assert.ok(error.location.length > 0);
 				return true;
 			});
 	});

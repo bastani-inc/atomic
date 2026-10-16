@@ -46,6 +46,7 @@ export async function loadVirtualModules(): Promise<Record<string, object>> {
 		piAiOauthPage,
 		properLockfile,
 		piCodingAgent,
+		storage,
 	] = await Promise.all([
 		import("typebox"),
 		import("typebox/compile"),
@@ -67,6 +68,7 @@ export async function loadVirtualModules(): Promise<Record<string, object>> {
 		import("proper-lockfile"),
 		// loader.ts exports are not re-exported from index.ts, avoiding a cycle.
 		import("../../index.ts"),
+		import("../storage/index.js"),
 	]);
 
 	return {
@@ -95,6 +97,7 @@ export async function loadVirtualModules(): Promise<Record<string, object>> {
 		"proper-lockfile": properLockfile,
 		...(atomicNatives ? { "@bastani/atomic-natives": atomicNatives } : {}),
 		"@bastani/atomic": piCodingAgent,
+		"@bastani/atomic/storage": storage,
 		"@earendil-works/pi-coding-agent": piCodingAgent,
 		"@mariozechner/pi-agent-core": piAgentCore,
 		"@mariozechner/pi-tui": piTui,
@@ -126,15 +129,17 @@ export async function getVirtualModules(): Promise<Record<string, object>> {
 }
 
 export async function getWorkflowHostModules(): Promise<
-	Record<"@bastani/atomic" | "@bastani/pi-ai" | "@bastani/pi-ai/providers/all", object>
+	Record<"@bastani/atomic" | "@bastani/atomic/storage" | "@bastani/pi-ai" | "@bastani/pi-ai/providers/all", object>
 > {
-	const [atomic, piAi, providers] = await Promise.all([
+	const [atomic, storage, piAi, providers] = await Promise.all([
 		import("../../index.ts"),
+		import("../storage/index.js"),
 		import("@bastani/pi-ai/compat"),
 		import("@bastani/pi-ai/providers/all"),
 	]);
 	return {
 		"@bastani/atomic": atomic,
+		"@bastani/atomic/storage": storage,
 		"@bastani/pi-ai": piAi,
 		"@bastani/pi-ai/providers/all": providers,
 	};

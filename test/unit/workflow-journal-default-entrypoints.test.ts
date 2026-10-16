@@ -7,7 +7,7 @@ import { getDurableBackendProcessOwner } from "../../packages/workflows/src/dura
 import { initializeDurableBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
-import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+import { openSqlRunJournal, SqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import { availableStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import { run as engineRun } from "../../packages/workflows/src/engine/run.js";
@@ -64,7 +64,7 @@ function definition() {
 function defaultBackend(store: Store) {
 	const backend = availableStoreDurableBackend(store);
 	assert.ok(backend instanceof JournalDurableBackend);
-	assert.ok(backend.journal instanceof SqliteRunJournal);
+	assert.ok(backend.journal instanceof SqlRunJournal);
 	assert.equal(backend.journal.path, expectedPath);
 	assert.equal(backend.persistent, true);
 	return backend;
@@ -194,7 +194,7 @@ test("an unopenable default SQLite journal fails without selecting memory", asyn
 	makeDirectorySync(expectedPath, { recursive: true });
 	await assert.rejects(run(definition(), {}, { cwd: directory, store: createStore() }), (error: Error) => {
 		assert.ok(error instanceof StorageUnavailableError);
-		assert.equal(error.path, expectedPath);
+		assert.equal(error.location, expectedPath);
 		return true;
 	});
 	assert.equal(getDurableBackendProcessOwner().selectedBackends?.size, 0);
@@ -205,7 +205,7 @@ test("runtime retries failed initialization but retains a successful journal sel
 	const runtime = createExtensionRuntime({ store: createStore(), cwd: directory });
 	await assert.rejects(runtime.dispatch({ action: "list" }), (error: Error) => {
 		assert.ok(error instanceof StorageUnavailableError);
-		assert.equal(error.path, directory);
+		assert.equal(error.location, directory);
 		return true;
 	});
 	process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = expectedPath;
@@ -216,7 +216,7 @@ test("runtime retries failed initialization but retains a successful journal sel
 	]);
 	const selected = runtime.durableBackend();
 	assert.ok(selected instanceof JournalDurableBackend);
-	assert.ok(selected.journal instanceof SqliteRunJournal);
+	assert.ok(selected.journal instanceof SqlRunJournal);
 	assert.equal(selected.journal.path, expectedPath);
 	process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = directory;
 	assert.deepEqual(await runtime.dispatch({ action: "list" }), { action: "list", items: [] });
@@ -320,7 +320,7 @@ test("fresh SDK runs resolve each project's settings instead of inheriting the d
 		assert.equal(second.status, "completed");
 		const backendB = availableStoreDurableBackend(sdkStore, second.runId);
 		assert.ok(backendB instanceof JournalDurableBackend);
-		assert.ok(backendB.journal instanceof SqliteRunJournal);
+		assert.ok(backendB.journal instanceof SqlRunJournal);
 		assert.equal(backendB.journal.path, pathB);
 		assert.equal(await initializeDurableBackend({ cwd: projectA }), backendA);
 		assert.deepEqual(
@@ -328,7 +328,7 @@ test("fresh SDK runs resolve each project's settings instead of inheriting the d
 			[first.runId],
 		);
 		await backendB.close();
-		const reopened = await JournalDurableBackend.open(new SqliteRunJournal(pathB));
+		const reopened = await JournalDurableBackend.open(await openSqlRunJournal(pathB));
 		try {
 			assert.deepEqual(
 				(await reopened.journal.listRuns()).map((saved) => saved.runId),
@@ -418,11 +418,11 @@ for (const entry of ["SDK", "engine", "background", "TUI slash", "CLI slash", "w
 			assert.ok(backendB instanceof JournalDurableBackend);
 			assert.notEqual(backendA, backendB);
 			assert.equal(availableStoreDurableBackend(owner.store, third), backendB);
-			assert.equal(exec.mock.calls.filter(([sql]) => sql.includes("CREATE TABLE IF NOT EXISTS meta")).length, 2);
+			assert.equal(exec.mock.calls.filter(([sql]) => sql.includes("CREATE TABLE IF NOT EXISTS wf_meta")).length, 2);
 			await backendA.close();
 			await backendB.close();
 			for (const [index, path] of paths.entries()) {
-				const reopened = await JournalDurableBackend.open(new SqliteRunJournal(path));
+				const reopened = await JournalDurableBackend.open(await openSqlRunJournal(path));
 				try {
 					assert.deepEqual(
 						(await reopened.journal.listRuns()).map((saved) => saved.runId).sort(),

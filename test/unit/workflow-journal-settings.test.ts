@@ -7,7 +7,7 @@ import { deepMergeSettings } from "../../packages/coding-agent/src/core/settings
 import { SettingsSchema } from "../../packages/coding-agent/src/core/settings-schema.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
-import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { JournalConfigurationError } from "../../packages/workflows/src/durable/journal/types.js";
 import { makeTempDirectory, moduleDir, readJson, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -49,7 +49,7 @@ test("project journal memory replaces a global path without changing other neste
 	);
 	assert.deepEqual(settings.workflows, { journal: { memory: true }, paths: ["global"] });
 	assert.deepEqual(settings.compaction, { reserveTokens: 100, enabled: false });
-	const journal = resolveRunJournal({ settings });
+	const journal = await resolveRunJournal({ settings });
 	try {
 		assert.ok(journal instanceof MemoryRunJournal);
 	} finally {
@@ -65,9 +65,9 @@ test("project journal path replaces global memory (#3674)", async () => {
 			{ workflows: { journal: { memory: true } } },
 			{ workflows: { journal: { path } } },
 		);
-		const journal = resolveRunJournal({ settings });
+		const journal = await resolveRunJournal({ settings });
 		try {
-			assert.ok(journal instanceof SqliteRunJournal);
+			assert.ok(journal instanceof SqlRunJournal);
 			assert.equal(journal.path, path);
 		} finally {
 			await journal.close();
@@ -77,10 +77,10 @@ test("project journal path replaces global memory (#3674)", async () => {
 	}
 });
 
-test("a conflicting journal within either scope still throws JournalConfigurationError (#3674)", () => {
+test("a conflicting journal within either scope still throws JournalConfigurationError (#3674)", async () => {
 	const conflict = { workflows: { journal: { path: "conflict.sqlite", memory: true } } };
 	for (const settings of [deepMergeSettings(conflict, {}), deepMergeSettings({}, conflict)]) {
-		assert.throws(
+		await assert.rejects(
 			() => resolveRunJournal({ settings }),
 			(error: Error) => {
 				assert.ok(error instanceof JournalConfigurationError);

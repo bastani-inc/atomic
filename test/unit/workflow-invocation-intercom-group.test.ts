@@ -263,7 +263,7 @@ test("model fallback replacement sessions keep the workflow invocation group", a
 test("delivery failure preserves sticky instructions for resumed and later stages (#3628)", async () => {
 	const runId = "36280000-0000-4000-8000-000000000002";
 	const group = `workflow:${runId}`;
-	const backend = new JournalTestBackend();
+	const backend = await JournalTestBackend.create();
 	setDurableBackend(backend);
 	const store = createStore();
 	let unavailable = true;
@@ -354,7 +354,7 @@ test("delivery failure preserves sticky instructions for resumed and later stage
 
 test("fresh durable replay restores a nested stage to the top-level invocation group", async () => {
 	const rootRunId = "durable-invocation-group-root";
-	const firstBackend = new JournalTestBackend();
+	const firstBackend = await JournalTestBackend.create();
 	const firstStore = createStore();
 	const promptStarted = Promise.withResolvers<void>();
 	const releasePrompt = Promise.withResolvers<void>();
@@ -473,7 +473,7 @@ test("active durable boolean subgroup resume preserves the persisted group ident
 			return {};
 		},
 	});
-	const firstBackend = new JournalTestBackend();
+	const firstBackend = await JournalTestBackend.create();
 	const firstStore = createStore();
 	const firstController = new AbortController();
 	const firstPromise = run(

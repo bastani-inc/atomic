@@ -9,12 +9,12 @@ import type { WorkflowSerializableValue } from "../../packages/workflows/src/sha
 import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
 
-function seedCompletedBoundary(
+async function seedCompletedBoundary(
 	backend: InMemoryDurableBackend,
 	runId: string,
 	output: WorkflowSerializableValue,
 	childRunId = testRunId(`${runId}-child`),
-): void {
+): Promise<void> {
 	const replayKey = "workflow:child:1";
 	const rootRun = { runId, runName: "completed-parent" } as const;
 	const child = {
@@ -24,7 +24,7 @@ function seedCompletedBoundary(
 		parentStageId: "boundary",
 		rootRunId: runId,
 	} as const;
-	backend.registerWorkflow({
+	await backend.registerWorkflow({
 		workflowId: runId,
 		name: "completed-parent",
 		inputs: {},
@@ -33,7 +33,7 @@ function seedCompletedBoundary(
 		updatedAt: 5,
 		resumable: false,
 	});
-	backend.recordCheckpoint({
+	await backend.recordCheckpoint({
 		kind: "stage",
 		workflowId: runId,
 		checkpointId: `boundary-start:${replayKey}`,
@@ -59,7 +59,7 @@ function seedCompletedBoundary(
 			},
 		},
 	});
-	backend.recordCheckpoint({
+	await backend.recordCheckpoint({
 		kind: "stage",
 		workflowId: runId,
 		checkpointId: `${replayKey}:stage:child:1`,
@@ -76,7 +76,7 @@ function seedCompletedBoundary(
 			run: { ...child, runId: childRunId },
 		},
 	});
-	backend.recordCheckpoint({
+	await backend.recordCheckpoint({
 		kind: "stage",
 		workflowId: runId,
 		checkpointId: `boundary-terminal:${replayKey}:completed`,
@@ -106,10 +106,10 @@ function seedCompletedBoundary(
 	});
 }
 
-test("completed catalog uses the shared strict WorkflowChildResult parser", () => {
-	const valid = new InMemoryDurableBackend();
+test("completed catalog uses the shared strict WorkflowChildResult parser", async () => {
+	const valid = await InMemoryDurableBackend.create();
 	const validRootId = testRunId("valid-completed");
-	seedCompletedBoundary(
+	await seedCompletedBoundary(
 		valid,
 		validRootId,
 		{
@@ -131,9 +131,9 @@ test("completed catalog uses the shared strict WorkflowChildResult parser", () =
 			{ workflow: "child", runId: testRunId("malformed-2-child"), status: "completed", exited: false, outputs: [] },
 		] satisfies readonly WorkflowSerializableValue[]
 	).entries()) {
-		const backend = new InMemoryDurableBackend();
+		const backend = await InMemoryDurableBackend.create();
 		const runId = testRunId(`malformed-${index}`);
-		seedCompletedBoundary(backend, runId, output);
+		await seedCompletedBoundary(backend, runId, output);
 		assert.deepEqual(listOpenableCompletedWorkflows(backend), [], runId);
 		assert.equal(resolveCompletedWorkflow(runId, backend).kind, "stale", runId);
 	}

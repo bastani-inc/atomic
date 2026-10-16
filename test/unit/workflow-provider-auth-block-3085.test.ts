@@ -107,7 +107,7 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 	try {
 		const dir = mkdtempSync(join(tmpdir(), "atomic-3085-wf-"));
 		cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
-		const backend = new JournalTestBackend();
+		const backend = await JournalTestBackend.create();
 		setDurableBackend(backend);
 		cleanup.push(() => setDurableBackend(undefined));
 

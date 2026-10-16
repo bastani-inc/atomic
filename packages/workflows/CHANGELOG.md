@@ -14,16 +14,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Custom `RunJournal` implementations must provide `getRun`, `takeoverExpired`, `leaseState`, lazy paged `read`, and `deleteOwnedRun(lease)` for atomic lease-fenced deletion. Synchronous fast paths are internal.
 - Invocation records require `invocationFingerprint`.
 - SDK workflow stages now use persistent session storage by default, including stages without `sessionDir`. Ephemeral stages must explicitly supply an in-memory session manager through an adapter. Storage failures do not fall back to memory.
+- Replaced `SqliteRunJournal` with async `SqlRunJournal.open(database, { prefix })` and `openSqlRunJournal(pathOrDatabase?)`; await `resolveRunJournal`. Journal tables now use the `wf_` namespace with no migration of earlier unreleased tables. Journal storage errors use the shared `StorageUnavailableError` fields `adapter`, `location`, and `cause` instead of `path`.
+- Custom journals must return `LeaseState.ageMs`, a non-negative safe-integer renewal age measured by the journal clock in the same read as the lease state. Ownership probes use this age rather than the process clock.
 
 ### Added
 
 - Added `RunOpts.journal` and `resolveRunJournal` for explicit journals, caller-owned SQLite connections, memory journals, and configurable files. TUI, CLI, background, and SDK runs use the selected journal. Resolution prioritizes the explicit option, a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, then journal settings and the default path. Relative settings paths resolve against the Atomic home directory.
 - Extended shared journal conformance checks to cover detached values, closed-journal rejection, failure atomicity, and deletion tombstones.
 - Added stale-only async journal takeover and read-only ownership inspection. Keyed append retries return the original entry before checking sequence expectations. Shared journal conformance covers stale-only takeover and early read termination.
+- Added facade-backed SQL journals for user-supplied SQLite-compatible drivers, optional table prefixes, shared session/journal databases, database-clock lease expiry, and sequence-checked `deleteOwnedRun(lease, expectSeq?)`.
 
 ### Fixed
 
 - Fixed workflow recovery reporting a foreign run as available at the exact lease-expiry boundary before takeover is permitted ([#3681](https://github.com/bastani-inc/atomic/pull/3681)).
+- SQL journals snapshot append payloads at invocation, including keyed retries, preserving status/event consistency during queued writes. User-supplied facades may return readonly rows. Header and append serialization failures now retain typed storage errors and their original causes without changing fencing, replay, or sequence-check precedence.
+- Journal run summaries and status validation now use the serialized `StatusChanged` payload, including transformations by `toJSON`, so recorded events and summaries agree. Ownership inspection now honors the journal clock even when the process clock is skewed.
 
 ## [0.9.38-alpha.5] - 2026-10-16
 

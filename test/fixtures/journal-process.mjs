@@ -4,21 +4,22 @@ import { createJiti } from "jiti";
 
 const jiti = createJiti(import.meta.url, { fsCache: false });
 const load = (name) => jiti.import(fileURLToPath(new URL(`../../packages/workflows/src/durable/journal/${name}.ts`, import.meta.url)));
-const { SqliteRunJournal } = await load("sqlite-run-journal");
-const { JournalDatabase } = await load("node-sqlite");
-const { JOURNAL_COLUMNS: c, JOURNAL_TABLES: t, RUN_EVENT_TYPES: e, JournalInvalidTextError, StaleLeaseError } = await load("types");
+const { openSqlRunJournal } = await load("sqlite-run-journal");
+const { JournalTestDatabase } = await jiti.import(fileURLToPath(new URL("../helpers/journal-database.ts", import.meta.url)));
+const { JOURNAL_COLUMNS: c, JOURNAL_TABLES: names, RUN_EVENT_TYPES: e, JournalInvalidTextError, StaleLeaseError } = await load("types");
+const t = Object.fromEntries(Object.entries(names).map(([key, name]) => [key, `wf_${name}`]));
 // jiti may load types.ts once per importer path spelling on Windows, so compare the class name, not identity.
 const isJournalError = (error, journalErrorClass) => error instanceof Error && error.name === journalErrorClass.name;
 const [mode, path, argument] = process.argv.slice(2);
 if (mode === "crash") {
-	const db = new JournalDatabase(path);
+	const db = new JournalTestDatabase(path);
 	db.exec("BEGIN IMMEDIATE");
 	db.run(`UPDATE ${t.runs} SET ${c.status} = ? WHERE ${c.runId} = ?`, "partial", "run");
 	db.run(`INSERT INTO ${t.events} VALUES (?, ?, ?, ?, ?, ?, ?)`, "run", 2, 1, "partial", e.summaryRecorded, JSON.stringify(null), 0);
 	process.stdout.write("transaction-open\n");
 	await new Promise(() => setInterval(() => {}, 1000));
 } else {
-	let journal = new SqliteRunJournal(path);
+	let journal = await openSqlRunJournal(path);
 	try {
 		if (mode === "append") {
 			const { lease, prefix } = JSON.parse(argument);
@@ -43,7 +44,7 @@ if (mode === "crash") {
 				assert.equal(scalar.entry.event.payload, JSON.parse(JSON.stringify(raw)));
 				assert.deepEqual(appended.entry.event.payload, expected);
 				for (const close of [false, true]) {
-					const reader = new SqliteRunJournal(path);
+					const reader = await openSqlRunJournal(path);
 					try {
 						const entries = [];
 						for await (const entry of reader.read(header.runId)) entries.push(entry);
@@ -54,7 +55,7 @@ if (mode === "crash") {
 					} finally { await reader.close(); }
 					if (!close) await journal.close();
 				}
-				journal = new SqliteRunJournal(path);
+				journal = await openSqlRunJournal(path);
 			}
 			process.stdout.write("raw-json-lossless=ok\n");
 		} else if (mode === "nul-rejection") {

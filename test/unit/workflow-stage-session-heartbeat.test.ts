@@ -167,7 +167,7 @@ describe("active workflow stage session durability", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(2_000_000);
 		const store = createStore();
-		const backend = new JournalTestBackend();
+		const backend = await JournalTestBackend.create();
 		const rootId = testRunId("nested-stage-heartbeat");
 		const release = Promise.withResolvers<string>();
 		const session: StageSessionRuntime = {
@@ -520,16 +520,19 @@ describe("active workflow stage session durability", () => {
 	test("surfaces a journal sessionless heartbeat failure before the active turn can finish", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(2_750_000);
-		const failure = new StorageUnavailableError("journal.sqlite", new Error("sessionless timing persistence failed"));
+		const failure = new StorageUnavailableError(
+			{ adapter: "node-sqlite", location: "journal.sqlite" },
+			new Error("sessionless timing persistence failed"),
+		);
 		class FailingHeartbeatBackend extends JournalTestBackend {
-			override recordCheckpoint(checkpoint: DurableCheckpoint): void {
+			override async recordCheckpoint(checkpoint: DurableCheckpoint): Promise<void> {
 				if (checkpoint.checkpointId.startsWith("run-timing:")) throw failure;
-				super.recordCheckpoint(checkpoint);
+				await super.recordCheckpoint(checkpoint);
 			}
 		}
 		const store = createStore();
 		const runId = testRunId("sessionless-heartbeat-failure");
-		const backend = new FailingHeartbeatBackend();
+		const backend = await FailingHeartbeatBackend.create();
 		const never = Promise.withResolvers<string>();
 		const promptStarted = Promise.withResolvers<void>();
 		const definition = workflow({

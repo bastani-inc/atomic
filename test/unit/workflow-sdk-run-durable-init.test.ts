@@ -4,7 +4,7 @@ import { afterEach, beforeEach, test } from "vitest";
 import { getDurableBackendProcessOwner } from "../../packages/workflows/src/durable/backend-process-owner.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
-import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import { requireStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
@@ -54,7 +54,7 @@ test("standalone SDK shares the selected journal across independent stores", asy
 	assert.ok(backend.getWorkflow("second"));
 	await backend.close();
 	setDurableBackend(undefined);
-	const reopened = await JournalDurableBackend.open(new SqliteRunJournal(process.env.ATOMIC_WORKFLOW_JOURNAL_PATH));
+	const reopened = await JournalDurableBackend.open(await openSqlRunJournal(process.env.ATOMIC_WORKFLOW_JOURNAL_PATH));
 	try {
 		assert.equal(reopened.getWorkflow("first")?.status, "completed");
 		assert.equal(reopened.getWorkflow("second")?.status, "completed");
@@ -67,7 +67,7 @@ test("standalone SDK surfaces the configured journal open failure", async () => 
 	process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = directory;
 	await assert.rejects(run(definition, {}, { store: createStore() }), (error: Error) => {
 		assert.ok(error instanceof StorageUnavailableError);
-		assert.equal(error.path, directory);
+		assert.equal(error.location, directory);
 		assert.ok(error.cause instanceof Error);
 		return true;
 	});
@@ -120,7 +120,7 @@ for (const outcome of ["success", "failure", "stop", "quit"] as const) {
 		await started.promise;
 		const backend = requireStoreDurableBackend(store);
 		assert.ok(backend instanceof JournalDurableBackend);
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: "unrelated",
 			name: "active",
 			inputs: {},
@@ -138,10 +138,10 @@ for (const outcome of ["success", "failure", "stop", "quit"] as const) {
 			outcome === "success" ? "completed" : outcome === "quit" ? "paused" : outcome === "stop" ? "killed" : "failed",
 		);
 		const contender = await JournalDurableBackend.open(
-			new SqliteRunJournal(process.env.ATOMIC_WORKFLOW_JOURNAL_PATH),
+			await openSqlRunJournal(process.env.ATOMIC_WORKFLOW_JOURNAL_PATH),
 		);
 		try {
-			assert.equal(contender.workflowOwnership("settled"), "available");
+			assert.equal(await contender.workflowOwnership("settled"), "available");
 			assert.equal(
 				await contender.transitionWorkflowStatus(
 					"settled",
@@ -150,8 +150,8 @@ for (const outcome of ["success", "failure", "stop", "quit"] as const) {
 				),
 				true,
 			);
-			assert.equal(contender.workflowOwnership("settled"), "local");
-			assert.equal(backend.workflowOwnership("unrelated"), "local");
+			assert.equal(await contender.workflowOwnership("settled"), "local");
+			assert.equal(await backend.workflowOwnership("unrelated"), "local");
 			assert.equal(requireStoreDurableBackend(store), backend);
 		} finally {
 			await contender.close();

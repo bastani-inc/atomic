@@ -759,8 +759,8 @@ test("stage auto sends stored classifier auth to the session's configured TypeSa
 
 test("durable session checkpoint roundtrip restores selection without another inference", async () => {
 	const f = await fixture();
-	const backend = new JournalTestBackend();
-	backend.registerWorkflow({ workflowId: "auto", name: "auto", inputs: {}, createdAt: 1, status: "running" });
+	const backend = await JournalTestBackend.create();
+	await backend.registerWorkflow({ workflowId: "auto", name: "auto", inputs: {}, createdAt: 1, status: "running" });
 	const selection = { model: "decision-test/chat", effort: null };
 	await recordStageSessionCheckpoint(
 		{ backend, workflowId: "auto", nextCheckpointId: () => "cp", nextReplayKey: () => "stage:test" },
@@ -807,7 +807,7 @@ test("durable session checkpoint roundtrip restores selection without another in
 	await stage.prompt("Original prompt");
 	assert.equal(f.infer.mock.calls.length, 0);
 	assert.equal(f.admissions.length, 1);
-	restored.recordCheckpoint({
+	await restored.recordCheckpoint({
 		...decoded,
 		checkpointId: "completed",
 		output: "Saved result",
@@ -1124,8 +1124,14 @@ test("ranked stage candidates run before configured fallback and survive checkpo
 			{ model: "decision-test/a", effort: null },
 			{ model: "decision-test/b", effort: null },
 		]);
-		const backend = new JournalTestBackend();
-		backend.registerWorkflow({ workflowId: "ranked", name: "ranked", inputs: {}, createdAt: 1, status: "running" });
+		const backend = await JournalTestBackend.create();
+		await backend.registerWorkflow({
+			workflowId: "ranked",
+			name: "ranked",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
 		await recordStageSessionCheckpoint(
 			{ backend, workflowId: "ranked", nextCheckpointId: () => "cp", nextReplayKey: () => "stage:ranked" },
 			{
@@ -1235,8 +1241,8 @@ test("builtin stages that omit a model route only to models the modelRouting gat
 });
 
 test("durable checkpoints keep routerSelection candidates and reject malformed lists (#3528)", async () => {
-	const backend = new JournalTestBackend();
-	backend.registerWorkflow({ workflowId: "auto", name: "auto", inputs: {}, createdAt: 1, status: "running" });
+	const backend = await JournalTestBackend.create();
+	await backend.registerWorkflow({ workflowId: "auto", name: "auto", inputs: {}, createdAt: 1, status: "running" });
 	const selection = { model: "decision-test/chat", effort: null, candidates: ["decision-test/chat", "other/model"] };
 	await recordStageSessionCheckpoint(
 		{ backend, workflowId: "auto", nextCheckpointId: () => "cp", nextReplayKey: () => "stage:test" },

@@ -67,7 +67,7 @@ test.each(
 )(
 	"public restored resume enforces its frontier without overriding terminal control ($ending, mixed=$mixed)",
 	async ({ ending, mixed }) => {
-		let backend = new JournalTestBackend();
+		let backend = await JournalTestBackend.create();
 		setDurableBackend(backend);
 		let completedCalls = 0;
 		let modelCalls = 0;

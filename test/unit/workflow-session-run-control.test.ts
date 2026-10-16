@@ -39,7 +39,10 @@ const DEAD_EXECUTOR_ID = "unavailable-holder";
 
 class ThrowingHydrationBackend extends InMemoryDurableBackend {
 	override async hydrateResumableWorkflows(): Promise<void> {
-		throw new StorageUnavailableError("/unavailable/journal.sqlite", new Error("disk unavailable"));
+		throw new StorageUnavailableError(
+			{ adapter: "node-sqlite", location: "/unavailable/journal.sqlite" },
+			new Error("disk unavailable"),
+		);
 	}
 	override async hydrateWorkflow(): Promise<void> {
 		await this.hydrateResumableWorkflows();
@@ -696,7 +699,10 @@ describe("session workflow run control", () => {
 	});
 
 	test.sequential("reports failed journal reads as WorkflowRunStorageError (#3377)", async () => {
-		const failure = new StorageUnavailableError("/unavailable/journal.sqlite", new Error("read failed"));
+		const failure = new StorageUnavailableError(
+			{ adapter: "node-sqlite", location: "/unavailable/journal.sqlite" },
+			new Error("read failed"),
+		);
 		setDurableBackend(new FailingInspectionBackend(failure));
 		const { control } = setup();
 		const runId = testRunId("session-run-control-database-reset");

@@ -25,7 +25,7 @@ export { registerRunJournalConformance } from "./durable/journal/conformance.js"
 export { MemoryRunJournal } from "./durable/journal/memory-run-journal.js";
 export type { RunJournalOption, RunJournalSettings } from "./durable/journal/resolution.js";
 export { resolveRunJournal } from "./durable/journal/resolution.js";
-export { SqliteRunJournal } from "./durable/journal/sqlite-run-journal.js";
+export { openSqlRunJournal, SqlRunJournal } from "./durable/journal/sqlite-run-journal.js";
 export * from "./durable/journal/types.js";
 export type { StageNode } from "./engine/graph-inference.js";
 export { GraphFrontierTracker } from "./engine/graph-inference.js";

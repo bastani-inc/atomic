@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
+import { readdirSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
+import { getDurableBackendProcessOwner } from "../../packages/workflows/src/durable/backend-process-owner.js";
 import { initializeDurableBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import {
 	JournalBackendClosedError,
 	JournalDurableBackend,
 } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
-import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { type RunJournal, StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
@@ -17,11 +19,34 @@ import { run, workflow } from "../../packages/workflows/src/sdk-surface.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
 
-const directories: string[] = [];
-afterEach(() => {
+async function resetBackends(): Promise<void> {
+	for (const selected of getDurableBackendProcessOwner().selectedBackends?.values() ?? []) {
+		await selected.ready;
+		await selected.close?.();
+	}
 	setDurableBackend(undefined);
+}
+
+const directories: string[] = [];
+afterEach(async () => {
+	await resetBackends();
 	vi.useRealTimers();
 	vi.unstubAllEnvs();
+	if (process.platform === "linux") {
+		const handles = readdirSync("/proc/self/fd").flatMap((fd) => {
+			try {
+				const path = readlinkSync(`/proc/self/fd/${fd}`);
+				return directories.some((directory) => path.startsWith(`${directory}/`)) &&
+					/runs\.sqlite(?:-wal|-shm)?$/.test(path)
+					? [path]
+					: [];
+			} catch (error) {
+				if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+				return [];
+			}
+		});
+		assert.deepEqual(handles, [], "journal cleanup must release every SQLite file descriptor (#3682)");
+	}
 	for (const directory of directories.splice(0)) removeTempDirectory(directory);
 });
 
@@ -50,7 +75,7 @@ function definition(onTool: () => void) {
 
 for (const storage of ["memory", "sqlite"] as const) {
 	test(`SDK executes and replays tool and stage checkpoints in the selected ${storage} journal`, async () => {
-		const journal = storage === "memory" ? new MemoryRunJournal() : new SqliteRunJournal(journalPath());
+		const journal = storage === "memory" ? new MemoryRunJournal() : await openSqlRunJournal(journalPath());
 		let tools = 0;
 		let stages = 0;
 		const def = definition(() => {
@@ -72,14 +97,17 @@ for (const storage of ["memory", "sqlite"] as const) {
 		try {
 			assert.equal((await run(def, {}, options)).status, "completed");
 			const backend = await JournalDurableBackend.open(journal);
-			assert.equal(backend.journal, journal);
-			assert.equal(backend.getWorkflow(options.runId)?.status, "completed");
-			assert.ok(backend.listCheckpoints(options.runId).some((entry) => entry.kind === "tool"));
-			assert.ok(backend.listCheckpoints(options.runId).some((entry) => entry.kind === "stage"));
-			assert.equal((await run(def, {}, { ...options, store: createStore() })).status, "completed");
-			assert.equal(tools, 1);
-			assert.equal(stages, 1);
-			await backend.close();
+			try {
+				assert.equal(backend.journal, journal);
+				assert.equal(backend.getWorkflow(options.runId)?.status, "completed");
+				assert.ok(backend.listCheckpoints(options.runId).some((entry) => entry.kind === "tool"));
+				assert.ok(backend.listCheckpoints(options.runId).some((entry) => entry.kind === "stage"));
+				assert.equal((await run(def, {}, { ...options, store: createStore() })).status, "completed");
+				assert.equal(tools, 1);
+				assert.equal(stages, 1);
+			} finally {
+				await backend.close();
+			}
 		} finally {
 			await journal.close();
 		}
@@ -157,7 +185,7 @@ test("explicit journal selection reuses each identity without replacing other jo
 	const path = journalPath();
 	const file = await initializeDurableBackend({ journal: { path } });
 	assert.equal(await initializeDurableBackend({ journal: { path } }), file);
-	const supplied = new SqliteRunJournal(path);
+	const supplied = await openSqlRunJournal(path);
 	try {
 		const explicit = await initializeDurableBackend({ journal: supplied });
 		assert.notEqual(explicit, file);
@@ -182,7 +210,7 @@ test("SDK uses a configured path and leaves a caller-owned connection open after
 		);
 		const backend = await initializeDurableBackend({ journal: { database } });
 		assert.equal(backend.getWorkflow("connection")?.status, "completed");
-		setDurableBackend(undefined);
+		await resetBackends();
 		database.exec("CREATE TABLE caller_still_open (value TEXT)");
 		assert.equal(
 			(await run(def, {}, { journal: { path }, runId: "path", store: createStore(), adapters })).status,
@@ -190,7 +218,7 @@ test("SDK uses a configured path and leaves a caller-owned connection open after
 		);
 		assert.equal((await initializeDurableBackend({ journal: { path } })).getWorkflow("path")?.status, "completed");
 	} finally {
-		setDurableBackend(undefined);
+		await resetBackends();
 		database.close();
 	}
 });
@@ -220,7 +248,7 @@ test("custom journal open failures retain the adapter error as a typed storage c
 	const journal = new UnavailableJournal();
 	await assert.rejects(initializeDurableBackend({ journal }), (error: Error) => {
 		assert.ok(error instanceof StorageUnavailableError);
-		assert.equal(error.path, "custom journal");
+		assert.equal(error.location, "custom journal");
 		assert.equal(error.cause, cause);
 		return true;
 	});
@@ -245,7 +273,7 @@ test("custom journal catalog and close failures retain typed storage causes", as
 	journal.fail = true;
 	const isStorageError = (error: Error): boolean => {
 		assert.ok(error instanceof StorageUnavailableError);
-		assert.equal(error.path, "custom journal");
+		assert.equal(error.location, "custom journal");
 		assert.equal(error.cause, cause);
 		return true;
 	};
@@ -294,6 +322,7 @@ test("background entry point records the run in its explicit journal", async () 
 	assert.equal(outcome.ok, true);
 	assert.equal(outcome.result?.status, "completed");
 	assert.equal((await journal.listRuns())[0]?.runId, accepted.runId);
+	await journal.close();
 });
 
 test("extension entry point resolves the invocation project's journal settings", async () => {
@@ -321,7 +350,7 @@ test("extension entry point resolves the invocation project's journal settings",
 		assert.equal(accepted.action, "run");
 		assert.ok("runId" in accepted && accepted.runId);
 		await jobs.get(accepted.runId)?.promise;
-		const reader = new SqliteRunJournal(path);
+		const reader = await openSqlRunJournal(path);
 		try {
 			assert.equal((await reader.listRuns())[0]?.runId, accepted.runId);
 			assert.equal(store.runs().find((entry) => entry.id === accepted.runId)?.status, "completed");

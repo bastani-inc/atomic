@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
+import { StorageError } from "@bastani/atomic/storage";
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../../runs/foreground/stage-session-heartbeat.js";
 import type { PendingStageMessage, PendingStageMessageDelivery } from "../../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../../shared/types.js";
@@ -81,8 +82,11 @@ function* invoke<T>(action: () => T | Promise<T>, synchronous = false): Operatio
 		});
 		return value!;
 	} catch (error) {
-		if (error instanceof JournalError) throw error;
-		throw new StorageUnavailableError("custom journal", error instanceof Error ? error : new Error(String(error)));
+		if (error instanceof JournalError || error instanceof StorageError) throw error;
+		throw new StorageUnavailableError(
+			{ adapter: "custom", location: "custom journal" },
+			error instanceof Error ? error : new Error(String(error)),
+		);
 	}
 }
 
@@ -181,8 +185,16 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			if (backend === undefined) {
 				if (options.ownsJournal !== false) await journal.close();
 			} else await backend.close();
-			if (error instanceof JournalError || error instanceof DurableNestedTopologyError) throw error;
-			throw new StorageUnavailableError("custom journal", error instanceof Error ? error : new Error(String(error)));
+			if (
+				error instanceof JournalError ||
+				error instanceof StorageError ||
+				error instanceof DurableNestedTopologyError
+			)
+				throw error;
+			throw new StorageUnavailableError(
+				{ adapter: "custom", location: "custom journal" },
+				error instanceof Error ? error : new Error(String(error)),
+			);
 		}
 	}
 
@@ -303,7 +315,9 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		if (result.status === "held") throw new JournalOwnershipError(runId, result.holderId);
 		this.leases.set(runId, result.lease);
 		if (this.timer === undefined) {
-			this.timer = setInterval(() => void this.renewLeases(), STAGE_SESSION_HEARTBEAT_INTERVAL_MS);
+			this.timer = setInterval(() => {
+				void this.renewLeases().catch((error: Error) => console.error(error));
+			}, STAGE_SESSION_HEARTBEAT_INTERVAL_MS);
 			this.timer.unref();
 		}
 		const execution = this.executions.get(runId);
@@ -311,14 +325,21 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		yield* this.rebuild(runId);
 		return result.lease;
 	}
-	private mapOwnership(error: Error, runId: string): Error {
+	private *mapOwnership(error: Error, runId: string): Operation<Error> {
 		if (!(error instanceof StaleLeaseError)) return error;
-		const failure = new JournalOwnershipError(
-			runId,
-			this.synchronous?.leaseStateSync(runId)?.holderId ?? null,
-			error,
-		);
+		let failure = new JournalOwnershipError(runId, null, error);
 		this.lost.set(runId, failure);
+		try {
+			const current = yield* invoke(
+				() =>
+					this.synchronous !== undefined ? this.synchronous.leaseStateSync(runId) : this.journal.leaseState(runId),
+				this.synchronous !== undefined,
+			);
+			failure = new JournalOwnershipError(runId, current?.holderId ?? null, error);
+			this.lost.set(runId, failure);
+		} catch {
+			// The stale fencing token already proves ownership loss; the current holder is best effort.
+		}
 		return failure;
 	}
 	private *append(
@@ -337,7 +358,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			);
 			yield* this.refresh(runId);
 		} catch (error) {
-			if (error instanceof Error) throw this.mapOwnership(error, runId);
+			if (error instanceof Error) throw yield* this.mapOwnership(error, runId);
 			throw error;
 		}
 	}
@@ -435,7 +456,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	workflowOwnership(runId: string): "local" | "foreign" | "available" | Promise<"local" | "foreign" | "available"> {
 		if (this.synchronous !== undefined) {
 			const lease = this.synchronous.leaseStateSync(runId);
-			if (lease === undefined || isWorkflowLeaseExpired(lease.renewedAt, FOREIGN_LIVE_WORKFLOW_WINDOW_MS))
+			if (lease === undefined || isWorkflowLeaseExpired(0, FOREIGN_LIVE_WORKFLOW_WINDOW_MS, lease.ageMs))
 				return "available";
 			return lease.holderId === this.holderId ? "local" : "foreign";
 		}
@@ -444,7 +465,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	private *probeOwnership(runId: string): Operation<"local" | "foreign" | "available"> {
 		this.ensureOpen();
 		const lease = yield* invoke(() => this.journal.leaseState(runId));
-		if (lease === undefined || isWorkflowLeaseExpired(lease.renewedAt, FOREIGN_LIVE_WORKFLOW_WINDOW_MS))
+		if (lease === undefined || isWorkflowLeaseExpired(0, FOREIGN_LIVE_WORKFLOW_WINDOW_MS, lease.ageMs))
 			return "available";
 		return lease.holderId === this.holderId ? "local" : "foreign";
 	}
@@ -740,7 +761,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			yield* invoke(() => this.journal.deleteOwnedRun(lease));
 		} catch (error) {
 			if (!(error instanceof RunNotFoundError)) {
-				if (error instanceof Error) throw this.mapOwnership(error, runId);
+				if (error instanceof Error) throw yield* this.mapOwnership(error, runId);
 				throw error;
 			}
 		}
@@ -795,7 +816,12 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	}
 	private async renewLeases(): Promise<void> {
 		for (const [runId, lease] of this.leases) {
-			await this.serialize(runId, () => this.renewLease(runId, lease));
+			try {
+				await this.serialize(runId, () => this.renewLease(runId, lease));
+			} catch (error) {
+				if (error instanceof Error) this.lost.set(runId, error);
+				this.dropLease(runId);
+			}
 		}
 	}
 	private *renewLease(runId: string, lease: Lease): Operation<void> {
@@ -806,8 +832,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 				return this.journal.renew(lease);
 			}, this.synchronous !== undefined);
 		} catch (error) {
-			if (this.leases.get(runId) === lease && error instanceof Error)
-				this.lost.set(runId, this.mapOwnership(error, runId));
+			if (this.leases.get(runId) === lease) {
+				if (error instanceof Error) this.lost.set(runId, yield* this.mapOwnership(error, runId));
+				this.dropLease(runId);
+			}
 		}
 	}
 	closeOnProcessExit(): void {
@@ -866,11 +894,14 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		} catch (error) {
 			if (!(error instanceof StaleLeaseError)) throw error;
 		} finally {
-			this.leases.delete(runId);
-			if (this.leases.size === 0) {
-				clearInterval(this.timer);
-				this.timer = undefined;
-			}
+			this.dropLease(runId);
+		}
+	}
+	private dropLease(runId: string): void {
+		this.leases.delete(runId);
+		if (this.leases.size === 0) {
+			clearInterval(this.timer);
+			this.timer = undefined;
 		}
 	}
 	private *releaseAll(): Operation<void> {

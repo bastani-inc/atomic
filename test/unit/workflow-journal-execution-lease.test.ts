@@ -8,7 +8,7 @@ import {
 	JournalDurableBackend,
 	JournalExecutionRetiredError,
 } from "../../packages/workflows/src/durable/journal/journal-backend.js";
-import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
 import { run as engineRun } from "../../packages/workflows/src/engine/run.js";
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
@@ -19,15 +19,16 @@ import type { RunResult } from "../../packages/workflows/src/runs/foreground/exe
 import { run } from "../../packages/workflows/src/runs/foreground/sdk-run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
-import { journalInternals } from "../helpers/journal-internals.js";
+import { readJournalEntries } from "../helpers/journal-internals.js";
+import { assertLeaseStateUnchanged } from "../helpers/journal-lease-state.js";
 import { testRunId } from "../helpers/run-id.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 test("rejected same-id SDK inputs preserve the active execution lease (#3647)", async () => {
 	const directory = makeTempDirectory("execution-lease-");
 	const path = join(directory, "journal.sqlite");
-	const backend = await JournalDurableBackend.open(new SqliteRunJournal(path));
-	const contender = new SqliteRunJournal(path);
+	const backend = await JournalDurableBackend.open(await openSqlRunJournal(path));
+	const contender = await openSqlRunJournal(path);
 	const started = Promise.withResolvers<void>();
 	const release = Promise.withResolvers<void>();
 	const definition = workflow({
@@ -86,8 +87,8 @@ test("detached quit releases only its own lease after final persistence and perm
 	const runId = testRunId("detached-quit-lease");
 	const directory = makeTempDirectory("detached-quit-lease-");
 	const path = join(directory, "journal.sqlite");
-	const backend = new DeferredPauseBackend(new SqliteRunJournal(path));
-	const contender = new SqliteRunJournal(path);
+	const backend = new DeferredPauseBackend(await openSqlRunJournal(path));
+	const contender = await openSqlRunJournal(path);
 	const controls = createToolControlRegistry();
 	const jobs = createJobTracker();
 	const store = createStore();
@@ -161,7 +162,7 @@ test("detached quit releases only its own lease after final persistence and perm
 		assert.equal(source.status, "paused");
 		assert.equal(source.resumable, true);
 		releaseBody.resolve();
-		const successor = await JournalDurableBackend.open(new SqliteRunJournal(path));
+		const successor = await JournalDurableBackend.open(await openSqlRunJournal(path));
 		try {
 			const resumedStore = createStore();
 			let completion: Promise<void> | undefined;
@@ -180,7 +181,7 @@ test("detached quit releases only its own lease after final persistence and perm
 			assert.equal(resumedStore.runs().find((candidate) => candidate.id === runId)?.status, "completed");
 			assert.equal(savedEffects, 1);
 			assert.equal(resumedEffects, 1);
-			assert.equal(successor.workflowOwnership(runId), "available");
+			assert.equal(await successor.workflowOwnership(runId), "available");
 			assert.equal((await contender.acquire("unrelated", "contender")).status, "held");
 		} finally {
 			await successor.close();
@@ -202,7 +203,7 @@ test("detached quit releases only its own lease after final persistence and perm
 test("quit retires a cancelled tool's executor without waiting for caught-cancellation cleanup (#3647)", async () => {
 	const runId = testRunId("quit-pending-cleanup");
 	const directory = makeTempDirectory("quit-pending-cleanup-");
-	const backend = new DeferredPauseBackend(new SqliteRunJournal(join(directory, "journal.sqlite")));
+	const backend = new DeferredPauseBackend(await openSqlRunJournal(join(directory, "journal.sqlite")));
 	const store = createStore();
 	const controls = createToolControlRegistry();
 	const jobs = createJobTracker();
@@ -220,8 +221,11 @@ test("quit retires a cancelled tool's executor without waiting for caught-cancel
 	let completion: Promise<void> | undefined;
 	let bodySettled = false;
 	const verifyLateWrites = async (): Promise<void> => {
-		assert.throws(() => backend.setWorkflowStatus(runId, "completed"), JournalExecutionRetiredError);
-		assert.throws(() => backend.releaseWorkflow(runId), JournalExecutionRetiredError);
+		await assert.rejects(
+			async () => await backend.setWorkflowStatus(runId, "completed"),
+			JournalExecutionRetiredError,
+		);
+		await assert.rejects(async () => await backend.releaseWorkflow(runId), JournalExecutionRetiredError);
 		await assert.rejects(
 			backend.withWorkflowLease(runId, async () => backend.setWorkflowStatus(runId, "completed")),
 			JournalExecutionRetiredError,
@@ -297,12 +301,12 @@ test("quit retires a cancelled tool's executor without waiting for caught-cancel
 		assert.equal((await quitting).ok, true);
 		assert.equal(controls.runControl(runId), undefined);
 		assert.equal(jobs.get(runId), undefined);
-		assert.equal(backend.workflowOwnership(runId), "available");
-		const pausedEntries = journalInternals(backend.journal).readEntries(runId);
+		assert.equal(await backend.workflowOwnership(runId), "available");
+		const pausedEntries = await readJournalEntries(backend.journal, runId);
 		attemptWhileReleased.resolve();
 		await releasedWrites.promise;
-		assert.deepEqual(journalInternals(backend.journal).readEntries(runId), pausedEntries);
-		assert.equal(backend.workflowOwnership(runId), "available", "retired writes cannot reacquire a free lease");
+		assert.deepEqual(await readJournalEntries(backend.journal, runId), pausedEntries);
+		assert.equal(await backend.workflowOwnership(runId), "available", "retired writes cannot reacquire a free lease");
 		const resumed = await resumeDurableWorkflow(runId, {
 			registry: createRegistry().register(definition),
 			baseRunOpts: { store, toolControlRegistry: controls },
@@ -318,15 +322,15 @@ test("quit retires a cancelled tool's executor without waiting for caught-cancel
 		assert.equal(executions, 2);
 		assert.equal(savedEffects, 1, "resume replays the persisted checkpoint");
 		assert.equal(bodySettled, false);
-		const entries = journalInternals(backend.journal).readEntries(runId);
+		const entries = await readJournalEntries(backend.journal, runId);
 		const lease = await backend.journal.leaseState(runId);
 		cleanup.resolve();
 		await lateWrites.promise;
 		finishRetiredJob.resolve();
 		await job.promise;
 		assert.equal(bodySettled, true);
-		assert.deepEqual(journalInternals(backend.journal).readEntries(runId), entries);
-		assert.deepEqual(
+		assert.deepEqual(await readJournalEntries(backend.journal, runId), entries);
+		assertLeaseStateUnchanged(
 			await backend.journal.leaseState(runId),
 			lease,
 			"late settlement cannot release the resumed lease",
@@ -334,7 +338,7 @@ test("quit retires a cancelled tool's executor without waiting for caught-cancel
 		resumeBody.resolve();
 		await completion;
 		assert.equal(backend.getWorkflow(runId)?.status, "completed");
-		assert.equal(backend.workflowOwnership(runId), "available");
+		assert.equal(await backend.workflowOwnership(runId), "available");
 	} finally {
 		attemptWhileReleased.resolve();
 		backend.finishPause.resolve();
@@ -353,9 +357,9 @@ test("quit retires a cancelled tool's executor without waiting for caught-cancel
 test("completed detached runs release their lease for deletion without unlocking active runs (#3647)", async () => {
 	const directory = makeTempDirectory("detached-completed-lease-");
 	const path = join(directory, "journal.sqlite");
-	const backend = await JournalDurableBackend.open(new SqliteRunJournal(path));
-	const successor = await JournalDurableBackend.open(new SqliteRunJournal(path));
-	const contender = new SqliteRunJournal(path);
+	const backend = await JournalDurableBackend.open(await openSqlRunJournal(path));
+	const successor = await JournalDurableBackend.open(await openSqlRunJournal(path));
+	const contender = await openSqlRunJournal(path);
 	const jobs = createJobTracker();
 	const started = Promise.withResolvers<void>();
 	const release = Promise.withResolvers<void>();
@@ -401,7 +405,7 @@ test("completed detached runs release their lease for deletion without unlocking
 					if (error instanceof Error) completionError = error;
 					observerStarted.resolve();
 					await finishObserver.promise;
-					backend.setWorkflowStatus("completed", "completed");
+					await backend.setWorkflowStatus("completed", "completed");
 				},
 			},
 		);
