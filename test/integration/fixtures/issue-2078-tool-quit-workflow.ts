@@ -22,7 +22,7 @@
  * `ISSUE_2078_STATE_DIR` so a driver outside this process can read them.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
@@ -67,7 +67,11 @@ function readState(): Issue2078FixtureState {
 function update(change: (state: Issue2078FixtureState) => void): Issue2078FixtureState {
 	const state = readState();
 	change(state);
-	writeFileSync(statePath(), JSON.stringify(state), "utf8");
+	const path = statePath();
+	const temporary = `${path}.tmp`;
+	// Readers in the driver process must see a complete old or new snapshot.
+	writeFileSync(temporary, JSON.stringify(state), "utf8");
+	renameSync(temporary, path);
 	return state;
 }
 
