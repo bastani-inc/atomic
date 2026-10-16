@@ -385,7 +385,7 @@ async function executeRun(
 		if (scheduler.isRunPaused()) return waitForRunRelease().then(() => whenRunning(call));
 		if (ownController.signal.aborted) return Promise.reject(ownController.signal.reason);
 		const persistence = drainCachedStagePersistence();
-		return persistence === undefined ? call() : persistence.then(call);
+		return persistence === undefined ? call() : persistence.then(() => whenRunning(call));
 	};
 	ownController.signal.addEventListener(
 		"abort",
@@ -410,6 +410,18 @@ async function executeRun(
 			}
 		})();
 		return cachedStageDrain;
+	};
+	// Cleanup metadata may still be written after cancellation, but a checkpoint
+	// that waited for replay writes must not begin after its execution was stopped.
+	const drainBeforeCheckpoint = (): void | Promise<void> => {
+		const persistence = drainCachedStagePersistence();
+		return persistence?.then(() => ownController.signal.throwIfAborted());
+	};
+	const beforeLiveCall = (): void | Promise<void> => {
+		ownController.signal.throwIfAborted();
+		const persistence = drainCachedStagePersistence();
+		if (persistence !== undefined) return persistence.then(beforeLiveCall);
+		if (scheduler.isRunPaused()) return waitForRunRelease().then(beforeLiveCall);
 	};
 	const finalizers = createRunFinalizers({
 		def,
@@ -442,7 +454,7 @@ async function executeRun(
 		nextCheckpointId: checkpointIdGenerator,
 		nextReplayKey: stageReplayKeyGenerator,
 		completedReplayKeys: completedStageReplayKeys,
-		beforeCheckpoint: drainCachedStagePersistence,
+		beforeCheckpoint: drainBeforeCheckpoint,
 	});
 	const durableOnStageEnd = createDurableStageEndRecorder({
 		rootRunId: runId,
@@ -603,6 +615,7 @@ async function executeRun(
 			toolAdmission,
 			budget,
 			beforeToolCall: drainCachedStagePersistence,
+			beforeCheckpoint: drainBeforeCheckpoint,
 		});
 	let selectedAdmittedToolFailure: ReturnType<typeof admittedTools.firstFailure>;
 	/**
@@ -662,7 +675,7 @@ async function executeRun(
 		workflowId: runId,
 		backend: durableBackend,
 		nextCheckpointId: checkpointIdGenerator,
-		beforeCheckpoint: drainCachedStagePersistence,
+		beforeCheckpoint: drainBeforeCheckpoint,
 		beforeCall: () => {
 			ownController.signal.throwIfAborted();
 			const persistence = drainCachedStagePersistence();
@@ -709,7 +722,7 @@ async function executeRun(
 		durableIntercomGroup,
 		task: taskRunners.task,
 		recordCachedTask: recordCachedStage,
-		beforeCheckpoint: drainCachedStagePersistence,
+		beforeCheckpoint: drainBeforeCheckpoint,
 		signal: ownController.signal,
 		registerTailControl: (registration) => {
 			registration.controller.signal.addEventListener(
@@ -749,7 +762,8 @@ async function executeRun(
 		backend: durableBackend,
 		nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName),
 		durableIntercomGroup,
-		beforeCall: drainCachedStagePersistence,
+		beforeCall: beforeLiveCall,
+		beforeCheckpoint: drainBeforeCheckpoint,
 		recordCachedStage,
 		stage: (name, options, replayKey) => {
 			const stage = runtime.stage(name, options);
@@ -813,8 +827,11 @@ async function executeRun(
 				return pending;
 			}),
 		tool: (...args) => {
-			// Let the tool's admission tracker own terminal rejection and observation.
-			if (!scheduler.isRunPaused()) return tool(...args);
+			// Let the tracker retain its terminal rejection, rather than replaying
+			// a stored drain failure or the run's abort reason to a late caller.
+			if (admittedTools.closed) return tool(...args);
+			// Wait before admission so pause cannot hold the registration lease
+			// that a subsequent quit needs to drain.
 			const pending = whenRunning(() => tool(...args));
 			void pending.catch(() => {});
 			return pending;

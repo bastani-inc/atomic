@@ -152,6 +152,7 @@ export function createDurableStagePrimitive(input: {
 	readonly stage: (name: string, options: StageOptions | undefined, replayKey: string) => StageContext;
 	readonly durableIntercomGroup?: (replayKey: string, stageId: string | undefined) => string | undefined;
 	readonly beforeCall?: () => void | Promise<void>;
+	readonly beforeCheckpoint?: () => void | Promise<void>;
 	readonly recordCachedStage?: (
 		name: string,
 		replayKey: string,
@@ -198,7 +199,7 @@ export function createDurableStagePrimitive(input: {
 			workflowId: input.workflowId,
 			backend: input.backend,
 			replayKey,
-			beforeCheckpoint: input.beforeCall,
+			beforeCheckpoint: input.beforeCheckpoint,
 			name,
 		});
 	};
@@ -298,6 +299,7 @@ export function createDurableTaskPrimitive(input: {
 		const signal = mergeAbortSignals(input.signal, tailController.signal);
 		try {
 			await input.beforeCheckpoint?.();
+			if (signal?.aborted) throw abortReasonError(signal);
 			await awaitAbortable(
 				signal,
 				recordCheckpointDurably(

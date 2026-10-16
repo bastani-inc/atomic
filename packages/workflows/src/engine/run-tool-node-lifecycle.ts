@@ -167,6 +167,7 @@ export function createTrackedToolPrimitive(input: {
 	readonly toolAdmission: ToolAdmissionBoundary;
 	readonly budget: RunBudgetController;
 	readonly beforeToolCall?: () => void | Promise<void>;
+	readonly beforeCheckpoint?: () => void | Promise<void>;
 }): {
 	readonly tool: WorkflowToolPrimitive;
 	readonly admittedTools: AdmittedToolExecutionTracker;
@@ -197,6 +198,13 @@ export function createTrackedToolPrimitive(input: {
 	const budgetBoundary = input.budget.enabled
 		? (): Promise<void> => input.budget.stopAtBoundaryAsync(input.run.stages.at(-1)?.name)
 		: undefined;
+	const assertToolAdmissionOpen = (): void => {
+		const quit = input.toolAdmission.quitReason;
+		if (quit !== undefined) {
+			observedQuit ??= quit;
+			throw quit;
+		}
+	};
 	const tool = createToolPrimitive({
 		workflowId: input.workflowId,
 		...(input.checkpointSourceWorkflowId === undefined
@@ -234,10 +242,14 @@ export function createTrackedToolPrimitive(input: {
 			return admission;
 		},
 		beforeToolCall: () => {
+			const afterDrain = (): void | Promise<void> => {
+				const budget = budgetBoundary?.();
+				return budget === undefined ? assertToolAdmissionOpen() : budget.then(assertToolAdmissionOpen);
+			};
 			const pending = input.beforeToolCall?.();
-			return pending === undefined ? budgetBoundary?.() : pending.then(() => budgetBoundary?.());
+			return pending === undefined ? afterDrain() : pending.then(afterDrain);
 		},
-		beforeCheckpoint: input.beforeToolCall,
+		beforeCheckpoint: input.beforeCheckpoint,
 		...(budgetBoundary !== undefined ? { afterToolCall: budgetBoundary } : {}),
 		...lifecycle,
 	});
