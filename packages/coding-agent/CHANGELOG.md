@@ -35,6 +35,7 @@
 - Fixed history refresh failures after a turn escaping error handling. The interactive engine now displays the failure without an unhandled rejection, and label edits await their saved history before reporting success.
 - Renaming the active session in the selector writes through its active manager, so later session writes retain the correct sequence.
 - Session pickers keep selection and rename bound to the selected project's store when IDs repeat across projects. Imported empty session IDs remain persistent across resume and restart instead of starting a new conversation.
+- Fixed Alt+Y restoring stale text and moving the cursor before the start of the scoped-model search after clearing it with Ctrl+C ([#3668](https://github.com/bastani-inc/atomic/issues/3668)).
 
 ## [0.9.38-alpha.4] - 2026-10-16
 
