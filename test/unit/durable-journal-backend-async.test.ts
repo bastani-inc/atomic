@@ -267,3 +267,77 @@ test("retirement drains an admitted terminal mutation but rejects new writes fro
 	assert.equal(entries.at(-1)?.event.type, RUN_EVENT_TYPES.messageQueued);
 	assert.equal(await backend.workflowOwnership("run"), "available");
 });
+
+test.each(["queued", "in-flight"] as const)(
+	"retirement around the first %s acquisition releases the admitted registration's lease",
+	async (timing) => {
+		vi.useFakeTimers();
+		const journal = new MemoryRunJournal();
+		const backend = await JournalDurableBackend.open(journal);
+		backends.push(backend);
+		const entered = gate();
+		const proceed = gate();
+		if (timing === "in-flight") {
+			const takeover = journal.takeoverExpired.bind(journal);
+			journal.takeoverExpired = async (...args) => {
+				const result = await takeover(...args);
+				entered.resolve();
+				await proceed.promise;
+				return result;
+			};
+		}
+		await backend.withWorkflowLease("run", async () => {
+			const retire = backend.captureWorkflowRetirement("run");
+			const registration = backend.registerWorkflow({
+				workflowId: "run",
+				name: "test",
+				inputs: {},
+				createdAt: 1,
+				status: "paused",
+			});
+			if (timing === "in-flight") await entered.promise;
+			const retirement = retire();
+			proceed.resolve();
+			await Promise.all([registration, retirement]);
+			await assert.rejects(backend.setWorkflowStatus("run", "completed"), JournalExecutionRetiredError);
+		});
+		assert.equal(backend.getWorkflow("run")?.status, "paused");
+		assert.equal(await journal.leaseState("run"), undefined);
+		const contender = await JournalDurableBackend.open(journal, { ownsJournal: false });
+		try {
+			await contender.setWorkflowStatus("run", "running");
+			assert.equal((await journal.leaseState("run"))?.holderId, contender.holderId);
+			assert.equal(contender.getWorkflow("run")?.status, "running");
+		} finally {
+			await contender.close();
+		}
+		await vi.advanceTimersByTimeAsync(STAGE_SESSION_HEARTBEAT_INTERVAL_MS * 2);
+		assert.equal(await journal.leaseState("run"), undefined);
+		assert.equal(await backend.workflowOwnership("run"), "available");
+	},
+);
+
+test("retirement joins close while the first admitted registration is still queued", async () => {
+	const journal = new MemoryRunJournal();
+	const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
+	backends.push(backend);
+	try {
+		await backend.withWorkflowLease("run", async () => {
+			const retire = backend.captureWorkflowRetirement("run");
+			const registration = backend.registerWorkflow({
+				workflowId: "run",
+				name: "test",
+				inputs: {},
+				createdAt: 1,
+				status: "paused",
+			});
+			const closing = backend.close();
+			await Promise.all([registration, closing, retire()]);
+		});
+		assert.equal(backend.getWorkflow("run")?.status, "paused");
+		assert.equal(await journal.leaseState("run"), undefined);
+	} finally {
+		await backend.close();
+		await journal.close();
+	}
+});

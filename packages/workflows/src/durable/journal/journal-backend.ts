@@ -328,7 +328,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			}, STAGE_SESSION_HEARTBEAT_INTERVAL_MS);
 			this.timer.unref();
 		}
-		const execution = this.executions.get(runId);
+		const execution = this.executionContext.getStore()?.get(runId) ?? this.executions.get(runId);
 		if (execution !== undefined) execution.lease = result.lease;
 		yield* this.rebuild(runId);
 		return result.lease;
@@ -857,16 +857,16 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		if (execution.retired) return;
 		execution.retired = true;
 		if (this.executions.get(runId) === execution) this.executions.delete(runId);
-		if (execution.lease !== undefined && this.leases.get(runId) === execution.lease)
-			return this.serialize(runId, () => this.release(runId), false);
+		if (this.state !== "open") return this.closing;
+		return this.serialize(runId, () => this.release(runId, execution), false);
 	}
 	releaseWorkflow(runId: string): Promise<void> {
 		this.assertExecutionActive(runId);
 		return this.serialize(runId, () => this.release(runId));
 	}
-	private *release(runId: string): Operation<void> {
+	private *release(runId: string, execution?: WorkflowLeaseExecution): Operation<void> {
 		const lease = this.leases.get(runId);
-		if (lease === undefined) return;
+		if (lease === undefined || (execution !== undefined && execution.lease !== lease)) return;
 		try {
 			yield* invoke(() => this.journal.release(lease));
 		} catch (error) {
