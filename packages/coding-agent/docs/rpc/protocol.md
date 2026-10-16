@@ -750,6 +750,12 @@ Load a different session by its exact ID. Can be cancelled by a `session_before_
 {"type": "switch_session", "sessionId": "abc123"}
 ```
 
+When choosing a session from another project's JSONL store, pass `sessionDirectory` to bind the ID lookup to that directory. IDs may repeat in different project stores; an explicitly selected directory never falls back to another store. `cwdOverride` changes the resumed working directory, not the store used for lookup.
+
+```json
+{"type": "switch_session", "sessionId": "abc123", "sessionDirectory": "/path/to/project-sessions"}
+```
+
 Response:
 ```json
 {"type": "response", "command": "switch_session", "success": true, "data": {"cancelled": false}}

@@ -34,6 +34,7 @@
 - Fixed overlapping model, thinking-level and session-name changes losing later choices. Model and thinking cycles now advance once per request, and saved defaults retain the last choice.
 - Fixed history refresh failures after a turn escaping error handling. The interactive engine now displays the failure without an unhandled rejection, and label edits await their saved history before reporting success.
 - Renaming the active session in the selector writes through its active manager, so later session writes retain the correct sequence.
+- Session pickers keep selection and rename bound to the selected project's store when IDs repeat across projects. Imported empty session IDs remain persistent across resume and restart instead of starting a new conversation.
 
 ## [0.9.38-alpha.4] - 2026-10-16
 

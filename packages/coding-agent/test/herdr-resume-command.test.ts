@@ -106,7 +106,7 @@ test("resume argv omits --session-dir for the default session directory (#3492)"
 	}
 });
 
-test("a session ID that --session would read as a file path resumes by its session file in its session directory (#3492)", async () => {
+test("a session ID ending in .jsonl remains an ID in terminal resume argv (#3492)", async () => {
 	const fake = await fakeHerdr();
 	const session = await SessionManager.create(fake.dir, fake.dir, { id: "notes.jsonl" });
 	assert.equal(session.getSessionId(), "notes.jsonl");
@@ -121,7 +121,7 @@ test("a session ID that --session would read as a file path resumes by its sessi
 			"--session-dir",
 			session.getSessionDir(),
 			"--session",
-			sessionFile,
+			session.getSessionId(),
 		]);
 	} finally {
 		await runner.emit({ type: "session_shutdown", reason: "quit" });

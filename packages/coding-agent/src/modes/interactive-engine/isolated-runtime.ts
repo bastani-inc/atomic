@@ -143,7 +143,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			restart: async () => {
 				this.engineRecoveryFailure = undefined;
 				try {
-					await this.client.restart(this.remoteSessionFile ? super.session.sessionId : undefined);
+					const manager = super.session.sessionManager;
+					await this.client.restart(this.remoteSessionFile ? manager.getSessionId() : undefined, {
+						cwd: manager.getCwd(),
+						sessionDirectory: this.remoteSessionFile ? manager.getSessionDir() : undefined,
+					});
 					await this.initializeFromEngine();
 				} catch (error) {
 					const failure = markRpcTransportFailure(error);
@@ -544,9 +548,12 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		sessionId: string,
 		options?: Parameters<AgentSessionRuntime["switchSession"]>[1],
 	): Promise<{ cancelled: boolean }> {
-		const result = await this.client.switchSession(sessionId, options?.cwdOverride);
+		const result = await this.client.switchSession(sessionId, options?.cwdOverride, options?.sessionDirectory);
 		if (!result.cancelled) {
-			await super.switchSession(sessionId, { cwdOverride: options?.cwdOverride });
+			await super.switchSession(sessionId, {
+				cwdOverride: options?.cwdOverride,
+				sessionDirectory: options?.sessionDirectory,
+			});
 			await this.initializeFromEngine();
 			if (options?.withSession) await options.withSession(this.session.createReplacedSessionContext());
 		}

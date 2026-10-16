@@ -138,7 +138,7 @@ export type RpcCommand =
 	| { id?: string; type: "get_session_stats" }
 	| { id?: string; type: "get_tools" }
 	| { id?: string; type: "export_html"; outputPath?: string }
-	| { id?: string; type: "switch_session"; sessionId: string; cwdOverride?: string }
+	| { id?: string; type: "switch_session"; sessionId: string; cwdOverride?: string; sessionDirectory?: string }
 	| { id?: string; type: "import_session"; inputPath: string; cwdOverride?: string }
 	| { id?: string; type: "fork"; entryId: string }
 	| { id?: string; type: "clone" }

@@ -42,6 +42,15 @@ describe("mergeProviderAttributionHeaders — ProviderHeaders null preservation"
 		}
 	});
 
+	it("preserves an empty stored session ID in provider attribution", () => {
+		const model = { ...createGenericModel(), provider: "opencode" };
+		const headers = mergeProviderAttributionHeaders(model, settingsManager, "");
+		expect(headers?.["x-opencode-session"]).toBe("");
+		expect(
+			mergeProviderAttributionHeaders(model, settingsManager, undefined)?.["x-opencode-session"],
+		).toBeUndefined();
+	});
+
 	it("forwards a null header value verbatim instead of collapsing it", () => {
 		const merged = mergeProviderAttributionHeaders(createGenericModel(), settingsManager, undefined, {
 			"User-Agent": null,

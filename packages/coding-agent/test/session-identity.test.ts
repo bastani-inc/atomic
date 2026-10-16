@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { registerSessionResourceCleanup } from "@bastani/pi-ai/compat";
 import { setKeybindings } from "@earendil-works/pi-tui";
 import { afterEach, test, vi } from "vitest";
 import { parseArgs } from "../src/cli/args.ts";
@@ -127,7 +128,7 @@ test("renaming the active session in the selector appends exactly once and keeps
 	show.call(host);
 	try {
 		await vi.waitFor(() => assert.equal(selector.getSessionList().getSelectedSessionId(), manager.getSessionId()));
-		selector.getSessionList().onRenameSession!(manager.getSessionId());
+		selector.handleInput("\x1b[114;5u");
 		selector.handleInput("new name");
 		selector.handleInput("\r");
 		await vi.waitFor(() => assert.equal(manager.getSessionName(), "new name"));
@@ -140,6 +141,55 @@ test("renaming the active session in the selector appends exactly once and keeps
 		await harness.cleanup();
 	}
 });
+
+test.each(["shared-id", "active-id"])(
+	"selector rename keeps duplicate project-local IDs in the selected store with active ID %s",
+	async (activeId) => {
+		const { cwd } = fixture();
+		vi.stubEnv(ENV_AGENT_DIR, join(cwd, "agent"));
+		const active = await SessionManager.create(cwd, undefined, { id: activeId });
+		const foreignCwd = join(cwd, "foreign");
+		const foreign = await SessionManager.create(foreignCwd, undefined, { id: "shared-id" });
+		await foreign.appendSessionInfo("foreign target");
+		const harness = await createHarness({ sessionManager: active });
+		const keybindings = new KeybindingsManager();
+		setKeybindings(keybindings);
+		initTheme("dark");
+		let selector!: SessionSelectorComponent;
+		const host: SelectorHost = {
+			sessionManager: active,
+			session: harness.session,
+			keybindings,
+			ui: { requestRender() {} },
+			showSelector(factory) {
+				selector = factory(() => {}).component;
+			},
+		};
+		const show = Reflect.get(InteractiveMode.prototype, "showSessionSelector") as (this: SelectorHost) => void;
+		show.call(host);
+		try {
+			await vi.waitFor(() => assert.equal(selector.getSessionList().getSelectedSessionId(), activeId));
+			if (activeId !== "shared-id") await SessionManager.create(cwd, undefined, { id: "shared-id" });
+			selector.handleInput("\t");
+			await vi.waitFor(() => assert.match(selector.render(120).join("\n"), /foreign target/));
+			selector.handleInput("foreign target");
+			selector.handleInput("\x1b[114;5u");
+			selector.handleInput("renamed ");
+			selector.handleInput("\r");
+			await vi.waitFor(async () =>
+				assert.equal((await foreign.openSessionById("shared-id")).getSessionName(), "renamed foreign target"),
+			);
+			assert.equal((await active.openSessionById("shared-id")).getSessionName(), undefined);
+			assert.equal(active.getSessionName(), undefined);
+			await active.appendSessionInfo("active writer still current");
+			assert.equal((await active.openSessionById(activeId)).getSessionName(), "active writer still current");
+		} finally {
+			selector.dispose();
+			await harness.cleanup();
+			vi.unstubAllEnvs();
+		}
+	},
+);
 
 test(
 	"real CLI and RPC resume an ID prefix, switch by ID and report a display-only location",
@@ -253,4 +303,132 @@ test(
 		}
 	},
 	REAL_RPC_IDENTITY_TIMEOUT_MS,
+);
+
+test(
+	"RPC restart preserves an empty imported session ID and its persistent store",
+	async () => {
+		const { cwd, directory } = fixture();
+		const source = await JsonlSessionStore.open(join(cwd, "exports"));
+		const header = { id: "", version: 4 as const, createdAt: new Date().toISOString(), cwd };
+		await source.create(header, []);
+		const client = new RpcClient({
+			cwd,
+			cliPath: join(import.meta.dirname, "../src/cli.ts"),
+			env: { [ENV_AGENT_DIR]: join(cwd, "agent"), ATOMIC_OFFLINE: "1" },
+			args: ["--session-dir", directory, "--import", source.locationFor(header), "--no-extensions"],
+		});
+		try {
+			await client.start();
+			const before = await client.getState();
+			assert.equal(before.sessionId, "");
+			assert.equal(typeof before.sessionLocation, "string");
+			await client.restart(before.sessionId);
+			const after = await client.getState();
+			assert.equal(after.sessionId, "");
+			assert.equal(after.sessionLocation, before.sessionLocation);
+			assert.deepEqual(
+				(await SessionManager.list(cwd, directory)).map((session) => session.id),
+				[""],
+			);
+			const forked = await createSessionManager(
+				parseArgs(["--fork", ""]),
+				cwd,
+				directory,
+				SettingsManager.inMemory(),
+			);
+			assert.equal(forked.getHeader()?.parentSessionId, "");
+		} finally {
+			await client.stop();
+			await source.close();
+		}
+	},
+	REAL_RPC_IDENTITY_TIMEOUT_MS,
+);
+
+test(
+	"RPC switch and restart keep a duplicate ID in the selected project store",
+	async () => {
+		const { cwd, directory } = fixture();
+		const foreign = fixture();
+		const local = await SessionManager.create(cwd, directory, { id: "shared-rpc-id" });
+		const target = await SessionManager.create(foreign.cwd, foreign.directory, { id: "shared-rpc-id" });
+		const client = new RpcClient({
+			cwd,
+			cliPath: join(import.meta.dirname, "../src/cli.ts"),
+			env: { [ENV_AGENT_DIR]: join(cwd, "agent"), ATOMIC_OFFLINE: "1" },
+			args: ["--session-dir", directory, "--session", local.getSessionId(), "--no-extensions"],
+		});
+		try {
+			await client.start();
+			assert.deepEqual(await client.switchSession(target.getSessionId(), undefined, foreign.directory), {
+				cancelled: false,
+			});
+			assert.equal((await client.getState()).sessionLocation, target.getSessionFile());
+			await client.restart(target.getSessionId(), { sessionDirectory: foreign.directory, cwd: foreign.cwd });
+			assert.equal((await client.getState()).sessionLocation, target.getSessionFile());
+		} finally {
+			await client.stop();
+		}
+	},
+	REAL_RPC_IDENTITY_TIMEOUT_MS,
+);
+
+test.each(["--session-id", "--fork"])(
+	"RPC restart consumes the original %s selector before resuming the active ID",
+	async (flag) => {
+		const { cwd, directory } = fixture();
+		const source = await SessionManager.create(cwd, directory, { id: "restart-source" });
+		const client = new RpcClient({
+			cwd,
+			cliPath: join(import.meta.dirname, "../src/cli.ts"),
+			env: { [ENV_AGENT_DIR]: join(cwd, "agent"), ATOMIC_OFFLINE: "1" },
+			args: ["--session-dir", directory, flag, source.getSessionId(), "--no-extensions"],
+		});
+		try {
+			await client.start();
+			const before = await client.getState();
+			await client.restart(before.sessionId);
+			const after = await client.getState();
+			assert.equal(after.sessionId, before.sessionId);
+			assert.equal(after.sessionLocation, before.sessionLocation);
+		} finally {
+			await client.stop();
+		}
+	},
+	REAL_RPC_IDENTITY_TIMEOUT_MS,
+);
+
+test("an explicit selected store never falls back to a duplicate ID in another store", async () => {
+	const { cwd } = fixture();
+	vi.stubEnv(ENV_AGENT_DIR, join(cwd, "agent"));
+	try {
+		const active = await SessionManager.create(cwd, undefined, { id: "not-in-selected-store" });
+		await assert.rejects(
+			active.openSessionById(active.getSessionId(), undefined, join(cwd, "selected-empty-store")),
+			SessionNotFoundError,
+		);
+	} finally {
+		vi.unstubAllEnvs();
+	}
+});
+
+test.each(["", "cache-owner"])(
+	"disposing session %j never requests another session's provider cache cleanup",
+	async (id) => {
+		const { cwd } = fixture();
+		const store = new MemorySessionStore();
+		await store.create({ id, version: 4, createdAt: new Date().toISOString(), cwd }, []);
+		const harness = await createHarness({ sessionManager: await SessionManager.open(store, id) });
+		const cleanup = vi.fn<(sessionId?: string) => void>();
+		const unregister = registerSessionResourceCleanup(cleanup);
+		try {
+			await harness.cleanup();
+			assert.deepEqual(cleanup.mock.calls, id === "" ? [] : [[id]]);
+		} finally {
+			unregister();
+			await harness.cleanup();
+			await store.close();
+		}
+	},
 );

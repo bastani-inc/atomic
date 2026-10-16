@@ -1,4 +1,4 @@
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 import { ProcessTerminal, setCapabilityOverrides, setKeybindings, TuiMainScreen } from "@earendil-works/pi-tui";
 import chalk from "chalk";
@@ -69,10 +69,10 @@ async function promptConfirm(message: string): Promise<boolean> {
 }
 
 export function validateForkFlags(parsed: Args): void {
-	if (!parsed.fork) return;
+	if (parsed.fork === undefined) return;
 
 	const conflictingFlags = [
-		parsed.session ? "--session" : undefined,
+		parsed.session !== undefined ? "--session" : undefined,
 		parsed.continue ? "--continue" : undefined,
 		parsed.resume ? "--resume" : undefined,
 		parsed.noSession ? "--no-session" : undefined,
@@ -88,7 +88,7 @@ export function validateSessionIdFlags(parsed: Args): void {
 	if (parsed.sessionId === undefined) return;
 
 	const conflictingFlags = [
-		parsed.session ? "--session" : undefined,
+		parsed.session !== undefined ? "--session" : undefined,
 		parsed.continue ? "--continue" : undefined,
 		parsed.resume ? "--resume" : undefined,
 	].filter((flag): flag is string => flag !== undefined);
@@ -158,12 +158,13 @@ export async function createSessionManager(
 			cwd,
 			parsed.sessionId !== undefined ? { id: parsed.sessionId } : undefined,
 		);
-		return parsed.import ? manager.importFromJsonl(resolvePath(parsed.import, cwd)) : manager;
+		return parsed.import !== undefined ? manager.importFromJsonl(resolvePath(parsed.import, cwd)) : manager;
 	}
-	if (parsed.import) return SessionManager.importFromJsonl(resolvePath(parsed.import, cwd), cwd, sessionDir);
+	if (parsed.import !== undefined)
+		return SessionManager.importFromJsonl(resolvePath(parsed.import, cwd), cwd, sessionDir);
 
-	if (parsed.fork) {
-		if (parsed.sessionId) {
+	if (parsed.fork !== undefined) {
+		if (parsed.sessionId !== undefined) {
 			const existingTarget = await findLocalSessionByExactId(parsed.sessionId, cwd, sessionDir);
 			if (existingTarget) {
 				console.error(chalk.red(`Session already exists with id '${parsed.sessionId}'`));
@@ -188,7 +189,7 @@ export async function createSessionManager(
 		}
 	}
 
-	if (parsed.session) {
+	if (parsed.session !== undefined) {
 		const resolved = await resolveSessionId(parsed.session, cwd, sessionDir);
 
 		switch (resolved.type) {
@@ -218,20 +219,16 @@ export async function createSessionManager(
 	if (parsed.resume) {
 		initTheme(settingsManager.getTheme(), true);
 		try {
-			const selectedPath = await selectSession(
+			const selected = await selectSession(
 				(onProgress) => SessionManager.list(cwd, sessionDir, onProgress),
 				(onProgress) => SessionManager.listAll(sessionDir, onProgress),
 				settingsManager,
 			);
-			if (!selectedPath) {
+			if (selected === null) {
 				console.log(chalk.dim("No session selected"));
 				process.exit(0);
 			}
-			return openSessionOrExit(
-				selectedPath,
-				sessionDir ?? join(getAgentDir(), "sessions"),
-				sessionDir !== undefined,
-			);
+			return openSessionOrExit(selected.id, dirname(selected.path));
 		} finally {
 			stopThemeWatcher();
 		}
@@ -241,7 +238,7 @@ export async function createSessionManager(
 		return await SessionManager.continueRecent(cwd, sessionDir);
 	}
 
-	if (parsed.sessionId) {
+	if (parsed.sessionId !== undefined) {
 		const existingSession = await findLocalSessionByExactId(parsed.sessionId, cwd, sessionDir);
 		if (existingSession) {
 			return openSessionOrExit(existingSession.id, existingSession.directory);

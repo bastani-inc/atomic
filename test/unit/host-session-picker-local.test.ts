@@ -119,6 +119,20 @@ describe("in-process host session picker (non-isolated)", () => {
 		assert.equal(mount.resolved(), true, "mount completed on select");
 	});
 
+	test("selection retains the chosen row when project-local IDs repeat", async () => {
+		const mount = makeLocalUi();
+		const handle = openLocalHostSessionPicker(mount.ui, {
+			sessions: [
+				{ ...row("shared"), path: "local:first-project", cwd: "first-project" },
+				{ ...row("shared", 900), path: "local:second-project", cwd: "second-project" },
+			],
+		});
+		await flush();
+		mount.component().handleInput(DOWN);
+		mount.component().handleInput(ENTER);
+		assert.equal(await handle.result, "local:second-project");
+	});
+
 	test("escape cancels with undefined; update and error drive the live mount", async () => {
 		const mount = makeLocalUi();
 		const handle = openLocalHostSessionPicker(mount.ui, { sessions: [row("alpha")] });

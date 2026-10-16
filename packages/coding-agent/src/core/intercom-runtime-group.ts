@@ -14,7 +14,7 @@ export function runtimeIntercomGroupEnvKey(sessionId: string): string {
 
 /** Read one session's non-empty runtime group from the inherited environment. */
 export function readRuntimeIntercomGroup(sessionId: string | undefined): string | undefined {
-	if (!sessionId) return undefined;
+	if (sessionId === undefined) return undefined;
 	const value = process.env[runtimeIntercomGroupEnvKey(sessionId)];
 	if (typeof value !== "string") return undefined;
 	const trimmed = value.trim();

@@ -638,7 +638,8 @@ export function closeAgentSession(
 			session._eventListeners = [];
 			await session._workflows?.disposeObservers(session._extensionRunner.getWorkflowActivitySnapshot());
 		});
-		await attempt("provider", () => cleanupSessionResources(session.sessionId));
+		// Empty stored IDs have no provider cache key; empty-key cleanup would close other sessions' caches.
+		if (session.sessionId !== "") await attempt("provider", () => cleanupSessionResources(session.sessionId));
 		await attempt("storage", () => {
 			session._tempStorageLease?.release();
 			session._tempStorageLease = undefined;

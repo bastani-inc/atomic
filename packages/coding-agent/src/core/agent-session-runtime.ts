@@ -539,6 +539,7 @@ export class AgentSessionRuntime {
 		sessionId: string,
 		options?: {
 			cwdOverride?: string;
+			sessionDirectory?: string;
 			withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
 			projectTrustContextFactory?: (cwd: string) => ProjectTrustContext;
 		},
@@ -551,7 +552,11 @@ export class AgentSessionRuntime {
 			}
 
 			const previousSessionId = this.session.sessionId;
-			const sessionManager = await this.session.sessionManager.openSessionById(sessionId, options?.cwdOverride);
+			const sessionManager = await this.session.sessionManager.openSessionById(
+				sessionId,
+				options?.cwdOverride,
+				options?.sessionDirectory,
+			);
 			assertSessionCwdExists(sessionManager, this.cwd);
 			const runtimeOptions: CreateAgentSessionRuntimeOptions = {
 				cwd: sessionManager.getCwd(),

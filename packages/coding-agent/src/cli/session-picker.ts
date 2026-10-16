@@ -11,12 +11,12 @@ import { SessionSelectorComponent } from "../modes/interactive/components/sessio
 
 type SessionsLoader = (onProgress?: SessionListProgress) => Promise<SessionInfo[]>;
 
-/** Show TUI session selector and return selected session path or null if cancelled */
+/** Show TUI session selector and return the selected row with its store scope, or null if cancelled. */
 export async function selectSession(
 	currentSessionsLoader: SessionsLoader,
 	allSessionsLoader: SessionsLoader,
 	settingsManager: SettingsManager,
-): Promise<string | null> {
+): Promise<SessionInfo | null> {
 	setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides());
 	return new Promise((resolve) => {
 		const ui = new TuiMainScreen(new ProcessTerminal(), undefined, getAgentDir());
@@ -27,12 +27,12 @@ export async function selectSession(
 		const selector = new SessionSelectorComponent(
 			currentSessionsLoader,
 			allSessionsLoader,
-			(path: string) => {
+			(session) => {
 				if (!resolved) {
 					resolved = true;
 					selector.dispose();
 					ui.stop();
-					resolve(path);
+					resolve(session);
 				}
 			},
 			() => {

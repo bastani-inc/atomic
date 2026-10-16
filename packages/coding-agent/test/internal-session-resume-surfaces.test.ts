@@ -27,7 +27,7 @@ vi.mock("fs/promises", async () => {
 });
 
 type SessionsLoader = (onProgress?: SessionListProgress) => Promise<SessionInfo[]>;
-type SelectSession = (current: SessionsLoader, all: SessionsLoader) => Promise<string | null>;
+type SelectSession = (current: SessionsLoader, all: SessionsLoader) => Promise<SessionInfo | null>;
 type SelectorBuilder = (done: () => void) => {
 	component: SessionSelectorComponent;
 	focus: SessionSelectorComponent;
@@ -224,7 +224,7 @@ describe("internal workflow sessions across resume surfaces", () => {
 			pickerCalled = true;
 			expect((await current()).map((session) => session.id)).toEqual(["user-picker"]);
 			expect((await all()).map((session) => session.id)).toEqual(["user-picker"]);
-			return "user-picker";
+			return (await current())[0]!;
 		};
 		const { createSessionManager } = await import("../src/main-session.ts");
 
@@ -238,7 +238,7 @@ describe("internal workflow sessions across resume surfaces", () => {
 		process.env.ATOMIC_CODING_AGENT_DIR = join(dir, "agent");
 		try {
 			const original = await SessionManager.create(cwd);
-			selectSessionImplementation = async () => original.getSessionId();
+			selectSessionImplementation = async (current) => (await current())[0]!;
 			const { createSessionManager } = await import("../src/main-session.ts");
 			const resumed = await createSessionManager(parseArgs(["--resume"]), cwd, undefined, settingsManager);
 			assert.equal(resumed.getSessionId(), original.getSessionId());
@@ -246,6 +246,24 @@ describe("internal workflow sessions across resume surfaces", () => {
 		} finally {
 			if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 			else process.env.ATOMIC_CODING_AGENT_DIR = previous;
+		}
+	});
+
+	it("startup resume keeps duplicate IDs bound to the selected project's store", async () => {
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", join(dir, "agent"));
+		try {
+			await SessionManager.create(cwd, undefined, { id: "project-local-id" });
+			const foreignCwd = join(dir, "foreign-project");
+			const selected = await SessionManager.create(foreignCwd, undefined, { id: "project-local-id" });
+			selectSessionImplementation = async (_current, all) =>
+				(await all()).find((session) => session.cwd === foreignCwd)!;
+			const { createSessionManager } = await import("../src/main-session.ts");
+			const resumed = await createSessionManager(parseArgs(["--resume"]), cwd, undefined, settingsManager);
+			assert.equal(resumed.getSessionId(), selected.getSessionId());
+			assert.equal(resumed.getSessionFile(), selected.getSessionFile());
+			assert.equal(resumed.getCwd(), foreignCwd);
+		} finally {
+			vi.unstubAllEnvs();
 		}
 	});
 

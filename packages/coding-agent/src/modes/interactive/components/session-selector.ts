@@ -41,7 +41,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	private allSessionsLoader: SessionsLoader;
 	private onCancel: () => void;
 	private requestRender: () => void;
-	private renameSession?: (sessionId: string, currentName: string | undefined) => Promise<void>;
+	private renameSession?: (session: SessionInfo, currentName: string | undefined) => Promise<void>;
 	private currentLoading = false;
 	private allLoading = false;
 	private allLoadSeq = 0;
@@ -49,7 +49,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 
 	private mode: "list" | "rename" = "list";
 	private renameInput = new Input();
-	private renameTargetId: string | null = null;
+	private renameTarget: SessionInfo | null = null;
 
 	// Focusable implementation - propagate to sessionList for IME cursor positioning
 	private _focused = false;
@@ -82,12 +82,12 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	constructor(
 		currentSessionsLoader: SessionsLoader,
 		allSessionsLoader: SessionsLoader,
-		onSelect: (sessionId: string) => void,
+		onSelect: (session: SessionInfo) => void,
 		onCancel: () => void,
 		onExit: () => void,
 		requestRender: () => void,
 		options?: {
-			renameSession?: (sessionId: string, currentName: string | undefined) => Promise<void>;
+			renameSession?: (session: SessionInfo, currentName: string | undefined) => Promise<void>;
 			showRenameHint?: boolean;
 			keybindings?: KeybindingsManager;
 			/**
@@ -98,7 +98,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			 */
 			initialSessions?: SessionInfo[];
 		},
-		currentSessionId?: string,
+		currentSession?: { id: string; directory: string },
 	) {
 		super();
 		this.keybindings = options?.keybindings ?? KeybindingsManager.create();
@@ -122,7 +122,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			this.sortMode,
 			this.nameFilter,
 			this.keybindings,
-			currentSessionId,
+			currentSession,
 		);
 		if (initialSessions !== undefined) {
 			this.currentSessions = initialSessions;
@@ -136,9 +136,9 @@ export class SessionSelectorComponent extends Container implements Focusable {
 
 		// Ensure header status timeouts are cleared when leaving the selector
 		const clearStatusMessage = () => this.header.setStatusMessage(null);
-		this.sessionList.onSelect = (sessionId) => {
+		this.sessionList.onSelect = (session) => {
 			clearStatusMessage();
-			onSelect(sessionId);
+			onSelect(session);
 		};
 		this.sessionList.onCancel = () => {
 			clearStatusMessage();
@@ -151,14 +151,11 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		this.sessionList.onToggleScope = () => this.toggleScope();
 		this.sessionList.onToggleSort = () => this.toggleSortMode();
 		this.sessionList.onToggleNameFilter = () => this.toggleNameFilter();
-		this.sessionList.onRenameSession = (sessionId) => {
+		this.sessionList.onRenameSession = (session) => {
 			if (!renameSession) return;
 			if (this.scope === "current" && this.currentLoading) return;
 			if (this.scope === "all" && this.allLoading) return;
-
-			const sessions = this.scope === "all" ? (this.allSessions ?? []) : (this.currentSessions ?? []);
-			const session = sessions.find((s) => s.id === sessionId);
-			this.enterRenameMode(sessionId, session?.name);
+			this.enterRenameMode(session);
 		};
 
 		// Sync list events to header
@@ -210,10 +207,10 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		void this.loadScope("current", "initial");
 	}
 
-	private enterRenameMode(sessionId: string, currentName: string | undefined): void {
+	private enterRenameMode(session: SessionInfo): void {
 		this.mode = "rename";
-		this.renameTargetId = sessionId;
-		this.renameInput.setValue(currentName ?? "");
+		this.renameTarget = session;
+		this.renameInput.setValue(session.name ?? "");
 		this.renameInput.focused = true;
 
 		const panel = new Container();
@@ -235,7 +232,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 
 	private exitRenameMode(): void {
 		this.mode = "list";
-		this.renameTargetId = null;
+		this.renameTarget = null;
 
 		this.buildBaseLayout(this.sessionList);
 
@@ -245,7 +242,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	private async confirmRename(value: string): Promise<void> {
 		const next = value.trim();
 		if (!next) return;
-		const target = this.renameTargetId;
+		const target = this.renameTarget;
 		if (!target) {
 			this.exitRenameMode();
 			return;

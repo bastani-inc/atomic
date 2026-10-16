@@ -26,7 +26,7 @@ function parseFrontMatter(text: string, idFallback: string): TodoFrontMatter {
 		if (typeof parsed.title === "string") data.title = parsed.title;
 		if (typeof parsed.status === "string" && parsed.status) data.status = parsed.status;
 		if (typeof parsed.created_at === "string") data.created_at = parsed.created_at;
-		if (typeof parsed.assigned_to_session === "string" && parsed.assigned_to_session.trim()) {
+		if (typeof parsed.assigned_to_session === "string") {
 			data.assigned_to_session = parsed.assigned_to_session;
 		}
 		if (Array.isArray(parsed.tags)) {
@@ -118,7 +118,7 @@ function serializeTodo(todo: TodoRecord): string {
 			tags: todo.tags ?? [],
 			status: todo.status,
 			created_at: todo.created_at,
-			assigned_to_session: todo.assigned_to_session || undefined,
+			assigned_to_session: todo.assigned_to_session,
 		},
 		null,
 		2,

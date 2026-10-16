@@ -440,7 +440,10 @@ export function createRpcCommandHandler({
 			}
 
 			case "switch_session": {
-				const result = await runtimeHost.switchSession(command.sessionId, { cwdOverride: command.cwdOverride });
+				const result = await runtimeHost.switchSession(command.sessionId, {
+					cwdOverride: command.cwdOverride,
+					sessionDirectory: command.sessionDirectory,
+				});
 				if (!result.cancelled) {
 					await rebindSession();
 				}

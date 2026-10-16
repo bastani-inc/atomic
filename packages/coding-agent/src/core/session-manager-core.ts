@@ -251,13 +251,21 @@ export class SessionManager {
 		return this.store;
 	}
 
-	async openSessionById(sessionId: string, cwdOverride?: string): Promise<SessionManager> {
-		let store = this.store;
+	async openSessionById(sessionId: string, cwdOverride?: string, sessionDirectory?: string): Promise<SessionManager> {
+		let store =
+			sessionDirectory === undefined
+				? this.store
+				: await JsonlSessionStore.open(sessionDirectory, { exactDirectory: true, scanExisting: false });
 		let snapshot: SessionSnapshot;
 		try {
 			snapshot = await store.load(sessionId);
 		} catch (error) {
-			if (!(error instanceof SessionNotFoundError) || !this.usesDefaultSessionDir()) throw error;
+			if (
+				!(error instanceof SessionNotFoundError) ||
+				sessionDirectory !== undefined ||
+				!this.usesDefaultSessionDir()
+			)
+				throw error;
 			store = await JsonlSessionStore.open(join(getAgentDir(), "sessions"), { scanExisting: false });
 			snapshot = await store.load(sessionId);
 		}

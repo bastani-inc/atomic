@@ -353,8 +353,9 @@ declare module "./interactive-mode-base.ts" {
 		showTreeSelector(initialSelectedId?: string): Promise<void>;
 		showSessionSelector(): void;
 		handleResumeSession(
-			sessionPath: string,
+			sessionId: string,
 			options?: Parameters<ExtensionCommandContext["switchSession"]>[1],
+			sessionDirectory?: string,
 		): Promise<{ cancelled: boolean }>;
 		getLoginProviderOptions(authType?: "oauth" | "api_key"): AuthSelectorProvider[];
 		getLogoutProviderOptions(): AuthSelectorProvider[];

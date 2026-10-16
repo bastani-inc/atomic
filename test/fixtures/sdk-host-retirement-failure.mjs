@@ -16,6 +16,7 @@ writeFileSync(join(cwd, ".atomic", "workflows", "sdk-host-durable.ts"), readFile
 const settingsManager = SettingsManager.inMemory();
 const sessionManager = await SessionManager.create(cwd, join(cwd, "sessions"));
 const entry = await sessionManager.appendMessage({ role: "user", content: "fork me", timestamp: 0 });
+const importSource = operation === "import" ? await SessionManager.create(cwd, join(cwd, "exports")) : undefined;
 const modelRuntime = await ModelRuntime.create({ authPath: join(cwd, "auth.json"), modelsPath: null, allowModelNetwork: false });
 const shutdowns = [];
 const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, noContextFiles: true,
@@ -39,7 +40,7 @@ for (let i = 0; i < 250; i++) {
 }
 assert.equal(before.runs[0]?.status, "running");
 assert.equal(before.runs[0]?.awaitingInputCount, 1);
-const invoke = () => operation === "fork" ? runtime.fork(entry) : operation === "resume" ? runtime.switchSession(sessionManager.getSessionFile()) : operation === "import" ? runtime.importFromJsonl(sessionManager.getSessionFile()) : runtime.newSession();
+const invoke = () => operation === "fork" ? runtime.fork(entry) : operation === "resume" ? runtime.switchSession(sessionManager.getSessionId()) : operation === "import" ? runtime.importFromJsonl(importSource.getSessionFile()) : runtime.newSession();
 const replacementError = await invoke().catch(error => error);
 assert.equal(replacementError?.code, "ShutdownFailed");
 const closing = runtime.dispose();

@@ -28,6 +28,8 @@ For UUID-backed sessions, `--session` and `--fork` accept either the full UUID o
 
 Session locations are for display, not selection. Use `--import <file>` or `/import <file>` to copy a format-4 JSONL export into the selected store. The session ID and entries are preserved. An ID already present in that store raises `SessionExistsError`; importing never replaces an existing session. Older session formats are not accepted.
 
+Imported IDs are kept verbatim, including an empty ID. Resume an imported empty ID with `atomic --session ""` or choose its row in the session picker. Picker actions stay bound to the selected project's store even when another project uses the same ID.
+
 ### Custom session directories
 
 Use `--session-dir <dir>`, `ATOMIC_CODING_AGENT_SESSION_DIR`, or the matching settings override to save the active chat outside `~/.atomic/agent/sessions/`.

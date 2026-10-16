@@ -1,3 +1,5 @@
+import { dirname } from "node:path";
+import { canonicalizePath } from "../../utils/paths.ts";
 import { withHostProjectTrustPrompt } from "../interactive-engine/extension-ui-bridge.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
@@ -261,10 +263,10 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 				this.sessionManager.usesDefaultSessionDir()
 					? SessionManager.listAll(onProgress)
 					: SessionManager.listAll(this.sessionManager.getSessionDir(), onProgress),
-			async (sessionId) => {
+			async (selected) => {
 				selector.dispose();
 				done();
-				await this.handleResumeSession(sessionId);
+				await this.handleResumeSession(selected.id, undefined, dirname(selected.path));
 			},
 			() => {
 				selector.dispose();
@@ -277,13 +279,17 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 			},
 			() => this.ui.requestRender(),
 			{
-				renameSession: async (sessionId: string, nextName: string | undefined) => {
+				renameSession: async (selected, nextName) => {
 					const next = (nextName ?? "").trim();
 					if (!next) return;
-					if (sessionId === this.sessionManager.getSessionId()) {
+					const directory = dirname(selected.path);
+					if (
+						selected.id === this.sessionManager.getSessionId() &&
+						canonicalizePath(directory) === canonicalizePath(this.sessionManager.getSessionDir())
+					) {
 						await this.session.setSessionName(next);
 					} else {
-						const mgr = await this.sessionManager.openSessionById(sessionId);
+						const mgr = await this.sessionManager.openSessionById(selected.id, undefined, directory);
 						await mgr.appendSessionInfo(next);
 					}
 				},
@@ -291,7 +297,7 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 				keybindings: this.keybindings,
 			},
 
-			this.sessionManager.getSessionId(),
+			{ id: this.sessionManager.getSessionId(), directory: this.sessionManager.getSessionDir() },
 		);
 		return { component: selector, focus: selector };
 	});
@@ -301,6 +307,7 @@ InteractiveModeBase.prototype.handleResumeSession = async function (
 	this: InteractiveModeBase,
 	sessionId: string,
 	options?: Parameters<ExtensionCommandContext["switchSession"]>[1],
+	sessionDirectory?: string,
 ): Promise<{ cancelled: boolean }> {
 	await this.ensureDeferredStartupComplete();
 	InteractiveModeBase.prototype.clearWorkingLoader.call(this);
@@ -308,6 +315,7 @@ InteractiveModeBase.prototype.handleResumeSession = async function (
 	try {
 		const result = await this.runtimeHost.switchSession(sessionId, {
 			withSession: options?.withSession,
+			sessionDirectory,
 			projectTrustContextFactory: (cwd) => this.createProjectTrustContext(cwd),
 		});
 		if (result.cancelled) {
@@ -328,6 +336,7 @@ InteractiveModeBase.prototype.handleResumeSession = async function (
 			}
 			const result = await this.runtimeHost.switchSession(sessionId, {
 				cwdOverride: selectedCwd,
+				sessionDirectory,
 				withSession: options?.withSession,
 				projectTrustContextFactory: (cwd) => this.createProjectTrustContext(cwd),
 			});

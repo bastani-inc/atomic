@@ -145,19 +145,37 @@ export function createInteractiveJsonlOptions(enabled: boolean): { maxBytesPerTu
  * previous generation carried and bind the replacement to `sessionId`, so a
  * restart resumes the same conversation instead of starting a fresh one.
  */
-export function restartCliArgs(args: readonly string[] | undefined, sessionId: string | undefined): string[] {
+export function restartCliArgs(
+	args: readonly string[] | undefined,
+	sessionId: string | undefined,
+	sessionDirectory?: string,
+): string[] {
 	const result: string[] = [];
 	for (let index = 0; index < (args?.length ?? 0); index += 1) {
 		const value = args![index]!;
-		if (value === "--no-session") continue;
-		if (value === "--session" || value === "--import") {
+		if (
+			value === "--no-session" ||
+			value === "--continue" ||
+			value === "-c" ||
+			value === "--resume" ||
+			value === "-r"
+		)
+			continue;
+		if (
+			value === "--session" ||
+			value === "--session-id" ||
+			value === "--fork" ||
+			value === "--import" ||
+			(value === "--session-dir" && sessionDirectory !== undefined)
+		) {
 			index += 1;
 			continue;
 		}
 		result.push(value);
 	}
-	result.push(sessionId ? "--session" : "--no-session");
-	if (sessionId) result.push(sessionId);
+	if (sessionId === undefined) result.push("--no-session");
+	else result.push("--session", sessionId);
+	if (sessionDirectory !== undefined) result.push("--session-dir", sessionDirectory);
 	return result;
 }
 
