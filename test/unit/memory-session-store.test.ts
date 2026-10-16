@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it, test } from "vitest";
 import { registerSessionStoreConformance } from "../../packages/coding-agent/src/core/storage/session/conformance.js";
-import { StoreClosedError } from "../../packages/coding-agent/src/core/storage/session/errors.js";
+import {
+	SessionInvalidTextError,
+	StoreClosedError,
+} from "../../packages/coding-agent/src/core/storage/session/errors.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { SESSION_FORMAT_VERSION } from "../../packages/coding-agent/src/core/storage/session/types.js";
 
@@ -75,4 +78,26 @@ test("memory handles share records only through reopen and detach descriptors an
 	assert.equal((await reopened.load(header.id)).lastSeq, 1);
 	await reopened.close();
 	await independent.close();
+});
+
+test("structural text preserves valid surrogate pairs and rejects lone low surrogates", async () => {
+	const store = new MemorySessionStore();
+	const header = {
+		id: "session-\ud800\udc00",
+		version: SESSION_FORMAT_VERSION,
+		createdAt: "2026-10-15T00:00:00Z",
+		cwd: "",
+	} as const;
+	try {
+		await store.create(header, []);
+		assert.equal((await store.readHeader(header.id))?.id, header.id);
+		await assert.rejects(store.create({ ...header, id: "session-\udc00" }, []), (error: Error) => {
+			assert.ok(error instanceof SessionInvalidTextError);
+			assert.equal(error.field, "header.id");
+			assert.equal(error.reason, "ill-formed-unicode");
+			return true;
+		});
+	} finally {
+		await store.close();
+	}
 });

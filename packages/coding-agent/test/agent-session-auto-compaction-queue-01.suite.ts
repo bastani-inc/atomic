@@ -108,7 +108,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 			streamFn: createFauxStreamFn(["Queued response"]).streamFn,
 		});
 		sessionManager = SessionManager.inMemory();
-		sessionManager.appendMessage({
+		await sessionManager.appendMessage({
 			role: "user",
 			content: [{ type: "text", text: "existing compactable context" }],
 			timestamp: Date.now(),
@@ -339,12 +339,12 @@ describe("AgentSession auto-compaction queue resume", () => {
 		};
 		// The overflow attempt is persisted like any finalized assistant; recovery must
 		// omit it from the canonical projection before compaction_end listeners observe state.
-		sessionManager.appendMessage({
+		await sessionManager.appendMessage({
 			role: "user",
 			content: [{ type: "text", text: "retry this" }],
 			timestamp: Date.now() - 1,
 		});
-		sessionManager.appendMessage(trailingOverflowError);
+		await sessionManager.appendMessage(trailingOverflowError);
 		session.refreshContext();
 		expect(session.agent.state.messages.at(-1)).toBe(trailingOverflowError);
 
@@ -475,15 +475,15 @@ describe("AgentSession auto-compaction queue resume", () => {
 			timestamp: staleAssistantTimestamp,
 		};
 
-		sessionManager.appendMessage({
+		await sessionManager.appendMessage({
 			role: "user",
 			content: [{ type: "text", text: "before compaction" }],
 			timestamp: staleAssistantTimestamp - 1000,
 		});
-		sessionManager.appendMessage(staleAssistant);
+		await sessionManager.appendMessage(staleAssistant);
 		appendTestCompaction(sessionManager, staleAssistant.usage.totalTokens, 50_000);
 
-		sessionManager.appendMessage({
+		await sessionManager.appendMessage({
 			role: "user",
 			content: [{ type: "text", text: "session recovery payload" }],
 			timestamp: Date.now(),
@@ -529,14 +529,14 @@ describe("AgentSession auto-compaction queue resume", () => {
 			timestamp: staleAssistantTimestamp,
 		};
 
-		sessionManager.appendMessage({
+		await sessionManager.appendMessage({
 			role: "user",
 			content: [{ type: "text", text: "before context compaction" }],
 			timestamp: staleAssistantTimestamp - 1000,
 		});
-		sessionManager.appendMessage(staleAssistant);
+		await sessionManager.appendMessage(staleAssistant);
 		appendTestCompaction(sessionManager, 610_000, 50_000);
-		sessionManager.appendMessage({
+		await sessionManager.appendMessage({
 			role: "user",
 			content: [{ type: "text", text: "session recovery payload" }],
 			timestamp: Date.now(),

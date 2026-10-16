@@ -46,10 +46,9 @@ async function factory({ cwd, agentDir, sessionManager, sessionStartEvent }) {
  sessions.set(id, result.session);
  return { ...result, services: { cwd, agentDir, settingsManager, modelRuntime, resourceLoader, diagnostics: [] }, diagnostics: [] };
 }
-const manager = SessionManager.create(root, join(root, "sessions"));
+const manager = await SessionManager.create(root, join(root, "sessions"));
 const runtime = await createAgentSessionRuntime(factory, { cwd: root, agentDir, sessionManager: manager });
-const entry = manager.appendMessage({ role: "user", content: "fork me", timestamp: 0 });
-await manager.flush();
+const entry = await manager.appendMessage({ role: "user", content: "fork me", timestamp: 0 });
 const source = manager.getSessionFile();
 runtime.setRebindSession(async session => { await tick(); assert.equal(runtime.session, session); rebound.push(session); });
 const invoke = () => operation === "fork" ? runtime.fork(entry) : operation === "resume" ? runtime.switchSession(source) : operation === "import" ? runtime.importFromJsonl(source) : runtime.newSession();

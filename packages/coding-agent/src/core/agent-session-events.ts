@@ -192,25 +192,24 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 	this._applyProviderErrorGuidance(event);
 
 	try {
-		// Emit to extensions first, then notify all public listeners.
 		await this._emitExtensionEvent(event);
-		this._emit(event);
+		if (event.type !== "message_end") this._emit(event);
 	} finally {
 		// Agent-core has consumed this protected input already. Its durability
 		// boundary cannot be skipped by a fallible extension or session listener.
 		if (protectedMessage !== undefined) {
 			try {
-				persistProtectedStreamingCustomMessage(this, protectedMessage);
+				await persistProtectedStreamingCustomMessage(this, protectedMessage);
 			} catch {
 				markProtectedStreamingCustomMessagePersistenceFailed(this, protectedMessage);
 			}
-			retryConsumedProtectedStreamingCustomMessages(this);
+			await retryConsumedProtectedStreamingCustomMessages(this);
 		}
 		if (event.type === "message_end") this._messagesAwaitingPersistence.delete(event.message);
 	}
 	if (event.type === "turn_end") {
 		this._lastAssistantToolResults = event.toolResults;
-		this._flushPendingCustomMessages();
+		await this._flushPendingCustomMessages();
 	}
 
 	// Handle session persistence
@@ -220,7 +219,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 		if (event.message.role === "custom") {
 			const admitted = event.message as StageAdmittedCustomMessage;
 			if (protectedMessage === undefined) {
-				entryId = this.sessionManager.appendCustomMessageEntry(
+				entryId = await this.sessionManager.appendCustomMessageEntry(
 					event.message.customType,
 					event.message.content,
 					event.message.display,
@@ -237,9 +236,14 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			event.message.role === "toolResult"
 		) {
 			// Regular LLM message - persist as SessionMessageEntry
-			entryId = this.sessionManager.appendMessage(event.message);
+			entryId = await this.sessionManager.appendMessage(event.message);
 		}
 		if (entryId) this._entryIdsByMessage.set(event.message, entryId);
+		if (entryId && event.message.role === "custom") {
+			const pendingIndex = this._pendingNextTurnMessages.indexOf(event.message);
+			if (pendingIndex >= 0) this._pendingNextTurnMessages.splice(pendingIndex, 1);
+		}
+		this._emit(event);
 		// Other message types (bashExecution, branchSummary) are persisted elsewhere
 
 		// Track assistant message for auto-compaction (checked on agent_end)
@@ -288,7 +292,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 
 	// A transient hidden-reconciliation write failure retries independently of
 	// provider/card delivery and can never create another visible lifecycle card.
-	retryConsumedProtectedStreamingCustomMessages(this);
+	await retryConsumedProtectedStreamingCustomMessages(this);
 
 	// Check auto-retry and auto-compaction after agent completes
 	if (event.type === "agent_end" && this._lastAssistantMessage) {
@@ -619,12 +623,11 @@ export function closeAgentSession(
 			await emitSessionShutdownEvent(session._extensionRunner, event);
 		});
 		await attempt("messages", () => prepareProtectedStreamingCustomMessagesForDisposal(session));
-		await attempt("shell persistence", () => session._flushPendingBashMessages());
+		await attempt("shell persistence", async () => await session._flushPendingBashMessages());
 		await attempt("settings", async () => {
 			await session.settingsManager.flush();
 			assertSettingsWrites(session);
 		});
-		await attempt("session persistence", () => session.sessionManager.flushIfStarted());
 		if (ownedSettingsManagers.get(session.settingsManager) === session)
 			ownedSettingsManagers.delete(session.settingsManager);
 		if (!handoff) await attempt("host subscriptions", () => beforeInvalidate?.());

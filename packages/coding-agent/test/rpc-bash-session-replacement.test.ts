@@ -313,7 +313,7 @@ describe("RPC bash ownership across session replacement", () => {
 		const gate = createBashGate("shared-manager");
 		try {
 			const source = await createHarness({ sessionManager: SessionManager.inMemory(gate.cwd) });
-			source.session.recordBashResult("seed", {
+			await source.session.recordBashResult("seed", {
 				output: "seed",
 				exitCode: 0,
 				cancelled: false,

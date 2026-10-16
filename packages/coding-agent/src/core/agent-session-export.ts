@@ -175,7 +175,7 @@ export function exportToJsonl(
 		type: "session",
 		version: CURRENT_SESSION_VERSION,
 		id: this.sessionManager.getSessionId(),
-		timestamp: new Date().toISOString(),
+		createdAt: new Date().toISOString(),
 		cwd: this.sessionManager.getCwd(),
 	};
 

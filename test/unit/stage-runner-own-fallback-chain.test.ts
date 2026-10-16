@@ -173,10 +173,10 @@ async function runStageAgainstConfiguredChains(
 	});
 	try {
 		if (reattach) {
-			const saved = SessionManager.create(cwd, join(agentDir, "sessions"));
-			saved.appendModelChange(ACCOUNTS.stageFallback, MODEL_ID);
-			saved.appendThinkingLevelChange("high");
-			saved.appendMessage({ role: "user", content: "previous turn", timestamp: Date.now() });
+			const saved = await SessionManager.create(cwd, join(agentDir, "sessions"));
+			await saved.appendModelChange(ACCOUNTS.stageFallback, MODEL_ID);
+			await saved.appendThinkingLevelChange("high");
+			await saved.appendMessage({ role: "user", content: "previous turn", timestamp: Date.now() });
 			await stage.__ensureSessionFromFile(saved.getSessionFile()!);
 		}
 		let reply: string | undefined;

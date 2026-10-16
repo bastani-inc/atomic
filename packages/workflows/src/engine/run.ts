@@ -893,7 +893,7 @@ async function executeRun(
 		if (ownsCancellationRegistration) opts.cancellation?.register(runId, ownController);
 		opts.onRunStart?.(runSnapshot);
 		if (opts.persistence) {
-			appendRunStart(opts.persistence, {
+			await appendRunStart(opts.persistence, {
 				runId,
 				name: def.name,
 				inputs: resolvedInputs,
@@ -993,7 +993,7 @@ async function executeRun(
 		// Durable identity must reach its terminal state even if the session journal fails.
 		if (opts.parentRun === undefined) await recordRunTimingCheckpointAsync(durableBackend, runSnapshot);
 		await durableBackend.setWorkflowStatus(runId, returned.status, undefined, returned.metadata?.resumable);
-		appendRunEndWhenRecorded(opts.persistence, recorded, {
+		await appendRunEndWhenRecorded(opts.persistence, recorded, {
 			runId,
 			status: returned.status,
 			result,

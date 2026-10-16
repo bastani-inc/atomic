@@ -149,7 +149,7 @@ test("post-tool preflight: every model fails, the turn still completes on the fr
 		// 1-2: the first provider response asked for the tool, and the tool result
 		// pushed the prospective context over the threshold mid-turn.
 		const starts = events.filter((event) => event.type === "compaction_start") as Array<{ midTurn?: boolean }>;
-		assert.equal(starts.length, 1);
+		assert.equal(starts.length, 1, JSON.stringify({ traffic, events }));
 		assert.equal(starts[0].midTurn, true);
 
 		// 3-4: the primary failed and each configured fallback got exactly one

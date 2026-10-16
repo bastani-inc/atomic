@@ -27,11 +27,11 @@ function fakeSession(): StageSessionRuntime {
 		sessionFile: undefined,
 		sessionId: "session-id",
 		async setModel(): Promise<void> {},
-		setThinkingLevel(): void {},
+		async setThinkingLevel(): Promise<void> {},
 		async cycleModel(): Promise<undefined> {
 			return undefined;
 		},
-		cycleThinkingLevel(): undefined {
+		async cycleThinkingLevel(): Promise<undefined> {
 			return undefined;
 		},
 		agent: {} as StageSessionRuntime["agent"],

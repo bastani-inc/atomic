@@ -81,8 +81,9 @@ export default function(pi) {
   }] });
   await loader.reload();
   ({ session } = await createAgentSession({ ...options, resourceLoader: loader, model: getModel("anthropic", "claude-sonnet-4-5") }));
-  if (mode === "thinking") assert.equal(session.setThinkingLevel("high"), undefined);
-  else if (mode === "name") session.setSessionName("raw name  ");
+  let mutation;
+  if (mode === "thinking") mutation = session.setThinkingLevel("high");
+  else if (mode === "name") mutation = session.setSessionName("raw name  ");
   else if (mode === "bus") emitBus();
   else if (mode === "observer") session.extensionRunner.createContext().observeWorkflowActivity(suspend);
   else if (mode === "shortcut") void session.extensionRunner.getShortcuts({}).get("ctrl+shift+j").handler(session.extensionRunner.createContext());
@@ -95,6 +96,7 @@ export default function(pi) {
   const shutdownsBeforeRelease = shutdowns;
   release.resolve();
   await closing;
+  await mutation;
   await tick();
   assert.equal(closedBeforeRelease, false);
   assert.equal(shutdownsBeforeRelease, 0);

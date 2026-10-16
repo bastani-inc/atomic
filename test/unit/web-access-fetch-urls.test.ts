@@ -60,7 +60,7 @@ function capture(register: (pi: ExtensionAPI) => void): ToolDefinition {
 		on: () => () => {},
 		registerShortcut: () => {},
 		registerCommand: () => {},
-		appendEntry: () => {},
+		appendEntry: async () => {},
 	};
 	register(pi as ExtensionAPI);
 	const tool = tools.find((tool) => tool.name === "fetch_content");

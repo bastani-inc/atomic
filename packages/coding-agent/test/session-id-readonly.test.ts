@@ -74,7 +74,7 @@ async function runCli(
 function writeSession(sessionDir: string, cwd: string, id: string): void {
 	writeFileSync(
 		join(sessionDir, `${id}.jsonl`),
-		`${JSON.stringify({ type: "session", version: 4, id, timestamp: new Date().toISOString(), cwd: realpathSync(cwd) })}\n`,
+		`${JSON.stringify({ type: "session", version: 4, id, createdAt: new Date().toISOString(), cwd: realpathSync(cwd) })}\n`,
 	);
 }
 
@@ -146,27 +146,27 @@ describe("--session-id validation", () => {
 });
 
 describe("exact session header discovery", () => {
-	it("finds header IDs in renamed files without listing or loading transcripts", () => {
+	it("finds header IDs in renamed files without listing or loading transcripts", async () => {
 		const dir = createTempDir();
 		const file = join(dir, "renamed.jsonl");
 		writeFileSync(
 			file,
-			`${JSON.stringify({ type: "session", version: 4, timestamp: new Date().toISOString(), id: "exact-id", cwd: dir })}\n${"not-json\n".repeat(100_000)}`,
+			`${JSON.stringify({ type: "session", version: 4, createdAt: new Date().toISOString(), id: "exact-id", cwd: dir })}\n${"not-json\n".repeat(100_000)}`,
 		);
 		const before = readFileSync(file);
 		const list = vi.spyOn(SessionManager, "list").mockRejectedValue(new Error("must not list"));
 		const load = vi.spyOn(storage, "loadEntriesFromFile").mockImplementation(() => {
 			throw new Error("must not load transcript");
 		});
-		expect(SessionManager.findById(dir, "exact-id", dir)).toBe(file);
-		expect(SessionManager.findById(dir, "exact", dir)).toBeUndefined();
-		expect(SessionManager.findById(dir, " exact-id", dir)).toBeUndefined();
+		expect(await SessionManager.findById(dir, "exact-id", dir)).toBe(file);
+		expect(await SessionManager.findById(dir, "exact", dir)).toBeUndefined();
+		expect(await SessionManager.findById(dir, " exact-id", dir)).toBeUndefined();
 		expect(list).not.toHaveBeenCalled();
 		expect(load).not.toHaveBeenCalled();
 		expect(readFileSync(file)).toEqual(before);
 	});
 
-	it("filters shared-directory cwd and internal workflow headers while ignoring malformed entries", () => {
+	it("filters shared-directory cwd and internal workflow headers while ignoring malformed entries", async () => {
 		const dir = createTempDir();
 		const file = join(dir, "session.jsonl");
 		writeFileSync(join(dir, "malformed.jsonl"), "not-json\n");
@@ -175,34 +175,34 @@ describe("exact session header discovery", () => {
 		mkdirSync(join(dir, "directory.jsonl"));
 		for (const cwd of [undefined, "", join(dir, "other")]) {
 			writeFileSync(file, JSON.stringify({ type: "session", id: "exact-id", cwd }));
-			expect(SessionManager.findById(dir, "exact-id", dir)).toBeUndefined();
+			expect(await SessionManager.findById(dir, "exact-id", dir)).toBeUndefined();
 		}
 		writeFileSync(
 			file,
 			JSON.stringify({
 				type: "session",
 				version: 4,
-				timestamp: new Date().toISOString(),
+				createdAt: new Date().toISOString(),
 				id: "exact-id",
 				cwd: dir,
 				internal: true,
 				workflow: { runId: "run", stageId: "stage", stageName: "name" },
 			}),
 		);
-		expect(SessionManager.findById(dir, "exact-id", dir)).toBeUndefined();
+		expect(await SessionManager.findById(dir, "exact-id", dir)).toBeUndefined();
 		// Incomplete ownership markers stay visible, matching Atomic's list policy.
 		writeFileSync(
 			file,
 			JSON.stringify({
 				type: "session",
 				version: 4,
-				timestamp: new Date().toISOString(),
+				createdAt: new Date().toISOString(),
 				id: "exact-id",
 				cwd: dir,
 				internal: true,
 			}),
 		);
-		expect(SessionManager.findById(dir, "exact-id", dir)).toBe(file);
-		expect(SessionManager.findById(dir, "exact-id", join(dir, "missing"))).toBeUndefined();
+		expect(await SessionManager.findById(dir, "exact-id", dir)).toBe(file);
+		expect(await SessionManager.findById(dir, "exact-id", join(dir, "missing"))).toBeUndefined();
 	});
 });

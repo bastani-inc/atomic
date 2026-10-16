@@ -247,7 +247,7 @@ describe("AgentSession MCP tools after resume and reload", () => {
  * session exists. The suite harness above builds `AgentSession` directly, so it cannot see how a
  * caller-supplied loadout meets the transcript.
  */
-describe("AgentSession MCP tools after resuming a file-backed session through createAgentSession", () => {
+describe("AgentSession MCP tools after resuming a file-backed session through createAgentSession", async () => {
 	const cleanups: Array<() => Promise<void> | void> = [];
 
 	afterEach(async () => {
@@ -361,7 +361,7 @@ describe("AgentSession MCP tools after resuming a file-backed session through cr
 
 	/** A first process loads the deferred tool with tool_search and quits; returns the stored session file. */
 	async function loadDocsSearchAndQuit(fixture: Fixture): Promise<string> {
-		const manager = SessionManager.create(fixture.cwd, join(fixture.cwd, "sessions"));
+		const manager = await SessionManager.create(fixture.cwd, join(fixture.cwd, "sessions"));
 		const first = await startSession(fixture, manager);
 		fixture.faux.setResponses([
 			fauxAssistantMessage([fauxToolCall("tool_search", { query: "search the docs", limit: 1 })], {
@@ -385,7 +385,7 @@ describe("AgentSession MCP tools after resuming a file-backed session through cr
 		const serverReady = new Promise<void>((resolve) => {
 			connectServer = resolve;
 		});
-		const session = await startSession(fixture, SessionManager.open(sessionFile, undefined, fixture.cwd), {
+		const session = await startSession(fixture, await SessionManager.open(sessionFile, undefined, fixture.cwd), {
 			...options,
 			serverReady,
 		});

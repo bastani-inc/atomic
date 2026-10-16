@@ -193,10 +193,10 @@ async function createForkFixture(): Promise<ForkFixture> {
 
 	// Write the parent's session with the real writer, so the file carries the
 	// exact entries a fork inherits.
-	const parent = SessionManager.create(cwd, sessionDir);
-	parent.appendMessage({ role: "user", content: "parent turn", timestamp: Date.now() });
-	parent.appendModelChange(PARENT_PROVIDER, PARENT_MODEL_ID);
-	parent.flush();
+	const parent = await SessionManager.create(cwd, sessionDir);
+	await parent.appendMessage({ role: "user", content: "parent turn", timestamp: Date.now() });
+	await parent.appendModelChange(PARENT_PROVIDER, PARENT_MODEL_ID);
+
 	const parentSessionFile = parent.getSessionFile();
 	assert.ok(parentSessionFile, "the parent session must be file-backed");
 
@@ -247,7 +247,7 @@ async function selectCandidate(fixture: ForkFixture, options: { resolve: boolean
  * `model: candidate.model ?? policy.model` — this run carries no policy model.
  */
 async function openChildSession(fixture: ForkFixture, candidate: ModelCandidate): Promise<Model<Api> | undefined> {
-	const sessionManager = SessionManager.open(fixture.parentSessionFile, fixture.sessionDir, fixture.cwd);
+	const sessionManager = await SessionManager.open(fixture.parentSessionFile, fixture.sessionDir, fixture.cwd);
 	const { session } = await createAgentSession({
 		cwd: fixture.cwd,
 		agentDir: fixture.agentDir,

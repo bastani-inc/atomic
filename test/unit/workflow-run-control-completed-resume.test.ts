@@ -53,7 +53,7 @@ function retainedSession(name: string): string {
 				type: "session",
 				version: 4,
 				id: `${name}-session`,
-				timestamp: new Date().toISOString(),
+				createdAt: new Date().toISOString(),
 				cwd: tempDir,
 			}),
 			JSON.stringify({

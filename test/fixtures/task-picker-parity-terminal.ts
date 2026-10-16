@@ -74,7 +74,7 @@ async function seed() {
 		}));
 		const session = SessionManager.inMemory();
 		for (let row = 0; row < 40; row++) {
-			session.appendMessage({ role: "user", content: `${active} ${name} transcript row ${row}`, timestamp: row });
+			(await session.appendMessage({ role: "user", content: `${active} ${name} transcript row ${row}`, timestamp: row }));
 		}
 		runner.context.bindTranscript(session);
 		transcripts.set(runner.context.ref.taskId, session);
@@ -88,7 +88,7 @@ async function update(settle: boolean) {
 		const runner = tasks.runners[index];
 		if (settle) await tasks.settle(index);
 		else {
-			transcripts.get(runner.context.ref.taskId)?.appendMessage({
+			await transcripts.get(runner.context.ref.taskId)?.appendMessage({
 				role: "user", content: `${active} LIVE UPDATE ${++sequence}`, timestamp: Date.now(),
 			});
 			taskValue(runner.context.reportActivity({

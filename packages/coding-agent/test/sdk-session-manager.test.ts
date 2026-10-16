@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
@@ -8,6 +9,7 @@ import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { StorageUnavailableError } from "../src/core/storage/session/errors.js";
 
 const missingApiKeyEnv = "ATOMIC_SDK_SESSION_MANAGER_MISSING_KEY";
 const testModel = (id: string) => ({
@@ -42,10 +44,10 @@ async function createSelectionRuntime(): Promise<ModelRuntime> {
 	return runtime;
 }
 
-function persistedSession(cwd: string, provider: string, modelId: string): SessionManager {
+async function persistedSession(cwd: string, provider: string, modelId: string): Promise<SessionManager> {
 	const manager = SessionManager.inMemory(cwd);
-	manager.appendModelChange(provider, modelId);
-	manager.appendMessage({
+	await manager.appendModelChange(provider, modelId);
+	await manager.appendMessage({
 		role: "user",
 		content: [{ type: "text", text: "restore" }],
 		timestamp: Date.now(),
@@ -93,8 +95,22 @@ describe("createAgentSession session manager defaults", () => {
 
 		expect(sessionDir).toBe(expectedSessionDir);
 		expect(sessionFile?.startsWith(`${expectedSessionDir}${sep}`)).toBe(true);
+		expect(session.sessionManager.isPersisted()).toBe(true);
+		expect(existsSync(sessionFile!)).toBe(true);
 
 		await session.dispose();
+	});
+
+	it("rejects an unavailable default session directory without choosing memory", async () => {
+		writeFileSync(join(agentDir, "sessions"), "not a directory");
+		await assert.rejects(
+			createAgentSession({ cwd, agentDir, model: getModel("anthropic", "claude-sonnet-4-5")! }),
+			(error: Error) => {
+				assert.ok(error instanceof StorageUnavailableError);
+				assert.equal(error.adapter, "jsonl");
+				return true;
+			},
+		);
 	});
 
 	it("keeps an explicit sessionManager override", async () => {
@@ -205,7 +221,7 @@ describe("createAgentSession session manager defaults", () => {
 			agentDir,
 			modelRuntime,
 			settingsManager: SettingsManager.inMemory(),
-			sessionManager: persistedSession(cwd, "test-ready", restoredModelId),
+			sessionManager: await persistedSession(cwd, "test-ready", restoredModelId),
 		});
 
 		expect(session.model?.provider).toBe("test-ready");
@@ -226,7 +242,7 @@ describe("createAgentSession session manager defaults", () => {
 			agentDir,
 			modelRuntime,
 			settingsManager: SettingsManager.inMemory(),
-			sessionManager: persistedSession(cwd, "test-locked", "locked-model"),
+			sessionManager: await persistedSession(cwd, "test-locked", "locked-model"),
 		});
 
 		expect(session.model).not.toEqual(locked);
@@ -307,7 +323,7 @@ describe("createAgentSession session manager defaults", () => {
 				defaultProvider: "unsupported-provider",
 				defaultModel: "unsupported-model",
 			}),
-			sessionManager: persistedSession(cwd, "absent-session-provider", "absent-session-model"),
+			sessionManager: await persistedSession(cwd, "absent-session-provider", "absent-session-model"),
 		});
 
 		expect(session.model?.provider).toBe("unknown");
@@ -330,7 +346,7 @@ describe("createAgentSession session manager defaults", () => {
 				agentDir,
 				modelRuntime,
 				settingsManager: SettingsManager.inMemory(savedDefault),
-				sessionManager: persistedSession(cwd, "absent-session-provider", "absent-session-model"),
+				sessionManager: await persistedSession(cwd, "absent-session-provider", "absent-session-model"),
 			});
 
 			expect(modelFallbackMessage).toContain("Could not restore model absent-session-provider/absent-session-model");
@@ -393,8 +409,8 @@ describe("createAgentSession session manager defaults", () => {
 		const replacement = modelRuntime.getAvailableSnapshot().find((model) => model.provider === "openai");
 		expect(replacement).toBeDefined();
 		const sessionManager = SessionManager.inMemory(cwd);
-		sessionManager.appendModelChange("absent-session-provider", "absent-session-model");
-		sessionManager.appendMessage({
+		await sessionManager.appendModelChange("absent-session-provider", "absent-session-model");
+		await sessionManager.appendMessage({
 			role: "user",
 			content: [{ type: "text", text: "restore" }],
 			timestamp: Date.now(),

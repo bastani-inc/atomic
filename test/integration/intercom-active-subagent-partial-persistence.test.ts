@@ -2,14 +2,13 @@ import assert from "node:assert/strict";
 import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
 import { test, vi } from "vitest";
 import type { ExtensionContext } from "../../packages/coding-agent/src/core/extensions/index.js";
+import { SessionConflictError } from "../../packages/coding-agent/src/core/storage/session/errors.js";
 import { createHarness, getMessageText } from "../../packages/coding-agent/test/suite/harness.js";
 import intercomHeavy from "../../packages/intercom/index-heavy.js";
 import type { IntercomExtensionTestOverrides } from "../../packages/intercom/intercom-test-seams.js";
 import { createDispatchCounter } from "../helpers/intercom-interrupt-probe.js";
 
-// R3: a card appended before a transient flush failure is one visible occurrence.
-// Retry completes its remaining durability work instead of appending another card.
-test("a flush failure after the card append retries without a duplicate visible card", async () => {
+test("a failed card commit retries without a duplicate visible card", async () => {
 	const ended = new AbortController();
 	const started = Promise.withResolvers<void>();
 	const release = Promise.withResolvers<void>();
@@ -53,17 +52,15 @@ test("a flush failure after the card append retries without a duplicate visible 
 		},
 		...dispatches.steps(3),
 	]);
-	const flush = h.sessionManager.flush.bind(h.sessionManager);
+	const append = h.sessionManager.appendCustomMessageEntry.bind(h.sessionManager);
 	let flushFailures = 0;
-	const storage = vi.spyOn(h.sessionManager, "flush").mockImplementation(() => {
-		if (
-			flushFailures === 0 &&
-			h.sessionManager.getEntries().some((e) => e.type === "custom_message" && e.customType === "intercom_message")
-		) {
+	const failure = new SessionConflictError(h.sessionManager.getSessionId(), 0, 1);
+	const storage = vi.spyOn(h.sessionManager, "appendCustomMessageEntry").mockImplementation(async (...args) => {
+		if (flushFailures === 0 && args[0] === "intercom_message") {
 			flushFailures += 1;
-			throw new Error("transient flush failure after append");
+			throw failure;
 		}
-		return flush();
+		return append(...args);
 	});
 	const execution = h.session.prompt("original task");
 	try {

@@ -116,31 +116,36 @@ describe("trusted ordinary Intercom sessions", () => {
 		}
 	});
 
-	it("allows selecting ordinary Intercom without other builtin tools", async () => {
-		const cwd = createTempDir("ic-sdk-");
-		const agentDir = join(cwd, "agent");
-		mkdirSync(agentDir, { recursive: true });
-		const { session } = await createAgentSession({
-			cwd,
-			agentDir,
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
-			sessionManager: SessionManager.inMemory(cwd),
-			tools: ["intercom"],
-		});
-		try {
-			const tools = session.getAllTools();
-			const intercom = tools.find((tool) => tool.name === "intercom");
-			expect(intercom?.sourceInfo.configurationOrigin).toBe("bundled");
-			expect(session.getToolDefinition("intercom")?.label).toBe("Intercom");
-			expect(session.getActiveToolNames()).toEqual(["intercom"]);
-			for (const optional of ["workflow", "subagent", "web_search", "mcp"]) {
-				expect(tools.map((tool) => tool.name)).not.toContain(optional);
+	const BUILTIN_PACKAGE_STARTUP_TIMEOUT_MS = 90_000;
+	it(
+		"allows selecting ordinary Intercom without other builtin tools",
+		async () => {
+			const cwd = createTempDir("ic-sdk-");
+			const agentDir = join(cwd, "agent");
+			mkdirSync(agentDir, { recursive: true });
+			const { session } = await createAgentSession({
+				cwd,
+				agentDir,
+				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				sessionManager: SessionManager.inMemory(cwd),
+				tools: ["intercom"],
+			});
+			try {
+				const tools = session.getAllTools();
+				const intercom = tools.find((tool) => tool.name === "intercom");
+				expect(intercom?.sourceInfo.configurationOrigin).toBe("bundled");
+				expect(session.getToolDefinition("intercom")?.label).toBe("Intercom");
+				expect(session.getActiveToolNames()).toEqual(["intercom"]);
+				for (const optional of ["workflow", "subagent", "web_search", "mcp"]) {
+					expect(tools.map((tool) => tool.name)).not.toContain(optional);
+				}
+				expect(session.getToolDefinition("contact_supervisor")).toBeUndefined();
+			} finally {
+				await session.dispose();
 			}
-			expect(session.getToolDefinition("contact_supervisor")).toBeUndefined();
-		} finally {
-			session.dispose();
-		}
-	});
+		},
+		BUILTIN_PACKAGE_STARTUP_TIMEOUT_MS,
+	);
 
 	it.each([
 		{ label: "deferExtensions", reload: { deferExtensions: true } },

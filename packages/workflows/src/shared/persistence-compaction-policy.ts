@@ -41,7 +41,7 @@ export interface CompactionAPI {
 export function installCompactionHook(api: CompactionAPI & PersistenceAPI, store: Store): void {
 	if (typeof api.on !== "function") return;
 
-	api.on("session_before_compact", () => {
+	api.on("session_before_compact", async () => {
 		const runs = store.runs();
 		const now = Date.now();
 
@@ -49,7 +49,7 @@ export function installCompactionHook(api: CompactionAPI & PersistenceAPI, store
 			// Only preserve runs that haven't ended
 			if (run.endedAt !== undefined) continue;
 
-			appendRunStart(api, {
+			await appendRunStart(api, {
 				runId: run.id,
 				name: run.name,
 				inputs: run.inputs,
@@ -59,7 +59,7 @@ export function installCompactionHook(api: CompactionAPI & PersistenceAPI, store
 			for (const stage of run.stages) {
 				// Re-append start for stages that haven't completed
 				if (stage.endedAt !== undefined) continue;
-				appendStageStart(api, {
+				await appendStageStart(api, {
 					runId: run.id,
 					stageId: stage.id,
 					name: stage.name,

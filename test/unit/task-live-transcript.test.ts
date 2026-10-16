@@ -42,7 +42,7 @@ test("open agent transcript streams text and tool results without task activity 
 	setKeybindings(new KeybindingsManager());
 	const fixture = taskFixture();
 	const session = SessionManager.inMemory();
-	session.appendMessage({ role: "user", content: "Inspect streaming", timestamp: 0 });
+	await session.appendMessage({ role: "user", content: "Inspect streaming", timestamp: 0 });
 	const listeners = new Set<(event: AgentSessionEvent) => void>();
 	const emit = (event: AgentSessionEvent) => {
 		for (const listener of listeners) listener(event);
@@ -124,7 +124,7 @@ test("live transcript keeps earlier pages and scroll position while new state ar
 	const fixture = taskFixture();
 	const session = SessionManager.inMemory();
 	for (let i = 0; i < 120; i++)
-		session.appendMessage({ role: "user", content: `HISTORY-${String(i).padStart(3, "0")}`, timestamp: i });
+		await session.appendMessage({ role: "user", content: `HISTORY-${String(i).padStart(3, "0")}`, timestamp: i });
 	let listener: ((event: AgentSessionEvent) => void) | undefined;
 	const inspector = new TaskInspector(
 		fixture.store,

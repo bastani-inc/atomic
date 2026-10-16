@@ -303,7 +303,7 @@ describe.skipIf(!API_KEY)("AgentSession tree navigation - branch scenarios", () 
 		const a1 = entries.find((e) => e.type === "message" && e.message.role === "assistant");
 
 		// Create a branch from a1: a1 -> u3 -> a3
-		sessionManager.branch(a1!.id);
+		await sessionManager.branch(a1!.id);
 		await session.prompt("Branch path");
 		await session.agent.waitForIdle();
 

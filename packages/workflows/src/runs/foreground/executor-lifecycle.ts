@@ -24,7 +24,7 @@ export function assertWorkflowCreatedExecution(runSnapshot: RunSnapshot): void {
 	throw new Error(EMPTY_WORKFLOW_GRAPH_ERROR_MESSAGE);
 }
 
-export function appendRunEndWhenRecorded(
+export async function appendRunEndWhenRecorded(
 	persistence: WorkflowPersistencePort | undefined,
 	recorded: boolean,
 	payload: {
@@ -46,9 +46,9 @@ export function appendRunEndWhenRecorded(
 		readonly retryAfterMs?: number;
 		readonly ts: number;
 	},
-): void {
+): Promise<void> {
 	if (!persistence || !recorded) return;
-	appendRunEnd(persistence, payload);
+	await appendRunEnd(persistence, payload);
 }
 
 export function runResultFromSnapshot(snapshot: RunSnapshot): RunResult {
@@ -370,13 +370,13 @@ export function stageReplayFields(
 	};
 }
 
-export function finalizeKilled(
+export async function finalizeKilled(
 	runId: string,
 	runSnapshot: RunSnapshot,
 	activeStore: Store,
 	persistence: WorkflowPersistencePort | undefined,
 	onRunEnd: RunOpts["onRunEnd"],
-): RunResult {
+): Promise<RunResult> {
 	const errorMessage = "workflow killed";
 	const metadata = {
 		failureKind: "cancelled" as const,
@@ -387,7 +387,7 @@ export function finalizeKilled(
 		resumable: false,
 	};
 	const recorded = activeStore.recordRunEnd(runId, "killed", undefined, errorMessage, metadata);
-	appendRunEndWhenRecorded(persistence, recorded, {
+	await appendRunEndWhenRecorded(persistence, recorded, {
 		runId,
 		status: "killed",
 		error: errorMessage,
@@ -403,16 +403,16 @@ export function finalizeKilled(
 	);
 }
 
-export function finalizeKilledByFailure(
+export async function finalizeKilledByFailure(
 	runId: string,
 	runSnapshot: RunSnapshot,
 	activeStore: Store,
 	persistence: WorkflowPersistencePort | undefined,
 	onRunEnd: RunOpts["onRunEnd"],
 	metadata: RunFailureMetadata,
-): RunResult {
+): Promise<RunResult> {
 	const recorded = activeStore.recordRunEnd(runId, "killed", undefined, metadata.errorMessage, metadata);
-	appendRunEndWhenRecorded(persistence, recorded, {
+	await appendRunEndWhenRecorded(persistence, recorded, {
 		runId,
 		status: "killed",
 		error: metadata.errorMessage,
@@ -436,13 +436,13 @@ export function finalizeKilledByFailure(
 		onRunEnd,
 	);
 }
-export function recordActiveBlockedFailure(
+export async function recordActiveBlockedFailure(
 	runId: string,
 	runSnapshot: RunSnapshot,
 	activeStore: Store,
 	persistence: WorkflowPersistencePort | undefined,
 	metadata: RunFailureMetadata & { readonly failureRecoverability: "recoverable" },
-): RunResult {
+): Promise<RunResult> {
 	const blockedAt = Date.now();
 	const endedAt = metadata.budgetState?.systemOwnedStop === true ? blockedAt : undefined;
 	const recorded = activeStore.recordRunBlocked(runId, metadata.errorMessage, {
@@ -460,7 +460,7 @@ export function recordActiveBlockedFailure(
 		blockedAt,
 	});
 	if (recorded && persistence !== undefined) {
-		appendRunBlocked(persistence, {
+		await appendRunBlocked(persistence, {
 			runId,
 			...(metadata.failedStageId !== undefined ? { failedStageId: metadata.failedStageId } : {}),
 			error: metadata.errorMessage,

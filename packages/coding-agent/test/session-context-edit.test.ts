@@ -61,10 +61,10 @@ function projectedTexts(session: SessionManager): string[] {
 }
 
 describe("session context edits", () => {
-	it("omits a target only from model projection", () => {
+	it("omits a target only from model projection", async () => {
 		const session = SessionManager.inMemory();
-		session.appendMessage({ role: "user", content: "request", timestamp: Date.now() });
-		const assistantId = session.appendMessage(assistant("partial"));
+		await session.appendMessage({ role: "user", content: "request", timestamp: Date.now() });
+		const assistantId = await session.appendMessage(assistant("partial"));
 		const result: ToolResultMessage = {
 			role: "toolResult",
 			toolCallId: "call-1",
@@ -74,21 +74,21 @@ describe("session context edits", () => {
 			isError: true,
 			timestamp: Date.now(),
 		};
-		const resultId = session.appendMessage(result);
-		session.appendContextEdit(assistantId, null);
-		session.appendContextEdit(resultId, null);
+		const resultId = await session.appendMessage(result);
+		await session.appendContextEdit(assistantId, null);
+		await session.appendContextEdit(resultId, null);
 
 		expect(session.getBranch().filter((entry) => entry.type === "message")).toHaveLength(3);
 		expect(session.buildSessionProjection().messages.map((message) => message.role)).toEqual(["user"]);
 		expect((session.getEntry(resultId) as { message: ToolResultMessage }).message).toBe(result);
 	});
 
-	it("replaces only content and lets the latest edit win", () => {
+	it("replaces only content and lets the latest edit win", async () => {
 		const session = SessionManager.inMemory();
-		const targetId = session.appendMessage(assistant("original"));
-		session.appendContextEdit(targetId, { content: [{ type: "text", text: "first" }] });
-		session.appendContextEdit(targetId, null);
-		session.appendContextEdit(targetId, { content: [{ type: "text", text: "restored" }] });
+		const targetId = await session.appendMessage(assistant("original"));
+		await session.appendContextEdit(targetId, { content: [{ type: "text", text: "first" }] });
+		await session.appendContextEdit(targetId, null);
+		await session.appendContextEdit(targetId, { content: [{ type: "text", text: "restored" }] });
 
 		const projected = session.buildSessionProjection().messages[0];
 		expect(projected.role).toBe("assistant");
@@ -98,10 +98,10 @@ describe("session context edits", () => {
 		expect(text((session.getEntry(targetId) as { message: AssistantMessage }).message)).toBe("original");
 	});
 
-	it("normalizes string replacements for array-only assistant and tool-result roles", () => {
+	it("normalizes string replacements for array-only assistant and tool-result roles", async () => {
 		const session = SessionManager.inMemory();
-		const assistantId = session.appendMessage(assistant("original"));
-		const resultId = session.appendMessage({
+		const assistantId = await session.appendMessage(assistant("original"));
+		const resultId = await session.appendMessage({
 			role: "toolResult",
 			toolCallId: "call-1",
 			toolName: "read",
@@ -109,8 +109,8 @@ describe("session context edits", () => {
 			isError: false,
 			timestamp: Date.now(),
 		});
-		const assistantEditId = session.appendContextEdit(assistantId, { content: "assistant replacement" });
-		const resultEditId = session.appendContextEdit(resultId, { content: "result replacement" });
+		const assistantEditId = await session.appendContextEdit(assistantId, { content: "assistant replacement" });
+		const resultEditId = await session.appendContextEdit(resultId, { content: "result replacement" });
 
 		expect(session.getEntry(assistantEditId)).toMatchObject({
 			replacement: { content: [{ type: "text", text: "assistant replacement" }] },
@@ -129,10 +129,10 @@ describe("session context edits", () => {
 		});
 	});
 
-	it("normalizes imported string replacements while projecting array-only roles", () => {
+	it("normalizes imported string replacements while projecting array-only roles", async () => {
 		const session = SessionManager.inMemory();
-		const assistantId = session.appendMessage(assistant("original"));
-		const editId = session.appendContextEdit(assistantId, null);
+		const assistantId = await session.appendMessage(assistant("original"));
+		const editId = await session.appendContextEdit(assistantId, null);
 		const edit = session.getEntry(editId);
 		if (edit?.type !== "context_edit") throw new Error("expected context edit");
 		edit.replacement = { content: "imported replacement" };
@@ -143,32 +143,34 @@ describe("session context edits", () => {
 		});
 	});
 
-	it("keeps edits branch-relative", () => {
+	it("keeps edits branch-relative", async () => {
 		const session = SessionManager.inMemory();
-		const targetId = session.appendMessage({ role: "user", content: "original", timestamp: Date.now() });
-		session.appendContextEdit(targetId, { content: "edited" });
+		const targetId = await session.appendMessage({ role: "user", content: "original", timestamp: Date.now() });
+		await session.appendContextEdit(targetId, { content: "edited" });
 		expect(text(session.buildSessionProjection().messages[0] as { content: string })).toBe("edited");
 
-		session.branch(targetId);
+		await session.branch(targetId);
 		expect(text(session.buildSessionProjection().messages[0] as { content: string })).toBe("original");
 	});
 
-	it("rejects edits to entries off the active branch or without model content", () => {
+	it("rejects edits to entries off the active branch or without model content", async () => {
 		const session = SessionManager.inMemory();
-		const first = session.appendMessage({ role: "user", content: "first", timestamp: Date.now() });
-		const custom = session.appendCustomEntry("bookkeeping", {});
-		expect(() => session.appendContextEdit(custom, null)).toThrow(/does not contribute editable model content/);
-		expect(() => session.appendContextEdit("missing", null)).toThrow(/not found/);
-		session.branch(first);
-		session.appendMessage({ role: "user", content: "other branch", timestamp: Date.now() });
-		expect(() => session.appendContextEdit(custom, null)).toThrow(/not on the active branch/);
+		const first = await session.appendMessage({ role: "user", content: "first", timestamp: Date.now() });
+		const custom = await session.appendCustomEntry("bookkeeping", {});
+		await expect(session.appendContextEdit(custom, null)).rejects.toThrow(
+			/does not contribute editable model content/,
+		);
+		await expect(session.appendContextEdit("missing", null)).rejects.toThrow(/not found/);
+		await session.branch(first);
+		await session.appendMessage({ role: "user", content: "other branch", timestamp: Date.now() });
+		await expect(session.appendContextEdit(custom, null)).rejects.toThrow(/not on the active branch/);
 	});
 
-	it("keeps a retain-none compaction as the only pre-boundary context", () => {
+	it("keeps a retain-none compaction as the only pre-boundary context", async () => {
 		const session = SessionManager.inMemory();
-		session.appendMessage({ role: "user", content: "discarded", timestamp: Date.now() });
-		const compactionId = session.appendCompaction("exact handoff", null, 100, verbatimDetails);
-		session.appendMessage({ role: "user", content: "after", timestamp: Date.now() });
+		await session.appendMessage({ role: "user", content: "discarded", timestamp: Date.now() });
+		const compactionId = await session.appendCompaction("exact handoff", null, 100, verbatimDetails);
+		await session.appendMessage({ role: "user", content: "after", timestamp: Date.now() });
 
 		expect(session.getEntry(compactionId)).toMatchObject({ type: "compaction", firstKeptEntryId: null });
 		const projection = session.buildSessionProjection();
@@ -180,12 +182,16 @@ describe("session context edits", () => {
 		expect(after).toBe("after");
 	});
 
-	it("applies post-compaction edits to retained pre-compaction entries", () => {
+	it("applies post-compaction edits to retained pre-compaction entries", async () => {
 		const session = SessionManager.inMemory();
-		session.appendMessage({ role: "user", content: "summarized", timestamp: Date.now() });
-		const retainedId = session.appendMessage({ role: "user", content: "original retained", timestamp: Date.now() });
-		session.appendCompaction("summary", retainedId, 100, verbatimDetails);
-		session.appendContextEdit(retainedId, { content: "edited retained" });
+		await session.appendMessage({ role: "user", content: "summarized", timestamp: Date.now() });
+		const retainedId = await session.appendMessage({
+			role: "user",
+			content: "original retained",
+			timestamp: Date.now(),
+		});
+		await session.appendCompaction("summary", retainedId, 100, verbatimDetails);
+		await session.appendContextEdit(retainedId, { content: "edited retained" });
 
 		const projection = session.buildSessionProjection();
 		// The retained tail is serialized into the boundary message, so the edit lands there;
@@ -201,34 +207,34 @@ describe("session context edits", () => {
 		expect(boundary).not.toContain("original retained");
 	});
 
-	it("does not trust pre-edit assistant usage for projected context estimates", () => {
+	it("does not trust pre-edit assistant usage for projected context estimates", async () => {
 		const session = SessionManager.inMemory();
-		const largeUserId = session.appendMessage({
+		const largeUserId = await session.appendMessage({
 			role: "user",
 			content: "discarded input ".repeat(2_000),
 			timestamp: Date.now(),
 		});
 		const response = assistant("small answer");
 		response.usage = { ...response.usage, input: 10_000, totalTokens: 10_001 };
-		const assistantId = session.appendMessage(response);
-		session.appendContextEdit(largeUserId, null);
+		const assistantId = await session.appendMessage(response);
+		await session.appendContextEdit(largeUserId, null);
 
 		const editedEstimate = estimateProjectedContextTokens(session.buildSessionProjection(), session.getBranch());
 		expect(editedEstimate.usageTokens).toBe(0);
 		expect(editedEstimate.tokens).toBeLessThan(100);
 
-		session.appendContextEdit(assistantId, null);
+		await session.appendContextEdit(assistantId, null);
 		expect(estimateProjectedContextTokens(session.buildSessionProjection(), session.getBranch()).tokens).toBe(0);
 	});
 
-	it("uses assistant usage captured after the latest context edit", () => {
+	it("uses assistant usage captured after the latest context edit", async () => {
 		const session = SessionManager.inMemory();
-		const userId = session.appendMessage({ role: "user", content: "original", timestamp: Date.now() });
-		session.appendContextEdit(userId, { content: "edited" });
+		const userId = await session.appendMessage({ role: "user", content: "original", timestamp: Date.now() });
+		await session.appendContextEdit(userId, { content: "edited" });
 		const response = assistant("answer");
 		response.usage = { ...response.usage, input: 4_000, output: 100, totalTokens: 4_100 };
-		session.appendMessage(response);
-		session.appendMessage({ role: "user", content: "next", timestamp: Date.now() });
+		await session.appendMessage(response);
+		await session.appendMessage({ role: "user", content: "next", timestamp: Date.now() });
 
 		const estimate = estimateProjectedContextTokens(session.buildSessionProjection(), session.getBranch());
 		expect(estimate.usageTokens).toBe(4_100);
@@ -236,23 +242,23 @@ describe("session context edits", () => {
 		expect(estimate.tokens).toBe(4_101);
 	});
 
-	it("does not reuse post-edit assistant usage after a later compaction", () => {
+	it("does not reuse post-edit assistant usage after a later compaction", async () => {
 		const session = SessionManager.inMemory();
-		const userId = session.appendMessage({ role: "user", content: "small input", timestamp: Date.now() });
-		session.appendContextEdit(userId, { content: "edited input" });
+		const userId = await session.appendMessage({ role: "user", content: "small input", timestamp: Date.now() });
+		await session.appendContextEdit(userId, { content: "edited input" });
 		const response = assistant("answer");
 		response.usage = { ...response.usage, input: 50_000, output: 1, totalTokens: 50_001 };
-		session.appendMessage(response);
-		session.appendCompaction("small summary", userId, 50_001, verbatimDetails);
+		await session.appendMessage(response);
+		await session.appendCompaction("small summary", userId, 50_001, verbatimDetails);
 
 		const estimate = estimateProjectedContextTokens(session.buildSessionProjection(), session.getBranch());
 		expect(estimate.usageTokens).toBe(0);
 		expect(estimate.tokens).toBeLessThan(100);
 	});
 
-	it("includes effective system and tool context in edited estimates", () => {
+	it("includes effective system and tool context in edited estimates", async () => {
 		const session = SessionManager.inMemory();
-		session.appendMessage({
+		await session.appendMessage({
 			role: "system",
 			content: "system prompt ".repeat(3_000),
 			toolsAdded: [
@@ -264,24 +270,28 @@ describe("session context edits", () => {
 			],
 			timestamp: Date.now(),
 		});
-		const userId = session.appendMessage({ role: "user", content: "ask", timestamp: Date.now() });
-		session.appendMessage(assistant("done"));
-		session.appendContextEdit(userId, { content: "ask" });
+		const userId = await session.appendMessage({ role: "user", content: "ask", timestamp: Date.now() });
+		await session.appendMessage(assistant("done"));
+		await session.appendContextEdit(userId, { content: "ask" });
 
 		expect(
 			estimateProjectedContextTokens(session.buildSessionProjection(), session.getBranch()).tokens,
 		).toBeGreaterThan(10_000);
 	});
 
-	it("prepares compaction from edited model content", () => {
+	it("prepares compaction from edited model content", async () => {
 		const session = SessionManager.inMemory();
-		const omittedId = session.appendMessage({ role: "user", content: "OMIT-ME ".repeat(100), timestamp: Date.now() });
-		const replacedId = session.appendMessage(assistant("old answer ".repeat(100)));
-		session.appendContextEdit(omittedId, null);
-		session.appendContextEdit(replacedId, { content: "REPLACED-ANSWER ".repeat(100) });
+		const omittedId = await session.appendMessage({
+			role: "user",
+			content: "OMIT-ME ".repeat(100),
+			timestamp: Date.now(),
+		});
+		const replacedId = await session.appendMessage(assistant("old answer ".repeat(100)));
+		await session.appendContextEdit(omittedId, null);
+		await session.appendContextEdit(replacedId, { content: "REPLACED-ANSWER ".repeat(100) });
 		for (let index = 0; index < 12; index++) {
-			session.appendMessage({ role: "user", content: `keep ${index} `.repeat(20), timestamp: Date.now() });
-			session.appendMessage(assistant(`suffix ${index} `.repeat(20)));
+			await session.appendMessage({ role: "user", content: `keep ${index} `.repeat(20), timestamp: Date.now() });
+			await session.appendMessage(assistant(`suffix ${index} `.repeat(20)));
 		}
 
 		const preparation = prepareCompactionBoundary(session.getBranch(), DEFAULT_COMPACTION_SETTINGS);

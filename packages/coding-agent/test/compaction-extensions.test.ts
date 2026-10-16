@@ -109,8 +109,12 @@ describe("verbatim compaction extension hooks", () => {
 		});
 		const now = Date.now();
 		for (let turn = 0; turn < 5; turn++) {
-			manager.appendMessage({ role: "user", content: `task ${turn}\nline a\nline b`, timestamp: now + turn * 2 });
-			manager.appendMessage(assistant(`answer ${turn}\nline c\nline d`, now + turn * 2 + 1));
+			await manager.appendMessage({
+				role: "user",
+				content: `task ${turn}\nline a\nline b`,
+				timestamp: now + turn * 2,
+			});
+			await manager.appendMessage(assistant(`answer ${turn}\nline c\nline d`, now + turn * 2 + 1));
 		}
 		agent.state.messages = manager.buildSessionContext().messages;
 	}
@@ -199,8 +203,8 @@ describe("verbatim compaction extension hooks", () => {
 		expect(session.sessionManager.buildSessionContext().messages).toHaveLength(1);
 
 		const long = Array.from({ length: 20 }, (_, index) => `new line ${index}`).join("\n");
-		session.sessionManager.appendMessage({ role: "user", content: long, timestamp: Date.now() });
-		const tailId = session.sessionManager.appendMessage(assistant("new tail", Date.now() + 1));
+		await session.sessionManager.appendMessage({ role: "user", content: long, timestamp: Date.now() });
+		const tailId = await session.sessionManager.appendMessage(assistant("new tail", Date.now() + 1));
 		session.agent.state.messages = session.sessionManager.buildSessionContext().messages;
 
 		const second = await session.compact({ preserve_recent: 1 });
@@ -220,8 +224,8 @@ describe("verbatim compaction extension hooks", () => {
 		const first = await session.compact({ preserve_recent: 0 });
 		expect(first.promptVersion).toBe(4);
 		const long = Array.from({ length: 20 }, (_, index) => `planner line ${index}`).join("\n");
-		session.sessionManager.appendMessage({ role: "user", content: long, timestamp: Date.now() });
-		session.sessionManager.appendMessage(assistant("planner tail", Date.now() + 1));
+		await session.sessionManager.appendMessage({ role: "user", content: long, timestamp: Date.now() });
+		await session.sessionManager.appendMessage(assistant("planner tail", Date.now() + 1));
 		session.agent.state.messages = session.sessionManager.buildSessionContext().messages;
 
 		await session.compact({ preserve_recent: 1 });

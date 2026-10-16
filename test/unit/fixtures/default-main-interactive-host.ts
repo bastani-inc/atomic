@@ -120,8 +120,8 @@ async function runHost(): Promise<void> {
 	const mutateSession = async (): Promise<void> => {
 		if (!mode?.session.model || !(mode.runtimeHost instanceof IsolatedInteractiveRuntime)) return;
 		await mode.session.setModel(mode.session.model);
-		mode.session.setThinkingLevel(mode.session.thinkingLevel === "high" ? "low" : "high");
-		mode.session.setSessionName("exactly-once");
+		(await mode.session.setThinkingLevel(mode.session.thinkingLevel === "high" ? "low" : "high"));
+		(await mode.session.setSessionName("exactly-once"));
 		await mode.runtimeHost.synchronize();
 		report({ type: "mutation_done", sessionFile: mode.session.sessionFile });
 	};

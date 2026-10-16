@@ -236,7 +236,7 @@ export async function _applyVerbatimCompaction(
 	const firstKeptEntryId =
 		compacted.summaryFirstKeptEntryId ?? (compacted.keptTail ? preparation.firstKeptEntryId : null);
 	const tokensBefore = compacted.summaryTokensBefore ?? preparation.tokensBefore;
-	const backupPath = this.sessionManager.writeBackupSnapshot(options.backupLabel);
+	const backupPath = await this.sessionManager.writeBackupSnapshot(options.backupLabel);
 	const details: VerbatimCompactionDetails = {
 		strategy: VERBATIM_COMPACTION_STRATEGY,
 		promptVersion: VERBATIM_COMPACTION_PROMPT_VERSION,
@@ -249,7 +249,7 @@ export async function _applyVerbatimCompaction(
 		...(compacted.summary ? { summary: compacted.summary } : {}),
 		...(backupPath ? { backupPath } : {}),
 	};
-	const entryId = this.sessionManager.appendCompaction(
+	const entryId = await this.sessionManager.appendCompaction(
 		compacted.text,
 		firstKeptEntryId,
 		tokensBefore,

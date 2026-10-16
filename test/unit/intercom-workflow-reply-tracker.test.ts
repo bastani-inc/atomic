@@ -146,7 +146,7 @@ test("public pending and reply isolate a workflow parent and two typed children"
 			registerTool: (registered) => {
 				tool = registered;
 			},
-			appendEntry() {},
+			async appendEntry() {},
 		};
 		registerIntercomTool(api as ExtensionAPI, {
 			ensureConnected: async () => client,

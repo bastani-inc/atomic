@@ -28,10 +28,10 @@ describe("pi 0.84.2 session name state", () => {
 			type: "session",
 			version: 4,
 			id,
-			timestamp: "2025-01-01T00:00:00Z",
+			createdAt: "2025-01-01T00:00:00Z",
 			cwd,
 		};
-		const path = join(dir, `${header.timestamp.replace(/[:.]/g, "-")}_${id}.jsonl`);
+		const path = join(dir, `${header.createdAt.replace(/[:.]/g, "-")}_${id}.jsonl`);
 		writeFileSync(path, `${JSON.stringify(header)}\n${lines.join("\n")}\n`);
 		return path;
 	}
@@ -76,9 +76,9 @@ describe("pi 0.84.2 session name state", () => {
 		assert.ok(!never.hasName);
 
 		// Opening the same files reports the same states through SessionManager.
-		const clearedSession = SessionManager.open(clearedPath);
+		const clearedSession = await SessionManager.open(clearedPath);
 		assert.deepEqual(clearedSession.getSessionNameState(), { hasName: true });
-		const neverSession = SessionManager.open(neverPath);
+		const neverSession = await SessionManager.open(neverPath);
 		assert.deepEqual(neverSession.getSessionNameState(), { hasName: false });
 
 		// The bare-string surface is unchanged: both still read as nameless.
@@ -99,37 +99,37 @@ describe("pi 0.84.2 session name state", () => {
 		assert.equal(named.name, "Second title");
 		assert.equal(named.hasName, true);
 
-		const session = SessionManager.open(path);
+		const session = await SessionManager.open(path);
 		assert.deepEqual(session.getSessionNameState(), { hasName: true, name: "Second title" });
 		assert.equal(session.getSessionName(), "Second title");
 	});
 
-	it("treats a whitespace-only latest name as a clear", () => {
+	it("treats a whitespace-only latest name as a clear", async () => {
 		const path = writeSessionFile("blank", [
 			userMessage("m1", null, "chase the flaky test"),
 			sessionInfo("n1", "m1", "Bug hunt"),
 			sessionInfo("n2", "n1", "   "),
 		]);
 
-		assert.deepEqual(SessionManager.open(path).getSessionNameState(), { hasName: true });
+		assert.deepEqual((await SessionManager.open(path)).getSessionNameState(), { hasName: true });
 	});
 
-	it("keeps the distinction across the live name and clear path", () => {
+	it("keeps the distinction across the live name and clear path", async () => {
 		const session = SessionManager.inMemory(cwd);
 		assert.deepEqual(session.getSessionNameState(), { hasName: false });
 
-		session.appendSessionInfo("Sprint");
+		await session.appendSessionInfo("Sprint");
 		assert.deepEqual(session.getSessionNameState(), { hasName: true, name: "Sprint" });
 
-		session.appendSessionInfo("");
+		await session.appendSessionInfo("");
 		assert.deepEqual(session.getSessionNameState(), { hasName: true });
 		assert.equal(session.getSessionName(), undefined);
 	});
 
-	it("still writes a clear as a session_info entry with an empty name", () => {
-		const session = SessionManager.create(cwd, dir);
-		session.appendMessage({ role: "user", content: "name this session", timestamp: 1 });
-		session.appendMessage({
+	it("still writes a clear as a session_info entry with an empty name", async () => {
+		const session = await SessionManager.create(cwd, dir);
+		await session.appendMessage({ role: "user", content: "name this session", timestamp: 1 });
+		await session.appendMessage({
 			role: "assistant",
 			content: [{ type: "text", text: "done" }],
 			api: "anthropic-messages",
@@ -146,9 +146,8 @@ describe("pi 0.84.2 session name state", () => {
 			stopReason: "stop",
 			timestamp: 2,
 		});
-		session.appendSessionInfo("Sprint");
-		session.appendSessionInfo("");
-		session.flush();
+		await session.appendSessionInfo("Sprint");
+		await session.appendSessionInfo("");
 
 		// The storage format is unchanged: a clear is a session_info entry with name "".
 		const file = session.getSessionFile();

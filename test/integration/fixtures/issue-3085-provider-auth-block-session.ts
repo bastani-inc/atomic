@@ -177,7 +177,7 @@ export async function createIssue3085StageSession(input: {
 			},
 			compaction: { enabled: false },
 		}),
-		sessionManager: SessionManager.create(sessionDir, join(sessionDir, "sessions")),
+		sessionManager: await SessionManager.create(sessionDir, join(sessionDir, "sessions")),
 		resourceLoader: createIssue3085ResourceLoader(),
 	});
 	return session as unknown as StageSessionRuntime;

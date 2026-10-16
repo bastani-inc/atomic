@@ -111,22 +111,24 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 		setDurableBackend(backend);
 		cleanup.push(() => setDurableBackend(undefined));
 
-		const parent = SessionManager.create(dir, join(dir, "parent-sessions"));
+		const parent = await SessionManager.create(dir, join(dir, "parent-sessions"));
 		const store = createStore();
 		const notices: Array<{ customType?: string; details?: { kind?: string; status?: string } }> = [];
+		const blockedNoticeCommitted = Promise.withResolvers<void>();
 		cleanup.push(
 			installWorkflowLifecycleNotifications({
 				store,
 				config: { enabled: true, notifyOn: ["blocked", "completed", "failed"] },
-				sendMessage: (message) => {
+				sendMessage: async (message) => {
 					const details = message.details as { kind?: string; status?: string } | undefined;
 					notices.push({ customType: message.customType, details });
-					parent.appendCustomMessageEntry(
+					await parent.appendCustomMessageEntry(
 						message.customType ?? LIFECYCLE_NOTICE_CUSTOM_TYPE,
 						message.content,
 						message.display !== false,
 						details,
 					);
+					if (details?.kind === "blocked") blockedNoticeCommitted.resolve();
 				},
 			}),
 		);
@@ -203,7 +205,7 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 								retry: { enabled: true, maxRetries: 3, baseDelayMs: 2000, maxAgentDelayMs: 60_000 },
 								compaction: { enabled: false },
 							}),
-							sessionManager: SessionManager.create(sessionDir, join(sessionDir, "sessions")),
+							sessionManager: await SessionManager.create(sessionDir, join(sessionDir, "sessions")),
 							resourceLoader: createTestResourceLoader(),
 						});
 						cleanup.push(() => session.dispose());
@@ -248,13 +250,13 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 		assert.doesNotMatch(source.failureMessage ?? "", /\/login/);
 		assert.equal(prefix, 1);
 
+		await blockedNoticeCommitted.promise;
 		const blocks = () => notices.filter((notice) => notice.details?.kind === "blocked");
 		assert.equal(blocks().length, 1);
 		assert.equal(blocks()[0]?.details?.status, "blocked");
 		await vi.advanceTimersByTimeAsync(60_000);
 		assert.equal(blocks().length, 1);
 
-		parent.flush();
 		const parentFile = parent.getSessionFile();
 		assert.ok(parentFile && existsSync(parentFile));
 		const parentCards = readFileSync(parentFile, "utf8")

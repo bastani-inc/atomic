@@ -6,13 +6,13 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type SessionHeader, SessionManager } from "../../src/core/session-manager.ts";
 
 function header(id: string, cwd: string): SessionHeader {
-	return { type: "session", version: 4, id, timestamp: new Date().toISOString(), cwd };
+	return { type: "session", version: 4, id, createdAt: new Date().toISOString(), cwd };
 }
 
 function writeSessionFile(dir: string, id: string, cwd: string, lines: string[]): void {
 	const h = header(id, cwd);
 	writeFileSync(
-		join(dir, `${h.timestamp.replace(/[:.]/g, "-")}_${id}.jsonl`),
+		join(dir, `${h.createdAt.replace(/[:.]/g, "-")}_${id}.jsonl`),
 		`${JSON.stringify(h)}\n${lines.join("\n")}\n`,
 	);
 }

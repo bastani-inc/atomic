@@ -119,7 +119,7 @@ for (const [label, runOpts] of [
 
 			assert.equal(outcome.status, "completed", outcome.error);
 			assert.ok(outcome.sessionFile, "a sessionDir stage persists its session");
-			assert.equal(SessionManager.open(outcome.sessionFile).getCwd(), cwd);
+			assert.equal((await SessionManager.open(outcome.sessionFile)).getCwd(), cwd);
 		} finally {
 			removeTempDirectory(cwd);
 		}

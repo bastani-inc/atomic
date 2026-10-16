@@ -370,7 +370,10 @@ InteractiveModeBase.prototype.showUserMessageSelector = async function (this: In
 	});
 };
 
-InteractiveModeBase.prototype.handleThinkingCommand = function (this: InteractiveModeBase, searchTerm?: string): void {
+InteractiveModeBase.prototype.handleThinkingCommand = async function (
+	this: InteractiveModeBase,
+	searchTerm?: string,
+): Promise<void> {
 	if (!searchTerm) {
 		this.showThinkingSelector();
 		return;
@@ -382,11 +385,14 @@ InteractiveModeBase.prototype.handleThinkingCommand = function (this: Interactiv
 		this.showError(`Unknown thinking level "${searchTerm}". Available levels: ${levels.join(", ")}.`);
 		return;
 	}
-	this.selectThinkingLevel(level);
+	await this.selectThinkingLevel(level);
 };
 
-InteractiveModeBase.prototype.selectThinkingLevel = function (this: InteractiveModeBase, level: ThinkingLevel): void {
-	this.session.setThinkingLevel(level, { persist: true });
+InteractiveModeBase.prototype.selectThinkingLevel = async function (
+	this: InteractiveModeBase,
+	level: ThinkingLevel,
+): Promise<void> {
+	await this.session.setThinkingLevel(level, { persist: true });
 	this.footer.invalidate();
 	this.updateEditorBorderColor();
 	this.showStatus(`Thinking level: ${level}`);
@@ -394,8 +400,8 @@ InteractiveModeBase.prototype.selectThinkingLevel = function (this: InteractiveM
 
 InteractiveModeBase.prototype.showThinkingSelector = function (this: InteractiveModeBase): void {
 	this.showSelector((done) => {
-		const select = (level: ThinkingLevel) => {
-			this.selectThinkingLevel(level);
+		const select = async (level: ThinkingLevel) => {
+			await this.selectThinkingLevel(level);
 			done();
 		};
 		const model = this.session.model;

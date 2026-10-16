@@ -24,11 +24,11 @@ function protectedMessages(session: AgentSession): ProtectedStreamingCustomMessa
 	return session._protectedStreamingCustomMessages;
 }
 
-function appendDurableDisplayCard(
+async function appendDurableDisplayCard(
 	session: AgentSession,
 	message: CustomMessage,
 	delivery: ProtectedDelivery,
-): { readonly card: CustomMessage & { excludeFromContext: true }; readonly intentEntryId: string } {
+): Promise<{ readonly card: CustomMessage & { excludeFromContext: true }; readonly intentEntryId: string }> {
 	const card = { ...message, excludeFromContext: true } satisfies CustomMessage & { excludeFromContext: true };
 	const admitted = message as StageAdmittedCustomMessage;
 	// A retry after a failed flush must complete the already-appended occurrence
@@ -48,7 +48,7 @@ function appendDurableDisplayCard(
 	// process exit or neither does.
 	const intentEntryId =
 		partial?.id ??
-		session.sessionManager.appendCustomMessageEntry(
+		(await session.sessionManager.appendCustomMessageEntry(
 			card.customType,
 			card.content,
 			card.display,
@@ -56,8 +56,7 @@ function appendDurableDisplayCard(
 			true,
 			{ delivery },
 			admitted.stageAdmissionKey,
-		);
-	if (admitted.stageAdmissionKey !== undefined) session.sessionManager.flush();
+		));
 	session._entryIdsByMessage.set(card, intentEntryId);
 	session._refreshFinalizedContext();
 	return { card, intentEntryId };
@@ -153,10 +152,11 @@ async function prepareProtectedAdmission(
 	// be queued synchronously so agent-core's next native poll observes it.
 	if (session.agent.state.pendingToolCalls.size > 0) await session._agentEventQueue;
 	const owner = resolveWorkflowStageDeliveryTarget(session);
-	const prepared = messages.map((message) => {
-		const { card, intentEntryId } = appendDurableDisplayCard(owner, message, delivery);
-		return { card, reconciliation: createProtectedReconciliation(message, intentEntryId) };
-	});
+	const prepared = [];
+	for (const message of messages) {
+		const { card, intentEntryId } = await appendDurableDisplayCard(owner, message, delivery);
+		prepared.push({ card, reconciliation: createProtectedReconciliation(message, intentEntryId) });
+	}
 	const cards = prepared.map((entry) => entry.card);
 	const reconciliations = prepared.map((entry) => entry.reconciliation);
 	protectedMessages(owner).push(
@@ -254,14 +254,17 @@ export function isProtectedStreamingCustomMessage(session: AgentSession, message
  * already committed at admission, so a transient failure never re-adds a card
  * or re-injects another provider message.
  */
-export function persistProtectedStreamingCustomMessage(session: AgentSession, message: CustomMessage): boolean {
+export async function persistProtectedStreamingCustomMessage(
+	session: AgentSession,
+	message: CustomMessage,
+): Promise<boolean> {
 	const pending = protectedMessages(session);
 	const index = pending.findIndex((entry) => entry.message === message);
 	if (index === -1) return false;
 	const entry = pending[index];
 	const admitted = message as StageAdmittedCustomMessage;
 	if (entry.phase !== "consumed-unpersisted" && entry.phase !== "persistence-failed") return true;
-	session.sessionManager.appendCustomMessageEntry(
+	await session.sessionManager.appendCustomMessageEntry(
 		message.customType,
 		message.content,
 		message.display,
@@ -275,11 +278,11 @@ export function persistProtectedStreamingCustomMessage(session: AgentSession, me
 }
 
 /** Retry only hidden reconciliation persistence; never queue another alias. */
-export function retryConsumedProtectedStreamingCustomMessages(session: AgentSession): void {
+export async function retryConsumedProtectedStreamingCustomMessages(session: AgentSession): Promise<void> {
 	for (const entry of [...protectedMessages(session)]) {
 		if (entry.phase !== "persistence-failed") continue;
 		try {
-			persistProtectedStreamingCustomMessage(session, entry.message);
+			await persistProtectedStreamingCustomMessage(session, entry.message);
 		} catch {
 			// The visible lifecycle card is already durable. Keep this consumed phase
 			// for a later event rather than duplicating either the card or model turn.
@@ -288,12 +291,12 @@ export function retryConsumedProtectedStreamingCustomMessages(session: AgentSess
 }
 
 /** Flush consumed reconciliations before session state can be discarded. */
-export function flushConsumedProtectedStreamingCustomMessages(session: AgentSession): void {
+export async function flushConsumedProtectedStreamingCustomMessages(session: AgentSession): Promise<void> {
 	for (const entry of [...protectedMessages(session)]) {
 		if (entry.phase === "queued") continue;
 		// Do not swallow the final write failure: callers must keep this session
 		// alive rather than discard the only remaining recovery state.
-		persistProtectedStreamingCustomMessage(session, entry.message);
+		await persistProtectedStreamingCustomMessage(session, entry.message);
 	}
 }
 
@@ -332,7 +335,7 @@ function isPausedHeldProtectedReference(session: AgentSession, message: CustomMe
  * hold. Other queued input can still race an active protocol turn and must keep
  * the historical fail-closed disposal behavior.
  */
-export function prepareProtectedStreamingCustomMessagesForDisposal(session: AgentSession): void {
+export async function prepareProtectedStreamingCustomMessagesForDisposal(session: AgentSession): Promise<void> {
 	const pending = protectedMessages(session);
 	const queued = pending.filter((entry) => entry.phase === "queued");
 	if (queued.some((entry) => !isPausedHeldProtectedReference(session, entry.message))) {
@@ -340,7 +343,7 @@ export function prepareProtectedStreamingCustomMessagesForDisposal(session: Agen
 	}
 	for (const entry of queued) {
 		const admitted = entry.message as StageAdmittedCustomMessage;
-		session.sessionManager.appendCustomMessageEntry(
+		await session.sessionManager.appendCustomMessageEntry(
 			entry.message.customType,
 			entry.message.content,
 			entry.message.display,
@@ -353,7 +356,7 @@ export function prepareProtectedStreamingCustomMessagesForDisposal(session: Agen
 		const index = pending.indexOf(entry);
 		if (index >= 0) pending.splice(index, 1);
 	}
-	flushConsumedProtectedStreamingCustomMessages(session);
+	await flushConsumedProtectedStreamingCustomMessages(session);
 }
 
 /** Restore only protected references actually removed from native queues/hold. */

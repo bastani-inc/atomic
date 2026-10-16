@@ -139,7 +139,7 @@ test("isolated child ask using a parent prefix reaches the authorized handoff", 
 			registerTool(value: NonNullable<typeof tool>) {
 				tool = value;
 			},
-			appendEntry() {},
+			async appendEntry() {},
 			events: {
 				emit(event: string, request: ParentAskHandoffRequest) {
 					assert.equal(event, PARENT_ASK_HANDOFF_REQUEST_EVENT);

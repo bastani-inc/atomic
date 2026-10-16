@@ -266,14 +266,14 @@ serialTest(
 				},
 			}),
 		);
-		const persisted = SessionManager.create(cwd, sessionDir);
-		persisted.appendModelChange(removedProvider, removedModel);
-		persisted.appendMessage({
+		const persisted = await SessionManager.create(cwd, sessionDir);
+		await persisted.appendModelChange(removedProvider, removedModel);
+		await persisted.appendMessage({
 			role: "user",
 			content: [{ type: "text", text: "persisted stale model" }],
 			timestamp: Date.now(),
 		});
-		persisted.appendMessage({
+		await persisted.appendMessage({
 			role: "assistant",
 			content: [{ type: "text", text: "persisted stale response" }],
 			api: "anthropic-messages",

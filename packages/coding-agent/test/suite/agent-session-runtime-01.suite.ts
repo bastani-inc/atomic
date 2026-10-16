@@ -105,7 +105,7 @@ describe("AgentSessionRuntime characterization", () => {
 		const runtime = await createAgentSessionRuntime(createRuntime, {
 			cwd: tempDir,
 			agentDir: tempDir,
-			sessionManager: SessionManager.create(tempDir),
+			sessionManager: await SessionManager.create(tempDir),
 		});
 		await runtime.session.bindExtensions({});
 
@@ -168,7 +168,7 @@ describe("AgentSessionRuntime characterization", () => {
 		const storedPath = join(sessionDir, filename);
 		const importPath = join(importDir, filename);
 		const header = (id: string) =>
-			`${JSON.stringify({ type: "session", version: 4, id, timestamp: new Date().toISOString(), cwd: tempDir })}\n`;
+			`${JSON.stringify({ type: "session", version: 4, id, createdAt: new Date().toISOString(), cwd: tempDir })}\n`;
 		const storedSession = header("stored");
 		const importedSession = header("imported");
 		mkdirSync(sessionDir, { recursive: true });
@@ -253,8 +253,12 @@ describe("AgentSessionRuntime characterization", () => {
 		events.length = 0;
 		const otherDir = join(tmpdir(), `pi-runtime-other-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(otherDir, { recursive: true });
-		const otherSession = SessionManager.create(otherDir);
-		otherSession.appendMessage({ role: "user", content: [{ type: "text", text: "other" }], timestamp: Date.now() });
+		const otherSession = await SessionManager.create(otherDir);
+		await otherSession.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "other" }],
+			timestamp: Date.now(),
+		});
 		const otherSessionFile = otherSession.getSessionFile();
 		cancelReason = "resume";
 		const resumeResult = await runtime.switchSession(otherSessionFile!);
@@ -457,15 +461,31 @@ describe("AgentSessionRuntime characterization", () => {
 			})),
 		).toEqual(beforeMessages);
 	});
-	it("explains why an unsaved session cannot be cloned or forked", async () => {
+	it("records canonical parent IDs for new sessions and empty forks", async () => {
 		const { runtime } = await createRuntimeForTest(() => {});
-		const entryId = runtime.session.sessionManager.appendModelChange("anthropic", "claude-sonnet-4-5");
-		expect(runtime.session.sessionFile).toBeTruthy();
-		expect(existsSync(runtime.session.sessionFile!)).toBe(false);
+		const sourcePath = runtime.session.sessionFile!;
+		const sourceId = runtime.session.sessionId;
+		await runtime.newSession({ parentSession: sourcePath });
+		expect(runtime.session.sessionManager.getHeader()?.parentSessionId).toBe(sourceId);
+		const parentId = runtime.session.sessionId;
+		await runtime.session.sessionManager.resetLeaf();
+		const entryId = await runtime.session.sessionManager.appendMessage({
+			role: "user",
+			content: "branch before me",
+			timestamp: Date.now(),
+		});
+		await runtime.fork(entryId);
+		expect(runtime.session.sessionManager.getHeader()?.parentSessionId).toBe(parentId);
+	});
 
-		await expect(runtime.fork(entryId, { position: "at" })).rejects.toThrow(
-			"This session has not been saved yet. Send a message before cloning or forking it.",
-		);
+	it("forks a session after its setup entry commits without a conversation message", async () => {
+		const { runtime } = await createRuntimeForTest(() => {});
+		const entryId = await runtime.session.sessionManager.appendModelChange("anthropic", "claude-sonnet-4-5");
+		expect(runtime.session.sessionFile).toBeTruthy();
+		expect(existsSync(runtime.session.sessionFile!)).toBe(true);
+		const result = await runtime.fork(entryId, { position: "at" });
+		expect(result.cancelled).toBe(false);
+		expect(runtime.session.sessionManager.getEntries().some((entry) => entry.id === entryId)).toBe(true);
 	});
 
 	it("throws when forking with an invalid entry id", async () => {

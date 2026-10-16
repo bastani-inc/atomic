@@ -1,6 +1,6 @@
 import { basename, dirname } from "node:path";
-import { getCurrentSystemMessage } from "@bastani/pi-ai";
-import { resetApiProviders } from "@bastani/pi-ai/compat";
+import { getCurrentSystemMessage, type Provider } from "@bastani/pi-ai";
+import { clampThinkingLevel, resetApiProviders } from "@bastani/pi-ai/compat";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { executeNestedToolCall, getCallableTools } from "./agent-session-nested-tools.js";
 import { recoverProtectedStreamingCustomMessages } from "./agent-session-persistent-custom-messages.ts";
@@ -17,7 +17,7 @@ import {
 } from "./extensions/loader-rollback.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { bindExtensionContextPublication, runSynchronousExtensionContextEffect } from "./extensions/runner-context.ts";
-import type { ExtensionRuntime, RegisteredTool } from "./extensions/types.ts";
+import type { ExtensionRuntime, ProviderConfig, RegisteredTool } from "./extensions/types.ts";
 import { isMandatoryRuntimeTool, isTrustedMandatoryRuntimeTool } from "./mandatory-runtime-tools.ts";
 import { isSelectedNativeMcpTool } from "./mcp-child-policy.ts";
 import { ModelRegistry } from "./model-registry.ts";
@@ -221,6 +221,7 @@ function startExtensions(
 				}
 			});
 			try {
+				if (session._extensionProviderIds.size > 0) await session.refreshCurrentModelFromRegistry();
 				await runner.emit(event);
 				await extendRunnerResources(session, runner, loader, event.reason === "reload" ? "reload" : "startup");
 				if (failures.length) throw new AggregateError(failures, "Extension startup failed");
@@ -346,11 +347,11 @@ export function _applyExtensionBindings(this: AgentSession, runner: ExtensionRun
 		: undefined;
 }
 
-export function refreshCurrentModelFromRegistry(this: AgentSession): void {
-	this._refreshCurrentModelFromRegistry();
+export async function refreshCurrentModelFromRegistry(this: AgentSession): Promise<void> {
+	await this._refreshCurrentModelFromRegistry();
 }
 
-export function _refreshCurrentModelFromRegistry(this: AgentSession): void {
+export async function _refreshCurrentModelFromRegistry(this: AgentSession): Promise<void> {
 	const currentModel = this.model;
 	if (!currentModel) {
 		return;
@@ -363,8 +364,14 @@ export function _refreshCurrentModelFromRegistry(this: AgentSession): void {
 
 	const previousModel = currentModel;
 	const previousThinkingLevel = this.thinkingLevel;
+	const level = clampThinkingLevel(refreshedModel, previousThinkingLevel);
+	if (level !== previousThinkingLevel) await this.sessionManager.appendThinkingLevelChange(level);
 	this.agent.state.model = refreshedModel;
-	this.setThinkingLevel(previousThinkingLevel);
+	this.agent.state.thinkingLevel = level;
+	if (level !== previousThinkingLevel) {
+		this._emit({ type: "thinking_level_changed", level });
+		await this._extensionRunner.emit({ type: "thinking_level_select", level, previousLevel: previousThinkingLevel });
+	}
 	this._refreshBaseSystemPromptFromActiveTools();
 	this._emit({ type: "model_changed", model: refreshedModel, previousModel, source: "restore" });
 }
@@ -462,6 +469,20 @@ export function _bindExtensionCore(
 		return [...extensionCommands, ...templates, ...skills];
 	};
 
+	const restoreProvider = (providerOrName: Provider | string, config?: ProviderConfig): void => {
+		const providerId = typeof providerOrName === "string" ? providerOrName : providerOrName.id;
+		if (publication) {
+			publication.providerIds.add(providerId);
+			if (typeof providerOrName === "string") {
+				publication.providerTransaction.registerProvider(providerOrName, config!);
+			} else publication.providerTransaction.registerNativeProvider(providerOrName);
+			return;
+		}
+		this._extensionProviderIds.add(providerId);
+		this._resourceLoader.getExtensions().runtime.extensionProviderIds.add(providerId);
+		if (typeof providerOrName === "string") this._modelRuntime.registerProvider(providerOrName, config!);
+		else this._modelRuntime.registerNativeProvider(providerOrName);
+	};
 	runner.bindCore(
 		{
 			sendMessage: (message, options) => {
@@ -506,28 +527,15 @@ export function _bindExtensionCore(
 				if (publication) publication.defer(send);
 				else void send();
 			},
-			appendEntry: (customType, data) => {
-				const append = () => {
-					const id = this.sessionManager.appendCustomEntry(customType, data);
-					const entry = this.sessionManager.getEntry(id);
-					if (entry) this._emit({ type: "entry_appended", entry });
-				};
-				if (publication) publication.defer(append);
-				else append();
+			appendEntry: async (customType, data) => {
+				const id = await this.sessionManager.appendCustomEntry(customType, data);
+				const entry = this.sessionManager.getEntry(id);
+				if (entry) this._emit({ type: "entry_appended", entry });
 			},
-			setSessionName: (name) => {
-				if (publication) publication.defer(() => this.setSessionName(name));
-				else this.setSessionName(name);
-			},
-			getSessionName: () => {
-				return this.sessionManager.getSessionName();
-			},
-			setLabel: (entryId, label) => {
-				if (publication) {
-					publication.defer(() => {
-						this.sessionManager.appendLabelChange(entryId, label);
-					});
-				} else this.sessionManager.appendLabelChange(entryId, label);
+			setSessionName: async (name) => await this.setSessionName(name),
+			getSessionName: () => this.sessionManager.getSessionName(),
+			setLabel: async (entryId, label) => {
+				await this.sessionManager.appendLabelChange(entryId, label);
 			},
 			getActiveTools: () => {
 				if (!publication) return this.getActiveToolNames();
@@ -580,9 +588,9 @@ export function _bindExtensionCore(
 				return true;
 			},
 			getThinkingLevel: () => this.thinkingLevel,
-			setThinkingLevel: (level) => {
-				if (publication) publication.defer(() => this.setThinkingLevel(level));
-				else this.setThinkingLevel(level);
+			setThinkingLevel: async (level) => {
+				if (publication) publication.defer(async () => await this.setThinkingLevel(level));
+				else await this.setThinkingLevel(level);
 			},
 		},
 		{
@@ -672,22 +680,12 @@ export function _bindExtensionCore(
 			getSystemPromptOptions: () => this._baseSystemPromptOptions,
 		},
 		{
-			registerProvider: (providerOrName, config) => {
-				const providerId = typeof providerOrName === "string" ? providerOrName : providerOrName.id;
-				if (publication) {
-					publication.providerIds.add(providerId);
-					if (typeof providerOrName === "string") {
-						publication.providerTransaction.registerProvider(providerOrName, config!);
-					} else publication.providerTransaction.registerNativeProvider(providerOrName);
-					return;
-				}
-				this._extensionProviderIds.add(providerId);
-				this._resourceLoader.getExtensions().runtime.extensionProviderIds.add(providerId);
-				if (typeof providerOrName === "string") this._modelRuntime.registerProvider(providerOrName, config!);
-				else this._modelRuntime.registerNativeProvider(providerOrName);
-				this.refreshCurrentModelFromRegistry();
+			restoreProvider,
+			registerProvider: async (providerOrName, config) => {
+				restoreProvider(providerOrName, config);
+				await this.refreshCurrentModelFromRegistry();
 			},
-			unregisterProvider: (name) => {
+			unregisterProvider: async (name) => {
 				if (publication) {
 					publication.providerIds.delete(name);
 					publication.providerTransaction.unregisterProvider(name);
@@ -695,7 +693,7 @@ export function _bindExtensionCore(
 					this._extensionProviderIds.delete(name);
 					this._resourceLoader.getExtensions().runtime.extensionProviderIds.delete(name);
 					this._modelRuntime.unregisterProvider(name);
-					this.refreshCurrentModelFromRegistry();
+					await this.refreshCurrentModelFromRegistry();
 				}
 			},
 		},
@@ -981,7 +979,7 @@ async function reloadOwnedGeneration(
 		resetApiProviders();
 		this._extensionProviderIds = new Set(publication.providerIds);
 		extensionsResult.runtime.extensionProviderIds = new Set(publication.providerIds);
-		this.refreshCurrentModelFromRegistry();
+		await this.refreshCurrentModelFromRegistry();
 		if (this._extensionRunnerRef) this._extensionRunnerRef.current = candidateRunner;
 		this._bindExtensionCore(candidateRunner);
 		this._applyExtensionBindings(candidateRunner);
@@ -1043,7 +1041,7 @@ export async function completeStartupResources(this: AgentSession, resourceLoade
 				getCurrentSystemMessage(this.sessionManager.buildSessionContext().messages) === undefined,
 			preserveRunner: true,
 		});
-		this.refreshCurrentModelFromRegistry();
+		await this.refreshCurrentModelFromRegistry();
 		await startNewcomers();
 		assertSessionOpen(this);
 		await this.extendResourcesFromExtensions("startup");

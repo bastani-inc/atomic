@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it, vi } from "vitest";
+import type { AgentSession } from "../src/core/agent-session.ts";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.ts";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
 import type { RpcClient } from "../src/modes/rpc/rpc-client.ts";
@@ -380,7 +381,7 @@ describe("RPC persist boundary", () => {
 		const model = runtime.session.model;
 		if (!model) throw new Error("missing runtime model");
 
-		runtime.session.setThinkingLevel("high", { persist: true });
+		await runtime.session.setThinkingLevel("high", { persist: true });
 
 		await vi.waitFor(() => {
 			assert.equal(engine.settingsManager.getModelThinkingLevel(model.provider, model.id), "high");
@@ -397,7 +398,7 @@ describe("RPC persist boundary", () => {
 		const model = runtime.session.model;
 		if (!model) throw new Error("missing runtime model");
 
-		runtime.session.setThinkingLevel("high", { persist: true });
+		await runtime.session.setThinkingLevel("high", { persist: true });
 
 		await vi.waitFor(() => {
 			assert.equal(engine.session.thinkingLevel, "off");
@@ -407,26 +408,37 @@ describe("RPC persist boundary", () => {
 		});
 	});
 
-	it("applies isolated thinking mutations immediately and advances two cycles before ACK", async () => {
+	it("publishes isolated thinking mutations after ACK and cycles committed levels", async () => {
 		const host = await twoModelHarness();
 		let ackCount = 0;
+		let releaseAck!: () => void;
 		const client = {
 			onEvent: () => () => {},
 			onGenerationEnded: () => () => {},
-			setThinkingLevelAck: () => {
+			setThinkingLevelAck: (level: AgentSession["thinkingLevel"]) => {
 				ackCount += 1;
-				return new Promise<{ level: "high" }>(() => {});
+				return new Promise<{ level: AgentSession["thinkingLevel"] }>((resolve) => {
+					releaseAck = () => resolve({ level });
+				});
 			},
 		} as unknown as RpcClient;
 		const localRuntime = new AgentSessionRuntime(host.session, servicesFor(host) as never, unusedCreateRuntime);
 		const runtime = new IsolatedInteractiveRuntime(localRuntime, unusedCreateRuntime, client);
 
-		runtime.session.setThinkingLevel("high");
-		assert.equal(runtime.session.thinkingLevel, "high");
+		const previous = runtime.session.thinkingLevel;
+		const setting = runtime.session.setThinkingLevel("high");
+		assert.equal(runtime.session.thinkingLevel, previous);
 		assert.equal(ackCount, 1);
+		releaseAck();
+		await setting;
+		assert.equal(runtime.session.thinkingLevel, "high");
 
-		const first = runtime.session.cycleThinkingLevel();
-		const second = runtime.session.cycleThinkingLevel();
+		const firstCycle = runtime.session.cycleThinkingLevel();
+		releaseAck();
+		const first = await firstCycle;
+		const secondCycle = runtime.session.cycleThinkingLevel();
+		releaseAck();
+		const second = await secondCycle;
 		assert.ok(first);
 		assert.ok(second);
 		assert.notEqual(first, second);
@@ -434,7 +446,7 @@ describe("RPC persist boundary", () => {
 		assert.equal(ackCount, 3);
 	});
 
-	it("synchronously clamps unsupported thinking to the nearest supported level, not off", async () => {
+	it("clamps unsupported thinking to the nearest supported level after ACK, not off", async () => {
 		const host = await twoModelHarness({
 			models: [{ id: "faux-1", name: "One", reasoning: true }],
 		});
@@ -444,7 +456,7 @@ describe("RPC persist boundary", () => {
 		const client = {
 			onEvent: () => () => {},
 			onGenerationEnded: () => () => {},
-			setThinkingLevelAck: () => new Promise<{ level: "low" }>(() => {}),
+			setThinkingLevelAck: async () => ({ level: "low" as const }),
 		} as unknown as RpcClient;
 		const localRuntime = new AgentSessionRuntime(host.session, servicesFor(host) as never, unusedCreateRuntime);
 		const runtime = new IsolatedInteractiveRuntime(localRuntime, unusedCreateRuntime, client);
@@ -453,7 +465,7 @@ describe("RPC persist boundary", () => {
 		assert.equal(available.includes("minimal"), false);
 		assert.equal(available[0], "off");
 
-		runtime.session.setThinkingLevel("minimal");
+		await runtime.session.setThinkingLevel("minimal");
 		assert.equal(runtime.session.thinkingLevel, "low");
 	});
 
@@ -479,7 +491,7 @@ describe("RPC persist boundary", () => {
 		const localRuntime = new AgentSessionRuntime(host.session, servicesFor(host) as never, unusedCreateRuntime);
 		const runtime = new IsolatedInteractiveRuntime(localRuntime, unusedCreateRuntime, client);
 
-		runtime.session.setThinkingLevel("high", { persist: true });
+		const setting = runtime.session.setThinkingLevel("high", { persist: true });
 		emit?.({
 			type: "model_changed",
 			model: next,
@@ -487,6 +499,7 @@ describe("RPC persist boundary", () => {
 			source: "set",
 		} as RpcEvent);
 		releaseAck({ level: "high", provider: current.provider, modelId: current.id });
+		await setting;
 
 		await vi.waitFor(() => {
 			assert.equal(host.settingsManager.getModelThinkingLevel(current.provider, current.id), "high");
@@ -516,9 +529,10 @@ describe("RPC persist boundary", () => {
 		const localRuntime = new AgentSessionRuntime(host.session, servicesFor(host) as never, unusedCreateRuntime);
 		const runtime = new IsolatedInteractiveRuntime(localRuntime, unusedCreateRuntime, client);
 
-		runtime.session.setThinkingLevel("high", { persist: true });
+		const setting = runtime.session.setThinkingLevel("high", { persist: true });
 		emit?.({ type: "thinking_level_changed", level: "off" });
 		releaseAck({ level: "high", provider: current.provider, modelId: current.id });
+		await setting;
 
 		await vi.waitFor(() => {
 			assert.equal(host.settingsManager.getModelThinkingLevel(current.provider, current.id), "high");

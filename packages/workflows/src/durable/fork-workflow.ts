@@ -66,7 +66,7 @@ export async function forkDurableWorkflow(
 			copy.sessionFile ?? (typeof taskOutput?.sessionFile === "string" ? taskOutput.sessionFile : undefined);
 		let session = sessionFile === undefined ? undefined : sessions.get(sessionFile);
 		if (session === undefined && sessionFile !== undefined) {
-			session = await SessionManager.forkFromAsync(sessionFile, cwd, undefined, {
+			session = await SessionManager.forkFrom(sessionFile, cwd, undefined, {
 				internal: true,
 				workflow: { runId: workflowId, stageId: stageTopology?.stageId ?? copy.checkpointId, stageName: copy.name },
 			});

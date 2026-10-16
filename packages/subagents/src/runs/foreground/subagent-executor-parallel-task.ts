@@ -40,7 +40,7 @@ interface ForegroundParallelRunInput {
 	signal: AbortSignal;
 	runId: string;
 	sessionDirForIndex: (idx?: number) => string | undefined;
-	sessionFileForIndex: (idx?: number) => string | undefined;
+	sessionFileForIndex: (idx?: number) => Promise<string | undefined>;
 	shareEnabled: boolean;
 	artifactConfig: ArtifactConfig;
 	artifactsDir: string;
@@ -192,7 +192,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			runId: input.runId,
 			index,
 			sessionDir: input.sessionDirForIndex(index),
-			sessionFile: input.sessionFileForIndex(index),
+			sessionFile: await input.sessionFileForIndex(index),
 			share: input.shareEnabled,
 			artifactsDir: input.artifactConfig.enabled ? input.artifactsDir : undefined,
 			artifactConfig: input.artifactConfig,

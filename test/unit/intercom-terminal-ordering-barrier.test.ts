@@ -50,7 +50,7 @@ function eventHarness() {
 			deliveries.push(...messages.map((message) => message.customType));
 			sentOptions.push(options);
 		},
-		appendEntry() {},
+		async appendEntry() {},
 	};
 	return { pi, deliveries, sentOptions };
 }
@@ -501,7 +501,7 @@ describe("per-child terminal ordering barrier", () => {
 				throw new Error("injected terminal dispatch failure");
 			},
 			sendMessage() {},
-			appendEntry() {},
+			async appendEntry() {},
 		};
 		const unregisterBarrier = registerTerminalOrderingBarrier(pi as never, {
 			queue,

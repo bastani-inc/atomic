@@ -48,7 +48,7 @@ function session(sessionId: string, promptImpl: (text: string) => Promise<string
 		async cycleModel() {
 			return undefined;
 		},
-		cycleThinkingLevel() {
+		async cycleThinkingLevel() {
 			return undefined;
 		},
 		async navigateTree() {

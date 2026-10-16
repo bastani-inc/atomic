@@ -566,8 +566,8 @@ export default {
       extensionFactories: [
         {
           name: "cloudflare-gateway-binding",
-          factory: (pi) => {
-            pi.registerProvider("cloudflare-ai-gateway", {
+          factory: async (pi) => {
+            await pi.registerProvider("cloudflare-ai-gateway", {
               // Placeholder credential: it marks the provider configured and becomes
               // `cf-aig-authorization: Bearer cloudflare-gateway-binding`. On the plain
               // binding fetch path, Cloudflare's gateway recognizes and strips it.

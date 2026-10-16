@@ -222,14 +222,14 @@ export async function closeWorkflowStageGeneration(this: AgentSession): Promise<
 	await this._agentEventQueue;
 }
 
-export function _appendCustomMessage<T>(this: AgentSession, message: CustomMessage<T>): void {
+export async function _appendCustomMessage<T>(this: AgentSession, message: CustomMessage<T>): Promise<void> {
 	const owner = resolveWorkflowStageDeliveryTarget(this);
 	if (owner !== this) {
-		owner._appendCustomMessage(message);
+		await owner._appendCustomMessage(message);
 		return;
 	}
 	const stageAdmissionMessage = message as StageAdmittedCustomMessage;
-	const entryId = this.sessionManager.appendCustomMessageEntry(
+	const entryId = await this.sessionManager.appendCustomMessageEntry(
 		message.customType,
 		message.content,
 		message.display,
@@ -244,12 +244,26 @@ export function _appendCustomMessage<T>(this: AgentSession, message: CustomMessa
 	this._emit({ type: "message_end", message });
 }
 
+const pendingCustomMessageDrains = new WeakMap<AgentSession, Promise<void>>();
+
 /** Append context-only custom messages once the current turn's tool results are in history. */
-export function _flushPendingCustomMessages(this: AgentSession): void {
-	if (this._pendingCustomMessages.length === 0) return;
-	const pending = this._pendingCustomMessages;
-	this._pendingCustomMessages = [];
-	for (const message of pending) this._appendCustomMessage(message);
+export function _flushPendingCustomMessages(this: AgentSession): Promise<void> {
+	const pending = pendingCustomMessageDrains.get(this);
+	if (pending) return pending;
+	if (this._pendingCustomMessages.length === 0) return Promise.resolve();
+
+	const drain = (async () => {
+		while (this._pendingCustomMessages.length > 0) {
+			await this._appendCustomMessage(this._pendingCustomMessages[0]);
+			this._pendingCustomMessages.shift();
+		}
+	})();
+	pendingCustomMessageDrains.set(this, drain);
+	void drain.then(
+		() => pendingCustomMessageDrains.delete(this),
+		() => pendingCustomMessageDrains.delete(this),
+	);
+	return drain;
 }
 export function _enqueueInterruptCustomMessage<T>(
 	this: AgentSession,

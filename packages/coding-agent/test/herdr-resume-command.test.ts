@@ -59,7 +59,7 @@ async function startedCalls(fake: FakeHerdr) {
 
 test("first Herdr report carries the exact session's resume argv after -- (#3492)", async () => {
 	const fake = await fakeHerdr();
-	const session = SessionManager.create(fake.dir, fake.dir);
+	const session = await SessionManager.create(fake.dir, fake.dir);
 	const runner = await startReporter(fake, session);
 	try {
 		await runner.emit({ type: "session_start" });
@@ -91,7 +91,7 @@ test("first Herdr report carries the exact session's resume argv after -- (#3492
 test("resume argv omits --session-dir for the default session directory (#3492)", async () => {
 	const fake = await fakeHerdr();
 	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", fake.dir);
-	const session = SessionManager.create(fake.dir);
+	const session = await SessionManager.create(fake.dir);
 	assert.equal(session.usesDefaultSessionDir(), true);
 	const runner = await startReporter(fake, session);
 	try {
@@ -108,7 +108,7 @@ test("resume argv omits --session-dir for the default session directory (#3492)"
 
 test("a session ID that --session would read as a file path resumes by its session file in its session directory (#3492)", async () => {
 	const fake = await fakeHerdr();
-	const session = SessionManager.create(fake.dir, fake.dir, { id: "notes.jsonl" });
+	const session = await SessionManager.create(fake.dir, fake.dir, { id: "notes.jsonl" });
 	assert.equal(session.getSessionId(), "notes.jsonl");
 	const runner = await startReporter(fake, session);
 	try {
@@ -132,7 +132,7 @@ test("a session ID that --session would read as a file path resumes by its sessi
 
 test("a session switch reports the new session's resume argv (#3492)", async () => {
 	const fake = await fakeHerdr();
-	const sessions = [SessionManager.create(fake.dir, fake.dir), SessionManager.create(fake.dir, fake.dir)];
+	const sessions = [await SessionManager.create(fake.dir, fake.dir), await SessionManager.create(fake.dir, fake.dir)];
 	const runners = [await startReporter(fake, sessions[0]), await startReporter(fake, sessions[1])];
 	try {
 		await runners[0].emit({ type: "session_start" });
@@ -172,7 +172,7 @@ test("non-persisted sessions still report state and identity without a resume ar
 
 test("a session directory Herdr cannot accept in a resume argv is reported without one (#3492)", async () => {
 	const fake = await fakeHerdr();
-	const session = SessionManager.create(fake.dir, join(fake.dir, "o'brien sessions"));
+	const session = await SessionManager.create(fake.dir, join(fake.dir, "o'brien sessions"));
 	const runner = await startReporter(fake, session);
 	try {
 		await runner.emit({ type: "session_start" });
@@ -236,7 +236,7 @@ test("a resume argv at Herdr's limits is still sent (#3492)", async () => {
 test("a Herdr that rejects the trailing argv gets the same report without it and keeps omitting it (#3492)", async () => {
 	const fake = await fakeHerdr(REJECT_TRAILING_ARGV);
 	const diagnostics: HerdrDiagnostic[] = [];
-	const session = SessionManager.create(fake.dir, fake.dir);
+	const session = await SessionManager.create(fake.dir, fake.dir);
 	const runner = await startReporter(fake, session, diagnostics);
 	try {
 		await runner.emit({ type: "session_start" });
@@ -267,7 +267,7 @@ test("a Herdr that rejects the trailing argv gets the same report without it and
 
 test("an older Herdr's rejection is remembered for the next session in the pane (#3492)", async () => {
 	const fake = await fakeHerdr(REJECT_TRAILING_ARGV);
-	const sessions = [SessionManager.create(fake.dir, fake.dir), SessionManager.create(fake.dir, fake.dir)];
+	const sessions = [await SessionManager.create(fake.dir, fake.dir), await SessionManager.create(fake.dir, fake.dir)];
 	const runners = [await startReporter(fake, sessions[0]), await startReporter(fake, sessions[1])];
 	try {
 		await runners[0].emit({ type: "session_start" });
@@ -297,7 +297,7 @@ for (const [failure, body, failedCalls, timeoutMs] of [
 ] as const) {
 	test(`a ${failure} first report retries the resume argv with the identity on the next report (#3492)`, async () => {
 		const fake = await fakeHerdr(body);
-		const session = SessionManager.create(fake.dir, fake.dir);
+		const session = await SessionManager.create(fake.dir, fake.dir);
 		const runner = await startReporter(fake, session, [], timeoutMs);
 		try {
 			await runner.emit({ type: "session_start" });
@@ -323,7 +323,7 @@ for (const [failure, body, failedCalls, timeoutMs] of [
 
 test("host-signal shutdown retires the reporter without releasing the pane's resume registration (#3492)", async () => {
 	const fake = await fakeHerdr();
-	const session = SessionManager.create(fake.dir, fake.dir);
+	const session = await SessionManager.create(fake.dir, fake.dir);
 	const runner = await startReporter(fake, session);
 	try {
 		await runner.emit({ type: "session_start" });
@@ -346,7 +346,7 @@ test("host-signal shutdown retires the reporter without releasing the pane's res
 
 test("an explicit quit still releases the pane's registration and resume command (#3492)", async () => {
 	const fake = await fakeHerdr();
-	const session = SessionManager.create(fake.dir, fake.dir);
+	const session = await SessionManager.create(fake.dir, fake.dir);
 	const runner = await startReporter(fake, session);
 	try {
 		await runner.emit({ type: "session_start" });

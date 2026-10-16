@@ -60,17 +60,17 @@ describe("AgentSession auth-missing compaction failure semantics", () => {
 		if (tempDir && existsSync(tempDir)) rmSync(tempDir, { recursive: true });
 	});
 
-	function seedCompactableBranch(): void {
+	async function seedCompactableBranch(): Promise<void> {
 		for (let turn = 0; turn < 3; turn++) {
-			sessionManager.appendMessage(text("user", `Task checkpoint ${turn}.\n${"objective\n".repeat(4)}`));
-			sessionManager.appendMessage(text("assistant", `old deletable ${turn}\n${"x x x x\n".repeat(8)}`));
+			await sessionManager.appendMessage(text("user", `Task checkpoint ${turn}.\n${"objective\n".repeat(4)}`));
+			await sessionManager.appendMessage(text("assistant", `old deletable ${turn}\n${"x x x x\n".repeat(8)}`));
 		}
-		sessionManager.appendMessage(text("user", "Continue with the final protected turn."));
-		sessionManager.appendMessage(text("assistant", "recent continuity"));
+		await sessionManager.appendMessage(text("user", "Continue with the final protected turn."));
+		await sessionManager.appendMessage(text("assistant", "recent continuity"));
 	}
 
-	function seedUnpreparableBranch(): void {
-		sessionManager.appendMessage(text("user", "Only one context-eligible entry is not enough to compact."));
+	async function seedUnpreparableBranch(): Promise<void> {
+		await sessionManager.appendMessage(text("user", "Only one context-eligible entry is not enough to compact."));
 	}
 
 	it("completes load-bearing overflow recovery even when the region is barely compactable", async () => {
@@ -78,7 +78,7 @@ describe("AgentSession auth-missing compaction failure semantics", () => {
 		// left a mid-turn preflight with nothing to do and killed the active turn,
 		// so a sub-minimum region now goes straight to the credential-free fresh
 		// rung instead of raising "nothing more was safely deletable".
-		seedUnpreparableBranch();
+		await seedUnpreparableBranch();
 		await (session as unknown as AutoCompactionSurface)._runAutoCompaction("overflow", false, "load_bearing");
 
 		const end = events.find((event) => event.type === "compaction_end" && event.reason === "overflow");
@@ -93,7 +93,7 @@ describe("AgentSession auth-missing compaction failure semantics", () => {
 	});
 
 	it("keeps threshold auto-compaction with no preparable transcript as a silent no-op", async () => {
-		seedUnpreparableBranch();
+		await seedUnpreparableBranch();
 		await (session as unknown as AutoCompactionSurface)._runAutoCompaction("threshold", false, "recoverable");
 
 		const end = events.find((event) => event.type === "compaction_end" && event.reason === "threshold");
@@ -106,7 +106,7 @@ describe("AgentSession auth-missing compaction failure semantics", () => {
 		// Missing credentials are ladder control flow, not an early throw: overflow
 		// recovery is load-bearing, so it falls through to the credential-free
 		// fresh rung instead of killing the turn.
-		seedCompactableBranch();
+		await seedCompactableBranch();
 		await (session as unknown as AutoCompactionSurface)._runAutoCompaction("overflow", true, "load_bearing");
 
 		const end = events.find((event) => event.type === "compaction_end" && event.reason === "overflow");
@@ -123,7 +123,7 @@ describe("AgentSession auth-missing compaction failure semantics", () => {
 	});
 
 	it("fails threshold compaction without persistence when auth is missing", async () => {
-		seedCompactableBranch();
+		await seedCompactableBranch();
 		await (session as unknown as AutoCompactionSurface)._runAutoCompaction("threshold", true, "recoverable");
 
 		const end = events.find((event) => event.type === "compaction_end" && event.reason === "threshold");

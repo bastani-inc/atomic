@@ -16,7 +16,7 @@ const loader = new DefaultResourceLoader({ cwd, agentDir: cwd, settingsManager, 
   extensionFactories: [pi => {
     pi.on("session_start", () => { api = pi; });
     pi.on("session_shutdown", async () => {
-      if (mode === "close") { enter(); await gate; pi.appendEntry("cleanup", { complete: true }); }
+      if (mode === "close") { enter(); await gate; await pi.appendEntry("cleanup", { complete: true }); }
       shutdown = true;
     });
   }] });
@@ -42,13 +42,13 @@ try {
       enter(); await gate; if (mode === "rollback") throw new Error("reject candidate");
     } });
     void operation.catch(() => {});
-    const refuses = () => {
+    const refuses = async () => {
       assert.throws(() => retired.exec(process.execPath, ["-e", 'throw Error("must not launch")']), /closed|stale|no longer active/i);
-      assert.throws(() => retired.setSessionName("unadmitted"), /closed|stale|no longer active/i);
+      await assert.rejects(() => retired.setSessionName("unadmitted"), /closed|stale|no longer active/i);
       assert.throws(() => retired.registerCommand("unadmitted", { description: "forbidden", handler: async () => {} }), /closed|stale|no longer active/i);
       assert.throws(() => retired.events.on("unadmitted", () => {}), /closed|stale|no longer active/i);
     };
-    refuses(); await entered; refuses();
+    await refuses(); await entered; await refuses();
     if (mode === "cancel") { close = session.dispose(); void close.catch(() => {}); }
     release();
     if (mode === "rollback") await assert.rejects(operation, /reject candidate/);

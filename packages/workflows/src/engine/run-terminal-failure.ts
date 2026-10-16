@@ -9,7 +9,7 @@ import type { RunSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
 import type { WorkflowPersistencePort } from "../shared/types.js";
 
 /** Record, persist, and return one ordinary terminal workflow failure. */
-export function finalizeTerminalFailure(input: {
+export async function finalizeTerminalFailure(input: {
 	readonly runId: string;
 	readonly runSnapshot: RunSnapshot;
 	readonly store: Store;
@@ -18,7 +18,7 @@ export function finalizeTerminalFailure(input: {
 	/** Source snapshot of a failed tool this run never admitted, such as a rejected resume frontier. */
 	readonly failedToolNode?: ToolNodeSnapshot;
 	readonly onRunEnd: RunOpts["onRunEnd"];
-}): RunResult {
+}): Promise<RunResult> {
 	const { runId, runSnapshot, store, persistence, metadata, onRunEnd } = input;
 	const failedToolNode =
 		metadata.failedToolNodeId === undefined
@@ -26,7 +26,7 @@ export function finalizeTerminalFailure(input: {
 			: (runSnapshot.toolNodes.find((node) => node.id === metadata.failedToolNodeId) ??
 				(input.failedToolNode?.id === metadata.failedToolNodeId ? input.failedToolNode : undefined));
 	const recorded = store.recordRunEnd(runId, "failed", undefined, metadata.errorMessage, metadata);
-	appendRunEndWhenRecorded(persistence, recorded, {
+	await appendRunEndWhenRecorded(persistence, recorded, {
 		runId,
 		status: "failed",
 		error: metadata.errorMessage,

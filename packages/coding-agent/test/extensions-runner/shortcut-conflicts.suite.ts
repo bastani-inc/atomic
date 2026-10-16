@@ -55,10 +55,10 @@ describe("ExtensionRunner", () => {
 	const _extensionActions: ExtensionActions = {
 		sendMessage: () => {},
 		sendUserMessage: () => {},
-		appendEntry: () => {},
-		setSessionName: () => {},
+		appendEntry: async () => {},
+		setSessionName: async () => {},
 		getSessionName: () => undefined,
-		setLabel: () => {},
+		setLabel: async () => {},
 		getActiveTools: () => [],
 		getAllTools: () => [],
 		setActiveTools: () => {},
@@ -66,7 +66,7 @@ describe("ExtensionRunner", () => {
 		getCommands: () => [],
 		setModel: async () => false,
 		getThinkingLevel: () => "off",
-		setThinkingLevel: () => {},
+		setThinkingLevel: async () => {},
 	};
 
 	const _extensionContextActions: ExtensionContextActions = {

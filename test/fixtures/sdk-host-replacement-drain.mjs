@@ -32,11 +32,10 @@ async function factory({ cwd, agentDir, sessionManager, sessionStartEvent }) {
  return { ...result, services: { cwd, agentDir, settingsManager, modelRuntime, resourceLoader, diagnostics: [] }, diagnostics: [] };
 }
 if (phase === "prepare") factory.prepareResume = async (options) => { await pause(); return () => factory(options); };
-const manager = SessionManager.create(root, join(root, "sessions"));
+const manager = await SessionManager.create(root, join(root, "sessions"));
 const runtime = await createAgentSessionRuntime(factory, { cwd: root, agentDir, sessionManager: manager });
 const old = runtime.session;
-const entry = manager.appendMessage({ role: "user", content: "fork me", timestamp: 0 });
-await manager.flush();
+const entry = await manager.appendMessage({ role: "user", content: "fork me", timestamp: 0 });
 const invoke = () => operation === "fork" ? runtime.fork(entry) : operation === "resume" ? runtime.switchSession(manager.getSessionFile()) : operation === "import" ? runtime.importFromJsonl(manager.getSessionFile()) : runtime.newSession();
 const result = invoke().catch(error => error);
 try {

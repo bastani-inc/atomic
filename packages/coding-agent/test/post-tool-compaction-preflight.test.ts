@@ -1340,7 +1340,7 @@ describe("post-tool compaction preflight", () => {
 			.getEntries()
 			.find((entry) => entry.type === "message" && entry.message.role === "user")?.id;
 		assert.ok(firstUserId);
-		harness.sessionManager.appendContextEdit(firstUserId, null);
+		await harness.sessionManager.appendContextEdit(firstUserId, null);
 
 		await harness.session.prompt("second run");
 

@@ -239,11 +239,11 @@ async function createTestAgentSession(_options?: CreateAgentSessionOptions): Pro
 		sessionFile: undefined,
 		sessionId: `test-session-${crypto.randomUUID()}`,
 		async setModel(_model): Promise<void> {},
-		setThinkingLevel(_level): void {},
+		async setThinkingLevel(_level): Promise<void> {},
 		async cycleModel() {
 			return undefined;
 		},
-		cycleThinkingLevel() {
+		async cycleThinkingLevel() {
 			return undefined;
 		},
 		agent: Object.create(null) as StageSessionRuntime["agent"],

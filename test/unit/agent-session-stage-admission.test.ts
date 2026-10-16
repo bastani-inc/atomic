@@ -51,9 +51,9 @@ function harness(withRouter = true) {
 }
 
 describe("AgentSession workflow-stage admission", () => {
-	test("stage admission identity survives the session-manager round trip", () => {
+	test("stage admission identity survives the session-manager round trip", async () => {
 		const manager = SessionManager.inMemory();
-		manager.appendCustomMessageEntry(
+		await manager.appendCustomMessageEntry(
 			"subagent-notify",
 			"result",
 			true,

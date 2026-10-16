@@ -422,15 +422,15 @@ test("isolated session synchronization replaces each engine-selected session exa
 	mkdirSync(cwd);
 	mkdirSync(agentDir);
 	mkdirSync(sessionDir);
-	const createPersistedSession = (text: string): string => {
-		const manager = SessionManager.create(cwd, sessionDir);
-		manager.appendMessage({ role: "user", content: [{ type: "text", text }], timestamp: Date.now() });
+	const createPersistedSession = async (text: string): Promise<string> => {
+		const manager = await SessionManager.create(cwd, sessionDir);
+		await manager.appendMessage({ role: "user", content: [{ type: "text", text }], timestamp: Date.now() });
 		const path = manager.getSessionFile();
 		assert.ok(path);
 		return path;
 	};
-	const firstSession = createPersistedSession("first");
-	const secondSession = createPersistedSession("second");
+	const firstSession = await createPersistedSession("first");
+	const secondSession = await createPersistedSession("second");
 	const authStorage = AuthStorage.inMemory();
 	let runtimeCreations = 0;
 	const startReasons: string[] = [];

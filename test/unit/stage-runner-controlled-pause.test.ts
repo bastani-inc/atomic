@@ -1,4 +1,4 @@
-import { describe, test } from "vitest";
+import { describe, test, vi } from "vitest";
 import type { AgentSessionAdapter, InternalStageContext } from "./stage-runner-helpers.js";
 import { assert, createStageContext, flushMicrotasks, makeMockSession, makeOpts } from "./stage-runner-helpers.js";
 
@@ -13,9 +13,7 @@ describe("createStageContext — controlled pause", () => {
 		const ctx = createStageContext(makeOpts({ adapters: { agentSession } })) as InternalStageContext;
 
 		const promptPromise = ctx.prompt("ask the model");
-		// Let prompt() reach session.prompt() (await ensureSession() + await s.prompt()).
-		await flushMicrotasks();
-		assert.equal(state.promptCalls, 1);
+		await vi.waitFor(() => assert.equal(state.promptCalls, 1));
 		assert.equal(ctx.__isPaused(), false);
 
 		await ctx.__requestPause();
@@ -64,8 +62,7 @@ describe("createStageContext — controlled pause", () => {
 		const ctx = createStageContext(makeOpts({ adapters: { agentSession } })) as InternalStageContext;
 
 		const promptPromise = ctx.prompt("ask the model");
-		await flushMicrotasks();
-		assert.equal(state.promptCalls, 1);
+		await vi.waitFor(() => assert.equal(state.promptCalls, 1));
 
 		await ctx.__requestPause();
 		assert.equal(state.abortCalls, 1);
@@ -84,8 +81,7 @@ describe("createStageContext — controlled pause", () => {
 		assert.equal(settled, false);
 
 		await ctx.__resume("continue from pause");
-		await flushMicrotasks();
-		assert.equal(state.promptCalls, 2);
+		await vi.waitFor(() => assert.equal(state.promptCalls, 2));
 		resolvePrompt?.();
 		await promptPromise;
 	});
@@ -102,7 +98,7 @@ describe("createStageContext — controlled pause", () => {
 		const promptPromise = ctx.prompt("first");
 		// Pre-empt any unhandled-rejection bubbling on the prompt promise.
 		void promptPromise.catch(() => {});
-		await flushMicrotasks();
+		await vi.waitFor(() => assert.equal(state.promptCalls, 1));
 
 		await ctx.__requestPause();
 		// The original prompt was aborted and the SDK call count is 1.
@@ -110,8 +106,7 @@ describe("createStageContext — controlled pause", () => {
 
 		// Resume with a new message: the SDK is invoked again with the new text.
 		await ctx.__resume("retry with this");
-		await flushMicrotasks();
-		assert.equal(state.promptCalls, 2);
+		await vi.waitFor(() => assert.equal(state.promptCalls, 2));
 
 		// Settle the second SDK call — pop the latest mock resolver.
 		state.resolvers[state.resolvers.length - 1]?.();
@@ -158,7 +153,7 @@ describe("createStageContext — controlled pause", () => {
 		};
 		const ctx = createStageContext(makeOpts({ adapters: { agentSession } })) as InternalStageContext;
 		const promptPromise = ctx.prompt("initial prompt");
-		await flushMicrotasks();
+		await vi.waitFor(() => assert.equal(state.promptCalls, 1));
 
 		let secondPauseSettled = false;
 		const firstPause = ctx.__requestPause();
@@ -197,7 +192,7 @@ describe("createStageContext — controlled pause", () => {
 		) as InternalStageContext;
 
 		const promptPromise = ctx.prompt("ask");
-		await flushMicrotasks();
+		await vi.waitFor(() => assert.equal(state.promptCalls, 1));
 		await ctx.__requestPause();
 		assert.equal(state.abortCalls, 1);
 
@@ -215,7 +210,7 @@ describe("createStageContext — controlled pause", () => {
 		const ctx = createStageContext(makeOpts({ adapters: { agentSession } })) as InternalStageContext;
 
 		const promptPromise = ctx.prompt("ask");
-		await flushMicrotasks();
+		await vi.waitFor(() => assert.equal(state.promptCalls, 1));
 		await ctx.__requestPause();
 		assert.equal(ctx.__isPaused(), true);
 
@@ -235,8 +230,7 @@ describe("createStageContext — controlled pause", () => {
 
 		const resumeResult = await ctx.__resume("continue");
 		assert.deepEqual(resumeResult, { releasedQueuedMessages: false, runnerOwnedDeliveryPending: false });
-		await flushMicrotasks();
-		assert.equal(state.promptCalls, 2);
+		await vi.waitFor(() => assert.equal(state.promptCalls, 2));
 		state.resolvers.at(-1)?.();
 		assert.equal(await promptPromise, "ok");
 	});
@@ -251,7 +245,7 @@ describe("createStageContext — controlled pause", () => {
 		const ctx = createStageContext(makeOpts({ adapters: { agentSession } })) as InternalStageContext;
 
 		const promptPromise = ctx.prompt("ask");
-		await flushMicrotasks();
+		await vi.waitFor(() => assert.equal(state.promptCalls, 1));
 		await ctx.__requestPause();
 		let rejection: Error | undefined;
 		void promptPromise.catch((error: Error) => {
@@ -261,7 +255,7 @@ describe("createStageContext — controlled pause", () => {
 		const disposePromise = ctx.__dispose();
 		const resumePromise = ctx.__resume("race resume");
 		await Promise.all([disposePromise, resumePromise]);
-		await flushMicrotasks();
+		await vi.waitFor(() => assert.equal(state.promptCalls, 2));
 		assert.equal(ctx.__isPaused(), false);
 		assert.equal(rejection, undefined);
 		assert.equal(state.promptCalls, 2);

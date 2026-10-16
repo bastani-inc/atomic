@@ -149,7 +149,7 @@ export function makeMockSession(overrides: Partial<StageSessionRuntime> = {}): {
 		async setModel() {},
 		setThinkingLevel() {},
 		cycleModel: (async () => undefined) as StageSessionRuntime["cycleModel"],
-		cycleThinkingLevel: (() => undefined) as StageSessionRuntime["cycleThinkingLevel"],
+		cycleThinkingLevel: (async () => undefined) as StageSessionRuntime["cycleThinkingLevel"],
 		agent: undefined as unknown as AgentSession["agent"],
 		model: undefined as AgentSession["model"],
 		thinkingLevel: "medium" as AgentSession["thinkingLevel"],

@@ -91,7 +91,7 @@ describe("subagent pre-spawn model candidate filtering", () => {
 				signal: new AbortController().signal,
 				runId: "parallel-known-providers",
 				sessionDirForIndex: () => undefined,
-				sessionFileForIndex: () => undefined,
+				sessionFileForIndex: async () => undefined,
 				shareEnabled: false,
 				artifactConfig: {
 					enabled: false,
@@ -157,7 +157,7 @@ describe("subagent pre-spawn model candidate filtering", () => {
 				signal: new AbortController().signal,
 				runId: "parallel-metadata",
 				sessionDirForIndex: () => undefined,
-				sessionFileForIndex: () => undefined,
+				sessionFileForIndex: async () => undefined,
 				shareEnabled: false,
 				artifactConfig: {
 					enabled: false,

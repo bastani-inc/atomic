@@ -381,9 +381,9 @@ test("workflow stages accept legacy Azure model strings and saved session refere
 			{ createAgentSession: async (options) => (await createAgentSession(options)) as StageSessionCreateResult },
 		);
 		const saved = SessionManager.inMemory(root);
-		saved.appendModelChange(legacy, "gpt-5.4");
-		saved.appendThinkingLevelChange("high");
-		saved.appendMessage({ role: "user", content: "previous turn", timestamp: Date.now() });
+		await saved.appendModelChange(legacy, "gpt-5.4");
+		await saved.appendThinkingLevelChange("high");
+		await saved.appendMessage({ role: "user", content: "previous turn", timestamp: Date.now() });
 		for (const options of [
 			{ model: `${legacy}/gpt-5.4`, sessionManager: SessionManager.inMemory(root) },
 			{ sessionManager: saved },

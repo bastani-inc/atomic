@@ -299,20 +299,20 @@ export interface ExtensionAPI {
 	): void;
 
 	/** Append a custom entry to the session for state persistence (not sent to LLM). */
-	appendEntry<T = unknown>(customType: string, data?: T): void;
+	appendEntry<T>(customType: string, data?: T): Promise<void>;
 
 	// =========================================================================
 	// Session Metadata
 	// =========================================================================
 
 	/** Set the session display name (shown in session selector). */
-	setSessionName(name: string): void;
+	setSessionName(name: string): Promise<void>;
 
 	/** Get the current session name, if set. */
 	getSessionName(): string | undefined;
 
 	/** Set or clear a label on an entry. Labels are user-defined markers for bookmarking/navigation. */
-	setLabel(entryId: string, label: string | undefined): void;
+	setLabel(entryId: string, label: string | undefined): Promise<void>;
 
 	/** Execute a shell command. */
 	exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult>;
@@ -346,7 +346,7 @@ export interface ExtensionAPI {
 	 * Set the thinking level (clamped to model capabilities) for the current session without changing the configured default
 	 * for new sessions.
 	 */
-	setThinkingLevel(level: ThinkingLevel): void;
+	setThinkingLevel(level: ThinkingLevel): Promise<void>;
 
 	// =========================================================================
 	// Provider Registration
@@ -367,7 +367,7 @@ export interface ExtensionAPI {
 	 *
 	 * @example
 	 * // Register a new provider with custom models
-	 * pi.registerProvider("my-proxy", {
+	 * await pi.registerProvider("my-proxy", {
 	 *   baseUrl: "https://proxy.example.com",
 	 *   apiKey: "$PROXY_API_KEY",
 	 *   api: "anthropic-messages",
@@ -386,13 +386,13 @@ export interface ExtensionAPI {
 	 *
 	 * @example
 	 * // Override baseUrl for an existing provider
-	 * pi.registerProvider("anthropic", {
+	 * await pi.registerProvider("anthropic", {
 	 *   baseUrl: "https://proxy.example.com"
 	 * });
 	 *
 	 * @example
 	 * // Register provider with OAuth support
-	 * pi.registerProvider("corporate-ai", {
+	 * await pi.registerProvider("corporate-ai", {
 	 *   baseUrl: "https://ai.corp.com",
 	 *   api: "openai-responses",
 	 *   models: [...],
@@ -404,9 +404,9 @@ export interface ExtensionAPI {
 	 *   }
 	 * });
 	 */
-	registerProvider(name: string, config: ProviderConfig): void;
-	registerProvider(provider: Provider): void;
-	registerProviderAlias(config: ProviderAliasConfig): void;
+	registerProvider(name: string, config: ProviderConfig): Promise<void>;
+	registerProvider(provider: Provider): Promise<void>;
+	registerProviderAlias(config: ProviderAliasConfig): Promise<void>;
 
 	/**
 	 * Unregister a previously registered provider.
@@ -419,9 +419,9 @@ export interface ExtensionAPI {
 	 * the initial load phase.
 	 *
 	 * @example
-	 * pi.unregisterProvider("my-proxy");
+	 * await pi.unregisterProvider("my-proxy");
 	 */
-	unregisterProvider(name: string): void;
+	unregisterProvider(name: string): Promise<void>;
 
 	/** Shared event bus for extension communication. */
 	events: EventBus;

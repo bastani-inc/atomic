@@ -38,7 +38,7 @@ for (const suspension of ["beforeConnect", "spawn"] as const) {
 				registerCommand() {},
 				registerShortcut() {},
 				registerMessageRenderer() {},
-				appendEntry() {},
+				async appendEntry() {},
 				getSessionName: () => undefined,
 				events: createEventBus(),
 			};

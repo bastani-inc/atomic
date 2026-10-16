@@ -1,16 +1,11 @@
+import { writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { getCurrentSystemMessage } from "@bastani/pi-ai";
 import type { ImageContent, Message, TextContent, Usage } from "@bastani/pi-ai/compat";
-import { existsSync, readdirSync, statSync } from "fs";
-import { join, resolve } from "path";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
-import {
-	createBackupSnapshot,
-	createBranchedSessionState,
-	forkSessionFromFile,
-	forkSessionFromFileAsync,
-} from "./session-manager-archive.ts";
+import { createBranchedSessionState } from "./session-manager-archive.ts";
 import { classifiedWorkflowMetadata, validSessionWorkflowMetadata } from "./session-manager-classification.ts";
 import {
 	createBranchSummaryEntry,
@@ -29,6 +24,7 @@ import {
 	getEntriesWithoutHeader,
 	getLatestSessionName,
 } from "./session-manager-entries.ts";
+import { SessionEntryError } from "./session-manager-errors.js";
 import {
 	buildContextEntries,
 	buildSessionIndex,
@@ -36,20 +32,8 @@ import {
 	buildSessionTree,
 	getBranchPath,
 } from "./session-manager-history.ts";
-import { listAllSessions, listProjectSessions } from "./session-manager-list.ts";
-import { getDefaultSessionDir, getDefaultSessionDirPath } from "./session-manager-paths.ts";
-import {
-	ensureDirectory,
-	findMostRecentSession,
-	getSessionHeaderCwd,
-	hasConversationMessage,
-	isInternalHeader,
-	loadEntriesFromFile,
-	persistAppendedEntry,
-	readSessionHeader,
-	sessionCwdMatches,
-	writeSessionEntries,
-} from "./session-manager-storage.ts";
+import { listProjectSessions } from "./session-manager-list.ts";
+import { getDefaultSessionDirPath } from "./session-manager-paths.ts";
 import type {
 	BranchSummaryEntry,
 	ContextEditEntry,
@@ -72,129 +56,155 @@ import {
 	generateId,
 	validateSessionFileEntries,
 } from "./session-manager-validation.ts";
-import { SessionFormatVersionError } from "./storage/session/errors.js";
+import { SessionFormatVersionError, type SessionJsonValue, StorageUnavailableError } from "./storage/session/errors.js";
+import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
+import { MemorySessionStore } from "./storage/session/memory-session-store.js";
+import type { SessionRecordHeader, SessionSnapshot, SessionStore } from "./storage/session/types.js";
 
-/** Manages conversation sessions as append-only trees stored in JSONL files.  Each session entry has an id and parentId forming a tree structure. The "leaf" pointer tracks the current position. Appending creates a child of the current leaf. Branching moves the leaf to an earlier entry, allowing new branches without modifying history.  Use buildSessionContext() to get the resolved message list for the LLM, which applies context-deletion filtering and follows the path from root to current leaf. */
+/** An in-memory session tree whose mutations await the backing store. */
 export class SessionManager {
-	private sessionId: string = "";
+	private sessionId = "";
 	private sessionFile: string | undefined;
 	private sessionDir: string;
 	private cwd: string;
-	private persist: boolean;
-	private flushed: boolean = false;
+	private store: SessionStore;
+	private lastSeq = 0;
+	private mutation: Promise<void> = Promise.resolve();
 	private fileEntries: FileEntry[] = [];
 	private byId: Map<string, SessionEntry> = new Map();
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
 
-	private constructor(
-		cwd: string,
-		sessionDir: string,
-		sessionFile: string | undefined,
-		persist: boolean,
-		newSessionOptions?: NewSessionOptions,
-		preloadedFileEntries?: FileEntry[],
-	) {
+	private constructor(store: SessionStore, cwd: string, sessionDir: string, options?: NewSessionOptions) {
+		this.store = store;
 		this.cwd = resolvePath(cwd);
 		this.sessionDir = normalizePath(sessionDir);
-		this.persist = persist;
-		if (persist && this.sessionDir && !preloadedFileEntries?.length) {
-			ensureDirectory(this.sessionDir);
-		}
-
-		if (sessionFile) {
-			this._setSessionFile(sessionFile, preloadedFileEntries);
-		} else if (preloadedFileEntries?.length) {
-			this._loadEntries(preloadedFileEntries, newSessionOptions);
-		} else {
-			this.newSession(newSessionOptions);
-		}
+		this.start(options);
 	}
 
-	private _loadEntries(entries: FileEntry[], options?: NewSessionOptions): void {
-		const header = entries[0]?.type === "session" ? entries[0] : undefined;
-		if (header) {
-			this.fileEntries = entries;
-			this.sessionId = header.id;
-		} else {
-			this.newSession(options);
-			this.fileEntries = this.fileEntries.concat(entries);
-		}
+	private runMutation<T>(operation: () => Promise<T>): Promise<T> {
+		const result = this.mutation.then(operation);
+		this.mutation = result.then(
+			() => {},
+			() => {},
+		);
+		return result;
+	}
+
+	private recordHeader(header = this.getHeader()!): SessionRecordHeader {
+		const { type: _type, ...record } = header;
+		return record;
+	}
+
+	private restore(snapshot: SessionSnapshot, location?: string): void {
+		const header = snapshot.header;
+		this.fileEntries = [{ type: "session", ...header }, ...snapshot.entries];
+		this.sessionId = header.id;
+		this.lastSeq = snapshot.lastSeq;
+		this.sessionFile =
+			location ?? (this.store instanceof JsonlSessionStore ? this.store.locationFor(header) : undefined);
 		this._buildIndex();
 	}
 
-	/** Switch to a different session file (used for resume and branching) */
-	setSessionFile(sessionFile: string): void {
-		this._setSessionFile(sessionFile);
-	}
-
-	private _setSessionFile(sessionFile: string, preloadedFileEntries?: FileEntry[]): void {
-		const explicitPath = resolvePath(sessionFile);
-		if (preloadedFileEntries?.length || existsSync(explicitPath)) {
-			const entries = preloadedFileEntries ?? loadEntriesFromFile(explicitPath);
-
-			// Initialize only genuinely empty files, never an invalid non-empty session.
-			if (entries.length === 0) {
-				if (statSync(explicitPath).size > 0) {
-					throw new SessionFormatVersionError(explicitPath, undefined);
-				}
-				this.newSession();
-				this.sessionFile = explicitPath;
-				this._rewriteFile();
-				this.flushed = true;
-				return;
-			}
-
-			const header = validateSessionFileEntries(entries, explicitPath);
-			this.sessionFile = explicitPath;
-			this.fileEntries = entries;
-			this.sessionId = header.id;
-
-			this._buildIndex();
-			this.flushed = true;
-		} else {
-			this.newSession();
-			this.sessionFile = explicitPath; // preserve explicit path from --session flag
-		}
-	}
-
-	newSession(options?: NewSessionOptions): string | undefined {
-		if (options?.id !== undefined) {
-			assertValidSessionId(options.id);
-		}
+	private start(options?: NewSessionOptions): string | undefined {
+		if (options?.id !== undefined) assertValidSessionId(options.id);
 		this.sessionId = options?.id ?? createSessionId();
-		const timestamp = new Date().toISOString();
-		const header = createSessionHeader(
-			this.sessionId,
-			this.cwd,
-			timestamp,
-			options?.parentSession,
-			options?.internal,
-			options?.workflow,
-		);
-		this.fileEntries = [header];
-		this.byId.clear();
-		this.labelsById.clear();
-		this.labelTimestampsById.clear();
-		this.leafId = null;
-		this.flushed = false;
-
-		if (this.persist) {
-			this.sessionFile = createSessionFilePath(this.getSessionDir(), timestamp, this.sessionId);
-		}
+		this.fileEntries = [
+			createSessionHeader(
+				this.sessionId,
+				this.cwd,
+				new Date().toISOString(),
+				options?.parentSession,
+				options?.internal,
+				options?.workflow,
+			),
+		];
+		this.lastSeq = 0;
+		this._buildIndex();
+		this.sessionFile =
+			this.store instanceof JsonlSessionStore
+				? this.sessionDir
+					? createSessionFilePath(this.sessionDir, this.getHeader()!.createdAt, this.sessionId)
+					: this.store.locationFor(this.recordHeader())
+				: undefined;
 		return this.sessionFile;
 	}
 
-	/** Mark the session as workflow-owned, repairing malformed markers while preserving valid ownership. */
-	markSessionInternal(workflow?: SessionWorkflowMetadata): void {
-		const header = this.fileEntries.find((entry) => entry.type === "session") as SessionHeader | undefined;
-		if (!header || classifiedWorkflowMetadata(header)) return;
-		const validWorkflow = validSessionWorkflowMetadata(workflow);
-		if (!validWorkflow) return;
-		header.internal = true;
-		header.workflow = validWorkflow;
-		if (this.flushed) this._rewriteFile();
+	setSessionFile(sessionFile: string): Promise<void> {
+		return this.runMutation(async () => {
+			const opened = await SessionManager.open(sessionFile, this.sessionDir, this.cwd);
+			this.store = opened.store;
+			this.restore(
+				{ header: opened.recordHeader(), entries: opened.getEntries(), lastSeq: opened.lastSeq },
+				opened.sessionFile,
+			);
+		});
+	}
+
+	private async initialize(): Promise<void> {
+		this.lastSeq = (
+			await (this.store instanceof JsonlSessionStore
+				? this.store.create(this.recordHeader(), this.getEntries(), this.sessionFile)
+				: this.store.create(this.recordHeader(), this.getEntries()))
+		).lastSeq;
+	}
+
+	private async storeForNewSession(): Promise<SessionStore> {
+		if (
+			this.store instanceof JsonlSessionStore &&
+			this.sessionDir &&
+			this.store.descriptor.location !== resolvePath(this.sessionDir)
+		) {
+			return JsonlSessionStore.open(this.sessionDir, { exactDirectory: true, scanExisting: false });
+		}
+		return this.store;
+	}
+
+	newSession(options?: NewSessionOptions): Promise<string | undefined> {
+		return this.runMutation(async () => {
+			if (options?.id !== undefined) assertValidSessionId(options.id);
+			const header = createSessionHeader(
+				options?.id ?? createSessionId(),
+				this.cwd,
+				new Date().toISOString(),
+				options?.parentSession,
+				options?.internal,
+				options?.workflow,
+			);
+			const record = this.recordHeader(header);
+			const store = await this.storeForNewSession();
+			const location =
+				store instanceof JsonlSessionStore
+					? this.sessionDir
+						? createSessionFilePath(this.sessionDir, record.createdAt, record.id)
+						: store.locationFor(record)
+					: undefined;
+			const result = await (store instanceof JsonlSessionStore
+				? store.create(record, [], location)
+				: store.create(record, []));
+			this.store = store;
+			this.byId.clear();
+			this.labelsById.clear();
+			this.labelTimestampsById.clear();
+			this.restore({ header: record, entries: [], lastSeq: result.lastSeq }, location);
+			return this.sessionFile;
+		});
+	}
+
+	markSessionInternal(workflow?: SessionWorkflowMetadata): Promise<void> {
+		return this.runMutation(async () => {
+			const previous = this.getHeader()!;
+			if (classifiedWorkflowMetadata(previous)) return;
+			const validWorkflow = validSessionWorkflowMetadata(workflow);
+			if (!validWorkflow) return;
+			const header: SessionHeader = { ...previous, internal: true, workflow: validWorkflow };
+			const result = await this.store.replace(this.sessionId, this.recordHeader(header), this.getEntries(), {
+				expectSeq: this.lastSeq,
+			});
+			this.lastSeq = result.lastSeq;
+			this.fileEntries[0] = header;
+		});
 	}
 
 	private _buildIndex(): void {
@@ -206,25 +216,8 @@ export class SessionManager {
 		this.leafId = index.leafId;
 	}
 
-	private _rewriteFile(): void {
-		if (!this.persist || !this.sessionFile) return;
-		writeSessionEntries(this.sessionFile, this.fileEntries);
-	}
-
 	isPersisted(): boolean {
-		return this.persist;
-	}
-
-	/** Persist the current session tree before an in-process attempt is force-finalized. */
-	flush(): void {
-		if (!this.persist || !this.sessionFile) return;
-		this._rewriteFile();
-		this.flushed = true;
-	}
-
-	/** Flush only a session whose file has already been started, so closing an unsaved session writes nothing. */
-	flushIfStarted(): void {
-		if (this.flushed || hasConversationMessage(this.fileEntries)) this.flush();
+		return !(this.store instanceof MemorySessionStore);
 	}
 
 	getCwd(): string {
@@ -247,63 +240,58 @@ export class SessionManager {
 		return this.sessionFile;
 	}
 
-	_persist(entry: SessionEntry): void {
-		if (!this.persist || !this.sessionFile) return;
-		this.flushed = persistAppendedEntry(this.sessionFile, this.fileEntries, entry, this.flushed);
-	}
-
-	private _appendEntry(entry: SessionEntry): void {
-		const previousLeafId = this.leafId;
+	private async _appendEntry(entry: SessionEntry): Promise<void> {
+		const result = await this.store.append(this.sessionId, [entry], { expectSeq: this.lastSeq });
+		this.lastSeq = result.lastSeq;
 		this.fileEntries.push(entry);
 		this.byId.set(entry.id, entry);
 		this.leafId = entry.id;
-		try {
-			this._persist(entry);
-		} catch (error) {
-			// Unpublish on write failure, so retries cannot point at an unwritten parent.
-			this.fileEntries.pop();
-			this.byId.delete(entry.id);
-			this.leafId = previousLeafId;
-			throw error;
-		}
 	}
 
 	/** Append a message as child of current leaf, then advance leaf. Returns entry id. */
-	appendMessage(message: Message | CustomMessage | BashExecutionMessage): string {
-		const entry = createMessageEntry(message, this.byId, this.leafId);
-		this._appendEntry(entry);
-		return entry.id;
+	appendMessage(message: Message | CustomMessage | BashExecutionMessage): Promise<string> {
+		return this.runMutation(async () => {
+			const entry = createMessageEntry(message, this.byId, this.leafId);
+			await this._appendEntry(entry);
+			return entry.id;
+		});
 	}
 
 	/** Append a thinking level change as child of current leaf, then advance leaf. Returns entry id. */
-	appendThinkingLevelChange(thinkingLevel: string): string {
-		const entry = createThinkingLevelChangeEntry(thinkingLevel, this.byId, this.leafId);
-		this._appendEntry(entry);
-		return entry.id;
+	appendThinkingLevelChange(thinkingLevel: string): Promise<string> {
+		return this.runMutation(async () => {
+			const entry = createThinkingLevelChangeEntry(thinkingLevel, this.byId, this.leafId);
+			await this._appendEntry(entry);
+			return entry.id;
+		});
 	}
 
 	/** Record auxiliary model usage without adding it to the LLM context. */
-	appendUsage(kind: string, provider: string, model: string, usage: Usage, note?: string): UsageEntry {
-		const entry: UsageEntry = {
-			type: "usage",
-			id: generateId(this.byId),
-			parentId: this.leafId,
-			timestamp: new Date().toISOString(),
-			kind,
-			provider,
-			model,
-			usage,
-			...(note === undefined ? {} : { note }),
-		};
-		this._appendEntry(entry);
-		return entry;
+	appendUsage(kind: string, provider: string, model: string, usage: Usage, note?: string): Promise<UsageEntry> {
+		return this.runMutation(async () => {
+			const entry: UsageEntry = {
+				type: "usage",
+				id: generateId(this.byId),
+				parentId: this.leafId,
+				timestamp: new Date().toISOString(),
+				kind,
+				provider,
+				model,
+				usage,
+				...(note === undefined ? {} : { note }),
+			};
+			await this._appendEntry(entry);
+			return entry;
+		});
 	}
 
 	/** Append a model change as child of current leaf, then advance leaf. Returns entry id. */
-	appendModelChange(provider: string, modelId: string): string {
-		const entry = createModelChangeEntry(provider, modelId, this.byId, this.leafId);
-		this._appendEntry(entry);
-		return entry.id;
+	appendModelChange(provider: string, modelId: string): Promise<string> {
+		return this.runMutation(async () => {
+			const entry = createModelChangeEntry(provider, modelId, this.byId, this.leafId);
+			await this._appendEntry(entry);
+			return entry.id;
+		});
 	}
 	appendCompaction(
 		compactedText: string,
@@ -311,84 +299,105 @@ export class SessionManager {
 		tokensBefore: number,
 		details: VerbatimCompactionDetails,
 		usage?: Usage,
-	): string {
-		if (firstKeptEntryId !== null && !this.byId.has(firstKeptEntryId))
-			throw new Error(`Entry ${firstKeptEntryId} not found`);
-		const entry = createCompactionEntry(
-			compactedText,
-			firstKeptEntryId,
-			tokensBefore,
-			details,
-			usage,
-			this.byId,
-			this.leafId,
-		);
-		const systemMessage = getCurrentSystemMessage(this.buildSessionProjection().messages);
-		if (systemMessage) entry.systemMessage = { ...systemMessage, timestamp: new Date(entry.timestamp).getTime() };
-		this._appendEntry(entry);
-		return entry.id;
+	): Promise<string> {
+		return this.runMutation(async () => {
+			if (firstKeptEntryId !== null && !this.byId.has(firstKeptEntryId))
+				throw new SessionEntryError(firstKeptEntryId, "missing");
+			const entry = createCompactionEntry(
+				compactedText,
+				firstKeptEntryId,
+				tokensBefore,
+				details,
+				usage,
+				this.byId,
+				this.leafId,
+			);
+			const systemMessage = getCurrentSystemMessage(this.buildSessionProjection().messages);
+			if (systemMessage) entry.systemMessage = { ...systemMessage, timestamp: new Date(entry.timestamp).getTime() };
+			await this._appendEntry(entry);
+			return entry.id;
+		});
 	}
 
-	/** Write a recoverable snapshot of the current session entries without mutating the active JSONL. */
-	writeBackupSnapshot(label = "compact"): string | undefined {
-		if (!this.persist) return undefined;
-		return createBackupSnapshot(this.sessionFile, this.fileEntries, label);
+	/** Save a JSONL backup; database-backed sessions have no file snapshot. */
+	writeBackupSnapshot(label = "compact"): Promise<string | undefined> {
+		return this.runMutation(async () => {
+			if (!(this.store instanceof JsonlSessionStore) || !this.sessionFile) return undefined;
+			const path = `${this.sessionFile}.${new Date().toISOString().replace(/[:.]/g, "-")}.${label.replace(/[^a-z0-9_-]/gi, "-") || "backup"}.bak`;
+			try {
+				await writeFile(
+					path,
+					`${[JSON.stringify({ type: "session", ...this.recordHeader() }), ...this.getEntries().map((entry) => JSON.stringify(entry))].join("\n")}\n`,
+				);
+			} catch (cause) {
+				throw new StorageUnavailableError(this.store.descriptor, cause as Error);
+			}
+			return path;
+		});
 	}
 
 	/** Append a branch-local edit to an earlier model-visible entry. */
-	appendContextEdit(targetId: string, replacement: ContextEditEntry["replacement"]): string {
-		if (
-			replacement !== null &&
-			(typeof replacement !== "object" ||
-				!("content" in replacement) ||
-				(typeof replacement.content !== "string" && !Array.isArray(replacement.content)))
-		) {
-			throw new Error("Context edit replacement must be null or contain string/array content");
-		}
-		const target = this.byId.get(targetId);
-		if (!target) throw new Error(`Entry ${targetId} not found`);
-		if (!this.getBranch().some((entry) => entry.id === targetId)) {
-			throw new Error(`Entry ${targetId} is not on the active branch`);
-		}
-		const editable =
-			target.type === "custom_message" ||
-			(target.type === "message" &&
-				(target.message.role === "user" ||
-					target.message.role === "assistant" ||
-					target.message.role === "toolResult"));
-		if (!editable) throw new Error(`Entry ${targetId} does not contribute editable model content`);
-		const targetRole = target.type === "message" ? target.message.role : "custom";
-		const normalizedReplacement =
-			replacement !== null &&
-			(targetRole === "assistant" || targetRole === "toolResult") &&
-			typeof replacement.content === "string"
-				? { content: [{ type: "text" as const, text: replacement.content }] }
-				: replacement;
-		const entry = createContextEditEntry(targetId, normalizedReplacement, this.byId, this.leafId);
-		this._appendEntry(entry);
-		return entry.id;
+	appendContextEdit(targetId: string, replacement: ContextEditEntry["replacement"]): Promise<string> {
+		return this.runMutation(async () => {
+			if (
+				replacement !== null &&
+				(typeof replacement !== "object" ||
+					!("content" in replacement) ||
+					(typeof replacement.content !== "string" && !Array.isArray(replacement.content)))
+			) {
+				throw new SessionEntryError(targetId, "invalid-replacement");
+			}
+			const target = this.byId.get(targetId);
+			if (!target) throw new SessionEntryError(targetId, "missing");
+			if (!this.getBranch().some((entry) => entry.id === targetId)) {
+				throw new SessionEntryError(targetId, "inactive");
+			}
+			const editable =
+				target.type === "custom_message" ||
+				(target.type === "message" &&
+					(target.message.role === "user" ||
+						target.message.role === "assistant" ||
+						target.message.role === "toolResult"));
+			if (!editable) throw new SessionEntryError(targetId, "not-editable");
+			const targetRole = target.type === "message" ? target.message.role : "custom";
+			const normalizedReplacement =
+				replacement !== null &&
+				(targetRole === "assistant" || targetRole === "toolResult") &&
+				typeof replacement.content === "string"
+					? { content: [{ type: "text" as const, text: replacement.content }] }
+					: replacement;
+			const entry = createContextEditEntry(targetId, normalizedReplacement, this.byId, this.leafId);
+			await this._appendEntry(entry);
+			return entry.id;
+		});
 	}
 
 	/** Append a custom entry (for extensions) as child of current leaf, then advance leaf. Returns entry id. */
-	appendCustomEntry(customType: string, data?: unknown): string {
-		const entry = createCustomEntry(customType, data, this.byId, this.leafId);
-		this._appendEntry(entry);
-		return entry.id;
+	appendCustomEntry<T = SessionJsonValue>(customType: string, data?: T): Promise<string> {
+		return this.runMutation(async () => {
+			const entry = createCustomEntry(customType, data, this.byId, this.leafId);
+			await this._appendEntry(entry);
+			return entry.id;
+		});
 	}
 
 	/** Append a session info entry (e.g., display name). Returns entry id. */
-	appendSessionInfo(name: string): string {
-		const entry = createSessionInfoEntry(name, this.byId, this.leafId);
-		this._appendEntry(entry);
-		return entry.id;
+	appendSessionInfo(name: string): Promise<string> {
+		return this.runMutation(async () => {
+			const entry = createSessionInfoEntry(name, this.byId, this.leafId);
+			await this._appendEntry(entry);
+			return entry.id;
+		});
 	}
 
 	/** Append a generated resume summary anchored to the message it describes. Returns entry id. */
-	appendSessionSummary(summary: string, summarizedThroughId: string, usage?: Usage): string {
-		if (!this.byId.has(summarizedThroughId)) throw new Error(`Entry ${summarizedThroughId} not found`);
-		const entry = createSessionSummaryEntry(summary, summarizedThroughId, usage, this.byId, this.leafId);
-		this._appendEntry(entry);
-		return entry.id;
+	appendSessionSummary(summary: string, summarizedThroughId: string, usage?: Usage): Promise<string> {
+		return this.runMutation(async () => {
+			if (!this.byId.has(summarizedThroughId)) throw new SessionEntryError(summarizedThroughId, "missing");
+			const entry = createSessionSummaryEntry(summary, summarizedThroughId, usage, this.byId, this.leafId);
+			await this._appendEntry(entry);
+			return entry.id;
+		});
 	}
 
 	/** Get the current session name from the latest session_info entry, if any. */
@@ -406,7 +415,7 @@ export class SessionManager {
 	}
 
 	/** Append a custom message entry (for extensions) that participates in LLM context unless excluded. */
-	appendCustomMessageEntry<T = unknown>(
+	appendCustomMessageEntry<T = SessionJsonValue>(
 		customType: string,
 		content: string | (TextContent | ImageContent)[],
 		display: boolean,
@@ -414,20 +423,22 @@ export class SessionManager {
 		excludeFromContext?: boolean,
 		protectedReconciliation?: { delivery: "steer" | "followUp" },
 		stageAdmissionKey?: string,
-	): string {
-		const entry = createCustomMessageEntry(
-			customType,
-			content,
-			display,
-			details,
-			excludeFromContext,
-			protectedReconciliation,
-			this.byId,
-			this.leafId,
-			stageAdmissionKey,
-		);
-		this._appendEntry(entry);
-		return entry.id;
+	): Promise<string> {
+		return this.runMutation(async () => {
+			const entry = createCustomMessageEntry(
+				customType,
+				content,
+				display,
+				details,
+				excludeFromContext,
+				protectedReconciliation,
+				this.byId,
+				this.leafId,
+				stageAdmissionKey,
+			);
+			await this._appendEntry(entry);
+			return entry.id;
+		});
 	}
 
 	getLeafId(): string | null {
@@ -459,20 +470,22 @@ export class SessionManager {
 	}
 
 	/** Set or clear a label on an entry. */
-	appendLabelChange(targetId: string, label: string | undefined): string {
-		if (!this.byId.has(targetId)) {
-			throw new Error(`Entry ${targetId} not found`);
-		}
-		const entry = createLabelEntry(targetId, label, this.byId, this.leafId);
-		this._appendEntry(entry);
-		if (label) {
-			this.labelsById.set(targetId, label);
-			this.labelTimestampsById.set(targetId, entry.timestamp);
-		} else {
-			this.labelsById.delete(targetId);
-			this.labelTimestampsById.delete(targetId);
-		}
-		return entry.id;
+	appendLabelChange(targetId: string, label: string | undefined): Promise<string> {
+		return this.runMutation(async () => {
+			if (!this.byId.has(targetId)) {
+				throw new SessionEntryError(targetId, "missing");
+			}
+			const entry = createLabelEntry(targetId, label, this.byId, this.leafId);
+			await this._appendEntry(entry);
+			if (label) {
+				this.labelsById.set(targetId, label);
+				this.labelTimestampsById.set(targetId, entry.timestamp);
+			} else {
+				this.labelsById.delete(targetId);
+				this.labelTimestampsById.delete(targetId);
+			}
+			return entry.id;
+		});
 	}
 
 	/** Walk from entry to root, returning all entries in path order. */
@@ -518,141 +531,214 @@ export class SessionManager {
 	}
 
 	/** Start a new branch from an earlier entry. */
-	branch(branchFromId: string): void {
-		if (!this.byId.has(branchFromId)) {
-			throw new Error(`Entry ${branchFromId} not found`);
-		}
-		this.leafId = branchFromId;
+	branch(branchFromId: string): Promise<void> {
+		return this.runMutation(async () => {
+			if (!this.byId.has(branchFromId)) {
+				throw new SessionEntryError(branchFromId, "missing");
+			}
+			this.leafId = branchFromId;
+		});
 	}
 
 	/** Reset the leaf pointer to null (before any entries). */
-	resetLeaf(): void {
-		this.leafId = null;
+	resetLeaf(): Promise<void> {
+		return this.runMutation(async () => {
+			this.leafId = null;
+		});
 	}
 
 	/** Start a new branch with a summary of the abandoned path. */
-	branchWithSummary(
+	branchWithSummary<T = SessionJsonValue>(
 		branchFromId: string | null,
 		summary: string,
-		details?: unknown,
+		details?: T,
 		fromHook?: boolean,
 		usage?: import("@bastani/pi-ai/compat").Usage,
-		fromId: string = this.leafId ?? "root",
-	): string {
-		if (branchFromId !== null && !this.byId.has(branchFromId)) {
-			throw new Error(`Entry ${branchFromId} not found`);
-		}
-		this.leafId = branchFromId;
-		const entry: BranchSummaryEntry = createBranchSummaryEntry(
-			branchFromId,
-			fromId,
-			summary,
-			details,
-			usage,
-			fromHook,
-			this.byId,
-		);
-		this._appendEntry(entry);
-		return entry.id;
-	}
-
-	/** Create a new session file containing only the path from root to the specified leaf. */
-	createBranchedSession(leafId: string): string | undefined {
-		const result = createBranchedSessionState({
-			leafId,
-			persist: this.persist,
-			sessionDir: this.getSessionDir(),
-			cwd: this.cwd,
-			previousSessionFile: this.sessionFile,
-			workflow: classifiedWorkflowMetadata(this.getHeader()),
-			path: this.getBranch(leafId),
-			labelsById: this.labelsById,
-			labelTimestampsById: this.labelTimestampsById,
+		fromId?: string,
+	): Promise<string> {
+		return this.runMutation(async () => {
+			if (branchFromId !== null && !this.byId.has(branchFromId)) {
+				throw new SessionEntryError(branchFromId, "missing");
+			}
+			const entry: BranchSummaryEntry = createBranchSummaryEntry(
+				branchFromId,
+				fromId ?? this.leafId ?? "root",
+				summary,
+				details,
+				usage,
+				fromHook,
+				this.byId,
+			);
+			await this._appendEntry(entry);
+			return entry.id;
 		});
-		this.fileEntries = result.fileEntries;
-		this.sessionId = result.sessionId;
-		if (result.sessionFile) this.sessionFile = result.sessionFile;
-		this._buildIndex();
-
-		if (this.persist) {
-			if (result.shouldRewriteFile) this._rewriteFile();
-			this.flushed = result.flushed ?? false;
-			return result.sessionFile;
-		}
-		return undefined;
 	}
 
-	/** Create a new session. */
-	static create(cwd: string, sessionDir?: string, options?: NewSessionOptions): SessionManager {
-		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
-		return new SessionManager(cwd, dir, undefined, true, options);
+	createBranchedSession(leafId: string): Promise<string | undefined> {
+		return this.runMutation(async () => {
+			const result = createBranchedSessionState({
+				leafId,
+				cwd: this.cwd,
+				parentSessionId: this.sessionId,
+				workflow: classifiedWorkflowMetadata(this.getHeader()),
+				path: this.getBranch(leafId),
+				labelsById: this.labelsById,
+				labelTimestampsById: this.labelTimestampsById,
+			});
+			const header = result.fileEntries[0] as SessionHeader;
+			const entries = getEntriesWithoutHeader(result.fileEntries);
+			const record = this.recordHeader(header);
+			const store = await this.storeForNewSession();
+			const location =
+				store instanceof JsonlSessionStore
+					? this.sessionDir
+						? createSessionFilePath(this.sessionDir, record.createdAt, record.id)
+						: store.locationFor(record)
+					: undefined;
+			const lastSeq = (
+				await (store instanceof JsonlSessionStore
+					? store.create(record, entries, location)
+					: store.create(record, entries))
+			).lastSeq;
+			this.store = store;
+			this.fileEntries = result.fileEntries;
+			this.sessionId = header.id;
+			this.lastSeq = lastSeq;
+			this.sessionFile = location;
+			this._buildIndex();
+			return this.sessionFile;
+		});
 	}
 
-	/** Open a specific session file. */
-	static open(path: string, sessionDir?: string, cwdOverride?: string): SessionManager {
-		const resolvedPath = resolvePath(path);
-		const entries = loadEntriesFromFile(resolvedPath);
-		const header = entries.find((entry) => entry.type === "session") as SessionHeader | undefined;
-		const cwd = cwdOverride ?? header?.cwd ?? process.cwd();
-		const dir = sessionDir ? normalizePath(sessionDir) : resolve(resolvedPath, "..");
-		return new SessionManager(cwd, dir, resolvedPath, true);
-	}
-
-	/** Continue the most recent session (skips internal workflow sessions unless `includeInternal: true`). */
-	static continueRecent(cwd: string, sessionDir?: string, options?: { includeInternal?: boolean }): SessionManager {
-		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
-		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
-		const mostRecent = findMostRecentSession(dir, filterCwd ? cwd : undefined, options?.includeInternal === true);
-		return new SessionManager(cwd, dir, mostRecent ?? undefined, true);
-	}
-
-	/** Create an in-memory session (no file persistence), optionally preloaded with entries. */
-	static inMemory(cwd: string = process.cwd(), options?: NewSessionOptions, entries?: FileEntry[]): SessionManager {
-		return new SessionManager(cwd, "", undefined, false, options, entries);
-	}
-
-	/** Fork a session from another project directory into the current project. */
-	static forkFrom(
-		sourcePath: string,
-		targetCwd: string,
-		sessionDir?: string,
+	static async create(cwd: string, sessionDir?: string, options?: NewSessionOptions): Promise<SessionManager>;
+	static async create(store: SessionStore, cwd: string, options?: NewSessionOptions): Promise<SessionManager>;
+	static async create(
+		cwdOrStore: string | SessionStore,
+		directoryOrCwd?: string,
 		options?: NewSessionOptions,
-	): SessionManager {
-		const forked = forkSessionFromFile(sourcePath, targetCwd, sessionDir, options);
-		return new SessionManager(forked.cwd, forked.sessionDir, forked.sessionFile, true);
+	): Promise<SessionManager> {
+		const cwd = typeof cwdOrStore === "string" ? cwdOrStore : (directoryOrCwd ?? process.cwd());
+		const directory =
+			typeof cwdOrStore === "string"
+				? directoryOrCwd
+					? normalizePath(directoryOrCwd)
+					: getDefaultSessionDirPath(cwd)
+				: "";
+		const store =
+			typeof cwdOrStore === "string"
+				? await JsonlSessionStore.open(directory, { exactDirectory: true, scanExisting: false })
+				: cwdOrStore;
+		const manager = new SessionManager(store, cwd, directory, options);
+		await manager.initialize();
+		return manager;
 	}
 
-	static async forkFromAsync(
+	static async open(path: string, sessionDir?: string, cwdOverride?: string): Promise<SessionManager>;
+	static async open(store: SessionStore, sessionId: string): Promise<SessionManager>;
+	static async open(
+		pathOrStore: string | SessionStore,
+		directoryOrId?: string,
+		cwdOverride?: string,
+	): Promise<SessionManager> {
+		if (typeof pathOrStore !== "string") {
+			const snapshot = await pathOrStore.load(directoryOrId!);
+			const manager = new SessionManager(pathOrStore, snapshot.header.cwd, "");
+			manager.restore(snapshot);
+			return manager;
+		}
+		const path = resolvePath(pathOrStore);
+		const directory = directoryOrId ?? dirname(path);
+		const store = await JsonlSessionStore.open(dirname(path), { exactDirectory: true, scanExisting: false });
+		let snapshot: SessionSnapshot;
+		try {
+			snapshot = await store.loadFile(path);
+		} catch (error) {
+			if (!(error instanceof StorageUnavailableError) || (error.cause as NodeJS.ErrnoException).code !== "ENOENT")
+				throw error;
+			const manager = new SessionManager(store, cwdOverride ?? process.cwd(), directory);
+			manager.lastSeq = (await store.create(manager.recordHeader(), [], path)).lastSeq;
+			manager.sessionFile = path;
+			return manager;
+		}
+		const manager = new SessionManager(store, cwdOverride ?? snapshot.header.cwd, directory);
+		manager.restore(snapshot, path);
+		return manager;
+	}
+
+	static async continueRecent(
+		cwd: string,
+		sessionDir?: string,
+		options?: { includeInternal?: boolean },
+	): Promise<SessionManager>;
+	static async continueRecent(
+		store: SessionStore,
+		cwd: string,
+		options?: { includeInternal?: boolean },
+	): Promise<SessionManager>;
+	static async continueRecent(
+		cwdOrStore: string | SessionStore,
+		directoryOrCwd?: string,
+		options?: { includeInternal?: boolean },
+	): Promise<SessionManager> {
+		const cwd = typeof cwdOrStore === "string" ? cwdOrStore : directoryOrCwd!;
+		const directory = typeof cwdOrStore === "string" ? (directoryOrCwd ?? getDefaultSessionDirPath(cwd)) : "";
+		const store =
+			typeof cwdOrStore === "string"
+				? await JsonlSessionStore.open(directory, { exactDirectory: true, scanExisting: false })
+				: cwdOrStore;
+		const recent = await store.findMostRecent({ cwd: resolvePath(cwd), includeInternal: options?.includeInternal });
+		const manager = new SessionManager(store, cwd, directory);
+		if (recent) manager.restore(await store.load(recent.id), recent.location);
+		else await manager.initialize();
+		return manager;
+	}
+
+	static inMemory(cwd: string = process.cwd(), options?: NewSessionOptions, entries?: FileEntry[]): SessionManager {
+		const manager = new SessionManager(new MemorySessionStore(), cwd, "", options);
+		if (entries?.length) {
+			manager.fileEntries = entries[0].type === "session" ? entries : [...manager.fileEntries, ...entries];
+			manager.sessionId = manager.getHeader()!.id;
+			manager._buildIndex();
+		}
+		manager.mutation = manager.initialize();
+		return manager;
+	}
+
+	static async forkFrom(
 		sourcePath: string,
 		targetCwd: string,
 		sessionDir?: string,
 		options?: NewSessionOptions,
 	): Promise<SessionManager> {
-		const forked = await forkSessionFromFileAsync(sourcePath, targetCwd, sessionDir, options);
-		return new SessionManager(forked.cwd, forked.sessionDir, forked.sessionFile, true, undefined, forked.fileEntries);
+		const sourceStore = await JsonlSessionStore.open(dirname(resolvePath(sourcePath)), {
+			exactDirectory: true,
+			scanExisting: false,
+		});
+		const source = await sourceStore.loadFile(resolvePath(sourcePath));
+		const directory = sessionDir ?? getDefaultSessionDirPath(targetCwd);
+		const store = await JsonlSessionStore.open(directory, { exactDirectory: true, scanExisting: false });
+		const manager = new SessionManager(store, targetCwd, directory, { ...options, parentSession: source.header.id });
+		manager.fileEntries.push(...source.entries);
+		await manager.initialize();
+		manager._buildIndex();
+		return manager;
 	}
 
-	/** Find an exact, non-internal session ID by reading headers, not transcripts. */
-	static findById(cwd: string, id: string, sessionDir?: string): string | undefined {
-		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
-		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
-		const resolvedCwd = resolvePath(cwd);
+	static async findById(cwd: string, id: string, sessionDir?: string): Promise<string | undefined> {
+		const directory = sessionDir ?? getDefaultSessionDirPath(cwd);
+		const store = await JsonlSessionStore.open(directory, { exactDirectory: true, scanExisting: false });
+		let header: SessionRecordHeader | undefined;
 		try {
-			for (const file of readdirSync(dir)) {
-				if (!file.endsWith(".jsonl")) continue;
-				const path = join(dir, file);
-				const header = readSessionHeader(path);
-				if (header?.id !== id || isInternalHeader(header)) continue;
-				if (filterCwd && !sessionCwdMatches(getSessionHeaderCwd(header), resolvedCwd)) continue;
-				return path;
-			}
-		} catch {
-			// Discovery is best-effort, matching list().
+			header = await store.readHeader(id);
+		} catch (error) {
+			if (error instanceof SessionFormatVersionError) return undefined;
+			throw error;
 		}
-		return undefined;
+		if (!header || classifiedWorkflowMetadata(header) || resolvePath(header.cwd) !== resolvePath(cwd))
+			return undefined;
+		return store.findFile(id);
 	}
 
-	/** List sessions for a directory. Internal (workflow) sessions are excluded unless `includeInternal: true`. */
 	static async list(
 		cwd: string,
 		sessionDir?: string,
@@ -669,7 +755,6 @@ export class SessionManager {
 		);
 	}
 
-	/** List sessions across all directories. Internal (workflow) sessions are excluded unless `includeInternal: true`. */
 	static async listAll(onProgress?: SessionListProgress, signal?: AbortSignal): Promise<SessionInfo[]>;
 	static async listAll(
 		sessionDir?: string,
@@ -677,19 +762,18 @@ export class SessionManager {
 		options?: { includeInternal?: boolean; signal?: AbortSignal } | AbortSignal,
 	): Promise<SessionInfo[]>;
 	static async listAll(
-		sessionDirOrOnProgress?: string | SessionListProgress,
-		onProgress?: SessionListProgress | AbortSignal,
+		directoryOrProgress?: string | SessionListProgress,
+		progressOrSignal?: SessionListProgress | AbortSignal,
 		options?: { includeInternal?: boolean; signal?: AbortSignal } | AbortSignal,
 	): Promise<SessionInfo[]> {
-		const signal =
+		const { listAllSessions } = await import("./session-manager-list.ts");
+		return listAllSessions(
+			directoryOrProgress,
+			typeof progressOrSignal === "function" ? progressOrSignal : undefined,
+			options !== undefined && "includeInternal" in options && options.includeInternal === true,
 			options && "aborted" in options
 				? options
-				: (options?.signal ?? (typeof onProgress === "object" ? onProgress : undefined));
-		return listAllSessions(
-			sessionDirOrOnProgress,
-			typeof onProgress === "function" ? onProgress : undefined,
-			options !== undefined && "includeInternal" in options && options.includeInternal === true,
-			signal,
+				: (options?.signal ?? (typeof progressOrSignal === "object" ? progressOrSignal : undefined)),
 		);
 	}
 }

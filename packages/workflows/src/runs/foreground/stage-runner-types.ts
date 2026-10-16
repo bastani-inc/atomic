@@ -68,7 +68,7 @@ export interface StageSessionRuntime {
 	readonly sessionFile: string | undefined;
 	readonly sessionId: string;
 	setModel(model: Parameters<AgentSession["setModel"]>[0]): Promise<void>;
-	setThinkingLevel(level: Parameters<AgentSession["setThinkingLevel"]>[0]): void;
+	setThinkingLevel(level: Parameters<AgentSession["setThinkingLevel"]>[0]): void | Promise<void>;
 	cycleModel(): ReturnType<AgentSession["cycleModel"]>;
 	cycleThinkingLevel(): ReturnType<AgentSession["cycleThinkingLevel"]>;
 	readonly agent: AgentSession["agent"];

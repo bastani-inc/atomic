@@ -111,7 +111,7 @@ function fixture(wait: WaitPolicy | undefined, owned = true, resources: { worktr
 		registerCommand() {},
 		registerShortcut() {},
 		registerMessageRenderer() {},
-		appendEntry() {},
+		async appendEntry() {},
 		sendMessage(value: { details: { message: Message } }) {
 			surfaced.push(value.details.message);
 		},
@@ -258,7 +258,7 @@ function fixture(wait: WaitPolicy | undefined, owned = true, resources: { worktr
 			registerTool(tool: Tool) {
 				registered = tool;
 			},
-			appendEntry() {},
+			async appendEntry() {},
 		};
 		if (kind === "intercom")
 			registerIntercomTool(

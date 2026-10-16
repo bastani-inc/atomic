@@ -98,7 +98,7 @@ async function endpoint(name: string, child = false, tools: AgentTool[] = [], op
 			...(options.extensionFactory ? [options.extensionFactory] : []),
 		],
 	});
-	harness.session.setSessionName(name);
+	await harness.session.setSessionName(name);
 	await harness.session.bindExtensions(
 		options.ui ? { mode: "tui", uiContext: { ...noOpUIContext } } : { mode: "print" },
 	);

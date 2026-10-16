@@ -40,7 +40,7 @@ async function compactSession(harness: Harness): Promise<void> {
 	harness.setResponses([fauxAssistantMessage("one")]);
 	await harness.session.prompt("first");
 	for (let index = 0; index < 24; index++) {
-		harness.sessionManager.appendMessage({
+		await harness.sessionManager.appendMessage({
 			role: "user",
 			content: `transcript ${index} ${"x".repeat(80)}`,
 			timestamp: Date.now() + index,

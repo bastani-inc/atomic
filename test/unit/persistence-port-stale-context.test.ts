@@ -67,8 +67,8 @@ function createHostGeneration(label: string): {
 	readonly persistence: WorkflowPersistencePort | undefined;
 } {
 	const runtime = createHostExtensionRuntime();
-	runtime.appendEntry = () => {};
-	runtime.setLabel = () => {};
+	runtime.appendEntry = async () => {};
+	runtime.setLabel = async () => {};
 	const extension = hostExtension(label);
 	const { api } = createExtensionAPI(extension, runtime, "/tmp", createEventBus());
 	api.on("session_shutdown", () => {});

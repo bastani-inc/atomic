@@ -524,7 +524,7 @@ test("editable postmortem skill invocation appends to its own retained session w
 		assert.ok(file);
 		restored = await createHarness({
 			resourceLoader: fixture.loader,
-			sessionManager: SessionManager.open(file),
+			sessionManager: await SessionManager.open(file),
 			fauxProvider: { api: "stage-skill-postmortem", provider: "stage-skill-postmortem" },
 		});
 		const session = restored.session;
@@ -547,7 +547,7 @@ test("editable postmortem skill invocation appends to its own retained session w
 		});
 		assert.ok(resolved.ok);
 		const beforeUsers = getUserTexts(restored).length;
-		const beforeStoredUsers = SessionManager.open(file)
+		const beforeStoredUsers = (await SessionManager.open(file))
 			.buildSessionContext()
 			.messages.filter((message) => message.role === "user").length;
 		if (!resolved.ok) throw new Error("Postmortem fixture was not eligible");
@@ -564,10 +564,15 @@ test("editable postmortem skill invocation appends to its own retained session w
 				.match(/<skill name=/g)?.length,
 			1,
 		);
+		await vi.waitFor(() =>
+			assert.equal(
+				restored!.sessionManager.buildSessionContext().messages.filter((message) => message.role === "user").length,
+				beforeStoredUsers + 1,
+			),
+		);
 		assert.equal(
-			SessionManager.open(file)
-				.buildSessionContext()
-				.messages.filter((message) => message.role === "user").length,
+			(await SessionManager.open(file)).buildSessionContext().messages.filter((message) => message.role === "user")
+				.length,
 			beforeStoredUsers + 1,
 		);
 		assert.equal(JSON.stringify(fixture.store.runs()[0]!.stages[0]), before);
@@ -626,7 +631,7 @@ test("concurrent lazy discovery across stage panes attaches once and keeps the r
 						await release.promise;
 						restored = await createHarness({
 							resourceLoader: fixture.loader,
-							sessionManager: SessionManager.open(file),
+							sessionManager: await SessionManager.open(file),
 							fauxProvider: { api: "stage-skill-lazy", provider: "stage-skill-lazy" },
 						});
 						return restored.session as StageSessionRuntime;
@@ -718,7 +723,7 @@ test("lazy stage skill discovery failures are contained, diagnosed and retryable
 						}
 						restored = await createHarness({
 							resourceLoader: fixture.loader,
-							sessionManager: SessionManager.open(file),
+							sessionManager: await SessionManager.open(file),
 							fauxProvider: { api: "stage-skill-lazy-retry", provider: "stage-skill-lazy-retry" },
 						});
 						return restored.session as StageSessionRuntime;

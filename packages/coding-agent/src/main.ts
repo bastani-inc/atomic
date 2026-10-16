@@ -432,6 +432,40 @@ export async function main(argv: string[], options?: MainOptions) {
 		startupSettingsManager.applyOverrides({ theme: parsed.useTheme });
 	}
 
+	if (parsed.help || parsed.listModels !== undefined) {
+		const completeServices = await prepareAgentSessionServices({
+			cwd,
+			agentDir,
+			settingsManager: startupSettingsManager,
+			extensionFlagValues: parsed.unknownFlags,
+			resourceLoaderOptions: {
+				additionalExtensionPaths: resolvedExtensionPaths,
+				additionalSkillPaths: resolvedSkillPaths,
+				additionalPromptTemplatePaths: resolvedPromptTemplatePaths,
+				additionalThemePaths: resolvedThemePaths,
+				builtinPackagePaths: options?.builtinPackagePaths,
+				noExtensions: parsed.noExtensions,
+				disabledBuiltinExtensions: parsed.noMcp ? ["mcp"] : undefined,
+				noSkills: parsed.noSkills,
+				noPromptTemplates: parsed.noPromptTemplates,
+				noThemes: parsed.noThemes,
+				noContextFiles: parsed.noContextFiles,
+				extensionFactories,
+			},
+		});
+		const { modelRuntime, resourceLoader } = await completeServices();
+		reportDiagnostics(startupSettingsDiagnostics);
+		if (shouldRestoreStdoutForMetadata) restoreStdout();
+		if (parsed.help) {
+			printHelp(
+				resourceLoader.getExtensions().extensions.flatMap((extension) => Array.from(extension.flags.values())),
+			);
+		} else {
+			await listModels(modelRuntime, typeof parsed.listModels === "string" ? parsed.listModels : undefined);
+		}
+		process.exit(0);
+	}
+
 	// Decide the final runtime cwd before creating cwd-bound runtime services.
 	// --session and --resume may select a session from another project, so project-local
 	// settings, resources, provider registrations, and models must be resolved only after
@@ -442,7 +476,7 @@ export async function main(argv: string[], options?: MainOptions) {
 		(parsed.sessionDir ? normalizePath(parsed.sessionDir) : undefined) ??
 		(envSessionDir ? expandTildePath(envSessionDir) : undefined) ??
 		startupSettingsManager.getSessionDir();
-	let sessionManager = applyInheritedWorkflowSessionClassification(
+	let sessionManager = await applyInheritedWorkflowSessionClassification(
 		await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager),
 	);
 	const missingSessionCwdIssue = getMissingSessionCwdIssue(sessionManager, cwd);
@@ -454,7 +488,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			if (!selectedCwd) {
 				process.exit(0);
 			}
-			sessionManager = SessionManager.open(missingSessionCwdIssue.sessionFile!, sessionDir, selectedCwd);
+			sessionManager = await SessionManager.open(missingSessionCwdIssue.sessionFile!, sessionDir, selectedCwd);
 		} else {
 			console.error(chalk.red(new MissingSessionCwdError(missingSessionCwdIssue).message));
 			process.exit(1);
@@ -467,7 +501,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			startupEarlyInputCapture?.consume();
 			process.exit(1);
 		}
-		sessionManager.appendSessionInfo(name);
+		await sessionManager.appendSessionInfo(name);
 	}
 	time("createSessionManager");
 
@@ -477,7 +511,7 @@ export async function main(argv: string[], options?: MainOptions) {
 		parsed.projectTrustOverride === undefined && !hasProjectTrustInputs(sessionCwd) ? sessionCwd : undefined;
 
 	const builtinPackagePaths = options?.builtinPackagePaths;
-	const trustPromptMode: AppMode = parsed.help || parsed.listModels !== undefined ? "print" : appMode;
+	const trustPromptMode: AppMode = appMode;
 	const projectTrustByCwd = new Map<string, boolean>();
 	const borrowedExtensionSourceTrustByPath = new Map<string, boolean>();
 	let deferredExtensionLoad = false;
@@ -751,8 +785,8 @@ export async function main(argv: string[], options?: MainOptions) {
 						created.session.setScopedModels(finalScope);
 						if (finalModel) {
 							created.session.agent.state.model = finalModel;
-							sessionManager.appendModelChange(finalModel.provider, finalModel.id);
-							created.session.setThinkingLevel(
+							await sessionManager.appendModelChange(finalModel.provider, finalModel.id);
+							await created.session.setThinkingLevel(
 								finalSelection.options.thinkingLevel ??
 									(existingSession.messages.length > 0 ? created.session.thinkingLevel : undefined) ??
 									settingsManager.getModelThinkingLevel(finalModel.provider, finalModel.id) ??
@@ -778,7 +812,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			}
 			const cliThinkingOverride = parsed.thinking !== undefined || cliThinkingFromModel;
 			if (created.session.model && cliThinkingOverride) {
-				created.session.setThinkingLevel(created.session.thinkingLevel);
+				await created.session.setThinkingLevel(created.session.thinkingLevel);
 			}
 			return {
 				...created,
@@ -807,31 +841,10 @@ export async function main(argv: string[], options?: MainOptions) {
 	);
 	endTimingSpan(runtimeCreationSpan);
 	const { services, session, modelFallbackMessage } = runtime;
-	const { settingsManager, modelRuntime, resourceLoader } = services;
+	const { settingsManager, modelRuntime } = services;
 	setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides());
 	applyHttpProxySettings(settingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher(settingsManager.getHttpIdleTimeoutMs());
-	if (parsed.help) {
-		reportDiagnostics(startupSettingsDiagnostics);
-		const extensionFlags = resourceLoader
-			.getExtensions()
-			.extensions.flatMap((extension) => Array.from(extension.flags.values()));
-		if (shouldRestoreStdoutForMetadata) {
-			restoreStdout();
-		}
-		printHelp(extensionFlags);
-		process.exit(0);
-	}
-
-	if (parsed.listModels !== undefined) {
-		reportDiagnostics(startupSettingsDiagnostics);
-		const searchPattern = typeof parsed.listModels === "string" ? parsed.listModels : undefined;
-		if (shouldRestoreStdoutForMetadata) {
-			restoreStdout();
-		}
-		await listModels(modelRuntime, searchPattern);
-		process.exit(0);
-	}
 
 	// Read piped stdin content (if any) - skip for RPC mode which uses stdin for JSON-RPC
 	let stdinContent: string | undefined;

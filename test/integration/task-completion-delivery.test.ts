@@ -89,9 +89,9 @@ test("restored completion intents begin delivery without a new settlement", asyn
 		result: { kind: "completed" },
 		display: false,
 	};
-	session.appendCustomEntry("task-completion-intent", envelope);
-	session.appendCustomEntry("task-completion-intent", { ...envelope, completionId: "already-acked" });
-	session.appendCustomEntry("task-completion-ack", { completionId: "already-acked" });
+	await session.appendCustomEntry("task-completion-intent", envelope);
+	await session.appendCustomEntry("task-completion-intent", { ...envelope, completionId: "already-acked" });
+	await session.appendCustomEntry("task-completion-ack", { completionId: "already-acked" });
 	const release = Promise.withResolvers<void>();
 	const admitted: string[] = [];
 	const outbox = new TaskCompletionOutbox(
@@ -121,7 +121,7 @@ test("restored completion intents begin delivery without a new settlement", asyn
 
 test("restored completion retry respects closed admission and retains failed delivery", async () => {
 	const session = SessionManager.inMemory();
-	session.appendCustomEntry("task-completion-intent", {
+	await session.appendCustomEntry("task-completion-intent", {
 		completionId: "retry-completion",
 		ownerId: "historical-owner",
 		taskId: "historical-task",
@@ -165,7 +165,7 @@ test("restored completion retry respects closed admission and retains failed del
 test("session task initialization deduplicates persisted delivery after a crash before acknowledgement", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "task-completion-restart-"));
 	try {
-		const original = SessionManager.create(directory, directory);
+		const original = await SessionManager.create(directory, directory);
 		const envelope = {
 			completionId: "delivered-before-crash",
 			ownerId: "historical-owner",
@@ -174,8 +174,8 @@ test("session task initialization deduplicates persisted delivery after a crash 
 			result: { kind: "completed" },
 			display: false,
 		};
-		original.appendCustomEntry("task-completion-intent", envelope);
-		original.appendCustomMessageEntry(
+		await original.appendCustomEntry("task-completion-intent", envelope);
+		await original.appendCustomMessageEntry(
 			"task-completion",
 			JSON.stringify(envelope),
 			false,
@@ -184,8 +184,8 @@ test("session task initialization deduplicates persisted delivery after a crash 
 			undefined,
 			envelope.completionId,
 		);
-		original.flush();
-		const restored = SessionManager.open(original.getSessionFile()!);
+
+		const restored = await SessionManager.open(original.getSessionFile()!);
 		let deliveries = 0;
 		const session = {
 			sessionManager: restored,
@@ -204,8 +204,8 @@ test("session task initialization deduplicates persisted delivery after a crash 
 				),
 			);
 			assert.equal(deliveries, 0);
-			restored.flush();
-			const restarted = SessionManager.open(restored.getSessionFile()!);
+
+			const restarted = await SessionManager.open(restored.getSessionFile()!);
 			assert.equal(
 				restarted
 					.getEntries()
@@ -482,7 +482,7 @@ test.runIf(process.platform !== "win32")(
 test("a persisted Intercom prelude cannot suppress a missing terminal notification on restore", async () => {
 	const manager = SessionManager.inMemory();
 	const completionId = "terminal-after-persisted-prelude";
-	manager.appendCustomEntry("task-completion-intent", {
+	await manager.appendCustomEntry("task-completion-intent", {
 		completionId,
 		ownerId: "historical-owner",
 		taskId: "historical-task",
@@ -490,7 +490,7 @@ test("a persisted Intercom prelude cannot suppress a missing terminal notificati
 		result: { kind: "cancelled", cause: "user" },
 		display: false,
 	});
-	manager.appendCustomMessageEntry(
+	await manager.appendCustomMessageEntry(
 		"intercom_message",
 		"Earlier child finding",
 		true,
@@ -545,12 +545,13 @@ function assistantText(text: string) {
 async function forkedChildCompletion(childReply: string | undefined): Promise<string> {
 	const sessionManager = SessionManager.inMemory();
 	const forkedChild = SessionManager.inMemory();
-	forkedChild.appendMessage(assistantText("PARENT-EARLIER-ASSISTANT-TEXT"));
+	await forkedChild.appendMessage(assistantText("PARENT-EARLIER-ASSISTANT-TEXT"));
 	const sendCustomMessage = vi.fn(async () => {});
 	const session = { sessionManager, sendCustomMessage } as unknown as ThisParameterType<typeof getAgentTaskHost>;
 	const host = getAgentTaskHost.call(session);
 	try {
 		const result = Promise.withResolvers<TaskResult>();
+		const transcriptBound = Promise.withResolvers<void>();
 		const started = await host.startAgentTask(
 			{ kind: "agent", agent: "worker", task: "Plan then edit" },
 			`forked-excerpt-${childReply ?? "none"}` as OperationId,
@@ -559,13 +560,15 @@ async function forkedChildCompletion(childReply: string | undefined): Promise<st
 					getSessionId: () => forkedChild.getSessionId(),
 					getEntries: () => forkedChild.getEntries(),
 				});
-				forkedChild.appendMessage({ role: "user", content: "Plan then edit", timestamp: 1 });
-				if (childReply) forkedChild.appendMessage(assistantText(childReply));
+				transcriptBound.resolve();
 				return { result: result.promise, cleanup: Promise.resolve({ kind: "reaped" }) };
 			},
 		);
 		assert.ok(started.ok);
 		await host.observeAgentLaunch(started.value.taskId, { kind: "background" });
+		await transcriptBound.promise;
+		await forkedChild.appendMessage({ role: "user", content: "Plan then edit", timestamp: 1 });
+		if (childReply) await forkedChild.appendMessage(assistantText(childReply));
 		result.resolve({ kind: "cancelled", cause: "parent-handoff" });
 		await host.waitForTask(started.value.taskId);
 		await vi.waitFor(() => assert.equal(sendCustomMessage.mock.calls.length, 1));

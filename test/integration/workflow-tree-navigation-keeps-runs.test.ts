@@ -75,8 +75,12 @@ test(
 			assert.ok(owner, "the model tool must record the session as the run's owner");
 			assert.equal(getDurableBackend().getWorkflow(runId)?.status, "running");
 
-			const first = session.sessionManager.appendMessage({ role: "user", content: "first", timestamp: Date.now() });
-			session.sessionManager.appendMessage({ role: "user", content: "second", timestamp: Date.now() });
+			const first = await session.sessionManager.appendMessage({
+				role: "user",
+				content: "first",
+				timestamp: Date.now(),
+			});
+			await session.sessionManager.appendMessage({ role: "user", content: "second", timestamp: Date.now() });
 			const navigation = await session.navigateTree(first, { summarize: false });
 			assert.equal(navigation.cancelled, false);
 

@@ -43,7 +43,7 @@ try {
   ({ session: sibling } = await createAgentSession({ ...options, settingsManager: session.settingsManager }));
   const file = join(agentDir, "settings.json");
   await session.settingsManager.flush(); rmSync(file, { force: true }); mkdirSync(file, { recursive: true });
-  session.setThinkingLevel("off", { persist: true });
+  await session.setThinkingLevel("off", { persist: true });
   await sibling.dispose();
   await assert.rejects(session.dispose(), { code: "ShutdownFailed" });
   assert.ok(session.settingsManager.drainErrors().some(({ error }) => /EISDIR/.test(error.message)));

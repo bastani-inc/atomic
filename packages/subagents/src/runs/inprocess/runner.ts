@@ -399,22 +399,15 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 		content: Array<{ type: "text"; text: string } | { type: "thinking"; thinking: string }>;
 		stopReason?: string;
 	}> = [];
-	const promptAbort = new Promise<"aborted">((resolve, reject) => {
-		settlePromptAbort = () => {
-			if (testOptions.abortResolvesPrompt) resolve("aborted");
-			else reject(new Error("aborted"));
-		};
-	});
 	let userMessages = 0;
 	let assistantMessages = 0;
 	const zeroTokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
 	const zeroCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
-	const appendAssistant = (
+	const appendAssistant = async (
 		content: Array<{ type: "text"; text: string } | { type: "thinking"; thinking: string }>,
 		stopReason: "stop" | "aborted",
-	): void => {
-		messages.push({ role: "assistant", content, stopReason });
-		sessionManager.appendMessage({
+	): Promise<void> => {
+		await sessionManager.appendMessage({
 			role: "assistant",
 			content,
 			api: "openai-responses",
@@ -431,6 +424,7 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 			stopReason,
 			timestamp: Date.now(),
 		});
+		messages.push({ role: "assistant", content, stopReason });
 		assistantMessages += 1;
 	};
 	return {
@@ -474,23 +468,29 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 			for (const listener of listeners) listener({ type: "agent_start" } as AgentSessionEvent);
 			if (aborted) throw new Error("aborted");
 			if (testOptions.promptLogPath) appendFileSync(testOptions.promptLogPath, `${text}\n---PROMPT---\n`, "utf8");
-			sessionManager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
+			await sessionManager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
 			userMessages += 1;
 			if (testOptions.seededAssistantText) {
 				lastAssistantText = testOptions.seededAssistantText;
-				appendAssistant([{ type: "text", text: lastAssistantText }], "stop");
+				await appendAssistant([{ type: "text", text: lastAssistantText }], "stop");
 			}
 			if (testOptions.fallbackBeforeGate) emitFallback();
 			for (const event of testOptions.beforeGateEvents ?? []) for (const listener of listeners) listener(event);
 			if (testOptions.promptGate) {
 				const gateResult = await Promise.race([
 					testOptions.promptGate.then(() => "released" as const),
-					promptAbort,
+					new Promise<"aborted">((resolve, reject) => {
+						settlePromptAbort = () => {
+							if (testOptions.abortResolvesPrompt) resolve("aborted");
+							else reject(new DOMException("aborted", "AbortError"));
+						};
+						if (aborted) settlePromptAbort();
+					}),
 				]);
 				if (gateResult === "aborted") {
 					if (testOptions.thinkingOnlyOnAbort) {
 						lastAssistantText = "";
-						appendAssistant([{ type: "thinking", thinking: "aborted mid-thought" }], "aborted");
+						await appendAssistant([{ type: "thinking", thinking: "aborted mid-thought" }], "aborted");
 					}
 					for (const event of testOptions.events ?? []) for (const listener of listeners) listener(event);
 					return "";
@@ -501,7 +501,7 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 			}
 			if (!testOptions.fallbackBeforeGate) emitFallback();
 			lastAssistantText = testOptions.output ?? "done";
-			appendAssistant([{ type: "text", text: lastAssistantText }], "stop");
+			await appendAssistant([{ type: "text", text: lastAssistantText }], "stop");
 			return lastAssistantText;
 		},
 		getLastAssistantText: () => {
@@ -912,7 +912,7 @@ export class SubagentControlRuntime {
 		this.attemptTokens.set(admitted.identity.path, token);
 		let session: AgentSession | undefined;
 		const executionEnded = new AbortController();
-		let activeSessionManager: SessionManager | undefined;
+
 		let termination: TerminationCauseName | undefined;
 		let terminating: Promise<void> | undefined;
 		let terminationWasKill = false;
@@ -930,7 +930,6 @@ export class SubagentControlRuntime {
 			termination = cause;
 			terminating = (async () => {
 				try {
-					activeSessionManager?.flush();
 					await session?.abort();
 				} finally {
 					try {
@@ -953,15 +952,14 @@ export class SubagentControlRuntime {
 			const workflow = workflowMetadataFromContext(admitted.spec.parent?.orchestrationContext);
 			if (admitted.sessionFile) mkdirSync(dirname(admitted.sessionFile), { recursive: true });
 			const sessionManager = admitted.sessionFile
-				? SessionManager.open(admitted.sessionFile, admitted.sessionDir, admitted.policy.cwd)
-				: SessionManager.create(
+				? await SessionManager.open(admitted.sessionFile, admitted.sessionDir, admitted.policy.cwd)
+				: await SessionManager.create(
 						admitted.policy.cwd,
 						admitted.sessionDir,
 						workflow ? { internal: true, workflow } : { internal: true },
 					);
-			activeSessionManager = sessionManager;
 			taskHooks?.bindTranscript?.(sessionManager);
-			if (workflow) sessionManager.markSessionInternal(workflow);
+			if (workflow) await sessionManager.markSessionInternal(workflow);
 			let created: { session: AgentSession };
 			if (admitted.spec.testSession) {
 				created = { session: createTestSession(sessionManager, admitted.spec) };
@@ -1155,7 +1153,7 @@ export class SubagentControlRuntime {
 			});
 			if (signals.abort.aborted) await terminate("abort");
 			if (signals.interrupt.aborted) await terminate("interrupt");
-			await session.prompt(admitted.spec.task);
+			if (!termination) await session.prompt(admitted.spec.task);
 			await terminating;
 			const stats = statsFor(session, admitted.identity.path);
 			const sessionFile = session.sessionFile;
@@ -1262,11 +1260,6 @@ export class SubagentControlRuntime {
 				unsubscribe?.();
 			} catch {
 				// Listener teardown must not replace the attempt result.
-			}
-			try {
-				activeSessionManager?.flush();
-			} catch {
-				// Persistence teardown must not replace the attempt result.
 			}
 			if (onCleanup) {
 				onCleanup(

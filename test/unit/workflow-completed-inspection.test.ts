@@ -40,7 +40,7 @@ function retainedSession(name: string, internal = false): string {
 				type: "session",
 				version: 4,
 				id: `${name}-session`,
-				timestamp: new Date().toISOString(),
+				createdAt: new Date().toISOString(),
 				cwd: tempDir,
 				...(internal ? { internal: true, workflow: { runId: name, stageId: "final", stageName: "final" } } : {}),
 			}),

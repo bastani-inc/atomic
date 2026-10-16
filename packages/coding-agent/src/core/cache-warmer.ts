@@ -284,7 +284,7 @@ export class CacheWarmer {
 				.result();
 			if (!this.validateRun(run)) return;
 			if (message.stopReason !== "error" && message.stopReason !== "aborted") {
-				const entry = this.sessionManager.appendUsage(
+				const entry = await this.sessionManager.appendUsage(
 					"cache_warm",
 					message.provider,
 					message.responseModel ?? message.model,

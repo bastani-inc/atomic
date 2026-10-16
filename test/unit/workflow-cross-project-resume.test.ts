@@ -175,7 +175,7 @@ test("forked stage conversations copy history without sharing the source session
 				type: "session",
 				version: 4,
 				id: "source-session",
-				timestamp: new Date().toISOString(),
+				createdAt: new Date().toISOString(),
 				cwd: join(root, "source"),
 			},
 			{
@@ -218,7 +218,7 @@ test("forked stage conversations copy history without sharing the source session
 		});
 		const originalCheckpoint = backend.listCheckpoints(id)[0];
 		backend.recordCheckpoint({ ...originalCheckpoint, checkpointId: "second-stage" });
-		const forkSession = vi.spyOn(SessionManager, "forkFromAsync");
+		const forkSession = vi.spyOn(SessionManager, "forkFrom");
 		let forkId: string;
 		try {
 			forkId = await forkDurableWorkflow(backend, backend.getWorkflow(id)!, cwd, undefined);
@@ -245,7 +245,7 @@ test("forked stage conversations copy history without sharing the source session
 		const replayed = await task("saved-stage", { prompt: "ignored" });
 		assert.equal(replayed.sessionId, checkpoint.sessionId);
 		assert.equal(replayed.sessionFile, checkpoint.sessionFile);
-		const fork = SessionManager.open(checkpoint.sessionFile);
+		const fork = await SessionManager.open(checkpoint.sessionFile);
 		assert.equal(fork.getCwd(), cwd);
 		assert.ok(fork.getEntries().some((entry) => entry.type === "custom" && entry.customType === "saved-history"));
 		assert.equal(await readText(sourcePath), history);

@@ -114,7 +114,7 @@ describe("executor.run — abort/kill wiring", () => {
 		await new Promise<void>((resolve) => setTimeout(resolve, 20));
 
 		// External kill path: records "killed" in store + appends one workflow.run.end
-		const killResult = killRun(capturedRunId, {
+		const killResult = await killRun(capturedRunId, {
 			store: testStore,
 			cancellation: registry,
 			persistence,

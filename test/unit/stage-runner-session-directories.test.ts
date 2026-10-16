@@ -116,7 +116,7 @@ describe("createStageContext — inherited session directories", () => {
 					type: "session",
 					version: 4,
 					id: "source-session",
-					timestamp: new Date().toISOString(),
+					createdAt: new Date().toISOString(),
 					cwd: sourceDir,
 				})}\n`,
 				"utf8",

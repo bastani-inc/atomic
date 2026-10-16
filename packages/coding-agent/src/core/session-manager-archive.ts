@@ -1,56 +1,18 @@
-import { createReadStream } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
-import { createInterface } from "node:readline";
-import { join } from "path";
-import { normalizePath, resolvePath } from "../utils/paths.ts";
-import { createLabelEntry, createSessionFilePath, createSessionHeader } from "./session-manager-entries.ts";
-import { getDefaultSessionDirPath } from "./session-manager-paths.ts";
-import {
-	ensureDirectory,
-	hasConversationMessage,
-	loadEntriesFromFile,
-	parseSessionEntries,
-	serializeSessionEntries,
-	writeSessionEntries,
-} from "./session-manager-storage.ts";
+import { createLabelEntry, createSessionHeader } from "./session-manager-entries.ts";
+import { SessionEntryError } from "./session-manager-errors.js";
 import type {
 	FileEntry,
 	LabelEntry,
-	NewSessionOptions,
 	SessionEntry,
 	SessionHeader,
 	SessionWorkflowMetadata,
 } from "./session-manager-types.ts";
-import {
-	assertValidSessionId,
-	createSessionId,
-	generateId,
-	validateSessionFileEntries,
-} from "./session-manager-validation.ts";
-
-export function createBackupSnapshot(
-	sessionFile: string | undefined,
-	entries: FileEntry[],
-	label = "compact",
-): string | undefined {
-	if (!sessionFile) return undefined;
-	const safeLabel =
-		label
-			.replace(/[^a-z0-9_-]/gi, "-")
-			.replace(/-+/g, "-")
-			.replace(/^-|-$/g, "") || "backup";
-	const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-	const backupPath = `${sessionFile}.${timestamp}.${safeLabel}.bak`;
-	writeSessionEntries(backupPath, entries);
-	return backupPath;
-}
+import { createSessionId } from "./session-manager-validation.ts";
 
 export interface BranchedSessionStateInput {
 	leafId: string;
-	persist: boolean;
-	sessionDir: string;
 	cwd: string;
-	previousSessionFile: string | undefined;
+	parentSessionId: string;
 	workflow?: SessionWorkflowMetadata;
 	path: SessionEntry[];
 	labelsById: ReadonlyMap<string, string>;
@@ -59,10 +21,7 @@ export interface BranchedSessionStateInput {
 
 export interface BranchedSessionState {
 	sessionId: string;
-	sessionFile: string | undefined;
 	fileEntries: FileEntry[];
-	shouldRewriteFile: boolean;
-	flushed?: boolean;
 }
 
 function collectLabelsForPath(
@@ -79,7 +38,7 @@ function collectLabelsForPath(
 	return labelsToWrite;
 }
 
-function buildPersistedLabelEntries(
+function buildLabelEntries(
 	pathEntryIds: Set<string>,
 	lastEntryId: string | null,
 	labelsToWrite: Array<{ targetId: string; label: string; timestamp: string }>,
@@ -95,31 +54,9 @@ function buildPersistedLabelEntries(
 	return labelEntries;
 }
 
-function buildInMemoryLabelEntries(
-	pathEntryIds: Set<string>,
-	lastEntryId: string | null,
-	labelsToWrite: Array<{ targetId: string; label: string; timestamp: string }>,
-): LabelEntry[] {
-	const labelEntries: LabelEntry[] = [];
-	let parentId = lastEntryId;
-	for (const { targetId, label, timestamp: labelTimestamp } of labelsToWrite) {
-		const labelEntry: LabelEntry = {
-			type: "label",
-			id: generateId(new Set([...pathEntryIds, ...labelEntries.map((e) => e.id)])),
-			parentId,
-			timestamp: labelTimestamp,
-			targetId,
-			label,
-		};
-		labelEntries.push(labelEntry);
-		parentId = labelEntry.id;
-	}
-	return labelEntries;
-}
-
 export function createBranchedSessionState(input: BranchedSessionStateInput): BranchedSessionState {
 	if (input.path.length === 0) {
-		throw new Error(`Entry ${input.leafId} not found`);
+		throw new SessionEntryError(input.leafId, "missing");
 	}
 
 	// Filter labels out, re-chain the retained path, and translate compaction boundaries
@@ -151,12 +88,11 @@ export function createBranchedSessionState(input: BranchedSessionStateInput): Br
 	}
 	const newSessionId = createSessionId();
 	const timestamp = new Date().toISOString();
-	const newSessionFile = createSessionFilePath(input.sessionDir, timestamp, newSessionId);
 	const header: SessionHeader = createSessionHeader(
 		newSessionId,
 		input.cwd,
 		timestamp,
-		input.persist ? input.previousSessionFile : undefined,
+		input.parentSessionId,
 		input.workflow !== undefined,
 		input.workflow,
 	);
@@ -165,98 +101,6 @@ export function createBranchedSessionState(input: BranchedSessionStateInput): Br
 	const pathEntryIds = new Set(pathWithoutLabels.map((entry) => entry.id));
 	const labelsToWrite = collectLabelsForPath(pathEntryIds, input.labelsById, input.labelTimestampsById);
 	const lastEntryId = pathWithoutLabels[pathWithoutLabels.length - 1]?.id || null;
-	const labelEntries = input.persist
-		? buildPersistedLabelEntries(pathEntryIds, lastEntryId, labelsToWrite)
-		: buildInMemoryLabelEntries(pathEntryIds, lastEntryId, labelsToWrite);
-	const fileEntries: FileEntry[] = [header, ...pathWithoutLabels, ...labelEntries];
-
-	if (!input.persist) {
-		return { sessionId: newSessionId, sessionFile: undefined, fileEntries, shouldRewriteFile: false };
-	}
-
-	// Use the same rule as appended entries: write now if the branched path already has a
-	// conversation, otherwise let the first user or assistant message create the file.
-	const shouldRewriteFile = hasConversationMessage(fileEntries);
-	return {
-		sessionId: newSessionId,
-		sessionFile: newSessionFile,
-		fileEntries,
-		shouldRewriteFile,
-		flushed: shouldRewriteFile,
-	};
-}
-
-export interface ForkedSessionFile {
-	cwd: string;
-	sessionDir: string;
-	sessionFile: string;
-	fileEntries: FileEntry[];
-}
-
-export function forkSessionFromFile(
-	sourcePath: string,
-	targetCwd: string,
-	sessionDir?: string,
-	options?: NewSessionOptions,
-): ForkedSessionFile {
-	const sourceEntries = loadEntriesFromFile(resolvePath(sourcePath));
-	const forked = prepareFork(sourcePath, targetCwd, sourceEntries, sessionDir, options);
-	ensureDirectory(forked.sessionDir);
-	writeSessionEntries(forked.sessionFile, forked.fileEntries);
-	return forked;
-}
-
-export async function forkSessionFromFileAsync(
-	sourcePath: string,
-	targetCwd: string,
-	sessionDir?: string,
-	options?: NewSessionOptions,
-): Promise<ForkedSessionFile> {
-	const sourceEntries: FileEntry[] = [];
-	const input = createReadStream(resolvePath(sourcePath), { encoding: "utf8" });
-	const lines = createInterface({ input, crlfDelay: Infinity });
-	try {
-		for await (const line of lines) sourceEntries.push(...parseSessionEntries(line));
-	} finally {
-		lines.close();
-		input.destroy();
-	}
-	const forked = prepareFork(sourcePath, targetCwd, sourceEntries, sessionDir, options);
-	await mkdir(forked.sessionDir, { recursive: true });
-	await writeFile(forked.sessionFile, serializeSessionEntries(forked.fileEntries));
-	return forked;
-}
-
-function prepareFork(
-	sourcePath: string,
-	targetCwd: string,
-	sourceEntries: FileEntry[],
-	sessionDir?: string,
-	options?: NewSessionOptions,
-): ForkedSessionFile {
-	const resolvedSourcePath = resolvePath(sourcePath);
-	const resolvedTargetCwd = resolvePath(targetCwd);
-	if (sourceEntries.length === 0) {
-		throw new Error(`Cannot fork: source session file is empty or invalid: ${resolvedSourcePath}`);
-	}
-	validateSessionFileEntries(sourceEntries, resolvedSourcePath);
-	const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDirPath(resolvedTargetCwd);
-	if (options?.id !== undefined) assertValidSessionId(options.id);
-	const newSessionId = options?.id ?? createSessionId();
-	const timestamp = new Date().toISOString();
-	const newSessionFile = join(dir, `${timestamp.replace(/[:.]/g, "-")}_${newSessionId}.jsonl`);
-	const newHeader = createSessionHeader(
-		newSessionId,
-		resolvedTargetCwd,
-		timestamp,
-		resolvedSourcePath,
-		options?.internal,
-		options?.workflow,
-	);
-	return {
-		cwd: resolvedTargetCwd,
-		sessionDir: dir,
-		sessionFile: newSessionFile,
-		fileEntries: [newHeader, ...sourceEntries.filter((entry) => entry.type !== "session")],
-	};
+	const labelEntries = buildLabelEntries(pathEntryIds, lastEntryId, labelsToWrite);
+	return { sessionId: newSessionId, fileEntries: [header, ...pathWithoutLabels, ...labelEntries] };
 }

@@ -147,7 +147,7 @@ async function generateOwnedSessionSummary(this: AgentSession): Promise<void> {
 		if (this._sessionSummaryRun !== run) return;
 		if (getLastConversationMessageId(this.sessionManager.getBranch()) !== throughId) return;
 
-		this.sessionManager.appendSessionSummary(result.summary, throughId, result.usage);
+		await this.sessionManager.appendSessionSummary(result.summary, throughId, result.usage);
 		this._lastSummarizedMessageId = throughId;
 	} catch {
 		// Nothing awaits this call, so an escaping rejection would surface as an unhandled

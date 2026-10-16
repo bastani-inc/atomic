@@ -77,7 +77,7 @@ function registerFetchContentTool(): ToolDefinition {
 	const tools: ToolDefinition[] = [];
 	const extensionApi: Pick<ExtensionAPI, "registerTool" | "appendEntry"> = {
 		registerTool: (tool: ToolDefinition) => tools.push(tool),
-		appendEntry: () => {},
+		appendEntry: async () => {},
 	};
 	registerContentTools(extensionApi as ExtensionAPI, {
 		maxInlineContent: 100_000,

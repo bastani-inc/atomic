@@ -425,14 +425,14 @@ export function createExtensionAPI(
 			runtime.sendUserMessage(content, options);
 		},
 
-		appendEntry(customType: string, data?: unknown): void {
+		async appendEntry<T>(customType: string, data?: T): Promise<void> {
 			assertActive();
-			runtime.appendEntry(customType, data);
+			await runtime.appendEntry(customType, data);
 		},
 
-		setSessionName(name: string): void {
+		async setSessionName(name: string): Promise<void> {
 			assertActive();
-			runtime.setSessionName(name);
+			await runtime.setSessionName(name);
 		},
 
 		getSessionName(): string | undefined {
@@ -440,9 +440,9 @@ export function createExtensionAPI(
 			return runtime.getSessionName();
 		},
 
-		setLabel(entryId: string, label: string | undefined): void {
+		async setLabel(entryId: string, label: string | undefined): Promise<void> {
 			assertActive();
-			runtime.setLabel(entryId, label);
+			await runtime.setLabel(entryId, label);
 		},
 
 		exec(command: string, args: string[], options?: ExecOptions) {
@@ -485,55 +485,53 @@ export function createExtensionAPI(
 			return runtime.getThinkingLevel();
 		},
 
-		setThinkingLevel(level) {
+		async setThinkingLevel(level) {
 			assertActive();
-			runtime.setThinkingLevel(level);
+			await runtime.setThinkingLevel(level);
 		},
 
-		registerProviderAlias({ id, name, provider }) {
-			assertActive();
-			applyRuntimeChange({
-				apply: () => runtime.registerProvider(id, { aliasOf: provider, name }, extension.path),
-				rollback: () => runtime.unregisterProvider(id, extension.path),
-			});
+		async registerProviderAlias({ id, name, provider }) {
+			await api.registerProvider(id, { aliasOf: provider, name });
 		},
 
-		registerProvider(nameOrProvider: string | Provider, config?: ProviderConfig) {
+		async registerProvider(nameOrProvider: string | Provider, config?: ProviderConfig): Promise<void> {
 			assertActive();
-			if (typeof nameOrProvider === "string") {
-				if (!config) throw new Error("Provider config is required");
-				const name = nameOrProvider;
+			if (typeof nameOrProvider === "string" && !config) throw new Error("Provider config is required");
+			if (state === "loading") {
+				const providerId = typeof nameOrProvider === "string" ? nameOrProvider : nameOrProvider.id;
 				applyRuntimeChange({
-					apply: () => runtime.registerProvider(name, config, extension.path),
-					rollback: () => runtime.unregisterProvider(name, extension.path),
+					apply: () => {
+						if (typeof nameOrProvider === "string")
+							runtime.registerProvider(nameOrProvider, config!, extension.path);
+						else runtime.registerProvider(nameOrProvider, extension.path);
+					},
+					rollback: () => {
+						runtime.unregisterProvider(providerId, extension.path);
+					},
 				});
-			} else {
-				const provider = nameOrProvider;
-				applyRuntimeChange({
-					apply: () => runtime.registerProvider(provider, extension.path),
-					rollback: () => runtime.unregisterProvider(provider.id, extension.path),
-				});
+				return;
 			}
+			if (typeof nameOrProvider === "string")
+				await runtime.registerProvider(nameOrProvider, config!, extension.path);
+			else await runtime.registerProvider(nameOrProvider, extension.path);
 		},
 
-		unregisterProvider(name: string) {
+		async unregisterProvider(name: string): Promise<void> {
 			assertActive();
-			const prior = runtime.pendingProviderRegistrations.filter((registration) =>
-				"provider" in registration ? registration.provider.id === name : registration.name === name,
-			);
+			if (state !== "loading") {
+				await runtime.unregisterProvider(name);
+				return;
+			}
+			let prior = originalRuntime.pendingProviderRegistrations;
 			applyRuntimeChange({
-				// Explicit unregistration stays name-wide: its rollback below
-				// restores every prior registration, so a narrower removal here
-				// would re-register entries that were never taken away.
-				apply: () => runtime.unregisterProvider(name),
+				apply: () => {
+					prior = originalRuntime.pendingProviderRegistrations;
+					originalRuntime.pendingProviderRegistrations = prior.filter(
+						(entry) => ("provider" in entry ? entry.provider.id : entry.name) !== name,
+					);
+				},
 				rollback: () => {
-					for (const registration of prior) {
-						if ("provider" in registration) {
-							runtime.registerProvider(registration.provider, registration.extensionPath);
-						} else {
-							runtime.registerProvider(registration.name, registration.config, registration.extensionPath);
-						}
-					}
+					originalRuntime.pendingProviderRegistrations = prior;
 				},
 			});
 		},

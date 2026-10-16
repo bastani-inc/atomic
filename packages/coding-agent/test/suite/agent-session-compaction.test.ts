@@ -221,7 +221,7 @@ describe("session_compact_failed", () => {
 			settings: { compaction: { enabled: true, reserveTokens: 10, preserve_recent: 2 } },
 		});
 		for (let index = 0; index < 10; index++) {
-			harness.sessionManager.appendMessage({
+			await harness.sessionManager.appendMessage({
 				role: "user",
 				content: `transcript ${index} ${"x".repeat(100)}`,
 				timestamp: Date.now() + index,

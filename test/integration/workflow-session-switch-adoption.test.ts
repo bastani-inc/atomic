@@ -136,7 +136,7 @@ async function switchHost(
 		cwd: project,
 		agentDir,
 		sessionManager: options.persistedSessions
-			? SessionManager.create(project, join(root, "sessions"))
+			? await SessionManager.create(project, join(root, "sessions"))
 			: SessionManager.inMemory(project),
 	});
 	const uiContext = {
@@ -197,7 +197,7 @@ for (const reason of ["new", "fork"] as const) {
 			const { runtime } = host;
 			const first = runtime.session;
 			const firstId = first.sessionManager.getSessionId();
-			const forkEntry = first.sessionManager.appendMessage({
+			const forkEntry = await first.sessionManager.appendMessage({
 				role: "user",
 				content: "hello",
 				timestamp: Date.now(),
@@ -272,7 +272,11 @@ for (const reason of ["new", "fork"] as const) {
 			const { runtime } = host;
 			const first = runtime.session;
 			const firstId = first.sessionManager.getSessionId();
-			forkEntryId = first.sessionManager.appendMessage({ role: "user", content: "hello", timestamp: Date.now() });
+			forkEntryId = await first.sessionManager.appendMessage({
+				role: "user",
+				content: "hello",
+				timestamp: Date.now(),
+			});
 			const launch = await callWorkflowTool(first, { action: "run", workflow: "switch-adoption", inputs: {} });
 			const runId = (launch.details as { runId?: string }).runId;
 			assert.ok(runId, JSON.stringify(launch));
@@ -400,8 +404,8 @@ test(
 		const host = await switchHost([], { persistedSessions: true });
 		const { runtime } = host;
 		const first = runtime.session;
-		first.sessionManager.appendMessage({ role: "user", content: "hello", timestamp: Date.now() });
-		first.sessionManager.appendMessage({
+		await first.sessionManager.appendMessage({ role: "user", content: "hello", timestamp: Date.now() });
+		await first.sessionManager.appendMessage({
 			role: "assistant",
 			content: [{ type: "text", text: "hi" }],
 			api: "openai-responses",

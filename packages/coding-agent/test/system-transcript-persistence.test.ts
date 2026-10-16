@@ -23,10 +23,10 @@ test("system instruction and tool deltas count toward context pressure", () => {
 	assert.ok(estimateTokens(message) >= 1500);
 });
 
-test("compaction, disk resume, and branches preserve raw system state and tool loadout", () => {
+test("compaction, disk resume, and branches preserve raw system state and tool loadout", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "atomic-system-transcript-"));
 	try {
-		const manager = SessionManager.create(dir, dir);
+		const manager = await SessionManager.create(dir, dir);
 		const head: SystemMessage = {
 			role: "system",
 			content: "  base\n\nbase  ",
@@ -34,9 +34,9 @@ test("compaction, disk resume, and branches preserve raw system state and tool l
 			toolsAdded: [tool("first"), tool("second")],
 			timestamp: 1,
 		};
-		manager.appendMessage(head);
-		manager.appendMessage(userMsg("old question"));
-		const branchPoint = manager.appendMessage(assistantMsg("old answer"));
+		await manager.appendMessage(head);
+		await manager.appendMessage(userMsg("old question"));
+		const branchPoint = await manager.appendMessage(assistantMsg("old answer"));
 		const patch: SystemMessage = {
 			role: "system",
 			content: "\nadded\n",
@@ -44,9 +44,9 @@ test("compaction, disk resume, and branches preserve raw system state and tool l
 			toolsRemoved: [{ name: "first" }],
 			timestamp: 2,
 		};
-		manager.appendMessage(patch);
-		const firstKept = manager.appendMessage(userMsg("keep me"));
-		manager.appendMessage(assistantMsg("kept answer"));
+		await manager.appendMessage(patch);
+		const firstKept = await manager.appendMessage(userMsg("keep me"));
+		await manager.appendMessage(assistantMsg("kept answer"));
 		const expected = getCurrentSystemMessage(manager.buildSessionContext().messages);
 		const details: VerbatimCompactionDetails = {
 			strategy: "verbatim-lines",
@@ -63,7 +63,7 @@ test("compaction, disk resume, and branches preserve raw system state and tool l
 			},
 			rung: "planned",
 		};
-		manager.appendCompaction("[User]: compacted\n(filtered 8 lines)", firstKept, 100, details);
+		await manager.appendCompaction("[User]: compacted\n(filtered 8 lines)", firstKept, 100, details);
 		const compacted = manager.buildSessionContext().messages;
 		assert.deepEqual(getCurrentSystemMessage(compacted), { ...expected, timestamp: compacted[0].timestamp });
 		assert.deepEqual(
@@ -72,14 +72,14 @@ test("compaction, disk resume, and branches preserve raw system state and tool l
 		);
 		const file = manager.getSessionFile();
 		assert.ok(file);
-		const resumed = SessionManager.open(file);
+		const resumed = await SessionManager.open(file);
 		assert.deepEqual(resumed.buildSessionContext().messages, compacted);
 		assert.deepEqual(
 			getCurrentTools(compacted).map((value) => value.name),
 			["second"],
 		);
 		assert.equal(Object.hasOwn(compacted[0], "toolsRemoved"), false);
-		resumed.branch(branchPoint);
+		await resumed.branch(branchPoint);
 		assert.deepEqual(getCurrentSystemMessage(resumed.buildSessionContext().messages), head);
 		assert.deepEqual(
 			getCurrentTools(resumed.buildSessionContext().messages).map((value) => value.name),

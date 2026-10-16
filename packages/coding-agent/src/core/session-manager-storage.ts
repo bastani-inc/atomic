@@ -1,22 +1,11 @@
-import {
-	appendFileSync,
-	closeSync,
-	existsSync,
-	mkdirSync,
-	openSync,
-	readdirSync,
-	readSync,
-	statSync,
-	truncateSync,
-	unlinkSync,
-	writeFileSync,
-} from "fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readSync, statSync } from "fs";
 import { join } from "path";
 import { StringDecoder } from "string_decoder";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { isClassifiedWorkflowSession } from "./session-manager-classification.ts";
 import type { FileEntry, SessionEntry, SessionHeader } from "./session-manager-types.ts";
 import { validateSessionFileEntries } from "./session-manager-validation.ts";
+
 import { StorageUnavailableError } from "./storage/session/errors.js";
 
 const SESSION_READ_BUFFER_SIZE = 1024 * 1024;
@@ -36,7 +25,9 @@ function parseSessionEntryLine(line: string, path: string): FileEntry | undefine
 	} catch (cause) {
 		throw new StorageUnavailableError({ adapter: "jsonl", location: path }, cause as Error);
 	}
-	if (entry?.type === "session") validateSessionFileEntries([entry], path);
+	if (entry?.type === "session") {
+		validateSessionFileEntries([entry], path);
+	}
 	return entry;
 }
 
@@ -180,46 +171,7 @@ export function findMostRecentSession(sessionDir: string, cwd?: string, includeI
 }
 
 export function serializeSessionEntries(entries: FileEntry[]): string {
-	return `${entries.map((e) => JSON.stringify(e)).join("\n")}\n`;
-}
-
-export function writeSessionEntries(filePath: string, entries: FileEntry[]): void {
-	writeFileSync(filePath, serializeSessionEntries(entries));
-}
-
-function appendSessionPayload(filePath: string, payload: string): void {
-	const existed = existsSync(filePath);
-	const offset = existed ? statSync(filePath).size : 0;
-	try {
-		if (offset > 0) {
-			const fd = openSync(filePath, "r");
-			try {
-				const lastByte = Buffer.alloc(1);
-				readSync(fd, lastByte, 0, 1, offset - 1);
-				if (lastByte[0] !== 10) payload = `\n${payload}`;
-			} finally {
-				closeSync(fd);
-			}
-		}
-		appendFileSync(filePath, payload);
-	} catch (writeError) {
-		try {
-			if (existed) truncateSync(filePath, offset);
-			else if (existsSync(filePath)) unlinkSync(filePath);
-		} catch (rollbackError) {
-			throw new AggregateError([writeError, rollbackError], "Session append and rollback failed");
-		}
-		throw writeError;
-	}
-}
-
-export function appendSessionEntry(filePath: string, entry: FileEntry): void {
-	appendSessionPayload(filePath, `${JSON.stringify(entry)}\n`);
-}
-
-export function appendSessionEntries(filePath: string, entries: FileEntry[]): void {
-	if (entries.length === 0) return;
-	appendSessionPayload(filePath, serializeSessionEntries(entries));
+	return `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
 }
 
 /**
@@ -233,25 +185,6 @@ export function hasConversationMessage(entries: FileEntry[]): boolean {
 		(entry): entry is SessionEntry =>
 			entry.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant"),
 	);
-}
-
-/**
- * Append one already-published entry. Buffered entries stay unwritten until a
- * user or assistant message exists; the first write after that flushes them together.
- * An explicit flush makes every later entry append immediately, including
- * entries written before the first user message.
- * Returns the new flushed state and throws without changing it on write failure.
- */
-export function persistAppendedEntry(
-	filePath: string,
-	entries: FileEntry[],
-	entry: FileEntry,
-	flushed: boolean,
-): boolean {
-	if (flushed) appendSessionEntry(filePath, entry);
-	else if (!hasConversationMessage(entries)) return false;
-	else appendSessionEntries(filePath, entries);
-	return true;
 }
 
 export function ensureDirectory(dir: string): void {

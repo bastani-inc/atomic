@@ -298,8 +298,9 @@ export class ExtensionRunner {
 		actions: ExtensionActions,
 		contextActions: ExtensionContextActions,
 		providerActions?: {
-			registerProvider?: (providerOrName: Provider | string, config?: ProviderConfig) => void;
-			unregisterProvider?: (name: string) => void;
+			registerProvider?: (providerOrName: Provider | string, config?: ProviderConfig) => Promise<void>;
+			restoreProvider?: (providerOrName: Provider | string, config?: ProviderConfig) => void;
+			unregisterProvider?: (name: string) => Promise<void>;
 		},
 	): void {
 		// Copy actions into the shared runtime (all extension APIs reference this)
@@ -348,12 +349,12 @@ export class ExtensionRunner {
 			try {
 				if ("provider" in registration) {
 					(
-						providerActions?.registerProvider ??
+						providerActions?.restoreProvider ??
 						((provider: Provider) => this.modelRegistry.registerProvider(provider))
 					)(registration.provider);
 				} else {
 					(
-						providerActions?.registerProvider ??
+						providerActions?.restoreProvider ??
 						((name: string, config?: ProviderConfig) => this.modelRegistry.registerProvider(name, config!))
 					)(registration.name, registration.config);
 				}
@@ -370,17 +371,20 @@ export class ExtensionRunner {
 
 		// From this point on, provider registration/unregistration takes effect immediately
 		// without requiring a /reload.
-		this.runtime.registerProvider = ((providerOrName: Provider | string, configOrPath?: ProviderConfig | string) => {
+		this.runtime.registerProvider = (async (
+			providerOrName: Provider | string,
+			configOrPath?: ProviderConfig | string,
+		) => {
 			if (typeof providerOrName === "string") {
 				const config = configOrPath as ProviderConfig;
-				if (providerActions?.registerProvider) providerActions.registerProvider(providerOrName, config);
+				if (providerActions?.registerProvider) await providerActions.registerProvider(providerOrName, config);
 				else this.modelRegistry.registerProvider(providerOrName, config);
-			} else if (providerActions?.registerProvider) providerActions.registerProvider(providerOrName);
+			} else if (providerActions?.registerProvider) await providerActions.registerProvider(providerOrName);
 			else this.modelRegistry.registerProvider(providerOrName);
 		}) as ExtensionRuntime["registerProvider"];
-		this.runtime.unregisterProvider = (name) => {
+		this.runtime.unregisterProvider = async (name) => {
 			if (providerActions?.unregisterProvider) {
-				providerActions.unregisterProvider(name);
+				await providerActions.unregisterProvider(name);
 				return;
 			}
 			this.modelRegistry.unregisterProvider(name);

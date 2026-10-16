@@ -535,16 +535,16 @@ describe("AgentSession actionable boundaries", () => {
 			settings: { compaction: { enabled: true, reserveTokens: 0 } },
 		});
 		harnesses.push(harness);
-		const userId = harness.sessionManager.appendMessage({
+		const userId = await harness.sessionManager.appendMessage({
 			role: "user",
 			content: "small input",
 			timestamp: Date.now() - 3,
 		});
-		harness.sessionManager.appendContextEdit(userId, { content: "edited input" });
+		await harness.sessionManager.appendContextEdit(userId, { content: "edited input" });
 		const response = fauxAssistantMessage("answer", { timestamp: Date.now() - 2 });
 		response.usage = { ...response.usage, input: 50_000, output: 1, totalTokens: 50_001 };
-		harness.sessionManager.appendMessage(response);
-		harness.sessionManager.appendCompaction("[User]: small summary", userId, 50_001, verbatimDetails);
+		await harness.sessionManager.appendMessage(response);
+		await harness.sessionManager.appendCompaction("[User]: small summary", userId, 50_001, verbatimDetails);
 		harness.session.refreshContext();
 		const runAutoCompaction = vi.spyOn(
 			harness.session as unknown as {
@@ -573,8 +573,8 @@ describe("AgentSession actionable boundaries", () => {
 		harnesses.push(harness);
 		const retained = fauxAssistantMessage("retained");
 		retained.usage = { ...retained.usage, input: 10_000, totalTokens: 10_001 };
-		const retainedId = harness.sessionManager.appendMessage(retained);
-		harness.sessionManager.appendCompaction("[User]: summary", retainedId, 10_001, verbatimDetails);
+		const retainedId = await harness.sessionManager.appendMessage(retained);
+		await harness.sessionManager.appendCompaction("[User]: summary", retainedId, 10_001, verbatimDetails);
 		harness.session.refreshContext();
 
 		expect(harness.session.getContextUsage()?.tokens).toBeNull();
@@ -812,17 +812,17 @@ describe("durable recovery omissions", () => {
 	it("resumes an admitted queued message after an interrupted empty reply through a durable omission", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
-		const userId = harness.sessionManager.appendMessage({
+		const userId = await harness.sessionManager.appendMessage({
 			role: "user",
 			content: "admitted queued message",
 			timestamp: Date.now() - 2,
 		});
-		const abortedId = harness.sessionManager.appendMessage(
+		const abortedId = await harness.sessionManager.appendMessage(
 			fauxAssistantMessage("", { stopReason: "aborted", timestamp: Date.now() - 1 }),
 		);
 		harness.session.refreshContext();
 
-		harness.sessionManager.appendContextEdit(abortedId, null);
+		await harness.sessionManager.appendContextEdit(abortedId, null);
 		harness.session.refreshContext();
 
 		expect(harness.session.messages.map((message) => message.role)).toEqual(["user"]);

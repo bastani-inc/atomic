@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AuthInteraction } from "@bastani/pi-ai";
-import { type Api, clampThinkingLevel, type Model } from "@bastani/pi-ai/compat";
+import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { AgentSession, CompactionReason } from "../../core/agent-session.js";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.ts";
 import type { ModelMutationOptions, PromptOptions } from "../../core/agent-session-types.js";
@@ -256,7 +256,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			this.compactionReason = state.isCompacting ? state.compactionReason : undefined;
 			this.queuePause.synchronize(state.queuedMessagesPaused === true);
 			this.replaceModelFallback(state.modelFallbackMessage, state.modelFallbackReason);
-			this.refreshSessionView();
+			await this.refreshSessionView();
 			this.engineCallbackActive = false;
 			this.health.clearUnresponsive();
 			this.health.markCooperativeAbortSettled();
@@ -282,7 +282,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.remoteModelCatalog.applyModels({ models: result.models, scopedModels: result.scopedModels ?? [] });
 		await super.session.modelRuntime.reloadCredentials({ refreshAvailability: false });
 		super.session.modelRuntime.applyExternalProviderAuthStatus(provider, result.authStatus);
-		super.session.refreshCurrentModelFromRegistry();
+		await super.session.refreshCurrentModelFromRegistry();
 		return result;
 	}
 
@@ -557,7 +557,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		if (result.cancelled) return result;
 		const state = await this.client.getState();
 		if (state.sessionFile) await super.switchSession(state.sessionFile);
-		else this.resetUnpersistedSessionView();
+		else await this.resetUnpersistedSessionView();
 		await this.initializeFromEngine();
 		return result;
 	}
@@ -735,12 +735,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			},
 			setSessionName: {
 				configurable: true,
-				value: (name: string) => {
+				value: async (name: string) => {
+					await this.client.setSessionName(name);
 					this.remoteSessionName = name;
-					this.dispatchBestEffort(
-						"set session name",
-						this.client.setSessionName(name).then(() => this.refreshSessionView()),
-					);
+					await this.refreshSessionView();
 				},
 			},
 			getSteeringMessages: { configurable: true, value: () => [...this.steeringMessages] },
@@ -793,21 +791,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			},
 			setThinkingLevel: {
 				configurable: true,
-				value: (level: AgentSession["thinkingLevel"], options?: ModelMutationOptions) => {
-					const availableLevels = session.getAvailableThinkingLevels();
-					const effectiveLevel = availableLevels.includes(level)
-						? level
-						: session.model
-							? clampThinkingLevel(session.model, level)
-							: "off";
-					session.agent.state.thinkingLevel = effectiveLevel;
+				value: async (level: AgentSession["thinkingLevel"], options?: ModelMutationOptions) => {
 					const epoch = ++this.thinkingEpoch;
-					this.dispatchBestEffort(
-						"set thinking level",
-						this.client.setThinkingLevelAck(level, options).then((result) => {
-							this.applyThinkingAck(session, epoch, result, options?.persist === true);
-						}),
-					);
+					const result = await this.client.setThinkingLevelAck(level, options);
+					this.applyThinkingAck(session, epoch, result, options?.persist === true);
 				},
 			},
 			cycleModel: {
@@ -827,20 +814,15 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			},
 			cycleThinkingLevel: {
 				configurable: true,
-				value: (options?: ModelMutationOptions) => {
+				value: async (options?: ModelMutationOptions) => {
 					const levels = session.getAvailableThinkingLevels();
 					if (levels.length <= 1) return undefined;
 					const current = levels.indexOf(session.thinkingLevel);
 					const level = levels[(current + 1) % levels.length]!;
-					session.agent.state.thinkingLevel = level;
 					const epoch = ++this.thinkingEpoch;
-					this.dispatchBestEffort(
-						"cycle thinking level",
-						this.client.setThinkingLevelAck(level, options).then((result) => {
-							this.applyThinkingAck(session, epoch, result, options?.persist === true);
-						}),
-					);
-					return level;
+					const result = await this.client.setThinkingLevelAck(level, options);
+					this.applyThinkingAck(session, epoch, result, options?.persist === true);
+					return result.level;
 				},
 			},
 			setSteeringMode: {
@@ -932,9 +914,12 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.followUpMessages = [...pendingClear.snapshot.followUp];
 	}
 
-	private resetUnpersistedSessionView(): void {
+	private async resetUnpersistedSessionView(): Promise<void> {
 		const session = super.session;
-		const manager = SessionManager.create(session.sessionManager.getCwd(), session.sessionManager.getSessionDir());
+		const manager = await SessionManager.create(
+			session.sessionManager.getCwd(),
+			session.sessionManager.getSessionDir(),
+		);
 		Object.defineProperty(session, "sessionManager", { configurable: true, value: manager });
 		this.patchSessionManager(manager);
 		session.agent.state.messages = [];
@@ -967,12 +952,12 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		}
 	}
 
-	private refreshSessionView(): void {
+	private async refreshSessionView(): Promise<void> {
 		const session = super.session;
 		const sessionFile = session.sessionFile;
 		if (!sessionFile) return;
 		const currentManager = session.sessionManager;
-		const refreshed = SessionManager.open(sessionFile, currentManager.getSessionDir(), currentManager.getCwd());
+		const refreshed = await SessionManager.open(sessionFile, currentManager.getSessionDir(), currentManager.getCwd());
 		Object.defineProperty(session, "sessionManager", { configurable: true, value: refreshed });
 		this.patchSessionManager(refreshed);
 		session.agent.state.messages = refreshed.buildSessionContext().messages;

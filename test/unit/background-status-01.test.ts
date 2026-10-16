@@ -223,24 +223,24 @@ describe("statusRuns", () => {
 describe("killRun", () => {
 	test("returns ok:false reason:not_found for unknown runId", async () => {
 		const st = createStore();
-		const result = killRun("nonexistent", { store: st });
+		const result = await killRun("nonexistent", { store: st });
 		assert.equal(result.ok, false);
 		if (!result.ok) assert.equal(result.reason, "not_found");
 	});
 
-	test("returns ok:false reason:already_ended when run has ended", () => {
+	test("returns ok:false reason:already_ended when run has ended", async () => {
 		const st = createStore();
 		st.recordRunStart(makeRun({ id: "r1" }));
 		st.recordRunEnd("r1", "completed");
-		const result = killRun("r1", { store: st });
+		const result = await killRun("r1", { store: st });
 		assert.equal(result.ok, false);
 		if (!result.ok) assert.equal(result.reason, "already_ended");
 	});
 
-	test("returns ok:true and marks run as killed", () => {
+	test("returns ok:true and marks run as killed", async () => {
 		const st = createStore();
 		st.recordRunStart(makeRun({ id: "r1" }));
-		const result = killRun("r1", { store: st });
+		const result = await killRun("r1", { store: st });
 		assert.equal(result.ok, true);
 		if (result.ok) {
 			assert.equal(result.runId, "r1");
@@ -251,16 +251,16 @@ describe("killRun", () => {
 	});
 });
 describe("killAllRuns", () => {
-	test("returns empty when no runs", () => {
+	test("returns empty when no runs", async () => {
 		const st = createStore();
-		assert.equal(killAllRuns({ store: st }).length, 0);
+		assert.equal((await killAllRuns({ store: st })).length, 0);
 	});
 
-	test("kills all in-flight runs", () => {
+	test("kills all in-flight runs", async () => {
 		const st = createStore();
 		st.recordRunStart(makeRun({ id: "r1" }));
 		st.recordRunStart(makeRun({ id: "r2", name: "wf2" }));
-		const results = killAllRuns({ store: st });
+		const results = await killAllRuns({ store: st });
 		assert.equal(results.length, 2);
 		assert.equal(
 			results.every((r) => r.ok),
@@ -272,11 +272,11 @@ describe("killAllRuns", () => {
 		);
 	});
 
-	test("does not kill already-ended runs", () => {
+	test("does not kill already-ended runs", async () => {
 		const st = createStore();
 		st.recordRunStart(makeRun({ id: "r1" }));
 		st.recordRunEnd("r1", "completed");
-		const results = killAllRuns({ store: st });
+		const results = await killAllRuns({ store: st });
 		// No in-flight runs, so returns empty
 		assert.equal(results.length, 0);
 	});

@@ -742,7 +742,7 @@ describe("durable pending-stage resume", () => {
 							async setModel() {},
 							setThinkingLevel() {},
 							cycleModel: (async () => undefined) as StageSessionRuntime["cycleModel"],
-							cycleThinkingLevel: (() => undefined) as StageSessionRuntime["cycleThinkingLevel"],
+							cycleThinkingLevel: (async () => undefined) as StageSessionRuntime["cycleThinkingLevel"],
 							agent: undefined as never,
 							model: undefined,
 							thinkingLevel: "medium",

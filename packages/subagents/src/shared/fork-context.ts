@@ -7,15 +7,21 @@ interface ForkableSessionManager {
 	getSessionFile(): string | undefined;
 	getLeafId(): string | null;
 	getSessionDir?(): string;
-	openSession?: (path: string, sessionDir?: string) => { createBranchedSession(leafId: string): string | undefined };
+	openSession?: (
+		path: string,
+		sessionDir?: string,
+	) => Promise<{ createBranchedSession(leafId: string): Promise<string | undefined> }>;
 }
 
 interface ForkContextResolverOptions {
-	openSession?: (path: string, sessionDir?: string) => { createBranchedSession(leafId: string): string | undefined };
+	openSession?: (
+		path: string,
+		sessionDir?: string,
+	) => Promise<{ createBranchedSession(leafId: string): Promise<string | undefined> }>;
 }
 
 interface ForkContextResolver {
-	sessionFileForIndex(index?: number): string | undefined;
+	sessionFileForIndex(index?: number): Promise<string | undefined>;
 }
 
 export function resolveSubagentContext(value: unknown): SubagentExecutionContext {
@@ -29,7 +35,7 @@ export function createForkContextResolver(
 ): ForkContextResolver {
 	if (resolveSubagentContext(requestedContext) !== "fork") {
 		return {
-			sessionFileForIndex: () => undefined,
+			sessionFileForIndex: async () => undefined,
 		};
 	}
 
@@ -51,7 +57,7 @@ export function createForkContextResolver(
 	const cachedSessionFiles = new Map<number, string>();
 
 	return {
-		sessionFileForIndex(index = 0): string | undefined {
+		async sessionFileForIndex(index = 0): Promise<string | undefined> {
 			const cached = cachedSessionFiles.get(index);
 			if (cached) return cached;
 			try {
@@ -60,8 +66,8 @@ export function createForkContextResolver(
 						`Parent session file does not exist: ${parentSessionFile}. Pi has not persisted enough history to fork yet.`,
 					);
 				}
-				const sourceManager = openSession(parentSessionFile, sessionDir);
-				const sessionFile = sourceManager.createBranchedSession(leafId);
+				const sourceManager = await openSession(parentSessionFile, sessionDir);
+				const sessionFile = await sourceManager.createBranchedSession(leafId);
 				if (!sessionFile) {
 					throw new Error("Session manager did not return a forked session file.");
 				}

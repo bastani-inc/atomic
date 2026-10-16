@@ -274,9 +274,15 @@ export interface WorkflowMcpPort {
  * Mirrors PersistenceAPI from shared/persistence-session-entries — no hard import.
  */
 export interface WorkflowPersistencePort {
-	appendEntry(type: string, payload: Record<string, unknown>): string | undefined;
-	setLabel?(entryId: string, label: string): void;
-	appendCustomMessageEntry?(content: string, meta?: Record<string, unknown>): string | undefined;
+	appendEntry(
+		type: string,
+		payload: Record<string, unknown>,
+	): string | void | Promise<string | undefined> | Promise<void>;
+	setLabel?(entryId: string, label: string): void | Promise<void>;
+	appendCustomMessageEntry?(
+		content: string,
+		meta?: Record<string, unknown>,
+	): string | void | Promise<string | undefined> | Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -372,7 +378,7 @@ export interface StageContext<TSchemaDef extends TSchema | undefined = undefined
 
 	/** Model control. */
 	setModel(model: Parameters<AgentSession["setModel"]>[0]): Promise<void>;
-	setThinkingLevel(level: Parameters<AgentSession["setThinkingLevel"]>[0]): void;
+	setThinkingLevel(level: Parameters<AgentSession["setThinkingLevel"]>[0]): Promise<void>;
 	cycleModel(): Promise<ModelCycleResult | undefined>;
 	cycleThinkingLevel(): ReturnType<AgentSession["cycleThinkingLevel"]>;
 

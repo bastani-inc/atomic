@@ -105,7 +105,7 @@ function harnessPi(handlers: LifecycleHandlers, tools: Map<string, ToolDefinitio
 		registerCommand() {},
 		registerShortcut() {},
 		registerMessageRenderer() {},
-		appendEntry() {},
+		async appendEntry() {},
 		getSessionName: () => sessionName,
 		setSessionName(value: string) {
 			sessionName = value;

@@ -302,7 +302,7 @@ declare module "./interactive-mode-base.ts" {
 		handleDequeue(): void;
 		refreshBuiltInHeader(): void;
 		updateEditorBorderColor(): void;
-		cycleThinkingLevel(): void;
+		cycleThinkingLevel(): Promise<void>;
 		cycleModel(direction: "forward" | "backward"): Promise<void>;
 		toggleToolOutputExpansion(): void;
 		setToolsExpanded(expanded: boolean): void;
@@ -334,8 +334,8 @@ declare module "./interactive-mode-base.ts" {
 		): void;
 		showSettingsSelector(): void;
 		handleModelCommand(searchTerm?: string): Promise<void>;
-		handleThinkingCommand(searchTerm?: string): void;
-		selectThinkingLevel(level: ThinkingLevel): void;
+		handleThinkingCommand(searchTerm?: string): Promise<void>;
+		selectThinkingLevel(level: ThinkingLevel): Promise<void>;
 		showThinkingSelector(): void;
 		findExactModelMatch(searchTerm: string): Promise<Model<Api> | undefined>;
 		getModelCandidates(): Promise<Model<Api>[]>;
@@ -380,7 +380,7 @@ declare module "./interactive-mode-base.ts" {
 		handleImportCommand(text: string): Promise<void>;
 		handleShareCommand(): Promise<void>;
 		handleCopyCommand(): Promise<void>;
-		handleNameCommand(text: string): void;
+		handleNameCommand(text: string): Promise<void>;
 		handleSessionCommand(): void;
 		handleToolsCommand(): Promise<void>;
 		handleChangelogCommand(): void;

@@ -60,7 +60,7 @@ function productionSession(overrides: Partial<StageSessionRuntime>): StageSessio
 		async setModel() {},
 		setThinkingLevel() {},
 		cycleModel: async () => undefined,
-		cycleThinkingLevel: () => undefined,
+		cycleThinkingLevel: async () => undefined,
 		agent: undefined as unknown as AgentSession["agent"],
 		model: undefined as AgentSession["model"],
 		thinkingLevel: "medium",

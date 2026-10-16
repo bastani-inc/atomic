@@ -134,7 +134,7 @@ describe("ctx.tool persistence and cancellation races", () => {
 		await Promise.all([blockerEntered.promise, failureEntered.promise]);
 		failureRelease.resolve();
 		await waitForToolStatus(store, runId, "callback-first", "failed");
-		assert.equal(killRun(runId, { store, cancellation }).ok, true);
+		assert.equal((await killRun(runId, { store, cancellation })).ok, true);
 		blockerRelease.resolve();
 		const result = await pending;
 		lifecycle.unsubscribe();
@@ -371,7 +371,7 @@ describe("ctx.tool persistence and cancellation races", () => {
 		);
 
 		await entered.promise;
-		assert.equal(killRun(runId, { store, cancellation }).ok, true);
+		assert.equal((await killRun(runId, { store, cancellation })).ok, true);
 		release.resolve();
 		const result = await pending;
 		lifecycle.unsubscribe();

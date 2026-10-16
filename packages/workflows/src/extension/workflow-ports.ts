@@ -10,9 +10,9 @@ import type { ExtensionAPI } from "./public-types.js";
  * observers report the run's state, so this must not fail the run. Exactly
  * the staleness rejection is swallowed here. Every other error still throws.
  */
-function unlessStale<T>(append: () => T): T | undefined {
+async function unlessStale<T>(append: () => T | Promise<T>): Promise<T | undefined> {
 	try {
-		return append();
+		return await append();
 	} catch (error) {
 		if (isStaleExtensionContextError(error)) return undefined;
 		throw error;
@@ -23,15 +23,16 @@ export function makePersistencePort(pi: ExtensionAPI, persistRuns: boolean): Wor
 	if (!persistRuns) return undefined;
 	if (typeof pi.appendEntry !== "function") return undefined;
 	const port: WorkflowPersistencePort = {
-		appendEntry: (type, payload) => unlessStale(() => pi.appendEntry!(type, payload)),
+		appendEntry: async (type, payload) => (await unlessStale(() => pi.appendEntry!(type, payload))) ?? undefined,
 	};
 	if (typeof pi.setLabel === "function") {
-		port.setLabel = (entryId, label) => {
-			unlessStale(() => pi.setLabel!(entryId, label));
+		port.setLabel = async (entryId, label) => {
+			await unlessStale(() => pi.setLabel!(entryId, label));
 		};
 	}
 	if (typeof pi.appendCustomMessageEntry === "function") {
-		port.appendCustomMessageEntry = (content, meta) => unlessStale(() => pi.appendCustomMessageEntry!(content, meta));
+		port.appendCustomMessageEntry = async (content, meta) =>
+			(await unlessStale(() => pi.appendCustomMessageEntry!(content, meta))) ?? undefined;
 	}
 	return port;
 }

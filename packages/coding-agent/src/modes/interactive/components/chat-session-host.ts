@@ -157,6 +157,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 			return false;
 		}
 		this.state.liveChat.appendMessages(messages);
+		this.state.requestRender?.();
 		return true;
 	}
 

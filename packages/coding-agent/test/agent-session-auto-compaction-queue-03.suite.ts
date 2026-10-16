@@ -95,7 +95,7 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 		const model = { ...getModel("anthropic", "claude-sonnet-4-5")!, contextWindow: 200_000 };
 		const agent = new Agent({ initialState: { model, systemPrompt: "Test", tools: [] } });
 		sessionManager = SessionManager.inMemory();
-		sessionManager.appendMessage({
+		await sessionManager.appendMessage({
 			role: "user",
 			content: [{ type: "text", text: "existing compactable context" }],
 			timestamp: Date.now(),
@@ -461,8 +461,8 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 			timestamp: Date.now() - 1000,
 		};
 		const assistant = outputBudgetErrorAssistant();
-		sessionManager.appendMessage(userMessage);
-		sessionManager.appendMessage(assistant);
+		await sessionManager.appendMessage(userMessage);
+		await sessionManager.appendMessage(assistant);
 		session.agent.state.messages = [userMessage, assistant];
 		const continueSpy = vi.spyOn(session.agent, "continue").mockImplementation(async () => {
 			// The compacted context ends on the boundary text message, never an assistant tail.
@@ -496,8 +496,8 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 			timestamp: Date.now() - 1000,
 		};
 		const assistant = lengthStoppedAssistant();
-		sessionManager.appendMessage(userMessage);
-		sessionManager.appendMessage(assistant);
+		await sessionManager.appendMessage(userMessage);
+		await sessionManager.appendMessage(assistant);
 		session.agent.state.messages = [userMessage, assistant];
 		const continueSpy = vi.spyOn(session.agent, "continue").mockImplementation(async () => {
 			expect(session.agent.state.messages.at(-1)?.role).not.toBe("assistant");
@@ -615,8 +615,8 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 			timestamp: Date.now() - 1000,
 		};
 		const assistant = outputCappedLengthStoppedAssistant();
-		sessionManager.appendMessage(userMessage);
-		sessionManager.appendMessage(assistant);
+		await sessionManager.appendMessage(userMessage);
+		await sessionManager.appendMessage(assistant);
 		session.agent.state.messages = [userMessage, assistant];
 		const runAutoCompactionSpy = vi
 			.spyOn(

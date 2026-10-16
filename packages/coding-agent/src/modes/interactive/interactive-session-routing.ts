@@ -240,13 +240,14 @@ InteractiveModeBase.prototype.showTreeSelector = async function (
 				done();
 				this.ui.requestRender();
 			},
-			(entryId, label) => {
-				this.sessionManager.appendLabelChange(entryId, label);
-				this.ui.requestRender();
+			async (entryId, label) => {
+				await this.sessionManager.appendLabelChange(entryId, label);
 			},
 			initialSelectedId,
 			initialFilterMode,
 		);
+		selector.onLabelError = (error) => this.showError(error.message);
+		selector.onLabelUpdate = () => this.ui.requestRender();
 		return { component: selector, focus: selector };
 	});
 };
@@ -279,8 +280,8 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 				renameSession: async (sessionFilePath: string, nextName: string | undefined) => {
 					const next = (nextName ?? "").trim();
 					if (!next) return;
-					const mgr = SessionManager.open(sessionFilePath);
-					mgr.appendSessionInfo(next);
+					const mgr = await SessionManager.open(sessionFilePath);
+					await mgr.appendSessionInfo(next);
 				},
 				showRenameHint: true,
 				keybindings: this.keybindings,

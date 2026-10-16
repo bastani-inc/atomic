@@ -14,7 +14,7 @@ import { applyInheritedWorkflowSessionClassification } from "../../src/main-sess
  */
 
 function writeSessionFile(dir: string, header: SessionHeader, lines: string[] = []): string {
-	const path = join(dir, `${header.timestamp.replace(/[:.]/g, "-")}_${header.id}.jsonl`);
+	const path = join(dir, `${header.createdAt.replace(/[:.]/g, "-")}_${header.id}.jsonl`);
 	writeFileSync(path, `${JSON.stringify(header)}\n${lines.join("\n")}${lines.length ? "\n" : ""}`);
 	return path;
 }
@@ -24,7 +24,7 @@ function userHeader(id: string, cwd: string, mtimeAgo = 0): SessionHeader {
 		type: "session",
 		version: 4,
 		id,
-		timestamp: new Date(Date.now() - mtimeAgo).toISOString(),
+		createdAt: new Date(Date.now() - mtimeAgo).toISOString(),
 		cwd,
 	};
 }
@@ -38,11 +38,11 @@ function workflowHeader(id: string, cwd: string, mtimeAgo = 0): SessionHeader {
 }
 
 describe("internal session marking", () => {
-	it("createSessionHeader stores internal/workflow metadata via NewSessionOptions", () => {
+	it("createSessionHeader stores internal/workflow metadata via NewSessionOptions", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "internal-sess-"));
 		try {
 			const cwd = dir;
-			const session = SessionManager.create(cwd, dir, {
+			const session = await SessionManager.create(cwd, dir, {
 				internal: true,
 				workflow: { runId: "r1", stageId: "s1", stageName: "build" },
 			});
@@ -64,12 +64,12 @@ describe("internal session marking", () => {
 		expect(session.getHeader()).not.toHaveProperty("workflow");
 	});
 
-	it("markSessionInternal stamps a fresh marker on an unmarked persisted session", () => {
+	it("markSessionInternal stamps a fresh marker on an unmarked persisted session", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "internal-sess-"));
 		try {
-			const session = SessionManager.create(dir, dir);
+			const session = await SessionManager.create(dir, dir);
 			expect(session.getHeader()?.internal).toBeUndefined();
-			session.markSessionInternal({ runId: "r", stageId: "s", stageName: "n" });
+			await session.markSessionInternal({ runId: "r", stageId: "s", stageName: "n" });
 			expect(session.getHeader()?.internal).toBe(true);
 			expect(session.getHeader()?.workflow).toEqual({ runId: "r", stageId: "s", stageName: "n" });
 		} finally {
@@ -77,14 +77,14 @@ describe("internal session marking", () => {
 		}
 	});
 
-	it("markSessionInternal preserves an existing full marker", () => {
+	it("markSessionInternal preserves an existing full marker", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "internal-sess-"));
 		try {
-			const session = SessionManager.create(dir, dir, {
+			const session = await SessionManager.create(dir, dir, {
 				internal: true,
 				workflow: { runId: "original", stageId: "s", stageName: "n" },
 			});
-			session.markSessionInternal({ runId: "should-not-overwrite", stageId: "x", stageName: "y" });
+			await session.markSessionInternal({ runId: "should-not-overwrite", stageId: "x", stageName: "y" });
 			expect(session.getHeader()?.workflow).toEqual({ runId: "original", stageId: "s", stageName: "n" });
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -185,7 +185,7 @@ describe("readSessionHeader robustness for long headers", () => {
 			type: "session",
 			version: 4,
 			id: "long-1",
-			timestamp: new Date().toISOString(),
+			createdAt: new Date().toISOString(),
 			cwd: dir,
 			internal: true,
 			workflow: { runId: "r", stageId: "s", stageName: longStageName },
@@ -252,25 +252,25 @@ describe("malformed internal session markers remain visible", () => {
 		expect((await SessionManager.list(cwd, dir)).map((session) => session.id)).toEqual(["user-fork"]);
 	});
 
-	it("repairs malformed persisted markers when valid ownership is supplied", () => {
+	it("repairs malformed persisted markers when valid ownership is supplied", async () => {
 		const path = writeSessionFile(dir, { ...userHeader("repair", cwd), internal: true } as SessionHeader);
-		const session = SessionManager.open(path, dir);
-		session.markSessionInternal({ runId: "r", stageId: "s", stageName: "n" });
+		const session = await SessionManager.open(path, dir);
+		await session.markSessionInternal({ runId: "r", stageId: "s", stageName: "n" });
 		expect(readSessionHeader(path)).toMatchObject({
 			internal: true,
 			workflow: { runId: "r", stageId: "s", stageName: "n" },
 		});
 	});
 
-	it("classifies and persists a fresh workflow subagent session from inherited metadata", () => {
+	it("classifies and persists a fresh workflow subagent session from inherited metadata", async () => {
 		const path = join(dir, "fresh-subagent.jsonl");
 		const workflow = { runId: "run-1", stageId: "stage-1", stageName: "build" };
-		const session = SessionManager.open(path, dir, cwd);
+		const session = await SessionManager.open(path, dir, cwd);
 		applyInheritedWorkflowSessionClassification(session, {
 			[WORKFLOW_SESSION_METADATA_ENV]: JSON.stringify(workflow),
 		});
-		session.appendMessage({ role: "user", content: "task", timestamp: Date.now() });
-		session.appendMessage({
+		await session.appendMessage({ role: "user", content: "task", timestamp: Date.now() });
+		await session.appendMessage({
 			role: "assistant",
 			content: [{ type: "text", text: "done" }],
 			api: "openai-responses",
@@ -311,7 +311,7 @@ describe("readSessionHeader reads multi-chunk headers with the small dedicated b
 			type: "session",
 			version: 4,
 			id: "smallbuf-multichunk-1",
-			timestamp: new Date().toISOString(),
+			createdAt: new Date().toISOString(),
 			cwd: dir,
 			internal: true,
 			workflow: { runId: "r", stageId: "s", stageName: longStageName },
@@ -343,7 +343,7 @@ describe("readSessionHeader decoder flush after newline", () => {
 			type: "session",
 			version: 4,
 			id: "big-header-1",
-			timestamp: new Date().toISOString(),
+			createdAt: new Date().toISOString(),
 			cwd: dir,
 			internal: true,
 			workflow: { runId: "r", stageId: "s", stageName: longStageName },
@@ -362,7 +362,7 @@ describe("readSessionHeader decoder flush after newline", () => {
 			type: "session",
 			version: 4,
 			id: "no-newline-1",
-			timestamp: new Date().toISOString(),
+			createdAt: new Date().toISOString(),
 			cwd: dir,
 			internal: true,
 			workflow: { runId: "r", stageId: "s", stageName: "n" },

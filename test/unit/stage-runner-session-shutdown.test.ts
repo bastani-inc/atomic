@@ -55,7 +55,7 @@ function makeFakeStageSession(options: FakeSessionOptions): StageSessionRuntime 
 		async cycleModel() {
 			return undefined;
 		},
-		cycleThinkingLevel() {
+		async cycleThinkingLevel() {
 			return undefined;
 		},
 		agent: Object.create(null) as StageSessionRuntime["agent"],

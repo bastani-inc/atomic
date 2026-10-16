@@ -27,12 +27,12 @@ type ResolvedSession =
  * If it looks like a path, use as-is. Otherwise resolve an exact ID or unique
  * 8-character prefix of a UUID-backed session.
  */
-function findLocalSessionByExactId(
+async function findLocalSessionByExactId(
 	sessionId: string,
 	cwd: string,
 	sessionDir?: string,
-): { type: "local"; path: string } | undefined {
-	const path = SessionManager.findById(cwd, sessionId, sessionDir);
+): Promise<{ type: "local"; path: string } | undefined> {
+	const path = await SessionManager.findById(cwd, sessionId, sessionDir);
 	return path ? { type: "local", path } : undefined;
 }
 
@@ -112,9 +112,14 @@ export function validateSessionIdFlags(parsed: Args): void {
 		process.exit(1);
 	}
 }
-function forkSessionOrExit(sourcePath: string, cwd: string, sessionDir?: string, sessionId?: string): SessionManager {
+async function forkSessionOrExit(
+	sourcePath: string,
+	cwd: string,
+	sessionDir?: string,
+	sessionId?: string,
+): Promise<SessionManager> {
 	try {
-		return SessionManager.forkFrom(sourcePath, cwd, sessionDir, { id: sessionId });
+		return await SessionManager.forkFrom(sourcePath, cwd, sessionDir, { id: sessionId });
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(chalk.red(`Error: ${message}`));
@@ -122,9 +127,9 @@ function forkSessionOrExit(sourcePath: string, cwd: string, sessionDir?: string,
 	}
 }
 
-function openSessionOrExit(path: string, sessionDir?: string): SessionManager {
+async function openSessionOrExit(path: string, sessionDir?: string): Promise<SessionManager> {
 	try {
-		return SessionManager.open(path, sessionDir);
+		return await SessionManager.open(path, sessionDir);
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(chalk.red(`Error: ${message}`));
@@ -132,12 +137,12 @@ function openSessionOrExit(path: string, sessionDir?: string): SessionManager {
 	}
 }
 
-export function applyInheritedWorkflowSessionClassification(
+export async function applyInheritedWorkflowSessionClassification(
 	sessionManager: SessionManager,
 	env: Record<string, string | undefined> = process.env,
-): SessionManager {
+): Promise<SessionManager> {
 	const metadata = workflowSessionMetadataFromEnv(env);
-	if (metadata) sessionManager.markSessionInternal(metadata);
+	if (metadata) await sessionManager.markSessionInternal(metadata);
 	return sessionManager;
 }
 
@@ -147,13 +152,13 @@ export async function createSessionManager(
 	sessionDir: string | undefined,
 	settingsManager: SettingsManager,
 ): Promise<SessionManager> {
-	if (parsed.noSession || parsed.help || parsed.listModels !== undefined) {
+	if (parsed.noSession) {
 		return SessionManager.inMemory(cwd, parsed.sessionId !== undefined ? { id: parsed.sessionId } : undefined);
 	}
 
 	if (parsed.fork) {
 		if (parsed.sessionId) {
-			const existingTarget = findLocalSessionByExactId(parsed.sessionId, cwd, sessionDir);
+			const existingTarget = await findLocalSessionByExactId(parsed.sessionId, cwd, sessionDir);
 			if (existingTarget) {
 				console.error(chalk.red(`Session already exists with id '${parsed.sessionId}'`));
 				process.exit(1);
@@ -225,18 +230,18 @@ export async function createSessionManager(
 	}
 
 	if (parsed.continue) {
-		return SessionManager.continueRecent(cwd, sessionDir);
+		return await SessionManager.continueRecent(cwd, sessionDir);
 	}
 
 	if (parsed.sessionId) {
-		const existingSession = findLocalSessionByExactId(parsed.sessionId, cwd, sessionDir);
+		const existingSession = await findLocalSessionByExactId(parsed.sessionId, cwd, sessionDir);
 		if (existingSession) {
 			return openSessionOrExit(existingSession.path, sessionDir);
 		}
 		console.error(chalk.yellow(`No session found with id '${parsed.sessionId}'; creating a new session.`));
 	}
 
-	return SessionManager.create(cwd, sessionDir, { id: parsed.sessionId });
+	return await SessionManager.create(cwd, sessionDir, { id: parsed.sessionId });
 }
 
 export async function promptForMissingSessionCwd(

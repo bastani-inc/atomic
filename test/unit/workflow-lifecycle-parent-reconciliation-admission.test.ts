@@ -45,7 +45,7 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 			});
 			const sessionDir = mkdtempSync(join(tmpdir(), "atomic-lifecycle-session-"));
 			tempDirs.push(sessionDir);
-			const sessionManager = SessionManager.create(process.cwd(), sessionDir);
+			const sessionManager = await SessionManager.create(process.cwd(), sessionDir);
 			let harness!: Harness;
 			let delivery: Promise<void> | undefined;
 			let sentNotice: Parameters<Harness["session"]["sendCustomMessage"]>[0] | undefined;
@@ -91,7 +91,7 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 					assert.equal(persistedAtAdmission.length, 1, "send admission must include one durable lifecycle card");
 					const sessionFile = sessionManager.getSessionFile();
 					assert.ok(sessionFile);
-					const reopenedAtAdmission = SessionManager.open(sessionFile, sessionDir, process.cwd());
+					const reopenedAtAdmission = await SessionManager.open(sessionFile, sessionDir, process.cwd());
 					assert.equal(
 						reopenedAtAdmission
 							.getEntries()
@@ -195,7 +195,7 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 				rawEntries.filter((entry) => entry.type === "custom_message" && entry.display === false).length,
 				1,
 			);
-			const reopened = SessionManager.open(sessionFile, sessionDir, process.cwd());
+			const reopened = await SessionManager.open(sessionFile, sessionDir, process.cwd());
 			const reopenedMessages = convertToLlm(reopened.buildSessionContext().messages);
 			assertWorkflowToolOrdering({ messages: reopenedMessages });
 			assert.equal(
@@ -517,8 +517,8 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 		const runId = "run-crash-reconciliation";
 		const sessionDir = mkdtempSync(join(tmpdir(), "atomic-lifecycle-crash-session-"));
 		tempDirs.push(sessionDir);
-		const sessionManager = SessionManager.create(process.cwd(), sessionDir);
-		sessionManager.appendMessage(fauxAssistantMessage("Prior durable turn."));
+		const sessionManager = await SessionManager.create(process.cwd(), sessionDir);
+		await sessionManager.appendMessage(fauxAssistantMessage("Prior durable turn."));
 		const original = await createHarness({ sessionManager });
 		harnesses.push(original);
 		original.session.pauseQueuedMessages();
@@ -566,7 +566,7 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 		)._protectedStreamingCustomMessages = [];
 		original.session.clearQueue();
 
-		const reopened = SessionManager.open(sessionFile, sessionDir, process.cwd());
+		const reopened = await SessionManager.open(sessionFile, sessionDir, process.cwd());
 		const restored = await createHarness({ sessionManager: reopened });
 		restored.session.agent.state.messages = reopened.buildSessionContext().messages;
 		restored.session.pauseQueuedMessages();
@@ -637,7 +637,7 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 			"the recovered correction must resolve its durable intent once",
 		);
 
-		const reopenedAgain = SessionManager.open(sessionFile, sessionDir, process.cwd());
+		const reopenedAgain = await SessionManager.open(sessionFile, sessionDir, process.cwd());
 		const later = await createHarness({ sessionManager: reopenedAgain });
 		later.session.agent.state.messages = reopenedAgain.buildSessionContext().messages;
 		harnesses.push(later);

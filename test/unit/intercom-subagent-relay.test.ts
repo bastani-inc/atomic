@@ -149,7 +149,7 @@ function createTerminalRelayDispatchHarness(withBatchSend: boolean) {
 					},
 				}
 			: {}),
-		appendEntry() {},
+		async appendEntry() {},
 	};
 	const unregister = registerTerminalOrderingBarrier(pi as never, {
 		queue: new InboundIdleQueue(),

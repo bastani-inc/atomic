@@ -5,7 +5,7 @@ Sessions are stored as JSONL (JSON Lines) files. Each line is a JSON object with
 ## File Location
 
 ```
-~/.atomic/agent/sessions/--<path>--/<timestamp>_<uuid>.jsonl
+~/.atomic/agent/sessions/--<path>--/<timestamp>_<session-id-hash>.jsonl
 ```
 
 Where `<path>` is the working directory with `/` replaced by `-`.
@@ -194,22 +194,22 @@ interface SessionEntryBase {
 
 ### SessionHeader
 
-First line of the file. Metadata only, not part of the tree (no `id`/`parentId`).
+First line of the file. Metadata only, not a tree entry. Its `id` identifies the session; it has no `parentId`.
 
 ```json
-{"type":"session","version":4,"id":"uuid","timestamp":"2024-12-03T14:00:00.000Z","cwd":"/path/to/project"}
+{"type":"session","version":4,"id":"uuid","createdAt":"2024-12-03T14:00:00.000Z","cwd":"/path/to/project"}
 ```
 
 For sessions with a parent (created via `/fork`, `/clone`, or `newSession({ parentSession })`):
 
 ```json
-{"type":"session","version":4,"id":"uuid","timestamp":"2024-12-03T14:00:00.000Z","cwd":"/path/to/project","parentSession":"/path/to/original/session.jsonl"}
+{"type":"session","version":4,"id":"uuid","createdAt":"2024-12-03T14:00:00.000Z","cwd":"/path/to/project","parentSessionId":"original-session-id"}
 ```
 
 Workflow-owned sessions carry both `internal: true` and complete `workflow` linkage. Atomic writes this classification before the transcript becomes visible wherever possible, including workflow stage forks and fresh/forked subagents. A session is excluded from normal resume history only when `internal` is the exact boolean `true` and `workflow.runId`, `workflow.stageId`, and `workflow.stageName` are all non-empty strings:
 
 ```json
-{"type":"session","version":4,"id":"uuid","timestamp":"2024-12-03T14:00:00.000Z","cwd":"/path/to/project","internal":true,"workflow":{"runId":"run-1","stageId":"stage-build","stageName":"build"}}
+{"type":"session","version":4,"id":"uuid","createdAt":"2024-12-03T14:00:00.000Z","cwd":"/path/to/project","internal":true,"workflow":{"runId":"run-1","stageId":"stage-build","stageName":"build"}}
 ```
 
 Malformed, incomplete, workflow-only, or truthy non-boolean legacy markers remain visible in normal history. Atomic does not infer workflow ownership from `parentSession`, so ordinary user-created forks are unaffected. Valid workflow classification is inherited when an internal workflow transcript is branched or forked.
@@ -424,6 +424,8 @@ for (const line of lines) {
 ## SessionManager API
 
 Key methods for working with sessions programmatically.
+
+Await `create`, `open`, `continueRecent`, `forkFrom`, and all session mutations. A resolved mutation has committed to its store; a failed write rejects with its typed storage error without publishing the failed entry. There is no `flush` method. `inMemory()` explicitly selects memory and performs no filesystem I/O. Other factories use persistent JSONL storage by default and never fall back to memory if it cannot be opened.
 
 ### Static Creation Methods
 

@@ -182,17 +182,11 @@ export function _isSafetyRefusal(this: AgentSession, message: AssistantMessage):
 	return (message.usage?.output ?? 0) === 0;
 }
 
-function applyFallbackThinkingLevel(this: AgentSession, level: ThinkingLevel): boolean {
+async function applyFallbackThinkingLevel(this: AgentSession, level: ThinkingLevel): Promise<boolean> {
 	const previousLevel = this.agent.state.thinkingLevel ?? this.thinkingLevel;
-	this.agent.state.thinkingLevel = level;
 	if (previousLevel === level) return false;
-	this.sessionManager.appendThinkingLevelChange(level);
-	this._emit({ type: "thinking_level_changed", level });
-	void this._extensionRunner?.emit({
-		type: "thinking_level_select",
-		level,
-		previousLevel,
-	});
+	await this.sessionManager.appendThinkingLevelChange(level);
+	this.agent.state.thinkingLevel = level;
 	return true;
 }
 
@@ -313,7 +307,13 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 
 		// Do not create a fallback lifecycle until a candidate can actually be
 		// selected. An exhausted or unresolvable chain has no start to close.
+
+		// Keep the failed attempt in raw history while durably omitting it from model projection.
+		await this._omitTrailingAssistantAttempt();
+		await this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
 		_beginFallbackModelScope.call(this);
+		this.agent.state.model = nextModel;
+		const thinkingChanged = await applyFallbackThinkingLevel.call(this, nextLevel);
 		this._fallbackAttemptedKeys.add(fallbackKey(currentModel, currentThinkingLevel));
 		if (this._retryAttempt > 0) {
 			this._emit({
@@ -330,12 +330,15 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 			reason: message.errorMessage || "Retryable model error",
 			attempt: this._fallbackAttemptedKeys.size - 1,
 		});
+		if (thinkingChanged) {
+			this._emit({ type: "thinking_level_changed", level: nextLevel });
+			void this._extensionRunner?.emit({
+				type: "thinking_level_select",
+				level: nextLevel,
+				previousLevel: currentThinkingLevel,
+			});
+		}
 
-		// Keep the failed attempt in raw history while durably omitting it from model projection.
-		this._omitTrailingAssistantAttempt();
-		this.agent.state.model = nextModel;
-		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
-		applyFallbackThinkingLevel.call(this, nextLevel);
 		this._refreshBaseSystemPromptFromActiveTools();
 		this._emitModelChanged(nextModel, fromModel, "fallback");
 		await this._emitModelSelect(nextModel, fromModel, "fallback");
@@ -440,7 +443,7 @@ export async function _handleRetryableError(this: AgentSession, message: Assista
 	});
 
 	// Keep the failed attempt in raw history while durably omitting it from model projection.
-	this._omitTrailingAssistantAttempt();
+	await this._omitTrailingAssistantAttempt();
 
 	// Wait with exponential backoff (abortable)
 	if (this._agentRunAbortRequested) this._retryAbortController.abort();

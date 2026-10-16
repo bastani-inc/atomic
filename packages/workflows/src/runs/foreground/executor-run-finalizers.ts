@@ -23,7 +23,11 @@ export function createRunFinalizers(input: {
 	readonly drainWorkflowExitCleanups: (reason?: string) => Promise<void>;
 	readonly assertSuccessfulCompletion: () => void;
 }): RunFinalizers {
-	const finalizeWorkflowExitValidationFailure = (err: unknown, exitReason?: string, resumable = false): RunResult => {
+	const finalizeWorkflowExitValidationFailure = async (
+		err: unknown,
+		exitReason?: string,
+		resumable = false,
+	): Promise<RunResult> => {
 		const failure = input.classifyExecutorFailure(err);
 		const classifiedMetadata = runFailureMetadata(failure, input.runSnapshot.stages);
 		const metadata = {
@@ -38,7 +42,7 @@ export function createRunFinalizers(input: {
 			metadata.errorMessage,
 			metadata,
 		);
-		appendRunEndWhenRecorded(input.opts.persistence, recorded, {
+		await appendRunEndWhenRecorded(input.opts.persistence, recorded, {
 			runId: input.runId,
 			status: "failed",
 			error: metadata.errorMessage,
@@ -98,7 +102,7 @@ export function createRunFinalizers(input: {
 			...(signal.reason !== undefined ? { exitReason: signal.reason } : {}),
 		} as const;
 		const recorded = input.activeStore.recordRunEnd(input.runId, signal.status, outputs, undefined, metadata);
-		appendRunEndWhenRecorded(input.opts.persistence, recorded, {
+		await appendRunEndWhenRecorded(input.opts.persistence, recorded, {
 			runId: input.runId,
 			status: signal.status,
 			result: outputs,
@@ -129,7 +133,7 @@ export function createRunFinalizers(input: {
 		const exitReason = parentWorkflowExitRunReason(parentReason);
 		const metadata = { resumable: false, exited: true, exitReason } as const;
 		const recorded = input.activeStore.recordRunEnd(input.runId, "cancelled", undefined, undefined, metadata);
-		appendRunEndWhenRecorded(input.opts.persistence, recorded, {
+		await appendRunEndWhenRecorded(input.opts.persistence, recorded, {
 			runId: input.runId,
 			status: "cancelled",
 			exited: true,

@@ -18,7 +18,7 @@ const loader = new DefaultResourceLoader({ cwd, agentDir: cwd, settingsManager, 
     records.push(record);
     pi.events.on("selected-ping", () => { record.calls++; });
     pi.registerCommand(name, { description: name, handler: async (_args, ctx) => {
-      record.write(); assert.ok(ctx.getAgentTaskHost()); pi.events.emit("selected-ping");
+      await record.write(); assert.ok(ctx.getAgentTaskHost()); pi.events.emit("selected-ping");
     } });
     pi.on("session_shutdown", () => {
       record.stops++; clearInterval(record.timer);
@@ -36,7 +36,7 @@ try {
     await assert.rejects(reload, mode === "rollback" ? /candidate rejected/ : { code: "ShutdownFailed" });
     assert.equal(records.find(r => r.generation === 1 && r.name === "keep").stops, 0);
     for (const record of records.filter(r => r.generation === 2)) {
-      assert.equal(record.stops, 1); assert.throws(record.write, /stale|no longer active/i);
+      assert.equal(record.stops, 1); await assert.rejects(record.write, /stale|no longer active/i);
     }
   } else await reload;
   if (mode !== "none") {
@@ -45,7 +45,7 @@ try {
     assert.equal(records.find(r => r.generation === current && r.name === "keep").calls, 1);
     assert.equal(records.find(r => r.generation === current && r.name === "omit").calls, mode === "all" ? 1 : 0);
   }
-  for (const record of records.filter(r => r.stops > 0)) assert.throws(record.write, /stale|no longer active/i);
+  for (const record of records.filter(r => r.stops > 0)) await assert.rejects(record.write, /stale|no longer active/i);
 } finally {
   await session?.dispose().catch(error => { assert.equal(mode, "cleanup"); assert.equal(error.code, "ShutdownFailed"); });
   rmSync(cwd, { recursive: true, force: true });

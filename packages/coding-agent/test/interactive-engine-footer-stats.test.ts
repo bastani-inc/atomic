@@ -234,7 +234,7 @@ function createRuntime(harness: Harness, probe: StatsEngineProbe): IsolatedInter
 /** Session replacement creates a file-backed mirror, so keep its directory out of the real agent dir. */
 async function createFileBackedHarness(): Promise<Harness> {
 	const sessionDir = mkdtempSync(join(tmpdir(), "atomic-footer-stats-"));
-	const harness = await createHarness({ sessionManager: SessionManager.create(sessionDir, sessionDir) });
+	const harness = await createHarness({ sessionManager: await SessionManager.create(sessionDir, sessionDir) });
 	return {
 		...harness,
 		cleanup: async () => {
@@ -313,7 +313,7 @@ test("/session uses engine counts and identity during the first run (#3383)", as
 		assert.match(output, /Total: 41,012/);
 		assert.match(output, /Cache Hit Rate: 48.6%/);
 		assert.match(output, /Total: 0.1720/);
-		harness.sessionManager.appendMessage(assistantMessage(usage(100, 10, 50, 50, 0.001)));
+		await harness.sessionManager.appendMessage(assistantMessage(usage(100, 10, 50, 50, 0.001)));
 		await showStats(probe, runtime, P2, P2_LINE);
 		const updated = sessionInfo(runtime.session);
 		assert.match(updated, /ID: engine-session/);
@@ -338,7 +338,7 @@ test("/session uses engine counts and identity during the first run (#3383)", as
 test("/session keeps local stats when no isolated engine cache exists (#3383)", async () => {
 	const harness = await createHarness();
 	try {
-		harness.sessionManager.appendMessage(assistantMessage(usage(100, 10, 50, 50, 0.001)));
+		await harness.sessionManager.appendMessage(assistantMessage(usage(100, 10, 50, 50, 0.001)));
 		const output = sessionInfo(harness.session);
 		assert.ok(output.includes(`ID: ${harness.session.sessionId}`));
 		assert.match(output, /Assistant: 1/);
@@ -355,7 +355,7 @@ test("/session keeps local stats when no isolated engine cache exists (#3383)", 
 test("footer follows engine stats after each message_end before agent_end (#3328)", async () => {
 	const harness = await createHarness();
 	try {
-		harness.sessionManager.appendMessage(assistantMessage(usage(100, 10, 50, 50, 0.001)));
+		await harness.sessionManager.appendMessage(assistantMessage(usage(100, 10, 50, 50, 0.001)));
 		const probe = createStatsEngineClient();
 		const runtime = createRuntime(harness, probe);
 		const reply = assistantMessage(usage(10, 102, 19_900, 90, 0.172));
@@ -400,7 +400,7 @@ test("footer follows engine stats after each message_end before agent_end (#3328
 test("/session and the extension context keep reading the host mirror while the footer shows engine stats (#3328)", async () => {
 	const harness = await createHarness();
 	try {
-		harness.sessionManager.appendMessage(assistantMessage(usage(100, 10, 50, 50, 0.001)));
+		await harness.sessionManager.appendMessage(assistantMessage(usage(100, 10, 50, 50, 0.001)));
 		const probe = createStatsEngineClient();
 		const runtime = createRuntime(harness, probe);
 		const mirrorStats = runtime.session.getSessionStats();
@@ -520,7 +520,7 @@ test("a completed compaction refreshes the footer and an aborted or failed one d
 test("an engine restart drops the old engine's stats without a diagnostic (#3328)", async () => {
 	const harness = await createHarness();
 	try {
-		harness.sessionManager.appendMessage(assistantMessage(usage(100, 10, 50, 50, 0.001)));
+		await harness.sessionManager.appendMessage(assistantMessage(usage(100, 10, 50, 50, 0.001)));
 		const probe = createStatsEngineClient(harness.getModel());
 		const runtime = createRuntime(harness, probe);
 		const mirrorLine = usageLine(runtime);
@@ -584,8 +584,8 @@ test("switchSession never shows the previous session's stats, even when the old 
 	const first = await createHarness();
 	const second = await createHarness();
 	try {
-		const target = SessionManager.create(second.tempDir, second.tempDir);
-		target.flush();
+		const target = await SessionManager.create(second.tempDir, second.tempDir);
+
 		const targetPath = target.getSessionFile();
 		if (!targetPath) throw new Error("missing target session path");
 		const probe = createStatsEngineClient(first.getModel());
@@ -670,8 +670,8 @@ test("stats that land after agent_end ask the host to repaint (#3328)", async ()
 test("the in-process footer still counts only its own message entries (#3328)", async () => {
 	const harness = await createHarness();
 	try {
-		harness.sessionManager.appendMessage(assistantMessage(usage(100, 10, 50, 50, 0.001)));
-		harness.sessionManager.appendUsage("cache-warm", "anthropic", "claude-test", usage(0, 0, 5_000, 0, 0.5));
+		await harness.sessionManager.appendMessage(assistantMessage(usage(100, 10, 50, 50, 0.001)));
+		await harness.sessionManager.appendUsage("cache-warm", "anthropic", "claude-test", usage(0, 0, 5_000, 0, 0.5));
 
 		const line = stripAnsi(new UsageMeterComponent(harness.session).render(120)[0] ?? "").trim();
 

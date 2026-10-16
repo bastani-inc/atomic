@@ -124,7 +124,7 @@ describe("cascade pause", () => {
 				this.model = "opus";
 				return undefined;
 			},
-			cycleThinkingLevel() {
+			async cycleThinkingLevel() {
 				this.thinkingLevel = "high";
 				return undefined;
 			},

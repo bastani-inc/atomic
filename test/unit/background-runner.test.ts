@@ -204,7 +204,7 @@ describe("runDetached — returns immediately", () => {
 		}) as WorkflowDefinition;
 
 		const accepted = runDetached(def, {}, { store, cancellation, jobs });
-		const killed = killRun(accepted.runId, { store, cancellation });
+		const killed = await killRun(accepted.runId, { store, cancellation });
 
 		assert.equal(killed.ok, true);
 
@@ -330,7 +330,7 @@ describe("killRun — aborts delayed stage and records killed state", () => {
 		);
 
 		// Run is active — kill it
-		const killResult = killRun(accepted.runId, { store, cancellation });
+		const killResult = await killRun(accepted.runId, { store, cancellation });
 		assert.equal(killResult.ok, true);
 		if (killResult.ok) {
 			assert.equal(killResult.previousStatus, "running");
@@ -368,7 +368,7 @@ describe("killRun — aborts delayed stage and records killed state", () => {
 		// Before kill: not aborted
 		assert.equal(cancellation.isAborted(accepted.runId), false);
 
-		killRun(accepted.runId, { store, cancellation });
+		await killRun(accepted.runId, { store, cancellation });
 
 		// After kill: aborted
 		assert.equal(cancellation.isAborted(accepted.runId), true);
@@ -377,10 +377,10 @@ describe("killRun — aborts delayed stage and records killed state", () => {
 		if (job) await job.promise;
 	});
 
-	test("kill result: ok:false not_found for unknown runId", () => {
+	test("kill result: ok:false not_found for unknown runId", async () => {
 		const store = createStore();
 		const cancellation = createCancellationRegistry();
-		const result = killRun("no-such-run", { store, cancellation });
+		const result = await killRun("no-such-run", { store, cancellation });
 		assert.equal(result.ok, false);
 		if (!result.ok) {
 			assert.equal(result.reason, "not_found");
@@ -405,14 +405,14 @@ describe("killRun — aborts delayed stage and records killed state", () => {
 			},
 		);
 
-		killRun(accepted.runId, { store, cancellation });
+		await killRun(accepted.runId, { store, cancellation });
 
 		const job = jobs.get(accepted.runId);
 		if (job) await job.promise;
 		await new Promise((resolve) => setTimeout(resolve, 5));
 
 		// Second kill attempt
-		const secondKill = killRun(accepted.runId, { store, cancellation });
+		const secondKill = await killRun(accepted.runId, { store, cancellation });
 		assert.equal(secondKill.ok, false);
 		if (!secondKill.ok) {
 			assert.equal(secondKill.reason, "already_ended");

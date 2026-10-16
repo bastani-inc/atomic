@@ -78,9 +78,9 @@ describe("appendRunStart", () => {
 		assert.equal((p.inputs as Record<string, unknown>).x, 1);
 	});
 
-	test("calls setLabel with wf:<name>:<full-id> format", () => {
+	test("calls setLabel with wf:<name>:<full-id> format", async () => {
 		const api = makeMockApi();
-		appendRunStart(api, {
+		await appendRunStart(api, {
 			runId: "339e05a4-2289-408e-9076-d1a348f582ae",
 			name: "my-workflow",
 			inputs: {},
@@ -339,9 +339,9 @@ describe("appendStageEnd", () => {
 			assert.equal("workflowChild" in api._entries[0]!.payload, false);
 		}
 	});
-	test("emitMessage=true calls appendCustomMessageEntry when summary provided", () => {
+	test("emitMessage=true calls appendCustomMessageEntry when summary provided", async () => {
 		const api = makeMockApi();
-		appendStageEnd(
+		await appendStageEnd(
 			api,
 			{ runId: "r1", stageId: "s1", status: "completed", summary: "fetched 10 files" },
 			{ emitMessage: true },

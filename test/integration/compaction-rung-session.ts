@@ -147,7 +147,7 @@ export async function createRungSession(options: RungSessionOptions): Promise<Ru
 	const manager =
 		options.sessionDir === undefined
 			? SessionManager.inMemory()
-			: SessionManager.create(options.sessionDir, options.sessionDir);
+			: await SessionManager.create(options.sessionDir, options.sessionDir);
 	const agent = new Agent({
 		getApiKey: () => "test-key",
 		initialState: {
@@ -193,8 +193,8 @@ export async function createRungSession(options: RungSessionOptions): Promise<Ru
 	const now = Date.now();
 	const usageTokens = options.usageTokens ?? 2;
 	for (let turn = 0; turn < (options.turns ?? 8); turn++) {
-		manager.appendMessage({ role: "user", content: `task ${turn}\nline a\nline b`, timestamp: now + turn * 2 });
-		manager.appendMessage(assistantTurn(`answer ${turn}\nline c\nline d`, now + turn * 2 + 1, usageTokens));
+		await manager.appendMessage({ role: "user", content: `task ${turn}\nline a\nline b`, timestamp: now + turn * 2 });
+		await manager.appendMessage(assistantTurn(`answer ${turn}\nline c\nline d`, now + turn * 2 + 1, usageTokens));
 	}
 	agent.state.messages = manager.buildSessionContext().messages;
 

@@ -602,7 +602,11 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 	it("cefa40ed: refuses tree navigation while a response is still streaming", async () => {
 		const harness = await createHarness();
 		try {
-			const targetId = harness.sessionManager.appendMessage({ role: "user", content: "first" } as never);
+			const targetId = await harness.sessionManager.appendMessage({
+				role: "user",
+				content: "first",
+				timestamp: Date.now(),
+			});
 			Object.defineProperty(harness.session, "isStreaming", { configurable: true, get: () => true });
 			const activeLeafId = harness.sessionManager.getLeafId();
 

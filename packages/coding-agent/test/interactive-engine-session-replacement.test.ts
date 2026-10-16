@@ -143,8 +143,8 @@ describe("isolated interactive engine session replacement", () => {
 	test("replaces a session even when the engine cannot answer abort", async () => {
 		const first = await createHarness();
 		const second = await createHarness();
-		const targetManager = SessionManager.create(second.tempDir, second.tempDir);
-		targetManager.flush();
+		const targetManager = await SessionManager.create(second.tempDir, second.tempDir);
+
 		const targetSessionPath = targetManager.getSessionFile();
 		if (!targetSessionPath) throw new Error("Missing target session path");
 

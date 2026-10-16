@@ -567,7 +567,7 @@ export async function executeCodemode(
 	const scriptOutput = [...result.output];
 	if (result.ok) {
 		if (Object.keys(result.storeWrites.set).length || result.storeWrites.delete.length)
-			options.appendEntry?.(CODEMODE_STORE_ENTRY_TYPE, result.storeWrites);
+			await options.appendEntry?.(CODEMODE_STORE_ENTRY_TYPE, result.storeWrites);
 		if (result.value !== undefined)
 			scriptOutput.push({
 				type: "text",

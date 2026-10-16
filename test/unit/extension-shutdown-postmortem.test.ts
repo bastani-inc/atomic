@@ -54,7 +54,7 @@ test("every non-quit session shutdown invalidates a post-mortem prompt whose ses
 						type: "session",
 						version: 4,
 						id: `${reason}-session`,
-						timestamp: new Date().toISOString(),
+						createdAt: new Date().toISOString(),
 						cwd: root,
 					}),
 					JSON.stringify({

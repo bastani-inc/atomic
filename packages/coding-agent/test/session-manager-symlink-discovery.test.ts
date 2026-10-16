@@ -32,7 +32,7 @@ describe("session discovery through linked project directories", () => {
 				type: "session",
 				version: 4,
 				id,
-				timestamp: "2026-08-03T00:00:00.000Z",
+				createdAt: "2026-08-03T00:00:00.000Z",
 				cwd: join(tempDir, "project"),
 			})}\n`,
 		);

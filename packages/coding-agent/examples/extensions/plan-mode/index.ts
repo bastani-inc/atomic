@@ -88,8 +88,8 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		updateStatus(ctx);
 	}
 
-	function persistState(): void {
-		pi.appendEntry("plan-mode", {
+	async function persistState(): Promise<void> {
+		await pi.appendEntry("plan-mode", {
 			enabled: planModeEnabled,
 			todos: todoItems,
 			executing: executionMode,
@@ -213,7 +213,7 @@ After completing a step, include a [DONE:n] tag in your response.`,
 		if (markCompletedSteps(text, todoItems) > 0) {
 			updateStatus(ctx);
 		}
-		persistState();
+		await persistState();
 	});
 
 	// Handle plan completion and plan mode UI
@@ -230,7 +230,7 @@ After completing a step, include a [DONE:n] tag in your response.`,
 				todoItems = [];
 				pi.setActiveTools(NORMAL_MODE_TOOLS);
 				updateStatus(ctx);
-				persistState(); // Save cleared state so resume doesn't restore old execution mode
+				await persistState(); // Save cleared state so resume doesn't restore old execution mode
 			}
 			return;
 		}

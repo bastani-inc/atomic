@@ -62,7 +62,7 @@ async function executeBashOperation(
 			},
 		);
 
-		if (options?.recordResult !== false) this.recordBashResult(command, result, options);
+		if (options?.recordResult !== false) await this.recordBashResult(command, result, options);
 		return result;
 	} finally {
 		controllers.delete(abortController);
@@ -75,12 +75,12 @@ async function executeBashOperation(
  * Used by executeBash and by extensions that handle bash execution themselves.
  */
 
-export function recordBashResult(
+export async function recordBashResult(
 	this: AgentSession,
 	command: string,
 	result: BashResult,
 	options?: { excludeFromContext?: boolean; persist?: boolean; defer?: boolean },
-): void {
+): Promise<void> {
 	const bashMessage: BashExecutionMessage = {
 		role: "bashExecution",
 		command,
@@ -99,7 +99,7 @@ export function recordBashResult(
 		this._pendingBashMessages.push(bashMessage);
 	} else if (options?.persist !== false) {
 		// Persist first, then refresh the finalized context from the canonical projection.
-		this.sessionManager.appendMessage(bashMessage);
+		await this.sessionManager.appendMessage(bashMessage);
 		this._refreshFinalizedContext();
 	} else {
 		// Avoid writing a source-owned result into a shared manager that an
@@ -122,16 +122,26 @@ export function abortBash(this: AgentSession, id?: string): void {
 	}
 }
 
-/** Whether a bash command is currently running */
+const pendingBashDrains = new WeakMap<AgentSession, Promise<void>>();
 
-export function _flushPendingBashMessages(this: AgentSession): void {
-	if (this._pendingBashMessages.length === 0) return;
+export function _flushPendingBashMessages(this: AgentSession): Promise<void> {
+	const pending = pendingBashDrains.get(this);
+	if (pending) return pending;
+	if (this._pendingBashMessages.length === 0) return Promise.resolve();
 
-	for (const bashMessage of this._pendingBashMessages) {
-		this.sessionManager.appendMessage(bashMessage);
-	}
-	this._pendingBashMessages = [];
-	this._refreshFinalizedContext();
+	const drain = (async () => {
+		while (this._pendingBashMessages.length > 0) {
+			await this.sessionManager.appendMessage(this._pendingBashMessages[0]);
+			this._pendingBashMessages.shift();
+			this._refreshFinalizedContext();
+		}
+	})();
+	pendingBashDrains.set(this, drain);
+	void drain.then(
+		() => pendingBashDrains.delete(this),
+		() => pendingBashDrains.delete(this),
+	);
+	return drain;
 }
 
 // =========================================================================

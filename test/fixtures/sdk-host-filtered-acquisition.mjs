@@ -21,7 +21,7 @@ const resourceLoader = new DefaultResourceLoader({
     writes.set(name, () => pi.setSessionName("omitted-write"));
     pi.events.on("selected-ping", () => { if (name === "keep") calls++; else omittedCalls++; });
     pi.registerCommand(name, { description: name, handler: async (_args, ctx) => {
-      pi.setSessionName("selected"); assert.ok(ctx.getAgentTaskHost()); pi.events.emit("selected-ping");
+      await pi.setSessionName("selected"); assert.ok(ctx.getAgentTaskHost()); pi.events.emit("selected-ping");
     } });
     pi.on("session_start", () => { started.push(name); if (mode === "startup") throw new Error("selected startup failed"); });
     pi.on("session_shutdown", () => {
@@ -46,7 +46,7 @@ try {
     ({ session } = await creation);
     assert.deepEqual(started, mode === "none" ? [] : mode === "all" ? ["keep", "omit"] : ["keep"]);
     assert.deepEqual(session.extensionRunner.getRegisteredCommands().map(command => command.name), started);
-    if (mode !== "all") assert.throws(writes.get("omit"), /stale|no longer active/i);
+    if (mode !== "all") await assert.rejects(writes.get("omit"), /stale|no longer active/i);
     if (mode !== "none") {
       await session.prompt("/keep"); assert.equal(session.sessionManager.getSessionName(), "selected"); assert.equal(calls, 1);
       assert.equal(omittedCalls, mode === "all" ? 1 : 0);

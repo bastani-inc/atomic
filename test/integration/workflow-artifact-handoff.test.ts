@@ -82,8 +82,8 @@ test.each(["custom", "user"])(
 		});
 		output = join(producer.tempDir, "complete report.md");
 		// A forked/restored assistant answer is context, not this prompt's output.
-		producer.sessionManager.appendMessage({ role: "user", content: "Earlier task", timestamp: 0 });
-		producer.sessionManager.appendMessage({
+		await producer.sessionManager.appendMessage({ role: "user", content: "Earlier task", timestamp: 0 });
+		await producer.sessionManager.appendMessage({
 			role: "assistant",
 			content: [{ type: "text", text: "HISTORY-ONLY previous deliverable" }],
 			api: "anthropic-messages",
@@ -257,9 +257,9 @@ test.each([
 			cost: 0,
 		});
 		assert.ok(history.role === "assistant");
-		producer.sessionManager.appendMessage({ role: "user", content: "An old task", timestamp: 0 });
-		const oldLeaf = producer.sessionManager.appendMessage(history);
-		producer.sessionManager.resetLeaf();
+		await producer.sessionManager.appendMessage({ role: "user", content: "An old task", timestamp: 0 });
+		const oldLeaf = await producer.sessionManager.appendMessage(history);
+		await producer.sessionManager.resetLeaf();
 		producer.agent.state.messages = producer.sessionManager.buildSessionContext().messages;
 		assert.equal(producer.session.messages.length, 0);
 		const output = join(producer.tempDir, "navigated report.md");

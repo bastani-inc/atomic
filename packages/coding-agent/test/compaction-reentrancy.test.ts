@@ -36,15 +36,15 @@ function assistant(text: string, timestamp: number): AssistantMessage {
 	};
 }
 
-function seedTranscript(harness: Harness): void {
+async function seedTranscript(harness: Harness): Promise<void> {
 	const now = Date.now();
 	for (let turn = 0; turn < 5; turn++) {
-		harness.sessionManager.appendMessage({
+		await harness.sessionManager.appendMessage({
 			role: "user",
 			content: `task ${turn}\nline a\nline b`,
 			timestamp: now + turn * 2,
 		});
-		harness.sessionManager.appendMessage(assistant(`answer ${turn}\nline c\nline d`, now + turn * 2 + 1));
+		await harness.sessionManager.appendMessage(assistant(`answer ${turn}\nline c\nline d`, now + turn * 2 + 1));
 	}
 	harness.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
 }
@@ -182,7 +182,7 @@ describe("manual compaction re-entrancy", () => {
 		const harness = await createHarnessWithExtensions({ extensionFactories: [factory] });
 		harnesses.push(harness);
 		await harness.session.bindExtensions({});
-		seedTranscript(harness);
+		await seedTranscript(harness);
 		return harness;
 	}
 
@@ -337,7 +337,7 @@ describe("manual compaction re-entrancy", () => {
 		});
 		harnesses.push(harness);
 		await harness.session.bindExtensions({});
-		seedTranscript(harness);
+		await seedTranscript(harness);
 
 		const prompt = harness.session.prompt("Run the tool, then continue responding.");
 		await responseGate.started;
@@ -496,8 +496,10 @@ describe("manual compaction re-entrancy", () => {
 		const unsubscribe = harness.session.subscribe((event) => {
 			if (requestedFollowUp || event.type !== "compaction_end" || event.reason !== "manual" || !event.result) return;
 			requestedFollowUp = true;
-			seedTranscript(harness);
-			followUp = harness.session.compact({ preserve_recent: 2 });
+			followUp = (async () => {
+				await seedTranscript(harness);
+				return harness.session.compact({ preserve_recent: 2 });
+			})();
 		});
 
 		const first = harness.session.compact({ preserve_recent: 2 });
@@ -531,7 +533,7 @@ describe("manual compaction re-entrancy", () => {
 		});
 		harnesses.push(harness);
 		await harness.session.bindExtensions({});
-		seedTranscript(harness);
+		await seedTranscript(harness);
 
 		await harness.session.prompt("finish the task");
 
@@ -571,7 +573,7 @@ describe("manual compaction re-entrancy", () => {
 		});
 		harnesses.push(harness);
 		await harness.session.bindExtensions({});
-		seedTranscript(harness);
+		await seedTranscript(harness);
 
 		await harness.session.prompt("finish the task");
 
@@ -677,7 +679,7 @@ describe("manual compaction re-entrancy", () => {
 		expect(harness.session.isCompacting).toBe(false);
 
 		// Fresh transcript so the released latch can own a second physical run.
-		seedTranscript(harness);
+		await seedTranscript(harness);
 		const second = await harness.session.compact({ preserve_recent: 2 });
 
 		expect(second.rung).toBe("extension");
@@ -731,7 +733,7 @@ describe("manual compaction re-entrancy", () => {
 		});
 		harnesses.push(harness);
 		await harness.session.bindExtensions({});
-		seedTranscript(harness);
+		await seedTranscript(harness);
 
 		const automatic = (harness.session as AutoCompactionRunner)._runAutoCompaction("threshold", false, "recoverable");
 		await compactionGate.started;

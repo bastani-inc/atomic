@@ -53,7 +53,7 @@ function fakeAgentSession(): Record<string, unknown> {
 			this.model = "opus";
 			return undefined;
 		},
-		cycleThinkingLevel() {
+		async cycleThinkingLevel() {
 			this.thinkingLevel = "high";
 			return undefined;
 		},
@@ -178,7 +178,7 @@ describe("ctx.exit", () => {
 		);
 
 		await cleanupAbortStarted.promise;
-		const killed = killRun(runId, { store, cancellation, persistence });
+		const killed = await killRun(runId, { store, cancellation, persistence });
 		assert.equal(killed.ok, true);
 		releaseCleanup.resolve();
 

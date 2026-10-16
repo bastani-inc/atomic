@@ -213,14 +213,14 @@ describe("unsupported provider in headless modes", () => {
 		const address = server.address() as AddressInfo;
 		writeIsolatedState(agentDir, `http://127.0.0.1:${address.port}/v1`);
 		const removedProvider = ["cur", "sor"].join("");
-		const persisted = SessionManager.create(cwd, sessionDir);
-		persisted.appendModelChange(removedProvider, ["composer", "-2"].join(""));
-		persisted.appendMessage({
+		const persisted = await SessionManager.create(cwd, sessionDir);
+		await persisted.appendModelChange(removedProvider, ["composer", "-2"].join(""));
+		await persisted.appendMessage({
 			role: "user",
 			content: [{ type: "text", text: "persisted stale model" }],
 			timestamp: Date.now(),
 		});
-		persisted.appendMessage({
+		await persisted.appendMessage({
 			role: "assistant",
 			content: [{ type: "text", text: "persisted stale response" }],
 			api: "anthropic-messages",

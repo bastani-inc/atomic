@@ -197,12 +197,12 @@ export function createTrackedStageCaller(input: {
 				if (refreshedParentIds !== undefined) {
 					runtime.scheduler.setStageParentIds(runtime.stageSnapshot, refreshedParentIds);
 				}
-				runtime.stageSnapshot.status = "running";
+				if (!runtime.innerCtx.__isPaused()) runtime.stageSnapshot.status = "running";
 				runtime.stageSnapshot.startedAt ??= rebasedStageStartedAt(input.options?.durableAccumulatedDurationMs, now);
 				runtime.applyModelFallbackMeta(runtime.innerCtx.__modelFallbackMeta());
 				// Publish every graph-visible live write before this task can yield.
 				runtime.activeStore.recordStageStart(runtime.runId, runtime.stageSnapshot);
-				runtime.appendStageStartOnce();
+				await runtime.appendStageStartOnce();
 				const sessionMeta = runtime.innerCtx.__sessionMeta();
 				if (sessionMeta.sessionId !== undefined || sessionMeta.sessionFile !== undefined) {
 					await runtime.captureStageSessionMeta({ awaitDurable: true });

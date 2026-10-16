@@ -155,10 +155,10 @@ export async function _dispatchTurnEndBoundary(
 			toolResultEntryIds,
 			outcome: this._lastActivityOutcome,
 		},
-		(entries) => this._buildBoundaryContext(entries, "turn_end"),
+		async (entries) => await this._buildBoundaryContext(entries, "turn_end"),
 	);
-	this._commitBoundaryDrafts(boundary.entries);
-	if (boundary.continue && !this._buildBoundaryContext([], "turn_end").canContinue) {
+	await this._commitBoundaryDrafts(boundary.entries);
+	if (boundary.continue && !(await this._buildBoundaryContext([], "turn_end")).canContinue) {
 		this._reportInvalidBoundaryContinuation("turn_end");
 		return false;
 	}
@@ -196,23 +196,28 @@ function extensionCompactionDetails(
 	};
 }
 
-export function _applyBoundaryDrafts(
+export async function _applyBoundaryDrafts(
 	this: AgentSession,
 	manager: SessionManager,
 	drafts: SessionBoundaryDraft[],
-): SessionEntry[] {
+): Promise<SessionEntry[]> {
 	const appended: SessionEntry[] = [];
 	for (const draft of drafts) {
 		let entryId: string;
 		switch (draft.type) {
 			case "custom":
-				entryId = manager.appendCustomEntry(draft.customType, draft.data);
+				entryId = await manager.appendCustomEntry(draft.customType, draft.data);
 				break;
 			case "custom_message":
-				entryId = manager.appendCustomMessageEntry(draft.customType, draft.content, draft.display, draft.details);
+				entryId = await manager.appendCustomMessageEntry(
+					draft.customType,
+					draft.content,
+					draft.display,
+					draft.details,
+				);
 				break;
 			case "context_edit":
-				entryId = manager.appendContextEdit(draft.targetId, draft.replacement);
+				entryId = await manager.appendContextEdit(draft.targetId, draft.replacement);
 				break;
 			case "compaction": {
 				if (draft.summary.trim().length === 0) throw new Error("Compaction draft summary must not be empty");
@@ -220,7 +225,7 @@ export function _applyBoundaryDrafts(
 					manager.buildSessionProjection(),
 					manager.getBranch(),
 				).tokens;
-				entryId = manager.appendCompaction(
+				entryId = await manager.appendCompaction(
 					draft.summary,
 					draft.firstKeptEntryId,
 					tokensBefore,
@@ -236,11 +241,14 @@ export function _applyBoundaryDrafts(
 	return appended;
 }
 
-export function _createBoundaryPreviewManager(this: AgentSession, drafts: SessionBoundaryDraft[]): SessionManager {
+export async function _createBoundaryPreviewManager(
+	this: AgentSession,
+	drafts: SessionBoundaryDraft[],
+): Promise<SessionManager> {
 	const header = this.sessionManager.getHeader();
 	if (!header) throw new Error("Session header is missing");
 	const manager = SessionManager.inMemory(this._cwd, undefined, [header, ...this.sessionManager.getBranch()]);
-	this._applyBoundaryDrafts(manager, drafts);
+	await this._applyBoundaryDrafts(manager, drafts);
 	return manager;
 }
 
@@ -248,12 +256,12 @@ export function _getPendingBoundaryMessages(this: AgentSession): AgentMessage[] 
 	return [...this.agent.peekQueuedMessages(), ...this._pendingCustomMessages];
 }
 
-export function _buildBoundaryContext(
+export async function _buildBoundaryContext(
 	this: AgentSession,
 	drafts: SessionBoundaryDraft[],
 	boundary: BoundaryKind,
-): BoundaryContextPreview {
-	const projection = this._createBoundaryPreviewManager(drafts).buildSessionProjection();
+): Promise<BoundaryContextPreview> {
+	const projection = (await this._createBoundaryPreviewManager(drafts)).buildSessionProjection();
 	const contextMessages = finalizeProjectedMessages(this, projection.messages);
 	const pendingMessages = this._getPendingBoundaryMessages();
 	const llmMessages = convertToLlm(contextMessages);
@@ -275,8 +283,8 @@ export function _buildBoundaryContext(
 	};
 }
 
-export function _commitBoundaryDrafts(this: AgentSession, drafts: SessionBoundaryDraft[]): void {
-	const appended = this._applyBoundaryDrafts(this.sessionManager, drafts);
+export async function _commitBoundaryDrafts(this: AgentSession, drafts: SessionBoundaryDraft[]): Promise<void> {
+	const appended = await this._applyBoundaryDrafts(this.sessionManager, drafts);
 	this._refreshFinalizedContext();
 	for (const entry of appended) this._emit({ type: "entry_appended", entry });
 }
@@ -313,11 +321,11 @@ export function _findPersistedMessageEntryId(this: AgentSession, message: AgentM
 }
 
 /** Keep a failed attempt in raw history while durably omitting it from model projection. */
-export function _omitRecoveryAttempt(
+export async function _omitRecoveryAttempt(
 	this: AgentSession,
 	message: AssistantMessage,
 	toolResults: AgentMessage[] = [],
-): void {
+): Promise<void> {
 	const targets = [message, ...toolResults];
 	const targetIds = targets.map((target) => this._findPersistedMessageEntryId(target));
 	const unresolvedProjectedTarget = targets.some(
@@ -328,7 +336,7 @@ export function _omitRecoveryAttempt(
 	}
 	for (const targetId of targetIds) {
 		if (!targetId) continue;
-		const editId = this.sessionManager.appendContextEdit(targetId, null);
+		const editId = await this.sessionManager.appendContextEdit(targetId, null);
 		const entry = this.sessionManager.getEntry(editId);
 		if (entry) this._emit({ type: "entry_appended", entry });
 	}
@@ -340,10 +348,10 @@ export function _omitRecoveryAttempt(
  * projection when the loop must resume from the preceding input. Returns true when an
  * assistant attempt was omitted.
  */
-export function _omitTrailingAssistantAttempt(
+export async function _omitTrailingAssistantAttempt(
 	this: AgentSession,
 	accept: (message: AssistantMessage) => boolean = () => true,
-): boolean {
+): Promise<boolean> {
 	const messages = this.agent.state.messages;
 	let index = messages.length - 1;
 	const trailingToolResults: AgentMessage[] = [];
@@ -355,7 +363,7 @@ export function _omitTrailingAssistantAttempt(
 	if (candidate?.role !== "assistant") return false;
 	const assistant = candidate as AssistantMessage;
 	if (!accept(assistant)) return false;
-	this._omitRecoveryAttempt(assistant, trailingToolResults);
+	await this._omitRecoveryAttempt(assistant, trailingToolResults);
 	return true;
 }
 
@@ -367,11 +375,11 @@ export async function _runBeforeSettleBoundary(this: AgentSession): Promise<bool
 	try {
 		const result = await this._extensionRunner.emitBoundary(
 			{ type: "agent_before_settle", outcome: this._lastActivityOutcome },
-			(entries) => this._buildBoundaryContext(entries, "agent_before_settle"),
+			async (entries) => await this._buildBoundaryContext(entries, "agent_before_settle"),
 		);
-		this._commitBoundaryDrafts(result.entries);
-		this._flushPendingCustomMessages();
-		const finalContext = this._buildBoundaryContext([], "agent_before_settle");
+		await this._commitBoundaryDrafts(result.entries);
+		await this._flushPendingCustomMessages();
+		const finalContext = await this._buildBoundaryContext([], "agent_before_settle");
 		if (this._abortDuringBeforeSettle) return false;
 		const shouldContinue = result.continue || this.agent.hasQueuedMessages();
 		if (shouldContinue && !finalContext.canContinue) {

@@ -1,6 +1,8 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
+import { setTimeout as sleep } from "node:timers/promises";
 import { AssistantMessageEventStream } from "@bastani/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -17,6 +19,33 @@ import { createTestResourceLoader } from "./utilities.ts";
 const REQUEST_AUTH_PREPARATION_TIMEOUT_MS = 15_000;
 const FIRST_AUTH_DELAY_MS = 14_000;
 const DEFAULT_AGENT_RETRY_BACKOFF_MS = 14_000;
+
+async function waitForIo(condition: () => boolean): Promise<void> {
+	const deadline = performance.now() + 5000;
+	while (!condition() && performance.now() < deadline) await sleep(1);
+	expect(condition()).toBe(true);
+}
+
+function watchRetryTimers(): (dispatch?: boolean) => number {
+	let scheduled = 0;
+	let dispatches = 0;
+	const schedule = globalThis.setTimeout;
+	vi.spyOn(globalThis, "setTimeout").mockImplementation((handler, timeout, ...args) => {
+		if (timeout === 2000 || timeout === 4000 || timeout === 8000) scheduled += 1;
+		if (timeout === 0) dispatches += 1;
+		return schedule(handler, timeout, ...args);
+	});
+	return (dispatch = false) => (dispatch ? dispatches : scheduled);
+}
+
+async function exhaustPrimary(retries: (dispatch?: boolean) => number): Promise<void> {
+	for (const [index, backoff] of [2000, 4000, 8000].entries()) {
+		await waitForIo(() => retries() === index + 1);
+		await vi.advanceTimersByTimeAsync(backoff + 1);
+	}
+	await waitForIo(() => retries(true) === 4);
+	await vi.advanceTimersByTimeAsync(1);
+}
 
 function deferred<T = void>() {
 	let resolve!: (value: T) => void;
@@ -71,6 +100,7 @@ function response(model: { api: string; provider: string; id: string }, extra: R
 }
 
 afterEach(() => {
+	vi.restoreAllMocks();
 	vi.useRealTimers();
 });
 
@@ -152,7 +182,7 @@ describe("createAgentSession request-auth cancellation", () => {
 			retry: { enabled: true, maxRetries: 3, baseDelayMs: 2000, maxAgentDelayMs: 60_000 },
 			compaction: { enabled: false },
 		});
-		const manager = SessionManager.create(dir, join(dir, "sessions"));
+		const manager = await SessionManager.create(dir, join(dir, "sessions"));
 		const { session } = await createAgentSession({
 			cwd: dir,
 			agentDir: dir,
@@ -207,6 +237,7 @@ describe("createAgentSession request-auth cancellation", () => {
 			stopped = true;
 		});
 		await vi.advanceTimersByTimeAsync(100);
+		await waitForIo(() => stopped && promptStopped);
 		try {
 			expect(signal).toBeInstanceOf(AbortSignal);
 			expect(signal?.aborted).toBe(false);
@@ -275,18 +306,25 @@ describe("createAgentSession request-auth cancellation", () => {
 			},
 		});
 		vi.useFakeTimers();
+		const retries = watchRetryTimers();
 		const start = Date.now();
 		let done = false;
 		const pending = f.session.prompt("go").finally(() => {
 			done = true;
 		});
-		await vi.advanceTimersByTimeAsync(10);
+		await vi.advanceTimersByTimeAsync(0);
+		await waitForIo(() => retries() === 1);
 		expect(diskErrors(f.manager)).toHaveLength(1);
-		await vi.advanceTimersByTimeAsync(2000);
+		await vi.advanceTimersByTimeAsync(2001);
+		await waitForIo(() => retries() === 2);
 		expect(diskErrors(f.manager)).toHaveLength(2);
-		await vi.advanceTimersByTimeAsync(4000);
+		await vi.advanceTimersByTimeAsync(4001);
+		await waitForIo(() => retries() === 3);
 		expect(diskErrors(f.manager)).toHaveLength(3);
-		await vi.advanceTimersByTimeAsync(8000);
+		await vi.advanceTimersByTimeAsync(8001);
+		await waitForIo(() => retries(true) === 4);
+		await vi.advanceTimersByTimeAsync(1);
+		await waitForIo(() => enteredAt !== undefined);
 		expect(enteredAt).toBeDefined();
 		expect(enteredAt! - start).toBeLessThanOrEqual(DEFAULT_AGENT_RETRY_BACKOFF_MS + 10);
 		const errors = diskErrors(f.manager);
@@ -295,6 +333,7 @@ describe("createAgentSession request-auth cancellation", () => {
 		await vi.advanceTimersByTimeAsync(enteredAt! + REQUEST_AUTH_PREPARATION_TIMEOUT_MS - 1 - Date.now());
 		expect(done).toBe(false);
 		await vi.advanceTimersByTimeAsync(1);
+		await waitForIo(() => done);
 		expect(done).toBe(true);
 		await pending;
 		const all = diskErrors(f.manager);
@@ -312,11 +351,13 @@ describe("createAgentSession request-auth cancellation", () => {
 			},
 		});
 		vi.useFakeTimers();
+		const retries = watchRetryTimers();
 		let done = false;
 		const pending = f.session.prompt("go").finally(() => {
 			done = true;
 		});
-		await vi.advanceTimersByTimeAsync(DEFAULT_AGENT_RETRY_BACKOFF_MS + 10);
+		await exhaustPrimary(retries);
+		await waitForIo(() => done);
 		expect(done).toBe(true);
 		await pending;
 		const errors = diskErrors(f.manager);
@@ -398,9 +439,11 @@ describe("createAgentSession request-auth cancellation", () => {
 		expect(done).toBe(false);
 		expect(turns).toBe(1);
 		answer.resolve();
+		await waitForIo(() => f.refreshes() === 2);
 		await vi.advanceTimersByTimeAsync(REQUEST_AUTH_PREPARATION_TIMEOUT_MS - 1);
 		expect(done).toBe(false);
 		await vi.advanceTimersByTimeAsync(1);
+		await waitForIo(() => done);
 		expect(done).toBe(true);
 		await pending;
 		expect(turns).toBe(1);
@@ -474,6 +517,7 @@ describe("createAgentSession request-auth cancellation", () => {
 		vi.useFakeTimers();
 		const pending = f.session.prompt("go");
 		await vi.advanceTimersByTimeAsync(0);
+		await waitForIo(() => started);
 		expect(started).toBe(true);
 		await vi.advanceTimersByTimeAsync(60_000);
 		let stopped = false;
@@ -481,6 +525,7 @@ describe("createAgentSession request-auth cancellation", () => {
 			stopped = true;
 		});
 		await vi.advanceTimersByTimeAsync(1);
+		await waitForIo(() => stopped);
 		expect(captured?.aborted).toBe(true);
 		expect(stopped).toBe(true);
 		await abort;
@@ -496,8 +541,10 @@ describe("createAgentSession request-auth cancellation", () => {
 			refresh: async (credential) => ({ ...credential, expires: Number.MAX_SAFE_INTEGER }),
 		});
 		vi.useFakeTimers();
+		const retries = watchRetryTimers();
 		const pending = f.session.prompt("go");
 		await vi.advanceTimersByTimeAsync(1);
+		await waitForIo(() => retries() === 1);
 		expect(diskErrors(f.manager)).toHaveLength(1);
 		const abort = f.session.abort();
 		await vi.advanceTimersByTimeAsync(1);
@@ -554,11 +601,13 @@ describe("createAgentSession request-auth cancellation", () => {
 	it("keeps a successful fallback answer and the primary rate-limit errors", async () => {
 		const f = await fixture({ fallback: true });
 		vi.useFakeTimers();
+		const retries = watchRetryTimers();
 		let done = false;
 		const pending = f.session.prompt("go").finally(() => {
 			done = true;
 		});
-		await vi.advanceTimersByTimeAsync(DEFAULT_AGENT_RETRY_BACKOFF_MS + 10);
+		await exhaustPrimary(retries);
+		await waitForIo(() => done);
 		expect(done).toBe(true);
 		await pending;
 		expect(f.calls()).toBe(1);
@@ -591,10 +640,12 @@ describe("createAgentSession request-auth cancellation", () => {
 		const pending = f.session.prompt("go").finally(() => {
 			done = true;
 		});
+		await waitForIo(() => derivations === 1);
 		await vi.advanceTimersByTimeAsync(FIRST_AUTH_DELAY_MS - 1);
 		expect(done).toBe(false);
 		expect(f.calls()).toBe(0);
 		await vi.advanceTimersByTimeAsync(1);
+		await waitForIo(() => done);
 		expect(done).toBe(true);
 		await pending;
 		expect(derivations).toBe(1);
@@ -617,10 +668,12 @@ describe("createAgentSession request-auth cancellation", () => {
 		const pending = f.session.prompt("go").finally(() => {
 			done = true;
 		});
+		await waitForIo(() => f.refreshes() === 1);
 		await vi.advanceTimersByTimeAsync(REQUEST_AUTH_PREPARATION_TIMEOUT_MS - 1);
 		expect(done).toBe(false);
 		expect(f.calls()).toBe(0);
 		await vi.advanceTimersByTimeAsync(1);
+		await waitForIo(() => done);
 		expect(done).toBe(true);
 		await pending;
 		expect(f.calls()).toBe(0);

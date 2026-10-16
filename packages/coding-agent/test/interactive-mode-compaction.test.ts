@@ -1013,23 +1013,22 @@ describe("compaction boundary JSONL reopen (#2052)", () => {
 		for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 	});
 
-	it("renders the authoritative count after JSONL close/reopen without persisting details.tokensBefore", () => {
+	it("renders the authoritative count after JSONL close/reopen without persisting details.tokensBefore", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-compaction-reopen-"));
 		tempDirs.push(cwd);
-		const manager = SessionManager.create(cwd, cwd);
-		manager.appendMessage(userMsg("historical user"));
-		manager.appendMessage(assistantMsg("historical answer"));
-		const firstKeptEntryId = manager.appendMessage(userMsg("kept tail"));
-		manager.appendMessage(assistantMsg("kept answer"));
+		const manager = await SessionManager.create(cwd, cwd);
+		await manager.appendMessage(userMsg("historical user"));
+		await manager.appendMessage(assistantMsg("historical answer"));
+		const firstKeptEntryId = await manager.appendMessage(userMsg("kept tail"));
+		await manager.appendMessage(assistantMsg("kept answer"));
 		const compactedText = "[User]: retained\n(filtered 1 lines)";
-		manager.appendCompaction(compactedText, firstKeptEntryId, 1_200, {
+		await manager.appendCompaction(compactedText, firstKeptEntryId, 1_200, {
 			strategy: "verbatim-lines",
 			parameters: result.parameters,
 			promptVersion: result.promptVersion,
 			rung: result.rung,
 			stats: { ...result.stats, tokensBefore: 480, tokensAfter: 240, percentReduction: 50 },
 		});
-		manager.flush();
 
 		const file = manager.getSessionFile();
 		expect(file).toBeDefined();
@@ -1047,7 +1046,7 @@ describe("compaction boundary JSONL reopen (#2052)", () => {
 		expect(compactionLine?.details?.stats?.tokensBefore).toBe(480);
 		expect(compactionLine?.details?.tokensBefore).toBeUndefined();
 
-		const resumed = SessionManager.open(file!);
+		const resumed = await SessionManager.open(file!);
 		const boundary = resumed
 			.buildSessionContext()
 			.messages.find(

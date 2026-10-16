@@ -33,9 +33,9 @@ describe("interrupted tool-call session recovery", () => {
 			api: faux.getModel().api,
 			models: faux.models,
 		});
-		const manager = SessionManager.create(tempDir, tempDir);
-		manager.appendThinkingLevelChange("off");
-		manager.appendMessage({
+		const manager = await SessionManager.create(tempDir, tempDir);
+		await manager.appendThinkingLevelChange("off");
+		await manager.appendMessage({
 			role: "assistant",
 			content: [
 				{ type: "text", text: "Committing now." },

@@ -16,7 +16,7 @@ import type { RunSnapshot } from "../../packages/workflows/src/shared/store-type
 
 function makeCompactionApi(): CompactionAPI & {
 	_handlers: Map<string, Array<() => void | Promise<void>>>;
-	trigger(event: string): void;
+	trigger(event: string): Promise<void>;
 } {
 	const _handlers = new Map<string, Array<() => void | Promise<void>>>();
 	return {
@@ -25,8 +25,8 @@ function makeCompactionApi(): CompactionAPI & {
 			if (!_handlers.has(event)) _handlers.set(event, []);
 			_handlers.get(event)!.push(handler);
 		},
-		trigger(event: string): void {
-			for (const h of _handlers.get(event) ?? []) h();
+		async trigger(event: string): Promise<void> {
+			for (const handler of _handlers.get(event) ?? []) await handler();
 		},
 	};
 }
@@ -63,7 +63,7 @@ describe("installCompactionHook", () => {
 		assert.equal(api._handlers.has("session_before_compact"), true);
 	});
 
-	test("on compact with no active runs: no entries appended", () => {
+	test("on compact with no active runs: no entries appended", async () => {
 		const api = makeCompactionApi();
 		const st = createStore();
 
@@ -82,12 +82,12 @@ describe("installCompactionHook", () => {
 		};
 
 		installCompactionHook(api, st);
-		api.trigger("session_before_compact");
+		await api.trigger("session_before_compact");
 
 		assert.equal(appended.length, 0);
 	});
 
-	test("on compact with active run: re-appends workflow.run.start", () => {
+	test("on compact with active run: re-appends workflow.run.start", async () => {
 		const api = makeCompactionApi();
 		const st = createStore();
 
@@ -104,7 +104,7 @@ describe("installCompactionHook", () => {
 		};
 
 		installCompactionHook(api, st);
-		api.trigger("session_before_compact");
+		await api.trigger("session_before_compact");
 
 		const runStart = appended.find((e) => e.type === "workflow.run.start");
 		assert.notEqual(runStart, undefined);
@@ -112,7 +112,7 @@ describe("installCompactionHook", () => {
 		assert.equal(runStart!.payload.name, "my-wf");
 	});
 
-	test("on compact: re-appends workflow.stage.start for non-ended stages", () => {
+	test("on compact: re-appends workflow.stage.start for non-ended stages", async () => {
 		const api = makeCompactionApi();
 		const st = createStore();
 
@@ -151,14 +151,14 @@ describe("installCompactionHook", () => {
 		};
 
 		installCompactionHook(api, st);
-		api.trigger("session_before_compact");
+		await api.trigger("session_before_compact");
 
 		const stageStarts = appended.filter((e) => e.type === "workflow.stage.start");
 		assert.equal(stageStarts.length, 1);
 		assert.equal(stageStarts[0]!.payload.stageId, "s1");
 	});
 
-	test("on compact: multiple active runs all re-appended", () => {
+	test("on compact: multiple active runs all re-appended", async () => {
 		const api = makeCompactionApi();
 		const st = createStore();
 
@@ -175,7 +175,7 @@ describe("installCompactionHook", () => {
 		};
 
 		installCompactionHook(api, st);
-		api.trigger("session_before_compact");
+		await api.trigger("session_before_compact");
 
 		const runStarts = appended.filter((e) => e.type === "workflow.run.start");
 		assert.equal(runStarts.length, 2);

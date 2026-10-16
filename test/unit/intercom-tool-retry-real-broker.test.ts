@@ -139,7 +139,7 @@ function registerTool(
 			registerTool(value: Tool) {
 				tool = value;
 			},
-			appendEntry() {},
+			async appendEntry() {},
 		} as never,
 		{
 			ensureConnected: async () => {

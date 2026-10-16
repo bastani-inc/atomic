@@ -108,7 +108,7 @@ interface PersistedHarness {
 
 async function createPersistedSession(directory: string): Promise<PersistedHarness> {
 	const { streamFn, models } = rescueStream();
-	const manager = SessionManager.create(directory, directory);
+	const manager = await SessionManager.create(directory, directory);
 	const agent = new Agent({
 		getApiKey: () => PRIMARY_KEY,
 		initialState: { model: SESSION_MODEL, systemPrompt: "test", tools: [], thinkingLevel: "high" },
@@ -141,8 +141,8 @@ async function createPersistedSession(directory: string): Promise<PersistedHarne
 
 	const now = Date.now();
 	for (let turn = 0; turn < 6; turn++) {
-		manager.appendMessage({ role: "user", content: `task ${turn}\nline a\nline b`, timestamp: now + turn * 2 });
-		manager.appendMessage(assistantMessage(`answer ${turn}\nline c\nline d`, now + turn * 2 + 1));
+		await manager.appendMessage({ role: "user", content: `task ${turn}\nline a\nline b`, timestamp: now + turn * 2 });
+		await manager.appendMessage(assistantMessage(`answer ${turn}\nline c\nline d`, now + turn * 2 + 1));
 	}
 	agent.state.messages = manager.buildSessionContext().messages;
 

@@ -72,8 +72,8 @@ process.stdin.resume();
 async function startHost() {
 	const dir = mkdtempSync(join(tmpdir(), "atomic-isolated-host-"));
 	tempDirs.push(dir);
-	const targetManager = SessionManager.create(dir, dir);
-	targetManager.flush();
+	const targetManager = await SessionManager.create(dir, dir);
+
 	const targetSessionFile = targetManager.getSessionFile();
 	if (!targetSessionFile) throw new Error("Missing target session file");
 	const first = await createHarness();

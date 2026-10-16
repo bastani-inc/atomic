@@ -137,6 +137,8 @@ Example shape:
 
 Filter modes are: default, no-tools, user-only, labeled-only, and all. Configure the default with `treeFilterMode` in [Settings](/settings).
 
+Label edits are saved before the tree is updated. While a save is pending, the label editor stays open. If saving fails, Atomic displays the error and keeps your text so you can retry with Enter or cancel with Escape.
+
 ### Selection Behavior
 
 Selecting a user or custom message:

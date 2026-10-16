@@ -12,9 +12,9 @@ Use `pi.registerProviderAlias()` instead of copying a provider's models, OAuth m
 ```typescript
 import type { ExtensionAPI } from "@bastani/atomic";
 
-export default function (pi: ExtensionAPI) {
+export default async function (pi: ExtensionAPI) {
   for (let account = 1; account <= 7; account++) {
-    pi.registerProviderAlias({
+    await pi.registerProviderAlias({
       id: `openai-${account}`,
       name: `OpenAI account ${account}`,
       provider: "openai",
@@ -57,7 +57,7 @@ export default async function (pi: ExtensionAPI) {
     }>;
   };
 
-  pi.registerProvider("local-openai", {
+  await pi.registerProvider("local-openai", {
     baseUrl: "http://localhost:1234/v1",
     apiKey: "$LOCAL_OPENAI_API_KEY",
     api: "openai-completions",
@@ -77,7 +77,7 @@ export default async function (pi: ExtensionAPI) {
 This registers the fetched models before startup finishes.
 
 ```typescript
-pi.registerProvider("my-llm", {
+await pi.registerProvider("my-llm", {
   baseUrl: "https://api.my-llm.com/v1",
   apiKey: "$MY_LLM_API_KEY",  // env var reference; omit $ for a literal value
   api: "openai-completions",  // which streaming API to use
@@ -108,7 +108,7 @@ Use `pi.unregisterProvider(name)` to remove a provider that was previously regis
 
 ```typescript
 // Register
-pi.registerProvider("my-llm", {
+await pi.registerProvider("my-llm", {
   baseUrl: "https://api.my-llm.com/v1",
   apiKey: "$MY_LLM_API_KEY",
   api: "openai-completions",
@@ -126,7 +126,7 @@ pi.registerProvider("my-llm", {
 });
 
 // Later, remove it
-pi.unregisterProvider("my-llm");
+await pi.unregisterProvider("my-llm");
 ```
 
 Unregistering removes that provider's dynamic models, API key fallback, OAuth provider registration, and custom stream handler registrations. Any built-in models or provider behavior that were overridden are restored.
@@ -185,7 +185,7 @@ Use `mistral-conversations` for native Mistral models. If you intentionally rout
 If your provider expects `Authorization: Bearer <key>` but doesn't use a standard API, set `authHeader: true`:
 
 ```typescript
-pi.registerProvider("custom-api", {
+await pi.registerProvider("custom-api", {
   baseUrl: "https://api.example.com",
   apiKey: "$MY_API_KEY",
   authHeader: true,  // adds Authorization: Bearer header

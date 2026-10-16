@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { createEventBus } from "../src/core/event-bus.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
@@ -191,12 +191,12 @@ test("review F transformed registrations bind the invoking sibling across awaits
 					description: "original",
 					handler: async () => {
 						await gates[entered++]!.promise;
-						pi.appendEntry("probe", { instance, calls: ++calls });
+						await pi.appendEntry("probe", { instance, calls: ++calls });
 					},
 				});
 				pi.registerCommand("removed", {
 					handler: async () => {
-						pi.appendEntry("removed", {});
+						await pi.appendEntry("removed", {});
 					},
 				});
 			},
@@ -213,7 +213,7 @@ test("review F transformed registrations bind the invoking sibling across awaits
 					description: "caller override",
 					handler: async (args, ctx) => {
 						await probe.handler(args, ctx);
-						overrideAPI.appendEntry("wrapped", "caller behavior");
+						await overrideAPI.appendEntry("wrapped", "caller behavior");
 					},
 				});
 				commands.set("added", {
@@ -221,14 +221,14 @@ test("review F transformed registrations bind the invoking sibling across awaits
 					name: "added",
 					handler: async () => {
 						await Promise.resolve();
-						overrideAPI.appendEntry("added", "caller behavior");
+						await overrideAPI.appendEntry("added", "caller behavior");
 						overrideAPI.registerCommand("dynamic", {
 							handler: async () => {
-								overrideAPI.appendEntry("dynamic", true);
+								await overrideAPI.appendEntry("dynamic", true);
 							},
 						});
-						overrideAPI.events.on("review:event", () => {
-							overrideAPI.appendEntry("event", true);
+						overrideAPI.events.on("review:event", async () => {
+							await overrideAPI.appendEntry("event", true);
 						});
 					},
 				});
@@ -292,12 +292,14 @@ test("review F transformed registrations bind the invoking sibling across awaits
 			);
 		}
 		eventBus.emit("review:event", undefined);
-		for (const session of [a, b])
-			assert.ok(
-				session.sessionManager
-					.getEntries()
-					.some((entry) => entry.type === "custom" && entry.customType === "event"),
-			);
+		await vi.waitFor(() => {
+			for (const session of [a, b])
+				assert.ok(
+					session.sessionManager
+						.getEntries()
+						.some((entry) => entry.type === "custom" && entry.customType === "event"),
+				);
+		});
 		await a.dispose();
 		await b.prompt("/added");
 		assert.deepEqual(errors, []);
@@ -528,11 +530,11 @@ for (const borrowed of [false, true]) {
 				await session.settingsManager.flush();
 				rmSync(path, { force: true });
 				mkdirSync(path, { recursive: true });
-				session.setThinkingLevel("off", { persist: true });
+				await session.setThinkingLevel("off", { persist: true });
 				await session.settingsManager.flush();
 				if (recover) {
 					rmSync(path, { recursive: true });
-					session.setThinkingLevel("off", { persist: true });
+					await session.setThinkingLevel("off", { persist: true });
 				}
 				await sibling.dispose();
 				if (recover) await session.dispose();
@@ -580,7 +582,7 @@ for (const writer of ["session", "caller"] as const) {
 		const path = join(f.options.agentDir, "settings.json");
 		try {
 			mkdirSync(path, { recursive: true });
-			if (writer === "session") session.setThinkingLevel("off", { persist: true });
+			if (writer === "session") await session.setThinkingLevel("off", { persist: true });
 			else manager.setDefaultThinkingLevel("off");
 			await manager.flush();
 			assert.ok(manager.drainErrors().some(({ error }) => /EISDIR/.test(error.message)));

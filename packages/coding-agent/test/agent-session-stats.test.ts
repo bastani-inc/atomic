@@ -110,8 +110,8 @@ describe("AgentSession.getSessionStats", () => {
 		const { session, sessionManager } = await createSession();
 
 		try {
-			sessionManager.appendMessage(createUserMessage("hello", 1));
-			sessionManager.appendMessage(createAssistantMessage("hi", 200, 2));
+			await sessionManager.appendMessage(createUserMessage("hello", 1));
+			await sessionManager.appendMessage(createAssistantMessage("hi", 200, 2));
 			syncAgentMessages(session, sessionManager);
 
 			const stats = session.getSessionStats();
@@ -128,12 +128,12 @@ describe("AgentSession.getSessionStats", () => {
 		const { session, sessionManager } = await createSession();
 
 		try {
-			sessionManager.appendMessage(createUserMessage("first", 1));
-			sessionManager.appendMessage(createAssistantMessage("response1", 180_000, 2));
-			sessionManager.appendMessage(createUserMessage("second", 3));
-			sessionManager.appendMessage(createAssistantMessage("response2", 195_000, 4));
+			await sessionManager.appendMessage(createUserMessage("first", 1));
+			await sessionManager.appendMessage(createAssistantMessage("response1", 180_000, 2));
+			await sessionManager.appendMessage(createUserMessage("second", 3));
+			await sessionManager.appendMessage(createAssistantMessage("response2", 195_000, 4));
 			appendTestCompaction(sessionManager, 195_000, 50_000);
-			sessionManager.appendMessage(createUserMessage("third", 5));
+			await sessionManager.appendMessage(createUserMessage("third", 5));
 			syncAgentMessages(session, sessionManager);
 
 			const stats = session.getSessionStats();
@@ -151,13 +151,13 @@ describe("AgentSession.getSessionStats", () => {
 		const { session, sessionManager } = await createSession();
 
 		try {
-			sessionManager.appendMessage(createUserMessage("first", 1));
-			sessionManager.appendMessage(createAssistantMessage("response1", 180_000, 2));
-			sessionManager.appendMessage(createUserMessage("second", 3));
-			sessionManager.appendMessage(createAssistantMessage("response2", 195_000, 4));
+			await sessionManager.appendMessage(createUserMessage("first", 1));
+			await sessionManager.appendMessage(createAssistantMessage("response1", 180_000, 2));
+			await sessionManager.appendMessage(createUserMessage("second", 3));
+			await sessionManager.appendMessage(createAssistantMessage("response2", 195_000, 4));
 			appendTestCompaction(sessionManager, 195_000, 50_000);
-			sessionManager.appendMessage(createUserMessage("third", Date.now() + 1));
-			sessionManager.appendMessage(createAssistantMessage("response3", 25_000, Date.now() + 2));
+			await sessionManager.appendMessage(createUserMessage("third", Date.now() + 1));
+			await sessionManager.appendMessage(createAssistantMessage("response3", 25_000, Date.now() + 2));
 			syncAgentMessages(session, sessionManager);
 
 			const stats = session.getSessionStats();
@@ -175,7 +175,7 @@ describe("AgentSession.getSessionStats", () => {
 		const { session, sessionManager } = await createSession();
 
 		try {
-			sessionManager.branchWithSummary(null, "summary", undefined, false, {
+			await sessionManager.branchWithSummary(null, "summary", undefined, false, {
 				input: 10,
 				output: 20,
 				cacheRead: 30,
@@ -197,7 +197,7 @@ describe("AgentSession.getSessionStats", () => {
 		const { session, sessionManager } = await createSession();
 
 		try {
-			sessionManager.appendMessage(
+			await sessionManager.appendMessage(
 				createToolResultMessage({
 					input: 10,
 					output: 20,
@@ -220,12 +220,12 @@ describe("AgentSession.getSessionStats", () => {
 	it("does not double-count mirrored cache buckets in post-compaction context usage", async () => {
 		const { session, sessionManager } = await createSession();
 		try {
-			sessionManager.appendMessage(createUserMessage("first", 1));
-			sessionManager.appendMessage(createAssistantMessage("response1", 195_000, 2));
+			await sessionManager.appendMessage(createUserMessage("first", 1));
+			await sessionManager.appendMessage(createAssistantMessage("response1", 195_000, 2));
 			appendTestCompaction(sessionManager, 216_006, 81_414);
 			const postCompaction = Date.now() + 1;
-			sessionManager.appendMessage(createUserMessage("second", postCompaction));
-			sessionManager.appendMessage(
+			await sessionManager.appendMessage(createUserMessage("second", postCompaction));
+			await sessionManager.appendMessage(
 				createAssistantMessageWithUsage(
 					"response2",
 					{
@@ -252,12 +252,12 @@ describe("AgentSession.getSessionStats", () => {
 	it("counts normalized Codex cache partitions in post-compaction context usage", async () => {
 		const { session, sessionManager } = await createSession();
 		try {
-			sessionManager.appendMessage(createUserMessage("first", 1));
-			sessionManager.appendMessage(createAssistantMessage("response1", 195_000, 2));
+			await sessionManager.appendMessage(createUserMessage("first", 1));
+			await sessionManager.appendMessage(createAssistantMessage("response1", 195_000, 2));
 			appendTestCompaction(sessionManager, 195_000, 50_000);
 			const postCompaction = Date.now() + 1;
-			sessionManager.appendMessage(createUserMessage("second", postCompaction));
-			sessionManager.appendMessage({
+			await sessionManager.appendMessage(createUserMessage("second", postCompaction));
+			await sessionManager.appendMessage({
 				...createAssistantMessageWithUsage(
 					"response2",
 					{
@@ -289,11 +289,11 @@ describe("AgentSession.getSessionStats", () => {
 
 		try {
 			const newest: Usage = { ...createUsage(250), cacheRead: 750, totalTokens: 1_000 };
-			sessionManager.appendMessage(createUserMessage("first", 1));
-			sessionManager.appendMessage(createAssistantMessage("older", 100, 2));
-			sessionManager.appendMessage(createUserMessage("second", 3));
-			sessionManager.appendMessage(createAssistantMessageWithUsage("newer", newest, 4));
-			sessionManager.appendMessage(createToolResultMessage(createUsage(999)));
+			await sessionManager.appendMessage(createUserMessage("first", 1));
+			await sessionManager.appendMessage(createAssistantMessage("older", 100, 2));
+			await sessionManager.appendMessage(createUserMessage("second", 3));
+			await sessionManager.appendMessage(createAssistantMessageWithUsage("newer", newest, 4));
+			await sessionManager.appendMessage(createToolResultMessage(createUsage(999)));
 
 			assert.deepEqual(session.getSessionStats().latestAssistantUsage, newest);
 		} finally {
@@ -305,7 +305,7 @@ describe("AgentSession.getSessionStats", () => {
 		const { session, sessionManager } = await createSession();
 
 		try {
-			sessionManager.appendMessage(createUserMessage("only", 1));
+			await sessionManager.appendMessage(createUserMessage("only", 1));
 
 			assert.equal(session.getSessionStats().latestAssistantUsage, undefined);
 		} finally {
@@ -317,12 +317,12 @@ describe("AgentSession.getSessionStats", () => {
 		const { session, sessionManager } = await createSession();
 
 		try {
-			sessionManager.appendMessage(createUserMessage("first", 1));
-			sessionManager.appendMessage(
+			await sessionManager.appendMessage(createUserMessage("first", 1));
+			await sessionManager.appendMessage(
 				createAssistantMessageWithUsage("cached", { ...createUsage(10), cacheRead: 90, totalTokens: 100 }, 2),
 			);
-			sessionManager.appendMessage(createUserMessage("second", 3));
-			sessionManager.appendMessage({
+			await sessionManager.appendMessage(createUserMessage("second", 3));
+			await sessionManager.appendMessage({
 				...createAssistantMessageWithUsage("", createUsage(0), 4),
 				stopReason: "aborted",
 			});

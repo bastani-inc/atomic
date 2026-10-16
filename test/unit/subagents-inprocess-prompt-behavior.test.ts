@@ -167,8 +167,8 @@ describe("in-process child prompt construction", () => {
 		const root = mkdtempSync(join(tmpdir(), "atomic-child-context-"));
 		tempDirs.push(root);
 		const manager = SessionManager.inMemory(root);
-		manager.appendMessage({ role: "user", content: "keep this task", timestamp: Date.now() });
-		manager.appendCustomMessageEntry("subagent-control-notice", "parent-only message", false);
+		await manager.appendMessage({ role: "user", content: "keep this task", timestamp: Date.now() });
+		await manager.appendCustomMessageEntry("subagent-control-notice", "parent-only message", false);
 		const session = await createChildSession({}, manager);
 		try {
 			assert.equal(

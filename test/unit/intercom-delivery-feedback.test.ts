@@ -47,7 +47,7 @@ async function fixture(closedStage = false) {
 		registerCommand() {},
 		registerShortcut() {},
 		registerMessageRenderer() {},
-		appendEntry() {},
+		async appendEntry() {},
 		getSessionName: () => undefined,
 		sendMessage: send,
 		sendMessages: (messages: Array<{ content: string }>, options?: SendMessageOptions) => {

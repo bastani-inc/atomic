@@ -44,20 +44,16 @@ export function createSessionHeader(
 	internal?: boolean,
 	workflow?: SessionWorkflowMetadata,
 ): SessionHeader {
-	const header: SessionHeader = {
+	const validWorkflow = internal === true ? validSessionWorkflowMetadata(workflow) : undefined;
+	return {
 		type: "session",
 		version: CURRENT_SESSION_VERSION,
 		id,
-		timestamp,
+		createdAt: timestamp,
 		cwd,
+		...(parentSession === undefined ? {} : { parentSessionId: parentSession }),
+		...(validWorkflow === undefined ? {} : { internal: true, workflow: validWorkflow }),
 	};
-	if (parentSession !== undefined) header.parentSession = parentSession;
-	const validWorkflow = internal === true ? validSessionWorkflowMetadata(workflow) : undefined;
-	if (validWorkflow) {
-		header.internal = true;
-		header.workflow = validWorkflow;
-	}
-	return header;
 }
 
 export function createSessionFilePath(sessionDir: string, timestamp: string, sessionId: string): string {

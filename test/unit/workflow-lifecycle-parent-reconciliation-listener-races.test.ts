@@ -211,7 +211,7 @@ describe("workflow lifecycle listener and admission races", () => {
 		});
 		const sessionDir = mkdtempSync(join(tmpdir(), "atomic-lifecycle-hidden-listener-"));
 		tempDirs.push(sessionDir);
-		const sessionManager = SessionManager.create(process.cwd(), sessionDir);
+		const sessionManager = await SessionManager.create(process.cwd(), sessionDir);
 		const harness = await createHarness({ sessionManager });
 		harnesses.push(harness);
 		unsubscriptions.push(
@@ -268,7 +268,7 @@ describe("workflow lifecycle listener and admission races", () => {
 		assert.equal(protectedEntries.length, 0);
 		const sessionFile = sessionManager.getSessionFile();
 		assert.ok(sessionFile);
-		const reopened = SessionManager.open(sessionFile, sessionDir, process.cwd());
+		const reopened = await SessionManager.open(sessionFile, sessionDir, process.cwd());
 		const reopenedCustom = reopened.getEntries().filter((entry) => entry.type === "custom_message");
 		assert.equal(reopenedCustom.filter((entry) => entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE).length, 1);
 		assert.equal(reopenedCustom.filter((entry) => entry.customType === HIDDEN_RECONCILIATION_CUSTOM_TYPE).length, 1);

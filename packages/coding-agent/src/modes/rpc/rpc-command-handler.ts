@@ -304,7 +304,7 @@ export function createRpcCommandHandler({
 			}
 
 			case "set_thinking_level": {
-				session.setThinkingLevel(command.level, command.persist === true ? { persist: true } : {});
+				await session.setThinkingLevel(command.level, command.persist === true ? { persist: true } : {});
 				const model = session.model;
 				return createRpcSuccessResponse(id, "set_thinking_level", {
 					level: session.thinkingLevel,
@@ -313,7 +313,7 @@ export function createRpcCommandHandler({
 			}
 
 			case "cycle_thinking_level": {
-				const level = session.cycleThinkingLevel();
+				const level = await session.cycleThinkingLevel();
 				return createRpcSuccessResponse(id, "cycle_thinking_level", level ? { level } : null);
 			}
 
@@ -509,7 +509,7 @@ export function createRpcCommandHandler({
 				if (!name) {
 					return createRpcErrorResponse(id, "set_session_name", "Session name cannot be empty");
 				}
-				session.setSessionName(name);
+				await session.setSessionName(name);
 				return createRpcSuccessResponse(id, "set_session_name");
 			}
 
@@ -522,7 +522,7 @@ export function createRpcCommandHandler({
 			}
 
 			case "set_label": {
-				session.sessionManager.appendLabelChange(command.entryId, command.label);
+				await session.sessionManager.appendLabelChange(command.entryId, command.label);
 				return createRpcSuccessResponse(id, "set_label");
 			}
 

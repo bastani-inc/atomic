@@ -483,7 +483,7 @@ export default workflow({ name: "children", description: "children", inputs: {},
 				wait: { kind: "foreground", budgetMs: 15_000 },
 			});
 			assert.ok(childCalls > 0, `subagent did not use the in-process provider: ${JSON.stringify(result)}`);
-			assert.equal(result.details.taskResponse.observation.result.kind, "completed");
+			assert.equal(result.details.taskResponse.observation.result.kind, "completed", JSON.stringify(result));
 			assert.equal(Number(result.details.taskRecords[0].output.byteCount), Buffer.byteLength("child complete"));
 			await session.prompt("/workflow children --no-picker");
 			const details = await until(async () => {

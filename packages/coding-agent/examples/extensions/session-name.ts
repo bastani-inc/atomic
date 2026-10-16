@@ -16,7 +16,7 @@ export default function (pi: ExtensionAPI) {
 			const name = args.trim();
 
 			if (name) {
-				pi.setSessionName(name);
+				await pi.setSessionName(name);
 				ctx.ui.notify(`Session named: ${name}`, "info");
 			} else {
 				const current = pi.getSessionName();

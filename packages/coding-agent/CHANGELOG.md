@@ -2,20 +2,30 @@
 
 ## [Unreleased]
 
-### Changed
-
-- The storage adapter conformance suite now checks call-time binary binding inside transactions.
-
 ### Breaking Changes
 
 - Removed the workflow `durability` option, `WorkflowDurability`, and `WorkflowDurabilityRequiredError`. Use `RunOpts.journal` to select storage or isolate runs, and handle typed journal errors when storage is unavailable.
 - Removed `InMemoryDurableBackend` and `createInMemoryTestBackend`. Use `JournalDurableBackend` over `MemoryRunJournal` for an explicitly in-memory backend. Removed the `legacyRecovery` workflow-tool argument and remaining `workflows.durability` settings.
 - Removed the `@bastani/workflows` import alias; import workflow APIs from `@bastani/atomic/workflows`.
 - Custom `RunJournal` implementations must provide atomic `deleteOwnedRun(lease)`, and invocation records require `invocationFingerprint`.
+- `SessionManager.create`, `open`, `continueRecent`, `forkFrom`, and mutations now return promises. Await session writes, branch changes, labels, names, and model/thinking changes before reading their results or continuing dependent work. Extension `pi.appendEntry`, `pi.setSessionName`, `pi.setLabel`, and `pi.setThinkingLevel` must also be awaited. Persistent session creation writes its header immediately, and setup entries commit without waiting for the first message. A failed write rejects that call with its typed storage error without publishing the failed entry; there is no `flush` API. Explicit in-memory sessions remain available synchronously through `SessionManager.inMemory()`.
+- Session headers use the format-4 fields `createdAt` and `parentSessionId`, including the header returned by `SessionManager.getHeader()`. The `timestamp` and `parentSession` header fields are removed.
+- Extension provider registration and removal now return promises too: await `pi.registerProvider`, `pi.registerProviderAlias`, and `pi.unregisterProvider` before dependent model or session work.
 
 ### Added
 
 - Added the `workflows.journal.path` and `workflows.journal.memory` settings, plus SDK `RunOpts.journal` for a file, caller-owned SQLite connection, explicit memory journal, or supplied journal. TUI, CLI, background, and SDK runs use the selected journal. Relative settings paths resolve against the Atomic home directory.
+
+### Changed
+
+- The storage adapter conformance suite now checks call-time binary binding inside transactions.
+
+### Fixed
+
+- Fixed overlapping prompts duplicating deferred shell results in session history, and retries replaying results that were already saved.
+- Fixed new and branched sessions becoming unwritable when a resumed session uses a different destination session directory.
+- Fixed tree label edits appearing saved before persistence completed. Failed saves now display the error and keep the editor open for retry.
+- Fixed failed custom-message writes dropping accepted pending and next-turn messages. Retries now retain the uncommitted messages in order, and overlapping drains do not duplicate saved messages.
 
 ## [0.9.38-alpha.4] - 2026-10-16
 

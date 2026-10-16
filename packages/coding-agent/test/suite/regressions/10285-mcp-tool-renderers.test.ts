@@ -150,11 +150,11 @@ describe("MCP tool renderers", () => {
 	it("renders unregistered MCP tool calls in HTML exports (#10285)", async () => {
 		initTheme("dark");
 		const dir = mkdtempSync(join(tmpdir(), "atomic-10285-"));
-		const sessionManager = SessionManager.create(dir, join(dir, "sessions"));
+		const sessionManager = await SessionManager.create(dir, join(dir, "sessions"));
 		const harness = await createHarness({ extensionFactories: [mcpExtension], sessionManager });
 		try {
-			sessionManager.appendMessage({ role: "user", content: "search", timestamp: 1 });
-			sessionManager.appendMessage({
+			await sessionManager.appendMessage({ role: "user", content: "search", timestamp: 1 });
+			await sessionManager.appendMessage({
 				role: "assistant",
 				content: fallbackLabels.map(([name], index) => ({
 					type: "toolCall",

@@ -55,7 +55,8 @@ test("workflow /tasks owns the full viewport and input until returning to stage 
 	try {
 		await fixture.start("Fullscreen review");
 		const child = SessionManager.inMemory();
-		for (let i = 0; i < 40; i++) child.appendMessage({ role: "user", content: `CHILD_MESSAGE_${i}`, timestamp: i });
+		for (let i = 0; i < 40; i++)
+			await child.appendMessage({ role: "user", content: `CHILD_MESSAGE_${i}`, timestamp: i });
 		fixture.runners[0].context.bindTranscript(child);
 		for (const key of "/tasks") stage.handleInput(key);
 		stage.handleInput("\r");

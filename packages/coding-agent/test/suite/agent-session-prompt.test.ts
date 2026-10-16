@@ -142,8 +142,8 @@ it("rejects tree navigation during user run preparation without moving the promp
 	});
 	let run: Promise<void> | undefined;
 	try {
-		const targetId = harness.sessionManager.appendMessage(fauxAssistantMessage("earlier branch"));
-		const originalLeafId = harness.sessionManager.appendMessage(fauxAssistantMessage("original branch"));
+		const targetId = await harness.sessionManager.appendMessage(fauxAssistantMessage("earlier branch"));
+		const originalLeafId = await harness.sessionManager.appendMessage(fauxAssistantMessage("original branch"));
 		harness.session.refreshContext();
 		harness.setResponses([fauxAssistantMessage("done")]);
 		run = harness.session.prompt("pending prompt");

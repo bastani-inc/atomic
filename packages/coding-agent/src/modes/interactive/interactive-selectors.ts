@@ -150,8 +150,8 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				onBashInterceptorEnabledChange: (enabled) => {
 					this.settingsManager.setBashInterceptorEnabled(enabled);
 				},
-				onThinkingLevelChange: (level) => {
-					this.session.setThinkingLevel(level, { persist: true });
+				onThinkingLevelChange: async (level) => {
+					await this.session.setThinkingLevel(level, { persist: true });
 					this.footer.invalidate();
 					this.updateEditorBorderColor();
 				},

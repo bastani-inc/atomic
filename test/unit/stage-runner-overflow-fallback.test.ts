@@ -1,4 +1,4 @@
-import { describe, test } from "vitest";
+import { describe, test, vi } from "vitest";
 import type { AgentSessionAdapter, InternalStageContext } from "./stage-runner-helpers.js";
 import { assert, createStageContext, flushMicrotasks, makeMockSession, makeOpts } from "./stage-runner-helpers.js";
 
@@ -175,8 +175,7 @@ describe("createStageContext — overflow fallback", () => {
 
 		const promptPromise = ctx.prompt("go");
 		void promptPromise.catch(() => {});
-		await flushMicrotasks();
-		assert.equal(mock.state.promptCalls, 1);
+		await vi.waitFor(() => assert.equal(mock.state.promptCalls, 1));
 
 		mock.emit({
 			type: "compaction_end",

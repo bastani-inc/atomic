@@ -84,7 +84,7 @@ function toolFixture(replyTracker: ReplyTracker, sessions: SessionInfo[] = []) {
 			registerTool(value: Tool) {
 				tool = value;
 			},
-			appendEntry() {},
+			async appendEntry() {},
 		} as never,
 		{
 			ensureConnected: async () => client,
@@ -175,7 +175,7 @@ describe("Intercom full session ID targeting", () => {
 				registerTool(value: Tool) {
 					tool = value;
 				},
-				appendEntry() {},
+				async appendEntry() {},
 			} as never,
 			{
 				ensureConnected: async () => client,
@@ -241,7 +241,7 @@ describe("Intercom full session ID targeting", () => {
 				registerTool(value: Tool) {
 					tool = value;
 				},
-				appendEntry() {},
+				async appendEntry() {},
 			} as never,
 			{
 				ensureConnected: async () => client,
@@ -611,7 +611,7 @@ describe("intercom list renders possible future stage rows (D7)", () => {
 				registerTool(value: Tool) {
 					tool = value;
 				},
-				appendEntry() {},
+				async appendEntry() {},
 			} as never,
 			{
 				ensureConnected: async () => client,
@@ -735,7 +735,7 @@ describe("intercom list renders possible future stage rows (D7)", () => {
 				registerTool(value: Tool) {
 					tool = value;
 				},
-				appendEntry() {},
+				async appendEntry() {},
 			} as never,
 			{
 				ensureConnected: async () => client,
