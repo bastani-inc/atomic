@@ -4,7 +4,7 @@ import type { SessionInfo } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyText } from "./keybinding-hints.js";
-import { deleteSessionFile } from "./session-selector-delete.ts";
+import { type DeleteSessionFileResult, deleteSessionFile } from "./session-selector-delete.ts";
 import { SessionSelectorHeader } from "./session-selector-header.ts";
 import { SessionList } from "./session-selector-list.ts";
 import type { NameFilter, SortMode } from "./session-selector-search.ts";
@@ -88,6 +88,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		requestRender: () => void,
 		options?: {
 			renameSession?: (session: SessionInfo, currentName: string | undefined) => Promise<void>;
+			deleteSession?: (sessionId: string) => Promise<void>;
 			showRenameHint?: boolean;
 			keybindings?: KeybindingsManager;
 			/**
@@ -174,7 +175,15 @@ export class SessionSelectorComponent extends Container implements Focusable {
 
 		// Handle session deletion
 		this.sessionList.onDeleteSession = async (sessionPath: string) => {
-			const result = await deleteSessionFile(sessionPath);
+			let result: DeleteSessionFileResult;
+			try {
+				if (options?.deleteSession) {
+					await options.deleteSession(sessionPath);
+					result = { ok: true, method: "store" };
+				} else result = await deleteSessionFile(sessionPath);
+			} catch (error) {
+				result = { ok: false, method: "store", error: error instanceof Error ? error.message : String(error) };
+			}
 
 			if (result.ok) {
 				if (this.currentSessions) {

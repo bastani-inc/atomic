@@ -4,7 +4,8 @@ import { fauxAssistantMessage, registerFauxProvider } from "@bastani/pi-ai/compa
 import { Type } from "typebox";
 import { test } from "vitest";
 import { InMemoryCodingAgentModelsStore } from "../../packages/coding-agent/src/core/models-store.js";
-import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/session/errors.js";
+import { resolveSessionStore } from "../../packages/coding-agent/src/core/session-storage.js";
+import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { AuthStorage, ModelRuntime, SessionManager, SettingsManager } from "../../packages/coding-agent/src/index.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { requireStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
@@ -22,6 +23,7 @@ interface StageRunOutcome {
 	readonly reply: RunResult<{ reply: string }>["result"];
 	readonly callCount: number;
 	readonly sessionFile: string | undefined;
+	readonly sessionId: string | undefined;
 }
 
 /** Runs one faux-model `ctx.task` stage through `run()` with the given run options. */
@@ -57,6 +59,7 @@ async function runOneTaskStage(
 			})),
 		});
 		let sessionFile: string | undefined = "unset";
+		let sessionId: string | undefined;
 		const def = workflow({
 			name: "sdk-run-default-adapter",
 			description: "One task stage with no caller-supplied adapters.",
@@ -74,6 +77,7 @@ async function runOneTaskStage(
 					...stageOptions,
 				});
 				sessionFile = result.sessionFile;
+				sessionId = result.sessionId;
 				return { reply: result.text };
 			},
 		});
@@ -85,6 +89,7 @@ async function runOneTaskStage(
 			reply: result.result,
 			callCount: faux.state.callCount,
 			sessionFile,
+			sessionId,
 		};
 	} finally {
 		faux.unregister();
@@ -99,8 +104,15 @@ test("run() executes a ctx.task stage without RunOpts.adapters (#3472)", async (
 		assert.equal(outcome.status, "completed", outcome.error);
 		assert.deepEqual(outcome.reply, { reply: "stage reply from the default adapter" });
 		assert.equal(outcome.callCount, 1);
-		assert.ok(outcome.sessionFile, "the default stage session must persist to disk");
-		assert.equal((await SessionManager.open(outcome.sessionFile)).getCwd(), cwd);
+		assert.equal(outcome.sessionFile, undefined);
+		assert.ok(outcome.sessionId);
+		const sessionStore = await resolveSessionStore(cwd, { agentDir: join(cwd, "agent"), settings: {} });
+		try {
+			assert.equal(sessionStore.descriptor.adapter, "node-sqlite");
+			assert.equal((await sessionStore.load(outcome.sessionId)).header.cwd, cwd);
+		} finally {
+			await sessionStore.close();
+		}
 	} finally {
 		removeTempDirectory(cwd);
 	}
@@ -316,7 +328,7 @@ test("the default workflow adapter rejects an unavailable persistent store inste
 	const cwd = makeTempDirectory("atomic-sdk-run-unavailable-session-");
 	try {
 		const agentDir = join(cwd, "agent");
-		await writeFileEnsuringDir(join(agentDir, "sessions"), "not a directory");
+		await writeFileEnsuringDir(join(cwd, "workflows"), "not a directory");
 		const adapter = createAgentSessionAdapter({
 			cwd,
 			agentDir,
@@ -326,8 +338,8 @@ test("the default workflow adapter rejects an unavailable persistent store inste
 		});
 		await assert.rejects(adapter.create({}), (error: Error) => {
 			assert.ok(error instanceof StorageUnavailableError);
-			assert.equal(error.adapter, "jsonl");
-			assert.ok(error.location.startsWith(agentDir));
+			assert.equal(error.adapter, "node-sqlite");
+			assert.equal(error.location, join(cwd, "workflows", "journal.sqlite"));
 			return true;
 		});
 	} finally {

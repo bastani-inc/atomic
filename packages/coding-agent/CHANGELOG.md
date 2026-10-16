@@ -6,10 +6,12 @@
 
 - `RunOpts.journal.database` now takes an async `SqliteDatabase` facade, not a raw `node:sqlite` connection; use `wrapNodeSqliteDatabase` for an existing connection. Journal configuration failures now use `StorageConfigError` with `source`, `field`, and `reason` instead of `JournalConfigurationError`.
 - Workflow stage forks now take `forkFromSessionId`, and stage resume, retained chat, and subagent forks resolve IDs within the selected session store. File paths are not session identities. Embedded chat hosts must use `await host.loadSession(store, sessionId)` instead of `loadSessionFile(path)`.
+- Sessions now default to the local SQLite database shared with workflow runs, rather than JSONL files. JSONL must be selected explicitly. Removed the `sessionDir` setting without an alias; use `sessions.storage.dir` instead.
 
 ### Added
 
 - Added user-installed journal adapter modules, environment/file secret references, shared `storage` defaults, and `StorageProvider` for explicit session/journal opens with shared database lifetime. `RunOpts.journal.database` accepts an async SQLite facade; invalid selections raise `StorageConfigError` without falling back to memory.
+- Added `sessions.storage` and SDK `sessionStore` to select SQLite, explicit JSONL or memory, a caller-owned database, or a user-installed adapter. Shared `storage` settings now configure sessions too; SDK, CLI and environment overrides take precedence without merging selections. Store-open failures raise typed errors rather than falling back to memory.
 
 ### Fixed
 

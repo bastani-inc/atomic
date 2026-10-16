@@ -23,10 +23,12 @@ export interface HerdrExtensionOptions extends PaneReportingOptions {
 }
 
 function resumeArgv(sessionManager: ExtensionContext["sessionManager"]): string[] | undefined {
-	const sessionFile = sessionManager.getSessionFile();
-	if (!sessionFile) return undefined;
+	if (sessionManager.getSessionStore().descriptor.adapter === "memory") return undefined;
 	const sessionId = sessionManager.getSessionId();
-	const sessionDir = sessionManager.usesDefaultSessionDir() ? [] : ["--session-dir", sessionManager.getSessionDir()];
+	const sessionDir =
+		sessionManager.getSessionDir() && !sessionManager.usesDefaultSessionDir()
+			? ["--session-dir", sessionManager.getSessionDir()]
+			: [];
 	return [APP_NAME, ...sessionDir, "--session", sessionId];
 }
 

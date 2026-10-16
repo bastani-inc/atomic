@@ -196,16 +196,16 @@ test("continueRecent selects and creates sessions through the supplied store", a
 	assert.equal(reopened.getLeafId(), initial.getLeafId());
 });
 
-test("JSONL managers retain explicit and default session directory placement", async () => {
+test("JSONL managers retain explicitly selected default and custom directory placement", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "session-manager-paths-"));
 	const previous = process.env.ATOMIC_CODING_AGENT_DIR;
 	process.env.ATOMIC_CODING_AGENT_DIR = join(directory, "agent");
 	try {
 		const cwd = join(directory, "project");
 		const explicit = join(directory, "chosen");
-		for (const selected of [undefined, explicit]) {
+		for (const selected of [getDefaultSessionDirPath(cwd), explicit]) {
 			const manager = await SessionManager.create(cwd, selected);
-			const expected = selected ?? getDefaultSessionDirPath(cwd);
+			const expected = selected;
 			assert.equal(manager.getSessionDir(), expected);
 			assert.equal(dirname(manager.getSessionFile()!), expected);
 			await manager.appendMessage(message("persisted"));
@@ -218,6 +218,8 @@ test("JSONL managers retain explicit and default session directory placement", a
 			const reopened = await SessionManager.open(manager.getSessionFile()!);
 			assert.equal(reopened.getSessionId(), manager.getSessionId());
 			assert.deepEqual(reopened.getEntries(), manager.getEntries());
+			await reopened.getSessionStore().close();
+			await manager.getSessionStore().close();
 		}
 	} finally {
 		if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
@@ -230,13 +232,21 @@ test("CLI and TUI session defaults stay persistent for create, resume, and fork"
 	const directory = await mkdtemp(join(tmpdir(), "session-manager-defaults-"));
 	const previous = process.env.ATOMIC_CODING_AGENT_DIR;
 	process.env.ATOMIC_CODING_AGENT_DIR = join(directory, "agent");
+	const managers: SessionManager[] = [];
 	try {
 		const settings = SettingsManager.inMemory();
-		const create = (args: string[]) => createSessionManager(parseArgs(args), directory, undefined, settings);
+		const create = async (args: string[]) => {
+			const manager = await createSessionManager(parseArgs(args), directory, undefined, settings);
+			managers.push(manager);
+			return manager;
+		};
 		const initial = await create([]);
 		assert.equal(initial.isPersisted(), true);
-		const path = initial.getSessionFile()!;
-		assert.equal(JSON.parse(await readFile(path, "utf8")).version, 4);
+		assert.deepEqual(initial.getSessionStore().descriptor, {
+			adapter: "node-sqlite",
+			location: join(directory, "workflows", "journal.sqlite"),
+		});
+		assert.equal((await initial.getSessionStore().load(initial.getSessionId())).header.version, 4);
 		await initial.appendMessage(message("default session"));
 		const resumed = await create(["--continue"]);
 		assert.equal(resumed.isPersisted(), true);
@@ -252,6 +262,7 @@ test("CLI and TUI session defaults stay persistent for create, resume, and fork"
 		assert.equal(memory.isPersisted(), false);
 		assert.equal(memory.getSessionFile(), undefined);
 	} finally {
+		for (const manager of managers) await manager.getSessionStore().close();
 		if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 		else process.env.ATOMIC_CODING_AGENT_DIR = previous;
 		await rm(directory, { recursive: true, force: true });

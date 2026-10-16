@@ -1,6 +1,6 @@
 # Session File Format
 
-Sessions are stored as JSONL (JSON Lines) files. Each line is a JSON object with a `type` field. Session entries form a tree structure via `id`/`parentId` fields, enabling in-place branching without creating new files.
+This page describes format-4 JSONL files used by explicit JSONL stores and exports. Sessions default to SQLite; see [Session storage](/sessions#session-storage) to choose a store. In JSONL, each line is a JSON object with a `type` field. Session entries form a tree through `id` and `parentId`.
 
 ## File Location
 
@@ -12,9 +12,9 @@ Where `<path>` is the working directory with `/` replaced by `-`.
 
 ## Deleting Sessions
 
-Sessions can be removed by deleting their `.jsonl` files under `~/.atomic/agent/sessions/` (legacy `~/.pi/agent/sessions/` may exist from older Pi installs).
+For an explicitly selected JSONL store, sessions can be removed by deleting their `.jsonl` files. Do not delete the shared SQLite database to remove a single session.
 
-Atomic also supports deleting sessions interactively from `/resume` (select a session and press `CTRL+D`, then confirm). When available, Atomic uses the `trash` CLI to avoid permanent deletion.
+Delete individual sessions from `/resume`: select a session, press `CTRL+D`, then confirm. Database stores delete the selected session record. JSONL stores use the `trash` CLI when available.
 
 ## Session Version
 
@@ -425,7 +425,7 @@ for (const line of lines) {
 
 Key methods for working with sessions programmatically.
 
-Await `create`, `open`, `continueRecent`, `forkFrom`, and all session mutations. A resolved mutation has committed to its store; a failed write rejects with its typed storage error without publishing the failed entry. There is no `flush` method. `inMemory()` explicitly selects memory and performs no filesystem I/O. Other factories use persistent JSONL storage by default and never fall back to memory if it cannot be opened.
+Await `create`, `open`, `continueRecent`, `forkFrom`, and all session mutations. A resolved mutation has committed to its store; a failed write rejects with its typed storage error without publishing the failed entry. There is no `flush` method. `inMemory()` explicitly selects memory and performs no filesystem I/O. Factories without an explicit store or directory resolve the configured storage, defaulting to the shared local SQLite database. A directory argument explicitly selects JSONL. Store-open failures never fall back to memory.
 
 ### Static Creation Methods
 

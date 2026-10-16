@@ -39,8 +39,8 @@ import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
 import { sessionGenerationClosing, sessionLifetime, trackSessionWork } from "./session-lifecycle-work.ts";
 import { SessionManager } from "./session-manager.ts";
-import { getDefaultSessionDirPath } from "./session-manager-paths.ts";
 import { registerStartupRollback, rollbackStartup } from "./session-startup-rollback.ts";
+import { resolveSessionStore } from "./session-storage.js";
 import { SettingsManager } from "./settings-manager.ts";
 import { applyToolModifiers, getToolListError, isToolModifier } from "./settings-merge.js";
 import { ownedSettingsManagers } from "./settings-write-ownership.ts";
@@ -173,7 +173,15 @@ async function constructAgentSession(
 
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
 	const sessionManager =
-		options.sessionManager ?? (await SessionManager.create(cwd, getDefaultSessionDirPath(cwd, agentDir)));
+		options.sessionManager ??
+		(await SessionManager.create(
+			await resolveSessionStore(cwd, {
+				agentDir,
+				settings: settingsManager.getSettings(),
+				sessionStore: options.sessionStore,
+			}),
+			cwd,
+		));
 
 	// Mark workflow-created sessions as internal so they are excluded from the
 	// standard `/resume` history while remaining resumable via `/workflow resume`.

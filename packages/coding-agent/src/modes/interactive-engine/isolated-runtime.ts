@@ -146,9 +146,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				this.engineRecoveryFailure = undefined;
 				try {
 					const manager = super.session.sessionManager;
-					await this.client.restart(this.remoteSessionFile ? manager.getSessionId() : undefined, {
+					await this.client.restart(manager.isPersisted() ? manager.getSessionId() : undefined, {
 						cwd: manager.getCwd(),
-						sessionDirectory: this.remoteSessionFile ? manager.getSessionDir() : undefined,
+						sessionDirectory: manager.getSessionDir() || undefined,
 					});
 					await this.initializeFromEngine();
 				} catch (error) {
@@ -233,12 +233,14 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			});
 			if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
 			if (
-				state.sessionLocation &&
-				(state.sessionId !== super.session.sessionId ||
+				(super.session.sessionManager.isPersisted() && state.sessionId !== super.session.sessionId) ||
+				(state.sessionLocation &&
 					canonicalizePath(dirname(state.sessionLocation)) !==
 						canonicalizePath(super.session.sessionManager.getSessionDir()))
 			) {
-				await super.switchSession(state.sessionId, { sessionDirectory: dirname(state.sessionLocation) });
+				await super.switchSession(state.sessionId, {
+					sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
+				});
 				if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
 			}
 			const session = super.session;
@@ -571,8 +573,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		const result = await this.client.newSession(options?.parentSession);
 		if (result.cancelled) return result;
 		const state = await this.client.getState();
-		if (state.sessionLocation)
-			await super.switchSession(state.sessionId, { sessionDirectory: dirname(state.sessionLocation) });
+		if (super.session.sessionManager.isPersisted())
+			await super.switchSession(state.sessionId, {
+				sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
+			});
 		else await this.resetUnpersistedSessionView();
 		await this.initializeFromEngine();
 		return result;
@@ -586,8 +590,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		});
 		if (result.cancelled) return result;
 		const state = await this.client.getState();
-		if (state.sessionLocation)
-			await super.switchSession(state.sessionId, { sessionDirectory: dirname(state.sessionLocation) });
+		if (super.session.sessionManager.isPersisted())
+			await super.switchSession(state.sessionId, {
+				sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
+			});
 		await this.initializeFromEngine();
 		return result;
 	}
@@ -607,8 +613,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		}
 		if (cancelled) return { cancelled: true };
 		const state = await this.client.getState();
-		if (state.sessionLocation)
-			await super.switchSession(state.sessionId, { sessionDirectory: dirname(state.sessionLocation) });
+		if (super.session.sessionManager.isPersisted())
+			await super.switchSession(state.sessionId, {
+				sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
+			});
 		await this.initializeFromEngine();
 		return { cancelled: false, selectedText };
 	}
@@ -945,8 +953,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private async resetUnpersistedSessionView(): Promise<void> {
 		const session = super.session;
 		const manager = await SessionManager.create(
+			session.sessionManager.getSessionStore(),
 			session.sessionManager.getCwd(),
-			session.sessionManager.getSessionDir(),
 		);
 		Object.defineProperty(session, "sessionManager", { configurable: true, value: manager });
 		this.patchSessionManager(manager);

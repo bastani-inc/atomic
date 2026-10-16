@@ -8,6 +8,7 @@ import { beforeAll, test, vi } from "vitest";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
 import type { SessionStats } from "../src/core/agent-session-types.js";
 import { SessionManager } from "../src/core/session-manager.js";
+import { resolveSessionStore } from "../src/core/session-storage.js";
 import { UsageMeterComponent } from "../src/modes/interactive/components/footer.js";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.js";
 import "../src/modes/interactive/interactive-slash-commands.js";
@@ -289,6 +290,23 @@ function sessionInfo(session: Harness["session"]): string {
 	return stripAnsi(chatContainer.render(120).join("\n"));
 }
 
+test("/session identifies a persistent SQLite database instead of memory", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "sqlite-session-info-"));
+	const path = join(directory, "sessions.sqlite");
+	const store = await resolveSessionStore(directory, { sessionStore: { kind: "sqlite", path } });
+	const harness = await createHarness({ sessionManager: await SessionManager.create(store, directory) });
+	try {
+		const output = sessionInfo(harness.session);
+		assert.ok(output.includes(`File: ${path}`));
+		assert.equal(output.includes("In-memory"), false);
+		assert.ok(output.includes(`ID: ${harness.session.sessionId}`));
+	} finally {
+		await harness.cleanup();
+		await store.close();
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
 test("/session uses engine counts and identity during the first run (#3383)", async () => {
 	const harness = await createHarness();
 	try {
@@ -551,9 +569,24 @@ test("an engine restart drops the old engine's stats without a diagnostic (#3328
 for (const operation of ["newSession", "fork", "importFromJsonl"] as const) {
 	test(`${operation} never shows the previous session's stats (#3328)`, async () => {
 		const harness = await createFileBackedHarness();
+		const replacements: Harness[] = [];
 		try {
 			const probe = createStatsEngineClient(harness.getModel());
-			const runtime = createRuntime(harness, probe);
+			await SessionManager.create(harness.sessionManager.getSessionStore(), harness.tempDir, {
+				id: "engine-session",
+			});
+			const localRuntime = new AgentSessionRuntime(harness.session, servicesFor(harness), async () => {
+				assert.fail("replacement must use the isolated runtime factory");
+			});
+			const runtime = new IsolatedInteractiveRuntime(
+				localRuntime,
+				async ({ sessionManager }) => {
+					const replacement = await createHarness({ sessionManager });
+					replacements.push(replacement);
+					return { session: replacement.session, services: servicesFor(replacement), diagnostics: [] };
+				},
+				probe.client as never,
+			);
 			await showStats(probe, runtime, P1, P1_LINE);
 			probe.emit({ type: "message_end", message: toolResultMessage() });
 			await vi.waitFor(() => {
@@ -575,6 +608,7 @@ for (const operation of ["newSession", "fork", "importFromJsonl"] as const) {
 			await showStats(probe, runtime, P2, P2_LINE);
 			assert.equal(usageLine(runtime), P2_LINE);
 		} finally {
+			for (const replacement of replacements) await replacement.cleanup();
 			await harness.cleanup();
 		}
 	});

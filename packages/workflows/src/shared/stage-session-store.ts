@@ -1,27 +1,28 @@
 import { randomUUID } from "node:crypto";
 import {
-	getDefaultSessionDirPath,
+	type CreateAgentSessionOptions,
 	JsonlSessionStore,
 	type NewSessionOptions,
+	resolveSessionStore,
 	SessionManager,
 	type SessionStore,
 } from "@bastani/atomic";
 
 export async function stageSessionStore(
-	options: { sessionStore?: SessionStore; sessionManager?: SessionManager; cwd?: string; sessionDir?: string },
+	options: Pick<CreateAgentSessionOptions, "sessionManager" | "cwd" | "agentDir" | "settingsManager"> & {
+		sessionStore?: SessionStore;
+		sessionDir?: string;
+	},
 	defaultSessionDir?: string,
 ): Promise<SessionStore> {
-	return (
-		options.sessionStore ??
-		options.sessionManager?.getSessionStore() ??
-		JsonlSessionStore.open(
-			options.sessionDir ?? defaultSessionDir ?? getDefaultSessionDirPath(options.cwd ?? process.cwd()),
-			{
-				exactDirectory: true,
-				scanExisting: false,
-			},
-		)
-	);
+	if (options.sessionStore !== undefined) return options.sessionStore;
+	if (options.sessionManager !== undefined) return options.sessionManager.getSessionStore();
+	const directory = options.sessionDir ?? defaultSessionDir;
+	if (directory !== undefined) return JsonlSessionStore.open(directory, { exactDirectory: true, scanExisting: false });
+	return resolveSessionStore(options.cwd ?? process.cwd(), {
+		agentDir: options.agentDir,
+		settings: options.settingsManager?.getSettings(),
+	});
 }
 
 export async function forkStageSession(

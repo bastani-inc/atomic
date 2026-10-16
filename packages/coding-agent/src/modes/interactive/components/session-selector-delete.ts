@@ -5,7 +5,7 @@ import { createChildProcessEnvironment } from "../../../utils/child-process.ts";
 
 export interface DeleteSessionFileResult {
 	ok: boolean;
-	method: "trash" | "unlink";
+	method: "trash" | "unlink" | "store";
 	error?: string;
 }
 

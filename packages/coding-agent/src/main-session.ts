@@ -1,4 +1,3 @@
-import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 import { ProcessTerminal, setCapabilityOverrides, setKeybindings, TuiMainScreen } from "@earendil-works/pi-tui";
 import chalk from "chalk";
@@ -9,42 +8,35 @@ import { KeybindingsManager } from "./core/keybindings.ts";
 import { formatMissingSessionCwdPrompt, type SessionCwdIssue } from "./core/session-cwd.ts";
 import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
 import { classifiedWorkflowMetadata, workflowSessionMetadataFromEnv } from "./core/session-manager-classification.ts";
-import { getDefaultSessionDirPath } from "./core/session-manager-paths.ts";
+import { resolveSessionStore } from "./core/session-storage.js";
 import type { SettingsManager } from "./core/settings-manager.ts";
-import { JsonlSessionStore } from "./core/storage/session/jsonl-session-store.js";
+import type { SessionStore } from "./core/storage/session/types.js";
 import { ExtensionSelectorComponent } from "./modes/interactive/components/extension-selector.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
 import { resolveSessionIdTargetAcrossScopes } from "./session-id-target.js";
 import { resolvePath } from "./utils/paths.ts";
 
 type ResolvedSession =
-	| { type: "local" | "global"; id: string; directory: string; cwd: string }
+	| { type: "local" | "global"; id: string; cwd: string }
 	| { type: "error"; message: string }
 	| { type: "not_found"; arg: string };
 
-async function findLocalSessionByExactId(sessionId: string, cwd: string, sessionDir?: string) {
-	const directory = sessionDir ?? getDefaultSessionDirPath(cwd);
-	const store = await JsonlSessionStore.open(directory, { exactDirectory: true, scanExisting: false });
-	try {
-		const header = await store.readHeader(sessionId);
-		return header && !classifiedWorkflowMetadata(header) && resolvePath(header.cwd) === resolvePath(cwd)
-			? { id: header.id, directory }
-			: undefined;
-	} finally {
-		await store.close();
-	}
+async function findLocalSessionByExactId(sessionId: string, cwd: string, store: SessionStore) {
+	const header = await store.readHeader(sessionId);
+	return header && !classifiedWorkflowMetadata(header) && resolvePath(header.cwd) === resolvePath(cwd)
+		? { id: header.id }
+		: undefined;
 }
 
-async function resolveSessionId(sessionArg: string, cwd: string, sessionDir?: string): Promise<ResolvedSession> {
-	const localSessions = await SessionManager.list(cwd, sessionDir, undefined, { includeInternal: true });
+async function resolveSessionId(sessionArg: string, cwd: string, store: SessionStore): Promise<ResolvedSession> {
+	const localSessions = await SessionManager.list(cwd, store, undefined, { includeInternal: true });
 	const resolution = await resolveSessionIdTargetAcrossScopes(sessionArg, localSessions, () =>
-		SessionManager.listAll(sessionDir, undefined, { includeInternal: true }),
+		SessionManager.listAll(store, undefined, { includeInternal: true }),
 	);
 	if (resolution.kind === "exact" || resolution.kind === "unique_prefix") {
 		return {
 			type: resolution.scope,
 			id: resolution.session.id,
-			directory: dirname(resolution.session.path),
 			cwd: resolution.session.cwd,
 		};
 	}
@@ -134,29 +126,23 @@ export function validateSessionIdFlags(parsed: Args): void {
 async function forkSessionOrExit(
 	sourceId: string,
 	cwd: string,
-	sessionDir?: string,
+	store: SessionStore,
 	sessionId?: string,
-	sourceDirectory?: string,
 ): Promise<SessionManager> {
 	try {
-		const store = await JsonlSessionStore.open(sourceDirectory ?? getDefaultSessionDirPath(cwd), {
-			exactDirectory: true,
-			scanExisting: false,
-		});
 		const source = await SessionManager.open(store, sourceId);
-		return await source.forkTo(cwd, sessionDir, { id: sessionId });
-	} catch (error: unknown) {
+		return await source.forkTo(cwd, store, { id: sessionId });
+	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(chalk.red(`Error: ${message}`));
 		process.exit(1);
 	}
 }
 
-async function openSessionOrExit(sessionId: string, directory: string, exactDirectory = true): Promise<SessionManager> {
+async function openSessionOrExit(sessionId: string, store: SessionStore): Promise<SessionManager> {
 	try {
-		const store = await JsonlSessionStore.open(directory, { exactDirectory, scanExisting: false });
 		return await SessionManager.open(store, sessionId);
-	} catch (error: unknown) {
+	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(chalk.red(`Error: ${message}`));
 		process.exit(1);
@@ -179,31 +165,29 @@ export async function createSessionManager(
 	settingsManager: SettingsManager,
 ): Promise<SessionManager> {
 	validateImportFlags(parsed);
-	if (parsed.noSession) {
-		const manager = SessionManager.inMemory(
-			cwd,
-			parsed.sessionId !== undefined ? { id: parsed.sessionId } : undefined,
-		);
-		return parsed.import !== undefined ? manager.importFromJsonl(resolvePath(parsed.import, cwd)) : manager;
-	}
-	if (parsed.import !== undefined)
-		return SessionManager.importFromJsonl(resolvePath(parsed.import, cwd), cwd, sessionDir);
+	const store = await resolveSessionStore(cwd, {
+		settings: settingsManager.getSettings(),
+		noSession: parsed.noSession,
+		sessionDir: parsed.sessionDir ?? sessionDir,
+	});
+	if (parsed.import !== undefined) return SessionManager.importFromJsonl(resolvePath(parsed.import, cwd), cwd, store);
+	if (parsed.noSession) return SessionManager.create(store, cwd, { id: parsed.sessionId });
 
 	if (parsed.fork !== undefined) {
 		if (parsed.sessionId !== undefined) {
-			const existingTarget = await findLocalSessionByExactId(parsed.sessionId, cwd, sessionDir);
+			const existingTarget = await findLocalSessionByExactId(parsed.sessionId, cwd, store);
 			if (existingTarget) {
 				console.error(chalk.red(`Session already exists with id '${parsed.sessionId}'`));
 				process.exit(1);
 			}
 		}
 
-		const resolved = await resolveSessionId(parsed.fork, cwd, sessionDir);
+		const resolved = await resolveSessionId(parsed.fork, cwd, store);
 
 		switch (resolved.type) {
 			case "local":
 			case "global":
-				return forkSessionOrExit(resolved.id, cwd, sessionDir, parsed.sessionId, resolved.directory);
+				return forkSessionOrExit(resolved.id, cwd, store, parsed.sessionId);
 			case "error":
 				console.error(chalk.red(`Error: ${resolved.message}`));
 				process.exit(1);
@@ -216,11 +200,11 @@ export async function createSessionManager(
 	}
 
 	if (parsed.session !== undefined) {
-		const resolved = await resolveSessionId(parsed.session, cwd, sessionDir);
+		const resolved = await resolveSessionId(parsed.session, cwd, store);
 
 		switch (resolved.type) {
 			case "local":
-				return openSessionOrExit(resolved.id, resolved.directory);
+				return openSessionOrExit(resolved.id, store);
 
 			case "global": {
 				console.log(chalk.yellow(`Session found in different project: ${resolved.cwd}`));
@@ -229,7 +213,7 @@ export async function createSessionManager(
 					console.log(chalk.dim("Aborted."));
 					process.exit(0);
 				}
-				return forkSessionOrExit(resolved.id, cwd, sessionDir, undefined, resolved.directory);
+				return forkSessionOrExit(resolved.id, cwd, store);
 			}
 			case "error":
 				console.error(chalk.red(`Error: ${resolved.message}`));
@@ -246,33 +230,34 @@ export async function createSessionManager(
 		initTheme(settingsManager.getTheme(), true);
 		try {
 			const selected = await selectSession(
-				(onProgress) => SessionManager.list(cwd, sessionDir, onProgress),
-				(onProgress) => SessionManager.listAll(sessionDir, onProgress),
+				(onProgress) => SessionManager.list(cwd, store, onProgress),
+				(onProgress) => SessionManager.listAll(store, onProgress),
 				settingsManager,
+				store.descriptor.adapter === "jsonl" ? undefined : (id) => store.delete(id),
 			);
 			if (selected === null) {
 				console.log(chalk.dim("No session selected"));
 				process.exit(0);
 			}
-			return openSessionOrExit(selected.id, dirname(selected.path));
+			return openSessionOrExit(selected.id, store);
 		} finally {
 			stopThemeWatcher();
 		}
 	}
 
 	if (parsed.continue) {
-		return await SessionManager.continueRecent(cwd, sessionDir);
+		return await SessionManager.continueRecent(store, cwd);
 	}
 
 	if (parsed.sessionId !== undefined) {
-		const existingSession = await findLocalSessionByExactId(parsed.sessionId, cwd, sessionDir);
+		const existingSession = await findLocalSessionByExactId(parsed.sessionId, cwd, store);
 		if (existingSession) {
-			return openSessionOrExit(existingSession.id, existingSession.directory);
+			return openSessionOrExit(existingSession.id, store);
 		}
 		console.error(chalk.yellow(`No session found with id '${parsed.sessionId}'; creating a new session.`));
 	}
 
-	return await SessionManager.create(cwd, sessionDir, { id: parsed.sessionId });
+	return await SessionManager.create(store, cwd, { id: parsed.sessionId });
 }
 
 export async function promptForMissingSessionCwd(

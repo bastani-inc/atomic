@@ -32,7 +32,7 @@ export function buildInteractiveEngineArgs(
 	appendValue(
 		args,
 		"--session-dir",
-		sessionManager.isPersisted() ? sessionManager.getSessionDir() : parsed.sessionDir,
+		sessionManager.getSessionStore().descriptor.adapter === "jsonl" ? sessionManager.getSessionDir() : undefined,
 	);
 	appendValue(args, "--provider", parsed.provider);
 	appendValue(args, "--model", parsed.model);

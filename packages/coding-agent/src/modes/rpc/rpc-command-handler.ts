@@ -159,7 +159,7 @@ export function createRpcCommandHandler({
 			case "list_sessions": {
 				const sessions = await SessionManager.list(
 					runtimeHost.services.cwd,
-					session.sessionManager.getSessionDir(),
+					session.sessionManager.getSessionStore(),
 				);
 				return createRpcSuccessResponse(id, command.type, {
 					sessions: sessions.map((info) => ({

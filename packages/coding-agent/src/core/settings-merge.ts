@@ -58,6 +58,9 @@ function deepMergeObjects(base: Record<string, unknown>, overrides: Record<strin
 export function deepMergeSettings(base: Settings, overrides: Settings): Settings {
 	const merged = deepMergeObjects(base as Record<string, unknown>, overrides as Record<string, unknown>) as Settings;
 	if (overrides.storage !== undefined) merged.storage = overrides.storage;
+	if (overrides.sessions?.storage !== undefined) {
+		merged.sessions = { ...merged.sessions, storage: overrides.sessions.storage };
+	}
 	if (isMergeableObject(base.workflows) || isMergeableObject(overrides.workflows)) {
 		const globalWorkflows = Array.isArray(base.workflows) ? { paths: base.workflows } : (base.workflows ?? {});
 		const projectWorkflows = Array.isArray(overrides.workflows)

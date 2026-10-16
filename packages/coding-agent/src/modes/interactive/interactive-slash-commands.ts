@@ -380,7 +380,10 @@ InteractiveModeBase.prototype.handleSessionCommand = function (this: Interactive
 	if (sessionName) {
 		info += `${theme.fg("dim", "Name:")} ${sessionName}\n`;
 	}
-	info += `${theme.fg("dim", "File:")} ${stats.sessionFile ?? "In-memory"}\n`;
+	const location =
+		stats.sessionFile ??
+		(this.sessionManager.isPersisted() ? this.sessionManager.getSessionStore().descriptor.location : "In-memory");
+	info += `${theme.fg("dim", "File:")} ${location}\n`;
 	info += `${theme.fg("dim", "ID:")} ${stats.sessionId}\n\n`;
 	info += `${theme.bold("Messages")}\n`;
 	info += `${theme.fg("dim", "User:")} ${stats.userMessages}\n`;

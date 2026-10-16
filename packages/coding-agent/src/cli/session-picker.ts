@@ -16,6 +16,7 @@ export async function selectSession(
 	currentSessionsLoader: SessionsLoader,
 	allSessionsLoader: SessionsLoader,
 	settingsManager: SettingsManager,
+	deleteSession?: (sessionId: string) => Promise<void>,
 ): Promise<SessionInfo | null> {
 	setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides());
 	return new Promise((resolve) => {
@@ -49,7 +50,7 @@ export async function selectSession(
 				process.exit(0);
 			},
 			() => ui.requestRender(),
-			{ showRenameHint: false, keybindings },
+			{ showRenameHint: false, keybindings, deleteSession },
 		);
 
 		ui.addChild(selector);

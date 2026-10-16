@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
-import { homedir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SettingsManager } from "../src/core/settings-manager.ts";
@@ -548,30 +547,6 @@ describe("SettingsManager", () => {
 			first.length = 0;
 
 			expect(manager.getDefaultTools()).toEqual(["read", "bash"]);
-		});
-	});
-
-	describe("getSessionDir", () => {
-		it("should return undefined when not set", () => {
-			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ theme: "dark" }));
-			const manager = SettingsManager.create(projectDir, agentDir);
-			expect(manager.getSessionDir()).toBeUndefined();
-		});
-		it("should return global sessionDir", () => {
-			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ sessionDir: "/tmp/sessions" }));
-			const manager = SettingsManager.create(projectDir, agentDir);
-			expect(manager.getSessionDir()).toBe("/tmp/sessions");
-		});
-		it("should return project sessionDir, overriding global", () => {
-			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ sessionDir: "/global/sessions" }));
-			writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify({ sessionDir: "./sessions" }));
-			const manager = SettingsManager.create(projectDir, agentDir);
-			expect(manager.getSessionDir()).toBe("./sessions");
-		});
-		it("should expand ~ in sessionDir", () => {
-			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ sessionDir: "~/sessions" }));
-			const manager = SettingsManager.create(projectDir, agentDir);
-			expect(manager.getSessionDir()).toBe(join(homedir(), "sessions"));
 		});
 	});
 });

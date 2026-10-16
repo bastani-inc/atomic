@@ -159,16 +159,18 @@ interface SharedDatabase {
 	references: number;
 }
 
+const sharedDatabases = new Map<string, SharedDatabase>();
+
 export interface StorageProvider {
 	openSessionStore(selection: StorageSelection, context: StorageOpenContext): Promise<SessionStore>;
 	openRunJournal(selection: StorageSelection, context: StorageOpenContext): Promise<RunJournal>;
 }
 
-export const StorageProvider: new (journals: JournalFactories) => StorageProvider = class {
-	private readonly journals: JournalFactories;
-	private readonly databases = new Map<string, SharedDatabase>();
+export const StorageProvider: new (journals?: JournalFactories) => StorageProvider = class {
+	private readonly journals?: JournalFactories;
+	private readonly databases = sharedDatabases;
 
-	constructor(journals: JournalFactories) {
+	constructor(journals?: JournalFactories) {
 		this.journals = journals;
 	}
 
@@ -183,11 +185,13 @@ export const StorageProvider: new (journals: JournalFactories) => StorageProvide
 	}
 
 	async openRunJournal(selection: StorageSelection, context: StorageOpenContext): Promise<RunJournal> {
+		const journals = this.journals;
+		if (!journals) throw new StorageConfigError("sdk", "journal", "adapter-domain-unsupported");
 		return this.open<RunJournal>(selection, context, {
-			memory: () => this.journals.memory({ adapter: "memory", location: ":memory:" }),
+			memory: () => journals.memory({ adapter: "memory", location: ":memory:" }),
 			direct: (adapter, options, storage) => adapter.openRunJournal?.(options, context, storage),
 			sql: async (database, options) => {
-				const journal = await this.journals.sql(database, options);
+				const journal = await journals.sql(database, options);
 				const createRun = journal.createRun.bind(journal);
 				journal.createRun = (header) => createRun({ ...header, storage: { ...database.descriptor } });
 				return journal;

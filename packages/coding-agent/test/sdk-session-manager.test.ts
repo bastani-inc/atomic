@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { join } from "node:path";
 import { getModel } from "@bastani/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -9,7 +9,8 @@ import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import { StorageUnavailableError } from "../src/core/storage/session/errors.js";
+import { StorageUnavailableError } from "../src/core/storage/errors.js";
+import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 
 const missingApiKeyEnv = "ATOMIC_SDK_SESSION_MANAGER_MISSING_KEY";
 const testModel = (id: string) => ({
@@ -78,7 +79,7 @@ describe("createAgentSession session manager defaults", () => {
 		if (tempDir && existsSync(tempDir)) rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	it("uses agentDir for the default persisted session path", async () => {
+	it("uses agentDir for the shared default SQLite database", async () => {
 		const model = getModel("anthropic", "claude-sonnet-4-5");
 		expect(model).toBeTruthy();
 
@@ -88,29 +89,48 @@ describe("createAgentSession session manager defaults", () => {
 			model: model!,
 		});
 
-		const safePath = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
-		const expectedSessionDir = join(agentDir, "sessions", safePath);
-		const sessionDir = session.sessionManager.getSessionDir();
-		const sessionFile = session.sessionManager.getSessionFile();
-
-		expect(sessionDir).toBe(expectedSessionDir);
-		expect(sessionFile?.startsWith(`${expectedSessionDir}${sep}`)).toBe(true);
-		expect(session.sessionManager.isPersisted()).toBe(true);
-		expect(existsSync(sessionFile!)).toBe(true);
+		const location = join(tempDir, "workflows", "journal.sqlite");
+		assert.deepEqual(session.sessionManager.getSessionStore().descriptor, { adapter: "node-sqlite", location });
+		assert.equal(session.sessionManager.getSessionFile(), undefined);
+		assert.equal(session.sessionManager.isPersisted(), true);
+		assert.equal(existsSync(location), true);
 
 		await session.dispose();
 	});
 
-	it("rejects an unavailable default session directory without choosing memory", async () => {
-		writeFileSync(join(agentDir, "sessions"), "not a directory");
+	it("rejects an unavailable default database without choosing memory", async () => {
+		writeFileSync(join(tempDir, "workflows"), "not a directory");
 		await assert.rejects(
 			createAgentSession({ cwd, agentDir, model: getModel("anthropic", "claude-sonnet-4-5")! }),
 			(error: Error) => {
 				assert.ok(error instanceof StorageUnavailableError);
-				assert.equal(error.adapter, "jsonl");
+				assert.equal(error.adapter, "node-sqlite");
 				return true;
 			},
 		);
+	});
+
+	it("accepts a sessionStore instance or selection ahead of settings", async () => {
+		const supplied = new MemorySessionStore();
+		for (const sessionStore of [
+			supplied,
+			{ kind: "memory" },
+			{ kind: "sqlite", path: join(tempDir, "explicit.sqlite") },
+		] as const) {
+			const { session } = await createAgentSession({
+				cwd,
+				agentDir,
+				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				settingsManager: SettingsManager.inMemory({ sessions: { storage: { path: "ignored.sqlite" } } }),
+				sessionStore,
+			});
+			if (sessionStore === supplied) assert.equal(session.sessionManager.getSessionStore(), supplied);
+			else {
+				assert.ok("kind" in sessionStore);
+				assert.equal(session.sessionManager.isPersisted(), sessionStore.kind === "sqlite");
+			}
+			await session.dispose();
+		}
 	});
 
 	it("keeps an explicit sessionManager override", async () => {
@@ -175,7 +195,7 @@ describe("createAgentSession session manager defaults", () => {
 			model: model!,
 			thinkingLevel: "high",
 		});
-		expect(session.sessionFile).toBeTruthy();
+		expect(session.sessionFile).toBeUndefined();
 		expect(session.systemPrompt).toContain(
 			"You can inspect ATOMIC_* or PI_* environment variables for current model and session details.",
 		);

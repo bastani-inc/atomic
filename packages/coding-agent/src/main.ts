@@ -29,10 +29,8 @@ import { listModels } from "./cli/list-models.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
 import {
 	ENV_OFFLINE,
-	ENV_SESSION_DIR,
 	ENV_SKIP_VERSION_CHECK,
 	ENV_STARTUP_BENCHMARK,
-	expandTildePath,
 	getAgentDir,
 	getEnvValue,
 	getPackageDir,
@@ -115,7 +113,6 @@ import {
 	takeInteractiveEngineBootstrapArg,
 } from "./utils/interactive-engine-bootstrap.ts";
 import { captureInteractiveEngineStartupEnv, isInteractiveEngineChild } from "./utils/interactive-engine-env.ts";
-import { normalizePath } from "./utils/paths.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 
 export type { AppMode } from "./main-app-mode.ts";
@@ -478,14 +475,9 @@ export async function main(argv: string[], options?: MainOptions) {
 	// --session and --resume may select a session from another project, so project-local
 	// settings, resources, provider registrations, and models must be resolved only after
 	// the target session cwd is known. The startup-cwd settings manager is used only for
-	// sessionDir lookup during session selection.
-	const envSessionDir = getEnvValue(ENV_SESSION_DIR);
-	const sessionDir =
-		(parsed.sessionDir ? normalizePath(parsed.sessionDir) : undefined) ??
-		(envSessionDir ? expandTildePath(envSessionDir) : undefined) ??
-		startupSettingsManager.getSessionDir();
+	// storage selection before loading the selected session's resources.
 	let sessionManager = await applyInheritedWorkflowSessionClassification(
-		await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager),
+		await createSessionManager(parsed, cwd, undefined, startupSettingsManager),
 	);
 	const missingSessionCwdIssue = getMissingSessionCwdIssue(sessionManager, cwd);
 	if (missingSessionCwdIssue) {

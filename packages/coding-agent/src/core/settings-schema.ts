@@ -365,6 +365,11 @@ export const StorageSelectionSchema = Type.Union([
 	),
 ]);
 
+export const SessionStorageSelectionSchema = Type.Union([
+	StorageSelectionSchema,
+	Type.Object({ dir: Type.String() }, { additionalProperties: false }),
+]);
+
 const WorkflowsSettingsSchema = Type.Union(
 	[
 		StringArraySchema,
@@ -382,6 +387,7 @@ export const SettingsSchema = Type.Object(
 	{
 		$schema: Type.Optional(Type.String({ description: "JSON Schema reference." })),
 		storage: Type.Optional(StorageSelectionSchema),
+		sessions: Type.Optional(Type.Object({ storage: Type.Optional(SessionStorageSelectionSchema) })),
 		lastChangelogVersion: Type.Optional(Type.String()),
 		firstRunOnboardingStartedVersion: Type.Optional(
 			Type.String({ description: "Managed onboarding state; leave unchanged." }),
@@ -610,11 +616,6 @@ export const SettingsSchema = Type.Object(
 		codemode: Type.Optional(CodemodeSettingsSchema),
 		markdown: Type.Optional(MarkdownSettingsSchema),
 		warnings: Type.Optional(WarningSettingsSchema),
-		sessionDir: Type.Optional(
-			Type.String({
-				description: "Custom session storage directory, in the same format as the --session-dir CLI flag.",
-			}),
-		),
 		httpProxy: Type.Optional(
 			Type.String({
 				description:
