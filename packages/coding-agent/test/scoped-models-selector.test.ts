@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { setKeybindings } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
@@ -56,6 +57,42 @@ describe("scoped models selector", () => {
 		);
 		return selector;
 	}
+
+	it.each(["model-b", "model"])("keeps the model selected when reordering with filter %s (#3657)", async (query) => {
+		harness = await createHarness({
+			models: [
+				{ id: "model-a", name: "Model A" },
+				{ id: "model-b", name: "Model B" },
+			],
+		});
+		const orderedIds = harness.models.map((model) => `${model.provider}/${model.id}`);
+		const changes: Array<string[] | null> = [];
+		const selector = new ScopedModelsSelectorComponent(
+			{ allModels: harness.models, enabledModelIds: orderedIds },
+			{
+				onChange: (ids) => {
+					changes.push(ids);
+				},
+				onCancel: () => {},
+			},
+		);
+		selector.handleInput(query);
+		if (query === "model") selector.handleInput("\x1b[B");
+
+		assert.doesNotThrow(() => selector.handleInput("\x1b[1;3A"));
+		assert.deepEqual(changes, [[orderedIds[1], orderedIds[0]]]);
+		assert.match(stripAnsi(selector.render(120).join("\n")), /→ ✓ model-b \[/);
+
+		selector.handleInput("\x1b[1;3A");
+		assert.equal(changes.length, 1);
+
+		selector.handleInput("\x1b[1;3B");
+		assert.deepEqual(changes, [[orderedIds[1], orderedIds[0]], orderedIds]);
+		assert.match(stripAnsi(selector.render(120).join("\n")), /→ ✓ model-b \[/);
+
+		selector.handleInput("\x1b[1;3B");
+		assert.equal(changes.length, 2);
+	});
 
 	it("marks every model after enabling all", async () => {
 		const models = [
