@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import { afterAll, describe, test, vi } from "vitest";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
 import type { AttemptOutcome, ChildSpec, ModelCandidate } from "../../packages/subagents/src/runs/inprocess/runner.ts";
 import { createCandidateModelResolver } from "../../packages/subagents/src/shared/model-resolution.ts";
@@ -144,13 +145,13 @@ async function runAndCapture(options: {
 }): Promise<CapturedAttempt> {
 	harness.attempts.length = 0;
 	const cwd = makeCwd();
+	const parent = await SessionManager.create(cwd, join(cwd, "sessions"));
+	await parent.appendModelChange("anthropic", "claude-fable-5");
 	await runSingleInProcess(cwd, options.agent, "do the thing", {
 		cwd,
 		runId: "run-1",
 		testSession: { output: "done" },
-		// A fork run reuses the parent's session file, which is exactly where the
-		// parent's model was being restored from.
-		sessionFile: join(cwd, "parent-session.jsonl"),
+		sessionManager: parent,
 		availableModels: [
 			{ provider: "openai-codex", id: "gpt-5.6-luna", fullId: CONFIGURED_MODEL_ID },
 			{ provider: "anthropic", id: "claude-fable-5", fullId: PARENT_MODEL_ID },

@@ -109,13 +109,13 @@ export function createWorkflowStageFactory(input: {
 			);
 		}
 		const replayStageOptions: StageOptions | undefined =
-			executeReplaySource?.sessionFile === undefined
+			executeReplaySource?.sessionId === undefined
 				? options
 				: {
 						...(options ?? {}),
 						routerSelection: executeReplaySource.routerSelection,
 						context: options?.context ?? "fork",
-						forkFromSessionFile: options?.forkFromSessionFile ?? executeReplaySource.sessionFile,
+						forkFromSessionId: options?.forkFromSessionId ?? executeReplaySource.sessionId,
 					};
 		const intercomGroup =
 			options?.durableIntercomGroup ?? resolveStageGroup(replayStageOptions, input.workflowIntercomGroup);
@@ -309,8 +309,8 @@ export function createWorkflowStageFactory(input: {
 			const meta = innerCtx.__sessionMeta();
 			if (meta.sessionId !== undefined) stageSnapshot.sessionId = meta.sessionId;
 			if (meta.sessionFile !== undefined) stageSnapshot.sessionFile = meta.sessionFile;
-			if (meta.sessionId !== undefined || meta.sessionFile !== undefined)
-				input.activeStore.recordStageSession(input.runId, stageId, meta);
+			if (meta.sessionId !== undefined)
+				input.activeStore.recordStageSession(input.runId, stageId, { sessionId: meta.sessionId });
 			const pending = input.opts.onStageSession?.(input.runId, stageSnapshot, checkpointOptions);
 			if (checkpointOptions?.forceDurable === true || checkpointOptions?.awaitDurable === true) {
 				await pending;

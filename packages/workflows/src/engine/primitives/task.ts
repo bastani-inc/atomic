@@ -73,7 +73,7 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 			});
 			const stage = stageHandle.context;
 			const promptText =
-				resolvedTaskOptions.resumeFromSessionFile !== undefined
+				resolvedTaskOptions.resumeFromSessionId !== undefined
 					? RESUME_CONTINUATION_PROMPT
 					: applyTaskContext(
 							`${taskReadInstruction(resolvedTaskOptions)}${taskPrompt(resolvedTaskOptions)}`,

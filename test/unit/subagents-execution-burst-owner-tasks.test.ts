@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "vitest";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import type {
 	ModelParallelResponse,
@@ -46,8 +47,8 @@ afterEach(async () => {
 
 function harness(runSync: SubagentExecutorRuntimeDeps["runSync"], defaultContext?: "fork", concurrency = 4) {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-burst-owner-"));
-	const parent = join(cwd, "parent.jsonl");
-	writeFileSync(parent, "");
+	const parentManager = SessionManager.inMemory(cwd);
+	const ready = parentManager.appendMessage({ role: "user", content: "parent context", timestamp: Date.now() });
 	const sessionId = `burst-owner-${++sessions}`;
 	const host = new AgentTaskHost({ scope: { kind: "session", sessionId }, authorizeLaunch() {} });
 	const ctx = {
@@ -57,19 +58,7 @@ function harness(runSync: SubagentExecutorRuntimeDeps["runSync"], defaultContext
 		ui: {},
 		model: undefined,
 		modelRegistry: { getAvailable: () => [] },
-		sessionManager: {
-			getSessionFile: () => parent,
-			getSessionId: () => sessionId,
-			getLeafId: () => "parent-leaf",
-			getEntries: () => [],
-			openSession: () => ({
-				createBranchedSession: () => {
-					const fork = join(cwd, `fork-${++sessions}.jsonl`);
-					writeFileSync(fork, "");
-					return fork;
-				},
-			}),
-		},
+		sessionManager: parentManager,
 		isIdle: () => true,
 		isProjectTrusted: () => true,
 		abort: () => {},
@@ -107,7 +96,7 @@ function harness(runSync: SubagentExecutorRuntimeDeps["runSync"], defaultContext
 	return {
 		cwd,
 		call: (id: string, params: SubagentParamsLike): Promise<SubagentToolResult> =>
-			executor.execute(id, params, new AbortController().signal, undefined, ctx),
+			ready.then(() => executor.execute(id, params, new AbortController().signal, undefined, ctx)),
 	};
 }
 

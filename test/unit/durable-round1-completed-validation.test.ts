@@ -121,8 +121,8 @@ test("completed catalog uses the shared strict WorkflowChildResult parser", asyn
 		},
 		testRunId("valid-completed-child"),
 	);
-	assert.equal(listOpenableCompletedWorkflows(valid).length, 1);
-	assert.equal(completedWorkflowRunSnapshots(valid, valid.listCompletedWorkflows()[0]!).length, 2);
+	assert.equal((await listOpenableCompletedWorkflows(valid)).length, 1);
+	assert.equal((await completedWorkflowRunSnapshots(valid, valid.listCompletedWorkflows()[0]!)).length, 2);
 
 	for (const [index, output] of (
 		[
@@ -134,7 +134,7 @@ test("completed catalog uses the shared strict WorkflowChildResult parser", asyn
 		const backend = await InMemoryDurableBackend.create();
 		const runId = testRunId(`malformed-${index}`);
 		await seedCompletedBoundary(backend, runId, output);
-		assert.deepEqual(listOpenableCompletedWorkflows(backend), [], runId);
-		assert.equal(resolveCompletedWorkflow(runId, backend).kind, "stale", runId);
+		assert.deepEqual(await listOpenableCompletedWorkflows(backend), [], runId);
+		assert.equal((await resolveCompletedWorkflow(runId, backend)).kind, "stale", runId);
 	}
 });

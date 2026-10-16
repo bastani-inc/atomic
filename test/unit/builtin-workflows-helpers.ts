@@ -78,6 +78,7 @@ interface MockResponders {
 	runId?: string;
 	task?: (name: string, options: WorkflowTaskOptions, calls: MockCalls) => MockTaskResponse | undefined;
 	sessionFile?: (name: string, options: WorkflowTaskOptions, calls: MockCalls) => string | undefined;
+	sessionId?: (name: string, options: WorkflowTaskOptions, calls: MockCalls) => string | undefined;
 	modelAttempts?: (
 		name: string,
 		options: WorkflowTaskOptions,
@@ -110,6 +111,7 @@ export function makeTaskResult(
 	sessionFile?: string,
 	structured?: WorkflowTaskResult["structured"],
 	modelAttempts?: readonly WorkflowModelAttempt[],
+	sessionId?: string,
 ): WorkflowTaskResult {
 	return {
 		name,
@@ -117,6 +119,7 @@ export function makeTaskResult(
 		text,
 		...(structured === undefined ? {} : { structured }),
 		...(sessionFile === undefined ? {} : { sessionFile }),
+		...(sessionId === undefined ? {} : { sessionId }),
 		...(modelAttempts === undefined ? {} : { modelAttempts }),
 	};
 }
@@ -200,6 +203,7 @@ export function makeMockCtx<TInputs extends WorkflowInputValues>(
 			responders.sessionFile?.(name, options, calls),
 			structured,
 			modelAttempts,
+			responders.sessionId?.(name, options, calls),
 		);
 	};
 

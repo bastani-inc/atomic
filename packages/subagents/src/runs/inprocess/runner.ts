@@ -114,7 +114,7 @@ export interface ChildSpec {
 	readonly parent?: ParentContext;
 	/** Typed identity/capability resolved by the parent before admission. */
 	readonly intercom?: SubagentIntercomIdentity;
-	readonly sessionFile?: string;
+	readonly sessionManager?: SessionManager;
 	readonly testSession?: boolean | TestSessionOptions;
 	readonly artifactJsonlPath?: string;
 	/**
@@ -579,7 +579,7 @@ function cancelledEnvelope(session: AgentSession | undefined, spec: ChildSpec, s
 			outputFor(session),
 		),
 		toolCount: stats.toolCalls,
-		sessionPath: session?.sessionFile ?? spec.sessionFile,
+		sessionPath: session?.sessionFile ?? spec.sessionManager?.getSessionFile(),
 		...(spec.progressArtifactPath ? { progressArtifactPath: spec.progressArtifactPath } : {}),
 		...(spec.outputArtifactPath ? { outputArtifactPath: spec.outputArtifactPath } : {}),
 	}).text;
@@ -702,7 +702,7 @@ interface AdmittedChildInput {
 	readonly spec: ChildSpec;
 	readonly policy: ChildPolicy;
 	readonly sessionDir: string;
-	readonly sessionFile?: string;
+	readonly sessionManager?: SessionManager;
 	readonly control: SubagentControlRuntime;
 }
 
@@ -711,7 +711,7 @@ export class AdmittedChild {
 	readonly spec: ChildSpec;
 	readonly policy: ChildPolicy;
 	readonly sessionDir: string;
-	readonly sessionFile?: string;
+	readonly sessionManager?: SessionManager;
 	readonly control: SubagentControlRuntime;
 
 	private constructor(input: {
@@ -719,14 +719,14 @@ export class AdmittedChild {
 		spec: ChildSpec;
 		policy: ChildPolicy;
 		sessionDir: string;
-		sessionFile?: string;
+		sessionManager?: SessionManager;
 		control: SubagentControlRuntime;
 	}) {
 		this.identity = input.identity;
 		this.spec = input.spec;
 		this.policy = input.policy;
 		this.sessionDir = input.sessionDir;
-		this.sessionFile = input.sessionFile;
+		this.sessionManager = input.sessionManager;
 		this.control = input.control;
 	}
 
@@ -793,9 +793,7 @@ export class SubagentControlRuntime {
 		if (!native.child) return refusal(native);
 		const identity = native.child;
 		const childModePolicy = resolveChildModePolicy(spec);
-		const sessionDir = spec.sessionFile
-			? dirname(spec.sessionFile)
-			: sessionDirectory(this.sessionRoot, identity.path);
+		const sessionDir = spec.sessionManager?.getSessionDir() || sessionDirectory(this.sessionRoot, identity.path);
 		mkdirSync(sessionDir, { recursive: true });
 		return {
 			admitted: AdmittedChild.create({
@@ -816,7 +814,7 @@ export class SubagentControlRuntime {
 					depth: identity.depth,
 				},
 				sessionDir,
-				sessionFile: spec.sessionFile,
+				sessionManager: spec.sessionManager,
 				control: this,
 			}),
 		};
@@ -950,9 +948,12 @@ export class SubagentControlRuntime {
 		});
 		try {
 			const workflow = workflowMetadataFromContext(admitted.spec.parent?.orchestrationContext);
-			if (admitted.sessionFile) mkdirSync(dirname(admitted.sessionFile), { recursive: true });
-			const sessionManager = admitted.sessionFile
-				? await SessionManager.open(admitted.sessionFile, admitted.sessionDir, admitted.policy.cwd)
+			const sessionManager = admitted.sessionManager
+				? await SessionManager.open(
+						admitted.sessionManager.getSessionStore(),
+						admitted.sessionManager.getSessionId(),
+						admitted.policy.cwd,
+					)
 				: await SessionManager.create(
 						admitted.policy.cwd,
 						admitted.sessionDir,

@@ -46,9 +46,11 @@ function buildWorkflowOverlay(
 	pi: ExtensionAPI,
 	owner: WorkflowOwnerResources,
 	resolvePostMortemHandle: (runId: string, stageId: string) => PostMortemHandleResolution,
+	resolveSessionStore: () => import("@bastani/atomic").SessionStore | undefined,
 ): GraphOverlayPort {
 	return buildGraphOverlayAdapter(pi, owner.store, {
 		resolvePostMortemHandle,
+		resolveSessionStore,
 		stageControlRegistry: owner.stageControlRegistry,
 		stageUiBroker: owner.stageUiBroker,
 	});
@@ -142,7 +144,7 @@ function factory(pi: ExtensionAPI): void {
 		registerExtensionContextRetirementEffect(ctx, disposeCompletedRoutes);
 		registerExtensionContextRetirementEffect(ctx, disposePendingRoutes);
 	});
-	const overlay = buildWorkflowOverlay(pi, owner, postMortemHandleResolver);
+	const overlay = buildWorkflowOverlay(pi, owner, postMortemHandleResolver, () => adapters.sessionStore);
 	const workflowCommands = new Map<string, WorkflowCommandHandler>();
 	const storeWidgetRef: { current: (() => void) | null } = { current: null };
 	const intercomControlRef: { current: (() => void) | null } = { current: null };

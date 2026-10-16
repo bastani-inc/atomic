@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentSession, CreateAgentSessionOptions, ToolDefinition } from "@bastani/atomic";
+import type { AgentSession, CreateAgentSessionOptions, SessionManager, ToolDefinition } from "@bastani/atomic";
 import { Type } from "typebox";
 import { afterEach, beforeEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -158,7 +158,7 @@ async function waitForPromptCall(
 	throw new Error(`prompt ${JSON.stringify(text)} occurrence ${occurrence} did not appear`);
 }
 
-function mockSession(): StageSessionRuntime {
+function mockSession(sessionManager?: SessionManager): StageSessionRuntime {
 	const listeners = new Set<(e: { type: string; [k: string]: unknown }) => void>();
 	void listeners;
 	return {
@@ -170,8 +170,8 @@ function mockSession(): StageSessionRuntime {
 		subscribe() {
 			return () => {};
 		},
-		sessionFile: "/tmp/atomic-test-session.ndjson",
-		sessionId: "sess-test-1",
+		sessionFile: sessionManager === undefined ? "/tmp/atomic-test-session.ndjson" : sessionManager.getSessionFile(),
+		sessionId: sessionManager?.getSessionId() ?? "sess-test-1",
 		async setModel() {},
 		setThinkingLevel() {},
 		cycleModel: (async () => undefined) as StageSessionRuntime["cycleModel"],
@@ -270,7 +270,7 @@ function structuredOutputMockSession(
 ): StageSessionRuntime {
 	const listeners = new Set<(e: { type: string; [k: string]: unknown }) => void>();
 	const messages: AgentSession["messages"] = [] as AgentSession["messages"];
-	const base = mockSession();
+	const base = mockSession(options.sessionManager);
 	const structuredTool = options.customTools?.find(
 		(tool): tool is ToolDefinition => tool.name === "structured_output",
 	);

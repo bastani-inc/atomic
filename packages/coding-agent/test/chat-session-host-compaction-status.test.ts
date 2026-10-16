@@ -3,6 +3,7 @@ import type { EditorTheme } from "@earendil-works/pi-tui";
 import { type Component, Text } from "@earendil-works/pi-tui";
 import { describe, expect, it, test } from "vitest";
 import type { CompactionReason } from "../src/core/agent-session.ts";
+import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { ChatSessionHost } from "../src/modes/interactive/components/chat-session-host.ts";
 import { compactionStatusMessage } from "../src/modes/interactive/components/chat-session-host-events.ts";
 import { renderChatSessionWorkingStatus } from "../src/modes/interactive/components/chat-session-host-rendering.ts";
@@ -90,14 +91,15 @@ describe("chat session compaction status", () => {
 	});
 });
 
-test("preserves displayed messages when retained history loading is skipped (#3658)", () => {
+test("preserves displayed messages when retained history loading is skipped (#3658)", async () => {
 	initTheme("dark");
 	const host = makeHost();
+	const store = new MemorySessionStore();
 	try {
 		host.appendMessages([{ role: "user", content: "Already displayed", timestamp: 1 }]);
 		const entries = [...host.entries()];
-		assert.equal(host.loadSessionFile(undefined), true);
-		assert.equal(host.loadSessionFile("/missing/retained-session.jsonl"), true);
+		assert.equal(await host.loadSession(store, undefined), true);
+		assert.equal(await host.loadSession(store, "missing-session"), true);
 		assert.deepEqual(host.entries(), entries);
 		assert.match(host.renderBody(80, 20).join("\n"), /Already displayed/);
 	} finally {
@@ -194,3 +196,35 @@ test("branch-summary hydration leaves the ordinary working spinner available", (
 	assert.doesNotMatch(rendered, /summarizing branch…/);
 	host.dispose();
 });
+
+for (const sessionId of ["shared-archive-id", ""]) {
+	test(`archived chat loads ID ${JSON.stringify(sessionId)} from its selected store`, async () => {
+		initTheme("dark");
+		const selected = new MemorySessionStore();
+		const other = new MemorySessionStore();
+		const header = { id: sessionId, version: 4 as const, createdAt: new Date().toISOString(), cwd: process.cwd() };
+		for (const [store, content] of [
+			[selected, "selected project history"],
+			[other, "other project history"],
+		] as const) {
+			await store.create(header, [
+				{
+					type: "message",
+					id: "message-1",
+					parentId: null,
+					timestamp: new Date().toISOString(),
+					message: { role: "user", content, timestamp: 1 },
+				},
+			]);
+		}
+		const host = makeHost();
+		try {
+			assert.equal(await host.loadSession(selected, sessionId), true);
+			const rendered = host.renderBody(100, 20).join("\n");
+			assert.match(rendered, /selected project history/);
+			assert.doesNotMatch(rendered, /other project history/);
+		} finally {
+			host.dispose();
+		}
+	});
+}

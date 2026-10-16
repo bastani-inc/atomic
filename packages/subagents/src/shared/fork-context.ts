@@ -1,85 +1,52 @@
-import * as fs from "node:fs";
 import { SessionManager } from "@bastani/atomic";
 
 type SubagentExecutionContext = "fresh" | "fork";
+type ForkableSessionManager = Pick<SessionManager, "getSessionId" | "getSessionStore" | "getLeafId" | "getCwd">;
 
-interface ForkableSessionManager {
-	getSessionFile(): string | undefined;
-	getLeafId(): string | null;
-	getSessionDir?(): string;
-	openSession?: (
-		path: string,
-		sessionDir?: string,
-	) => Promise<{ createBranchedSession(leafId: string): Promise<string | undefined> }>;
+export class SubagentForkContextError extends Error {
+	constructor(
+		readonly parentSessionId: string,
+		readonly reason: "no_leaf" | "fork_failed",
+		options?: ErrorOptions,
+	) {
+		super(`Cannot fork subagent session ${JSON.stringify(parentSessionId)}: ${reason}`, options);
+		this.name = "SubagentForkContextError";
+	}
 }
 
-interface ForkContextResolverOptions {
-	openSession?: (
-		path: string,
-		sessionDir?: string,
-	) => Promise<{ createBranchedSession(leafId: string): Promise<string | undefined> }>;
-}
-
-interface ForkContextResolver {
-	sessionFileForIndex(index?: number): Promise<string | undefined>;
-}
-
-export function resolveSubagentContext(value: unknown): SubagentExecutionContext {
+export function resolveSubagentContext(value: string | undefined): SubagentExecutionContext {
 	return value === "fork" ? "fork" : "fresh";
 }
 
 export function createForkContextResolver(
 	sessionManager: ForkableSessionManager,
-	requestedContext: unknown,
-	options: ForkContextResolverOptions = {},
-): ForkContextResolver {
+	requestedContext: string | undefined,
+) {
 	if (resolveSubagentContext(requestedContext) !== "fork") {
-		return {
-			sessionFileForIndex: async () => undefined,
-		};
+		return { sessionManagerForIndex: async (): Promise<SessionManager | undefined> => undefined };
 	}
-
-	const parentSessionFile = sessionManager.getSessionFile();
-	if (!parentSessionFile) {
-		throw new Error("Forked subagent context requires a persisted parent session.");
-	}
-
+	const parentSessionId = sessionManager.getSessionId();
+	const store = sessionManager.getSessionStore();
+	const cwd = sessionManager.getCwd();
 	const leafId = sessionManager.getLeafId();
-	if (!leafId) {
-		throw new Error("Forked subagent context requires a current leaf to fork from.");
-	}
-
-	const openSession =
-		options.openSession ??
-		sessionManager.openSession ??
-		((file: string, dir?: string) => SessionManager.open(file, dir));
-	const sessionDir = sessionManager.getSessionDir?.();
-	const cachedSessionFiles = new Map<number, string>();
-
+	if (leafId === null) throw new SubagentForkContextError(parentSessionId, "no_leaf");
+	const children = new Map<number, Promise<SessionManager>>();
 	return {
-		async sessionFileForIndex(index = 0): Promise<string | undefined> {
-			const cached = cachedSessionFiles.get(index);
-			if (cached) return cached;
-			try {
-				if (!fs.existsSync(parentSessionFile)) {
-					throw new Error(
-						`Parent session file does not exist: ${parentSessionFile}. Pi has not persisted enough history to fork yet.`,
-					);
+		sessionManagerForIndex(index = 0): Promise<SessionManager> {
+			const cached = children.get(index);
+			if (cached !== undefined) return cached;
+			const child = (async () => {
+				try {
+					const source = await SessionManager.open(store, parentSessionId, cwd);
+					await source.createBranchedSession(leafId);
+					return source;
+				} catch (cause) {
+					children.delete(index);
+					throw new SubagentForkContextError(parentSessionId, "fork_failed", { cause });
 				}
-				const sourceManager = await openSession(parentSessionFile, sessionDir);
-				const sessionFile = await sourceManager.createBranchedSession(leafId);
-				if (!sessionFile) {
-					throw new Error("Session manager did not return a forked session file.");
-				}
-				if (!fs.existsSync(sessionFile)) {
-					throw new Error(`Session manager returned a forked session file that does not exist: ${sessionFile}`);
-				}
-				cachedSessionFiles.set(index, sessionFile);
-				return sessionFile;
-			} catch (error) {
-				const cause = error instanceof Error ? error : new Error(String(error));
-				throw new Error(`Failed to create forked subagent session: ${cause.message}`, { cause });
-			}
+			})();
+			children.set(index, child);
+			return child;
 		},
 	};
 }

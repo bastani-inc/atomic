@@ -198,8 +198,9 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 	scopedModels?: AuthoringContract.StageOptions["scopedModels"];
 	sessionManager?: SessionManager;
 	settingsManager?: SettingsManager;
-	/** Internal durable resume hook: reopen this exact Atomic/Pi session file instead of forking. */
-	resumeFromSessionFile?: string;
+	sessionStore?: import("@bastani/atomic").SessionStore;
+	/** Internal durable resume hook: reopen this ID in the selected store instead of forking. */
+	resumeFromSessionId?: string;
 	/** Persisted automatic selection; revalidated without another decision on resume. */
 	routerSelection?: import("@bastani/atomic").ModelRouterOutput;
 	/** Restrictions inherited from task/default declarations; all must hold. */

@@ -34,15 +34,15 @@ type ModelConfig = Record<string, object | string | readonly string[]>;
 
 type ForkContinuationOptions = {
   readonly context?: "fork";
-  readonly forkFromSessionFile?: string;
+  readonly forkFromSessionId?: string;
 };
 
 function forkContinuationOptions(
-  sessionFile: string | undefined,
+  sessionId: string | undefined,
 ): ForkContinuationOptions {
-  return sessionFile === undefined || sessionFile.length === 0
+  return sessionId === undefined
     ? {}
-    : { context: "fork", forkFromSessionFile: sessionFile };
+    : { context: "fork", forkFromSessionId: sessionId };
 }
 
 type RefineOptions = {
@@ -138,13 +138,13 @@ type LiveReviewSessionOptions = {
  */
 async function runLiveReviewSession(options: LiveReviewSessionOptions): Promise<void> {
   const { designContext, round, reviewStageName, previewPath, previewFileUrl, browserBootstrapRules, designModelConfig, workflowCwd } = options;
-  let sessionFile: string | undefined;
+  let sessionId: string | undefined;
 
   const start = await designContext.task(`${reviewStageName}-start`, {
     prompt: buildLiveSessionStartPrompt({ previewPath, previewFileUrl, browserBootstrapRules, round }),
     ...designModelConfig,
   });
-  sessionFile = start.sessionFile;
+  sessionId = start.sessionId;
 
   for (let index = 1; ; index += 1) {
 		// `timeout` is absorbed inside the poll, so an idle hour costs no nodes and
@@ -162,9 +162,9 @@ async function runLiveReviewSession(options: LiveReviewSessionOptions): Promise<
 		const response = await designContext.task(`live-${event.type}-${round}-${index}`, {
 			prompt: buildLiveEventPrompt({ event, previewPath }),
 			...designModelConfig,
-			...forkContinuationOptions(sessionFile),
+			...forkContinuationOptions(sessionId),
 		});
-		sessionFile = response.sessionFile ?? sessionFile;
+		sessionId = response.sessionId ?? sessionId;
 		const status = replyTokenFor(event);
 		await designContext.tool(
 			`live-reply-${round}-${index}`,

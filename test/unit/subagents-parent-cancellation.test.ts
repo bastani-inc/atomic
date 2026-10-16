@@ -415,7 +415,6 @@ test("parent abort without findings cites persisted output and progress artifact
 			cwd: root,
 			runId: "cancel-artifact-refs",
 			sessionDir: join(root, "sessions"),
-			sessionFile: join(root, "sessions", "session.jsonl"),
 			signal: controller.signal,
 			progressPath,
 			artifactsDir,

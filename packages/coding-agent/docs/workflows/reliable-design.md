@@ -529,7 +529,7 @@ Ordinary `intercom` is enabled by default but respects `tools`, `excludedTools`,
 - Persist decisions under stable keys. Pause/resume, model fallback, durable replay, and nested workflows then reread the artifact instead of sending duplicate interventions.
 - Omit `group` for ordinary use. The worker, guard, nested workflows, and delegated subagents inherit the top-level workflow invocation's stable Intercom group. Set an explicit group only for intentional isolation; an override isolates that stage from ordinary same-group peers while leaving it steerable from the invocation context, which retains directional list/send/live-ask control over the subgroups it owns.
 - Use `context: "fresh"` for guards, reviewers, and judges. They should see only the contract, candidate, decision artifacts, and current files.
-- Use `context: "fork"` plus `forkFromSessionFile` for implementation, debugging, and repair roles that need continuity with an owned earlier session. `context: "fork"` alone does not name a fork source; an initial worker with no prior lineage may start fresh. A later continuation should use the earlier worker's `sessionFile` when available. Do not fork an independent guard from the worker it judges.
+- Use `context: "fork"` plus `forkFromSessionId` for implementation, debugging, and repair roles that need continuity with an owned earlier session. `context: "fork"` alone does not name a fork source; an initial worker with no prior lineage may start fresh. A later continuation should use the earlier worker's `sessionId` in the selected session store when available. Do not fork an independent guard from the worker it judges.
 - Send a forked continuation only the delta after the fork point: new evidence, the decision artifact, any human answer, and the next action. Keep the full shared contract in its canonical file.
 
 Expected lifecycle state is not a defect. If the contract says `candidate → validation → approval → push/publish`, a guard at the candidate or validation boundary must not reject the patch merely because it is unpushed or unpublished. Only the later publication stage owns that action.
@@ -568,10 +568,10 @@ const decisionLogSchema = Type.Object(
 
 type DecisionLog = Static<typeof decisionLogSchema>;
 
-function continueWorker(sessionFile: string | undefined) {
-  return sessionFile === undefined
+function continueWorker(sessionId: string | undefined) {
+  return sessionId === undefined
     ? { context: "fork" as const }
-    : { context: "fork" as const, forkFromSessionFile: sessionFile };
+    : { context: "fork" as const, forkFromSessionId: sessionId };
 }
 
 export default workflow({
@@ -627,7 +627,7 @@ export default workflow({
         ].join("\n"));
 
     await ctx.task("continue worker", {
-      ...continueWorker(worker.sessionFile),
+      ...continueWorker(worker.sessionId),
       reads: [contract, decisionLog],
       prompt: [
         `Read the decision log at ${decisionLog}.`,
@@ -653,10 +653,10 @@ Use `ctx.stage(...)` when one independent checker needs a retained conversation.
 import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 
-function continueWorker(sessionFile: string | undefined) {
-  return sessionFile === undefined
+function continueWorker(sessionId: string | undefined) {
+  return sessionId === undefined
     ? { context: "fork" as const }
-    : { context: "fork" as const, forkFromSessionFile: sessionFile };
+    : { context: "fork" as const, forkFromSessionId: sessionId };
 }
 
 export default workflow({
@@ -703,7 +703,7 @@ export default workflow({
     );
 
     await ctx.task("apply retained decision", {
-      ...continueWorker(worker.sessionFile),
+      ...continueWorker(worker.sessionId),
       reads: [contract, decisionLog],
       prompt: [
         `Read ${decisionLog}.`,
@@ -742,10 +742,10 @@ const coordinationSchema = Type.Object(
 
 type Coordination = Static<typeof coordinationSchema>;
 
-function workerContext(sessionFile: string | undefined) {
-  return sessionFile === undefined
+function workerContext(sessionId: string | undefined) {
+  return sessionId === undefined
     ? { context: "fresh" as const }
-    : { context: "fork" as const, forkFromSessionFile: sessionFile };
+    : { context: "fork" as const, forkFromSessionId: sessionId };
 }
 
 export default workflow({
@@ -753,7 +753,7 @@ export default workflow({
   description: "Run a worker with a live same-group scope peer.",
   inputs: {
     scope_contract: Type.String(),
-    worker_session_file: Type.Optional(Type.String({
+    worker_session_id: Type.Optional(Type.String({
       description: "Earlier worker session to continue; omit when no worker lineage exists.",
     })),
     fallback_policy: Type.Union([
@@ -778,7 +778,7 @@ export default workflow({
       [
         {
           name: "worker",
-          ...workerContext(ctx.inputs.worker_session_file),
+          ...workerContext(ctx.inputs.worker_session_id),
           reads: [contract],
           prompt: [
             `Read the immutable scope contract at ${contract}.`,
@@ -910,11 +910,11 @@ State important constraints once. Reserve absolute wording for safety, required 
 
 Avoid unrelated workflow internals such as reducer algorithms, future PR stages, sibling reviewer names, loop implementation details, or project-specific nicknames unless they are explicitly part of the current stage contract. If a term such as a gate name, ledger field, or workflow nickname is necessary, define it in the prompt before using it.
 
-Choose context mode deliberately. Use `context: "fork"` or `forkFromSessionFile` for coherent long-running implementation stages that need continuity from their own earlier work. Use `context: "fresh"` for unbiased reviewer, evaluator, and gate stages so they inspect the current files and explicit artifacts rather than inheriting the implementer's assumptions. When continuity is needed across fresh stages, pass it explicitly through files, declared outputs, and `reads`.
+Choose context mode deliberately. Use `context: "fork"` or `forkFromSessionId` for coherent long-running implementation stages that need continuity from their own earlier work. Use `context: "fresh"` for unbiased reviewer, evaluator, and gate stages so they inspect the current files and explicit artifacts rather than inheriting the implementer's assumptions. When continuity is needed across fresh stages, pass it explicitly through files, declared outputs, and `reads`.
 
 ### Context-Mode-Aware Prompt Text
 
-Context mode is an execution property configured with `context`/`forkFromSessionFile`; the model cannot act on context mode, so keep it out of prompt text:
+Context mode is an execution property configured with `context`/`forkFromSessionId`; the model cannot act on context mode, so keep it out of prompt text:
 
 - **Never describe the stage's own context mode.** Sentences like "you are running in a fresh context window", "your context is clean/non-forked", or "this is a forked session" add tokens without changing behavior. State the concrete action, inputs, and success criteria instead.
 - **Fresh stages must not reference invisible context.** A fresh stage has no "previous conversation", cannot see sibling stages' transcripts, and does not know the surrounding graph, so instructions like "compare against previous workflow reasoning" or "this runs in parallel with the locator pass" do not help and may confuse the model. Phrase the same intent stage-locally ("compare the working tree against the baseline branch"; "do your own scan; do not assume any other stage's output is available") and pass any state the stage needs through files, declared outputs, and `reads`. If a stage should talk to a live peer, say so explicitly and tell it how to find that peer with `intercom list`; see [peer coordination between stages](#peer-coordination-between-stages).

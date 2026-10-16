@@ -238,7 +238,7 @@ export class StageSessionController {
 	private sessionShutdownPromise: Promise<void> | undefined;
 	/** #3020: an unowned failed binding cannot be replaced until cleanup proves release. Never reset this fence. */
 	private bindingCleanupFailure: StageSessionBindingCleanupFailure | undefined;
-	private reattachSessionFile: string | undefined;
+	private reattachSessionId: string | undefined;
 	private lastPromptStartIndex: number | undefined;
 	/** Message index latched once per high-level candidate prompt; never re-read later. */
 	private attemptUsageStartIndex: number | undefined;
@@ -554,11 +554,11 @@ export class StageSessionController {
 		return this.modelRoute ? this.checkedSession(await ready) : ready;
 	}
 
-	async ensureSessionFromFile(
-		sessionFile: string,
+	async ensureSessionFromId(
+		sessionId: string,
 		consumer: AgentSessionConsumer = "prompt",
 	): Promise<StageSessionRuntime> {
-		if (!this.sessionShutdownPromise && !this.sessionPromise && !this.session) this.reattachSessionFile = sessionFile;
+		if (!this.sessionShutdownPromise && !this.sessionPromise && !this.session) this.reattachSessionId = sessionId;
 		const session = await this.ensureSession(consumer);
 		await session.closeWorkflowStageGeneration?.();
 		return session;
@@ -579,7 +579,7 @@ export class StageSessionController {
 				return pausedDelivery;
 			}
 			preparation?.beforePreparation?.();
-			const sessionFile = preparation?.sessionFile;
+			const sessionId = preparation?.sessionId;
 			const deliver = async (activity?: StageDeliveryActivity) => {
 				if (this.effectiveStageOptions?.model === "auto")
 					await this.preparePrompt(
@@ -591,9 +591,9 @@ export class StageSessionController {
 									.join("\n"),
 					);
 				const activeSession =
-					sessionFile === undefined
+					sessionId === undefined
 						? await this.ensureSession("prompt")
-						: await this.ensureSessionFromFile(sessionFile, "prompt");
+						: await this.ensureSessionFromId(sessionId, "prompt");
 				const pausedDelivery = this.pauseControl.deferRunnerOwnedDelivery(() =>
 					sendStageUserMessage(
 						activeSession,
@@ -619,7 +619,7 @@ export class StageSessionController {
 					activity,
 				);
 			};
-			if (this.session === undefined || sessionFile !== undefined)
+			if (this.session === undefined || sessionId !== undefined)
 				return this.deliveryActivity.runWithLease(() => deliver());
 			return deliver(this.deliveryActivity);
 		});
@@ -1296,7 +1296,7 @@ export class StageSessionController {
 				this.createInitialSessionWithRetry(undefined, consumer, { error }),
 			);
 		}
-		if (this.reattachSessionFile !== undefined) {
+		if (this.reattachSessionId !== undefined) {
 			const resumed = await this.createSession(undefined, consumer, { restoreSavedModel: true });
 			const restoredId = workflowModelId(resumed.model);
 			const exactRestoredIndex =
@@ -1598,7 +1598,7 @@ export class StageSessionController {
 			ownsFallbackChain: this.hasExplicitModelFallbackConfig,
 			scopedModels,
 			restoreSavedModel: resumeOptions?.restoreSavedModel,
-			reattachSessionFile: this.reattachSessionFile,
+			reattachSessionId: this.reattachSessionId,
 			sharedModelRuntime: this.sharedModelRuntime,
 			defaultCwd: this.opts.defaultCwd,
 		});

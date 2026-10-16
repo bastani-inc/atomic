@@ -73,7 +73,9 @@ describe("ctx.tool durable graph replay", () => {
 				assert.equal(currentIds.has(parentId), true, `dangling parent ${parentId}`);
 		}
 		const entry = backend.listCompletedWorkflows().find((candidate) => candidate.workflowId === runId)!;
-		const catalogRun = completedWorkflowRunSnapshots(backend, entry).find((candidate) => candidate.id === runId)!;
+		const catalogRun = (await completedWorkflowRunSnapshots(backend, entry)).find(
+			(candidate) => candidate.id === runId,
+		)!;
 		const catalogTool = catalogRun.toolNodes?.[0];
 		assert.deepEqual(orderedNames(catalogRun), ["before", "middle", "after"]);
 		assert.deepEqual(catalogTool?.parentIds, [catalogRun.stages[0]?.id]);
@@ -196,7 +198,7 @@ describe("ctx.tool durable graph replay", () => {
 		assert.deepEqual(liveGraph.stages, [], "the populated child boundary is flattened");
 
 		const entry = backend.listCompletedWorkflows().find((candidate) => candidate.workflowId === runId)!;
-		const catalogRuns = completedWorkflowRunSnapshots(backend, entry);
+		const catalogRuns = await completedWorkflowRunSnapshots(backend, entry);
 		const catalogChild = catalogRuns.find((candidate) => candidate.parentRunId === runId);
 		assert.ok(catalogChild !== undefined);
 		assert.equal(catalogChild.rootRunId, runId);
@@ -260,7 +262,7 @@ describe("ctx.tool durable graph replay", () => {
 		assert.equal(partialChild.parentRunId, runId);
 		assert.equal(partialChild.rootRunId, runId);
 		const partialEntry = partialBackend.listCompletedWorkflows().find((candidate) => candidate.workflowId === runId)!;
-		const partialCatalogRuns = completedWorkflowRunSnapshots(partialBackend, partialEntry);
+		const partialCatalogRuns = await completedWorkflowRunSnapshots(partialBackend, partialEntry);
 		const partialCatalogChild = partialCatalogRuns.find((candidate) => candidate.parentRunId === runId);
 		assert.equal(partialCatalogChild?.id, partialBoundary.workflowChild?.runId);
 		assert.deepEqual(

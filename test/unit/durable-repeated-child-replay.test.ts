@@ -67,7 +67,7 @@ executorTest("fully cached repeated child replay reconciles each durable boundar
 	assert.equal(completeExecutions, 4);
 
 	const entry = listCompletedFromBackend(backend).find((item) => item.workflowId === rootId)!;
-	const catalogRuns = completedWorkflowRunSnapshots(backend, entry);
+	const catalogRuns = await completedWorkflowRunSnapshots(backend, entry);
 	const catalogClone = structuredClone(catalogRuns);
 	const catalogChildren = catalogRuns.filter((run) => run.parentRunId === rootId);
 	assert.equal(catalogChildren.length, 2);

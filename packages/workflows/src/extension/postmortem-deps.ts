@@ -51,6 +51,7 @@ export function postMortemDepsForRun(runId: string, deps: PostMortemResolverDeps
 	return {
 		registry: deps.stageControlRegistry ?? stageControlRegistry,
 		adapters: deps.adapters,
+		sessionStore: deps.adapters.sessionStore,
 		cwd: resolveStageCwd(runId, deps.store ?? store),
 		defaultSessionDir: deps.resolveDefaultStageSessionDir(),
 	};
@@ -63,8 +64,8 @@ export function postMortemDepsForRun(runId: string, deps: PostMortemResolverDeps
  */
 export function createPostMortemHandleResolver(
 	deps: PostMortemResolverDeps,
-): (runId: string, stageId: string) => EnsurePostMortemStageHandleResult | undefined {
-	return (runId, stageId) => {
+): (runId: string, stageId: string) => Promise<EnsurePostMortemStageHandleResult | undefined> {
+	return async (runId, stageId) => {
 		const run = readGraphStoreSnapshot(deps.store ?? store).runs.find((candidate) => candidate.id === runId);
 		const stage = run?.stages.find((candidate) => candidate.id === stageId);
 		if (stage === undefined) return undefined;

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SessionManager } from "@bastani/atomic";
+import { JsonlSessionStore, SessionManager } from "@bastani/atomic";
 import { test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
@@ -218,16 +218,17 @@ test("forked stage conversations copy history without sharing the source session
 		});
 		const originalCheckpoint = backend.listCheckpoints(id)[0];
 		backend.recordCheckpoint({ ...originalCheckpoint, checkpointId: "second-stage" });
-		const forkSession = vi.spyOn(SessionManager, "forkFrom");
+		const sessionStore = await JsonlSessionStore.open(root, { exactDirectory: true });
+		const forkSession = vi.spyOn(sessionStore, "create");
 		let forkId: string;
 		try {
-			forkId = await forkDurableWorkflow(backend, backend.getWorkflow(id)!, cwd, undefined);
+			forkId = await forkDurableWorkflow(backend, backend.getWorkflow(id)!, cwd, undefined, sessionStore);
 			assert.equal(forkSession.mock.calls.length, 1);
 		} finally {
 			forkSession.mockRestore();
 		}
 		const forkedStages = backend.listCheckpoints(forkId).filter((entry) => entry.kind === "stage");
-		assert.equal(forkedStages[1].sessionFile, forkedStages[0].sessionFile);
+		assert.equal(forkedStages[1].sessionId, forkedStages[0].sessionId);
 		const checkpoint = backend.listCheckpoints(forkId)[0];
 		assert.equal(checkpoint.kind, "stage");
 		if (checkpoint.kind !== "stage") assert.fail("stage checkpoint required");
@@ -245,7 +246,7 @@ test("forked stage conversations copy history without sharing the source session
 		const replayed = await task("saved-stage", { prompt: "ignored" });
 		assert.equal(replayed.sessionId, checkpoint.sessionId);
 		assert.equal(replayed.sessionFile, checkpoint.sessionFile);
-		const fork = await SessionManager.open(checkpoint.sessionFile);
+		const fork = await SessionManager.open(sessionStore, checkpoint.sessionId!);
 		assert.equal(fork.getCwd(), cwd);
 		assert.ok(fork.getEntries().some((entry) => entry.type === "custom" && entry.customType === "saved-history"));
 		assert.equal(await readText(sourcePath), history);
@@ -253,6 +254,7 @@ test("forked stage conversations copy history without sharing the source session
 		assert.ok(Array.isArray(forkItems));
 		forkItems.push("fork-only");
 		assert.deepEqual(backend.getWorkflow(id)!.inputs.items, ["source"]);
+		await sessionStore.close();
 	} finally {
 		vi.unstubAllEnvs();
 		rmSync(root, { recursive: true, force: true });

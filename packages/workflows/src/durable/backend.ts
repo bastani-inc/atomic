@@ -466,7 +466,7 @@ class JournalProjection {
 		} else {
 			if ("output" in currentCheckpoint)
 				rec.stageOutputByReplayKey.set(currentCheckpoint.replayKey, currentCheckpoint);
-			if (currentCheckpoint.sessionId !== undefined || currentCheckpoint.sessionFile !== undefined) {
+			if (currentCheckpoint.sessionId !== undefined) {
 				const existing = rec.stageSessionByReplayKey.get(currentCheckpoint.replayKey);
 				if (existing === undefined || currentCheckpoint.completedAt >= existing.completedAt) {
 					rec.stageSessionByReplayKey.set(currentCheckpoint.replayKey, currentCheckpoint);
@@ -510,7 +510,7 @@ class JournalProjection {
 		  }
 		| undefined {
 		const checkpoint = this.workflows.get(workflowId)?.stageSessionByReplayKey.get(replayKey);
-		if (checkpoint?.sessionId === undefined && checkpoint?.sessionFile === undefined) return undefined;
+		if (checkpoint?.sessionId === undefined) return undefined;
 		return {
 			...(checkpoint.sessionId !== undefined ? { sessionId: checkpoint.sessionId } : {}),
 			...(checkpoint.sessionFile !== undefined ? { sessionFile: checkpoint.sessionFile } : {}),

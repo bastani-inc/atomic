@@ -179,12 +179,12 @@ describe("StageChatView", () => {
 		assert.equal(typeof sessionFile, "string");
 		store.recordStageSession("run-1", "stage-a", {
 			sessionId: manager.getSessionId(),
-			sessionFile,
 		});
 
 		let renders = 0;
 		const view = new StageChatView({
 			store,
+			sessionStore: manager.getSessionStore(),
 			graphTheme: deriveGraphTheme({}),
 			runId: "run-1",
 			stageId: "stage-a",
@@ -255,12 +255,12 @@ describe("StageChatView", () => {
 		} as Parameters<SessionManager["appendMessage"]>[0]);
 		store.recordStageSession("run-1", "stage-a", {
 			sessionId: manager.getSessionId(),
-			sessionFile: manager.getSessionFile(),
 		});
 
 		let renders = 0;
 		const view = new StageChatView({
 			store,
+			sessionStore: manager.getSessionStore(),
 			graphTheme: deriveGraphTheme({}),
 			runId: "run-1",
 			stageId: "stage-a",

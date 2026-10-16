@@ -288,7 +288,13 @@ async function resumeDurableWorkflowClaimed(
 	}
 	if (crossProject) {
 		deps.signal?.throwIfAborted();
-		const forkId = await forkDurableWorkflow(backend, handle, currentCwd!, deps.forkModelOwner ?? requestedOwner);
+		const forkId = await forkDurableWorkflow(
+			backend,
+			handle,
+			currentCwd!,
+			deps.forkModelOwner ?? requestedOwner,
+			deps.baseRunOpts.adapters?.sessionStore,
+		);
 		const fork = backend.getWorkflow(forkId)!;
 		const result = await resumeDurableWorkflow(
 			forkId,

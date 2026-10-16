@@ -63,7 +63,7 @@ function retainedSessionFile(name: string): string {
 	return path;
 }
 
-function completedStage(sessionFile: string): StageSnapshot {
+function completedStage(sessionFile: string, sessionId: string): StageSnapshot {
 	return {
 		id: "stage-a",
 		name: "review-a",
@@ -71,6 +71,7 @@ function completedStage(sessionFile: string): StageSnapshot {
 		parentIds: [],
 		toolEvents: [],
 		sessionFile,
+		sessionId,
 	};
 }
 
@@ -86,7 +87,7 @@ interface LazyHandleFixture {
 	renderRequests: number;
 }
 
-function lazyPostMortemFixture(name: string, sessionFile: string): LazyHandleFixture {
+async function lazyPostMortemFixture(name: string, sessionFile: string, sessionId: string): Promise<LazyHandleFixture> {
 	const entered = Promise.withResolvers<void>();
 	const gate = Promise.withResolvers<void>();
 	const promptCalls: string[] = [];
@@ -116,11 +117,12 @@ function lazyPostMortemFixture(name: string, sessionFile: string): LazyHandleFix
 		},
 	};
 	const registry = createStageControlRegistry();
-	const stage = completedStage(sessionFile);
-	const result = ensurePostMortemStageHandle(`run-${name}`, stage, {
+	const stage = completedStage(sessionFile, sessionId);
+	const result = await ensurePostMortemStageHandle(`run-${name}`, stage, {
 		registry,
 		adapters,
 		cwd: tempDir,
+		defaultSessionDir: tempDir,
 	});
 	assert.equal(result.ok, true);
 	if (!result.ok) throw new Error("expected an eligible post-mortem stage");
@@ -160,7 +162,7 @@ function renderText(view: StageChatView): string {
 
 test("a post-mortem chat shows Working while its saved session restores", async () => {
 	const sessionFile = retainedSessionFile("restore-working");
-	const fixture = lazyPostMortemFixture("restore", sessionFile);
+	const fixture = await lazyPostMortemFixture("restore", sessionFile, "restore-working-session");
 
 	try {
 		assert.doesNotMatch(renderText(fixture.view), /Working/);
@@ -198,7 +200,7 @@ test("a post-mortem chat shows Working while its saved session restores", async 
 
 test("a failed restore settles the post-mortem chat instead of sticking on Working", async () => {
 	const sessionFile = retainedSessionFile("restore-failure");
-	const fixture = lazyPostMortemFixture("failure", sessionFile);
+	const fixture = await lazyPostMortemFixture("failure", sessionFile, "restore-failure-session");
 
 	try {
 		const delivery = fixture.handle.sendUserMessage?.("follow up that cannot land");

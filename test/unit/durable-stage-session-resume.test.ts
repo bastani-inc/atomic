@@ -122,6 +122,7 @@ describe("durable stage session resume", () => {
 		const stage = makeStage({
 			replayKey,
 			sessionFile: "/tmp/stage.jsonl",
+			sessionId: "stage-session",
 			pausedDurationMs: 200,
 			pausedAt: 1800,
 		});
@@ -141,9 +142,12 @@ describe("durable stage session resume", () => {
 		assert.equal(rebasedStageStartedAt(-50, resumedAt), resumedAt);
 	});
 
-	test("reopens prior session file when output is not completed", async () => {
+	test("reopens prior session ID when output is not completed", async () => {
 		const replayKey = "stage:analyze:1";
-		await recordStageSessionCheckpoint(deps(), makeStage({ replayKey, sessionFile: "/tmp/prior.jsonl" }));
+		await recordStageSessionCheckpoint(
+			deps(),
+			makeStage({ replayKey, sessionId: "stage-session", sessionFile: "/tmp/prior.jsonl" }),
+		);
 		let observed: string | undefined;
 		let observedPrompt: string | undefined;
 		const stage = createDurableStagePrimitive({
@@ -151,7 +155,7 @@ describe("durable stage session resume", () => {
 			backend,
 			nextReplayKey: () => replayKey,
 			stage: (_name, options) => {
-				observed = options?.resumeFromSessionFile;
+				observed = options?.resumeFromSessionId;
 				return Object.assign(fakeStageContext("resumed") as object, {
 					prompt: async (text: string) => {
 						observedPrompt = text;
@@ -162,13 +166,13 @@ describe("durable stage session resume", () => {
 		});
 
 		assert.equal(await stage("analyze").prompt("continue"), "resumed");
-		assert.equal(observed, "/tmp/prior.jsonl");
+		assert.equal(observed, "stage-session");
 		assert.equal(observedPrompt, RESUME_CONTINUATION_PROMPT);
 	});
 
 	test("hydrates the durable source identity of an active stage session", async () => {
 		const replayKey = "stage:analyze:1";
-		const source = makeStage({ replayKey, sessionFile: "/tmp/prior.jsonl" });
+		const source = makeStage({ replayKey, sessionId: "stage-session", sessionFile: "/tmp/prior.jsonl" });
 		await recordStageSessionCheckpoint(deps(), source);
 		let identity: { id?: string; parentIds?: readonly string[] } | undefined;
 		const stage = createDurableStagePrimitive({
@@ -187,7 +191,10 @@ describe("durable stage session resume", () => {
 
 	test("hydrates accumulated duration into a new-process live stage", async () => {
 		const replayKey = "stage:analyze:1";
-		await recordStageSessionCheckpoint(deps(1700), makeStage({ replayKey, sessionFile: "/tmp/prior.jsonl" }));
+		await recordStageSessionCheckpoint(
+			deps(1700),
+			makeStage({ replayKey, sessionId: "stage-session", sessionFile: "/tmp/prior.jsonl" }),
+		);
 		let accumulatedDurationMs: number | undefined;
 		const stage = createDurableStagePrimitive({
 			workflowId: WORKFLOW_ID,
@@ -205,8 +212,11 @@ describe("durable stage session resume", () => {
 
 	test("hydrates accumulated duration into a resumed task", async () => {
 		const replayKey = "stage:task:analyze:1";
-		await recordStageSessionCheckpoint(deps(1700), makeStage({ replayKey, sessionFile: "/tmp/prior-task.jsonl" }));
-		let observedOptions: { resumeFromSessionFile?: string; durableAccumulatedDurationMs?: number } | undefined;
+		await recordStageSessionCheckpoint(
+			deps(1700),
+			makeStage({ replayKey, sessionId: "stage-session", sessionFile: "/tmp/prior-task.jsonl" }),
+		);
+		let observedOptions: { resumeFromSessionId?: string; durableAccumulatedDurationMs?: number } | undefined;
 		const task = createDurableTaskPrimitive({
 			workflowId: WORKFLOW_ID,
 			backend,
@@ -218,13 +228,16 @@ describe("durable stage session resume", () => {
 		});
 
 		assert.equal((await task("analyze", { prompt: "continue" })).text, "resumed task");
-		assert.equal(observedOptions?.resumeFromSessionFile, "/tmp/prior-task.jsonl");
+		assert.equal(observedOptions?.resumeFromSessionId, "stage-session");
 		assert.equal(observedOptions?.durableAccumulatedDurationMs, 700);
 	});
 
 	test("mid-session resume does not eagerly read throwing StageContext getters", async () => {
 		const replayKey = "stage:analyze:1";
-		await recordStageSessionCheckpoint(deps(), makeStage({ replayKey, sessionFile: "/tmp/prior.jsonl" }));
+		await recordStageSessionCheckpoint(
+			deps(),
+			makeStage({ replayKey, sessionId: "stage-session", sessionFile: "/tmp/prior.jsonl" }),
+		);
 		let observedPrompt: string | undefined;
 		// Mirror production StageContext: lazy getters that throw until the SDK
 		// session exists. A spread-based wrapper would invoke these eagerly.
@@ -258,14 +271,21 @@ describe("durable stage session resume", () => {
 	test("updates session metadata across repeated resumes", async () => {
 		const replayKey = "stage:analyze:1";
 		assert.equal(
-			await recordStageSessionCheckpoint(deps(1500), makeStage({ replayKey, sessionFile: "/tmp/first.jsonl" })),
+			await recordStageSessionCheckpoint(
+				deps(1500),
+				makeStage({ replayKey, sessionId: "first", sessionFile: "/tmp/first.jsonl" }),
+			),
 			true,
 		);
 		assert.equal(
-			await recordStageSessionCheckpoint(deps(1800), makeStage({ replayKey, sessionFile: "/tmp/second.jsonl" })),
+			await recordStageSessionCheckpoint(
+				deps(1800),
+				makeStage({ replayKey, sessionId: "second", sessionFile: "/tmp/second.jsonl" }),
+			),
 			true,
 		);
 		assert.deepEqual(backend.getStageSession(WORKFLOW_ID, replayKey), {
+			sessionId: "second",
 			sessionFile: "/tmp/second.jsonl",
 			startedAt: 1000,
 			durationMs: 800,
@@ -275,9 +295,13 @@ describe("durable stage session resume", () => {
 	test("completed output wins over later session metadata", async () => {
 		const replayKey = "stage:analyze:1";
 		await recordStageCheckpoint(deps(), makeStage({ status: "completed", replayKey, result: "done", endedAt: 2000 }));
-		await recordStageSessionCheckpoint(deps(), makeStage({ replayKey, sessionFile: "/tmp/later.jsonl" }));
+		await recordStageSessionCheckpoint(
+			deps(),
+			makeStage({ replayKey, sessionId: "stage-session", sessionFile: "/tmp/later.jsonl" }),
+		);
 		assert.equal(backend.getStageOutput(WORKFLOW_ID, replayKey), "done");
 		assert.deepEqual(backend.getStageSession(WORKFLOW_ID, replayKey), {
+			sessionId: "stage-session",
 			sessionFile: "/tmp/later.jsonl",
 			startedAt: 1000,
 			durationMs: 1000,
@@ -295,10 +319,14 @@ describe("durable stage session resume", () => {
 
 	test("completed output wins after earlier session metadata", async () => {
 		const replayKey = "stage:analyze:1";
-		await recordStageSessionCheckpoint(deps(), makeStage({ replayKey, sessionFile: "/tmp/first.jsonl" }));
+		await recordStageSessionCheckpoint(
+			deps(),
+			makeStage({ replayKey, sessionId: "stage-session", sessionFile: "/tmp/first.jsonl" }),
+		);
 		await recordStageCheckpoint(deps(), makeStage({ status: "completed", replayKey, result: "done", endedAt: 2000 }));
 		assert.equal(backend.getStageOutput(WORKFLOW_ID, replayKey), "done");
 		assert.deepEqual(backend.getStageSession(WORKFLOW_ID, replayKey), {
+			sessionId: "stage-session",
 			sessionFile: "/tmp/first.jsonl",
 			startedAt: 1000,
 			durationMs: 1000,
@@ -311,7 +339,12 @@ describe("durable stage session resume", () => {
 		vi.spyOn(Date, "now").mockImplementation(() => clock);
 		// startedAt straddles a 30 s debounce bucket boundary between the two
 		// checkpoints so the second (latest) duration is durably refreshed.
-		const active = makeStage({ replayKey, sessionFile: "/tmp/schema-stage.jsonl", startedAt: -28_839 });
+		const active = makeStage({
+			replayKey,
+			sessionId: "stage-session",
+			sessionFile: "/tmp/schema-stage.jsonl",
+			startedAt: -28_839,
+		});
 		await recordStageSessionCheckpoint(deps(1111), active);
 		await recordStageSessionCheckpoint(deps(1222), active);
 

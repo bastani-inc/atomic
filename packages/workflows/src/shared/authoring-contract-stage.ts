@@ -186,7 +186,7 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 	readonly sessionManager?: never;
 	readonly settingsManager?: never;
 	readonly context?: WorkflowContextMode;
-	readonly forkFromSessionFile?: string;
+	readonly forkFromSessionId?: string;
 	readonly gitWorktreeDir?: string;
 	readonly baseBranch?: string;
 	readonly sessionDir?: string;

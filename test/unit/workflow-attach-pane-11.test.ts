@@ -16,7 +16,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSession } from "@bastani/atomic";
-import { describe, test } from "vitest";
+import { describe, test, vi } from "vitest";
+import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
 import { createPostMortemHandleResolver } from "../../packages/workflows/src/extension/postmortem-deps.js";
 import type { StageControlHandle } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
@@ -43,6 +44,7 @@ function setupCompletedRun(store: ReturnType<typeof createStore>, runId: string,
 		toolEvents: [],
 		result: "done",
 		sessionFile,
+		sessionId: "retained-session",
 		attachable: false,
 	});
 }
@@ -166,10 +168,7 @@ describe("WorkflowAttachPane post-mortem revival", () => {
 		const rendered = pane.render(40).join("\n");
 		const visible = rendered.replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+/g, " ");
 		assert.match(visible, /SESSION UNAVAILABLE/);
-		assert.match(
-			visible,
-			/The retained session is missing, unreadable, or invalid\. Check that the session file still exists and is readable\./,
-		);
+		assert.match(visible, /The retained session is missing, unreadable, or invalid in the selected session store\./);
 		assert.doesNotMatch(visible, /archived transcript/);
 		pane.dispose();
 	});
@@ -185,9 +184,11 @@ describe("WorkflowAttachPane post-mortem revival", () => {
 				}
 				if (failure === "deleted") rmSync(sessionFile);
 				const store = createStore();
+				const sessionStore = await JsonlSessionStore.open(dir, { exactDirectory: true, scanExisting: false });
 				setupCompletedRun(store, "run-1", sessionFile);
 				const pane = new WorkflowAttachPane({
 					store,
+					sessionStore,
 					graphTheme: deriveGraphTheme({}),
 					runId: "run-1",
 					stageControlRegistry: createStageControlRegistry(),
@@ -195,18 +196,20 @@ describe("WorkflowAttachPane post-mortem revival", () => {
 					initialAttachStageId: "stage-a",
 				});
 				try {
+					await vi.waitFor(() => assert.match(pane.render(80).join("\n"), /SESSION UNAVAILABLE/));
 					const visible = pane
 						.render(80)
 						.join("\n")
 						.replace(/\x1b\[[0-9;]*m/g, "")
 						.replace(/\s+/g, " ");
 					assert.match(visible, /SESSION UNAVAILABLE/);
-					assert.match(visible, /Check that the session file still exists and is readable\./);
+					assert.match(visible, /invalid in the selected session store\./);
 					assert.doesNotMatch(visible, /archived transcript|READ-ONLY SESSION/);
 					assert.equal(pane._mode, "stage-chat");
 					if (failure === "empty") assert.equal(await readText(sessionFile), "");
 				} finally {
 					pane.dispose();
+					await sessionStore.close();
 				}
 			} finally {
 				rmSync(dir, { recursive: true, force: true });
@@ -214,7 +217,7 @@ describe("WorkflowAttachPane post-mortem revival", () => {
 		},
 	);
 
-	test.sequential("the extension resolver preserves invalid-session reasons", () => {
+	test.sequential("the extension resolver preserves invalid-session reasons", async () => {
 		globalStore.clear();
 		try {
 			setupCompletedRun(globalStore, "resolver-run");
@@ -229,7 +232,7 @@ describe("WorkflowAttachPane post-mortem revival", () => {
 				resolveDefaultStageSessionDir: () => undefined,
 			});
 
-			assert.deepEqual(resolver("resolver-run", "stage-a"), { ok: false, reason: "invalid_session" });
+			assert.deepEqual(await resolver("resolver-run", "stage-a"), { ok: false, reason: "invalid_session" });
 		} finally {
 			globalStore.clear();
 		}

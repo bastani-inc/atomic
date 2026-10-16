@@ -53,15 +53,15 @@ function positiveInteger(value: number | undefined, fallback: number): number {
 
 type ForkContinuationOptions = {
   readonly context?: "fork";
-  readonly forkFromSessionFile?: string;
+  readonly forkFromSessionId?: string;
 };
 
 function forkContinuationOptions(
-  sessionFile: string | undefined,
+  sessionId: string | undefined,
 ): ForkContinuationOptions {
-  return sessionFile === undefined || sessionFile.length === 0
+  return sessionId === undefined
     ? {}
-    : { context: "fork", forkFromSessionFile: sessionFile };
+    : { context: "fork", forkFromSessionId: sessionId };
 }
 
 function normalizeBranchInput(
@@ -123,7 +123,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
     let latestReviews: ReviewRecord[] = [];
     let latestReviewArtifactPaths: string[] = [];
     let latestReviewReportPath: string | undefined;
-    let previousOrchestratorSessionFile: string | undefined;
+    let previousOrchestratorSessionId: string | undefined;
 
     // A resume reloads the ledger its source run already advanced, possibly to a
     // terminal status. Replay the recorded turns anyway: their stages return
@@ -144,8 +144,8 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
       }
 
       const orchestratorReceiptPath = join(artifactDir, "orchestrator-receipt.md");
-      const orchestratorForkOptions = forkContinuationOptions(previousOrchestratorSessionFile);
-      const orchestratorPrompt = orchestratorForkOptions.forkFromSessionFile === undefined
+      const orchestratorForkOptions = forkContinuationOptions(previousOrchestratorSessionId);
+      const orchestratorPrompt = orchestratorForkOptions.forkFromSessionId === undefined
         ? renderGoalOrchestratorPrompt({
             ledger,
             ledgerPath,
@@ -168,7 +168,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           ...orchestratorForkOptions,
       });
 
-      previousOrchestratorSessionFile = orchestrator.sessionFile;
+      previousOrchestratorSessionId = orchestrator.sessionId;
       if (!replayingRecordedTurn) {
         ledger.turns = turn;
         const receiptAlreadyRecorded = ledger.receipts.some(

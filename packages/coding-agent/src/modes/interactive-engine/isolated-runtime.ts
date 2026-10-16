@@ -985,8 +985,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 
 	private async refreshSessionView(): Promise<void> {
 		const session = super.session;
-		const sessionFile = session.sessionFile;
-		if (!sessionFile) return;
 		const currentManager = session.sessionManager;
 		const refreshed = await SessionManager.open(
 			currentManager.getSessionStore(),

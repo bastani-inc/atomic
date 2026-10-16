@@ -39,7 +39,7 @@ interface WorkflowEventSurface {
 export type CompletedStageHandleResolver = (
 	runId: string,
 	stageId: string,
-) => EnsurePostMortemStageHandleResult | undefined;
+) => EnsurePostMortemStageHandleResult | undefined | Promise<EnsurePostMortemStageHandleResult | undefined>;
 
 /**
  * Claims late blocking Intercom asks for completed workflow stages and runs one
@@ -110,7 +110,7 @@ async function deliverAsPostMortemTurn(
 	event: CompletedStageAskEvent & { readonly workflowRunId: string; readonly workflowStageId: string },
 	resolveHandle: CompletedStageHandleResolver,
 ): Promise<void> {
-	const resolution = resolveHandle(event.workflowRunId, event.workflowStageId);
+	const resolution = await resolveHandle(event.workflowRunId, event.workflowStageId);
 	if (resolution === undefined) {
 		throw new Error(
 			`Intercom ask target is unavailable: completed workflow stage ${event.workflowRunId}/${event.workflowStageId} was deleted or is no longer retained.`,

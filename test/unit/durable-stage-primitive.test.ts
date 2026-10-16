@@ -625,7 +625,7 @@ describe("run durable checkpoints", () => {
 			.listCompletedWorkflows()
 			.find((entry) => entry.workflowId === "wf-exit-failed-default");
 		exAssert.ok(completedEntry);
-		const hydratedRoot = completedWorkflowRunSnapshots(backend, completedEntry).find(
+		const hydratedRoot = (await completedWorkflowRunSnapshots(backend, completedEntry)).find(
 			(runSnapshot) => runSnapshot.id === "wf-exit-failed-default",
 		);
 		exAssert.ok(hydratedRoot);

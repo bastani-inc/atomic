@@ -33,6 +33,7 @@ export { resolveRestoredModelReference } from "./core/model-resolver-initial.ts"
 export type { UsageEntry } from "./core/session-manager.ts";
 export { CACHE_WARMING_MODES, type CacheWarmingMode } from "./core/settings-manager.ts";
 export * from "./core/storage/index.js";
+export { JsonlSessionStore } from "./core/storage/session/jsonl-session-store.js";
 // Internal trusted-host task integration (not model authority).
 export { AgentTaskHost, type AgentTaskHostBinding, type AgentTaskRunnerFactory } from "./core/tasks/agent-adapter.js";
 export type { AgentIntent, OperationId, TaskId, TaskResult, WaitPolicy } from "./core/tasks/contracts.js";
@@ -368,6 +369,7 @@ export {
 	type CustomEntry,
 	type CustomMessageEntry,
 	type FileEntry,
+	getDefaultSessionDirPath,
 	getLatestCompactionBoundaryEntry,
 	type ModelChangeEntry,
 	type NewSessionOptions,

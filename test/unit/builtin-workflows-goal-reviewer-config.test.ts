@@ -46,7 +46,7 @@ test("Goal reviewers route automatically and retain their schema and tool restri
 		const options = ctx.calls.taskOptions[name]?.[0];
 		assert.ok(options, `missing options for ${name}`);
 		assert.equal(options.context, undefined, name);
-		assert.equal(options.forkFromSessionFile, undefined, name);
+		assert.equal(options.forkFromSessionId, undefined, name);
 		assert.equal(options.model, goalReviewerModelConfig.model, name);
 		assert.equal(options.model, "auto", name);
 		assert.equal(options.fallbackModels, undefined, name);

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { afterEach, describe, test } from "vitest";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { runGoalWorkflow } from "../../packages/workflows/builtin/goal-runner.js";
 import { isBrandedWorkflowDefinition, workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
@@ -147,13 +148,14 @@ describe("resume after a completed ctx.parallel", () => {
 			},
 		});
 		const adapters = {
+			sessionStore: new MemorySessionStore(),
 			agentSession: {
 				async create(options: CreateAgentSessionOptions): Promise<StageSessionRuntime> {
 					if (options.customTools?.some((tool) => tool.name === "structured_output")) {
 						sessions.push("reviewer");
 						return structuredOutputMockSession(options, approvingReview);
 					}
-					const session = mockSession();
+					const session = mockSession(options.sessionManager);
 					return {
 						...session,
 						async prompt(text: string) {

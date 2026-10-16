@@ -32,7 +32,7 @@ export type StageUserMessageDeliveryAction = "prompt" | "steer" | "followUp" | "
 
 /** Internal session preparation and side-effect-free eligibility boundary. */
 export interface StageUserMessagePreparation {
-	readonly sessionFile?: string;
+	readonly sessionId?: string;
 	readonly beforePreparation?: () => void;
 }
 
@@ -129,6 +129,7 @@ export interface CompleteAdapter {
 }
 
 export interface StageAdapters {
+	sessionStore?: import("@bastani/atomic").SessionStore;
 	agentSession?: AgentSessionAdapter;
 	prompt?: PromptAdapter;
 	complete?: CompleteAdapter;
@@ -183,7 +184,7 @@ export interface InternalStageContext extends StageContext {
 	 */
 	__ensureSession(): Promise<void>;
 	/** Internal: reopen an archived stage transcript before post-terminal follow-up. */
-	__ensureSessionFromFile(sessionFile: string): Promise<void>;
+	__ensureSessionFromId(sessionId: string): Promise<void>;
 	/** Internal idle-aware delivery primitive; returns the action actually taken. */
 	__sendUserMessage(
 		content: StageUserMessageContent,

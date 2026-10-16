@@ -140,25 +140,12 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 			context.bumpAndNotify();
 		},
 
-		recordStageSession(
-			runId: string,
-			stageId: string,
-			session: { sessionId?: string; sessionFile?: string },
-		): boolean {
+		recordStageSession(runId: string, stageId: string, session: { sessionId: string }): boolean {
 			const run = context.findRun(runId);
 			if (!run) return false;
 			const stage = context.findStage(run, stageId);
-			if (!stage) return false;
-			let changed = false;
-			if (session.sessionId !== undefined && stage.sessionId !== session.sessionId) {
-				stage.sessionId = session.sessionId;
-				changed = true;
-			}
-			if (session.sessionFile !== undefined && stage.sessionFile !== session.sessionFile) {
-				stage.sessionFile = session.sessionFile;
-				changed = true;
-			}
-			if (!changed) return false;
+			if (!stage || stage.sessionId === session.sessionId) return false;
+			stage.sessionId = session.sessionId;
 			context.bumpAndNotify();
 			return true;
 		},

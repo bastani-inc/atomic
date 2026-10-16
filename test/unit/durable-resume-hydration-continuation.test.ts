@@ -316,7 +316,7 @@ exTest("mixed cached and live child resume remains inspectable after completion"
 	assert.equal(resumed.status, "completed", resumed.error);
 
 	const entry = listCompletedFromBackend(backend).find((candidate) => candidate.workflowId === runId)!;
-	const snapshots = completedWorkflowRunSnapshots(backend, entry);
+	const snapshots = await completedWorkflowRunSnapshots(backend, entry);
 	assert.ok(snapshots.length >= 2, "root and resumed child reconstruct after mixed replay/live completion");
 	const graph = expandWorkflowGraph({ runs: snapshots, notices: [], version: 1 }, runId);
 	assert.deepEqual(

@@ -154,7 +154,7 @@ describe("stage timing durability boundaries", () => {
 			parentIds: ["plan-source"],
 			startedAt: 0,
 			pausedAt: 10_000,
-			sessionFile: "/tmp/work.jsonl",
+			sessionId: "work-session",
 			toolEvents: [],
 		};
 		assert.equal(await recordStageSessionCheckpoint(deps, stage), true);
@@ -189,7 +189,7 @@ describe("resumed runs inherit elapsed time", () => {
 			checkpointId: "stage-session:stage:work:1:prior",
 			name: "work",
 			replayKey: "stage:work:1",
-			sessionFile: "/tmp/prior.jsonl",
+			sessionId: "prior-session",
 			startedAt: 2,
 			durationMs: 700,
 			completedAt: 5,

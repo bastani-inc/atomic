@@ -56,6 +56,7 @@ export interface StageControlHandle {
 	readonly stageName: string;
 	readonly status: StageControlStatus;
 	readonly sessionId: string | undefined;
+	readonly sessionStore?: import("@bastani/atomic").SessionStore;
 	readonly sessionFile: string | undefined;
 	readonly isStreaming: boolean;
 	/** True after the executor has released the live SDK session behind this handle. */

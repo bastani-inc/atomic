@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, test } from "vitest";
+import { describe, test, vi } from "vitest";
 import { openCompletedDurableWorkflow } from "../../packages/workflows/src/durable/completed-inspection.js";
 import { testRunId } from "../helpers/run-id.js";
 // InMemoryDurableBackend is already bound at line 46. Bun tolerated the repeated
@@ -249,13 +249,20 @@ describe("/workflow attach <rootRunId> <nestedStageId>", () => {
 				notifications.push(message);
 			},
 			setWidget: () => {},
-			custom: (factory) => {
+			custom: async (factory) => {
 				overlayOpens += 1;
 				const component = factory(
 					{ requestRender: () => {}, terminal: { rows: 32, columns: 96 } },
 					{},
 					{},
 					() => {},
+				);
+				await vi.waitFor(() =>
+					assert.ok(
+						store
+							.runs()
+							.some((run) => run.stages.some((stage) => stage.id === "review" && stage.attached === true)),
+					),
 				);
 				attachedOwner = store
 					.runs()
@@ -311,6 +318,7 @@ describe("/workflow attach <rootRunId> <nestedStageId>", () => {
 						endedAt: Date.now(),
 						toolEvents: [],
 						sessionFile: `/tmp/${childRunId}.jsonl`,
+						sessionId: childRunId,
 					},
 				],
 			});
@@ -319,7 +327,7 @@ describe("/workflow attach <rootRunId> <nestedStageId>", () => {
 		await handler(`attach ${rootRunId} ${childTwoRunId}:${nestedStageId}`, { hasUI: true, ui: pi.ui });
 
 		assert.equal(overlayOpens, 1);
-		assert.equal(attachedOwner, childTwoRunId);
+		await vi.waitFor(() => assert.equal(attachedOwner, childTwoRunId));
 		const content = notifications.join("\n");
 		assert.match(content, /Attached to .* stage review/);
 		assert.doesNotMatch(content, /Stage not found/);
@@ -416,11 +424,13 @@ describe("/workflow attach <rootRunId> <nestedStageId>", () => {
 			},
 		});
 		assert.equal(
-			openCompletedDurableWorkflow(rootRunId, {
-				durableBackend: backend,
-				store,
-				stageControlRegistry,
-			}).ok,
+			(
+				await openCompletedDurableWorkflow(rootRunId, {
+					durableBackend: backend,
+					store,
+					stageControlRegistry,
+				})
+			).ok,
 			true,
 		);
 
@@ -434,13 +444,20 @@ describe("/workflow attach <rootRunId> <nestedStageId>", () => {
 				notifications.push(message);
 			},
 			setWidget: () => {},
-			custom: (factory) => {
+			custom: async (factory) => {
 				overlayOpens += 1;
 				const component = factory(
 					{ requestRender: () => {}, terminal: { rows: 32, columns: 96 } },
 					{},
 					{},
 					() => {},
+				);
+				await vi.waitFor(() =>
+					assert.ok(
+						store
+							.runs()
+							.some((run) => run.stages.some((stage) => stage.id === stageId && stage.attached === true)),
+					),
 				);
 				attachedOwner = store
 					.runs()
@@ -455,7 +472,7 @@ describe("/workflow attach <rootRunId> <nestedStageId>", () => {
 		await handler(`attach ${rootRunId} ${childRunId}:${stageId}`, { hasUI: true, ui: pi.ui });
 
 		assert.equal(overlayOpens, 1);
-		assert.equal(attachedOwner, childRunId);
+		await vi.waitFor(() => assert.equal(attachedOwner, childRunId));
 		assert.match(notifications.join("\n"), /Attached to .* stage hydrated-review\./);
 	});
 });

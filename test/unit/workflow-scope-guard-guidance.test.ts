@@ -1,6 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { describe, expect, test } from "vitest";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { loadWorkflowModule } from "../../packages/workflows/src/extension/workflow-module-loader.js";
 import { fileExists, moduleDir, readText } from "../helpers/runtime.js";
 import {
@@ -123,9 +124,9 @@ describe("workflow scope-guard guidance", () => {
 			"Omit `group` for ordinary use",
 			"delegated subagents inherit the top-level workflow invocation's stable Intercom group",
 			'Use `context: "fresh"` for guards, reviewers, and judges',
-			'Use `context: "fork"` plus `forkFromSessionFile` for implementation, debugging, and repair roles',
+			'Use `context: "fork"` plus `forkFromSessionId` for implementation, debugging, and repair roles',
 			'`context: "fork"` alone does not name a fork source',
-			"use the earlier worker's `sessionFile` when available",
+			"use the earlier worker's `sessionId` in the selected session store when available",
 			"Send a forked continuation only the delta after the fork point",
 			"Complete all turns on a retained guard before starting downstream dependency work",
 		]) {
@@ -152,7 +153,7 @@ describe("workflow scope-guard guidance", () => {
 				filename: "scope-guard-live.ts",
 				name: "scope-guard-live",
 				api: "ctx.parallel(",
-				inputs: ["scope_contract", "worker_session_file", "fallback_policy", "artifact_dir"],
+				inputs: ["scope_contract", "worker_session_id", "fallback_policy", "artifact_dir"],
 			},
 		] as const;
 		const tempDirectory = await mkdtemp(resolve(repositoryRoot, "test", ".scope-guard-examples-"));
@@ -169,7 +170,7 @@ describe("workflow scope-guard guidance", () => {
 					expect(source).toContain("guard.sendUserMessage(");
 				}
 				if (example.name === "scope-guard-live") {
-					expect(source).toContain("forkFromSessionFile: sessionFile");
+					expect(source).toContain("forkFromSessionId: sessionId");
 					expect(source).toContain("fallback_policy:");
 					expect(source).toContain('ctx.task("persist scope decisions"');
 					expect(source).toContain("{ concurrency: 2, failFast: true }");
@@ -206,9 +207,13 @@ describe("workflow scope-guard guidance", () => {
 					store: createStore(),
 					ui: testUi(),
 					adapters: {
+						sessionStore: new MemorySessionStore(),
 						agentSession: {
-							async create(_options, meta) {
-								return textSession(meta?.stageName ?? "unknown", prompts);
+							async create(options, meta) {
+								return {
+									...textSession(meta?.stageName ?? "unknown", prompts),
+									sessionId: options.sessionManager!.getSessionId(),
+								};
 							},
 						},
 					},

@@ -38,7 +38,12 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 	const structuredOutputExecutionCapture: StructuredOutputExecutionCapture<Static<TSchema>> | undefined =
 		stageOptions?.schema ? {} : undefined;
 	const effectiveStageOptions = stageOptionsWithStructuredOutput(
-		stageOptions,
+		adapters.sessionStore === undefined ||
+			stageOptions?.sessionStore !== undefined ||
+			stageOptions?.sessionDir !== undefined ||
+			stageOptions?.sessionManager !== undefined
+			? stageOptions
+			: { ...stageOptions, sessionStore: adapters.sessionStore },
 		structuredOutputCapture,
 		structuredOutputExecutionCapture,
 	);
@@ -363,8 +368,8 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 			await controller.ensureSession();
 		},
 
-		async __ensureSessionFromFile(sessionFile) {
-			await controller.ensureSessionFromFile(sessionFile);
+		async __ensureSessionFromId(sessionId) {
+			await controller.ensureSessionFromId(sessionId);
 		},
 
 		__sealGeneration() {

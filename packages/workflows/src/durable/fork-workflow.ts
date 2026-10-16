@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { SessionManager } from "@bastani/atomic";
+import type { SessionManager, SessionStore } from "@bastani/atomic";
+import { forkStageSession, stageSessionStore } from "../shared/stage-session-store.js";
 import { isToolPayloadObject } from "../shared/tool-payload-bounds.js";
 import { formatWorkflowStageTarget, parseWorkflowStageTarget } from "../shared/workflow-stage-target.js";
 import type { DurableWorkflowBackend } from "./backend.js";
@@ -11,8 +12,11 @@ export async function forkDurableWorkflow(
 	source: DurableWorkflowHandle,
 	cwd: string,
 	modelOwner: string | undefined,
+	sessionStore?: SessionStore,
 ): Promise<string> {
 	source = structuredClone(source);
+	const selectedStore =
+		sessionStore ?? (await stageSessionStore({ cwd: source.workflowCwd ?? source.invocationCwd ?? cwd }));
 	const workflowId = randomUUID();
 	const ids = new Map([[source.workflowId, workflowId]]);
 	const mapId = (id: string): string => {
@@ -62,15 +66,15 @@ export async function forkDurableWorkflow(
 		const boundary = stageTopology?.boundary;
 		const taskOutput =
 			isToolPayloadObject(copy.output) && typeof copy.output.text === "string" ? copy.output : undefined;
-		const sessionFile =
-			copy.sessionFile ?? (typeof taskOutput?.sessionFile === "string" ? taskOutput.sessionFile : undefined);
-		let session = sessionFile === undefined ? undefined : sessions.get(sessionFile);
-		if (session === undefined && sessionFile !== undefined) {
-			session = await SessionManager.forkFrom(sessionFile, cwd, undefined, {
+		const sessionId =
+			copy.sessionId ?? (typeof taskOutput?.sessionId === "string" ? taskOutput.sessionId : undefined);
+		let session = sessionId === undefined ? undefined : sessions.get(sessionId);
+		if (session === undefined && sessionId !== undefined) {
+			session = await forkStageSession(selectedStore, sessionId, cwd, {
 				internal: true,
 				workflow: { runId: workflowId, stageId: stageTopology?.stageId ?? copy.checkpointId, stageName: copy.name },
 			});
-			sessions.set(sessionFile, session);
+			sessions.set(sessionId, session);
 		}
 		const childOutput = boundary === undefined ? undefined : parseWorkflowChildResult(copy.output);
 		checkpoints.push({

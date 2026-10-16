@@ -1,3 +1,4 @@
+import type { SessionStore } from "@bastani/atomic";
 import { createPostMortemStageHandle } from "../runs/foreground/postmortem-stage-chat.js";
 import {
 	stageControlRegistry as defaultStageControlRegistry,
@@ -5,14 +6,11 @@ import {
 	type StageControlRegistry,
 } from "../runs/foreground/stage-control-registry.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
+import { stageSessionStore } from "../shared/stage-session-store.js";
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
-import {
-	completedWorkflowRunSnapshots,
-	listOpenableCompletedWorkflows,
-	resolveCompletedWorkflow,
-} from "./completed-catalog.js";
+import { completedWorkflowRunSnapshots, resolveCompletedWorkflow } from "./completed-catalog.js";
 import type { ResumableWorkflowEntry } from "./types.js";
 
 export type OpenCompletedDurableResult =
@@ -32,6 +30,7 @@ export interface OpenCompletedDurableDeps {
 	readonly stageControlRegistry?: StageControlRegistry;
 	readonly cwd?: string;
 	readonly defaultSessionDir?: string;
+	readonly sessionStore?: SessionStore;
 	/** Seed lifecycle dedupe state before historical snapshots become observable. */
 	readonly beforeRestore?: (snapshots: readonly RunSnapshot[]) => void;
 }
@@ -48,12 +47,16 @@ const completedChatRegistrations = new WeakMap<StageControlRegistry, Map<string,
  * mutable surface is a lazily reopened stage chat, which appends follow-up
  * conversation to its retained Atomic session without dispatching the workflow.
  */
-export function openCompletedDurableWorkflow(
+export async function openCompletedDurableWorkflow(
 	workflowId: string,
 	deps: OpenCompletedDurableDeps,
-	catalog: readonly ResumableWorkflowEntry[] = listOpenableCompletedWorkflows(deps.durableBackend),
-): OpenCompletedDurableResult {
-	const resolved = resolveCompletedWorkflow(workflowId, deps.durableBackend, catalog);
+	catalog?: readonly ResumableWorkflowEntry[],
+): Promise<OpenCompletedDurableResult> {
+	const selectedStore = await stageSessionStore(
+		{ sessionStore: deps.sessionStore ?? deps.adapters?.sessionStore, cwd: deps.cwd },
+		deps.defaultSessionDir,
+	);
+	const resolved = await resolveCompletedWorkflow(workflowId, deps.durableBackend, catalog, selectedStore);
 	if (resolved.kind === "not_found") {
 		return failure("not_found", `No completed durable workflow found for id: ${workflowId}`);
 	}
@@ -74,16 +77,16 @@ export function openCompletedDurableWorkflow(
 			`Workflow ${resolved.snapshot.id} is already active in this session; attach with /workflow connect ${resolved.snapshot.id} instead.`,
 		);
 	}
-	const snapshots = completedWorkflowRunSnapshots(deps.durableBackend, resolved.entry);
+	const snapshots = await completedWorkflowRunSnapshots(deps.durableBackend, resolved.entry, selectedStore);
 	const snapshot = snapshots.find((run) => run.id === resolved.snapshot.id) ?? resolved.snapshot;
 	deps.beforeRestore?.(snapshots);
 	for (const restored of snapshots) {
 		const previous = deps.store.runs().find((run) => run.id === restored.id);
 		if (previous !== undefined) deps.store.removeRun(previous.id);
 		deps.store.recordRunStart(restored);
-		registerCompletedChatHandles(restored, deps);
+		registerCompletedChatHandles(restored, deps, selectedStore);
 	}
-	const hasReopenableStage = snapshots.some((run) => run.stages.some((stage) => stage.sessionFile !== undefined));
+	const hasReopenableStage = snapshots.some((run) => run.stages.some((stage) => stage.sessionId !== undefined));
 	return {
 		ok: true,
 		runId: snapshot.id,
@@ -97,14 +100,18 @@ function failure(reason: "not_found" | "malformed" | "stale" | "active", message
 	return { ok: false, reason, message };
 }
 
-function registerCompletedChatHandles(snapshot: RunSnapshot, deps: OpenCompletedDurableDeps): void {
+function registerCompletedChatHandles(
+	snapshot: RunSnapshot,
+	deps: OpenCompletedDurableDeps,
+	sessionStore: SessionStore,
+): void {
 	if (deps.adapters?.agentSession === undefined) return;
 	const registry = deps.stageControlRegistry ?? defaultStageControlRegistry;
 	const registrations = completedChatRegistrations.get(registry) ?? new Map();
 	completedChatRegistrations.set(registry, registrations);
 	const desiredKeys = new Set(
 		snapshot.stages
-			.filter((stage) => stage.sessionFile !== undefined)
+			.filter((stage) => stage.sessionId !== undefined)
 			.map((stage) => completedChatKey(snapshot.id, stage.id)),
 	);
 	for (const [key, registration] of registrations) {
@@ -112,11 +119,12 @@ function registerCompletedChatHandles(snapshot: RunSnapshot, deps: OpenCompleted
 		removeCompletedChatRegistration(registrations, key, registration);
 	}
 	for (const stage of snapshot.stages) {
-		if (stage.sessionFile === undefined) continue;
+		if (stage.sessionId === undefined) continue;
 		const key = completedChatKey(snapshot.id, stage.id);
 		const registration = registrations.get(key);
 		const existing = registry.claim(snapshot.id, stage.id);
-		if (existing?.sessionFile === stage.sessionFile && !existing.isDisposed) continue;
+		if (existing?.sessionId === stage.sessionId && existing.sessionStore === sessionStore && !existing.isDisposed)
+			continue;
 		if (registration !== undefined) {
 			removeCompletedChatRegistration(registrations, key, registration);
 		} else if (existing !== undefined) {
@@ -125,10 +133,11 @@ function registerCompletedChatHandles(snapshot: RunSnapshot, deps: OpenCompleted
 		const handle = createPostMortemStageHandle(
 			snapshot.id,
 			stage,
-			stage.sessionFile,
+			stage.sessionId,
 			deps.adapters,
 			deps.cwd,
 			deps.defaultSessionDir,
+			sessionStore,
 		);
 		const unregister = registry.register(handle);
 		registrations.set(key, { handle, unregister });

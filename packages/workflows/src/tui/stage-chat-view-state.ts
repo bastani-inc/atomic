@@ -39,6 +39,7 @@ import {
 
 export function initializeStageChatView(ctx: StageChatViewContext, opts: StageChatViewOpts): void {
 	ctx.store = opts.store;
+	ctx.sessionStore = opts.sessionStore;
 	ctx.theme = opts.graphTheme;
 	ctx.runId = opts.runId;
 	ctx.stageId = opts.stageId;
@@ -99,7 +100,7 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 	const initialStage = initialRun?.stages.find((s) => s.id === ctx.stageId);
 	ctx.lastObservedRunStatus = initialRun?.status;
 	ctx.lastObservedStageStatus = initialStage?.status;
-	snapshotMessagesFromSessionFile(ctx, initialStage);
+	snapshotMessagesFromSession(ctx, initialStage);
 	absorbStageNotices(ctx, initialStage);
 	syncPromptState(ctx, initialStage?.pendingPrompt);
 	const initialChatIsTerminal =
@@ -346,11 +347,20 @@ function snapshotMessagesFromHandle(ctx: StageChatViewContext): void {
 	ctx.chatHost.hydrateStreamingAssistantMessage(handle.agentSession?.agent?.state.streamingMessage);
 }
 
-function snapshotMessagesFromSessionFile(ctx: StageChatViewContext, stage: StageSnapshot | undefined): void {
+function snapshotMessagesFromSession(ctx: StageChatViewContext, stage: StageSnapshot | undefined): void {
 	const handle = liveHandle(ctx);
-	if (!ctx.chatHost.loadSessionFile(handle?.sessionFile ?? stage?.sessionFile) && !handle) {
-		ctx.postMortemUnavailableReason ??= "invalid_session";
+	const sessionId = handle?.sessionId ?? stage?.sessionId;
+	if (sessionId === undefined) return;
+	const sessionStore =
+		handle?.sessionStore ?? handle?.agentSession?.sessionManager.getSessionStore() ?? ctx.sessionStore;
+	if (sessionStore === undefined) {
+		if (!handle) ctx.postMortemUnavailableReason ??= "invalid_session";
+		return;
 	}
+	void ctx.chatHost.loadSession(sessionStore, sessionId).then((loaded) => {
+		if (!loaded && !liveHandle(ctx)) ctx.postMortemUnavailableReason ??= "invalid_session";
+		ctx.requestRender?.();
+	});
 }
 
 function absorbStageNotices(ctx: StageChatViewContext, stage: StageSnapshot | undefined): boolean {
@@ -532,7 +542,7 @@ export function isReadOnlyArchive(
 ): boolean {
 	if (liveHandle(ctx)) return false;
 	if (!stage) return true;
-	return isReadOnlyArchiveStatus(stage.status) || Boolean(stage.sessionFile);
+	return isReadOnlyArchiveStatus(stage.status) || stage.sessionId !== undefined;
 }
 
 async function handleSlashCommand(ctx: StageChatViewContext, text: string): Promise<boolean> {

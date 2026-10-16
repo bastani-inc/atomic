@@ -73,6 +73,7 @@ test("nested post-mortem chat reopens in the durable root cwd while retaining ch
 			parentIds: [],
 			toolEvents: [],
 			sessionFile,
+			sessionId: `${durableCwdField}-session`,
 		};
 		store.recordRunStart({
 			id: "child-run",
@@ -98,12 +99,12 @@ test("nested post-mortem chat reopens in the durable root cwd while retaining ch
 					},
 				},
 			},
-			resolveDefaultStageSessionDir: () => undefined,
+			resolveDefaultStageSessionDir: () => tempRoot,
 		});
 		assert.equal(deps.cwd, durableCwd);
 		assert.notEqual(deps.cwd, process.cwd());
 
-		const result = ensurePostMortemStageHandle("child-run", stage, deps);
+		const result = await ensurePostMortemStageHandle("child-run", stage, deps);
 		assert.equal(result.ok, true);
 		if (!result.ok) continue;
 		await result.handle.ensureAttached();

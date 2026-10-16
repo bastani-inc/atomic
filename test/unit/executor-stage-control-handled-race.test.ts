@@ -113,13 +113,13 @@ test("stage-control send keeps saved-session restore inside final message admiss
 		name: "restore race",
 		stageSnapshot: {
 			status: "completed",
-			sessionFile: "/tmp/retained-restore.jsonl",
+			sessionId: "retained-restore",
 		},
 		state: { liveHandleReleased: false },
 		innerCtx: {
 			__sessionMeta: () => ({ sessionId: undefined, sessionFile: undefined }),
 			subscribe: () => () => {},
-			async __ensureSessionFromFile() {
+			async __ensureSessionFromId() {
 				events.push("outer_restore");
 			},
 			async __sendUserMessage(
@@ -128,7 +128,7 @@ test("stage-control send keeps saved-session restore inside final message admiss
 				beforeDelivery: () => void,
 				preparation:
 					| {
-							sessionFile?: string;
+							sessionId?: string;
 							beforePreparation?: () => void;
 					  }
 					| undefined,
@@ -136,7 +136,7 @@ test("stage-control send keeps saved-session restore inside final message admiss
 				events.push("inner_send");
 				preparation?.beforePreparation?.();
 				sendEntered.resolve();
-				assert.equal(preparation?.sessionFile, "/tmp/retained-restore.jsonl");
+				assert.equal(preparation?.sessionId, "retained-restore");
 				await finishRestore.promise;
 				beforeDelivery();
 				sdkMutations += 1;

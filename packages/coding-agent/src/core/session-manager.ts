@@ -8,7 +8,7 @@ export {
 	getLatestCompactionBoundaryEntry,
 	sessionEntryToContextMessages,
 } from "./session-manager-history.ts";
-export { getDefaultSessionDir } from "./session-manager-paths.ts";
+export { getDefaultSessionDir, getDefaultSessionDirPath } from "./session-manager-paths.ts";
 export {
 	findMostRecentSession,
 	isInternalHeader,

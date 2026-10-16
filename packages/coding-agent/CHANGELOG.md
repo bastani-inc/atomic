@@ -33,6 +33,7 @@
 - Extension provider registration and removal now return promises too: await `pi.registerProvider`, `pi.registerProviderAlias`, and `pi.unregisterProvider` before dependent model or session work.
 - Workflow SQLite journals now use `SqlRunJournal` with async initialization and `wf_` table names. Use `await openSqlRunJournal(pathOrDatabase?)` or `await SqlRunJournal.open(database, { prefix })`, and await `resolveRunJournal`. Earlier unreleased bare tables are not read or migrated. Workflow `StorageUnavailableError` now provides `adapter`, `location`, and `cause` instead of `path`.
 - Session selection now uses IDs instead of file paths: `--session` and `--fork` accept exact IDs or unique eight-hex UUID prefixes; use `--import <file>` for format-4 JSONL exports. Extension `switchSession` takes an ID, lifecycle events use `previousSessionId` and `targetSessionId`, and RPC `switch_session` takes `sessionId`. RPC state reports `sessionLocation` for optional display instead of `sessionFile`. Shell tools no longer expose `ATOMIC_SESSION_FILE` or `PI_SESSION_FILE`; use `ATOMIC_SESSION_ID` or `PI_SESSION_ID`.
+- Workflow stage forks now take `forkFromSessionId`, and stage resume, retained chat, and subagent forks resolve IDs within the selected session store. File paths are not session identities. Embedded chat hosts must use `await host.loadSession(store, sessionId)` instead of `loadSessionFile(path)`.
 
 ### Added
 
