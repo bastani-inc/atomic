@@ -37,13 +37,19 @@ import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
 import { canCloneDefaultResourceDiscovery, DefaultResourceLoader } from "./resource-loader.ts";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-types.ts";
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
-import { sessionGenerationClosing, sessionLifetime, trackSessionWork } from "./session-lifecycle-work.ts";
+import {
+	ownedSessionStores,
+	sessionGenerationClosing,
+	sessionLifetime,
+	trackSessionWork,
+} from "./session-lifecycle-work.ts";
 import { SessionManager } from "./session-manager.ts";
 import { registerStartupRollback, rollbackStartup } from "./session-startup-rollback.ts";
 import { resolveSessionStore } from "./session-storage.js";
 import { SettingsManager } from "./settings-manager.ts";
 import { applyToolModifiers, getToolListError, isToolModifier } from "./settings-merge.js";
 import { ownedSettingsManagers } from "./settings-write-ownership.ts";
+import type { SessionStore } from "./storage/session/types.js";
 import { createChildCommandTaskOwner } from "./tasks/child-command-owner.js";
 import { time } from "./timings.ts";
 import { createToolNameMatcher } from "./tool-selection.ts";
@@ -140,14 +146,24 @@ function createScopedSession(
 		const result = await factoryAcquisitions.run(
 			{ pending: new Map(), replacement: context.replacement },
 			async () => {
+				const acquisition: { store?: SessionStore } = {};
 				try {
 					return await constructAgentSession(
 						{ ...options, extensionBindings: options.extensionBindings ?? context.bindings },
 						deferStart,
 						persistInitialState,
+						acquisition,
 					);
 				} catch (error) {
-					throw factoryRollbackError(error, await rollbackFactoryAcquisitions());
+					const failures = await rollbackFactoryAcquisitions();
+					if (acquisition.store) {
+						try {
+							await acquisition.store.close();
+						} catch (cause) {
+							failures.push(cause);
+						}
+					}
+					throw factoryRollbackError(error, failures);
 				}
 			},
 		);
@@ -160,6 +176,7 @@ async function constructAgentSession(
 	options: CreateAgentSessionOptions,
 	deferStart: boolean,
 	persistInitialState: boolean,
+	acquisition: { store?: SessionStore },
 ): Promise<CreateAgentSessionResult> {
 	const cwd = resolvePath(options.cwd ?? options.sessionManager?.getCwd() ?? process.cwd());
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
@@ -178,16 +195,16 @@ async function constructAgentSession(
 	await modelRuntime.refresh({ allowNetwork: false });
 
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
-	const sessionManager =
-		options.sessionManager ??
-		(await SessionManager.create(
-			await resolveSessionStore(cwd, {
-				agentDir,
-				settings: settingsManager.getSettings(),
-				sessionStore: options.sessionStore,
-			}),
-			cwd,
-		));
+	let sessionManager = options.sessionManager;
+	if (!sessionManager) {
+		const store = await resolveSessionStore(cwd, {
+			agentDir,
+			settings: settingsManager.getSettings(),
+			sessionStore: options.sessionStore,
+		});
+		if (store !== options.sessionStore) acquisition.store = store;
+		sessionManager = await SessionManager.create(store, cwd);
+	}
 
 	// Mark workflow-created sessions as internal so they are excluded from the
 	// standard `/resume` history while remaining resumable via `/workflow resume`.
@@ -706,6 +723,10 @@ async function constructAgentSession(
 			throw new AggregateError([error, ...cleanupErrors], "Extension startup failed and rollback reported errors");
 		throw error;
 	});
+	if (acquisition.store) {
+		ownedSessionStores.set(session, acquisition.store);
+		acquisition.store = undefined;
+	}
 	try {
 		// Omitted factories may share the selected runtime: release their acquisitions,
 		// but leave that runtime and its selected subscriptions owned by the runner.

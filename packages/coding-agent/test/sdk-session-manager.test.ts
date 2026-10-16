@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { getModel } from "@bastani/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resolveRunJournal } from "../../workflows/src/durable/journal/resolution.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { StorageUnavailableError } from "../src/core/storage/errors.js";
+import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
+import { StoreClosedError } from "../src/core/storage/session/errors.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 
 const missingApiKeyEnv = "ATOMIC_SDK_SESSION_MANAGER_MISSING_KEY";
@@ -96,6 +100,7 @@ describe("createAgentSession session manager defaults", () => {
 		assert.equal(existsSync(location), true);
 
 		await session.dispose();
+		await assert.rejects(session.sessionManager.getSessionStore().load(session.sessionId), StoreClosedError);
 	});
 
 	it("rejects an unavailable default database without choosing memory", async () => {
@@ -108,6 +113,30 @@ describe("createAgentSession session manager defaults", () => {
 				return true;
 			},
 		);
+	});
+
+	it("releases a selected store when initialization fails after acquisition", async () => {
+		const lifecycle = join(tempDir, "lifecycle.txt");
+		const failure = new StorageUnavailableError({ adapter: "test", location: "startup" }, new Error("startup"));
+		await assert.rejects(
+			createAgentSession({
+				cwd,
+				agentDir,
+				modelRuntime: await createSelectionRuntime(),
+				settingsManager: SettingsManager.inMemory(),
+				sessionStore: {
+					kind: "adapter",
+					module: fileURLToPath(new URL("../../../test/fixtures/storage-adapter.ts", import.meta.url)),
+					options: { path: join(tempDir, "failed.sqlite"), lifecycle },
+				},
+				initialContextTransform: () => {
+					throw failure;
+				},
+				builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+			}),
+			(error: Error) => error === failure,
+		);
+		assert.equal(readFileSync(lifecycle, "utf8"), "open\nclose\n");
 	});
 
 	it("accepts a sessionStore instance or selection ahead of settings", async () => {
@@ -130,6 +159,66 @@ describe("createAgentSession session manager defaults", () => {
 				assert.equal(session.sessionManager.isPersisted(), sessionStore.kind === "sqlite");
 			}
 			await session.dispose();
+			await session.dispose();
+			if (sessionStore === supplied) {
+				assert.equal((await supplied.load(session.sessionId)).header.id, session.sessionId);
+			} else {
+				await assert.rejects(session.sessionManager.getSessionStore().load(session.sessionId), StoreClosedError);
+			}
+		}
+	});
+
+	it("keeps other SDK acquisitions and the shared journal alive during disposal", async () => {
+		const path = join(tempDir, "shared.sqlite");
+		const modelRuntime = await createSelectionRuntime();
+		const options = {
+			cwd,
+			agentDir,
+			modelRuntime,
+			settingsManager: SettingsManager.inMemory(),
+			sessionStore: { kind: "sqlite", path } as const,
+			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+		};
+		const first = (await createAgentSession(options)).session;
+		const second = (await createAgentSession(options)).session;
+		const journal = await resolveRunJournal({ journal: { path } });
+		try {
+			await first.dispose();
+			await assert.rejects(first.sessionManager.getSessionStore().load(first.sessionId), StoreClosedError);
+			await second.sessionManager.appendSessionInfo("still open");
+			assert.equal(
+				(await second.sessionManager.getSessionStore().load(second.sessionId)).header.id,
+				second.sessionId,
+			);
+			await journal.createRun({ runId: "shared", name: "shared", cwd, createdAt: 1, status: "running" });
+			await second.dispose();
+			assert.equal((await journal.getRun("shared"))?.name, "shared");
+			await journal.createRun({ runId: "after-disposal", name: "after", cwd, createdAt: 2, status: "running" });
+			assert.equal((await journal.getRun("after-disposal"))?.name, "after");
+		} finally {
+			await first.dispose();
+			await second.dispose();
+			await journal.close();
+		}
+	});
+
+	it("releases its store wrapper without closing a caller-owned database", async () => {
+		const database = await openNodeSqliteDatabase(join(tempDir, "caller.sqlite"));
+		try {
+			const { session } = await createAgentSession({
+				cwd,
+				agentDir,
+				modelRuntime: await createSelectionRuntime(),
+				settingsManager: SettingsManager.inMemory(),
+				sessionStore: { kind: "database", database },
+				builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+			});
+			await session.dispose();
+			await session.dispose();
+			await assert.rejects(session.sessionManager.getSessionStore().load(session.sessionId), StoreClosedError);
+			assert.deepEqual(await database.get("SELECT 1 AS value"), { value: 1 });
+		} finally {
+			await database.close();
 		}
 	});
 
@@ -149,6 +238,11 @@ describe("createAgentSession session manager defaults", () => {
 		expect(session.sessionManager.isPersisted()).toBe(false);
 
 		await session.dispose();
+		await sessionManager.appendSessionInfo("still caller-owned");
+		assert.equal(
+			(await sessionManager.getSessionStore().load(session.sessionId)).entries.at(-1)?.type,
+			"session_info",
+		);
 	});
 
 	it("derives cwd from an explicit sessionManager when cwd is omitted", async () => {
