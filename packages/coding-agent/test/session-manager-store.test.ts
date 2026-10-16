@@ -644,3 +644,34 @@ test.each(["new", "branched"] as const)(
 		}
 	},
 );
+
+test("refreshContext retains a user message while its async session append is pending", async () => {
+	const store = new ControlledStore();
+	const manager = await SessionManager.create(store, "/project");
+	const harness = await createHarness({ sessionManager: manager });
+	harness.setResponses([fauxAssistantMessage("setup reply"), fauxAssistantMessage("saved reply")]);
+	await harness.session.prompt("setup");
+	store.blocked = true;
+	const prompt = harness.session.prompt("user awaiting commit");
+	try {
+		await store.entered.promise;
+		const hasPendingUser = () =>
+			harness.session.messages.some(
+				(message) =>
+					message.role === "user" &&
+					Array.isArray(message.content) &&
+					message.content.some((part) => part.type === "text" && part.text === "user awaiting commit"),
+			);
+		assert.ok(hasPendingUser(), "the agent has admitted the user message before the append commits");
+		harness.session.refreshContext();
+		assert.ok(hasPendingUser(), "refresh must not drop a message whose append is still pending");
+		store.release.resolve();
+		await prompt;
+		harness.session.refreshContext();
+		assert.equal(harness.session.messages.filter((message) => message.role === "user").length, 2);
+	} finally {
+		store.release.resolve();
+		await prompt;
+		await harness.cleanup();
+	}
+});

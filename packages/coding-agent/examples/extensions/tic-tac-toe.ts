@@ -155,7 +155,7 @@ export default function (pi: ExtensionAPI) {
 				gameState = createInitialState();
 			}
 			gameActive = true;
-			pi.setSessionName("Tic-Tac-Toe");
+			await pi.setSessionName("Tic-Tac-Toe");
 
 			await ctx.ui.custom<void>((tui, _theme, _kb, done) => {
 				component = new TicTacToeComponent(
@@ -166,40 +166,42 @@ export default function (pi: ExtensionAPI) {
 						done(undefined);
 					},
 					(row, col) => {
-						gameState.board[row][col] = gameState.userMark;
-						gameState.status = checkWin(gameState.board);
-						if (gameState.status === "playing") {
-							gameState.currentTurn = gameState.agentMark;
-						}
-						component?.updateState(gameState);
-						pi.appendEntry(SAVE_TYPE, getBoardDetails());
+						void (async () => {
+							gameState.board[row][col] = gameState.userMark;
+							gameState.status = checkWin(gameState.board);
+							if (gameState.status === "playing") {
+								gameState.currentTurn = gameState.agentMark;
+							}
+							component?.updateState(gameState);
+							await pi.appendEntry(SAVE_TYPE, getBoardDetails());
 
-						if (gameState.status === "playing") {
-							// IMPORTANT: user play does NOT touch the agent cursor.
-							// The agent cursor is only reset after a successful agent play.
-							const boardAscii = boardToAscii(
-								gameState.board,
-								gameState.agentCursorRow,
-								gameState.agentCursorCol,
-							);
-							pi.sendMessage(
-								{
-									customType: MOVE_MESSAGE_TYPE,
-									content:
-										`Player X played at (row=${row}, col=${col}). It is now Player O's turn.\n\n` +
-										`Board (your cursor marked with <>):\n${boardAscii}\n\n` +
-										`Your cursor is at (row=${gameState.agentCursorRow}, col=${gameState.agentCursorCol}). ` +
-										`Decide your target cell, then emit every move_* and the final play ` +
-										`as separate tic_tac_toe tool calls in THIS response.`,
-									display: true,
-									details: getBoardDetails(),
-								},
-								{ triggerTurn: true },
-							);
-						} else {
-							emitGameOverMessage();
-							gameActive = false;
-						}
+							if (gameState.status === "playing") {
+								// IMPORTANT: user play does NOT touch the agent cursor.
+								// The agent cursor is only reset after a successful agent play.
+								const boardAscii = boardToAscii(
+									gameState.board,
+									gameState.agentCursorRow,
+									gameState.agentCursorCol,
+								);
+								pi.sendMessage(
+									{
+										customType: MOVE_MESSAGE_TYPE,
+										content:
+											`Player X played at (row=${row}, col=${col}). It is now Player O's turn.\n\n` +
+											`Board (your cursor marked with <>):\n${boardAscii}\n\n` +
+											`Your cursor is at (row=${gameState.agentCursorRow}, col=${gameState.agentCursorCol}). ` +
+											`Decide your target cell, then emit every move_* and the final play ` +
+											`as separate tic_tac_toe tool calls in THIS response.`,
+										display: true,
+										details: getBoardDetails(),
+									},
+									{ triggerTurn: true },
+								);
+							} else {
+								emitGameOverMessage();
+								gameActive = false;
+							}
+						})().catch((error: Error) => ctx.ui.notify(error.message, "error"));
 					},
 					gameState,
 				);
@@ -232,13 +234,13 @@ export default function (pi: ExtensionAPI) {
 
 			let result: string;
 			if (params.action === "play") {
-				result = handleAgentPlay(emitGameOverMessage, () => pi.appendEntry(SAVE_TYPE, getBoardDetails()));
+				result = await handleAgentPlay(emitGameOverMessage, () => pi.appendEntry(SAVE_TYPE, getBoardDetails()));
 			} else {
 				result = applyCursorMove(params.action);
 			}
 
 			component?.updateState(gameState);
-			pi.appendEntry(SAVE_TYPE, getBoardDetails());
+			await pi.appendEntry(SAVE_TYPE, getBoardDetails());
 
 			return {
 				content: [{ type: "text", text: result }],
@@ -303,7 +305,7 @@ export default function (pi: ExtensionAPI) {
 	});
 }
 
-function handleAgentPlay(emitGameOverMessage: () => void, appendSave: () => void): string {
+async function handleAgentPlay(emitGameOverMessage: () => void, appendSave: () => Promise<void>): Promise<string> {
 	if (gameState.status !== "playing") {
 		throw new TicTacToeError(`Game is over (${gameState.status}).`);
 	}
@@ -316,7 +318,7 @@ function handleAgentPlay(emitGameOverMessage: () => void, appendSave: () => void
 		// Do NOT reset the cursor on failure. The agent can retry
 		// from the cursor's current position.
 		component?.updateState(gameState);
-		appendSave();
+		await appendSave();
 		throw new TicTacToeError(
 			`Cell (${r},${c}) is already ${gameState.board[r][c]}. Your cursor is still at (${r},${c}). Move to an empty cell and retry play.`,
 		);

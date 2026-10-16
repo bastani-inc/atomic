@@ -92,7 +92,9 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 	this.defaultEditor.onAction("app.clear", () => this.handleCtrlC());
 	this.defaultEditor.onCtrlD = () => this.handleCtrlD();
 	this.defaultEditor.onAction("app.suspend", () => this.handleCtrlZ());
-	this.defaultEditor.onAction("app.thinking.cycle", async () => await this.cycleThinkingLevel());
+	this.defaultEditor.onAction("app.thinking.cycle", () => {
+		void this.cycleThinkingLevel().catch((error: Error) => this.showError(error.message));
+	});
 	this.defaultEditor.onAction("app.model.cycleForward", () => {
 		void (async () => {
 			await this.ensureDeferredStartupComplete();

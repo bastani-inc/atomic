@@ -401,8 +401,12 @@ InteractiveModeBase.prototype.selectThinkingLevel = async function (
 InteractiveModeBase.prototype.showThinkingSelector = function (this: InteractiveModeBase): void {
 	this.showSelector((done) => {
 		const select = async (level: ThinkingLevel) => {
-			await this.selectThinkingLevel(level);
-			done();
+			try {
+				await this.selectThinkingLevel(level);
+				done();
+			} catch (error) {
+				this.showError(error instanceof Error ? error.message : String(error));
+			}
 		};
 		const model = this.session.model;
 		const availableLevels = this.session.getAvailableThinkingLevels();

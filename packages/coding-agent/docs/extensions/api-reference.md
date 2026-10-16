@@ -647,6 +647,8 @@ pi.on("session_start", async (_event, ctx) => {
 
 Await `pi.appendEntry` before using the new entry. The promise resolves after the write commits and rejects with the store's typed error if it fails. Setup entries also commit before the promise resolves. Appending emits `entry_appended` with the committed entry. This lets extensions react to session entries without polling.
 
+During a transactional reload's `session_start` handler, `pi.appendEntry`, `pi.setSessionName`, and `pi.setLabel` stage their writes instead. Awaiting them confirms staging; the writes and their notifications are published in call order only after reload succeeds. Rejected reloads discard these changes. Do not depend on reading the staged changes back during that handler.
+
 ### pi.registerEntryRenderer(customType, renderer)
 
 Register a TUI renderer for durable custom entries created by `pi.appendEntry()`. These entries render in the transcript but do not enter model context.

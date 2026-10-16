@@ -528,14 +528,25 @@ export function _bindExtensionCore(
 				else void send();
 			},
 			appendEntry: async (customType, data) => {
-				const id = await this.sessionManager.appendCustomEntry(customType, data);
-				const entry = this.sessionManager.getEntry(id);
-				if (entry) this._emit({ type: "entry_appended", entry });
+				const append = async () => {
+					const id = await this.sessionManager.appendCustomEntry(customType, data);
+					const entry = this.sessionManager.getEntry(id);
+					if (entry) this._emit({ type: "entry_appended", entry });
+				};
+				if (publication) publication.defer(append);
+				else await append();
 			},
-			setSessionName: async (name) => await this.setSessionName(name),
+			setSessionName: async (name) => {
+				if (publication) publication.defer(() => this.setSessionName(name));
+				else await this.setSessionName(name);
+			},
 			getSessionName: () => this.sessionManager.getSessionName(),
 			setLabel: async (entryId, label) => {
-				await this.sessionManager.appendLabelChange(entryId, label);
+				const append = async () => {
+					await this.sessionManager.appendLabelChange(entryId, label);
+				};
+				if (publication) publication.defer(append);
+				else await append();
 			},
 			getActiveTools: () => {
 				if (!publication) return this.getActiveToolNames();

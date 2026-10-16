@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Removed the `@bastani/workflows` import alias; use `@bastani/atomic/workflows`.
 - Custom `RunJournal` implementations must provide `deleteOwnedRun(lease)` for atomic lease-fenced deletion.
 - Invocation records require `invocationFingerprint`.
+- SDK workflow stages now use persistent session storage by default, including stages without `sessionDir`. Ephemeral stages must explicitly supply an in-memory session manager through an adapter. Storage failures do not fall back to memory.
 
 ### Added
 
@@ -35,7 +36,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Heartbeat records require their original launch cadence; incomplete records no longer inherit the current workflow definition. Configuration load results always include `globalConfig` and `projectConfig`, using `null` when a source is absent or invalid.
 - Public run snapshots require `toolNodes`. Inline forms require injected keybindings and no longer include unused submit-choice state. Removed the ignored `preserveAnsi` truncation argument; text truncation remains ANSI-aware.
 - Workflow runs now persist only in the local SQLite journal. Journal initialization failures throw `StorageUnavailableError` instead of continuing without durable storage. Postgres connection settings (`workflows.durability.systemDatabaseUrl` and `workflows.durability.poolSize`) and `DBOS_SYSTEM_DATABASE_URL`, `ATOMIC_POSTGRES_*`, and `PG*` environment variables no longer configure workflow storage.
-- SDK workflow stages now use persistent session storage by default, including stages without `sessionDir`. Ephemeral stages must explicitly supply an in-memory session manager through an adapter. Storage failures do not fall back to memory.
 
 ### Removed
 

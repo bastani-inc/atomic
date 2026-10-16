@@ -205,7 +205,6 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			}
 			await retryConsumedProtectedStreamingCustomMessages(this);
 		}
-		if (event.type === "message_end") this._messagesAwaitingPersistence.delete(event.message);
 	}
 	if (event.type === "turn_end") {
 		this._lastAssistantToolResults = event.toolResults;
@@ -243,6 +242,8 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			const pendingIndex = this._pendingNextTurnMessages.indexOf(event.message);
 			if (pendingIndex >= 0) this._pendingNextTurnMessages.splice(pendingIndex, 1);
 		}
+		// Context refreshes must retain admitted messages until their async append commits.
+		this._messagesAwaitingPersistence.delete(event.message);
 		this._emit(event);
 		// Other message types (bashExecution, branchSummary) are persisted elsewhere
 
