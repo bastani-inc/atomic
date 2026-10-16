@@ -93,10 +93,13 @@ test(
 				cwd: dir,
 				registry: createRegistry([definition]),
 				adapters: {
+					sessionStore: parent.getSessionStore(),
 					agentSession: {
 						create: async (options) => {
+							assert.ok(options.sessionManager);
 							const session = await createIssue3085StageSession({
 								dir,
+								sessionManager: options.sessionManager,
 								model: options.model,
 								fallbackModels: options.fallbackModels,
 								recovered: false,
@@ -142,6 +145,9 @@ test(
 			assert.equal(source.failureRecoverability, "recoverable");
 			assert.equal(source.resumable, true);
 			assert.equal(readPrefix(dir), 1);
+			const stageSessionId = source.stages[0]?.sessionId;
+			assert.ok(stageSessionId);
+			assert.equal((await parent.getSessionStore().load(stageSessionId)).header.id, stageSessionId);
 			assert.equal(notices.filter((notice) => notice.details?.kind === "blocked").length, 1);
 
 			await backend.close();

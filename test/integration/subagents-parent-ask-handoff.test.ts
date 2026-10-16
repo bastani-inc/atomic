@@ -68,9 +68,7 @@ function state(): ExecutorDeps["state"] {
 	};
 }
 
-function context(root: string, options: { forkable?: boolean } = {}): ExtensionContext {
-	const parentSessionFile = join(root, "parent.jsonl");
-	if (options.forkable) writeFileSync(parentSessionFile, "", "utf8");
+function context(root: string, sessionManager?: SessionManager): ExtensionContext {
 	return {
 		cwd: root,
 		mode: "tui",
@@ -78,18 +76,11 @@ function context(root: string, options: { forkable?: boolean } = {}): ExtensionC
 		model: undefined,
 		scopedModels: [],
 		modelRegistry: { getAvailable: () => [] },
-		sessionManager: {
-			getSessionFile: () => parentSessionFile,
+		sessionManager: sessionManager ?? {
+			getSessionFile: () => undefined,
 			getSessionId: () => "parent-session-id",
-			getLeafId: () => (options.forkable ? "parent-leaf" : null),
+			getLeafId: () => null,
 			getSessionDir: () => root,
-			openSession: () => ({
-				createBranchedSession: () => {
-					const forked = join(root, "forked-child.jsonl");
-					writeFileSync(forked, "", "utf8");
-					return forked;
-				},
-			}),
 		},
 		isIdle: () => true,
 		isProjectTrusted: () => true,
@@ -252,6 +243,8 @@ test("SINGLE parent ask ends the old child and returns an ordered fresh-start ha
 
 test("forked SINGLE handoff keeps the original unusual task verbatim instead of the fork preamble", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-fork-parent-handoff-"));
+	const parent = await SessionManager.create(root, join(root, "parent-sessions"));
+	await parent.appendMessage({ role: "user", content: "Committed parent context", timestamp: Date.now() });
 	const events = new TestEvents();
 	const childState = state();
 	const originalTask = "  leading\tspace\r\n[TASK_CONTEXT]? `ticks` $" + "{literal}\n雪  trailing  ";
@@ -259,6 +252,10 @@ test("forked SINGLE handoff keeps the original unusual task verbatim instead of 
 	let capturedRequest: ParentAskHandoffRequest | undefined;
 	const runtime: SubagentExecutorRuntimeDeps = {
 		runSync: async (_cwd, _agents, agentName, task, options) => {
+			assert.ok(options.sessionManager);
+			assert.equal(options.sessionManager.getSessionStore(), parent.getSessionStore());
+			assert.equal(options.sessionManager.getHeader()?.parentSessionId, parent.getSessionId());
+			assert.deepEqual(options.sessionManager.buildSessionContext().messages, parent.buildSessionContext().messages);
 			runtimeTask = task;
 			const request: ParentAskHandoffRequest = {
 				runId: options.runId,
@@ -291,7 +288,7 @@ test("forked SINGLE handoff keeps the original unusual task verbatim instead of 
 			{ agent: "worker", task: originalTask, context: "fork", artifacts: false, progress: false },
 			new AbortController().signal,
 			undefined,
-			context(root, { forkable: true }),
+			context(root, parent),
 		);
 
 		assert.match(runtimeTask, /delegated subagent running from a fork of the parent session/);
