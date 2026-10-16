@@ -60,11 +60,7 @@ Journal contract change: schema v1 leases.run_id no longer has a cascading forei
 
 ## Original implementation validation history (before consolidated repairs)
 
-Every executable validation command used this exact wrapper from the worktree root, replacing the final quoted command:
-
-```sh
-CRABBOX_SSH_KEY=/Users/tonystark/.ssh/ascii_box_ed25519 CRABBOX_STATIC_ID=aj-386ff92db84c crabbox run --provider ssh --target linux --static-host 46.105.118.142 --static-port 19037 --static-user user --static-work-root /home/user/crabbox --keep --script /Users/tonystark/.atomic/agent/workflows/dbos-journal-slices/in-box.sh -- origin/main '<command>'
-```
+Every executable validation command below ran from the worktree root on the remote verification box.
 
 | Command | Current evidence |
 | --- | --- |
@@ -111,7 +107,7 @@ The nine findings at review-round-latest.json:1424-1605 are exactly three repeat
 
 ### Prior repair validation
 
-All repair commands use the exact wrapper above, serially, on the existing lease. Local work is file reads/edits/git only; no local runtime, formatter, tests, hooks, dependencies, new checkout, sandbox lifecycle action or optional qlty expansion. Raw logs are retained under ignored .crabbox/repair-*.log.
+All repair commands run serially on the remote verification box. Local work is file reads/edits/git only; no local runtime, formatter, tests, hooks, dependencies, new checkout, sandbox lifecycle action or optional qlty expansion. Raw logs are retained under ignored .crabbox/repair-*.log.
 
 The durable regression sequence first reproduced fencing reset (1 !== 2, repair-root1-red-2.log), then PI-only selection (repair-root2-red-root1-green.log), absent counter export (repair-counter-red-root2-green.log), two MAX epoch missing rejections (repair-epoch-red.log), and six unsafe-access failures (repair-unsafe-red.log). Each was repaired and rerun successfully before proceeding. The first fencing test had a missing brace, caught by the remote transform in repair-root1-red.log; it was corrected before the behavioral RED run. The replacement range amendment then produced 12 failures, including negative counters accepted and the absent replacement class (run_3ce1434cad226f15ce50e1b214c0ce45, repair-range-amendment-red.log); the amended implementation passed all 24 unit tests (run_24364f768e6c9a1abc95a74bc9704b2d, repair-range-amendment-green.log). No failing test was suppressed.
 
@@ -145,7 +141,7 @@ The rejection tracer then passed 25/25 (nul-rejection-tracer-green.log). The com
 
 ### Prior amended formatted-checkout validation
 
-All executable commands use the exact wrapper above, serially on the existing supplied lease. Final amended results are recorded below. No local runtime/check/test/formatter is used, no excluded tests/configuration are changed, and no sandbox lifecycle action or optional qlty expansion is performed.
+All executable commands run serially on the remote verification box. Final amended results are recorded below. No local runtime/check/test/formatter is used, no excluded tests/configuration are changed, and no sandbox lifecycle action or optional qlty expansion is performed.
 
 | Final amended command / scenario | Result and raw log |
 | --- | --- |
@@ -170,7 +166,7 @@ The five findings at review-round-latest.json:1655-1757 group into two original 
 
 ### Reproduction and current validation
 
-All executable work uses the exact supplied wrapper above serially; Mac work is file reads/edits/git only. No new lease, checkout, dependencies, migrations, wiring or excluded-test/config changes.
+All executable work runs serially on the remote verification box; Mac work is file reads/edits/git only. No new lease, checkout, dependencies, migrations, wiring or excluded-test/config changes.
 
 The durable identifier tracer failed with missing expected rejection while all 48 inherited unit tests passed (run_2b966b66ace766cfcdc2fe91c4cae859, .crabbox/unicode-tracer-red.log). Authoritative oracles reproduced all 66 identifier failures and all 66 closed-handle failures per runtime, API compile failure and invalid-holder aliasing (run_45adbb823f08b730e74a61a05b63d343, .crabbox/unicode-oracles-red.log). The copied evidence3-amended-probe.mjs only corrected nine ordinary escaped-surrogate payload expectations to positive roundtrips, as the original assignment already required. Original review sources/logs remain unchanged.
 
@@ -182,7 +178,7 @@ The direct-SQL [1,1] meta tracer failed with missing expected exception while 14
 
 These prior passes cover ordinary escaped JSON but do not establish universal JSON preservation: the next review's native rawJSON counterexample exposed an additional write-boundary defect. Only the latest repair evidence below closes that case.
 
-All commands below ran on the existing supplied remote via the exact wrapper above, serially, and ended with ATOMIC_JOURNAL_GATE_EXIT=0. No production/test edits followed the touched-file formatting patch; only this evidence record changed.
+All commands below ran serially on the remote verification box and ended with ATOMIC_JOURNAL_GATE_EXIT=0. No production/test edits followed the touched-file formatting patch; only this evidence record changed.
 
 | Required command / scenario | Result and raw log |
 | --- | --- |
@@ -213,7 +209,7 @@ The final shared serializer follows the subsequent exact-formula directive, incl
 
 ### Latest formatted-checkout gates
 
-All commands below run serially through the exact wrapper above. No production/test changes follow the final formatting gate; subsequent note updates only record observed evidence.
+All commands below run serially on the remote verification box. No production/test changes follow the final formatting gate; subsequent note updates only record observed evidence.
 
 | Required command / scenario | Result and raw log |
 | --- | --- |

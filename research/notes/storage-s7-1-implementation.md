@@ -76,7 +76,7 @@ State model: open -> closing -> closed. Operations accepted while open remain qu
 
 ## Evidence and commands
 
-All heavy commands use the ledger's implementer Boat invocation, lease aj-98109e7702d3 at 151.80.23.92:19040, from this checkout. No other lease was used. The Mac ran only file operations and Git.
+All heavy commands ran on the remote verification box from this checkout. The Mac ran only file operations and Git.
 
 - Initial RED, `run_e70b48eae9161d0a39d10a23a5816258`: setup installed Node 22.19.0, Bun 1.4.2 and 525 npm packages, then built catalogs, native bindings and coding-agent assets. Biome passed with five existing informational diagnostics. `npm run check` reached TS2307 because the first bindings test imported the not-yet-created node adapter.
 - First focused run, `run_67fca82b9f9fab1213f4c8397dce5055`: build passed; 33/36 tests passed. Two Node normal/reopen NUL cases failed. The other failure was the test's unavailable TypeScript 7 parser API, repaired with the existing Babel parser. The Bun child passed all 24 then-current cases and built exports worked.
