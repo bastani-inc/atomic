@@ -48,6 +48,8 @@ export function collectResumePickerLiveRuns(runStore: Store, deps?: DurableResum
 	// rows have no durable checkpoint or pending prompt progress, so the resume
 	// path would refuse them. Only `not_shadow` runs can actually be resumed here.
 	const runs = topLevelWorkflowRuns(runStore.runs());
+	// A fresh picker mounts before catalog hydration prepares and binds its journal.
+	if (runs.length === 0) return { liveRuns: [], suppressedLiveIds: new Set() };
 	const shadowClassification = new Map(runs.map((run) => [run.id, classifyDurableResumeShadow(run, runStore, deps)]));
 	const isOfferable = (run: RunSnapshot): boolean => shadowClassification.get(run.id) === "not_shadow";
 	const sessionRuns = runStore.runs();

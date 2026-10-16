@@ -218,3 +218,74 @@ test("runtime retries failed initialization but retains a successful journal sel
 	assert.deepEqual(await runtime.dispatch({ action: "list" }), { action: "list", items: [] });
 	assert.equal(runtime.durableBackend(), selected);
 });
+
+test("fresh /workflow resume opens the picker before loading saved journal runs (#3674)", async () => {
+	const def = definition();
+	const previousStore = createStore();
+	const saved = await run(def, {}, { cwd: directory, store: previousStore });
+	assert.equal(saved.status, "completed", JSON.stringify(saved));
+	const previousBackend = defaultBackend(previousStore);
+	await previousBackend.setWorkflowStatus(saved.runId, "paused", 0, true);
+	await previousBackend.close();
+	setDurableBackend(undefined);
+
+	const owner = resources();
+	const runtime = createExtensionRuntime({ ...owner, cwd: directory, definitions: [def] });
+	const handlers = new Map<string, WorkflowCommandHandler>();
+	const pi: ExtensionAPI = { registerCommand() {}, sendMessage() {} };
+	const overlay: GraphOverlayPort = { open() {}, toggle() {}, close() {} };
+	registerWorkflowSlashCommand(pi, handlers, {
+		runtimeProxy: runtime,
+		runtimeForContext: () => runtime,
+		overlay,
+		owner,
+		reloadWorkflowResources: () => undefined,
+		ensureWorkflowResourcesLoaded: () => undefined,
+		runWithLifecycleSuppressedForPolicy: (_policy, action) => action(),
+		runControl: {
+			pi,
+			overlay,
+			runtimeForContext: () => runtime,
+			ensureWorkflowResourcesLoaded: () => undefined,
+			owner,
+		},
+	});
+	const handler = handlers.get("workflow");
+	assert.ok(handler);
+	let opened = false;
+	let savedRunListed = false;
+	let closePicker: (path: string | undefined) => void = () => {};
+	const result = new Promise<string | undefined>((resolve) => {
+		closePicker = resolve;
+	});
+	const { ctx, messages } = buildCtx();
+	await handler("resume", {
+		...ctx,
+		cwd: directory,
+		hasUI: true,
+		ui: {
+			...ctx.ui,
+			custom: async () => undefined,
+			hostSessionPicker(request) {
+				opened = true;
+				assert.deepEqual(request.sessions, []);
+				assert.equal(availableStoreDurableBackend(owner.store), undefined, "mount must stay storage-free");
+				return {
+					result,
+					close: () => closePicker(undefined),
+					update(rows) {
+						savedRunListed = rows.some((row) => row.id === saved.runId);
+						closePicker(undefined);
+					},
+					error(message) {
+						messages.push(message);
+						closePicker(undefined);
+					},
+				};
+			},
+		},
+	});
+	assert.equal(opened, true, messages.join("\n"));
+	assert.equal(savedRunListed, true, messages.join("\n"));
+	assert.equal(defaultBackend(owner.store).getWorkflow(saved.runId)?.status, "paused");
+});

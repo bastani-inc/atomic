@@ -5,8 +5,12 @@ import { Type } from "typebox";
 import { test } from "vitest";
 import { InMemoryCodingAgentModelsStore } from "../../packages/coding-agent/src/core/models-store.js";
 import { AuthStorage, ModelRuntime, SessionManager, SettingsManager } from "../../packages/coding-agent/src/index.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { requireStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import type { RunOpts, RunResult } from "../../packages/workflows/src/runs/foreground/executor-types.js";
+import { createWorkflowPendingStageDelivery } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
 import { createAgentSessionAdapter, run, workflow } from "../../packages/workflows/src/sdk-surface.js";
+import { adoptStore, currentWorkflowStore, store } from "../../packages/workflows/src/shared/store-factory.js";
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
 
 const BUILTINS = { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false } as const;
@@ -166,7 +170,7 @@ async function runStandaloneStringModelStage(
 				return { reply: result.text };
 			},
 		});
-		const result = await run(def, {}, { cwd, durability: { mode: "memory" }, ...runOpts });
+		const result = await run(def, {}, { cwd, journal: { memory: true }, ...runOpts });
 		return { result, reference, selectedModel, reasoning, callCount: faux.state.callCount };
 	} finally {
 		faux.unregister();
@@ -229,6 +233,79 @@ test("standalone SDK adapter reports an unavailable string model without a TypeE
 		assert.equal(modelError?.message, "Workflow stage model unavailable: missing-provider/missing-model");
 		assert.equal(outcome.callCount, 0);
 	} finally {
+		removeTempDirectory(cwd);
+	}
+});
+
+test("SDK run without an explicit store binds the adopted scope used by pending delivery (#3674)", async () => {
+	setDurableBackend(undefined);
+	const cwd = makeTempDirectory("atomic-sdk-adopted-store-");
+	const firstScope = {};
+	const secondScope = {};
+	const firstStore = adoptStore(firstScope);
+	const firstRuns = structuredClone(firstStore.runs());
+	const adoptedStore = adoptStore(secondScope);
+	assert.notEqual(adoptedStore, firstStore);
+	const delivered: string[] = [];
+	try {
+		const outcome = await runOneTaskStage(cwd, (dir) => {
+			const adapter = createAgentSessionAdapter({ cwd: dir });
+			return {
+				cwd: dir,
+				adapters: {
+					agentSession: {
+						async create(options, meta) {
+							assert.ok(meta);
+							const delivery = createWorkflowPendingStageDelivery(
+								store,
+								meta.runId,
+								meta.stageId,
+								meta.stageName,
+							);
+							// Intercom drains even an empty queue when the stage joins.
+							await delivery.deliverPending((_from, message) => {
+								delivered.push(message.id);
+							});
+							const backend = requireStoreDurableBackend(store);
+							assert.equal(requireStoreDurableBackend(adoptedStore), backend);
+							assert.equal(backend.getWorkflow(meta.runId)?.workflowId, meta.runId);
+							const group = `workflow:${meta.runId}`;
+							const queued = await store.queueStageMessage(
+								{
+									runId: meta.runId,
+									stageKey: "reply",
+									from: { id: "planner", name: "planner", group },
+									message: {
+										id: "adopted-instruction",
+										timestamp: Date.now(),
+										content: { text: "say hello" },
+									},
+									queuedAt: new Date().toISOString(),
+								},
+								group,
+								group,
+								backend,
+							);
+							assert.equal(queued?.ok, true);
+							await delivery.deliverPending((_from, message) => {
+								delivered.push(message.id);
+							});
+							assert.deepEqual(store.pendingStageMessagesFor(meta.runId, "reply"), []);
+							return adapter.create(options, meta);
+						},
+					},
+				},
+			};
+		});
+		assert.equal(outcome.status, "completed", outcome.error);
+		assert.deepEqual(outcome.reply, { reply: "stage reply from the default adapter" });
+		assert.deepEqual(delivered, ["adopted-instruction"]);
+		assert.equal(currentWorkflowStore(), adoptedStore);
+		assert.equal(adoptedStore.runs().length, 1);
+		assert.deepEqual(firstStore.runs(), firstRuns);
+	} finally {
+		adoptedStore.clear();
+		adoptStore(firstScope);
 		removeTempDirectory(cwd);
 	}
 });
