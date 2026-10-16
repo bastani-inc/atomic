@@ -35,7 +35,7 @@
     "shrinkwrap:coding-agent": "node scripts/generate-coding-agent-shrinkwrap.mjs"
   },
   "devDependencies": {
-    "@babel/parser": "8.0.4",
+    "@babel/parser": "8.0.7",
     "@biomejs/biome": "2.5.8",
     "@j178/prek": "0.4.11",
     "@libsql/client": "0.18.0",
