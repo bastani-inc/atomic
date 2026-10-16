@@ -1,6 +1,7 @@
 /**
  * Integration: a workflow stage whose queued Intercom instructions can no
- * longer be delivered must reach a deterministic terminal outcome.
+ * longer be delivered must reach a deterministic, resumable blocked outcome
+ * (#3628) rather than failing terminally and losing its instructions.
  *
  * Before the fix, the Intercom wrapper wrote one console diagnostic when its
  * bounded warm-up retries ran out and nothing settled the delivery, so the
@@ -20,6 +21,7 @@
  */
 
 import { getDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { effectiveRunStatus } from "../../packages/workflows/src/shared/returned-run-status.js";
 import type { StageExecutionMeta } from "../../packages/workflows/src/shared/types.js";
 import {
 	assert,
@@ -45,7 +47,7 @@ function productionWarmUpExhaustedReason(): Error {
 	return new IntercomWarmUpExhaustedError(5, { cause: new IntercomClientDisconnectedError({ cause: transport }) });
 }
 
-test("a stage whose pending Intercom delivery fails terminally becomes a failed stage", async () => {
+test("a stage whose pending Intercom delivery fails blocks resumably without spending fallbacks (#3628)", async () => {
 	const store = createStore();
 	let prompted = 0;
 	const creates: string[] = [];
@@ -130,12 +132,18 @@ test("a stage whose pending Intercom delivery fails terminally becomes a failed 
 
 	assert.equal(prompted, 0, "the stage never runs without the instructions it was refused");
 	assert.deepEqual(creates, [PRIMARY_MODEL], "no same-model retry and no fallback candidate is spent");
-	assert.equal(result.status, "failed");
+	const stored = store.runs().find((candidate) => candidate.id === result.runId);
+	assert.ok(stored);
+	assert.equal(
+		effectiveRunStatus(stored),
+		"blocked",
+		"the run blocks resumably instead of failing terminally (#3628)",
+	);
 	const stage = result.stages.find((candidate) => candidate.name === "reviewer");
 	assert.ok(stage);
-	assert.equal(stage.status, "failed", "the stage reaches a terminal outcome instead of staying parked");
-	assert.equal(stage.failureDisposition, "terminal_failed");
-	assert.equal(stage.failureKind, "unknown");
+	assert.equal(stage.failureDisposition, "active_blocked");
+	assert.equal(stage.failureRecoverability, "recoverable");
+	assert.equal(stage.failureCode, "pending_stage_delivery_failed");
 	assert.equal(stage.modelAttempts?.length ?? 0, 1, "exactly the one attempt that was actually spent");
 	assert.equal(stage.modelAttempts?.[0]?.success, false);
 	assert.equal(stage.warnings, undefined, "no [fallback] warning blames a model for a delivery failure");
