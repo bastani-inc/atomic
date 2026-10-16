@@ -354,7 +354,10 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 		// Ctrl+C - clear search or cancel if empty
 		if (matchesKey(data, Key.ctrl("c"))) {
 			if (this.searchInput.getValue()) {
-				this.searchInput.setValue("");
+				const searchInputIndex = this.children.indexOf(this.searchInput);
+				this.searchInput = new Input();
+				this.searchInput.focused = this.focused;
+				this.children[searchInputIndex] = this.searchInput;
 				this.refresh();
 			} else {
 				this.callbacks.onCancel();

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { setKeybindings } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, setKeybindings } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { KeybindingsManager, useWindowsKeybindings } from "../src/core/keybindings.js";
 import { ScopedModelsSelectorComponent } from "../src/modes/interactive/components/scoped-models-selector.ts";
@@ -96,6 +96,41 @@ describe("scoped models selector", () => {
 		selector.handleInput(REORDER_DOWN);
 		assert.equal(changes.length, 2);
 	});
+
+	it.each(["empty", "populated"])(
+		"invalidates the prior yank when clearing search with a %s model list (#3668)",
+		async (list) => {
+			if (list === "populated") harness = await createHarness({ models: [{ id: "model-a", name: "Model A" }] });
+			let cancellations = 0;
+			const selector = new ScopedModelsSelectorComponent(
+				{ allModels: harness?.models ?? [], enabledModelIds: null },
+				{
+					onChange: () => {},
+					onCancel: () => {
+						cancellations++;
+					},
+				},
+			);
+			selector.focused = true;
+			for (const key of ["a", "\x15", "beta", "\x15", "\x19"]) selector.handleInput(key);
+			assert.equal(selector.getSearchInput().getValue(), "beta");
+
+			selector.handleInput("\x03");
+			assert.equal(selector.getSearchInput().getValue(), "");
+			assert.equal(cancellations, 0);
+			selector.handleInput("\x1by");
+			assert.equal(selector.getSearchInput().getValue(), "");
+			assert.ok(selector.render(120).some((line) => line.startsWith(`> ${CURSOR_MARKER}`)));
+			if (list === "populated") assert.match(stripAnsi(selector.render(120).join("\n")), /model-a \[/);
+
+			selector.handleInput("ok");
+			assert.equal(selector.getSearchInput().getValue(), "ok");
+			assert.ok(selector.render(120).some((line) => line.startsWith(`> ok${CURSOR_MARKER}`)));
+			selector.handleInput("\x03");
+			selector.handleInput("\x03");
+			assert.equal(cancellations, 1);
+		},
+	);
 
 	it("marks every model after enabling all", async () => {
 		const models = [
