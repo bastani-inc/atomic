@@ -122,13 +122,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 }
 
 /** Internal CLI assembly seam. Not exported from the package entrypoint. */
-export function createUnstartedAgentSession(options: CreateAgentSessionOptions): Promise<CreateAgentSessionResult> {
-	return createScopedSession(options, true);
+export function createUnstartedAgentSession(
+	options: CreateAgentSessionOptions,
+	persistInitialState = true,
+): Promise<CreateAgentSessionResult> {
+	return createScopedSession(options, true, persistInitialState);
 }
 
 function createScopedSession(
 	options: CreateAgentSessionOptions,
 	deferStart: boolean,
+	persistInitialState = true,
 ): Promise<CreateAgentSessionResult> {
 	const inherited = sessionLifecycleCreation.getStore();
 	const context = inherited && !inherited.claimed ? inherited : { scope: {} };
@@ -140,6 +144,7 @@ function createScopedSession(
 					return await constructAgentSession(
 						{ ...options, extensionBindings: options.extensionBindings ?? context.bindings },
 						deferStart,
+						persistInitialState,
 					);
 				} catch (error) {
 					throw factoryRollbackError(error, await rollbackFactoryAcquisitions());
@@ -154,6 +159,7 @@ function createScopedSession(
 async function constructAgentSession(
 	options: CreateAgentSessionOptions,
 	deferStart: boolean,
+	persistInitialState: boolean,
 ): Promise<CreateAgentSessionResult> {
 	const cwd = resolvePath(options.cwd ?? options.sessionManager?.getCwd() ?? process.cwd());
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
@@ -608,17 +614,18 @@ async function constructAgentSession(
 		maxRetryDelayMs: settingsManager.getProviderRetrySettings().maxRetryDelayMs,
 	});
 
-	// Restore missing settings metadata for older sessions.
-	if (hasExistingSession) {
-		if (!hasThinkingEntry) {
+	// The isolated host mirrors child-owned storage without writing startup metadata.
+	if (persistInitialState) {
+		if (hasExistingSession) {
+			if (!hasThinkingEntry) {
+				await sessionManager.appendThinkingLevelChange(thinkingLevel);
+			}
+		} else {
+			if (model) {
+				await sessionManager.appendModelChange(model.provider, model.id);
+			}
 			await sessionManager.appendThinkingLevelChange(thinkingLevel);
 		}
-	} else {
-		// Save initial model and thinking level for new sessions so they can be restored on resume
-		if (model) {
-			await sessionManager.appendModelChange(model.provider, model.id);
-		}
-		await sessionManager.appendThinkingLevelChange(thinkingLevel);
 	}
 
 	const providerRollback = modelRuntime.createExtensionProviderTransaction();

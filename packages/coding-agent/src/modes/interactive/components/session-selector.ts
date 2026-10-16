@@ -123,7 +123,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			this.sortMode,
 			this.nameFilter,
 			this.keybindings,
-			currentSession,
+			options?.deleteSession && currentSession ? { id: currentSession.id } : currentSession,
 		);
 		if (initialSessions !== undefined) {
 			this.currentSessions = initialSessions;
@@ -174,11 +174,11 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		};
 
 		// Handle session deletion
-		this.sessionList.onDeleteSession = async (sessionPath: string) => {
+		this.sessionList.onDeleteSession = async (sessionPath, session) => {
 			let result: DeleteSessionFileResult;
 			try {
 				if (options?.deleteSession) {
-					await options.deleteSession(sessionPath);
+					await options.deleteSession(session.id);
 					result = { ok: true, method: "store" };
 				} else result = await deleteSessionFile(sessionPath);
 			} catch (error) {
@@ -187,10 +187,14 @@ export class SessionSelectorComponent extends Container implements Focusable {
 
 			if (result.ok) {
 				if (this.currentSessions) {
-					this.currentSessions = this.currentSessions.filter((s) => s.path !== sessionPath);
+					this.currentSessions = this.currentSessions.filter((s) =>
+						options?.deleteSession ? s.id !== session.id : s.path !== sessionPath,
+					);
 				}
 				if (this.allSessions) {
-					this.allSessions = this.allSessions.filter((s) => s.path !== sessionPath);
+					this.allSessions = this.allSessions.filter((s) =>
+						options?.deleteSession ? s.id !== session.id : s.path !== sessionPath,
+					);
 				}
 
 				const sessions = this.scope === "all" ? (this.allSessions ?? []) : (this.currentSessions ?? []);

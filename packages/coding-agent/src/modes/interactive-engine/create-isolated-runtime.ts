@@ -7,6 +7,7 @@ import {
 	createAgentSessionRuntime,
 } from "../../core/agent-session-runtime.ts";
 import type { SessionManager } from "../../core/session-manager.ts";
+import { canIsolateSessionStore } from "../../core/session-storage.js";
 import { RpcClient } from "../rpc/rpc-client.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import { buildInteractiveEngineArgs, type InteractiveEngineResourcePaths } from "./engine-args.ts";
@@ -71,6 +72,7 @@ export async function createRuntimeForMode(
 	parsed: Args,
 	resources: InteractiveEngineResourcePaths,
 ): Promise<AgentSessionRuntime> {
+	isolateInteractiveHost &&= canIsolateSessionStore(sessionManager.getSessionStore());
 	if (isolateInteractiveHost && hasInlineExtensionFactories) {
 		throw new Error(
 			"Interactive engine isolation cannot serialize inline extension factories; load the extension from a module path instead.",

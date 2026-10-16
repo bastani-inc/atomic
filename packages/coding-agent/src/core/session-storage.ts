@@ -1,4 +1,4 @@
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { Value } from "typebox/value";
 import { ENV_SESSION_DIR, getAgentDir } from "../config.js";
 import { resolvePath } from "../utils/paths.ts";
@@ -8,6 +8,7 @@ import type { Settings } from "./settings-types.ts";
 import { StorageConfigError } from "./storage/errors.js";
 import { StorageProvider, type StorageSelection } from "./storage/provider.js";
 import { selectStorage } from "./storage/selection.js";
+import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import type { SessionStore } from "./storage/session/types.js";
 
 export interface SessionStorageOptions {
@@ -20,6 +21,45 @@ export interface SessionStorageOptions {
 
 const provider = new StorageProvider();
 const sources = new WeakMap<StorageSelection, { source: "settings" | "cli" | "env"; field: string }>();
+type EngineSessionStorage = Extract<StorageSelection, { kind: "sqlite" }>;
+const engineSelections = new WeakMap<SessionStore, EngineSessionStorage | null>();
+export const ENGINE_SESSION_STORAGE_FLAG = "--internal-session-storage";
+
+export function getEngineSessionStorage(store: SessionStore): EngineSessionStorage | undefined {
+	return engineSelections.get(store) ?? undefined;
+}
+
+export function canIsolateSessionStore(store: SessionStore): boolean {
+	return (
+		getEngineSessionStorage(store) !== undefined ||
+		(store instanceof JsonlSessionStore && !engineSelections.has(store))
+	);
+}
+
+export function takeEngineSessionStorageArg(args: readonly string[]): {
+	args: string[];
+	sessionStorage?: EngineSessionStorage;
+} {
+	const remaining: string[] = [];
+	let sessionStorage: EngineSessionStorage | undefined;
+	for (let index = 0; index < args.length; index++) {
+		if (args[index] !== ENGINE_SESSION_STORAGE_FLAG) {
+			remaining.push(args[index]!);
+			continue;
+		}
+		let parsed: EngineSessionStorage;
+		try {
+			parsed = JSON.parse(args[++index]!) as EngineSessionStorage;
+		} catch {
+			throw new StorageConfigError("cli", ENGINE_SESSION_STORAGE_FLAG, "invalid-selection");
+		}
+		if (parsed?.kind !== "sqlite" || typeof parsed.path !== "string") {
+			throw new StorageConfigError("cli", ENGINE_SESSION_STORAGE_FLAG, "invalid-selection");
+		}
+		sessionStorage = parsed;
+	}
+	return { args: remaining, ...(sessionStorage === undefined ? {} : { sessionStorage }) };
+}
 
 function resolveStoragePath(path: string, base: string, source: "cli" | "env" | "settings", field: string): string {
 	try {
@@ -104,10 +144,18 @@ export async function resolveSessionStore(cwd: string, options: SessionStorageOp
 	const selection = selectSessionStorage(cwd, options);
 	if (selection !== null && typeof selection === "object" && "load" in selection) return selection;
 	try {
-		return await provider.openSessionStore(selection, {
+		const store = await provider.openSessionStore(selection, {
 			agentDir: options.agentDir ?? getAgentDir(),
 			domain: "sessions",
 		});
+		if (selection.kind === "sqlite" && selection.path !== "" && selection.path !== ":memory:") {
+			engineSelections.set(store, {
+				kind: "sqlite",
+				path: resolve(selection.path),
+				...(selection.prefix === undefined ? {} : { prefix: selection.prefix }),
+			});
+		} else if (selection.kind !== "jsonl") engineSelections.set(store, null);
+		return store;
 	} catch (error) {
 		if (error instanceof StorageConfigError) {
 			const origin = sources.get(selection);

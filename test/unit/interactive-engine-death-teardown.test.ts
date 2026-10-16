@@ -25,7 +25,6 @@ const FORBIDDEN_TEXT = ["Engine terminated;", "result unknown; inspect side effe
 
 function fixtureArgs(temp: string): string[] {
 	return [
-		"--no-session",
 		"--no-extensions",
 		// The blocking-tool fixture supplies the offline provider/model; the
 		// engine-death fixture supplies the never-resolving custom UI commands.

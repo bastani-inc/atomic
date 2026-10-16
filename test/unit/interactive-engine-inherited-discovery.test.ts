@@ -206,7 +206,6 @@ export default function(pi) {
 
 function args(): string[] {
 	return [
-		"--no-session",
 		"--extension",
 		join(moduleDir(import.meta.url), "fixtures", "workflow-command-extension.ts"),
 		"--no-skills",

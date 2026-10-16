@@ -39,7 +39,6 @@ function fixtureArgs(extension: string): string[] {
 	return [
 		// --approve pins project trust for this run so a fresh agent dir (CI, containers)
 		// never blocks startup on the interactive "Trust project folder?" prompt.
-		"--no-session",
 		"--no-extensions",
 		"--extension",
 		extension,
@@ -226,7 +225,7 @@ serialTest(
 	async () => {
 		const temp = mkdtempSync(join(tmpdir(), "atomic-exact-once-"));
 		const extension = join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts");
-		const args = fixtureArgs(extension).filter((value) => value !== "--no-session");
+		const args = fixtureArgs(extension);
 		args.push("--session-dir", join(temp, "sessions"));
 		const toolPidFile = join(temp, "tool.pid");
 		const driver = new DefaultMainDriver(args, {
@@ -409,7 +408,7 @@ serialTest(
 		const extension = join(moduleDir(import.meta.url), "fixtures", "workflow-command-extension.ts");
 		// Reproduction parity with `bun packages/coding-agent/src/cli.ts` from the
 		// worktree: interactive host isolates extensions, engine child owns them.
-		const args = fixtureArgs(extension).filter((value) => value !== "--no-session");
+		const args = fixtureArgs(extension);
 		args.push("--session-dir", join(temp, "sessions"));
 		const logFile = join(temp, "commands.log");
 		const toolPidFile = join(temp, "tool.pid");

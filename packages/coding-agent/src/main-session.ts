@@ -10,6 +10,7 @@ import { assertValidSessionId, SessionManager } from "./core/session-manager.ts"
 import { classifiedWorkflowMetadata, workflowSessionMetadataFromEnv } from "./core/session-manager-classification.ts";
 import { resolveSessionStore } from "./core/session-storage.js";
 import type { SettingsManager } from "./core/settings-manager.ts";
+import type { StorageSelection } from "./core/storage/provider.js";
 import type { SessionStore } from "./core/storage/session/types.js";
 import { ExtensionSelectorComponent } from "./modes/interactive/components/extension-selector.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
@@ -163,9 +164,11 @@ export async function createSessionManager(
 	cwd: string,
 	sessionDir: string | undefined,
 	settingsManager: SettingsManager,
+	sessionStore?: SessionStore | StorageSelection,
 ): Promise<SessionManager> {
 	validateImportFlags(parsed);
 	const store = await resolveSessionStore(cwd, {
+		sessionStore,
 		settings: settingsManager.getSettings(),
 		noSession: parsed.noSession,
 		sessionDir: parsed.sessionDir ?? sessionDir,

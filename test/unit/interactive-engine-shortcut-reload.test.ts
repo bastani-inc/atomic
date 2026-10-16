@@ -184,7 +184,6 @@ class InteractiveModeDriver {
 
 function fixtureArgs(extension: string): string[] {
 	return [
-		"--no-session",
 		"--no-extensions",
 		"--extension",
 		extension,

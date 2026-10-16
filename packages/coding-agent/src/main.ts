@@ -58,6 +58,7 @@ import { ModelRuntime } from "./core/model-runtime.js";
 import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { formatBorrowedExtensionSourceTrustPrompt, resolveProjectTrusted } from "./core/project-trust.ts";
 import { getMissingSessionCwdIssue, MissingSessionCwdError } from "./core/session-cwd.ts";
+import { canIsolateSessionStore, takeEngineSessionStorageArg } from "./core/session-storage.js";
 import { deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { endTimingSpan, printTimings, resetTimings, startTimingSpan, time } from "./core/timings.ts";
@@ -281,7 +282,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	// child's environment, so no descendant of the engine can inherit it — which
 	// deleting variables from `process.env` cannot achieve under Bun.
 	const bootstrap = takeInteractiveEngineBootstrapArg(argv);
-	const args = bootstrap.args;
+	const { args, sessionStorage } = takeEngineSessionStorageArg(bootstrap.args);
 	const engineEnv = captureInteractiveEngineStartupEnv(
 		bootstrap.path === undefined ? undefined : readInteractiveEngineBootstrap(bootstrap.path),
 	);
@@ -355,7 +356,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	let appMode = options?.internalInteractiveHarness?.forceInteractive
 		? "interactive"
 		: resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY);
-	const isolateInteractiveHost =
+	let isolateInteractiveHost =
 		appMode === "interactive" && !isPlainRuntimeMetadataCommand(parsed) && engineEnv.child !== "1";
 	const shouldTakeOverStdout = appMode !== "interactive";
 	const shouldRestoreStdoutForMetadata = isPlainRuntimeMetadataCommand(parsed);
@@ -477,7 +478,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	// the target session cwd is known. The startup-cwd settings manager is used only for
 	// storage selection before loading the selected session's resources.
 	let sessionManager = await applyInheritedWorkflowSessionClassification(
-		await createSessionManager(parsed, cwd, undefined, startupSettingsManager),
+		await createSessionManager(parsed, cwd, undefined, startupSettingsManager, sessionStorage),
 	);
 	const missingSessionCwdIssue = getMissingSessionCwdIssue(sessionManager, cwd);
 	if (missingSessionCwdIssue) {
@@ -504,6 +505,7 @@ export async function main(argv: string[], options?: MainOptions) {
 		await sessionManager.appendSessionInfo(name);
 	}
 	time("createSessionManager");
+	isolateInteractiveHost &&= canIsolateSessionStore(sessionManager.getSessionStore());
 
 	const sessionCwd = sessionManager.getCwd();
 	startupEarlyInputCapture ??= beginStartupInputCapture(sessionCwd, true, deprecationWarnings.length);
@@ -716,19 +718,22 @@ export async function main(argv: string[], options?: MainOptions) {
 				}
 			}
 
-			const created = await createUnstartedAgentSessionFromServices({
-				services,
-				sessionManager,
-				sessionStartEvent,
-				model: sessionOptions.model,
-				thinkingLevel: sessionOptions.thinkingLevel,
-				scopedModels: sessionOptions.scopedModels,
-				tools: sessionOptions.tools,
-				builtins: parsed.noMcp ? { mcp: false } : undefined,
-				excludedTools: resolveExcludedToolsForAppMode(appMode, sessionOptions.excludedTools),
-				noTools: sessionOptions.noTools,
-				customTools: sessionOptions.customTools,
-			});
+			const created = await createUnstartedAgentSessionFromServices(
+				{
+					services,
+					sessionManager,
+					sessionStartEvent,
+					model: sessionOptions.model,
+					thinkingLevel: sessionOptions.thinkingLevel,
+					scopedModels: sessionOptions.scopedModels,
+					tools: sessionOptions.tools,
+					builtins: parsed.noMcp ? { mcp: false } : undefined,
+					excludedTools: resolveExcludedToolsForAppMode(appMode, sessionOptions.excludedTools),
+					noTools: sessionOptions.noTools,
+					customTools: sessionOptions.customTools,
+				},
+				!isolateInteractiveHost,
+			);
 			if (completeStartupReload) {
 				const completeReload = completeStartupReload;
 				let completion: Promise<void> | undefined;
@@ -811,7 +816,7 @@ export async function main(argv: string[], options?: MainOptions) {
 				return createRuntime({ cwd, agentDir, sessionManager, sessionStartEvent, projectTrustContext });
 			}
 			const cliThinkingOverride = parsed.thinking !== undefined || cliThinkingFromModel;
-			if (created.session.model && cliThinkingOverride) {
+			if (!isolateInteractiveHost && created.session.model && cliThinkingOverride) {
 				await created.session.setThinkingLevel(created.session.thinkingLevel);
 			}
 			return {

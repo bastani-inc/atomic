@@ -1,5 +1,6 @@
 import type { Args } from "../../cli/args.ts";
 import type { SessionManager } from "../../core/session-manager.ts";
+import { ENGINE_SESSION_STORAGE_FLAG, getEngineSessionStorage } from "../../core/session-storage.js";
 import { resolvePath } from "../../utils/paths.ts";
 
 export interface InteractiveEngineResourcePaths {
@@ -34,6 +35,8 @@ export function buildInteractiveEngineArgs(
 		"--session-dir",
 		sessionManager.getSessionStore().descriptor.adapter === "jsonl" ? sessionManager.getSessionDir() : undefined,
 	);
+	const storage = getEngineSessionStorage(sessionManager.getSessionStore());
+	if (storage) args.push(ENGINE_SESSION_STORAGE_FLAG, JSON.stringify(storage));
 	appendValue(args, "--provider", parsed.provider);
 	appendValue(args, "--model", parsed.model);
 	appendValue(args, "--thinking", parsed.thinking);
