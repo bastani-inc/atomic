@@ -257,10 +257,10 @@ export class MemoryRunJournal implements RunJournal {
 
 	private readPage(runId: string, fromSeq: number): JournalEntry[] {
 		const entries = this.runs.get(runId)?.entries ?? [];
-		const start = entries.findIndex((entry) => entry.seq >= fromSeq);
-		return start < 0
-			? []
-			: entries.slice(start, start + JOURNAL_READ_PAGE_SIZE).map((entry) => this.copyEntry(entry));
+		const start = Math.max(0, Math.ceil(fromSeq) - 1);
+		return fromSeq <= entries.length
+			? entries.slice(start, start + JOURNAL_READ_PAGE_SIZE).map((entry) => this.copyEntry(entry))
+			: [];
 	}
 
 	private readEntries(runId: string, fromSeq = 1): readonly JournalEntry[] {
