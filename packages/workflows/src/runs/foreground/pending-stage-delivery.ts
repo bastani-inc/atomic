@@ -82,6 +82,17 @@ export function createWorkflowPendingStageDelivery(
 	let drainError: Error | undefined;
 	let terminalError: WorkflowPendingStageDeliveryFailedError | undefined;
 	let drainPromise: Promise<void> | undefined;
+	let currentRecipient: WorkflowPendingStageRecipient;
+	const hasUndelivered = (sessionId?: string): boolean =>
+		activeStore.pendingStageMessagesFor(runId, stageId).length > 0 ||
+		(stageId !== stageName && activeStore.pendingStageMessagesFor(runId, stageName).length > 0) ||
+		stickyPendingStageEntriesForStage(
+			activeStore,
+			runId,
+			stageId,
+			stageName,
+			sessionId === undefined ? undefined : { sessionId },
+		).length > 0;
 	const pendingReady = (): Promise<void> => {
 		if (readyPromise === undefined) {
 			readyPromise = new Promise<void>((resolve, reject) => {
@@ -94,6 +105,7 @@ export function createWorkflowPendingStageDelivery(
 	return {
 		routeCapability: workflowPendingStageRouteCapability(activeStore, runId),
 		deliverPending(deliver, recipient) {
+			currentRecipient = recipient;
 			if (drainPromise !== undefined) return drainPromise;
 			// After a terminal failure the queue is left exactly as it is: consuming
 			// entries for a stage that will not run would mark this stage's steering
@@ -124,17 +136,7 @@ export function createWorkflowPendingStageDelivery(
 			return drainPromise;
 		},
 		ready(sessionId) {
-			if (
-				activeStore.pendingStageMessagesFor(runId, stageId).length === 0 &&
-				(stageId === stageName || activeStore.pendingStageMessagesFor(runId, stageName).length === 0) &&
-				stickyPendingStageEntriesForStage(
-					activeStore,
-					runId,
-					stageId,
-					stageName,
-					sessionId === undefined ? undefined : { sessionId },
-				).length === 0
-			) {
+			if (!hasUndelivered(sessionId)) {
 				// Nothing was queued, so a terminal failure costs this stage nothing:
 				// keep the short circuit first and let the stage run.
 				return undefined;
@@ -180,7 +182,7 @@ export function createWorkflowPendingStageDelivery(
 			// First terminal wins and is sticky for the life of this delivery, which
 			// `executor-stage-factory` creates once per stage context — so a resumed
 			// stage builds a fresh delivery and is not poisoned by this attempt.
-			if (terminalError !== undefined) return;
+			if (terminalError !== undefined || !hasUndelivered(currentRecipient?.sessionId)) return;
 			terminalError = new WorkflowPendingStageDeliveryFailedError(runId, stageId, stageName, reason);
 			if (readyPromise === undefined) return;
 			// The controller may not have reached its `await` yet; an unobserved

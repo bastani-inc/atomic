@@ -61,6 +61,7 @@ export function isWorkflowFailureCode(code: string): code is WorkflowFailureCode
 		case "rate_limited":
 		case "quota_limited":
 		case "provider_unavailable":
+		case "pending_stage_delivery_failed":
 		case "cancelled":
 		case "unknown":
 			return true;

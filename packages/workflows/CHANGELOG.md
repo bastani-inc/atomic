@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Fixed standalone SDK `run()` resolving string stage models, including thinking suffixes and fallback models, instead of crashing during session creation ([#3629](https://github.com/bastani-inc/atomic/issues/3629)).
+- Fixed queued Intercom instructions preventing stage model fallback. Delivery failures now block resumably and preserve sticky instructions for resumed runs and later stages ([#3628](https://github.com/bastani-inc/atomic/issues/3628)).
 
 ## [0.9.38-alpha.4] - 2026-10-16
 

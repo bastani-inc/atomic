@@ -35,6 +35,7 @@ import {
 } from "../../packages/workflows/src/runs/shared/model-fallback-failures.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { PendingStageMessageInput } from "../../packages/workflows/src/shared/store-types.js";
+import { classifyWorkflowFailure } from "../../packages/workflows/src/shared/workflow-failures.js";
 import { testRunId } from "../helpers/run-id.js";
 import { sleep } from "../helpers/runtime.js";
 
@@ -228,6 +229,19 @@ describe("workflow pending-stage delivery terminal failure", () => {
 		assert.equal(isRetryableSameModelFailure(terminal), false, "no same-model retry is spent");
 		assert.equal(isRetryableModelFailure(terminal), false, "no model-fallback candidate is spent");
 		assert.equal(isWorkflowPendingStageDeliveryFailure(terminal), true);
+	});
+
+	test("blocks resumably when queued instructions cannot be delivered (#3628)", async () => {
+		const { store } = await fixtureWithQueuedMessage("resume-1");
+		const delivery = createWorkflowPendingStageDelivery(store, RUN_ID, STAGE_ID, STAGE_NAME);
+		delivery.fail(productionWarmUpExhaustedReason());
+		const error = await delivery.ready()?.catch((reason: Error) => reason);
+		const failure = classifyWorkflowFailure(error);
+		assert.equal(failure.disposition, "active_blocked");
+		assert.equal(failure.recoverability, "recoverable");
+		assert.equal(failure.resumable, true);
+		assert.equal(failure.retryable, false);
+		assert.equal(store.pendingStageMessagesFor(RUN_ID, STAGE_NAME)[0]?.status, "queued");
 	});
 
 	test("recognizes a terminal delivery failure that crossed a realm and lost instanceof", () => {
