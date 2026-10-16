@@ -13,11 +13,20 @@ import {
 
 export type RunJournalConformanceRunner = (name: string, body: () => Promise<void>) => void;
 export type OpenRunJournal = () => RunJournal | Promise<RunJournal>;
+export interface RunJournalReadObservation {
+	readonly pageSize: number;
+	readonly pageSizes: readonly number[];
+	readonly entriesRead: number;
+	restore(): void;
+	reset(): void;
+}
+export type ObserveRunJournalRead = (journal: RunJournal) => RunJournalReadObservation;
 
 export function registerRunJournalConformance(
 	runner: RunJournalConformanceRunner,
 	name: string,
 	open: OpenRunJournal,
+	observeRead: ObserveRunJournalRead,
 ): void {
 	const header = { runId: "run", name: "workflow", cwd: " /raw/../cwd ", createdAt: 0, status: "running" };
 	async function lease(journal: RunJournal, holder = "holder"): Promise<Lease> {
@@ -52,7 +61,97 @@ export function registerRunJournalConformance(
 		assert.deepEqual(await journal.listRuns({ cwd: header.cwd }), [header]);
 		assert.deepEqual(await journal.listRuns({ cwd: "/cwd" }), []);
 	});
-	check("appends dense sequences and first-writer keyed records with CAS before replay", async (journal) => {
+	check("gets detached run summaries with current status and absent identities", async (journal) => {
+		assert.equal(await journal.getRun(header.runId), undefined);
+		const original = { ...header, inputs: { values: [2, 1, 2], text: "\u0000\ud800" } };
+		await journal.createRun(original);
+		original.inputs.values.push(9);
+		const found = journal.getRun(header.runId);
+		assert.ok(found instanceof Promise);
+		const summary = await found;
+		assert.deepEqual(summary, { ...header, inputs: { values: [2, 1, 2], text: "\u0000\ud800" } });
+		(summary!.inputs as { values: number[] }).values.push(9);
+		Reflect.set(summary!, "name", "changed");
+		assert.deepEqual(await journal.getRun(header.runId), (await journal.listRuns())[0]);
+		const held = await lease(journal);
+		await journal.append(held, { type: "StatusChanged", payload: { status: "paused" } });
+		assert.equal((await journal.getRun(header.runId))?.status, "paused");
+		await journal.deleteRun(header.runId);
+		assert.equal(await journal.getRun(header.runId), undefined);
+	});
+	check("inspects detached lease state and takes over only strictly expired renewals", async (journal) => {
+		assert.equal(await journal.leaseState(header.runId), undefined);
+		await journal.createRun(header);
+		const acquired = journal.takeoverExpired(header.runId, "first", Number.POSITIVE_INFINITY);
+		assert.ok(acquired instanceof Promise);
+		const first = await acquired;
+		assert.equal(first.status, "acquired");
+		if (first.status !== "acquired") assert.fail("lease not acquired");
+		const state = journal.leaseState(header.runId);
+		assert.ok(state instanceof Promise);
+		const initial = await state;
+		assert.ok(initial);
+		assert.deepEqual(initial, { ...first.lease, renewedAt: initial.renewedAt });
+		Reflect.set(initial, "holderId", "changed");
+		assert.equal((await journal.leaseState(header.runId))?.holderId, "first");
+		assert.deepEqual(await journal.takeoverExpired(header.runId, "first", 0), first);
+		assert.deepEqual(await journal.takeoverExpired(header.runId, "next", Number.POSITIVE_INFINITY), {
+			status: "held",
+			holderId: "first",
+			epoch: first.lease.epoch,
+		});
+		await journal.renew(first.lease);
+		const renewed = await journal.leaseState(header.runId);
+		assert.ok(renewed && renewed.renewedAt >= initial.renewedAt);
+		const attempts = await Promise.all([
+			journal.takeoverExpired(header.runId, "next", -1),
+			journal.takeoverExpired(header.runId, "racer", Number.POSITIVE_INFINITY),
+		]);
+		const next = attempts[0]!;
+		assert.equal(next.status, "acquired");
+		if (next.status !== "acquired") assert.fail("expired lease not acquired");
+		assert.equal(next.lease.epoch, first.lease.epoch + 1);
+		assert.deepEqual(attempts[1], { status: "held", holderId: "next", epoch: next.lease.epoch });
+		await assert.rejects(journal.append(first.lease, { type: "RunStarted", payload: null }), StaleLeaseError);
+		await journal.release(next.lease);
+		assert.equal(await journal.leaseState(header.runId), undefined);
+		const reacquired = await journal.takeoverExpired(header.runId, "last", Number.POSITIVE_INFINITY);
+		assert.equal(reacquired.status, "acquired");
+		if (reacquired.status !== "acquired") assert.fail("unheld lease not acquired");
+		assert.equal(reacquired.lease.epoch, next.lease.epoch + 1);
+		await journal.deleteRun(header.runId);
+		assert.equal(await journal.leaseState(header.runId), undefined);
+	});
+	check("reads lazily in bounded pages and stops loading after early termination", async (journal) => {
+		await journal.createRun(header);
+		const held = await lease(journal);
+		const observation = observeRead(journal);
+		try {
+			const { pageSize } = observation;
+			const count = pageSize * 2 + 1;
+			for (let seq = 1; seq <= count; seq++) await journal.append(held, { type: "SummaryRecorded", payload: seq });
+			observation.reset();
+			const iterator = journal.read(header.runId)[Symbol.asyncIterator]();
+			assert.deepEqual(observation.pageSizes, []);
+			assert.equal(observation.entriesRead, 0);
+			assert.equal((await iterator.next()).value?.seq, 1);
+			assert.deepEqual(observation.pageSizes, [pageSize]);
+			assert.equal(observation.entriesRead, pageSize);
+			await iterator.return?.();
+			assert.deepEqual(observation.pageSizes, [pageSize]);
+			assert.equal(observation.entriesRead, pageSize);
+			const all = await entries(journal);
+			assert.deepEqual(
+				all.map((entry) => entry.seq),
+				Array.from({ length: count }, (_, index) => index + 1),
+			);
+			assert.deepEqual(observation.pageSizes, [pageSize, pageSize, pageSize, 1]);
+			assert.equal(observation.entriesRead, pageSize + count);
+		} finally {
+			observation.restore();
+		}
+	});
+	check("appends dense sequences and replays keyed records before CAS", async (journal) => {
 		await journal.createRun(header);
 		const held = await lease(journal);
 		const first = await journal.append(held, { type: "RunStarted", payload: [2, 1, 2] }, { key: "", expectSeq: 0 });
@@ -61,8 +160,12 @@ export function registerRunJournalConformance(
 		assert.equal(first.entry.epoch, held.epoch);
 		const duplicate = await journal.append(held, { type: "RunFinished", payload: null }, { key: "", expectSeq: 1 });
 		assert.deepEqual(duplicate, { status: "exists", entry: first.entry });
+		assert.deepEqual(await journal.append(held, { type: "RunFinished", payload: null }, { key: "", expectSeq: 0 }), {
+			status: "exists",
+			entry: first.entry,
+		});
 		await assert.rejects(
-			journal.append(held, { type: "RunFinished", payload: null }, { key: "", expectSeq: 0 }),
+			journal.append(held, { type: "RunFinished", payload: null }, { key: "new", expectSeq: 0 }),
 			(error: Error) => {
 				assert.ok(error instanceof JournalCasConflictError);
 				assert.equal(error.runId, header.runId);
@@ -82,6 +185,17 @@ export function registerRunJournalConformance(
 		);
 		assert.deepEqual(await journal.readKey(header.runId, ""), first.entry);
 		assert.equal(await journal.readKey(header.runId, "missing"), undefined);
+		const taken = await journal.takeover(header.runId, "next", held.holderId);
+		assert.equal(taken.status, "acquired");
+		if (taken.status !== "acquired") assert.fail("takeover not acquired");
+		await assert.rejects(
+			journal.append(held, { type: "RunFinished", payload: null }, { key: "", expectSeq: 0 }),
+			StaleLeaseError,
+		);
+		assert.deepEqual(
+			await journal.append(taken.lease, { type: "RunFinished", payload: null }, { key: "", expectSeq: 0 }),
+			{ status: "exists", entry: first.entry },
+		);
 	});
 	check("fences takeover, release and deletion while preserving epoch tombstones", async (journal) => {
 		await journal.createRun(header);
@@ -174,7 +288,11 @@ export function registerRunJournalConformance(
 		assert.deepEqual(await journal.listRuns(), [header]);
 	});
 	check("reports absent runs and empty reads without inventing records", async (journal) => {
-		for (const acquire of [() => journal.acquire("missing", "h"), () => journal.takeover("missing", "h", "old")]) {
+		for (const acquire of [
+			() => journal.acquire("missing", "h"),
+			() => journal.takeover("missing", "h", "old"),
+			() => journal.takeoverExpired("missing", "h", 1),
+		]) {
 			await assert.rejects(acquire(), (error: Error) => {
 				assert.ok(error instanceof RunNotFoundError);
 				assert.equal(error.runId, "missing");
@@ -268,6 +386,10 @@ export function registerRunJournalConformance(
 				() => Promise<object | string | undefined> | Promise<void>,
 			][] = [
 				["runId", () => journal.createRun({ ...header, runId: invalid })],
+				["runId", () => journal.getRun(invalid)],
+				["runId", () => journal.leaseState(invalid)],
+				["runId", () => journal.takeoverExpired(invalid, "h", 1)],
+				["holderId", () => journal.takeoverExpired(header.runId, invalid, 1)],
 				["name", () => journal.createRun({ ...header, name: invalid })],
 				["cwd", () => journal.listRuns({ cwd: invalid })],
 				["status", () => journal.createRun({ ...header, status: invalid })],
@@ -301,6 +423,9 @@ export function registerRunJournalConformance(
 		const operations = [
 			() => journal.createRun(header),
 			() => journal.listRuns(),
+			() => journal.getRun(header.runId),
+			() => journal.leaseState(header.runId),
+			() => journal.takeoverExpired(header.runId, "next", 1),
 			() => journal.acquire(header.runId, "holder"),
 			() => journal.takeover(header.runId, "next", "holder"),
 			() => journal.renew(held),
@@ -309,6 +434,9 @@ export function registerRunJournalConformance(
 			() => journal.read(header.runId)[Symbol.asyncIterator]().next(),
 			() => started.next(),
 			() => journal.readKey(header.runId, "entry"),
+			() => journal.getRun("\u0000"),
+			() => journal.leaseState("\u0000"),
+			() => journal.takeoverExpired("\u0000", "next", 1),
 			() => journal.deleteOwnedRun(held),
 			() => journal.deleteRun(header.runId),
 			() => journal.createRun({ ...header, runId: "\u0000" }),

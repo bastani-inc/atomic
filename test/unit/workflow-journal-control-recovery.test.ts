@@ -8,17 +8,23 @@ import { StorageUnavailableError } from "../../packages/workflows/src/durable/jo
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { journalInternals } from "../helpers/journal-internals.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 class FailingJournal extends SqliteRunJournal {
 	failure: StorageUnavailableError | undefined;
-	override appendSync(...args: Parameters<SqliteRunJournal["appendSync"]>) {
-		if (this.failure) {
-			const failure = this.failure;
-			this.failure = undefined;
-			throw failure;
-		}
-		return super.appendSync(...args);
+	constructor(path: string) {
+		super(path);
+		const internal = journalInternals(this);
+		const append = internal.appendSync;
+		internal.appendSync = (...args) => {
+			if (this.failure) {
+				const failure = this.failure;
+				this.failure = undefined;
+				throw failure;
+			}
+			return append(...args);
+		};
 	}
 }
 

@@ -47,6 +47,9 @@ import {
 	SqliteRunJournal,
 	StorageUnavailableError,
 	type RunJournal,
+	type Lease,
+	type LeaseState,
+	type RunSummary,
 	type RunOpts,
 	type StageContext,
 	type StageAdapters,
@@ -61,6 +64,15 @@ const adapters: StageAdapters = {
 };
 const opts: RunOpts = { adapters };
 const journal: RunJournal = new MemoryRunJournal();
+const runLookup: Promise<RunSummary | undefined> = journal.getRun("run");
+const leaseLookup: Promise<LeaseState | undefined> = journal.leaseState("run");
+const takeover: ReturnType<RunJournal["acquire"]> = journal.takeoverExpired("run", "holder", 100);
+type Equal<Left, Right> =
+	(<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2 ? true : false;
+const memoryShape: Equal<keyof MemoryRunJournal, keyof RunJournal> = true;
+const sqliteShape: Equal<Exclude<keyof SqliteRunJournal, "path">, keyof RunJournal> = true;
+const leaseShape: Equal<LeaseState, Lease & { readonly renewedAt: number }> = true;
+void [runLookup, leaseLookup, takeover, memoryShape, sqliteShape, leaseShape];
 const journalOptions: readonly RunOpts[] = [
 	{ journal }, { journal: { memory: true } }, { journal: { path: "runs.sqlite" } },
 ];

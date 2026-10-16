@@ -1375,7 +1375,35 @@ type JournalOption = { path: string } | { database: DatabaseSync } | { memory: t
 - `{ memory: true }` explicitly selects `MemoryRunJournal`. Records last only for the process and cannot recover runs after exit.
 - A `RunJournal` instance is used as supplied. `SqliteRunJournal`, `MemoryRunJournal`, journal error classes, and `registerRunJournalConformance` are exported from `@bastani/atomic/workflows`.
 
-Custom `RunJournal` implementations must provide `deleteOwnedRun(lease): Promise<void>`. It atomically deletes a run only while the lease's `runId`, `holderId`, and `epoch` still match; otherwise it rejects with `StaleLeaseError` and preserves the run and its events. Deletion keeps the last epoch so an old lease cannot delete or write a recreated run. `deleteRun(runId)` is an unconditional administrative operation, not an execution-owned deletion. Use `registerRunJournalConformance` to check an adapter, including ownership fencing, detached values, failure atomicity, and rejection after close. `close()` is idempotent.
+Custom journals implement this full async interface. The named types are exported from `@bastani/atomic/workflows`:
+
+```ts
+interface RunJournal {
+	createRun(header: RunHeader): Promise<"created" | "exists">;
+	getRun(runId: string): Promise<RunSummary | undefined>;
+	listRuns(filter?: { cwd?: string }): Promise<readonly RunSummary[]>;
+	acquire(runId: string, holderId: string): Promise<LeaseOutcome>;
+	takeover(runId: string, holderId: string, expectedHolder: string): Promise<LeaseOutcome>;
+	takeoverExpired(runId: string, holderId: string, staleAfterMs: number): Promise<LeaseOutcome>;
+	leaseState(runId: string): Promise<LeaseState | undefined>;
+	renew(lease: Lease): Promise<void>;
+	release(lease: Lease): Promise<void>;
+	append(lease: Lease, event: RunEvent, options?: { key?: string; expectSeq?: number }): Promise<AppendOutcome>;
+	read(runId: string, fromSeq?: number): AsyncIterable<JournalEntry>;
+	readKey(runId: string, key: string): Promise<JournalEntry | undefined>;
+	deleteOwnedRun(lease: Lease): Promise<void>;
+	deleteRun(runId: string): Promise<void>;
+	close(): Promise<void>;
+}
+```
+
+`getRun` returns the current summary or `undefined`. `leaseState` returns the current lease with its `renewedAt` timestamp, or `undefined` when unheld. `takeoverExpired` measures a duration on the journal's clock and atomically refuses a foreign lease unless its renewal is strictly older than `staleAfterMs`, returning the `held` outcome while fresh. `read` loads bounded pages only as consumed, in sequence order starting at the inclusive `fromSeq`, which defaults to 1. Stopping iteration must stop further page reads.
+
+`append` checks lease fencing first, then the idempotency key before `expectSeq`. A committed keyed retry returns `{ status: "exists", entry }` with the original entry even when the retry's sequence expectation is stale. A new key with a stale expectation rejects with `JournalCasConflictError` without writing.
+
+`deleteOwnedRun` atomically deletes a run only while the lease's `runId`, `holderId`, and `epoch` still match; otherwise it rejects with `StaleLeaseError` and preserves the run and its events. Deletion keeps the last epoch so an old lease cannot delete or write a recreated run. `deleteRun` is an unconditional administrative operation. Inputs and returned records must be detached. `close()` is idempotent, and every later operation rejects.
+
+Use `registerRunJournalConformance(runner, name, open, observeRead)` to check a fresh journal per case. Supply a read observer that reports actual page sizes and entries loaded or copied, with a `restore()` method, so the suite can verify lazy reads without consuming the whole history. Synchronous backend fast paths are internal and are not part of the custom-journal contract.
 
 Precedence is `RunOpts.journal`, non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, `workflows.journal.path` or `workflows.journal.memory`, then the default `~/.atomic/workflows/journal.sqlite`. Relative settings paths resolve against the Atomic home directory. Storage failures reject the call; Atomic never selects memory as a recovery step. Keep the same journal and working directory when resuming stored runs.
 

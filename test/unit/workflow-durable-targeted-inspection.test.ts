@@ -11,6 +11,7 @@ import { createJobTracker } from "../../packages/workflows/src/runs/background/j
 import { createStore, store } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
+import { journalInternals } from "../helpers/journal-internals.js";
 import { testRunId } from "../helpers/run-id.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
@@ -156,7 +157,7 @@ describe("targeted durable workflow inspection", () => {
 			},
 		});
 		const backend = await writer.reopen();
-		const beforeInspection = backend.journal.readEntries(ROOT_ID);
+		const beforeInspection = journalInternals(backend.journal).readEntries(ROOT_ID);
 		setDurableBackend(backend);
 		const runtime = createExtensionRuntime({ store });
 		const execute = makeExecuteWorkflowTool(runtime, () => undefined);
@@ -199,7 +200,7 @@ describe("targeted durable workflow inspection", () => {
 			transcript,
 		);
 		assert.deepEqual(store.runs(), [], "targeted durable inspection must not add foreign runs to session status");
-		assert.deepEqual(backend.journal.readEntries(ROOT_ID), beforeInspection);
+		assert.deepEqual(journalInternals(backend.journal).readEntries(ROOT_ID), beforeInspection);
 
 		const listing = await execute({ action: "status" }, {} as never);
 		assert.equal(listing.action, "status");
@@ -245,7 +246,7 @@ describe("targeted durable workflow inspection", () => {
 			});
 			if (status === "completed") owner.setWorkflowStatus(workflowId, status, 0, false);
 		}
-		const beforeInspection = owner.journal.readEntries(liveId);
+		const beforeInspection = journalInternals(owner.journal).readEntries(liveId);
 		const observer = new JournalTestBackend(owner.databasePath);
 		const live = await inspectTargetedDurableWorkflow(observer, prefix ? liveId.slice(0, 8) : liveId);
 		const terminal = await inspectTargetedDurableWorkflow(observer, terminalId);
@@ -258,7 +259,7 @@ describe("targeted durable workflow inspection", () => {
 		}
 		assert.equal(terminal.kind, "found");
 		if (terminal.kind === "found") assert.equal(terminal.detail.status, "completed");
-		assert.deepEqual(owner.journal.readEntries(liveId), beforeInspection);
+		assert.deepEqual(journalInternals(owner.journal).readEntries(liveId), beforeInspection);
 	});
 
 	test("fails closed for cyclic, orphaned, and nonreciprocal retained topology", async () => {

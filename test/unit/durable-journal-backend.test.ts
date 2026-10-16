@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { join, resolve } from "node:path";
 import { afterEach, test, vi } from "vitest";
 import { DurableNestedTopologyError } from "../../packages/workflows/src/durable/boundary-topology.js";
+import { synchronousJournal } from "../../packages/workflows/src/durable/journal/internal.js";
 import {
 	JournalDurableBackend,
 	JournalOwnershipError,
@@ -11,7 +12,7 @@ import {
 	JOURNAL_READ_PAGE_SIZE,
 	SqliteRunJournal,
 } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
-import type { Lease, RunEvent } from "../../packages/workflows/src/durable/journal/types.js";
+import type { RunJournal } from "../../packages/workflows/src/durable/journal/types.js";
 import {
 	JOURNAL_COLUMNS,
 	JOURNAL_TABLES,
@@ -32,6 +33,21 @@ import type { PendingStageMessage } from "../../packages/workflows/src/shared/st
 import { bunExecutable, makeTempDirectory, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
 import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
+function sync(journal: RunJournal) {
+	const internal = synchronousJournal(journal);
+	assert.ok(internal);
+	return internal;
+}
+function interleavedJournal(path: string, before: (runId: string) => void): SqliteRunJournal {
+	const journal = new SqliteRunJournal(path);
+	const internal = sync(journal);
+	const takeover = internal.takeoverExpiredSync;
+	internal.takeoverExpiredSync = (...args) => {
+		before(args[0]);
+		return takeover(...args);
+	};
+	return journal;
+}
 const opened: JournalDurableBackend[] = [];
 const dirs: string[] = [];
 function database(): string {
@@ -82,9 +98,9 @@ test("opening rejects a boundary record without its invocation fingerprint", asy
 	const path = database();
 	const writer = await open(path);
 	register(writer);
-	const lease = writer.journal.leaseState("run");
+	const lease = await writer.journal.leaseState("run");
 	assert.ok(lease);
-	writer.journal.appendSync(lease, {
+	await writer.journal.append(lease, {
 		type: RUN_EVENT_TYPES.checkpointRecorded,
 		payload: {
 			kind: "stage",
@@ -129,12 +145,12 @@ test("opening folds every journal event exactly once through paged reads", async
 	register(writer);
 	for (let index = 0; index <= JOURNAL_READ_PAGE_SIZE * 2; index++)
 		writer.recordCheckpoint({ ...checkpoint(`output ${index}`), checkpointId: `checkpoint ${index}` });
-	const events = writer.journal.readEntries("run").length;
+	const events = sync(writer.journal).readEntries("run").length;
 	assert.ok(events > JOURNAL_READ_PAGE_SIZE * 2);
 	const expected = writer.getWorkflow("run");
 	const checkpoints = writer.listCheckpoints("run");
 	await writer.close();
-	const unpaged = vi.spyOn(SqliteRunJournal.prototype, "readEntries");
+	const unpaged = vi.spyOn(SqliteRunJournal.prototype as object as { readEntries: () => void }, "readEntries");
 	const readSource = SqliteRunJournal.prototype.read;
 	let consumed = 0;
 	const paged = vi.spyOn(SqliteRunJournal.prototype, "read").mockImplementation(async function* (
@@ -227,10 +243,10 @@ test("checkpoint identity is first-writer-wins without adding a duplicate event"
 	const backend = await open();
 	register(backend);
 	await backend.recordCheckpointAsync(checkpoint());
-	const before = backend.journal.readEntries("run");
+	const before = sync(backend.journal).readEntries("run");
 	await backend.recordCheckpointAsync(checkpoint("changed"));
 	assert.equal(backend.getToolOutput("run", "hash"), "saved");
-	assert.deepEqual(backend.journal.readEntries("run"), before);
+	assert.deepEqual(sync(backend.journal).readEntries("run"), before);
 });
 
 test("two backends on one file cannot append to the same fresh lease", async () => {
@@ -239,7 +255,7 @@ test("two backends on one file cannot append to the same fresh lease", async () 
 	register(first);
 	const second = await open(path);
 	assert.notEqual(first.holderId, second.holderId);
-	const before = first.journal.readEntries("run");
+	const before = sync(first.journal).readEntries("run");
 	assert.throws(
 		() => second.recordCheckpoint(checkpoint()),
 		(error: Error) => {
@@ -250,7 +266,7 @@ test("two backends on one file cannot append to the same fresh lease", async () 
 			return true;
 		},
 	);
-	assert.deepEqual(first.journal.readEntries("run"), before);
+	assert.deepEqual(sync(first.journal).readEntries("run"), before);
 	assert.equal(second.listCheckpoints("run").length, 0);
 });
 
@@ -260,13 +276,13 @@ test("lease expiry takeover fences the previous writer and maps lost ownership",
 	const path = database();
 	const first = await open(path);
 	register(first);
-	const oldEpoch = first.journal.leaseState("run")!.epoch;
+	const oldEpoch = (await first.journal.leaseState("run"))!.epoch;
 	vi.setSystemTime(1_000 + FOREIGN_LIVE_WORKFLOW_WINDOW_MS + 1);
 	const second = await open(path);
 	second.recordCheckpoint(checkpoint("new holder"));
-	const currentEpoch = second.journal.leaseState("run")!.epoch;
+	const currentEpoch = (await second.journal.leaseState("run"))!.epoch;
 	assert.equal(currentEpoch, oldEpoch + 1);
-	const before = second.journal.readEntries("run");
+	const before = sync(second.journal).readEntries("run");
 	assert.throws(
 		() => first.recordCheckpoint(checkpoint("stale")),
 		(error: Error) => {
@@ -279,7 +295,7 @@ test("lease expiry takeover fences the previous writer and maps lost ownership",
 			return true;
 		},
 	);
-	assert.deepEqual(second.journal.readEntries("run"), before);
+	assert.deepEqual(sync(second.journal).readEntries("run"), before);
 	assert.equal(second.getToolOutput("run", "hash"), "new holder");
 });
 
@@ -289,13 +305,13 @@ test("lease renewal follows the existing liveness cadence and prevents stale tak
 	const path = database();
 	const first = await open(path);
 	register(first);
-	const initial = first.journal.leaseState("run")!;
+	const initial = (await first.journal.leaseState("run"))!;
 	vi.advanceTimersByTime(STAGE_SESSION_HEARTBEAT_INTERVAL_MS);
-	assert.equal(first.journal.leaseState("run")!.renewedAt, 1_000 + STAGE_SESSION_HEARTBEAT_INTERVAL_MS);
+	assert.equal((await first.journal.leaseState("run"))!.renewedAt, 1_000 + STAGE_SESSION_HEARTBEAT_INTERVAL_MS);
 	vi.advanceTimersByTime(FOREIGN_LIVE_WORKFLOW_WINDOW_MS);
 	const second = await open(path);
 	assert.throws(() => second.recordCheckpoint(checkpoint()), JournalOwnershipError);
-	assert.equal(first.journal.leaseState("run")!.epoch, initial.epoch);
+	assert.equal((await first.journal.leaseState("run"))!.epoch, initial.epoch);
 	await first.close();
 	vi.advanceTimersByTime(FOREIGN_LIVE_WORKFLOW_WINDOW_MS);
 	second.recordCheckpoint(checkpoint());
@@ -318,7 +334,7 @@ test("status claims use full snapshots, omit absent fields and clear omitted own
 		await backend.transitionWorkflowStatus("run", ["running"], "paused", 0, undefined, previous.updatedAt),
 		true,
 	);
-	const latest = backend.journal.readEntries("run").at(-1)!;
+	const latest = sync(backend.journal).readEntries("run").at(-1)!;
 	assert.equal(latest.event.type, RUN_EVENT_TYPES.statusChanged);
 	const payload = JSON.parse(JSON.stringify(latest.event.payload)) as Record<string, string | number>;
 	assert.equal(payload.status, "paused");
@@ -329,13 +345,13 @@ test("status claims use full snapshots, omit absent fields and clear omitted own
 	const reader = await open(path);
 	assert.deepEqual(reader.getWorkflow("run"), backend.getWorkflow("run"));
 	assert.equal(reader.getWorkflow("run")?.modelOwner, undefined);
-	const before = backend.journal.readEntries("run");
+	const before = sync(backend.journal).readEntries("run");
 	assert.equal(await backend.transitionWorkflowStatus("run", ["running"], "completed"), false);
 	assert.equal(
 		await backend.transitionWorkflowStatus("run", ["paused"], "completed", undefined, undefined, previous.updatedAt),
 		false,
 	);
-	assert.deepEqual(backend.journal.readEntries("run"), before);
+	assert.deepEqual(sync(backend.journal).readEntries("run"), before);
 });
 
 test("owner release and reclaim match the in-memory backend before and after reopen", async () => {
@@ -360,7 +376,7 @@ test("owner release and reclaim match the in-memory backend before and after reo
 		assert.deepEqual(journal.getWorkflow("run"), expected);
 		assert.equal(expected.modelOwner, modelOwner);
 		assert.equal(expected.releasedModelOwner, releasedModelOwner);
-		const snapshot = journal.journal.readEntries("run").at(-1)!;
+		const snapshot = sync(journal.journal).readEntries("run").at(-1)!;
 		assert.deepEqual(snapshot.event.payload, expected);
 		await journal.close();
 		journal = await open(path);
@@ -428,20 +444,25 @@ test("a stale holder cannot delete the new holder's run", async () => {
 	vi.setSystemTime(1_000 + FOREIGN_LIVE_WORKFLOW_WINDOW_MS + 1);
 	const second = await open(path);
 	second.recordCheckpoint(checkpoint());
-	const before = second.journal.readEntries("run");
+	const before = sync(second.journal).readEntries("run");
 	await assert.rejects(first.deleteWorkflow("run"), JournalOwnershipError);
-	assert.deepEqual(second.journal.readEntries("run"), before);
+	assert.deepEqual(sync(second.journal).readEntries("run"), before);
 });
 
 test("a status sequence conflict returns false and refreshes the winning snapshot", async () => {
 	class ContendedJournal extends SqliteRunJournal {
 		contend = false;
-		override appendSync(lease: Lease, event: RunEvent, options?: { key?: string; expectSeq?: number }) {
-			if (this.contend && options?.expectSeq !== undefined) {
-				this.contend = false;
-				super.appendSync(lease, event);
-			}
-			return super.appendSync(lease, event, options);
+		constructor(path: string) {
+			super(path);
+			const internal = sync(this);
+			const append = internal.appendSync;
+			internal.appendSync = (lease, event, options) => {
+				if (this.contend && options?.expectSeq !== undefined) {
+					this.contend = false;
+					append(lease, event);
+				}
+				return append(lease, event, options);
+			};
 		}
 	}
 	const journal = new ContendedJournal(database());
@@ -451,7 +472,7 @@ test("a status sequence conflict returns false and refreshes the winning snapsho
 	journal.contend = true;
 	assert.equal(await backend.transitionWorkflowStatus("run", ["running"], "paused"), false);
 	assert.equal(backend.getWorkflow("run")?.status, "paused");
-	assert.equal(journal.readEntries("run").length, 2);
+	assert.equal(sync(journal).readEntries("run").length, 2);
 });
 
 test("prompt reservation generations and releases rebuild from durable events", async () => {
@@ -480,22 +501,22 @@ test("cache replays of an answered prompt add no journal events while changing c
 	register(backend);
 	const answered = await backend.reservePendingPrompt("run", "answered");
 	await backend.releasePendingPrompt("run", "answered", answered);
-	const events = backend.journal.readEntries("run").length;
+	const events = sync(backend.journal).readEntries("run").length;
 	const updatedAt = backend.getWorkflow("run")!.updatedAt;
 	for (let replay = 1; replay <= 3; replay++) {
 		vi.setSystemTime(1_000 + replay * 1_000);
 		assert.equal(await backend.pendingPromptToken("run", "answered"), undefined);
 	}
-	assert.equal(backend.journal.readEntries("run").length, events);
+	assert.equal(sync(backend.journal).readEntries("run").length, events);
 	assert.equal(backend.getWorkflow("run")!.updatedAt, updatedAt);
 	backend.adjustPendingPrompts("run", 1);
 	const claimed = await backend.pendingPromptToken("run", "pending");
 	assert.ok(claimed);
-	assert.equal(backend.journal.readEntries("run").length, events + 2);
+	assert.equal(sync(backend.journal).readEntries("run").length, events + 2);
 	await backend.close();
 	const resumed = await open(path);
 	assert.deepEqual(await resumed.pendingPromptToken("run", "pending"), claimed);
-	assert.equal(resumed.journal.readEntries("run").length, events + 2);
+	assert.equal(sync(resumed.journal).readEntries("run").length, events + 2);
 	await resumed.releasePendingPrompt("run", "pending", claimed);
 	assert.equal(resumed.getWorkflow("run")!.pendingPrompts, 0);
 });
@@ -542,9 +563,15 @@ test("pending messages, settlement and delivery accounting survive reopen withou
 test("additive checkpoints propagate typed counter violations instead of hiding them", async () => {
 	class FailingJournal extends SqliteRunJournal {
 		fail = false;
-		override appendSync(lease: Lease, event: RunEvent, options?: { key?: string; expectSeq?: number }) {
-			if (this.fail) throw new JournalCounterRangeError(lease.runId, "seq", Number.MAX_SAFE_INTEGER + 1, "overflow");
-			return super.appendSync(lease, event, options);
+		constructor(path: string) {
+			super(path);
+			const internal = sync(this);
+			const append = internal.appendSync;
+			internal.appendSync = (lease, event, options) => {
+				if (this.fail)
+					throw new JournalCounterRangeError(lease.runId, "seq", Number.MAX_SAFE_INTEGER + 1, "overflow");
+				return append(lease, event, options);
+			};
 		}
 	}
 	const journal = new FailingJournal(database());
@@ -560,7 +587,7 @@ test("additive checkpoints propagate typed counter violations instead of hiding 
 		assert.equal(error.reason, "overflow");
 		return true;
 	});
-	assert.equal(journal.readEntries("run").length, 1);
+	assert.equal(sync(journal).readEntries("run").length, 1);
 	assert.equal(backend.listCheckpoints("run").length, 0);
 });
 
@@ -636,7 +663,7 @@ test("status mutation after recreation rebuilds a shorter journal without explic
 	writer.recordCheckpoint({ ...checkpoint("old"), checkpointId: "old" });
 	await writer.persistSummary("run", "old summary", 1);
 	writer.setWorkflowStatus("run", "paused");
-	assert.equal(writer.journal.readEntries("run").length, 4);
+	assert.equal(sync(writer.journal).readEntries("run").length, 4);
 	const observer = await open(path);
 	await writer.deleteWorkflow("run");
 	writer.registerWorkflow({
@@ -661,7 +688,7 @@ test("status mutation after recreation rebuilds a shorter journal without explic
 	assert.equal(observer.getWorkflow("run")!.name, "new");
 	assert.equal(observer.getWorkflow("run")!.createdAt, 5);
 	assert.equal(observer.getWorkflow("run")!.summary, undefined);
-	const latest = observer.journal.readEntries("run").at(-1)!;
+	const latest = sync(observer.journal).readEntries("run").at(-1)!;
 	assert.equal(latest.event.type, RUN_EVENT_TYPES.statusChanged);
 	assert.deepEqual(latest.event.payload, JSON.parse(JSON.stringify(observer.getWorkflow("run"))));
 });
@@ -704,7 +731,7 @@ for (const extra of [0, 1]) {
 			messageRunId: "run",
 			deliveryCount: 9,
 		});
-		assert.equal(writer.journal.readEntries("run").length, 8);
+		assert.equal(sync(writer.journal).readEntries("run").length, 8);
 		const observer = await open(path);
 		await writer.deleteWorkflow("run");
 		writer.registerWorkflow({
@@ -724,7 +751,7 @@ for (const extra of [0, 1]) {
 			deliveryCount: 2,
 		});
 		for (let index = 0; index <= extra; index++) writer.setWorkflowStatus("run", "running");
-		assert.equal(writer.journal.readEntries("run").length, 8 + extra);
+		assert.equal(sync(writer.journal).readEntries("run").length, 8 + extra);
 		await writer.close();
 		observer.setWorkflowStatus("run", "paused");
 		const fresh = await open(path);
@@ -751,7 +778,7 @@ for (const extra of [0, 1]) {
 		}
 		assert.deepEqual(observer.getWorkflow("run"), fresh.getWorkflow("run"));
 		assert.deepEqual(observer.listCheckpoints("run"), fresh.listCheckpoints("run"));
-		const latest = observer.journal.readEntries("run").at(-1)!;
+		const latest = sync(observer.journal).readEntries("run").at(-1)!;
 		assert.equal(latest.event.type, RUN_EVENT_TYPES.statusChanged);
 		assert.deepEqual(latest.event.payload, JSON.parse(JSON.stringify(fresh.getWorkflow("run"))));
 		assert.equal(await observer.pendingPromptToken("run", "old prompt"), undefined);
@@ -766,16 +793,16 @@ test("a retained stale lease stays lost after deletion and recreation even after
 	const path = database();
 	const stale = await open(path);
 	register(stale);
-	const oldEpoch = stale.journal.leaseState("run")!.epoch;
+	const oldEpoch = (await stale.journal.leaseState("run"))!.epoch;
 	vi.setSystemTime(1_000 + FOREIGN_LIVE_WORKFLOW_WINDOW_MS + 1);
 	const replacement = await open(path);
 	replacement.recordCheckpoint(checkpoint());
 	await replacement.deleteWorkflow("run");
 	register(replacement);
 	replacement.recordCheckpoint({ ...checkpoint("new"), checkpointId: "new" });
-	const currentEpoch = replacement.journal.leaseState("run")!.epoch;
+	const currentEpoch = (await replacement.journal.leaseState("run"))!.epoch;
 	await replacement.close();
-	const before = stale.journal.readEntries("run");
+	const before = sync(stale.journal).readEntries("run");
 	let lost: JournalOwnershipError | undefined;
 	assert.throws(
 		() => stale.setWorkflowStatus("run", "paused"),
@@ -796,8 +823,8 @@ test("a retained stale lease stays lost after deletion and recreation even after
 		() => stale.recordCheckpoint(checkpoint("stale")),
 		(error: Error) => error === lost,
 	);
-	assert.deepEqual(stale.journal.readEntries("run"), before);
-	assert.equal(stale.journal.leaseState("run"), undefined);
+	assert.deepEqual(sync(stale.journal).readEntries("run"), before);
+	assert.equal(await stale.journal.leaseState("run"), undefined);
 });
 
 test("mutation of a deleted unrecreated run clears cached state and preserves absent-run results", async () => {
@@ -816,8 +843,8 @@ test("mutation of a deleted unrecreated run clears cached state and preserves ab
 	assert.equal(await observer.persistPendingStageMessages("run", []), false);
 	assert.deepEqual(await observer.deleteWorkflowIfInactive("run"), { ok: false, reason: "not_found" });
 	await observer.deleteWorkflow("run");
-	assert.deepEqual(observer.journal.readEntries("run"), []);
-	assert.equal(observer.journal.leaseState("run"), undefined);
+	assert.deepEqual(sync(observer.journal).readEntries("run"), []);
+	assert.equal(await observer.journal.leaseState("run"), undefined);
 	register(observer);
 	assert.equal(observer.getWorkflow("run")!.completedCheckpoints, 0);
 	assert.deepEqual(observer.listCheckpoints("run"), []);
@@ -929,20 +956,20 @@ test("direct deletion first after recreation removes the current run and its che
 	await writer.deleteWorkflow("run");
 	register(writer);
 	writer.recordCheckpoint({ ...checkpoint("new"), checkpointId: "new" });
-	const epoch = writer.journal.leaseState("run")!.epoch;
+	const epoch = (await writer.journal.leaseState("run"))!.epoch;
 	await writer.close();
 	await observer.deleteWorkflow("run");
 	const fresh = await open(path);
 	assert.equal(observer.getWorkflow("run"), undefined);
 	assert.equal(fresh.getWorkflow("run"), undefined);
 	assert.deepEqual(fresh.listCheckpoints("run"), []);
-	assert.deepEqual(fresh.journal.listRunsSync(), []);
-	assert.deepEqual(fresh.journal.readEntries("run"), []);
+	assert.deepEqual(await fresh.journal.listRuns(), []);
+	assert.deepEqual(sync(fresh.journal).readEntries("run"), []);
 	register(observer);
-	assert.equal(observer.journal.leaseState("run")!.epoch, epoch + 2);
+	assert.equal((await observer.journal.leaseState("run"))!.epoch, epoch + 2);
 	await observer.deleteWorkflow("run");
-	assert.deepEqual(observer.journal.listRunsSync(), []);
-	assert.equal(observer.journal.leaseState("run"), undefined);
+	assert.deepEqual(await observer.journal.listRuns(), []);
+	assert.equal(await observer.journal.leaseState("run"), undefined);
 });
 
 test("late registration deletion refuses a fresh foreign holder before deleting after release", async () => {
@@ -950,8 +977,8 @@ test("late registration deletion refuses a fresh foreign holder before deleting 
 	const observer = await open(path);
 	const writer = await open(path);
 	register(writer);
-	const before = writer.journal.readEntries("run");
-	const lease = writer.journal.leaseState("run");
+	const before = sync(writer.journal).readEntries("run");
+	const lease = await writer.journal.leaseState("run");
 	await assert.rejects(observer.deleteWorkflow("run"), (error: Error) => {
 		assert.ok(error instanceof JournalOwnershipError);
 		assert.equal(error.runId, "run");
@@ -959,13 +986,13 @@ test("late registration deletion refuses a fresh foreign holder before deleting 
 		assert.equal(error.cause, undefined);
 		return true;
 	});
-	assert.deepEqual(writer.journal.readEntries("run"), before);
-	assert.deepEqual(writer.journal.leaseState("run"), lease);
+	assert.deepEqual(sync(writer.journal).readEntries("run"), before);
+	assert.deepEqual(await writer.journal.leaseState("run"), lease);
 	assert.deepEqual((await open(path)).getWorkflow("run"), writer.getWorkflow("run"));
 	await writer.close();
 	await observer.deleteWorkflow("run");
 	assert.equal((await open(path)).getWorkflow("run"), undefined);
-	assert.deepEqual(observer.journal.listRunsSync(), []);
+	assert.deepEqual(await observer.journal.listRuns(), []);
 });
 
 test("direct deletion retains stale held-lease fencing even with an empty cached projection", async () => {
@@ -974,7 +1001,7 @@ test("direct deletion retains stale held-lease fencing even with an empty cached
 	const path = database();
 	const stale = await open(path);
 	register(stale);
-	const heldEpoch = stale.journal.leaseState("run")!.epoch;
+	const heldEpoch = (await stale.journal.leaseState("run"))!.epoch;
 	vi.setSystemTime(1_000 + FOREIGN_LIVE_WORKFLOW_WINDOW_MS + 1);
 	const writer = await open(path);
 	writer.recordCheckpoint(checkpoint("current"));
@@ -982,8 +1009,8 @@ test("direct deletion retains stale held-lease fencing even with an empty cached
 	await stale.hydrateWorkflow("run");
 	assert.equal(stale.getWorkflow("run"), undefined);
 	register(writer);
-	const currentEpoch = writer.journal.leaseState("run")!.epoch;
-	const before = writer.journal.readEntries("run");
+	const currentEpoch = (await writer.journal.leaseState("run"))!.epoch;
+	const before = sync(writer.journal).readEntries("run");
 	await assert.rejects(stale.deleteWorkflow("run"), (error: Error) => {
 		assert.ok(error instanceof JournalOwnershipError);
 		assert.equal(error.runId, "run");
@@ -994,7 +1021,7 @@ test("direct deletion retains stale held-lease fencing even with an empty cached
 		assert.equal(error.cause.currentEpoch, currentEpoch);
 		return true;
 	});
-	assert.deepEqual(writer.journal.readEntries("run"), before);
+	assert.deepEqual(sync(writer.journal).readEntries("run"), before);
 	await writer.close();
 	await assert.rejects(stale.deleteWorkflow("run"), JournalOwnershipError);
 	assert.deepEqual(writer.getWorkflow("run"), (await open(path)).getWorkflow("run"));
@@ -1013,28 +1040,25 @@ test("status claims recheck the acquired equal-sequence incarnation", async () =
 	});
 	await writer.close();
 	const replacement = await open(path);
-	class InterleavedJournal extends SqliteRunJournal {
-		override takeoverExpiredSync(runId: string, holderId: string, expiredBefore: number) {
-			replacement.journal.deleteRunSync(runId);
-			replacement.registerWorkflow({
-				workflowId: runId,
-				name: "replacement",
-				inputs: { identity: "replacement" },
-				createdAt: 2,
-				updatedAt: 2,
-				status: "running",
-			});
-			replacement.journal.releaseSync(replacement.journal.leaseState(runId)!);
-			return super.takeoverExpiredSync(runId, holderId, expiredBefore);
-		}
-	}
-	const observer = new JournalDurableBackend(new InterleavedJournal(path));
+	const journal = interleavedJournal(path, (runId) => {
+		sync(replacement.journal).deleteRunSync(runId);
+		replacement.registerWorkflow({
+			workflowId: runId,
+			name: "replacement",
+			inputs: { identity: "replacement" },
+			createdAt: 2,
+			updatedAt: 2,
+			status: "running",
+		});
+		sync(replacement.journal).releaseSync(sync(replacement.journal).leaseStateSync(runId)!);
+	});
+	const observer = new JournalDurableBackend(journal);
 	opened.push(observer);
 	assert.equal(await observer.transitionWorkflowStatus("run", ["paused"], "completed"), false);
 	const fresh = await open(path);
 	assert.equal(fresh.getWorkflow("run")!.status, "running");
 	assert.deepEqual(fresh.getWorkflow("run")!.inputs, { identity: "replacement" });
-	assert.equal(fresh.journal.readEntries("run").length, 1);
+	assert.equal(sync(fresh.journal).readEntries("run").length, 1);
 });
 
 test("inactive deletion rechecks the acquired equal-sequence incarnation", async () => {
@@ -1043,25 +1067,22 @@ test("inactive deletion rechecks the acquired equal-sequence incarnation", async
 	writer.registerWorkflow({ workflowId: "run", name: "old", inputs: {}, createdAt: 1, status: "paused" });
 	await writer.close();
 	const replacement = await open(path);
-	class InterleavedJournal extends SqliteRunJournal {
-		override takeoverExpiredSync(runId: string, holderId: string, expiredBefore: number) {
-			replacement.journal.deleteRunSync(runId);
-			replacement.registerWorkflow({
-				workflowId: runId,
-				name: "replacement",
-				inputs: {},
-				createdAt: 2,
-				status: "running",
-			});
-			replacement.journal.releaseSync(replacement.journal.leaseState(runId)!);
-			return super.takeoverExpiredSync(runId, holderId, expiredBefore);
-		}
-	}
-	const observer = new JournalDurableBackend(new InterleavedJournal(path));
+	const journal = interleavedJournal(path, (runId) => {
+		sync(replacement.journal).deleteRunSync(runId);
+		replacement.registerWorkflow({
+			workflowId: runId,
+			name: "replacement",
+			inputs: {},
+			createdAt: 2,
+			status: "running",
+		});
+		sync(replacement.journal).releaseSync(sync(replacement.journal).leaseStateSync(runId)!);
+	});
+	const observer = new JournalDurableBackend(journal);
 	opened.push(observer);
 	assert.deepEqual(await observer.deleteWorkflowIfInactive("run"), { ok: false, reason: "running" });
 	assert.equal((await open(path)).getWorkflow("run")!.status, "running");
-	assert.equal(observer.journal.readEntries("run").length, 1);
+	assert.equal(sync(observer.journal).readEntries("run").length, 1);
 });
 
 test("backend writes use standard JSON for negative zero across repeated snapshots", async () => {
@@ -1093,7 +1114,7 @@ test("backend writes use standard JSON for negative zero across repeated snapsho
 		verify(backend);
 		verify(await open(path));
 	}
-	for (const entry of backend.journal.readEntries("run")) {
+	for (const entry of sync(backend.journal).readEntries("run")) {
 		const payload = entry.event.payload as {
 			inputs?: { value: number };
 			handle?: { inputs: { value: number } };
@@ -1148,13 +1169,10 @@ test("direct deletion clears all cached state when another deletion wins acquisi
 	await writer.close();
 	const remover = await open(path);
 	let removal: Promise<void> | undefined;
-	class InterleavedJournal extends SqliteRunJournal {
-		override takeoverExpiredSync(runId: string, holderId: string, expiredBefore: number) {
-			removal = remover.deleteWorkflow(runId);
-			return super.takeoverExpiredSync(runId, holderId, expiredBefore);
-		}
-	}
-	const observer = new JournalDurableBackend(new InterleavedJournal(path));
+	const journal = interleavedJournal(path, (runId) => {
+		removal = remover.deleteWorkflow(runId);
+	});
+	const observer = new JournalDurableBackend(journal);
 	opened.push(observer);
 	assert.ok(observer.getWorkflow("run"));
 	assert.equal(observer.listCheckpoints("run").length, 1);
@@ -1172,9 +1190,9 @@ test("direct deletion clears all cached state when another deletion wins acquisi
 	assert.equal(await observer.readSettledPendingStageMessage("run", message.id), undefined);
 	assert.equal(await observer.hasPendingStageDeliveryReceipt("run", message.id, delivery), false);
 	assert.equal(await observer.readPendingStageMessageDeliveryCount("run", message.id), 0);
-	assert.deepEqual(observer.journal.listRunsSync(), []);
-	assert.deepEqual(observer.journal.readEntries("run"), []);
-	assert.equal(observer.journal.leaseState("run"), undefined);
+	assert.deepEqual(await observer.journal.listRuns(), []);
+	assert.deepEqual(sync(observer.journal).readEntries("run"), []);
+	assert.equal(await observer.journal.leaseState("run"), undefined);
 	assert.deepEqual(await observer.prepareWorkflowCatalog(), { resumable: [], completed: [], inspectableIds: [] });
 	assert.equal((await open(path)).getWorkflow("run"), undefined);
 });
@@ -1186,21 +1204,18 @@ for (const action of ["claim", "delete"] as const) {
 		writer.registerWorkflow({ workflowId: "run", name: "old", inputs: {}, createdAt: 1, status: "paused" });
 		await writer.close();
 		const remover = await open(path);
-		class InterleavedJournal extends SqliteRunJournal {
-			override takeoverExpiredSync(runId: string, holderId: string, expiredBefore: number) {
-				void remover.deleteWorkflow(runId);
-				return super.takeoverExpiredSync(runId, holderId, expiredBefore);
-			}
-		}
-		const observer = new JournalDurableBackend(new InterleavedJournal(path));
+		const journal = interleavedJournal(path, (runId) => {
+			void remover.deleteWorkflow(runId);
+		});
+		const observer = new JournalDurableBackend(journal);
 		opened.push(observer);
 		if (action === "claim")
 			assert.equal(await observer.transitionWorkflowStatus("run", ["paused"], "completed"), false);
 		else assert.deepEqual(await observer.deleteWorkflowIfInactive("run"), { ok: false, reason: "not_found" });
 		assert.equal(observer.getWorkflow("run"), undefined);
 		assert.equal((await open(path)).getWorkflow("run"), undefined);
-		assert.deepEqual(observer.journal.readEntries("run"), []);
-		assert.equal(observer.journal.leaseState("run"), undefined);
+		assert.deepEqual(sync(observer.journal).readEntries("run"), []);
+		assert.equal(await observer.journal.leaseState("run"), undefined);
 	});
 }
 
@@ -1219,17 +1234,14 @@ async function interleaveAcquisition(change: (replacement: JournalDurableBackend
 	}
 	await writer.close();
 	const replacement = await open(path);
-	class InterleavedJournal extends SqliteRunJournal {
-		armed = true;
-		override takeoverExpiredSync(runId: string, holderId: string, expiredBefore: number) {
-			if (this.armed) {
-				this.armed = false;
-				change(replacement);
-			}
-			return super.takeoverExpiredSync(runId, holderId, expiredBefore);
+	let armed = true;
+	const journal = interleavedJournal(path, () => {
+		if (armed) {
+			armed = false;
+			change(replacement);
 		}
-	}
-	const observer = new JournalDurableBackend(new InterleavedJournal(path));
+	});
+	const observer = new JournalDurableBackend(journal);
 	opened.push(observer);
 	return { path, observer, replacement };
 }
@@ -1242,7 +1254,7 @@ for (const [length, oldLength, newLength] of [
 	for (const predicate of ["matching", "status mismatch", "timestamp mismatch"] as const) {
 		test(`claim uses acquired ${length} sequence and ${predicate} predicate`, async () => {
 			const { path, observer } = await interleaveAcquisition((replacement) => {
-				replacement.journal.deleteRunSync("run");
+				sync(replacement.journal).deleteRunSync("run");
 				for (let index = 0; index < newLength; index++) {
 					replacement.registerWorkflow({
 						workflowId: "run",
@@ -1265,13 +1277,13 @@ for (const [length, oldLength, newLength] of [
 				predicate === "matching" ? "completed" : predicate === "status mismatch" ? "running" : "paused",
 			);
 			assert.deepEqual(fresh.getWorkflow("run")!.inputs, { identity: "new" });
-			assert.equal(fresh.journal.readEntries("run").length, newLength + (predicate === "matching" ? 1 : 0));
+			assert.equal(sync(fresh.journal).readEntries("run").length, newLength + (predicate === "matching" ? 1 : 0));
 		});
 	}
 	for (const status of ["running", "paused"] as const) {
 		test(`inactive deletion uses acquired ${length} sequence and ${status} status`, async () => {
 			const { path, observer } = await interleaveAcquisition((replacement) => {
-				replacement.journal.deleteRunSync("run");
+				sync(replacement.journal).deleteRunSync("run");
 				for (let index = 0; index < newLength; index++) {
 					replacement.registerWorkflow({
 						workflowId: "run",
@@ -1289,7 +1301,7 @@ for (const [length, oldLength, newLength] of [
 			);
 			const fresh = await open(path);
 			assert.equal(fresh.getWorkflow("run")?.status, status === "paused" ? undefined : "running");
-			assert.equal(fresh.journal.readEntries("run").length, status === "paused" ? 0 : newLength);
+			assert.equal(sync(fresh.journal).readEntries("run").length, status === "paused" ? 0 : newLength);
 		});
 	}
 }
@@ -1297,7 +1309,7 @@ for (const [length, oldLength, newLength] of [
 for (const action of ["claim", "delete"] as const) {
 	test(`${action} refuses a fresh competitor acquired during the guard gap`, async () => {
 		const { path, observer, replacement } = await interleaveAcquisition((backend) => {
-			backend.journal.deleteRunSync("run");
+			sync(backend.journal).deleteRunSync("run");
 			backend.registerWorkflow({
 				workflowId: "run",
 				name: "replacement",
@@ -1319,13 +1331,13 @@ for (const action of ["claim", "delete"] as const) {
 			},
 		);
 		assert.equal((await open(path)).getWorkflow("run")!.status, "paused");
-		assert.equal(observer.journal.readEntries("run").length, 1);
+		assert.equal(sync(observer.journal).readEntries("run").length, 1);
 	});
 	test(`${action} cannot silently reacquire a stale execution after replacement`, async () => {
 		const path = database();
 		const stale = await open(path);
 		stale.registerWorkflow({ workflowId: "run", name: "old", inputs: {}, createdAt: 1, status: "paused" });
-		const heldEpoch = stale.journal.leaseState("run")!.epoch;
+		const heldEpoch = (await stale.journal.leaseState("run"))!.epoch;
 		const replacement = await open(path);
 		const takeover = await replacement.journal.takeover("run", replacement.holderId, stale.holderId);
 		assert.equal(takeover.status, "acquired");
@@ -1337,9 +1349,9 @@ for (const action of ["claim", "delete"] as const) {
 			createdAt: 2,
 			status: "paused",
 		});
-		const currentEpoch = replacement.journal.leaseState("run")!.epoch;
+		const currentEpoch = (await replacement.journal.leaseState("run"))!.epoch;
 		await replacement.close();
-		const before = stale.journal.readEntries("run");
+		const before = sync(stale.journal).readEntries("run");
 		let failure: JournalOwnershipError | undefined;
 		for (let repeat = 0; repeat < 2; repeat++) {
 			await assert.rejects(
@@ -1358,8 +1370,8 @@ for (const action of ["claim", "delete"] as const) {
 			);
 			await stale.hydrateWorkflow("run");
 		}
-		assert.deepEqual(stale.journal.readEntries("run"), before);
-		assert.equal(stale.journal.leaseState("run"), undefined);
+		assert.deepEqual(sync(stale.journal).readEntries("run"), before);
+		assert.equal(await stale.journal.leaseState("run"), undefined);
 	});
 }
 
@@ -1394,7 +1406,7 @@ for (const runtime of ["node", "bun"] as const) {
 					const fresh = await open(path);
 					assert.equal(fresh.getWorkflow("run")!.status, "running");
 					assert.deepEqual(fresh.getWorkflow("run")!.inputs, { identity: "replacement" });
-					assert.equal(fresh.journal.readEntries("run").length, length === "same" ? 1 : 2);
+					assert.equal(sync(fresh.journal).readEntries("run").length, length === "same" ? 1 : 2);
 				},
 				FRESH_PROCESS_TIMEOUT_MS,
 			);
@@ -1426,10 +1438,10 @@ test("backend serialization keeps native lexemes and calls caller toJSON once pe
 	assert.equal(calls, 2);
 	backend.recordCheckpoint({ ...checkpoint(), output: input });
 	assert.equal(calls, 3);
-	const before = backend.journal.readEntries("run");
+	const before = sync(backend.journal).readEntries("run");
 	backend.recordCheckpoint({ ...checkpoint(), output: input });
 	assert.equal(calls, 3);
-	assert.deepEqual(backend.journal.readEntries("run"), before);
+	assert.deepEqual(sync(backend.journal).readEntries("run"), before);
 	const db = new JournalDatabase(path);
 	try {
 		const lexemes = '"values":[1.2300e+02,-0,"\\u0061","\\ud800","💡"]';

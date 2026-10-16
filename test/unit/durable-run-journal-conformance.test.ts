@@ -5,19 +5,25 @@ import { afterEach, test } from "vitest";
 import { registerRunJournalConformance } from "../../packages/workflows/src/durable/journal/conformance.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
 import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+import { observeJournalRead } from "../helpers/journal-read-observation.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
-registerRunJournalConformance(test, "memory", () => new MemoryRunJournal());
-registerRunJournalConformance(test, "sqlite", () => {
-	const directory = makeTempDirectory("journal-conformance-");
-	const journal = new SqliteRunJournal(join(directory, "journal.sqlite"));
-	const close = journal.close.bind(journal);
-	journal.close = async () => {
-		await close();
-		removeTempDirectory(directory);
-	};
-	return journal;
-});
+registerRunJournalConformance(test, "memory", () => new MemoryRunJournal(), observeJournalRead);
+registerRunJournalConformance(
+	test,
+	"sqlite",
+	() => {
+		const directory = makeTempDirectory("journal-conformance-");
+		const journal = new SqliteRunJournal(join(directory, "journal.sqlite"));
+		const close = journal.close.bind(journal);
+		journal.close = async () => {
+			await close();
+			removeTempDirectory(directory);
+		};
+		return journal;
+	},
+	observeJournalRead,
+);
 
 const borrowed: { database: DatabaseSync; directory: string }[] = [];
 afterEach(() => {
@@ -27,9 +33,14 @@ afterEach(() => {
 		removeTempDirectory(directory);
 	}
 });
-registerRunJournalConformance(test, "caller-owned sqlite", () => {
-	const directory = makeTempDirectory("borrowed-journal-conformance-");
-	const database = new DatabaseSync(join(directory, "journal.sqlite"));
-	borrowed.push({ database, directory });
-	return new SqliteRunJournal(database);
-});
+registerRunJournalConformance(
+	test,
+	"caller-owned sqlite",
+	() => {
+		const directory = makeTempDirectory("borrowed-journal-conformance-");
+		const database = new DatabaseSync(join(directory, "journal.sqlite"));
+		borrowed.push({ database, directory });
+		return new SqliteRunJournal(database);
+	},
+	observeJournalRead,
+);

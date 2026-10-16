@@ -93,6 +93,9 @@ test("async-only custom journal delays workflow completion until its checkpoint 
 	let gated = false;
 	const journal: RunJournal = {
 		createRun: (header) => memory.createRun(header),
+		getRun: (runId) => memory.getRun(runId),
+		leaseState: (runId) => memory.leaseState(runId),
+		takeoverExpired: (runId, holderId, staleAfterMs) => memory.takeoverExpired(runId, holderId, staleAfterMs),
 		listRuns: (filter) => memory.listRuns(filter),
 		acquire: (runId, holderId) => memory.acquire(runId, holderId),
 		takeover: (runId, holderId, expectedHolder) => memory.takeover(runId, holderId, expectedHolder),
@@ -203,7 +206,7 @@ test("failed custom-journal initialization stops its timer without closing the s
 	const timers = vi.getTimerCount();
 	await assert.rejects(initializeDurableBackend({ journal }), JournalBackendClosedError);
 	assert.equal(vi.getTimerCount(), timers);
-	assert.deepEqual(journal.listRunsSync(), []);
+	assert.equal(await journal.getRun("missing"), undefined);
 	await journal.close();
 });
 

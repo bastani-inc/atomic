@@ -11,13 +11,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Removed the SDK `durability` option, `WorkflowDurability`, and `WorkflowDurabilityRequiredError`. Use `RunOpts.journal` to select storage or isolate runs, and handle typed journal errors when storage is unavailable.
 - Removed `InMemoryDurableBackend` and `createInMemoryTestBackend`. Use `JournalDurableBackend` over `MemoryRunJournal` for an explicitly in-memory backend. Removed the `legacyRecovery` workflow-tool argument and remaining `workflows.durability` settings.
 - Removed the `@bastani/workflows` import alias; use `@bastani/atomic/workflows`.
-- Custom `RunJournal` implementations must provide `deleteOwnedRun(lease)` for atomic lease-fenced deletion.
+- Custom `RunJournal` implementations must provide `getRun`, `takeoverExpired`, `leaseState`, lazy paged `read`, and `deleteOwnedRun(lease)` for atomic lease-fenced deletion. Synchronous fast paths are internal.
 - Invocation records require `invocationFingerprint`.
 
 ### Added
 
 - Added `RunOpts.journal` and `resolveRunJournal` for explicit journals, caller-owned SQLite connections, memory journals, and configurable files. TUI, CLI, background, and SDK runs use the selected journal. Resolution prioritizes the explicit option, a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, then journal settings and the default path. Relative settings paths resolve against the Atomic home directory.
 - Extended shared journal conformance checks to cover detached values, closed-journal rejection, failure atomicity, and deletion tombstones.
+- Added stale-only async journal takeover and read-only ownership inspection. Keyed append retries return the original entry before checking sequence expectations. Shared journal conformance covers stale-only takeover and early read termination.
 
 ## [0.9.38-alpha.5] - 2026-10-16
 
