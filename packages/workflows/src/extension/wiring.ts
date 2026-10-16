@@ -21,10 +21,12 @@
  *            pi docs/sdk.md createAgentSession
  */
 
+import { join } from "node:path";
 import {
 	type CreateAgentSessionOptions,
 	type DefaultResourceLoaderInheritanceSnapshot,
 	isStaleExtensionContextError,
+	ModelRuntime,
 	resolveRestoredModelReference,
 	SessionManager,
 } from "@bastani/atomic";
@@ -679,7 +681,18 @@ export function createAgentSessionAdapter(
 				return options;
 			},
 		},
-		{ createAgentSession: (options, prepareOptions) => createPiSdkAgentSession(options, prepareOptions) },
+		{
+			async createAgentSession(options, prepareOptions) {
+				if (options && !options.modelRuntime && typeof options.model === "string") {
+					options.modelRuntime = await ModelRuntime.create({
+						authPath: options.agentDir ? join(options.agentDir, "auth.json") : undefined,
+						modelsPath: options.agentDir ? join(options.agentDir, "models.json") : undefined,
+					});
+					await resolveStageModel(options, false);
+				}
+				return createPiSdkAgentSession(options, prepareOptions);
+			},
+		},
 	);
 	// Session managers are created before this adapter sees a stage, so the runner applies the cwd first.
 	if (baseOptions.cwd !== undefined) setAgentSessionAdapterDefaultCwd(agentSession!, baseOptions.cwd);
