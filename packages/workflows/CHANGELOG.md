@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.38-alpha.5] - 2026-10-16
+
 ### Fixed
 
 - Fixed standalone SDK `run()` resolving string stage models, including thinking suffixes and fallback models, instead of crashing during session creation ([#3629](https://github.com/bastani-inc/atomic/issues/3629)).
