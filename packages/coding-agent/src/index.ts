@@ -370,7 +370,6 @@ export {
 	type FileEntry,
 	getLatestCompactionBoundaryEntry,
 	type ModelChangeEntry,
-	migrateSessionEntries,
 	type NewSessionOptions,
 	type ProjectedSessionEntry,
 	parseSessionEntries,

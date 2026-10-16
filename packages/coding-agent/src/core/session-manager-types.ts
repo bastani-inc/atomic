@@ -10,8 +10,9 @@ import type {
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { CustomMessage } from "./messages.ts";
 import type { SessionManager } from "./session-manager-core.ts";
+import { SESSION_FORMAT_VERSION } from "./storage/session/types.js";
 
-export const CURRENT_SESSION_VERSION = 3;
+export const CURRENT_SESSION_VERSION = SESSION_FORMAT_VERSION;
 
 /**
  * Workflow linkage persisted on internal (workflow-created) session headers.
@@ -26,7 +27,7 @@ export interface SessionWorkflowMetadata {
 
 export interface SessionHeader {
 	type: "session";
-	version?: number; // v1 sessions don't have this
+	version: number;
 	id: string;
 	timestamp: string;
 	cwd: string;

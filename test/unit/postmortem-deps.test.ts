@@ -52,7 +52,7 @@ test("nested post-mortem chat reopens in the durable root cwd while retaining ch
 			`${[
 				JSON.stringify({
 					type: "session",
-					version: 3,
+					version: 4,
 					id: `${durableCwdField}-session`,
 					timestamp: new Date().toISOString(),
 					cwd: durableCwd,
@@ -62,7 +62,7 @@ test("nested post-mortem chat reopens in the durable root cwd while retaining ch
 					id: `${durableCwdField}-message`,
 					parentId: null,
 					timestamp: new Date().toISOString(),
-					message: { role: "user", content: "Original stage request" },
+					message: { role: "user", content: "Original stage request", timestamp: Date.now() },
 				}),
 			].join("\n")}\n`,
 		);

@@ -31,7 +31,7 @@ function tempDir(): string {
 function sessionHeader(id: string): string {
 	return JSON.stringify({
 		type: "session",
-		version: 3,
+		version: 4,
 		id,
 		timestamp: "2020-01-01T00:00:00.000Z",
 		cwd: "/tmp/project",
@@ -43,6 +43,7 @@ function messageLine(index: number, text: string): string {
 		type: "message",
 		id: `m${index}`,
 		parentId: index === 0 ? null : `m${index - 1}`,
+		timestamp: new Date(1_577_836_800_000 + index).toISOString(),
 		message: { role: index % 2 === 0 ? "user" : "assistant", content: text, timestamp: 1_577_836_800_000 + index },
 	});
 }

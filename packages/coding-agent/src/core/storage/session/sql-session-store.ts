@@ -5,6 +5,7 @@ import { assertStorageSchemaVersion } from "../schema.js";
 import {
 	SessionConflictError,
 	SessionExistsError,
+	SessionIdMismatchError,
 	SessionNotFoundError,
 	StorageUnavailableError,
 	StoreClosedError,
@@ -144,6 +145,7 @@ export class SqlSessionStore implements SessionStore {
 			await this.forWrite(tx, sessionId, options);
 			validateSessionHeader(header);
 			validateSessionEntries(entries);
+			if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
 			await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.entries} WHERE session_id = ?`, sessionId);
 			const texts = await this.saveSummary(tx, sessionId, { header, entries, lastSeq: entries.length });

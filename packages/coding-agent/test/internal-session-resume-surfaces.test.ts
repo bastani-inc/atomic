@@ -55,7 +55,7 @@ function writeSession(
 ): string {
 	const header: SessionHeader = {
 		type: "session",
-		version: 3,
+		version: 4,
 		id,
 		timestamp: new Date(options.mtime).toISOString(),
 		cwd,
@@ -126,7 +126,14 @@ describe("internal workflow sessions across resume surfaces", () => {
 				writeSession(dir, `workflow-${index}`, cwd, {
 					internal: true,
 					stageId: `stage-${index}`,
-					body: `{malformed workflow body ${index} ${"x".repeat(4096)}}`,
+					body: JSON.stringify({
+						type: "custom",
+						id: `entry-${index}`,
+						parentId: null,
+						timestamp: new Date(now).toISOString(),
+						customType: "workflow-state",
+						data: "x".repeat(4096),
+					}),
 					mtime: now + index,
 				}),
 			);

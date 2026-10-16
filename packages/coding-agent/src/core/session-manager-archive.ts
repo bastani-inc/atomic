@@ -4,12 +4,12 @@ import { createInterface } from "node:readline";
 import { join } from "path";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { createLabelEntry, createSessionFilePath, createSessionHeader } from "./session-manager-entries.ts";
-import { migrateToCurrentVersion, parseSessionEntries } from "./session-manager-migrations.ts";
 import { getDefaultSessionDirPath } from "./session-manager-paths.ts";
 import {
 	ensureDirectory,
 	hasConversationMessage,
 	loadEntriesFromFile,
+	parseSessionEntries,
 	serializeSessionEntries,
 	writeSessionEntries,
 } from "./session-manager-storage.ts";
@@ -21,7 +21,12 @@ import type {
 	SessionHeader,
 	SessionWorkflowMetadata,
 } from "./session-manager-types.ts";
-import { assertValidSessionId, createSessionId, generateId } from "./session-manager-validation.ts";
+import {
+	assertValidSessionId,
+	createSessionId,
+	generateId,
+	validateSessionFileEntries,
+} from "./session-manager-validation.ts";
 
 export function createBackupSnapshot(
 	sessionFile: string | undefined,
@@ -234,11 +239,7 @@ function prepareFork(
 	if (sourceEntries.length === 0) {
 		throw new Error(`Cannot fork: source session file is empty or invalid: ${resolvedSourcePath}`);
 	}
-	const sourceHeader = sourceEntries[0];
-	if (sourceHeader.type !== "session" || typeof sourceHeader.id !== "string") {
-		throw new Error(`Cannot fork: source session has no header: ${resolvedSourcePath}`);
-	}
-	migrateToCurrentVersion(sourceEntries);
+	validateSessionFileEntries(sourceEntries, resolvedSourcePath);
 	const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDirPath(resolvedTargetCwd);
 	if (options?.id !== undefined) assertValidSessionId(options.id);
 	const newSessionId = options?.id ?? createSessionId();

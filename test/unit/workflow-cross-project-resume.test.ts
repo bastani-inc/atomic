@@ -172,7 +172,7 @@ test("forked stage conversations copy history without sharing the source session
 		const history = `${[
 			{
 				type: "session",
-				version: 3,
+				version: 4,
 				id: "source-session",
 				timestamp: new Date().toISOString(),
 				cwd: join(root, "source"),

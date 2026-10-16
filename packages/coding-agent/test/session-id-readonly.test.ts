@@ -74,7 +74,7 @@ async function runCli(
 function writeSession(sessionDir: string, cwd: string, id: string): void {
 	writeFileSync(
 		join(sessionDir, `${id}.jsonl`),
-		`${JSON.stringify({ type: "session", version: 3, id, timestamp: new Date().toISOString(), cwd: realpathSync(cwd) })}\n`,
+		`${JSON.stringify({ type: "session", version: 4, id, timestamp: new Date().toISOString(), cwd: realpathSync(cwd) })}\n`,
 	);
 }
 
@@ -151,7 +151,7 @@ describe("exact session header discovery", () => {
 		const file = join(dir, "renamed.jsonl");
 		writeFileSync(
 			file,
-			`${JSON.stringify({ type: "session", id: "exact-id", cwd: dir })}\n${"not-json\n".repeat(100_000)}`,
+			`${JSON.stringify({ type: "session", version: 4, timestamp: new Date().toISOString(), id: "exact-id", cwd: dir })}\n${"not-json\n".repeat(100_000)}`,
 		);
 		const before = readFileSync(file);
 		const list = vi.spyOn(SessionManager, "list").mockRejectedValue(new Error("must not list"));
@@ -181,6 +181,8 @@ describe("exact session header discovery", () => {
 			file,
 			JSON.stringify({
 				type: "session",
+				version: 4,
+				timestamp: new Date().toISOString(),
 				id: "exact-id",
 				cwd: dir,
 				internal: true,
@@ -189,7 +191,17 @@ describe("exact session header discovery", () => {
 		);
 		expect(SessionManager.findById(dir, "exact-id", dir)).toBeUndefined();
 		// Incomplete ownership markers stay visible, matching Atomic's list policy.
-		writeFileSync(file, JSON.stringify({ type: "session", id: "exact-id", cwd: dir, internal: true }));
+		writeFileSync(
+			file,
+			JSON.stringify({
+				type: "session",
+				version: 4,
+				timestamp: new Date().toISOString(),
+				id: "exact-id",
+				cwd: dir,
+				internal: true,
+			}),
+		);
 		expect(SessionManager.findById(dir, "exact-id", dir)).toBe(file);
 		expect(SessionManager.findById(dir, "exact-id", join(dir, "missing"))).toBeUndefined();
 	});

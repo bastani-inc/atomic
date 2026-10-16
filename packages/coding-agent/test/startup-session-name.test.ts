@@ -33,7 +33,7 @@ function createSessionFile(projectDir: string, sessionFile: string): void {
 	const timestamp = new Date().toISOString();
 	writeFileSync(
 		sessionFile,
-		`${JSON.stringify({ type: "session", version: 3, id: "existing-session", timestamp, cwd: projectDir })}\n${JSON.stringify(
+		`${JSON.stringify({ type: "session", version: 4, id: "existing-session", timestamp, cwd: projectDir })}\n${JSON.stringify(
 			{
 				type: "message",
 				id: "assistant-1",

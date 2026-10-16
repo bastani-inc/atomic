@@ -16,9 +16,8 @@ import {
 	buildSessionContext,
 	type CompactionEntry,
 	type ContextCompactionEntry,
+	type FileEntry,
 	type ModelChangeEntry,
-	migrateSessionEntries,
-	parseSessionEntries,
 	type SessionEntry,
 	type SessionMessageEntry,
 	type ThinkingLevelChangeEntry,
@@ -34,9 +33,17 @@ function loadLargeSessionEntries(): SessionEntry[] {
 	if (content.startsWith("version https://git-lfs.github.com/spec/")) {
 		throw new Error(`${sessionPath} is a Git LFS pointer. Install git-lfs and run \`git lfs pull\`.`);
 	}
-	const entries = parseSessionEntries(content);
-	migrateSessionEntries(entries); // Add id/parentId for v1 fixtures
-	return entries.filter((e): e is SessionEntry => e.type !== "session");
+	// This fixture supplies message data for compaction, not a loadable session file.
+	return content
+		.trim()
+		.split("\n")
+		.map((line) => JSON.parse(line) as FileEntry)
+		.filter((entry): entry is SessionEntry => entry.type !== "session")
+		.map((entry, index) => ({
+			...entry,
+			id: `fixture-${index}`,
+			parentId: index === 0 ? null : `fixture-${index - 1}`,
+		}));
 }
 
 function createMockUsage(input: number, output: number, cacheRead = 0, cacheWrite = 0): Usage {

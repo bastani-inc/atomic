@@ -8,9 +8,13 @@ import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { classifiedWorkflowMetadata } from "./session-manager-classification.ts";
 import { getLatestSessionSummary } from "./session-manager-entries.ts";
-import { parseSessionEntries } from "./session-manager-migrations.ts";
 import { getDefaultSessionDir, getDefaultSessionDirPath } from "./session-manager-paths.ts";
-import { isInternalHeader, readSessionHeader, sessionCwdMatches } from "./session-manager-storage.ts";
+import {
+	isInternalHeader,
+	parseSessionEntries,
+	readSessionHeader,
+	sessionCwdMatches,
+} from "./session-manager-storage.ts";
 import type {
 	FileEntry,
 	SessionEntryBase,
@@ -20,6 +24,7 @@ import type {
 	SessionListProgress,
 	SessionMessageEntry,
 } from "./session-manager-types.ts";
+import { validateSessionFileEntries } from "./session-manager-validation.ts";
 
 function isMessageWithContent(message: AgentMessage): message is Message {
 	return typeof (message as Message).role === "string" && "content" in message;
@@ -120,11 +125,7 @@ async function parseSessionEntriesCooperatively(content: string, signal?: AbortS
 	for (let index = 0; index < lines.length; index += 1) {
 		const line = lines[index]!;
 		if (line.trim()) {
-			try {
-				entries.push(JSON.parse(line) as FileEntry);
-			} catch {
-				// Skip malformed lines, matching parseSessionEntries.
-			}
+			entries.push(...parseSessionEntries(line));
 		}
 		if ((index + 1) % PARSE_YIELD_EVERY_LINES === 0) {
 			signal?.throwIfAborted();
@@ -175,9 +176,7 @@ async function buildSessionInfo(
 				? await parseSessionEntriesCooperatively(content, signal)
 				: parseSessionEntries(content);
 
-		if (entries.length === 0) return null;
-		const header = entries[0];
-		if (header.type !== "session") return null;
+		const header = validateSessionFileEntries(entries, filePath);
 
 		const stats = fileStats ?? (await stat(filePath));
 		let messageCount = 0;

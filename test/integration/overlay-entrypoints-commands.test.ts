@@ -68,7 +68,7 @@ function registerInspectableCompleted(backend: InMemoryDurableBackend, workflowI
 		`${[
 			JSON.stringify({
 				type: "session",
-				version: 3,
+				version: 4,
 				id: `${workflowId}-session`,
 				timestamp: new Date().toISOString(),
 				cwd: dir,

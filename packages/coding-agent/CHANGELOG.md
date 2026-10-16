@@ -8,6 +8,7 @@
 - Workflow heartbeat records require their original launch cadence instead of inheriting the current definition when cadence is missing. Configuration load results always include their global and project source fields, using `null` for absent or invalid sources.
 - Workflow run snapshots require `toolNodes`, and inline forms require injected keybindings without obsolete submit-choice state. Removed the ignored workflow text-truncation `preserveAnsi` argument; ANSI-aware rendering is unchanged.
 - Workflow runs now persist only in the local SQLite journal. Journal initialization failures throw `StorageUnavailableError` instead of continuing without durable storage. Postgres connection settings (`workflows.durability.systemDatabaseUrl` and `workflows.durability.poolSize`) and `DBOS_SYSTEM_DATABASE_URL`, `ATOMIC_POSTGRES_*`, and `PG*` environment variables no longer configure workflow storage.
+- Removed automatic session-format migrations and the `migrateSessionEntries` export. Reading session files no longer appends missing newlines.
 
 ### Added
 

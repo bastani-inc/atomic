@@ -16,6 +16,8 @@ import { StringDecoder } from "string_decoder";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { isClassifiedWorkflowSession } from "./session-manager-classification.ts";
 import type { FileEntry, SessionEntry, SessionHeader } from "./session-manager-types.ts";
+import { validateSessionFileEntries } from "./session-manager-validation.ts";
+import { StorageUnavailableError } from "./storage/session/errors.js";
 
 const SESSION_READ_BUFFER_SIZE = 1024 * 1024;
 /**
@@ -26,13 +28,16 @@ const SESSION_READ_BUFFER_SIZE = 1024 * 1024;
  */
 const HEADER_READ_BUFFER_SIZE = 64 * 1024;
 
-function parseSessionEntryLine(line: string): FileEntry | null {
-	if (!line.trim()) return null;
+function parseSessionEntryLine(line: string, path: string): FileEntry | undefined {
+	if (!line.trim()) return undefined;
+	let entry: FileEntry;
 	try {
-		return JSON.parse(line) as FileEntry;
-	} catch {
-		return null;
+		entry = JSON.parse(line) as FileEntry;
+	} catch (cause) {
+		throw new StorageUnavailableError({ adapter: "jsonl", location: path }, cause as Error);
 	}
+	if (entry?.type === "session") validateSessionFileEntries([entry], path);
+	return entry;
 }
 
 /** Exported for testing */
@@ -55,8 +60,8 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 			let lineStart = 0;
 			let newlineIndex = pending.indexOf("\n", lineStart);
 			while (newlineIndex !== -1) {
-				const entry = parseSessionEntryLine(pending.slice(lineStart, newlineIndex));
-				if (entry) entries.push(entry);
+				const entry = parseSessionEntryLine(pending.slice(lineStart, newlineIndex), resolvedFilePath);
+				if (entry !== undefined) entries.push(entry);
 				lineStart = newlineIndex + 1;
 				newlineIndex = pending.indexOf("\n", lineStart);
 			}
@@ -64,20 +69,24 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 		}
 
 		pending += decoder.end();
-		const finalEntry = parseSessionEntryLine(pending);
-		if (finalEntry) entries.push(finalEntry);
+		const finalEntry = parseSessionEntryLine(pending, resolvedFilePath);
+		if (finalEntry !== undefined) entries.push(finalEntry);
 	} finally {
 		closeSync(fd);
 	}
 
-	// Validate session header before repairing the file.
 	if (entries.length === 0) return entries;
-	const header = entries[0];
-	if (header.type !== "session" || !("id" in header) || typeof header.id !== "string") {
-		return [];
-	}
+	validateSessionFileEntries(entries, resolvedFilePath);
 
-	if (pending) appendFileSync(resolvedFilePath, "\n");
+	return entries;
+}
+
+export function parseSessionEntries(content: string): FileEntry[] {
+	const entries: FileEntry[] = [];
+	for (const line of content.trim().split("\n")) {
+		const entry = parseSessionEntryLine(line, "session content");
+		if (entry !== undefined) entries.push(entry);
+	}
 	return entries;
 }
 
@@ -115,11 +124,8 @@ export function readSessionHeader(filePath: string): SessionHeader | null {
 			}
 			const firstLine = pending.split("\n")[0];
 			if (!firstLine) return null;
-			const header = JSON.parse(firstLine) as Record<string, unknown>;
-			if (header.type !== "session" || typeof header.id !== "string") {
-				return null;
-			}
-			return header as unknown as SessionHeader;
+			const header = JSON.parse(firstLine) as SessionHeader;
+			return validateSessionFileEntries([header], filePath);
 		} finally {
 			closeSync(fd);
 		}
@@ -154,13 +160,18 @@ export function findMostRecentSession(sessionDir: string, cwd?: string, includeI
 			.sort((a, b) => b.mtime - a.mtime);
 
 		for (const { path } of files) {
-			const header = readSessionHeader(path);
-			if (
-				header &&
-				(!resolvedCwd || sessionCwdMatches(getSessionHeaderCwd(header), resolvedCwd)) &&
-				(includeInternal || !isInternalHeader(header))
-			)
-				return path;
+			try {
+				const header = readSessionHeader(path);
+				if (
+					!header ||
+					(resolvedCwd && !sessionCwdMatches(getSessionHeaderCwd(header), resolvedCwd)) ||
+					(!includeInternal && isInternalHeader(header))
+				)
+					continue;
+				if (loadEntriesFromFile(path).length > 0) return path;
+			} catch {
+				// Unloadable sessions are not resume candidates.
+			}
 		}
 		return null;
 	} catch {
@@ -180,6 +191,16 @@ function appendSessionPayload(filePath: string, payload: string): void {
 	const existed = existsSync(filePath);
 	const offset = existed ? statSync(filePath).size : 0;
 	try {
+		if (offset > 0) {
+			const fd = openSync(filePath, "r");
+			try {
+				const lastByte = Buffer.alloc(1);
+				readSync(fd, lastByte, 0, 1, offset - 1);
+				if (lastByte[0] !== 10) payload = `\n${payload}`;
+			} finally {
+				closeSync(fd);
+			}
+		}
 		appendFileSync(filePath, payload);
 	} catch (writeError) {
 		try {

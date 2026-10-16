@@ -48,7 +48,7 @@ function retainedSession(name: string): string {
 		`${[
 			JSON.stringify({
 				type: "session",
-				version: 3,
+				version: 4,
 				id: `${name}-session`,
 				timestamp: new Date().toISOString(),
 				cwd: tempDir,

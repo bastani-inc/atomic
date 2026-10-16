@@ -114,7 +114,7 @@ describe("createStageContext — inherited session directories", () => {
 				sourceSessionFile,
 				`${JSON.stringify({
 					type: "session",
-					version: 3,
+					version: 4,
 					id: "source-session",
 					timestamp: new Date().toISOString(),
 					cwd: sourceDir,

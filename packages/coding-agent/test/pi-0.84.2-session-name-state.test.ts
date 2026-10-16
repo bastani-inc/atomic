@@ -26,7 +26,7 @@ describe("pi 0.84.2 session name state", () => {
 	function writeSessionFile(id: string, lines: string[]): string {
 		const header: SessionHeader = {
 			type: "session",
-			version: 3,
+			version: 4,
 			id,
 			timestamp: "2025-01-01T00:00:00Z",
 			cwd,

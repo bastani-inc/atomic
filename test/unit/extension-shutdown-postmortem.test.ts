@@ -52,7 +52,7 @@ test("every non-quit session shutdown invalidates a post-mortem prompt whose ses
 				`${[
 					JSON.stringify({
 						type: "session",
-						version: 3,
+						version: 4,
 						id: `${reason}-session`,
 						timestamp: new Date().toISOString(),
 						cwd: root,
@@ -62,7 +62,7 @@ test("every non-quit session shutdown invalidates a post-mortem prompt whose ses
 						id: `${reason}-message`,
 						parentId: null,
 						timestamp: new Date().toISOString(),
-						message: { role: "user", content: "Original stage request" },
+						message: { role: "user", content: "Original stage request", timestamp: Date.now() },
 					}),
 				].join("\n")}\n`,
 			);

@@ -168,7 +168,7 @@ describe("AgentSessionRuntime characterization", () => {
 		const storedPath = join(sessionDir, filename);
 		const importPath = join(importDir, filename);
 		const header = (id: string) =>
-			`${JSON.stringify({ type: "session", version: 3, id, timestamp: new Date().toISOString(), cwd: tempDir })}\n`;
+			`${JSON.stringify({ type: "session", version: 4, id, timestamp: new Date().toISOString(), cwd: tempDir })}\n`;
 		const storedSession = header("stored");
 		const importedSession = header("imported");
 		mkdirSync(sessionDir, { recursive: true });

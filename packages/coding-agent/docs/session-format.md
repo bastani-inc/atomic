@@ -18,13 +18,7 @@ Atomic also supports deleting sessions interactively from `/resume` (select a se
 
 ## Session Version
 
-Sessions have a version field in the header:
-
-- **Version 1**: Linear entry sequence (legacy, auto-migrated on load)
-- **Version 2**: Tree structure with `id`/`parentId` linking
-- **Version 3**: Renamed `hookMessage` role to `custom` (extensions unification)
-
-Existing sessions are automatically migrated to the current version (v3) when loaded.
+SessionManager writes version 4 headers. Other versions and structurally invalid entries are rejected before loading or forking; unloadable sessions are omitted from resume listings. Session-format migrations have been removed. Start a new session instead of relying on automatic conversion. Reading a file leaves its bytes unchanged. A complete final record without a newline is accepted; a torn final record is rejected.
 
 ## Source Files
 
@@ -203,19 +197,19 @@ interface SessionEntryBase {
 First line of the file. Metadata only, not part of the tree (no `id`/`parentId`).
 
 ```json
-{"type":"session","version":3,"id":"uuid","timestamp":"2024-12-03T14:00:00.000Z","cwd":"/path/to/project"}
+{"type":"session","version":4,"id":"uuid","timestamp":"2024-12-03T14:00:00.000Z","cwd":"/path/to/project"}
 ```
 
 For sessions with a parent (created via `/fork`, `/clone`, or `newSession({ parentSession })`):
 
 ```json
-{"type":"session","version":3,"id":"uuid","timestamp":"2024-12-03T14:00:00.000Z","cwd":"/path/to/project","parentSession":"/path/to/original/session.jsonl"}
+{"type":"session","version":4,"id":"uuid","timestamp":"2024-12-03T14:00:00.000Z","cwd":"/path/to/project","parentSession":"/path/to/original/session.jsonl"}
 ```
 
 Workflow-owned sessions carry both `internal: true` and complete `workflow` linkage. Atomic writes this classification before the transcript becomes visible wherever possible, including workflow stage forks and fresh/forked subagents. A session is excluded from normal resume history only when `internal` is the exact boolean `true` and `workflow.runId`, `workflow.stageId`, and `workflow.stageName` are all non-empty strings:
 
 ```json
-{"type":"session","version":3,"id":"uuid","timestamp":"2024-12-03T14:00:00.000Z","cwd":"/path/to/project","internal":true,"workflow":{"runId":"run-1","stageId":"stage-build","stageName":"build"}}
+{"type":"session","version":4,"id":"uuid","timestamp":"2024-12-03T14:00:00.000Z","cwd":"/path/to/project","internal":true,"workflow":{"runId":"run-1","stageId":"stage-build","stageName":"build"}}
 ```
 
 Malformed, incomplete, workflow-only, or truthy non-boolean legacy markers remain visible in normal history. Atomic does not infer workflow ownership from `parentSession`, so ordinary user-created forks are unaffected. Valid workflow classification is inherited when an internal workflow transcript is branched or forked.
