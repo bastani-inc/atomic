@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The storage adapter conformance suite now checks call-time binary binding inside transactions.
+
 ## [0.9.38-alpha.4] - 2026-10-16
 
 ### Breaking Changes
