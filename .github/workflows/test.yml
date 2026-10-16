@@ -30,7 +30,7 @@ on:
 #
 #   unit-tests      build package -> unit
 #   integration-tests build package -> integration
-#   agent-suite     build native bindings -> coding-agent vitest
+#   agent-suite     build ai + native bindings -> pi-ai and coding-agent vitest
 #   release-archive build package -> build-binaries.sh -> archive smoke
 #   static-checks   typecheck, docs, Mintlify, CI contracts (Linux)
 #   test            result gate; carries the required check contexts
@@ -278,6 +278,8 @@ jobs:
         run: node scripts/alias-pi-ai.mjs
       - name: Build @bastani/pi-ai
         run: npm run build --workspace=@bastani/pi-ai
+      - name: pi-ai vitest suite
+        run: npm run test --workspace=@bastani/pi-ai
       # packages/coding-agent/test/native-binding-exports.test.ts is hard-required
       # by ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE below, so the vitest suite must
       # stay behind this build.
