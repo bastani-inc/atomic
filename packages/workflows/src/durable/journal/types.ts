@@ -90,6 +90,8 @@ export interface Lease {
 	readonly epoch: number;
 }
 
+export type LeaseState = Lease & { readonly renewedAt: number };
+
 export type LeaseOutcome =
 	| { readonly status: "acquired"; readonly lease: Lease }
 	| { readonly status: "held"; readonly holderId: string | null; readonly epoch: number };
@@ -122,9 +124,12 @@ export type AppendOutcome = { readonly status: "appended" | "exists"; readonly e
 
 export interface RunJournal {
 	createRun(header: RunHeader): Promise<"created" | "exists">;
+	getRun(runId: string): Promise<RunSummary | undefined>;
 	listRuns(filter?: { cwd?: string }): Promise<readonly RunSummary[]>;
 	acquire(runId: string, holderId: string): Promise<LeaseOutcome>;
 	takeover(runId: string, holderId: string, expectedHolder: string): Promise<LeaseOutcome>;
+	takeoverExpired(runId: string, holderId: string, staleAfterMs: number): Promise<LeaseOutcome>;
+	leaseState(runId: string): Promise<LeaseState | undefined>;
 	renew(lease: Lease): Promise<void>;
 	release(lease: Lease): Promise<void>;
 	append(lease: Lease, event: RunEvent, options?: { key?: string; expectSeq?: number }): Promise<AppendOutcome>;
@@ -133,19 +138,6 @@ export interface RunJournal {
 	deleteOwnedRun(lease: Lease): Promise<void>;
 	deleteRun(runId: string): Promise<void>;
 	close(): Promise<void>;
-}
-
-export interface SynchronousRunJournal {
-	createRunSync(header: RunHeader): "created" | "exists";
-	listRunsSync(filter?: { cwd?: string }): readonly RunSummary[];
-	acquireSync(runId: string, holderId: string): LeaseOutcome;
-	takeoverExpiredSync(runId: string, holderId: string, expiredBefore: number): LeaseOutcome;
-	leaseState(runId: string): (Lease & { readonly renewedAt: number }) | undefined;
-	renewSync(lease: Lease): void;
-	releaseSync(lease: Lease): void;
-	appendSync(lease: Lease, event: RunEvent, options?: { key?: string; expectSeq?: number }): AppendOutcome;
-	readEntries(runId: string, fromSeq?: number): readonly JournalEntry[];
-	deleteRunSync(runId: string): void;
 }
 
 export class JournalError extends Error {}

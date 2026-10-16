@@ -39,12 +39,15 @@ const borrowed = resolveRunJournal({ journal: { database } });
 await borrowed.close();
 assert.equal(database.prepare("SELECT schema_version FROM meta").get().schema_version, 1);
 database.exec("INSERT INTO meta VALUES (1)");
-assert.throws(() => new SqliteRunJournal(database), (error) => {
-	assert.ok(error instanceof JournalMetaCorruptError);
-	assert.ok(error instanceof JournalError);
-	assert.equal(error.path, database.location());
-	return true;
-});
+assert.throws(
+	() => new SqliteRunJournal(database),
+	(error) => {
+		assert.ok(error instanceof JournalMetaCorruptError);
+		assert.ok(error instanceof JournalError);
+		assert.equal(error.path, database.location());
+		return true;
+	},
+);
 database.close();
 assert.throws(
 	() => resolveRunJournal({ settings: { workflows: { journal: { path: "x", memory: true } } } }),
@@ -55,8 +58,42 @@ registerRunJournalConformance(
 	(name, body) => checks.push({ name, body }),
 	"public SDK memory",
 	() => new MemoryRunJournal(),
+	(journal) => {
+		const pageSizes = [];
+		let entriesRead = 0;
+		const copy = journal.copyEntry;
+		const page = journal.readPage;
+		journal.copyEntry = (entry) => {
+			entriesRead++;
+			return copy.call(journal, entry);
+		};
+		journal.readPage = (...args) => {
+			const rows = page.apply(journal, args);
+			pageSizes.push(rows.length);
+			return rows;
+		};
+		return {
+			pageSize: 256,
+			pageSizes,
+			get entriesRead() {
+				return entriesRead;
+			},
+			reset() {
+				pageSizes.length = 0;
+				entriesRead = 0;
+			},
+			restore() {
+				journal.copyEntry = copy;
+				journal.readPage = page;
+			},
+		};
+	},
 );
 for (const check of checks) await check.body();
 console.log(
-	JSON.stringify({ runtime: process.versions.bun ? "bun" : "node", publicConformance: checks.length, status: "passed" }),
+	JSON.stringify({
+		runtime: process.versions.bun ? "bun" : "node",
+		publicConformance: checks.length,
+		status: "passed",
+	}),
 );

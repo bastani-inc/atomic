@@ -7,12 +7,18 @@ import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/m
 import type { RunJournal } from "../../packages/workflows/src/durable/journal/types.js";
 import { run, workflow } from "../../packages/workflows/src/sdk-surface.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { observeJournalRead } from "../helpers/journal-read-observation.js";
 
 const ForeignPromise = runInNewContext("Promise") as PromiseConstructor;
+const backingJournals = new WeakMap<RunJournal, MemoryRunJournal>();
 
 function crossRealmJournal(memory: MemoryRunJournal): RunJournal {
-	return {
+	const journal: RunJournal = {
 		createRun: (header) => ForeignPromise.resolve(memory.createRun(header)),
+		getRun: (runId) => ForeignPromise.resolve(memory.getRun(runId)),
+		leaseState: (runId) => ForeignPromise.resolve(memory.leaseState(runId)),
+		takeoverExpired: (runId, holderId, staleAfterMs) =>
+			ForeignPromise.resolve(memory.takeoverExpired(runId, holderId, staleAfterMs)),
 		listRuns: (filter) => ForeignPromise.resolve(memory.listRuns(filter)),
 		acquire: (runId, holderId) => ForeignPromise.resolve(memory.acquire(runId, holderId)),
 		takeover: (runId, holderId, expectedHolder) =>
@@ -26,9 +32,20 @@ function crossRealmJournal(memory: MemoryRunJournal): RunJournal {
 		deleteRun: (runId) => ForeignPromise.resolve(memory.deleteRun(runId)),
 		close: () => ForeignPromise.resolve(memory.close()),
 	};
+	backingJournals.set(journal, memory);
+	return journal;
 }
 
-registerRunJournalConformance(test, "cross-realm Promise journal", () => crossRealmJournal(new MemoryRunJournal()));
+registerRunJournalConformance(
+	test,
+	"cross-realm Promise journal",
+	() => crossRealmJournal(new MemoryRunJournal()),
+	(journal) => {
+		const memory = backingJournals.get(journal);
+		assert.ok(memory);
+		return observeJournalRead(memory);
+	},
+);
 
 test("cross-realm journal registration persists before success and replays completed work", async () => {
 	const memory = new MemoryRunJournal();

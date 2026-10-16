@@ -1,6 +1,8 @@
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { getAgentDir } from "@bastani/atomic";
+import { JOURNAL_READ_PAGE_SIZE, registerSynchronousJournal } from "./internal.js";
+import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import { JournalDatabase, journalCounter, type SqliteStoredValue, storageBoundary } from "./node-sqlite.js";
 import {
 	type AppendOutcome,
@@ -15,6 +17,7 @@ import {
 	JournalSchemaVersionError,
 	type Lease,
 	type LeaseOutcome,
+	type LeaseState,
 	RUN_EVENT_TYPES,
 	type RunEvent,
 	type RunHeader,
@@ -22,12 +25,11 @@ import {
 	RunNotFoundError,
 	type RunSummary,
 	StaleLeaseError,
-	type SynchronousRunJournal,
 	JOURNAL_TABLES as t,
 } from "./types.js";
 import { serializeJson, validateText } from "./values.js";
 
-export const JOURNAL_READ_PAGE_SIZE = 256;
+export { JOURNAL_READ_PAGE_SIZE } from "./internal.js";
 
 export function workflowJournalPath(): string {
 	const override = process.env.ATOMIC_WORKFLOW_JOURNAL_PATH;
@@ -56,7 +58,7 @@ function entryFromRow(row: JournalEventRow): JournalEntry {
 	};
 }
 
-export class SqliteRunJournal implements RunJournal, SynchronousRunJournal {
+export class SqliteRunJournal implements RunJournal {
 	private readonly db: JournalDatabase;
 	private closed = false;
 	readonly path: string;
@@ -101,13 +103,24 @@ export class SqliteRunJournal implements RunJournal, SynchronousRunJournal {
 		} finally {
 			if (!initialized) this.db.close();
 		}
+		registerSynchronousJournal(this, {
+			createRunSync: this.createRunSync.bind(this),
+			listRunsSync: this.listRunsSync.bind(this),
+			takeoverExpiredSync: this.takeoverExpiredSync.bind(this),
+			leaseStateSync: this.leaseStateSync.bind(this),
+			renewSync: this.renewSync.bind(this),
+			releaseSync: this.releaseSync.bind(this),
+			appendSync: this.appendSync.bind(this),
+			readEntries: this.readEntries.bind(this),
+			deleteRunSync: this.deleteRunSync.bind(this),
+		});
 	}
 
 	async createRun(header: RunHeader): Promise<"created" | "exists"> {
 		return this.createRunSync(header);
 	}
 
-	createRunSync(header: RunHeader): "created" | "exists" {
+	private createRunSync(header: RunHeader): "created" | "exists" {
 		this.db.ensureOpen();
 		validateText("runId", header.runId);
 		validateText("name", header.name);
@@ -128,11 +141,23 @@ export class SqliteRunJournal implements RunJournal, SynchronousRunJournal {
 		);
 	}
 
+	async getRun(runId: string): Promise<RunSummary | undefined> {
+		this.db.ensureOpen();
+		validateText("runId", runId);
+		return storageBoundary(this.path, () => {
+			const row = this.db.get<{ [c.headerJson]: string; [c.status]: string }>(
+				`SELECT ${c.headerJson}, ${c.status} FROM ${t.runs} WHERE ${c.runId} = ?`,
+				runId,
+			);
+			return row ? { ...(JSON.parse(row[c.headerJson]) as RunHeader), status: row[c.status] } : undefined;
+		});
+	}
+
 	async listRuns(filter?: { cwd?: string }): Promise<readonly RunSummary[]> {
 		return this.listRunsSync(filter);
 	}
 
-	listRunsSync(filter?: { cwd?: string }): readonly RunSummary[] {
+	private listRunsSync(filter?: { cwd?: string }): readonly RunSummary[] {
 		this.db.ensureOpen();
 		if (filter?.cwd !== undefined) validateText("cwd", filter.cwd);
 		return storageBoundary(this.path, () =>
@@ -173,7 +198,7 @@ export class SqliteRunJournal implements RunJournal, SynchronousRunJournal {
 		return this.acquireSync(runId, holderId);
 	}
 
-	acquireSync(runId: string, holderId: string): LeaseOutcome {
+	private acquireSync(runId: string, holderId: string): LeaseOutcome {
 		this.db.ensureOpen();
 		validateText("runId", runId);
 		validateText("holderId", holderId);
@@ -216,7 +241,11 @@ export class SqliteRunJournal implements RunJournal, SynchronousRunJournal {
 		});
 	}
 
-	leaseState(runId: string): (Lease & { readonly renewedAt: number }) | undefined {
+	async leaseState(runId: string): Promise<LeaseState | undefined> {
+		return this.leaseStateSync(runId);
+	}
+
+	private leaseStateSync(runId: string): LeaseState | undefined {
 		this.db.ensureOpen();
 		validateText("runId", runId);
 		const row = this.db.getCounters<JournalLeaseRow & { [c.renewedAt]: number }>(
@@ -229,13 +258,17 @@ export class SqliteRunJournal implements RunJournal, SynchronousRunJournal {
 			: undefined;
 	}
 
-	takeoverExpiredSync(runId: string, holderId: string, expiredBefore: number): LeaseOutcome {
+	async takeoverExpired(runId: string, holderId: string, staleAfterMs: number): Promise<LeaseOutcome> {
+		return this.takeoverExpiredSync(runId, holderId, staleAfterMs);
+	}
+
+	private takeoverExpiredSync(runId: string, holderId: string, staleAfterMs: number): LeaseOutcome {
 		this.db.ensureOpen();
 		validateText("runId", runId);
 		validateText("holderId", holderId);
 		return this.db.transaction(() => {
 			this.requireRun(runId);
-			const current = this.leaseState(runId);
+			const current = this.leaseStateSync(runId);
 			if (current?.holderId === holderId)
 				return { status: "acquired", lease: { runId, holderId, epoch: current.epoch } };
 			if (current === undefined) {
@@ -248,7 +281,7 @@ export class SqliteRunJournal implements RunJournal, SynchronousRunJournal {
 						: JOURNAL_LEASE.initialEpoch,
 				);
 			}
-			if (current.renewedAt > expiredBefore)
+			if (!isWorkflowLeaseExpired(current.renewedAt, staleAfterMs))
 				return { status: "held", holderId: current.holderId, epoch: current.epoch };
 			return this.grant(
 				runId,
@@ -269,7 +302,7 @@ export class SqliteRunJournal implements RunJournal, SynchronousRunJournal {
 		this.renewSync(lease);
 	}
 
-	renewSync(lease: Lease): void {
+	private renewSync(lease: Lease): void {
 		this.db.ensureOpen();
 		validateText("runId", lease.runId);
 		validateText("holderId", lease.holderId);
@@ -283,7 +316,7 @@ export class SqliteRunJournal implements RunJournal, SynchronousRunJournal {
 		this.releaseSync(lease);
 	}
 
-	releaseSync(lease: Lease): void {
+	private releaseSync(lease: Lease): void {
 		this.db.ensureOpen();
 		validateText("runId", lease.runId);
 		validateText("holderId", lease.holderId);
@@ -301,7 +334,7 @@ export class SqliteRunJournal implements RunJournal, SynchronousRunJournal {
 		return this.appendSync(lease, event, options);
 	}
 
-	appendSync(lease: Lease, event: RunEvent, options?: { key?: string; expectSeq?: number }): AppendOutcome {
+	private appendSync(lease: Lease, event: RunEvent, options?: { key?: string; expectSeq?: number }): AppendOutcome {
 		this.db.ensureOpen();
 		validateText("runId", lease.runId);
 		validateText("holderId", lease.holderId);
@@ -309,14 +342,6 @@ export class SqliteRunJournal implements RunJournal, SynchronousRunJournal {
 		if (event.type === RUN_EVENT_TYPES.statusChanged) validateText("status", event.payload.status);
 		return this.db.transaction(() => {
 			this.checkLease(lease);
-			const actualSeq =
-				this.db.getCounters<{ [c.seq]: number }>(
-					lease.runId,
-					`SELECT COALESCE(MAX(${c.seq}), 0) AS ${c.seq} FROM ${t.events} WHERE ${c.runId} = ?`,
-					lease.runId,
-				)?.[c.seq] ?? 0;
-			if (options?.expectSeq !== undefined && options.expectSeq !== actualSeq)
-				throw new JournalCasConflictError(lease.runId, options.expectSeq, actualSeq);
 			if (options?.key !== undefined) {
 				const row = this.db.getCounters<JournalEventRow>(
 					lease.runId,
@@ -326,6 +351,14 @@ export class SqliteRunJournal implements RunJournal, SynchronousRunJournal {
 				);
 				if (row) return { status: "exists", entry: entryFromRow(row) };
 			}
+			const actualSeq =
+				this.db.getCounters<{ [c.seq]: number }>(
+					lease.runId,
+					`SELECT COALESCE(MAX(${c.seq}), 0) AS ${c.seq} FROM ${t.events} WHERE ${c.runId} = ?`,
+					lease.runId,
+				)?.[c.seq] ?? 0;
+			if (options?.expectSeq !== undefined && options.expectSeq !== actualSeq)
+				throw new JournalCasConflictError(lease.runId, options.expectSeq, actualSeq);
 			const nextSeq = journalCounter(lease.runId, "seq", actualSeq + 1, "overflow");
 			const at = Date.now();
 			this.db.run(
@@ -377,7 +410,7 @@ export class SqliteRunJournal implements RunJournal, SynchronousRunJournal {
 		}
 	}
 
-	readEntries(runId: string, fromSeq = 1): readonly JournalEntry[] {
+	private readEntries(runId: string, fromSeq = 1): readonly JournalEntry[] {
 		this.db.ensureOpen();
 		validateText("runId", runId);
 		return storageBoundary(this.path, () =>
@@ -411,7 +444,7 @@ export class SqliteRunJournal implements RunJournal, SynchronousRunJournal {
 		this.deleteRunSync(runId);
 	}
 
-	deleteRunSync(runId: string): void {
+	private deleteRunSync(runId: string): void {
 		this.db.ensureOpen();
 		validateText("runId", runId);
 		this.db.transaction(() => this.deleteRunData(runId));

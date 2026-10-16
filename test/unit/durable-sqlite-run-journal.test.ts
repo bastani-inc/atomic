@@ -859,16 +859,24 @@ test("lease transitions fence stale appends, renewals and releases while retaini
 	});
 });
 
-test("stale expectSeq writes nothing, including on a keyed duplicate", async () => {
+test("keyed retries replay before stale expectSeq while new keys reject without writes", async () => {
 	await withJournal(async (journal) => {
 		await journal.createRun(header);
 		const lease = await acquire(journal);
-		await journal.append(
+		const first = await journal.append(
 			lease,
 			{ type: e.statusChanged, payload: { status: "paused" } },
 			{ expectSeq: 0, key: "status" },
 		);
-		for (const key of ["new", "status"]) {
+		assert.deepEqual(
+			await journal.append(
+				lease,
+				{ type: e.statusChanged, payload: { status: "failed" } },
+				{ expectSeq: 0, key: "status" },
+			),
+			{ status: "exists", entry: first.entry },
+		);
+		for (const key of ["new"]) {
 			await assert.rejects(
 				() =>
 					journal.append(lease, { type: e.statusChanged, payload: { status: "failed" } }, { expectSeq: 0, key }),

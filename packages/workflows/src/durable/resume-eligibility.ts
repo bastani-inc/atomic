@@ -1,4 +1,5 @@
 import type { RunSnapshot, RunStatus, WorkflowFailureRecoverability } from "../shared/store-types.js";
+import { isWorkflowLeaseExpired } from "./journal/lease-expiry.js";
 import type { DurableWorkflowStatus } from "./types.js";
 
 /** Metadata required to classify a workflow as resumable. */
@@ -73,7 +74,7 @@ export function isDurableWorkflowResumable(candidate: DurableResumeCandidate): b
 /**
  * Liveness window for a `running` workflow owned by another Atomic process.
  * Active LM stages refresh durable timing metadata at least every ~30s, so a
- * running handle whose metadata is fresher than this window is treated as
+ * running handle whose metadata is no older than this window is treated as
  * genuinely executing in that other session rather than crashed.
  */
 export const FOREIGN_LIVE_WORKFLOW_WINDOW_MS = 120_000;
@@ -93,7 +94,10 @@ export function isForeignLiveWorkflow(
 ): boolean {
 	if (candidate.status !== "running") return false;
 	if (candidate.ownerExecutorId === undefined || candidate.ownerExecutorId === localExecutorId) return false;
-	return candidate.ownerLiveness === "alive" || now - candidate.updatedAt < FOREIGN_LIVE_WORKFLOW_WINDOW_MS;
+	return (
+		candidate.ownerLiveness === "alive" ||
+		!isWorkflowLeaseExpired(candidate.updatedAt, FOREIGN_LIVE_WORKFLOW_WINDOW_MS, now)
+	);
 }
 
 /**
@@ -105,6 +109,7 @@ export function isForeignLiveWorkflow(
 export function isLiveRunningWorkflow(candidate: ForeignLivenessCandidate, now: number = Date.now()): boolean {
 	return (
 		candidate.status === "running" &&
-		(candidate.ownerLiveness === "alive" || now - candidate.updatedAt < FOREIGN_LIVE_WORKFLOW_WINDOW_MS)
+		(candidate.ownerLiveness === "alive" ||
+			!isWorkflowLeaseExpired(candidate.updatedAt, FOREIGN_LIVE_WORKFLOW_WINDOW_MS, now))
 	);
 }

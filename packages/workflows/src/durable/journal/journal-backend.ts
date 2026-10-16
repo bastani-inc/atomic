@@ -24,6 +24,8 @@ import type {
 	DurableWorkflowHandle,
 	DurableWorkflowStatus,
 } from "../types.js";
+import { type SynchronousRunJournal, synchronousJournal } from "./internal.js";
+import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import { MemoryRunJournal } from "./memory-run-journal.js";
 import {
 	RUN_EVENT_TYPES as E,
@@ -36,7 +38,6 @@ import {
 	RunNotFoundError,
 	StaleLeaseError,
 	StorageUnavailableError,
-	type SynchronousRunJournal,
 } from "./types.js";
 
 const PROCESS_HOLDER_ID = randomUUID();
@@ -70,10 +71,10 @@ function isPromise<T>(value: T | Promise<T>): value is Promise<T> {
 	return typeof (value as Promise<T> | undefined)?.then === "function";
 }
 
-function* invoke<T>(action: () => T | Promise<T>): Operation<T> {
+function* invoke<T>(action: () => T | Promise<T>, synchronous = false): Operation<T> {
 	try {
 		const result = action();
-		if (!isPromise(result)) return result;
+		if (synchronous) return result as T;
 		let value: T;
 		yield Promise.resolve(result).then((resolved) => {
 			value = resolved;
@@ -91,25 +92,6 @@ function execute<T>(operation: Operation<T>, step = operation.next()): T | Promi
 		() => execute(operation),
 		(error: Error) => execute(operation, operation.throw(error)),
 	);
-}
-
-function synchronousJournal(journal: RunJournal): SynchronousRunJournal | undefined {
-	const candidate = journal as RunJournal & Partial<SynchronousRunJournal>;
-	const methods = [
-		"createRunSync",
-		"listRunsSync",
-		"acquireSync",
-		"takeoverExpiredSync",
-		"leaseState",
-		"renewSync",
-		"releaseSync",
-		"appendSync",
-		"readEntries",
-		"deleteRunSync",
-	] as const;
-	return methods.every((method) => typeof candidate[method] === "function")
-		? (candidate as RunJournal & SynchronousRunJournal)
-		: undefined;
 }
 
 export class JournalOwnershipError extends WorkflowInstanceOwnershipError {
@@ -158,9 +140,7 @@ interface WorkflowLeaseExecution {
 	retired: boolean;
 }
 
-export class JournalDurableBackend<Journal extends RunJournal = RunJournal & SynchronousRunJournal>
-	implements DurableWorkflowBackend
-{
+export class JournalDurableBackend<Journal extends RunJournal = RunJournal> implements DurableWorkflowBackend {
 	readonly persistent: boolean;
 	private readonly projection = createJournalProjection();
 	private readonly synchronous: SynchronousRunJournal | undefined;
@@ -313,10 +293,12 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal & Syn
 		if (lost) throw lost;
 		const existing = this.leases.get(runId);
 		if (existing) return existing;
-		const result = yield* invoke(() =>
-			this.synchronous !== undefined
-				? this.synchronous.takeoverExpiredSync(runId, this.holderId, Date.now() - FOREIGN_LIVE_WORKFLOW_WINDOW_MS)
-				: this.journal.acquire(runId, this.holderId),
+		const result = yield* invoke(
+			() =>
+				this.synchronous !== undefined
+					? this.synchronous.takeoverExpiredSync(runId, this.holderId, FOREIGN_LIVE_WORKFLOW_WINDOW_MS)
+					: this.journal.takeoverExpired(runId, this.holderId, FOREIGN_LIVE_WORKFLOW_WINDOW_MS),
+			this.synchronous !== undefined,
 		);
 		if (result.status === "held") throw new JournalOwnershipError(runId, result.holderId);
 		this.leases.set(runId, result.lease);
@@ -331,7 +313,11 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal & Syn
 	}
 	private mapOwnership(error: Error, runId: string): Error {
 		if (!(error instanceof StaleLeaseError)) return error;
-		const failure = new JournalOwnershipError(runId, this.synchronous?.leaseState(runId)?.holderId ?? null, error);
+		const failure = new JournalOwnershipError(
+			runId,
+			this.synchronous?.leaseStateSync(runId)?.holderId ?? null,
+			error,
+		);
 		this.lost.set(runId, failure);
 		return failure;
 	}
@@ -342,10 +328,12 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal & Syn
 	): Operation<void> {
 		const lease = yield* this.ownership(runId);
 		try {
-			yield* invoke(() =>
-				this.synchronous !== undefined
-					? this.synchronous.appendSync(lease, event, options)
-					: this.journal.append(lease, event, options),
+			yield* invoke(
+				() =>
+					this.synchronous !== undefined
+						? this.synchronous.appendSync(lease, event, options)
+						: this.journal.append(lease, event, options),
+				this.synchronous !== undefined,
 			);
 			yield* this.refresh(runId);
 		} catch (error) {
@@ -389,7 +377,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal & Syn
 			status: input.status,
 			inputs: input.inputs,
 		};
-		yield* invoke(() => this.synchronous?.createRunSync(header) ?? this.journal.createRun(header));
+		yield* invoke(
+			() => this.synchronous?.createRunSync(header) ?? this.journal.createRun(header),
+			this.synchronous !== undefined,
+		);
 		yield* this.ownership(input.workflowId);
 		yield* this.refresh(input.workflowId);
 		const draft = yield* this.draft(input.workflowId);
@@ -443,29 +434,19 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal & Syn
 	}
 	workflowOwnership(runId: string): "local" | "foreign" | "available" | Promise<"local" | "foreign" | "available"> {
 		if (this.synchronous !== undefined) {
-			const lease = this.synchronous.leaseState(runId);
-			if (lease === undefined || Date.now() - lease.renewedAt >= FOREIGN_LIVE_WORKFLOW_WINDOW_MS) return "available";
+			const lease = this.synchronous.leaseStateSync(runId);
+			if (lease === undefined || isWorkflowLeaseExpired(lease.renewedAt, FOREIGN_LIVE_WORKFLOW_WINDOW_MS))
+				return "available";
 			return lease.holderId === this.holderId ? "local" : "foreign";
 		}
 		return this.serialize(runId, () => this.probeOwnership(runId));
 	}
 	private *probeOwnership(runId: string): Operation<"local" | "foreign" | "available"> {
 		this.ensureOpen();
-		const local = this.leases.get(runId);
-		try {
-			if (local !== undefined) {
-				yield* invoke(() => this.journal.renew(local));
-				return "local";
-			}
-			const result = yield* invoke(() => this.journal.acquire(runId, randomUUID()));
-			if (result.status === "held") return "foreign";
-			yield* invoke(() => this.journal.release(result.lease));
+		const lease = yield* invoke(() => this.journal.leaseState(runId));
+		if (lease === undefined || isWorkflowLeaseExpired(lease.renewedAt, FOREIGN_LIVE_WORKFLOW_WINDOW_MS))
 			return "available";
-		} catch (error) {
-			if (error instanceof StaleLeaseError) return "foreign";
-			if (error instanceof RunNotFoundError) return "available";
-			throw error;
-		}
+		return lease.holderId === this.holderId ? "local" : "foreign";
 	}
 	setWorkflowStatus(
 		runId: string,
@@ -797,12 +778,15 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal & Syn
 		return execute(this.resetJournal());
 	}
 	private *resetJournal(): Operation<void> {
-		const runs = yield* invoke(() => this.synchronous?.listRunsSync() ?? this.journal.listRuns());
+		const runs = yield* invoke(
+			() => this.synchronous?.listRunsSync() ?? this.journal.listRuns(),
+			this.synchronous !== undefined,
+		);
 		for (const run of runs)
 			yield* invoke(() => {
 				if (this.synchronous !== undefined) return this.synchronous.deleteRunSync(run.runId);
 				return this.journal.deleteRun(run.runId);
-			});
+			}, this.synchronous !== undefined);
 		this.projection.reset();
 		this.sequences.clear();
 		this.leases.clear();
@@ -820,7 +804,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal & Syn
 			yield* invoke(() => {
 				if (this.synchronous !== undefined) return this.synchronous.renewSync(lease);
 				return this.journal.renew(lease);
-			});
+			}, this.synchronous !== undefined);
 		} catch (error) {
 			if (this.leases.get(runId) === lease && error instanceof Error)
 				this.lost.set(runId, this.mapOwnership(error, runId));
@@ -878,7 +862,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal & Syn
 			yield* invoke(() => {
 				if (this.synchronous !== undefined) return this.synchronous.releaseSync(lease);
 				return this.journal.release(lease);
-			});
+			}, this.synchronous !== undefined);
 		} catch (error) {
 			if (!(error instanceof StaleLeaseError)) throw error;
 		} finally {

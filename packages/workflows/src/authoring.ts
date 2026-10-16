@@ -12,7 +12,12 @@ import type { TSchema } from "typebox";
 import type {} from "./authoring/typebox-defaults.js";
 
 export type { Static, TSchema } from "typebox";
-export type { OpenRunJournal, RunJournalConformanceRunner } from "./durable/journal/conformance.js";
+export type {
+	ObserveRunJournalRead,
+	OpenRunJournal,
+	RunJournalConformanceRunner,
+	RunJournalReadObservation,
+} from "./durable/journal/conformance.js";
 export { registerRunJournalConformance } from "./durable/journal/conformance.js";
 export { MemoryRunJournal } from "./durable/journal/memory-run-journal.js";
 export type { RunJournalOption, RunJournalSettings } from "./durable/journal/resolution.js";

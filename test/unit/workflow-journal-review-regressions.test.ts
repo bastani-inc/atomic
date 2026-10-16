@@ -1,11 +1,21 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import { test, vi } from "vitest";
 import { DurableNestedTopologyError } from "../../packages/workflows/src/durable/boundary-topology.js";
-import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import {
+	JournalDurableBackend,
+	JournalOwnershipError,
+} from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
 import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
-import type { RunJournal } from "../../packages/workflows/src/durable/journal/types.js";
+import {
+	RUN_EVENT_TYPES,
+	type RunJournal,
+	RunNotFoundError,
+	StorageUnavailableError,
+} from "../../packages/workflows/src/durable/journal/types.js";
+import { FOREIGN_LIVE_WORKFLOW_WINDOW_MS } from "../../packages/workflows/src/durable/resume-eligibility.js";
 import {
 	prepareTargetedDurableResumable,
 	resumeDurableWorkflow,
@@ -28,6 +38,9 @@ import {
 function asyncJournal(journal: RunJournal): RunJournal {
 	return {
 		createRun: (header) => journal.createRun(header),
+		getRun: (runId) => journal.getRun(runId),
+		leaseState: (runId) => journal.leaseState(runId),
+		takeoverExpired: (runId, holderId, staleAfterMs) => journal.takeoverExpired(runId, holderId, staleAfterMs),
 		listRuns: (filter) => journal.listRuns(filter),
 		acquire: (runId, holderId) => journal.acquire(runId, holderId),
 		takeover: (runId, holderId, expectedHolder) => journal.takeover(runId, holderId, expectedHolder),
@@ -40,6 +53,95 @@ function asyncJournal(journal: RunJournal): RunJournal {
 		deleteRun: (runId) => journal.deleteRun(runId),
 		close: () => journal.close(),
 	};
+}
+
+for (const method of ["takeoverExpired", "leaseState"] as const) {
+	test(`VM-native ${method} preserves registration journal effects and local ownership`, async () => {
+		const ForeignPromise = runInNewContext("Promise") as PromiseConstructor;
+		const memory = new MemoryRunJournal();
+		const journal = asyncJournal(memory);
+		function foreign<T>(result: Promise<T>): Promise<T> {
+			const promise = ForeignPromise.resolve(result);
+			assert.ok(promise instanceof ForeignPromise);
+			assert.ok(!(promise instanceof Promise));
+			return promise;
+		}
+		if (method === "takeoverExpired") journal.takeoverExpired = (...args) => foreign(memory.takeoverExpired(...args));
+		else journal.leaseState = (...args) => foreign(memory.leaseState(...args));
+		const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
+		try {
+			await backend.registerWorkflow({
+				workflowId: "run",
+				name: "test",
+				inputs: {},
+				createdAt: 1,
+				status: "running",
+			});
+			assert.equal((await memory.getRun("run"))?.status, "running");
+			const entries = [];
+			for await (const entry of memory.read("run")) entries.push(entry);
+			assert.deepEqual(
+				entries.map((entry) => [entry.seq, entry.event.type]),
+				[[1, RUN_EVENT_TYPES.runStarted]],
+			);
+			assert.equal(backend.getWorkflow("run")?.status, "running");
+			const state = await memory.leaseState("run");
+			assert.equal(state?.holderId, backend.holderId);
+			assert.equal(await backend.workflowOwnership("run"), "local");
+			assert.deepEqual(await memory.leaseState("run"), state);
+		} finally {
+			await backend.close();
+			await memory.close();
+		}
+	});
+
+	test(`async-only ${method} preserves thrown and VM-rejected errors without poisoning retries`, async () => {
+		const ForeignPromise = runInNewContext("Promise") as PromiseConstructor;
+		const memory = new MemoryRunJournal();
+		const journal = asyncJournal(memory);
+		const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
+		const register = () =>
+			backend.registerWorkflow({ workflowId: "run", name: "test", inputs: {}, createdAt: 1, status: "running" });
+		try {
+			for (const failure of [new RunNotFoundError("run"), new TypeError("adapter failed")]) {
+				for (const completion of ["throw", "reject"] as const) {
+					journal[method] = () => {
+						if (completion === "throw") throw failure;
+						const result = ForeignPromise.reject<never>(failure);
+						assert.ok(result instanceof ForeignPromise);
+						assert.ok(!(result instanceof Promise));
+						return result;
+					};
+					await assert.rejects(
+						Promise.resolve().then(() =>
+							method === "takeoverExpired" ? register() : backend.workflowOwnership("run"),
+						),
+						(error: Error) => {
+							if (failure instanceof RunNotFoundError) assert.equal(error, failure);
+							else {
+								assert.ok(error instanceof StorageUnavailableError);
+								assert.equal(error.path, "custom journal");
+								assert.equal(error.cause, failure);
+							}
+							return true;
+						},
+					);
+					assert.equal(await memory.leaseState("run"), undefined);
+					assert.equal(backend.getWorkflow("run"), undefined);
+					const entries = [];
+					for await (const entry of memory.read("run")) entries.push(entry);
+					assert.deepEqual(entries, []);
+				}
+			}
+			journal.takeoverExpired = (...args) => memory.takeoverExpired(...args);
+			journal.leaseState = (...args) => memory.leaseState(...args);
+			await register();
+			assert.equal(await backend.workflowOwnership("run"), "local");
+		} finally {
+			await backend.close();
+			await memory.close();
+		}
+	});
 }
 
 for (const storage of ["memory", "sqlite"] as const) {
@@ -170,6 +272,42 @@ test("reopened async-only journals resume unheld runs and replay completed tools
 		await reader?.close();
 		await writer.close();
 		await journal.close();
+	}
+});
+
+test("async-only ownership inspection is read-only and expired takeover fences the previous holder", async () => {
+	vi.useFakeTimers({ toFake: ["Date"] });
+	vi.setSystemTime(1_000);
+	const memory = new MemoryRunJournal();
+	const journal = asyncJournal(memory);
+	const writer = await JournalDurableBackend.open(journal, { ownsJournal: false });
+	let reader: Awaited<ReturnType<typeof JournalDurableBackend.open>> | undefined;
+	try {
+		await writer.registerWorkflow({ workflowId: "run", name: "test", inputs: {}, createdAt: 1, status: "running" });
+		reader = await JournalDurableBackend.open(journal, { ownsJournal: false });
+		const initial = await memory.leaseState("run");
+		assert.ok(initial);
+		vi.setSystemTime(1_001);
+		assert.equal(await writer.workflowOwnership("run"), "local");
+		assert.equal(await reader.workflowOwnership("run"), "foreign");
+		assert.deepEqual(await memory.leaseState("run"), initial);
+		vi.setSystemTime(1_000 + FOREIGN_LIVE_WORKFLOW_WINDOW_MS + 1);
+		assert.equal(await reader.workflowOwnership("run"), "available");
+		assert.deepEqual(await memory.leaseState("run"), initial);
+		await reader.setWorkflowStatus("run", "paused");
+		const current = await memory.leaseState("run");
+		assert.equal(current?.epoch, initial.epoch + 1);
+		assert.equal(current?.holderId, reader.holderId);
+		await assert.rejects(
+			Promise.resolve().then(() => writer.setWorkflowStatus("run", "failed")),
+			JournalOwnershipError,
+		);
+		assert.equal((await memory.getRun("run"))?.status, "paused");
+	} finally {
+		await reader?.close();
+		await writer.close();
+		await memory.close();
+		vi.useRealTimers();
 	}
 });
 

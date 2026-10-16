@@ -19,6 +19,7 @@ import type { RunResult } from "../../packages/workflows/src/runs/foreground/exe
 import { run } from "../../packages/workflows/src/runs/foreground/sdk-run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { journalInternals } from "../helpers/journal-internals.js";
 import { testRunId } from "../helpers/run-id.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -297,10 +298,10 @@ test("quit retires a cancelled tool's executor without waiting for caught-cancel
 		assert.equal(controls.runControl(runId), undefined);
 		assert.equal(jobs.get(runId), undefined);
 		assert.equal(backend.workflowOwnership(runId), "available");
-		const pausedEntries = backend.journal.readEntries(runId);
+		const pausedEntries = journalInternals(backend.journal).readEntries(runId);
 		attemptWhileReleased.resolve();
 		await releasedWrites.promise;
-		assert.deepEqual(backend.journal.readEntries(runId), pausedEntries);
+		assert.deepEqual(journalInternals(backend.journal).readEntries(runId), pausedEntries);
 		assert.equal(backend.workflowOwnership(runId), "available", "retired writes cannot reacquire a free lease");
 		const resumed = await resumeDurableWorkflow(runId, {
 			registry: createRegistry().register(definition),
@@ -317,15 +318,19 @@ test("quit retires a cancelled tool's executor without waiting for caught-cancel
 		assert.equal(executions, 2);
 		assert.equal(savedEffects, 1, "resume replays the persisted checkpoint");
 		assert.equal(bodySettled, false);
-		const entries = backend.journal.readEntries(runId);
-		const lease = backend.journal.leaseState(runId);
+		const entries = journalInternals(backend.journal).readEntries(runId);
+		const lease = await backend.journal.leaseState(runId);
 		cleanup.resolve();
 		await lateWrites.promise;
 		finishRetiredJob.resolve();
 		await job.promise;
 		assert.equal(bodySettled, true);
-		assert.deepEqual(backend.journal.readEntries(runId), entries);
-		assert.deepEqual(backend.journal.leaseState(runId), lease, "late settlement cannot release the resumed lease");
+		assert.deepEqual(journalInternals(backend.journal).readEntries(runId), entries);
+		assert.deepEqual(
+			await backend.journal.leaseState(runId),
+			lease,
+			"late settlement cannot release the resumed lease",
+		);
 		resumeBody.resolve();
 		await completion;
 		assert.equal(backend.getWorkflow(runId)?.status, "completed");

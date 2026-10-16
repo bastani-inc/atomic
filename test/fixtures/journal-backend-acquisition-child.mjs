@@ -31,7 +31,9 @@ try {
 			completedAt: 6,
 		});
 	}
-	console.log(JSON.stringify({ handle: backend.getWorkflow("run"), entries: backend.journal.readEntries("run") }));
+	const entries = [];
+	for await (const entry of backend.journal.read("run")) entries.push(entry);
+	console.log(JSON.stringify({ handle: backend.getWorkflow("run"), entries }));
 } finally {
 	await backend.close();
 }
