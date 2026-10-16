@@ -136,7 +136,11 @@ function structuredRecoverableFailureFromSnapshot(
 ): StructuredRecoverableWorkflowFailure | undefined {
 	if (snapshot.failureDisposition !== "active_blocked") return undefined;
 	if (snapshot.failureRecoverability !== "recoverable") return undefined;
-	if (!isRecoverableProviderFailureKind(snapshot.failureKind)) return undefined;
+	if (
+		!isRecoverableProviderFailureKind(snapshot.failureKind) &&
+		snapshot.failureCode !== "pending_stage_delivery_failed"
+	)
+		return undefined;
 	const error = snapshot.error ?? snapshot.failureMessage ?? "Workflow is blocked by a recoverable provider failure.";
 	return {
 		error,

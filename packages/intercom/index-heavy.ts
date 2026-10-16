@@ -1134,16 +1134,20 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       if (ctx.subagentPolicy?.intercom !== undefined) await ensureConnected("startup");
       return;
     }
+    const deliverPending = async (): Promise<void> => {
+      const receivedMessageIds = ctx.sessionManager.getBranch().flatMap((entry) => {
+        if (entry.type !== "custom_message" || entry.customType !== "intercom_message") return [];
+        const id = (entry.details as { message?: { id?: string } } | undefined)?.message?.id;
+        return typeof id === "string" ? [id] : [];
+      });
+      await pendingStageDelivery.deliverPending(
+        (from, message) => handleIncomingMessage(ctx, from as SessionInfo, message as Message, undefined, true),
+        { sessionId: ctx.sessionManager.getSessionId(), receivedMessageIds },
+      );
+    };
+    await deliverPending();
     await ensureConnected("startup");
-    const receivedMessageIds = ctx.sessionManager.getBranch().flatMap((entry) => {
-      if (entry.type !== "custom_message" || entry.customType !== "intercom_message") return [];
-      const id = (entry.details as { message?: { id?: string } } | undefined)?.message?.id;
-      return typeof id === "string" ? [id] : [];
-    });
-    await pendingStageDelivery.deliverPending(
-      (from, message) => handleIncomingMessage(ctx, from as SessionInfo, message as Message, undefined, true),
-      { sessionId: ctx.sessionManager.getSessionId(), receivedMessageIds },
-    );
+    await deliverPending();
   });
 
 

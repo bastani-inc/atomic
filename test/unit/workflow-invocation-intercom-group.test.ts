@@ -6,6 +6,8 @@ import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-
 import { type BrokerConnectedSession, handleBrokerSend } from "../../packages/intercom/broker/send-handler.js";
 import { SupervisorChannelCache } from "../../packages/intercom/broker/supervisor-channel.js";
 import type { BrokerMessage, Message, SessionInfo } from "../../packages/intercom/types.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { effectiveRunStatus } from "../../packages/workflows/src/shared/returned-run-status.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { createStore, mockSession, run, workflow } from "./executor-shared.js";
 
@@ -256,6 +258,98 @@ test("model fallback replacement sessions keep the workflow invocation group", a
 	assert.equal(result.status, "completed");
 	assert.equal(groups.length, 2);
 	assert.equal(groups[0], groups[1]);
+});
+
+test("delivery failure preserves sticky instructions for resumed and later stages (#3628)", async () => {
+	const runId = "36280000-0000-4000-8000-000000000002";
+	const group = `workflow:${runId}`;
+	const backend = new JournalTestBackend();
+	setDurableBackend(backend);
+	const store = createStore();
+	let unavailable = true;
+	const received: string[] = [];
+	let creations = 0;
+	const definition = workflow({
+		name: "delivery-resume",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			if (unavailable) {
+				const queued = await store.queueStickyStageMessage(
+					{
+						runId,
+						stageKey: `workflow:${runId}/**`,
+						targetPath: `workflow:${runId}/**`,
+						from: { id: "planner", name: "planner", group },
+						message: { id: "retained-instruction", timestamp: 1, content: { text: "keep this instruction" } },
+						queuedAt: new Date().toISOString(),
+					},
+					group,
+					group,
+					backend,
+				);
+				assert.equal(queued?.ok, true);
+			}
+			await ctx.task("review", {
+				prompt: "review",
+				model: "anthropic/primary",
+				fallbackModels: ["openai/fallback"],
+			});
+			await ctx.task("later", { prompt: "later" });
+			return {};
+		},
+	});
+	const adapters = {
+		agentSession: {
+			async create(options: CreateAgentSessionOptions) {
+				creations += 1;
+				const context = options.orchestrationContext;
+				assert.ok(context?.pendingStageDelivery);
+				if (unavailable) {
+					context.pendingStageDelivery.fail(
+						new Error("Intercom could not reach the broker after 5 warm-up attempts."),
+					);
+					await context.pendingStageDelivery.ready("unavailable");
+				} else {
+					await context.pendingStageDelivery.deliverPending(
+						(_from, message) => {
+							received.push(`${context.workflowStageName}:${message.id}`);
+						},
+						{ sessionId: `resumed-${creations}`, receivedMessageIds: [] },
+					);
+				}
+				const model =
+					typeof options.model === "string" ? options.model : `${options.model?.provider}/${options.model?.id}`;
+				return {
+					...mockSession(),
+					async prompt() {
+						assert.equal(received.at(-1), `${context.workflowStageName}:retained-instruction`);
+						if (model === "anthropic/primary") throw new Error("429 rate limit exceeded");
+					},
+				};
+			},
+		},
+	};
+	const first = await run(definition, {}, { runId, store, durableBackend: backend, adapters });
+	assert.equal(first.status, "running");
+	assert.equal(first.stages[0]?.failureDisposition, "active_blocked");
+	assert.equal(first.stages[0]?.failureRecoverability, "recoverable");
+	assert.equal(effectiveRunStatus(store.runs()[0]!), "blocked");
+	assert.equal(creations, 1);
+	assert.equal(store.runs()[0]?.pendingStageMessages?.[0]?.status, "queued");
+	unavailable = false;
+	const reopened = await backend.reopen();
+	setDurableBackend(reopened);
+	await reopened.hydrateWorkflow(runId);
+	const resumed = await run(definition, {}, { runId, store: createStore(), durableBackend: reopened, adapters });
+	assert.equal(resumed.status, "completed", resumed.error);
+	assert.deepEqual(received, [
+		"review:retained-instruction",
+		"review:retained-instruction",
+		"later:retained-instruction",
+	]);
+	assert.deepEqual(resumed.stages[0]?.attemptedModels, ["anthropic/primary", "openai/fallback"]);
 });
 
 test("fresh durable replay restores a nested stage to the top-level invocation group", async () => {

@@ -299,6 +299,14 @@ export function strongDecisionFromNormalizedCode(
 	if (normalized === "atomic_durable_admission_rejected") {
 		return { ...unknownDecision(), resumable: false, recoverability: "non_recoverable" };
 	}
+	if (normalized === "pending_stage_delivery_failed") {
+		return {
+			...unknownDecision(),
+			code: "pending_stage_delivery_failed",
+			recoverability: "recoverable",
+			disposition: "active_blocked",
+		};
+	}
 	if (CANCELLED_CODES.has(normalized)) return cancelledDecision();
 	if (INVALID_API_KEY_CODES.has(normalized)) return authDecision("invalid_api_key");
 	if (MISSING_API_KEY_CODES.has(normalized)) return authDecision("missing_api_key");

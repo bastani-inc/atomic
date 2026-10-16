@@ -88,6 +88,7 @@ export type WorkflowFailureCode =
 	| "rate_limited"
 	| "quota_limited"
 	| "provider_unavailable"
+	| "pending_stage_delivery_failed"
 	| "cancelled"
 	| "unknown";
 

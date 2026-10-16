@@ -889,6 +889,15 @@ test("a failed lazy workflow-stage startup connect disposes the candidate instea
 	const runId = "0f4c8a2b-71de-4b93-9a5f-6c2d81e0b7a4";
 	const stageId = "a91b6d3c-52f8-4e17-8c0a-3d7b45f9e128";
 	const store = createStore();
+	store.recordRunStart({
+		id: runId,
+		name: "startup-disposal-flow",
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [{ id: stageId, name: "reviewer", status: "running", parentIds: [], toolEvents: [] }],
+		startedAt: 1,
+	});
 	const stage = extensionFixture("startup-disposal-session", "startup-disposal", {
 		intercomGroup: `workflow:${runId}`,
 		kind: "workflow-stage",

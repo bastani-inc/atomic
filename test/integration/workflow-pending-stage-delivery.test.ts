@@ -2675,11 +2675,15 @@ test("one composite workflow-stage target transitions atomically from durable qu
 		const drainRelease = new Promise<void>((resolveRelease) => {
 			releaseDrain = resolveRelease;
 		});
+		let drainCalls = 0;
 		const heldPendingStageDelivery: ReturnType<typeof createWorkflowPendingStageDelivery> = {
 			routeCapability: pendingStageDelivery.routeCapability,
 			async deliverPending(deliver) {
-				signalDrainEntered();
-				await drainRelease;
+				drainCalls += 1;
+				if (drainCalls === 2) {
+					signalDrainEntered();
+					await drainRelease;
+				}
 				await pendingStageDelivery.deliverPending(deliver);
 			},
 			ready: () => pendingStageDelivery.ready(),
