@@ -78,7 +78,7 @@ test("cached SQLite selection initializes storage only once (#3674)", async () =
 			await initializeDurableBackend({ journal: { path: process.env.ATOMIC_WORKFLOW_JOURNAL_PATH } }),
 			first,
 		);
-		assert.equal(exec.mock.calls.filter(([sql]) => sql.includes("CREATE TABLE IF NOT EXISTS meta")).length, 1);
+		assert.equal(exec.mock.calls.filter(([sql]) => sql.includes("CREATE TABLE IF NOT EXISTS wf_meta")).length, 1);
 	} finally {
 		exec.mockRestore();
 	}

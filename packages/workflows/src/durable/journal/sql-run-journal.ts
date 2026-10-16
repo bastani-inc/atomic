@@ -10,6 +10,7 @@ import {
 	StorageUnavailableError,
 } from "@bastani/atomic/storage";
 import { JOURNAL_READ_PAGE_SIZE } from "./internal.js";
+import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import {
 	type AppendOutcome,
 	JOURNAL_COLUMNS as c,
@@ -278,7 +279,8 @@ export class SqlRunJournal implements RunJournal {
 					return { status: "acquired", lease: { runId, holderId, epoch: current[c.epoch] } };
 				if (current && current[c.holderId] !== null) {
 					const now = (await tx.get<SqliteRow & { now: number }>(`SELECT ${STORE_NOW} AS now`))!.now;
-					if (!(now - Number(current[c.renewedAt]) > staleAfterMs))
+					const ageMs = Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, now - Number(current[c.renewedAt])));
+					if (!isWorkflowLeaseExpired(0, staleAfterMs, ageMs))
 						return { status: "held", holderId: current[c.holderId], epoch: current[c.epoch] };
 				}
 				return this.grant(tx, runId, holderId, current);

@@ -759,7 +759,10 @@ describe("targeted durable workflow inspection", () => {
 		clock += FOREIGN_LIVE_WORKFLOW_WINDOW_MS + 1;
 		const connection = new JournalTestDatabase(crashedOwner.databasePath);
 		try {
-			connection.run("UPDATE wf_leases SET renewed_at = 0");
+			connection.run(
+				"UPDATE wf_leases SET renewed_at = CAST(unixepoch('subsec') * 1000 AS INTEGER) - ? - 1",
+				FOREIGN_LIVE_WORKFLOW_WINDOW_MS,
+			);
 		} finally {
 			connection.close();
 		}

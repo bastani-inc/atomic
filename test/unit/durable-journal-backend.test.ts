@@ -57,7 +57,10 @@ const JOURNAL_TABLES = Object.fromEntries(
 function expire(path: string): void {
 	const connection = new JournalTestDatabase(path);
 	try {
-		connection.run("UPDATE wf_leases SET renewed_at = 0");
+		connection.run(
+			"UPDATE wf_leases SET renewed_at = CAST(unixepoch('subsec') * 1000 AS INTEGER) - ? - 1",
+			FOREIGN_LIVE_WORKFLOW_WINDOW_MS,
+		);
 	} finally {
 		connection.close();
 	}

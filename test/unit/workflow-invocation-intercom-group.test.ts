@@ -263,7 +263,7 @@ test("model fallback replacement sessions keep the workflow invocation group", a
 test("delivery failure preserves sticky instructions for resumed and later stages (#3628)", async () => {
 	const runId = "36280000-0000-4000-8000-000000000002";
 	const group = `workflow:${runId}`;
-	const backend = new JournalTestBackend();
+	const backend = await JournalTestBackend.create();
 	setDurableBackend(backend);
 	const store = createStore();
 	let unavailable = true;

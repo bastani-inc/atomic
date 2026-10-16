@@ -142,13 +142,9 @@ export class MemoryRunJournal implements RunJournal {
 		validateText("runId", runId);
 		validateText("holderId", holderId);
 		this.requireRun(runId);
-		const current = this.leases.get(runId);
+		const current = this.leaseStateSync(runId);
 		if (current?.holderId === holderId) return this.acquireSync(runId, holderId);
-		if (
-			current?.holderId !== undefined &&
-			current.holderId !== null &&
-			!isWorkflowLeaseExpired(current.renewedAt, staleAfterMs)
-		)
+		if (current !== undefined && !isWorkflowLeaseExpired(0, staleAfterMs, current.ageMs))
 			return { status: "held", holderId: current.holderId, epoch: current.epoch };
 		return this.grant(runId, holderId);
 	}

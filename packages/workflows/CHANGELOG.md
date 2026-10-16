@@ -27,6 +27,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Fixed workflow recovery reporting a foreign run as available at the exact lease-expiry boundary before takeover is permitted ([#3681](https://github.com/bastani-inc/atomic/pull/3681)).
+- SQL journals snapshot append payloads at invocation, including keyed retries, preserving status/event consistency during queued writes. User-supplied facades may return readonly rows. Header and append serialization failures now retain typed storage errors and their original causes without changing fencing, replay, or sequence-check precedence.
+- Journal run summaries and status validation now use the serialized `StatusChanged` payload, including transformations by `toJSON`, so recorded events and summaries agree. Ownership inspection now honors the journal clock even when the process clock is skewed.
 
 ## [0.9.38-alpha.5] - 2026-10-16
 
@@ -44,11 +46,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Heartbeat records require their original launch cadence; incomplete records no longer inherit the current workflow definition. Configuration load results always include `globalConfig` and `projectConfig`, using `null` when a source is absent or invalid.
 - Public run snapshots require `toolNodes`. Inline forms require injected keybindings and no longer include unused submit-choice state. Removed the ignored `preserveAnsi` truncation argument; text truncation remains ANSI-aware.
 - Workflow runs now persist only in the local SQLite journal. Journal initialization failures throw `StorageUnavailableError` instead of continuing without durable storage. Postgres connection settings (`workflows.durability.systemDatabaseUrl` and `workflows.durability.poolSize`) and `DBOS_SYSTEM_DATABASE_URL`, `ATOMIC_POSTGRES_*`, and `PG*` environment variables no longer configure workflow storage.
-
-### Fixed
-
-- SQL journals snapshot append payloads at invocation, including keyed retries, preserving status/event consistency during queued writes. User-supplied facades may return readonly rows. Header and append serialization failures now retain typed storage errors and their original causes without changing fencing, replay, or sequence-check precedence.
-- Journal run summaries and status validation now use the serialized `StatusChanged` payload, including transformations by `toJSON`, so recorded events and summaries agree. Ownership inspection now honors the journal clock even when the process clock is skewed.
 
 ### Removed
 

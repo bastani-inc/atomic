@@ -392,7 +392,13 @@ describe("pre-start sticky drain", () => {
 		const { store } = rootFixture(baseStage({ status: "failed" }));
 		let failMetadata = false;
 		const backend = await metadataFailureBackend(() => failMetadata, "metadata-only fault");
-		await backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.registerWorkflow({
+			workflowId: ROOT_RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		bindStoreDurableBackend(store, backend);
 		await store.queueStickyStageMessage(
 			stickyInput("callback-fault", `workflow:${ROOT_RUN_ID}/**`),
@@ -437,7 +443,13 @@ describe("pre-start sticky drain", () => {
 	test("bounds sticky session receipts while retaining old-session deduplication (#3467)", async () => {
 		const { store } = rootFixture();
 		const backend = await JournalTestBackend.create();
-		await backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.registerWorkflow({
+			workflowId: ROOT_RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		bindStoreDurableBackend(store, backend);
 		await store.queueStickyStageMessage(stickyInput("sessions", `workflow:${ROOT_RUN_ID}/**`), GROUP, GROUP, backend);
 		for (let index = 0; index < 100; index++) {
@@ -473,7 +485,13 @@ describe("pre-start sticky drain", () => {
 	test("deduplicates archived no-recipient sticky delivery after failed-stage retry and cold hydration (#3467)", async () => {
 		const { store } = rootFixture([]);
 		const backend = await JournalTestBackend.create();
-		await backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.registerWorkflow({
+			workflowId: ROOT_RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		bindStoreDurableBackend(store, backend);
 		await store.queueStickyStageMessage(
 			stickyInput("optional-recipient", `workflow:${ROOT_RUN_ID}/**`),
@@ -595,7 +613,13 @@ describe("pre-start sticky drain", () => {
 	test("bounds failed-iteration sticky receipts through resume and settlement (#3467)", async () => {
 		const { store } = rootFixture([]);
 		const backend = await JournalTestBackend.create();
-		await backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.registerWorkflow({
+			workflowId: ROOT_RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		bindStoreDurableBackend(store, backend);
 		await store.queueStickyStageMessage(
 			stickyInput("failed-loop", `workflow:${ROOT_RUN_ID}/**`),
@@ -681,7 +705,13 @@ describe("pre-start sticky drain", () => {
 	test("settlement archives sticky receipts whose failed stages are no longer materialized (#3467)", async () => {
 		const { store } = rootFixture([]);
 		const backend = await JournalTestBackend.create();
-		await backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.registerWorkflow({
+			workflowId: ROOT_RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		bindStoreDurableBackend(store, backend);
 		await store.queueStickyStageMessage(
 			stickyInput("missing-stages", `workflow:${ROOT_RUN_ID}/**`),

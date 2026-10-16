@@ -28,7 +28,7 @@ function crossRealmJournal(memory: MemoryRunJournal): RunJournal {
 		append: (lease, event, options) => ForeignPromise.resolve(memory.append(lease, event, options)),
 		read: (runId, fromSeq) => memory.read(runId, fromSeq),
 		readKey: (runId, key) => ForeignPromise.resolve(memory.readKey(runId, key)),
-		deleteOwnedRun: (lease) => ForeignPromise.resolve(memory.deleteOwnedRun(lease)),
+		deleteOwnedRun: (lease, expectSeq) => ForeignPromise.resolve(memory.deleteOwnedRun(lease, expectSeq)),
 		deleteRun: (runId) => ForeignPromise.resolve(memory.deleteRun(runId)),
 		close: () => ForeignPromise.resolve(memory.close()),
 	};
