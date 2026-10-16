@@ -88,7 +88,11 @@ export function createMcpToolName(
 	const name = `mcp__${server}__${tool}`.replace(/[^A-Za-z0-9_]/g, "_");
 	if (name.length <= MAX_TOOL_NAME_LENGTH && !isTaken(name)) return name;
 	const hash = createHash("sha256").update(`${server}\0${tool}`).digest("hex").slice(0, 8);
-	return `${name.slice(0, MAX_TOOL_NAME_LENGTH - hash.length - 1)}_${hash}`;
+	for (let attempt = 0; ; attempt++) {
+		const suffix = attempt === 0 ? hash : `${hash}_${attempt}`;
+		const candidate = `${name.slice(0, MAX_TOOL_NAME_LENGTH - suffix.length - 1)}_${suffix}`;
+		if (!isTaken(candidate)) return candidate;
+	}
 }
 
 function textOf(content: readonly (TextContent | ImageContent)[]): string {

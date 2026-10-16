@@ -287,6 +287,51 @@ describe("MCP tools", () => {
 		assert.match(second, /^mcp__s__a_b_[0-9a-f]{8}$/);
 	});
 
+	it("keeps distinct MCP tool names and existing owners when a generated suffix collides (#3667)", () => {
+		const server = "demo";
+		const tools = ["a_b_108b2fb7", "a-b", "a_b"];
+		const toolOwners = new Map<string, string>();
+		const current = new Set<string>();
+		const plain = tools.map((tool) => createMcpToolName(server, tool));
+		const names = tools.map((tool) => {
+			const owner = `${server}\0${tool}`;
+			const name = createMcpToolName(server, tool, (candidate) => {
+				const existing = toolOwners.get(candidate);
+				return (
+					(existing !== undefined && existing !== owner) ||
+					current.has(candidate) ||
+					plain.indexOf(candidate) !== plain.lastIndexOf(candidate)
+				);
+			});
+			toolOwners.set(name, owner);
+			current.add(name);
+			return name;
+		});
+		assert.equal(new Set(names).size, tools.length);
+		assert.equal(names[0], "mcp__demo__a_b_108b2fb7");
+		assert.equal(names[2], "mcp__demo__a_b_f8c0c823");
+		for (const [index, name] of names.entries()) {
+			assert.equal(toolOwners.get(name), `${server}\0${tools[index]}`);
+		}
+	});
+
+	it.each(["a-b", "x".repeat(100)])("skips repeatedly reserved suffixes for %s (#3667)", (tool) => {
+		const plain = createMcpToolName("demo", tool);
+		const reserved = new Set([plain]);
+		for (let index = 0; index < 3; index++) {
+			const name = createMcpToolName("demo", tool, (candidate) => reserved.has(candidate));
+			assert.ok(!reserved.has(name));
+			assert.ok(name.length <= 64);
+			assert.match(name, /^[A-Za-z0-9_]+$/);
+			assert.equal(
+				createMcpToolName("demo", tool, (candidate) => reserved.has(candidate)),
+				name,
+			);
+			reserved.add(name);
+		}
+		assert.equal(createMcpToolName("demo", tool), plain);
+	});
+
 	it("converts results, passing the CallToolResult to scripts and flagging errors", async () => {
 		const blocks = [
 			{ type: "resource_link" as const, uri: "file:///a", name: "a" },
