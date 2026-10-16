@@ -19,6 +19,7 @@
 
 - Fixed Xiaomi MiMo and all regional Token Plan providers defaulting to a deprecated model omitted from the generated catalog. They now select MiMo V2.6 Pro (`mimo-v2.6-pro`) by default.
 - Fixed failed prompts sent after compaction dropping messages queued while the prompt was pending. Later steering, follow-up, and compaction messages now survive recovery without duplicating the original batch ([#3654](https://github.com/bastani-inc/atomic/issues/3654)).
+- Fixed compaction file lists omitting hashline edits, including multi-file edits and nested tool calls. Edited files now appear under modified files rather than read-only files ([#3656](https://github.com/bastani-inc/atomic/issues/3656)).
 
 ### Removed
 

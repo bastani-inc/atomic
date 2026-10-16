@@ -26,6 +26,7 @@ import {
 	extractFileOpsFromMessage,
 	type FileOperations,
 	formatFileOperations,
+	normalizeFileOpPath,
 	SUMMARIZATION_SYSTEM_PROMPT,
 	serializeConversation,
 } from "./utils.ts";
@@ -68,6 +69,7 @@ export interface CollectEntriesResult {
 }
 
 export interface GenerateBranchSummaryOptions {
+	cwd?: string;
 	/** Model to use for summarization */
 	model: Model<Api>;
 	/** API key for the model; omitted for header-only bearer authentication. */
@@ -210,7 +212,11 @@ function getMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
  * @param entries - Entries in chronological order
  * @param tokenBudget - Maximum tokens to include (0 = no limit)
  */
-export function prepareBranchEntries(entries: SessionEntry[], tokenBudget: number = 0): BranchPreparation {
+export function prepareBranchEntries(
+	entries: SessionEntry[],
+	tokenBudget: number = 0,
+	cwd?: string,
+): BranchPreparation {
 	const messages: AgentMessage[] = [];
 	const fileOps = createFileOps();
 	const filteredEntries = entries;
@@ -223,12 +229,12 @@ export function prepareBranchEntries(entries: SessionEntry[], tokenBudget: numbe
 		if (entry.type === "branch_summary" && !entry.fromHook && entry.details) {
 			const details = entry.details as BranchSummaryDetails;
 			if (Array.isArray(details.readFiles)) {
-				for (const f of details.readFiles) fileOps.read.add(f);
+				for (const f of details.readFiles) fileOps.read.add(normalizeFileOpPath(f, cwd));
 			}
 			if (Array.isArray(details.modifiedFiles)) {
 				// Modified files go into both edited and written for proper deduplication
 				for (const f of details.modifiedFiles) {
-					fileOps.edited.add(f);
+					fileOps.edited.add(normalizeFileOpPath(f, cwd));
 				}
 			}
 		}
@@ -241,7 +247,7 @@ export function prepareBranchEntries(entries: SessionEntry[], tokenBudget: numbe
 		if (!message) continue;
 
 		// Extract file ops from assistant messages (tool calls)
-		extractFileOpsFromMessage(message, fileOps);
+		extractFileOpsFromMessage(message, fileOps, cwd);
 
 		const tokens = estimateTokens(message);
 
@@ -332,7 +338,7 @@ export async function generateBranchSummary(
 	const contextWindow = model.contextWindow || 128000;
 	const tokenBudget = contextWindow - reserveTokens;
 
-	const { messages, fileOps } = prepareBranchEntries(entries, tokenBudget);
+	const { messages, fileOps } = prepareBranchEntries(entries, tokenBudget, options.cwd);
 
 	if (messages.length === 0) {
 		return { summary: "No content to summarize" };

@@ -21,6 +21,7 @@ import {
 	extractFileOpsFromMessage,
 	type FileOperations,
 	formatFileOperations,
+	normalizeFileOpPath,
 	SUMMARIZATION_SYSTEM_PROMPT,
 	serializeConversation,
 } from "./utils.ts";
@@ -108,6 +109,7 @@ function conversationMessages(entry: ProjectedSessionEntry): AgentMessage[] {
 export function preparePiSummaryCompaction(
 	pathEntries: SessionEntry[],
 	settings: PiSummarySettings,
+	cwd?: string,
 ): PiSummaryPreparation | undefined {
 	if (pathEntries.at(-1)?.type === "compaction") return undefined;
 	const projection = buildSessionProjection(pathEntries);
@@ -202,11 +204,13 @@ export function preparePiSummaryCompaction(
 		] as const) {
 			if (key in previousDetails) {
 				const files = (previousDetails as { readFiles?: string[]; modifiedFiles?: string[] })[key];
-				if (Array.isArray(files)) for (const file of files) if (typeof file === "string") target.add(file);
+				if (Array.isArray(files))
+					for (const file of files) if (typeof file === "string") target.add(normalizeFileOpPath(file, cwd));
 			}
 		}
 	}
-	for (const message of [...messagesToSummarize, ...turnPrefixMessages]) extractFileOpsFromMessage(message, fileOps);
+	for (const message of [...messagesToSummarize, ...turnPrefixMessages])
+		extractFileOpsFromMessage(message, fileOps, cwd);
 	return {
 		firstKeptEntryId: entries[cut].sourceEntry.id,
 		messagesToSummarize,
@@ -312,9 +316,9 @@ export async function runPiSummaryFallback(
 	entries: SessionEntry[],
 	settings: PiSummarySettings,
 	planner: BorrowedPlanner,
-	options: RangePlannerOptions & { signal?: AbortSignal },
+	options: RangePlannerOptions & { signal?: AbortSignal; cwd?: string },
 ): Promise<PiSummaryResult> {
-	const preparation = preparePiSummaryCompaction(entries, settings);
+	const preparation = preparePiSummaryCompaction(entries, settings, options.cwd);
 	if (!preparation) throw new Error("No compactable history for pi summary fallback");
 	const model = plannerRequestModel(planner);
 	const summarize = async (

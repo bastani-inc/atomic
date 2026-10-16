@@ -2,8 +2,11 @@
  * Shared utilities for compaction and branch summarization.
  */
 
+import { isAbsolute, relative, sep } from "node:path";
 import type { Message } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { Patch } from "../tools/hashline-engine/index.ts";
+import { resolveToCwd } from "../tools/path-utils.ts";
 import type { LineRange } from "./compaction-types.js";
 
 // ============================================================================
@@ -27,9 +30,9 @@ export function createFileOps(): FileOperations {
 /**
  * Extract file operations from direct and recorded nested tool calls.
  */
-export function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOperations): void {
+export function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOperations, cwd?: string): void {
 	if (message.role === "toolResult") {
-		for (const call of message.nestedCalls?.calls ?? []) addFileOp(call.name, call.arguments, fileOps);
+		for (const call of message.nestedCalls?.calls ?? []) addFileOp(call.name, call.arguments, fileOps, cwd);
 		return;
 	}
 	if (message.role !== "assistant") return;
@@ -40,16 +43,42 @@ export function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOp
 		if (!("type" in block) || block.type !== "toolCall") continue;
 		if (!("arguments" in block) || !("name" in block)) continue;
 
-		addFileOp(block.name, block.arguments as Record<string, unknown> | undefined, fileOps);
+		addFileOp(block.name, block.arguments as Record<string, unknown> | undefined, fileOps, cwd);
 	}
 }
 
-function addFileOp(name: string, args: Record<string, unknown> | undefined, fileOps: FileOperations): void {
+function addFileOp(
+	name: string,
+	args: Record<string, unknown> | undefined,
+	fileOps: FileOperations,
+	cwd?: string,
+): void {
+	if (name === "edit" && typeof args?.input === "string") {
+		for (const path of hashlineEditPaths(args.input)) fileOps.edited.add(normalizeFileOpPath(path, cwd));
+	}
 	const path = typeof args?.path === "string" ? args.path : undefined;
 	if (!path) return;
-	if (name === "read") fileOps.read.add(path);
-	else if (name === "write") fileOps.written.add(path);
-	else if (name === "edit") fileOps.edited.add(path);
+	const normalizedPath = normalizeFileOpPath(path, cwd);
+	if (name === "read") fileOps.read.add(normalizedPath);
+	else if (name === "write") fileOps.written.add(normalizedPath);
+	else if (name === "edit") fileOps.edited.add(normalizedPath);
+}
+
+export function normalizeFileOpPath(path: string, cwd?: string): string {
+	if (cwd === undefined || /^[a-z][a-z0-9+.-]*:\/\//i.test(path)) return path;
+	const absolutePath = resolveToCwd(path, cwd);
+	const relativePath = relative(cwd, absolutePath);
+	return relativePath === ".." || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)
+		? absolutePath
+		: relativePath || ".";
+}
+
+function hashlineEditPaths(input: string): string[] {
+	try {
+		return Patch.parse(input).sections.map((section) => section.path);
+	} catch {
+		return [];
+	}
 }
 
 /**
