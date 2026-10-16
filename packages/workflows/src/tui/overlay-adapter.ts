@@ -298,8 +298,8 @@ export function buildGraphOverlayAdapter(
 
 		// Already mounted but hidden — flip visibility without remounting.
 		if (mounted && currentHandle?.isHidden()) {
-			currentView?.retarget(runId, stageId, stageRunId);
 			currentView?.setVisible(true);
+			currentView?.retarget(runId, stageId, stageRunId);
 			updateTerminalAutowrap(true);
 			currentHandle.setHidden(false);
 			currentHandle.focus();
