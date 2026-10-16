@@ -32,40 +32,44 @@ import { store } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { testRunId } from "../helpers/run-id.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const SESSION_ID = "session-a";
 const DEAD_EXECUTOR_ID = "unavailable-holder";
 
-class ThrowingHydrationBackend extends InMemoryDurableBackend {
-	override async hydrateResumableWorkflows(): Promise<void> {
-		throw new StorageUnavailableError(
-			{ adapter: "node-sqlite", location: "/unavailable/journal.sqlite" },
-			new Error("disk unavailable"),
-		);
-	}
-	override async hydrateWorkflow(): Promise<void> {
-		await this.hydrateResumableWorkflows();
-	}
+async function createThrowingHydrationBackend() {
+	const backend = Object.assign(await createMemoryTestBackend(), {});
+	return Object.assign(backend, {
+		async hydrateResumableWorkflows(): Promise<void> {
+			throw new StorageUnavailableError(
+				{ adapter: "node-sqlite", location: "/unavailable/journal.sqlite" },
+				new Error("disk unavailable"),
+			);
+		},
+		async hydrateWorkflow(): Promise<void> {
+			await backend.hydrateResumableWorkflows();
+		},
+	});
 }
 
-class CatalogScanCountingBackend extends InMemoryDurableBackend {
-	catalogScans = 0;
-	override async prepareWorkflowCatalog(): Promise<DurableWorkflowCatalogEntries> {
-		this.catalogScans += 1;
-		return super.prepareWorkflowCatalog();
-	}
+async function createCatalogScanCountingBackend() {
+	const backend = Object.assign(await createMemoryTestBackend(), { catalogScans: 0 });
+	const baseprepareWorkflowCatalog = backend.prepareWorkflowCatalog.bind(backend);
+	return Object.assign(backend, {
+		async prepareWorkflowCatalog(): Promise<DurableWorkflowCatalogEntries> {
+			backend.catalogScans += 1;
+			return baseprepareWorkflowCatalog();
+		},
+	});
 }
 
-class FailingInspectionBackend extends InMemoryDurableBackend {
-	private readonly failure: Error;
-	constructor(failure: Error) {
-		super();
-		this.failure = failure;
-	}
-	override async hydrateWorkflow(): Promise<void> {
-		throw this.failure;
-	}
+async function createFailingInspectionBackend(failure: Error) {
+	const backend = Object.assign(await createMemoryTestBackend(), { failure: failure });
+	return Object.assign(backend, {
+		async hydrateWorkflow(): Promise<void> {
+			throw backend.failure;
+		},
+	});
 }
 
 function sessionContext(sessionId: string): PiEventContext {
@@ -204,9 +208,9 @@ async function rejection(operation: Promise<unknown>): Promise<Error> {
 	throw new assert.AssertionError({ message: "expected the operation to reject" });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
 	store.clear();
-	setDurableBackend(new InMemoryDurableBackend());
+	setDurableBackend(await createMemoryTestBackend());
 });
 
 afterEach(() => {
@@ -218,10 +222,10 @@ afterEach(() => {
 describe("session workflow run control", () => {
 	test.sequential("fresh SDK sessions inspect crashed durable runs without adopting them (#3419)", async () => {
 		const runId = testRunId("sdk-crashed-inspection");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		backend.workflowOwnership = () => "available";
-		backend.registerWorkflow({
+		backend.workflowOwnership = async () => "available";
+		await backend.registerWorkflow({
 			workflowId: runId,
 			name: "session-run-control",
 			inputs: {},
@@ -247,10 +251,10 @@ describe("session workflow run control", () => {
 
 	test.sequential("fresh SDK sessions adopt crashed durable ownership through resume (#3419)", async () => {
 		const runId = testRunId("sdk-crashed-adoption");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		backend.workflowOwnership = () => "available";
-		backend.registerWorkflow({
+		backend.workflowOwnership = async () => "available";
+		await backend.registerWorkflow({
 			workflowId: runId,
 			name: "session-run-control",
 			inputs: {},
@@ -277,9 +281,9 @@ describe("session workflow run control", () => {
 	});
 	test.sequential("SDK preserves existing resume authority for unattributed user launches (#3419)", async () => {
 		const runId = testRunId("sdk-user-durable-resume");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: runId,
 			name: "session-run-control",
 			inputs: {},
@@ -300,10 +304,10 @@ describe("session workflow run control", () => {
 		for (const [index, overrides] of cases.entries()) {
 			store.clear();
 			const runId = testRunId(`sdk-recovery-refusal-${index}`);
-			const backend = new InMemoryDurableBackend();
+			const backend = await createMemoryTestBackend();
 			setDurableBackend(backend);
-			backend.workflowOwnership = () => "available";
-			backend.registerWorkflow({
+			backend.workflowOwnership = async () => "available";
+			await backend.registerWorkflow({
 				workflowId: runId,
 				name: "session-run-control",
 				inputs: {},
@@ -336,9 +340,9 @@ describe("session workflow run control", () => {
 	] as const) {
 		test.sequential(`fresh SDK sessions adopt a ${label} run released by its disposed owner through resume (#3566)`, async () => {
 			const runId = testRunId(`sdk-released-adoption-${label}`);
-			const backend = new InMemoryDurableBackend();
+			const backend = await createMemoryTestBackend();
 			setDurableBackend(backend);
-			backend.registerWorkflow({
+			await backend.registerWorkflow({
 				workflowId: runId,
 				name: "session-run-control",
 				inputs: {},
@@ -368,9 +372,9 @@ describe("session workflow run control", () => {
 
 	test.sequential("SDK refuses a paused agent-launched run whose owning session has not released it (#3566)", async () => {
 		const runId = testRunId("sdk-unreleased-paused");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: runId,
 			name: "session-run-control",
 			inputs: {},
@@ -406,9 +410,9 @@ describe("session workflow run control", () => {
 		for (const [index, overrides] of cases.entries()) {
 			store.clear();
 			const runId = testRunId(`sdk-released-refusal-${index}`);
-			const backend = new InMemoryDurableBackend();
+			const backend = await createMemoryTestBackend();
 			setDurableBackend(backend);
-			backend.registerWorkflow({
+			await backend.registerWorkflow({
 				workflowId: runId,
 				name: "session-run-control",
 				inputs: {},
@@ -533,10 +537,10 @@ describe("session workflow run control", () => {
 
 	test.sequential("refuses to resume a run executing in another live process as WorkflowRunOwnershipError (#3377)", async () => {
 		const runId = testRunId("session-run-control-foreign-process");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		backend.workflowOwnership = () => "foreign";
-		backend.registerWorkflow({
+		backend.workflowOwnership = async () => "foreign";
+		await backend.registerWorkflow({
 			workflowId: runId,
 			name: "session-run-control",
 			inputs: {},
@@ -557,10 +561,10 @@ describe("session workflow run control", () => {
 
 	test.sequential("rejects pause and quit of a run executing in another live process as WorkflowRunOwnershipError (#3377)", async () => {
 		const runId = testRunId("session-run-control-foreign-process-control");
-		const backend = new InMemoryDurableBackend();
-		backend.workflowOwnership = () => "foreign";
+		const backend = await createMemoryTestBackend();
+		backend.workflowOwnership = async () => "foreign";
 		setDurableBackend(backend);
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: runId,
 			name: "session-run-control",
 			inputs: {},
@@ -583,9 +587,9 @@ describe("session workflow run control", () => {
 
 	test.sequential("rejects pause and quit of a durable run owned by another session as WorkflowRunOwnershipError (#3377)", async () => {
 		const runId = testRunId("session-run-control-foreign-session-durable");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: runId,
 			name: "session-run-control",
 			inputs: {},
@@ -607,9 +611,9 @@ describe("session workflow run control", () => {
 
 	test.sequential("rejects unknown and foreign run prefixes without scanning the durable catalog (#3377)", async () => {
 		const foreignId = testRunId("session-run-control-prefix-foreign");
-		const backend = new CatalogScanCountingBackend();
+		const backend = await createCatalogScanCountingBackend();
 		setDurableBackend(backend);
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: foreignId,
 			name: "session-run-control",
 			inputs: {},
@@ -661,9 +665,9 @@ describe("session workflow run control", () => {
 		store.recordRunStart(run(completedId));
 		store.recordRunEnd(completedId, "completed");
 		const noProgressId = testRunId("session-run-control-no-progress");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: noProgressId,
 			name: "session-run-control",
 			inputs: {},
@@ -682,7 +686,7 @@ describe("session workflow run control", () => {
 
 	test.sequential("reports journal failures as WorkflowRunStorageError (#3377)", async () => {
 		const hydrationId = testRunId("session-run-control-database-hydration");
-		setDurableBackend(new ThrowingHydrationBackend());
+		setDurableBackend(await createThrowingHydrationBackend());
 		const { control } = setup();
 
 		const hydration = await rejection(control.resume(hydrationId));
@@ -703,7 +707,7 @@ describe("session workflow run control", () => {
 			{ adapter: "node-sqlite", location: "/unavailable/journal.sqlite" },
 			new Error("read failed"),
 		);
-		setDurableBackend(new FailingInspectionBackend(failure));
+		setDurableBackend(await createFailingInspectionBackend(failure));
 		const { control } = setup();
 		const runId = testRunId("session-run-control-database-reset");
 
@@ -845,9 +849,9 @@ describe("session workflow run control", () => {
 
 	test.sequential("rejects a stage-scoped resume of a durable run with WorkflowStageResumeUnsupportedError (#3377)", async () => {
 		const runId = testRunId("session-run-control-stage-durable-resume");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: runId,
 			name: "session-run-control",
 			inputs: {},
@@ -1384,7 +1388,7 @@ describe("session workflow run control", () => {
 
 	test.sequential("returns a structured storage_unavailable result when durable inspection fails for an unknown run (#3377)", async () => {
 		const runId = testRunId("session-run-control-inspection-outage");
-		setDurableBackend(new FailingInspectionBackend(new DurableBackendNotInitializedError()));
+		setDurableBackend(await createFailingInspectionBackend(new DurableBackendNotInitializedError()));
 		const { execute } = setup();
 
 		for (const action of ["pause", "quit"] as const) {
@@ -1399,7 +1403,7 @@ describe("session workflow run control", () => {
 
 	test.sequential("returns a structured storage_unavailable result when durable inspection throws (#3377)", async () => {
 		const runId = testRunId("session-run-control-inspection-plain-error");
-		setDurableBackend(new FailingInspectionBackend(new Error("connect ECONNREFUSED 127.0.0.1:5432")));
+		setDurableBackend(await createFailingInspectionBackend(new Error("connect ECONNREFUSED 127.0.0.1:5432")));
 		const { execute, control } = setup();
 
 		for (const action of ["pause", "quit"] as const) {
@@ -1424,10 +1428,10 @@ describe("session workflow run control", () => {
 
 	test.sequential("still reports the foreign owner when durable inspection succeeds (#3377)", async () => {
 		const runId = testRunId("session-run-control-inspection-healthy");
-		const backend = new InMemoryDurableBackend();
-		backend.workflowOwnership = () => "foreign";
+		const backend = await createMemoryTestBackend();
+		backend.workflowOwnership = async () => "foreign";
 		setDurableBackend(backend);
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: runId,
 			name: "session-run-control",
 			inputs: {},
@@ -1535,12 +1539,12 @@ test("SDK workflow history reads stored summaries for durable, completed and liv
 });
 
 test("SDK details retain stored generated summary metadata for durable and completed runs", async () => {
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	setDurableBackend(backend);
 	const { control } = setup();
 	for (const status of ["paused", "completed"] as const) {
 		const runId = testRunId(`stored-summary-${status}`);
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: runId,
 			name: "session-run-control",
 			inputs: { objective: "Build parser" },

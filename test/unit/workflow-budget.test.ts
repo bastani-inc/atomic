@@ -31,7 +31,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import type { WorkflowModelAttempt, WorkflowModelUsage } from "../../packages/workflows/src/shared/types.js";
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import {
 	type AgentSession,
 	type AgentSessionAdapter,
@@ -857,7 +857,7 @@ describe("token and cost budget metering", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(0);
 		const runId = "budget-durable-accounting";
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const definition = workflow({
 			name: "budget-durable-accounting",
 			description: "",
@@ -1636,7 +1636,7 @@ describe("budget executor boundaries", () => {
 	test("budget live child boundary preserves the frontier result on raised resume", async () => {
 		const sleep = (milliseconds: number): Promise<void> =>
 			new Promise((resolve) => setTimeout(resolve, milliseconds));
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const child = workflow({
 			name: "budget-live-child",
 			description: "",
@@ -1776,7 +1776,7 @@ describe("budget executor boundaries", () => {
 	test("budget resume carries elapsed time, repeats no wrap-up at the same ceiling, and continues when raised", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(0);
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const definition = workflow({
 			name: "budget-resume",
 			description: "",
@@ -1855,7 +1855,7 @@ describe("budget executor boundaries", () => {
 	test("budget wrap-up never replaces the frontier result during raised resume", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(0);
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		let completeCalls = 0;
 		const definition = workflow({
 			name: "budget-frontier-result",
@@ -1944,7 +1944,7 @@ describe("budget executor boundaries", () => {
 	test("budget resumed startup exhaustion lands on the blocked rail with no stage", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(0);
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const definition = workflow({
 			name: "budget-resumed-startup-boundary",
 			description: "",
@@ -1998,7 +1998,7 @@ describe("budget executor boundaries", () => {
 	test("budget exhausted generation can resume again from its boundary with a raised ceiling", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(0);
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const definition = workflow({
 			name: "budget-resume-boundary-chain",
 			description: "",
@@ -2064,7 +2064,7 @@ describe("budget executor boundaries", () => {
 	test("budget failedStageId is a real stage id or absent, never a display name", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(0);
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const definition = workflow({
 			name: "budget-failed-stage-id-shape",
 			description: "",

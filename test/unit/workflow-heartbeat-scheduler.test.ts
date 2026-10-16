@@ -37,7 +37,7 @@ import {
 } from "../../packages/workflows/src/shared/workflow-heartbeat-contract.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
-import { createMemoryTestBackend as createInMemoryTestBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 type Store = ReturnType<typeof createStore>;
 
@@ -1497,8 +1497,11 @@ describe("workflow heartbeat durable cadence anchor", () => {
 });
 
 describe("workflow heartbeat anchor checkpoint", () => {
-	function registerRun(backend: ReturnType<typeof createInMemoryTestBackend>, runId: string): void {
-		backend.registerWorkflow({
+	async function registerRun(
+		backend: Awaited<ReturnType<typeof createMemoryTestBackend>>,
+		runId: string,
+	): Promise<void> {
+		await backend.registerWorkflow({
 			workflowId: runId,
 			name: "heartbeat-workflow",
 			inputs: {},
@@ -1508,8 +1511,11 @@ describe("workflow heartbeat anchor checkpoint", () => {
 	}
 
 	/** One ordinary tool checkpoint, so the run has durable progress of its own. */
-	function recordProgress(backend: ReturnType<typeof createInMemoryTestBackend>, runId: string): void {
-		backend.recordCheckpoint({
+	async function recordProgress(
+		backend: Awaited<ReturnType<typeof createMemoryTestBackend>>,
+		runId: string,
+	): Promise<void> {
+		await backend.recordCheckpoint({
 			topology: { version: 1, nodeId: `tool:${"some-tool"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: runId,
@@ -1522,9 +1528,9 @@ describe("workflow heartbeat anchor checkpoint", () => {
 	}
 
 	test("persisted heartbeat records require the launch cadence", async () => {
-		const backend = createInMemoryTestBackend();
+		const backend = await createMemoryTestBackend();
 		const runId = testRunId("heartbeat-anchor-requires-cadence");
-		registerRun(backend, runId);
+		await registerRun(backend, runId);
 		await backend.recordCheckpoint({
 			kind: "tool",
 			workflowId: runId,
@@ -1546,9 +1552,9 @@ describe("workflow heartbeat anchor checkpoint", () => {
 	});
 
 	test("a run with no durable progress of its own is never made to look resumable", async () => {
-		const backend = createInMemoryTestBackend();
+		const backend = await createMemoryTestBackend();
 		const runId = testRunId("heartbeat-anchor-no-progress");
-		registerRun(backend, runId);
+		await registerRun(backend, runId);
 
 		assert.equal(
 			await recordWorkflowHeartbeatAnchor(backend, {
@@ -1571,11 +1577,11 @@ describe("workflow heartbeat anchor checkpoint", () => {
 	});
 
 	test("a pause that creates the first durable progress preserves the original cadence on resume", async () => {
-		const backend = createInMemoryTestBackend();
+		const backend = await createMemoryTestBackend();
 		const runId = testRunId("heartbeat-anchor-first-progress-during-pause");
 		const intervalMinutes = 15;
 		const pauseAt = STARTED_AT + 5 * MINUTE_MS;
-		registerRun(backend, runId);
+		await registerRun(backend, runId);
 
 		const anchorStore: WorkflowHeartbeatAnchorStore = {
 			readAnchorAt(id) {
@@ -1674,11 +1680,11 @@ describe("workflow heartbeat anchor checkpoint", () => {
 	});
 
 	test("an ordinary first checkpoint persists the anchor even when the scheduler's write never lands", async () => {
-		const backend = createInMemoryTestBackend();
+		const backend = await createMemoryTestBackend();
 		const runId = testRunId("heartbeat-anchor-first-progress-crash-race");
 		const launchIntervalMinutes = 15;
 		const checkpointAt = STARTED_AT + 5 * MINUTE_MS;
-		registerRun(backend, runId);
+		await registerRun(backend, runId);
 
 		// The scheduler's own launch-record write is asynchronous and best-effort.
 		// This store models the process exiting while that write is still in
@@ -1774,10 +1780,10 @@ describe("workflow heartbeat anchor checkpoint", () => {
 	});
 
 	test("the record carries the launch cadence and rejects corrupt cadence", async () => {
-		const backend = createInMemoryTestBackend();
+		const backend = await createMemoryTestBackend();
 		const runId = testRunId("heartbeat-anchor-cadence-field");
-		registerRun(backend, runId);
-		recordProgress(backend, runId);
+		await registerRun(backend, runId);
+		await recordProgress(backend, runId);
 
 		await recordWorkflowHeartbeatAnchor(backend, {
 			runId,
@@ -1787,9 +1793,9 @@ describe("workflow heartbeat anchor checkpoint", () => {
 		});
 		assert.deepEqual(readWorkflowHeartbeatAnchor(backend, runId), { anchorAt: STARTED_AT, intervalMinutes: 7 });
 
-		const corruptBackend = createInMemoryTestBackend();
+		const corruptBackend = await createMemoryTestBackend();
 		const corruptRunId = testRunId("heartbeat-anchor-corrupt-shape");
-		registerRun(corruptBackend, corruptRunId);
+		await registerRun(corruptBackend, corruptRunId);
 		await corruptBackend.recordCheckpoint({
 			kind: "tool",
 			workflowId: corruptRunId,
@@ -1822,10 +1828,10 @@ describe("workflow heartbeat anchor checkpoint", () => {
 	});
 
 	test("many boundaries produce exactly one row, and the first anchor stands", async () => {
-		const backend = createInMemoryTestBackend();
+		const backend = await createMemoryTestBackend();
 		const runId = testRunId("heartbeat-anchor-one-row");
-		registerRun(backend, runId);
-		recordProgress(backend, runId);
+		await registerRun(backend, runId);
+		await recordProgress(backend, runId);
 
 		for (let boundary = 1; boundary <= 3; boundary += 1) {
 			await recordWorkflowHeartbeatAnchor(backend, {
@@ -1850,10 +1856,10 @@ describe("workflow heartbeat anchor checkpoint", () => {
 	});
 
 	test("the record stamps write time, so it cannot walk liveness backwards", async () => {
-		const backend = createInMemoryTestBackend();
+		const backend = await createMemoryTestBackend();
 		const runId = testRunId("heartbeat-anchor-liveness");
-		registerRun(backend, runId);
-		recordProgress(backend, runId);
+		await registerRun(backend, runId);
+		await recordProgress(backend, runId);
 		const before = backend.getWorkflow(runId)?.updatedAt ?? 0;
 
 		const writeTime = before + 10 * MINUTE_MS;
@@ -1871,10 +1877,10 @@ describe("workflow heartbeat anchor checkpoint", () => {
 	});
 
 	test("the anchor record produces no graph node in durable reconstruction", async () => {
-		const backend = createInMemoryTestBackend();
+		const backend = await createMemoryTestBackend();
 		const runId = testRunId("heartbeat-anchor-reconstruction");
-		registerRun(backend, runId);
-		recordProgress(backend, runId);
+		await registerRun(backend, runId);
+		await recordProgress(backend, runId);
 		await recordWorkflowHeartbeatAnchor(backend, {
 			runId,
 			anchorAt: STARTED_AT,

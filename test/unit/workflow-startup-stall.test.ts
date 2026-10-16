@@ -10,7 +10,7 @@ import { createStageControlRegistry } from "../../packages/workflows/src/runs/fo
 import type { StageStartupSnapshot } from "../../packages/workflows/src/shared/stage-startup.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { renderRunDetail } from "../../packages/workflows/src/tui/run-detail.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { createStageContext, makeMockSession, makeOpts } from "./stage-runner-helpers.js";
 
 // #3040: exercise production preparation, serialized reload, SDK and binding, not a replacement queue.
@@ -259,7 +259,7 @@ test("paused and quit startup stays observable; owner cancellation terminates st
 			adapters: buildRuntimeAdapters({}, { sdk }),
 			stageControlRegistry: controls,
 			toolControlRegistry: tools,
-			durableBackend: new InMemoryDurableBackend(),
+			durableBackend: await createMemoryTestBackend(),
 			signal: owner.signal,
 		},
 	);

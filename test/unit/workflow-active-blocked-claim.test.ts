@@ -7,7 +7,10 @@ import { createJobTracker } from "../../packages/workflows/src/runs/background/j
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { testRunId } from "../helpers/run-id.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import {
+	createMemoryTestBackend,
+	type MemoryJournalBackend as InMemoryDurableBackend,
+} from "../helpers/workflow-journal.js";
 
 const runId = testRunId("active-blocked-claim");
 
@@ -47,8 +50,8 @@ function seedBlockedRun() {
 	return store;
 }
 
-function registerBlockedDurable(backend: InMemoryDurableBackend, completedCheckpoints = 1) {
-	backend.registerWorkflow({
+async function registerBlockedDurable(backend: InMemoryDurableBackend, completedCheckpoints = 1) {
+	await backend.registerWorkflow({
 		workflowId: runId,
 		name: "claim-flow",
 		inputs: {},
@@ -59,13 +62,17 @@ function registerBlockedDurable(backend: InMemoryDurableBackend, completedCheckp
 	});
 }
 
-class FailingInvocationMetadataBackend extends InMemoryDurableBackend {
-	override registerWorkflow(handle: Parameters<InMemoryDurableBackend["registerWorkflow"]>[0]): void {
-		if (handle.invocationCwd !== undefined) {
-			throw new Error("invocation metadata persistence failed");
-		}
-		super.registerWorkflow(handle);
-	}
+async function createFailingInvocationMetadataBackend() {
+	const backend = Object.assign(await createMemoryTestBackend(), {});
+	const baseregisterWorkflow = backend.registerWorkflow.bind(backend);
+	return Object.assign(backend, {
+		async registerWorkflow(handle: Parameters<InMemoryDurableBackend["registerWorkflow"]>[0]): Promise<void> {
+			if (handle.invocationCwd !== undefined) {
+				throw new Error("invocation metadata persistence failed");
+			}
+			await baseregisterWorkflow(handle);
+		},
+	});
 }
 
 function claimFlow() {
@@ -83,8 +90,8 @@ function claimFlow() {
 
 describe("active-blocked resume claim", () => {
 	test("continues the same identity and completes its durable state", async () => {
-		const backend = new InMemoryDurableBackend();
-		registerBlockedDurable(backend);
+		const backend = await createMemoryTestBackend();
+		await registerBlockedDurable(backend);
 		setDurableBackend(backend);
 		const store = seedBlockedRun();
 		const jobs = createJobTracker();
@@ -105,9 +112,9 @@ describe("active-blocked resume claim", () => {
 		assert.equal(store.runs().find((run) => run.id === continuationId)?.status, "completed");
 	});
 
-	test("keeps a zero-checkpoint block recoverable (durable source unchanged)", () => {
-		const backend = new InMemoryDurableBackend();
-		registerBlockedDurable(backend, 0);
+	test("keeps a zero-checkpoint block recoverable (durable source unchanged)", async () => {
+		const backend = await createMemoryTestBackend();
+		await registerBlockedDurable(backend, 0);
 		// The source is a zero-progress blocked handle; leaving it untouched (rather
 		// than claiming `running`) keeps it listed and recoverable.
 		assert.deepEqual(
@@ -117,8 +124,8 @@ describe("active-blocked resume claim", () => {
 	});
 
 	test("returns failure when the continuation's startup (run.start) fails, leaving the source resumable", async () => {
-		const backend = new InMemoryDurableBackend();
-		registerBlockedDurable(backend);
+		const backend = await createMemoryTestBackend();
+		await registerBlockedDurable(backend);
 		setDurableBackend(backend);
 		const store = seedBlockedRun();
 		const jobs = createJobTracker();
@@ -163,8 +170,8 @@ describe("active-blocked resume claim", () => {
 	});
 
 	test("same-ID continuation does not register unrelated invocation metadata", async () => {
-		const backend = new FailingInvocationMetadataBackend();
-		registerBlockedDurable(backend);
+		const backend = await createFailingInvocationMetadataBackend();
+		await registerBlockedDurable(backend);
 		setDurableBackend(backend);
 		const store = seedBlockedRun();
 		const jobs = createJobTracker();
@@ -198,8 +205,8 @@ describe("active-blocked resume claim", () => {
 	});
 
 	test("refuses a concurrent second resume (one winner)", async () => {
-		const backend = new InMemoryDurableBackend();
-		registerBlockedDurable(backend);
+		const backend = await createMemoryTestBackend();
+		await registerBlockedDurable(backend);
 		setDurableBackend(backend);
 		const store = seedBlockedRun();
 		const jobs = createJobTracker();
@@ -246,8 +253,8 @@ describe("active-blocked resume claim", () => {
 	});
 
 	test("contains a terminal persistence fault after a successful continuation", async () => {
-		const backend = new InMemoryDurableBackend();
-		registerBlockedDurable(backend);
+		const backend = await createMemoryTestBackend();
+		await registerBlockedDurable(backend);
 		setDurableBackend(backend);
 		const store = seedBlockedRun();
 		const jobs = createJobTracker();
@@ -281,17 +288,19 @@ describe("active-blocked resume claim", () => {
 	test("a terminal control that wins pending resume admission is never overwritten", async () => {
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
-		class HeldAdmissionBackend extends InMemoryDurableBackend {
-			override async transitionWorkflowStatus(
-				...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>
-			) {
-				entered.resolve();
-				await release.promise;
-				return super.transitionWorkflowStatus(...args);
-			}
+		async function createHeldAdmissionBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), {});
+			const basetransitionWorkflowStatus = backend.transitionWorkflowStatus.bind(backend);
+			return Object.assign(backend, {
+				async transitionWorkflowStatus(...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>) {
+					entered.resolve();
+					await release.promise;
+					return basetransitionWorkflowStatus(...args);
+				},
+			});
 		}
-		const backend = new HeldAdmissionBackend();
-		registerBlockedDurable(backend);
+		const backend = await createHeldAdmissionBackend();
+		await registerBlockedDurable(backend);
 		setDurableBackend(backend);
 		const store = seedBlockedRun();
 		const jobs = createJobTracker();
@@ -311,7 +320,7 @@ describe("active-blocked resume claim", () => {
 		});
 		const pending = runtime.resumeFailedRun(runId);
 		await entered.promise;
-		backend.setWorkflowStatus(runId, "cancelled", 0, false);
+		await backend.setWorkflowStatus(runId, "cancelled", 0, false);
 		assert.equal(store.recordRunEnd(runId, "killed"), true);
 		release.resolve();
 		const result = await pending;
@@ -328,17 +337,19 @@ describe("active-blocked resume claim", () => {
 	test("overlapping resumes from different runtime views admit one executor", async () => {
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
-		class HeldAdmissionBackend extends InMemoryDurableBackend {
-			override async transitionWorkflowStatus(
-				...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>
-			) {
-				entered.resolve();
-				await release.promise;
-				return super.transitionWorkflowStatus(...args);
-			}
+		async function createHeldAdmissionBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), {});
+			const basetransitionWorkflowStatus = backend.transitionWorkflowStatus.bind(backend);
+			return Object.assign(backend, {
+				async transitionWorkflowStatus(...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>) {
+					entered.resolve();
+					await release.promise;
+					return basetransitionWorkflowStatus(...args);
+				},
+			});
 		}
-		const backend = new HeldAdmissionBackend();
-		registerBlockedDurable(backend);
+		const backend = await createHeldAdmissionBackend();
+		await registerBlockedDurable(backend);
 		setDurableBackend(backend);
 		const jobs = createJobTracker();
 		let calls = 0;

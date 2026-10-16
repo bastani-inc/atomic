@@ -31,7 +31,10 @@ import type { WorkflowRegistry } from "../../packages/workflows/src/workflows/re
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import {
+	createMemoryTestBackend,
+	type MemoryJournalBackend as InMemoryDurableBackend,
+} from "../helpers/workflow-journal.js";
 
 function makeEntry(workflowId: string, name: string, status: ResumableWorkflowEntry["status"]): ResumableWorkflowEntry {
 	return {
@@ -96,8 +99,8 @@ describe("resumeDurableWorkflow", () => {
 	let cancellation: ReturnType<typeof createCancellationRegistry>;
 	let jobs: ReturnType<typeof createJobTracker>;
 
-	beforeEach(() => {
-		backend = new InMemoryDurableBackend();
+	beforeEach(async () => {
+		backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		store = createStore();
 		cancellation = createCancellationRegistry();
@@ -194,12 +197,15 @@ describe("resumeDurableWorkflow", () => {
 	});
 
 	test("resolves a unique prefix before exact-id loadability checks", async () => {
-		class ExactOnlyLoadableBackend extends InMemoryDurableBackend {
-			override isWorkflowLoadable(workflowId: string): boolean {
-				return this.getWorkflow(workflowId) !== undefined;
-			}
+		async function createExactOnlyLoadableBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), {});
+			return Object.assign(backend, {
+				isWorkflowLoadable(workflowId: string): boolean {
+					return backend.getWorkflow(workflowId) !== undefined;
+				},
+			});
 		}
-		const exactBackend = new ExactOnlyLoadableBackend();
+		const exactBackend = await createExactOnlyLoadableBackend();
 		const fullId = testRunId("wf-prefix-current");
 		await exactBackend.registerWorkflow({
 			workflowId: fullId,
@@ -555,22 +561,23 @@ describe("resumeDurableWorkflow", () => {
 	});
 
 	test("prepareRuntimeDurableResumable hydrates fresh persistent backend before resume", async () => {
-		class HydratingBackend extends InMemoryDurableBackend {
-			override readonly persistent = true;
-			hydrated = false;
-			async hydrateResumableWorkflows(): Promise<void> {
-				this.hydrated = true;
-				await this.registerWorkflow({
-					workflowId: testRunId("wf-hydrated"),
-					name: "resumable-pipeline",
-					inputs: { topic: "data" },
-					createdAt: 1,
-					status: "paused",
-					completedCheckpoints: 1,
-				});
-			}
+		async function createHydratingBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), { persistent: true, hydrated: false });
+			return Object.assign(backend, {
+				async hydrateResumableWorkflows(): Promise<void> {
+					backend.hydrated = true;
+					await backend.registerWorkflow({
+						workflowId: testRunId("wf-hydrated"),
+						name: "resumable-pipeline",
+						inputs: { topic: "data" },
+						createdAt: 1,
+						status: "paused",
+						completedCheckpoints: 1,
+					});
+				},
+			});
 		}
-		const hydrating = new HydratingBackend();
+		const hydrating = await createHydratingBackend();
 		const catalog = await prepareRuntimeDurableResumable(() => hydrating);
 		assert.equal(hydrating.hydrated, true);
 		assert.equal(catalog.length, 1);

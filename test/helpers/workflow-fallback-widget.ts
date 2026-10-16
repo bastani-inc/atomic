@@ -8,11 +8,11 @@ import { setDurableBackend } from "../../packages/workflows/src/durable/factory.
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { makeMockSession } from "../unit/stage-runner-helpers.js";
-import { createMemoryTestBackend as createInMemoryTestBackend } from "./workflow-journal.js";
+import { createMemoryTestBackend } from "./workflow-journal.js";
 
 /** Real SDK fallback selection/events with a controlled transport and pending workflow prompts. */
 export async function startFallbackWidgetScenario(explicitModel = true) {
-	setDurableBackend(createInMemoryTestBackend());
+	setDurableBackend(await createMemoryTestBackend());
 	const store = createStore();
 	const ready = Promise.withResolvers<void>();
 	const finish = Promise.withResolvers<void>();
@@ -37,18 +37,31 @@ export async function startFallbackWidgetScenario(explicitModel = true) {
 	const events: AgentSessionEvent[] = [];
 	const prompts: string[] = [];
 	const creations: string[] = [];
+	const affectedPromptStarted = Promise.withResolvers<void>();
 	const prompt = async (text: string) => {
 		prompts.push(text);
 		if (prompts.length === 2) ready.resolve();
 		await finish.promise;
 		return undefined;
 	};
-	const affected = makeMockSession({ prompt });
+	const affected = makeMockSession({
+		async prompt(text) {
+			affectedPromptStarted.resolve();
+			return prompt(text);
+		},
+	});
 	Object.defineProperties(affected.session, {
 		model: { get: () => state.model },
 		thinkingLevel: { get: () => state.thinkingLevel },
 	});
-	const sibling = makeMockSession({ model: { ...primary, id: "unchanged" }, thinkingLevel: "low", prompt });
+	const sibling = makeMockSession({
+		model: { ...primary, id: "unchanged" },
+		thinkingLevel: "low",
+		async prompt(text) {
+			await affectedPromptStarted.promise;
+			return prompt(text);
+		},
+	});
 	const sdk = {
 		get model() {
 			return state.model;

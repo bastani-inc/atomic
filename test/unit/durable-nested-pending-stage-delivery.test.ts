@@ -9,7 +9,7 @@ import { createWorkflowPendingStageDelivery } from "../../packages/workflows/src
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { PendingStageMessage } from "../../packages/workflows/src/shared/store-types.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const ROOT_RUN_ID = "11111111-1111-4111-8111-111111111111";
 const CHILD_RUN_ID = "22222222-2222-4222-8222-222222222222";
@@ -34,7 +34,7 @@ afterEach(() => setDurableBackend(undefined));
 test("a child run hydrates and drains only its logical pending messages through the root durable handle", async () => {
 	const rootEntry = pendingMessage(ROOT_RUN_ID, "root-receiver", "root-message");
 	const childEntry = pendingMessage(CHILD_RUN_ID, "receiver", "child-message");
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	await backend.registerWorkflow({
 		workflowId: ROOT_RUN_ID,
 		name: "root",
@@ -367,8 +367,14 @@ test("root, siblings, and arbitrarily nested children isolate dedupe, capacity, 
 		stages: [stage("shared-stage", "shared")],
 		startedAt: 4,
 	});
-	const backend = new InMemoryDurableBackend();
-	backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "root", inputs: {}, status: "running", createdAt: 1 });
+	const backend = await createMemoryTestBackend();
+	await backend.registerWorkflow({
+		workflowId: ROOT_RUN_ID,
+		name: "root",
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+	});
 	const group = `workflow:${ROOT_RUN_ID}`;
 	const sender = { id: "planner-id", name: "planner", group };
 	const views = new Map(

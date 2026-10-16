@@ -10,7 +10,7 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifacts.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const completeReview = JSON.stringify({
 	findings: [],
@@ -30,7 +30,7 @@ for (const interruptedStage of ["orchestrator-1", "completion-reviewer-1"] as co
 		const root = await mkdtemp(join(tmpdir(), "goal-infra-resume-"));
 		const previousRoot = process.env[ENV_WORKFLOW_ARTIFACT_DIR];
 		process.env[ENV_WORKFLOW_ARTIFACT_DIR] = root;
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const calls: string[] = [];
 		let artifactDir = "";
 		let receiptPath = "";

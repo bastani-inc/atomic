@@ -6,7 +6,10 @@ import { afterEach, beforeEach, describe, test } from "vitest";
 import { toolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { testRunId } from "../helpers/run-id.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import {
+	createMemoryTestBackend,
+	type MemoryJournalBackend as InMemoryDurableBackend,
+} from "../helpers/workflow-journal.js";
 import {
 	attachHostCustomUiState,
 	buildGraphOverlayAdapter,
@@ -63,7 +66,11 @@ void [
 	waitForStagePendingPrompt,
 ];
 
-function registerInspectableCompleted(backend: InMemoryDurableBackend, workflowId: string, name: string): () => void {
+async function registerInspectableCompleted(
+	backend: InMemoryDurableBackend,
+	workflowId: string,
+	name: string,
+): Promise<() => void> {
 	const dir = mkdtempSync(join(tmpdir(), "atomic-completed-overlay-"));
 	const sessionFile = join(dir, "stage.jsonl");
 	writeFileSync(
@@ -85,8 +92,8 @@ function registerInspectableCompleted(backend: InMemoryDurableBackend, workflowI
 			}),
 		].join("\n")}\n`,
 	);
-	backend.registerWorkflow({ workflowId, name, inputs: {}, createdAt: 1, status: "completed" });
-	backend.recordCheckpoint({
+	await backend.registerWorkflow({ workflowId, name, inputs: {}, createdAt: 1, status: "completed" });
+	await backend.recordCheckpoint({
 		kind: "stage",
 		workflowId,
 		checkpointId: "stage:1",
@@ -100,8 +107,8 @@ function registerInspectableCompleted(backend: InMemoryDurableBackend, workflowI
 }
 
 describe("/workflow resume — overlay integration", () => {
-	beforeEach(() => {
-		setDurableBackend(new InMemoryDurableBackend());
+	beforeEach(async () => {
+		setDurableBackend(await createMemoryTestBackend());
 	});
 	afterEach(() => setDurableBackend(undefined));
 	test("resume with unknown runId prints not-found, does NOT call custom", async () => {
@@ -137,8 +144,8 @@ describe("/workflow resume — overlay integration", () => {
 
 	test("resume with no runId opens durable picker when only durable entries exist", async () => {
 		singletonStore.clear();
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({
 			workflowId: "durable-picker-run",
 			name: "durable-wf",
 			inputs: {},
@@ -177,8 +184,8 @@ describe("/workflow resume — overlay integration", () => {
 			startedAt: Date.now(),
 		});
 		singletonStore.recordRunEnd(completedRunId, "completed", {});
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({
 			workflowId: "durable-after-completed",
 			name: "durable-history",
 			inputs: {},
@@ -254,8 +261,8 @@ describe("/workflow resume — overlay integration", () => {
 			startedAt: Date.now(),
 		});
 		singletonStore.recordRunPaused(liveRunId);
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({
 			workflowId: liveRunId,
 			name: "live-wf",
 			inputs: {},
@@ -269,7 +276,7 @@ describe("/workflow resume — overlay integration", () => {
 			async resume() {},
 			async quit() {},
 		});
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: "durable-alongside-live",
 			name: "durable-cross-session",
 			inputs: {},
@@ -298,8 +305,8 @@ describe("/workflow resume — overlay integration", () => {
 	test("resume with known authoritative completed runId calls overlay.open", async () => {
 		singletonStore.clear();
 		const runId = testRunId(`test-resume-run-${Date.now()}`);
-		const backend = new InMemoryDurableBackend();
-		const cleanup = registerInspectableCompleted(backend, runId, "test-wf");
+		const backend = await createMemoryTestBackend();
+		const cleanup = await registerInspectableCompleted(backend, runId, "test-wf");
 		setDurableBackend(backend);
 		singletonStore.recordRunStart({
 			id: runId,
@@ -419,7 +426,7 @@ describe("/workflow pause — top-level command", () => {
 });
 
 describe("/workflow resume — paused vs non-paused branching", () => {
-	beforeEach(() => setDurableBackend(new InMemoryDurableBackend()));
+	beforeEach(async () => setDurableBackend(await createMemoryTestBackend()));
 	afterEach(() => setDurableBackend(undefined));
 	test("resume <runId> refuses a completed local snapshot without authoritative data", async () => {
 		singletonStore.clear();
@@ -451,8 +458,8 @@ describe("/workflow attach — top-level command", () => {
 	// Hermetic durable backend: without this, tests that fall back to durable
 	// discovery scan the real ~/.atomic/workflow-durable directory, which can
 	// hold tens of thousands of files on dev machines and blow the 5s timeout.
-	beforeEach(() => {
-		setDurableBackend(new InMemoryDurableBackend());
+	beforeEach(async () => {
+		setDurableBackend(await createMemoryTestBackend());
 	});
 	afterEach(() => setDurableBackend(undefined));
 	test("attach <runId> opens the overlay", async () => {
@@ -513,8 +520,8 @@ describe("/workflow attach — top-level command", () => {
 			startedAt: now,
 		});
 		singletonStore.recordRunPaused(liveRunId);
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({
 			workflowId: liveRunId,
 			name: "live-older-wf",
 			inputs: {},
@@ -528,7 +535,7 @@ describe("/workflow attach — top-level command", () => {
 			async resume() {},
 			async quit() {},
 		});
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: "durable-combined-wf",
 			name: "durable-newer-wf",
 			inputs: {},
@@ -597,8 +604,8 @@ describe("/workflow attach — top-level command", () => {
 			startedAt: Date.now(),
 		});
 		singletonStore.recordRunPaused(liveRunId);
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({
 			workflowId: "durable-dismiss-wf",
 			name: "durable-dismiss",
 			inputs: {},
@@ -641,8 +648,8 @@ describe("/workflow attach — top-level command", () => {
 			startedAt: Date.now(),
 		});
 		singletonStore.recordRunPaused(liveRunId);
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({
 			workflowId: liveRunId,
 			name: "live-hydrate-wf",
 			inputs: {},
@@ -656,7 +663,7 @@ describe("/workflow attach — top-level command", () => {
 			async resume() {},
 			async quit() {},
 		});
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: "durable-hydrate-wf",
 			name: "durable-hydrate",
 			inputs: {},

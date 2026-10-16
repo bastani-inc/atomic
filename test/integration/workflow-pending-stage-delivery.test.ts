@@ -37,7 +37,7 @@ const { default: intercom } = await import("../../packages/intercom/index.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 const { SessionManager } = await import("../../packages/coding-agent/src/core/session-manager-core.ts");
 const { default: intercomHeavy } = await import("../../packages/intercom/index-heavy.js");
-const { MemoryJournalBackend: InMemoryDurableBackend } = await import("../helpers/workflow-journal.js");
+const { createMemoryTestBackend } = await import("../helpers/workflow-journal.js");
 const { setDurableBackend } = await import("../../packages/workflows/src/durable/factory.js");
 const { WorkflowStageAdmissionBoundary: StageAdmissionBoundary } = await import(
 	"../../packages/coding-agent/src/core/workflow-stage-admission.ts"
@@ -576,7 +576,7 @@ test("the real two-session route owner is hidden and rejects ordinary messages w
 	const runId = "88888888-1111-4111-8111-111111111111";
 	const group = `workflow:${runId}`;
 	const store = createStore();
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	configureTestStoreBackend(store, backend);
 	const owner = extensionFixture("recipient-owner", "recipient-owner", undefined, "default");
 	const sender = extensionFixture("recipient-sender", "recipient-sender", undefined, group);
@@ -866,7 +866,7 @@ test("ctx.ui run prompts and synthetic prompt stages are hidden and broker-refus
 	const childId = "65555555-2222-4222-8222-222222222222";
 	const group = `workflow:${rootId}`;
 	const store = createStore();
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	configureTestStoreBackend(store, backend);
 	const owner = extensionFixture("prompt-owner", "prompt-owner", undefined, "default");
 	const sender = extensionFixture("prompt-sender", "prompt-sender", undefined, group);
@@ -1355,7 +1355,7 @@ test.each(["tool", "prompt"] as const)(
 		const runId = "66666666-3333-4333-8333-333333333333";
 		const group = `workflow:${runId}`;
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		configureTestStoreBackend(store, backend);
 		const owner = extensionFixture("ambiguity-owner", "ambiguity-owner", undefined, "default");
 		const sender = extensionFixture("ambiguity-sender", "ambiguity-sender", undefined, group);
@@ -1466,7 +1466,7 @@ test("live agent aliases survive same-name tools when pending capability disappe
 	const runId = "66666666-1111-4111-8111-111111111111";
 	const group = `workflow:${runId}`;
 	const store = createStore();
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	configureTestStoreBackend(store, backend);
 	const owner = extensionFixture("alias-transition-owner", "alias-transition-owner", undefined, group);
 	const sender = extensionFixture("alias-transition-sender", "alias-transition-sender", undefined, group);
@@ -1642,7 +1642,7 @@ test.each([
 		const runId = "66666666-2222-4222-8222-222222222222";
 		const group = `workflow:${runId}`;
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		configureTestStoreBackend(store, backend);
 		const fixtures: ReturnType<typeof extensionFixture>[] = [];
 		const makeOwner = () => {
@@ -1873,7 +1873,7 @@ test("nested known tools are broker-refused through every supported boundary and
 	const grandId = "77777777-3333-4333-8333-333333333333";
 	const group = `workflow:${rootId}`;
 	const store = createStore();
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	configureTestStoreBackend(store, backend);
 	const owner = extensionFixture("nested-purpose-owner", "nested-purpose-owner", undefined, "default");
 	const sender = new RawBrokerClient();
@@ -2122,7 +2122,7 @@ test("materialized ctx.tool IDs and names never become speculative future-agent 
 	const runId = "88888888-3333-4333-8333-333333333333";
 	const group = `workflow:${runId}`;
 	const store = createStore();
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	configureTestStoreBackend(store, backend);
 	const owner = extensionFixture("tool-node-owner", "tool-node-owner", undefined, "default");
 	const sender = new RawBrokerClient();
@@ -2273,7 +2273,7 @@ test("the production owner route respects pending delivery tool restrictions", a
 	for (const scenario of scenarios) {
 		const group = `workflow:${scenario.runId}`;
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		await backend.registerWorkflow({
 			workflowId: scenario.runId,
 			name: scenario.name,
@@ -2351,8 +2351,14 @@ test("an invocation controls pending and live delivery into an owned isolated st
 	const workflowGroup = `workflow:${runId}`;
 	const isolatedGroup = `${workflowGroup}/isolated-reviewers`;
 	const store = createStore();
-	const backend = new InMemoryDurableBackend();
-	backend.registerWorkflow({ workflowId: runId, name: "isolated-live", inputs: {}, status: "running", createdAt: 1 });
+	const backend = await createMemoryTestBackend();
+	await backend.registerWorkflow({
+		workflowId: runId,
+		name: "isolated-live",
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+	});
 	configureTestStoreBackend(store, backend);
 	const owner = extensionFixture("isolated-owner-session", "isolated-owner", undefined, "default");
 	intercom(owner.pi as never);
@@ -2550,7 +2556,7 @@ test("an invocation controls pending and live delivery into an owned isolated st
 
 test("one composite workflow-stage target transitions atomically from durable queueing to live delivery", async () => {
 	const store = createStore();
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	configureTestStoreBackend(store, backend);
 	const owner = extensionFixture("owner-runtime-session", "workflow-owner", undefined, "default");
 	const sender = extensionFixture("sender-runtime-session", "stage-a");
@@ -2835,7 +2841,7 @@ test("route-neutral store churn preserves durable queueing and live delivery for
 	const nameTarget = `${group}/reviewer`;
 	const stageSessionId = "burst-reviewer-session";
 	const store = createStore();
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	configureTestStoreBackend(store, backend);
 	const owner = extensionFixture("burst-owner-session", "burst-owner", undefined, "default");
 	const sender = extensionFixture("burst-sender-session", "burst-sender", undefined, group);
@@ -2948,7 +2954,7 @@ test("a durable pending admission survives a real stage-session fallback attempt
 	const replayKey = "stage:reviewer:1";
 	const attemptSessionIds = ["2717-reviewer-attempt-1", "2717-reviewer-attempt-2"] as const;
 	const store = createStore();
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	await backend.registerWorkflow({
 		workflowId: RUN_ID,
 		name: "attempt-restart",
@@ -3710,7 +3716,7 @@ test("an ordinary queued send receives one correlated failure when its stage bec
 	const runId = "71805cb7-169f-4531-ad39-bbcab6b01087";
 	const group = `workflow:${runId}`;
 	const store = createStore();
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	configureTestStoreBackend(store, backend);
 	const owner = extensionFixture("undeliverable-owner", "undeliverable-owner", undefined, "default");
 	const sender = extensionFixture("undeliverable-sender", "undeliverable-sender", undefined, group);
@@ -3790,7 +3796,7 @@ test("the workflow owner session receives its own undeliverable notice when it i
 	const runId = "5d2c9a1e-6f3b-4c8d-9e0f-1a2b3c4d5e6f";
 	const group = `workflow:${runId}`;
 	const store = createStore();
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	configureTestStoreBackend(store, backend);
 	const owner = extensionFixture("self-notice-owner", "self-notice-owner", undefined, group);
 	intercom(owner.pi as never);
@@ -4077,7 +4083,7 @@ test("a reconnected logical sender receives its durable undeliverable notice aft
 // with the sender identity while future iterations receive the pre-start prelude.
 test("a sticky pattern preludes every materializing iteration and ** broadcasts live stages", async () => {
 	const store = createStore();
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	configureTestStoreBackend(store, backend);
 	const owner = extensionFixture("sticky-owner-session", "workflow-owner", undefined, "default");
 	const sender = extensionFixture("sticky-sender-session", "stage-a");
@@ -4279,7 +4285,7 @@ for (const scenario of ["startup replacement", "durable acknowledgment replay"] 
 		const { fauxAssistantMessage } = await import("@bastani/pi-ai/compat");
 		const { SettingsManager } = await import("../../packages/coding-agent/src/core/settings-manager.js");
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		configureTestStoreBackend(store, backend);
 		const owner = extensionFixture("issue-3406-owner", "owner", undefined, "default");
 		const sender = extensionFixture("issue-3406-sender", "sender");
@@ -4414,7 +4420,7 @@ for (const scenario of ["startup replacement", "durable acknowledgment replay"] 
 test("retired real startup context cannot acknowledge a dropped sticky message (#3406)", async () => {
 	const { createHarness } = await import("../../packages/coding-agent/test/suite/harness.js");
 	const store = createStore();
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	configureTestStoreBackend(store, backend);
 	const owner = extensionFixture("issue-3406-retired-owner", "owner", undefined, "default");
 	const sender = extensionFixture("issue-3406-retired-sender", "sender");

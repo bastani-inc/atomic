@@ -260,17 +260,20 @@ describe("recordStageCheckpoint", () => {
 
 describe("run durable checkpoints", () => {
 	exTest("completed stage checkpoint is awaited before next stage starts", async () => {
-		class AsyncStageBackend extends InMemoryDurableBackend {
-			persisted = false;
-			async recordCheckpointAsync(
-				checkpoint: import("../../packages/workflows/src/durable/types.js").DurableCheckpoint,
-			): Promise<void> {
-				await Promise.resolve();
-				await super.recordCheckpoint(checkpoint);
-				if (checkpoint.kind === "stage" && checkpoint.name === "one") this.persisted = true;
-			}
+		async function createAsyncStageBackend() {
+			const backend = Object.assign(await InMemoryDurableBackend.create(), { persisted: false });
+			const baserecordCheckpoint = backend.recordCheckpoint.bind(backend);
+			return Object.assign(backend, {
+				async recordCheckpointAsync(
+					checkpoint: import("../../packages/workflows/src/durable/types.js").DurableCheckpoint,
+				): Promise<void> {
+					await Promise.resolve();
+					await baserecordCheckpoint(checkpoint);
+					if (checkpoint.kind === "stage" && checkpoint.name === "one") backend.persisted = true;
+				},
+			});
 		}
-		const backend = await AsyncStageBackend.create();
+		const backend = await createAsyncStageBackend();
 		const store = createStore();
 		const def = workflow({
 			name: "stage-order-wf",
@@ -696,16 +699,19 @@ describe("run durable checkpoints", () => {
 	});
 
 	exTest("child workflow run propagates custom durableBackend", async () => {
-		class TrackingBackend extends InMemoryDurableBackend {
-			registered: string[] = [];
-			async registerWorkflow(
-				h: import("../../packages/workflows/src/durable/backend.js").WorkflowRegistrationInput,
-			): Promise<void> {
-				this.registered.push(h.workflowId);
-				await super.registerWorkflow(h);
-			}
+		async function createTrackingBackend() {
+			const backend = Object.assign(await InMemoryDurableBackend.create(), { registered: [] as string[] });
+			const baseregisterWorkflow = backend.registerWorkflow.bind(backend);
+			return Object.assign(backend, {
+				async registerWorkflow(
+					h: import("../../packages/workflows/src/durable/backend.js").WorkflowRegistrationInput,
+				): Promise<void> {
+					backend.registered.push(h.workflowId);
+					await baseregisterWorkflow(h);
+				},
+			});
 		}
-		const backend = await TrackingBackend.create();
+		const backend = await createTrackingBackend();
 		const child = workflow({
 			name: "backend-child",
 			description: "",

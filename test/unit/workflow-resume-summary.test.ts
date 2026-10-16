@@ -4,7 +4,7 @@ import { setDurableBackend } from "../../packages/workflows/src/durable/factory.
 import type { ExtensionAPI, PiCommandContext } from "../../packages/workflows/src/extension/public-types.js";
 import { injectWorkflowResumeSummary } from "../../packages/workflows/src/extension/workflow-resume-summary.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import { createMemoryTestBackend as createInMemoryTestBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 function run(): RunSnapshot {
 	return {
@@ -71,8 +71,8 @@ test("a later pause can supply fresh resume context without duplicating the live
 });
 
 test("durable resumes without snapshots deliver again after pause or detach, not during a live attachment", async () => {
-	const backend = createInMemoryTestBackend();
-	backend.registerWorkflow({
+	const backend = await createMemoryTestBackend();
+	await backend.registerWorkflow({
 		workflowId: "durable-summary",
 		name: "Ship feature",
 		inputs: {},
@@ -90,14 +90,14 @@ test("durable resumes without snapshots deliver again after pause or detach, not
 		};
 		const ctx: PiCommandContext = { ui: { notify() {} } };
 		for (const boundary of ["initial", "pause", "detach"]) {
-			if (boundary !== "initial") backend.setWorkflowStatus("durable-summary", "paused");
+			if (boundary !== "initial") await backend.setWorkflowStatus("durable-summary", "paused");
 			await injectWorkflowResumeSummary(pi, ctx, "durable-summary", undefined, undefined, backend);
 			await injectWorkflowResumeSummary(pi, ctx, "durable-summary", undefined, undefined, backend);
-			backend.setWorkflowStatus("durable-summary", "running");
+			await backend.setWorkflowStatus("durable-summary", "running");
 			await injectWorkflowResumeSummary(pi, ctx, "durable-summary", undefined, undefined, backend);
 			assert.equal(messages.length, ["initial", "pause", "detach"].indexOf(boundary) + 1);
 		}
-		backend.setWorkflowStatus("durable-summary", "paused");
+		await backend.setWorkflowStatus("durable-summary", "paused");
 		await injectWorkflowResumeSummary(pi, ctx, "durable-summary", undefined, undefined, backend);
 		await backend.persistSummary("durable-summary", "Updated review context", 2000);
 		await injectWorkflowResumeSummary(pi, ctx, "durable-summary", undefined, undefined, backend);
@@ -113,7 +113,7 @@ test("durable resumes without snapshots deliver again after pause or detach, not
 });
 
 test("missing durable summary lookups cannot prevent workflow recovery", async () => {
-	const backend = createInMemoryTestBackend();
+	const backend = await createMemoryTestBackend();
 	backend.getLoadableWorkflow = () => {
 		throw new Error("WorkflowRunNotFoundError");
 	};

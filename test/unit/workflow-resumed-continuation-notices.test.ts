@@ -9,7 +9,7 @@ import {
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, WorkflowActor } from "../../packages/workflows/src/shared/store-types.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { mockSession, Type } from "./executor-shared.js";
 
 interface CapturedNotice {
@@ -82,7 +82,7 @@ async function runContinuation(
 		{
 			runId,
 			store,
-			durableBackend: new InMemoryDurableBackend(),
+			durableBackend: await createMemoryTestBackend(),
 			continuation: { source, resumeFromStageId: "implement" },
 			...(resumeActor === undefined ? {} : { resumeActor }),
 			adapters: {

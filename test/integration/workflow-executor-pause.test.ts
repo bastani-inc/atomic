@@ -95,13 +95,17 @@ test("already-live children stay held after rejected journal resume persistence 
 		{ adapter: "node-sqlite", location: "journal.sqlite" },
 		new Error("resume persistence failed"),
 	);
-	class FailingResumeBackend extends JournalTestBackend {
-		override async transitionWorkflowStatus(...args: Parameters<JournalTestBackend["transitionWorkflowStatus"]>) {
-			if (failResume && args[2] === "running") throw failure;
-			return super.transitionWorkflowStatus(...args);
-		}
+	async function createFailingResumeBackend(...args: Parameters<typeof JournalTestBackend.create>) {
+		const backend = Object.assign(await JournalTestBackend.create(...args), {});
+		const basetransitionWorkflowStatus = backend.transitionWorkflowStatus.bind(backend);
+		return Object.assign(backend, {
+			async transitionWorkflowStatus(...args: Parameters<JournalTestBackend["transitionWorkflowStatus"]>) {
+				if (failResume && args[2] === "running") throw failure;
+				return basetransitionWorkflowStatus(...args);
+			},
+		});
 	}
-	const backend = await FailingResumeBackend.create();
+	const backend = await createFailingResumeBackend();
 	setDurableBackend(backend);
 	const entered = Promise.withResolvers<string>();
 	const release = Promise.withResolvers<void>();

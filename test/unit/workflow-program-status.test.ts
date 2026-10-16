@@ -10,7 +10,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { PendingPrompt, RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { projectWorkflowActivity } from "../../packages/workflows/src/shared/workflow-activity.js";
 import { sleep } from "../helpers/runtime.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const STEP_MS = 15;
 
@@ -45,7 +45,7 @@ async function reportedStates(
 			{},
 			{
 				store,
-				durableBackend: new InMemoryDurableBackend(),
+				durableBackend: await createMemoryTestBackend(),
 				...(complete ? { adapters: { complete: { complete } } } : {}),
 			},
 		);

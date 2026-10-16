@@ -13,7 +13,7 @@ import { stageControlRegistry as registry } from "../../packages/workflows/src/r
 import { type StageCustomUiRequest, StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { makeMockSession } from "./stage-runner-helpers.js";
 
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -28,7 +28,7 @@ test.each(["direct", "slash", "tool", "nested-tool", "answer-race"] as const)(
 	async (route) => {
 		const broker = new StageUiBroker(store);
 		const runId = crypto.randomUUID();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const controller = new AbortController();
 		const toolController = new AbortController();

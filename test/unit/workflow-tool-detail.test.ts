@@ -22,7 +22,7 @@ import { renderSessionList } from "../../packages/workflows/src/tui/session-list
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 import { renderToolDetail } from "../../packages/workflows/src/tui/tool-detail.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { ANSI_RE, defaultTheme, visibleText } from "./overlay-graph-helpers.js";
 
 const KEY_DOWN = "\x1b[B";
@@ -699,7 +699,7 @@ describe("tool graph inspection", () => {
 	});
 
 	test("durable tool execution carries exact args and result into snapshots", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		await backend.registerWorkflow({
 			workflowId: "durable-detail",
 			name: "detail",
@@ -881,7 +881,7 @@ describe("tool graph inspection", () => {
 	});
 
 	test("callback source is captured at registration, persisted, and rendered", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		await backend.registerWorkflow({
 			workflowId: "durable-source",
 			name: "source",
@@ -1042,7 +1042,7 @@ describe("tool graph inspection", () => {
 	});
 
 	test("bounding the live store never bounds the replayed durable output", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		await backend.registerWorkflow({
 			workflowId: "durable-replay",
 			name: "replay",

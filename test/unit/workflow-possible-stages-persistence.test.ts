@@ -20,10 +20,7 @@ import {
 	sleep,
 	writeTextSync,
 } from "../helpers/runtime.js";
-import {
-	createMemoryTestBackend as createInMemoryTestBackend,
-	MemoryJournalBackend as InMemoryDurableBackend,
-} from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const SCANNED = ["orchestrator-*", "pull-request", "reviewer-error"] as const;
 
@@ -41,7 +38,7 @@ const plain = workflow({
 
 describe("possible-stages persistence (D10)", () => {
 	test("a launch-time scan persists onto the root snapshot and the durable handle", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const store = createStore();
 		await run(
 			plain,
@@ -59,7 +56,7 @@ describe("possible-stages persistence (D10)", () => {
 	});
 
 	test("resume hydrates the persisted scan instead of recomputing it", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const first = createStore();
 		await run(
 			plain,
@@ -89,7 +86,7 @@ describe("possible-stages persistence (D10)", () => {
 	});
 
 	test("a missing or corrupt scan hydrates as an empty set", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const store = createStore();
 		await run(
 			plain,
@@ -135,7 +132,7 @@ describe("possible-stages persistence (D10)", () => {
 	});
 
 	test("continuations inherit the source run's persisted scan", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const store = createStore();
 		await run(
 			plain,
@@ -167,7 +164,7 @@ describe("possible-stages persistence (D10)", () => {
 	});
 
 	test("child runs do not carry the root scan", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const store = createStore();
 		const child = workflow({
 			name: "possible-stages-child",
@@ -286,7 +283,7 @@ describe("possible-stages admission wiring (D10)", () => {
 
 	test("dispatch persists the admission-time scan onto the root snapshot", async () => {
 		await wireWorkflow();
-		setDurableBackend(createInMemoryTestBackend());
+		setDurableBackend(await createMemoryTestBackend());
 		const discovery = await discoverWorkflows({
 			cwd: WIRE_DIR,
 			homeDir: join(WIRE_DIR, "home"),
@@ -358,7 +355,7 @@ describe("possible-stages admission wiring (D10)", () => {
 			].join("\n"),
 			"utf-8",
 		);
-		setDurableBackend(createInMemoryTestBackend());
+		setDurableBackend(await createMemoryTestBackend());
 		const discovery = await discoverWorkflows({
 			cwd: WIRE_DIR,
 			homeDir: join(WIRE_DIR, "home"),
@@ -395,7 +392,7 @@ describe("possible-stages admission wiring (D10)", () => {
 	});
 
 	test("a missing entry path never blocks launch and hydrates an empty set", async () => {
-		setDurableBackend(createInMemoryTestBackend());
+		setDurableBackend(await createMemoryTestBackend());
 		const discovery = await discoverWorkflows({
 			cwd: WIRE_DIR,
 			homeDir: join(WIRE_DIR, "home"),

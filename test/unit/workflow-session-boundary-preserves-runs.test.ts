@@ -33,7 +33,7 @@ import {
 	currentStoreBackend as getDurableBackend,
 	configureCurrentTestStoreBackend as setDurableBackend,
 } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 type SessionEventHandler = (event?: unknown, ctx?: unknown) => Promise<unknown>;
 
@@ -130,7 +130,7 @@ function makeHandle(
 
 // #3105: actual execution remains with its retained owner after another host adopts state.
 test("a live workflow survives replacement and sibling quit, then settles on owner quit", async () => {
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	setDurableBackend(backend);
 	const owner = {};
 	adoptWorkflowSessionRunState({});
@@ -186,7 +186,7 @@ test("a live workflow survives replacement and sibling quit, then settles on own
 
 // #3105: cleanup captures the adopted generation, never the newest singleton facade.
 test("owner quit drains retained generations, preserves sibling and borrowed backend", async () => {
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	setDurableBackend(backend);
 	const owner = {};
 	bindScope({});
@@ -232,7 +232,7 @@ test("owner quit drains retained generations, preserves sibling and borrowed bac
 });
 
 test("owner quit attempts all generation cleanup after a disposal failure", async () => {
-	setDurableBackend(new InMemoryDurableBackend());
+	setDurableBackend(await createMemoryTestBackend());
 	const owner = {};
 	bindScope({});
 	const first = captureHandlers(owner);
@@ -397,7 +397,7 @@ function waitingWorkflowRuntime(name: string) {
 describe("switching sessions quits in-flight runs at a resumable checkpoint (#3203)", () => {
 	for (const reason of ["new", "resume", "fork"] as const) {
 		test(`session_shutdown(${reason}) pauses the run durably and keeps the lifetime open (#3203)`, async () => {
-			const backend = new InMemoryDurableBackend();
+			const backend = await createMemoryTestBackend();
 			setDurableBackend(backend);
 			const owner = {};
 			adoptWorkflowSessionRunState({});
@@ -426,7 +426,7 @@ describe("switching sessions quits in-flight runs at a resumable checkpoint (#32
 	}
 
 	test("session_shutdown(reload) keeps the run executing (#3203)", async () => {
-		setDurableBackend(new InMemoryDurableBackend());
+		setDurableBackend(await createMemoryTestBackend());
 		adoptWorkflowSessionRunState({});
 		const handlers = captureHandlers();
 		const ownedStore = currentWorkflowStore();
@@ -488,7 +488,7 @@ async function startSession(sessionId: string): Promise<Map<string, SessionEvent
 
 describe("a disposed session releases its paused agent-launched runs for adoption (#3566)", () => {
 	test("session_shutdown(quit) records a durable release only for the runs its own session owns (#3566)", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		adoptWorkflowSessionRunState({});
 		const handlers = await startSession("session-a");
@@ -503,7 +503,7 @@ describe("a disposed session releases its paused agent-launched runs for adoptio
 	});
 
 	test("session_shutdown(quit) releases a run that was awaiting human input (#3566)", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		await backend.registerWorkflow({
 			workflowId: "release-awaiting-input",
@@ -525,7 +525,7 @@ describe("a disposed session releases its paused agent-launched runs for adoptio
 	});
 
 	test("session_shutdown(reload) keeps its runs executing, owned, and unreleased (#3566)", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		adoptWorkflowSessionRunState({});
 		const handlers = await startSession("session-a");
@@ -592,7 +592,7 @@ const RELEASE_RUN_C = "33333333-3333-4333-8333-333333333333";
 describe("the successor may start before the departing session's shutdown handlers run (#3569)", () => {
 	for (const reason of ["new", "resume", "fork"] as const) {
 		test(`session_start(${reason}) completes the quit-and-release handoff itself and announces the run (#3569)`, async () => {
-			const backend = new InMemoryDurableBackend();
+			const backend = await createMemoryTestBackend();
 			setDurableBackend(backend);
 			adoptWorkflowSessionRunState({});
 			const scope = {};
@@ -620,9 +620,9 @@ describe("the successor may start before the departing session's shutdown handle
 	}
 
 	test("a departing shutdown that already ran is not repeated by the successor's session_start (#3569)", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a", { name: "alpha" });
+		await registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a", { name: "alpha" });
 		const scope = {};
 		const departing = await startSwitchedSession(scope, "session-a", "startup");
 		await departing.get("session_shutdown")!({ reason: "new" });
@@ -634,9 +634,9 @@ describe("the successor may start before the departing session's shutdown handle
 	});
 
 	test("disposing the departing session waits for a successor's running handoff instead of overlapping it (#3569)", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a");
+		await registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a");
 		const scope = {};
 		const departing = await startSwitchedSession(scope, "session-a", "startup");
 		const gate = Promise.withResolvers<void>();
@@ -660,7 +660,7 @@ describe("the successor may start before the departing session's shutdown handle
 	});
 
 	test("a second switch before anyone adopts keeps the first release and still announces the run (#3569)", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		adoptWorkflowSessionRunState({});
 		const scope = {};
@@ -686,7 +686,7 @@ describe("the successor may start before the departing session's shutdown handle
 	});
 
 	test("returning to the owner session reclaims its released run instead of announcing it or leaving it adoptable (#3569)", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		adoptWorkflowSessionRunState({});
 		const scope = {};
@@ -711,17 +711,20 @@ describe("the successor may start before the departing session's shutdown handle
 	});
 
 	test("a successor never reclaims a run another session released (#3569)", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a", { releasedModelOwner: "session-a" });
+		await registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a", { releasedModelOwner: "session-a" });
 		const notices: string[] = [];
 		await startSwitchedSession({}, "session-b", "new", notifyingUi(notices));
 		assert.equal(backend.getWorkflow(RELEASE_RUN_A)?.releasedModelOwner, "session-a");
 	});
 
 	test("reclaim never clears a newer release written by another process (#3569)", async () => {
-		const backend = new InMemoryDurableBackend();
-		registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-b", { releasedModelOwner: "session-b", updatedAt: 5 });
+		const backend = await createMemoryTestBackend();
+		await registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-b", {
+			releasedModelOwner: "session-b",
+			updatedAt: 5,
+		});
 		const current = backend.getWorkflow(RELEASE_RUN_A)!;
 		const staleLocalCopy = { ...current, modelOwner: "session-a", releasedModelOwner: "session-a", updatedAt: 1 };
 		const staleView = Object.create(backend, {
@@ -740,7 +743,7 @@ describe("the successor may start before the departing session's shutdown handle
 	});
 
 	test("session_start(startup) and session_start(reload) never run the departing handoff (#3569)", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		adoptWorkflowSessionRunState({});
 		const scope = {};
@@ -755,7 +758,7 @@ describe("the successor may start before the departing session's shutdown handle
 describe("switching sessions releases the previous session's paused runs for the successor (#3569)", () => {
 	for (const reason of ["new", "resume", "fork"] as const) {
 		test(`session_shutdown(${reason}) quits, then durably releases only the previous session's own runs (#3569)`, async () => {
-			const backend = new InMemoryDurableBackend();
+			const backend = await createMemoryTestBackend();
 			setDurableBackend(backend);
 			adoptWorkflowSessionRunState({});
 			const handlers = await startSession("session-a");
@@ -772,9 +775,9 @@ describe("switching sessions releases the previous session's paused runs for the
 		});
 
 		test(`session_shutdown(${reason}) releases in a headless host without any UI (#3569)`, async () => {
-			const backend = new InMemoryDurableBackend();
+			const backend = await createMemoryTestBackend();
 			setDurableBackend(backend);
-			registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a");
+			await registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a");
 			const handlers = await startSwitchedSession({}, "session-a", "startup", { hasUI: false });
 			const before = reason === "fork" ? handlers.get("session_before_fork") : handlers.get("session_before_switch");
 			assert.equal(await before!({ reason }, { hasUI: false }), undefined);
@@ -798,12 +801,12 @@ describe("switching sessions releases the previous session's paused runs for the
 	}
 
 	test("session_shutdown(reload) does not release, so the run keeps executing and owned (#3569)", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		adoptWorkflowSessionRunState({});
 		const handlers = await startSession("session-a");
 		const own = await ownedCheckpointedWaitingRun("switch-reload-no-release", "session-a").launch();
-		registerPausedOwnedRun(backend, RELEASE_RUN_B, "session-a");
+		await registerPausedOwnedRun(backend, RELEASE_RUN_B, "session-a");
 		await handlers.get("session_shutdown")!({ reason: "reload" });
 		assert.equal(backend.getWorkflow(own)?.status, "running");
 		assert.equal(backend.getWorkflow(own)?.releasedModelOwner, undefined);
@@ -813,14 +816,14 @@ describe("switching sessions releases the previous session's paused runs for the
 
 	for (const reason of ["new", "resume", "fork"] as const) {
 		test(`the successor's session_start(${reason}) lists the released in-scope runs with full resume commands (#3569)`, async () => {
-			const backend = new InMemoryDurableBackend();
+			const backend = await createMemoryTestBackend();
 			setDurableBackend(backend);
-			registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a", { name: "alpha" });
-			registerPausedOwnedRun(backend, RELEASE_RUN_B, "session-a", {
+			await registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a", { name: "alpha" });
+			await registerPausedOwnedRun(backend, RELEASE_RUN_B, "session-a", {
 				name: "elsewhere",
 				invocationCwd: "/another-project",
 			});
-			registerPausedOwnedRun(backend, RELEASE_RUN_C, "session-z", { name: "someone-elses" });
+			await registerPausedOwnedRun(backend, RELEASE_RUN_C, "session-z", { name: "someone-elses" });
 			const scope = {};
 			const first = await startSwitchedSession(scope, "session-a", "startup");
 			await first.get("session_shutdown")!({ reason });
@@ -835,9 +838,9 @@ describe("switching sessions releases the previous session's paused runs for the
 	}
 
 	test("the notice is not repeated after the successor reloads, and is absent on reload and startup (#3569)", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a");
+		await registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a");
 		const scope = {};
 		const first = await startSwitchedSession(scope, "session-a", "startup");
 		await first.get("session_shutdown")!({ reason: "reload" });
@@ -858,9 +861,9 @@ describe("switching sessions releases the previous session's paused runs for the
 	});
 
 	test("a reload in the successor keeps unadopted released runs for the next successor's notice (#3569)", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a");
+		await registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a");
 		const scope = {};
 		const first = await startSwitchedSession(scope, "session-a", "startup");
 		await first.get("session_shutdown")!({ reason: "new" });
@@ -879,10 +882,10 @@ describe("switching sessions releases the previous session's paused runs for the
 	});
 
 	test("the notice omits a released run another session adopted first (#3569)", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a");
-		registerPausedOwnedRun(backend, RELEASE_RUN_B, "session-a");
+		await registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a");
+		await registerPausedOwnedRun(backend, RELEASE_RUN_B, "session-a");
 		const scope = {};
 		const first = await startSwitchedSession(scope, "session-a", "startup");
 		await first.get("session_shutdown")!({ reason: "new" });
@@ -906,9 +909,9 @@ describe("switching sessions releases the previous session's paused runs for the
 	});
 
 	test("a headless successor starts without a notice or an error and can still adopt the run (#3569)", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a");
+		await registerPausedOwnedRun(backend, RELEASE_RUN_A, "session-a");
 		const scope = {};
 		const first = await startSwitchedSession(scope, "session-a", "startup", { hasUI: false });
 		await first.get("session_shutdown")!({ reason: "fork" });
@@ -917,7 +920,7 @@ describe("switching sessions releases the previous session's paused runs for the
 	});
 
 	test("nothing is released or announced when the previous session owned no paused runs (#3569)", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const scope = {};
 		const first = await startSwitchedSession(scope, "session-a", "startup");

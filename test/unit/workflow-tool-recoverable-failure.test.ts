@@ -13,7 +13,7 @@ import {
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowToolFailure } from "../../packages/workflows/src/shared/types.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 describe("ctx.tool recoverable failures", () => {
 	test("returns a typed failure after retries while the workflow continues", async () => {
@@ -57,7 +57,7 @@ describe("ctx.tool recoverable failures", () => {
 			{},
 			{
 				store: createStore(),
-				durableBackend: new InMemoryDurableBackend(),
+				durableBackend: await createMemoryTestBackend(),
 			},
 		);
 
@@ -80,7 +80,7 @@ describe("ctx.tool recoverable failures", () => {
 	});
 
 	test("replays the durable failed outcome without rerunning the callback", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const runId = "recoverable-tool-replay";
 		const outcomes: object[] = [];
 		let callbackCalls = 0;
@@ -132,7 +132,7 @@ describe("ctx.tool recoverable failures", () => {
 	});
 
 	test("keeps a recoverable failure node failed in completed durable inspection", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const runId = "recoverable-tool-completed-inspection";
 		const definition = workflow({
 			name: "recoverable-tool-completed-inspection",
@@ -164,7 +164,7 @@ describe("ctx.tool recoverable failures", () => {
 	});
 
 	test("keeps cancellation throwing in return mode", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const controller = new AbortController();
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
@@ -221,7 +221,7 @@ describe("ctx.tool recoverable failures", () => {
 	});
 
 	test("fails and notifies for a nested callback-origin AbortError without a run abort", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const store = createStore();
 		const notices: WorkflowLifecycleNoticeDetails[] = [];
 		const unsubscribe = installWorkflowLifecycleNotifications({
@@ -282,7 +282,7 @@ describe("ctx.tool recoverable failures", () => {
 	});
 
 	test("retries process errors whose message contains cancellation words", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		let callbackCalls = 0;
 		let observed: WorkflowToolFailure | undefined;
 		const definition = workflow({
@@ -344,7 +344,7 @@ describe("ctx.tool recoverable failures", () => {
 
 	for (const maxAttempts of [0, -1, 1.5]) {
 		test(`rejects invalid maxAttempts ${maxAttempts} without invoking or checkpointing`, async () => {
-			const backend = new InMemoryDurableBackend();
+			const backend = await createMemoryTestBackend();
 			let callbackCalls = 0;
 			let downstreamRan = false;
 			const definition = workflow({
@@ -422,7 +422,7 @@ describe("ctx.tool recoverable failures", () => {
 			{},
 			{
 				store,
-				durableBackend: new InMemoryDurableBackend(),
+				durableBackend: await createMemoryTestBackend(),
 				adapters: {
 					prompt: {
 						prompt: async (text) => {
@@ -450,7 +450,7 @@ describe("ctx.tool recoverable failures", () => {
 		let capturedStderr = "";
 		let capturedMessage = "";
 		let capturedStdout = "";
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const definition = workflow({
 			name: "recoverable-tool-safe-output",
 			description: "",
@@ -535,7 +535,7 @@ describe("ctx.tool recoverable failures", () => {
 			{},
 			{
 				store: createStore(),
-				durableBackend: new InMemoryDurableBackend(),
+				durableBackend: await createMemoryTestBackend(),
 			},
 		);
 
@@ -550,13 +550,16 @@ describe("ctx.tool recoverable failures", () => {
 	});
 
 	test("keeps durable storage failures throwing in return mode", async () => {
-		class RejectingBackend extends InMemoryDurableBackend {
-			override async recordCheckpointAsync(_checkpoint: DurableCheckpoint): Promise<void> {
-				throw new Error("checkpoint storage unavailable");
-			}
+		async function createRejectingBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), {});
+			return Object.assign(backend, {
+				async recordCheckpointAsync(_checkpoint: DurableCheckpoint): Promise<void> {
+					throw new Error("checkpoint storage unavailable");
+				},
+			});
 		}
-		const backend = new RejectingBackend();
-		backend.registerWorkflow({
+		const backend = await createRejectingBackend();
+		await backend.registerWorkflow({
 			workflowId: "recoverable-storage-failure",
 			name: "recoverable-storage-failure",
 			inputs: {},

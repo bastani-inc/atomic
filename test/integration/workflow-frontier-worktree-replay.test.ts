@@ -13,7 +13,7 @@ import { INTERACTIVE_WORKFLOW_POLICY } from "../../packages/workflows/src/shared
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { sleep } from "../helpers/runtime.js";
 import { TEST_TIMEOUT_MS } from "../helpers/test-timeout.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 // Exercise the public executor without creating another Git checkout for this regression.
 const filesystem = vi.hoisted(() => ({ prepared: 0, cleaned: 0, collected: 0 }));
@@ -50,7 +50,7 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 
 // PR #2864 discussion_r3939119993: live preparation must not displace cached predecessors.
 test("public tool-frontier resume replays a completed worktree task without preparing it again", async () => {
-	setDurableBackend(new InMemoryDurableBackend());
+	setDurableBackend(await createMemoryTestBackend());
 	let models = 0;
 	let tools = 0;
 	const definition = workflow({
@@ -107,7 +107,7 @@ test("public tool-frontier resume replays a completed worktree task without prep
 });
 
 test("live task admission still resolves reusable worktree options before model execution", async () => {
-	setDurableBackend(new InMemoryDurableBackend());
+	setDurableBackend(await createMemoryTestBackend());
 	let models = 0;
 	const definition = workflow({
 		name: "task-worktree-options",

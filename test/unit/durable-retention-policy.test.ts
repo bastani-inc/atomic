@@ -64,12 +64,15 @@ describe("durable workflow retention policy", () => {
 	});
 
 	test("reports backend deletion failures and preserves the indexed row", async () => {
-		class RejectingDeleteBackend extends InMemoryDurableBackend {
-			override async deleteWorkflowIfInactive(): Promise<never> {
-				throw new Error("delete unavailable");
-			}
+		async function createRejectingDeleteBackend() {
+			const backend = await InMemoryDurableBackend.create();
+			return Object.assign(backend, {
+				async deleteWorkflowIfInactive(): Promise<never> {
+					throw new Error("delete unavailable");
+				},
+			});
 		}
-		const backend = await RejectingDeleteBackend.create();
+		const backend = await createRejectingDeleteBackend();
 		await register(backend, "preserved", "completed");
 
 		const outcome = await deleteDurableWorkflowIfSafe(backend, "preserved", () => false);

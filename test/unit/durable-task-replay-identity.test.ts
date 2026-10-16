@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 import type { WorkflowTaskResult } from "../../packages/workflows/src/shared/types.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { createStore, mockSession, run, tmpdir, workflow } from "./executor-shared.js";
 
 // #1859: task replay must preserve returned identity, not only the graph snapshot.
@@ -81,7 +81,7 @@ test.each([
 	{ label: "terminal checkpoint", checkpoint: "high", expected: "high", terminal: true },
 ])("public task replay preserves $label", async ({ base, checkpoint, expected, terminal }) => {
 	const runId = "task-thinking-precedence";
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	await backend.registerWorkflow({ workflowId: runId, name: runId, inputs: {}, createdAt: 1, status: "failed" });
 	await backend.recordCheckpoint({
 		kind: "stage",

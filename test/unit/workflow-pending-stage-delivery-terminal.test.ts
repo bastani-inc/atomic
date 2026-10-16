@@ -38,7 +38,7 @@ import type { PendingStageMessageInput } from "../../packages/workflows/src/shar
 import { classifyWorkflowFailure } from "../../packages/workflows/src/shared/workflow-failures.js";
 import { testRunId } from "../helpers/run-id.js";
 import { sleep } from "../helpers/runtime.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 /** The exact reason chain `packages/intercom/index.ts` hands to `fail()` in production. */
 function productionWarmUpExhaustedReason(): IntercomWarmUpExhaustedError {
@@ -53,7 +53,7 @@ const STAGE_NAME = "reviewer";
 
 afterEach(() => setDurableBackend(undefined));
 
-function fixture() {
+async function fixture() {
 	const store = createStore();
 	store.recordRunStart({
 		id: RUN_ID,
@@ -64,8 +64,8 @@ function fixture() {
 		stages: [{ id: STAGE_ID, name: STAGE_NAME, status: "pending", parentIds: [], toolEvents: [] }],
 		startedAt: 1,
 	});
-	const backend = new InMemoryDurableBackend();
-	backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	const backend = await createMemoryTestBackend();
+	await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 	bindStoreDurableBackend(store, backend);
 	return { store, backend };
 }
@@ -81,7 +81,7 @@ function queuedInput(id: string): PendingStageMessageInput {
 }
 
 async function fixtureWithQueuedMessage(id = "queued-1") {
-	const { store, backend } = fixture();
+	const { store, backend } = await fixture();
 	const queued = await store.queueStageMessage(queuedInput(id), GROUP, GROUP, backend);
 	assert.equal(queued?.ok, true);
 	return { store, backend };
@@ -128,7 +128,7 @@ describe("workflow pending-stage delivery terminal failure", () => {
 	});
 
 	test("keeps the empty-queue short circuit so a stage with nothing queued still runs", async () => {
-		const { store } = fixture();
+		const { store } = await fixture();
 		const delivery = createWorkflowPendingStageDelivery(store, RUN_ID, STAGE_ID, STAGE_NAME);
 
 		assert.equal(delivery.ready(), undefined);

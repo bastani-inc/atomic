@@ -15,7 +15,7 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { workflowPolicyFromContext } from "../../packages/workflows/src/extension/workflow-policy.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { WorkflowProcessHome } from "../helpers/workflow-process.js";
 import { attachedCliPresentation, forwardCliDialogs } from "./fixtures/sdk-host-cli.js";
 import { runBuiltNodeFixture } from "./sdk-builtin-host-parity-helpers.js";
@@ -662,7 +662,7 @@ test("missing adapter refuses ordinary dialog and leaves durable approval pendin
 			{},
 			{
 				store,
-				durableBackend: new InMemoryDurableBackend(),
+				durableBackend: await createMemoryTestBackend(),
 				usePromptNodesForUi: false,
 				ui: {
 					custom: async () => {
@@ -690,7 +690,12 @@ test("missing adapter refuses ordinary dialog and leaves durable approval pendin
 		const pending = run(
 			durable,
 			{},
-			{ store, durableBackend: new InMemoryDurableBackend(), usePromptNodesForUi: true, signal: controller.signal },
+			{
+				store,
+				durableBackend: await createMemoryTestBackend(),
+				usePromptNodesForUi: true,
+				signal: controller.signal,
+			},
 		);
 		try {
 			await vi.waitFor(() =>
@@ -828,7 +833,7 @@ test("durable prompt identity accepts one answer and refuses a repeated answer",
 	const pending = run(
 		definition,
 		{},
-		{ store, durableBackend: new InMemoryDurableBackend(), usePromptNodesForUi: true, signal: controller.signal },
+		{ store, durableBackend: await createMemoryTestBackend(), usePromptNodesForUi: true, signal: controller.signal },
 	);
 	try {
 		await vi.waitFor(() => assert.ok(store.runs()[0]?.stages.some((stage) => stage.pendingPrompt)));

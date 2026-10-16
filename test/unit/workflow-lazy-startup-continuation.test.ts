@@ -25,8 +25,8 @@ import {
 	configureCurrentTestStoreBackend as setDurableBackend,
 } from "../helpers/store-backend.js";
 import {
-	createMemoryTestBackend as createInMemoryTestBackend,
-	MemoryJournalBackend as InMemoryDurableBackend,
+	createMemoryTestBackend,
+	type MemoryJournalBackend as InMemoryDurableBackend,
 } from "../helpers/workflow-journal.js";
 
 interface SentMessage {
@@ -43,9 +43,9 @@ async function cleanupJobs(): Promise<void> {
 	await Promise.all(jobTracker.runIds().map((runId) => jobTracker.get(runId)?.promise));
 }
 
-beforeEach(() => {
-	const backend = createInMemoryTestBackend();
-	backend.workflowOwnership = () => "available";
+beforeEach(async () => {
+	const backend = await createMemoryTestBackend();
+	backend.workflowOwnership = async () => "available";
 	setDurableBackend(backend);
 });
 
@@ -187,7 +187,7 @@ describe("workflow lazy-startup continuation fixes", () => {
 				completedCheckpoints: 1,
 				invocationCwd: root,
 			};
-			backend.registerWorkflow(handle);
+			await backend.registerWorkflow(handle);
 			const { handlers } = registerFactory({
 				refreshWorkflowResources: async () => [{ path: workflowPath, enabled: true }],
 			});
@@ -203,7 +203,7 @@ describe("workflow lazy-startup continuation fixes", () => {
 						notify: () => undefined,
 						confirm: async () => {
 							prompts += 1;
-							backend.registerWorkflow({ ...handle, invocationCwd: join(root, "elsewhere") });
+							await backend.registerWorkflow({ ...handle, invocationCwd: join(root, "elsewhere") });
 							changedHandle = backend.getWorkflow(runId);
 							return true;
 						},
@@ -239,7 +239,7 @@ describe("workflow lazy-startup continuation fixes", () => {
 					process.chdir(projectA);
 					const backend = getDurableBackend();
 					const runId = testRunId(`startup-project-${mode}-${ownership}`);
-					backend.registerWorkflow({
+					await backend.registerWorkflow({
 						workflowId: runId,
 						name: "shared",
 						inputs: {},
@@ -250,7 +250,7 @@ describe("workflow lazy-startup continuation fixes", () => {
 						...(ownership === "legacy" ? {} : { invocationCwd: projectA }),
 						...(ownership === "agent" ? { origin: "agent", modelOwner: "previous-session" } : {}),
 					});
-					backend.recordCheckpoint({
+					await backend.recordCheckpoint({
 						kind: "tool",
 						workflowId: runId,
 						checkpointId: "saved-progress",
@@ -326,30 +326,34 @@ describe("workflow lazy-startup continuation fixes", () => {
 
 	for (const scenario of ["safe", "safe-ask", "foreign-cwd", "unknown-owner", "concurrent-claim"] as const) {
 		test(`session_start agent recovery ${scenario} preserves ownership fencing (#3468)`, async () => {
-			class ClaimBackend extends InMemoryDurableBackend {
-				override workflowOwnership(): "foreign" | "available" {
-					return scenario === "unknown-owner" ? "foreign" : "available";
-				}
-				override async transitionWorkflowStatus(
-					...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>
-				): Promise<boolean> {
-					if (scenario === "concurrent-claim" && args[6] !== undefined) {
-						const [id, expected, status, prompts, resumable, updatedAt] = args;
-						await super.transitionWorkflowStatus(
-							id,
-							expected,
-							status,
-							prompts,
-							resumable,
-							updatedAt,
-							"competing-session",
-						);
-						return false;
-					}
-					return super.transitionWorkflowStatus(...args);
-				}
+			async function createClaimBackend() {
+				const backend = Object.assign(await createMemoryTestBackend(), {});
+				const basetransitionWorkflowStatus = backend.transitionWorkflowStatus.bind(backend);
+				return Object.assign(backend, {
+					workflowOwnership(): "foreign" | "available" {
+						return scenario === "unknown-owner" ? "foreign" : "available";
+					},
+					async transitionWorkflowStatus(
+						...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>
+					): Promise<boolean> {
+						if (scenario === "concurrent-claim" && args[6] !== undefined) {
+							const [id, expected, status, prompts, resumable, updatedAt] = args;
+							await basetransitionWorkflowStatus(
+								id,
+								expected,
+								status,
+								prompts,
+								resumable,
+								updatedAt,
+								"competing-session",
+							);
+							return false;
+						}
+						return basetransitionWorkflowStatus(...args);
+					},
+				});
 			}
-			const backend = new ClaimBackend();
+			const backend = await createClaimBackend();
 			setDurableBackend(backend);
 			const root = mkdtempSync(join(tmpdir(), "atomic-workflow-startup-owner-"));
 			try {
@@ -371,7 +375,7 @@ export default workflow({
 				);
 				process.chdir(root);
 				const runId = testRunId(`startup-owner-${scenario}`);
-				backend.registerWorkflow({
+				await backend.registerWorkflow({
 					workflowId: runId,
 					name: "startup-owner",
 					inputs: {},
@@ -442,7 +446,7 @@ export default workflow({
 				await writePromptWorkflowFixture(workflowPath, "startup-generations");
 				process.chdir(root);
 				const runId = testRunId("startup-generations");
-				getDurableBackend().registerWorkflow({
+				await getDurableBackend().registerWorkflow({
 					workflowId: runId,
 					name: "startup-generations",
 					inputs: {},
@@ -555,7 +559,7 @@ export default workflow({
 				process.chdir(root);
 				const runId = testRunId("startup-policy");
 				const backend = getDurableBackend();
-				backend.registerWorkflow({
+				await backend.registerWorkflow({
 					workflowId: runId,
 					name: "startup-workflow",
 					inputs: {},
@@ -617,7 +621,7 @@ export default workflow({
 			process.chdir(root);
 			const backend = getDurableBackend();
 			const runId = testRunId("startup-nonblocking-ask");
-			backend.registerWorkflow({
+			await backend.registerWorkflow({
 				workflowId: runId,
 				name: "shared",
 				inputs: {},
@@ -676,7 +680,7 @@ export default workflow({
 			process.chdir(root);
 			const backend = getDurableBackend();
 			const runId = testRunId("startup-default-never");
-			backend.registerWorkflow({
+			await backend.registerWorkflow({
 				workflowId: runId,
 				name: "shared",
 				inputs: {},
@@ -726,7 +730,7 @@ export default workflow({
 			process.chdir(root);
 			const backend = getDurableBackend();
 			const runId = testRunId("startup-retired-ask");
-			backend.registerWorkflow({
+			await backend.registerWorkflow({
 				workflowId: runId,
 				name: "shared",
 				inputs: {},
@@ -785,7 +789,7 @@ export default workflow({
 					? "foreign"
 					: "available";
 			for (const status of ["paused", "failed", "blocked", "running"] as const) {
-				backend.registerWorkflow({
+				await backend.registerWorkflow({
 					workflowId: testRunId(`startup-excluded-${status}`),
 					name: "excluded",
 					inputs: {},
@@ -796,7 +800,7 @@ export default workflow({
 					invocationCwd: root,
 				});
 			}
-			backend.registerWorkflow({
+			await backend.registerWorkflow({
 				workflowId: testRunId("startup-awaiting-input"),
 				name: "excluded",
 				inputs: {},
@@ -806,7 +810,7 @@ export default workflow({
 				pendingPrompts: 1,
 				invocationCwd: root,
 			});
-			backend.registerWorkflow({
+			await backend.registerWorkflow({
 				workflowId: testRunId("startup-live-quiet-owner"),
 				name: "excluded",
 				inputs: {},
@@ -852,21 +856,24 @@ export default workflow({
 
 	for (const mode of ["auto", "ask"] as const) {
 		test(`presentation-only session_start does not apply ${mode} recovery (#3468)`, async () => {
-			class CatalogBackend extends InMemoryDurableBackend {
-				catalogReads = 0;
-				override async hydrateResumableWorkflows(): Promise<void> {
-					this.catalogReads += 1;
-					await super.hydrateResumableWorkflows();
-				}
+			async function createCatalogBackend() {
+				const backend = Object.assign(await createMemoryTestBackend(), { catalogReads: 0 });
+				const basehydrateResumableWorkflows = backend.hydrateResumableWorkflows.bind(backend);
+				return Object.assign(backend, {
+					async hydrateResumableWorkflows(): Promise<void> {
+						backend.catalogReads += 1;
+						await basehydrateResumableWorkflows();
+					},
+				});
 			}
-			const backend = new CatalogBackend();
+			const backend = await createCatalogBackend();
 			setDurableBackend(backend);
 			const root = mkdtempSync(join(tmpdir(), "atomic-workflow-presentation-startup-"));
 			try {
 				mkdirSync(workflowConfigDir(root), { recursive: true });
 				writeFileSync(join(workflowConfigDir(root), "config.json"), JSON.stringify({ resumeInFlight: mode }));
 				process.chdir(root);
-				backend.registerWorkflow({
+				await backend.registerWorkflow({
 					workflowId: testRunId("presentation-startup"),
 					name: "presentation-startup",
 					inputs: {},
@@ -905,12 +912,15 @@ export default workflow({
 	}
 
 	test("session_start recovery failure warns without failing startup (#3468)", async () => {
-		class UnavailableBackend extends InMemoryDurableBackend {
-			override async hydrateResumableWorkflows(): Promise<void> {
-				throw new Error("durable catalog unavailable");
-			}
+		async function createUnavailableBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), {});
+			return Object.assign(backend, {
+				async hydrateResumableWorkflows(): Promise<void> {
+					throw new Error("durable catalog unavailable");
+				},
+			});
 		}
-		setDurableBackend(new UnavailableBackend());
+		setDurableBackend(await createUnavailableBackend());
 		const root = mkdtempSync(join(tmpdir(), "atomic-workflow-startup-unavailable-"));
 		try {
 			mkdirSync(workflowConfigDir(root), { recursive: true });
@@ -1129,16 +1139,18 @@ export default workflow({
 	});
 
 	test("/workflow resume lazy-loads resources before failed-run registry lookup", async () => {
-		class CatalogCountingBackend extends InMemoryDurableBackend {
-			completedCatalogCalls = 0;
-
-			override listCompletedWorkflows() {
-				this.completedCatalogCalls += 1;
-				return super.listCompletedWorkflows();
-			}
+		async function createCatalogCountingBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), { completedCatalogCalls: 0 });
+			const baselistCompletedWorkflows = backend.listCompletedWorkflows.bind(backend);
+			return Object.assign(backend, {
+				listCompletedWorkflows() {
+					backend.completedCatalogCalls += 1;
+					return baselistCompletedWorkflows();
+				},
+			});
 		}
 
-		const backend = new CatalogCountingBackend();
+		const backend = await createCatalogCountingBackend();
 		setDurableBackend(backend);
 		const dir = await mkdtemp(join(tmpdir(), "atomic-workflow-slash-resume-lazy-"));
 		try {
@@ -1178,7 +1190,7 @@ export default workflow({
 				error: "boom",
 			});
 			store.recordRunEnd(sourceRunId, "failed", undefined, "boom", { resumable: true, failedStageId: "retry-old" });
-			backend.registerWorkflow({
+			await backend.registerWorkflow({
 				workflowId: sourceRunId,
 				name: "slash-resume-lazy",
 				inputs: {},
@@ -1239,7 +1251,7 @@ export default workflow({
 		});
 		store.recordRunEnd(sourceRunId, "failed", undefined, "boom", { resumable: true, failedStageId: "retry-old" });
 		// #3106: resume requires the original durable instance, not a snapshot-only fork.
-		getDurableBackend().registerWorkflow({
+		await getDurableBackend().registerWorkflow({
 			workflowId: sourceRunId,
 			name: def.name,
 			inputs: {},

@@ -9,7 +9,7 @@ import { stageTimingFields } from "../../packages/workflows/src/shared/timing.js
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { sleep } from "../helpers/runtime.js";
 import { TEST_TIMEOUT_MS } from "../helpers/test-timeout.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { waitForExecutorStagePendingPrompt } from "../unit/executor-shared.js";
 
 afterEach(() => setDurableBackend(undefined));
@@ -18,7 +18,7 @@ afterEach(() => setDurableBackend(undefined));
 test.each(["valid", "missing-ui", "mismatched-ui"] as const)(
 	"public durable prompt/tool recovery (%s)",
 	async (mode) => {
-		let backend = new InMemoryDurableBackend();
+		let backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const initialStore = createStore();
 		let receipts = 0;
@@ -56,12 +56,12 @@ test.each(["valid", "missing-ui", "mismatched-ui"] as const)(
 		const prompt = original.stages.find((stage) => stage.name === "confirm")!;
 		assert.ok(prompt.durationMs! > 0);
 		if (mode !== "valid") {
-			const incomplete = new InMemoryDurableBackend();
-			incomplete.registerWorkflow(backend.getWorkflow(original.runId)!);
+			const incomplete = await createMemoryTestBackend();
+			await incomplete.registerWorkflow(backend.getWorkflow(original.runId)!);
 			for (const checkpoint of backend.listCheckpoints(original.runId)) {
-				if (checkpoint.kind !== "ui") incomplete.recordCheckpoint(checkpoint);
+				if (checkpoint.kind !== "ui") await incomplete.recordCheckpoint(checkpoint);
 				else if (mode === "mismatched-ui")
-					incomplete.recordCheckpoint({ ...checkpoint, promptHash: "different-prompt" });
+					await incomplete.recordCheckpoint({ ...checkpoint, promptHash: "different-prompt" });
 			}
 			backend = incomplete;
 			setDurableBackend(backend);

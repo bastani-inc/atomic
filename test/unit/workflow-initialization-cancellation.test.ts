@@ -15,7 +15,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
 import { renderWidgetLines } from "../../packages/workflows/src/tui/widget.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 afterEach(() => setDurableBackend(undefined));
 
@@ -26,7 +26,7 @@ test("quit controls a node-less workflow await without inventing graph nodes or 
 	const store = createStore();
 	const jobs = createJobTracker();
 	const toolControls = createToolControlRegistry();
-	setDurableBackend(new InMemoryDurableBackend());
+	setDurableBackend(await createMemoryTestBackend());
 	let toolCalls = 0;
 	const definition = workflow({
 		name: "quit-empty-root",
@@ -83,7 +83,7 @@ test("quit controls a node-less workflow await without inventing graph nodes or 
 });
 
 test("a run-start observer failure cannot leave an ownerless running root", async () => {
-	setDurableBackend(new InMemoryDurableBackend());
+	setDurableBackend(await createMemoryTestBackend());
 	const store = createStore();
 	const jobs = createJobTracker();
 	const toolControls = createToolControlRegistry();
@@ -153,17 +153,17 @@ test("pre-aborted public reads and mutations never start resource or runtime wor
 });
 
 test("an aborted public resume never mutates after non-cancellable resource loading completes", async () => {
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	setDurableBackend(backend);
 	const runId = crypto.randomUUID();
-	backend.registerWorkflow({
+	await backend.registerWorkflow({
 		workflowId: runId,
 		name: "resume-after-load",
 		inputs: {},
 		status: "paused",
 		createdAt: 1,
 	});
-	backend.setWorkflowStatus(runId, "paused", 1, true);
+	await backend.setWorkflowStatus(runId, "paused", 1, true);
 	const loading = Promise.withResolvers<void>();
 	let resumeCalls = 0;
 	const runtime = {
@@ -191,19 +191,23 @@ test("an aborted public resume never mutates after non-cancellable resource load
 test("durable resume cancellation during its claim restores the source without launching late work", async () => {
 	const claimed = Promise.withResolvers<void>();
 	const release = Promise.withResolvers<void>();
-	class DelayedClaim extends InMemoryDurableBackend {
-		override async transitionWorkflowStatus(
-			id: string,
-			expected: readonly DurableWorkflowStatus[],
-			status: DurableWorkflowStatus,
-		): Promise<boolean> {
-			const result = await super.transitionWorkflowStatus(id, expected, status);
-			claimed.resolve();
-			await release.promise;
-			return result;
-		}
+	async function createDelayedClaim() {
+		const backend = Object.assign(await createMemoryTestBackend(), {});
+		const basetransitionWorkflowStatus = backend.transitionWorkflowStatus.bind(backend);
+		return Object.assign(backend, {
+			async transitionWorkflowStatus(
+				id: string,
+				expected: readonly DurableWorkflowStatus[],
+				status: DurableWorkflowStatus,
+			): Promise<boolean> {
+				const result = await basetransitionWorkflowStatus(id, expected, status);
+				claimed.resolve();
+				await release.promise;
+				return result;
+			},
+		});
 	}
-	const backend = new DelayedClaim();
+	const backend = await createDelayedClaim();
 	setDurableBackend(backend);
 	const store = createStore();
 	const jobs = createJobTracker();
@@ -219,8 +223,14 @@ test("durable resume cancellation during its claim restores the source without l
 		},
 	});
 	const runId = crypto.randomUUID();
-	backend.registerWorkflow({ workflowId: runId, name: definition.name, inputs: {}, status: "paused", createdAt: 1 });
-	backend.setWorkflowStatus(runId, "paused", 1, true);
+	await backend.registerWorkflow({
+		workflowId: runId,
+		name: definition.name,
+		inputs: {},
+		status: "paused",
+		createdAt: 1,
+	});
+	await backend.setWorkflowStatus(runId, "paused", 1, true);
 	const runtime = createExtensionRuntime({ registry: createRegistry([definition]), store, jobs });
 	const caller = new AbortController();
 	const reason = new Error("cancel durable resume");
@@ -237,11 +247,11 @@ test("durable resume cancellation during its claim restores the source without l
 	await jobs.get(runId)?.promise;
 	assert.equal(calls, 0);
 	assert.equal(result, reason);
-	assert.equal(backend.getWorkflow(runId)?.status, "paused");
+	await vi.waitFor(() => assert.equal(backend.getWorkflow(runId)?.status, "paused"));
 });
 
 test("quit immediately after allocation suspends before the deferred startup turn", async () => {
-	setDurableBackend(new InMemoryDurableBackend());
+	setDurableBackend(await createMemoryTestBackend());
 	const store = createStore();
 	const jobs = createJobTracker();
 	const controls = createToolControlRegistry();
@@ -266,7 +276,7 @@ test("quit immediately after allocation suspends before the deferred startup tur
 });
 
 test("startup signal ownership is released once and post-acknowledgement abort stays detached", async () => {
-	setDurableBackend(new InMemoryDurableBackend());
+	setDurableBackend(await createMemoryTestBackend());
 	const ready = Promise.withResolvers<void>();
 	const body = Promise.withResolvers<void>();
 	const store = createStore();
@@ -301,7 +311,7 @@ test("startup signal ownership is released once and post-acknowledgement abort s
 });
 
 test("a retired node-less executor cannot hydrate cached stages after quit", async () => {
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	setDurableBackend(backend);
 	const entered = Promise.withResolvers<void>();
 	const release = Promise.withResolvers<void>();

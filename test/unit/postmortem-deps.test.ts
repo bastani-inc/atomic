@@ -9,7 +9,7 @@ import { stageControlRegistry } from "../../packages/workflows/src/runs/foregrou
 import type { StageSessionCreateOptions } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { mockSession } from "./executor-shared.js";
 
 let tempRoot = "";
@@ -31,10 +31,10 @@ test("nested post-mortem chat reopens in the durable root cwd while retaining ch
 	for (const durableCwdField of ["workflowCwd", "invocationCwd"] as const) {
 		stageControlRegistry.clear();
 		store.clear();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const durableCwd = join(tempRoot, durableCwdField);
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: "root-run",
 			rootWorkflowId: "root-run",
 			name: "root-workflow",

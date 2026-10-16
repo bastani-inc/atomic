@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 describe("durable workflow origin", () => {
-	test("registered user and agent origins round-trip through the handle and catalog", () => {
-		const backend = new InMemoryDurableBackend();
+	test("registered user and agent origins round-trip through the handle and catalog", async () => {
+		const backend = await createMemoryTestBackend();
 		for (const origin of ["user", "agent"] as const) {
 			const workflowId = `origin-${origin}`;
-			backend.registerWorkflow({
+			await backend.registerWorkflow({
 				workflowId,
 				name: `workflow-${origin}`,
 				inputs: {},
@@ -27,9 +27,9 @@ describe("durable workflow origin", () => {
 		}
 	});
 
-	test("a handle registered without origin keeps origin absent rather than guessing", () => {
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+	test("a handle registered without origin keeps origin absent rather than guessing", async () => {
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({
 			workflowId: "origin-omitted",
 			name: "legacy-workflow",
 			inputs: {},
@@ -45,9 +45,9 @@ describe("durable workflow origin", () => {
 		assert.equal(backend.toMetadata("origin-omitted")?.origin, undefined);
 	});
 
-	test("re-registering without origin preserves the previously recorded origin", () => {
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+	test("re-registering without origin preserves the previously recorded origin", async () => {
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({
 			workflowId: "origin-preserved",
 			name: "preserved-workflow",
 			inputs: {},
@@ -55,7 +55,7 @@ describe("durable workflow origin", () => {
 			status: "running",
 			origin: "agent",
 		});
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: "origin-preserved",
 			name: "preserved-workflow",
 			inputs: {},

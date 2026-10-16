@@ -70,7 +70,7 @@ interface WorkflowGeneration {
 	readonly jobTracker: JobTracker;
 	readonly stageUiBroker: StageUiBroker;
 	readonly factory: ExtensionFactory;
-	readonly createInMemoryTestBackend: () => DurableWorkflowBackend;
+	readonly createMemoryTestBackend: () => DurableWorkflowBackend;
 	readonly setDurableBackend: (backend: DurableWorkflowBackend | undefined) => void;
 	readonly adoptWorkflowSessionRunState?: (scope: object | undefined) => void;
 }
@@ -576,7 +576,7 @@ test.sequential(
 			const first = await evaluateInstalledWorkflowGraph();
 			// Each jiti generation owns its durable factory, so install one shared
 			// in-memory backend across the full-reload boundary.
-			const durableBackend = first.createInMemoryTestBackend();
+			const durableBackend = first.createMemoryTestBackend();
 			first.setDurableBackend(durableBackend);
 			firstGeneration = first;
 			const firstRuntime = createHostRuntime(scope);

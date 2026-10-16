@@ -6,11 +6,11 @@ import { run } from "../../packages/workflows/src/engine/run.js";
 import { createAdmittedToolExecutionTracker } from "../../packages/workflows/src/engine/run-tool-execution-tracker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { sleep } from "../helpers/runtime.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 describe("ctx.tool admitted execution barrier", () => {
 	test("tracking returns the exact execution promise and callback value", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		let admitted: Promise<unknown> | undefined;
 		let trackedBeforeCallback = false;
 		let boundNodeId: string | undefined;
@@ -41,7 +41,7 @@ describe("ctx.tool admitted execution barrier", () => {
 	});
 
 	test("refused tracking rejects the exact native execution promise before invocation", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const refusal = new Error("deterministic refusal");
 		let admitted: Promise<unknown> | undefined;
 		let callbacks = 0;
@@ -68,7 +68,7 @@ describe("ctx.tool admitted execution barrier", () => {
 	});
 	test("unawaited admitted success delays root completion until checkpointed", async () => {
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
 		let rootSettled = false;
@@ -115,7 +115,7 @@ describe("ctx.tool admitted execution barrier", () => {
 
 	test("caught tool rejection preserves identity and still fails the root", async () => {
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const original = new Error("caught original tool failure");
 		let caught: unknown;
 
@@ -161,7 +161,7 @@ describe("ctx.tool admitted execution barrier", () => {
 
 	test("unawaited rejection is observed and fails root without an unhandled rejection", async () => {
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
 		const unhandled: unknown[] = [];
@@ -305,7 +305,7 @@ describe("ctx.tool admitted execution barrier", () => {
 
 	test("selected ctx.exit remains authoritative after admitted tool cancellation", async () => {
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
 		const pending = run(
@@ -447,7 +447,7 @@ describe("ctx.tool admitted execution barrier", () => {
 
 	test("external cancellation wins after an unawaited admitted tool settles", async () => {
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const controller = new AbortController();
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();

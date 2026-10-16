@@ -18,7 +18,7 @@ import type { RunSnapshot } from "../../packages/workflows/src/shared/store-type
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { computeLayout, NODE_H, NODE_W } from "../../packages/workflows/src/tui/layout.js";
 import { testRunId } from "../helpers/run-id.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 import { mockSession, type StageSessionRuntime } from "./executor-shared.js";
 import { defaultTheme, makeTestTui, visibleText } from "./overlay-graph-helpers.js";
@@ -105,7 +105,7 @@ function lifecycleRestoration(store: ReturnType<typeof createStore>) {
 
 describe("completed workflow inspection", () => {
 	test("opens immutable detail and appends follow-up chat without durable re-dispatch", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const store = createStore();
 		const lifecycle = lifecycleRestoration(store);
 		const registry = createStageControlRegistry();
@@ -118,7 +118,7 @@ describe("completed workflow inspection", () => {
 				promptCalls.push(text);
 			},
 		};
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: testRunId("completed-inspection"),
 			name: "completed-flow",
 			inputs: { topic: "done" },
@@ -126,7 +126,7 @@ describe("completed workflow inspection", () => {
 			updatedAt: 3,
 			status: "completed",
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("completed-inspection"),
 			checkpointId: "stage:1",
@@ -203,9 +203,9 @@ describe("completed workflow inspection", () => {
 	});
 	test("includes the full workflow id in a completed inspection message", async () => {
 		const workflowId = testRunId("full-workflow-id");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const store = createStore();
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId,
 			name: "completed-flow",
 			inputs: {},
@@ -213,7 +213,7 @@ describe("completed workflow inspection", () => {
 			updatedAt: 3,
 			status: "completed",
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId,
 			checkpointId: "stage:1",
@@ -230,17 +230,17 @@ describe("completed workflow inspection", () => {
 	});
 
 	test("refuses to replace an active run with the same id", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const store = createStore();
 		const sessionFile = retainedSession(testRunId("same-id"));
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: testRunId("same-id"),
 			name: "completed-flow",
 			inputs: {},
 			createdAt: 1,
 			status: "completed",
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("same-id"),
 			checkpointId: "stage:1",
@@ -268,17 +268,17 @@ describe("completed workflow inspection", () => {
 	});
 
 	test("replaces a retained completed snapshot with authoritative durable detail", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const store = createStore();
 		const sessionFile = retainedSession(testRunId("authoritative"));
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: testRunId("authoritative"),
 			name: "durable-name",
 			inputs: {},
 			createdAt: 1,
 			status: "completed",
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("authoritative"),
 			checkpointId: "stage:1",
@@ -311,20 +311,20 @@ describe("completed workflow inspection", () => {
 	});
 
 	test("refreshes a retained chat handle when authoritative transcript detail changes", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const store = createStore();
 		const lifecycle = lifecycleRestoration(store);
 		const registry = createStageControlRegistry();
 		const firstSessionFile = retainedSession("first-authoritative");
 		const secondSessionFile = retainedSession("second-authoritative");
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: testRunId("refresh-chat"),
 			name: "completed-flow",
 			inputs: {},
 			createdAt: 1,
 			status: "completed",
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("refresh-chat"),
 			checkpointId: "stage:1",
@@ -352,7 +352,7 @@ describe("completed workflow inspection", () => {
 		assert.equal((await openCompletedDurableWorkflow(testRunId("refresh-chat"), deps)).ok, true);
 		const firstHandle = registry.get(testRunId("refresh-chat"), "final-source");
 		assert.equal(firstHandle?.sessionFile, firstSessionFile);
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("refresh-chat"),
 			checkpointId: "stage:2",
@@ -372,19 +372,19 @@ describe("completed workflow inspection", () => {
 	});
 
 	test("removes a retained chat handle when its transcript becomes invalid", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const store = createStore();
 		const registry = createStageControlRegistry();
 		const invalidatedSessionFile = retainedSession("invalidated-stage");
 		const retainedSessionFile = retainedSession("still-retained-stage");
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: testRunId("invalidate-chat"),
 			name: "completed-flow",
 			inputs: {},
 			createdAt: 1,
 			status: "completed",
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("invalidate-chat"),
 			checkpointId: "stage:1",
@@ -395,7 +395,7 @@ describe("completed workflow inspection", () => {
 			completedAt: 2,
 			topology: completedTopology("first-source", 0),
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("invalidate-chat"),
 			checkpointId: "stage:2",
@@ -431,18 +431,18 @@ describe("completed workflow inspection", () => {
 	});
 
 	test("opens a retained internal stage transcript without exposing it in ordinary history", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const store = createStore();
 		const internalSessionFile = retainedSession(testRunId("internal-completed"), true);
 		retainedSession("regular-history");
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: testRunId("internal-completed"),
 			name: "completed-flow",
 			inputs: {},
 			createdAt: 1,
 			status: "completed",
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("internal-completed"),
 			checkpointId: "stage:1",
@@ -466,17 +466,17 @@ describe("completed workflow inspection", () => {
 	});
 
 	test("opens a tool-only run as a read-only graph without promising chat", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const store = createStore();
 		const registry = createStageControlRegistry();
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: testRunId("completed-tool-only"),
 			name: "tool-only",
 			inputs: {},
 			createdAt: 1,
 			status: "completed",
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			topology: { version: 1, nodeId: `tool:${"publish-hash"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: testRunId("completed-tool-only"),
@@ -512,12 +512,12 @@ describe("completed workflow inspection", () => {
 	});
 
 	test("restores nested completed snapshots without lifecycle delivery", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const store = createStore();
 		const lifecycle = lifecycleRestoration(store);
 		const runId = testRunId("silent-nested-root");
 		const childRunId = testRunId("silent-nested-child");
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: runId,
 			name: "nested root",
 			inputs: {},
@@ -525,7 +525,7 @@ describe("completed workflow inspection", () => {
 			updatedAt: 4,
 			status: "completed",
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: runId,
 			checkpointId: "boundary",
@@ -540,7 +540,7 @@ describe("completed workflow inspection", () => {
 				run: { runId, runName: "nested root" },
 			},
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "tool",
 			workflowId: runId,
 			checkpointId: "child-tool",
@@ -584,7 +584,7 @@ describe("completed workflow inspection", () => {
 		assert.deepEqual(lifecycle.sent, []);
 	});
 	test("historical tool-only restoration is lifecycle-silent", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const store = createStore();
 		const state = createWorkflowLifecycleNotificationState();
 		const sent: unknown[] = [];
@@ -596,7 +596,7 @@ describe("completed workflow inspection", () => {
 				sent.push({ message, options });
 			},
 		});
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: testRunId("silent-tool-only"),
 			name: "silent tool",
 			inputs: {},
@@ -604,7 +604,7 @@ describe("completed workflow inspection", () => {
 			updatedAt: 3,
 			status: "completed",
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			topology: { version: 1, nodeId: `tool:${"publish-hash"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: testRunId("silent-tool-only"),
@@ -633,7 +633,7 @@ describe("completed workflow inspection", () => {
 	});
 
 	test("completed inspection does not duplicate an already delivered live notice", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const store = createStore();
 		const state = createWorkflowLifecycleNotificationState();
 		const sent: unknown[] = [];
@@ -657,7 +657,7 @@ describe("completed workflow inspection", () => {
 		});
 		store.recordRunEnd(testRunId("live-then-inspect"), "completed", {});
 		assert.equal(sent.length, 1);
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: testRunId("live-then-inspect"),
 			name: "live tool",
 			inputs: {},
@@ -665,7 +665,7 @@ describe("completed workflow inspection", () => {
 			updatedAt: 3,
 			status: "completed",
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			topology: { version: 1, nodeId: `tool:${"done-hash"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: testRunId("live-then-inspect"),

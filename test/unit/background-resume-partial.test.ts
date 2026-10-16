@@ -10,18 +10,23 @@ import {
 	type StageControlStatus,
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import {
+	createMemoryTestBackend,
+	type MemoryJournalBackend as InMemoryDurableBackend,
+} from "../helpers/workflow-journal.js";
 
 interface ResumeHandleState {
 	status: StageControlStatus;
 	calls: number;
 }
 
-function seedPausedRun(
+async function seedPausedRun(
 	runId: string,
 	stageIds: readonly string[],
-	backend: InMemoryDurableBackend = new InMemoryDurableBackend(),
+	backend: InMemoryDurableBackend | undefined = undefined,
 ) {
+	backend ??= await createMemoryTestBackend();
+
 	const store = createStore();
 	store.recordRunStart({
 		id: runId,
@@ -37,8 +42,8 @@ function seedPausedRun(
 		store.recordStagePaused(runId, stageId);
 	}
 	store.recordRunPaused(runId, undefined, { resumable: true, exitReason: "quit" });
-	backend.registerWorkflow({ workflowId: runId, name: "partial", inputs: {}, createdAt: 1, status: "paused" });
-	backend.recordCheckpoint({
+	await backend.registerWorkflow({ workflowId: runId, name: "partial", inputs: {}, createdAt: 1, status: "paused" });
+	await backend.recordCheckpoint({
 		kind: "tool",
 		workflowId: runId,
 		checkpointId: "progress",
@@ -93,7 +98,7 @@ afterEach(() => setDurableBackend(undefined));
 describe("multi-stage resume acknowledgement coherence", () => {
 	test("settles every stage and reports partial running state before a later retry", async () => {
 		const runId = "partial-resume-all-settled";
-		const { store, backend, registry } = seedPausedRun(runId, ["reject-first", "resume-late"]);
+		const { store, backend, registry } = await seedPausedRun(runId, ["reject-first", "resume-late"]);
 		const rejected: ResumeHandleState = { status: "paused", calls: 0 };
 		const resumed: ResumeHandleState = { status: "paused", calls: 0 };
 		const lateSuccess = Promise.withResolvers<void>();
@@ -176,7 +181,7 @@ describe("multi-stage resume acknowledgement coherence", () => {
 
 	test("waits for a late rejection after an earlier stage visibly resumes", async () => {
 		const runId = "resume-late-rejection";
-		const { store, backend, registry } = seedPausedRun(runId, ["resume-first", "reject-late"]);
+		const { store, backend, registry } = await seedPausedRun(runId, ["resume-first", "reject-late"]);
 		const first: ResumeHandleState = { status: "paused", calls: 0 };
 		const late: ResumeHandleState = { status: "paused", calls: 0 };
 		const lateAcknowledgement = Promise.withResolvers<void>();
@@ -226,7 +231,7 @@ describe("multi-stage resume acknowledgement coherence", () => {
 
 	test("counts a late rejection as resumed after its stage is visibly running", async () => {
 		const runId = "resume-late-visible";
-		const { store, backend, registry } = seedPausedRun(runId, ["ok", "late-visible"]);
+		const { store, backend, registry } = await seedPausedRun(runId, ["ok", "late-visible"]);
 		for (const stageId of ["ok", "late-visible"] as const) {
 			const state: ResumeHandleState = { status: "paused", calls: 0 };
 			registerProductionShapedHandle({
@@ -264,7 +269,7 @@ describe("multi-stage resume acknowledgement coherence", () => {
 
 	test("reconciles a late-rejecting running control into the store", async () => {
 		const runId = "resume-late-control-visible";
-		const { store, backend, registry } = seedPausedRun(runId, ["control-visible"]);
+		const { store, backend, registry } = await seedPausedRun(runId, ["control-visible"]);
 		const state: ResumeHandleState = { status: "paused", calls: 0 };
 		registerProductionShapedHandle({
 			runId,
@@ -292,7 +297,7 @@ describe("multi-stage resume acknowledgement coherence", () => {
 
 	test("all late-visible rejections reconcile the root and durability to running", async () => {
 		const runId = "resume-all-late-visible";
-		const { store, backend, registry } = seedPausedRun(runId, ["late-a", "late-b"]);
+		const { store, backend, registry } = await seedPausedRun(runId, ["late-a", "late-b"]);
 		for (const stageId of ["late-a", "late-b"] as const) {
 			const state: ResumeHandleState = { status: "paused", calls: 0 };
 			registerProductionShapedHandle({
@@ -326,7 +331,7 @@ describe("multi-stage resume acknowledgement coherence", () => {
 
 	test("terminalization during acknowledgement cannot revive a stage", async () => {
 		const runId = "resume-terminal-race";
-		const { store, backend, registry } = seedPausedRun(runId, ["racing-stage"]);
+		const { store, backend, registry } = await seedPausedRun(runId, ["racing-stage"]);
 		const state: ResumeHandleState = { status: "paused", calls: 0 };
 		const acknowledgement = Promise.withResolvers<void>();
 		registerProductionShapedHandle({
@@ -345,7 +350,7 @@ describe("multi-stage resume acknowledgement coherence", () => {
 		const operation = resumeRun(runId, { store, stageControlRegistry: registry });
 		await Promise.resolve();
 		assert.equal(store.recordRunEnd(runId, "completed", {}), true);
-		backend.setWorkflowStatus(runId, "completed");
+		await backend.setWorkflowStatus(runId, "completed");
 		acknowledgement.resolve();
 		const result = await operation;
 		assert.equal(result.ok, true);
@@ -357,7 +362,7 @@ describe("multi-stage resume acknowledgement coherence", () => {
 
 	test("aggregates all stage-qualified failures and leaves all-paused state coherent", async () => {
 		const runId = "resume-all-reject";
-		const { store, backend, registry } = seedPausedRun(runId, ["reject-a", "reject-b"]);
+		const { store, backend, registry } = await seedPausedRun(runId, ["reject-a", "reject-b"]);
 		for (const [stageId, message] of [
 			["reject-a", "alpha"],
 			["reject-b", "beta"],
@@ -390,19 +395,23 @@ describe("multi-stage resume acknowledgement coherence", () => {
 	});
 
 	test("surfaces durable running transition failures after visible resume", async () => {
-		class ThrowRunningBackend extends InMemoryDurableBackend {
-			override async transitionWorkflowStatus(
-				...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>
-			): Promise<boolean> {
-				if (args[2] === "running") throw new Error("durable running write failed");
-				return await super.transitionWorkflowStatus(...args);
-			}
+		async function createThrowRunningBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), {});
+			const basetransitionWorkflowStatus = backend.transitionWorkflowStatus.bind(backend);
+			return Object.assign(backend, {
+				async transitionWorkflowStatus(
+					...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>
+				): Promise<boolean> {
+					if (args[2] === "running") throw new Error("durable running write failed");
+					return await basetransitionWorkflowStatus(...args);
+				},
+			});
 		}
 		for (const [suffix, backend, failure] of [
-			["set", new ThrowRunningBackend(), /durable running write failed/],
+			["set", await createThrowRunningBackend(), /durable running write failed/],
 		] as const) {
 			const runId = `resume-durable-failure-${suffix}`;
-			const seeded = seedPausedRun(runId, ["only"], backend);
+			const seeded = await seedPausedRun(runId, ["only"], backend);
 			const state: ResumeHandleState = { status: "paused", calls: 0 };
 			registerProductionShapedHandle({
 				runId,
@@ -428,18 +437,22 @@ describe("multi-stage resume acknowledgement coherence", () => {
 	});
 
 	test("retries a failed durable running transition after local resume already succeeded", async () => {
-		class TransientRunningBackend extends InMemoryDurableBackend {
-			runningAttempts = 0;
-			override async transitionWorkflowStatus(
-				...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>
-			): Promise<boolean> {
-				if (args[2] === "running" && ++this.runningAttempts === 1) throw new Error("transient durable failure");
-				return await super.transitionWorkflowStatus(...args);
-			}
+		async function createTransientRunningBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), { runningAttempts: 0 });
+			const basetransitionWorkflowStatus = backend.transitionWorkflowStatus.bind(backend);
+			return Object.assign(backend, {
+				async transitionWorkflowStatus(
+					...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>
+				): Promise<boolean> {
+					if (args[2] === "running" && ++backend.runningAttempts === 1)
+						throw new Error("transient durable failure");
+					return await basetransitionWorkflowStatus(...args);
+				},
+			});
 		}
 		const runId = "resume-durable-retry";
-		const backend = new TransientRunningBackend();
-		const { store, registry } = seedPausedRun(runId, ["only"], backend);
+		const backend = await createTransientRunningBackend();
+		const { store, registry } = await seedPausedRun(runId, ["only"], backend);
 		const state: ResumeHandleState = { status: "paused", calls: 0 };
 		registerProductionShapedHandle({
 			runId,
@@ -481,7 +494,7 @@ describe("multi-stage resume acknowledgement coherence", () => {
 
 	test("successful resume preserves target order despite reverse settlement", async () => {
 		const runId = "resume-success-order";
-		const { store, registry } = seedPausedRun(runId, ["stage-a", "stage-b"]);
+		const { store, registry } = await seedPausedRun(runId, ["stage-a", "stage-b"]);
 		const a = Promise.withResolvers<void>();
 		const b = Promise.withResolvers<void>();
 		for (const [stageId, acknowledgement] of [
@@ -519,7 +532,7 @@ describe("multi-stage resume acknowledgement coherence", () => {
 	});
 	test("fulfilled resume that completes before reconciliation returns terminal progress", async () => {
 		const runId = "resume-ack-completes";
-		const { store, backend, registry } = seedPausedRun(runId, ["awaiting-answer"]);
+		const { store, backend, registry } = await seedPausedRun(runId, ["awaiting-answer"]);
 		const state: ResumeHandleState = { status: "paused", calls: 0 };
 		registerProductionShapedHandle({
 			runId,
@@ -540,7 +553,7 @@ describe("multi-stage resume acknowledgement coherence", () => {
 					result: "held-answer",
 				});
 				store.recordRunEnd(runId, "completed", { answer: "held-answer" });
-				backend.setWorkflowStatus(runId, "completed");
+				await backend.setWorkflowStatus(runId, "completed");
 			},
 		});
 

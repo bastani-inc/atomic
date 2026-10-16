@@ -13,7 +13,7 @@ import { createCancellationRegistry } from "../../packages/workflows/src/runs/ba
 import { killRun } from "../../packages/workflows/src/runs/background/status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { sleep } from "../helpers/runtime.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 function installFailureNotices(store: ReturnType<typeof createStore>): {
 	readonly notices: WorkflowLifecycleNoticeDetails[];
@@ -55,7 +55,7 @@ function waitForToolStatus(
 describe("ctx.tool persistence and cancellation races", () => {
 	test("cancellation during retry backoff leaves a cancelled node and no checkpoint", async () => {
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const controller = new AbortController();
 		const attempted = Promise.withResolvers<void>();
 		let attempts = 0;
@@ -99,7 +99,7 @@ describe("ctx.tool persistence and cancellation races", () => {
 
 	test("failure observed before a late cancellation wins while catch drains another tool", async () => {
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const cancellation = createCancellationRegistry();
 		const lifecycle = installFailureNotices(store);
 		const blockerEntered = Promise.withResolvers<void>();
@@ -152,7 +152,7 @@ describe("ctx.tool persistence and cancellation races", () => {
 
 	test("unawaited failure during normal drain terminates a non-cooperative sibling", async () => {
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const lifecycle = installFailureNotices(store);
 		const persisted: Array<{ type: string; payload: Record<string, unknown> }> = [];
 		const persistence = {
@@ -232,7 +232,7 @@ describe("ctx.tool persistence and cancellation races", () => {
 
 	test("ordinary failure settles despite a non-cooperative sibling tool", async () => {
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const lifecycle = installFailureNotices(store);
 		const blockerEntered = Promise.withResolvers<void>();
 		const blockerRelease = Promise.withResolvers<void>();
@@ -295,7 +295,7 @@ describe("ctx.tool persistence and cancellation races", () => {
 
 	test("preserves first terminal tool attribution when concurrent failures throw the same value", async () => {
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const lifecycle = installFailureNotices(store);
 		const sharedError = new Error("shared concurrent failure");
 		const firstEntered = Promise.withResolvers<void>();
@@ -345,7 +345,7 @@ describe("ctx.tool persistence and cancellation races", () => {
 
 	test("cancellation observed before callback failure wins and emits no failed notice", async () => {
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const cancellation = createCancellationRegistry();
 		const lifecycle = installFailureNotices(store);
 		const entered = Promise.withResolvers<void>();
@@ -385,18 +385,22 @@ describe("ctx.tool persistence and cancellation races", () => {
 	});
 
 	test("writer rejection after callback success fails node and root without a completed checkpoint", async () => {
-		class RejectingBackend extends InMemoryDurableBackend {
-			override async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
-				if (checkpoint.kind === "tool")
-					throw new StorageUnavailableError(
-						{ adapter: "node-sqlite", location: "durable writer rejected" },
-						new Error("fixture storage failure"),
-					);
-				await super.recordCheckpointAsync(checkpoint);
-			}
+		async function createRejectingBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), {});
+			const baserecordCheckpointAsync = backend.recordCheckpointAsync.bind(backend);
+			return Object.assign(backend, {
+				async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+					if (checkpoint.kind === "tool")
+						throw new StorageUnavailableError(
+							{ adapter: "node-sqlite", location: "durable writer rejected" },
+							new Error("fixture storage failure"),
+						);
+					await baserecordCheckpointAsync(checkpoint);
+				},
+			});
 		}
 		const store = createStore();
-		const backend = new RejectingBackend();
+		const backend = await createRejectingBackend();
 		let callbackCalls = 0;
 		const result = await run(
 			workflow({
@@ -427,19 +431,24 @@ describe("ctx.tool persistence and cancellation races", () => {
 	});
 
 	test("checkpoint commit wins an in-flight cancellation but the root never claims completion", async () => {
-		class GatedBackend extends InMemoryDurableBackend {
-			readonly writeStarted = Promise.withResolvers<void>();
-			readonly releaseWrite = Promise.withResolvers<void>();
-			override async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
-				if (checkpoint.kind === "tool") {
-					this.writeStarted.resolve();
-					await this.releaseWrite.promise;
-				}
-				await super.recordCheckpointAsync(checkpoint);
-			}
+		async function createGatedBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), {
+				writeStarted: Promise.withResolvers<void>(),
+				releaseWrite: Promise.withResolvers<void>(),
+			});
+			const baserecordCheckpointAsync = backend.recordCheckpointAsync.bind(backend);
+			return Object.assign(backend, {
+				async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+					if (checkpoint.kind === "tool") {
+						backend.writeStarted.resolve();
+						await backend.releaseWrite.promise;
+					}
+					await baserecordCheckpointAsync(checkpoint);
+				},
+			});
 		}
 		const store = createStore();
-		const backend = new GatedBackend();
+		const backend = await createGatedBackend();
 		const controller = new AbortController();
 		const pending = run(
 			workflow({
@@ -467,18 +476,23 @@ describe("ctx.tool persistence and cancellation races", () => {
 	});
 
 	test("return-mode cancellation during failure commit throws before downstream code", async () => {
-		class GatedFailureBackend extends InMemoryDurableBackend {
-			readonly writeStarted = Promise.withResolvers<void>();
-			readonly releaseWrite = Promise.withResolvers<void>();
-			override async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
-				if (checkpoint.kind === "tool") {
-					this.writeStarted.resolve();
-					await this.releaseWrite.promise;
-				}
-				await super.recordCheckpointAsync(checkpoint);
-			}
+		async function createGatedFailureBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), {
+				writeStarted: Promise.withResolvers<void>(),
+				releaseWrite: Promise.withResolvers<void>(),
+			});
+			const baserecordCheckpointAsync = backend.recordCheckpointAsync.bind(backend);
+			return Object.assign(backend, {
+				async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+					if (checkpoint.kind === "tool") {
+						backend.writeStarted.resolve();
+						await backend.releaseWrite.promise;
+					}
+					await baserecordCheckpointAsync(checkpoint);
+				},
+			});
 		}
-		const backend = new GatedFailureBackend();
+		const backend = await createGatedFailureBackend();
 		const controller = new AbortController();
 		let downstreamRan = false;
 		let observedOutcome = false;

@@ -15,7 +15,7 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createWorkflowObservation } from "../../packages/workflows/src/extension/workflow-observation.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -78,7 +78,7 @@ test("nested execution delivers run stage tool and prompt hooks through the host
 		{},
 		{
 			store,
-			durableBackend: new InMemoryDurableBackend(),
+			durableBackend: await createMemoryTestBackend(),
 			usePromptNodesForUi: true,
 			adapters: { complete: { complete: async (text) => text } },
 		},
@@ -144,7 +144,7 @@ test("nested execution delivers run stage tool and prompt hooks through the host
 		{},
 		{
 			store,
-			durableBackend: new InMemoryDurableBackend(),
+			durableBackend: await createMemoryTestBackend(),
 			adapters: {
 				complete: {
 					complete: async () => {
@@ -184,7 +184,7 @@ test("nested execution delivers run stage tool and prompt hooks through the host
 		{},
 		{
 			store,
-			durableBackend: new InMemoryDurableBackend(),
+			durableBackend: await createMemoryTestBackend(),
 			adapters: {
 				prompt: {
 					prompt: async () => {

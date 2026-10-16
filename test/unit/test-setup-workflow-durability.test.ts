@@ -1,16 +1,21 @@
 import assert from "node:assert/strict";
 import { afterAll, test } from "vitest";
+import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
 import { getDurableBackendProcessOwner } from "../../packages/workflows/src/durable/backend-process-owner.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { requireStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import { createStore, currentWorkflowStore } from "../../packages/workflows/src/shared/store-factory.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import {
+	createMemoryTestBackend,
+	type MemoryJournalBackend as InMemoryDurableBackend,
+} from "../helpers/workflow-journal.js";
 
 const owner = getDurableBackendProcessOwner();
 const original = { ...owner };
-const initialized = new InMemoryDurableBackend();
+const initialized = await createMemoryTestBackend();
 const selected = new Map([["memory", { ready: Promise.resolve(initialized) }]]);
-let previousInjected: InMemoryDurableBackend | undefined;
+let previousInjected: DurableWorkflowBackend | undefined;
 let previousOverride: InMemoryDurableBackend | undefined;
 let completed = 0;
 
@@ -21,10 +26,10 @@ afterAll(() => {
 // These ordinary, ordered tests exercise the real configured beforeEach twice.
 // The second verifies the transition from an explicit override to a fresh backend.
 for (const ordinal of [0, 1]) {
-	test(`durable setup installs a fresh store-bound backend before test ${ordinal + 1}`, () => {
+	test(`durable setup installs a fresh store-bound backend before test ${ordinal + 1}`, async () => {
 		assert.equal(completed, ordinal);
 		const injected = requireStoreDurableBackend(currentWorkflowStore());
-		assert.ok(injected instanceof InMemoryDurableBackend);
+		assert.ok(injected instanceof JournalDurableBackend);
 		assert.equal(injected, owner.injectedBackend);
 		assert.notEqual(injected, previousInjected);
 		assert.notEqual(injected, previousOverride);
@@ -34,7 +39,7 @@ for (const ordinal of [0, 1]) {
 			assert.equal(owner.selectedBackends, selected);
 		}
 		owner.selectedBackends = selected;
-		const override = new InMemoryDurableBackend();
+		const override = await createMemoryTestBackend();
 		setDurableBackend(override);
 		assert.equal(requireStoreDurableBackend(createStore()), override);
 		assert.equal(requireStoreDurableBackend(currentWorkflowStore()), injected);

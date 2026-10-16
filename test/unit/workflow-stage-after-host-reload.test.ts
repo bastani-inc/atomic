@@ -37,7 +37,7 @@ import {
 	messageStream,
 	registeredDecisionRuntime,
 } from "../helpers/structured-output.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 /** Real resource loader, real SDK session, and a real `/reload` or `/new` transaction. */
 const HOST_RELOAD_STAGE_TIMEOUT_MS = 120_000;
@@ -107,7 +107,7 @@ async function gatedWorkflowHost(prefix: string) {
 	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
 	vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
 	vi.stubEnv("TYPESAFE_API_KEY", "");
-	setDurableBackend(new InMemoryDurableBackend());
+	setDurableBackend(await createMemoryTestBackend());
 	const { runtime: modelRuntime } = await registeredDecisionRuntime((_model, context) =>
 		messageStream(context.messages.at(-1)?.role === "toolResult" ? finalReply() : decisionMessage({ ok: true })),
 	);

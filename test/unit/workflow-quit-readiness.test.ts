@@ -18,7 +18,7 @@ import {
 } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { makeMockSession } from "./stage-runner-helpers.js";
 
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -32,7 +32,7 @@ afterEach(() => {
 	setDurableBackend(undefined);
 });
 
-function startReadiness(
+async function startReadiness(
 	options: {
 		nested?: boolean;
 		usePromptNodesForUi?: boolean;
@@ -42,7 +42,7 @@ function startReadiness(
 	} = {},
 ) {
 	const root = new AbortController();
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	setDurableBackend(backend);
 	const runId = crypto.randomUUID();
 	const first = Promise.withResolvers<StageCustomUiRequest>();
@@ -126,7 +126,7 @@ function startReadiness(
 
 // Related: #2897. A failed quit must roll back admission, not strand an accepted answer.
 test("failed quit acknowledgement releases accepted readiness without requiring resume", async () => {
-	const fixture = startReadiness({
+	const fixture = await startReadiness({
 		async abort() {
 			throw new Error("abort failed");
 		},
@@ -153,7 +153,7 @@ test("failed quit acknowledgement releases accepted readiness without requiring 
 test("concurrent failed pauses keep readiness fenced until acknowledgement and recover after resume", async () => {
 	const abort = Promise.withResolvers<void>();
 	const failure = new Error("abort failed");
-	const fixture = startReadiness({ abort: () => abort.promise });
+	const fixture = await startReadiness({ abort: () => abort.promise });
 	try {
 		const request = await fixture.first;
 		const handle = stageControlRegistry.get(fixture.runId, request.stageId)!;
@@ -181,7 +181,7 @@ test("concurrent failed pauses keep readiness fenced until acknowledgement and r
 test("successful retry after failed pause retains readiness admission until explicit resume", async () => {
 	let aborts = 0;
 	const failure = new Error("first abort failed");
-	const fixture = startReadiness({
+	const fixture = await startReadiness({
 		async abort() {
 			if (++aborts === 1) throw failure;
 		},
@@ -212,7 +212,7 @@ test("successful retry after failed pause retains readiness admission until expl
 test.each(["tool", "slash", "slash-implicit", "nested-tool", "answer-race"] as const)(
 	"%s quit dismisses readiness and rejects late answers without advancing",
 	async (route) => {
-		const fixture = startReadiness({ nested: route === "nested-tool" });
+		const fixture = await startReadiness({ nested: route === "nested-tool" });
 		const { root, backend, runId, state } = fixture;
 		try {
 			const request = await fixture.first;
@@ -257,7 +257,7 @@ test.each(["tool", "slash", "slash-implicit", "nested-tool", "answer-race"] as c
 );
 
 test.each(["pause", "quit"] as const)("%s readiness requires a fresh answer after explicit resume", async (action) => {
-	const fixture = startReadiness();
+	const fixture = await startReadiness();
 	try {
 		const old = await fixture.first;
 		const handle = stageControlRegistry.get(old.runId, old.stageId);
@@ -286,7 +286,7 @@ test.each(["pause", "quit"] as const)("%s readiness requires a fresh answer afte
 });
 
 test("ordinary readiness answer completes without pause", async () => {
-	const fixture = startReadiness();
+	const fixture = await startReadiness();
 	try {
 		broker.resolve(await fixture.first, ready);
 		await fixture.pending;
@@ -299,7 +299,7 @@ test("ordinary readiness answer completes without pause", async () => {
 });
 
 test("readiness disabled does not create a question", async () => {
-	const fixture = startReadiness({ usePromptNodesForUi: false });
+	const fixture = await startReadiness({ usePromptNodesForUi: false });
 	try {
 		await fixture.pending;
 		assert.equal(fixture.state.downstream, 1);
@@ -317,7 +317,7 @@ test.each(["quit-first", "answer-first"] as const)(
 		const second = Promise.withResolvers<void>();
 		const fresh = Promise.withResolvers<boolean>();
 		let attempts = 0;
-		const fixture = startReadiness({
+		const fixture = await startReadiness({
 			usePromptNodesForUi: false,
 			confirmStageReadiness: async (request) => {
 				if (++attempts === 1) {
@@ -364,7 +364,7 @@ test("already-aborted readiness signal rejects without mounting or approving", a
 });
 
 test("root abort dismisses a pending readiness question without approval", async () => {
-	const fixture = startReadiness();
+	const fixture = await startReadiness();
 	try {
 		const request = await fixture.first;
 		fixture.root.abort(new Error("root stopped"));
@@ -380,7 +380,7 @@ test("root abort dismisses a pending readiness question without approval", async
 });
 
 test("quitting readiness preserves an unrelated question with the same local stage id", async () => {
-	const fixture = startReadiness();
+	const fixture = await startReadiness();
 	const other = crypto.randomUUID();
 	let otherRequest: StageCustomUiRequest | undefined;
 	let otherQuestion: Promise<object> | undefined;
@@ -426,7 +426,7 @@ test("answer-versus-quit fences every nonterminal stage during asynchronous fina
 	let activeOrders = 0;
 	// Related: #2897. Exercise consumed answers while checkpointing, not only pending UI.
 	for (let delay = 0; delay < 60; delay++) {
-		const fixture = startReadiness();
+		const fixture = await startReadiness();
 		try {
 			const request = await fixture.first;
 			const handle = stageControlRegistry.get(request.runId, request.stageId);
@@ -462,7 +462,7 @@ test("answer-versus-quit fences every nonterminal stage during asynchronous fina
 test("a readiness stage completed before quit selection retains the admitted answer winner", async () => {
 	const admitted = Promise.withResolvers<void>();
 	const continueUntracked = Promise.withResolvers<void>();
-	const fixture = startReadiness({
+	const fixture = await startReadiness({
 		afterStage: async () => {
 			admitted.resolve();
 			await continueUntracked.promise;

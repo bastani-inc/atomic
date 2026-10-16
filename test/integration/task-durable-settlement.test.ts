@@ -6,7 +6,7 @@ import { runSync } from "../../packages/subagents/src/runs/foreground/execution.
 import { runAgentTask, taskToolResult } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import { createToolPrimitive } from "../../packages/workflows/src/durable/tool-primitive.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 // RFC PR #2884: observation yield must never complete a durable DAG node.
 test("a live admitted task prevents durable node completion and yielded checkpoints", async () => {
@@ -16,7 +16,7 @@ test("a live admitted task prevents durable node completion and yielded checkpoi
 	let ended = false;
 	const tool = createToolPrimitive({
 		workflowId: "task-durable",
-		backend: new InMemoryDurableBackend(),
+		backend: await createMemoryTestBackend(),
 		nextCheckpointId: () => "one",
 		throwIfCancelled() {},
 		onNodeEnd() {
@@ -58,7 +58,7 @@ test("durable real task tool results replace only linked serialized observations
 	const launched = Promise.withResolvers<void>();
 	const tool = createToolPrimitive({
 		workflowId: "task-wire",
-		backend: new InMemoryDurableBackend(),
+		backend: await createMemoryTestBackend(),
 		nextCheckpointId: () => "one",
 		throwIfCancelled() {},
 	});

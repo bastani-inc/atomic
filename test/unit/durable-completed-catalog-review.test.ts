@@ -13,10 +13,10 @@ import type { DurableCheckpoint, DurableStageRunTopology } from "../../packages/
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { testRunId } from "../helpers/run-id.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
-function registerCompleted(backend: DurableWorkflowBackend, workflowId: string): void {
-	backend.registerWorkflow({
+async function registerCompleted(backend: DurableWorkflowBackend, workflowId: string): Promise<void> {
+	await backend.registerWorkflow({
 		workflowId,
 		name: workflowId,
 		inputs: {},
@@ -87,11 +87,11 @@ async function reconstructed(
 
 describe("completed catalog reviewer regressions", () => {
 	test("keeps a public workflow-run-timing tool visible while excluding the internal timing checkpoint", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const workflowId = testRunId("public-run-timing-name");
-		registerCompleted(backend, workflowId);
+		await registerCompleted(backend, workflowId);
 		const argsHash = durableHash({ name: RUN_TIMING_CHECKPOINT_NAME, args: {}, ordinal: 1 });
-		backend.recordCheckpoint(
+		await backend.recordCheckpoint(
 			tool(workflowId, `tool:${argsHash}`, RUN_TIMING_CHECKPOINT_NAME, argsHash, 20, {
 				topology: {
 					version: 1,
@@ -103,7 +103,7 @@ describe("completed catalog reviewer regressions", () => {
 				},
 			}),
 		);
-		backend.recordCheckpoint(
+		await backend.recordCheckpoint(
 			tool(workflowId, "run-timing:12345", RUN_TIMING_CHECKPOINT_NAME, RUN_TIMING_CHECKPOINT_NAME, 30, {
 				output: { elapsedMs: 12_345 },
 			}),
@@ -134,10 +134,10 @@ describe("completed catalog reviewer regressions", () => {
 	});
 
 	test("retains a scoped child tool whose public name matches the run-timing sentinel", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const workflowId = testRunId("scoped-name-root");
 		const childRunId = testRunId("scoped-name-child");
-		registerCompleted(backend, workflowId);
+		await registerCompleted(backend, workflowId);
 		const rootRun = { runId: workflowId, runName: workflowId } as const;
 		const childRun: DurableStageRunTopology = {
 			runId: childRunId,
@@ -146,13 +146,13 @@ describe("completed catalog reviewer regressions", () => {
 			parentStageId: "boundary",
 			rootRunId: workflowId,
 		};
-		backend.recordCheckpoint(
+		await backend.recordCheckpoint(
 			stage(workflowId, "boundary", "child-boundary", 10, {
 				output: { workflow: "child", runId: childRunId, status: "completed", exited: false, outputs: {} },
 				topology: { version: 1, stageId: "boundary", parentIds: [], order: 1, run: rootRun },
 			}),
 		);
-		backend.recordCheckpoint(
+		await backend.recordCheckpoint(
 			tool(workflowId, "child:tool:timing-name", RUN_TIMING_CHECKPOINT_NAME, "child:hpublic", 20, {
 				topology: {
 					version: 1,
@@ -185,22 +185,22 @@ describe("completed catalog reviewer regressions", () => {
 	});
 
 	test("persisted topology order overrides contradictory checkpoint sequence", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const workflowId = testRunId("topology-over-sequence");
-		registerCompleted(backend, workflowId);
+		await registerCompleted(backend, workflowId);
 		const run = { runId: workflowId, runName: workflowId } as const;
-		backend.recordCheckpoint(
+		await backend.recordCheckpoint(
 			stage(workflowId, "after", "after", 10, {
 				output: "after",
 				topology: { version: 1, stageId: "after", parentIds: ["middle"], order: 3, run },
 			}),
 		);
-		backend.recordCheckpoint(
+		await backend.recordCheckpoint(
 			tool(workflowId, "middle", "middle", "middle-hash", 20, {
 				topology: { version: 1, nodeId: "middle", ordinal: 1, order: 2, parentIds: ["before"], run },
 			}),
 		);
-		backend.recordCheckpoint(
+		await backend.recordCheckpoint(
 			stage(workflowId, "before", "before", 30, {
 				output: "before",
 				topology: { version: 1, stageId: "before", parentIds: [], order: 1, run },
@@ -213,10 +213,10 @@ describe("completed catalog reviewer regressions", () => {
 	});
 
 	test("preserves nested topology-aware order and boundary fan-in", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const workflowId = testRunId("nested-topology-order");
 		const childRunId = testRunId("nested-topology-child");
-		registerCompleted(backend, workflowId);
+		await registerCompleted(backend, workflowId);
 		const rootRun = { runId: workflowId, runName: workflowId } as const;
 		const childRun: DurableStageRunTopology = {
 			runId: childRunId,
@@ -257,7 +257,7 @@ describe("completed catalog reviewer regressions", () => {
 				topology: { version: 1, stageId: "after", parentIds: ["boundary"], order: 3, run: rootRun },
 			}),
 		])
-			backend.recordCheckpoint(checkpoint);
+			await backend.recordCheckpoint(checkpoint);
 
 		const { runs } = await reconstructed(backend, workflowId);
 		const graph = expandWorkflowGraph({ runs, notices: [], version: 1 }, workflowId);

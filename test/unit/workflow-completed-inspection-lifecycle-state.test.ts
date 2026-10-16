@@ -9,7 +9,10 @@ import {
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { testRunId } from "../helpers/run-id.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import {
+	createMemoryTestBackend,
+	type MemoryJournalBackend as InMemoryDurableBackend,
+} from "../helpers/workflow-journal.js";
 
 interface Admission {
 	readonly content?: string;
@@ -21,9 +24,20 @@ interface TimerRecord {
 	active: boolean;
 }
 
-function seedCompletedTool(backend: InMemoryDurableBackend, runId: string, name = "historical workflow"): void {
-	backend.registerWorkflow({ workflowId: runId, name, inputs: {}, createdAt: 1, updatedAt: 3, status: "completed" });
-	backend.recordCheckpoint({
+async function seedCompletedTool(
+	backend: InMemoryDurableBackend,
+	runId: string,
+	name = "historical workflow",
+): Promise<void> {
+	await backend.registerWorkflow({
+		workflowId: runId,
+		name,
+		inputs: {},
+		createdAt: 1,
+		updatedAt: 3,
+		status: "completed",
+	});
+	await backend.recordCheckpoint({
 		topology: { version: 1, nodeId: `tool:${"done-hash"}`, ordinal: 1, order: 1, parentIds: [] },
 		kind: "tool",
 		workflowId: runId,
@@ -71,12 +85,12 @@ function installTimerHarness(): { runNext(): void; activeCount(): number; restor
 
 describe("completed inspection lifecycle delivery state", () => {
 	test("preserves an in-flight live completion admission until its original send resolves", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const store = createStore();
 		const state = createWorkflowLifecycleNotificationState();
 		const send = Promise.withResolvers<void>();
 		const admissions: Admission[] = [];
-		seedCompletedTool(backend, testRunId("pending-live"), "historical replacement");
+		await seedCompletedTool(backend, testRunId("pending-live"), "historical replacement");
 		const unsubscribe = installWorkflowLifecycleNotifications({
 			store,
 			state,
@@ -120,12 +134,12 @@ describe("completed inspection lifecycle delivery state", () => {
 
 	test("preserves the retained retry envelope until its scheduled retry", async () => {
 		const timers = installTimerHarness();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const store = createStore();
 		const state = createWorkflowLifecycleNotificationState();
 		const admissions: Admission[] = [];
 		let attempt = 0;
-		seedCompletedTool(backend, testRunId("retry-live"), "historical replacement");
+		await seedCompletedTool(backend, testRunId("retry-live"), "historical replacement");
 		const unsubscribe = installWorkflowLifecycleNotifications({
 			store,
 			state,

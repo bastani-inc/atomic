@@ -8,7 +8,7 @@ import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expande
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 function orderedNames(snapshot: RunSnapshot): string[] {
 	return [
@@ -21,7 +21,7 @@ function orderedNames(snapshot: RunSnapshot): string[] {
 
 describe("ctx.tool durable graph replay", () => {
 	test("fresh-store replay preserves stage → tool → stage topology and exact cached output", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const runId = "tool-mixed-replay";
 		let toolCalls = 0;
 		const definition = workflow({
@@ -85,7 +85,7 @@ describe("ctx.tool durable graph replay", () => {
 	});
 
 	test("fresh-store replay preserves concurrent tool siblings and fan-in", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const runId = "tool-concurrent-replay";
 		let toolCalls = 0;
 		const siblingGate = Promise.withResolvers<void>();
@@ -158,7 +158,7 @@ describe("ctx.tool durable graph replay", () => {
 	});
 
 	test("tool-only child topology survives completed catalog and cached-boundary replay", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const runId = "tool-only-child-root";
 		let toolCalls = 0;
 		const child = workflow({
@@ -230,7 +230,7 @@ describe("ctx.tool durable graph replay", () => {
 			.find((checkpoint) => checkpoint.kind === "tool" && checkpoint.name === "child-write");
 		assert.equal(cachedChildTool?.kind, "tool");
 		if (cachedChildTool?.kind !== "tool") return;
-		const partialBackend = new InMemoryDurableBackend();
+		const partialBackend = await createMemoryTestBackend();
 		await partialBackend.registerWorkflow({
 			workflowId: runId,
 			name: parent.name,

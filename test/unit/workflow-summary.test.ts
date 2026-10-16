@@ -5,7 +5,7 @@ import {
 	workflowSummaryInput,
 } from "../../packages/workflows/src/extension/workflow-summary.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { createMemoryTestBackend as createInMemoryTestBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const settle = async () => {
 	for (let i = 0; i < 12; i++) await Promise.resolve();
@@ -68,8 +68,14 @@ for (const status of ["completed", "killed", "skipped"] as const) {
 
 test("terminal workflow summaries run without heartbeat scheduling and persist in the durable catalog", async () => {
 	const store = fixture();
-	const backend = createInMemoryTestBackend();
-	backend.registerWorkflow({ workflowId: "summary-run", name: "build", inputs: {}, status: "running", createdAt: 1 });
+	const backend = await createMemoryTestBackend();
+	await backend.registerWorkflow({
+		workflowId: "summary-run",
+		name: "build",
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+	});
 	const service = createWorkflowSummaryService({
 		store,
 		resolveContext: () => ({ generateWorkflowSummary: async () => "Compiler repair completed" }),

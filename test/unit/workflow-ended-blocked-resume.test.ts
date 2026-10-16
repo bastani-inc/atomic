@@ -13,7 +13,7 @@ import { workflowRunResumeCandidate } from "../../packages/workflows/src/shared/
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { testRunId } from "../helpers/run-id.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const sourceId = testRunId("ended-blocked-reviewer");
 
@@ -22,8 +22,8 @@ afterEach(() => {
 	setDurableBackend(undefined);
 });
 
-function setupReviewerResume(overrides: Partial<RunSnapshot> = {}) {
-	const backend = new InMemoryDurableBackend();
+async function setupReviewerResume(overrides: Partial<RunSnapshot> = {}) {
+	const backend = await createMemoryTestBackend();
 	setDurableBackend(backend);
 	const definition = workflow({
 		name: "ended-blocked-reviewer",
@@ -75,7 +75,7 @@ function setupReviewerResume(overrides: Partial<RunSnapshot> = {}) {
 		],
 		...overrides,
 	});
-	backend.registerWorkflow({
+	await backend.registerWorkflow({
 		workflowId: sourceId,
 		name: definition.name,
 		inputs: {},
@@ -103,7 +103,7 @@ function setupReviewerResume(overrides: Partial<RunSnapshot> = {}) {
 
 // #3106: checkpoint continuation retains the execution identity.
 test("tool resumes an ended recoverable blocked root at its failed reviewer without repeating completed work", async () => {
-	const { backend, calls, jobs, runtime } = setupReviewerResume();
+	const { backend, calls, jobs, runtime } = await setupReviewerResume();
 	const result = await workflowResumeAction(
 		{ action: "resume", runId: sourceId },
 		{ getRuntime: () => runtime, policy: workflowPolicyFromContext(), ensureWorkflowResourcesLoaded() {} },
@@ -123,7 +123,7 @@ test("tool resumes an ended recoverable blocked root at its failed reviewer with
 test.each(["blocked", "failed", "killed"] as const)(
 	"tool reports not_resumable %s snapshots as no-op, not success",
 	async (status) => {
-		const { calls, jobs, runtime } = setupReviewerResume({ status, resumable: false });
+		const { calls, jobs, runtime } = await setupReviewerResume({ status, resumable: false });
 		const result = await workflowResumeAction(
 			{ action: "resume", runId: sourceId },
 			{ getRuntime: () => runtime, policy: workflowPolicyFromContext(), ensureWorkflowResourcesLoaded() {} },
@@ -157,7 +157,7 @@ async function resumeCommand(runtime: ReturnType<typeof createExtensionRuntime>)
 }
 
 test("CLI reports not_resumable from live stage control as an error, not a successful resume", async () => {
-	const { calls, runtime } = setupReviewerResume({
+	const { calls, runtime } = await setupReviewerResume({
 		resumable: false,
 		stages: [{ id: "stale-paused", name: "stale-paused", status: "paused", parentIds: [], toolEvents: [] }],
 	});
@@ -169,7 +169,7 @@ test("CLI reports not_resumable from live stage control as an error, not a succe
 });
 
 test("tool reports a blocked snapshot without a recoverable continuation as no-op", async () => {
-	const { calls, runtime } = setupReviewerResume({
+	const { calls, runtime } = await setupReviewerResume({
 		resumable: undefined,
 		failureRecoverability: undefined,
 	});
@@ -185,7 +185,7 @@ test("tool reports a blocked snapshot without a recoverable continuation as no-o
 });
 
 test("CLI continues the exact ended blocked root through the real runtime", async () => {
-	const { runtime, calls, jobs } = setupReviewerResume();
+	const { runtime, calls, jobs } = await setupReviewerResume();
 	const result = await resumeCommand(runtime);
 	assert.deepEqual(result.errors, []);
 	assert.match(result.messages.join("\n"), /Resuming durable/);
@@ -199,7 +199,7 @@ test("CLI continues the exact ended blocked root through the real runtime", asyn
 });
 
 test("runtime admits one ended blocked continuation and refuses a duplicate", async () => {
-	const { runtime, jobs, calls } = setupReviewerResume();
+	const { runtime, jobs, calls } = await setupReviewerResume();
 	assert.equal(isWorkflowRunResumable(workflowRunResumeCandidate(store.runs()[0]!)), true);
 	const results = await Promise.all([runtime.resumeFailedRun(sourceId), runtime.resumeFailedRun(sourceId)]);
 	const accepted = results.filter((result) => result.ok);
@@ -216,7 +216,7 @@ test("runtime admits one ended blocked continuation and refuses a duplicate", as
 });
 
 test("runtime does not turn a quit blocked root into a fresh continuation", async () => {
-	const { runtime, calls, jobs } = setupReviewerResume({ exitReason: "quit" });
+	const { runtime, calls, jobs } = await setupReviewerResume({ exitReason: "quit" });
 	const result = await runtime.resumeFailedRun(sourceId);
 	assert.equal(result.ok, false, JSON.stringify(result));
 	if (result.ok) return;
@@ -225,8 +225,8 @@ test("runtime does not turn a quit blocked root into a fresh continuation", asyn
 	assert.deepEqual(jobs.runIds(), []);
 });
 
-test("ended blocked eligibility still requires durable state, artifacts, and recoverability; killed always wins", () => {
-	setupReviewerResume();
+test("ended blocked eligibility still requires durable state, artifacts, and recoverability; killed always wins", async () => {
+	await setupReviewerResume();
 	const candidate = workflowRunResumeCandidate(store.runs()[0]!);
 	assert.equal(isWorkflowRunResumable(candidate), true);
 	assert.equal(isWorkflowRunResumable({ ...candidate, hasDurableCheckpoint: false }), false);

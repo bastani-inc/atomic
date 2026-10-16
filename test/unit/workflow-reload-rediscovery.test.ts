@@ -19,7 +19,7 @@ import type { StageSessionRuntime } from "../../packages/workflows/src/runs/fore
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { testRunId } from "../helpers/run-id.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const originalCwd = process.cwd();
 const originalAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
@@ -528,8 +528,8 @@ describe("workflow reload rediscovery matrix", () => {
 				}),
 			}),
 		});
-		const durableBackend = new InMemoryDurableBackend();
-		durableBackend.registerWorkflow({
+		const durableBackend = await createMemoryTestBackend();
+		await durableBackend.registerWorkflow({
 			workflowId: testRunId("durable-reload-retained"),
 			name: "reload-inflight",
 			inputs: { message: "resume" },

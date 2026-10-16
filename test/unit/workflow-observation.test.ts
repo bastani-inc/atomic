@@ -12,7 +12,7 @@ import { installWorkflowHeartbeatScheduler } from "../../packages/workflows/src/
 import { createWorkflowObservation } from "../../packages/workflows/src/extension/workflow-observation.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 // #2891: restoring graph records must never manufacture execution ownership.
 test("historical tool transitions without an executor stay idle", () => {
@@ -62,7 +62,7 @@ test("durable catalog hydration publishes recovering before ready", async () => 
 		baseRunOpts: () => ({ store }),
 		ensureReady: async () => {
 			await release.promise;
-			return new InMemoryDurableBackend();
+			return await createMemoryTestBackend();
 		},
 	});
 	const pending = runtime.prepareDurableResumable();
@@ -84,7 +84,7 @@ test("durable catalog hydration publishes recovering before ready", async () => 
 			},
 		}),
 		{},
-		{ store, durableBackend: new InMemoryDurableBackend() },
+		{ store, durableBackend: await createMemoryTestBackend() },
 	);
 	await entered.promise;
 	const frames: WorkflowActivityFrame[] = [];
@@ -136,7 +136,7 @@ test("restored stages never synthesize completion and explicit replay is tagged"
 	});
 	const adapters = { complete: { complete: async (text: string) => text } };
 	assert.equal(
-		(await run(definition, {}, { store, adapters, durableBackend: new InMemoryDurableBackend() })).status,
+		(await run(definition, {}, { store, adapters, durableBackend: await createMemoryTestBackend() })).status,
 		"completed",
 	);
 	await new Promise<void>((resolve) => setImmediate(resolve));
@@ -159,7 +159,7 @@ test("restored stages never synthesize completion and explicit replay is tagged"
 				{
 					store,
 					adapters,
-					durableBackend: new InMemoryDurableBackend(),
+					durableBackend: await createMemoryTestBackend(),
 					continuation: { source, resumeFromStageId: source.stages[1]!.id },
 				},
 			)
@@ -233,7 +233,7 @@ test("live tool workflow emits heartbeat observations at its configured cadence"
 			},
 		}),
 		{},
-		{ store, durableBackend: new InMemoryDurableBackend() },
+		{ store, durableBackend: await createMemoryTestBackend() },
 	);
 	await entered.promise;
 	const scheduler = installWorkflowHeartbeatScheduler({

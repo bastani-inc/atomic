@@ -63,18 +63,6 @@ export function priorRunAccounting(
  * value did not grow past the last record, or — with `debounce` — while the
  * value stays inside the last 30 s bucket. Usage shares only the progress guard.
  */
-export function recordRunTimingCheckpoint(
-	backend: DurableWorkflowBackend,
-	run: RunSnapshot,
-	options?: { readonly debounce?: boolean; readonly now?: number },
-): boolean {
-	const checkpoints = [runTimingCheckpoint(backend, run, options), runUsageCheckpoint(backend, run, options?.now)];
-	if (checkpoints.every((checkpoint) => checkpoint === undefined)) return false;
-	for (const checkpoint of checkpoints) if (checkpoint !== undefined) backend.recordCheckpoint(checkpoint);
-	return true;
-}
-
-/** Await the timing and usage writes so an active turn observes persistent storage faults at once. */
 export async function recordRunTimingCheckpointAsync(
 	backend: DurableWorkflowBackend,
 	run: RunSnapshot,

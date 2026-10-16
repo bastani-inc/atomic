@@ -9,7 +9,7 @@ import {
 	currentStoreBackend,
 	configureCurrentTestStoreBackend as setDurableBackend,
 } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import {
 	buildMockPi,
 	buildPrintCtxWithRealCustom,
@@ -22,9 +22,9 @@ import {
 } from "./overlay-entrypoints-helpers.js";
 
 describe("/workflow resume — durable regression coverage", () => {
-	beforeEach(() => {
+	beforeEach(async () => {
 		singletonStore.clear();
-		setDurableBackend(new InMemoryDurableBackend());
+		setDurableBackend(await createMemoryTestBackend());
 		initTheme("dark");
 	});
 	afterEach(() => {
@@ -194,8 +194,8 @@ describe("/workflow resume — durable regression coverage", () => {
 	});
 
 	test("no-arg durable picker renders the /resume selector chrome", async () => {
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({
 			workflowId: "durable-tree-ui",
 			name: "durable-tree-wf",
 			inputs: {},
@@ -222,15 +222,15 @@ describe("/workflow resume — durable regression coverage", () => {
 	});
 
 	test("no-arg durable picker hides stale failed/running entries without current definitions", async () => {
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({
 			workflowId: "old-failed-run",
 			name: "old-missing-definition",
 			inputs: {},
 			createdAt: Date.now(),
 			status: "failed",
 		});
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: "old-running-run",
 			name: "old-running-definition",
 			inputs: {},
@@ -238,7 +238,7 @@ describe("/workflow resume — durable regression coverage", () => {
 			status: "running",
 			completedCheckpoints: 1,
 		});
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: "visible-paused-run",
 			name: "visible-paused-definition",
 			inputs: {},
@@ -264,9 +264,9 @@ describe("/workflow resume — durable regression coverage", () => {
 		await handlerPromise;
 	});
 	test("no-arg durable picker resolves selection before dispose", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const workflowId = testRunId("durable-select-race");
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId,
 			name: "missing-selection-def",
 			inputs: {},
@@ -303,8 +303,8 @@ describe("/workflow resume — durable regression coverage", () => {
 			startedAt: now,
 		});
 		singletonStore.recordRunPaused(liveRunId, now + 2);
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({
 			workflowId: liveRunId,
 			name: "live-select-wf",
 			inputs: {},
@@ -327,7 +327,7 @@ describe("/workflow resume — durable regression coverage", () => {
 			},
 			async quit() {},
 		});
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: testRunId("durable-select-alongside"),
 			name: "durable-select",
 			inputs: {},
@@ -368,8 +368,8 @@ describe("/workflow resume — durable regression coverage", () => {
 			failedStageId: "failed-stage",
 			resumable: true,
 		});
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({
 			workflowId: failedRunId,
 			name: "missing-continuation-wf",
 			inputs: {},
@@ -378,7 +378,7 @@ describe("/workflow resume — durable regression coverage", () => {
 			completedCheckpoints: 1,
 			resumable: true,
 		});
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: testRunId("durable-with-failed-live"),
 			name: "durable-select",
 			inputs: {},
@@ -406,8 +406,8 @@ describe("/workflow resume — durable regression coverage", () => {
 	test("combined picker routes failed author exits through durable resume", async () => {
 		const now = Date.now();
 		const failedRunId = testRunId(`failed-author-exit-${now}`);
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({
 			workflowId: failedRunId,
 			name: "failed-author-exit-wf",
 			inputs: {},

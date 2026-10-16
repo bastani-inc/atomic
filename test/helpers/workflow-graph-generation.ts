@@ -11,4 +11,4 @@ export { jobTracker } from "../../packages/workflows/src/runs/background/job-tra
 export { stageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.ts";
 export { stageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.ts";
 export { store } from "../../packages/workflows/src/shared/store.ts";
-export { createMemoryTestBackend as createInMemoryTestBackend } from "./workflow-journal.js";
+export { createMemoryTestBackend } from "./workflow-journal.js";

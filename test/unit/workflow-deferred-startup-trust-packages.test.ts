@@ -21,7 +21,7 @@ import type {
 } from "../../packages/workflows/src/extension/public-types.js";
 import type { WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";
 import { toolContext } from "../helpers/tool-context.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const roots: string[] = [];
 
@@ -64,7 +64,7 @@ export default workflow({ name: "demo-hello", description: "demo", inputs: {}, o
 	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
 	vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
 	vi.stubEnv("ATOMIC_OFFLINE", "1");
-	setDurableBackend(new InMemoryDurableBackend());
+	setDurableBackend(await createMemoryTestBackend());
 	return { project, agentDir };
 }
 

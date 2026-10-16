@@ -12,7 +12,7 @@ import { createContinuationReplayIndex } from "../../packages/workflows/src/runs
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { waitForExecutorStagePendingPrompt } from "./executor-shared.js";
 
 function toolNode(id: string, status: ToolNodeSnapshot["status"] = "completed"): ToolNodeSnapshot {
@@ -190,7 +190,7 @@ describe("continuation tool-parent identity map", () => {
 	});
 
 	test("fresh-id continuation rejects a changed tool graph instead of keeping stale parents", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		let toolCalls = 0;
 		const sourceDef = workflow({
 			name: "changed-tool-graph",
@@ -258,7 +258,7 @@ describe("continuation tool-parent identity map", () => {
 	});
 
 	test("fresh-id continuation rejects an inserted parent before a parented tool", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		let toolCalls = 0;
 		const sourceDef = workflow({
 			name: "parented-tool-insert",
@@ -327,7 +327,7 @@ describe("continuation tool-parent identity map", () => {
 	});
 
 	test("fresh-id continuation rejects a tool whose restored parents cannot be translated", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		let toolCalls = 0;
 		const sourceDef = workflow({
 			name: "untranslated-tool-parent",
@@ -395,7 +395,7 @@ describe("continuation tool-parent identity map", () => {
 	});
 
 	test("fresh-id continuation keeps a tool parented by a when a replayed sibling stage settles first", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		let toolCalls = 0;
 		let failAfter = true;
 		const definition = workflow({
@@ -451,7 +451,7 @@ describe("continuation tool-parent identity map", () => {
 	});
 
 	test("fresh-id continuation keeps cached tool siblings parented by the shared seed", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		let toolCalls = 0;
 		let failAfter = true;
 		const definition = workflow({
@@ -513,7 +513,7 @@ describe("continuation tool-parent identity map", () => {
 	});
 
 	test("fresh-id continuation keeps cached seedless tool siblings at the root", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		let toolCalls = 0;
 		let failAfter = true;
 		let insertParent = false;
@@ -628,7 +628,7 @@ describe("continuation tool-parent identity map", () => {
 	});
 
 	test("active-blocked resume stays retryable after a fail-closed tool-graph mismatch", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		let insertParent = false;
 		let toolCalls = 0;
@@ -672,7 +672,7 @@ describe("continuation tool-parent identity map", () => {
 		assert.equal(source.resumable, true);
 		assert.equal(source.endedAt, undefined);
 		assert.equal(source.failureRecoverability, "recoverable");
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: source.id,
 			name: definition.name,
 			inputs: {},
@@ -719,7 +719,7 @@ describe("continuation tool-parent identity map", () => {
 	});
 
 	test("active-blocked resume stays retryable after duplicate-key parent topology changes", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		let collapseDuplicates = false;
 		let failAfterDuplicates = true;
@@ -765,7 +765,7 @@ describe("continuation tool-parent identity map", () => {
 		const source = store.runs().find((candidate) => candidate.id === first.runId);
 		assert.ok(source);
 		assert.equal(source.resumable, true);
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: source.id,
 			name: definition.name,
 			inputs: {},
@@ -809,7 +809,7 @@ describe("continuation tool-parent identity map", () => {
 	});
 
 	test("retry after fail-closed mismatch does not re-ask a recorded prompt answer", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		let insertParent = false;
 		let toolCalls = 0;
@@ -863,7 +863,7 @@ describe("continuation tool-parent identity map", () => {
 			message: "WORKFLOW BLOCKED",
 			createdAt: Date.now(),
 		});
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: source.id,
 			name: definition.name,
 			inputs: {},

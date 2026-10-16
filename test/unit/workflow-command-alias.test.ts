@@ -6,7 +6,7 @@ import { createExtensionRuntime } from "../../packages/workflows/src/extension/r
 import { registerWorkflowSlashCommand } from "../../packages/workflows/src/extension/workflow-command-registration.js";
 import type { WorkflowCommandHandler } from "../../packages/workflows/src/extension/workflow-command-utils.js";
 import type { GraphOverlayPort } from "../../packages/workflows/src/tui/overlay-adapter.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const overlay: GraphOverlayPort = {
 	open: () => {},
@@ -14,8 +14,8 @@ const overlay: GraphOverlayPort = {
 	close: () => {},
 };
 
-test("registers /workflows as the durable run-history alias", () => {
-	setDurableBackend(new InMemoryDurableBackend());
+test("registers /workflows as the durable run-history alias", async () => {
+	setDurableBackend(await createMemoryTestBackend());
 	try {
 		const handlers = new Map<string, WorkflowCommandHandler>();
 		const registered: string[] = [];

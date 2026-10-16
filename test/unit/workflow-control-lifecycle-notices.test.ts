@@ -21,7 +21,7 @@ import {
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 interface CapturedNotice {
 	readonly customType: string;
@@ -322,12 +322,12 @@ describe("workflow control lifecycle notices", () => {
 	});
 
 	test("the real resume and quit paths emit one user-attributed notice each", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
 		liveRun(store, registry, "run-control", { name: "goal", origin: "agent" });
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: "run-control",
 			name: "goal",
 			inputs: {},
@@ -361,12 +361,18 @@ describe("workflow control lifecycle notices", () => {
 	});
 
 	test("agent tool control emits nothing while the same store transitions happen", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
 		liveRun(store, registry, "run-tool", { origin: "agent" });
-		backend.registerWorkflow({ workflowId: "run-tool", name: "goal", inputs: {}, createdAt: 1, status: "running" });
+		await backend.registerWorkflow({
+			workflowId: "run-tool",
+			name: "goal",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
 		const { sent, unsubscribe } = installOn(store);
 		try {
 			assert.equal((await pauseRun("run-tool", { store, stageControlRegistry: registry })).ok, true);
@@ -631,9 +637,9 @@ describe("workflow control lifecycle notices", () => {
 	});
 	test("a restored quit shadow stays QUIT when a user quits it again", async () => {
 		const workflowId = "run-restored-quit-no-timestamp";
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId,
 			name: "goal",
 			inputs: {},
@@ -914,7 +920,7 @@ describe("workflow control lifecycle notices", () => {
 	});
 
 	test("a quit that never publishes leaves the run paused and reports nothing", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -923,7 +929,7 @@ describe("workflow control lifecycle notices", () => {
 		registry.register(
 			executorStyleHandle({ store, runId: "run-quit-failed", stageId: "stage-1", failAfterPausing: true }),
 		);
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: "run-quit-failed",
 			name: "ralph",
 			inputs: {},

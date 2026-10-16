@@ -8,7 +8,10 @@ import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { Store } from "../../packages/workflows/src/shared/store-public-types.js";
 import { sleep } from "../helpers/runtime.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import {
+	createMemoryTestBackend,
+	type MemoryJournalBackend as InMemoryDurableBackend,
+} from "../helpers/workflow-journal.js";
 
 async function assertClosedBeforeEffects(
 	retainedTool: WorkflowToolPrimitive | undefined,
@@ -58,7 +61,7 @@ async function assertClosedBeforeEffects(
 describe("ctx.tool terminal admission", () => {
 	test("completed publication refuses retained calls before all effects", async () => {
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		let retainedTool: WorkflowToolPrimitive | undefined;
 		const result = await run(
 			workflow({
@@ -82,7 +85,7 @@ describe("ctx.tool terminal admission", () => {
 
 	test("ordinary failure closes admission", async () => {
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		let retainedTool: WorkflowToolPrimitive | undefined;
 		const result = await run(
 			workflow({
@@ -106,7 +109,7 @@ describe("ctx.tool terminal admission", () => {
 
 	test("explicit exit closes admission", async () => {
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		let retainedTool: WorkflowToolPrimitive | undefined;
 		const result = await run(
 			workflow({
@@ -130,7 +133,7 @@ describe("ctx.tool terminal admission", () => {
 
 	test("external cancellation closes admission after admitted tools settle", async () => {
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const controller = new AbortController();
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
@@ -165,7 +168,7 @@ describe("ctx.tool terminal admission", () => {
 
 	test("parent cancellation closes a retained child tool admission", async () => {
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const controller = new AbortController();
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
@@ -207,7 +210,7 @@ describe("ctx.tool terminal admission", () => {
 
 	test("active-blocked publication closes admission even though the retained run stays running", async () => {
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		let retainedTool: WorkflowToolPrimitive | undefined;
 		const result = await run(
 			workflow({
@@ -241,7 +244,7 @@ describe("ctx.tool terminal admission", () => {
 	});
 	test("output validation failure closes admission", async () => {
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		let retainedTool: WorkflowToolPrimitive | undefined;
 		const result = await run(
 			workflow({
@@ -266,7 +269,7 @@ describe("ctx.tool terminal admission", () => {
 
 	test("empty-graph validation failure closes admission", async () => {
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		let retainedTool: WorkflowToolPrimitive | undefined;
 		const result = await run(
 			workflow({
@@ -289,13 +292,16 @@ describe("ctx.tool terminal admission", () => {
 	});
 
 	test("authoritative durable failure closes admission", async () => {
-		class RejectToolCheckpointBackend extends InMemoryDurableBackend {
-			override async recordCheckpointAsync(): Promise<void> {
-				throw new Error("authoritative checkpoint rejected");
-			}
+		async function createRejectToolCheckpointBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), {});
+			return Object.assign(backend, {
+				async recordCheckpointAsync(): Promise<void> {
+					throw new Error("authoritative checkpoint rejected");
+				},
+			});
 		}
 		const store = createStore();
-		const backend = new RejectToolCheckpointBackend();
+		const backend = await createRejectToolCheckpointBackend();
 		let retainedTool: WorkflowToolPrimitive | undefined;
 		const result = await run(
 			workflow({
@@ -319,18 +325,22 @@ describe("ctx.tool terminal admission", () => {
 	});
 
 	test("a rejecting durable terminal finalizer cannot leave admission open", async () => {
-		class RejectTerminalBackend extends InMemoryDurableBackend {
-			override setWorkflowStatus(...args: Parameters<InMemoryDurableBackend["setWorkflowStatus"]>): void {
-				if (args[1] === "failed")
-					throw new StorageUnavailableError(
-						{ adapter: "node-sqlite", location: "journal.sqlite" },
-						new Error("terminal write failed"),
-					);
-				super.setWorkflowStatus(...args);
-			}
+		async function createRejectTerminalBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), {});
+			const basesetWorkflowStatus = backend.setWorkflowStatus.bind(backend);
+			return Object.assign(backend, {
+				async setWorkflowStatus(...args: Parameters<InMemoryDurableBackend["setWorkflowStatus"]>): Promise<void> {
+					if (args[1] === "failed")
+						throw new StorageUnavailableError(
+							{ adapter: "node-sqlite", location: "journal.sqlite" },
+							new Error("terminal write failed"),
+						);
+					await basesetWorkflowStatus(...args);
+				},
+			});
 		}
 		const store = createStore();
-		const backend = new RejectTerminalBackend();
+		const backend = await createRejectTerminalBackend();
 		let retainedTool: WorkflowToolPrimitive | undefined;
 		let runId = "";
 		await assert.rejects(
@@ -363,7 +373,7 @@ describe("ctx.tool terminal admission", () => {
 	});
 	test("a rejecting terminal callback cannot leave admission open", async () => {
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		let retainedTool: WorkflowToolPrimitive | undefined;
 		let runId = "";
 		let callbackRefusal: Promise<string> | undefined;

@@ -9,7 +9,11 @@ import {
 } from "../packages/workflows/src/durable/store-backend.js";
 import type { Store } from "../packages/workflows/src/shared/store-public-types.js";
 import { ENV_WORKFLOW_ARTIFACT_DIR } from "../packages/workflows/src/shared/workflow-artifact-env.js";
-import { closeMemoryTestBackends, MemoryJournalBackend as InMemoryDurableBackend } from "./helpers/workflow-journal.js";
+import {
+	closeMemoryTestBackends,
+	createMemoryTestBackend,
+	type MemoryJournalBackend as InMemoryDurableBackend,
+} from "./helpers/workflow-journal.js";
 
 /**
  * Durable workflow artifacts (stage transcripts, ledgers, run notes) default to
@@ -63,8 +67,8 @@ function resetConstructedStoreFixture(backend: InMemoryDurableBackend): void {
 }
 
 /** Tests inject an isolated backend unless they explicitly open a journal. */
-beforeEach(() => {
-	const backend = new InMemoryDurableBackend();
+beforeEach(async () => {
+	const backend = await createMemoryTestBackend();
 	getDurableBackendProcessOwner().injectedBackend = backend;
 	resetConstructedStoreFixture(backend);
 });
