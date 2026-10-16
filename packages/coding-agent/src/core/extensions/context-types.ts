@@ -235,6 +235,8 @@ export interface ExtensionContext {
 	isProjectTrusted(): boolean;
 	/** The current abort signal, or undefined when the agent is not streaming. */
 	signal: AbortSignal | undefined;
+	/** Ends on reload or shutdown, before admitted work is drained. Independent of agent streaming. */
+	readonly sessionSignal: AbortSignal;
 	/** Abort the current agent operation */
 	abort(): void;
 	/** Whether there are queued messages waiting */

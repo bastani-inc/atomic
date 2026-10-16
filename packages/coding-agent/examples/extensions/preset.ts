@@ -271,8 +271,6 @@ export default function presetExtension(pi: ExtensionAPI) {
 
 		if (result === "(none)") {
 			// Clear preset and restore original state
-			activePresetName = undefined;
-			activePreset = undefined;
 			if (originalState) {
 				if (originalState.model) {
 					await pi.setModel(originalState.model);
@@ -282,6 +280,8 @@ export default function presetExtension(pi: ExtensionAPI) {
 			} else {
 				pi.setActiveTools(["read", "bash", "edit", "write"]);
 			}
+			activePresetName = undefined;
+			activePreset = undefined;
 			ctx.ui.notify("Preset cleared, defaults restored", "info");
 			updateStatus(ctx);
 			return;
@@ -327,8 +327,6 @@ export default function presetExtension(pi: ExtensionAPI) {
 		const nextName = cycleList[nextIndex];
 
 		if (nextName === "(none)") {
-			activePresetName = undefined;
-			activePreset = undefined;
 			if (originalState) {
 				if (originalState.model) {
 					await pi.setModel(originalState.model);
@@ -338,6 +336,8 @@ export default function presetExtension(pi: ExtensionAPI) {
 			} else {
 				pi.setActiveTools(["read", "bash", "edit", "write"]);
 			}
+			activePresetName = undefined;
+			activePreset = undefined;
 			ctx.ui.notify("Preset cleared, defaults restored", "info");
 			updateStatus(ctx);
 			return;

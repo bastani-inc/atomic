@@ -1,6 +1,11 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { withBuiltinDiagnostics } from "../builtin-diagnostics.ts";
-import { drainSessionWork, hasCallingSessionWork, trackSessionWork } from "../session-lifecycle-work.ts";
+import {
+	drainSessionWork,
+	hasCallingSessionWork,
+	sessionLifetime,
+	trackSessionWork,
+} from "../session-lifecycle-work.ts";
 import { hostInputError } from "./host-input.js";
 import { STALE_EXTENSION_CONTEXT_MESSAGE } from "./stale-context.ts";
 import type { ExtensionRuntime } from "./types.ts";
@@ -14,6 +19,7 @@ interface WorkBinding {
 	revoked?: boolean;
 	run<T>(operation: () => Promise<T>): Promise<T>;
 	drain(): Promise<void>;
+	signal(): AbortSignal;
 }
 type OwnedRuntime = ExtensionRuntime & { [workBinding]?: WorkBinding };
 
@@ -23,7 +29,12 @@ export function bindExtensionWork(runtime: ExtensionRuntime, owner: object): voi
 		cleanup: new AsyncLocalStorage<{ active: boolean }>(),
 		run: (operation) => trackSessionWork(owner, () => trackSessionWork(runtime, operation)),
 		drain: () => drainSessionWork(runtime),
+		signal: () => sessionLifetime(owner),
 	};
+}
+
+export function extensionSessionSignal(runtime: ExtensionRuntime): AbortSignal {
+	return (runtime as OwnedRuntime)[workBinding]?.signal() ?? sessionLifetime(runtime);
 }
 
 export function sealExtensionWork(runtime: ExtensionRuntime): void {

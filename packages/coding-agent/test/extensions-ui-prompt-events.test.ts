@@ -194,7 +194,7 @@ test("all blocking extension UI prompts emit lifecycle events and preserve their
 			},
 			custom: (async (factory, options) => {
 				assert.equal(factory, customFactory);
-				assert.equal(options, customOptions);
+				assert.deepEqual(options, { ...customOptions, signal: runner.createContext().sessionSignal });
 				calls.push("custom");
 				return "custom result";
 			}) as ExtensionUIContext["custom"],
@@ -207,6 +207,7 @@ test("all blocking extension UI prompts emit lifecycle events and preserve their
 	assert.equal(await ui.input("Input title", "Type here", dialogOptions), "typed");
 	assert.equal(await ui.editor("Editor title", "draft", dialogOptions), "edited");
 	assert.equal(await ui.custom(customFactory, customOptions), "custom result");
+	assert.deepEqual(customOptions, { overlay: true }, "lifetime binding does not mutate caller options");
 	await flushNotifications();
 
 	assert.deepEqual(calls, ["select", "confirm", "input", "editor", "custom"]);
@@ -237,7 +238,7 @@ test("navigation custom UI does not hold nested approval prompts open", async ()
 		createUI({
 			custom: ((actualFactory, actualOptions) => {
 				assert.equal(actualFactory, factory);
-				assert.equal(actualOptions, options);
+				assert.deepEqual(actualOptions, { ...options, signal: runner.createContext().sessionSignal });
 				return navigation.promise;
 			}) as ExtensionUIContext["custom"],
 			confirm: () => approval.promise,
@@ -246,6 +247,7 @@ test("navigation custom UI does not hold nested approval prompts open", async ()
 	);
 	const ui = runner.getUIContext();
 	const view = ui.custom(factory, options);
+	assert.deepEqual(options, { purpose: "navigation", overlay: true }, "caller options remain unchanged");
 	await flushNotifications();
 	assert.deepEqual(events, []);
 	const decision = ui.confirm("Approval", "Continue?");

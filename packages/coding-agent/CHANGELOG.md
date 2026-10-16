@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The storage adapter conformance suite now checks call-time binary binding inside transactions.
+
 ### Breaking Changes
 
 - Removed the workflow `durability` option, `WorkflowDurability`, and `WorkflowDurabilityRequiredError`. Use `RunOpts.journal` to select storage or isolate runs, and handle typed journal errors when storage is unavailable.
@@ -15,10 +19,7 @@
 ### Added
 
 - Added the `workflows.journal.path` and `workflows.journal.memory` settings, plus SDK `RunOpts.journal` for a file, caller-owned SQLite connection, explicit memory journal, or supplied journal. TUI, CLI, background, and SDK runs use the selected journal. Relative settings paths resolve against the Atomic home directory.
-
-### Changed
-
-- The storage adapter conformance suite now checks call-time binary binding inside transactions.
+- Added `ctx.sessionSignal` so extension commands can close long-running resources when reload or shutdown begins, before admitted work is drained. Custom UI is now dismissed automatically at that boundary while preserving caller-signal cancellation.
 
 ### Fixed
 

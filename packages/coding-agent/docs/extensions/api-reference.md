@@ -137,6 +137,25 @@ pi.on("tool_result", async (event, ctx) => {
 });
 ```
 
+### ctx.sessionSignal
+
+A read-only `AbortSignal` for the session lifetime, available even while the agent is idle. It aborts when reload or shutdown begins, **before** Atomic drains admitted commands and emits `session_shutdown`. Unlike `ctx.signal`, it does not end when an agent turn finishes. A replacement session generation receives a new signal.
+
+Custom UI mounted through `ctx.ui.custom` is dismissed automatically when the session ends; an explicit caller signal can still dismiss it earlier. Use `ctx.sessionSignal` for other long-running command resources, such as browser windows, instead of waiting for `session_shutdown`, which cannot run until those commands settle. Cancellation should stop waiting for input, not abandon a session write already started: keep awaiting that write so teardown can drain it safely.
+
+```typescript
+import { Text } from "@earendil-works/pi-tui";
+
+pi.registerCommand("monitor", {
+  description: "Keep a monitor open until the session ends",
+  handler: async (_args, ctx) => {
+    await ctx.ui.custom(() => new Text("Monitoring; reload or quit to close."), {
+      signal: ctx.sessionSignal,
+    });
+  },
+});
+```
+
 ### ctx.isIdle() / ctx.abort() / ctx.hasPendingMessages()
 
 Control flow helpers.

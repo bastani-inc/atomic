@@ -7,6 +7,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 ### Fixed
 
 - Intercom tools now await session records before reporting success or clearing pending replies. Failed commits reach the existing error handling, including local subagent relay diagnostics.
+- Session-list and compose overlays now close when reload or shutdown begins instead of keeping their commands pending.
 
 ## [0.9.38-alpha.5] - 2026-10-16
 

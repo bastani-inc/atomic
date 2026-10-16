@@ -28,6 +28,7 @@ import {
 	assertExtensionAction,
 	bindExtensionWork,
 	drainExtensionWork,
+	extensionSessionSignal,
 	extensionWorkOpen,
 	resumeExtensionWork,
 	revokeExtensionAuthority,
@@ -516,10 +517,16 @@ export class ExtensionRunner {
 				this.withUIPrompt(binding, "input", title, () => ui.input(title, placeholder, opts)),
 			editor: (title, prefill, opts) =>
 				this.withUIPrompt(binding, "editor", title, () => ui.editor(title, prefill, opts)),
-			custom: (factory, options) =>
-				options?.purpose === "navigation"
-					? ui.custom(factory, options)
-					: this.withUIPrompt(binding, "custom", undefined, () => ui.custom(factory, options)),
+			custom: (factory, options) => {
+				const lifetime = extensionSessionSignal(this.runtime);
+				const scopedOptions = {
+					...options,
+					signal: options?.signal ? AbortSignal.any([options.signal, lifetime]) : lifetime,
+				};
+				return options?.purpose === "navigation"
+					? ui.custom(factory, scopedOptions)
+					: this.withUIPrompt(binding, "custom", undefined, () => ui.custom(factory, scopedOptions));
+			},
 		};
 	}
 
@@ -885,6 +892,7 @@ export class ExtensionRunner {
 			isIdle: () => this.isIdleFn(),
 			isProjectTrusted: () => this.isProjectTrustedFn(),
 			getSignal: () => this.getSignalFn(),
+			getSessionSignal: () => extensionSessionSignal(this.runtime),
 			abort: () => this.abortFn(),
 			hasPendingMessages: () => this.hasPendingMessagesFn(),
 			isSessionSummaryEnabled: () => this.isSessionSummaryEnabledFn?.() ?? false,

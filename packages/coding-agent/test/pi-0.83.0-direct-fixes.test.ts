@@ -168,6 +168,7 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 				if (!active) throw new Error("inactive");
 			},
 			getScopedModels: () => scopedModels,
+			getSessionSignal: () => new AbortController().signal,
 		} as unknown as ExtensionContextSource;
 
 		const ctx = createExtensionContext(source);
@@ -190,6 +191,7 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 		const source = {
 			assertActive: () => {},
 			getScopedModels: () => scopedModels,
+			getSessionSignal: () => new AbortController().signal,
 		} as unknown as ExtensionContextSource;
 
 		const ctx = createExtensionContext(source);
@@ -223,6 +225,7 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 		const source = {
 			assertActive: () => {},
 			getScopedModels: () => scopedModels,
+			getSessionSignal: () => new AbortController().signal,
 		} as unknown as ExtensionContextSource;
 
 		const ctx = createExtensionContext(source);
@@ -262,6 +265,7 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 		const source = {
 			assertActive: () => {},
 			getScopedModels: () => scopedModels,
+			getSessionSignal: () => new AbortController().signal,
 		} as unknown as ExtensionContextSource;
 
 		const ctx = createExtensionContext(source);

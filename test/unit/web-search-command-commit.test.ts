@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@bastani/atomic";
 import { test, vi } from "vitest";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/session/errors.js";
+import { createHarness } from "../../packages/coding-agent/test/suite/harness.ts";
+import { createTestExtensionsResult, createTestResourceLoader } from "../../packages/coding-agent/test/utilities.ts";
 
 interface CuratorCallbacks {
 	onSubmit(payload: { selectedQueryIndices: number[]; rawResults: boolean }): void;
@@ -97,6 +103,7 @@ for (const action of ["submit", "timeout"] as const) {
 		});
 		assert.ok(command);
 		const completion = command.handler("", {
+			sessionSignal: new AbortController().signal,
 			ui: {
 				notify(message: string) {
 					notices.push(message);
@@ -115,4 +122,98 @@ for (const action of ["submit", "timeout"] as const) {
 		assert.deepEqual(sent, []);
 		assert.equal(notices.at(-1), `Failed to open curator: ${failure.message}`);
 	});
+}
+
+for (const ending of ["reload", "shutdown"] as const) {
+	for (const saving of [false, true]) {
+		test(`websearch ${ending} closes an open curator and drains an admitted save (${saving})`, async () => {
+			const directory = mkdtempSync(join(tmpdir(), "curator-lifetime-"));
+			const manager = await SessionManager.create(directory, directory);
+			const opening = Promise.withResolvers<void>();
+			curator.opened = opening.resolve;
+			const saveStarted = Promise.withResolvers<void>();
+			const saveRelease = Promise.withResolvers<void>();
+			const append = manager.appendCustomEntry.bind(manager);
+			const writes = vi.spyOn(manager, "appendCustomEntry").mockImplementation(async (type, data) => {
+				saveStarted.resolve();
+				await saveRelease.promise;
+				return append(type, data);
+			});
+			const state = { activeCurator: null as { close(): void } | null };
+			let closed = 0;
+			let shutdown = false;
+			const closeCurator = () => {
+				const handle = state.activeCurator;
+				state.activeCurator = null;
+				if (handle) closed++;
+				handle?.close();
+			};
+			const extensions = await createTestExtensionsResult([
+				(pi) => {
+					registerWebSearchCommand(pi, {
+						state,
+						closeCurator,
+						async buildSearchReturn() {
+							await pi.appendEntry("curator-save", { saved: true });
+							return { content: [{ type: "text", text: "saved" }], details: {} };
+						},
+					});
+					pi.on("session_shutdown", () => {
+						shutdown = true;
+						closeCurator();
+					});
+				},
+			]);
+			const loader = createTestResourceLoader({ extensionsResult: extensions });
+			loader.prepareReload = async () => ({
+				loader: createTestResourceLoader({ extensionsResult: await createTestExtensionsResult([]) }),
+				activate() {},
+				commit() {},
+			});
+			const harness = await createHarness({ sessionManager: manager, resourceLoader: loader });
+			let endingWork: Promise<void> | undefined;
+			try {
+				await harness.session.bindExtensions({});
+				const runner = harness.session.extensionRunner;
+				const command = runner.getCommand("websearch");
+				assert.ok(command);
+				const context = runner.createCommandContext();
+				const completion = command.handler("", context);
+				await opening.promise;
+				if (saving) {
+					curator.callbacks!.onSubmit({ selectedQueryIndices: [], rawResults: true });
+					await saveStarted.promise;
+				}
+				let ended = false;
+				endingWork = (ending === "reload" ? harness.session.reload() : harness.session.dispose()).then(() => {
+					ended = true;
+				});
+				await vi.waitFor(() => assert.equal(closed, 1), { timeout: 500 });
+				assert.equal(context.sessionSignal.aborted, true);
+				assert.equal(state.activeCurator, null);
+				if (saving) {
+					assert.equal(ended, false, "ending waits for the pending save");
+					assert.equal(shutdown, false, "save drains before session_shutdown");
+				}
+				saveRelease.resolve();
+				await vi.waitFor(() => assert.equal(ended, true), { timeout: 1000 });
+				await completion;
+				assert.equal(shutdown, true);
+				assert.equal(writes.mock.calls.length, saving ? 1 : 0);
+				const reopened = await SessionManager.open(manager.getSessionFile()!);
+				assert.equal(
+					reopened.getEntries().filter((entry) => entry.type === "custom" && entry.customType === "curator-save")
+						.length,
+					saving ? 1 : 0,
+				);
+			} finally {
+				saveRelease.resolve();
+				closeCurator();
+				await endingWork;
+				await harness.cleanup();
+				writes.mockRestore();
+				rmSync(directory, { recursive: true, force: true });
+			}
+		});
+	}
 }

@@ -26,6 +26,8 @@ export function registerWebSearchCommand(pi: ExtensionAPI, deps: RegisterWebSear
 	pi.registerCommand("websearch", {
 		description: "Open web search curator",
 		handler: async (args, ctx) => {
+			const sessionSignal = ctx.sessionSignal;
+			if (sessionSignal.aborted) return;
 			deps.closeCurator();
 			const sessionToken = randomUUID();
 
@@ -51,6 +53,7 @@ export function registerWebSearchCommand(pi: ExtensionAPI, deps: RegisterWebSear
 				modelRegistry: ctx.modelRegistry,
 			};
 			const summaryModelChoices = await loadSummaryModelChoices(summaryContext);
+			if (sessionSignal.aborted) return;
 
 			ctx.ui.notify("Opening web search curator...", "info");
 
@@ -62,9 +65,18 @@ export function registerWebSearchCommand(pi: ExtensionAPI, deps: RegisterWebSear
 			const commandCompletion = new Promise<SearchReturnOptions | undefined>((resolve) => {
 				finishCommand = resolve;
 			});
+			const endSession = () => {
+				aborted = true;
+				searchAbort.abort();
+				finishCommand();
+				if (commandHandle && deps.state.activeCurator === commandHandle) deps.closeCurator();
+			};
+			sessionSignal.addEventListener("abort", endSession, { once: true });
 
 			async function sendFollowUpFromReturn(options: SearchReturnOptions): Promise<void> {
 				const payload = await deps.buildSearchReturn(options);
+				// A save already admitted by submission must settle, but teardown must not start a turn.
+				if (sessionSignal.aborted) return;
 				await pi.sendMessage({
 					customType: "web-search-results",
 					content: payload.content,
@@ -200,12 +212,19 @@ export function registerWebSearchCommand(pi: ExtensionAPI, deps: RegisterWebSear
 				);
 
 				commandHandle = handle;
+				if (sessionSignal.aborted) {
+					handle.close();
+					return;
+				}
 				deps.state.activeCurator = handle;
 				await openCuratorWindow(
 					pi,
 					handle.url,
 					"Search Curator",
-					win => { deps.state.glimpseWin = win; },
+					win => {
+						if (sessionSignal.aborted) win?.close();
+						else deps.state.glimpseWin = win;
+					},
 					win => {
 						if (deps.state.glimpseWin === win) {
 							deps.state.glimpseWin = null;
@@ -249,6 +268,8 @@ export function registerWebSearchCommand(pi: ExtensionAPI, deps: RegisterWebSear
 				deps.closeCurator();
 				const message = err instanceof Error ? err.message : String(err);
 				ctx.ui.notify(`Failed to open curator: ${message}`, "error");
+			} finally {
+				sessionSignal.removeEventListener("abort", endSession);
 			}
 		},
 	});

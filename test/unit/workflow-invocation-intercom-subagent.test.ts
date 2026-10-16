@@ -59,6 +59,7 @@ function stageContext(
 		isIdle: () => true,
 		isProjectTrusted: () => true,
 		signal: undefined,
+		sessionSignal: new AbortController().signal,
 		abort: () => {},
 		hasPendingMessages: () => false,
 		shutdown: () => {},

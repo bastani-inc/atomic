@@ -86,6 +86,7 @@ function rollbackContext(cwd: string) {
 		isIdle: () => true,
 		isProjectTrusted: () => false,
 		getSignal: () => AbortSignal.abort(),
+		getSessionSignal: () => AbortSignal.abort(),
 		abort: noop,
 		hasPendingMessages: () => false,
 		shutdown: noop,

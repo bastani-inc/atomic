@@ -79,20 +79,20 @@ function getBoardDetails(): BoardDetails {
 	return toBoardDetails(gameState);
 }
 
-function applyCursorMove(action: Exclude<Action, "play">): string {
+function applyCursorMove(state: GameState, action: Exclude<Action, "play">): string {
 	switch (action) {
 		case "move_up":
-			if (gameState.agentCursorRow > 0) gameState.agentCursorRow--;
-			return `Moved up. Cursor: (${gameState.agentCursorRow}, ${gameState.agentCursorCol})`;
+			if (state.agentCursorRow > 0) state.agentCursorRow--;
+			return `Moved up. Cursor: (${state.agentCursorRow}, ${state.agentCursorCol})`;
 		case "move_down":
-			if (gameState.agentCursorRow < 2) gameState.agentCursorRow++;
-			return `Moved down. Cursor: (${gameState.agentCursorRow}, ${gameState.agentCursorCol})`;
+			if (state.agentCursorRow < 2) state.agentCursorRow++;
+			return `Moved down. Cursor: (${state.agentCursorRow}, ${state.agentCursorCol})`;
 		case "move_left":
-			if (gameState.agentCursorCol > 0) gameState.agentCursorCol--;
-			return `Moved left. Cursor: (${gameState.agentCursorRow}, ${gameState.agentCursorCol})`;
+			if (state.agentCursorCol > 0) state.agentCursorCol--;
+			return `Moved left. Cursor: (${state.agentCursorRow}, ${state.agentCursorCol})`;
 		case "move_right":
-			if (gameState.agentCursorCol < 2) gameState.agentCursorCol++;
-			return `Moved right. Cursor: (${gameState.agentCursorRow}, ${gameState.agentCursorCol})`;
+			if (state.agentCursorCol < 2) state.agentCursorCol++;
+			return `Moved right. Cursor: (${state.agentCursorRow}, ${state.agentCursorCol})`;
 	}
 }
 
@@ -103,7 +103,7 @@ export default function (pi: ExtensionAPI) {
 	// Sent once per game at end-of-game. The custom renderer paints the banner;
 	// `content` is a plain-text fallback for any non-TUI consumer and for the
 	// LLM (in case the message ends up in future context).
-	const emitGameOverMessage = (): void => {
+	const emitGameOverMessage = async (): Promise<void> => {
 		const label =
 			gameState.status === "win_X"
 				? "Player X (human) wins"
@@ -112,7 +112,7 @@ export default function (pi: ExtensionAPI) {
 					: gameState.status === "draw"
 						? "Draw"
 						: "Game over";
-		pi.sendMessage({
+		await pi.sendMessage({
 			customType: GAME_OVER_MESSAGE_TYPE,
 			content: `Game over: ${label}.`,
 			display: true,
@@ -154,8 +154,9 @@ export default function (pi: ExtensionAPI) {
 			if (gameState.status !== "playing") {
 				gameState = createInitialState();
 			}
-			gameActive = true;
 			await pi.setSessionName("Tic-Tac-Toe");
+			gameActive = true;
+			let userMovePending = false;
 
 			await ctx.ui.custom<void>((tui, _theme, _kb, done) => {
 				component = new TicTacToeComponent(
@@ -166,14 +167,16 @@ export default function (pi: ExtensionAPI) {
 						done(undefined);
 					},
 					(row, col) => {
+						if (userMovePending) return;
+						userMovePending = true;
 						void (async () => {
-							gameState.board[row][col] = gameState.userMark;
-							gameState.status = checkWin(gameState.board);
-							if (gameState.status === "playing") {
-								gameState.currentTurn = gameState.agentMark;
-							}
+							const nextState = { ...gameState, board: gameState.board.map((row) => [...row]) };
+							nextState.board[row][col] = nextState.userMark;
+							nextState.status = checkWin(nextState.board);
+							if (nextState.status === "playing") nextState.currentTurn = nextState.agentMark;
+							await pi.appendEntry(SAVE_TYPE, toBoardDetails(nextState));
+							gameState = nextState;
 							component?.updateState(gameState);
-							await pi.appendEntry(SAVE_TYPE, getBoardDetails());
 
 							if (gameState.status === "playing") {
 								// IMPORTANT: user play does NOT touch the agent cursor.
@@ -183,7 +186,7 @@ export default function (pi: ExtensionAPI) {
 									gameState.agentCursorRow,
 									gameState.agentCursorCol,
 								);
-								pi.sendMessage(
+								await pi.sendMessage(
 									{
 										customType: MOVE_MESSAGE_TYPE,
 										content:
@@ -198,10 +201,14 @@ export default function (pi: ExtensionAPI) {
 									{ triggerTurn: true },
 								);
 							} else {
-								emitGameOverMessage();
+								await emitGameOverMessage();
 								gameActive = false;
 							}
-						})().catch((error: Error) => ctx.ui.notify(error.message, "error"));
+						})()
+							.catch((error: Error) => ctx.ui.notify(error.message, "error"))
+							.finally(() => {
+								userMovePending = false;
+							});
 					},
 					gameState,
 				);
@@ -232,15 +239,16 @@ export default function (pi: ExtensionAPI) {
 			const actionDelay = ACTION_DELAYS[params.action];
 			if (actionDelay > 0) await delay(actionDelay);
 
-			let result: string;
-			if (params.action === "play") {
-				result = await handleAgentPlay(emitGameOverMessage, () => pi.appendEntry(SAVE_TYPE, getBoardDetails()));
-			} else {
-				result = applyCursorMove(params.action);
-			}
-
+			const nextState = { ...gameState, board: gameState.board.map((row) => [...row]) };
+			const result =
+				params.action === "play" ? handleAgentPlay(nextState) : applyCursorMove(nextState, params.action);
+			await pi.appendEntry(SAVE_TYPE, toBoardDetails(nextState));
+			gameState = nextState;
 			component?.updateState(gameState);
-			await pi.appendEntry(SAVE_TYPE, getBoardDetails());
+			if (params.action === "play" && gameState.status !== "playing") {
+				gameActive = false;
+				await emitGameOverMessage();
+			}
 
 			return {
 				content: [{ type: "text", text: result }],
@@ -305,43 +313,33 @@ export default function (pi: ExtensionAPI) {
 	});
 }
 
-async function handleAgentPlay(emitGameOverMessage: () => void, appendSave: () => Promise<void>): Promise<string> {
-	if (gameState.status !== "playing") {
-		throw new TicTacToeError(`Game is over (${gameState.status}).`);
+function handleAgentPlay(state: GameState): string {
+	if (state.status !== "playing") {
+		throw new TicTacToeError(`Game is over (${state.status}).`);
 	}
-	if (gameState.currentTurn !== gameState.agentMark) {
+	if (state.currentTurn !== state.agentMark) {
 		throw new TicTacToeError("It is not your turn.");
 	}
-	const r = gameState.agentCursorRow;
-	const c = gameState.agentCursorCol;
-	if (gameState.board[r][c] !== " ") {
+	const r = state.agentCursorRow;
+	const c = state.agentCursorCol;
+	if (state.board[r][c] !== " ") {
 		// Do NOT reset the cursor on failure. The agent can retry
 		// from the cursor's current position.
-		component?.updateState(gameState);
-		await appendSave();
 		throw new TicTacToeError(
-			`Cell (${r},${c}) is already ${gameState.board[r][c]}. Your cursor is still at (${r},${c}). Move to an empty cell and retry play.`,
+			`Cell (${r},${c}) is already ${state.board[r][c]}. Your cursor is still at (${r},${c}). Move to an empty cell and retry play.`,
 		);
 	}
 
-	gameState.board[r][c] = gameState.agentMark;
-	gameState.status = checkWin(gameState.board);
+	state.board[r][c] = state.agentMark;
+	state.status = checkWin(state.board);
 	// Reset agent cursor to home ONLY on successful play.
-	gameState.agentCursorRow = AGENT_CURSOR_HOME_ROW;
-	gameState.agentCursorCol = AGENT_CURSOR_HOME_COL;
-	if (gameState.status === "playing") {
-		gameState.currentTurn = gameState.userMark;
+	state.agentCursorRow = AGENT_CURSOR_HOME_ROW;
+	state.agentCursorCol = AGENT_CURSOR_HOME_COL;
+	if (state.status === "playing") {
+		state.currentTurn = state.userMark;
 		return `Placed O at (${r},${c}). Cursor reset to (${AGENT_CURSOR_HOME_ROW},${AGENT_CURSOR_HOME_COL}). Your turn, X!`;
 	}
-	if (gameState.status === "win_O") {
-		gameActive = false;
-		emitGameOverMessage();
-		return `Placed O at (${r},${c}). Player O wins!`;
-	}
-	if (gameState.status === "draw") {
-		gameActive = false;
-		emitGameOverMessage();
-		return `Placed O at (${r},${c}). It's a draw!`;
-	}
+	if (state.status === "win_O") return `Placed O at (${r},${c}). Player O wins!`;
+	if (state.status === "draw") return `Placed O at (${r},${c}). It's a draw!`;
 	return `Placed O at (${r},${c}).`;
 }

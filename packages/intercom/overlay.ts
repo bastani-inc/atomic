@@ -56,7 +56,7 @@ export function registerIntercomOverlay(pi: ExtensionAPI, deps: OverlayDeps): vo
     const selectedSession = await ctx.ui.custom<SessionInfo | undefined>(
 	  (_tui, theme, keybindings, done) =>
 		new SessionListOverlay(theme, keybindings, currentSession, sessions, done, workflowStages),
-      { overlay: true }
+      { overlay: true, signal: ctx.sessionSignal }
     ).catch(() => undefined);
 
     if (!selectedSession || !deps.getLiveContext(ctx, overlayGeneration)) return;
@@ -73,7 +73,7 @@ export function registerIntercomOverlay(pi: ExtensionAPI, deps: OverlayDeps): vo
 
     const result = await ctx.ui.custom<ComposeResult>(
       (tui, theme, keybindings, done) => new ComposeOverlay(tui, theme, keybindings, selectedSession, targetLabel, overlayClient, done),
-      { overlay: true }
+      { overlay: true, signal: ctx.sessionSignal }
     ).catch(() => undefined);
 
     if (result?.sent && result.messageId && result.text && deps.getLiveContext(ctx, overlayGeneration)) {
