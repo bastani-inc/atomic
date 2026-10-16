@@ -8,7 +8,7 @@ import type {
 	RunJournal,
 	RunOpts,
 	RunSummary,
-	SqliteRunJournal,
+	SqlRunJournal,
 } from "@bastani/workflows";
 import { test } from "vitest";
 import type { RunJournal as KernelRunJournal } from "../../packages/workflows/src/durable/journal/types.js";
@@ -28,7 +28,7 @@ const optionIdentity: Equal<
 	{ path: string } | { database: DatabaseSync } | { memory: true } | RunJournal
 > = true;
 const memoryPublicShape: Equal<keyof MemoryRunJournal, keyof RunJournal> = true;
-const sqlitePublicShape: Equal<Exclude<keyof SqliteRunJournal, "path">, keyof RunJournal> = true;
+const sqlitePublicShape: Equal<Exclude<keyof SqlRunJournal, "path" | "descriptor">, keyof RunJournal> = true;
 const runLookupIdentity: Equal<ReturnType<RunJournal["getRun"]>, Promise<RunSummary | undefined>> = true;
 const leaseLookupIdentity: Equal<ReturnType<RunJournal["leaseState"]>, Promise<LeaseState | undefined>> = true;
 const leaseStateIdentity: Equal<LeaseState, Lease & { readonly renewedAt: number }> = true;
@@ -57,7 +57,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
 } });
 const sdk = await import("@bastani/atomic/workflows");
 assert.equal(typeof sdk.MemoryRunJournal, "function");
-assert.equal(typeof sdk.SqliteRunJournal, "function");
+assert.equal(typeof sdk.SqlRunJournal, "function");
 assert.equal("synchronousJournal" in sdk, false);
 assert.equal("registerSynchronousJournal" in sdk, false);`,
 	]);
@@ -78,7 +78,7 @@ for (const runtime of ["node", "bun"] as const) {
 				assert.equal(result.exitCode, 0, result.stderr.toString() + result.stdout.toString());
 				assert.deepEqual(JSON.parse(result.stdout.toString()), {
 					runtime,
-					publicConformance: 18,
+					publicConformance: 19,
 					status: "passed",
 				});
 			} finally {

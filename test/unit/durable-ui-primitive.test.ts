@@ -78,9 +78,9 @@ async function promptAtSecondAuthorCallsite(ui: WorkflowUIContext): Promise<stri
 describe("wrapUiWithDurable", () => {
 	let backend: InMemoryDurableBackend;
 
-	beforeEach(() => {
-		backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+	beforeEach(async () => {
+		backend = await InMemoryDurableBackend.create();
+		await backend.registerWorkflow({
 			workflowId: WORKFLOW_ID,
 			name: "ui-test",
 			inputs: {},
@@ -116,8 +116,8 @@ describe("wrapUiWithDurable", () => {
 		const baseA = makeBaseUi();
 		assert.equal(await promptInputAtStableCallsite(wrap(baseA), "checkpointed before cleanup"), "raw-input");
 		const checkpoint = backend.listCheckpoints(WORKFLOW_ID)[0]!;
-		backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+		backend = await InMemoryDurableBackend.create();
+		await backend.registerWorkflow({
 			workflowId: WORKFLOW_ID,
 			name: "ui-test",
 			inputs: {},
@@ -125,7 +125,7 @@ describe("wrapUiWithDurable", () => {
 			status: "running",
 			pendingPrompts: 1,
 		});
-		backend.recordCheckpoint(checkpoint);
+		await backend.recordCheckpoint(checkpoint);
 		assert.equal(backend.getWorkflow(WORKFLOW_ID)?.pendingPrompts, 1);
 
 		const baseB = makeBaseUi();
@@ -296,20 +296,38 @@ describe("wrapUiWithDurable", () => {
 		});
 		const answerA = Promise.withResolvers<string>();
 		const answerB = Promise.withResolvers<string>();
-		const uiA = wrapUiWithDurable(makeBaseUi({ input: () => answerA.promise }), {
-			workflowId: "grandchild-a",
-			backend: grandchildA,
-			nextCheckpointId: createCheckpointIdGenerator(),
-		});
-		const uiB = wrapUiWithDurable(makeBaseUi({ input: () => answerB.promise }), {
-			workflowId: "grandchild-b",
-			backend: grandchildB,
-			nextCheckpointId: createCheckpointIdGenerator(),
-		});
+		const admittedA = Promise.withResolvers<void>();
+		const admittedB = Promise.withResolvers<void>();
+		const uiA = wrapUiWithDurable(
+			makeBaseUi({
+				input: () => {
+					admittedA.resolve();
+					return answerA.promise;
+				},
+			}),
+			{
+				workflowId: "grandchild-a",
+				backend: grandchildA,
+				nextCheckpointId: createCheckpointIdGenerator(),
+			},
+		);
+		const uiB = wrapUiWithDurable(
+			makeBaseUi({
+				input: () => {
+					admittedB.resolve();
+					return answerB.promise;
+				},
+			}),
+			{
+				workflowId: "grandchild-b",
+				backend: grandchildB,
+				nextCheckpointId: createCheckpointIdGenerator(),
+			},
+		);
 
 		const pendingA = promptInputAtStableCallsite(uiA, "identical nested prompt");
 		const pendingB = promptInputAtStableCallsite(uiB, "identical nested prompt");
-		await Promise.resolve();
+		await Promise.all([admittedA.promise, admittedB.promise]);
 		assert.equal(backend.getWorkflow(WORKFLOW_ID)?.pendingPrompts, 2);
 		answerA.resolve("answer-a");
 		answerB.resolve("answer-b");
@@ -407,21 +425,37 @@ describe("wrapUiWithDurable", () => {
 	test("counts nested workflow prompts at the durable root without underflow", async () => {
 		const rootWaiter = Promise.withResolvers<string>();
 		const childWaiter = Promise.withResolvers<string>();
-		const rootUi = wrap(makeBaseUi({ input: () => rootWaiter.promise }));
+		const rootAdmitted = Promise.withResolvers<void>();
+		const childAdmitted = Promise.withResolvers<void>();
+		const rootUi = wrap(
+			makeBaseUi({
+				input: () => {
+					rootAdmitted.resolve();
+					return rootWaiter.promise;
+				},
+			}),
+		);
 		const childBackend = new ScopedDurableBackend(backend, {
 			rootWorkflowId: WORKFLOW_ID,
 			scopePrefix: "workflow:child:1",
 		});
-		const childUi = wrapUiWithDurable(makeBaseUi({ input: () => childWaiter.promise }), {
-			workflowId: "child-run",
-			backend: childBackend,
-			nextCheckpointId: createCheckpointIdGenerator(),
-		});
+		const childUi = wrapUiWithDurable(
+			makeBaseUi({
+				input: () => {
+					childAdmitted.resolve();
+					return childWaiter.promise;
+				},
+			}),
+			{
+				workflowId: "child-run",
+				backend: childBackend,
+				nextCheckpointId: createCheckpointIdGenerator(),
+			},
+		);
 
 		const rootPrompt = rootUi.input("root question");
 		const childPrompt = childUi.input("child question");
-		await Promise.resolve();
-		await Promise.resolve();
+		await Promise.all([rootAdmitted.promise, childAdmitted.promise]);
 		assert.equal(backend.getWorkflow(WORKFLOW_ID)?.pendingPrompts, 2);
 
 		childWaiter.resolve("child answer");
@@ -431,13 +465,13 @@ describe("wrapUiWithDurable", () => {
 		assert.equal(backend.getWorkflow(WORKFLOW_ID)?.pendingPrompts, 0);
 		assert.equal(backend.listCheckpoints(WORKFLOW_ID).length, 2);
 
-		backend.adjustPendingPrompts(WORKFLOW_ID, -1);
+		await backend.adjustPendingPrompts(WORKFLOW_ID, -1);
 		assert.equal(backend.getWorkflow(WORKFLOW_ID)?.pendingPrompts, 0);
 	});
 
 	test("reuses a persisted scoped-child prompt reservation after restart", async () => {
-		const rootBackend = new InMemoryDurableBackend();
-		rootBackend.registerWorkflow({
+		const rootBackend = await InMemoryDurableBackend.create();
+		await rootBackend.registerWorkflow({
 			workflowId: WORKFLOW_ID,
 			name: "ui-test",
 			inputs: {},
@@ -450,14 +484,23 @@ describe("wrapUiWithDurable", () => {
 			scopePrefix: "workflow:child:restart:1",
 		});
 		const answer = Promise.withResolvers<string>();
-		const childUi = wrapUiWithDurable(makeBaseUi({ input: () => answer.promise }), {
-			workflowId: "restarted-child-run",
-			backend: scopedBackend,
-			nextCheckpointId: createCheckpointIdGenerator(),
-		});
+		const admitted = Promise.withResolvers<void>();
+		const childUi = wrapUiWithDurable(
+			makeBaseUi({
+				input: () => {
+					admitted.resolve();
+					return answer.promise;
+				},
+			}),
+			{
+				workflowId: "restarted-child-run",
+				backend: scopedBackend,
+				nextCheckpointId: createCheckpointIdGenerator(),
+			},
+		);
 
 		const pending = childUi.input("child pending from prior process");
-		await Promise.resolve();
+		await admitted.promise;
 		assert.equal(rootBackend.getWorkflow(WORKFLOW_ID)?.pendingPrompts, 1);
 		answer.resolve("answered after restart");
 		assert.equal(await pending, "answered after restart");
@@ -468,20 +511,23 @@ describe("wrapUiWithDurable", () => {
 	test("counts concurrent unresolved prompts until checkpoint or rejection settles", async () => {
 		const first = Promise.withResolvers<string>();
 		const second = Promise.withResolvers<string>();
+		const firstAdmitted = Promise.withResolvers<void>();
+		const secondAdmitted = Promise.withResolvers<void>();
 		let calls = 0;
 		const base = makeBaseUi({
 			async input() {
 				base.calls.input++;
 				calls += 1;
+				(calls === 1 ? firstAdmitted : secondAdmitted).resolve();
 				return calls === 1 ? first.promise : second.promise;
 			},
 		});
 		const ui = wrap(base);
 
 		const firstPrompt = ui.input("first");
-		await Promise.resolve();
+		await firstAdmitted.promise;
 		const secondPrompt = ui.input("second");
-		await Promise.resolve();
+		await secondAdmitted.promise;
 
 		assert.equal(backend.getWorkflow(WORKFLOW_ID)?.pendingPrompts, 2);
 		first.resolve("answered");

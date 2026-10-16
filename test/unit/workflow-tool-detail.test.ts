@@ -265,7 +265,7 @@ function clickForSingleNode(stage: ToolNodeSnapshot, width = 120, rows = 32): st
 }
 
 describe("tool graph inspection", () => {
-	test("Enter and direct selection open a collapsed read-only tool message block", () => {
+	test("Enter and direct selection open a collapsed read-only tool message block", async () => {
 		const node = tool();
 		const enterView = viewFor(node);
 		enterView.render(120);
@@ -326,7 +326,7 @@ describe("tool graph inspection", () => {
 		assert.ok(clickView._toolDetail);
 		clickView.dispose();
 	});
-	test("opened tool detail keeps canvas between the chrome bars and the painted card", () => {
+	test("opened tool detail keeps canvas between the chrome bars and the painted card", async () => {
 		const view = viewFor(tool());
 		view.render(120);
 		assert.equal(view.handleInput("\r"), true);
@@ -348,7 +348,7 @@ describe("tool graph inspection", () => {
 		view.dispose();
 	});
 
-	test("collapsed multi-line errors keep the block inset and account for bounded rows", () => {
+	test("collapsed multi-line errors keep the block inset and account for bounded rows", async () => {
 		const wideError = "first line\nsecond line\nthird line";
 		const wideRows = renderToolDetail(tool({ status: "failed", result: undefined, error: wideError }), {
 			width: 120,
@@ -402,7 +402,7 @@ describe("tool graph inspection", () => {
 		assert.match(manyRows.find((row) => row.includes("earlier lines")) ?? "", /190 earlier lines, ctrl\+o Expand/);
 	});
 
-	test("operator chrome keeps the result tail, sub-second timing, markers, paths, and shading", () => {
+	test("operator chrome keeps the result tail, sub-second timing, markers, paths, and shading", async () => {
 		const longResult = Array.from({ length: 20 }, (_, index) => `line-${index}`).join("\n");
 		const collapsed = renderToolDetail(
 			tool({ status: "failed", result: undefined, error: longResult, startedAt: 100, endedAt: 111 }),
@@ -481,7 +481,7 @@ describe("tool graph inspection", () => {
 		assert.match(longHint, /\x1b\[38;2;127;132;156mctrl\+o/, "expand key uses dim");
 	});
 
-	test("running tool headers omit the status marker without changing other status markers", () => {
+	test("running tool headers omit the status marker without changing other status markers", async () => {
 		const plain = renderToolDetail(
 			tool({ name: "push-propagated-2657", args: undefined, status: "running", endedAt: undefined }),
 			{ width: 80, now: 2_000 },
@@ -520,7 +520,7 @@ describe("tool graph inspection", () => {
 		}
 	});
 
-	test("collapsed previews use the full bounded body and exact visual tail count", () => {
+	test("collapsed previews use the full bounded body and exact visual tail count", async () => {
 		const longLines = Array.from({ length: 24 }, (_, index) => `report-line-${index}-abcdefghijklmnopqrstuvwxyz`);
 		const wideRows = renderToolDetail(tool({ args: undefined, result: { ok: true, lines: longLines } }), {
 			width: 80,
@@ -544,7 +544,7 @@ describe("tool graph inspection", () => {
 		assert.doesNotMatch(narrowRows.join("\n"), /… \[truncated\]/);
 	});
 
-	test("status-tinted backgrounds cover every rendered tool cell", () => {
+	test("status-tinted backgrounds cover every rendered tool cell", async () => {
 		const cases = [
 			["completed with args", tool({ result: "ok" })],
 			["failed", tool({ status: "failed", result: undefined, error: "check failed", args: { attempt: 1 } })],
@@ -559,7 +559,7 @@ describe("tool graph inspection", () => {
 		}
 	});
 
-	test("plain detail output stays ANSI-free when narrow rows are clipped", () => {
+	test("plain detail output stays ANSI-free when narrow rows are clipped", async () => {
 		const result = {
 			lines: Array.from({ length: 24 }, (_, index) => `report-line-${index}-abcdefghijklmnopqrstuvwxyz`),
 		};
@@ -573,7 +573,7 @@ describe("tool graph inspection", () => {
 		}
 	});
 
-	test("capped long result rendering stays within the responsive frame budget", () => {
+	test("capped long result rendering stays within the responsive frame budget", async () => {
 		const LARGE_RESULT_RENDER_BUDGET_MS = 80;
 		const node = tool({
 			args: undefined,
@@ -591,7 +591,7 @@ describe("tool graph inspection", () => {
 		);
 	});
 
-	test("oversized errors and results share head truncation marker placement", () => {
+	test("oversized errors and results share head truncation marker placement", async () => {
 		const oversized = `HEAD-MARKER${"e".repeat(TOOL_PAYLOAD_VALUE_LIMIT + 100)}TAIL-MARKER`;
 		const outputs = [
 			renderToolDetail(tool({ status: "failed", result: undefined, error: oversized }), {
@@ -609,12 +609,12 @@ describe("tool graph inspection", () => {
 		}
 	});
 
-	test("width wrapping does not emit lone surrogates when skipping a wide grapheme boundary", () => {
+	test("width wrapping does not emit lone surrogates when skipping a wide grapheme boundary", async () => {
 		const rendered = renderToolDetail(tool({ result: "👍👍/abc" }), { width: 3, expanded: true });
 		const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 		assert.doesNotMatch(rendered, loneSurrogate);
 	});
-	test("completed cards omit the empty marker row and keep the bash-like header", () => {
+	test("completed cards omit the empty marker row and keep the bash-like header", async () => {
 		const rendered = renderToolDetail(tool({ status: "completed", replayed: false }), {
 			theme: defaultTheme,
 			width: 96,
@@ -624,7 +624,7 @@ describe("tool graph inspection", () => {
 		assert.match(text, /\$ inspect-api/);
 		assert.doesNotMatch(text, /✓ inspect-api|\bMARKERS\b|\bARGS\b/);
 	});
-	test("large and unusual values render with an explicit truncation marker", () => {
+	test("large and unusual values render with an explicit truncation marker", async () => {
 		const huge = "x".repeat(20_000);
 		assert.doesNotThrow(() => {
 			const text = renderToolDetail(
@@ -644,7 +644,7 @@ describe("tool graph inspection", () => {
 		assert.match(errorText, /\$ inspect-api[\s\S]*check failed/);
 	});
 
-	test("failed, cached, and replayed tool nodes keep status markers in the message block", () => {
+	test("failed, cached, and replayed tool nodes keep status markers in the message block", async () => {
 		const failed = visibleText(
 			renderToolDetail(tool({ status: "failed", result: undefined, error: "check failed" }), {
 				theme: defaultTheme,
@@ -673,7 +673,7 @@ describe("tool graph inspection", () => {
 		assert.doesNotMatch(replayed, /MARKERS/);
 	});
 
-	test("malformed snapshot display values never make the detail renderer throw", () => {
+	test("malformed snapshot display values never make the detail renderer throw", async () => {
 		const cyclic: { self?: object } = {};
 		cyclic.self = cyclic;
 		const throwingCoercion = {
@@ -700,7 +700,7 @@ describe("tool graph inspection", () => {
 
 	test("durable tool execution carries exact args and result into snapshots", async () => {
 		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: "durable-detail",
 			name: "detail",
 			inputs: {},
@@ -731,7 +731,7 @@ describe("tool graph inspection", () => {
 		assert.deepEqual(checkpoint?.kind === "tool" ? checkpoint.output : undefined, result);
 	});
 
-	test("graph snapshots detach full tool payloads before freezing them", () => {
+	test("graph snapshots detach full tool payloads before freezing them", async () => {
 		const args = { nested: { values: ["first", "second"] } };
 		const result = { nested: { ok: true } };
 		const store = createStore();
@@ -756,7 +756,7 @@ describe("tool graph inspection", () => {
 		assert.equal(Object.isFrozen(result), false);
 	});
 
-	test("detail view keeps large payloads scrollable without activating graph controls", () => {
+	test("detail view keeps large payloads scrollable without activating graph controls", async () => {
 		const source = Array.from({ length: 2_000 }, (_, index) => `source-line-${index}`).join("\n");
 		const view = viewFor(tool({ source }));
 		view.render(120);
@@ -770,7 +770,7 @@ describe("tool graph inspection", () => {
 		view.dispose();
 	});
 
-	test("the real graph view survives hostile payloads through the store projection", () => {
+	test("the real graph view survives hostile payloads through the store projection", async () => {
 		const selfReferential: Record<string, unknown> = {};
 		selfReferential.self = selfReferential;
 		// Reviewer-reported shape: an own enumerable `toJSON` that throws, on a
@@ -817,7 +817,7 @@ describe("tool graph inspection", () => {
 		cycleView.dispose();
 	});
 
-	test("the graph projection retains bounded tool payloads", () => {
+	test("the graph projection retains bounded tool payloads", async () => {
 		const huge = "y".repeat(2_000_000);
 		const store = createStore();
 		store.recordRunStart({
@@ -845,7 +845,7 @@ describe("tool graph inspection", () => {
 		}
 	});
 
-	test("detail serialization is bounded by the display cap rather than the payload", () => {
+	test("detail serialization is bounded by the display cap rather than the payload", async () => {
 		const entries = 20_000;
 		let reads = 0;
 		const target: Record<string, string> = {};
@@ -869,7 +869,7 @@ describe("tool graph inspection", () => {
 		assert.ok(rendered.includes(TOOL_PAYLOAD_TRUNCATION_MARKER.slice(0, 3)));
 	});
 
-	test("timing stays inspectable at the narrowest supported detail width", () => {
+	test("timing stays inspectable at the narrowest supported detail width", async () => {
 		const rendered = renderToolDetail(tool({ startedAt: 1786890801337, endedAt: 1786890801341 }), {
 			theme: defaultTheme,
 			width: 40,
@@ -882,7 +882,7 @@ describe("tool graph inspection", () => {
 
 	test("callback source is captured at registration, persisted, and rendered", async () => {
 		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: "durable-source",
 			name: "source",
 			inputs: {},
@@ -939,7 +939,7 @@ describe("tool graph inspection", () => {
 		);
 	});
 
-	test("tool cards render a constant body while status keeps the result summary", () => {
+	test("tool cards render a constant body while status keeps the result summary", async () => {
 		const nodes = [
 			tool({ id: "tool:done", name: "done", argsHash: "h1", status: "completed", resultSummary: '"published"' }),
 			tool({
@@ -984,7 +984,7 @@ describe("tool graph inspection", () => {
 		assert.equal(summarized?.resultSummary, '"published"');
 	});
 
-	test("the session list survives every non-clonable tool result the store can hold", () => {
+	test("the session list survives every non-clonable tool result the store can hold", async () => {
 		const withOwnFunction: Record<string, unknown> = { ok: true, retry: () => undefined };
 		const withProxy = new Proxy({ ok: true }, {});
 		const variants: Array<readonly [string, unknown]> = [
@@ -1024,9 +1024,9 @@ describe("tool graph inspection", () => {
 		];
 
 		for (const [label, args] of hostileArgs) {
-			const backend = new JournalTestBackend();
+			const backend = await JournalTestBackend.create();
 			const workflowId = `durable-args-${label.replace(/\s+/g, "-")}`;
-			backend.registerWorkflow({ workflowId, name: label, inputs: {}, createdAt: 1, status: "running" });
+			await backend.registerWorkflow({ workflowId, name: label, inputs: {}, createdAt: 1, status: "running" });
 			const durableTool = createToolPrimitive({
 				workflowId,
 				backend,
@@ -1043,7 +1043,7 @@ describe("tool graph inspection", () => {
 
 	test("bounding the live store never bounds the replayed durable output", async () => {
 		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: "durable-replay",
 			name: "replay",
 			inputs: {},
@@ -1096,14 +1096,14 @@ describe("tool graph inspection", () => {
 		assert.ok(retained.big.endsWith(TOOL_PAYLOAD_TRUNCATION_MARKER));
 	});
 
-	test("the live store keeps a multi-megabyte tool result bounded", () => {
+	test("the live store keeps a multi-megabyte tool result bounded", async () => {
 		const store = storeWithToolResult({ payload: "m".repeat(5_000_000) });
 		const serialized = JSON.stringify(store.snapshot());
 		assert.ok(serialized.length < 100_000, `store.snapshot() serialized to ${serialized.length} bytes`);
 		assert.ok(serialized.includes(TOOL_PAYLOAD_TRUNCATION_MARKER));
 	});
 
-	test("the detail view scrolls from the keyboard alone", () => {
+	test("the detail view scrolls from the keyboard alone", async () => {
 		const source = Array.from({ length: 600 }, (_, index) => `source-line-${index}`).join("\n");
 		const view = viewFor(tool({ source }));
 		view.render(120);
@@ -1143,7 +1143,7 @@ describe("tool graph inspection", () => {
 		view.dispose();
 	});
 
-	test("source text cannot desynchronize the box or emit escape sequences", () => {
+	test("source text cannot desynchronize the box or emit escape sequences", async () => {
 		const width = 60;
 		for (const [label, source] of [
 			["tab indented", "async () => {\n\treturn {\n\t\tok: true,\n\t};\n}"],
@@ -1164,7 +1164,7 @@ describe("tool graph inspection", () => {
 		}
 	});
 
-	test("the scroll range always equals the rows the body really rendered", () => {
+	test("the scroll range always equals the rows the body really rendered", async () => {
 		// The height callback and body callback receive the same detail width,
 		// including when a scrollbar column is reserved.
 		const source = Array.from({ length: 800 }, (_, index) => `source-line-${index}`).join("\n");
@@ -1188,7 +1188,7 @@ describe("tool graph inspection", () => {
 		}
 	});
 
-	test("the tail of a capped payload is reachable on ordinary terminals", () => {
+	test("the tail of a capped payload is reachable on ordinary terminals", async () => {
 		const source = Array.from({ length: 800 }, (_, index) => `source-line-${index}`).join("\n");
 		for (const [width, rows] of [
 			[80, 40],
@@ -1216,7 +1216,7 @@ describe("tool graph inspection", () => {
 		}
 	});
 
-	test("an ordinary result reaches the operator footer at 80x40", () => {
+	test("an ordinary result reaches the operator footer at 80x40", async () => {
 		const source = Array.from({ length: 500 }, (_, index) => `source-line-${index}`).join("\n");
 		const view = viewForAtRows(tool({ result: { payload: "published" }, source }), 40);
 		view.render(80);
@@ -1230,7 +1230,7 @@ describe("tool graph inspection", () => {
 		view.dispose();
 	});
 
-	test("End and PageDown reach the end of a long result", () => {
+	test("End and PageDown reach the end of a long result", async () => {
 		const result = Array.from({ length: 300 }, (_, index) => `result-line-${index}`).join("\n");
 		const view = viewForAtRows(tool({ result }), 24);
 		view.render(80);
@@ -1251,7 +1251,7 @@ describe("tool graph inspection", () => {
 		view.dispose();
 	});
 
-	test("a focused tool node advertises its activation key", () => {
+	test("a focused tool node advertises its activation key", async () => {
 		const view = viewFor(tool());
 		const graphFooter = visibleText(view.render(120));
 		assert.ok(graphFooter.includes("↵"), "a focused tool node must offer an Enter affordance");
@@ -1275,7 +1275,7 @@ describe("tool graph inspection", () => {
 		view.dispose();
 	});
 
-	test("an unbound expand action omits the statusline expand hint", () => {
+	test("an unbound expand action omits the statusline expand hint", async () => {
 		const unbound = viewFor(tool(), {
 			matches(): boolean {
 				return false;
@@ -1296,7 +1296,7 @@ describe("tool graph inspection", () => {
 		unbound.dispose();
 	});
 
-	test("stage-node statusline hints are unchanged", () => {
+	test("stage-node statusline hints are unchanged", async () => {
 		const store = createStore();
 		store.recordRunStart({
 			id: RUN_ID,
@@ -1366,7 +1366,7 @@ describe("tool graph inspection", () => {
 		empty.dispose();
 	});
 
-	test("every element kind advances the retention cap", () => {
+	test("every element kind advances the retention cap", async () => {
 		// JSON emits `null` for holes, `undefined`, functions, and symbols. A
 		// walker that returns those without charging never reaches the cap, so a
 		// multi-million-element array of them was retained whole.
@@ -1386,14 +1386,14 @@ describe("tool graph inspection", () => {
 		}
 	});
 
-	test("a sparse array is bounded rather than densified", () => {
+	test("a sparse array is bounded rather than densified", async () => {
 		const store = storeWithToolResult({ rows: new Array(20_000_000) });
 		const rows = retainedRows(store);
 		assert.ok(rows.length <= TOOL_PAYLOAD_VALUE_LIMIT / 4, `retained ${rows.length} of 20,000,000 holes`);
 		assert.equal(rows.at(-1), TOOL_PAYLOAD_TRUNCATION_MARKER);
 	});
 
-	test("durable args stay bounded for uncharged element kinds", () => {
+	test("durable args stay bounded for uncharged element kinds", async () => {
 		const record = boundedToolPayloadRecord({ rows: new Array(3_000_000).fill(null) } as never);
 		const rows = (record as { rows: unknown[] }).rows;
 		assert.ok(Array.isArray(rows));
@@ -1413,7 +1413,7 @@ describe("tool graph inspection", () => {
 		assert.ok(bytes < 100_000, `the durable checkpoint payload grew to ${bytes} bytes`);
 	});
 
-	test("repeated graph snapshots re-walk only a bounded payload", () => {
+	test("repeated graph snapshots re-walk only a bounded payload", async () => {
 		const store = storeWithToolResult({ rows: new Array(5_000_000).fill(null) });
 		for (const pass of ["first", "after a version bump"]) {
 			if (pass !== "first") {
@@ -1452,7 +1452,7 @@ describe("tool graph inspection", () => {
 		}
 	});
 
-	test("the collapsed and expanded message block stay width-safe at the narrowest frame", () => {
+	test("the collapsed and expanded message block stay width-safe at the narrowest frame", async () => {
 		const view = viewForAtRows(
 			tool({
 				status: "failed",
@@ -1479,7 +1479,7 @@ describe("tool graph inspection", () => {
 		view.dispose();
 	});
 
-	test("tool snapshots remain non-attachable", () => {
+	test("tool snapshots remain non-attachable", async () => {
 		assert.equal(tool().attachable, false);
 	});
 });

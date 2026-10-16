@@ -8,7 +8,7 @@ import {
 	JournalOwnershipError,
 } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
-import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import {
 	RUN_EVENT_TYPES,
 	type RunJournal,
@@ -120,7 +120,7 @@ for (const method of ["takeoverExpired", "leaseState"] as const) {
 							if (failure instanceof RunNotFoundError) assert.equal(error, failure);
 							else {
 								assert.ok(error instanceof StorageUnavailableError);
-								assert.equal(error.path, "custom journal");
+								assert.equal(error.location, "custom journal");
 								assert.equal(error.cause, failure);
 							}
 							return true;
@@ -148,7 +148,7 @@ for (const storage of ["memory", "sqlite"] as const) {
 	test(`rejected boundary writes preserve a reopenable ${storage} journal`, async () => {
 		const directory = makeTempDirectory("boundary-rejection-");
 		const journal =
-			storage === "memory" ? new MemoryRunJournal() : new SqliteRunJournal(join(directory, "journal.sqlite"));
+			storage === "memory" ? new MemoryRunJournal() : await openSqlRunJournal(join(directory, "journal.sqlite"));
 		const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
 		try {
 			await backend.registerWorkflow({
@@ -311,7 +311,7 @@ test("async-only ownership inspection is read-only and expired takeover fences t
 	}
 });
 
-test("owned deletion rejects takeover between renewal and deletion without erasing the successor", () => {
+test("owned deletion rejects takeover between renewal and deletion without erasing the successor", async () => {
 	const result = spawnSyncCollect([
 		bunExecutable(),
 		"run",

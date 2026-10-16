@@ -15,7 +15,7 @@ function withoutParentStageId(run: RunSnapshot): Omit<RunSnapshot, "parentStageI
 }
 
 executorTest("fully cached repeated child replay reconciles each durable boundary", async () => {
-	const backend = new InMemoryDurableBackend();
+	const backend = await InMemoryDurableBackend.create();
 	let childExecutions = 0;
 	let completeExecutions = 0;
 	const child = workflow({

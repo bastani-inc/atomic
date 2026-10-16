@@ -1,9 +1,7 @@
-import assert from "node:assert/strict";
-import { synchronousJournal } from "../../packages/workflows/src/durable/journal/internal.js";
-import type { RunJournal } from "../../packages/workflows/src/durable/journal/types.js";
+import type { JournalEntry, RunJournal } from "../../packages/workflows/src/durable/journal/types.js";
 
-export function journalInternals(journal: RunJournal) {
-	const internal = synchronousJournal(journal);
-	assert.ok(internal);
-	return internal;
+export async function readJournalEntries(journal: RunJournal, runId: string): Promise<JournalEntry[]> {
+	const entries: JournalEntry[] = [];
+	for await (const entry of journal.read(runId)) entries.push(entry);
+	return entries;
 }

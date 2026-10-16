@@ -34,11 +34,11 @@ function stage(overrides: Partial<StageSnapshot>): StageSnapshot {
 }
 
 test("schema-backed output checkpoint merges final lifecycle metadata", async () => {
-	const backend = new InMemoryDurableBackend();
+	const backend = await InMemoryDurableBackend.create();
 	const workflowId = "wf-schema-meta";
 	const replayKey = "stage:structured-meta:1";
-	backend.registerWorkflow({ workflowId, name: "schema-meta", inputs: {}, createdAt: 1, status: "running" });
-	backend.recordCheckpoint({
+	await backend.registerWorkflow({ workflowId, name: "schema-meta", inputs: {}, createdAt: 1, status: "running" });
+	await backend.recordCheckpoint({
 		kind: "stage",
 		workflowId,
 		checkpointId: `stage:${replayKey}`,
@@ -69,7 +69,7 @@ test("schema-backed output checkpoint merges final lifecycle metadata", async ()
 });
 
 exTest("live ctx.task stage metadata converges on task durable replay key", async () => {
-	const backend = new InMemoryDurableBackend();
+	const backend = await InMemoryDurableBackend.create();
 	const def = workflow({
 		name: "task-key-convergence",
 		description: "",
@@ -114,7 +114,7 @@ exTest("live ctx.task stage metadata converges on task durable replay key", asyn
 });
 
 exTest("cached child replay hydrates workflowChild boundary metadata", async () => {
-	const backend = new InMemoryDurableBackend();
+	const backend = await InMemoryDurableBackend.create();
 	const child = workflow({
 		name: "boundary-child",
 		description: "",
@@ -169,7 +169,7 @@ exTest("cached child replay hydrates workflowChild boundary metadata", async () 
 });
 
 exTest("fresh-store cached child replay restores nested parallel hierarchy", async () => {
-	const backend = new InMemoryDurableBackend();
+	const backend = await InMemoryDurableBackend.create();
 	const child = workflow({
 		name: "parallel-child",
 		description: "",
@@ -272,7 +272,7 @@ exTest("fresh-store cached child replay restores nested parallel hierarchy", asy
 });
 
 exTest("mixed cached and live child resume remains inspectable after completion", async () => {
-	const backend = new InMemoryDurableBackend();
+	const backend = await InMemoryDurableBackend.create();
 	const child = workflow({
 		name: "partial-child",
 		description: "",
@@ -326,7 +326,7 @@ exTest("mixed cached and live child resume remains inspectable after completion"
 });
 
 exTest("mixed cached and live repeated child calls keep boundary replay keys in sync", async () => {
-	const backend = new InMemoryDurableBackend();
+	const backend = await InMemoryDurableBackend.create();
 	let childRuns = 0;
 	let interrupted = true;
 	const child = workflow({

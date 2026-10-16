@@ -40,9 +40,9 @@ function makeStage(overrides: Partial<StageSnapshot> = {}): StageSnapshot {
 describe("empty string stage outputs (issue #1498)", () => {
 	let backend: InMemoryDurableBackend;
 
-	beforeEach(() => {
-		backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+	beforeEach(async () => {
+		backend = await InMemoryDurableBackend.create();
+		await backend.registerWorkflow({
 			workflowId: WORKFLOW_ID,
 			name: "test",
 			inputs: {},
@@ -115,7 +115,7 @@ describe("empty string stage outputs (issue #1498)", () => {
 });
 
 describe("replayed durable stage graph lineage (issue #1498)", () => {
-	test("recordCachedStageIntoStore preserves parentIds from tracker", () => {
+	test("recordCachedStageIntoStore preserves parentIds from tracker", async () => {
 		const store = createStore();
 		store.recordRunStart({
 			id: WORKFLOW_ID,
@@ -150,7 +150,7 @@ describe("replayed durable stage graph lineage (issue #1498)", () => {
 		assert.equal(stageB.parentIds.length, 1);
 	});
 
-	test("replayed stages without parentIds default to empty array", () => {
+	test("replayed stages without parentIds default to empty array", async () => {
 		const store = createStore();
 		store.recordRunStart({
 			id: WORKFLOW_ID,
@@ -169,7 +169,7 @@ describe("replayed durable stage graph lineage (issue #1498)", () => {
 	});
 });
 
-test("parallel replay uses fail-fast scope parents instead of flattening fanout", () => {
+test("parallel replay uses fail-fast scope parents instead of flattening fanout", async () => {
 	const store = createStore();
 	store.recordRunStart({
 		id: WORKFLOW_ID,
@@ -229,7 +229,7 @@ test("parallel replay uses fail-fast scope parents instead of flattening fanout"
 function cpStageId(name: string): string {
 	return `checkpoint-only:${name}`;
 }
-test("cached replay hydrates persisted stage timing, result, session, and model + thinking metadata", () => {
+test("cached replay hydrates persisted stage timing, result, session, and model + thinking metadata", async () => {
 	const store = createStore();
 	store.recordRunStart({
 		id: WORKFLOW_ID,

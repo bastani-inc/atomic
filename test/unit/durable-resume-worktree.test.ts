@@ -50,8 +50,8 @@ describe("durable resume with reusable git worktrees", () => {
 	let cancellation: ReturnType<typeof createCancellationRegistry>;
 	let jobs: ReturnType<typeof createJobTracker>;
 
-	beforeEach(() => {
-		backend = new InMemoryDurableBackend();
+	beforeEach(async () => {
+		backend = await InMemoryDurableBackend.create();
 		setDurableBackend(backend);
 		store = createStore();
 		cancellation = createCancellationRegistry();
@@ -90,7 +90,7 @@ describe("durable resume with reusable git worktrees", () => {
 					return { observed_cwd };
 				},
 			}) as unknown as WorkflowDefinition;
-			backend.registerWorkflow({
+			await backend.registerWorkflow({
 				workflowId: testRunId("wf-worktree-resume"),
 				name: "worktree-resume-pipeline",
 				inputs: { git_worktree_dir: "../resume-reused-wt" },
@@ -143,7 +143,7 @@ describe("durable resume with reusable git worktrees", () => {
 					return { ok: true };
 				},
 			}) as unknown as WorkflowDefinition;
-			backend.registerWorkflow({
+			await backend.registerWorkflow({
 				workflowId: testRunId("wf-worktree-partial-fails"),
 				name: "worktree-partial-fails",
 				inputs: { git_worktree_dir: "../partial-wt" },

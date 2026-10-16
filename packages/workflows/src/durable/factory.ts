@@ -60,8 +60,8 @@ export async function initializeDurableBackend(options: DurableBackendOptions = 
 	if (existing !== undefined) {
 		backend = await existing.ready;
 	} else {
-		const journal = resolveRunJournal({ journal: selection });
-		const ready = JournalDurableBackend.open(journal, { ownsJournal })
+		const ready = resolveRunJournal({ journal: selection })
+			.then((journal) => JournalDurableBackend.open(journal, { ownsJournal }))
 			.then((opened) => {
 				if (ownsJournal) opened.closeOnProcessExit();
 				entry.close = () => opened.close();

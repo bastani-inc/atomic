@@ -445,6 +445,7 @@ function getAliases(): Record<string, string> {
 	);
 
 	_aliases = {
+		"@bastani/atomic/storage": path.resolve(__dirname, "../storage/index.js"),
 		"@bastani/atomic": piCodingAgentEntry,
 		"@earendil-works/pi-coding-agent": piCodingAgentEntry,
 		"@earendil-works/pi-agent-core": piAgentCoreEntry,

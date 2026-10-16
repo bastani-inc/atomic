@@ -1,4 +1,7 @@
+import { StorageSchemaVersionError } from "@bastani/atomic/storage";
 import type { WorkflowSerializableValue } from "../../shared/authoring-contract-stage.js";
+
+export { StorageUnavailableError } from "@bastani/atomic/storage";
 
 export const JOURNAL_SCHEMA_VERSION = 1;
 export type JournalSchemaVersion = typeof JOURNAL_SCHEMA_VERSION;
@@ -135,7 +138,7 @@ export interface RunJournal {
 	append(lease: Lease, event: RunEvent, options?: { key?: string; expectSeq?: number }): Promise<AppendOutcome>;
 	read(runId: string, fromSeq?: number): AsyncIterable<JournalEntry>;
 	readKey(runId: string, key: string): Promise<JournalEntry | undefined>;
-	deleteOwnedRun(lease: Lease): Promise<void>;
+	deleteOwnedRun(lease: Lease, expectSeq?: number): Promise<void>;
 	deleteRun(runId: string): Promise<void>;
 	close(): Promise<void>;
 }
@@ -236,15 +239,10 @@ export class JournalCasConflictError extends JournalError {
 	}
 }
 
-export class JournalSchemaVersionError extends JournalError {
-	readonly found: number | bigint | string | Uint8Array | null;
-	readonly supported: number;
-
-	constructor(found: JournalSchemaVersionError["found"], supported = JOURNAL_SCHEMA_VERSION) {
-		super(`Unsupported journal schema version ${String(found)}`);
+export class JournalSchemaVersionError extends StorageSchemaVersionError {
+	constructor(found: StorageSchemaVersionError["found"], supported = JOURNAL_SCHEMA_VERSION) {
+		super("journal", found, supported);
 		this.name = "JournalSchemaVersionError";
-		this.found = found;
-		this.supported = supported;
 	}
 }
 
@@ -255,17 +253,5 @@ export class RunNotFoundError extends JournalError {
 		super(`Run not found: ${runId}`);
 		this.name = "RunNotFoundError";
 		this.runId = runId;
-	}
-}
-
-export class StorageUnavailableError extends JournalError {
-	readonly path: string;
-	override readonly cause: Error;
-
-	constructor(path: string, cause: Error) {
-		super(`Journal storage unavailable: ${path}`, { cause });
-		this.name = "StorageUnavailableError";
-		this.path = path;
-		this.cause = cause;
 	}
 }

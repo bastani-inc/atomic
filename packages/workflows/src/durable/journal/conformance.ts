@@ -242,6 +242,26 @@ export function registerRunJournalConformance(
 		assert.deepEqual(await entries(journal), []);
 		assert.equal(await journal.readKey(header.runId, "one"), undefined);
 	});
+	check("owned deletion checks the expected sequence atomically before deleting", async (journal) => {
+		await journal.createRun(header);
+		const held = await lease(journal);
+		const appended = await journal.append(held, { type: "RunStarted", payload: [2, 1, 2] }, { key: "first" });
+		const beforeLease = await journal.leaseState(header.runId);
+		await assert.rejects(journal.deleteOwnedRun(held, 0), (error: Error) => {
+			assert.ok(error instanceof JournalCasConflictError);
+			assert.equal(error.runId, header.runId);
+			assert.equal(error.expectedSeq, 0);
+			assert.equal(error.actualSeq, 1);
+			return true;
+		});
+		assert.deepEqual(await journal.getRun(header.runId), header);
+		assert.deepEqual(await entries(journal), [appended.entry]);
+		assert.deepEqual(await journal.leaseState(header.runId), beforeLease);
+		await journal.deleteOwnedRun(held, 1);
+		assert.equal(await journal.getRun(header.runId), undefined);
+		assert.deepEqual(await entries(journal), []);
+		assert.equal(await journal.leaseState(header.runId), undefined);
+	});
 	check("owned deletion rejects a stale lease without changing the successor", async (journal) => {
 		await journal.createRun(header);
 		const first = await lease(journal);
@@ -449,7 +469,7 @@ export function registerRunJournalConformance(
 			await assert.rejects(operation(), (error: Error) => {
 				assert.ok(error instanceof StorageUnavailableError);
 				assert.ok(error.cause instanceof JournalClosedError);
-				assert.ok(error.path.length > 0);
+				assert.ok(error.location.length > 0);
 				return true;
 			});
 	});

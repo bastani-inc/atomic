@@ -67,7 +67,7 @@ async function lifecycleFixture(runStatus: RunStatus, stageStatus: StageStatus =
 		toolEvents: [],
 		...(stageStatus === "skipped" ? { skippedReason: "fail-fast" } : {}),
 	});
-	backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	await backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 	bindStoreDurableBackend(activeStore, backend);
 	const accepted = await activeStore.queueStageMessage(
 		pendingMessage(runId, "review-stage"),
@@ -83,7 +83,7 @@ async function renamedLifecycleFixture(runStatus: RunStatus, restoredStageStatus
 	const runId = testRunId(`pending-delivery-renamed-${runStatus}-${restoredStageStatus}`);
 	const group = `workflow:${runId}`;
 	const backend = new InMemoryDurableBackend();
-	backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	await backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 	setDurableBackend(backend);
 	const writerStore = createStore();
 	writerStore.recordRunStart({
@@ -179,7 +179,7 @@ describe("pending workflow stage delivery lifecycle", () => {
 
 		const backend = new InMemoryDurableBackend();
 		const runId = testRunId("pending-delivery-after-empty-startup");
-		backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		bindStoreDurableBackend(activeStore, backend);
 		activeStore.recordRunStart({
 			id: runId,
@@ -404,7 +404,7 @@ describe("pending workflow stage delivery lifecycle", () => {
 		const runId = testRunId("pending-delivery-canonical-rename");
 		const group = `workflow:${runId}`;
 		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		setDurableBackend(backend);
 		const writerStore = createStore();
 		writerStore.recordRunStart({
@@ -658,16 +658,19 @@ test("a crash after sender-visible failure notification reloads to exactly one n
 	const runId = testRunId("pending-delivery-notification-crash");
 	const group = `workflow:${runId}`;
 	let failNextMetadataWrite = false;
-	const writer = new JournalTestBackend();
+	const writer = await JournalTestBackend.create();
 	const persist = writer.persistPendingStageMessages.bind(writer);
 	writer.persistPendingStageMessages = async (...args) => {
 		if (failNextMetadataWrite) {
 			failNextMetadataWrite = false;
-			throw new StorageUnavailableError(writer.databasePath, new Error("process exit after notification"));
+			throw new StorageUnavailableError(
+				{ adapter: "node-sqlite", location: writer.databasePath },
+				new Error("process exit after notification"),
+			);
 		}
 		return persist(...args);
 	};
-	writer.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	await writer.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 	setDurableBackend(writer);
 	const activeStore = createStore();
 	activeStore.recordRunStart({

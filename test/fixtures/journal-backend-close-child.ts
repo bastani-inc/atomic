@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { readdirSync, readlinkSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
-import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 
 const path = resolve(process.argv[2]!);
-const backend = await JournalDurableBackend.open(new SqliteRunJournal(path));
+const backend = await JournalDurableBackend.open(await openSqlRunJournal(path));
 try {
-	backend.registerWorkflow({ workflowId: "closed-run", name: "close", inputs: {}, createdAt: 1, status: "running" });
+	await backend.registerWorkflow({ workflowId: "closed-run", name: "close", inputs: {}, createdAt: 1, status: "running" });
 	await backend.close();
 	if (process.platform === "linux") {
 		const retained = readdirSync("/proc/self/fd").flatMap((fd) => {

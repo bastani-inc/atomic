@@ -3,10 +3,11 @@ import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLOutputValue } from "node:sqlite";
 import { getAgentDir } from "@bastani/atomic";
 import { test, vi } from "vitest";
-import { JournalDatabase } from "../../packages/workflows/src/durable/journal/node-sqlite.js";
+import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import {
 	JOURNAL_READ_PAGE_SIZE,
-	SqliteRunJournal,
+	openSqlRunJournal,
+	type SqlRunJournal,
 	workflowJournalPath,
 } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import {
@@ -28,8 +29,9 @@ import {
 	RunNotFoundError,
 	StaleLeaseError,
 	StorageUnavailableError,
-	JOURNAL_TABLES as t,
+	JOURNAL_TABLES as tableNames,
 } from "../../packages/workflows/src/durable/journal/types.js";
+import { JournalTestDatabase } from "../helpers/journal-database.js";
 import {
 	bunExecutable,
 	makeTempDirectory,
@@ -38,12 +40,17 @@ import {
 	writeTextSync,
 } from "../helpers/runtime.js";
 
+const t = Object.fromEntries(Object.entries(tableNames).map(([key, name]) => [key, `wf_${name}`])) as Record<
+	keyof typeof tableNames,
+	string
+>;
+
 const header = { runId: "run", name: "workflow", cwd: " /raw/../cwd ", createdAt: 0, status: "running" };
 const illFormedExamples = ["\ud800", "\udfff", "a\ud800b"] as const;
 
-async function withJournal(body: (journal: SqliteRunJournal) => Promise<void>): Promise<void> {
+async function withJournal(body: (journal: SqlRunJournal) => Promise<void>): Promise<void> {
 	const directory = makeTempDirectory("journal-unit-");
-	const journal = new SqliteRunJournal(join(directory, "nested", "journal.sqlite"));
+	const journal = await openSqlRunJournal(join(directory, "nested", "journal.sqlite"));
 	try {
 		await body(journal);
 	} finally {
@@ -52,14 +59,14 @@ async function withJournal(body: (journal: SqliteRunJournal) => Promise<void>): 
 	}
 }
 
-async function acquire(journal: SqliteRunJournal, runId = header.runId, holderId = "holder"): Promise<Lease> {
+async function acquire(journal: SqlRunJournal, runId = header.runId, holderId = "holder"): Promise<Lease> {
 	const outcome = await journal.acquire(runId, holderId);
 	assert.equal(outcome.status, "acquired");
 	if (outcome.status !== "acquired") assert.fail("lease not acquired");
 	return outcome.lease;
 }
 
-async function read(journal: SqliteRunJournal, runId = header.runId, fromSeq?: number): Promise<JournalEntry[]> {
+async function read(journal: SqlRunJournal, runId = header.runId, fromSeq?: number): Promise<JournalEntry[]> {
 	const entries: JournalEntry[] = [];
 	for await (const entry of journal.read(runId, fromSeq)) entries.push(entry);
 	return entries;
@@ -71,7 +78,7 @@ test("append is durable when it resolves and readable through a fresh connection
 		const lease = await acquire(journal);
 		const event = { type: e.runStarted, payload: { text: "  raw\ntext  ", values: [2, 1, 2] } } as const;
 		const appended = await journal.append(lease, event);
-		const reader = new SqliteRunJournal(journal.path);
+		const reader = await openSqlRunJournal(journal.path);
 		try {
 			assert.deepEqual(await read(reader), [appended.entry]);
 			assert.deepEqual(appended.entry.event, event);
@@ -85,7 +92,7 @@ test("append is durable when it resolves and readable through a fresh connection
 
 test("createRun rejects a NUL runId with typed fields before writing", async () => {
 	await withJournal(async (journal) => {
-		const db = new JournalDatabase(journal.path);
+		const db = new JournalTestDatabase(journal.path);
 		try {
 			const before = snapshot(db);
 			await assert.rejects(
@@ -148,13 +155,13 @@ test.each([
 	async ({ versions }) => {
 		const directory = makeTempDirectory("journal-meta-corrupt-");
 		const path = join(directory, "journal.sqlite");
-		let opened: SqliteRunJournal | undefined;
+		let opened: SqlRunJournal | undefined;
 		try {
 			seedMeta(path, versions);
 			const before = rawSnapshot(path);
-			assert.throws(
-				() => {
-					opened = new SqliteRunJournal(path);
+			await assert.rejects(
+				async () => {
+					opened = await openSqlRunJournal(path);
 				},
 				(error: Error) => {
 					assert.equal(error.constructor, JournalMetaCorruptError);
@@ -183,13 +190,13 @@ test.each([
 	async ({ version, found }) => {
 		const directory = makeTempDirectory("journal-meta-single-");
 		const path = join(directory, "journal.sqlite");
-		let opened: SqliteRunJournal | undefined;
+		let opened: SqlRunJournal | undefined;
 		try {
 			seedMeta(path, [version]);
 			const before = rawSnapshot(path);
-			assert.throws(
-				() => {
-					opened = new SqliteRunJournal(path);
+			await assert.rejects(
+				async () => {
+					opened = await openSqlRunJournal(path);
 				},
 				(error: Error) => {
 					assert.equal(error.constructor, JournalSchemaVersionError);
@@ -210,11 +217,11 @@ test.each([
 test("empty meta initializes once and a single current version reopens without metadata changes", async () => {
 	const directory = makeTempDirectory("journal-meta-empty-");
 	const path = join(directory, "journal.sqlite");
-	const db = new JournalDatabase(path);
+	const db = new JournalTestDatabase(path);
 	try {
 		db.exec(`CREATE TABLE ${t.meta}(${c.schemaVersion} INTEGER NOT NULL)`);
 		for (let attempt = 0; attempt < 2; attempt++) {
-			const journal = new SqliteRunJournal(path);
+			const journal = await openSqlRunJournal(path);
 			await journal.close();
 			assert.deepEqual(
 				db.all<{ [c.schemaVersion]: number }>(`SELECT * FROM ${t.meta}`).map((row) => row[c.schemaVersion]),
@@ -233,12 +240,12 @@ test("corrupt meta rejects without changing existing runs, events or leases", as
 		const lease = await acquire(journal);
 		await journal.append(lease, { type: e.summaryRecorded, payload: "retained" });
 		await journal.close();
-		const db = new JournalDatabase(journal.path);
+		const db = new JournalTestDatabase(journal.path);
 		try {
 			db.run(`INSERT INTO ${t.meta} VALUES (?)`, JOURNAL_SCHEMA_VERSION);
 			const before = snapshot(db);
-			assert.throws(
-				() => new SqliteRunJournal(journal.path),
+			await assert.rejects(
+				async () => await openSqlRunJournal(journal.path),
 				(error: Error) => {
 					assert.equal(error.constructor, JournalMetaCorruptError);
 					assert.ok(error instanceof JournalMetaCorruptError);
@@ -256,7 +263,7 @@ test("corrupt meta rejects without changing existing runs, events or leases", as
 
 test("createRun rejects ill-formed runId before SQL", async () => {
 	await withJournal(async (journal) => {
-		const db = new JournalDatabase(journal.path);
+		const db = new JournalTestDatabase(journal.path);
 		try {
 			const before = snapshot(db);
 			await assert.rejects(
@@ -280,7 +287,7 @@ test("createRun rejects ill-formed runId before SQL", async () => {
 const invalidTextCases: readonly {
 	name: string;
 	field: JournalInvalidTextError["field"];
-	call: (journal: SqliteRunJournal, lease: Lease, text: string) => Promise<void>;
+	call: (journal: SqlRunJournal, lease: Lease, text: string) => Promise<void>;
 }[] = [
 	{
 		name: "createRun.runId",
@@ -443,7 +450,7 @@ function closedJournal(path: string) {
 		assert.equal(error.constructor, StorageUnavailableError);
 		assert.ok(error instanceof StorageUnavailableError);
 		assert.ok(error.cause instanceof JournalClosedError);
-		assert.equal(error.path, path);
+		assert.equal(error.location, path);
 		return true;
 	};
 }
@@ -458,7 +465,7 @@ for (const scenario of invalidTextCases) {
 				{ type: e.summaryRecorded, payload: "original\u0000JSON" },
 				{ key: "prefix" },
 			);
-			const db = new JournalDatabase(journal.path);
+			const db = new JournalTestDatabase(journal.path);
 			const invalid = (error: Error): boolean => {
 				assert.ok(error instanceof JournalInvalidTextError);
 				assert.ok(error instanceof JournalError);
@@ -495,7 +502,7 @@ for (const scenario of invalidTextCases) {
 				await journal.createRun({ ...header, runId: "prefix" });
 				const lease = await acquire(journal, "prefix", "prefix");
 				await journal.append(lease, { type: e.summaryRecorded, payload: "original" }, { key: "prefix" });
-				const db = new JournalDatabase(journal.path);
+				const db = new JournalTestDatabase(journal.path);
 				const invalid = (error: Error): boolean => {
 					assert.equal(error.constructor, JournalInvalidTextError);
 					assert.ok(error instanceof JournalInvalidTextError);
@@ -508,9 +515,9 @@ for (const scenario of invalidTextCases) {
 					const before = snapshot(db);
 					for (const state of ["open", "closed"]) {
 						if (state === "closed") await journal.close();
-						const calls = (
-							["transaction", "exec", "get", "all", "getCounters", "allCounters", "run"] as const
-						).map((method) => vi.spyOn(JournalDatabase.prototype, method));
+						const calls = (["transaction", "exec", "get", "all", "run"] as const).map((method) =>
+							vi.spyOn(Reflect.get(journal, "database") as SqliteDatabase, method),
+						);
 						try {
 							await assert.rejects(
 								() => scenario.call(journal, lease, text),
@@ -535,7 +542,7 @@ test.each(illFormedExamples)(
 	async (text) => {
 		await withJournal(async (journal) => {
 			await journal.createRun(header);
-			const db = new JournalDatabase(journal.path);
+			const db = new JournalTestDatabase(journal.path);
 			try {
 				const before = snapshot(db);
 				await assert.rejects(
@@ -604,7 +611,7 @@ test.each([
 		const appended = await journal.append(lease, { type: e.summaryRecorded, payload }, { key: "nested" });
 		assert.equal(scalar.entry.event.payload, JSON.parse(JSON.stringify(raw)));
 		assert.deepEqual(appended.entry.event.payload, expected);
-		const db = new JournalDatabase(journal.path);
+		const db = new JournalTestDatabase(journal.path);
 		try {
 			assert.deepEqual(
 				db
@@ -626,7 +633,7 @@ test.each([
 		}
 		for (const reopen of [false, true]) {
 			if (reopen) await journal.close();
-			const reader = new SqliteRunJournal(journal.path);
+			const reader = await openSqlRunJournal(journal.path);
 			try {
 				assert.deepEqual(await reader.listRuns(), [{ ...header, inputs: expected }]);
 				assert.deepEqual(await read(reader), [scalar.entry, appended.entry]);
@@ -674,7 +681,7 @@ test("JSON TEXT preserves native raw lexemes and invokes caller toJSON once per 
 		const appended = await journal.append(lease, { type: e.summaryRecorded, payload }, { key: "raw" });
 		assert.equal(calls, 2);
 		assert.deepEqual(appended.entry.event.payload, expected);
-		const db = new JournalDatabase(journal.path);
+		const db = new JournalTestDatabase(journal.path);
 		try {
 			const stored = '{"values":[1.2300e+02,-0,"\\u0061","\\uD800","💡","\\udfff"]}';
 			assert.equal(db.get<{ json: string }>(`SELECT ${c.payload} AS json FROM ${t.events}`)?.json, stored);
@@ -686,7 +693,7 @@ test("JSON TEXT preserves native raw lexemes and invokes caller toJSON once per 
 			db.close();
 		}
 		await journal.close();
-		const reader = new SqliteRunJournal(journal.path);
+		const reader = await openSqlRunJournal(journal.path);
 		try {
 			assert.deepEqual(await reader.listRuns(), [{ ...header, inputs: expected }]);
 			assert.deepEqual(await read(reader), [appended.entry]);
@@ -714,7 +721,7 @@ test.each(["\u0000", ...illFormedExamples, "a\udfffb"])(
 				assert.deepEqual(appended.entry.event, event);
 			}
 			await journal.close();
-			const reader = new SqliteRunJournal(journal.path);
+			const reader = await openSqlRunJournal(journal.path);
 			try {
 				assert.deepEqual(await reader.listRuns(), [{ ...header, inputs: { [text]: [text, "JSON\u0000"] } }]);
 				assert.deepEqual(
@@ -753,7 +760,7 @@ test("JSON NUL strings and property names survive fresh/reopened read, list, rea
 		assert.equal("key" in changed.entry, false);
 		for (const connection of ["fresh", "reopened"]) {
 			if (connection === "reopened") await journal.close();
-			const reader = new SqliteRunJournal(journal.path);
+			const reader = await openSqlRunJournal(journal.path);
 			try {
 				assert.deepEqual(await reader.listRuns({ cwd: raw.cwd }), [
 					{ ...raw, status: changedEvent.payload.status },
@@ -951,7 +958,7 @@ test("delete/recreate cycles durably fence every old handle without affecting ot
 		for (let cycle = 0; cycle < 3; cycle++) {
 			old.push(await acquire(journal));
 			await journal.deleteRun(header.runId);
-			const reopened = new SqliteRunJournal(journal.path);
+			const reopened = await openSqlRunJournal(journal.path);
 			try {
 				assert.equal(await reopened.createRun(header), "created");
 				const current = await acquire(reopened);
@@ -985,7 +992,8 @@ test("delete/recreate cycles durably fence every old handle without affecting ot
 test("schema v1 exports stable names and stores event payloads as JSON text with required SQLite pragmas", async () => {
 	assert.equal(JOURNAL_SCHEMA_VERSION, 1);
 	assert.equal(JOURNAL_PAYLOAD_ENCODING, "json-text");
-	assert.deepEqual(Object.values(t), ["meta", "runs", "events", "leases"]);
+	assert.deepEqual(Object.values(tableNames), ["meta", "runs", "events", "leases"]);
+	assert.deepEqual(Object.values(t), ["wf_meta", "wf_runs", "wf_events", "wf_leases"]);
 	assert.deepEqual(Object.values(c), [
 		"schema_version",
 		"run_id",
@@ -1031,7 +1039,7 @@ test("schema v1 exports stable names and stores event payloads as JSON text with
 			(await read(journal)).map((entry) => entry.event),
 			events,
 		);
-		const db = new JournalDatabase(journal.path);
+		const db = new JournalTestDatabase(journal.path);
 		try {
 			for (const [pragma, value] of [
 				["journal_mode", "wal"],
@@ -1064,12 +1072,12 @@ test("schema v1 exports stable names and stores event payloads as JSON text with
 test("unknown schema versions fail with typed fields and are not migrated", async () => {
 	await withJournal(async (journal) => {
 		await journal.close();
-		const db = new JournalDatabase(journal.path);
+		const db = new JournalTestDatabase(journal.path);
 		try {
 			for (const version of [0, 2, 999]) {
 				db.run(`UPDATE ${t.meta} SET ${c.schemaVersion} = ?`, version);
-				assert.throws(
-					() => new SqliteRunJournal(journal.path),
+				await assert.rejects(
+					async () => await openSqlRunJournal(journal.path),
 					(error: Error) => {
 						assert.ok(error instanceof JournalSchemaVersionError);
 						assert.equal(error.found, version);
@@ -1093,18 +1101,18 @@ test("storage failures and access after idempotent close retain typed path and c
 			() => journal.listRuns(),
 			(error: Error) => {
 				assert.ok(error instanceof StorageUnavailableError);
-				assert.equal(error.path, journal.path);
+				assert.equal(error.location, journal.path);
 				assert.ok(error.cause instanceof Error);
 				return true;
 			},
 		);
 		const invalid = join(dirname(journal.path), "file");
 		writeTextSync(invalid, "not a directory");
-		assert.throws(
-			() => new SqliteRunJournal(join(invalid, "journal.sqlite")),
+		await assert.rejects(
+			async () => await openSqlRunJournal(join(invalid, "journal.sqlite")),
 			(error: Error) => {
 				assert.ok(error instanceof StorageUnavailableError);
-				assert.equal(error.path, join(invalid, "journal.sqlite"));
+				assert.equal(error.location, join(invalid, "journal.sqlite"));
 				assert.ok(error.cause instanceof Error);
 				return true;
 			},
@@ -1116,7 +1124,7 @@ test("seq at MAX_SAFE_INTEGER rejects its successor before changing any rows", a
 	await withJournal(async (journal) => {
 		await journal.createRun(header);
 		const lease = await acquire(journal);
-		const db = new JournalDatabase(journal.path);
+		const db = new JournalTestDatabase(journal.path);
 		try {
 			db.run(
 				`INSERT INTO ${t.events} VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -1153,7 +1161,7 @@ test.each(["takeover", "reacquire"] as const)(
 		await withJournal(async (journal) => {
 			await journal.createRun(header);
 			await acquire(journal);
-			const db = new JournalDatabase(journal.path);
+			const db = new JournalTestDatabase(journal.path);
 			try {
 				db.run(
 					`UPDATE ${t.leases} SET ${c.epoch} = ?, ${c.holderId} = ?, ${c.renewedAt} = 0`,
@@ -1189,7 +1197,7 @@ test.each([-1, 1.5, 2 ** 53 + 2])(
 		await withJournal(async (journal) => {
 			await journal.createRun(header);
 			const lease = await acquire(journal);
-			const db = new JournalDatabase(journal.path);
+			const db = new JournalTestDatabase(journal.path);
 			try {
 				db.run(`UPDATE ${t.leases} SET ${c.epoch} = ?, ${c.renewedAt} = 0`, seed);
 				const before = snapshot(db);
@@ -1232,7 +1240,7 @@ test.each([
 	await withJournal(async (journal) => {
 		await journal.createRun(header);
 		const lease = await acquire(journal);
-		const db = new JournalDatabase(journal.path);
+		const db = new JournalTestDatabase(journal.path);
 		try {
 			db.run(
 				`INSERT INTO ${t.events} VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -1273,7 +1281,7 @@ test("safe integer boundary counters remain usable without an overflowing succes
 	await withJournal(async (journal) => {
 		await journal.createRun(header);
 		await acquire(journal);
-		const db = new JournalDatabase(journal.path);
+		const db = new JournalTestDatabase(journal.path);
 		try {
 			db.run(`UPDATE ${t.leases} SET ${c.epoch} = ?`, Number.MAX_SAFE_INTEGER - 1);
 			db.run(
@@ -1319,7 +1327,7 @@ test("zero database counters are valid for reads, replay and lease operations", 
 	await withJournal(async (journal) => {
 		await journal.createRun(header);
 		await acquire(journal);
-		const db = new JournalDatabase(journal.path);
+		const db = new JournalTestDatabase(journal.path);
 		try {
 			db.run(`UPDATE ${t.leases} SET ${c.epoch} = 0`);
 			db.run(
@@ -1349,7 +1357,7 @@ test("zero database counters are valid for reads, replay and lease operations", 
 	});
 });
 
-function snapshot(db: JournalDatabase): Record<string, string>[][] {
+function snapshot(db: JournalTestDatabase): Record<string, string>[][] {
 	return Object.values(t).map((table) => {
 		const columns = db.all<{ name: string }>(`PRAGMA table_info(${table})`);
 		return db.all<Record<string, string>>(
@@ -1358,7 +1366,7 @@ function snapshot(db: JournalDatabase): Record<string, string>[][] {
 	});
 }
 
-test("journal path defaults to the user workflow root and preserves an explicit environment override", () => {
+test("journal path defaults to the user workflow root and preserves an explicit environment override", async () => {
 	const previousPi = process.env.PI_WORKFLOW_JOURNAL_PATH;
 	const previous = process.env.ATOMIC_WORKFLOW_JOURNAL_PATH;
 	try {
@@ -1389,7 +1397,7 @@ test("read pages through the journal instead of loading the whole history first"
 		for (let index = 0; index < total; index++) {
 			await journal.append(lease, { type: e.summaryRecorded, payload: { index } });
 		}
-		const pageQueries = vi.spyOn(JournalDatabase.prototype, "allCounters");
+		const pageQueries = vi.spyOn(Reflect.get(journal, "database") as SqliteDatabase, "all");
 		try {
 			const all = await read(journal);
 			assert.deepEqual(
@@ -1423,11 +1431,11 @@ test.each(["node", "bun"])("empty journal override persists across reopen and a 
 		import { resolve, dirname, join } from "node:path";
 		import { createJiti } from "jiti";
 		const jiti = createJiti(resolve("journal-empty-override.mjs"), { fsCache: false });
-		const { SqliteRunJournal } = await jiti.import(resolve("packages/workflows/src/durable/journal/sqlite-run-journal.ts"));
+		const { SqlRunJournal, openSqlRunJournal } = await jiti.import(resolve("packages/workflows/src/durable/journal/sqlite-run-journal.ts"));
 		const header = { runId: "empty-override", name: "workflow", cwd: "", createdAt: 0, status: "running" };
 		const event = { type: "RunStarted", payload: { marker: "durable" } };
 		if (process.env.JOURNAL_PROBE_MODE === "write") {
-			const writer = new SqliteRunJournal();
+			const writer = await openSqlRunJournal();
 			try {
 				assert.equal(await writer.createRun(header), "created");
 				const acquired = await writer.acquire(header.runId, "holder");
@@ -1435,7 +1443,7 @@ test.each(["node", "bun"])("empty journal override persists across reopen and a 
 				assert.equal((await writer.append(acquired.lease, event)).status, "appended");
 			} finally { await writer.close(); }
 		}
-		const reader = new SqliteRunJournal();
+		const reader = await openSqlRunJournal();
 		try {
 			assert.deepEqual(await reader.listRuns(), [header]);
 			const entries = [];

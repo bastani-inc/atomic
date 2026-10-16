@@ -7,7 +7,7 @@ import { getDurableBackendProcessOwner } from "../../packages/workflows/src/dura
 import { initializeDurableBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
-import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+import { openSqlRunJournal, SqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import { availableStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import { run as engineRun } from "../../packages/workflows/src/engine/run.js";
@@ -64,7 +64,7 @@ function definition() {
 function defaultBackend(store: Store) {
 	const backend = availableStoreDurableBackend(store);
 	assert.ok(backend instanceof JournalDurableBackend);
-	assert.ok(backend.journal instanceof SqliteRunJournal);
+	assert.ok(backend.journal instanceof SqlRunJournal);
 	assert.equal(backend.journal.path, expectedPath);
 	assert.equal(backend.persistent, true);
 	return backend;
@@ -194,7 +194,7 @@ test("an unopenable default SQLite journal fails without selecting memory", asyn
 	makeDirectorySync(expectedPath, { recursive: true });
 	await assert.rejects(run(definition(), {}, { cwd: directory, store: createStore() }), (error: Error) => {
 		assert.ok(error instanceof StorageUnavailableError);
-		assert.equal(error.path, expectedPath);
+		assert.equal(error.location, expectedPath);
 		return true;
 	});
 	assert.equal(getDurableBackendProcessOwner().selectedBackends?.size, 0);

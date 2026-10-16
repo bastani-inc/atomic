@@ -50,7 +50,7 @@ test.each([
 	"public resume replays completed work from live, lifecycle-restored, or durable state and rejects unsafe frontiers (%s)",
 	async (mode) => {
 		let backend: DurableWorkflowBackend = mode.startsWith("journal")
-			? new JournalTestBackend()
+			? await JournalTestBackend.create()
 			: new InMemoryDurableBackend();
 		setDurableBackend(backend);
 		let completedCalls = 0;
@@ -140,10 +140,10 @@ test.each([
 			if (mode === "session-missing-checkpoint") {
 				const retained = backend;
 				backend = new InMemoryDurableBackend();
-				backend.registerWorkflow(retained.getWorkflow(runId)!);
+				await backend.registerWorkflow(retained.getWorkflow(runId)!);
 				for (const checkpoint of retained.listCheckpoints(runId)) {
 					if (checkpoint.kind === "tool" && checkpoint.name === "prepare") continue;
-					backend.recordCheckpoint(checkpoint);
+					await backend.recordCheckpoint(checkpoint);
 				}
 				setDurableBackend(backend);
 				runtime = createExtensionRuntime(runtimeOptions);
@@ -222,7 +222,7 @@ test.each([
 test.each(["live", "restored"] as const)(
 	"public repeated tool-frontier continuation preserves two interleaved stages and effects (%s)",
 	async (mode) => {
-		let backend = new JournalTestBackend();
+		let backend = await JournalTestBackend.create();
 		setDurableBackend(backend);
 		let modelCalls = 0;
 		let receiptCalls = 0;
@@ -348,7 +348,7 @@ test.each(["missing-parent", "cycle", "ambiguous", "completed", "missing", "unre
 			source = { ...source, toolNodes: [{ ...frontier, parentIds: [] }] };
 		}
 		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: source.id,
 			name: source.name,
 			inputs: {},
@@ -432,9 +432,9 @@ test("tool-only return-mode resume preserves repeated-call ordinals and never re
 });
 
 test("fresh journal rejects a cyclic persisted tool frontier without executing callbacks", async () => {
-	const writer = new JournalTestBackend();
+	const writer = await JournalTestBackend.create();
 	const workflowId = "78607844-1088-4e90-83ac-ce1b957689ed";
-	writer.registerWorkflow({
+	await writer.registerWorkflow({
 		workflowId,
 		name: "cyclic-tool",
 		inputs: {},
@@ -443,7 +443,7 @@ test("fresh journal rejects a cyclic persisted tool frontier without executing c
 		failedToolNodeId: "tool:bad",
 		resumable: true,
 	});
-	writer.recordCheckpoint({
+	await writer.recordCheckpoint({
 		kind: "tool",
 		workflowId,
 		checkpointId: "tool-failure:bad:1",
@@ -494,7 +494,7 @@ test.each(
 )(
 	"public durable resume requires the typed tool failure checkpoint for name=$name, typed=$typed",
 	async ({ name, typed }) => {
-		const original = new JournalTestBackend();
+		const original = await JournalTestBackend.create();
 		setDurableBackend(original);
 		let completedCalls = 0;
 		let targetCalls = 0;
@@ -527,11 +527,11 @@ test.each(
 		const target = source.toolNodes![1]!;
 		await workflowPauseAction({ action: "pause", runId: source.id, stageId: target.id });
 		await waitFor(() => source.endedAt !== undefined);
-		const writer = new JournalTestBackend();
-		writer.registerWorkflow(original.getWorkflow(source.id)!);
+		const writer = await JournalTestBackend.create();
+		await writer.registerWorkflow(original.getWorkflow(source.id)!);
 		for (const checkpoint of original.listCheckpoints(source.id)) {
 			if (!typed && checkpoint.kind === "tool" && checkpoint.throwingFailureError !== undefined) continue;
-			writer.recordCheckpoint(checkpoint);
+			await writer.recordCheckpoint(checkpoint);
 		}
 		const backend = await writer.reopen();
 		await backend.hydrateWorkflow(source.id);

@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
-import { JournalDatabase } from "../../packages/workflows/src/durable/journal/node-sqlite.js";
-import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+import {
+	openSqlRunJournal,
+	type SqlRunJournal,
+} from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { RUN_EVENT_TYPES as e, type JournalEntry } from "../../packages/workflows/src/durable/journal/types.js";
+import { JournalTestDatabase } from "../helpers/journal-database.js";
 import {
 	bunExecutable,
 	decodeStream,
@@ -44,7 +47,7 @@ async function remaining(reader: ReadableStreamDefaultReader<string>): Promise<s
 	return text;
 }
 
-async function entries(journal: SqliteRunJournal): Promise<JournalEntry[]> {
+async function entries(journal: SqlRunJournal): Promise<JournalEntry[]> {
 	const result: JournalEntry[] = [];
 	for await (const entry of journal.read(header.runId)) result.push(entry);
 	return result;
@@ -55,7 +58,7 @@ test(
 	async () => {
 		const directory = makeTempDirectory("journal-crash-");
 		const path = join(directory, "journal.sqlite");
-		const journal = new SqliteRunJournal(path);
+		const journal = await openSqlRunJournal(path);
 		let child: SpawnedProcess | undefined;
 		try {
 			await journal.createRun(header);
@@ -69,7 +72,7 @@ test(
 			child.kill("SIGKILL");
 			assert.notEqual(await child.exited, 0);
 			assert.equal(await remaining(output), "");
-			const reopened = new SqliteRunJournal(path);
+			const reopened = await openSqlRunJournal(path);
 			try {
 				assert.deepEqual(await entries(reopened), [committed.entry]);
 				assert.equal((await reopened.listRuns())[0]?.status, "running");
@@ -77,7 +80,7 @@ test(
 			} finally {
 				await reopened.close();
 			}
-			const db = new JournalDatabase(path);
+			const db = new JournalTestDatabase(path);
 			try {
 				assert.equal(db.get<{ integrity_check: string }>("PRAGMA integrity_check")?.integrity_check, "ok");
 			} finally {
@@ -98,7 +101,7 @@ test(
 	async () => {
 		const directory = makeTempDirectory("journal-contention-");
 		const path = join(directory, "journal.sqlite");
-		const journal = new SqliteRunJournal(path);
+		const journal = await openSqlRunJournal(path);
 		const children: SpawnedProcess[] = [];
 		try {
 			await journal.createRun(header);
@@ -155,7 +158,7 @@ test(
 			const result = spawnSyncCollect([bunExecutable(), fixture, "bun", path]);
 			assert.equal(result.exitCode, 0, result.stderr.toString());
 			assert.equal(result.stdout.toString(), "bun-open-append-read=ok\n");
-			const journal = new SqliteRunJournal(path);
+			const journal = await openSqlRunJournal(path);
 			try {
 				assert.deepEqual((await journal.readKey("bun", ""))?.event, { type: e.runStarted, payload: ["bun", 0] });
 			} finally {
@@ -173,7 +176,7 @@ test(
 	async () => {
 		const directory = makeTempDirectory("journal-nul-rejection-");
 		const path = join(directory, "journal.sqlite");
-		const journal = new SqliteRunJournal(path);
+		const journal = await openSqlRunJournal(path);
 		try {
 			const raw = {
 				...header,
@@ -204,7 +207,7 @@ test(
 				assert.equal(result.stdout.toString(), "nul-rejection-json=ok\n");
 				lease = { ...lease, holderId: nextHolder, epoch: lease.epoch + 1 };
 				assert.deepEqual(await journal.acquire(raw.runId, nextHolder), { status: "acquired", lease });
-				const reader = new SqliteRunJournal(path);
+				const reader = await openSqlRunJournal(path);
 				try {
 					assert.deepEqual(await reader.listRuns(), [raw]);
 					const entry = await reader.readKey(raw.runId, key);
@@ -249,7 +252,7 @@ test(
 				assert.equal(result.exitCode, 0, result.stderr.toString());
 				assert.equal(result.stdout.toString(), "raw-json-lossless=ok\n");
 			}
-			const journal = new SqliteRunJournal(path);
+			const journal = await openSqlRunJournal(path);
 			try {
 				assert.equal((await journal.listRuns()).length, 16);
 				for (let processIndex = 0; processIndex < 4; processIndex++) {

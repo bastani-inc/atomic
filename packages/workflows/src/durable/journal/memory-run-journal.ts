@@ -1,6 +1,5 @@
 import { JOURNAL_READ_PAGE_SIZE, registerSynchronousJournal } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
-import { journalCounter, storageBoundary } from "./node-sqlite.js";
 import {
 	type AppendOutcome,
 	JOURNAL_LEASE,
@@ -18,7 +17,7 @@ import {
 	StaleLeaseError,
 	StorageUnavailableError,
 } from "./types.js";
-import { serializeJson, validateText } from "./values.js";
+import { journalCounter, serializeJson, storageBoundary, validateText } from "./values.js";
 
 interface MemoryRun {
 	header: RunHeader;
@@ -45,7 +44,8 @@ export class MemoryRunJournal implements RunJournal {
 	}
 
 	private ensureOpen(): void {
-		if (this.closed) throw new StorageUnavailableError(":memory:", new JournalClosedError());
+		if (this.closed)
+			throw new StorageUnavailableError({ adapter: "memory", location: ":memory:" }, new JournalClosedError());
 	}
 
 	async createRun(header: RunHeader): Promise<"created" | "exists"> {
@@ -292,11 +292,14 @@ export class MemoryRunJournal implements RunJournal {
 		this.runs.delete(runId);
 	}
 
-	async deleteOwnedRun(lease: Lease): Promise<void> {
+	async deleteOwnedRun(lease: Lease, expectSeq?: number): Promise<void> {
 		this.ensureOpen();
 		validateText("runId", lease.runId);
 		validateText("holderId", lease.holderId);
 		this.checkLease(lease);
+		const actual = this.runs.get(lease.runId)?.entries.at(-1)?.seq ?? 0;
+		if (expectSeq !== undefined && expectSeq !== actual)
+			throw new JournalCasConflictError(lease.runId, expectSeq, actual);
 		this.deleteRunSync(lease.runId);
 	}
 

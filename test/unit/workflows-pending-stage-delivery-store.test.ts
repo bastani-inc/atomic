@@ -46,8 +46,8 @@ function pendingMessage(id: string, overrides: Partial<PendingStageMessageInput>
 describe("workflow stage messages store", () => {
 	test("terminal sticky status survives bounded metadata and cold archive hydration (#3467)", async () => {
 		const RUN_ID = "4ac72924-c452-4e5f-9e63-2435722109f7";
-		const backend = new JournalTestBackend();
-		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		const backend = await JournalTestBackend.create();
+		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		const store = createStore();
 		store.recordRunStart({
 			id: RUN_ID,
@@ -119,14 +119,14 @@ describe("workflow stage messages store", () => {
 		}
 	});
 
-	test("sticky status remains readable before durable backend initialization (#3467)", () => {
+	test("sticky status remains readable before durable backend initialization (#3467)", async () => {
 		setDurableBackend(undefined);
 		assert.deepEqual(stickyStageDeliveryStatuses([], RUN_ID), []);
 	});
 
 	test("bounds settled payloads and deduplicates old delivered IDs after journal reload (#3467)", async () => {
-		const backend = new JournalTestBackend();
-		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		const backend = await JournalTestBackend.create();
+		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		const store = createStore();
 		store.recordRunStart({
 			id: RUN_ID,
@@ -167,7 +167,10 @@ describe("workflow stage messages store", () => {
 
 	test("preserves settled retry identity across interrupted archival and metadata writes (#3467)", async () => {
 		let failedOperation: "archive" | "snapshot" | undefined;
-		const failure = new StorageUnavailableError("journal.sqlite", new Error("interrupted persistence"));
+		const failure = new StorageUnavailableError(
+			{ adapter: "node-sqlite", location: "journal.sqlite" },
+			new Error("interrupted persistence"),
+		);
 		class FailingBackend extends JournalTestBackend {
 			override async archivePendingStageMessage(runId: string, entry: PendingStageMessage): Promise<void> {
 				if (failedOperation === "archive") throw failure;
@@ -182,8 +185,8 @@ describe("workflow stage messages store", () => {
 				return super.persistPendingStageMessages(runId, messages, logicalRunId);
 			}
 		}
-		const backend = new FailingBackend();
-		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		const backend = await FailingBackend.create();
+		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		const store = createStore();
 		store.recordRunStart({
 			id: RUN_ID,
@@ -206,7 +209,7 @@ describe("workflow stage messages store", () => {
 				(error: Error) => error === failure,
 			);
 			assert.equal(store.pendingStageMessagesFor(RUN_ID, STAGE_KEY).length, 1);
-			const resumed = new JournalTestBackend(backend.databasePath);
+			const resumed = await JournalTestBackend.create(backend.databasePath);
 			await resumed.hydrateWorkflow(RUN_ID);
 			const restored = createStore();
 			restored.recordRunStart({
@@ -225,7 +228,7 @@ describe("workflow stage messages store", () => {
 		assert.equal((await backend.readSettledPendingStageMessage(RUN_ID, "0"))?.status, "delivered");
 	});
 
-	test("assigns durable FIFO admission order independently of sender timestamps", () => {
+	test("assigns durable FIFO admission order independently of sender timestamps", async () => {
 		const first = pendingMessage("1", {
 			message: { ...message("1", "scope changed"), timestamp: 200 },
 			queuedAt: "2026-08-26T00:00:02.000Z",
@@ -256,7 +259,7 @@ describe("workflow stage messages store", () => {
 		assert.deepEqual(queued[0]?.message.content.attachments, first.message.content.attachments);
 	});
 
-	test("deduplicates a logical message id as a no-op success", () => {
+	test("deduplicates a logical message id as a no-op success", async () => {
 		const first = queueStageMessage([], pendingMessage("same"), RUN_GROUP, RUN_GROUP);
 		assert.equal(first.ok, true);
 		if (!first.ok) return;
@@ -276,7 +279,7 @@ describe("workflow stage messages store", () => {
 
 	test("deduplicates a durable retry across volatile sender presence changes", async () => {
 		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		const original = pendingMessage("presence", {
 			senderReturnAddress: "host-session-planner",
 			from: {
@@ -372,8 +375,14 @@ describe("workflow stage messages store", () => {
 	});
 
 	test("deduplicates a reconstructed durable retry with a regenerated timestamp", async () => {
-		const writerBackend = new JournalTestBackend();
-		writerBackend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		const writerBackend = await JournalTestBackend.create();
+		await writerBackend.registerWorkflow({
+			workflowId: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		const writerStore = createStore();
 		writerStore.recordRunStart({
 			id: RUN_ID,
@@ -486,8 +495,14 @@ describe("workflow stage messages store", () => {
 	});
 
 	test("canonicalizes omitted message defaults across durable queued and delivered retries", async () => {
-		const writerBackend = new JournalTestBackend();
-		writerBackend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		const writerBackend = await JournalTestBackend.create();
+		await writerBackend.registerWorkflow({
+			workflowId: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		const writerStore = createStore();
 		writerStore.recordRunStart({
 			id: RUN_ID,
@@ -650,7 +665,7 @@ describe("workflow stage messages store", () => {
 		assert.deepEqual(deliveredBeforeRetry[0]?.message.source, omitted.message.source);
 	});
 
-	test("a delivered retry is a terminal no-op without an active queue position", () => {
+	test("a delivered retry is a terminal no-op without an active queue position", async () => {
 		const accepted = queueStageMessage([], pendingMessage("delivered"), RUN_GROUP, RUN_GROUP);
 		assert.equal(accepted.ok, true);
 		if (!accepted.ok) return;
@@ -670,7 +685,7 @@ describe("workflow stage messages store", () => {
 		assert.strictEqual(retry.messages, delivered);
 	});
 
-	test("rejects stable sender, canonical target, and exact payload message-id conflicts", () => {
+	test("rejects stable sender, canonical target, and exact payload message-id conflicts", async () => {
 		const original = pendingMessage("same", {
 			message: {
 				...message("same"),
@@ -747,7 +762,7 @@ describe("workflow stage messages store", () => {
 		assert.equal(first.messages.length, 1);
 	});
 
-	test("enforces the exact queued cap and delivered entries free capacity", () => {
+	test("enforces the exact queued cap and delivered entries free capacity", async () => {
 		let messages: readonly PendingStageMessage[] = [];
 		for (let index = 1; index <= PENDING_STAGE_MESSAGE_LIMIT; index++) {
 			const result = queueStageMessage(messages, pendingMessage(String(index)), RUN_GROUP, RUN_GROUP);
@@ -773,7 +788,7 @@ describe("workflow stage messages store", () => {
 		assert.equal(queuedPendingStageMessageCount(afterDelivery.messages, RUN_ID, STAGE_KEY), 50);
 	});
 
-	test("rejects a sending session outside the run group", () => {
+	test("rejects a sending session outside the run group", async () => {
 		const result = queueStageMessage([], pendingMessage("isolated"), "other", RUN_GROUP);
 		assert.deepEqual(result, {
 			ok: false,
@@ -785,7 +800,7 @@ describe("workflow stage messages store", () => {
 
 	test("shares identity, dedupe, positions, and the exact cap across a stage id and unique name", async () => {
 		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		const store = createStore();
 		store.recordRunStart({
 			id: RUN_ID,
@@ -866,7 +881,7 @@ describe("workflow stage messages store", () => {
 
 	test("live store methods publish only persisted message transitions", async () => {
 		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		const store = createStore();
 		store.recordRunStart({
 			id: RUN_ID,
@@ -905,13 +920,13 @@ describe("durable workflow stage messages metadata", () => {
 		};
 	}
 
-	function roundTrip(input: DurableWorkflowMetadata) {
-		const writer = new JournalTestBackend();
-		writer.registerWorkflow(input);
-		return new JournalTestBackend(writer.databasePath).getWorkflow(input.workflowId);
+	async function roundTrip(input: DurableWorkflowMetadata) {
+		const writer = await JournalTestBackend.create();
+		await writer.registerWorkflow(input);
+		return (await JournalTestBackend.create(writer.databasePath)).getWorkflow(input.workflowId);
 	}
 
-	test("encode and parse restore messages verbatim", () => {
+	test("encode and parse restore messages verbatim", async () => {
 		const accepted = queueStageMessage(
 			[],
 			pendingMessage("durable", { senderReturnAddress: "host-session-durable" }),
@@ -920,11 +935,11 @@ describe("durable workflow stage messages metadata", () => {
 		);
 		assert.equal(accepted.ok, true);
 		if (!accepted.ok) return;
-		const parsed = roundTrip(metadata(accepted.messages));
+		const parsed = await roundTrip(metadata(accepted.messages));
 		assert.deepEqual(parsed?.pendingStageMessages, accepted.messages);
 	});
 
-	test("metadata round-trip preserves all sender memberships", () => {
+	test("metadata round-trip preserves all sender memberships", async () => {
 		const senderGroups = ["planning", RUN_GROUP];
 		const accepted = queueStageMessage(
 			[],
@@ -936,29 +951,29 @@ describe("durable workflow stage messages metadata", () => {
 		);
 		assert.equal(accepted.ok, true);
 		if (!accepted.ok) return;
-		const parsed = roundTrip(metadata(accepted.messages));
+		const parsed = await roundTrip(metadata(accepted.messages));
 		assert.deepEqual(parsed?.pendingStageMessages?.[0]?.from.groups, senderGroups);
 	});
 
-	test("preserves an omitted sender return address", () => {
+	test("preserves an omitted sender return address", async () => {
 		const accepted = queueStageMessage([], pendingMessage("omitted"), RUN_GROUP, RUN_GROUP);
 		assert.equal(accepted.ok, true);
 		if (!accepted.ok) return;
-		const parsed = roundTrip(metadata(accepted.messages));
+		const parsed = await roundTrip(metadata(accepted.messages));
 		assert.equal(parsed?.pendingStageMessages?.[0]?.senderReturnAddress, undefined);
 	});
 
-	test("metadata without pending messages hydrates an empty collection", () => {
-		const parsed = roundTrip(metadata());
+	test("metadata without pending messages hydrates an empty collection", async () => {
+		const parsed = await roundTrip(metadata());
 		assert.deepEqual(parsed?.pendingStageMessages, []);
 	});
 
-	test("in-memory metadata preserves updates and defaults absent pending message collections", () => {
+	test("in-memory metadata preserves updates and defaults absent pending message collections", async () => {
 		const accepted = queueStageMessage([], pendingMessage("memory"), RUN_GROUP, RUN_GROUP);
 		assert.equal(accepted.ok, true);
 		if (!accepted.ok) return;
 		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: RUN_ID,
 			name: "flow",
 			inputs: {},
@@ -972,8 +987,8 @@ describe("durable workflow stage messages metadata", () => {
 	});
 
 	test("store lifecycle transitions survive journal reload", async () => {
-		const backend = new JournalTestBackend();
-		backend.registerWorkflow({
+		const backend = await JournalTestBackend.create();
+		await backend.registerWorkflow({
 			workflowId: RUN_ID,
 			name: "flow",
 			inputs: {},
@@ -993,7 +1008,7 @@ describe("durable workflow stage messages metadata", () => {
 
 		const queued = await store.queueStageMessage(pendingMessage("queued"), RUN_GROUP, RUN_GROUP, backend);
 		assert.equal(queued?.ok, true);
-		let reloaded = new JournalTestBackend(backend.databasePath);
+		let reloaded = await JournalTestBackend.create(backend.databasePath);
 		await reloaded.hydrateWorkflow(RUN_ID);
 		assert.deepEqual(
 			reloaded.getWorkflow(RUN_ID)?.pendingStageMessages?.map(({ id, status }) => ({ id, status })),
@@ -1004,7 +1019,7 @@ describe("durable workflow stage messages metadata", () => {
 			await store.markPendingStageMessageDelivered(RUN_ID, STAGE_KEY, "queued", "2026-08-27T12:00:00.000Z", backend),
 			true,
 		);
-		reloaded = new JournalTestBackend(backend.databasePath);
+		reloaded = await JournalTestBackend.create(backend.databasePath);
 		await reloaded.hydrateWorkflow(RUN_ID);
 		assert.deepEqual(
 			reloaded.getWorkflow(RUN_ID)?.pendingStageMessages?.map(({ id, status }) => ({ id, status })),
@@ -1017,7 +1032,7 @@ describe("durable workflow stage messages metadata", () => {
 			await store.markPendingStageMessageUndeliverable(RUN_ID, STAGE_KEY, "refused", "stage ended", backend),
 			true,
 		);
-		reloaded = new JournalTestBackend(backend.databasePath);
+		reloaded = await JournalTestBackend.create(backend.databasePath);
 		await reloaded.hydrateWorkflow(RUN_ID);
 		assert.deepEqual(
 			reloaded.getWorkflow(RUN_ID)?.pendingStageMessages?.map(({ id, status }) => ({ id, status })),
@@ -1029,8 +1044,8 @@ describe("durable workflow stage messages metadata", () => {
 	});
 
 	test("concurrent queue transitions retain FIFO in live and reloaded metadata", async () => {
-		const backend = new JournalTestBackend();
-		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		const backend = await JournalTestBackend.create();
+		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		const store = createStore();
 		store.recordRunStart({
 			id: RUN_ID,
@@ -1063,7 +1078,10 @@ describe("durable workflow stage messages metadata", () => {
 
 	test("journal rejection leaves the transition invisible and propagates the typed error", async () => {
 		let rejectWrites = false;
-		const failure = new StorageUnavailableError("journal.sqlite", new Error("write rejected"));
+		const failure = new StorageUnavailableError(
+			{ adapter: "node-sqlite", location: "journal.sqlite" },
+			new Error("write rejected"),
+		);
 		class FailingBackend extends JournalTestBackend {
 			override async persistPendingStageMessages(
 				runId: string,
@@ -1074,8 +1092,8 @@ describe("durable workflow stage messages metadata", () => {
 				return super.persistPendingStageMessages(runId, messages, logicalRunId);
 			}
 		}
-		const backend = new FailingBackend();
-		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		const backend = await FailingBackend.create();
+		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		const store = createStore();
 		store.recordRunStart({
 			id: RUN_ID,
@@ -1096,7 +1114,7 @@ describe("durable workflow stage messages metadata", () => {
 		);
 		assert.equal(notifications, 0);
 		assert.deepEqual(store.pendingStageMessagesFor(RUN_ID, STAGE_KEY), []);
-		const reloaded = new JournalTestBackend(backend.databasePath);
+		const reloaded = await JournalTestBackend.create(backend.databasePath);
 		await reloaded.hydrateWorkflow(RUN_ID);
 		assert.deepEqual(reloaded.getWorkflow(RUN_ID)?.pendingStageMessages, []);
 	});

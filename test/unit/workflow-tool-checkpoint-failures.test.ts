@@ -13,12 +13,16 @@ describe("tool checkpoint failures", () => {
 		class RejectAdditiveBackend extends JournalTestBackend {
 			rejectWrite = false;
 			override async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
-				if (this.rejectWrite) throw new StorageUnavailableError(this.databasePath, new Error("write rejected"));
+				if (this.rejectWrite)
+					throw new StorageUnavailableError(
+						{ adapter: "node-sqlite", location: this.databasePath },
+						new Error("write rejected"),
+					);
 				await super.recordCheckpointAsync(checkpoint);
 			}
 		}
-		const backend = new RejectAdditiveBackend();
-		backend.registerWorkflow({
+		const backend = await RejectAdditiveBackend.create();
+		await backend.registerWorkflow({
 			workflowId: "journal-best-effort",
 			name: "journal",
 			inputs: {},
@@ -49,7 +53,10 @@ describe("tool checkpoint failures", () => {
 		class RejectAuthoritativeBackend extends InMemoryDurableBackend {
 			override async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
 				if (checkpoint.kind === "tool")
-					throw new StorageUnavailableError("authoritative write rejected", new Error("fixture storage failure"));
+					throw new StorageUnavailableError(
+						{ adapter: "node-sqlite", location: "authoritative write rejected" },
+						new Error("fixture storage failure"),
+					);
 				await super.recordCheckpointAsync(checkpoint);
 			}
 		}

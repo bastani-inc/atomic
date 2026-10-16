@@ -5,7 +5,8 @@ import { runInNewContext } from "node:vm";
 import { afterEach, test } from "vitest";
 import { registerRunJournalConformance } from "../../packages/workflows/src/durable/journal/conformance.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
-import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+import { StaleLeaseError } from "../../packages/workflows/src/durable/journal/types.js";
 import { observeJournalRead } from "../helpers/journal-read-observation.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -13,9 +14,9 @@ registerRunJournalConformance(test, "memory", () => new MemoryRunJournal(), obse
 registerRunJournalConformance(
 	test,
 	"sqlite",
-	() => {
+	async () => {
 		const directory = makeTempDirectory("journal-conformance-");
-		const journal = new SqliteRunJournal(join(directory, "journal.sqlite"));
+		const journal = await openSqlRunJournal(join(directory, "journal.sqlite"));
 		const close = journal.close.bind(journal);
 		journal.close = async () => {
 			await close();
@@ -37,14 +38,60 @@ afterEach(() => {
 registerRunJournalConformance(
 	test,
 	"caller-owned sqlite",
-	() => {
+	async () => {
 		const directory = makeTempDirectory("borrowed-journal-conformance-");
 		const database = new DatabaseSync(join(directory, "journal.sqlite"));
 		borrowed.push({ database, directory });
-		return new SqliteRunJournal(database);
+		return await openSqlRunJournal(database);
 	},
 	observeJournalRead,
 );
+
+for (const source of ["node", "caller-owned"] as const) {
+	test(`${source} reopens headers, keyed events, live leases and deletion tombstones`, async () => {
+		const directory = makeTempDirectory("journal-reopen-");
+		const path = join(directory, "journal.sqlite");
+		const connection = source === "caller-owned" ? new DatabaseSync(path) : undefined;
+		let journal = await openSqlRunJournal(connection ?? path);
+		try {
+			const header = { runId: "run", name: "name", cwd: " /raw/../cwd ", createdAt: 0, status: "running" };
+			await journal.createRun(header);
+			const acquired = await journal.acquire(header.runId, "first");
+			assert.equal(acquired.status, "acquired");
+			if (acquired.status !== "acquired") assert.fail("lease not acquired");
+			const appended = await journal.append(
+				acquired.lease,
+				{ type: "StatusChanged", payload: { status: "paused", values: [2, 1, 2] } },
+				{ key: "", expectSeq: 0 },
+			);
+			const state = await journal.leaseState(header.runId);
+			await journal.close();
+			journal = await openSqlRunJournal(connection ?? path);
+			assert.deepEqual(await journal.getRun(header.runId), { ...header, status: "paused" });
+			assert.deepEqual(await journal.leaseState(header.runId), state);
+			assert.deepEqual(
+				await journal.append(acquired.lease, { type: "RunFinished", payload: null }, { key: "", expectSeq: 0 }),
+				{ status: "exists", entry: appended.entry },
+			);
+			assert.deepEqual(await journal.readKey(header.runId, ""), appended.entry);
+			await journal.deleteOwnedRun(acquired.lease, 1);
+			await journal.close();
+			journal = await openSqlRunJournal(connection ?? path);
+			assert.equal(await journal.getRun(header.runId), undefined);
+			assert.equal(await journal.readKey(header.runId, ""), undefined);
+			await journal.createRun(header);
+			const recreated = await journal.acquire(header.runId, "first");
+			assert.equal(recreated.status, "acquired");
+			if (recreated.status !== "acquired") assert.fail("lease not acquired");
+			assert.equal(recreated.lease.epoch, acquired.lease.epoch + 1);
+			await assert.rejects(journal.deleteOwnedRun(acquired.lease), StaleLeaseError);
+		} finally {
+			await journal.close();
+			connection?.close();
+			removeTempDirectory(directory);
+		}
+	});
+}
 
 for (const method of ["getRun", "takeoverExpired", "leaseState"] as const) {
 	test(`conformance accepts VM-native promises from ${method} individually`, async () => {

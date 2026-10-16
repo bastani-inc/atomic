@@ -39,8 +39,8 @@ function makeBackend(): InMemoryDurableBackend {
 	return backend;
 }
 
-function recordProgressCheckpoint(backend: DurableWorkflowBackend, workflowId = RUN_ID): void {
-	backend.recordCheckpoint({
+function recordProgressCheckpoint(backend: DurableWorkflowBackend, workflowId = RUN_ID): void | Promise<void> {
+	return backend.recordCheckpoint({
 		kind: "stage",
 		workflowId,
 		checkpointId: "stage-session:stage:work:1:seed",
@@ -54,12 +54,12 @@ function recordProgressCheckpoint(backend: DurableWorkflowBackend, workflowId = 
 }
 
 describe("run timer math with inherited elapsed", () => {
-	test("elapsedRunMs adds accumulated elapsed from prior sessions", () => {
+	test("elapsedRunMs adds accumulated elapsed from prior sessions", async () => {
 		const resumed = makeRun({ startedAt: 1000, accumulatedDurationMs: 500 });
 		assert.equal(elapsedRunMs(resumed, 1600), 1100);
 	});
 
-	test("accumulated elapsed composes with pause accounting without double counting", () => {
+	test("accumulated elapsed composes with pause accounting without double counting", async () => {
 		const resumed = makeRun({
 			startedAt: 1000,
 			accumulatedDurationMs: 500,
@@ -70,14 +70,14 @@ describe("run timer math with inherited elapsed", () => {
 		assert.equal(elapsedRunMs(resumed, 2000), 1100);
 	});
 
-	test("terminal durationMs wins over accumulated elapsed", () => {
+	test("terminal durationMs wins over accumulated elapsed", async () => {
 		const ended = makeRun({ startedAt: 1000, durationMs: 42, accumulatedDurationMs: 500 });
 		assert.equal(elapsedRunMs(ended, 9999), 42);
 	});
 });
 
 describe("durable run-timing checkpoints", () => {
-	test("records run elapsed only once the workflow has durable progress", () => {
+	test("records run elapsed only once the workflow has durable progress", async () => {
 		const backend = makeBackend();
 		const snapshot = makeRun({ startedAt: 0 });
 		assert.equal(recordRunTimingCheckpoint(backend, snapshot, { now: 10_000 }), false);
@@ -88,7 +88,7 @@ describe("durable run-timing checkpoints", () => {
 		assert.equal(priorRunElapsedMs(backend, RUN_ID), 10_000);
 	});
 
-	test("debounces inside a 30s bucket and refreshes across buckets", () => {
+	test("debounces inside a 30s bucket and refreshes across buckets", async () => {
 		const backend = makeBackend();
 		recordProgressCheckpoint(backend);
 		const snapshot = makeRun({ startedAt: 0 });
@@ -99,7 +99,7 @@ describe("durable run-timing checkpoints", () => {
 		assert.equal(priorRunElapsedMs(backend, RUN_ID), 40_000);
 	});
 
-	test("never regresses the recorded elapsed", () => {
+	test("never regresses the recorded elapsed", async () => {
 		const backend = makeBackend();
 		recordProgressCheckpoint(backend);
 		assert.equal(recordRunTimingCheckpoint(backend, makeRun({ startedAt: 0 }), { now: 40_000 }), true);
@@ -109,15 +109,21 @@ describe("durable run-timing checkpoints", () => {
 	});
 
 	test("run timing survives journal reopen", async () => {
-		const backend = new JournalTestBackend();
-		backend.registerWorkflow({ workflowId: RUN_ID, name: "timing", inputs: {}, createdAt: 1, status: "running" });
-		recordProgressCheckpoint(backend);
-		assert.equal(recordRunTimingCheckpoint(backend, makeRun({ startedAt: 0 }), { now: 90_000 }), true);
+		const backend = await JournalTestBackend.create();
+		await backend.registerWorkflow({
+			workflowId: RUN_ID,
+			name: "timing",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
+		await recordProgressCheckpoint(backend);
+		assert.equal(await recordRunTimingCheckpoint(backend, makeRun({ startedAt: 0 }), { now: 90_000 }), true);
 		const rehydrated = await backend.reopen();
 		assert.equal(priorRunElapsedMs(rehydrated, RUN_ID), 90_000);
 	});
 
-	test("inheritedRunElapsedMs prefers the live continuation source snapshot", () => {
+	test("inheritedRunElapsedMs prefers the live continuation source snapshot", async () => {
 		const backend = makeBackend();
 		const source = makeRun({ startedAt: 1000, endedAt: 2000, durationMs: 1234, status: "failed" });
 		assert.equal(inheritedRunElapsedMs({ backend, runId: RUN_ID, continuationSource: source }), 1234);
@@ -175,9 +181,9 @@ describe("resumed runs inherit elapsed time", () => {
 	test("durable resume seeds run total and mid-running stage timers", async () => {
 		const runId = "wf-durable-resume-timing";
 		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({ workflowId: runId, name: "timing", inputs: {}, createdAt: 1, status: "paused" });
+		await backend.registerWorkflow({ workflowId: runId, name: "timing", inputs: {}, createdAt: 1, status: "paused" });
 		// Mid-running stage session persisted by the prior session (700ms elapsed).
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: runId,
 			checkpointId: "stage-session:stage:work:1:prior",
@@ -189,7 +195,7 @@ describe("resumed runs inherit elapsed time", () => {
 			completedAt: 5,
 		});
 		// Total run elapsed persisted at quit time (90s).
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "tool",
 			workflowId: runId,
 			checkpointId: "run-timing:90000",
@@ -278,8 +284,14 @@ describe("run elapsed persistence at pause/failure boundaries", () => {
 	test("quitRun persists the exact accumulated run elapsed durably", async () => {
 		const backend = getDurableBackend();
 		const runId = "wf-quit-timing";
-		backend.registerWorkflow({ workflowId: runId, name: "timing", inputs: {}, createdAt: 1, status: "running" });
-		recordProgressCheckpoint(backend as InMemoryDurableBackend, runId);
+		await backend.registerWorkflow({
+			workflowId: runId,
+			name: "timing",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
+		await recordProgressCheckpoint(backend as InMemoryDurableBackend, runId);
 
 		const store = createStore();
 		const startedAt = Date.now() - 60_000;
@@ -317,7 +329,7 @@ describe("run elapsed persistence at pause/failure boundaries", () => {
 });
 
 describe("run.start persistence round-trip", () => {
-	test("restores inherited elapsed onto the rehydrated run snapshot", () => {
+	test("restores inherited elapsed onto the rehydrated run snapshot", async () => {
 		const entries: SessionEntry[] = [];
 		const api = {
 			appendEntry: (type: string, payload: Record<string, unknown>): string => {

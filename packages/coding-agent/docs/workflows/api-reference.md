@@ -1373,7 +1373,27 @@ type JournalOption = { path: string } | { database: DatabaseSync } | { memory: t
 - `{ path }` opens that SQLite file.
 - `{ database }` uses a caller-owned `node:sqlite` connection. Atomic initializes the journal schema on it but does not close the connection.
 - `{ memory: true }` explicitly selects `MemoryRunJournal`. Records last only for the process and cannot recover runs after exit.
-- A `RunJournal` instance is used as supplied. `SqliteRunJournal`, `MemoryRunJournal`, journal error classes, and `registerRunJournalConformance` are exported from `@bastani/atomic/workflows`.
+- A `RunJournal` instance is used as supplied. `SqlRunJournal`, `openSqlRunJournal`, `MemoryRunJournal`, journal error classes, and `registerRunJournalConformance` are exported from `@bastani/atomic/workflows`.
+
+Use `await openSqlRunJournal(path)` to open a file directly, or omit `path` for the default journal. It also accepts a caller-owned `DatabaseSync`. `await resolveRunJournal(options)` applies the selection rules below.
+
+To attach your own SQLite-compatible driver, implement the [async SQLite storage API](/storage) and pass its facade to `SqlRunJournal.open`:
+
+```ts
+import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
+import { SqlRunJournal, run } from "@bastani/atomic/workflows";
+
+const database = await openNodeSqliteDatabase("./shared.sqlite");
+const journal = await SqlRunJournal.open(database, { prefix: "project_" });
+try {
+	await run(helloWorld, { name: "Atomic" }, { journal });
+} finally {
+	await journal.close();
+	await database.close();
+}
+```
+
+`SqlRunJournal.open` leaves ownership of the facade with you. Journal tables use `wf_` names, optionally preceded by your prefix; session tables use a separate namespace in the same database. A new prefix selects an empty journal, not a migration. Bare journal table names from earlier unreleased builds are not read. SQL event and lease timestamps, including expiry checks, use the database clock. Journal storage failures expose `StorageUnavailableError.adapter`, `.location`, and `.cause`; use `.location` rather than `.path`.
 
 Custom journals implement this full async interface. The named types are exported from `@bastani/atomic/workflows`:
 
@@ -1391,7 +1411,7 @@ interface RunJournal {
 	append(lease: Lease, event: RunEvent, options?: { key?: string; expectSeq?: number }): Promise<AppendOutcome>;
 	read(runId: string, fromSeq?: number): AsyncIterable<JournalEntry>;
 	readKey(runId: string, key: string): Promise<JournalEntry | undefined>;
-	deleteOwnedRun(lease: Lease): Promise<void>;
+	deleteOwnedRun(lease: Lease, expectSeq?: number): Promise<void>;
 	deleteRun(runId: string): Promise<void>;
 	close(): Promise<void>;
 }
@@ -1401,7 +1421,7 @@ interface RunJournal {
 
 `append` checks lease fencing first, then the idempotency key before `expectSeq`. A committed keyed retry returns `{ status: "exists", entry }` with the original entry even when the retry's sequence expectation is stale. A new key with a stale expectation rejects with `JournalCasConflictError` without writing.
 
-`deleteOwnedRun` atomically deletes a run only while the lease's `runId`, `holderId`, and `epoch` still match; otherwise it rejects with `StaleLeaseError` and preserves the run and its events. Deletion keeps the last epoch so an old lease cannot delete or write a recreated run. `deleteRun` is an unconditional administrative operation. Inputs and returned records must be detached. `close()` is idempotent, and every later operation rejects.
+`deleteOwnedRun` atomically deletes a run only while the lease's `runId`, `holderId`, and `epoch` still match; otherwise it rejects with `StaleLeaseError` and preserves the run and its events. An optional `expectSeq` must equal the latest sequence or the operation rejects with `JournalCasConflictError` without deleting anything. Deletion keeps the last epoch so an old lease cannot delete or write a recreated run. `deleteRun` is an unconditional administrative operation. Inputs and returned records must be detached. `close()` is idempotent, and every later operation rejects.
 
 Use `registerRunJournalConformance(runner, name, open, observeRead)` to check a fresh journal per case. Supply a read observer that reports actual page sizes and entries loaded or copied, with a `restore()` method, so the suite can verify lazy reads without consuming the whole history. Synchronous backend fast paths are internal and are not part of the custom-journal contract.
 

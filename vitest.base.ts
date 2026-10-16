@@ -50,6 +50,10 @@ const workspaceSourceAliases: readonly Alias[] =
 /** Every alias each vitest project shares. */
 export const sharedAliases: readonly Alias[] = [
 	{ find: /^@bastani\/atomic$/, replacement: atomicSrcIndex },
+	{
+		find: /^@bastani\/atomic\/storage$/,
+		replacement: fileURLToPath(new URL("./packages/coding-agent/src/core/storage/index.ts", import.meta.url)),
+	},
 	...workspaceSourceAliases,
 ];
 

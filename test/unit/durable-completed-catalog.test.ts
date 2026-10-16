@@ -43,8 +43,8 @@ function writeSessionTranscript(path: string, id: string): void {
 	);
 }
 
-function registerCompleted(backend: InMemoryDurableBackend, id: string): void {
-	backend.registerWorkflow({
+async function registerCompleted(backend: InMemoryDurableBackend, id: string): Promise<void> {
+	await backend.registerWorkflow({
 		workflowId: id,
 		name: "completed-flow",
 		inputs: { topic: "done" },
@@ -55,9 +55,9 @@ function registerCompleted(backend: InMemoryDurableBackend, id: string): void {
 }
 
 describe("completed durable catalog", () => {
-	test("keeps completed listing distinct from resumability predicates", () => {
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+	test("keeps completed listing distinct from resumability predicates", async () => {
+		const backend = await InMemoryDurableBackend.create();
+		await backend.registerWorkflow({
 			workflowId: testRunId("paused"),
 			name: "paused-flow",
 			inputs: {},
@@ -65,8 +65,8 @@ describe("completed durable catalog", () => {
 			status: "paused",
 			completedCheckpoints: 1,
 		});
-		registerCompleted(backend, testRunId("completed"));
-		backend.recordCheckpoint({
+		await registerCompleted(backend, testRunId("completed"));
+		await backend.recordCheckpoint({
 			topology: { version: 1, nodeId: `tool:${"hash"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: testRunId("completed"),
@@ -86,7 +86,7 @@ describe("completed durable catalog", () => {
 			[testRunId("completed")],
 		);
 	});
-	test("formats full workflow ids in resume target lists", () => {
+	test("formats full workflow ids in resume target lists", async () => {
 		const workflowId = "bb22cc33-44dd-55ee-66ff-778899001122";
 		const rendered = formatResumableWorkflowList([
 			{
@@ -102,12 +102,12 @@ describe("completed durable catalog", () => {
 		assert.ok(rendered.includes(workflowId));
 	});
 
-	test("keeps completed graphs inspectable while stripping stale retained chat", () => {
-		const backend = new InMemoryDurableBackend();
+	test("keeps completed graphs inspectable while stripping stale retained chat", async () => {
+		const backend = await InMemoryDurableBackend.create();
 		const transcript = join(tempDir, "stage.jsonl");
 		writeSessionTranscript(transcript, "valid-session");
-		registerCompleted(backend, testRunId("valid-completed"));
-		backend.recordCheckpoint({
+		await registerCompleted(backend, testRunId("valid-completed"));
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("valid-completed"),
 			checkpointId: "stage:1",
@@ -118,8 +118,8 @@ describe("completed durable catalog", () => {
 			model: "provider/model",
 			completedAt: 20,
 		});
-		registerCompleted(backend, testRunId("stale-completed"));
-		backend.recordCheckpoint({
+		await registerCompleted(backend, testRunId("stale-completed"));
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("stale-completed"),
 			checkpointId: "stage:1",
@@ -149,8 +149,8 @@ describe("completed durable catalog", () => {
 		assert.equal(resolveCompletedWorkflow(testRunId("stale-completed"), backend).kind, "found");
 	});
 
-	test("keeps completed graphs open without retained chat and opens tool-only runs read-only", () => {
-		const backend = new InMemoryDurableBackend();
+	test("keeps completed graphs open without retained chat and opens tool-only runs read-only", async () => {
+		const backend = await InMemoryDurableBackend.create();
 		const cases = [
 			{ id: testRunId("no-session"), sessionFile: undefined },
 			{ id: testRunId("empty-session"), sessionFile: join(tempDir, "empty.jsonl") },
@@ -171,8 +171,8 @@ describe("completed durable catalog", () => {
 			].join("\n"),
 		);
 		for (const item of cases) {
-			registerCompleted(backend, item.id);
-			backend.recordCheckpoint({
+			await registerCompleted(backend, item.id);
+			await backend.recordCheckpoint({
 				kind: "stage",
 				workflowId: item.id,
 				checkpointId: "stage:1",
@@ -182,8 +182,8 @@ describe("completed durable catalog", () => {
 				completedAt: 20,
 			});
 		}
-		registerCompleted(backend, testRunId("tool-only"));
-		backend.recordCheckpoint({
+		await registerCompleted(backend, testRunId("tool-only"));
+		await backend.recordCheckpoint({
 			topology: { version: 1, nodeId: `tool:${"hash"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: testRunId("tool-only"),
@@ -212,12 +212,12 @@ describe("completed durable catalog", () => {
 		}
 	});
 
-	test("validates the retained transcript after merging repeated stage checkpoints", () => {
-		const backend = new InMemoryDurableBackend();
+	test("validates the retained transcript after merging repeated stage checkpoints", async () => {
+		const backend = await InMemoryDurableBackend.create();
 		const validTranscript = join(tempDir, "retained.jsonl");
 		writeSessionTranscript(validTranscript, "retained-session");
-		registerCompleted(backend, testRunId("merged-stage"));
-		backend.recordCheckpoint({
+		await registerCompleted(backend, testRunId("merged-stage"));
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("merged-stage"),
 			checkpointId: "stage:1",
@@ -227,7 +227,7 @@ describe("completed durable catalog", () => {
 			completedAt: 20,
 			topology: { version: 1, stageId: "final-source", parentIds: [], sourceOrder: 0, status: "completed" },
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("merged-stage"),
 			checkpointId: "stage:2",
@@ -249,12 +249,12 @@ describe("completed durable catalog", () => {
 		);
 	});
 
-	test("keeps a completed workflow when at least one stage has a usable transcript", () => {
-		const backend = new InMemoryDurableBackend();
+	test("keeps a completed workflow when at least one stage has a usable transcript", async () => {
+		const backend = await InMemoryDurableBackend.create();
 		const validTranscript = join(tempDir, "usable.jsonl");
 		writeSessionTranscript(validTranscript, "usable-session");
-		registerCompleted(backend, testRunId("partially-retained"));
-		backend.recordCheckpoint({
+		await registerCompleted(backend, testRunId("partially-retained"));
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("partially-retained"),
 			checkpointId: "stage:1",
@@ -263,7 +263,7 @@ describe("completed durable catalog", () => {
 			sessionFile: validTranscript,
 			completedAt: 20,
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("partially-retained"),
 			checkpointId: "stage:2",
@@ -282,8 +282,8 @@ describe("completed durable catalog", () => {
 		assert.equal(snapshot?.stages[1]?.sessionFile, undefined);
 	});
 
-	test("strips partially malformed and context-empty transcripts without hiding the graph", () => {
-		const backend = new InMemoryDurableBackend();
+	test("strips partially malformed and context-empty transcripts without hiding the graph", async () => {
+		const backend = await InMemoryDurableBackend.create();
 		const malformed = join(tempDir, "partially-malformed.jsonl");
 		writeFileSync(
 			malformed,
@@ -305,8 +305,8 @@ describe("completed durable catalog", () => {
 			{ id: testRunId("empty-block"), content: [{}] },
 			{ id: testRunId("blank-text-block"), content: [{ type: "text", text: "" }] },
 		] as const;
-		registerCompleted(backend, testRunId("partially-malformed"));
-		backend.recordCheckpoint({
+		await registerCompleted(backend, testRunId("partially-malformed"));
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("partially-malformed"),
 			checkpointId: "stage:1",
@@ -329,8 +329,8 @@ describe("completed durable catalog", () => {
 					}),
 				].join("\n"),
 			);
-			registerCompleted(backend, item.id);
-			backend.recordCheckpoint({
+			await registerCompleted(backend, item.id);
+			await backend.recordCheckpoint({
 				kind: "stage",
 				workflowId: item.id,
 				checkpointId: "stage:1",
@@ -350,8 +350,8 @@ describe("completed durable catalog", () => {
 			assert.equal(completedWorkflowSnapshot(backend, entry)?.stages[0]?.sessionFile, undefined);
 	});
 
-	test("accepts a retained transcript with a meaningful structured content block", () => {
-		const backend = new InMemoryDurableBackend();
+	test("accepts a retained transcript with a meaningful structured content block", async () => {
+		const backend = await InMemoryDurableBackend.create();
 		const path = join(tempDir, "structured-context.jsonl");
 		writeFileSync(
 			path,
@@ -365,8 +365,8 @@ describe("completed durable catalog", () => {
 				}),
 			].join("\n"),
 		);
-		registerCompleted(backend, testRunId("structured-context"));
-		backend.recordCheckpoint({
+		await registerCompleted(backend, testRunId("structured-context"));
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("structured-context"),
 			checkpointId: "stage:1",
@@ -382,13 +382,13 @@ describe("completed durable catalog", () => {
 		);
 	});
 
-	test("reconstructs nested parallel runs and accumulated completed duration", () => {
-		const backend = new InMemoryDurableBackend();
+	test("reconstructs nested parallel runs and accumulated completed duration", async () => {
+		const backend = await InMemoryDurableBackend.create();
 		const transcript = join(tempDir, "nested-child.jsonl");
 		writeSessionTranscript(transcript, "nested-child-session");
 		const runId = testRunId("completed-nested");
 		const childRunId = testRunId("completed-nested-child");
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: runId,
 			name: "nested-root",
 			inputs: {},
@@ -470,9 +470,9 @@ describe("completed durable catalog", () => {
 				topology: { version: 1 as const, stageId: "abandoned", parentIds: ["old-boundary-id"], run: rootRun },
 			},
 		]) {
-			backend.recordCheckpoint({ kind: "stage", workflowId: runId, completedAt: 2_000, ...checkpoint });
+			await backend.recordCheckpoint({ kind: "stage", workflowId: runId, completedAt: 2_000, ...checkpoint });
 		}
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "tool",
 			workflowId: runId,
 			checkpointId: "run-timing:12345",
@@ -503,9 +503,9 @@ describe("completed durable catalog", () => {
 		assert.deepEqual(new Set(after.parentIds), new Set([left.id, right.id]));
 	});
 
-	test("hides duplicate boundary-start records instead of inventing a child link", () => {
-		const backend = new InMemoryDurableBackend();
-		registerCompleted(backend, testRunId("duplicate-boundary"));
+	test("hides duplicate boundary-start records instead of inventing a child link", async () => {
+		const backend = await InMemoryDurableBackend.create();
+		await registerCompleted(backend, testRunId("duplicate-boundary"));
 		const rootRun = { runId: testRunId("duplicate-boundary"), runName: "completed-flow" } as const;
 		const child = {
 			runId: testRunId("duplicate-child"),
@@ -523,7 +523,7 @@ describe("completed durable catalog", () => {
 			child,
 		};
 		for (const checkpointId of ["boundary-start:a", "boundary-start:b"]) {
-			backend.recordCheckpoint({
+			await backend.recordCheckpoint({
 				kind: "stage",
 				workflowId: testRunId("duplicate-boundary"),
 				checkpointId,
@@ -547,14 +547,14 @@ describe("completed durable catalog", () => {
 		assert.equal(completedWorkflowSnapshot(backend, listCompletedFromBackend(backend)[0]!), undefined);
 	});
 
-	test("hides cyclic and duplicated stage topology", () => {
-		const backend = new InMemoryDurableBackend();
-		registerCompleted(backend, testRunId("cyclic"));
+	test("hides cyclic and duplicated stage topology", async () => {
+		const backend = await InMemoryDurableBackend.create();
+		await registerCompleted(backend, testRunId("cyclic"));
 		for (const [stageId, parentIds] of [
 			["a", ["b"]],
 			["b", ["a"]],
 		] as const) {
-			backend.recordCheckpoint({
+			await backend.recordCheckpoint({
 				kind: "stage",
 				workflowId: testRunId("cyclic"),
 				checkpointId: `stage:${stageId}`,
@@ -570,9 +570,9 @@ describe("completed durable catalog", () => {
 				},
 			});
 		}
-		registerCompleted(backend, testRunId("duplicate-stage-id"));
+		await registerCompleted(backend, testRunId("duplicate-stage-id"));
 		for (const replayKey of ["stage:one:1", "stage:two:1"]) {
-			backend.recordCheckpoint({
+			await backend.recordCheckpoint({
 				kind: "stage",
 				workflowId: testRunId("duplicate-stage-id"),
 				checkpointId: replayKey,
@@ -594,9 +594,9 @@ describe("completed durable catalog", () => {
 		assert.equal(resolveCompletedWorkflow(testRunId("duplicate-stage-id"), backend).kind, "stale");
 	});
 
-	test("hides a boundary terminal that disagrees with its start identity", () => {
-		const backend = new InMemoryDurableBackend();
-		registerCompleted(backend, testRunId("mismatched-terminal"));
+	test("hides a boundary terminal that disagrees with its start identity", async () => {
+		const backend = await InMemoryDurableBackend.create();
+		await registerCompleted(backend, testRunId("mismatched-terminal"));
 		const rootRun = { runId: testRunId("mismatched-terminal"), runName: "completed-flow" } as const;
 		const child = {
 			runId: testRunId("child-from-start"),
@@ -605,7 +605,7 @@ describe("completed durable catalog", () => {
 			parentStageId: "boundary",
 			rootRunId: "mismatched-terminal",
 		} as const;
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("mismatched-terminal"),
 			checkpointId: "boundary-start:workflow:child:1",
@@ -631,7 +631,7 @@ describe("completed durable catalog", () => {
 				},
 			},
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("mismatched-terminal"),
 			checkpointId: "boundary-terminal:workflow:child:1:completed",
@@ -669,12 +669,12 @@ describe("completed durable catalog", () => {
 		assert.equal(listOpenableCompletedWorkflows(backend).length, 0);
 		assert.equal(resolveCompletedWorkflow(testRunId("mismatched-terminal"), backend).kind, "stale");
 	});
-	test("marks a completed root stale when a current boundary start has no terminal", () => {
-		const backend = new InMemoryDurableBackend();
+	test("marks a completed root stale when a current boundary start has no terminal", async () => {
+		const backend = await InMemoryDurableBackend.create();
 		const runId = testRunId("unterminated-completed-root");
 		const childRunId = testRunId("unterminated-child");
 		const replayKey = "workflow:child:1";
-		registerCompleted(backend, runId);
+		await registerCompleted(backend, runId);
 		const rootRun = { runId, runName: "completed-flow" } as const;
 		const child = {
 			runId: childRunId,
@@ -683,7 +683,7 @@ describe("completed durable catalog", () => {
 			parentStageId: "boundary",
 			rootRunId: runId,
 		} as const;
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: runId,
 			checkpointId: "stage:root",
@@ -700,7 +700,7 @@ describe("completed durable catalog", () => {
 				run: rootRun,
 			},
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: runId,
 			checkpointId: `boundary-start:${replayKey}`,
@@ -726,7 +726,7 @@ describe("completed durable catalog", () => {
 				},
 			},
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: runId,
 			checkpointId: `${replayKey}:stage:child:1`,

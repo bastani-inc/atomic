@@ -24,7 +24,7 @@ afterEach(() => {
 
 for (const phase of ["before-turn", "executing"] as const) {
 	test(`pause/${phase}: public resume preserves the live owner and journal state (#2885)`, async () => {
-		const backend = new JournalTestBackend();
+		const backend = await JournalTestBackend.create();
 		setDurableBackend(backend);
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
@@ -63,7 +63,7 @@ for (const phase of ["before-turn", "executing"] as const) {
 			assert.equal(toolControlRegistry.runControl(runId), owner);
 			assert.equal(effects, 0);
 			if (phase === "executing") {
-				const reader = new JournalTestBackend(backend.databasePath);
+				const reader = await JournalTestBackend.create(backend.databasePath);
 				assert.equal(reader.getWorkflow(runId)?.status, "paused");
 			}
 			const resumed = await workflowResumeAction(
@@ -79,7 +79,7 @@ for (const phase of ["before-turn", "executing"] as const) {
 			await job.promise;
 			assert.equal(bodyCalls, 1);
 			assert.equal(effects, 1);
-			const reader = new JournalTestBackend(backend.databasePath);
+			const reader = await JournalTestBackend.create(backend.databasePath);
 			assert.equal(reader.getWorkflow(runId)?.status, "completed");
 		} finally {
 			release.resolve();
@@ -91,14 +91,17 @@ for (const phase of ["before-turn", "executing"] as const) {
 
 test("already-live children stay held after rejected journal resume persistence (#2885)", async () => {
 	let failResume = false;
-	const failure = new StorageUnavailableError("journal.sqlite", new Error("resume persistence failed"));
+	const failure = new StorageUnavailableError(
+		{ adapter: "node-sqlite", location: "journal.sqlite" },
+		new Error("resume persistence failed"),
+	);
 	class FailingResumeBackend extends JournalTestBackend {
 		override async transitionWorkflowStatus(...args: Parameters<JournalTestBackend["transitionWorkflowStatus"]>) {
 			if (failResume && args[2] === "running") throw failure;
 			return super.transitionWorkflowStatus(...args);
 		}
 	}
-	const backend = new FailingResumeBackend();
+	const backend = await FailingResumeBackend.create();
 	setDurableBackend(backend);
 	const entered = Promise.withResolvers<string>();
 	const release = Promise.withResolvers<void>();
@@ -145,7 +148,7 @@ test("already-live children stay held after rejected journal resume persistence 
 		assert.equal((await resumeRun(runId)).ok, true);
 		await job.promise;
 		assert.equal(effects, 1);
-		assert.equal(new JournalTestBackend(backend.databasePath).getWorkflow(runId)?.status, "completed");
+		assert.equal((await JournalTestBackend.create(backend.databasePath)).getWorkflow(runId)?.status, "completed");
 	} finally {
 		release.resolve();
 		job.controller.abort();

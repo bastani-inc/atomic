@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
+import type { SqliteDatabase, SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.js";
 import type { RunJournalReadObservation } from "../../packages/workflows/src/durable/journal/conformance.js";
 import { JOURNAL_READ_PAGE_SIZE } from "../../packages/workflows/src/durable/journal/internal.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
-import type { JournalDatabase, SqliteValue } from "../../packages/workflows/src/durable/journal/node-sqlite.js";
 import type { JournalEntry, RunJournal } from "../../packages/workflows/src/durable/journal/types.js";
 
 export function observeJournalRead(journal: RunJournal): RunJournalReadObservation {
@@ -38,10 +38,10 @@ export function observeJournalRead(journal: RunJournal): RunJournalReadObservati
 			},
 		};
 	}
-	const database = Reflect.get(journal, "db") as JournalDatabase;
-	const all = database.allCounters;
-	database.allCounters = <Row>(runId: string, sql: string, ...values: SqliteValue[]): Row[] => {
-		const rows = all.call(database, runId, sql, ...values) as Row[];
+	const database = Reflect.get(journal, "database") as SqliteDatabase;
+	const all = database.all.bind(database);
+	database.all = async <Row extends SqliteRow>(sql: string, ...values: readonly SqliteValue[]): Promise<Row[]> => {
+		const rows = await all<Row>(sql, ...values);
 		pageSizes.push(rows.length);
 		entriesRead += rows.length;
 		return rows;
@@ -57,7 +57,7 @@ export function observeJournalRead(journal: RunJournal): RunJournalReadObservati
 			entriesRead = 0;
 		},
 		restore() {
-			database.allCounters = all;
+			database.all = all;
 		},
 	};
 }

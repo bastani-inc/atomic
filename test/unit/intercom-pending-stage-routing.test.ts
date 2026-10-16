@@ -54,7 +54,7 @@ afterEach(() => {
 	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-test("pending-stage fallback runs only for a valid composite unknown target and preserves ordinary unknown failures", () => {
+test("pending-stage fallback runs only for a valid composite unknown target and preserves ordinary unknown failures", async () => {
 	const socket = {} as net.Socket;
 	const sessions = new Map([["sender-id", sender(socket)]]);
 	const writes: BrokerMessage[] = [];
@@ -148,7 +148,7 @@ test("pending-stage fallback runs only for a valid composite unknown target and 
 	assert.equal((writes.at(-1) as { messageId?: string }).messageId, "legacy");
 });
 
-test("live workflow stage targets still deliver immediately before pending-stage fallback", () => {
+test("live workflow stage targets still deliver immediately before pending-stage fallback", async () => {
 	const senderSocket = {} as net.Socket;
 	const targetSocket = {} as net.Socket;
 	const sessions = new Map<string, BrokerConnectedSession>([
@@ -187,7 +187,7 @@ test("live workflow stage targets still deliver immediately before pending-stage
 	]);
 });
 
-test("pending-stage ask refusal recommends nonblocking send", () => {
+test("pending-stage ask refusal recommends nonblocking send", async () => {
 	assert.equal(PENDING_STAGE_ASK_REFUSAL.includes("Use send"), true);
 });
 
@@ -281,7 +281,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		dispose();
 	});
 
-	test("announces discoverable pending workflow stages with canonical targets", () => {
+	test("announces discoverable pending workflow stages with canonical targets", async () => {
 		const { emitted, dispose } = harness();
 		const route = emitted.find(({ event }) => event === "atomic:workflow-pending-stage-route");
 		// Regression: #2784
@@ -429,7 +429,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			startedAt: 2,
 		});
 		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({ workflowId: RUN_ID, name: "root", inputs: {}, status: "running", createdAt: 1 });
+		await backend.registerWorkflow({ workflowId: RUN_ID, name: "root", inputs: {}, status: "running", createdAt: 1 });
 		bindStoreDurableBackend(store, backend);
 		const rootMessage = message("root-existing", 100);
 		assert.equal(
@@ -593,7 +593,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			startedAt: 3,
 		});
 		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({ workflowId: RUN_ID, name: "root", inputs: {}, status: "running", createdAt: 1 });
+		await backend.registerWorkflow({ workflowId: RUN_ID, name: "root", inputs: {}, status: "running", createdAt: 1 });
 		bindStoreDurableBackend(store, backend);
 		const routeAnnouncements: Array<{ runId: string; stages: Array<{ stageId: string; target: string }> }> = [];
 		const listeners = new Map<string, (payload: unknown) => void>();
@@ -850,7 +850,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 	});
 
 	// Regression for #2990.
-	test("an unclaimed announcement republishes until a consumer acknowledges it", () => {
+	test("an unclaimed announcement republishes until a consumer acknowledges it", async () => {
 		const routes: Record<string, unknown>[] = [];
 		let acknowledging = false;
 		const { store, dispose } = harness((payload) => {
@@ -890,8 +890,8 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 });
 
 test("reloads and drains aliases by durable deposit order rather than sender timestamp exactly once", async () => {
-	const writer = new JournalTestBackend();
-	writer.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	const writer = await JournalTestBackend.create();
+	await writer.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 	const store = createStore();
 	store.recordRunStart({
 		id: RUN_ID,
@@ -968,7 +968,7 @@ test("reloads and drains aliases by durable deposit order rather than sender tim
 test("concurrent stage drains claim one queued message exactly once", async () => {
 	const store = createStore();
 	const backend = new InMemoryDurableBackend();
-	backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 	bindStoreDurableBackend(store, backend);
 	store.recordRunStart({
 		id: RUN_ID,
@@ -1012,8 +1012,8 @@ test("concurrent stage drains claim one queued message exactly once", async () =
 });
 
 test("rejected inbound delivery remains queued and retries after durable reload", async () => {
-	const writer = new JournalTestBackend();
-	writer.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	const writer = await JournalTestBackend.create();
+	await writer.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 	setDurableBackend(writer);
 	const store = createStore();
 	store.recordRunStart({
@@ -1078,16 +1078,19 @@ test("rejected inbound delivery remains queued and retries after durable reload"
 
 test("durable acknowledgement failure replays through the recipient idempotency key without duplicate visibility", async () => {
 	let failNextMetadataWrite = false;
-	const writer = new JournalTestBackend();
+	const writer = await JournalTestBackend.create();
 	const persist = writer.persistPendingStageMessages.bind(writer);
 	writer.persistPendingStageMessages = async (...args) => {
 		if (failNextMetadataWrite) {
 			failNextMetadataWrite = false;
-			throw new StorageUnavailableError(writer.databasePath, new Error("delivery acknowledgement failed"));
+			throw new StorageUnavailableError(
+				{ adapter: "node-sqlite", location: writer.databasePath },
+				new Error("delivery acknowledgement failed"),
+			);
 		}
 		return persist(...args);
 	};
-	writer.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	await writer.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 	setDurableBackend(writer);
 	const store = createStore();
 	store.recordRunStart({
@@ -1310,7 +1313,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 		return { store, emitted, queueSticky, routePayload, dispose };
 	}
 
-	test("announces scan rows with canonical path targets, suppresses materialized literals, and appends the broadcast row", () => {
+	test("announces scan rows with canonical path targets, suppresses materialized literals, and appends the broadcast row", async () => {
 		const { routePayload, dispose } = rowHarness({
 			possibleStages: ["setup", "orchestrator-*", "reviewer", "child-boundary/inner-stage"],
 		});
@@ -1325,7 +1328,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 		dispose();
 	});
 
-	test("pattern entries stay listed while a matching stage is materialized", () => {
+	test("pattern entries stay listed while a matching stage is materialized", async () => {
 		const { routePayload, dispose } = rowHarness({
 			possibleStages: ["orchestrator-*"],
 			extraStages: [{ id: "orch-1-id", name: "orchestrator-1", status: "running" }],
@@ -1598,7 +1601,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 		dispose();
 	});
 
-	test("only the root run's announcement carries the possible-stage rows", () => {
+	test("only the root run's announcement carries the possible-stage rows", async () => {
 		const { emitted, dispose } = rowHarness({ possibleStages: ["setup"], childRun: true });
 		const rootRoute = emitted.find(({ payload }) => payload.runId === RUN_ID && payload.possibleStages !== undefined);
 		const childRoute = emitted.find(({ payload }) => payload.runId === CHILD_RUN_ID);

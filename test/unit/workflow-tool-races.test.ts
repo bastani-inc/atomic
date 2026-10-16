@@ -388,7 +388,10 @@ describe("ctx.tool persistence and cancellation races", () => {
 		class RejectingBackend extends InMemoryDurableBackend {
 			override async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
 				if (checkpoint.kind === "tool")
-					throw new StorageUnavailableError("durable writer rejected", new Error("fixture storage failure"));
+					throw new StorageUnavailableError(
+						{ adapter: "node-sqlite", location: "durable writer rejected" },
+						new Error("fixture storage failure"),
+					);
 				await super.recordCheckpointAsync(checkpoint);
 			}
 		}

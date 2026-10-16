@@ -40,11 +40,11 @@ test(
 			writeFileSync(
 				join(root, "probe.ts"),
 				`
-import { createAgentSession } from "@bastani/atomic";
+import { createAgentSession, type SqliteDatabase, type StorageDescriptor } from "@bastani/atomic";
 import {
 	createStore,
 	MemoryRunJournal,
-	SqliteRunJournal,
+	SqlRunJournal,
 	StorageUnavailableError,
 	type RunJournal,
 	type Lease,
@@ -70,13 +70,16 @@ const takeover: ReturnType<RunJournal["acquire"]> = journal.takeoverExpired("run
 type Equal<Left, Right> =
 	(<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2 ? true : false;
 const memoryShape: Equal<keyof MemoryRunJournal, keyof RunJournal> = true;
-const sqliteShape: Equal<Exclude<keyof SqliteRunJournal, "path">, keyof RunJournal> = true;
+const sqliteShape: Equal<Exclude<keyof SqlRunJournal, "path" | "descriptor">, keyof RunJournal> = true;
+const descriptorShape: Equal<SqlRunJournal["descriptor"], StorageDescriptor> = true;
+declare const database: SqliteDatabase;
+const opened: Promise<SqlRunJournal> = SqlRunJournal.open(database, { prefix: "example_" });
 const leaseShape: Equal<LeaseState, Lease & { readonly renewedAt: number }> = true;
-void [runLookup, leaseLookup, takeover, memoryShape, sqliteShape, leaseShape];
+void [runLookup, leaseLookup, takeover, memoryShape, sqliteShape, leaseShape, descriptorShape, opened];
 const journalOptions: readonly RunOpts[] = [
 	{ journal }, { journal: { memory: true } }, { journal: { path: "runs.sqlite" } },
 ];
-void [journalOptions, SqliteRunJournal, StorageUnavailableError];
+void [journalOptions, SqlRunJournal, StorageUnavailableError];
 
 const store = createStore();
 const unsubscribe: () => void = store.subscribe((snap: StoreSnapshot) => {

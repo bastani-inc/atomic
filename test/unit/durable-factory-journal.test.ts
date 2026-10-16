@@ -7,7 +7,7 @@ import { afterEach, test, vi } from "vitest";
 import { getDurableBackendProcessOwner } from "../../packages/workflows/src/durable/backend-process-owner.js";
 import { initializeDurableBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
-import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 
 const directories: string[] = [];
@@ -31,7 +31,7 @@ test("journal open failure throws typed storage error without installing a fallb
 	process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = directory;
 	await assert.rejects(initializeDurableBackend(), (error: Error) => {
 		assert.ok(error instanceof StorageUnavailableError);
-		assert.equal(error.path, directory);
+		assert.equal(error.location, directory);
 		assert.ok(error.cause instanceof Error);
 		return true;
 	});
@@ -54,12 +54,12 @@ test("shared journal initialization releases its exit listener on explicit close
 	setDurableBackend(undefined);
 	const reopened = await initializeDurableBackend();
 	assert.ok(reopened instanceof JournalDurableBackend);
-	reopened.registerWorkflow({ workflowId: "reset", name: "reset", inputs: {}, status: "paused", createdAt: 1 });
+	await reopened.registerWorkflow({ workflowId: "reset", name: "reset", inputs: {}, status: "paused", createdAt: 1 });
 	setDurableBackend(undefined);
 	assert.equal(process.listenerCount("exit"), listenersBefore);
-	const observer = await JournalDurableBackend.open(new SqliteRunJournal(process.env.ATOMIC_WORKFLOW_JOURNAL_PATH));
+	const observer = await JournalDurableBackend.open(await openSqlRunJournal(process.env.ATOMIC_WORKFLOW_JOURNAL_PATH));
 	try {
-		assert.equal(observer.workflowOwnership("reset"), "available");
+		assert.equal(await observer.workflowOwnership("reset"), "available");
 	} finally {
 		await observer.close();
 	}

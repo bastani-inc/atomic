@@ -50,7 +50,10 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	private closePromise?: Promise<void>;
 	private readonly executor: SqliteExecutor;
 
-	constructor(connection: DatabaseSync, descriptor: StorageDescriptor) {
+	private readonly ownsConnection: boolean;
+
+	constructor(connection: DatabaseSync, descriptor: StorageDescriptor, ownsConnection = true) {
+		this.ownsConnection = ownsConnection;
 		this.connection = connection;
 		this.descriptor = descriptor;
 		this.executor = this.createExecutor(() => true);
@@ -151,7 +154,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			this.closing = true;
 			this.closePromise = this.tail.then(() =>
 				this.driver(() => {
-					this.connection.close();
+					if (this.ownsConnection) this.connection.close();
 					finalizeReleasedStatements();
 				}),
 			);
@@ -186,6 +189,19 @@ export async function openNodeSqliteDatabase(
 		} catch {
 			// Preserve the opening failure if cleanup also fails.
 		}
+		throw new StorageUnavailableError(descriptor, cause as StorageFailureCause);
+	}
+}
+
+export function wrapNodeSqliteDatabase(connection: DatabaseSync): SqliteDatabase {
+	const descriptor = { adapter: "node-sqlite", location: ":memory:" };
+	try {
+		descriptor.location = connection.location() || ":memory:";
+		connection.exec(
+			"PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON",
+		);
+		return new NodeSqliteDatabase(connection, descriptor, false);
+	} catch (cause) {
 		throw new StorageUnavailableError(descriptor, cause as StorageFailureCause);
 	}
 }

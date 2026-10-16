@@ -116,7 +116,7 @@ function attempt(item: ReconcileCase): {
 	return { changed, before, after: store.snapshot(), notifications };
 }
 
-test("cached child reconciliation rejects every ownership and status mismatch verbatim", () => {
+test("cached child reconciliation rejects every ownership and status mismatch verbatim", async () => {
 	const cases: ReconcileCase[] = [
 		{
 			name: "unknown checkpoint child",
@@ -149,7 +149,7 @@ test("cached child reconciliation rejects every ownership and status mismatch ve
 	}
 });
 
-test("cached child reconciliation preserves run order, prompts, and notices while changing only the parent stage", () => {
+test("cached child reconciliation preserves run order, prompts, and notices while changing only the parent stage", async () => {
 	const store = createStore();
 	const beforeSentinel = parentRun({
 		id: "sentinel-before",
@@ -249,7 +249,7 @@ test("cached child reconciliation preserves run order, prompts, and notices whil
 	assert.deepEqual(afterRun.stages[0]?.parentIds, ["parent-a", "parent-a"]);
 });
 
-test("cached child reconciliation accepts an intentionally failed child exit", () => {
+test("cached child reconciliation accepts an intentionally failed child exit", async () => {
 	const store = createStore();
 	store.recordRunStart(childRun({ status: "failed", result: { attempted: 2 } }));
 	const catalog = childRun({ status: "failed", result: { attempted: 2 } });
@@ -275,7 +275,7 @@ test("cached child reconciliation accepts an intentionally failed child exit", (
 	assert.equal(store.runs()[0]?.parentStageId, currentBoundary.id);
 });
 
-test("an already reconciled child cannot be stolen by a later corrupt boundary", () => {
+test("an already reconciled child cannot be stolen by a later corrupt boundary", async () => {
 	const store = createStore();
 	store.recordRunStart(childRun());
 	const catalog = childRun();
@@ -301,7 +301,7 @@ test("an already reconciled child cannot be stolen by a later corrupt boundary",
 	assert.deepEqual(store.snapshot(), afterFirst);
 });
 
-test("nested cached child reconciles only with complete reciprocal legacy-root ancestry", () => {
+test("nested cached child reconciles only with complete reciprocal legacy-root ancestry", async () => {
 	const rootBoundary = boundary("root-to-middle", "middle");
 	const root = parentRun({ stages: [rootBoundary] });
 	const middle = parentRun({
@@ -383,9 +383,9 @@ test("nested cached child reconciles only with complete reciprocal legacy-root a
 	assert.equal(storeConflict.runs().find((item) => item.id === CHILD_ID)?.parentStageId, OLD_BOUNDARY_ID);
 });
 
-test("cached recorder derives the durable catalog root through rootless parent ancestry", () => {
-	const backend = new InMemoryDurableBackend();
-	backend.registerWorkflow({
+test("cached recorder derives the durable catalog root through rootless parent ancestry", async () => {
+	const backend = await InMemoryDurableBackend.create();
+	await backend.registerWorkflow({
 		workflowId: ROOT_ID,
 		name: "guard-root-name",
 		inputs: {},
@@ -407,7 +407,7 @@ test("cached recorder derives the durable catalog root through rootless parent a
 		exited: false,
 		outputs: {},
 	} as const;
-	backend.recordCheckpoint({
+	await backend.recordCheckpoint({
 		kind: "stage",
 		workflowId: ROOT_ID,
 		checkpointId: "root-boundary",
@@ -442,8 +442,8 @@ test("cached recorder derives the durable catalog root through rootless parent a
 			},
 		},
 	};
-	backend.recordCheckpoint({ ...cachedBoundary, workflowId: ROOT_ID });
-	backend.recordCheckpoint({
+	await backend.recordCheckpoint({ ...cachedBoundary, workflowId: ROOT_ID });
+	await backend.recordCheckpoint({
 		kind: "stage",
 		workflowId: ROOT_ID,
 		checkpointId: "grand-leaf",
