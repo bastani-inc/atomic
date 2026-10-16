@@ -5,9 +5,14 @@ import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { quitAllRuns, quitRun } from "../runs/background/quit.js";
 import { abortToolNode } from "../runs/background/quit-tool-node.js";
 import { pauseAllRuns, pauseRun, resumeRun } from "../runs/background/status.js";
-import { workflowHasPausedStages, workflowHasPausedState } from "../runs/background/workflow-lifecycle-aggregate.js";
+import {
+	expandedControlRunIds,
+	workflowHasPausedStages,
+	workflowHasPausedState,
+} from "../runs/background/workflow-lifecycle-aggregate.js";
 import { isFullRunId, isRunIdPrefix } from "../shared/run-id.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
+import type { Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowExecutionPolicy, WorkflowToolNodeIdentity } from "../shared/types.js";
 import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
@@ -302,6 +307,33 @@ export async function workflowQuitAction(
 	}
 }
 
+function activePauseTargets(store: Store, runIds: readonly string[], stageId?: string) {
+	return store
+		.runs()
+		.filter((run) => runIds.includes(run.id))
+		.flatMap((run) =>
+			run.stages
+				.filter(
+					(stage) =>
+						(stageId === undefined || stage.id === stageId) &&
+						(stage.status === "running" || stage.status === "pending"),
+				)
+				.map((stage) => ({ runId: run.id, stageId: stage.id })),
+		);
+}
+
+function retainedPauseMessage(store: Store, targets: ReturnType<typeof activePauseTargets>): string | undefined {
+	const retained = targets.filter((target) =>
+		store
+			.runs()
+			.find((run) => run.id === target.runId)
+			?.stages.some((stage) => stage.id === target.stageId && stage.status === "paused"),
+	);
+	return retained.length === 0
+		? undefined
+		: `Pauses remain in effect for stages ${retained.map((target) => `${target.runId}/${target.stageId}`).join(", ")} and can be resumed.`;
+}
+
 export async function workflowPauseAction(
 	args: WorkflowToolArgs,
 	owner = captureWorkflowOwnerResources(),
@@ -314,21 +346,37 @@ export async function workflowPauseAction(
 		if (args.stageId !== undefined && args.stageId.length > 0) {
 			return { action, runId: "--all", status: "noop", message: allStageConflictMessage("pause") };
 		}
+		const pauseTargets = activePauseTargets(
+			store,
+			store.runs().map((run) => run.id),
+		);
 		try {
 			const results = await pauseAllRuns(owner);
 			const paused = results.filter((result) => result.ok).length;
 			const failedRuns = bulkFailedRuns(results);
 			if (failedRuns.length > 0) {
+				const failedControlRunIds = new Set(
+					results
+						.filter((result) => !result.ok && result.reason === "pause_failed")
+						.flatMap((result) => expandedControlRunIds(store, result.runId)),
+				);
+				const retained = retainedPauseMessage(
+					store,
+					pauseTargets.filter((pauseTarget) => failedControlRunIds.has(pauseTarget.runId)),
+				);
 				return {
 					action,
 					runId: "--all",
-					...bulkUnstoppedStatus(results),
-					message: bulkFailureMessage(
-						"Paused",
-						action,
-						results,
-						(result) => result.message ?? `${result.runId}: paused`,
-					),
+					...(retained === undefined ? bulkUnstoppedStatus(results) : { status: "partial" as const }),
+					message: [
+						bulkFailureMessage(
+							"Paused",
+							action,
+							results,
+							(result) => result.message ?? `${result.runId}: paused`,
+						),
+						...(retained === undefined ? [] : [retained]),
+					].join(" "),
 					failedRuns,
 				};
 			}
@@ -366,6 +414,8 @@ export async function workflowPauseAction(
 	const stage = resolveToolStageTarget(target.runId, args.stageId, store);
 	if (!stage.ok) return { action, runId: target.runId, status: "noop", message: stage.message, code: stage.code };
 	const stageRunId = stage.runId ?? target.runId;
+	const controlRunIds = stage.stageId === undefined ? expandedControlRunIds(store, stageRunId) : [stageRunId];
+	const pauseTargets = activePauseTargets(store, controlRunIds, stage.stageId);
 	try {
 		const result = await pauseRun(stageRunId, { ...owner, stageId: stage.stageId });
 		if (result.ok) {
@@ -389,6 +439,16 @@ export async function workflowPauseAction(
 			...(result.reason === "stage_not_found" ? { code: "stage_not_found" as const } : {}),
 		};
 	} catch (error) {
+		const retained = retainedPauseMessage(store, pauseTargets);
+		if (retained !== undefined) {
+			return {
+				action,
+				runId: stageRunId,
+				status: "partial",
+				message: `Failed to pause run ${stageRunId}: ${error instanceof Error ? error.message : String(error)}. ${retained}`,
+				code: classifyControlError(error),
+			};
+		}
 		return controlFailure(action, stageRunId, error);
 	}
 }

@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
 import { resolveStageTarget } from "../../packages/workflows/src/extension/workflow-targets.js";
@@ -13,6 +14,7 @@ import {
 	workflowPauseAction,
 	workflowResumeAction,
 } from "../../packages/workflows/src/extension/workflow-tool-control.js";
+import { createStageControlHandle } from "../../packages/workflows/src/runs/foreground/executor-stage-control.js";
 import { stageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 import { createStore, store } from "../../packages/workflows/src/shared/store.js";
@@ -199,6 +201,252 @@ describe("non-attachable tool interactions", () => {
 		assert.equal(overlayOpens, 0);
 		assert.deepEqual(stageControlRegistry.forRun(testRunId("tool-interaction-run")), []);
 	});
+
+	test.each(
+		[
+			{
+				scenario: "pause reports a retained hold when durable capture fails",
+				refused: false,
+				error: new Error("durable capture unavailable"),
+				code: "control_failed",
+			},
+			{
+				scenario: "pause preserves the storage failure code after retaining a hold",
+				refused: false,
+				error: new StorageUnavailableError(
+					{ adapter: "node-sqlite", location: "/unavailable/journal.sqlite" },
+					new Error("durable capture unavailable"),
+				),
+				code: "storage_unavailable",
+			},
+			{
+				scenario: "pause remains a noop when the SDK refuses before applying the hold",
+				refused: true,
+				error: new Error("SDK pause refused"),
+				code: "control_failed",
+			},
+		].flatMap((scenario) =>
+			["target", undefined, "--all"].flatMap((stageId) =>
+				(scenario.refused ? ["running", "paused"] : ["running"]).map((siblingStatus) => ({
+					...scenario,
+					stageId,
+					target: stageId ?? "whole run",
+					siblingStatus,
+				})),
+			),
+		),
+	)(
+		"$scenario for $target with $siblingStatus sibling (#3671)",
+		async ({ refused, error, code, stageId, siblingStatus }) => {
+			const runId = testRunId("pause-capture-failure");
+			store.recordRunStart({
+				id: runId,
+				name: "pause capture failure",
+				inputs: {},
+				status: "running",
+				startedAt: 1,
+				toolNodes: [],
+				stages: [
+					{ id: "target", name: "target", status: "running", parentIds: [], toolEvents: [] },
+					{ id: "sibling", name: "sibling", status: siblingStatus, parentIds: [], toolEvents: [] },
+				],
+			});
+			const run = store.runs().find((candidate) => candidate.id === runId)!;
+			const barriers = new Set<string>();
+			let captureCalls = 0;
+			const handle = createStageControlHandle({
+				runId,
+				stageId: "target",
+				name: "target",
+				stageSnapshot: run.stages[0],
+				activeStore: store,
+				state: { liveHandleReleased: false, readinessController: new AbortController() },
+				innerCtx: {
+					subscribe: () => () => {},
+					__requestPause: async () => {
+						if (refused) throw error;
+					},
+				},
+				scheduler: {
+					ensureReleaseBarrier: (stageId: string) => barriers.add(stageId),
+					releaseStageBarrier: (stageId: string) => barriers.delete(stageId),
+					hasCascadePauseOwners: () => false,
+					cascadePauseFrom: async () => {},
+				},
+				throwIfStageMutationBlocked() {},
+				releaseLiveHandle: async () => {},
+				captureStageSessionMeta: async (options) => {
+					assert.equal(options?.forceDurable, true);
+					captureCalls += 1;
+					throw error;
+				},
+			});
+			stageControlRegistry.register(handle);
+
+			const result = await workflowPauseAction(
+				stageId === "--all" ? { action: "pause", all: true } : { action: "pause", runId, stageId },
+			);
+
+			assert.equal(captureCalls, refused ? 0 : 1);
+			assert.equal(run.stages[0].status, refused ? "running" : "paused");
+			assert.equal(run.stages[1].status, siblingStatus);
+			assert.equal(run.status, "running");
+			assert.deepEqual([...barriers], refused ? [] : ["target"]);
+			assert.equal(result.status, refused ? "noop" : "partial");
+			if (stageId === "--all") {
+				assert.equal(result.code, refused ? "control_failed" : undefined);
+				assert.ok(
+					result.failedRuns?.some((failed) => failed.runId === runId && failed.message?.includes(error.message)),
+				);
+			} else {
+				assert.equal(result.code, code);
+			}
+			if (!refused) assert.match(result.message, /pause.*remain.*effect/i);
+			assert.ok(result.message.includes(error.message));
+		},
+	);
+
+	test("bulk pause reports a retained nested child pause under its parent run (#3671)", async () => {
+		const parentId = testRunId("pause-nested-parent");
+		const childId = testRunId("pause-nested-child");
+		store.recordRunStart({
+			id: parentId,
+			name: "nested parent",
+			inputs: {},
+			status: "running",
+			startedAt: 1,
+			toolNodes: [],
+			stages: [
+				{
+					id: "boundary",
+					name: "boundary",
+					status: "running",
+					parentIds: [],
+					toolEvents: [],
+					workflowChildRun: { alias: "child", workflow: "nested child", runId: childId },
+				},
+			],
+		});
+		store.recordRunStart({
+			id: childId,
+			name: "nested child",
+			inputs: {},
+			status: "running",
+			startedAt: 2,
+			toolNodes: [],
+			parentRunId: parentId,
+			parentStageId: "boundary",
+			rootRunId: parentId,
+			stages: [{ id: "target", name: "target", status: "running", parentIds: [], toolEvents: [] }],
+		});
+		const child = store.runs().find((candidate) => candidate.id === childId)!;
+		const error = new Error("child durable capture unavailable");
+		stageControlRegistry.register(
+			createStageControlHandle({
+				runId: childId,
+				stageId: "target",
+				name: "target",
+				stageSnapshot: child.stages[0],
+				activeStore: store,
+				state: { liveHandleReleased: false, readinessController: new AbortController() },
+				innerCtx: { subscribe: () => () => {}, __requestPause: async () => {} },
+				scheduler: {
+					ensureReleaseBarrier: () => {},
+					releaseStageBarrier: () => {},
+					hasCascadePauseOwners: () => false,
+					cascadePauseFrom: async () => {},
+				},
+				throwIfStageMutationBlocked() {},
+				releaseLiveHandle: async () => {},
+				captureStageSessionMeta: async () => {
+					throw error;
+				},
+			}),
+		);
+
+		const result = await workflowPauseAction({ action: "pause", all: true });
+
+		assert.equal(child.stages[0].status, "paused");
+		assert.equal(result.status, "partial", result.message);
+		assert.equal(result.code, undefined);
+		assert.match(result.message, new RegExp(`${childId}/target`));
+		assert.match(result.message, /pause.*remain.*effect/i);
+		assert.ok(result.failedRuns?.some((failed) => failed.runId === parentId));
+	});
+
+	test.each([false, true])(
+		"whole-run pause separates retained holds from a later failure, SDK refused: %s (#3671)",
+		async (refused) => {
+			const runId = testRunId("sequential-pause-failure");
+			store.recordRunStart({
+				id: runId,
+				name: "sequential pause",
+				inputs: {},
+				status: "running",
+				startedAt: 1,
+				toolNodes: [],
+				stages: ["first", "second", "sibling"].map((id) => ({
+					id,
+					name: id,
+					status: "running",
+					parentIds: [],
+					toolEvents: [],
+				})),
+			});
+			const run = store.runs().find((candidate) => candidate.id === runId)!;
+			const barriers = new Set<string>();
+			const captures: string[] = [];
+			const error = new StorageUnavailableError(
+				{ adapter: "node-sqlite", location: "/unavailable/journal.sqlite" },
+				new Error("second capture unavailable"),
+			);
+			for (const stage of run.stages.slice(0, 2)) {
+				stageControlRegistry.register(
+					createStageControlHandle({
+						runId,
+						stageId: stage.id,
+						name: stage.name,
+						stageSnapshot: stage,
+						activeStore: store,
+						state: { liveHandleReleased: false, readinessController: new AbortController() },
+						innerCtx: {
+							subscribe: () => () => {},
+							__requestPause: async () => {
+								if (stage.id === "second" && refused) throw new Error("second SDK pause refused");
+							},
+						},
+						scheduler: {
+							ensureReleaseBarrier: (id: string) => barriers.add(id),
+							releaseStageBarrier: (id: string) => barriers.delete(id),
+							hasCascadePauseOwners: () => false,
+							cascadePauseFrom: async () => {},
+						},
+						throwIfStageMutationBlocked() {},
+						releaseLiveHandle: async () => {},
+						captureStageSessionMeta: async () => {
+							captures.push(stage.id);
+							if (stage.id === "second") throw error;
+						},
+					}),
+				);
+			}
+
+			const result = await workflowPauseAction({ action: "pause", runId });
+
+			assert.equal(result.status, "partial");
+			assert.equal(result.code, refused ? "control_failed" : "storage_unavailable");
+			assert.deepEqual(captures, refused ? ["first"] : ["first", "second"]);
+			assert.deepEqual([...barriers], refused ? ["first"] : ["first", "second"]);
+			assert.deepEqual(
+				run.stages.map((stage) => stage.status),
+				["paused", refused ? "running" : "paused", "running"],
+			);
+			assert.ok(result.message.includes(refused ? "second SDK pause refused" : error.message));
+			assert.match(result.message, /Pauses remain in effect/);
+			assert.ok(result.message.includes(`${runId}/first`));
+			assert.doesNotMatch(result.message, /Stage first.*could not be durably recorded/);
+		},
+	);
 
 	test("tool resumes a failed author exit through the durable backend", async () => {
 		const backend = new InMemoryDurableBackend();
