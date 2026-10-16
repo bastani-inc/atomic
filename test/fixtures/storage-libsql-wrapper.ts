@@ -108,7 +108,10 @@ class LibsqlDatabase implements SqliteDatabase {
 			return this.driver(operation);
 		};
 		const statement = (sql: string, params: readonly SqliteValue[]): Promise<ResultSet> =>
-			connection.execute({ sql, args: [...params] });
+			connection.execute({
+				sql,
+				args: params.map((value) => (value instanceof Uint8Array ? new Uint8Array(value) : value)),
+			});
 		return {
 			exec: (sql) => execute(() => connection.executeMultiple(sql)),
 			run: (sql, ...params) =>

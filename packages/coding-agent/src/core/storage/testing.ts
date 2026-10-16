@@ -110,6 +110,23 @@ export function registerSqliteDatabaseConformance(
 				assert.deepEqual(await (await checkpoint(subject)).all("SELECT value FROM items"), [expected]);
 			});
 
+			check("binds binary parameters at call time inside a transaction", async (subject) => {
+				await create(subject.database);
+				const database = await checkpoint(subject);
+				const expected = { value: new Uint8Array([1, 2, 3]) };
+				await database.transaction(async (tx) => {
+					const bytes = new Uint8Array([1, 2, 3]);
+					const write = tx.run("INSERT INTO items(value) VALUES (?)", bytes);
+					const read = tx.get("SELECT ? AS value", bytes);
+					const rows = tx.all("SELECT ? AS value", bytes);
+					bytes.fill(0);
+					await write;
+					assert.deepEqual(await read, expected);
+					assert.deepEqual(await rows, [expected]);
+				});
+				assert.deepEqual(await (await checkpoint(subject)).all("SELECT value FROM items"), [expected]);
+			});
+
 			check("rejects NUL string bindings before executing SQL", async (subject) => {
 				await create(subject.database);
 				const database = await checkpoint(subject);

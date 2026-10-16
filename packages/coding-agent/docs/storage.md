@@ -59,7 +59,7 @@ The returned value can be passed to your own SDK application code that accepts `
 <details>
 <summary>Complete wrapper</summary>
 
-<!-- custom-driver-example -->
+{/* custom-driver-example */}
 ```ts
 import type { Client, ResultSet, Row, Transaction } from "@libsql/client";
 import {
@@ -171,7 +171,10 @@ class LibsqlDatabase implements SqliteDatabase {
 			return this.driver(operation);
 		};
 		const statement = (sql: string, params: readonly SqliteValue[]): Promise<ResultSet> =>
-			connection.execute({ sql, args: [...params] });
+			connection.execute({
+				sql,
+				args: params.map((value) => (value instanceof Uint8Array ? new Uint8Array(value) : value)),
+			});
 		return {
 			exec: (sql) => execute(() => connection.executeMultiple(sql)),
 			run: (sql, ...params) =>
@@ -275,7 +278,7 @@ export async function openLibsqlDatabase(options: LibsqlDatabaseOptions): Promis
 	}
 }
 ```
-<!-- /custom-driver-example -->
+{/* /custom-driver-example */}
 
 </details>
 

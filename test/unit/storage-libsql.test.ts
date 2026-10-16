@@ -6,14 +6,9 @@ import { describe, it, test } from "vitest";
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { registerSqliteDatabaseConformance } from "../../packages/coding-agent/src/core/storage/testing.js";
 import { openLibsqlDatabase } from "../fixtures/storage-libsql-wrapper.js";
+import { removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { withLibsqlDatabase } from "../helpers/libsql-database.js";
-import {
-	bunExecutable,
-	makeTempDirectory,
-	moduleDir,
-	removeTempDirectory,
-	spawnSyncCollect,
-} from "../helpers/runtime.js";
+import { bunExecutable, makeTempDirectory, moduleDir, spawnSyncCollect } from "../helpers/runtime.js";
 
 registerSqliteDatabaseConformance({ describe, it }, "libSQL file", withLibsqlDatabase);
 
@@ -82,7 +77,7 @@ for (const scenario of ["local file", "unsupported query", "malformed URL"]) {
 			}
 			assert.deepEqual(options, { url, authToken: "fixture-option-token" });
 		} finally {
-			removeTempDirectory(directory);
+			await removeLibsqlDirectory(directory);
 		}
 	});
 }
