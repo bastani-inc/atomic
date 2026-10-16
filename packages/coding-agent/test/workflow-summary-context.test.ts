@@ -149,8 +149,14 @@ for (const responds of [true, false]) {
 			return stream;
 		};
 		const store = createStore();
-		const backend = createInMemoryTestBackend();
-		backend.registerWorkflow({ workflowId: "terminal", name: "build", inputs: {}, status: "running", createdAt: 1 });
+		const backend = await createInMemoryTestBackend();
+		await backend.registerWorkflow({
+			workflowId: "terminal",
+			name: "build",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		store.recordRunStart({
 			id: "terminal",
 			name: "build",

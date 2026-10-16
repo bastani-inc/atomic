@@ -877,7 +877,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			{},
 			{
 				store: createStore(),
-				durableBackend: createInMemoryTestBackend(),
+				durableBackend: await createInMemoryTestBackend(),
 				mcp: staleMcpPort,
 				adapters: {
 					prompt: {
