@@ -429,7 +429,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				boundary > 0 &&
 				boundary + 2 < encoded.length &&
 				boundary === encoded.lastIndexOf("__") &&
-				!/_[a-f0-9]{8}$/.test(toolName);
+				!/_[a-f0-9]{8}(?:_\d+)?$/.test(toolName);
 			const label = unambiguous ? `${encoded.slice(0, boundary)}/${encoded.slice(boundary + 2)}` : toolName;
 			return createMcpToolRenderers(label);
 		});

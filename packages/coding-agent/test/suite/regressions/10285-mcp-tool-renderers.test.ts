@@ -23,6 +23,7 @@ const fallbackLabels = [
 	["mcp__a___search", "mcp__a___search"],
 	["mcp__a_b__search", "a_b/search"],
 	["mcp__a__search_1234abcd", "mcp__a__search_1234abcd"],
+	["mcp__demo__a_b_108b2fb7_1", "mcp__demo__a_b_108b2fb7_1"],
 	[shortenedName, shortenedName],
 	[shortenedServerName, shortenedServerName],
 ] as const;
