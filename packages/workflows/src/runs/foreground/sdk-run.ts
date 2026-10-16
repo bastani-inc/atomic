@@ -1,6 +1,6 @@
 import { initializeDurableBackend } from "../../durable/factory.js";
 import { availableRunDurableBackend } from "../../durable/run-owner-backend.js";
-import { availableStoreDurableBackend, bindStoreDurableBackend } from "../../durable/store-backend.js";
+import { availableStoreDurableBackendOverride, bindStoreDurableBackend } from "../../durable/store-backend.js";
 import { run as engineRun } from "../../engine/run.js";
 import { createAgentSessionAdapter } from "../../extension/wiring.js";
 import { store as defaultStore } from "../../shared/store.js";
@@ -29,7 +29,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	const ownedBackend = sourceRunId === undefined ? undefined : availableRunDurableBackend(store.runs(), sourceRunId);
 	const preset =
 		opts.journal === undefined
-			? (opts.durableBackend ?? ownedBackend ?? availableStoreDurableBackend(store))
+			? (opts.durableBackend ?? ownedBackend ?? availableStoreDurableBackendOverride(store))
 			: undefined;
 	const backend = preset ?? (await initializeDurableBackend({ journal: opts.journal, cwd: opts.cwd }));
 	if (opts.journal === undefined && opts.durableBackend === undefined && ownedBackend === undefined) {

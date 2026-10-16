@@ -16,7 +16,7 @@ import { initializeDurableBackend } from "../durable/factory.js";
 import type { RunJournalOption } from "../durable/journal/resolution.js";
 import { resumeDurableWorkflow } from "../durable/resume-runtime.js";
 import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
-import { availableStoreDurableBackend, bindStoreDurableBackend } from "../durable/store-backend.js";
+import { availableStoreDurableBackendOverride, bindStoreDurableBackend } from "../durable/store-backend.js";
 import { resolveToolResumeFrontier } from "../durable/tool-resume-frontier.js";
 import { currentToolControlRegistry, type ToolControlRegistry } from "../engine/run-tool-control-registry.js";
 import { type CancellationRegistry, currentCancellationRegistry } from "../runs/background/cancellation-registry.js";
@@ -189,7 +189,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 	const resolveDefaultStageSessionDir = opts.resolveDefaultStageSessionDir;
 	const resolvePossibleStageEntry = opts.resolvePossibleStageEntry;
 	const beforeRestoreCompleted = opts.beforeRestoreCompleted;
-	const presetBackend = opts.journal === undefined ? availableStoreDurableBackend(activeStore) : undefined;
+	const presetBackend = opts.journal === undefined ? availableStoreDurableBackendOverride(activeStore) : undefined;
 	const backendRef = { current: presetBackend };
 	let ready: Promise<DurableWorkflowBackend> | undefined;
 	const ensureReady = () =>

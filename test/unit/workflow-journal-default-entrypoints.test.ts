@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { getAgentDir } from "@bastani/atomic";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { getDurableBackendProcessOwner } from "../../packages/workflows/src/durable/backend-process-owner.js";
-import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { initializeDurableBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
 import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import { availableStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
+import { run as engineRun } from "../../packages/workflows/src/engine/run.js";
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import type { ExtensionAPI } from "../../packages/workflows/src/extension/public-types.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
@@ -19,9 +22,10 @@ import { runDetached } from "../../packages/workflows/src/runs/background/runner
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { run, workflow } from "../../packages/workflows/src/sdk-surface.js";
 import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
-import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
+import { createStore, type Store, store as sdkStore } from "../../packages/workflows/src/shared/store.js";
 import type { GraphOverlayPort } from "../../packages/workflows/src/tui/overlay-adapter.js";
-import { makeDirectorySync, makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { makeDirectorySync, makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
+import { configureTestStoreBackend } from "../helpers/store-backend.js";
 import { buildCtx } from "./slash-dispatch-utils.js";
 
 let directory: string;
@@ -289,3 +293,147 @@ test("fresh /workflow resume opens the picker before loading saved journal runs 
 	assert.equal(savedRunListed, true, messages.join("\n"));
 	assert.equal(defaultBackend(owner.store).getWorkflow(saved.runId)?.status, "paused");
 });
+
+test("fresh SDK runs resolve each project's settings instead of inheriting the default store journal (#3674)", async () => {
+	configureTestStoreBackend(sdkStore, undefined);
+	const projectA = join(directory, "project-a");
+	const projectB = join(directory, "project-b");
+	const pathB = join(projectB, "journal.sqlite");
+	await writeFileEnsuringDir(
+		join(projectA, ".atomic", "settings.json"),
+		JSON.stringify({ workflows: { journal: { memory: true } } }),
+	);
+	await writeFileEnsuringDir(
+		join(projectB, ".atomic", "settings.json"),
+		JSON.stringify({ workflows: { journal: { path: pathB } } }),
+	);
+	const ids: string[] = [];
+	try {
+		const first = await run(definition(), {}, { cwd: projectA });
+		ids.push(first.runId);
+		assert.equal(first.status, "completed");
+		const backendA = availableStoreDurableBackend(sdkStore, first.runId);
+		assert.ok(backendA instanceof JournalDurableBackend);
+		assert.ok(backendA.journal instanceof MemoryRunJournal);
+		const second = await run(definition(), {}, { cwd: projectB });
+		ids.push(second.runId);
+		assert.equal(second.status, "completed");
+		const backendB = availableStoreDurableBackend(sdkStore, second.runId);
+		assert.ok(backendB instanceof JournalDurableBackend);
+		assert.ok(backendB.journal instanceof SqliteRunJournal);
+		assert.equal(backendB.journal.path, pathB);
+		assert.equal(await initializeDurableBackend({ cwd: projectA }), backendA);
+		assert.deepEqual(
+			(await backendA.journal.listRuns()).map((saved) => saved.runId),
+			[first.runId],
+		);
+		await backendB.close();
+		const reopened = await JournalDurableBackend.open(new SqliteRunJournal(pathB));
+		try {
+			assert.deepEqual(
+				(await reopened.journal.listRuns()).map((saved) => saved.runId),
+				[second.runId],
+			);
+		} finally {
+			await reopened.close();
+		}
+	} finally {
+		for (const id of ids) sdkStore.removeRun(id);
+		configureTestStoreBackend(sdkStore, undefined);
+	}
+});
+
+type FreshEntryPoint = "SDK" | "engine" | "background" | "TUI slash" | "CLI slash" | "workflow tool";
+
+async function launchFresh(entry: FreshEntryPoint, owner: ReturnType<typeof resources>, cwd: string): Promise<string> {
+	const previousIds = new Set(owner.store.runs().map((saved) => saved.id));
+	if (entry === "SDK" || entry === "engine") {
+		const result = await (entry === "SDK" ? run : engineRun)(definition(), {}, { ...owner, cwd });
+		assert.equal(result.status, "completed", JSON.stringify(result));
+	} else if (entry === "background") {
+		runDetached(definition(), {}, { ...owner, cwd });
+	} else {
+		const runtime = createExtensionRuntime({ ...owner, cwd, definitions: [definition()] });
+		const { ctx } = buildCtx();
+		if (entry === "workflow tool") {
+			const execute = makeExecuteWorkflowTool(
+				runtime,
+				() => undefined,
+				() => undefined,
+				owner,
+			);
+			const result = await execute({ action: "run", workflow: "default-journal" }, { ...ctx, cwd, hasUI: false });
+			assert.ok("runId" in result && result.runId);
+		} else {
+			const handlers = new Map<string, WorkflowCommandHandler>();
+			const pi: ExtensionAPI = { registerCommand() {}, sendMessage() {} };
+			const overlay: GraphOverlayPort = { open() {}, toggle() {}, close() {} };
+			registerWorkflowSlashCommand(pi, handlers, {
+				runtimeProxy: runtime,
+				runtimeForContext: () => runtime,
+				overlay,
+				owner,
+				reloadWorkflowResources: () => undefined,
+				ensureWorkflowResourcesLoaded: () => undefined,
+				runWithLifecycleSuppressedForPolicy: (_policy, action) => action(),
+				runControl: {
+					pi,
+					overlay,
+					runtimeForContext: () => runtime,
+					ensureWorkflowResourcesLoaded: () => undefined,
+					owner,
+				},
+			});
+			const handler = handlers.get("workflow");
+			assert.ok(handler);
+			await handler("default-journal --yes", { ...ctx, cwd, hasUI: entry === "TUI slash" });
+		}
+	}
+	await Promise.all(owner.jobs.runIds().map((id) => owner.jobs.get(id)?.promise));
+	const created = owner.store.runs().filter((saved) => !previousIds.has(saved.id));
+	assert.equal(created.length, 1);
+	assert.equal(created[0]!.status, "completed");
+	return created[0]!.id;
+}
+
+for (const entry of ["SDK", "engine", "background", "TUI slash", "CLI slash", "workflow tool"] as const) {
+	test(`fresh ${entry} runs isolate project journals and reuse the same selection without reopening (#3674)`, async () => {
+		const owner = resources();
+		const projects = [join(directory, "a"), join(directory, "b")];
+		const paths = projects.map((cwd) => join(cwd, "journal.sqlite"));
+		for (const [index, cwd] of projects.entries()) {
+			await writeFileEnsuringDir(
+				join(cwd, ".atomic", "settings.json"),
+				JSON.stringify({ workflows: { journal: { path: paths[index] } } }),
+			);
+		}
+		const exec = vi.spyOn(DatabaseSync.prototype, "exec");
+		try {
+			const first = await launchFresh(entry, owner, projects[0]!);
+			const second = await launchFresh(entry, owner, projects[1]!);
+			const third = await launchFresh(entry, owner, projects[1]!);
+			const backendA = availableStoreDurableBackend(owner.store, first);
+			const backendB = availableStoreDurableBackend(owner.store, second);
+			assert.ok(backendA instanceof JournalDurableBackend);
+			assert.ok(backendB instanceof JournalDurableBackend);
+			assert.notEqual(backendA, backendB);
+			assert.equal(availableStoreDurableBackend(owner.store, third), backendB);
+			assert.equal(exec.mock.calls.filter(([sql]) => sql.includes("CREATE TABLE IF NOT EXISTS meta")).length, 2);
+			await backendA.close();
+			await backendB.close();
+			for (const [index, path] of paths.entries()) {
+				const reopened = await JournalDurableBackend.open(new SqliteRunJournal(path));
+				try {
+					assert.deepEqual(
+						(await reopened.journal.listRuns()).map((saved) => saved.runId).sort(),
+						(index === 0 ? [first] : [second, third]).sort(),
+					);
+				} finally {
+					await reopened.close();
+				}
+			}
+		} finally {
+			exec.mockRestore();
+		}
+	});
+}

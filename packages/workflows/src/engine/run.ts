@@ -3,7 +3,7 @@ import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
 import { initializeDurableBackend } from "../durable/factory.js";
 import { JournalDurableBackend } from "../durable/journal/journal-backend.js";
-import { bindRunDurableBackend } from "../durable/run-owner-backend.js";
+import { availableRunDurableBackend, bindRunDurableBackend } from "../durable/run-owner-backend.js";
 import { inheritedRunElapsedMs, priorRunAccounting, recordRunTimingCheckpointAsync } from "../durable/run-timing.js";
 import { ScopedDurableBackend } from "../durable/scoped-backend.js";
 import {
@@ -11,7 +11,7 @@ import {
 	createDurableTaskPrimitive,
 	createStageReplayKeyGenerator,
 } from "../durable/stage-primitive.js";
-import { availableStoreDurableBackend, bindStoreDurableBackend } from "../durable/store-backend.js";
+import { availableStoreDurableBackendOverride, bindStoreDurableBackend } from "../durable/store-backend.js";
 import { createCheckpointIdGenerator } from "../durable/tool-primitive.js";
 import { transitionDurableWorkflowStatus } from "../durable/workflow-status-transition.js";
 import {
@@ -142,7 +142,8 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	const preset =
 		opts.durableBackend ??
 		(opts.journal === undefined
-			? availableStoreDurableBackend(activeStore, opts.continuation?.source.id ?? runId)
+			? (availableRunDurableBackend(activeStore.runs(), opts.continuation?.source.id ?? runId) ??
+				availableStoreDurableBackendOverride(activeStore))
 			: undefined);
 	const backend = preset ?? (await initializeDurableBackend({ journal: opts.journal, cwd: opts.cwd }));
 	if (opts.parentRun === undefined && opts.journal === undefined && opts.durableBackend === undefined) {

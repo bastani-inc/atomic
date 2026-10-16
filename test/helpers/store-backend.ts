@@ -4,6 +4,7 @@ import {
 	availableStoreDurableBackend,
 	requireStoreDurableBackend,
 	workflowStoreBackend,
+	workflowStoreBackendOverride,
 } from "../../packages/workflows/src/durable/store-backend.js";
 import { currentWorkflowStore } from "../../packages/workflows/src/shared/store-factory.js";
 import type { Store } from "../../packages/workflows/src/shared/store-public-types.js";
@@ -20,4 +21,6 @@ export function configureCurrentTestStoreBackend(backend: DurableWorkflowBackend
 
 export function configureTestStoreBackend(store: Store, backend: DurableWorkflowBackend | undefined): void {
 	(store as Store & { [workflowStoreBackend]?: DurableWorkflowBackend })[workflowStoreBackend] = backend;
+	(store as Store & { [workflowStoreBackendOverride]?: DurableWorkflowBackend })[workflowStoreBackendOverride] =
+		backend;
 }

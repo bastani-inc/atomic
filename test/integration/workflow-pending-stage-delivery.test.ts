@@ -11,9 +11,9 @@ import { afterAll, beforeAll, test, vi } from "vitest";
 import type { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.ts";
 import { isRecoverableIntercomDisconnect } from "../../packages/intercom/recoverable-disconnect.js";
 import type { BrokerMessage } from "../../packages/intercom/types.js";
-import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
+import { configureTestStoreBackend } from "../helpers/store-backend.js";
 
 const RUN_ID = "4ac72924-c452-4e5f-9e63-2435722109f7";
 const GROUP = `workflow:${RUN_ID}`;
@@ -577,7 +577,7 @@ test("the real two-session route owner is hidden and rejects ordinary messages w
 	const group = `workflow:${runId}`;
 	const store = createStore();
 	const backend = new InMemoryDurableBackend();
-	bindStoreDurableBackend(store, backend);
+	configureTestStoreBackend(store, backend);
 	const owner = extensionFixture("recipient-owner", "recipient-owner", undefined, "default");
 	const sender = extensionFixture("recipient-sender", "recipient-sender", undefined, group);
 	const raw = new RawBrokerClient();
@@ -867,7 +867,7 @@ test("ctx.ui run prompts and synthetic prompt stages are hidden and broker-refus
 	const group = `workflow:${rootId}`;
 	const store = createStore();
 	const backend = new InMemoryDurableBackend();
-	bindStoreDurableBackend(store, backend);
+	configureTestStoreBackend(store, backend);
 	const owner = extensionFixture("prompt-owner", "prompt-owner", undefined, "default");
 	const sender = extensionFixture("prompt-sender", "prompt-sender", undefined, group);
 	const raw = new RawBrokerClient();
@@ -1356,7 +1356,7 @@ test.each(["tool", "prompt"] as const)(
 		const group = `workflow:${runId}`;
 		const store = createStore();
 		const backend = new InMemoryDurableBackend();
-		bindStoreDurableBackend(store, backend);
+		configureTestStoreBackend(store, backend);
 		const owner = extensionFixture("ambiguity-owner", "ambiguity-owner", undefined, "default");
 		const sender = extensionFixture("ambiguity-sender", "ambiguity-sender", undefined, group);
 		const agents = [new IntercomClient(), new IntercomClient()];
@@ -1461,7 +1461,7 @@ test("live agent aliases survive same-name tools when pending capability disappe
 	const group = `workflow:${runId}`;
 	const store = createStore();
 	const backend = new InMemoryDurableBackend();
-	bindStoreDurableBackend(store, backend);
+	configureTestStoreBackend(store, backend);
 	const owner = extensionFixture("alias-transition-owner", "alias-transition-owner", undefined, group);
 	const sender = extensionFixture("alias-transition-sender", "alias-transition-sender", undefined, group);
 	const agent = new IntercomClient();
@@ -1637,7 +1637,7 @@ test.each([
 		const group = `workflow:${runId}`;
 		const store = createStore();
 		const backend = new InMemoryDurableBackend();
-		bindStoreDurableBackend(store, backend);
+		configureTestStoreBackend(store, backend);
 		const fixtures: ReturnType<typeof extensionFixture>[] = [];
 		const makeOwner = () => {
 			const owner = extensionFixture("reactivation-owner", "reactivation-owner", undefined, "default");
@@ -1868,7 +1868,7 @@ test("nested known tools are broker-refused through every supported boundary and
 	const group = `workflow:${rootId}`;
 	const store = createStore();
 	const backend = new InMemoryDurableBackend();
-	bindStoreDurableBackend(store, backend);
+	configureTestStoreBackend(store, backend);
 	const owner = extensionFixture("nested-purpose-owner", "nested-purpose-owner", undefined, "default");
 	const sender = new RawBrokerClient();
 	rawClients.add(sender);
@@ -2117,7 +2117,7 @@ test("materialized ctx.tool IDs and names never become speculative future-agent 
 	const group = `workflow:${runId}`;
 	const store = createStore();
 	const backend = new InMemoryDurableBackend();
-	bindStoreDurableBackend(store, backend);
+	configureTestStoreBackend(store, backend);
 	const owner = extensionFixture("tool-node-owner", "tool-node-owner", undefined, "default");
 	const sender = new RawBrokerClient();
 	rawClients.add(sender);
@@ -2275,7 +2275,7 @@ test("the production owner route respects pending delivery tool restrictions", a
 			status: "running",
 			createdAt: 1,
 		});
-		bindStoreDurableBackend(store, backend);
+		configureTestStoreBackend(store, backend);
 		const owner = extensionFixture(`${scenario.name}-owner`, `${scenario.name}-owner`, undefined, "default");
 		intercomHeavy(owner.pi as never);
 		const disposeBridge = registerPendingStageIntercomBridge(owner.pi as never, store);
@@ -2347,7 +2347,7 @@ test("an invocation controls pending and live delivery into an owned isolated st
 	const store = createStore();
 	const backend = new InMemoryDurableBackend();
 	backend.registerWorkflow({ workflowId: runId, name: "isolated-live", inputs: {}, status: "running", createdAt: 1 });
-	bindStoreDurableBackend(store, backend);
+	configureTestStoreBackend(store, backend);
 	const owner = extensionFixture("isolated-owner-session", "isolated-owner", undefined, "default");
 	intercom(owner.pi as never);
 	const disposeBridge = registerPendingStageIntercomBridge(owner.pi as never, store);
@@ -2545,7 +2545,7 @@ test("an invocation controls pending and live delivery into an owned isolated st
 test("one composite workflow-stage target transitions atomically from durable queueing to live delivery", async () => {
 	const store = createStore();
 	const backend = new InMemoryDurableBackend();
-	bindStoreDurableBackend(store, backend);
+	configureTestStoreBackend(store, backend);
 	const owner = extensionFixture("owner-runtime-session", "workflow-owner", undefined, "default");
 	const sender = extensionFixture("sender-runtime-session", "stage-a");
 	intercom(owner.pi as never);
@@ -2830,7 +2830,7 @@ test("route-neutral store churn preserves durable queueing and live delivery for
 	const stageSessionId = "burst-reviewer-session";
 	const store = createStore();
 	const backend = new InMemoryDurableBackend();
-	bindStoreDurableBackend(store, backend);
+	configureTestStoreBackend(store, backend);
 	const owner = extensionFixture("burst-owner-session", "burst-owner", undefined, "default");
 	const sender = extensionFixture("burst-sender-session", "burst-sender", undefined, group);
 	intercom(owner.pi as never);
@@ -2950,7 +2950,7 @@ test("a durable pending admission survives a real stage-session fallback attempt
 		status: "running",
 		createdAt: 1,
 	});
-	bindStoreDurableBackend(store, backend);
+	configureTestStoreBackend(store, backend);
 	const owner = extensionFixture("attempt-restart-owner", "attempt-restart-owner", undefined, "default");
 	intercom(owner.pi as never);
 	const disposeBridge = registerPendingStageIntercomBridge(owner.pi as never, store);
@@ -3246,7 +3246,7 @@ test("an identical durable delivered retry is acknowledged as delivered through 
 			startedAt: 1,
 			pendingStageMessages: [...(reader.getWorkflow(runId)?.pendingStageMessages ?? [])],
 		});
-		bindStoreDurableBackend(reloadedStore, reader);
+		configureTestStoreBackend(reloadedStore, reader);
 		secondOwner = extensionFixture("delivered-retry-owner-2", "delivered-retry-owner-2", undefined, "default");
 		intercomHeavy(secondOwner.pi as never);
 		await secondOwner.start();
@@ -3687,7 +3687,7 @@ test("an ordinary queued send receives one correlated failure when its stage bec
 	const group = `workflow:${runId}`;
 	const store = createStore();
 	const backend = new InMemoryDurableBackend();
-	bindStoreDurableBackend(store, backend);
+	configureTestStoreBackend(store, backend);
 	const owner = extensionFixture("undeliverable-owner", "undeliverable-owner", undefined, "default");
 	const sender = extensionFixture("undeliverable-sender", "undeliverable-sender", undefined, group);
 	intercom(owner.pi as never);
@@ -3767,7 +3767,7 @@ test("the workflow owner session receives its own undeliverable notice when it i
 	const group = `workflow:${runId}`;
 	const store = createStore();
 	const backend = new InMemoryDurableBackend();
-	bindStoreDurableBackend(store, backend);
+	configureTestStoreBackend(store, backend);
 	const owner = extensionFixture("self-notice-owner", "self-notice-owner", undefined, group);
 	intercom(owner.pi as never);
 	const disposeBridge = registerPendingStageIntercomBridge(owner.pi as never, store);
@@ -3938,7 +3938,7 @@ test("a reconnected logical sender receives its durable undeliverable notice aft
 			startedAt: 1,
 			pendingStageMessages: [...(reader.getWorkflow(runId)?.pendingStageMessages ?? [])],
 		});
-		bindStoreDurableBackend(reloadedStore, reader);
+		configureTestStoreBackend(reloadedStore, reader);
 		ownerAfter = extensionFixture("sender-reconnect-owner-after", "sender-reconnect-owner", undefined, "default");
 		senderAfter = extensionFixture(
 			"sender-reconnect-session-before",
@@ -4023,7 +4023,7 @@ test("a reconnected logical sender receives its durable undeliverable notice aft
 			startedAt: 1,
 			pendingStageMessages: [...(receiptReader.getWorkflow(runId)?.pendingStageMessages ?? [])],
 		});
-		bindStoreDurableBackend(restartedStore, receiptReader);
+		configureTestStoreBackend(restartedStore, receiptReader);
 		let retryNotifications = 0;
 		assert.equal(
 			await settleUndeliverablePendingStageMessages(restartedStore, async () => {
@@ -4054,7 +4054,7 @@ test("a reconnected logical sender receives its durable undeliverable notice aft
 test("a sticky pattern preludes every materializing iteration and ** broadcasts live stages", async () => {
 	const store = createStore();
 	const backend = new InMemoryDurableBackend();
-	bindStoreDurableBackend(store, backend);
+	configureTestStoreBackend(store, backend);
 	const owner = extensionFixture("sticky-owner-session", "workflow-owner", undefined, "default");
 	const sender = extensionFixture("sticky-sender-session", "stage-a");
 	intercom(owner.pi as never);
@@ -4256,7 +4256,7 @@ for (const scenario of ["startup replacement", "durable acknowledgment replay"] 
 		const { SettingsManager } = await import("../../packages/coding-agent/src/core/settings-manager.js");
 		const store = createStore();
 		const backend = new InMemoryDurableBackend();
-		bindStoreDurableBackend(store, backend);
+		configureTestStoreBackend(store, backend);
 		const owner = extensionFixture("issue-3406-owner", "owner", undefined, "default");
 		const sender = extensionFixture("issue-3406-sender", "sender");
 		intercom(owner.pi as never);
@@ -4391,7 +4391,7 @@ test("retired real startup context cannot acknowledge a dropped sticky message (
 	const { createHarness } = await import("../../packages/coding-agent/test/suite/harness.js");
 	const store = createStore();
 	const backend = new InMemoryDurableBackend();
-	bindStoreDurableBackend(store, backend);
+	configureTestStoreBackend(store, backend);
 	const owner = extensionFixture("issue-3406-retired-owner", "owner", undefined, "default");
 	const sender = extensionFixture("issue-3406-retired-sender", "sender");
 	intercom(owner.pi as never);
