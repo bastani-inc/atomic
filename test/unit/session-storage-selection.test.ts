@@ -12,7 +12,10 @@ import {
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { InMemorySettingsStorage } from "../../packages/coding-agent/src/core/settings-storage.js";
 import { StorageConfigError, StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
-import { StorageUnavailableError as JsonlStorageUnavailableError } from "../../packages/coding-agent/src/core/storage/session/errors.js";
+import {
+	StorageUnavailableError as JsonlStorageUnavailableError,
+	SessionExistsError,
+} from "../../packages/coding-agent/src/core/storage/session/errors.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { createSessionManager } from "../../packages/coding-agent/src/main-session.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
@@ -317,6 +320,120 @@ test("default import and fork factories persist in SQLite without creating extra
 		for (const manager of managers) await manager.getSessionStore().close();
 		if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 		else process.env.ATOMIC_CODING_AGENT_DIR = previous;
+		removeTempDirectory(root);
+	}
+});
+
+test("failed implicit creation releases its acquisition without closing a borrowed store", async () => {
+	const root = makeTempDirectory("session-failed-create-");
+	const previous = process.env.ATOMIC_CODING_AGENT_DIR;
+	process.env.ATOMIC_CODING_AGENT_DIR = join(root, "agent");
+	const lifecycle = join(root, "lifecycle.txt");
+	try {
+		await writeFileEnsuringDir(
+			join(root, "agent", "settings.json"),
+			JSON.stringify({
+				sessions: {
+					storage: {
+						adapter: join(moduleDir(import.meta.url), "../fixtures/storage-adapter.ts"),
+						options: { path: join(root, "sessions.sqlite"), lifecycle },
+					},
+				},
+			}),
+		);
+		const first = await SessionManager.create(root, undefined, { id: "existing" });
+		const store = first.getSessionStore();
+		try {
+			await assert.rejects(SessionManager.create(root, undefined, { id: "existing" }), SessionExistsError);
+			const source = await SessionManager.create(root, join(root, "source"), { id: "existing" });
+			try {
+				await assert.rejects(first.forkTo(root, undefined, { id: "existing" }), SessionExistsError);
+				await assert.rejects(SessionManager.importFromJsonl(source.getSessionFile()!, root), SessionExistsError);
+				await assert.rejects(
+					SessionManager.forkFrom(source.getSessionFile()!, root, undefined, { id: "existing" }),
+					SessionExistsError,
+				);
+				await assert.rejects(first.forkTo(root, store, { id: "existing" }), SessionExistsError);
+				await assert.rejects(
+					SessionManager.importFromJsonl(source.getSessionFile()!, root, store),
+					SessionExistsError,
+				);
+			} finally {
+				await source.getSessionStore().close();
+			}
+			await assert.rejects(SessionManager.create(store, root, { id: "existing" }), SessionExistsError);
+			assert.equal((await store.load("existing")).header.id, "existing");
+		} finally {
+			await store.close();
+		}
+		assert.equal(await readText(lifecycle), "open\nclose\n");
+	} finally {
+		if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+		else process.env.ATOMIC_CODING_AGENT_DIR = previous;
+		removeTempDirectory(root);
+	}
+});
+
+test("failed implicit continuation releases its store and preserves borrowed store errors", async () => {
+	const root = makeTempDirectory("session-failed-continue-");
+	const previous = process.env.ATOMIC_CODING_AGENT_DIR;
+	process.env.ATOMIC_CODING_AGENT_DIR = join(root, "agent");
+	const lifecycle = join(root, "lifecycle.txt");
+	try {
+		await writeFileEnsuringDir(
+			join(root, "agent", "settings.json"),
+			JSON.stringify({
+				sessions: {
+					storage: {
+						adapter: join(moduleDir(import.meta.url), "../fixtures/session-factory-failure-adapter.ts"),
+						options: { lifecycle },
+					},
+				},
+			}),
+		);
+		await assert.rejects(SessionManager.continueRecent(root), TypeError);
+		assert.equal(await readText(lifecycle), "open\nclose\n");
+		const supplied = new MemorySessionStore();
+		const failure = new JsonlStorageUnavailableError(supplied.descriptor, new Error("recent"));
+		supplied.findMostRecent = async () => {
+			throw failure;
+		};
+		try {
+			await assert.rejects(SessionManager.continueRecent(supplied, root), (error: Error) => error === failure);
+			assert.equal(await supplied.readHeader("missing"), undefined);
+		} finally {
+			await supplied.close();
+		}
+	} finally {
+		if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+		else process.env.ATOMIC_CODING_AGENT_DIR = previous;
+		removeTempDirectory(root);
+	}
+});
+
+test("higher-priority session selections ignore malformed losing values", () => {
+	const root = makeTempDirectory("session-losing-source-");
+	const previous = process.env.ATOMIC_CODING_AGENT_SESSION_DIR;
+	try {
+		delete process.env.ATOMIC_CODING_AGENT_SESSION_DIR;
+		assert.deepEqual(
+			selectSessionStorage(root, { noSession: true, settings: { sessions: { storage: null as never } } }),
+			{ kind: "memory" },
+		);
+		assert.deepEqual(
+			selectSessionStorage(root, {
+				settings: { sessions: { storage: { memory: true } }, storage: { path: 42 as never } },
+			}),
+			{ kind: "memory" },
+		);
+		process.env.ATOMIC_CODING_AGENT_SESSION_DIR = "file://%";
+		assert.deepEqual(selectSessionStorage(root, { sessionDir: "chosen" }), {
+			kind: "jsonl",
+			dir: join(root, "chosen"),
+		});
+	} finally {
+		if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_SESSION_DIR;
+		else process.env.ATOMIC_CODING_AGENT_SESSION_DIR = previous;
 		removeTempDirectory(root);
 	}
 });

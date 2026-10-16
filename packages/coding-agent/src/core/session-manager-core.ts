@@ -59,6 +59,7 @@ import {
 } from "./session-manager-validation.ts";
 import { resolveSessionStore } from "./session-storage.js";
 import { listSessionStore } from "./session-store-list.js";
+import { type StorageFailureCause, StorageRollbackError } from "./storage/errors.js";
 import {
 	SessionFormatVersionError,
 	SessionIdMismatchError,
@@ -675,11 +676,13 @@ export class SessionManager {
 				? await JsonlSessionStore.open(sessionDir, { exactDirectory: true, scanExisting: false })
 				: (sessionDir ?? (await resolveSessionStore(cwd)));
 		const directory = store instanceof JsonlSessionStore ? store.descriptor.location : "";
-		const manager = new SessionManager(store, cwd, directory, { ...options, parentSession: this.sessionId });
-		manager.fileEntries.push(...this.getEntries());
-		await manager.initialize();
-		manager._buildIndex();
-		return manager;
+		return SessionManager.constructWithStore(store, store !== sessionDir, async () => {
+			const manager = new SessionManager(store, cwd, directory, { ...options, parentSession: this.sessionId });
+			manager.fileEntries.push(...this.getEntries());
+			await manager.initialize();
+			manager._buildIndex();
+			return manager;
+		});
 	}
 
 	static async importFromJsonl(
@@ -691,12 +694,33 @@ export class SessionManager {
 			typeof sessionDir === "string"
 				? await JsonlSessionStore.open(sessionDir, { exactDirectory: true, scanExisting: false })
 				: (sessionDir ?? (await resolveSessionStore(cwd)));
-		return new SessionManager(
-			store,
-			cwd,
-			store instanceof JsonlSessionStore ? store.descriptor.location : "",
-		).importFromJsonl(inputPath);
+		return SessionManager.constructWithStore(store, store !== sessionDir, () =>
+			new SessionManager(
+				store,
+				cwd,
+				store instanceof JsonlSessionStore ? store.descriptor.location : "",
+			).importFromJsonl(inputPath),
+		);
 	}
+	private static async constructWithStore(
+		store: SessionStore,
+		owned: boolean,
+		construct: () => Promise<SessionManager>,
+	): Promise<SessionManager> {
+		try {
+			return await construct();
+		} catch (error) {
+			if (owned) {
+				try {
+					await store.close();
+				} catch (cause) {
+					throw new StorageRollbackError(error as StorageFailureCause, cause as StorageFailureCause);
+				}
+			}
+			throw error;
+		}
+	}
+
 	static async create(cwd: string, sessionDir?: string, options?: NewSessionOptions): Promise<SessionManager>;
 	static async create(store: SessionStore, cwd: string, options?: NewSessionOptions): Promise<SessionManager>;
 	static async create(
@@ -706,7 +730,8 @@ export class SessionManager {
 	): Promise<SessionManager> {
 		const cwd = typeof cwdOrStore === "string" ? cwdOrStore : (directoryOrCwd ?? process.cwd());
 		if (typeof cwdOrStore === "string" && directoryOrCwd === undefined) {
-			return SessionManager.create(await resolveSessionStore(cwd), cwd, options);
+			const store = await resolveSessionStore(cwd);
+			return SessionManager.constructWithStore(store, true, () => SessionManager.create(store, cwd, options));
 		}
 		const directory =
 			typeof cwdOrStore === "string"
@@ -720,13 +745,15 @@ export class SessionManager {
 			typeof cwdOrStore === "string"
 				? await JsonlSessionStore.open(directory, { exactDirectory: true, scanExisting: false })
 				: cwdOrStore;
-		const manager = new SessionManager(store, cwd, directory, options);
-		if (typeof cwdOrStore !== "string" && store instanceof JsonlSessionStore) {
-			manager.sessionFile = store.locationFor(manager.recordHeader());
-			manager.sessionDir = dirname(manager.sessionFile);
-		}
-		await manager.initialize();
-		return manager;
+		return SessionManager.constructWithStore(store, store !== cwdOrStore, async () => {
+			const manager = new SessionManager(store, cwd, directory, options);
+			if (typeof cwdOrStore !== "string" && store instanceof JsonlSessionStore) {
+				manager.sessionFile = store.locationFor(manager.recordHeader());
+				manager.sessionDir = dirname(manager.sessionFile);
+			}
+			await manager.initialize();
+			return manager;
+		});
 	}
 
 	static async open(path: string, sessionDir?: string, cwdOverride?: string): Promise<SessionManager>;
@@ -787,18 +814,26 @@ export class SessionManager {
 	): Promise<SessionManager> {
 		const cwd = typeof cwdOrStore === "string" ? cwdOrStore : directoryOrCwd!;
 		if (typeof cwdOrStore === "string" && directoryOrCwd === undefined) {
-			return SessionManager.continueRecent(await resolveSessionStore(cwd), cwd, options);
+			const store = await resolveSessionStore(cwd);
+			return SessionManager.constructWithStore(store, true, () =>
+				SessionManager.continueRecent(store, cwd, options),
+			);
 		}
 		const directory = typeof cwdOrStore === "string" ? (directoryOrCwd ?? getDefaultSessionDirPath(cwd)) : "";
 		const store =
 			typeof cwdOrStore === "string"
 				? await JsonlSessionStore.open(directory, { exactDirectory: true, scanExisting: false })
 				: cwdOrStore;
-		const recent = await store.findMostRecent({ cwd: resolvePath(cwd), includeInternal: options?.includeInternal });
-		const manager = new SessionManager(store, cwd, directory);
-		if (recent) manager.restore(await store.load(recent.id), recent.location);
-		else await manager.initialize();
-		return manager;
+		return SessionManager.constructWithStore(store, store !== cwdOrStore, async () => {
+			const recent = await store.findMostRecent({
+				cwd: resolvePath(cwd),
+				includeInternal: options?.includeInternal,
+			});
+			const manager = new SessionManager(store, cwd, directory);
+			if (recent) manager.restore(await store.load(recent.id), recent.location);
+			else await manager.initialize();
+			return manager;
+		});
 	}
 
 	static inMemory(cwd: string = process.cwd(), options?: NewSessionOptions, entries?: FileEntry[]): SessionManager {
@@ -822,20 +857,26 @@ export class SessionManager {
 			exactDirectory: true,
 			scanExisting: false,
 		});
-		const source = await sourceStore.loadFile(resolvePath(sourcePath));
-		await sourceStore.close();
+		let source: SessionSnapshot;
+		try {
+			source = await sourceStore.loadFile(resolvePath(sourcePath));
+		} finally {
+			await sourceStore.close();
+		}
 		const store =
 			sessionDir === undefined
 				? await resolveSessionStore(targetCwd)
 				: await JsonlSessionStore.open(sessionDir, { exactDirectory: true, scanExisting: false });
-		const manager = new SessionManager(store, targetCwd, sessionDir ?? "", {
-			...options,
-			parentSession: source.header.id,
+		return SessionManager.constructWithStore(store, true, async () => {
+			const manager = new SessionManager(store, targetCwd, sessionDir ?? "", {
+				...options,
+				parentSession: source.header.id,
+			});
+			manager.fileEntries.push(...source.entries);
+			await manager.initialize();
+			manager._buildIndex();
+			return manager;
 		});
-		manager.fileEntries.push(...source.entries);
-		await manager.initialize();
-		manager._buildIndex();
-		return manager;
 	}
 
 	static async findById(cwd: string, id: string, sessionDir?: string): Promise<string | undefined> {
