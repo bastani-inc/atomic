@@ -237,6 +237,7 @@ export class WorkflowAttachPane implements Component {
 				: 0;
 	}
 	retarget(runId: string | null, stageId?: string, stageRunId?: string): void {
+		this.attachmentGeneration += 1;
 		if (this.chatView && this.attachedRunId && this.lastAttachedStageId) {
 			this.store.recordStageAttached(this.attachedRunId, this.lastAttachedStageId, false);
 		}

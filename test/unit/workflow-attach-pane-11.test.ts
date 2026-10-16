@@ -83,6 +83,36 @@ function submit(chatView: { handleInput(data: string): boolean }, text: string):
 }
 
 describe("WorkflowAttachPane post-mortem revival", () => {
+	test.each(["run-1", "run-2"])("graph retarget to %s cancels a pending retained chat", async (targetRunId) => {
+		const store = createStore();
+		setupCompletedRun(store, "run-1");
+		setupCompletedRun(store, "run-2");
+		const pending = Promise.withResolvers<undefined>();
+		const pane = new WorkflowAttachPane({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			initialAttachStageId: "stage-a",
+			resolvePostMortemHandle: () => pending.promise,
+			onClose: () => {},
+		});
+		try {
+			pane.retarget(targetRunId);
+			assert.equal(pane._mode, "graph");
+			pending.resolve(undefined);
+			await flush();
+			assert.equal(pane._mode, "graph");
+			assert.equal(pane._runId, targetRunId);
+			assert.equal(pane._hasChatView, false);
+			assert.equal(pane._lastAttachedStageId, null);
+			const oldStage = store.runs().find((run) => run.id === "run-1")?.stages[0];
+			assert.ok(oldStage);
+			assert.equal(oldStage.attached, undefined);
+		} finally {
+			pane.dispose();
+		}
+	});
+
 	test("revives a post-mortem handle when the registry misses", async () => {
 		const store = createStore();
 		setupCompletedRun(store, "run-1");
