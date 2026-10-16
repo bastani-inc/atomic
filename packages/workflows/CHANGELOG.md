@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Breaking Changes
 
+- Construct `JournalDurableBackend` with asynchronous `open()`; direct construction and internal synchronous journal methods have been removed.
 - `RunOpts.journal.database` requires the async SQLite facade; wrap an existing native connection with `wrapNodeSqliteDatabase`. Journal selection errors now use `StorageConfigError` and its `source`, `field`, and `reason` fields instead of `JournalConfigurationError`.
 - Replaced `forkFromSessionFile` with `forkFromSessionId`. Use the prior task's `sessionId` in the selected session store. `recordStageSession` now accepts `{ sessionId }` only. Retained chat validation and completed inspection are asynchronous, and transcript paths are display metadata, not resume or fork identities.
 
@@ -26,7 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Removed the SDK `durability` option, `WorkflowDurability`, and `WorkflowDurabilityRequiredError`. Use `RunOpts.journal` to select storage or isolate runs, and handle typed journal errors when storage is unavailable.
 - Removed `InMemoryDurableBackend` and `createInMemoryTestBackend`. Use `JournalDurableBackend` over `MemoryRunJournal` for an explicitly in-memory backend. Removed the `legacyRecovery` workflow-tool argument and remaining `workflows.durability` settings.
 - Removed the `@bastani/workflows` import alias; use `@bastani/atomic/workflows`.
-- Custom `RunJournal` implementations must provide `getRun`, `takeoverExpired`, `leaseState`, lazy paged `read`, and `deleteOwnedRun(lease)` for atomic lease-fenced deletion.
+- Custom `RunJournal` implementations must provide `getRun`, `takeoverExpired`, `leaseState`, lazy paged `read`, and `deleteOwnedRun(lease)` for atomic lease-fenced deletion. Synchronous fast paths are internal.
 - Invocation records require `invocationFingerprint`.
 - SDK workflow stages now use persistent session storage by default, including stages without `sessionDir`. Ephemeral stages must explicitly supply an in-memory session manager through an adapter. Storage failures do not fall back to memory.
 - Replaced `SqliteRunJournal` with async `SqlRunJournal.open(database, { prefix })` and `openSqlRunJournal(pathOrDatabase?)`; await `resolveRunJournal`. Journal tables now use the `wf_` namespace with no migration of earlier unreleased tables. Journal storage errors use the shared `StorageUnavailableError` fields `adapter`, `location`, and `cause` instead of `path`.

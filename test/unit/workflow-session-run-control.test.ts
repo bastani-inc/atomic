@@ -1403,7 +1403,7 @@ describe("session workflow run control", () => {
 
 	test.sequential("returns a structured storage_unavailable result when durable inspection throws (#3377)", async () => {
 		const runId = testRunId("session-run-control-inspection-plain-error");
-		setDurableBackend(await createFailingInspectionBackend(new Error("connect ECONNREFUSED 127.0.0.1:5432")));
+		setDurableBackend(await createFailingInspectionBackend(new Error("journal read failed")));
 		const { execute, control } = setup();
 
 		for (const action of ["pause", "quit"] as const) {
@@ -1414,7 +1414,7 @@ describe("session workflow run control", () => {
 			assert.equal("code" in result ? result.code : undefined, "storage_unavailable");
 			assert.match(
 				"message" in result ? result.message : "",
-				new RegExp(`Failed to ${action} run ${runId}: connect ECONNREFUSED 127\\.0\\.0\\.1:5432`),
+				new RegExp(`Failed to ${action} run ${runId}: journal read failed`),
 			);
 		}
 		for (const operation of [() => control.pause(runId), () => control.quit(runId)]) {
@@ -1422,7 +1422,7 @@ describe("session workflow run control", () => {
 			assert.ok(error instanceof WorkflowRunStorageError, error.message);
 			assert.equal(error.code, "WORKFLOW_RUN_STORAGE");
 			assert.equal(error.runId, runId);
-			assert.match(error.message, /connect ECONNREFUSED 127\.0\.0\.1:5432/);
+			assert.match(error.message, /journal read failed/);
 		}
 	});
 
