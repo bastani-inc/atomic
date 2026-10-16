@@ -122,9 +122,31 @@ function restoreJsonStrings(value: JsonValue): JsonValue {
 	return value;
 }
 
+function prefixJsonStrings(json: string): string {
+	let prefixed = "";
+	let inString = false;
+	for (let index = 0; index < json.length; index++) {
+		const char = json[index];
+		prefixed += char;
+		if (!inString) {
+			if (char === '"') {
+				inString = true;
+				prefixed += "$";
+			}
+			continue;
+		}
+		if (char === "\\") {
+			index += 1;
+			if (index < json.length) prefixed += json[index];
+		} else if (char === '"') {
+			inString = false;
+		}
+	}
+	return prefixed;
+}
+
 function parsePartialJson(json: string): JsonValue {
-	const prefixedJson = json.replace(/"(?:\\[\s\S]|[^"\\])*(?:"|\\?$)/g, (literal) => `"$${literal.slice(1)}`);
-	return restoreJsonStrings(partialParse(prefixedJson) as JsonValue);
+	return restoreJsonStrings(partialParse(prefixJsonStrings(json)) as JsonValue);
 }
 
 /**

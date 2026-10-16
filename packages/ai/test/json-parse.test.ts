@@ -45,6 +45,15 @@ describe("parseStreamingJson", () => {
 		assert.equal(JSON.stringify(parsed), JSON.stringify(expected));
 	});
 
+	it("keeps __proto__ objects as data on the repaired partial-parse fallback (#3679)", () => {
+		const parsed = parseStreamingJson('{"__proto__":{"polluted":"trailing\\');
+		const expected = JSON.parse('{"__proto__":{"polluted":"trailing"}}');
+		assert.deepEqual(parsed, expected);
+		assert.equal(Object.getPrototypeOf(parsed), Object.prototype);
+		assert.equal(Object.hasOwn(parsed, "__proto__"), true);
+		assert.equal(JSON.stringify(parsed), JSON.stringify(expected));
+	});
+
 	it("retains partial string contents through the repair retry (#3679)", () => {
 		assert.equal(parseStreamingJson(String.raw`"\x" trailing`), "\\x");
 		assert.deepEqual(parseStreamingJson('{"__proto__":"trailing\\'), JSON.parse('{"__proto__":"trailing"}'));
