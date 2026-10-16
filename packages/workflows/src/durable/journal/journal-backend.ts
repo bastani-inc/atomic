@@ -70,10 +70,10 @@ function isPromise<T>(value: T | Promise<T>): value is Promise<T> {
 	return typeof (value as Promise<T> | undefined)?.then === "function";
 }
 
-function* invoke<T>(action: () => T | Promise<T>): Operation<T> {
+function* invoke<T>(action: () => T | Promise<T>, synchronous = false): Operation<T> {
 	try {
 		const result = action();
-		if (!isPromise(result)) return result;
+		if (synchronous) return result as T;
 		let value: T;
 		yield Promise.resolve(result).then((resolved) => {
 			value = resolved;
@@ -292,10 +292,12 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		if (lost) throw lost;
 		const existing = this.leases.get(runId);
 		if (existing) return existing;
-		const result = yield* invoke(() =>
-			this.synchronous !== undefined
-				? this.synchronous.takeoverExpiredSync(runId, this.holderId, FOREIGN_LIVE_WORKFLOW_WINDOW_MS)
-				: this.journal.takeoverExpired(runId, this.holderId, FOREIGN_LIVE_WORKFLOW_WINDOW_MS),
+		const result = yield* invoke(
+			() =>
+				this.synchronous !== undefined
+					? this.synchronous.takeoverExpiredSync(runId, this.holderId, FOREIGN_LIVE_WORKFLOW_WINDOW_MS)
+					: this.journal.takeoverExpired(runId, this.holderId, FOREIGN_LIVE_WORKFLOW_WINDOW_MS),
+			this.synchronous !== undefined,
 		);
 		if (result.status === "held") throw new JournalOwnershipError(runId, result.holderId);
 		this.leases.set(runId, result.lease);
@@ -325,10 +327,12 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	): Operation<void> {
 		const lease = yield* this.ownership(runId);
 		try {
-			yield* invoke(() =>
-				this.synchronous !== undefined
-					? this.synchronous.appendSync(lease, event, options)
-					: this.journal.append(lease, event, options),
+			yield* invoke(
+				() =>
+					this.synchronous !== undefined
+						? this.synchronous.appendSync(lease, event, options)
+						: this.journal.append(lease, event, options),
+				this.synchronous !== undefined,
 			);
 			yield* this.refresh(runId);
 		} catch (error) {
@@ -372,7 +376,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			status: input.status,
 			inputs: input.inputs,
 		};
-		yield* invoke(() => this.synchronous?.createRunSync(header) ?? this.journal.createRun(header));
+		yield* invoke(
+			() => this.synchronous?.createRunSync(header) ?? this.journal.createRun(header),
+			this.synchronous !== undefined,
+		);
 		yield* this.ownership(input.workflowId);
 		yield* this.refresh(input.workflowId);
 		const draft = yield* this.draft(input.workflowId);
@@ -768,12 +775,15 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		return execute(this.resetJournal());
 	}
 	private *resetJournal(): Operation<void> {
-		const runs = yield* invoke(() => this.synchronous?.listRunsSync() ?? this.journal.listRuns());
+		const runs = yield* invoke(
+			() => this.synchronous?.listRunsSync() ?? this.journal.listRuns(),
+			this.synchronous !== undefined,
+		);
 		for (const run of runs)
 			yield* invoke(() => {
 				if (this.synchronous !== undefined) return this.synchronous.deleteRunSync(run.runId);
 				return this.journal.deleteRun(run.runId);
-			});
+			}, this.synchronous !== undefined);
 		this.projection.reset();
 		this.sequences.clear();
 		this.leases.clear();
@@ -791,7 +801,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			yield* invoke(() => {
 				if (this.synchronous !== undefined) return this.synchronous.renewSync(lease);
 				return this.journal.renew(lease);
-			});
+			}, this.synchronous !== undefined);
 		} catch (error) {
 			if (this.leases.get(runId) === lease && error instanceof Error)
 				this.lost.set(runId, this.mapOwnership(error, runId));
@@ -849,7 +859,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			yield* invoke(() => {
 				if (this.synchronous !== undefined) return this.synchronous.releaseSync(lease);
 				return this.journal.release(lease);
-			});
+			}, this.synchronous !== undefined);
 		} catch (error) {
 			if (!(error instanceof StaleLeaseError)) throw error;
 		} finally {
