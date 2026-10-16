@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getAgentDir, openNodeSqliteDatabase, StorageConfigError } from "@bastani/atomic";
 import { afterEach, beforeEach, test, vi } from "vitest";
@@ -11,7 +12,8 @@ import {
 } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { openSqlRunJournal, SqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import type { RunJournal } from "../../packages/workflows/src/durable/journal/types.js";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { optionCases } from "../fixtures/storage-value-adapter.js";
+import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
 
 let root: string;
 const opened: RunJournal[] = [];
@@ -223,3 +225,60 @@ test("SDK selections require a concrete form and preserve an explicitly empty pa
 		);
 	}
 });
+
+test("resolved adapter options preserve typed values and isolate each journal history", async () => {
+	const adapter = join(moduleDir(import.meta.url), "../fixtures/storage-value-adapter.ts");
+	const journals: RunJournal[] = [];
+	for (const [name, value] of optionCases) {
+		const journal = await resolve({ journal: { adapter, options: { root, value } } });
+		assert.ok(journal instanceof SqlRunJournal);
+		assert.equal(journal.path, join(root, `${name}.sqlite`));
+		assert.deepEqual(await journal.listRuns(), []);
+		for (const previous of journals) assert.equal(await previous.getRun(name), undefined);
+		await journal.createRun({ runId: name, name, cwd: root, createdAt: 1, status: "running" });
+		journals.push(journal);
+		const repeatedValue = value instanceof Uint8Array ? value.slice() : value;
+		const repeated = await resolve({ journal: { adapter, options: { value: repeatedValue, root } } });
+		assert.equal((await repeated.getRun(name))?.name, name);
+	}
+	assert.deepEqual(
+		(await readFile(join(root, "opens.txt"), "utf8")).trim().split("\n"),
+		optionCases.map(([name]) => name),
+	);
+});
+
+for (const source of ["sdk", "workflows.journal", "storage"] as const) {
+	for (const failure of ["missing-secret", "unsupported-domain"] as const) {
+		test(`resolved ${source} adapter ${failure} retains configuration provenance`, async () => {
+			vi.stubEnv("ATOMIC_TEST_STORAGE_ABSENT_TOKEN", undefined);
+			const selection =
+				failure === "missing-secret"
+					? {
+							adapter: join(moduleDir(import.meta.url), "../fixtures/storage-adapter.ts"),
+							secrets: { token: { env: "ATOMIC_TEST_STORAGE_ABSENT_TOKEN" } },
+						}
+					: { adapter: join(moduleDir(import.meta.url), "../fixtures/storage-unsupported-adapter.ts") };
+			await assert.rejects(
+				() =>
+					resolve(
+						source === "sdk"
+							? { journal: selection }
+							: {
+									settings:
+										source === "storage" ? { storage: selection } : { workflows: { journal: selection } },
+								},
+					),
+				(error: Error) => {
+					assert.ok(error instanceof StorageConfigError);
+					assert.equal(error.source, source === "sdk" ? "sdk" : "settings");
+					assert.equal(error.field, failure === "missing-secret" ? "secrets.token" : "adapter");
+					assert.equal(
+						error.reason,
+						failure === "missing-secret" ? "secret-env-missing" : "adapter-domain-unsupported",
+					);
+					return true;
+				},
+			);
+		});
+	}
+}

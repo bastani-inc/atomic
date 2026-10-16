@@ -49,6 +49,16 @@ export interface JournalFactories {
 const databaseIds = new WeakMap<SqliteDatabase, number>();
 let nextDatabaseId = 0;
 
+function storageOptionKey(
+	value: SqliteValue | boolean,
+): readonly [string, string | boolean | readonly number[] | null] {
+	if (value instanceof Uint8Array) return ["bytes", Array.from(value)];
+	if (value === null) return ["null", null];
+	if (typeof value === "number") return ["number", Object.is(value, -0) ? "-0" : String(value)];
+	if (typeof value === "bigint") return ["bigint", String(value)];
+	return [typeof value, value];
+}
+
 export function storageSelectionKey(selection: StorageSelection, agentDir?: string): string {
 	if (selection.kind === "database") {
 		let id = databaseIds.get(selection.database);
@@ -63,13 +73,11 @@ export function storageSelectionKey(selection: StorageSelection, agentDir?: stri
 		return JSON.stringify(["sqlite", path, selection.prefix ?? ""]);
 	}
 	if (selection.kind === "adapter") {
-		const options = Object.entries(selection.options ?? {}).sort(([a], [b]) => a.localeCompare(b));
+		const options = Object.entries(selection.options ?? {})
+			.sort(([a], [b]) => a.localeCompare(b))
+			.map(([name, value]) => [name, storageOptionKey(value)]);
 		const secrets = Object.entries(selection.secrets ?? {}).sort(([a], [b]) => a.localeCompare(b));
-		return JSON.stringify(
-			["adapter", agentDir, selection.module, options, secrets, selection.prefix ?? ""],
-			(_key, value: SqliteValue | boolean | object) =>
-				typeof value === "bigint" ? { bigint: String(value) } : value,
-		);
+		return JSON.stringify(["adapter", agentDir, selection.module, options, secrets, selection.prefix ?? ""]);
 	}
 	return JSON.stringify(selection);
 }

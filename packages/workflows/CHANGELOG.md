@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `RunOpts.journal.database` requires the async SQLite facade; wrap an existing native connection with `wrapNodeSqliteDatabase`. Journal selection errors now use `StorageConfigError` and its `source`, `field`, and `reason` fields instead of `JournalConfigurationError`.
+
+### Added
+
+- Added journal adapter module selection with environment/file secret references and shared `storage` settings. SDK options override environment, journal settings, shared storage, and persistent defaults; nearer settings replace complete selections. Caller-owned database selections accept the async SQLite facade and remain open after journal close.
+
 ## [0.9.38-alpha.6] - 2026-10-16
 
 ### Breaking Changes
@@ -18,7 +26,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - SDK workflow stages now use persistent session storage by default, including stages without `sessionDir`. Ephemeral stages must explicitly supply an in-memory session manager through an adapter. Storage failures do not fall back to memory.
 - Replaced `SqliteRunJournal` with async `SqlRunJournal.open(database, { prefix })` and `openSqlRunJournal(pathOrDatabase?)`; await `resolveRunJournal`. Journal tables now use the `wf_` namespace with no migration of earlier unreleased tables. Journal storage errors use the shared `StorageUnavailableError` fields `adapter`, `location`, and `cause` instead of `path`.
 - Custom journals must return `LeaseState.ageMs`, a non-negative safe-integer renewal age measured by the journal clock in the same read as the lease state. Ownership probes use this age rather than the process clock.
-- `RunOpts.journal.database` requires the async SQLite facade; wrap an existing native connection with `wrapNodeSqliteDatabase`. Journal selection errors now use `StorageConfigError` and its `source`, `field`, and `reason` fields instead of `JournalConfigurationError`.
 
 ### Added
 
@@ -26,7 +33,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Extended shared journal conformance checks to cover detached values, closed-journal rejection, failure atomicity, and deletion tombstones.
 - Added stale-only async journal takeover and read-only ownership inspection. Keyed append retries return the original entry before checking sequence expectations. Shared journal conformance covers stale-only takeover and early read termination.
 - Added facade-backed SQL journals for user-supplied SQLite-compatible drivers, optional table prefixes, shared session/journal databases, database-clock lease expiry, and sequence-checked `deleteOwnedRun(lease, expectSeq?)`.
-- Added journal adapter module selection with environment/file secret references and shared `storage` settings. SDK options override environment, journal settings, shared storage, and persistent defaults; nearer settings replace complete selections. Caller-owned database selections accept the async SQLite facade and remain open after journal close.
 
 ### Fixed
 

@@ -12,6 +12,7 @@ import {
 	type RunJournalOption,
 	type RunJournalSettings,
 	selectRunJournal,
+	withRunJournalConfigSource,
 } from "./journal/resolution.js";
 
 /** Internal test injection, captured only when an owning store is constructed. */
@@ -54,11 +55,11 @@ export async function initializeDurableBackend(options: DurableBackendOptions = 
 	owner.selectedBackends ??= new Map();
 	const selected = owner.selectedBackends;
 	const existing = selected.get(key);
-	let backend: DurableWorkflowBackend;
+	let ready: Promise<DurableWorkflowBackend>;
 	if (existing !== undefined) {
-		backend = await existing.ready;
+		ready = existing.ready;
 	} else {
-		const ready = openSelectedRunJournal(selection)
+		ready = openSelectedRunJournal(selection)
 			.then((journal) => JournalDurableBackend.open(journal, { ownsJournal }))
 			.then((opened) => {
 				if (ownsJournal) opened.closeOnProcessExit();
@@ -71,7 +72,6 @@ export async function initializeDurableBackend(options: DurableBackendOptions = 
 			});
 		const entry: SelectedDurableBackend = { ready };
 		selected.set(key, entry);
-		backend = await ready;
 	}
-	return backend;
+	return withRunJournalConfigSource(selection, () => ready);
 }

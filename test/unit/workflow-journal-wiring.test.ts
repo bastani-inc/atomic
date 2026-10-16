@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readdirSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
-import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
+import { openNodeSqliteDatabase, StorageConfigError } from "@bastani/atomic/storage";
 import { afterEach, test, vi } from "vitest";
 import { getDurableBackendProcessOwner } from "../../packages/workflows/src/durable/backend-process-owner.js";
 import { initializeDurableBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
@@ -20,6 +20,7 @@ import { runDetached } from "../../packages/workflows/src/runs/background/runner
 import type { RunResult } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import { run, workflow } from "../../packages/workflows/src/sdk-surface.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { optionCases } from "../fixtures/storage-value-adapter.js";
 import {
 	fileExists,
 	makeTempDirectory,
@@ -542,4 +543,93 @@ test("temporary SQLite paths do not alias filesystem paths in the resolved-selec
 			return true;
 		},
 	);
+});
+
+test("factory adapter selections isolate typed options and reuse equal values", async () => {
+	const root = makeTempDirectory("journal-option-values-");
+	directories.push(root);
+	const adapter = join(moduleDir(import.meta.url), "../fixtures/storage-value-adapter.ts");
+	const backends: JournalDurableBackend[] = [];
+	for (const [name, value] of optionCases) {
+		const backend = await initializeDurableBackend({ journal: { adapter, options: { root, value } } });
+		assert.ok(backend instanceof JournalDurableBackend);
+		assert.ok(backend.journal instanceof SqlRunJournal);
+		assert.equal(backend.journal.path, join(root, `${name}.sqlite`));
+		assert.deepEqual(await backend.journal.listRuns(), []);
+		for (const previous of backends) {
+			assert.notEqual(backend, previous);
+			assert.equal(previous.getWorkflow(name), undefined);
+		}
+		await backend.registerWorkflow({ workflowId: name, name, inputs: {}, createdAt: 1, status: "paused" });
+		backends.push(backend);
+		const repeatedValue = value instanceof Uint8Array ? value.slice() : value;
+		assert.equal(
+			await initializeDurableBackend({ journal: { adapter, options: { value: repeatedValue, root } } }),
+			backend,
+		);
+	}
+});
+
+for (const source of ["sdk", "workflows.journal", "storage"] as const) {
+	for (const failure of ["missing-secret", "unsupported-domain"] as const) {
+		test(`factory ${source} adapter ${failure} retains configuration provenance`, async () => {
+			vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", "");
+			vi.stubEnv("ATOMIC_TEST_STORAGE_ABSENT_TOKEN", undefined);
+			const selection =
+				failure === "missing-secret"
+					? {
+							adapter: join(moduleDir(import.meta.url), "../fixtures/storage-adapter.ts"),
+							secrets: { token: { env: "ATOMIC_TEST_STORAGE_ABSENT_TOKEN" } },
+						}
+					: { adapter: join(moduleDir(import.meta.url), "../fixtures/storage-unsupported-adapter.ts") };
+			await assert.rejects(
+				() =>
+					initializeDurableBackend(
+						source === "sdk"
+							? { journal: selection }
+							: {
+									settings:
+										source === "storage" ? { storage: selection } : { workflows: { journal: selection } },
+								},
+					),
+				(error: Error) => {
+					assert.ok(error instanceof StorageConfigError);
+					assert.equal(error.source, source === "sdk" ? "sdk" : "settings");
+					assert.equal(error.field, failure === "missing-secret" ? "secrets.token" : "adapter");
+					assert.equal(
+						error.reason,
+						failure === "missing-secret" ? "secret-env-missing" : "adapter-domain-unsupported",
+					);
+					return true;
+				},
+			);
+		});
+	}
+}
+
+test("concurrent factory callers retain their own configuration error source", async () => {
+	vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", "");
+	const selection = { adapter: join(moduleDir(import.meta.url), "../fixtures/storage-unsupported-adapter.ts") };
+	for (const sources of [
+		["sdk", "settings"],
+		["settings", "sdk"],
+	] as const) {
+		await Promise.all(
+			sources.map(async (source) => {
+				await assert.rejects(
+					() =>
+						initializeDurableBackend(
+							source === "sdk" ? { journal: selection } : { settings: { storage: selection } },
+						),
+					(error: Error) => {
+						assert.ok(error instanceof StorageConfigError);
+						assert.equal(error.source, source);
+						assert.equal(error.field, "adapter");
+						assert.equal(error.reason, "adapter-domain-unsupported");
+						return true;
+					},
+				);
+			}),
+		);
+	}
 });

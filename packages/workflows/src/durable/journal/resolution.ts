@@ -29,6 +29,7 @@ const provider = new StorageProvider({
 	memory: (descriptor) => new MemoryRunJournal(descriptor),
 	sql: SqlRunJournal.open,
 });
+const settingsSelections = new WeakSet<StorageSelection>();
 
 export function selectRunJournal(
 	options: { journal?: RunJournalOption; settings?: RunJournalSettings } = {},
@@ -75,10 +76,12 @@ export function selectRunJournal(
 		journal !== undefined ? "workflows.journal" : "storage",
 		journal !== undefined ? defaultPath : join(dirname(agentDir), "storage.sqlite"),
 	);
-	if (selection.kind === "sqlite" && !isAbsolute(selection.path)) {
-		return { ...selection, path: join(dirname(agentDir), selection.path) };
-	}
-	return selection;
+	const resolved =
+		selection.kind === "sqlite" && !isAbsolute(selection.path)
+			? { ...selection, path: join(dirname(agentDir), selection.path) }
+			: selection;
+	settingsSelections.add(resolved);
+	return resolved;
 }
 
 export async function resolveRunJournal(
@@ -89,5 +92,23 @@ export async function resolveRunJournal(
 
 export async function openSelectedRunJournal(selection: StorageSelection | RunJournal): Promise<RunJournal> {
 	if ("createRun" in selection) return selection;
-	return provider.openRunJournal(selection, { agentDir: getAgentDir(), domain: "journal" });
+	return withRunJournalConfigSource(selection, () =>
+		provider.openRunJournal(selection, { agentDir: getAgentDir(), domain: "journal" }),
+	);
+}
+
+export async function withRunJournalConfigSource<T>(
+	selection: StorageSelection | RunJournal,
+	open: () => Promise<T>,
+): Promise<T> {
+	if ("createRun" in selection) return open();
+	try {
+		return await open();
+	} catch (error) {
+		if (error instanceof StorageConfigError) {
+			const source = settingsSelections.has(selection) ? "settings" : "sdk";
+			if (error.source !== source) throw new StorageConfigError(source, error.field, error.reason);
+		}
+		throw error;
+	}
 }
