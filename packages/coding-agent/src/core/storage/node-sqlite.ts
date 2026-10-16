@@ -219,7 +219,8 @@ export async function openNodeSqliteDatabase(
 		connection = new Database(path);
 		connection.exec(`PRAGMA busy_timeout=${busyTimeoutMs}`);
 		connection.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON");
-		const identity = path === ":memory:" ? connection : await realpath(path);
+		const location = connection.location();
+		const identity = location === null ? connection : await realpath(location);
 		return new NodeSqliteDatabase(connection, descriptor, true, identity);
 	} catch (cause) {
 		try {
