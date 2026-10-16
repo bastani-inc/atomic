@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { getKeybindings, setKeybindings, stripTerminalSequences } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, test } from "vitest";
-import { KeybindingsManager } from "../src/core/keybindings.ts";
-import { ExtensionInputComponent } from "../src/modes/interactive/components/extension-input.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { KeybindingsManager } from "../src/core/keybindings.js";
+import { ExtensionInputComponent } from "../src/modes/interactive/components/extension-input.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 const originalKeybindings = getKeybindings();
 beforeAll(() => initTheme("dark"));
