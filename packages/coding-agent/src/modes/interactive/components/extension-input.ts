@@ -33,7 +33,7 @@ export class ExtensionInputComponent extends Container implements Focusable {
 
 	constructor(
 		title: string,
-		_placeholder: string | undefined,
+		placeholder: string | undefined,
 		onSubmit: (value: string) => void,
 		onCancel: () => void,
 		opts?: ExtensionInputOptions,
@@ -60,7 +60,7 @@ export class ExtensionInputComponent extends Container implements Focusable {
 			);
 		}
 
-		this.input = new Input();
+		this.input = new Input({ placeholder, placeholderStyle: (text) => theme.fg("dim", text) });
 		this.addChild(this.input);
 		this.addChild(new Spacer(1));
 		this.addChild(

@@ -37,6 +37,7 @@
 - Session pickers keep selection and rename bound to the selected project's store when IDs repeat across projects. Imported empty session IDs remain persistent across resume and restart instead of starting a new conversation.
 - Fixed Alt+Y restoring stale text and moving the cursor before the start of the scoped-model search after clearing it with Ctrl+C ([#3668](https://github.com/bastani-inc/atomic/issues/3668)).
 - Fixed MCP tools with colliding generated names overwriting another tool's owner. Generated names now avoid names already in use or reserved by other tools ([#3667](https://github.com/bastani-inc/atomic/issues/3667)).
+- Fixed extension input dialogs ignoring the supplied placeholder. The hint now appears while the input is empty without becoming submitted text ([#3672](https://github.com/bastani-inc/atomic/issues/3672)).
 
 ## [0.9.38-alpha.4] - 2026-10-16
 
