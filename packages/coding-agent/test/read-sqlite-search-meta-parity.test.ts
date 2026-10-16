@@ -28,7 +28,12 @@ describe("sqlite and metadata parity", () => {
 		const db = new mod.Database(dbPath);
 		try {
 			db.run("create table t (id integer primary key, body text)");
+			db.run("BEGIN");
 			for (let i = 1; i <= 600; i++) db.run("insert into t values (?, ?)", i, `row${i}`);
+			db.run("COMMIT");
+			expect(db.query("select * from t order by id").all()).toEqual(
+				Array.from({ length: 600 }, (_, i) => ({ id: i + 1, body: `row${i + 1}` })),
+			);
 		} finally {
 			db.close();
 		}
@@ -80,7 +85,12 @@ describe("sqlite and metadata parity", () => {
 		const db = new mod.Database(dbPath);
 		try {
 			db.run("create table t (id integer primary key)");
+			db.run("BEGIN");
 			for (let i = 1; i <= 1500; i++) db.run("insert into t values (?)", i);
+			db.run("COMMIT");
+			expect(db.query("select * from t order by id").all()).toEqual(
+				Array.from({ length: 1500 }, (_, i) => ({ id: i + 1 })),
+			);
 		} finally {
 			db.close();
 		}
