@@ -4,6 +4,7 @@
 
 import type { Message } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { Patch } from "../tools/hashline-engine/index.js";
 import type { LineRange } from "./compaction-types.js";
 
 // ============================================================================
@@ -45,11 +46,22 @@ export function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOp
 }
 
 function addFileOp(name: string, args: Record<string, unknown> | undefined, fileOps: FileOperations): void {
+	if (name === "edit" && typeof args?.input === "string") {
+		for (const path of hashlineEditPaths(args.input)) fileOps.edited.add(path);
+	}
 	const path = typeof args?.path === "string" ? args.path : undefined;
 	if (!path) return;
 	if (name === "read") fileOps.read.add(path);
 	else if (name === "write") fileOps.written.add(path);
 	else if (name === "edit") fileOps.edited.add(path);
+}
+
+function hashlineEditPaths(input: string): string[] {
+	try {
+		return Patch.parse(input).sections.map((section) => section.path);
+	} catch {
+		return [];
+	}
 }
 
 /**
