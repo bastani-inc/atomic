@@ -7,7 +7,7 @@ import { InMemoryCodingAgentModelsStore } from "../../packages/coding-agent/src/
 import { AuthStorage, ModelRuntime, SessionManager, SettingsManager } from "../../packages/coding-agent/src/index.js";
 import type { RunOpts, RunResult } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import { createAgentSessionAdapter, run, workflow } from "../../packages/workflows/src/sdk-surface.js";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
 
 const BUILTINS = { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false } as const;
 
@@ -121,3 +121,114 @@ for (const [label, runOpts] of [
 		}
 	});
 }
+
+async function runStandaloneStringModelStage(
+	cwd: string,
+	selectModel: (reference: string) => { model: string; fallbackModels?: string[] },
+	runOpts: RunOpts = {},
+) {
+	const faux = registerFauxProvider({ models: [{ id: "sdk-reasoning", reasoning: true }] });
+	try {
+		const model = faux.getModel();
+		let selectedModel: string | undefined;
+		let reasoning: string | undefined;
+		faux.setResponses([
+			(_context, options, _state, selected) => {
+				selectedModel = `${selected.provider}/${selected.id}`;
+				reasoning = options?.reasoning;
+				return fauxAssistantMessage("standalone reply");
+			},
+		]);
+		const agentDir = join(cwd, "agent");
+		await writeFileEnsuringDir(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					[model.provider]: { baseUrl: model.baseUrl, apiKey: "faux-key", api: faux.api, models: faux.models },
+				},
+			}),
+		);
+		const reference = `${model.provider}/${model.id}`;
+		const def = workflow({
+			name: "sdk-standalone-string-model",
+			description: "Resolve standalone stage model references.",
+			inputs: {},
+			outputs: { reply: Type.String() },
+			run: async (ctx) => {
+				const result = await ctx.task("reply", {
+					...selectModel(reference),
+					prompt: "Reply OK",
+					agentDir,
+					settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),
+					builtins: BUILTINS,
+					tools: [],
+				});
+				return { reply: result.text };
+			},
+		});
+		const result = await run(def, {}, { cwd, durability: { mode: "memory" }, ...runOpts });
+		return { result, reference, selectedModel, reasoning, callCount: faux.state.callCount };
+	} finally {
+		faux.unregister();
+	}
+}
+
+test("standalone run() resolves a string stage model without an explicit runtime (#3629)", async () => {
+	const cwd = makeTempDirectory("atomic-sdk-string-model-");
+	try {
+		const outcome = await runStandaloneStringModelStage(cwd, (model) => ({ model }));
+		assert.equal(outcome.result.status, "completed", outcome.result.error);
+		assert.deepEqual(outcome.result.result, { reply: "standalone reply" });
+		assert.equal(outcome.selectedModel, outcome.reference);
+		assert.equal(outcome.callCount, 1);
+	} finally {
+		removeTempDirectory(cwd);
+	}
+});
+
+for (const fallback of [false, true]) {
+	test(`standalone run() resolves ${fallback ? "fallback" : "primary"} model thinking suffixes (#3629)`, async () => {
+		const cwd = makeTempDirectory("atomic-sdk-string-thinking-");
+		try {
+			const outcome = await runStandaloneStringModelStage(cwd, (reference) =>
+				fallback
+					? { model: "missing-provider/missing-model", fallbackModels: [`${reference}:high`] }
+					: { model: `${reference}:high` },
+			);
+			assert.equal(outcome.result.status, "completed", outcome.result.error);
+			assert.deepEqual(outcome.result.result, { reply: "standalone reply" });
+			assert.equal(outcome.selectedModel, outcome.reference);
+			assert.equal(outcome.reasoning, "high");
+			assert.equal(outcome.callCount, 1);
+		} finally {
+			removeTempDirectory(cwd);
+		}
+	});
+}
+
+test("standalone SDK adapter reports an unavailable string model without a TypeError (#3629)", async () => {
+	const cwd = makeTempDirectory("atomic-sdk-missing-model-");
+	try {
+		const adapter = createAgentSessionAdapter({ cwd });
+		let modelError: Error | undefined;
+		const outcome = await runStandaloneStringModelStage(cwd, () => ({ model: "missing-provider/missing-model" }), {
+			adapters: {
+				agentSession: {
+					async create(options, meta) {
+						try {
+							return await adapter.create(options, meta);
+						} catch (error) {
+							if (error instanceof Error) modelError = error;
+							throw error;
+						}
+					},
+				},
+			},
+		});
+		assert.equal(modelError?.name, "Error");
+		assert.equal(modelError?.message, "Workflow stage model unavailable: missing-provider/missing-model");
+		assert.equal(outcome.callCount, 0);
+	} finally {
+		removeTempDirectory(cwd);
+	}
+});
