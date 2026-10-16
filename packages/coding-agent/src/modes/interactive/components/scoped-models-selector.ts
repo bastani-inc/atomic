@@ -204,7 +204,7 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 		return theme.fg("dim", `  ${parts.join(" · ")}`);
 	}
 
-	private refresh(): void {
+	private refresh(selectedId?: string): void {
 		const query = this.searchInput.getValue();
 		const items = this.buildItems();
 		this.filteredItems = query
@@ -214,7 +214,8 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 						: item.fullId,
 				)
 			: items;
-		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredItems.length - 1));
+		if (selectedId) this.selectedIndex = this.filteredItems.findIndex((item) => item.fullId === selectedId);
+		this.selectedIndex = Math.max(0, Math.min(this.selectedIndex, this.filteredItems.length - 1));
 		this.updateList();
 		this.footerText.setText(this.getFooterText());
 	}
@@ -298,8 +299,7 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 				// Only move if within bounds
 				if (newIndex >= 0 && newIndex < this.enabledIds.length) {
 					this.enabledIds = move(this.enabledIds, item.fullId, delta);
-					this.selectedIndex += delta;
-					this.refresh();
+					this.refresh(item.fullId);
 					this.notifyChange();
 				}
 			}

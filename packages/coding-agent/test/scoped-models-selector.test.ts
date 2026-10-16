@@ -1,10 +1,14 @@
+import assert from "node:assert/strict";
 import { setKeybindings } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { KeybindingsManager } from "../src/core/keybindings.ts";
+import { KeybindingsManager, useWindowsKeybindings } from "../src/core/keybindings.js";
 import { ScopedModelsSelectorComponent } from "../src/modes/interactive/components/scoped-models-selector.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
+
+const REORDER_UP = useWindowsKeybindings() ? "\x1bq" : "\x1b[1;3A";
+const REORDER_DOWN = "\x1b[1;3B";
 
 interface ModelState {
 	id: string;
@@ -56,6 +60,42 @@ describe("scoped models selector", () => {
 		);
 		return selector;
 	}
+
+	it.each(["model-b", "model"])("keeps the model selected when reordering with filter %s (#3657)", async (query) => {
+		harness = await createHarness({
+			models: [
+				{ id: "model-a", name: "Model A" },
+				{ id: "model-b", name: "Model B" },
+			],
+		});
+		const orderedIds = harness.models.map((model) => `${model.provider}/${model.id}`);
+		const changes: Array<string[] | null> = [];
+		const selector = new ScopedModelsSelectorComponent(
+			{ allModels: harness.models, enabledModelIds: orderedIds },
+			{
+				onChange: (ids) => {
+					changes.push(ids);
+				},
+				onCancel: () => {},
+			},
+		);
+		selector.handleInput(query);
+		if (query === "model") selector.handleInput("\x1b[B");
+
+		assert.doesNotThrow(() => selector.handleInput(REORDER_UP));
+		assert.deepEqual(changes, [[orderedIds[1], orderedIds[0]]]);
+		assert.match(stripAnsi(selector.render(120).join("\n")), /→ ✓ model-b \[/);
+
+		selector.handleInput(REORDER_UP);
+		assert.equal(changes.length, 1);
+
+		selector.handleInput(REORDER_DOWN);
+		assert.deepEqual(changes, [[orderedIds[1], orderedIds[0]], orderedIds]);
+		assert.match(stripAnsi(selector.render(120).join("\n")), /→ ✓ model-b \[/);
+
+		selector.handleInput(REORDER_DOWN);
+		assert.equal(changes.length, 2);
+	});
 
 	it("marks every model after enabling all", async () => {
 		const models = [
