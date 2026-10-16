@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.38-alpha.6] - 2026-10-16
+
 ### Fixed
 
 - Fixed streaming tool arguments losing `__proto__` fields and changing object prototypes when JSON is incomplete, including nested objects and arrays ([#3679](https://github.com/bastani-inc/atomic/issues/3679)).

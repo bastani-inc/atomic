@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.38-alpha.6] - 2026-10-16
+
 ### Fixed
 
 - Search and fetched-content results now wait for their session commits before becoming available or notifying the agent. Failed commits reach the existing error handling instead of reporting uncommitted results.
