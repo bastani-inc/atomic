@@ -244,6 +244,7 @@ export type WorkflowRegisteredToolResult = WorkflowToolResult | WorkflowTimeoutR
 
 export interface RenderResultOpts {
 	isPartial?: boolean;
+	errorText?: string;
 	/**
 	 * Host-provided render width in terminal cells. Tool renderers pass the
 	 * component width here so workflow tool output uses the same sizing path as
@@ -350,6 +351,7 @@ function renderResultBody(result: WorkflowRegisteredToolResult | null | undefine
 	// missing `action` here previously threw and crashed the TUI render loop, so
 	// degrade gracefully instead.
 	if (result === null || result === undefined || typeof result.action !== "string") {
+		if (opts?.errorText !== undefined) return renderNotice("WORKFLOW ERROR", opts.errorText, opts, themed);
 		return partial ? "" : renderNotice("WORKFLOW", "no result", opts, themed);
 	}
 	if ("code" in result && result.code === "WORKFLOW_TIMEOUT") {

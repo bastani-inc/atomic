@@ -26,9 +26,12 @@ export interface PiRenderContext {
 		stages?: unknown[];
 	};
 	invalidate?: () => void;
+	isError?: boolean;
 }
 
-export interface PiRenderResultOpts extends RenderResultOpts {}
+export interface PiRenderResultOpts extends RenderResultOpts {
+	expanded?: boolean;
+}
 
 export interface PiRenderComponent {
 	render(width: number): string[];
@@ -130,7 +133,7 @@ export interface PiToolOpts<TArgs, TDetails> {
 	) => Promise<PiAgentToolResult<TDetails>>;
 	renderCall?: (args: TArgs, theme: PiTheme, context: PiRenderContext) => PiRenderComponent | string;
 	renderResult?: (
-		result: PiAgentToolResult<TDetails>,
+		result: Omit<PiAgentToolResult<TDetails>, "details"> & { details?: TDetails; isError?: boolean },
 		opts: PiRenderResultOpts,
 		theme: PiTheme,
 		context: PiRenderContext,

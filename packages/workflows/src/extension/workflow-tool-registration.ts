@@ -134,6 +134,10 @@ export function registerWorkflowTool(
 			return dynamicTextRenderComponent((width) =>
 				renderResult(result.details, {
 					...opts,
+					errorText:
+						(context.isError ?? result.isError)
+							? result.content.flatMap((item) => (item.type === "text" ? [item.text] : [])).join("\n")
+							: undefined,
 					width,
 					now: capturedNow,
 					runInputs: (context as { args?: WorkflowToolArgs }).args?.inputs,
