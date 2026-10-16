@@ -249,3 +249,133 @@ test("isolated host mirrors the child's startup trust decision before startup tr
 		harness.cleanup();
 	}
 });
+
+test("history reopen failure after agent_end reaches the engine diagnostic without killing the host (#3678)", async () => {
+	const harness = await createHarness();
+	try {
+		const probe = createUnresponsiveEngineClient();
+		const localRuntime = new AgentSessionRuntime(harness.session, servicesFor(harness) as never, async () => {
+			throw new Error("unused runtime factory");
+		});
+		const runtime = new IsolatedInteractiveRuntime(
+			localRuntime,
+			async () => {
+				throw new Error("unexpected replacement");
+			},
+			probe.client as never,
+		);
+		vi.spyOn(runtime.session, "sessionFile", "get").mockReturnValue("/session/history.jsonl");
+		const reopen = vi.spyOn(SessionManager, "open").mockRejectedValueOnce(new Error("history read failed"));
+		const diagnostics: string[] = [];
+		const unsubscribe = runtime.onDiagnostic((diagnostic) => diagnostics.push(diagnostic.message));
+		try {
+			probe.emit({ type: "agent_start" });
+			probe.emit({ type: "agent_end", messages: [] });
+			await vi.waitFor(() =>
+				expect(diagnostics).toEqual(["Interactive engine refresh session view failed: history read failed"]),
+			);
+			expect(reopen).toHaveBeenCalledTimes(1);
+			expect(runtime.session.isStreaming).toBe(false);
+			probe.emit({ type: "agent_start" });
+			expect(runtime.session.isStreaming).toBe(true);
+		} finally {
+			unsubscribe();
+		}
+	} finally {
+		vi.restoreAllMocks();
+		await harness.cleanup();
+	}
+});
+
+test("isolated label writes return an awaited receipt and propagate errors to the caller (#3678)", async () => {
+	const harness = await createHarness();
+	const response = Promise.withResolvers<{ entryId: string }>();
+	const reopened = Promise.withResolvers<SessionManager>();
+	try {
+		const probe = createUnresponsiveEngineClient();
+		probe.client.requestInternal = async <T>(command: { type: string }): Promise<T> => {
+			expect(command.type).toBe("set_label");
+			return (await response.promise) as T;
+		};
+		const localRuntime = new AgentSessionRuntime(harness.session, servicesFor(harness) as never, async () => {
+			throw new Error("unused runtime factory");
+		});
+		const runtime = new IsolatedInteractiveRuntime(
+			localRuntime,
+			async () => {
+				throw new Error("unexpected replacement");
+			},
+			probe.client as never,
+		);
+		const session = runtime.session;
+		vi.spyOn(session, "sessionFile", "get").mockReturnValue("/session/history.jsonl");
+		const reopen = vi.spyOn(SessionManager, "open").mockReturnValue(reopened.promise);
+		let settled = false;
+		const receipt = session.sessionManager.appendLabelChange("target", "saved-label");
+		expect(receipt).toBeInstanceOf(Promise);
+		const completion = receipt.then((id) => {
+			settled = true;
+			return id;
+		});
+		response.resolve({ entryId: "label-receipt" });
+		await vi.waitFor(() => expect(reopen).toHaveBeenCalledOnce());
+		expect(settled).toBe(false);
+		const refreshed = SessionManager.inMemory();
+		const target = await refreshed.appendMessage({ role: "user", content: "label target", timestamp: 1 });
+		await refreshed.appendLabelChange(target, "saved-label");
+		reopened.resolve(refreshed);
+		expect(await completion).toBe("label-receipt");
+		expect(session.sessionManager.getLabel(target)).toBe("saved-label");
+		const failure = new Error("label commit failed");
+		probe.client.requestInternal = async () => {
+			throw failure;
+		};
+		await expect(session.sessionManager.appendLabelChange(target, "lost-label")).rejects.toBe(failure);
+		expect(session.sessionManager.getLabel(target)).toBe("saved-label");
+	} finally {
+		response.resolve({ entryId: "label-receipt" });
+		reopened.resolve(SessionManager.inMemory());
+		vi.restoreAllMocks();
+		await harness.cleanup();
+	}
+});
+
+test("overlapping isolated session names retain the last requested name (#3678)", async () => {
+	const harness = await createHarness();
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const written: string[] = [];
+	try {
+		const probe = createUnresponsiveEngineClient();
+		Object.assign(probe.client, {
+			async setSessionName(name: string) {
+				if (name === "first") {
+					entered.resolve();
+					await release.promise;
+				}
+				written.push(name);
+			},
+		});
+		const localRuntime = new AgentSessionRuntime(harness.session, servicesFor(harness) as never, async () => {
+			throw new Error("unused runtime factory");
+		});
+		const runtime = new IsolatedInteractiveRuntime(
+			localRuntime,
+			async () => {
+				throw new Error("unexpected replacement");
+			},
+			probe.client as never,
+		);
+		const first = runtime.session.setSessionName("first");
+		await entered.promise;
+		const last = runtime.session.setSessionName("last");
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		release.resolve();
+		await Promise.all([first, last]);
+		expect(runtime.session.sessionName).toBe("last");
+		expect(written).toEqual(["first", "last"]);
+	} finally {
+		release.resolve();
+		await harness.cleanup();
+	}
+});

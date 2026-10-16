@@ -151,6 +151,37 @@ test("header changes and label failures publish only successful commits", async 
 	assert.equal(manager.getLabel(id), "label");
 });
 
+test("overlapping session names and label clears retain invocation order through reopen (#3678)", async () => {
+	const store = new ControlledStore();
+	const manager = await SessionManager.create(store, "/project");
+	const target = await manager.appendMessage(message("target"));
+	const harness = await createHarness({ sessionManager: manager });
+	try {
+		store.blocked = true;
+		const firstName = harness.session.setSessionName("first");
+		await store.entered.promise;
+		const lastName = harness.session.setSessionName("last");
+		const setLabel = manager.appendLabelChange(target, "temporary");
+		const clearLabel = manager.appendLabelChange(target, undefined);
+		assert.equal(harness.session.sessionName, undefined);
+		assert.equal(manager.getLabel(target), undefined);
+		store.release.resolve();
+		await Promise.all([firstName, lastName, setLabel, clearLabel]);
+		const reopened = await SessionManager.open(store, manager.getSessionId());
+		assert.equal(harness.session.sessionName, "last");
+		assert.equal(reopened.getSessionName(), "last");
+		assert.equal(reopened.getLabel(target), undefined);
+		assert.deepEqual(
+			reopened.getEntries().map((entry) => entry.type),
+			["message", "session_info", "session_info", "label", "label"],
+		);
+	} finally {
+		store.release.resolve();
+		await harness.cleanup();
+		await store.close();
+	}
+});
+
 test("continueRecent selects and creates sessions through the supplied store", async () => {
 	const store = new MemorySessionStore();
 	const initial = await SessionManager.continueRecent(store, "/project");

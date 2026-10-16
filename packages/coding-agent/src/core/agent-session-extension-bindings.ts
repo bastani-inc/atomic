@@ -36,6 +36,7 @@ import {
 	trackSessionReload,
 	trackSessionWork,
 } from "./session-lifecycle-work.ts";
+import { serializeSessionMutation } from "./session-mutation-queue.ts";
 import { completeStartup, rollbackStartup } from "./session-startup-rollback.ts";
 import { applyToolModifiers } from "./settings-merge.js";
 import { getSkillCatalog } from "./skill-catalog.ts";
@@ -352,28 +353,31 @@ export async function refreshCurrentModelFromRegistry(this: AgentSession): Promi
 }
 
 export async function _refreshCurrentModelFromRegistry(this: AgentSession): Promise<void> {
-	const currentModel = this.model;
-	if (!currentModel) {
-		return;
-	}
+	const changedThinking = await serializeSessionMutation(this, async () => {
+		const currentModel = this.model;
+		if (!currentModel) {
+			return;
+		}
 
-	const refreshedModel = this._modelRuntime.getModel(currentModel.provider, currentModel.id);
-	if (!refreshedModel || refreshedModel === currentModel) {
-		return;
-	}
+		const refreshedModel = this._modelRuntime.getModel(currentModel.provider, currentModel.id);
+		if (!refreshedModel || refreshedModel === currentModel) {
+			return;
+		}
 
-	const previousModel = currentModel;
-	const previousThinkingLevel = this.thinkingLevel;
-	const level = clampThinkingLevel(refreshedModel, previousThinkingLevel);
-	if (level !== previousThinkingLevel) await this.sessionManager.appendThinkingLevelChange(level);
-	this.agent.state.model = refreshedModel;
-	this.agent.state.thinkingLevel = level;
-	if (level !== previousThinkingLevel) {
-		this._emit({ type: "thinking_level_changed", level });
-		await this._extensionRunner.emit({ type: "thinking_level_select", level, previousLevel: previousThinkingLevel });
-	}
-	this._refreshBaseSystemPromptFromActiveTools();
-	this._emit({ type: "model_changed", model: refreshedModel, previousModel, source: "restore" });
+		const previousModel = currentModel;
+		const previousThinkingLevel = this.thinkingLevel;
+		const level = clampThinkingLevel(refreshedModel, previousThinkingLevel);
+		if (level !== previousThinkingLevel) await this.sessionManager.appendThinkingLevelChange(level);
+		this.agent.state.model = refreshedModel;
+		this.agent.state.thinkingLevel = level;
+		if (level !== previousThinkingLevel) {
+			this._emit({ type: "thinking_level_changed", level });
+		}
+		this._refreshBaseSystemPromptFromActiveTools();
+		this._emit({ type: "model_changed", model: refreshedModel, previousModel, source: "restore" });
+		return level !== previousThinkingLevel ? { level, previousLevel: previousThinkingLevel } : undefined;
+	});
+	if (changedThinking) await this._extensionRunner.emit({ type: "thinking_level_select", ...changedThinking });
 }
 
 export function _bindExtensionCore(

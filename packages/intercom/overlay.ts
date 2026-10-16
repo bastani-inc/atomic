@@ -71,12 +71,18 @@ export function registerIntercomOverlay(pi: ExtensionAPI, deps: OverlayDeps): vo
 
     const targetLabel = formatSessionLabel(selectedSession, duplicates);
 
-    const result = await ctx.ui.custom<ComposeResult>(
-      (tui, theme, keybindings, done) => new ComposeOverlay(tui, theme, keybindings, selectedSession, targetLabel, overlayClient, done),
+    let compose: ComposeOverlay | undefined;
+    const uiResult = await ctx.ui.custom<ComposeResult>(
+      (tui, theme, keybindings, done) => {
+        compose = new ComposeOverlay(tui, theme, keybindings, selectedSession, targetLabel, overlayClient, done);
+        return compose;
+      },
       { overlay: true, signal: ctx.sessionSignal }
     ).catch(() => undefined);
 
-    if (result?.sent && result.messageId && result.text && deps.getLiveContext(ctx, overlayGeneration)) {
+    // Dismissal releases idle UI, not a delivery already admitted by this command.
+    const result = compose?.pendingSend ? await compose.pendingSend : uiResult;
+    if (result?.sent && result.messageId && result.text) {
       await pi.appendEntry("intercom_sent", {
         to: selectedSession.name || selectedSession.id,
         message: { text: result.text },

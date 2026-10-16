@@ -7,6 +7,7 @@ import type { ModelMutationOptions, PromptOptions } from "../../core/agent-sessi
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
 import { SessionManager } from "../../core/session-manager.ts";
+import { serializeSessionMutation } from "../../core/session-mutation-queue.ts";
 import type { ToolStatusReport } from "../../core/tool-status.js";
 import { captureHerdrEnvironment } from "../../extensions/herdr/environment.js";
 import { releaseUnownedPaneRegistration } from "../../extensions/herdr/pane-owner.js";
@@ -736,9 +737,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			setSessionName: {
 				configurable: true,
 				value: async (name: string) => {
-					await this.client.setSessionName(name);
-					this.remoteSessionName = name;
-					await this.refreshSessionView();
+					return serializeSessionMutation(session, async () => {
+						await this.client.setSessionName(name);
+						this.remoteSessionName = name;
+						await this.refreshSessionView();
+					});
 				},
 			},
 			getSteeringMessages: { configurable: true, value: () => [...this.steeringMessages] },
@@ -781,48 +784,56 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			setModel: {
 				configurable: true,
 				value: async (model: Model<Api>, options?: ModelMutationOptions) => {
-					await this.settleEngineResync();
-					const selected = await this.client.setModel(model.provider, model.id, options);
-					const nextModel = session.modelRuntime.getModel(selected.provider, selected.id) ?? model;
-					session.agent.state.model = nextModel;
-					this.resolveModelFallback();
-					if (options?.persist === true) await this.syncPersistedModelCatalog(session, nextModel);
+					return serializeSessionMutation(session, async () => {
+						await this.settleEngineResync();
+						const selected = await this.client.setModel(model.provider, model.id, options);
+						const nextModel = session.modelRuntime.getModel(selected.provider, selected.id) ?? model;
+						session.agent.state.model = nextModel;
+						this.resolveModelFallback();
+						if (options?.persist === true) await this.syncPersistedModelCatalog(session, nextModel);
+					});
 				},
 			},
 			setThinkingLevel: {
 				configurable: true,
 				value: async (level: AgentSession["thinkingLevel"], options?: ModelMutationOptions) => {
-					const epoch = ++this.thinkingEpoch;
-					const result = await this.client.setThinkingLevelAck(level, options);
-					this.applyThinkingAck(session, epoch, result, options?.persist === true);
+					return serializeSessionMutation(session, async () => {
+						const epoch = ++this.thinkingEpoch;
+						const result = await this.client.setThinkingLevelAck(level, options);
+						this.applyThinkingAck(session, epoch, result, options?.persist === true);
+					});
 				},
 			},
 			cycleModel: {
 				configurable: true,
 				value: async (direction?: "forward" | "backward", options?: ModelMutationOptions) => {
-					await this.settleEngineResync();
-					const previousModel = session.model;
-					const result = await this.client.cycleModel(direction, options);
-					if (!result) return undefined;
-					const model = session.modelRuntime.getModel(result.model.provider, result.model.id) ?? result.model;
-					session.agent.state.model = model;
-					session.agent.state.thinkingLevel = result.thinkingLevel;
-					this.resolveModelFallbackAfterExplicitModelSelection(previousModel, model);
-					if (options?.persist === true) await this.syncPersistedModelCatalog(session, model);
-					return { ...result, model };
+					return serializeSessionMutation(session, async () => {
+						await this.settleEngineResync();
+						const previousModel = session.model;
+						const result = await this.client.cycleModel(direction, options);
+						if (!result) return undefined;
+						const model = session.modelRuntime.getModel(result.model.provider, result.model.id) ?? result.model;
+						session.agent.state.model = model;
+						session.agent.state.thinkingLevel = result.thinkingLevel;
+						this.resolveModelFallbackAfterExplicitModelSelection(previousModel, model);
+						if (options?.persist === true) await this.syncPersistedModelCatalog(session, model);
+						return { ...result, model };
+					});
 				},
 			},
 			cycleThinkingLevel: {
 				configurable: true,
 				value: async (options?: ModelMutationOptions) => {
-					const levels = session.getAvailableThinkingLevels();
-					if (levels.length <= 1) return undefined;
-					const current = levels.indexOf(session.thinkingLevel);
-					const level = levels[(current + 1) % levels.length]!;
-					const epoch = ++this.thinkingEpoch;
-					const result = await this.client.setThinkingLevelAck(level, options);
-					this.applyThinkingAck(session, epoch, result, options?.persist === true);
-					return result.level;
+					return serializeSessionMutation(session, async () => {
+						const levels = session.getAvailableThinkingLevels();
+						if (levels.length <= 1) return undefined;
+						const current = levels.indexOf(session.thinkingLevel);
+						const level = levels[(current + 1) % levels.length]!;
+						const epoch = ++this.thinkingEpoch;
+						const result = await this.client.setThinkingLevelAck(level, options);
+						this.applyThinkingAck(session, epoch, result, options?.persist === true);
+						return result.level;
+					});
 				},
 			},
 			setSteeringMode: {
@@ -928,13 +939,16 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private patchSessionManager(manager: SessionManager): void {
 		Object.defineProperty(manager, "appendLabelChange", {
 			configurable: true,
-			value: (entryId: string, label?: string) => {
-				this.dispatchBestEffort(
-					"set label",
-					this.client
-						.requestInternal<void>({ type: "set_label", entryId, label })
-						.then(() => this.refreshSessionView()),
-				);
+			value: async (entryId: string, label?: string): Promise<string> => {
+				return serializeSessionMutation(super.session, async () => {
+					const receipt = await this.client.requestInternal<{ entryId: string }>({
+						type: "set_label",
+						entryId,
+						label,
+					});
+					await this.refreshSessionView();
+					return receipt.entryId;
+				});
 			},
 		});
 	}
@@ -971,7 +985,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				break;
 			case "agent_end":
 				this.streaming = false;
-				this.refreshSessionView();
+				this.dispatchBestEffort("refresh session view", this.refreshSessionView());
 				break;
 			case "compaction_start":
 				this.compacting = true;

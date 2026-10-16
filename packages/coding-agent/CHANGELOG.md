@@ -27,6 +27,8 @@
 - Fixed new and branched sessions becoming unwritable when a resumed session uses a different destination session directory.
 - Fixed tree label edits appearing saved before persistence completed. Failed saves now display the error and keep the editor open for retry.
 - Fixed failed custom-message writes dropping accepted pending and next-turn messages. Retries now retain the uncommitted messages in order, and overlapping drains do not duplicate saved messages.
+- Fixed overlapping model, thinking-level and session-name changes losing later choices. Model and thinking cycles now advance once per request, and saved defaults retain the last choice.
+- Fixed history refresh failures after a turn escaping error handling. The interactive engine now displays the failure without an unhandled rejection, and label edits await their saved history before reporting success.
 
 ## [0.9.38-alpha.4] - 2026-10-16
 

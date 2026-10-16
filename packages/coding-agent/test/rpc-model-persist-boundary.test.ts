@@ -552,4 +552,30 @@ describe("RPC persist boundary", () => {
 		assert.equal(host.settingsManager.getDefaultThinkingLevel(), result?.thinkingLevel);
 		assert.equal(engine.settingsManager.getDefaultThinkingLevel(), result?.thinkingLevel);
 	});
+
+	it("orders overlapping thinking cycles through the isolated host and saved settings (#3678)", async () => {
+		const { engine, host, runtime } = await isolatedPair();
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const append = engine.sessionManager.appendThinkingLevelChange.bind(engine.sessionManager);
+		vi.spyOn(engine.sessionManager, "appendThinkingLevelChange").mockImplementationOnce(async (level) => {
+			entered.resolve();
+			await release.promise;
+			return append(level);
+		});
+		const levels = runtime.session.getAvailableThinkingLevels();
+		const first = runtime.session.cycleThinkingLevel({ persist: true });
+		await entered.promise;
+		const second = runtime.session.cycleThinkingLevel({ persist: true });
+		release.resolve();
+		try {
+			assert.deepEqual(await Promise.all([first, second]), [levels[1], levels[2]]);
+			assert.equal(engine.session.thinkingLevel, levels[2]);
+			assert.equal(runtime.session.thinkingLevel, levels[2]);
+			assert.equal(engine.settingsManager.getDefaultThinkingLevel(), levels[2]);
+			assert.equal(host.settingsManager.getDefaultThinkingLevel(), levels[2]);
+		} finally {
+			vi.restoreAllMocks();
+		}
+	});
 });

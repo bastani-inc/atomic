@@ -522,8 +522,8 @@ export function createRpcCommandHandler({
 			}
 
 			case "set_label": {
-				await session.sessionManager.appendLabelChange(command.entryId, command.label);
-				return createRpcSuccessResponse(id, "set_label");
+				const entryId = await session.sessionManager.appendLabelChange(command.entryId, command.label);
+				return createRpcSuccessResponse(id, "set_label", { entryId });
 			}
 
 			case "reload": {

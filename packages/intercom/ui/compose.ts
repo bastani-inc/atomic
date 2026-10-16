@@ -39,6 +39,12 @@ export class ComposeOverlay implements Component {
   private inputBuffer: string = "";
   private sending: boolean = false;
   private error: string | null = null;
+  private sendOperation: Promise<ComposeResult | undefined> | undefined;
+
+  /** A started delivery outlives the custom UI mount that initiated it. */
+  get pendingSend(): Promise<ComposeResult | undefined> | undefined {
+    return this.sendOperation;
+  }
 
   constructor(
     tui: TUI,
@@ -73,7 +79,7 @@ export class ComposeOverlay implements Component {
 
     if (this.keybindings.matches(data, "tui.select.confirm")) {
       if (this.inputBuffer.trim()) {
-        this.sendMessage();
+        this.sendOperation = this.sendMessage();
       }
       return true;
     }
@@ -93,7 +99,7 @@ export class ComposeOverlay implements Component {
     return false;
   }
 
-  private async sendMessage(): Promise<void> {
+  private async sendMessage(): Promise<ComposeResult | undefined> {
     this.sending = true;
     this.error = null;
     this.tui.requestRender();
@@ -110,11 +116,13 @@ export class ComposeOverlay implements Component {
         return;
       }
 
-      this.done({
+      const sent = {
         sent: true,
         messageId: result.id,
         text: this.inputBuffer.trim(),
-      });
+      };
+      this.done(sent);
+      return sent;
     } catch (error) {
       this.error = error instanceof Error ? error.message : String(error);
       this.sending = false;
