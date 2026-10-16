@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, realpath } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue, StorageDescriptor } from "./database.js";
@@ -11,6 +11,34 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
+
+interface TransactionGates {
+	readonly files: Map<string, Promise<void>>;
+	readonly connections: WeakMap<DatabaseSync, Promise<void>>;
+}
+
+// Share gates across module reloads as well as adapter instances. Only live queues retain file identities.
+const TRANSACTION_GATES = Symbol.for("atomic-storage/node-sqlite-transaction-gates@1");
+const gateBag = globalThis as typeof globalThis & Record<symbol, TransactionGates | undefined>;
+const gates: TransactionGates = gateBag[TRANSACTION_GATES] ?? { files: new Map(), connections: new WeakMap() };
+gateBag[TRANSACTION_GATES] = gates;
+
+function gateTransaction<T>(identity: string | DatabaseSync, operation: () => Promise<T>): Promise<T> {
+	const prior = typeof identity === "string" ? gates.files.get(identity) : gates.connections.get(identity);
+	const result = (prior ?? Promise.resolve()).then(operation);
+	const settled = result.then(
+		() => {},
+		() => {},
+	);
+	if (typeof identity === "string") gates.files.set(identity, settled);
+	else gates.connections.set(identity, settled);
+	void settled.then(() => {
+		if (typeof identity === "string") {
+			if (gates.files.get(identity) === settled) gates.files.delete(identity);
+		} else if (gates.connections.get(identity) === settled) gates.connections.delete(identity);
+	});
+	return result;
+}
 
 /** Copies binary parameters so queued work binds the bytes the caller passed, not later buffer contents. */
 function snapshotParams(params: readonly SqliteValue[]): SqliteValue[] {
@@ -51,8 +79,15 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	private readonly executor: SqliteExecutor;
 
 	private readonly ownsConnection: boolean;
+	private readonly transactionIdentity: string | DatabaseSync;
 
-	constructor(connection: DatabaseSync, descriptor: StorageDescriptor, ownsConnection = true) {
+	constructor(
+		connection: DatabaseSync,
+		descriptor: StorageDescriptor,
+		ownsConnection = true,
+		transactionIdentity: string | DatabaseSync = connection,
+	) {
+		this.transactionIdentity = transactionIdentity;
 		this.ownsConnection = ownsConnection;
 		this.connection = connection;
 		this.descriptor = descriptor;
@@ -128,25 +163,27 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	}
 
 	transaction<T>(callback: (transaction: SqliteExecutor) => Promise<T>): Promise<T> {
-		return this.enqueue(async () => {
-			await this.executor.exec("BEGIN IMMEDIATE");
-			let active = true;
-			const transaction = this.createExecutor(() => active);
-			try {
-				const result = await callback(transaction);
-				active = false;
-				await this.executor.exec("COMMIT");
-				return result;
-			} catch (cause) {
-				active = false;
+		return this.enqueue(() =>
+			gateTransaction(this.transactionIdentity, async () => {
+				await this.executor.exec("BEGIN IMMEDIATE");
+				let active = true;
+				const transaction = this.createExecutor(() => active);
 				try {
-					await this.executor.exec("ROLLBACK");
-				} catch (rollbackCause) {
-					throw new StorageRollbackError(cause as StorageFailureCause, rollbackCause as StorageFailureCause);
+					const result = await callback(transaction);
+					active = false;
+					await this.executor.exec("COMMIT");
+					return result;
+				} catch (cause) {
+					active = false;
+					try {
+						await this.executor.exec("ROLLBACK");
+					} catch (rollbackCause) {
+						throw new StorageRollbackError(cause as StorageFailureCause, rollbackCause as StorageFailureCause);
+					}
+					throw cause;
 				}
-				throw cause;
-			}
-		});
+			}),
+		);
 	}
 
 	close(): Promise<void> {
@@ -182,7 +219,8 @@ export async function openNodeSqliteDatabase(
 		connection = new Database(path);
 		connection.exec(`PRAGMA busy_timeout=${busyTimeoutMs}`);
 		connection.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON");
-		return new NodeSqliteDatabase(connection, descriptor);
+		const identity = path === ":memory:" ? connection : await realpath(path);
+		return new NodeSqliteDatabase(connection, descriptor, true, identity);
 	} catch (cause) {
 		try {
 			connection?.close();

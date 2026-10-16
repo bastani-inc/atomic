@@ -5,6 +5,7 @@
 ### Changed
 
 - The storage adapter conformance suite now checks call-time binary binding inside transactions.
+- Node SQLite facade transactions opened on the same file now queue asynchronously within a process, including when paths use symlinks, instead of stalling the event loop and failing with a locked database.
 
 ### Breaking Changes
 

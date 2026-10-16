@@ -346,3 +346,42 @@ export function registerSqliteDatabaseConformance(
 		});
 	}
 }
+
+/** Exercises independent connections to the same database, including an async yield while holding its write lock. */
+export function registerSqliteConnectionConformance(
+	runner: StorageConformanceRunner,
+	name: string,
+	withConnections: (body: (first: SqliteDatabase, second: SqliteDatabase) => Promise<void>) => Promise<void>,
+): void {
+	runner.describe(name, () => {
+		runner.it("queues concurrent transactions across connections without blocking the event loop (#3682)", () =>
+			withConnections(async (first, second) => {
+				await first.exec("CREATE TABLE concurrent_items (value INTEGER)");
+				const entered = Promise.withResolvers<void>();
+				let timerDelay = 0;
+				const started = performance.now();
+				const holding = first.transaction(async (tx) => {
+					entered.resolve();
+					await new Promise<void>((resolve) => setTimeout(resolve, 25));
+					timerDelay = performance.now() - started;
+					await tx.run("INSERT INTO concurrent_items VALUES (?)", 1);
+				});
+				await entered.promise;
+				const queued = second.transaction(async (tx) => {
+					await tx.run("INSERT INTO concurrent_items VALUES (?)", 2);
+				});
+				const outcomes = await Promise.allSettled([holding, queued]);
+				const EVENT_LOOP_STALL_BOUND_MS = 2000;
+				assert.ok(timerDelay < EVENT_LOOP_STALL_BOUND_MS, `timer delayed ${timerDelay}ms`);
+				assert.deepEqual(
+					outcomes.map((outcome) => outcome.status),
+					["fulfilled", "fulfilled"],
+				);
+				assert.deepEqual(await second.all("SELECT value FROM concurrent_items ORDER BY value"), [
+					{ value: 1 },
+					{ value: 2 },
+				]);
+			}),
+		);
+	});
+}

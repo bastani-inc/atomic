@@ -337,3 +337,61 @@ test.each(["header", "append"] as const)(
 		await journal.close();
 	},
 );
+
+test("independent journals acquire and append concurrently without stalling timers (#3682)", async () => {
+	const directory = makeTempDirectory("journal-concurrent-");
+	const path = join(directory, "runs.sqlite");
+	const first = await openSqlRunJournal(path);
+	const second = await openSqlRunJournal(path);
+	try {
+		await first.createRun({ ...header, runId: "first" });
+		await second.createRun({ ...header, runId: "second" });
+		const started = performance.now();
+		const timer = new Promise<number>((resolve) => setTimeout(() => resolve(performance.now() - started), 10));
+		const acquisitions = await Promise.allSettled([first.acquire("first", "one"), second.acquire("second", "two")]);
+		const EVENT_LOOP_STALL_BOUND_MS = 2000;
+		assert.ok((await timer) < EVENT_LOOP_STALL_BOUND_MS, "concurrent acquisitions blocked the event loop");
+		const leases = acquisitions.map((outcome) => {
+			assert.equal(outcome.status, "fulfilled");
+			assert.equal(outcome.value.status, "acquired");
+			return outcome.value.lease;
+		});
+		const appended = await Promise.all([
+			first.append(leases[0]!, { type: "RunStarted", payload: "first" }),
+			second.append(leases[1]!, { type: "RunStarted", payload: "second" }),
+		]);
+		assert.deepEqual(
+			appended.map((result) => result.entry.seq),
+			[1, 1],
+		);
+		assert.equal((await first.getRun("first"))?.runId, "first");
+		assert.equal((await second.getRun("second"))?.runId, "second");
+	} finally {
+		await first.close();
+		await second.close();
+		removeTempDirectory(directory);
+	}
+});
+
+test("session and journal write concurrently through separate connections to one file (#3682)", async () => {
+	const directory = makeTempDirectory("session-journal-concurrent-");
+	const path = join(directory, "shared.sqlite");
+	const db = await openNodeSqliteDatabase(path);
+	const session = await SqlSessionStore.open(db);
+	const journal = await openSqlRunJournal(path);
+	try {
+		const lease = await acquire(journal);
+		const sessionHeader = { id: "session", version: 4 as const, createdAt: "2026-01-01T00:00:00.000Z", cwd: "/" };
+		await Promise.all([
+			session.create(sessionHeader, []),
+			journal.append(lease, { type: "RunStarted", payload: "saved" }, { key: "saved" }),
+		]);
+		assert.deepEqual(await session.readHeader("session"), sessionHeader);
+		assert.equal((await journal.readKey(header.runId, "saved"))?.event.payload, "saved");
+	} finally {
+		await session.close();
+		await journal.close();
+		await db.close();
+		removeTempDirectory(directory);
+	}
+});

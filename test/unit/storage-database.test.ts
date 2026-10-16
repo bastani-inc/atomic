@@ -1,4 +1,5 @@
 import assert, { AssertionError } from "node:assert/strict";
+import { symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, test } from "vitest";
 import type {
@@ -11,6 +12,7 @@ import { StoragePrefixError, StorageUnavailableError } from "../../packages/codi
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { renderStorageIdentifiers } from "../../packages/coding-agent/src/core/storage/prefix.js";
 import {
+	registerSqliteConnectionConformance,
 	registerSqliteDatabaseConformance,
 	type WithSqliteDatabaseSubject,
 } from "../../packages/coding-agent/src/core/storage/testing.js";
@@ -25,6 +27,23 @@ import {
 import { withNodeSqliteDatabase } from "../helpers/storage-database.js";
 
 registerSqliteDatabaseConformance({ describe, it: test }, "node SQLite", withNodeSqliteDatabase);
+
+registerSqliteConnectionConformance({ describe, it: test }, "node SQLite shared file", async (body) => {
+	const directory = makeTempDirectory("atomic-storage-concurrent-");
+	const first = await openNodeSqliteDatabase(join(directory, "shared.sqlite"));
+	try {
+		await symlink(directory, join(directory, "alias"), "junction");
+		const second = await openNodeSqliteDatabase(join(directory, "alias", "shared.sqlite"));
+		try {
+			await body(first, second);
+		} finally {
+			await second.close();
+		}
+	} finally {
+		await first.close();
+		removeTempDirectory(directory);
+	}
+});
 
 type CommitFault = "swallows the commit error" | "rejects without rolling back";
 

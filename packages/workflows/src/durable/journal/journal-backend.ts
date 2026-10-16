@@ -315,7 +315,9 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		if (result.status === "held") throw new JournalOwnershipError(runId, result.holderId);
 		this.leases.set(runId, result.lease);
 		if (this.timer === undefined) {
-			this.timer = setInterval(() => void this.renewLeases(), STAGE_SESSION_HEARTBEAT_INTERVAL_MS);
+			this.timer = setInterval(() => {
+				void this.renewLeases().catch((error: Error) => console.error(error));
+			}, STAGE_SESSION_HEARTBEAT_INTERVAL_MS);
 			this.timer.unref();
 		}
 		const execution = this.executions.get(runId);
@@ -325,13 +327,19 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	}
 	private *mapOwnership(error: Error, runId: string): Operation<Error> {
 		if (!(error instanceof StaleLeaseError)) return error;
-		const current = yield* invoke(
-			() =>
-				this.synchronous !== undefined ? this.synchronous.leaseStateSync(runId) : this.journal.leaseState(runId),
-			this.synchronous !== undefined,
-		);
-		const failure = new JournalOwnershipError(runId, current?.holderId ?? null, error);
+		let failure = new JournalOwnershipError(runId, null, error);
 		this.lost.set(runId, failure);
+		try {
+			const current = yield* invoke(
+				() =>
+					this.synchronous !== undefined ? this.synchronous.leaseStateSync(runId) : this.journal.leaseState(runId),
+				this.synchronous !== undefined,
+			);
+			failure = new JournalOwnershipError(runId, current?.holderId ?? null, error);
+			this.lost.set(runId, failure);
+		} catch {
+			// The stale fencing token already proves ownership loss; the current holder is best effort.
+		}
 		return failure;
 	}
 	private *append(
@@ -808,7 +816,12 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	}
 	private async renewLeases(): Promise<void> {
 		for (const [runId, lease] of this.leases) {
-			await this.serialize(runId, () => this.renewLease(runId, lease));
+			try {
+				await this.serialize(runId, () => this.renewLease(runId, lease));
+			} catch (error) {
+				if (error instanceof Error) this.lost.set(runId, error);
+				this.dropLease(runId);
+			}
 		}
 	}
 	private *renewLease(runId: string, lease: Lease): Operation<void> {
@@ -819,8 +832,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 				return this.journal.renew(lease);
 			}, this.synchronous !== undefined);
 		} catch (error) {
-			if (this.leases.get(runId) === lease && error instanceof Error)
-				this.lost.set(runId, yield* this.mapOwnership(error, runId));
+			if (this.leases.get(runId) === lease) {
+				if (error instanceof Error) this.lost.set(runId, yield* this.mapOwnership(error, runId));
+				this.dropLease(runId);
+			}
 		}
 	}
 	closeOnProcessExit(): void {
@@ -879,11 +894,14 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		} catch (error) {
 			if (!(error instanceof StaleLeaseError)) throw error;
 		} finally {
-			this.leases.delete(runId);
-			if (this.leases.size === 0) {
-				clearInterval(this.timer);
-				this.timer = undefined;
-			}
+			this.dropLease(runId);
+		}
+	}
+	private dropLease(runId: string): void {
+		this.leases.delete(runId);
+		if (this.leases.size === 0) {
+			clearInterval(this.timer);
+			this.timer = undefined;
 		}
 	}
 	private *releaseAll(): Operation<void> {

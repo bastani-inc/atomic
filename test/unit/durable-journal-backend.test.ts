@@ -354,6 +354,33 @@ test("lease renewal follows the existing liveness cadence and prevents stale tak
 	assert.equal(second.getToolOutput("run", "hash"), "saved");
 });
 
+test("heartbeat records lost ownership and drops the lease when renewal and holder lookup both reject (#3682)", async () => {
+	vi.useFakeTimers();
+	const backend = await open();
+	await register(backend);
+	const state = (await backend.journal.leaseState("run"))!;
+	const stale = new StaleLeaseError("run", state.epoch, state.epoch + 1);
+	const renew = vi.spyOn(backend.journal, "renew").mockRejectedValue(stale);
+	vi.spyOn(backend.journal, "leaseState").mockRejectedValue(
+		new StorageUnavailableError({ adapter: "test", location: "journal" }, new Error("lookup failed")),
+	);
+	const release = vi.spyOn(backend.journal, "release");
+	await vi.advanceTimersByTimeAsync(STAGE_SESSION_HEARTBEAT_INTERVAL_MS);
+	await assert.rejects(
+		async () => await backend.setWorkflowStatus("run", "paused"),
+		(error: Error) => {
+			assert.ok(error instanceof JournalOwnershipError);
+			assert.equal(error.holderId, null);
+			assert.equal(error.cause, stale);
+			return true;
+		},
+	);
+	await vi.advanceTimersByTimeAsync(STAGE_SESSION_HEARTBEAT_INTERVAL_MS);
+	assert.equal(renew.mock.calls.length, 1);
+	await backend.close();
+	assert.equal(release.mock.calls.length, 0, "lost local lease must not be released on close");
+});
+
 test("status claims use full snapshots, omit absent fields and clear omitted owners", async () => {
 	const path = database();
 	const backend = await open(path);
