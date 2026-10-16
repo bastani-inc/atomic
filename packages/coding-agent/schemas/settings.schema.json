@@ -8,6 +8,9 @@
       "type": "string",
       "description": "JSON Schema reference."
     },
+    "storage": {
+      "$ref": "#/$defs/StorageSelection"
+    },
     "lastChangelogVersion": {
       "type": "string"
     },
@@ -499,31 +502,7 @@
               "description": "Workflow resource paths."
             },
             "journal": {
-              "type": "object",
-              "properties": {
-                "path": {
-                  "type": "string",
-                  "description": "Journal file path, relative to the Atomic home directory."
-                },
-                "memory": {
-                  "type": "boolean",
-                  "description": "Keep workflow journal records in memory."
-                }
-              },
-              "not": {
-                "required": [
-                  "path",
-                  "memory"
-                ],
-                "properties": {
-                  "path": {
-                    "minLength": 1
-                  },
-                  "memory": {
-                    "const": true
-                  }
-                }
-              }
+              "$ref": "#/$defs/StorageSelection"
             }
           }
         }
@@ -946,6 +925,112 @@
         "high",
         "xhigh",
         "max"
+      ]
+    },
+    "StorageSelection": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Database path relative to the Atomic home directory."
+            },
+            "memory": {
+              "type": "boolean",
+              "description": "Explicitly select ephemeral storage."
+            },
+            "prefix": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "not": {
+            "required": [
+              "path",
+              "memory"
+            ],
+            "properties": {
+              "path": {
+                "minLength": 1
+              },
+              "memory": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "adapter"
+          ],
+          "properties": {
+            "adapter": {
+              "type": "string",
+              "minLength": 1,
+              "description": "User-installed storage adapter module specifier."
+            },
+            "options": {
+              "type": "object",
+              "patternProperties": {
+                "^.*$": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            },
+            "secrets": {
+              "type": "object",
+              "patternProperties": {
+                "^.*$": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "env"
+                      ],
+                      "properties": {
+                        "env": {
+                          "type": "string"
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "file"
+                      ],
+                      "properties": {
+                        "file": {
+                          "type": "string"
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              }
+            },
+            "prefix": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
       ]
     }
   }

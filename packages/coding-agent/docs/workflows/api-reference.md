@@ -1331,7 +1331,7 @@ interface RunOpts {
   readonly signal?: AbortSignal;
   readonly deferWorkflowStart?: boolean;
   readonly config?: WorkflowRuntimeConfig;
-  readonly journal?: { path: string } | { database: DatabaseSync } | { memory: true } | RunJournal;
+  readonly journal?: RunJournalOption;
   readonly models?: WorkflowModelCatalogPort;
   readonly registry?: WorkflowRegistry;
   readonly depth?: number;
@@ -1362,17 +1362,15 @@ The public authoring declaration intentionally excludes runtime-only executor fi
 #### Choosing the durable backend
 
 ```typescript
-import type { DatabaseSync } from "node:sqlite";
-import type { RunJournal } from "@bastani/atomic/workflows";
-
-type JournalOption = { path: string } | { database: DatabaseSync } | { memory: true } | RunJournal;
+import type { RunJournalOption } from "@bastani/atomic/workflows";
 ```
 
 `run()` uses a local SQLite journal by default and releases the run's lease when execution settles. Select a journal with `RunOpts.journal`:
 
 - `{ path }` opens that SQLite file.
-- `{ database }` uses a caller-owned `node:sqlite` connection. Atomic initializes the journal schema on it but does not close the connection.
+- `{ database, prefix? }` uses a caller-owned async `SqliteDatabase` facade. Atomic initializes the journal schema on it but does not close the database.
 - `{ memory: true }` explicitly selects `MemoryRunJournal`. Records last only for the process and cannot recover runs after exit.
+- `{ adapter, options?, secrets?, prefix? }` loads your installed adapter module. See [Storage adapters](/storage#selecting-an-adapter).
 - A `RunJournal` instance is used as supplied. `SqlRunJournal`, `openSqlRunJournal`, `MemoryRunJournal`, journal error classes, and `registerRunJournalConformance` are exported from `@bastani/atomic/workflows`.
 
 Use `await openSqlRunJournal(path)` to open a file directly, or omit `path` for the default journal. It also accepts a caller-owned `DatabaseSync`. `await resolveRunJournal(options)` applies the selection rules below.
@@ -1427,7 +1425,7 @@ interface RunJournal {
 
 Use `registerRunJournalConformance(runner, name, open, observeRead)` to check a fresh journal per case. Supply a read observer that reports actual page sizes and entries loaded or copied, with a `restore()` method, so the suite can verify lazy reads without consuming the whole history. Synchronous backend fast paths are internal and are not part of the custom-journal contract.
 
-Precedence is `RunOpts.journal`, non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, `workflows.journal.path` or `workflows.journal.memory`, then the default `~/.atomic/workflows/journal.sqlite`. Relative settings paths resolve against the Atomic home directory. Storage failures reject the call; Atomic never selects memory as a recovery step. Keep the same journal and working directory when resuming stored runs.
+Precedence is `RunOpts.journal`, non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, `workflows.journal`, shared top-level `storage`, then the default `~/.atomic/workflows/journal.sqlite`. Nearer settings selections replace whole objects, never merge options or secrets. Relative settings paths resolve against Atomic home. Invalid selected values raise `StorageConfigError`; storage failures reject the call without selecting memory. Keep the same journal and working directory when resuming stored runs.
 
 ```ts
 import { run } from "@bastani/atomic/workflows";

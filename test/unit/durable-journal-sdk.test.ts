@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import type { DatabaseSync } from "node:sqlite";
+import type {
+	AdapterOptions,
+	SecretRef,
+	SessionStore,
+	SqliteDatabase,
+	StorageOpenContext,
+	StorageProvider,
+	RunJournal as StorageRunJournal,
+	StorageSelection,
+} from "@bastani/atomic/storage";
 import type {
 	Lease,
 	LeaseState,
@@ -23,9 +32,21 @@ import {
 type Equal<Left, Right> =
 	(<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2 ? true : false;
 const journalIdentity: Equal<RunJournal, KernelRunJournal> = true;
+const storageJournalIdentity: Equal<RunJournal, StorageRunJournal> = true;
+const providerIdentity: Equal<
+	StorageProvider,
+	{
+		openSessionStore(selection: StorageSelection, context: StorageOpenContext): Promise<SessionStore>;
+		openRunJournal(selection: StorageSelection, context: StorageOpenContext): Promise<RunJournal>;
+	}
+> = true;
 const optionIdentity: Equal<
 	NonNullable<RunOpts["journal"]>,
-	{ path: string } | { database: DatabaseSync } | { memory: true } | RunJournal
+	| { path: string; prefix?: string }
+	| { database: SqliteDatabase; prefix?: string }
+	| { memory: true }
+	| { adapter: string; options?: AdapterOptions; secrets?: Readonly<Record<string, SecretRef>>; prefix?: string }
+	| RunJournal
 > = true;
 const memoryPublicShape: Equal<keyof MemoryRunJournal, keyof RunJournal> = true;
 const sqlitePublicShape: Equal<Exclude<keyof SqlRunJournal, "path" | "descriptor">, keyof RunJournal> = true;
@@ -34,8 +55,10 @@ const leaseLookupIdentity: Equal<ReturnType<RunJournal["leaseState"]>, Promise<L
 const leaseStateIdentity: Equal<LeaseState, Lease & { readonly renewedAt: number; readonly ageMs: number }> = true;
 const SDK_PROCESS_TIMEOUT_MS = 120_000;
 
-test("public journal types retain exact option and RunJournal identities", () => {
+test("public storage and journal types retain exact provider, option and journal identities", () => {
 	assert.equal(journalIdentity, true);
+	assert.equal(storageJournalIdentity, true);
+	assert.equal(providerIdentity, true);
 	assert.equal(optionIdentity, true);
 	assert.equal(memoryPublicShape, true);
 	assert.equal(sqlitePublicShape, true);

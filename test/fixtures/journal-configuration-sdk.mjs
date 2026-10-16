@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { StorageUnavailableError } from "@bastani/atomic/storage";
+import { fileURLToPath } from "node:url";
+import { StorageConfigError, StorageUnavailableError, wrapNodeSqliteDatabase } from "@bastani/atomic/storage";
 import {
-	JournalConfigurationError,
 	JournalError,
 	JournalMetaCorruptError,
 	MemoryRunJournal,
@@ -54,7 +54,7 @@ await assert.rejects(
 	file.append(held.lease, { type: "StatusChanged", payload: { status: "failed", inputs } }),
 	serializationError,
 );
-assert.deepEqual(await file.listRuns(), [header]);
+assert.deepEqual(await file.listRuns(), [{ ...header, storage: file.descriptor }]);
 const leaseAfter = await file.leaseState(header.runId);
 assert.ok(Number.isSafeInteger(leaseAfter.ageMs) && leaseAfter.ageMs >= leaseBefore.ageMs);
 assert.deepEqual(leaseAfter, { ...leaseBefore, ageMs: leaseAfter.ageMs });
@@ -63,10 +63,10 @@ for await (const entry of file.read(header.runId)) entries.push(entry);
 assert.deepEqual(entries, []);
 await file.close();
 const reopened = await openSqlRunJournal(join(root, "sdk.sqlite"));
-assert.deepEqual(await reopened.listRuns(), [header]);
+assert.deepEqual(await reopened.listRuns(), [{ ...header, storage: reopened.descriptor }]);
 await reopened.close();
 const database = new DatabaseSync(join(root, "caller.sqlite"));
-const borrowed = await resolveRunJournal({ journal: { database } });
+const borrowed = await resolveRunJournal({ journal: { database: wrapNodeSqliteDatabase(database) } });
 await borrowed.close();
 assert.equal(database.prepare("SELECT schema_version FROM wf_meta").get().schema_version, 1);
 database.exec("INSERT INTO wf_meta VALUES (1)");
@@ -82,8 +82,58 @@ await assert.rejects(
 database.close();
 await assert.rejects(
 	() => resolveRunJournal({ settings: { workflows: { journal: { path: "x", memory: true } } } }),
-	JournalConfigurationError,
+	StorageConfigError,
 );
+const adapter = fileURLToPath(new URL("./storage-value-adapter.ts", import.meta.url));
+const adapterJournals = [];
+try {
+	for (const [name, value] of [
+		["null", null],
+		["nan", NaN],
+		["infinity", Infinity],
+		["negative-infinity", -Infinity],
+		["zero", 0],
+		["negative-zero", -0],
+		["bigint-one", 1n],
+		["bytes-one", new Uint8Array([1])],
+	]) {
+		const journal = await resolveRunJournal({ journal: { adapter, options: { root, value } } });
+		adapterJournals.push(journal);
+		assert.ok(journal instanceof SqlRunJournal);
+		assert.equal(journal.path, join(root, `${name}.sqlite`));
+		assert.deepEqual(await journal.listRuns(), []);
+		await journal.createRun({ ...header, runId: name });
+		const repeated = await resolveRunJournal({ journal: { adapter, options: { value, root } } });
+		adapterJournals.push(repeated);
+		assert.equal((await repeated.getRun(name)).runId, name);
+	}
+} finally {
+	for (const journal of adapterJournals) await journal.close();
+}
+delete process.env.ATOMIC_TEST_STORAGE_ABSENT_TOKEN;
+for (const source of ["sdk", "workflows.journal", "storage"]) {
+	for (const failure of ["missing-secret", "unsupported-domain"]) {
+		const selection =
+			failure === "missing-secret"
+				? { adapter, secrets: { token: { env: "ATOMIC_TEST_STORAGE_ABSENT_TOKEN" } } }
+				: { adapter: fileURLToPath(new URL("./storage-unsupported-adapter.ts", import.meta.url)) };
+		await assert.rejects(
+			() =>
+				resolveRunJournal(
+					source === "sdk"
+						? { journal: selection }
+						: { settings: source === "storage" ? { storage: selection } : { workflows: { journal: selection } } },
+				),
+			(error) => {
+				assert.ok(error instanceof StorageConfigError);
+				assert.equal(error.source, source === "sdk" ? "sdk" : "settings");
+				assert.equal(error.field, failure === "missing-secret" ? "secrets.token" : "adapter");
+				assert.equal(error.reason, failure === "missing-secret" ? "secret-env-missing" : "adapter-domain-unsupported");
+				return true;
+			},
+		);
+	}
+}
 const checks = [];
 registerRunJournalConformance(
 	(name, body) => checks.push({ name, body }),

@@ -11,7 +11,7 @@ import {
 import type { TSchema } from "typebox";
 import { KeybindingsSchema, KeybindingValueSchema } from "../src/core/keybindings-schema.ts";
 import { ModelsConfigSchema, ModelsJsonCompatSchema } from "../src/core/model-config.ts";
-import { SettingsSchema } from "../src/core/settings-schema.ts";
+import { SettingsSchema, StorageSelectionSchema } from "../src/core/settings-schema.js";
 import { ColorValueSchema, ThemeJsonSchema } from "../src/modes/interactive/theme/theme-schema.ts";
 
 const packageDirectory = fileURLToPath(new URL("..", import.meta.url));
@@ -41,7 +41,7 @@ const schemaArtifacts: readonly SchemaArtifact[] = [
 	{
 		path: "schemas/settings.schema.json",
 		schema: SettingsSchema,
-		definitions: { ModelThinkingLevel: ModelThinkingLevelSchema },
+		definitions: { ModelThinkingLevel: ModelThinkingLevelSchema, StorageSelection: StorageSelectionSchema },
 	},
 	{
 		path: "schemas/keybindings.schema.json",

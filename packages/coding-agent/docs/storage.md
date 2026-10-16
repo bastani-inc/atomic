@@ -1,6 +1,6 @@
 # SQLite storage API
 
-The SDK exposes an async SQLite API from `@bastani/atomic` and `@bastani/atomic/storage`. It does not change where Atomic stores sessions or workflow runs.
+The SDK exposes an async SQLite API from `@bastani/atomic` and `@bastani/atomic/storage`. Workflow journals can use this API through a caller-owned database or a user-installed adapter module. Session settings selection is unchanged.
 
 ```ts
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
@@ -58,7 +58,7 @@ try {
 }
 ```
 
-The returned value can be passed to your own SDK application code that accepts `SqliteDatabase`. This does not select a custom driver for Atomic sessions or workflow runs.
+Pass the returned facade as SDK `journal: { database, prefix: "project_" }`; Atomic leaves that database open. To select it from settings, expose `openLibsqlDatabase` through an adapter module as described below.
 
 <details>
 <summary>Complete wrapper</summary>
@@ -285,6 +285,36 @@ export async function openLibsqlDatabase(options: LibsqlDatabaseOptions): Promis
 {/* /custom-driver-example */}
 
 </details>
+
+## Selecting an adapter
+
+Install your driver separately and export a default `StorageAdapterModule` from your module:
+
+```ts
+import type { StorageAdapterModule } from "@bastani/atomic/storage";
+import { openLibsqlDatabase } from "./storage-libsql-wrapper.js";
+
+export default {
+  atomicStorageAdapter: 1,
+  async openDatabase(options, context) {
+    return openLibsqlDatabase({ url: String(options.url), authToken: String(options.authToken) });
+  },
+} satisfies StorageAdapterModule;
+```
+
+Select it with `workflows.journal: { "adapter": "@example/atomic-sqlite" }` or shared top-level `storage` in [settings](/settings#workflow-storage). SDK runs accept `journal: { adapter, options, secrets, prefix }`. Module specifiers resolve from the agent directory, normally `~/.atomic/agent`; absolute module paths also work. Project settings follow the same trust boundary as project extensions. A module executes with Atomic's privileges.
+
+`options` is an object of SQLite scalar values or booleans. In JSON settings use strings, numbers, booleans, or null. `secrets` maps option names to `{ env }` or `{ file }`; resolved values override same-named options without trimming file contents. Keep credentials out of `options` and database descriptors. `context` contains `agentDir`, `domain: "sessions" | "journal"`, and an optional `signal`.
+
+A SQLite adapter implements `openDatabase(options, context): Promise<SqliteDatabase>`. Atomic applies its domain schema and optional table prefix. A full adapter can instead implement `openSessionStore(options, context, storage)` or `openRunJournal(options, context, storage)`; the domain hook takes priority over `openDatabase`. The typed third argument is `{ readonly prefix?: string }`. Domain adapters must honor this prefix to isolate selected stores. A missing domain/database hook raises `StorageConfigError` with reason `"adapter-domain-unsupported"`. Load failures and invalid module contracts raise `StorageAdapterLoadError`; driver opening failures raise `StorageUnavailableError`. None selects memory as a fallback.
+
+The exported `StorageProvider` can open either domain explicitly. Construct it with `{ memory: (descriptor) => new MemoryRunJournal(descriptor), sql: SqlRunJournal.open }` from `@bastani/atomic/workflows`, then call `openSessionStore(selection, context)` or `openRunJournal(selection, context)`. `StorageSelection` uses `kind: "memory"`, `"jsonl"` with `dir` for sessions only, `"sqlite"` with `path`, `"database"` with a caller-owned facade, or `"adapter"` with `module`, optional options/secrets/prefix. This does not change session settings or SDK session selection.
+
+One provider shares a database for matching owned SQLite or adapter selections. Close every returned store; the last store closes the owned database. Closing a store is idempotent. A caller-owned `database` is never closed by the provider. A full domain adapter owns its returned store's lifecycle. Invalid configuration stops selection, and a configured persistent store that cannot open never becomes an in-memory store.
+
+If opening storage fails and closing its owned database also fails, the original typed opening error is thrown with a `cleanupCause` field containing the cleanup failure. Inspect both errors when diagnosing the failed open.
+
+Factory-created journal headers record a credential-free `storage` descriptor for diagnostics. Full domain adapters are responsible for recording their own safe descriptor. Directly supplied journals and their caller-provided headers are not rewritten.
 
 ## Adapter conformance
 

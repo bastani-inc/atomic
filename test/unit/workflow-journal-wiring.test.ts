@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readdirSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
+import { openNodeSqliteDatabase, StorageConfigError } from "@bastani/atomic/storage";
 import { afterEach, test, vi } from "vitest";
 import { getDurableBackendProcessOwner } from "../../packages/workflows/src/durable/backend-process-owner.js";
 import { initializeDurableBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
@@ -9,15 +10,24 @@ import {
 	JournalDurableBackend,
 } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
-import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+import { openSqlRunJournal, SqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { type RunJournal, StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
+import { currentWorkflowSessionRunState } from "../../packages/workflows/src/extension/adopt-session-run-state.js";
+import { createWorkflowExtensionRuntimeState } from "../../packages/workflows/src/extension/extension-runtime-state.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { runDetached } from "../../packages/workflows/src/runs/background/runner.js";
 import type { RunResult } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import { run, workflow } from "../../packages/workflows/src/sdk-surface.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
+import { optionCases } from "../fixtures/storage-value-adapter.js";
+import {
+	fileExists,
+	makeTempDirectory,
+	moduleDir,
+	removeTempDirectory,
+	writeFileEnsuringDir,
+} from "../helpers/runtime.js";
 
 async function resetBackends(): Promise<void> {
 	for (const selected of getDurableBackendProcessOwner().selectedBackends?.values() ?? []) {
@@ -182,6 +192,8 @@ test("explicit journal selection reuses each identity without replacing other jo
 	await second.registerWorkflow({ workflowId: "same", name: "second", inputs: {}, createdAt: 1, status: "paused" });
 	assert.equal(first.getWorkflow("same")?.name, "first");
 	assert.equal(second.getWorkflow("same")?.name, "second");
+	assert.ok(first instanceof JournalDurableBackend);
+	assert.deepEqual((await first.journal.getRun("same"))?.storage, { adapter: "memory", location: ":memory:" });
 	const path = journalPath();
 	const file = await initializeDurableBackend({ journal: { path } });
 	assert.equal(await initializeDurableBackend({ journal: { path } }), file);
@@ -198,9 +210,8 @@ test("explicit journal selection reuses each identity without replacing other jo
 });
 
 test("SDK uses a configured path and leaves a caller-owned connection open after reset", async () => {
-	const { DatabaseSync } = await import("node:sqlite");
 	const path = journalPath();
-	const database = new DatabaseSync(path);
+	const database = await openNodeSqliteDatabase(path);
 	try {
 		const def = definition(() => {});
 		const adapters = { prompt: { prompt: async () => "finished" } };
@@ -211,7 +222,7 @@ test("SDK uses a configured path and leaves a caller-owned connection open after
 		const backend = await initializeDurableBackend({ journal: { database } });
 		assert.equal(backend.getWorkflow("connection")?.status, "completed");
 		await resetBackends();
-		database.exec("CREATE TABLE caller_still_open (value TEXT)");
+		await database.exec("CREATE TABLE caller_still_open (value TEXT)");
 		assert.equal(
 			(await run(def, {}, { journal: { path }, runId: "path", store: createStore(), adapters })).status,
 			"completed",
@@ -219,7 +230,7 @@ test("SDK uses a configured path and leaves a caller-owned connection open after
 		assert.equal((await initializeDurableBackend({ journal: { path } })).getWorkflow("path")?.status, "completed");
 	} finally {
 		await resetBackends();
-		database.close();
+		await database.close();
 	}
 });
 
@@ -428,5 +439,197 @@ test("stores retain their construction-time test backend after a later injection
 	} finally {
 		await firstBackend.close();
 		await secondBackend.close();
+	}
+});
+
+test("SDK adapter journals persist checkpoints across reopen and cache the full resolved selection", async () => {
+	const path = journalPath();
+	const adapter = join(moduleDir(import.meta.url), "../fixtures/storage-adapter.ts");
+	const journal = { adapter, options: { path }, prefix: "first_" };
+	let tools = 0;
+	let stages = 0;
+	const def = definition(() => {
+		tools++;
+	});
+	const options = {
+		journal,
+		runId: "adapter-replay",
+		store: createStore(),
+		adapters: {
+			prompt: {
+				prompt: async () => {
+					stages++;
+					return "finished";
+				},
+			},
+		},
+	};
+	assert.equal((await run(def, {}, options)).status, "completed");
+	const first = await initializeDurableBackend({ journal });
+	assert.equal(await initializeDurableBackend({ journal: { ...journal, options: { path } } }), first);
+	const second = await initializeDurableBackend({ journal: { ...journal, prefix: "second_" } });
+	assert.notEqual(first, second);
+	assert.equal(second.getWorkflow(options.runId), undefined);
+	await resetBackends();
+	assert.equal((await run(def, {}, { ...options, store: createStore() })).status, "completed");
+	assert.equal(tools, 1);
+	assert.equal(stages, 1);
+	const database = await openNodeSqliteDatabase(path);
+	try {
+		assert.ok((await database.all("SELECT seq FROM first_wf_events")).length > 0);
+		assert.deepEqual(await database.all("SELECT run_id FROM second_wf_runs"), []);
+	} finally {
+		await database.close();
+	}
+});
+
+test("untrusted project adapters are not loaded through extension contexts and trusted contexts can select them", async () => {
+	setDurableBackend(undefined);
+	const root = makeTempDirectory("journal-trust-");
+	directories.push(root);
+	const cwd = join(root, "project");
+	const path = join(root, "runs.sqlite");
+	const lifecycle = join(root, "adapter-lifecycle.txt");
+	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", join(root, "agent"));
+	vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", "");
+	await writeFileEnsuringDir(
+		join(cwd, ".atomic", "settings.json"),
+		JSON.stringify({
+			workflows: {
+				journal: {
+					adapter: join(moduleDir(import.meta.url), "../fixtures/storage-adapter.ts"),
+					options: { path, lifecycle },
+				},
+			},
+		}),
+	);
+	const state = createWorkflowExtensionRuntimeState(
+		{},
+		{},
+		{
+			resolveHostCwd: () => cwd,
+			runState: { ...currentWorkflowSessionRunState(), store: createStore() },
+		},
+	);
+	try {
+		const untrustedRuntime = state.runtimeForContext({ isProjectTrusted: () => false });
+		await untrustedRuntime.dispatch({ action: "list" });
+		const untrusted = untrustedRuntime.durableBackend();
+		assert.ok(untrusted instanceof JournalDurableBackend);
+		assert.equal(await fileExists(lifecycle), false);
+		const trustedRuntime = state.runtimeForContext({ isProjectTrusted: () => true });
+		await trustedRuntime.dispatch({ action: "list" });
+		const trusted = trustedRuntime.durableBackend();
+		assert.notEqual(trusted, untrusted);
+		assert.equal(await fileExists(lifecycle), true);
+		assert.ok(trusted instanceof JournalDurableBackend);
+		assert.ok(trusted.journal instanceof SqlRunJournal);
+		assert.equal(trusted.journal.path, path);
+	} finally {
+		state.setNotificationsActive(false);
+	}
+});
+
+test("temporary SQLite paths do not alias filesystem paths in the resolved-selection cache", async () => {
+	const backend = await initializeDurableBackend({ journal: { path: "" } });
+	assert.ok(backend instanceof JournalDurableBackend);
+	assert.ok(backend.journal instanceof SqlRunJournal);
+	assert.equal(backend.journal.path, "");
+	await assert.rejects(
+		() => initializeDurableBackend({ journal: { path: process.cwd() } }),
+		(error: Error) => {
+			assert.ok(error instanceof StorageUnavailableError);
+			assert.equal(error.location, process.cwd());
+			return true;
+		},
+	);
+});
+
+test("factory adapter selections isolate typed options and reuse equal values", async () => {
+	const root = makeTempDirectory("journal-option-values-");
+	directories.push(root);
+	const adapter = join(moduleDir(import.meta.url), "../fixtures/storage-value-adapter.ts");
+	const backends: JournalDurableBackend[] = [];
+	for (const [name, value] of optionCases) {
+		const backend = await initializeDurableBackend({ journal: { adapter, options: { root, value } } });
+		assert.ok(backend instanceof JournalDurableBackend);
+		assert.ok(backend.journal instanceof SqlRunJournal);
+		assert.equal(backend.journal.path, join(root, `${name}.sqlite`));
+		assert.deepEqual(await backend.journal.listRuns(), []);
+		for (const previous of backends) {
+			assert.notEqual(backend, previous);
+			assert.equal(previous.getWorkflow(name), undefined);
+		}
+		await backend.registerWorkflow({ workflowId: name, name, inputs: {}, createdAt: 1, status: "paused" });
+		backends.push(backend);
+		const repeatedValue = value instanceof Uint8Array ? value.slice() : value;
+		assert.equal(
+			await initializeDurableBackend({ journal: { adapter, options: { value: repeatedValue, root } } }),
+			backend,
+		);
+	}
+});
+
+for (const source of ["sdk", "workflows.journal", "storage"] as const) {
+	for (const failure of ["missing-secret", "unsupported-domain"] as const) {
+		test(`factory ${source} adapter ${failure} retains configuration provenance`, async () => {
+			vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", "");
+			vi.stubEnv("ATOMIC_TEST_STORAGE_ABSENT_TOKEN", undefined);
+			const selection =
+				failure === "missing-secret"
+					? {
+							adapter: join(moduleDir(import.meta.url), "../fixtures/storage-adapter.ts"),
+							secrets: { token: { env: "ATOMIC_TEST_STORAGE_ABSENT_TOKEN" } },
+						}
+					: { adapter: join(moduleDir(import.meta.url), "../fixtures/storage-unsupported-adapter.ts") };
+			await assert.rejects(
+				() =>
+					initializeDurableBackend(
+						source === "sdk"
+							? { journal: selection }
+							: {
+									settings:
+										source === "storage" ? { storage: selection } : { workflows: { journal: selection } },
+								},
+					),
+				(error: Error) => {
+					assert.ok(error instanceof StorageConfigError);
+					assert.equal(error.source, source === "sdk" ? "sdk" : "settings");
+					assert.equal(error.field, failure === "missing-secret" ? "secrets.token" : "adapter");
+					assert.equal(
+						error.reason,
+						failure === "missing-secret" ? "secret-env-missing" : "adapter-domain-unsupported",
+					);
+					return true;
+				},
+			);
+		});
+	}
+}
+
+test("concurrent factory callers retain their own configuration error source", async () => {
+	vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", "");
+	const selection = { adapter: join(moduleDir(import.meta.url), "../fixtures/storage-unsupported-adapter.ts") };
+	for (const sources of [
+		["sdk", "settings"],
+		["settings", "sdk"],
+	] as const) {
+		await Promise.all(
+			sources.map(async (source) => {
+				await assert.rejects(
+					() =>
+						initializeDurableBackend(
+							source === "sdk" ? { journal: selection } : { settings: { storage: selection } },
+						),
+					(error: Error) => {
+						assert.ok(error instanceof StorageConfigError);
+						assert.equal(error.source, source);
+						assert.equal(error.field, "adapter");
+						assert.equal(error.reason, "adapter-domain-unsupported");
+						return true;
+					},
+				);
+			}),
+		);
 	}
 });

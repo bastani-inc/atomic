@@ -1,5 +1,5 @@
+import type { RunEventType } from "@bastani/atomic/storage";
 import { StorageSchemaVersionError } from "@bastani/atomic/storage";
-import type { WorkflowSerializableValue } from "../../shared/authoring-contract-stage.js";
 
 export { StorageUnavailableError } from "@bastani/atomic/storage";
 
@@ -29,84 +29,19 @@ export const JOURNAL_COLUMNS = {
 export type JournalColumn = (typeof JOURNAL_COLUMNS)[keyof typeof JOURNAL_COLUMNS];
 export const JOURNAL_LEASE = { initialEpoch: 1, epochIncrement: 1, unheld: null, absentEpoch: 0 } as const;
 export type JournalLeaseSemantics = typeof JOURNAL_LEASE;
-export const RUN_EVENT_TYPES = {
-	runStarted: "RunStarted",
-	runFinished: "RunFinished",
-	statusChanged: "StatusChanged",
-	checkpointRecorded: "CheckpointRecorded",
-	promptAsked: "PromptAsked",
-	promptReleased: "PromptReleased",
-	controlRequested: "ControlRequested",
-	messageQueued: "MessageQueued",
-	messageDelivered: "MessageDelivered",
-	messageSettled: "MessageSettled",
-	timerScheduled: "TimerScheduled",
-	summaryRecorded: "SummaryRecorded",
-} as const;
-export type RunEventType = (typeof RUN_EVENT_TYPES)[keyof typeof RUN_EVENT_TYPES];
-
-export interface RunHeader {
-	readonly runId: string;
-	readonly name: string;
-	readonly cwd: string;
-	readonly createdAt: number;
-	readonly status: string;
-	readonly inputs?: WorkflowSerializableValue;
-}
-
-export type RunSummary = RunHeader;
-
-type EventOf<Type extends string, Payload = WorkflowSerializableValue> = {
-	readonly type: Type;
-	readonly payload: Payload;
-};
-
-export type RunEvent =
-	| EventOf<typeof RUN_EVENT_TYPES.runStarted | typeof RUN_EVENT_TYPES.runFinished>
-	| EventOf<
-			typeof RUN_EVENT_TYPES.statusChanged,
-			{ readonly status: string; readonly [key: string]: WorkflowSerializableValue }
-	  >
-	| EventOf<
-			typeof RUN_EVENT_TYPES.checkpointRecorded,
-			{
-				readonly kind: "tool" | "ui" | "stage" | "task" | "boundary";
-				readonly [key: string]: WorkflowSerializableValue;
-			}
-	  >
-	| EventOf<
-			| typeof RUN_EVENT_TYPES.promptAsked
-			| typeof RUN_EVENT_TYPES.promptReleased
-			| typeof RUN_EVENT_TYPES.controlRequested
-	  >
-	| EventOf<
-			| typeof RUN_EVENT_TYPES.messageQueued
-			| typeof RUN_EVENT_TYPES.messageDelivered
-			| typeof RUN_EVENT_TYPES.messageSettled
-			| typeof RUN_EVENT_TYPES.timerScheduled
-			| typeof RUN_EVENT_TYPES.summaryRecorded
-	  >;
-
-export interface Lease {
-	readonly runId: string;
-	readonly holderId: string;
-	readonly epoch: number;
-}
-
-export type LeaseState = Lease & { readonly renewedAt: number; readonly ageMs: number };
-
-export type LeaseOutcome =
-	| { readonly status: "acquired"; readonly lease: Lease }
-	| { readonly status: "held"; readonly holderId: string | null; readonly epoch: number };
-
-export interface JournalEntry {
-	readonly runId: string;
-	readonly seq: number;
-	readonly epoch: number;
-	readonly key?: string;
-	readonly event: RunEvent;
-	readonly at: number;
-}
+export type {
+	AppendOutcome,
+	JournalEntry,
+	Lease,
+	LeaseOutcome,
+	LeaseState,
+	RunEvent,
+	RunEventType,
+	RunHeader,
+	RunJournal,
+	RunSummary,
+} from "@bastani/atomic/storage";
+export { RUN_EVENT_TYPES } from "@bastani/atomic/storage";
 
 export interface JournalLeaseRow {
 	[JOURNAL_COLUMNS.holderId]: string | null;
@@ -123,46 +58,12 @@ export interface JournalEventRow {
 	[JOURNAL_COLUMNS.at]: number;
 }
 
-export type AppendOutcome = { readonly status: "appended" | "exists"; readonly entry: JournalEntry };
-
-export interface RunJournal {
-	createRun(header: RunHeader): Promise<"created" | "exists">;
-	getRun(runId: string): Promise<RunSummary | undefined>;
-	listRuns(filter?: { cwd?: string }): Promise<readonly RunSummary[]>;
-	acquire(runId: string, holderId: string): Promise<LeaseOutcome>;
-	takeover(runId: string, holderId: string, expectedHolder: string): Promise<LeaseOutcome>;
-	takeoverExpired(runId: string, holderId: string, staleAfterMs: number): Promise<LeaseOutcome>;
-	leaseState(runId: string): Promise<LeaseState | undefined>;
-	renew(lease: Lease): Promise<void>;
-	release(lease: Lease): Promise<void>;
-	append(lease: Lease, event: RunEvent, options?: { key?: string; expectSeq?: number }): Promise<AppendOutcome>;
-	read(runId: string, fromSeq?: number): AsyncIterable<JournalEntry>;
-	readKey(runId: string, key: string): Promise<JournalEntry | undefined>;
-	deleteOwnedRun(lease: Lease, expectSeq?: number): Promise<void>;
-	deleteRun(runId: string): Promise<void>;
-	close(): Promise<void>;
-}
-
 export class JournalError extends Error {}
 
 export class JournalClosedError extends JournalError {
 	constructor() {
 		super("Journal is closed");
 		this.name = "JournalClosedError";
-	}
-}
-
-export class JournalConfigurationError extends JournalError {
-	readonly source: "settings";
-	readonly setting: "workflows.journal";
-	readonly reason: "path-and-memory";
-
-	constructor(source: "settings", setting: "workflows.journal", reason: "path-and-memory") {
-		super(`Invalid journal configuration at ${source}.${setting}: ${reason}`);
-		this.name = "JournalConfigurationError";
-		this.source = source;
-		this.setting = setting;
-		this.reason = reason;
 	}
 }
 

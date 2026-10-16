@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `RunOpts.journal.database` requires the async SQLite facade; wrap an existing native connection with `wrapNodeSqliteDatabase`. Journal selection errors now use `StorageConfigError` and its `source`, `field`, and `reason` fields instead of `JournalConfigurationError`.
+
+### Added
+
+- Added journal adapter module selection with environment/file secret references and shared `storage` settings. SDK options override environment, journal settings, shared storage, and persistent defaults; nearer settings replace complete selections. Caller-owned database selections accept the async SQLite facade and remain open after journal close.
+
 ## [0.9.38-alpha.6] - 2026-10-16
 
 ### Breaking Changes

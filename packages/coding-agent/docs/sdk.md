@@ -243,11 +243,11 @@ await run(myWorkflow, inputs, { journal: { path: "./workflow-runs.sqlite" } });
 await run(myWorkflow, inputs, { journal: { memory: true } });
 ```
 
-Use `{ database }` for an existing `node:sqlite` `DatabaseSync`; Atomic does not close that connection. A supplied `RunJournal` is used as-is. Memory is an explicit opt-in for tests or ephemeral runs and cannot recover runs after the process exits.
+Use `{ database, prefix? }` for an async `SqliteDatabase` facade; Atomic never closes the caller-owned database. To use a driver selected by module specifier, pass `{ adapter, options?, secrets?, prefix? }`. Atomic bundles no remote drivers. A supplied `RunJournal` is used as-is. Memory is an explicit opt-in for tests or ephemeral runs and cannot recover runs after process exit. See [Storage adapters](/storage#selecting-an-adapter).
 
 Custom journals implement the full `RunJournal` interface, including `deleteOwnedRun(lease, expectSeq?)` for atomic lease-fenced deletion with an optional sequence check. A stale lease rejects with `StaleLeaseError` without deleting the successor's data. Open a facade-backed journal with `await SqlRunJournal.open(database, { prefix })`, or use `await openSqlRunJournal(pathOrDatabase?)` for the node adapter. Validate custom journals with `registerRunJournalConformance`; see [Choosing the durable backend](/workflows/api-reference#choosing-the-durable-backend).
 
-Without a per-run option, a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH` overrides `workflows.journal.path` or `workflows.journal.memory` in settings. Relative settings paths resolve against the Atomic home directory. The default file is `~/.atomic/workflows/journal.sqlite`. Keep the original journal and working directory to resume saved runs. Storage failures reject the action rather than switching to memory. See [Workflow storage settings](/settings#workflow-storage).
+Without a per-run option, a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH` overrides `workflows.journal`, which overrides shared top-level `storage`. Nearer-scope settings replace whole selections. Relative settings paths resolve against Atomic home. The default journal is `~/.atomic/workflows/journal.sqlite`; an empty shared selection uses `~/.atomic/storage.sqlite`. Keep the original journal and working directory to resume saved runs. Invalid configuration and storage failures reject rather than switching to memory. See [Workflow storage settings](/settings#workflow-storage).
 
 ### Workflow run control
 

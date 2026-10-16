@@ -1,41 +1,114 @@
 import { dirname, isAbsolute, join } from "node:path";
-import type { DatabaseSync } from "node:sqlite";
 import { getAgentDir } from "@bastani/atomic";
+import {
+	type AdapterOptions,
+	type SecretRef,
+	type SqliteDatabase,
+	StorageConfigError,
+	StorageProvider,
+	type StorageSelection,
+	type StorageSettingsSelection,
+	selectStorage,
+} from "@bastani/atomic/storage";
 import { MemoryRunJournal } from "./memory-run-journal.js";
-import { openSqlRunJournal, workflowJournalPath } from "./sqlite-run-journal.js";
-import { JournalConfigurationError, type RunJournal } from "./types.js";
+import { SqlRunJournal } from "./sql-run-journal.js";
+import type { RunJournal } from "./types.js";
 
-export type RunJournalOption = { path: string } | { database: DatabaseSync } | { memory: true } | RunJournal;
-
+export type RunJournalOption =
+	| { path: string; prefix?: string }
+	| { database: SqliteDatabase; prefix?: string }
+	| { memory: true }
+	| { adapter: string; options?: AdapterOptions; secrets?: Readonly<Record<string, SecretRef>>; prefix?: string }
+	| RunJournal;
 export interface RunJournalSettings {
-	workflows?: string[] | { journal?: { path?: string; memory?: boolean } };
+	workflows?: string[] | { journal?: StorageSettingsSelection };
+	storage?: StorageSettingsSelection;
 }
 
-/** Resolve configuration without opening storage, so callers can reuse an existing selection. */
+const provider = new StorageProvider({
+	memory: (descriptor) => new MemoryRunJournal(descriptor),
+	sql: SqlRunJournal.open,
+});
+const settingsSelections = new WeakSet<StorageSelection>();
+
 export function selectRunJournal(
 	options: { journal?: RunJournalOption; settings?: RunJournalSettings } = {},
-): RunJournalOption {
-	if (options.journal !== undefined) return options.journal;
-	const environment = process.env.ATOMIC_WORKFLOW_JOURNAL_PATH;
-	if (environment !== undefined && environment.length > 0) return { path: environment };
-	const workflows = options.settings?.workflows;
-	const settings = Array.isArray(workflows) ? undefined : workflows?.journal;
-	const path = settings?.path;
-	if (path !== undefined && path.length > 0) {
-		if (settings?.memory === true)
-			throw new JournalConfigurationError("settings", "workflows.journal", "path-and-memory");
-		return { path: isAbsolute(path) ? path : join(dirname(getAgentDir()), path) };
+): StorageSelection | RunJournal {
+	const agentDir = getAgentDir();
+	const defaultPath = join(dirname(agentDir), "workflows", "journal.sqlite");
+	if (options.journal !== undefined) {
+		if (options.journal !== null && typeof options.journal === "object" && "createRun" in options.journal) {
+			const journal = options.journal;
+			if (
+				[
+					journal.createRun,
+					journal.getRun,
+					journal.listRuns,
+					journal.acquire,
+					journal.takeover,
+					journal.takeoverExpired,
+					journal.leaseState,
+					journal.renew,
+					journal.release,
+					journal.append,
+					journal.read,
+					journal.readKey,
+					journal.deleteOwnedRun,
+					journal.deleteRun,
+					journal.close,
+				].some((hook) => typeof hook !== "function")
+			) {
+				throw new StorageConfigError("sdk", "journal", "invalid-journal");
+			}
+			return journal;
+		}
+		return selectStorage(options.journal, "sdk", "journal", defaultPath);
 	}
-	if (settings?.memory === true) return { memory: true };
-	return { path: workflowJournalPath() };
+	const environment = process.env.ATOMIC_WORKFLOW_JOURNAL_PATH;
+	if (environment !== undefined && environment.length > 0) return { kind: "sqlite", path: environment };
+	const workflows = options.settings?.workflows;
+	const journal = Array.isArray(workflows) ? undefined : workflows?.journal;
+	const value = journal !== undefined ? journal : options.settings?.storage;
+	if (value === undefined) return { kind: "sqlite", path: defaultPath };
+	const selection = selectStorage(
+		value,
+		"settings",
+		journal !== undefined ? "workflows.journal" : "storage",
+		journal !== undefined ? defaultPath : join(dirname(agentDir), "storage.sqlite"),
+	);
+	const resolved =
+		selection.kind === "sqlite" && !isAbsolute(selection.path)
+			? { ...selection, path: join(dirname(agentDir), selection.path) }
+			: selection;
+	settingsSelections.add(resolved);
+	return resolved;
 }
 
 export async function resolveRunJournal(
 	options: { journal?: RunJournalOption; settings?: RunJournalSettings } = {},
 ): Promise<RunJournal> {
-	const selected = selectRunJournal(options);
-	if ("createRun" in selected) return selected;
-	if ("path" in selected) return await openSqlRunJournal(selected.path);
-	if ("database" in selected) return await openSqlRunJournal(selected.database);
-	return new MemoryRunJournal();
+	return openSelectedRunJournal(selectRunJournal(options));
+}
+
+export async function openSelectedRunJournal(selection: StorageSelection | RunJournal): Promise<RunJournal> {
+	if ("createRun" in selection) return selection;
+	return withRunJournalConfigSource(selection, () =>
+		provider.openRunJournal(selection, { agentDir: getAgentDir(), domain: "journal" }),
+	);
+}
+
+export async function withRunJournalConfigSource<T>(
+	selection: StorageSelection | RunJournal,
+	open: () => Promise<T>,
+): Promise<T> {
+	if ("createRun" in selection) return open();
+	try {
+		return await open();
+	} catch (error) {
+		if (error instanceof StorageConfigError) {
+			const source = settingsSelections.has(selection) ? "settings" : "sdk";
+			if (error.source !== source) throw new StorageConfigError(source, error.field, error.reason);
+		}
+		throw error;
+	}
 }

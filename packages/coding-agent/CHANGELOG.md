@@ -2,9 +2,18 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `RunOpts.journal.database` now takes an async `SqliteDatabase` facade, not a raw `node:sqlite` connection; use `wrapNodeSqliteDatabase` for an existing connection. Journal configuration failures now use `StorageConfigError` with `source`, `field`, and `reason` instead of `JournalConfigurationError`.
+
+### Added
+
+- Added user-installed journal adapter modules, environment/file secret references, shared `storage` defaults, and `StorageProvider` for explicit session/journal opens with shared database lifetime. `RunOpts.journal.database` accepts an async SQLite facade; invalid selections raise `StorageConfigError` without falling back to memory.
+
 ### Fixed
 
 - Session shutdown and replacement now wait for already-admitted extension session entries to finish saving before releasing their resources.
+- Storage providers now preserve domain-adapter prefixes, make returned stores safe to close repeatedly, and retain typed opening errors when cleanup also fails.
 
 ## [0.9.38-alpha.6] - 2026-10-16
 

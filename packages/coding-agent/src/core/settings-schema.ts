@@ -332,27 +332,45 @@ const SkillsInputSchema = Type.Union(
 	{ description: "Local skill file paths or directories." },
 );
 
+export const StorageSelectionSchema = Type.Union([
+	Type.Object(
+		{
+			path: Type.Optional(Type.String({ description: "Database path relative to the Atomic home directory." })),
+			memory: Type.Optional(Type.Boolean({ description: "Explicitly select ephemeral storage." })),
+			prefix: Type.Optional(Type.String()),
+		},
+		{
+			additionalProperties: false,
+			not: { required: ["path", "memory"], properties: { path: { minLength: 1 }, memory: { const: true } } },
+		},
+	),
+	Type.Object(
+		{
+			adapter: Type.String({ minLength: 1, description: "User-installed storage adapter module specifier." }),
+			options: Type.Optional(
+				Type.Record(Type.String(), Type.Union([Type.String(), Type.Number(), Type.Boolean(), Type.Null()])),
+			),
+			secrets: Type.Optional(
+				Type.Record(
+					Type.String(),
+					Type.Union([
+						Type.Object({ env: Type.String() }, { additionalProperties: false }),
+						Type.Object({ file: Type.String() }, { additionalProperties: false }),
+					]),
+				),
+			),
+			prefix: Type.Optional(Type.String()),
+		},
+		{ additionalProperties: false },
+	),
+]);
+
 const WorkflowsSettingsSchema = Type.Union(
 	[
 		StringArraySchema,
 		Type.Object({
 			paths: Type.Optional(Type.Array(Type.String(), { description: "Workflow resource paths." })),
-			journal: Type.Optional(
-				Type.Object(
-					{
-						path: Type.Optional(
-							Type.String({ description: "Journal file path, relative to the Atomic home directory." }),
-						),
-						memory: Type.Optional(Type.Boolean({ description: "Keep workflow journal records in memory." })),
-					},
-					{
-						not: {
-							required: ["path", "memory"],
-							properties: { path: { minLength: 1 }, memory: { const: true } },
-						},
-					},
-				),
-			),
+			journal: Type.Optional(StorageSelectionSchema),
 		}),
 	],
 	{
@@ -363,6 +381,7 @@ const WorkflowsSettingsSchema = Type.Union(
 export const SettingsSchema = Type.Object(
 	{
 		$schema: Type.Optional(Type.String({ description: "JSON Schema reference." })),
+		storage: Type.Optional(StorageSelectionSchema),
 		lastChangelogVersion: Type.Optional(Type.String()),
 		firstRunOnboardingStartedVersion: Type.Optional(
 			Type.String({ description: "Managed onboarding state; leave unchanged." }),
