@@ -46,6 +46,11 @@ import { validateSessionEntries, validateSessionHeader, validateSessionText } fr
 
 interface SessionFileState {
 	readonly stamp: string;
+	readonly identity: string;
+	readonly headerStamp: string;
+	readonly headerId: string;
+	readonly lastEntryId: string | undefined;
+	readonly witness: Buffer;
 	readonly size: number;
 	readonly lastSeq: number;
 	readonly terminated: boolean;
@@ -132,7 +137,7 @@ export class JsonlSessionStore implements SessionStore {
 					if (cause.code !== "ENOENT") throw cause;
 				});
 			}
-			await this.remember(path, entries.length, true);
+			await this.remember(path, this.contentState(header, entries, payload));
 			return { lastSeq: entries.length };
 		}, true);
 	}
@@ -167,7 +172,13 @@ export class JsonlSessionStore implements SessionStore {
 				throw cause;
 			}
 			const lastSeq = state.lastSeq + entries.length;
-			await this.remember(path, lastSeq, true);
+			await this.remember(path, {
+				...state,
+				lastSeq,
+				lastEntryId: entries.at(-1)?.id,
+				terminated: true,
+				witness: Buffer.from(Buffer.concat([state.witness, Buffer.from(payload)]).subarray(-64)),
+			});
 			return { lastSeq };
 		});
 	}
@@ -192,7 +203,7 @@ export class JsonlSessionStore implements SessionStore {
 					if (cause.code !== "ENOENT") throw cause;
 				});
 			}
-			await this.remember(path, entries.length, true);
+			await this.remember(path, this.contentState(header, entries, payload));
 			return { lastSeq: entries.length };
 		});
 	}
@@ -224,30 +235,37 @@ export class JsonlSessionStore implements SessionStore {
 	}
 
 	async *list(query: SessionListQuery): AsyncIterable<SessionSummary> {
-		const paths = await this.run(() => this.paths());
+		this.checkAbort(query.signal);
+		const paths = await this.run(() => this.paths(), true, query.signal);
 		for (const path of paths) {
-			const summary = await this.run(async () => {
-				this.checkAbort(query);
-				try {
-					const header = await this.readHeaderAt(path);
-					if (query.cwd !== undefined && query.cwd !== header.cwd) return undefined;
-					if (!query.includeInternal && header.internal) return undefined;
-					return { ...summarizeSession(await this.readSnapshot(path)), location: path };
-				} catch (cause) {
-					if (
-						cause instanceof SessionFormatVersionError ||
-						cause instanceof SessionInvalidTextError ||
-						cause instanceof SessionInvalidTimestampError ||
-						cause instanceof SyntaxError
-					)
-						return undefined;
-					throw cause;
-				}
-			});
-			this.checkAbort(query);
+			const summary = await this.run(
+				async () => {
+					this.checkAbort(query.signal);
+					try {
+						const header = await this.readHeaderAt(path);
+						if (query.cwd !== undefined && query.cwd !== header.cwd) return undefined;
+						if (!query.includeInternal && header.internal) return undefined;
+						return { ...summarizeSession(await this.readSnapshot(path)), location: path };
+					} catch (cause) {
+						const error = cause as NodeJS.ErrnoException;
+						if (error.path === path && (error.code === "ENOENT" || error.code === "ENOTDIR")) return undefined;
+						if (
+							cause instanceof SessionFormatVersionError ||
+							cause instanceof SessionInvalidTextError ||
+							cause instanceof SessionInvalidTimestampError ||
+							cause instanceof SyntaxError
+						)
+							return undefined;
+						throw cause;
+					}
+				},
+				true,
+				query.signal,
+			);
+			this.checkAbort(query.signal);
 			if (summary) yield summary;
 		}
-		await this.run(async () => this.checkAbort(query));
+		await this.run(async () => this.checkAbort(query.signal), true, query.signal);
 	}
 
 	async findMostRecent(query: {
@@ -267,12 +285,12 @@ export class JsonlSessionStore implements SessionStore {
 		return this.queue;
 	}
 
-	private run<T>(operation: () => Promise<T>, locked = true): Promise<T> {
+	private run<T>(operation: () => Promise<T>, locked = true, signal?: AbortSignal): Promise<T> {
 		if (this.closed) return Promise.reject(new StoreClosedError(this.descriptor));
 		const result = this.queue.then(async () => {
 			if (this.poisoned) throw this.poisoned;
 			try {
-				return await (locked ? this.exclusive(operation) : operation());
+				return await (locked ? this.exclusive(operation, signal) : operation());
 			} catch (cause) {
 				if (
 					cause instanceof SessionConflictError ||
@@ -295,9 +313,10 @@ export class JsonlSessionStore implements SessionStore {
 		return result;
 	}
 
-	private async exclusive<T>(operation: () => Promise<T>): Promise<T> {
+	private async exclusive<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
 		let release: () => Promise<void>;
 		for (;;) {
+			this.checkAbort(signal);
 			try {
 				release = await lockfile.lock(this.directory, {
 					lockfilePath: join(this.directory, ".session.lock"),
@@ -312,6 +331,7 @@ export class JsonlSessionStore implements SessionStore {
 			}
 		}
 		try {
+			this.checkAbort(signal);
 			if (this.poisoned) throw this.poisoned;
 			const result = await operation();
 			if (this.poisoned) throw this.poisoned;
@@ -321,8 +341,8 @@ export class JsonlSessionStore implements SessionStore {
 		}
 	}
 
-	private checkAbort(query: SessionListQuery): void {
-		if (query.signal?.aborted) throw new DOMException("Session listing aborted", "AbortError");
+	private checkAbort(signal?: AbortSignal): void {
+		if (signal?.aborted) throw new DOMException("Session listing aborted", "AbortError");
 	}
 
 	private async paths(): Promise<string[]> {
@@ -342,7 +362,17 @@ export class JsonlSessionStore implements SessionStore {
 		validateSessionText("sessionId", sessionId);
 		for (const path of await this.paths()) {
 			const key = basename(path).match(/_([0-9a-f]{64})\.jsonl$/)?.[1];
-			if (key ? key === this.key(sessionId) : (await this.readFirstLine(path)).id === sessionId) return path;
+			if (key) {
+				if (key === this.key(sessionId)) return path;
+				continue;
+			}
+			if (this.fileStates.get(path)?.headerId === sessionId) return path;
+			try {
+				if ((await this.readFirstLine(path)).id === sessionId) return path;
+			} catch {
+				// An unidentifiable file cannot block lookup of unrelated sessions.
+				// Listing still examines it independently; no failure is cached here.
+			}
 		}
 		return undefined;
 	}
@@ -402,7 +432,7 @@ export class JsonlSessionStore implements SessionStore {
 		const entries = lines.slice(1).map((line) => JSON.parse(line) as SessionEntry);
 		validateSessionEntryStructure(entries, path);
 		validateSessionEntries(entries);
-		await this.remember(path, entries.length, content.endsWith("\n"));
+		await this.remember(path, this.contentState(header, entries, content));
 		return { header, entries, lastSeq: entries.length };
 	}
 
@@ -410,36 +440,93 @@ export class JsonlSessionStore implements SessionStore {
 		return `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}`;
 	}
 
-	private async remember(path: string, lastSeq: number, terminated: boolean): Promise<void> {
-		const stats = await stat(path, { bigint: true });
-		this.fileStates.set(path, { stamp: this.stamp(stats), size: Number(stats.size), lastSeq, terminated });
+	private contentState(
+		header: SessionRecordHeader,
+		entries: readonly SessionEntry[],
+		content: string,
+	): Omit<SessionFileState, "stamp" | "identity" | "size"> {
+		return {
+			headerStamp: JSON.stringify(header),
+			lastSeq: entries.length,
+			headerId: header.id,
+			lastEntryId: entries.at(-1)?.id,
+			terminated: content.endsWith("\n"),
+			witness: Buffer.from(Buffer.from(content).subarray(-64)),
+		};
 	}
 
+	private async remember(path: string, state: Omit<SessionFileState, "stamp" | "identity" | "size">): Promise<void> {
+		const stats = await stat(path, { bigint: true });
+		this.fileStates.set(path, {
+			...state,
+			stamp: this.stamp(stats),
+			identity: `${stats.dev}:${stats.ino}`,
+			size: Number(stats.size),
+		});
+	}
+
+	/**
+	 * Foreign appends read only the header, at most 64 known boundary bytes, and new bytes.
+	 * The witness detects a changed append boundary, not arbitrary edits in old history.
+	 * Structural changes require an explicit load; they never trigger a hidden full reread.
+	 */
 	private async forWrite(
 		sessionId: string,
 		options: SessionWriteOptions,
 	): Promise<{ path: string; state: SessionFileState }> {
 		const path = await this.locate(sessionId);
 		if (!path) throw new SessionNotFoundError(sessionId);
-		await this.readHeaderAt(path);
+		const header = await this.readHeaderAt(path);
 		const stats = await stat(path, { bigint: true });
 		let state = this.fileStates.get(path);
-		if (!state || state.stamp !== this.stamp(stats)) {
-			const snapshot = await this.readSnapshot(path);
-			const file = await open(path, "r");
-			const lastByte = Buffer.alloc(1);
-			try {
-				await file.read(lastByte, 0, 1, Number(stats.size) - 1);
-			} finally {
-				await file.close();
+		if (!state) {
+			await this.readSnapshot(path);
+			state = this.fileStates.get(path)!;
+		} else {
+			const lastSeq = state.lastSeq;
+			const stale = () => new SessionConflictError(sessionId, options.expectSeq, lastSeq);
+			if (
+				state.identity !== `${stats.dev}:${stats.ino}` ||
+				state.headerStamp !== JSON.stringify(header) ||
+				Number(stats.size) < state.size
+			)
+				throw stale();
+			if (state.stamp !== this.stamp(stats)) {
+				const file = await open(path, "r");
+				const offset = state.size - state.witness.length;
+				const bytes = Buffer.alloc(Number(stats.size) - offset);
+				try {
+					let read = 0;
+					while (read < bytes.length) {
+						const { bytesRead } = await file.read(bytes, read, bytes.length - read, offset + read);
+						if (!bytesRead) throw stale();
+						read += bytesRead;
+					}
+				} finally {
+					await file.close();
+				}
+				if (!bytes.subarray(0, state.witness.length).equals(state.witness)) throw stale();
+				let appended = bytes.subarray(state.witness.length).toString("utf8");
+				if (appended && !state.terminated) {
+					if (!appended.startsWith("\n")) throw stale();
+					appended = appended.slice(1);
+				}
+				const lines = appended.split("\n");
+				if (lines.at(-1) === "") lines.pop();
+				const entries = lines.map((line) => JSON.parse(line) as SessionEntry);
+				validateSessionEntryStructure(entries, path);
+				validateSessionEntries(entries);
+				state = {
+					...state,
+					stamp: this.stamp(stats),
+					size: Number(stats.size),
+					lastSeq: state.lastSeq + entries.length,
+					lastEntryId: entries.at(-1)?.id ?? state.lastEntryId,
+					terminated: bytes.at(-1) === 10,
+					witness: Buffer.from(bytes.subarray(-64)),
+				};
+				this.fileStates.set(path, state);
 			}
-			state = {
-				stamp: this.stamp(stats),
-				size: Number(stats.size),
-				lastSeq: snapshot.lastSeq,
-				terminated: lastByte[0] === 10,
-			};
-			this.fileStates.set(path, state);
 		}
 		if (state.lastSeq !== options.expectSeq)
 			throw new SessionConflictError(sessionId, options.expectSeq, state.lastSeq);

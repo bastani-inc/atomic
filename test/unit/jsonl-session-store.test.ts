@@ -15,6 +15,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import lockfile from "proper-lockfile";
 import { afterEach, describe, it, vi } from "vitest";
 import { registerSessionStoreConformance } from "../../packages/coding-agent/src/core/storage/session/conformance.js";
 import {
@@ -130,6 +131,230 @@ it("commits format 4 header and ordered entry lines before resolving", async () 
 		await rm(directory, { recursive: true, force: true });
 	}
 });
+
+it("bounds alternating writers to header, a 64-byte witness and newly appended bytes at both history sizes", async () => {
+	const overheads: number[] = [];
+	for (const count of [32, 4096]) {
+		await withStore(async (store, directory) => {
+			const history = Array.from({ length: count }, (_, index) => ({
+				...entry,
+				id: `history-${index}`,
+				name: "x".repeat(1024),
+			}));
+			await store.create(header, history);
+			const path = await location(store);
+			const other = await JsonlSessionStore.open(directory);
+			const initialSize = (await fs.stat(path)).size;
+			const knownSizes = new Map([
+				[store, initialSize],
+				[other, initialSize],
+			]);
+			const headerBytes = Buffer.byteLength(`${JSON.stringify({ type: "session", ...header })}\n`);
+			try {
+				for (let index = 0; index < 4; index++) {
+					const writer = index % 2 === 0 ? store : other;
+					const knownSize = knownSizes.get(writer)!;
+					const currentSize = (await fs.stat(path)).size;
+					const handles: FileHandle[] = [];
+					const originalOpen = fs.open;
+					const opened = vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+						const handle = await originalOpen(...args);
+						vi.spyOn(handle, "read");
+						handles.push(handle);
+						return handle;
+					});
+					vi.mocked(readFile).mockClear();
+					try {
+						await writer.append(header.id, [{ ...entry, id: `new-${index}` }], { expectSeq: count + index });
+						assert.equal(vi.mocked(readFile).mock.calls.length, 0, "append must not read the transcript");
+						let bytes = 0;
+						for (const handle of handles) {
+							let sequential = 0;
+							const reads = vi.mocked(handle.read);
+							for (const [readIndex, result] of reads.mock.results.entries()) {
+								assert.equal(result.type, "return");
+								if (result.type !== "return") continue;
+								const length = (await result.value).bytesRead;
+								const position = reads.mock.calls[readIndex]?.at(-1);
+								if (position === null) {
+									sequential += length;
+									assert.ok(sequential <= headerBytes);
+								} else {
+									assert.equal(typeof position, "number");
+									assert.ok(Number(position) >= knownSize - 64, "must not revisit old history");
+									assert.ok(Number(position) + length <= currentSize);
+								}
+								bytes += length;
+							}
+						}
+						const newlyAppended = currentSize - knownSize;
+						assert.equal(bytes, headerBytes + (newlyAppended === 0 ? 0 : 64 + newlyAppended));
+						if (newlyAppended > 0) overheads.push(bytes - newlyAppended);
+					} finally {
+						opened.mockRestore();
+						for (const handle of handles) vi.mocked(handle.read).mockRestore();
+					}
+					knownSizes.set(writer, (await fs.stat(path)).size);
+				}
+				assert.equal((await other.load(header.id)).lastSeq, count + 4);
+			} finally {
+				await other.close();
+			}
+		});
+	}
+	assert.equal(overheads.length, 6);
+	assert.ok(overheads.every((overhead) => overhead === overheads[0]));
+});
+
+it("rejects an already aborted listing before attempting to acquire the directory lock", async () => {
+	await withStore(async (store) => {
+		const controller = new AbortController();
+		controller.abort();
+		const locking = vi.spyOn(lockfile, "lock");
+		try {
+			await assert.rejects(collect(store.list({ signal: controller.signal })), (error: Error) => {
+				assert.ok(error instanceof DOMException);
+				assert.equal(error.name, "AbortError");
+				return true;
+			});
+			assert.equal(locking.mock.calls.length, 0);
+		} finally {
+			locking.mockRestore();
+		}
+	});
+});
+
+for (const code of ["ENOTDIR", "EACCES"] as const) {
+	it(`handles only disappeared listing paths, not other I/O failures (${code})`, async () => {
+		await withStore(async (store) => {
+			for (const id of ["first", "second", "third"]) await store.create({ ...header, id }, []);
+			const summaries = await collect(store.list({}));
+			const listing = store.list({})[Symbol.asyncIterator]();
+			await listing.next();
+			const missing = summaries[1];
+			assert.ok(missing?.location);
+			const failure = Object.assign(new Error(code), { code, path: missing.location });
+			const originalOpen = fs.open;
+			const opened = vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+				if (args[0] === missing.location) throw failure;
+				return originalOpen(...args);
+			});
+			try {
+				if (code === "ENOTDIR") {
+					assert.deepEqual(
+						(await collect({ [Symbol.asyncIterator]: () => listing })).map((summary) => summary.id),
+						[summaries[2]?.id],
+					);
+				} else {
+					await assert.rejects(listing.next(), (error: Error) => {
+						assert.ok(error instanceof StorageUnavailableError);
+						assert.equal(error.cause, failure);
+						return true;
+					});
+				}
+			} finally {
+				opened.mockRestore();
+				await listing.return?.();
+			}
+		});
+	});
+}
+
+it("cancels a listing waiting for a held lock without another acquisition attempt", async () => {
+	await withStore(async (store, directory) => {
+		const lockPath = join(directory, ".session.lock");
+		const release = await lockfile.lock(directory, { lockfilePath: lockPath });
+		const controller = new AbortController();
+		const originalLock = lockfile.lock;
+		let attempts = 0;
+		const locking = vi.spyOn(lockfile, "lock").mockImplementation(async (...args) => {
+			attempts++;
+			assert.equal(attempts, 1, "cancelled listing must not try acquiring again");
+			try {
+				return await originalLock(...args);
+			} catch (error) {
+				assert.equal((error as NodeJS.ErrnoException).code, "ELOCKED");
+				controller.abort();
+				throw error;
+			}
+		});
+		try {
+			await assert.rejects(collect(store.list({ signal: controller.signal })), (error: Error) => {
+				assert.ok(error instanceof DOMException);
+				assert.equal(error.name, "AbortError");
+				return true;
+			});
+			assert.equal(attempts, 1);
+			assert.ok((await fs.stat(lockPath)).isDirectory(), "the owner's lock must remain held");
+		} finally {
+			locking.mockRestore();
+			await release();
+		}
+	});
+});
+
+it("continues listing when another handle deletes a pending session between yields", async () => {
+	await withStore(async (store, directory) => {
+		for (const id of ["first", "second", "third"]) await store.create({ ...header, id }, []);
+		const before = await collect(store.list({}));
+		const other = await JsonlSessionStore.open(directory);
+		const listing = store.list({})[Symbol.asyncIterator]();
+		try {
+			assert.equal((await listing.next()).value?.id, before[0]?.id);
+			assert.ok(before[1]);
+			await other.delete(before[1].id);
+			assert.deepEqual(
+				(await collect({ [Symbol.asyncIterator]: () => listing })).map((summary) => summary.id),
+				[before[2]?.id],
+			);
+		} finally {
+			await listing.return?.();
+			await other.close();
+		}
+	});
+});
+
+it("retains a known unkeyed session identity when its requested header becomes unreadable", async () => {
+	await withStore(async (store, directory) => {
+		const path = join(directory, "named.jsonl");
+		await writeFile(path, `${JSON.stringify({ type: "session", ...header })}\n`);
+		assert.deepEqual((await store.load(header.id)).header, header);
+		await writeFile(path, "{torn");
+		await assert.rejects(store.load(header.id), (error: Error) => {
+			assert.ok(error instanceof StorageUnavailableError);
+			assert.ok(error.cause instanceof SyntaxError);
+			return true;
+		});
+	});
+});
+
+for (const damaged of ["", '{"type":']) {
+	it(`isolates an unrelated damaged header during lookup (${JSON.stringify(damaged)})`, async () => {
+		await withStore(async (store, directory) => {
+			await store.create(header, [entry]);
+			const requestedPath = await location(store);
+			await writeFile(join(directory, "!damaged.jsonl"), damaged);
+			await store.create({ ...header, id: "healthy" }, []);
+			const reopened = await JsonlSessionStore.open(directory);
+			try {
+				assert.deepEqual((await reopened.load(header.id)).entries, [entry]);
+				assert.equal((await reopened.readHeader("healthy"))?.id, "healthy");
+				await writeFile(requestedPath, damaged);
+				await assert.rejects(reopened.load(header.id), (error: Error) => {
+					assert.ok(error instanceof StorageUnavailableError);
+					assert.ok(error.cause instanceof SyntaxError);
+					return true;
+				});
+				assert.deepEqual(
+					(await collect(reopened.list({}))).map((summary) => summary.id),
+					["healthy"],
+				);
+			} finally {
+				await reopened.close();
+			}
+		});
+	});
+}
 
 for (const version of [undefined, null, false, 0, 1, 2, 3, 5, "4", {}, []]) {
 	it(`rejects format ${JSON.stringify(version)} without changing bytes and omits it from listing`, async () => {
@@ -659,25 +884,26 @@ for (const invalid of ["version", "header", "entry"] as const) {
 	});
 }
 
-it("refreshes cached sequence after competing replace, deletion and recreation", async () => {
+it("requires an explicit load after competing replacement or recreation without changing bytes", async () => {
 	await withStore(async (store, directory) => {
 		await store.create(header, [entry]);
+		const path = await location(store);
 		const other = await JsonlSessionStore.open(directory);
 		try {
-			const results = await Promise.allSettled([
-				store.append(header.id, [entry], { expectSeq: 1 }),
-				other.replace(header.id, header, [entry, entry], { expectSeq: 1 }),
-			]);
-			assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
-			const rejected = results.find((result) => result.status === "rejected");
-			assert.ok(rejected?.status === "rejected");
-			assert.ok(rejected.reason instanceof SessionConflictError);
-			assert.equal(rejected.reason.actualSeq, 2);
+			await other.replace(header.id, header, [entry, entry], { expectSeq: 1 });
+			const replaced = await readFile(path, "utf8");
+			await assert.rejects(store.append(header.id, [entry], { expectSeq: 2 }), SessionConflictError);
+			assert.equal(await readFile(path, "utf8"), replaced);
+			assert.equal((await store.load(header.id)).lastSeq, 2);
+			assert.deepEqual(await store.append(header.id, [entry], { expectSeq: 2 }), { lastSeq: 3 });
 			await other.delete(header.id);
 			await other.create(header, []);
+			const recreated = await readFile(path, "utf8");
+			await assert.rejects(store.append(header.id, [entry], { expectSeq: 0 }), SessionConflictError);
+			assert.equal(await readFile(path, "utf8"), recreated);
+			assert.equal((await store.load(header.id)).lastSeq, 0);
 			assert.deepEqual(await store.append(header.id, [entry], { expectSeq: 0 }), { lastSeq: 1 });
 			assert.equal((await other.load(header.id)).lastSeq, 1);
-			const path = await location(other);
 			const content = await readFile(path, "utf8");
 			await writeFile(path, content.replace('"version":4', '"version":3'));
 			await assert.rejects(store.append(header.id, [entry], { expectSeq: 1 }), SessionFormatVersionError);
@@ -686,6 +912,31 @@ it("refreshes cached sequence after competing replace, deletion and recreation",
 		}
 	});
 });
+
+for (const change of ["shrink", "header", "boundary"] as const) {
+	it(`rejects an append after a ${change} change without rereading history or writing bytes`, async () => {
+		await withStore(async (store) => {
+			await store.create(header, [entry, { ...entry, id: "last" }]);
+			const path = await location(store);
+			const original = await readFile(path, "utf8");
+			const changed =
+				change === "shrink"
+					? original.slice(0, original.lastIndexOf("\n", original.length - 2) + 1)
+					: original.replaceAll(
+							change === "header" ? "/project" : " Name ",
+							change === "header" ? "/changed" : " Other ",
+						);
+			await writeFile(path, changed);
+			vi.mocked(readFile).mockClear();
+			await assert.rejects(
+				store.append(header.id, [entry], { expectSeq: change === "shrink" ? 1 : 2 }),
+				SessionConflictError,
+			);
+			assert.equal(vi.mocked(readFile).mock.calls.length, 0);
+			assert.equal(await readFile(path, "utf8"), changed);
+		});
+	});
+}
 
 for (const operation of ["empty append", "append", "stale append", "replace", "stale replace"] as const) {
 	it(`rejects ${operation} after a non-4 rewrite with identical cached metadata`, async () => {
