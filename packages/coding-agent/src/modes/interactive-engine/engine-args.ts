@@ -26,7 +26,11 @@ export function buildInteractiveEngineArgs(
 	const args: string[] = [];
 	if (parsed.noSession || !sessionManager.isPersisted()) args.push("--no-session");
 	else args.push("--session", sessionManager.getSessionId());
-	appendValue(args, "--session-dir", parsed.sessionDir);
+	appendValue(
+		args,
+		"--session-dir",
+		sessionManager.isPersisted() ? sessionManager.getSessionDir() : parsed.sessionDir,
+	);
 	appendValue(args, "--provider", parsed.provider);
 	appendValue(args, "--model", parsed.model);
 	appendValue(args, "--thinking", parsed.thinking);

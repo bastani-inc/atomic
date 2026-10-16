@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { dirname } from "node:path";
 import type { AuthInteraction } from "@bastani/pi-ai";
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { AgentSession, CompactionReason } from "../../core/agent-session.js";
@@ -11,6 +12,7 @@ import { serializeSessionMutation } from "../../core/session-mutation-queue.ts";
 import type { ToolStatusReport } from "../../core/tool-status.js";
 import { captureHerdrEnvironment } from "../../extensions/herdr/environment.js";
 import { releaseUnownedPaneRegistration } from "../../extensions/herdr/pane-owner.js";
+import { canonicalizePath } from "../../utils/paths.ts";
 import { sleep } from "../../utils/sleep.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
@@ -230,8 +232,13 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				allowPartialResources: true,
 			});
 			if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
-			if (state.sessionLocation && state.sessionId !== super.session.sessionId) {
-				await super.switchSession(state.sessionId);
+			if (
+				state.sessionLocation &&
+				(state.sessionId !== super.session.sessionId ||
+					canonicalizePath(dirname(state.sessionLocation)) !==
+						canonicalizePath(super.session.sessionManager.getSessionDir()))
+			) {
+				await super.switchSession(state.sessionId, { sessionDirectory: dirname(state.sessionLocation) });
 				if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
 			}
 			const session = super.session;
@@ -564,7 +571,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		const result = await this.client.newSession(options?.parentSession);
 		if (result.cancelled) return result;
 		const state = await this.client.getState();
-		if (state.sessionLocation) await super.switchSession(state.sessionId);
+		if (state.sessionLocation)
+			await super.switchSession(state.sessionId, { sessionDirectory: dirname(state.sessionLocation) });
 		else await this.resetUnpersistedSessionView();
 		await this.initializeFromEngine();
 		return result;
@@ -578,7 +586,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		});
 		if (result.cancelled) return result;
 		const state = await this.client.getState();
-		if (state.sessionLocation) await super.switchSession(state.sessionId);
+		if (state.sessionLocation)
+			await super.switchSession(state.sessionId, { sessionDirectory: dirname(state.sessionLocation) });
 		await this.initializeFromEngine();
 		return result;
 	}
@@ -598,7 +607,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		}
 		if (cancelled) return { cancelled: true };
 		const state = await this.client.getState();
-		if (state.sessionLocation) await super.switchSession(state.sessionId);
+		if (state.sessionLocation)
+			await super.switchSession(state.sessionId, { sessionDirectory: dirname(state.sessionLocation) });
 		await this.initializeFromEngine();
 		return { cancelled: false, selectedText };
 	}
@@ -978,7 +988,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		const sessionFile = session.sessionFile;
 		if (!sessionFile) return;
 		const currentManager = session.sessionManager;
-		const refreshed = await SessionManager.open(sessionFile, currentManager.getSessionDir(), currentManager.getCwd());
+		const refreshed = await SessionManager.open(
+			currentManager.getSessionStore(),
+			currentManager.getSessionId(),
+			currentManager.getCwd(),
+		);
 		Object.defineProperty(session, "sessionManager", { configurable: true, value: refreshed });
 		this.patchSessionManager(refreshed);
 		session.agent.state.messages = refreshed.buildSessionContext().messages;

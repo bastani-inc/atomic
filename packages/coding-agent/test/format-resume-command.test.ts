@@ -58,6 +58,16 @@ describe("formatResumeCommand", () => {
 		expect(formatResumeCommand(sessionManager)).toBe(`${APP_NAME} --session test-session`);
 	});
 
+	it.each([
+		["", "''"],
+		[" raw session ID ", "' raw session ID '"],
+		["session's ID", "'session'\\''s ID'"],
+	])("preserves stored session ID %j in the shell resume command", (sessionId, argument) => {
+		setStdoutIsTTY(true);
+		const sessionManager = createSessionManager({ sessionFile: createTempFile(), sessionId });
+		expect(formatResumeCommand(sessionManager)).toBe(`${APP_NAME} --session ${argument}`);
+	});
+
 	it("includes unquoted safe session dirs for non-default session dirs", () => {
 		setStdoutIsTTY(true);
 		const sessionFile = createTempFile();

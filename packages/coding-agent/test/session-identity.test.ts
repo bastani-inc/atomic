@@ -432,3 +432,30 @@ test.each(["", "cache-owner"])(
 		}
 	},
 );
+
+test(
+	"RPC new sessions preserve an explicitly empty parent session ID",
+	async () => {
+		const { cwd, directory } = fixture();
+		const client = new RpcClient({
+			cwd,
+			cliPath: join(import.meta.dirname, "../src/cli.ts"),
+			env: { [ENV_AGENT_DIR]: join(cwd, "agent"), ATOMIC_OFFLINE: "1" },
+			args: ["--session-dir", directory, "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes"],
+		});
+		try {
+			await client.start();
+			assert.deepEqual(await client.newSession(""), { cancelled: false });
+			const state = await client.getState();
+			const store = await JsonlSessionStore.open(directory, { exactDirectory: true, scanExisting: false });
+			try {
+				assert.equal((await store.load(state.sessionId)).header.parentSessionId, "");
+			} finally {
+				await store.close();
+			}
+		} finally {
+			await client.stop();
+		}
+	},
+	REAL_RPC_IDENTITY_TIMEOUT_MS,
+);

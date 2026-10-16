@@ -112,7 +112,7 @@ export function formatResumeCommand(sessionManager: SessionManager): string | un
 	if (!sessionManager.usesDefaultSessionDir()) {
 		args.push("--session-dir", quoteIfNeeded(sessionManager.getSessionDir()));
 	}
-	args.push("--session", sessionManager.getSessionId());
+	args.push("--session", quoteIfNeeded(sessionManager.getSessionId()));
 	return args.join(" ");
 }
 

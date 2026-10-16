@@ -146,7 +146,7 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "abort");
 			}
 			case "new_session": {
-				const options = command.parentSession ? { parentSession: command.parentSession } : undefined;
+				const options = command.parentSession !== undefined ? { parentSession: command.parentSession } : undefined;
 				const result = await runtimeHost.newSession(options);
 				if (!result.cancelled) {
 					await rebindSession();

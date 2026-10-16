@@ -1,6 +1,11 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, renameSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
 import type { RpcEvent, RpcSessionState } from "../src/modes/rpc/rpc-types.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
@@ -376,5 +381,98 @@ test("overlapping isolated session names retain the last requested name (#3678)"
 	} finally {
 		release.resolve();
 		await harness.cleanup();
+	}
+});
+
+test.each(["", "shared-mirror-id"])("isolated initialization scopes duplicate ID %j", async (id) => {
+	const directory = mkdtempSync(join(tmpdir(), "isolated-session-identity-"));
+	const localStore = await JsonlSessionStore.open(join(directory, "local"), { exactDirectory: true });
+	const selectedStore = await JsonlSessionStore.open(join(directory, "selected"), { exactDirectory: true });
+	const header = { id, version: 4 as const, createdAt: new Date().toISOString(), cwd: directory };
+	await localStore.create(header, []);
+	await selectedStore.create(header, []);
+	const localManager = await SessionManager.open(localStore, id);
+	const selectedManager = await SessionManager.open(selectedStore, id);
+	await localManager.appendSessionInfo("local conversation");
+	await selectedManager.appendSessionInfo("selected conversation");
+	const harness = await createHarness({ sessionManager: localManager });
+	const replacements: Harness[] = [];
+	try {
+		const probe = createUnresponsiveEngineClient();
+		probe.client.getState = async () => ({
+			...createState(),
+			sessionId: id,
+			sessionLocation: selectedManager.getSessionFile(),
+			sessionName: selectedManager.getSessionName(),
+		});
+		const localRuntime = new AgentSessionRuntime(harness.session, servicesFor(harness) as never, async () => {
+			throw new Error("unused local runtime factory");
+		});
+		const runtime = new IsolatedInteractiveRuntime(
+			localRuntime,
+			async ({ sessionManager }) => {
+				const replacement = await createHarness({ sessionManager });
+				replacements.push(replacement);
+				return { session: replacement.session, services: servicesFor(replacement), diagnostics: [] } as never;
+			},
+			probe.client as never,
+		);
+		await runtime.initializeFromEngine();
+		assert.equal(runtime.session.sessionId, id);
+		assert.equal(runtime.session.sessionManager.getSessionDir(), selectedManager.getSessionDir());
+		assert.deepEqual(runtime.session.sessionManager.getEntries(), selectedManager.getEntries());
+		assert.equal((await localStore.load(id)).entries.length, localManager.getEntries().length);
+	} finally {
+		await harness.cleanup();
+		for (const replacement of replacements) await replacement.cleanup();
+		await localStore.close();
+		await selectedStore.close();
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+test("isolated label refresh resolves an empty ID in its store after its display location changes", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "isolated-label-identity-"));
+	const store = await JsonlSessionStore.open(directory, { exactDirectory: true });
+	await store.create({ id: "", version: 4, createdAt: new Date().toISOString(), cwd: directory }, []);
+	const writer = await SessionManager.open(store, "");
+	const target = await writer.appendMessage({ role: "user", content: "label target", timestamp: 1 });
+	const harness = await createHarness({ sessionManager: await SessionManager.open(store, "") });
+	let committedReceipt: string | undefined;
+	try {
+		const probe = createUnresponsiveEngineClient();
+		probe.client.getState = async () => ({
+			...createState(),
+			sessionId: "",
+			sessionLocation: writer.getSessionFile(),
+		});
+		probe.client.requestInternal = async <T>(command: { type: string }): Promise<T> => {
+			if (command.type === "set_label") {
+				committedReceipt = await writer.appendLabelChange(target, "saved label");
+				return { entryId: committedReceipt } as T;
+			}
+			return { models: [], scopedModels: [] } as T;
+		};
+		const localRuntime = new AgentSessionRuntime(harness.session, servicesFor(harness) as never, async () => {
+			throw new Error("unused local runtime factory");
+		});
+		const runtime = new IsolatedInteractiveRuntime(
+			localRuntime,
+			async () => {
+				throw new Error("unexpected replacement");
+			},
+			probe.client as never,
+		);
+		await runtime.initializeFromEngine();
+		const session = runtime.session;
+		renameSync(writer.getSessionFile()!, join(directory, "moved-session.jsonl"));
+		assert.equal(await session.sessionManager.appendLabelChange(target, "saved label"), committedReceipt);
+		assert.equal(session.sessionId, "");
+		assert.equal(session.sessionManager.getLabel(target), "saved label");
+		assert.deepEqual(session.sessionManager.getEntries(), writer.getEntries());
+	} finally {
+		await harness.cleanup();
+		await store.close();
+		rmSync(directory, { recursive: true, force: true });
 	}
 });

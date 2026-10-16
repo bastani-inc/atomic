@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
+import { SessionManager } from "../src/core/session-manager.ts";
 import { SessionConflictError } from "../src/core/storage/session/errors.ts";
+import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { createHarness } from "./suite/harness.ts";
 
 test("the last overlapping thinking choice wins in state and settings (#3678)", async () => {
@@ -166,5 +168,55 @@ test("model-select handlers can await a subsequent choice without deadlocking th
 		assert.equal(harness.session.thinkingLevel, "low");
 	} finally {
 		await harness.cleanup();
+	}
+});
+
+test.each(["", "shared-choice-id"])("choices stay store-local for duplicate ID %j", async (id) => {
+	const firstStore = new MemorySessionStore();
+	const secondStore = new MemorySessionStore();
+	const header = { id, version: 4 as const, createdAt: new Date().toISOString(), cwd: process.cwd() };
+	await firstStore.create(header, []);
+	await secondStore.create(header, []);
+	const first = await createHarness({
+		sessionManager: await SessionManager.open(firstStore, id),
+		models: [{ id: "reasoning", reasoning: true }],
+	});
+	const second = await createHarness({
+		sessionManager: await SessionManager.open(secondStore, id),
+		models: [{ id: "reasoning", reasoning: true }],
+	});
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const append = first.sessionManager.appendThinkingLevelChange.bind(first.sessionManager);
+	vi.spyOn(first.sessionManager, "appendThinkingLevelChange").mockImplementationOnce(async (level) => {
+		entered.resolve();
+		await release.promise;
+		return append(level);
+	});
+	const pending = first.session.setThinkingLevel("high", { persist: true });
+	await entered.promise;
+	let independentFinished = false;
+	const independent = second.session.setThinkingLevel("low", { persist: true }).then(() => {
+		independentFinished = true;
+	});
+	try {
+		await vi.waitFor(() => assert.equal(independentFinished, true));
+		assert.equal(second.session.thinkingLevel, "low");
+		assert.equal(second.settingsManager.getDefaultThinkingLevel(), "low");
+		release.resolve();
+		await pending;
+		assert.equal(first.session.thinkingLevel, "high");
+		assert.equal(first.session.sessionId, id);
+		assert.equal(second.session.sessionId, id);
+		assert.deepEqual((await firstStore.load(id)).entries, first.sessionManager.getEntries());
+		assert.deepEqual((await secondStore.load(id)).entries, second.sessionManager.getEntries());
+	} finally {
+		release.resolve();
+		await Promise.allSettled([pending, independent]);
+		vi.restoreAllMocks();
+		await first.cleanup();
+		await second.cleanup();
+		await firstStore.close();
+		await secondStore.close();
 	}
 });
