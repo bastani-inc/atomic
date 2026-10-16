@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { StorageUnavailableError } from "@bastani/atomic/storage";
 import {
 	JournalConfigurationError,
 	JournalError,
@@ -31,6 +32,33 @@ await memory.close();
 const file = await resolveRunJournal({ journal: { path: join(root, "sdk.sqlite") } });
 assert.ok(file instanceof SqlRunJournal);
 await file.createRun(header);
+const held = await file.acquire(header.runId, "serializer");
+assert.equal(held.status, "acquired");
+const leaseBefore = await file.leaseState(header.runId);
+const cause = new Error("serializer failure");
+const inputs = {};
+Object.defineProperty(inputs, "toJSON", {
+	value: () => {
+		throw cause;
+	},
+});
+const serializationError = (error) => {
+	assert.ok(error instanceof StorageUnavailableError);
+	assert.equal(error.adapter, file.descriptor.adapter);
+	assert.equal(error.location, file.descriptor.location);
+	assert.equal(error.cause, cause);
+	return true;
+};
+await assert.rejects(file.createRun({ ...header, runId: "rejected", inputs }), serializationError);
+await assert.rejects(
+	file.append(held.lease, { type: "StatusChanged", payload: { status: "failed", inputs } }),
+	serializationError,
+);
+assert.deepEqual(await file.listRuns(), [header]);
+assert.deepEqual(await file.leaseState(header.runId), leaseBefore);
+const entries = [];
+for await (const entry of file.read(header.runId)) entries.push(entry);
+assert.deepEqual(entries, []);
 await file.close();
 const reopened = await openSqlRunJournal(join(root, "sdk.sqlite"));
 assert.deepEqual(await reopened.listRuns(), [header]);

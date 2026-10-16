@@ -361,6 +361,25 @@ export function registerRunJournalConformance(
 		assert.deepEqual(await entries(journal), [expectedEntry]);
 		assert.deepEqual(await journal.readKey(header.runId, "entry"), expectedEntry);
 	});
+	check("snapshots append payloads before yielding and keeps status consistent", async (journal) => {
+		await journal.createRun(header);
+		const held = await lease(journal);
+		const payload = { text: "original", values: [2, 1, 2] };
+		const pending = journal.append(held, { type: "RunStarted", payload }, { key: "snapshot" });
+		payload.text = "changed";
+		payload.values.push(9);
+		const appended = await pending;
+		assert.deepEqual(appended.entry.event.payload, { text: "original", values: [2, 1, 2] });
+		assert.deepEqual(await journal.readKey(header.runId, "snapshot"), appended.entry);
+		const status = { status: "paused", values: [3, 2, 3] };
+		const changing = journal.append(held, { type: "StatusChanged", payload: status });
+		status.status = "failed";
+		status.values.push(9);
+		const changed = await changing;
+		assert.deepEqual(changed.entry.event.payload, { status: "paused", values: [3, 2, 3] });
+		assert.equal((await journal.getRun(header.runId))?.status, "paused");
+		assert.deepEqual((await entries(journal)).at(-1), changed.entry);
+	});
 	check("rejected appends leave all rows, sequence and status unchanged", async (journal) => {
 		await journal.createRun(header);
 		const first = await lease(journal);

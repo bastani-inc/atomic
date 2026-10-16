@@ -1447,7 +1447,7 @@ test("backend serialization keeps native lexemes and calls caller toJSON once pe
 	assert.equal(calls, 3);
 	const before = await entries(backend.journal);
 	await backend.recordCheckpoint({ ...checkpoint(), output: input });
-	assert.equal(calls, 3);
+	assert.equal(calls, 4, "append serializes once at invocation, including keyed replay");
 	assert.deepEqual(await entries(backend.journal), before);
 	const db = new JournalTestDatabase(path);
 	try {
@@ -1459,7 +1459,7 @@ test("backend serialization keeps native lexemes and calls caller toJSON once pe
 		db.close();
 	}
 	await backend.setWorkflowStatus("run", "paused");
-	assert.equal(calls, 3);
+	assert.equal(calls, 4, "append serializes once at invocation, including keyed replay");
 	const expected = { values: [123, -0, "a", "\ud800", "💡"] };
 	assert.deepEqual(backend.getWorkflow("run")!.inputs, JSON.parse(JSON.stringify(expected)));
 	assert.deepEqual((await open(path)).getToolOutput("run", "hash"), expected);

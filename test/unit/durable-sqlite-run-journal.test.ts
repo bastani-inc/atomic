@@ -701,7 +701,7 @@ test("JSON TEXT preserves native raw lexemes and invokes caller toJSON once per 
 				status: "exists",
 				entry: appended.entry,
 			});
-			assert.equal(calls, 2);
+			assert.equal(calls, 3, "payload serialization happens once at invocation, including keyed retries");
 		} finally {
 			await reader.close();
 		}

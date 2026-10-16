@@ -13,7 +13,11 @@ import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/se
 import { registerRunJournalConformance } from "../../packages/workflows/src/durable/journal/conformance.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
-import { StaleLeaseError } from "../../packages/workflows/src/durable/journal/types.js";
+import {
+	JournalCasConflictError,
+	JournalInvalidTextError,
+	StaleLeaseError,
+} from "../../packages/workflows/src/durable/journal/types.js";
 import { observeJournalRead } from "../helpers/journal-read-observation.js";
 import { fileExists, makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -28,8 +32,16 @@ function executor(source: SqliteExecutor): SqliteExecutor {
 	return {
 		exec: (sql) => source.exec(sql),
 		run: (sql, ...params) => source.run(sql, ...params),
-		get: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => source.get<T>(sql, ...params),
-		all: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => source.all<T>(sql, ...params),
+		get: async <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
+			const row = await source.get<T>(sql, ...params);
+			if (row !== undefined) Object.freeze(row);
+			return row;
+		},
+		all: async <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
+			const rows = await source.all<T>(sql, ...params);
+			for (const row of rows) Object.freeze(row);
+			return rows;
+		},
 	};
 }
 
@@ -254,3 +266,59 @@ test("invalid prefixes reject before the node factory creates its file", async (
 		removeTempDirectory(directory);
 	}
 });
+
+test.each(["header", "append"] as const)(
+	"%s serialization failures are typed and leave journal state unchanged",
+	async (kind) => {
+		const db = await database();
+		const journal = await SqlRunJournal.open(db);
+		const lease = await acquire(journal);
+		const first = await journal.append(lease, { type: "RunStarted", payload: "original" }, { key: "first" });
+		const state = await journal.leaseState(header.runId);
+		const cause = new Error("serializer failed");
+		const inputs = { values: [2, 1, 2] };
+		Object.defineProperty(inputs, "toJSON", {
+			value: () => {
+				throw cause;
+			},
+		});
+		const event = { type: "StatusChanged", payload: { status: "failed", inputs } } as const;
+		if (kind === "append") {
+			await assert.rejects(journal.append({ ...lease, epoch: lease.epoch + 1 }, event), StaleLeaseError);
+			assert.deepEqual(await journal.append(lease, event, { key: "first", expectSeq: 0 }), {
+				status: "exists",
+				entry: first.entry,
+			});
+			await assert.rejects(journal.append(lease, event, { expectSeq: 0 }), JournalCasConflictError);
+			await assert.rejects(
+				journal.append(lease, { type: "StatusChanged", payload: { status: "bad\u0000status", inputs } }),
+				JournalInvalidTextError,
+			);
+		}
+		const rejected =
+			kind === "header"
+				? journal.createRun({ ...header, runId: "rejected", inputs })
+				: journal.append(lease, event, { key: "rejected", expectSeq: 1 });
+		assert.ok(rejected instanceof Promise);
+		await assert.rejects(rejected, (error: Error) => {
+			assert.ok(error instanceof StorageUnavailableError);
+			assert.equal(error.adapter, db.descriptor.adapter);
+			assert.equal(error.location, db.descriptor.location);
+			assert.equal(error.cause, cause);
+			return true;
+		});
+		assert.deepEqual(await journal.listRuns(), [header]);
+		assert.equal(await journal.getRun("rejected"), undefined);
+		assert.equal(await journal.readKey(header.runId, "rejected"), undefined);
+		assert.deepEqual(await journal.readKey(header.runId, "first"), first.entry);
+		const entries = [];
+		for await (const entry of journal.read(header.runId)) entries.push(entry);
+		assert.deepEqual(entries, [first.entry]);
+		assert.deepEqual(await journal.leaseState(header.runId), state);
+		assert.equal(
+			(await journal.append(lease, { type: "RunFinished", payload: null }, { expectSeq: 1 })).entry.seq,
+			2,
+		);
+		await journal.close();
+	},
+);

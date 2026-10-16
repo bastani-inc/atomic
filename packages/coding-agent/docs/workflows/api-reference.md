@@ -1421,6 +1421,8 @@ interface RunJournal {
 
 `append` checks lease fencing first, then the idempotency key before `expectSeq`. A committed keyed retry returns `{ status: "exists", entry }` with the original entry even when the retry's sequence expectation is stale. A new key with a stale expectation rejects with `JournalCasConflictError` without writing.
 
+`SqlRunJournal.append` serializes its payload once at invocation, before asynchronous lease and key checks, so later caller mutation cannot change the event. This invokes `toJSON` once even for a keyed duplicate, which still returns the original entry without writing. Header and payload serialization failures retain their original cause in `StorageUnavailableError`; append reports such a failure only after the lease, key, and sequence checks above.
+
 `deleteOwnedRun` atomically deletes a run only while the lease's `runId`, `holderId`, and `epoch` still match; otherwise it rejects with `StaleLeaseError` and preserves the run and its events. An optional `expectSeq` must equal the latest sequence or the operation rejects with `JournalCasConflictError` without deleting anything. Deletion keeps the last epoch so an old lease cannot delete or write a recreated run. `deleteRun` is an unconditional administrative operation. Inputs and returned records must be detached. `close()` is idempotent, and every later operation rejects.
 
 Use `registerRunJournalConformance(runner, name, open, observeRead)` to check a fresh journal per case. Supply a read observer that reports actual page sizes and entries loaded or copied, with a `restore()` method, so the suite can verify lazy reads without consuming the whole history. Synchronous backend fast paths are internal and are not part of the custom-journal contract.

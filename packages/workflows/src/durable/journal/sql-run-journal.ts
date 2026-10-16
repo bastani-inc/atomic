@@ -5,9 +5,10 @@ import {
 	type SqliteExecutor,
 	type SqliteRow,
 	type StorageDescriptor,
+	type StorageFailureCause,
 	StorageSchemaVersionError,
 	StorageUnavailableError,
-} from "@bastani/atomic";
+} from "@bastani/atomic/storage";
 import { JOURNAL_READ_PAGE_SIZE } from "./internal.js";
 import {
 	type AppendOutcome,
@@ -125,13 +126,22 @@ export class SqlRunJournal implements RunJournal {
 		return result;
 	}
 
+	private snapshotJson(value: RunHeader | RunEvent["payload"]): string | StorageUnavailableError {
+		try {
+			return serializeJson(value);
+		} catch (cause) {
+			return new StorageUnavailableError(this.descriptor, cause as StorageFailureCause);
+		}
+	}
+
 	async createRun(header: RunHeader): Promise<"created" | "exists"> {
 		this.assertOpen();
 		validateText("runId", header.runId);
 		validateText("name", header.name);
 		validateText("cwd", header.cwd);
 		validateText("status", header.status);
-		const json = serializeJson(header);
+		const json = this.snapshotJson(header);
+		if (json instanceof StorageUnavailableError) throw json;
 		const { runs } = this.tables;
 		return this.operation(async () => {
 			const result = await this.database.run(
@@ -178,8 +188,7 @@ export class SqlRunJournal implements RunJournal {
 
 	private async leaseRow(tx: SqliteExecutor, runId: string): Promise<LeaseRow | undefined> {
 		const row = await tx.get<LeaseRow>(`SELECT * FROM ${this.tables.leases} WHERE ${c.runId} = ?`, runId);
-		if (row) row[c.epoch] = journalCounter(runId, "epoch", row[c.epoch]);
-		return row;
+		return row ? { ...row, [c.epoch]: journalCounter(runId, "epoch", row[c.epoch]) } : undefined;
 	}
 
 	private async grant(
@@ -325,8 +334,8 @@ export class SqlRunJournal implements RunJournal {
 		const key = options?.key;
 		const expected = options?.expectSeq;
 		const type = event.type;
-		const payload = event.payload;
 		const status = event.type === RUN_EVENT_TYPES.statusChanged ? event.payload.status : undefined;
+		const payload = this.snapshotJson(event.payload);
 		return this.operation(() =>
 			this.database.transaction(async (tx) => {
 				await this.checkLease(tx, owned);
@@ -342,6 +351,7 @@ export class SqlRunJournal implements RunJournal {
 				if (expected !== undefined && expected !== actual)
 					throw new JournalCasConflictError(owned.runId, expected, actual);
 				const seq = journalCounter(owned.runId, "seq", actual + 1, "overflow");
+				if (payload instanceof StorageUnavailableError) throw payload;
 				await tx.run(
 					`INSERT INTO ${this.tables.events} VALUES (?, ?, ?, ?, ?, ?, ${STORE_NOW})`,
 					owned.runId,
@@ -349,7 +359,7 @@ export class SqlRunJournal implements RunJournal {
 					owned.epoch,
 					key ?? null,
 					type,
-					serializeJson(payload),
+					payload,
 				);
 				if (status !== undefined)
 					await tx.run(`UPDATE ${this.tables.runs} SET ${c.status} = ? WHERE ${c.runId} = ?`, status, owned.runId);
