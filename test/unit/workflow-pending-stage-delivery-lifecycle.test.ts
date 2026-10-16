@@ -9,7 +9,6 @@ import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-
 import { type BrokerConnectedSession, handleBrokerSend } from "../../packages/intercom/broker/send-handler.js";
 import { InboundMessageAdmission } from "../../packages/intercom/inbound-message-admission.js";
 import type { BrokerMessage, Message, SessionInfo } from "../../packages/intercom/types.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import { ScopedDurableBackend } from "../../packages/workflows/src/durable/scoped-backend.js";
@@ -26,6 +25,7 @@ import type {
 } from "../../packages/workflows/src/shared/store-types.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const tempDirs: string[] = [];
 

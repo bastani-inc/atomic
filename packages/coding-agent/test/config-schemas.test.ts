@@ -381,25 +381,15 @@ describe("settings.json schema", () => {
 				herdr: { enabled: false },
 				markdown: { codeBlockIndent: "  ", mermaid: "final", latex: false },
 				packages: ["pi-skills", { source: "pi-skills", workflows: [], mcpServers: [], autoload: false }],
-				workflows: { paths: ["./workflows"], durability: { systemDatabaseUrlFile: "~/.atomic/neon/direct.url" } },
+				workflows: { paths: ["./workflows"], journal: { path: "workflows/project.sqlite" } },
 				streamDeadlineMs: "5m",
 				codemode: { mode: "only", inlineBudget: 0 },
 			}),
 			true,
 		);
 		assert.equal(validator.Check({ cacheWarming: "always" }), false);
-		assert.equal(validator.Check({ workflows: { durability: { unknownKey: "x" } } }), false);
+		assert.equal(validator.Check({ workflows: { journal: { path: "runs.sqlite", memory: true } } }), false);
 		assert.equal(validator.Check({ compaction: { compression_ratio: 1 } }), false);
-	});
-
-	it("validates workflow database pool sizes with the same minimum as durability", () => {
-		for (const schema of [SettingsSchema, renderedSchema("settings")]) {
-			const validator = Compile(schema);
-			for (const poolSize of [2, 10, 100])
-				assert.equal(validator.Check({ workflows: { durability: { poolSize } } }), true);
-			for (const poolSize of [1, 0, -1, 2.5, "2", null])
-				assert.equal(validator.Check({ workflows: { durability: { poolSize } } }), false);
-		}
 	});
 
 	it("rejects settings values that runtime accessors reject", () => {

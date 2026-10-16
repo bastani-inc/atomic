@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { Key } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import {
@@ -28,6 +27,7 @@ import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/sh
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
 import { testRunId } from "../helpers/run-id.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const fixtureRunId = (seed: string): string => testRunId(seed);
 

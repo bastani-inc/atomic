@@ -7,19 +7,6 @@
  *      title: full runId · workflowName · ● running
  *      body: compact `k=v · k=v · +N more` input summary when present
  *
- * What we deliberately do NOT emit (was in the legacy 7-row layout):
- *  - the `✓ submitted · /workflow <name>` echo line — pi already shows
- *    the user's slash-input verbatim, with all inputs, on its own row;
- *  - the `[ DISPATCHED ]` band — a single-card surface doesn't need a
- *    band wrapper (bands frame multi-card surfaces like BACKGROUND /
- *    WORKFLOWS);
- *  - the `run id` muted caption — the bare identifier row already
- *    communicates identity without restoring legacy chrome;
- *  - the `status starting…` body row — the `● running` badge on row 1
- *    occupies the same semantic slot;
- *  - the second hint row `▸ /workflow status` — that is a separate intent
- *    (list other in-flight runs), already discoverable from a bare `/workflow`
- *    invocation and the picker's confirm panel.
  *
  * Plain mode drops ANSI; the rounded panel/card layout shape is preserved.
  *
@@ -190,9 +177,7 @@ interface InputsSegment {
  *  - Objects / arrays render as a compact JSON projection clamped to
  *    the same per-pair `valueBudget` derived below.
  *  - If the styled segment would still exceed `budget`, fall back to a
- *    single end-truncated `k=v, k=v, …` line — the same degraded shape
- *    the legacy `inputsRow` emitted, but without the `inputs` column
- *    label.
+ *    single end-truncated `k=v, k=v, …` line.
  */
 function renderInputsSegment(
 	inputs: Readonly<WorkflowInputValues>,
@@ -211,12 +196,7 @@ function renderInputsSegment(
 	const overflow = entries.length - visible.length;
 	const numPairs = visible.length;
 
-	// Per-pair `valueBudget` allocation. The legacy heuristic (`width *
-	// 0.5` regardless of pair count) would let any single value claim
-	// more than the whole row, dragging the styled `k=v · k=v · +N more`
-	// form through the comma-truncated fallback whenever ≥2 pairs had
-	// non-trivial values.
-	//
+	// Divide the remaining row width across the visible values.
 	// Instead, subtract the fixed cost of the row (keys + `=`, separators,
 	// overflow marker) and split the remainder evenly across the visible
 	// pairs, with a floor so any single value still renders something
@@ -255,11 +235,7 @@ function renderInputsSegment(
 		return { rendered, visibleWidth: totalW, fitted: true };
 	}
 
-	// Overflow fallback — drop per-pair ANSI, emit an end-truncated plain
-	// join. Matches the legacy `inputsRow` degraded path, minus the
-	// `inputs` column label. Body-row callers tolerate this; the inline
-	// suffix path rejects it via `fitted === false` and falls through to
-	// the body-row layout instead.
+	// Inline suffixes reject this plain overflow rendering; body rows accept it.
 	const flat = entries.map(([k, v]) => `${k}=${renderInputValue(v, valueBudget)}`).join(", ");
 	const cut = truncateToWidth(flat, Math.max(8, budget), ELLIPSIS);
 	if (!theme) return { rendered: cut, visibleWidth: visibleWidth(cut), fitted: false };

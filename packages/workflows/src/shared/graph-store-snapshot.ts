@@ -64,7 +64,7 @@ function compactExitedOutputs(
 			}
 		}
 	} catch {
-		// Fall through to the bounded legacy fields below.
+		// Keep the bounded display fields when full serialization is unavailable.
 	}
 	return Object.keys(compact).length === 0 ? undefined : compact;
 }

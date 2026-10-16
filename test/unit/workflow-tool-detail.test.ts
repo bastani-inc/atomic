@@ -4,7 +4,6 @@ import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindin
 
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { createToolPrimitive } from "../../packages/workflows/src/durable/tool-primitive.js";
 import { summarizeRunSnapshot } from "../../packages/workflows/src/extension/workflow-status-summary.js";
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
@@ -23,6 +22,7 @@ import { renderSessionList } from "../../packages/workflows/src/tui/session-list
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 import { renderToolDetail } from "../../packages/workflows/src/tui/tool-detail.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import { ANSI_RE, defaultTheme, visibleText } from "./overlay-graph-helpers.js";
 
 const KEY_DOWN = "\x1b[B";

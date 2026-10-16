@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
-import {
-	type DurableWorkflowBackend,
-	durableHash,
-	InMemoryDurableBackend,
-} from "../../packages/workflows/src/durable/backend.js";
+import { type DurableWorkflowBackend, durableHash } from "../../packages/workflows/src/durable/backend.js";
 import {
 	completedWorkflowRunSnapshots,
 	completedWorkflowSnapshot,
@@ -17,6 +13,7 @@ import type { DurableCheckpoint, DurableStageRunTopology } from "../../packages/
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { testRunId } from "../helpers/run-id.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 function registerCompleted(backend: DurableWorkflowBackend, workflowId: string): void {
 	backend.registerWorkflow({

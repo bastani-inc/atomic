@@ -1331,7 +1331,7 @@ interface RunOpts {
   readonly signal?: AbortSignal;
   readonly deferWorkflowStart?: boolean;
   readonly config?: WorkflowRuntimeConfig;
-  readonly durability?: WorkflowDurability;
+  readonly journal?: { path: string } | { database: DatabaseSync } | { memory: true } | RunJournal;
   readonly models?: WorkflowModelCatalogPort;
   readonly registry?: WorkflowRegistry;
   readonly depth?: number;
@@ -1362,22 +1362,26 @@ The public authoring declaration intentionally excludes runtime-only executor fi
 #### Choosing the durable backend
 
 ```typescript
-type WorkflowDurability =
-  | { readonly mode: "memory" }
-  | { readonly mode: "durable" };
+import type { DatabaseSync } from "node:sqlite";
+import type { RunJournal } from "@bastani/atomic/workflows";
+
+type JournalOption = { path: string } | { database: DatabaseSync } | { memory: true } | RunJournal;
 ```
 
-`run()` initializes the process's local SQLite journal on first use and releases each run's lease when execution settles. The journal remains available to other runs in the same process.
+`run()` uses a local SQLite journal by default and releases the run's lease when execution settles. Select a journal with `RunOpts.journal`:
 
-- **Omitted or `{ mode: "durable" }`:** writes durable state to the journal. Storage failures reject the call; Atomic does not silently switch to memory.
-- **`{ mode: "memory" }`:** explicitly chooses state that lasts only for this call and cannot resume after process exit.
+- `{ path }` opens that SQLite file.
+- `{ database }` uses a caller-owned `node:sqlite` connection. Atomic initializes the journal schema on it but does not close the connection.
+- `{ memory: true }` explicitly selects `MemoryRunJournal`. Records last only for the process and cannot recover runs after exit.
+- A `RunJournal` instance is used as supplied. `SqliteRunJournal`, `MemoryRunJournal`, journal error classes, and `registerRunJournalConformance` are exported from `@bastani/atomic/workflows`.
 
-The default journal is `~/.atomic/workflows/journal.sqlite`. Set `ATOMIC_WORKFLOW_JOURNAL_PATH` before the first workflow action to choose another file. Keep the same journal and working directory when resuming stored runs.
+Precedence is `RunOpts.journal`, non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, `workflows.journal.path` or `workflows.journal.memory`, then the default `~/.atomic/workflows/journal.sqlite`. Relative settings paths resolve against the Atomic home directory. Storage failures reject the call; Atomic never selects memory as a recovery step. Keep the same journal and working directory when resuming stored runs.
 
 ```ts
 import { run } from "@bastani/atomic/workflows";
 
-await run(helloWorld, { name: "Atomic" }, { durability: { mode: "durable" } });
+await run(helloWorld, { name: "Atomic" }, { journal: { path: "./workflow-runs.sqlite" } });
+await run(helloWorld, { name: "Atomic" }, { journal: { memory: true } });
 ```
 
 ### `resolveInputs(schema, provided)`

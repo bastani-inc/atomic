@@ -460,7 +460,7 @@ The readiness prompt can be answered in the attached stage UI or with `workflow(
 
 Atomic workflows use a **local SQLite journal as their only persistent store**. It opens on the first workflow action and commits registrations, checkpoints, and control transitions before reporting them as durable. The default file is `~/.atomic/workflows/journal.sqlite`; set `ATOMIC_WORKFLOW_JOURNAL_PATH` before starting Atomic to select another file. Keep it on durable local storage. Storage failures stop the action rather than selecting another store.
 
-SDK callers can explicitly choose per-call non-durable execution; see [Choosing the durable backend](/workflows/api-reference#choosing-the-durable-backend).
+Select process-local memory explicitly with `workflows.journal.memory: true` or SDK `RunOpts.journal: { memory: true }`. It supports checkpoint replay within the process but not recovery after exit. See [Choosing the durable backend](/workflows/api-reference#choosing-the-durable-backend).
 
 ### Storage failures and recovery
 
@@ -653,7 +653,9 @@ That history does not authorize any live release action.
 
 ### Configuring journal storage
 
-Set `ATOMIC_WORKFLOW_JOURNAL_PATH` before starting Atomic to select a durable local file. Otherwise Atomic uses `~/.atomic/workflows/journal.sqlite`. Preserve that file and its SQLite sidecar files; use the same journal and working directory to resume an existing run. See [Workflow storage settings](/settings#workflow-storage).
+Set `workflows.journal.path` in `settings.json` or set `ATOMIC_WORKFLOW_JOURNAL_PATH` before starting Atomic to select a local SQLite file. The non-empty environment value overrides settings; SDK `RunOpts.journal` overrides both. Relative settings paths resolve against the Atomic home directory, normally `~/.atomic`. With no override, Atomic uses `~/.atomic/workflows/journal.sqlite`.
+
+For process-local storage, use `workflows.journal.memory: true` without a non-empty settings path, or pass `journal: { memory: true }` to SDK `run()`. Memory is never selected after a storage failure. Preserve a SQLite journal and its sidecar files; use the same journal and working directory to resume an existing run. See [Workflow storage settings](/settings#workflow-storage).
 
 Pending-stage Intercom cleanup checks durable ownership only for runs with messages that need settlement. Repeated failures with the same message produce one warning per extension instance. Interactive hosts receive a display-only notification, never a console stack trace, even if notification delivery fails; headless hosts retain a console diagnostic. Pending messages are not discarded when cleanup fails.
 

@@ -43,6 +43,10 @@ test(
 import { createAgentSession } from "@bastani/atomic";
 import {
 	createStore,
+	MemoryRunJournal,
+	SqliteRunJournal,
+	StorageUnavailableError,
+	type RunJournal,
 	type RunOpts,
 	type StageContext,
 	type StageAdapters,
@@ -56,6 +60,11 @@ const adapters: StageAdapters = {
 	},
 };
 const opts: RunOpts = { adapters };
+const journal: RunJournal = new MemoryRunJournal();
+const journalOptions: readonly RunOpts[] = [
+	{ journal }, { journal: { memory: true } }, { journal: { path: "runs.sqlite" } },
+];
+void [journalOptions, SqliteRunJournal, StorageUnavailableError];
 
 const store = createStore();
 const unsubscribe: () => void = store.subscribe((snap: StoreSnapshot) => {

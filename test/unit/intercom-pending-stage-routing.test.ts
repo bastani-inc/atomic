@@ -13,13 +13,13 @@ import {
 	PENDING_STAGE_ASK_REFUSAL,
 } from "../../packages/intercom/broker/send-handler.js";
 import type { BrokerMessage, Message, SessionInfo } from "../../packages/intercom/types.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import { registerPendingStageIntercomBridge } from "../../packages/workflows/src/extension/pending-stage-intercom.js";
 import { createWorkflowPendingStageDelivery } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
 import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const RUN_ID = "4ac72924-c452-4e5f-9e63-2435722109f7";
 const CHILD_RUN_ID = "5bd82a35-c563-4f60-9a74-3546832210a8";

@@ -1,7 +1,7 @@
 /** Durable workflow API. */
 
 export type { DurableWorkflowBackend, DurableWorkflowCatalogEntries } from "./backend.js";
-export { durableHash, InMemoryDurableBackend } from "./backend.js";
+export { durableHash } from "./backend.js";
 export {
 	type CompletedWorkflowResolution,
 	completedWorkflowSnapshot,
@@ -15,7 +15,6 @@ export {
 	openCompletedDurableWorkflow,
 } from "./completed-inspection.js";
 export {
-	createInMemoryTestBackend,
 	getDurableBackend,
 	initializeDurableBackend,
 	setDurableBackend,

@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import type { WorkflowToolPrimitive } from "../../packages/workflows/src/durable/tool-primitive.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { Store } from "../../packages/workflows/src/shared/store-public-types.js";
 import { sleep } from "../helpers/runtime.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 async function assertClosedBeforeEffects(
 	retainedTool: WorkflowToolPrimitive | undefined,

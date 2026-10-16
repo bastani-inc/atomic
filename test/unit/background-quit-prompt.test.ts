@@ -3,7 +3,6 @@ import type { AgentSession } from "@bastani/atomic";
 import { Type } from "typebox";
 import { afterEach, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
 import { resumeRun } from "../../packages/workflows/src/runs/background/status.js";
@@ -15,6 +14,7 @@ import {
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { sleep } from "../helpers/runtime.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 async function waitForPrompt(store: ReturnType<typeof createStore>): Promise<{
 	readonly runId: string;

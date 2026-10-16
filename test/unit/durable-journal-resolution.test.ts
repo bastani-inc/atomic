@@ -50,7 +50,7 @@ test("explicit memory and journal instances are used instead of environment and 
 
 test("explicit caller-owned connection wins and stays open", async () => {
 	vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", join(root, "environment.sqlite"));
-	const database = new DatabaseSync(":memory:");
+	const database = new DatabaseSync(join(root, "caller.sqlite"));
 	try {
 		const journal = resolve({ journal: { database }, settings: conflicting });
 		assert.ok(journal instanceof SqliteRunJournal);

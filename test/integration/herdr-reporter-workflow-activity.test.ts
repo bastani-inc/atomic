@@ -12,10 +12,10 @@ import { createHerdrExtension } from "../../packages/coding-agent/src/extensions
 import type { HerdrDiagnostic } from "../../packages/coding-agent/src/extensions/herdr/transport.js";
 import { arg, fakeHerdr } from "../../packages/coding-agent/test/helpers/herdr.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createWorkflowObservation } from "../../packages/workflows/src/extension/workflow-observation.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 // #2891: the full path from workflow execution through the host activity hub to the
 // built-in reporter's `herdr` CLI invocations, against a fake executable capturing argv.

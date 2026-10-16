@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { buildRuntimeAdapters, type PiCodingAgentSdk } from "../../packages/workflows/src/extension/wiring.js";
 import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
@@ -11,6 +10,7 @@ import { createStageControlRegistry } from "../../packages/workflows/src/runs/fo
 import type { StageStartupSnapshot } from "../../packages/workflows/src/shared/stage-startup.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { renderRunDetail } from "../../packages/workflows/src/tui/run-detail.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import { createStageContext, makeMockSession, makeOpts } from "./stage-runner-helpers.js";
 
 // #3040: exercise production preparation, serialized reload, SDK and binding, not a replacement queue.

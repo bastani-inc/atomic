@@ -284,19 +284,6 @@ export interface WorkflowParentRunLink {
 	readonly rootRunId: string;
 }
 
-/**
- * Backend selection for one programmatic run. Omit it for the default:
- * durable, falling back to an in-memory backend with a warning.
- */
-export type WorkflowDurability =
-	| { readonly mode: "memory" }
-	| {
-			readonly mode: "durable";
-			readonly systemDatabaseUrl?: string;
-			/** Maximum connections per workflow database pool; integer of at least 2, defaults to 10. */
-			readonly poolSize?: number;
-	  };
-
 export interface RunOpts {
 	readonly adapters?: StageAdapters;
 	readonly cwd?: string;
@@ -319,8 +306,6 @@ export interface RunOpts {
 	readonly config?: WorkflowRuntimeConfig;
 	/** Per-run budget override. Each field resolves over definition and config values. */
 	readonly budget?: WorkflowBudget;
-	/** Select the durable backend for this run. `"durable"` fails fast instead of falling back to memory. */
-	readonly durability?: WorkflowDurability;
 	readonly journal?: RunJournalOption;
 	readonly models?: WorkflowModelCatalogPort;
 	readonly registry?: object;

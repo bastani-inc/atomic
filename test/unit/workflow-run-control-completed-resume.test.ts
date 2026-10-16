@@ -3,7 +3,6 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import type { ResumableWorkflowEntry } from "../../packages/workflows/src/durable/types.js";
 import {
@@ -26,6 +25,7 @@ import { workflowResumeAction } from "../../packages/workflows/src/extension/wor
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifacts.js";
 import { testRunId } from "../helpers/run-id.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 let tempDir = "";
 
@@ -573,10 +573,6 @@ test("durable catalog preparation hydrates workflow metadata only once", async (
 		override async hydrateResumableWorkflows(): Promise<void> {
 			this.hydrations++;
 		}
-		override async prepareWorkflowCatalog() {
-			await this.hydrateResumableWorkflows();
-			return super.prepareWorkflowCatalog();
-		}
 	}
 	const backend = new CountingBackend();
 	const runtime = createDurableResumeRuntime({
@@ -1028,6 +1024,16 @@ describe("/workflow resume completed target", () => {
 		const completedId = testRunId("shared-completed");
 		const liveId = `${completedId.slice(0, 8)}-${testRunId("shared-live").slice(9)}`;
 		registerCompleted(backend, completedId);
+		backend.registerWorkflow({ workflowId: liveId, name: "live-flow", inputs: {}, status: "paused", createdAt: 1 });
+		backend.recordCheckpoint({
+			kind: "tool",
+			workflowId: liveId,
+			checkpointId: "progress",
+			name: "progress",
+			argsHash: "progress",
+			output: "saved",
+			completedAt: 2,
+		});
 		store.recordRunStart({
 			id: liveId,
 			name: "live-flow",

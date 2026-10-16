@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import type { AgentSession } from "@bastani/atomic";
 import { afterEach, describe, test } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { resumeRun } from "../../packages/workflows/src/runs/background/status.js";
 import {
@@ -10,6 +9,7 @@ import {
 	type StageControlStatus,
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 interface ResumeHandleState {
 	status: StageControlStatus;
@@ -390,14 +390,11 @@ describe("multi-stage resume acknowledgement coherence", () => {
 
 	test("surfaces durable running transition failures after visible resume", async () => {
 		class ThrowRunningBackend extends InMemoryDurableBackend {
-			override setWorkflowStatus(
-				workflowId: string,
-				status: Parameters<InMemoryDurableBackend["setWorkflowStatus"]>[1],
-				pendingPrompts?: number,
-				resumable?: boolean,
-			): void {
-				if (status === "running") throw new Error("durable running write failed");
-				super.setWorkflowStatus(workflowId, status, pendingPrompts, resumable);
+			override async transitionWorkflowStatus(
+				...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>
+			): Promise<boolean> {
+				if (args[2] === "running") throw new Error("durable running write failed");
+				return await super.transitionWorkflowStatus(...args);
 			}
 		}
 		for (const [suffix, backend, failure] of [
@@ -432,14 +429,11 @@ describe("multi-stage resume acknowledgement coherence", () => {
 	test("retries a failed durable running transition after local resume already succeeded", async () => {
 		class TransientRunningBackend extends InMemoryDurableBackend {
 			runningAttempts = 0;
-			override setWorkflowStatus(
-				workflowId: string,
-				status: Parameters<InMemoryDurableBackend["setWorkflowStatus"]>[1],
-				pendingPrompts?: number,
-				resumable?: boolean,
-			): void {
-				if (status === "running" && ++this.runningAttempts === 1) throw new Error("transient durable failure");
-				super.setWorkflowStatus(workflowId, status, pendingPrompts, resumable);
+			override async transitionWorkflowStatus(
+				...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>
+			): Promise<boolean> {
+				if (args[2] === "running" && ++this.runningAttempts === 1) throw new Error("transient durable failure");
+				return await super.transitionWorkflowStatus(...args);
 			}
 		}
 		const runId = "resume-durable-retry";

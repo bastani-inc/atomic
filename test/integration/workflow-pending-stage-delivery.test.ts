@@ -36,7 +36,7 @@ const { default: intercom } = await import("../../packages/intercom/index.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 const { SessionManager } = await import("../../packages/coding-agent/src/core/session-manager-core.ts");
 const { default: intercomHeavy } = await import("../../packages/intercom/index-heavy.js");
-const { InMemoryDurableBackend } = await import("../../packages/workflows/src/durable/backend.js");
+const { MemoryJournalBackend: InMemoryDurableBackend } = await import("../helpers/workflow-journal.js");
 const { setDurableBackend } = await import("../../packages/workflows/src/durable/factory.js");
 const { WorkflowStageAdmissionBoundary: StageAdmissionBoundary } = await import(
 	"../../packages/coding-agent/src/core/workflow-stage-admission.ts"

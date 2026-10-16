@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { durableHash, InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { durableHash } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
@@ -12,6 +12,7 @@ import { runDetached } from "../../packages/workflows/src/runs/background/runner
 import { stageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { testRunId } from "../helpers/run-id.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 class TrackingHydrationBackend extends InMemoryDurableBackend {
 	targetedHydrationCalls: string[] = [];

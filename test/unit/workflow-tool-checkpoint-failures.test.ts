@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableCheckpoint, DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 describe("tool checkpoint failures", () => {
 	test("journal best-effort storage rejection leaves checkpoints unchanged and permits a later write", async () => {
@@ -48,7 +48,8 @@ describe("tool checkpoint failures", () => {
 	test("authoritative fresh checkpoint failures still fail the run", async () => {
 		class RejectAuthoritativeBackend extends InMemoryDurableBackend {
 			override async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
-				if (checkpoint.kind === "tool") throw new Error("authoritative write rejected");
+				if (checkpoint.kind === "tool")
+					throw new StorageUnavailableError("authoritative write rejected", new Error("fixture storage failure"));
 				await super.recordCheckpointAsync(checkpoint);
 			}
 		}

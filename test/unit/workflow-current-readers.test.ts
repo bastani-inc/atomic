@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { DurableNestedTopologyError } from "../../packages/workflows/src/durable/boundary-topology.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { GraphFrontierTracker } from "../../packages/workflows/src/engine/graph-inference.js";
@@ -23,6 +22,7 @@ import type {
 	RunSnapshot,
 	StageSnapshot,
 } from "../../packages/workflows/src/shared/store-types.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 function message(id: string, admissionOrder: number): PendingStageMessage {
 	return {

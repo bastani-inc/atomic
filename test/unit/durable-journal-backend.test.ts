@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { join, resolve } from "node:path";
 import { afterEach, test, vi } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { DurableNestedTopologyError } from "../../packages/workflows/src/durable/boundary-topology.js";
 import {
 	JournalDurableBackend,
 	JournalOwnershipError,
@@ -30,6 +30,7 @@ import { classifyControlError } from "../../packages/workflows/src/extension/wor
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../../packages/workflows/src/runs/foreground/stage-session-heartbeat.js";
 import type { PendingStageMessage } from "../../packages/workflows/src/shared/store-types.js";
 import { bunExecutable, makeTempDirectory, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const opened: JournalDurableBackend[] = [];
 const dirs: string[] = [];
@@ -39,7 +40,7 @@ function database(): string {
 	return join(dir, "journal.sqlite");
 }
 async function open(path = database()): Promise<JournalDurableBackend> {
-	const backend = await JournalDurableBackend.open(path);
+	const backend = await JournalDurableBackend.open(new SqliteRunJournal(path));
 	opened.push(backend);
 	return backend;
 }
@@ -75,6 +76,51 @@ test("journal backend writes checkpoints durably before returning and rebuilds o
 	const reader = await open(path);
 	assert.equal(reader.getToolOutput("run", "hash"), "saved");
 	assert.deepEqual(reader.listCheckpoints("run"), backend.listCheckpoints("run"));
+});
+
+test("opening rejects a boundary record without its invocation fingerprint", async () => {
+	const path = database();
+	const writer = await open(path);
+	register(writer);
+	const lease = writer.journal.leaseState("run");
+	assert.ok(lease);
+	writer.journal.appendSync(lease, {
+		type: RUN_EVENT_TYPES.checkpointRecorded,
+		payload: {
+			kind: "stage",
+			workflowId: "run",
+			checkpointId: "boundary",
+			name: "workflow:child",
+			replayKey: "child:1",
+			completedAt: 2,
+			topology: {
+				version: 1,
+				stageId: "boundary",
+				parentIds: [],
+				boundary: {
+					version: 1,
+					replayScope: "child:1",
+					alias: "child",
+					workflow: "child",
+					event: "start",
+					status: "running",
+					child: {
+						runId: "child",
+						runName: "child",
+						parentRunId: "run",
+						parentStageId: "boundary",
+						rootRunId: "run",
+					},
+				},
+			},
+		},
+	});
+	await writer.close();
+	await assert.rejects(JournalDurableBackend.open(new SqliteRunJournal(path)), (error: Error) => {
+		assert.ok(error instanceof DurableNestedTopologyError);
+		assert.equal(error.reason, "missing invocation fingerprint at boundary");
+		return true;
+	});
 });
 
 test("opening folds every journal event exactly once through paged reads", async () => {
@@ -130,10 +176,13 @@ test("a replay failure while opening clears the renewal timer and closes the jou
 	const closedJournal = vi.spyOn(SqliteRunJournal.prototype, "close");
 	try {
 		for (let attempt = 0; attempt < 3; attempt++) {
-			await assert.rejects(JournalDurableBackend.open(path), (error: Error) => error === replayFailure);
+			await assert.rejects(
+				JournalDurableBackend.open(new SqliteRunJournal(path)),
+				(error: Error) => error === replayFailure,
+			);
 		}
 		const timers = created.mock.results.map((result) => result.value);
-		assert.equal(timers.length, 3);
+		assert.equal(timers.length, 0);
 		assert.deepEqual(
 			cleared.mock.calls.map(([timer]) => timer),
 			timers,
@@ -409,17 +458,17 @@ test("prompt reservation generations and releases rebuild from durable events", 
 	const path = database();
 	const backend = await open(path);
 	register(backend);
-	const firstToken = backend.reservePendingPrompt("run", "prompt");
+	const firstToken = await backend.reservePendingPrompt("run", "prompt");
 	await backend.close();
 	const resumed = await open(path);
-	assert.deepEqual(resumed.pendingPromptToken("run", "prompt"), firstToken);
-	resumed.releasePendingPrompt("run", "prompt", firstToken);
+	assert.deepEqual(await resumed.pendingPromptToken("run", "prompt"), firstToken);
+	await resumed.releasePendingPrompt("run", "prompt", firstToken);
 	assert.equal(resumed.getWorkflow("run")?.pendingPrompts, 0);
-	const nextToken = resumed.reservePendingPrompt("run", "prompt");
+	const nextToken = await resumed.reservePendingPrompt("run", "prompt");
 	assert.equal(nextToken.generation, firstToken.generation + 1);
-	resumed.releasePendingPrompt("run", "prompt", firstToken);
+	await resumed.releasePendingPrompt("run", "prompt", firstToken);
 	assert.equal(resumed.getWorkflow("run")?.pendingPrompts, 1);
-	resumed.releasePendingPrompt("run", "prompt", nextToken);
+	await resumed.releasePendingPrompt("run", "prompt", nextToken);
 	assert.equal(resumed.getWorkflow("run")?.pendingPrompts, 0);
 });
 
@@ -429,25 +478,25 @@ test("cache replays of an answered prompt add no journal events while changing c
 	const path = database();
 	const backend = await open(path);
 	register(backend);
-	const answered = backend.reservePendingPrompt("run", "answered");
-	backend.releasePendingPrompt("run", "answered", answered);
+	const answered = await backend.reservePendingPrompt("run", "answered");
+	await backend.releasePendingPrompt("run", "answered", answered);
 	const events = backend.journal.readEntries("run").length;
 	const updatedAt = backend.getWorkflow("run")!.updatedAt;
 	for (let replay = 1; replay <= 3; replay++) {
 		vi.setSystemTime(1_000 + replay * 1_000);
-		assert.equal(backend.pendingPromptToken("run", "answered"), undefined);
+		assert.equal(await backend.pendingPromptToken("run", "answered"), undefined);
 	}
 	assert.equal(backend.journal.readEntries("run").length, events);
 	assert.equal(backend.getWorkflow("run")!.updatedAt, updatedAt);
 	backend.adjustPendingPrompts("run", 1);
-	const claimed = backend.pendingPromptToken("run", "pending");
+	const claimed = await backend.pendingPromptToken("run", "pending");
 	assert.ok(claimed);
 	assert.equal(backend.journal.readEntries("run").length, events + 2);
 	await backend.close();
 	const resumed = await open(path);
-	assert.deepEqual(resumed.pendingPromptToken("run", "pending"), claimed);
+	assert.deepEqual(await resumed.pendingPromptToken("run", "pending"), claimed);
 	assert.equal(resumed.journal.readEntries("run").length, events + 2);
-	resumed.releasePendingPrompt("run", "pending", claimed);
+	await resumed.releasePendingPrompt("run", "pending", claimed);
 	assert.equal(resumed.getWorkflow("run")!.pendingPrompts, 0);
 });
 
@@ -519,11 +568,11 @@ test("status snapshots preserve unchanged active prompt reservations across reop
 	const path = database();
 	const backend = await open(path);
 	register(backend);
-	const token = backend.reservePendingPrompt("run", "prompt");
+	const token = await backend.reservePendingPrompt("run", "prompt");
 	backend.setWorkflowStatus("run", "paused");
 	await backend.close();
 	const resumed = await open(path);
-	resumed.releasePendingPrompt("run", "prompt", token);
+	await resumed.releasePendingPrompt("run", "prompt", token);
 	assert.equal(resumed.getWorkflow("run")?.pendingPrompts, 0);
 });
 
@@ -534,13 +583,13 @@ test("lease handoff refreshes the projection before writing a status snapshot", 
 	const second = await open(path);
 	first.recordCheckpoint(checkpoint());
 	await first.persistSummary("run", "keep summary", 1);
-	const token = first.reservePendingPrompt("run", "prompt");
+	const token = await first.reservePendingPrompt("run", "prompt");
 	await first.close();
 	second.setWorkflowStatus("run", "paused");
 	assert.equal(second.getWorkflow("run")?.completedCheckpoints, 1);
 	assert.equal(second.getWorkflow("run")?.summary, "keep summary");
 	assert.equal(second.getWorkflow("run")?.pendingPrompts, 1);
-	second.releasePendingPrompt("run", "prompt", token);
+	await second.releasePendingPrompt("run", "prompt", token);
 	assert.equal(second.getWorkflow("run")?.pendingPrompts, 0);
 });
 
@@ -648,7 +697,7 @@ for (const extra of [0, 1]) {
 		writer.recordCheckpoint({ ...checkpoint("old"), checkpointId: "old" });
 		writer.recordCheckpoint({ ...checkpoint("old two"), checkpointId: "old two" });
 		await writer.persistSummary("run", "old summary", 99);
-		writer.reservePendingPrompt("run", "old prompt");
+		await writer.reservePendingPrompt("run", "old prompt");
 		await writer.persistPendingStageMessages("run", [message("old")]);
 		await writer.archivePendingStageMessage("run", message("old"));
 		await writer.archivePendingStageDeliveryReceipt("run", "old", delivery, {
@@ -667,7 +716,7 @@ for (const extra of [0, 1]) {
 		});
 		writer.recordCheckpoint({ ...checkpoint("new"), checkpointId: "new", completedAt: 6 });
 		await writer.persistSummary("run", "new summary", 1);
-		const token = writer.reservePendingPrompt("run", "new prompt");
+		const token = await writer.reservePendingPrompt("run", "new prompt");
 		await writer.persistPendingStageMessages("run", [message("new")]);
 		await writer.archivePendingStageMessage("run", message("new"));
 		await writer.archivePendingStageDeliveryReceipt("run", "new", delivery, {
@@ -705,8 +754,8 @@ for (const extra of [0, 1]) {
 		const latest = observer.journal.readEntries("run").at(-1)!;
 		assert.equal(latest.event.type, RUN_EVENT_TYPES.statusChanged);
 		assert.deepEqual(latest.event.payload, JSON.parse(JSON.stringify(fresh.getWorkflow("run"))));
-		assert.equal(observer.pendingPromptToken("run", "old prompt"), undefined);
-		observer.releasePendingPrompt("run", "new prompt", token);
+		assert.equal(await observer.pendingPromptToken("run", "old prompt"), undefined);
+		await observer.releasePendingPrompt("run", "new prompt", token);
 		assert.equal(observer.getWorkflow("run")!.pendingPrompts, 0);
 	});
 }
@@ -1035,8 +1084,8 @@ test("backend writes use standard JSON for negative zero across repeated snapsho
 	verify(backend);
 	for (let repeat = 0; repeat < 2; repeat++) {
 		backend.setWorkflowStatus("run", "paused");
-		const token = backend.reservePendingPrompt("run", "prompt");
-		backend.releasePendingPrompt("run", "prompt", token);
+		const token = await backend.reservePendingPrompt("run", "prompt");
+		await backend.releasePendingPrompt("run", "prompt", token);
 		await backend.persistPendingStageMessages("run", []);
 		await backend.persistSummary("run", "summary", repeat);
 		verify(backend);
@@ -1072,7 +1121,7 @@ test("direct deletion clears all cached state when another deletion wins acquisi
 	register(writer);
 	writer.recordCheckpoint(checkpoint());
 	await writer.persistSummary("run", "old summary", 1);
-	writer.reservePendingPrompt("run", "old prompt");
+	await writer.reservePendingPrompt("run", "old prompt");
 	const message: PendingStageMessage = {
 		id: "old",
 		runId: "run",
@@ -1119,7 +1168,7 @@ test("direct deletion clears all cached state when another deletion wins acquisi
 	assert.equal(observer.getLoadableWorkflow("run"), undefined);
 	assert.equal(observer.toMetadata("run"), undefined);
 	assert.deepEqual(observer.listCheckpoints("run"), []);
-	assert.equal(observer.pendingPromptToken("run", "old prompt"), undefined);
+	assert.equal(await observer.pendingPromptToken("run", "old prompt"), undefined);
 	assert.equal(await observer.readSettledPendingStageMessage("run", message.id), undefined);
 	assert.equal(await observer.hasPendingStageDeliveryReceipt("run", message.id, delivery), false);
 	assert.equal(await observer.readPendingStageMessageDeliveryCount("run", message.id), 0);

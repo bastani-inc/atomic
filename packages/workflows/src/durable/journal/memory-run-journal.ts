@@ -4,6 +4,7 @@ import {
 	JOURNAL_LEASE,
 	JournalCasConflictError,
 	type JournalEntry,
+	JournalError,
 	type Lease,
 	type LeaseOutcome,
 	type RunEvent,
@@ -13,6 +14,7 @@ import {
 	type RunSummary,
 	StaleLeaseError,
 	StorageUnavailableError,
+	type SynchronousRunJournal,
 } from "./types.js";
 import { serializeJson, validateText } from "./values.js";
 
@@ -21,16 +23,27 @@ interface MemoryRun {
 	entries: JournalEntry[];
 }
 
-export class MemoryRunJournal implements RunJournal {
+class MemoryJournalClosedError extends JournalError {
+	constructor() {
+		super("Journal is closed");
+		this.name = "MemoryJournalClosedError";
+	}
+}
+
+export class MemoryRunJournal implements RunJournal, SynchronousRunJournal {
 	private readonly runs = new Map<string, MemoryRun>();
-	private readonly leases = new Map<string, { holderId: string | null; epoch: number }>();
+	private readonly leases = new Map<string, { holderId: string | null; epoch: number; renewedAt: number }>();
 	private closed = false;
 
 	private ensureOpen(): void {
-		if (this.closed) throw new StorageUnavailableError(":memory:", new Error("Journal is closed"));
+		if (this.closed) throw new StorageUnavailableError(":memory:", new MemoryJournalClosedError());
 	}
 
 	async createRun(header: RunHeader): Promise<"created" | "exists"> {
+		return this.createRunSync(header);
+	}
+
+	createRunSync(header: RunHeader): "created" | "exists" {
 		validateText("runId", header.runId);
 		validateText("name", header.name);
 		validateText("cwd", header.cwd);
@@ -43,6 +56,10 @@ export class MemoryRunJournal implements RunJournal {
 	}
 
 	async listRuns(filter?: { cwd?: string }): Promise<readonly RunSummary[]> {
+		return this.listRunsSync(filter);
+	}
+
+	listRunsSync(filter?: { cwd?: string }): readonly RunSummary[] {
 		if (filter?.cwd !== undefined) validateText("cwd", filter.cwd);
 		this.ensureOpen();
 		return [...this.runs.values()]
@@ -63,18 +80,23 @@ export class MemoryRunJournal implements RunJournal {
 		const epoch = current
 			? journalCounter(runId, "epoch", current.epoch + JOURNAL_LEASE.epochIncrement, "overflow")
 			: JOURNAL_LEASE.initialEpoch;
-		this.leases.set(runId, { holderId, epoch });
+		this.leases.set(runId, { holderId, epoch, renewedAt: Date.now() });
 		return { status: "acquired", lease: { runId, holderId, epoch } };
 	}
 
 	async acquire(runId: string, holderId: string): Promise<LeaseOutcome> {
+		return this.acquireSync(runId, holderId);
+	}
+
+	acquireSync(runId: string, holderId: string): LeaseOutcome {
 		validateText("runId", runId);
 		validateText("holderId", holderId);
 		this.requireRun(runId);
 		const current = this.leases.get(runId);
 		if (current?.holderId === holderId)
 			return { status: "acquired", lease: { runId, holderId, epoch: current.epoch } };
-		if (current && current.holderId !== JOURNAL_LEASE.unheld) return { status: "held", ...current };
+		if (current && current.holderId !== JOURNAL_LEASE.unheld)
+			return { status: "held", holderId: current.holderId, epoch: current.epoch };
 		return this.grant(runId, holderId);
 	}
 
@@ -93,28 +115,58 @@ export class MemoryRunJournal implements RunJournal {
 		return this.grant(runId, holderId);
 	}
 
+	takeoverExpiredSync(runId: string, holderId: string, expiredBefore: number): LeaseOutcome {
+		validateText("runId", runId);
+		validateText("holderId", holderId);
+		this.requireRun(runId);
+		const current = this.leases.get(runId);
+		if (current?.holderId === holderId) return this.acquireSync(runId, holderId);
+		if (current?.holderId !== undefined && current.holderId !== null && current.renewedAt > expiredBefore)
+			return { status: "held", holderId: current.holderId, epoch: current.epoch };
+		return this.grant(runId, holderId);
+	}
+
+	leaseState(runId: string): (Lease & { readonly renewedAt: number }) | undefined {
+		validateText("runId", runId);
+		this.ensureOpen();
+		const current = this.leases.get(runId);
+		return current?.holderId === undefined || current.holderId === null
+			? undefined
+			: { runId, holderId: current.holderId, epoch: current.epoch, renewedAt: current.renewedAt };
+	}
+
 	private checkLease(lease: Lease): void {
 		this.ensureOpen();
 		const current = this.leases.get(lease.runId);
-		if (current?.holderId !== lease.holderId || current.epoch !== lease.epoch) {
+		if (current?.holderId !== lease.holderId || current.epoch !== lease.epoch)
 			throw new StaleLeaseError(lease.runId, lease.epoch, current?.epoch ?? JOURNAL_LEASE.absentEpoch);
-		}
 	}
 
 	async renew(lease: Lease): Promise<void> {
+		this.renewSync(lease);
+	}
+	renewSync(lease: Lease): void {
 		validateText("runId", lease.runId);
 		validateText("holderId", lease.holderId);
 		this.checkLease(lease);
+		this.leases.set(lease.runId, { holderId: lease.holderId, epoch: lease.epoch, renewedAt: Date.now() });
 	}
 
 	async release(lease: Lease): Promise<void> {
+		this.releaseSync(lease);
+	}
+	releaseSync(lease: Lease): void {
 		validateText("runId", lease.runId);
 		validateText("holderId", lease.holderId);
 		this.checkLease(lease);
-		this.leases.set(lease.runId, { holderId: JOURNAL_LEASE.unheld, epoch: lease.epoch });
+		this.leases.set(lease.runId, { holderId: JOURNAL_LEASE.unheld, epoch: lease.epoch, renewedAt: Date.now() });
 	}
 
 	async append(lease: Lease, event: RunEvent, options?: { key?: string; expectSeq?: number }): Promise<AppendOutcome> {
+		return this.appendSync(lease, event, options);
+	}
+
+	appendSync(lease: Lease, event: RunEvent, options?: { key?: string; expectSeq?: number }): AppendOutcome {
 		validateText("runId", lease.runId);
 		validateText("holderId", lease.holderId);
 		if (options?.key !== undefined) validateText("key", options.key);
@@ -122,9 +174,8 @@ export class MemoryRunJournal implements RunJournal {
 		this.checkLease(lease);
 		const run = this.requireRun(lease.runId);
 		const actualSeq = run.entries.at(-1)?.seq ?? 0;
-		if (options?.expectSeq !== undefined && options.expectSeq !== actualSeq) {
+		if (options?.expectSeq !== undefined && options.expectSeq !== actualSeq)
 			throw new JournalCasConflictError(lease.runId, options.expectSeq, actualSeq);
-		}
 		if (options?.key !== undefined) {
 			const existing = run.entries.find((entry) => entry.key === options.key);
 			if (existing) return { status: "exists", entry: this.copyEntry(existing) };
@@ -155,9 +206,13 @@ export class MemoryRunJournal implements RunJournal {
 	}
 
 	async *read(runId: string, fromSeq = 1): AsyncIterable<JournalEntry> {
+		yield* this.readEntries(runId, fromSeq);
+	}
+
+	readEntries(runId: string, fromSeq = 1): readonly JournalEntry[] {
 		validateText("runId", runId);
 		this.ensureOpen();
-		yield* (this.runs.get(runId)?.entries ?? [])
+		return (this.runs.get(runId)?.entries ?? [])
 			.filter((entry) => entry.seq >= fromSeq)
 			.map((entry) => this.copyEntry(entry));
 	}
@@ -171,11 +226,26 @@ export class MemoryRunJournal implements RunJournal {
 	}
 
 	async deleteRun(runId: string): Promise<void> {
+		this.deleteRunSync(runId);
+	}
+	deleteRunSync(runId: string): void {
 		validateText("runId", runId);
 		this.ensureOpen();
 		const current = this.leases.get(runId);
-		if (current) this.leases.set(runId, { holderId: JOURNAL_LEASE.unheld, epoch: current.epoch });
+		if (current)
+			this.leases.set(runId, { holderId: JOURNAL_LEASE.unheld, epoch: current.epoch, renewedAt: Date.now() });
 		this.runs.delete(runId);
+	}
+
+	deleteOwnedRunSync(lease: Lease, expectSeq?: number): void {
+		validateText("runId", lease.runId);
+		validateText("holderId", lease.holderId);
+		this.checkLease(lease);
+		const run = this.requireRun(lease.runId);
+		const actualSeq = run.entries.at(-1)?.seq ?? 0;
+		if (expectSeq !== undefined && expectSeq !== actualSeq)
+			throw new JournalCasConflictError(lease.runId, expectSeq, actualSeq);
+		this.deleteRunSync(lease.runId);
 	}
 
 	async close(): Promise<void> {

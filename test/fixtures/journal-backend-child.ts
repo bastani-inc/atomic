@@ -1,7 +1,8 @@
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 
 const [path, mode] = process.argv.slice(-2);
-const backend = await JournalDurableBackend.open(path);
+const backend = await JournalDurableBackend.open(new SqliteRunJournal(path));
 try {
 	if (mode === "write") {
 		backend.registerWorkflow({ workflowId: "process-run", name: "process", inputs: { text: "raw\u0000\ud800", values: [2, 1, 2] }, createdAt: 1, status: "running" });

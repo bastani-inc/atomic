@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { afterAll, test } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { getDurableBackendProcessOwner } from "../../packages/workflows/src/durable/backend-process-owner.js";
 import { getDurableBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const owner = getDurableBackendProcessOwner();
 const original = { ...owner };
 const initialized = new InMemoryDurableBackend();
-const initializing = Promise.resolve(initialized);
+const selected = new Map([["memory", { ready: Promise.resolve(initialized) }]]);
 let previousInjected: InMemoryDurableBackend | undefined;
 let previousOverride: InMemoryDurableBackend | undefined;
 let completed = 0;
@@ -29,10 +29,10 @@ for (const ordinal of [0, 1]) {
 		assert.equal(injected.persistent, false);
 		if (ordinal === 1) {
 			assert.equal(owner.initializedBackend, initialized);
-			assert.equal(owner.initializing, initializing);
+			assert.equal(owner.selectedBackends, selected);
 		}
 		owner.initializedBackend = initialized;
-		owner.initializing = initializing;
+		owner.selectedBackends = selected;
 		const override = new InMemoryDurableBackend();
 		setDurableBackend(override);
 		assert.equal(getDurableBackend(), override);

@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed the SDK `durability` option, `WorkflowDurability`, and `WorkflowDurabilityRequiredError`. Use `RunOpts.journal` to select storage or isolate runs, and handle typed journal errors when storage is unavailable.
+- Removed `InMemoryDurableBackend` and `createInMemoryTestBackend`. Use `JournalDurableBackend` over `MemoryRunJournal` for an explicitly in-memory backend. Removed the `legacyRecovery` workflow-tool argument and remaining `workflows.durability` settings.
+- Removed the `@bastani/workflows` import alias; use `@bastani/atomic/workflows`.
+
+### Added
+
+- Added `RunOpts.journal` and `resolveRunJournal` for explicit journals, caller-owned SQLite connections, memory journals, and configurable files. TUI, CLI, background, and SDK runs use the selected journal. Resolution prioritizes the explicit option, a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, then journal settings and the default path. Relative settings paths resolve against the Atomic home directory.
+
 ## [0.9.38-alpha.5] - 2026-10-16
 
 ### Fixed
@@ -30,7 +40,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Added `MemoryRunJournal`, public SQLite journal and error exports, and `registerRunJournalConformance` for shared journal contract checks.
-- Added `RunOpts.journal` types and `resolveRunJournal` for explicit journals, caller-owned SQLite connections, memory journals, and configurable files. Resolution prioritizes the explicit option, a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, then journal settings and the default path. Relative settings paths resolve against the Atomic home directory. Runtime wiring is deferred.
 
 ### Fixed
 

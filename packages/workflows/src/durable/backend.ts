@@ -1,12 +1,8 @@
-/** Durable workflow storage and its in-memory projection. */
+/** Durable workflow contract and private journal projection. */
 
 import type { PendingStageMessage, PendingStageMessageDelivery } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
-import {
-	inactivePromptReservationToken,
-	PromptReservationState,
-	type PromptReservationToken,
-} from "./prompt-reservation-state.js";
+import type { PromptReservationToken } from "./prompt-reservation-state.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import type {
 	DurableCheckpoint,
@@ -75,14 +71,14 @@ export type DurableInactiveDeleteResult =
 	| { readonly ok: true }
 	| { readonly ok: false; readonly reason: "not_found" | "running" };
 
-/** Synchronous metadata writes and awaited checkpoint writes commit before returning. */
+/** Await mutations before observing their persisted result. */
 export interface DurableWorkflowBackend {
 	/** Whether state survives the current process. */
 	readonly persistent: boolean;
 	workflowOwnership(workflowId: string): "local" | "foreign" | "available";
 	persistSummary?(workflowId: string, summary: string, summarizedThrough: number): Promise<boolean>;
 	/** Register or update a workflow's top-level metadata. */
-	registerWorkflow(handle: WorkflowRegistrationInput): void;
+	registerWorkflow(handle: WorkflowRegistrationInput): void | Promise<void>;
 	/** Persist one logical run's pending-stage transition under its durable owner. */
 	persistPendingStageMessages(
 		workflowId: string,
@@ -118,7 +114,7 @@ export interface DurableWorkflowBackend {
 		logicalRunId?: string,
 	): Promise<boolean>;
 	/** Record a completed checkpoint. Idempotent: same (kind, checkpointId) is a no-op. */
-	recordCheckpoint(checkpoint: DurableCheckpoint): void;
+	recordCheckpoint(checkpoint: DurableCheckpoint): void | Promise<void>;
 
 	/** Persist a checkpoint before exposing its side effect. */
 	recordCheckpointAsync(checkpoint: DurableCheckpoint, options?: { readonly signal?: AbortSignal }): Promise<void>;
@@ -177,7 +173,7 @@ export interface DurableWorkflowBackend {
 		pendingPrompts?: number,
 		resumable?: boolean,
 		failure?: DurableWorkflowFailureMetadata,
-	): void;
+	): void | Promise<void>;
 	/**
 	 * Atomically update status only when the authoritative status is expected.
 	 * `modelOwner` adopts the run for a new session. `releasedModelOwner` durably records that
@@ -194,7 +190,7 @@ export interface DurableWorkflowBackend {
 		releasedModelOwner?: string,
 	): Promise<boolean>;
 	/** Atomically adjust unresolved UI prompt count, clamped at zero. */
-	adjustPendingPrompts(workflowId: string, delta: number): void;
+	adjustPendingPrompts(workflowId: string, delta: number): void | Promise<void>;
 
 	/**
 	 * List resumable root workflows: running/paused runs with progress and
@@ -218,23 +214,28 @@ export interface DurableWorkflowBackend {
 	isWorkflowLoadable(workflowId: string): boolean;
 
 	/** Clear all state (for tests). */
-	reset(): void;
+	reset(): void | Promise<void>;
 
 	/** Hydrate one workflow from persistent storage. */
 	hydrateWorkflow(workflowId: string): Promise<void>;
 	/** Hydrate all catalog candidates from persistent storage. */
 	hydrateResumableWorkflows(): Promise<void>;
 	promptReservationScope(workflowId: string): { readonly rootWorkflowId: string; readonly scope: string };
-	pendingPromptToken(workflowId: string, reservationId: string): PromptReservationToken | undefined;
-	reservePendingPrompt(workflowId: string, reservationId: string): PromptReservationToken;
-	releasePendingPrompt(workflowId: string, reservationId: string, token: PromptReservationToken): void;
+	pendingPromptToken(
+		workflowId: string,
+		reservationId: string,
+	): PromptReservationToken | undefined | Promise<PromptReservationToken | undefined>;
+	reservePendingPrompt(
+		workflowId: string,
+		reservationId: string,
+	): PromptReservationToken | Promise<PromptReservationToken>;
+	releasePendingPrompt(workflowId: string, reservationId: string, token: PromptReservationToken): void | Promise<void>;
 }
 
-// ---------------------------------------------------------------------------
-// In-memory backend
+// Journal projection
 // ---------------------------------------------------------------------------
 
-interface InMemoryWorkflowRecord {
+interface JournalWorkflowRecord {
 	handle: DurableWorkflowHandle;
 	checkpoints: Map<string, DurableCheckpoint>;
 	toolByHash: Map<string, DurableToolCheckpoint>;
@@ -247,14 +248,12 @@ function checkpointKey(c: DurableCheckpoint): string {
 	return `${c.kind}:${c.checkpointId}`;
 }
 
-/** Process-local projection and explicitly injected test backend. */
-export class InMemoryDurableBackend implements DurableWorkflowBackend {
-	public readonly persistent: boolean = false;
-	private readonly workflows = new Map<string, InMemoryWorkflowRecord>();
-	workflowOwnership(workflowId: string): "local" | "foreign" | "available" {
-		return this.workflows.has(workflowId) ? "local" : "available";
-	}
-	private readonly promptReservations = new Map<string, PromptReservationState>();
+export function createJournalProjection() {
+	return new JournalProjection();
+}
+
+class JournalProjection {
+	private readonly workflows = new Map<string, JournalWorkflowRecord>();
 	private readonly deletedWorkflowIds = new Set<string>();
 	private readonly pendingReceipts = new Map<string, Map<string, PendingStageMessage>>();
 	private readonly stickyReceipts = new Map<string, Set<string>>();
@@ -329,7 +328,6 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 					? { ownerExecutorId: existing.handle.ownerExecutorId }
 					: {}),
 			...(handle.ownerLiveness !== undefined ? { ownerLiveness: handle.ownerLiveness } : {}),
-			...(handle.legacyRecoveryPending === true ? { legacyRecoveryPending: true as const } : {}),
 		};
 		if (existing) existing.handle = full;
 		else
@@ -341,8 +339,6 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 				stageOutputByReplayKey: new Map(),
 				stageSessionByReplayKey: new Map(),
 			});
-
-		if (handle.pendingPrompts !== undefined) this.promptReservations.delete(handle.workflowId);
 	}
 	applyWorkflowSnapshot(handle: DurableWorkflowHandle): void {
 		if (!this.workflows.has(handle.workflowId)) this.registerWorkflow(handle, true);
@@ -438,31 +434,6 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 		});
 	}
 
-	async persistSummary(workflowId: string, summary: string, summarizedThrough: number): Promise<boolean> {
-		const handle = this.getWorkflow(workflowId);
-		if (!handle || (handle.summarizedThrough ?? -Infinity) > summarizedThrough) return false;
-		this.registerWorkflow({ ...handle, summary, summarizedThrough });
-		return true;
-	}
-
-	async persistPendingStageMessages(
-		workflowId: string,
-		messages: readonly PendingStageMessage[],
-		logicalRunId = workflowId,
-	): Promise<boolean> {
-		const handle = this.getWorkflow(workflowId);
-		if (handle === undefined) return false;
-		this.registerWorkflow({
-			...handle,
-			pendingStageMessages: replacePendingStageMessagesForRun(
-				handle.pendingStageMessages ?? [],
-				logicalRunId,
-				messages,
-			),
-			updatedAt: nextMetadataTimestamp(handle.updatedAt),
-		});
-		return true;
-	}
 	recordCheckpoint(checkpoint: DurableCheckpoint): void {
 		const currentCheckpoint =
 			checkpoint.kind === "stage" && checkpoint.topology === undefined
@@ -505,26 +476,6 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 			completedCheckpoints: rec.checkpoints.size,
 			updatedAt: currentCheckpoint.completedAt,
 		};
-	}
-
-	async recordCheckpointAsync(
-		checkpoint: DurableCheckpoint,
-		options?: { readonly signal?: AbortSignal },
-	): Promise<void> {
-		if (options?.signal?.aborted) {
-			const reason = options.signal.reason;
-			throw reason instanceof Error ? reason : new Error("atomic-workflows: workflow cancelled");
-		}
-		this.recordCheckpoint(checkpoint);
-	}
-
-	async recordAdditiveCheckpointBestEffort(checkpoint: DurableCheckpoint): Promise<boolean> {
-		try {
-			await this.recordCheckpointAsync(checkpoint);
-			return true;
-		} catch {
-			return false;
-		}
 	}
 
 	getToolOutput(workflowId: string, argsHash: string): WorkflowSerializableValue | undefined {
@@ -580,10 +531,6 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 		return this.getWorkflow(workflowId);
 	}
 
-	async hydrateWorkflow(_workflowId: string): Promise<void> {}
-
-	async hydrateResumableWorkflows(): Promise<void> {}
-
 	async prepareWorkflowCatalog(): Promise<DurableWorkflowCatalogEntries> {
 		return {
 			resumable: this.listResumableWorkflows(),
@@ -620,86 +567,6 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 			...(resumable !== undefined ? { resumable } : {}),
 			...(status === "failed" ? (failure ?? {}) : {}),
 		};
-		if (pendingPrompts !== undefined) this.promptReservations.delete(workflowId);
-	}
-
-	async transitionWorkflowStatus(
-		workflowId: string,
-		expected: readonly DurableWorkflowStatus[],
-		status: DurableWorkflowStatus,
-		pendingPrompts?: number,
-		resumable?: boolean,
-		expectedUpdatedAt?: number,
-		modelOwner?: string,
-		releasedModelOwner?: string,
-	): Promise<boolean> {
-		const record = this.workflows.get(workflowId);
-		const current = record?.handle;
-		if (
-			current === undefined ||
-			!expected.includes(current.status) ||
-			(expectedUpdatedAt !== undefined && current.updatedAt !== expectedUpdatedAt)
-		)
-			return false;
-		this.setWorkflowStatus(workflowId, status, pendingPrompts, resumable);
-		if (record !== undefined) {
-			const { releasedModelOwner: _previousRelease, ...settled } = record.handle;
-			record.handle = {
-				...settled,
-				...(modelOwner !== undefined ? { modelOwner } : {}),
-				...(releasedModelOwner !== undefined ? { releasedModelOwner } : {}),
-			};
-		}
-		return true;
-	}
-
-	adjustPendingPrompts(workflowId: string, delta: number): void {
-		const state = this.promptState(workflowId);
-		if (state === undefined) return;
-		state.adjust(delta);
-		this.setPromptCount(workflowId, state.pendingPrompts);
-	}
-
-	promptReservationScope(workflowId: string): { readonly rootWorkflowId: string; readonly scope: string } {
-		return { rootWorkflowId: workflowId, scope: "root" };
-	}
-
-	pendingPromptToken(workflowId: string, reservationId: string): PromptReservationToken | undefined {
-		const state = this.promptState(workflowId);
-		const token = state?.claim(reservationId);
-		if (state !== undefined && token !== undefined) this.setPromptCount(workflowId, state.pendingPrompts);
-		return token;
-	}
-
-	reservePendingPrompt(workflowId: string, reservationId: string): PromptReservationToken {
-		const state = this.promptState(workflowId);
-		if (state === undefined) return inactivePromptReservationToken(reservationId);
-		const token = state.reserve(reservationId);
-		this.setPromptCount(workflowId, state.pendingPrompts);
-		return token;
-	}
-
-	releasePendingPrompt(workflowId: string, reservationId: string, token: PromptReservationToken): void {
-		const state = this.promptState(workflowId);
-		if (state === undefined) return;
-		state.release(reservationId, token);
-		this.setPromptCount(workflowId, state.pendingPrompts);
-	}
-
-	private promptState(workflowId: string): PromptReservationState | undefined {
-		const rec = this.workflows.get(workflowId);
-		if (rec === undefined) return undefined;
-		let state = this.promptReservations.get(workflowId);
-		if (state === undefined) {
-			state = new PromptReservationState(rec.handle.pendingPrompts);
-			this.promptReservations.set(workflowId, state);
-		}
-		return state;
-	}
-
-	private setPromptCount(workflowId: string, pendingPrompts: number): void {
-		const rec = this.workflows.get(workflowId);
-		if (rec !== undefined) rec.handle = { ...rec.handle, pendingPrompts, updatedAt: Date.now() };
 	}
 
 	listResumableWorkflows(): readonly ResumableWorkflowEntry[] {
@@ -731,7 +598,6 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 			pendingStageMessages: h.pendingStageMessages ?? [],
 			...(h.possibleStages !== undefined ? { possibleStages: h.possibleStages } : {}),
 			...(h.ownerExecutorId !== undefined ? { ownerExecutorId: h.ownerExecutorId } : {}),
-			...(h.legacyRecoveryPending === true ? { legacyRecoveryPending: true as const } : {}),
 			...(h.sessionFile !== undefined ? { sessionFile: h.sessionFile } : {}),
 			...(h.label !== undefined ? { label: h.label } : {}),
 			...(h.summary !== undefined ? { summary: h.summary, summarizedThrough: h.summarizedThrough } : {}),
@@ -754,16 +620,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 		this.pendingReceipts.delete(workflowId);
 		this.stickyReceipts.delete(workflowId);
 		this.stickyDeliveryCounts.delete(workflowId);
-		this.promptReservations.delete(workflowId);
 		this.deletedWorkflowIds.add(workflowId);
-	}
-
-	async deleteWorkflowIfInactive(workflowId: string): Promise<DurableInactiveDeleteResult> {
-		const handle = this.workflows.get(workflowId)?.handle;
-		if (handle === undefined) return { ok: false, reason: "not_found" };
-		if (handle.status === "running") return { ok: false, reason: "running" };
-		await this.deleteWorkflow(workflowId);
-		return { ok: true };
 	}
 
 	isWorkflowLoadable(workflowId: string): boolean {
@@ -775,7 +632,6 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 		this.pendingReceipts.clear();
 		this.stickyReceipts.clear();
 		this.stickyDeliveryCounts.clear();
-		this.promptReservations.clear();
 		this.deletedWorkflowIds.clear();
 	}
 }
@@ -852,10 +708,6 @@ function toResumableEntry(handle: DurableWorkflowHandle): ResumableWorkflowEntry
 		createdAt: handle.createdAt,
 		updatedAt: handle.updatedAt,
 	};
-}
-
-function nextMetadataTimestamp(previous: number): number {
-	return Math.max(Date.now(), previous + 1);
 }
 
 function pendingDeliveryReceiptKey(

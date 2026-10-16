@@ -1,9 +1,10 @@
 import { type DurableWorkflowBackend, pendingStageMessagesForDurableRun } from "../durable/backend.js";
+import { getDurableBackendProcessOwner } from "../durable/backend-process-owner.js";
 import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
-import { getDurableBackend } from "../durable/factory.js";
+import { initializeDurableBackend } from "../durable/factory.js";
 import { JournalDurableBackend } from "../durable/journal/journal-backend.js";
-import { inheritedRunElapsedMs, priorRunAccounting, recordRunTimingCheckpoint } from "../durable/run-timing.js";
+import { inheritedRunElapsedMs, priorRunAccounting, recordRunTimingCheckpointAsync } from "../durable/run-timing.js";
 import { ScopedDurableBackend } from "../durable/scoped-backend.js";
 import {
 	createDurableStagePrimitive,
@@ -136,7 +137,9 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 
 	const resolvedInputs = resolveAndValidateInputs(def.inputs, inputs, `workflow "${def.name}"`);
 	const runId = opts.runId ?? crypto.randomUUID();
-	const backend = opts.durableBackend ?? getDurableBackend();
+	const preset =
+		opts.durableBackend ?? (opts.journal === undefined ? getDurableBackendProcessOwner().injectedBackend : undefined);
+	const backend = preset ?? (await initializeDurableBackend({ journal: opts.journal, cwd: opts.cwd }));
 	const execute = () => executeRun(def, resolvedInputs, { ...opts, runId, durableBackend: backend });
 	return opts.parentRun === undefined && backend instanceof JournalDurableBackend
 		? await backend.withWorkflowLease(runId, execute)
@@ -636,7 +639,7 @@ async function executeRun(
 	});
 	const recordCachedStage: typeof cachedStage.record = (...args) => {
 		ownController.signal.throwIfAborted();
-		cachedStage.record(...args);
+		return cachedStage.record(...args);
 	};
 	const durableIntercomGroup = (replayKey: string, stageId: string | undefined): string | undefined => {
 		const stages = activeStore.runs().find((candidate) => candidate.id === runId)?.stages ?? [];
@@ -791,7 +794,7 @@ async function executeRun(
 			) {
 				throw new WorkflowRunControlError(runId, status, "transition-refused");
 			}
-			recordRunTimingCheckpoint(durableBackend, runSnapshot);
+			await recordRunTimingCheckpointAsync(durableBackend, runSnapshot);
 			if (control === latestControl) {
 				activeStore.recordRunExecutionState(runId, {
 					controlPersistence: durableBackend.persistent ? "durable" : "observed",
@@ -806,6 +809,7 @@ async function executeRun(
 			? rootBackend.captureWorkflowRetirement(runId)
 			: undefined;
 	const unregisterRunControl = toolControls.registerRun(runId, {
+		durableBackend: rootBackend,
 		get paused() {
 			return scheduler.isRunPaused();
 		},
@@ -817,10 +821,10 @@ async function executeRun(
 			pendingControlPersistence.add(settled);
 			void settled.then(() => pendingControlPersistence.delete(settled));
 		},
-		retire: () => {
+		retire: async () => {
 			ownController.abort(new WorkflowGracefulQuitError(runId, "workflow runtime"));
 			unregisterRunControl();
-			retireJournalExecution?.();
+			await retireJournalExecution?.();
 		},
 		pause: () => {
 			ownController.signal.throwIfAborted();
@@ -888,7 +892,7 @@ async function executeRun(
 		ownController.signal.throwIfAborted();
 		if (opts.parentRun === undefined) {
 			if (durableRootRegistration !== undefined) {
-				durableBackend.registerWorkflow({
+				await durableBackend.registerWorkflow({
 					...durableRootRegistration,
 					modelOwner: runSnapshot.modelOwner,
 					...workflowInvocationMetadata(
@@ -899,7 +903,7 @@ async function executeRun(
 					),
 				});
 			} else {
-				durableBackend.setWorkflowStatus(runId, "running");
+				await durableBackend.setWorkflowStatus(runId, "running");
 			}
 		}
 		durableRootAdmitted = true;
@@ -958,8 +962,8 @@ async function executeRun(
 		if (returned.status === "completed") assertFrontierConsumed();
 		const recorded = activeStore.recordRunEnd(runId, returned.status, result, returned.error, returned.metadata);
 		// Durable identity must reach its terminal state even if the session journal fails.
-		if (opts.parentRun === undefined) recordRunTimingCheckpoint(durableBackend, runSnapshot);
-		durableBackend.setWorkflowStatus(runId, returned.status, undefined, returned.metadata?.resumable);
+		if (opts.parentRun === undefined) await recordRunTimingCheckpointAsync(durableBackend, runSnapshot);
+		await durableBackend.setWorkflowStatus(runId, returned.status, undefined, returned.metadata?.resumable);
 		appendRunEndWhenRecorded(opts.persistence, recorded, {
 			runId,
 			status: returned.status,

@@ -370,7 +370,10 @@ export async function resumeRun(
 	const locallyReconciledRoot = activeStore.runs().find((candidate) => candidate.id === aggregateRootRunId);
 	if (locallyReconciledRoot?.endedAt === undefined && locallyReconciledRoot?.status === "running") {
 		try {
-			const transition = await markDurableResumed(aggregateRootRunId);
+			const transition = await markDurableResumed(
+				aggregateRootRunId,
+				(opts?.toolControlRegistry ?? defaultToolControlRegistry).runControl(aggregateRootRunId)?.durableBackend,
+			);
 			if (transition === "refused") {
 				durabilityFailure = `authoritative durable workflow ${aggregateRootRunId} refused the running transition`;
 			}

@@ -34,7 +34,7 @@ await file.close();
 const reopened = new SqliteRunJournal(join(root, "sdk.sqlite"));
 assert.deepEqual(await reopened.listRuns(), [header]);
 await reopened.close();
-const database = new DatabaseSync(":memory:");
+const database = new DatabaseSync(join(root, "caller.sqlite"));
 const borrowed = resolveRunJournal({ journal: { database } });
 await borrowed.close();
 assert.equal(database.prepare("SELECT schema_version FROM meta").get().schema_version, 1);
@@ -42,7 +42,7 @@ database.exec("INSERT INTO meta VALUES (1)");
 assert.throws(() => new SqliteRunJournal(database), (error) => {
 	assert.ok(error instanceof JournalMetaCorruptError);
 	assert.ok(error instanceof JournalError);
-	assert.equal(error.path, ":memory:");
+	assert.equal(error.path, database.location());
 	return true;
 });
 database.close();

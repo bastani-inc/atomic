@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import factory, { type ExtensionAPI, type PiCommandOptions } from "../../packages/workflows/src/extension/index.js";
 import type { WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";
@@ -15,6 +14,7 @@ import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { testRunId } from "../helpers/run-id.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const previousWorkflowStageSubagentGuard = process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
 

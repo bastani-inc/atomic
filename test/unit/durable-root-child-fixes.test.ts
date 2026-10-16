@@ -233,6 +233,7 @@ describe("ScopedDurableBackend (child side effects under root)", () => {
 					replayScope: "workflow:leaf:1",
 					alias: "leaf",
 					workflow: "leaf",
+					invocationFingerprint: "leaf-fingerprint",
 					status: "running",
 					child: {
 						runId: "leaf-run",

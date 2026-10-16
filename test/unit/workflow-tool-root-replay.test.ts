@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { durableHash, InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { durableHash } from "../../packages/workflows/src/durable/backend.js";
 import * as toolPrimitives from "../../packages/workflows/src/durable/tool-primitive.js";
 import type { DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 test("resumes interrupted current root tool work without repeating its callback", async () => {
 	const runId = "current-root-replay";

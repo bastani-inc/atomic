@@ -15,6 +15,7 @@ Atomic accepts environment variables for configuration, provider credentials, an
 | `ATOMIC_REDUCED_MOTION` | `PI_REDUCED_MOTION` | Use static reduced-motion presentation |
 | `ATOMIC_EXPERIMENTAL` | `PI_EXPERIMENTAL` | Set to `1` to enable experimental features and preferred strict JSON-schema constrained sampling for additional built-in tools; `read`, `edit`, `write`, `bash`, and PowerShell already prefer strict sampling by default. The footer shows an `xp` badge |
 | `ATOMIC_CLIPBOARD_OSC52` | `PI_CLIPBOARD_OSC52` | Set to `1` to also send copied text to the terminal with OSC 52 after the local clipboard write, as Atomic does over SSH. Use it when a remote client reaches Atomic without SSH variables, such as a multiplexer attached from another machine or a remote IDE daemon |
+| `ATOMIC_WORKFLOW_JOURNAL_PATH` | None | Non-empty value selects the local SQLite workflow journal file; overrides `workflows.journal` settings, but not SDK `RunOpts.journal` |
 
 `VISUAL` and `EDITOR` select the Ctrl+G external editor when `externalEditor` is unset.
 
@@ -23,6 +24,10 @@ Atomic accepts environment variables for configuration, provider credentials, an
 The renderer also owns `PI_HYPERLINKS`, `PI_IMAGE_PROTOCOL`, and `PI_TRUE_COLOR`. `PI_HYPERLINKS=1|0|auto` and `PI_TRUE_COLOR=1|0|auto` override or preserve detection; `PI_IMAGE_PROTOCOL=kitty|iterm2|none|auto` selects, disables, or preserves image-protocol detection. Explicit JSON values under `terminal.hyperlinks`, `terminal.images`, and `terminal.trueColor` take precedence. These renderer-owned names intentionally have no `ATOMIC_*` aliases.
 
 `PI_PROGRAM_STATUS=1` forces OSC 7501 program-status reports; `0` disables them. Otherwise Atomic reports only after the terminal confirms support. This renderer-owned variable has no `ATOMIC_*` alias. See [Program status](/terminal-setup#program-status).
+
+## Workflow journal
+
+The default workflow journal is `~/.atomic/workflows/journal.sqlite`. `ATOMIC_WORKFLOW_JOURNAL_PATH` selects another file; an empty value leaves settings in effect. In `settings.json`, use `workflows.journal.path` or explicitly select process-local memory with `workflows.journal.memory: true`. Relative settings paths resolve against the Atomic home directory. Memory cannot recover runs after process exit and is never selected after a storage failure. See [Workflow storage](/settings#workflow-storage).
 
 ## Prompt-cache retention
 

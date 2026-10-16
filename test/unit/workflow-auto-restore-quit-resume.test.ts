@@ -3,7 +3,6 @@ import { type AgentSession, WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/a
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import type { DurableWorkflowStatus } from "../../packages/workflows/src/durable/types.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
@@ -19,6 +18,7 @@ import {
 import { restoreOnSessionStart } from "../../packages/workflows/src/shared/persistence-restore.js";
 import { createStore, store } from "../../packages/workflows/src/shared/store.js";
 import { testRunId } from "../helpers/run-id.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 function seedRestoredShadow(
 	backend: InMemoryDurableBackend,
@@ -334,6 +334,7 @@ describe("gracefully quit durable workflow session restore", () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
 		seedDurableOnly(backend, durableId);
+		seedDurableOnly(backend, localId);
 		const release = Promise.withResolvers<void>();
 		const execute = makeExecuteWorkflowTool(
 			resumableRuntime(release.promise),

@@ -15,6 +15,7 @@ import {
 } from "../durable/resume-runtime.js";
 import { inspectTargetedDurableWorkflow, type TargetedDurableInspection } from "../durable/targeted-inspection.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
+import type { ToolControlRegistry } from "../engine/run-tool-control-registry.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
 import type { RunOpts } from "../runs/foreground/executor.js";
 import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
@@ -61,6 +62,7 @@ export interface DurableResumeRuntimeDeps {
 	readonly registry: WorkflowRegistry;
 	readonly store: Store;
 	readonly stageControlRegistry?: StageControlRegistry;
+	readonly toolControlRegistry?: ToolControlRegistry;
 	readonly adapters?: StageAdapters;
 	readonly runtimeCwd: string;
 	readonly ensureReady: () => Promise<DurableWorkflowBackend>;
@@ -158,7 +160,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 					preparedCatalog = await prepareRuntimeDurableResumable(() => backend, workflowId);
 					return preparedCatalog;
 				} finally {
-					purgeSuppressedWorkflowRuns(backend, deps.store);
+					purgeSuppressedWorkflowRuns(backend, deps.store, deps.toolControlRegistry);
 				}
 			});
 		},
@@ -166,12 +168,16 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			return withRecovery(async () => {
 				const backend = await ensureReady();
 				try {
-					await hydrateStoredWorkflowCandidates(backend);
 					const catalog = await backend.prepareWorkflowCatalog();
+					const known = new Set(
+						catalog.inspectableIds ??
+							[...catalog.resumable, ...catalog.completed].map((entry) => entry.workflowId),
+					);
+					for (const run of deps.store.runs()) if (!known.has(run.id)) await backend.hydrateWorkflow(run.id);
 					preparedCatalog = catalog.resumable;
 					return catalog;
 				} finally {
-					purgeSuppressedWorkflowRuns(backend, deps.store);
+					purgeSuppressedWorkflowRuns(backend, deps.store, deps.toolControlRegistry);
 				}
 			});
 		},
@@ -182,7 +188,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 					preparedCatalog = await prepareTargetedDurableResumable(backend, workflowIds);
 					return preparedCatalog;
 				} finally {
-					purgeSuppressedWorkflowRuns(backend, deps.store);
+					purgeSuppressedWorkflowRuns(backend, deps.store, deps.toolControlRegistry);
 				}
 			});
 		},
@@ -194,7 +200,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 					await hydrateStoredWorkflowCandidates(backend);
 					return listOpenableCompletedWorkflows(backend);
 				} finally {
-					purgeSuppressedWorkflowRuns(backend, deps.store);
+					purgeSuppressedWorkflowRuns(backend, deps.store, deps.toolControlRegistry);
 				}
 			});
 		},

@@ -3,7 +3,6 @@ import type { AgentSession } from "@bastani/atomic";
 import { Type } from "typebox";
 import { afterEach, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import type { DurableWorkflowStatus } from "../../packages/workflows/src/durable/types.js";
 import {
@@ -20,6 +19,7 @@ import {
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 function stageHandle(input: {
 	runId: string;

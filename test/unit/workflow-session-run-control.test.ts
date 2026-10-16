@@ -13,10 +13,7 @@ import {
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { WorkflowActivityHub } from "../../packages/coding-agent/src/core/extensions/workflow-activity-hub.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import {
-	type DurableWorkflowCatalogEntries,
-	InMemoryDurableBackend,
-} from "../../packages/workflows/src/durable/backend.js";
+import type { DurableWorkflowCatalogEntries } from "../../packages/workflows/src/durable/backend.js";
 import { DurableBackendNotInitializedError, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import { toolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
@@ -34,6 +31,7 @@ import {
 import { store } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { testRunId } from "../helpers/run-id.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const SESSION_ID = "session-a";
 const DEAD_EXECUTOR_ID = "unavailable-holder";

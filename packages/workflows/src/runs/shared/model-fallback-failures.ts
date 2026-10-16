@@ -1,9 +1,4 @@
-/**
- * Compatibility exports for the shared Atomic model-failure classifier.
- *
- * The implementation lives in @bastani/atomic so the main chat, workflows,
- * and subagents cannot drift into separate fallback decisions.
- */
+/** Shared Atomic model-failure classification for workflow stages. */
 
 export type {
 	ModelFallbackFailureKind,

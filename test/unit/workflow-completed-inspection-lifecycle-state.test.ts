@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { openCompletedDurableWorkflow } from "../../packages/workflows/src/durable/completed-inspection.js";
 import {
 	createWorkflowLifecycleNotificationState,
@@ -10,6 +9,7 @@ import {
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { testRunId } from "../helpers/run-id.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 interface Admission {
 	readonly content?: string;

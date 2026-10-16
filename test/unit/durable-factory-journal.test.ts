@@ -9,6 +9,7 @@ import {
 	setDurableBackend,
 } from "../../packages/workflows/src/durable/factory.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 
 const directories: string[] = [];
@@ -56,7 +57,7 @@ test("shared journal initialization releases its exit listener on explicit close
 	reopened.registerWorkflow({ workflowId: "reset", name: "reset", inputs: {}, status: "paused", createdAt: 1 });
 	setDurableBackend(undefined);
 	assert.equal(process.listenerCount("exit"), listenersBefore);
-	const observer = await JournalDurableBackend.open(process.env.ATOMIC_WORKFLOW_JOURNAL_PATH);
+	const observer = await JournalDurableBackend.open(new SqliteRunJournal(process.env.ATOMIC_WORKFLOW_JOURNAL_PATH));
 	try {
 		assert.equal(observer.workflowOwnership("reset"), "available");
 	} finally {

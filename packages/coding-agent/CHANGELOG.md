@@ -5,6 +5,15 @@
 ### Changed
 
 - The storage adapter conformance suite now checks call-time binary binding inside transactions.
+### Breaking Changes
+
+- Removed the workflow `durability` option, `WorkflowDurability`, and `WorkflowDurabilityRequiredError`. Use `RunOpts.journal` to select storage or isolate runs, and handle typed journal errors when storage is unavailable.
+- Removed `InMemoryDurableBackend` and `createInMemoryTestBackend`. Use `JournalDurableBackend` over `MemoryRunJournal` for an explicitly in-memory backend. Removed the `legacyRecovery` workflow-tool argument and remaining `workflows.durability` settings.
+- Removed the `@bastani/workflows` import alias; import workflow APIs from `@bastani/atomic/workflows`.
+
+### Added
+
+- Added the `workflows.journal.path` and `workflows.journal.memory` settings, plus SDK `RunOpts.journal` for a file, caller-owned SQLite connection, explicit memory journal, or supplied journal. TUI, CLI, background, and SDK runs use the selected journal. Relative settings paths resolve against the Atomic home directory.
 
 ## [0.9.38-alpha.4] - 2026-10-16
 
@@ -19,7 +28,6 @@
 ### Added
 
 - Added the async SQLite facade and node adapter through `@bastani/atomic/storage`, with typed storage errors, prefix and schema-version helpers, and an adapter conformance suite in `@bastani/atomic/storage/testing`. String bindings containing NUL are rejected with `StorageInvalidTextError`; zero bytes remain supported in binary values.
-- Added the `workflows.journal.path` and `workflows.journal.memory` settings schema, plus SDK `RunOpts.journal` types for a file, caller-owned SQLite connection, explicit memory journal, or supplied journal. Journal selection is exposed through `resolveRunJournal`; runtime wiring is deferred.
 
 ### Fixed
 

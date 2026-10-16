@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import type { ExtensionAPI } from "../../packages/workflows/src/extension/public-types.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { registerWorkflowSlashCommand } from "../../packages/workflows/src/extension/workflow-command-registration.js";
 import type { WorkflowCommandHandler } from "../../packages/workflows/src/extension/workflow-command-utils.js";
 import type { GraphOverlayPort } from "../../packages/workflows/src/tui/overlay-adapter.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const overlay: GraphOverlayPort = {
 	open: () => {},

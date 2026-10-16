@@ -6,9 +6,9 @@ import {
 	setCallbackActivityReporter,
 } from "../../packages/coding-agent/src/core/callback-activity.ts";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.ts";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.ts";
 import { run } from "../../packages/workflows/src/engine/run.ts";
 import { createStore } from "../../packages/workflows/src/shared/store.ts";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 test.sequential("real workflow author, ctx.tool, and stage adapter callbacks report activity", async () => {
 	const started: CallbackActivity[] = [];

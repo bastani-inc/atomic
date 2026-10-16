@@ -11,7 +11,6 @@ import { noOpUIContext } from "../../packages/coding-agent/src/core/extensions/r
 import type { ExtensionFactory } from "../../packages/coding-agent/src/core/extensions/types.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import workflowExtension from "../../packages/workflows/src/extension/index.js";
 import type {
@@ -22,6 +21,7 @@ import type {
 } from "../../packages/workflows/src/extension/public-types.js";
 import type { WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";
 import { toolContext } from "../helpers/tool-context.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const roots: string[] = [];
 

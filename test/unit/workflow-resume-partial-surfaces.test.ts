@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { type AgentSession, WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
@@ -13,6 +12,7 @@ import {
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { testRunId } from "../helpers/run-id.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 function seedPartialRun(runId: string): InMemoryDurableBackend {
 	const backend = new InMemoryDurableBackend();
@@ -122,14 +122,11 @@ describe("partial resume command surfaces", () => {
 
 	test.sequential("workflow tool reports durable resume failure as partial when a stage is running", async () => {
 		class ThrowRunningBackend extends InMemoryDurableBackend {
-			override setWorkflowStatus(
-				workflowId: string,
-				status: Parameters<InMemoryDurableBackend["setWorkflowStatus"]>[1],
-				pendingPrompts?: number,
-				resumable?: boolean,
-			): void {
-				if (status === "running") throw new Error("durable running write failed");
-				super.setWorkflowStatus(workflowId, status, pendingPrompts, resumable);
+			override async transitionWorkflowStatus(
+				...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>
+			): Promise<boolean> {
+				if (args[2] === "running") throw new Error("durable running write failed");
+				return await super.transitionWorkflowStatus(...args);
 			}
 		}
 		const runId = testRunId("tool-durable-resume-failure");
@@ -181,15 +178,12 @@ describe("partial resume command surfaces", () => {
 	test.sequential("workflow tool retries transient durable reconciliation on a later resume request", async () => {
 		class TransientRunningBackend extends InMemoryDurableBackend {
 			runningAttempts = 0;
-			override setWorkflowStatus(
-				workflowId: string,
-				status: Parameters<InMemoryDurableBackend["setWorkflowStatus"]>[1],
-				pendingPrompts?: number,
-				resumable?: boolean,
-			): void {
-				if (status === "running" && ++this.runningAttempts === 1)
+			override async transitionWorkflowStatus(
+				...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>
+			): Promise<boolean> {
+				if (args[2] === "running" && ++this.runningAttempts === 1)
 					throw new Error("transient public durable failure");
-				super.setWorkflowStatus(workflowId, status, pendingPrompts, resumable);
+				return await super.transitionWorkflowStatus(...args);
 			}
 		}
 		const runId = testRunId("tool-durable-resume-retry");

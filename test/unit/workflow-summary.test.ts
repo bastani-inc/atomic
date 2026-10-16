@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { createInMemoryTestBackend } from "../../packages/workflows/src/durable/factory.js";
 import {
 	createWorkflowSummaryService,
 	workflowSummaryInput,
 } from "../../packages/workflows/src/extension/workflow-summary.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { createMemoryTestBackend as createInMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const settle = async () => {
 	for (let i = 0; i < 12; i++) await Promise.resolve();

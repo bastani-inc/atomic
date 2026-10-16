@@ -91,8 +91,7 @@ export function stickyStageDeliveryStatuses(
 					)
 				) {
 					state = "receipt-unverified";
-					reason =
-						"Legacy or live transport receipt only; inspect the session transcript to confirm context admission";
+					reason = "Live delivery receipt only; inspect the session transcript to confirm context admission";
 				} else if (stage.pendingStageDeliveryAvailable !== true) {
 					state = "delivery-unavailable";
 					reason = "Stage has no pre-start Intercom helper; enable Intercom in the invocation group";

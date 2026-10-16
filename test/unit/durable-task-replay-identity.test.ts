@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import type { WorkflowTaskResult } from "../../packages/workflows/src/shared/types.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import { createStore, mockSession, run, tmpdir, workflow } from "./executor-shared.js";
 
 // #1859: task replay must preserve returned identity, not only the graph snapshot.

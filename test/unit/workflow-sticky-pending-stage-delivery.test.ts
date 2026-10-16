@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, test } from "vitest";
 import type { SessionInfo } from "../../packages/intercom/types.js";
-import { type DurableWorkflowBackend, InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import { ScopedDurableBackend } from "../../packages/workflows/src/durable/scoped-backend.js";
@@ -34,6 +34,7 @@ import {
 } from "../../packages/workflows/src/shared/workflow-stage-path-matching.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const ROOT_RUN_ID = testRunId("sticky-root");
 const CHILD_RUN_ID = testRunId("sticky-child");

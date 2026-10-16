@@ -73,7 +73,7 @@ async function runOneTaskStage(
 			},
 		});
 
-		const result = await run(def, {}, { ...runOpts(cwd), durability: { mode: "memory" } });
+		const result = await run(def, {}, { ...runOpts(cwd), journal: { memory: true } });
 		return {
 			status: result.status,
 			...(result.error !== undefined ? { error: result.error } : {}),

@@ -3,7 +3,6 @@ import type { AgentSession } from "@bastani/atomic";
 import { Type } from "typebox";
 import { afterEach, beforeEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { BUDGET_WRAP_UP_PROMPT } from "../../packages/workflows/src/engine/run-budget.js";
@@ -16,6 +15,7 @@ import type { RunSnapshot } from "../../packages/workflows/src/shared/store-type
 import { INTERACTIVE_WORKFLOW_POLICY, type StageExecutionMeta } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { TEST_TIMEOUT_MS } from "../helpers/test-timeout.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import { assistantMessageWithUsage, makeMockSession } from "./stage-runner-helpers.js";
 
 const ZERO_USAGE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 } as const;

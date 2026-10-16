@@ -184,7 +184,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 	const resolveDefaultStageSessionDir = opts.resolveDefaultStageSessionDir;
 	const resolvePossibleStageEntry = opts.resolvePossibleStageEntry;
 	const beforeRestoreCompleted = opts.beforeRestoreCompleted;
-	const ensureReady = () => initializeDurableBackend();
+	const ensureReady = () => initializeDurableBackend({ cwd: runtimeCwd });
 
 	function runOptions(policy?: WorkflowExecutionPolicy): RunOpts {
 		const defaultSessionDir = resolveDefaultStageSessionDir?.();
@@ -402,6 +402,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			registry,
 			store: activeStore,
 			stageControlRegistry,
+			toolControlRegistry,
 			adapters,
 			runtimeCwd,
 			getWorkflowHostModules: opts.getWorkflowHostModules,

@@ -519,6 +519,7 @@ describe("completed durable catalog", () => {
 			replayScope: "workflow:child:1",
 			alias: "child",
 			workflow: "child",
+			invocationFingerprint: "child-fingerprint",
 			child,
 		};
 		for (const checkpointId of ["boundary-start:a", "boundary-start:b"]) {
@@ -624,6 +625,7 @@ describe("completed durable catalog", () => {
 					replayScope: "workflow:child:1",
 					alias: "child",
 					workflow: "child",
+					invocationFingerprint: "child-fingerprint",
 					status: "running",
 					child,
 				},
@@ -657,6 +659,7 @@ describe("completed durable catalog", () => {
 					replayScope: "workflow:child:1",
 					alias: "child",
 					workflow: "child",
+					invocationFingerprint: "child-fingerprint",
 					status: "completed",
 					child: { ...child, runId: testRunId("unrelated-child") },
 				},
@@ -717,6 +720,7 @@ describe("completed durable catalog", () => {
 					replayScope: replayKey,
 					alias: "child",
 					workflow: "child",
+					invocationFingerprint: "child-fingerprint",
 					status: "running",
 					child,
 				},

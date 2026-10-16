@@ -4,12 +4,16 @@ import type { DurableWorkflowBackend } from "./backend.js";
 
 const DURABLE_BACKEND_PROCESS_OWNER_KEY = Symbol.for("atomic-workflows/durable-backend-process-owner@1");
 
+export interface SelectedDurableBackend {
+	readonly ready: Promise<DurableWorkflowBackend>;
+	close?: () => Promise<void>;
+}
+
 export interface DurableBackendProcessOwner {
 	readonly version: 1;
 	injectedBackend: DurableWorkflowBackend | undefined;
 	initializedBackend: DurableWorkflowBackend | undefined;
-	initializing: Promise<DurableWorkflowBackend> | undefined;
-	closeInitializedBackend?: () => Promise<void>;
+	selectedBackends?: Map<string | object, SelectedDurableBackend>;
 }
 
 function emptyOwner(): DurableBackendProcessOwner {
@@ -17,7 +21,6 @@ function emptyOwner(): DurableBackendProcessOwner {
 		version: 1,
 		injectedBackend: undefined,
 		initializedBackend: undefined,
-		initializing: undefined,
 	};
 }
 
@@ -36,12 +39,13 @@ export function getDurableBackendProcessOwner(): DurableBackendProcessOwner {
 
 export function resetDurableBackendProcessOwner(): void {
 	const owner = getDurableBackendProcessOwner();
-	void owner.closeInitializedBackend?.().catch((error: Error) => {
-		console.error(error);
-		process.exitCode = 1;
-	});
-	owner.closeInitializedBackend = undefined;
+	for (const selected of owner.selectedBackends?.values() ?? []) {
+		void (selected.close?.() ?? selected.ready.then(() => selected.close?.())).catch((error: Error) => {
+			console.error(error);
+			process.exitCode = 1;
+		});
+	}
+	owner.selectedBackends = undefined;
 	owner.injectedBackend = undefined;
 	owner.initializedBackend = undefined;
-	owner.initializing = undefined;
 }

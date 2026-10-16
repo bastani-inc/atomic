@@ -9,7 +9,6 @@ import { consecutiveBlockerTurns, reduceGoalDecision } from "../../packages/work
 import { createGoalArtifactDirectory, runGoalWorkflow } from "../../packages/workflows/builtin/goal-runner.js";
 import type { GoalLedger, ReviewRecord } from "../../packages/workflows/builtin/goal-types.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import {
 	createCheckpointIdGenerator,
 	createToolPrimitive,
@@ -18,6 +17,7 @@ import { run } from "../../packages/workflows/src/engine/run.js";
 import { taskReadInstruction } from "../../packages/workflows/src/runs/foreground/executor-task-prompts.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifacts.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import { makeMockCtx } from "./builtin-workflows-helpers.js";
 
 const posix = (value: string): string => value.replaceAll("\\", "/");

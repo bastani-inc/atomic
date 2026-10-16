@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { createInMemoryTestBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import type { ExtensionAPI, PiCommandContext } from "../../packages/workflows/src/extension/public-types.js";
 import { injectWorkflowResumeSummary } from "../../packages/workflows/src/extension/workflow-resume-summary.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { createMemoryTestBackend as createInMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 function run(): RunSnapshot {
 	return {

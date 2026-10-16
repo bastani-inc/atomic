@@ -149,14 +149,18 @@ export function createDurableStagePrimitive(input: {
 	readonly nextReplayKey: (stageName: string) => string;
 	readonly stage: (name: string, options: StageOptions | undefined, replayKey: string) => StageContext;
 	readonly durableIntercomGroup?: (replayKey: string, stageId: string | undefined) => string | undefined;
-	readonly recordCachedStage?: (name: string, replayKey: string, checkpoint: DurableCompletedStageCheckpoint) => void;
+	readonly recordCachedStage?: (
+		name: string,
+		replayKey: string,
+		checkpoint: DurableCompletedStageCheckpoint,
+	) => void | Promise<void>;
 }): (name: string, options?: StageOptions, reservedReplayKey?: string) => StageContext {
 	return (name: string, options?: StageOptions, reservedReplayKey?: string): StageContext => {
 		const replayKey = reservedReplayKey ?? input.nextReplayKey(name);
 		const cached = stageCheckpointWithOutput(input.backend, input.workflowId, replayKey);
 		if (cached !== undefined) {
-			input.recordCachedStage?.(name, replayKey, cached);
-			return createCachedStageContext(name, cached.output, cached.result);
+			const recorded = input.recordCachedStage?.(name, replayKey, cached);
+			return createCachedStageContext(name, cached.output, cached.result, recorded);
 		}
 		const session = input.backend.getStageSession(input.workflowId, replayKey);
 		const isMidSessionResume = session?.sessionFile !== undefined;
@@ -207,7 +211,7 @@ export function createDurableTaskPrimitive(input: {
 		replayKey: string,
 		checkpoint: DurableCompletedStageCheckpoint,
 		stageFailFastScope?: ParallelFailFastScope,
-	) => void;
+	) => void | Promise<void>;
 	readonly afterLiveResult?: (name: string) => Promise<void>;
 	readonly signal?: AbortSignal;
 	readonly registerTailControl?: (registration: {
@@ -225,7 +229,7 @@ export function createDurableTaskPrimitive(input: {
 		const replayKey = input.nextReplayKey(`task:${name}`);
 		const replayed = replayableTaskResult(name, input.backend, input.workflowId, replayKey);
 		if (replayed !== undefined) {
-			input.recordCachedTask?.(name, replayKey, replayed.checkpoint, stageFailFastScope);
+			await input.recordCachedTask?.(name, replayKey, replayed.checkpoint, stageFailFastScope);
 			return replayed.result;
 		}
 		const session = input.backend.getStageSession(input.workflowId, replayKey);
@@ -461,7 +465,12 @@ function wrapSchemaStageForDurability(input: {
 	return wrapped;
 }
 
-function createCachedStageContext(name: string, output: WorkflowSerializableValue, result?: string): StageContext {
+function createCachedStageContext(
+	name: string,
+	output: WorkflowSerializableValue,
+	result?: string,
+	recorded?: void | Promise<void>,
+): StageContext {
 	const text = result ?? (typeof output === "string" ? output : JSON.stringify(output));
 	const unsupported = async (): Promise<never> => {
 		throw new Error(
@@ -471,9 +480,11 @@ function createCachedStageContext(name: string, output: WorkflowSerializableValu
 	const cached = {
 		name,
 		async prompt() {
+			await recorded;
 			return output as Awaited<ReturnType<StageContext["prompt"]>>;
 		},
 		async complete() {
+			await recorded;
 			return text;
 		},
 		sendUserMessage: unsupported,

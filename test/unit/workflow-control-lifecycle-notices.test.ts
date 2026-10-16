@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import type { AgentSession } from "@bastani/atomic";
 import { afterEach, describe, test } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import {
 	createWorkflowLifecycleNotificationState,
@@ -22,6 +21,7 @@ import {
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 interface CapturedNotice {
 	readonly customType: string;

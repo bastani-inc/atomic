@@ -26,7 +26,6 @@ import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/reso
 import { type CreateAgentSessionOptions, createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import workflowExtension from "../../packages/workflows/src/extension/index.js";
 import { trackLiveHostGeneration } from "../../packages/workflows/src/extension/live-host-generation.js";
@@ -38,6 +37,7 @@ import {
 	messageStream,
 	registeredDecisionRuntime,
 } from "../helpers/structured-output.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 /** Real resource loader, real SDK session, and a real `/reload` or `/new` transaction. */
 const HOST_RELOAD_STAGE_TIMEOUT_MS = 120_000;

@@ -12,7 +12,6 @@ import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { isDurableWorkflowResumable } from "../../packages/workflows/src/durable/resume-eligibility.js";
 import {
@@ -32,6 +31,7 @@ import type { WorkflowRegistry } from "../../packages/workflows/src/workflows/re
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 function makeEntry(workflowId: string, name: string, status: ResumableWorkflowEntry["status"]): ResumableWorkflowEntry {
 	return {
@@ -770,6 +770,7 @@ describe("durable pending-stage resume", () => {
 		const resumed = await runtime.resumeDurableWorkflow(workflowId, { actor: "agent" });
 		assert.equal(resumed.ok, true);
 		await terminal.promise;
+		await jobs.get(workflowId)?.promise;
 		unsubscribe();
 
 		assert.deepEqual(lifecycle, ["pending-delivery", "first-task"]);

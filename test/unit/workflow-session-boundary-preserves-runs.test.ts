@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.ts";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { type DurableWorkflowBackend, InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
 import {
 	getDurableBackend,
 	initializeDurableBackend,
@@ -34,6 +34,7 @@ import { store } from "../../packages/workflows/src/shared/store.js";
 import { adoptStore, currentWorkflowStore } from "../../packages/workflows/src/shared/store-factory.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 type SessionEventHandler = (event?: unknown, ctx?: unknown) => Promise<unknown>;
 

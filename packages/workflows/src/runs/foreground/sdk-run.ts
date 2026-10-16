@@ -1,10 +1,7 @@
-import { InMemoryDurableBackend } from "../../durable/backend.js";
-import { getDurableBackendProcessOwner } from "../../durable/backend-process-owner.js";
 import { initializeDurableBackend } from "../../durable/factory.js";
 import { run as engineRun } from "../../engine/run.js";
 import { createAgentSessionAdapter } from "../../extension/wiring.js";
 import type { WorkflowDefinition, WorkflowInputValues, WorkflowOutputValues } from "../../shared/types.js";
-import { WorkflowDurabilityRequiredError } from "../../shared/workflow-durability.js";
 import type { RunOpts, RunResult } from "./executor-types.js";
 
 type WorkflowRunInputArgument = Parameters<typeof engineRun>[1];
@@ -24,16 +21,10 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	callerOpts: RunOpts = {},
 ): Promise<RunResult> {
 	const opts = withDefaultAgentSessionAdapter(callerOpts);
-	const durability = opts.durability;
-	if (durability?.mode === "memory") {
-		return await engineRun(def, inputs, { ...opts, durableBackend: new InMemoryDurableBackend() });
-	}
-	const durableRequested = durability?.mode === "durable";
-	const presetBackend = opts.durableBackend ?? getDurableBackendProcessOwner().injectedBackend;
-	if (durableRequested && presetBackend !== undefined && !presetBackend.persistent) {
-		throw new WorkflowDurabilityRequiredError(def.name, "only an in-memory backend is available.");
-	}
-	const backend = presetBackend ?? (await initializeDurableBackend());
+	const backend =
+		opts.journal === undefined && opts.durableBackend !== undefined
+			? opts.durableBackend
+			: await initializeDurableBackend({ journal: opts.journal, cwd: opts.cwd });
 	return await engineRun(def, inputs, { ...opts, durableBackend: backend });
 }
 

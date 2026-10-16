@@ -1,6 +1,7 @@
 import { raceAbort } from "../shared/abort.js";
 /** Resume workflows from durable checkpoints without repeating completed work. */
 
+import { currentToolControlRegistry, type ToolControlRegistry } from "../engine/run-tool-control-registry.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
 import { launchDetachedUntilStartup, workflowStartupFailureMessage } from "../runs/background/startup-admission.js";
 import {
@@ -111,6 +112,9 @@ export async function resumeDurableWorkflow(
 	const backend = deps.durableBackend ?? getDurableBackend();
 	const target = resolveDurableEntry(workflowId, catalog ?? backend.listResumableWorkflows());
 	const id = target !== undefined && !("kind" in target) ? target.workflowId : workflowId;
+	const handle = backend.getWorkflow(id);
+	if (handle?.status === "running" && hasActiveLiveRun(deps.baseRunOpts.store, id))
+		return alreadyRunningResult(handle.name, id, deps.baseRunOpts.store);
 	let pending = pendingResumes.get(backend);
 	if (pending === undefined) {
 		pending = new Set();
@@ -173,7 +177,7 @@ async function resumeDurableWorkflowClaimed(
 				return foreignRunningResult(direct.name, direct.workflowId);
 			}
 		}
-		if (!backend.isWorkflowLoadable(workflowId)) {
+		if (direct !== undefined && !backend.isWorkflowLoadable(workflowId)) {
 			return {
 				ok: false,
 				reason: "not_registered",
@@ -341,7 +345,7 @@ async function resumeDurableWorkflowClaimed(
 			if (restored) onRestored?.();
 			return restored;
 		}
-		backend.setWorkflowStatus(
+		await backend.setWorkflowStatus(
 			resolved.workflowId,
 			handle.status,
 			handle.pendingPrompts,
@@ -422,7 +426,7 @@ async function resumeDurableWorkflowClaimed(
 					const current = deps.baseRunOpts.store?.runs().find((run) => run.id === resolved.workflowId);
 					// Do not undo a concurrent terminal control decision.
 					if (current?.status === "failed" && current.error === message) {
-						backend.setWorkflowStatus(
+						await backend.setWorkflowStatus(
 							resolved.workflowId,
 							handle.status,
 							handle.pendingPrompts,
@@ -517,11 +521,12 @@ function hasActiveLiveRun(store: RunOpts["store"] | undefined, workflowId: strin
 export function purgeSuppressedWorkflowRuns(
 	backend: DurableWorkflowBackend,
 	store: RunOpts["store"],
+	controls: ToolControlRegistry = currentToolControlRegistry(),
 ): readonly string[] {
 	if (store === undefined) return [];
 	const removed: string[] = [];
 	for (const run of store.runs()) {
-		if (backend.isWorkflowLoadable(run.id)) continue;
+		if (controls.runControl(run.id) !== undefined || backend.isWorkflowLoadable(run.id)) continue;
 		if (store.removeRun(run.id)) removed.push(run.id);
 	}
 	return removed;

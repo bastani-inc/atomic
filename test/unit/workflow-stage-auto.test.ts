@@ -10,7 +10,6 @@ import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.j
 import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import classifyAndAct from "../../packages/workflows/builtin/classify-and-act.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import {
 	createDurableStagePrimitive,
@@ -27,6 +26,7 @@ import {
 	messageStream,
 	registeredDecisionRuntime,
 } from "../helpers/structured-output.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import { createStore, run, structuredOutputMockSession, Type, workflow } from "./executor-shared.js";
 import { createStageContext, makeMockSession, makeOpts } from "./stage-runner-helpers.js";
 

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import type { DurableWorkflowStatus } from "../../packages/workflows/src/durable/types.js";
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
@@ -16,6 +15,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
 import { renderWidgetLines } from "../../packages/workflows/src/tui/widget.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 afterEach(() => setDurableBackend(undefined));
 

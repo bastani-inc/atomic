@@ -6,7 +6,7 @@ import type { AgentSession, CreateAgentSessionOptions, ToolDefinition } from "@b
 import { Type } from "typebox";
 import { afterEach, beforeEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { createInMemoryTestBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import {
 	RESUME_CONTINUATION_PROMPT,
 	resolveInputs,
@@ -29,6 +29,7 @@ import {
 } from "../../packages/workflows/src/shared/workflow-failures.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { decisionMessage } from "../helpers/structured-output.js";
+import { createMemoryTestBackend as createInMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { executeWorkflowDecision, workflowDecisionArgs } from "./structured-output-workflow-fixture.js";
 
 async function waitForExecutorStagePendingPrompt(

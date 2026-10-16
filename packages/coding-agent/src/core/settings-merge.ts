@@ -63,9 +63,6 @@ export function deepMergeSettings(base: Settings, overrides: Settings): Settings
 			? { paths: overrides.workflows }
 			: (overrides.workflows ?? {});
 		merged.workflows = deepMergeObjects(globalWorkflows, projectWorkflows);
-		if (!Array.isArray(overrides.workflows) && overrides.workflows?.durability !== undefined) {
-			merged.workflows.durability = overrides.workflows.durability;
-		}
 	}
 	const overrideTools = Array.isArray(overrides.defaultTools)
 		? overrides.defaultTools.filter((entry) => typeof entry === "string")

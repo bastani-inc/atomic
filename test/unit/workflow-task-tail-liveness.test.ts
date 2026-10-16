@@ -6,7 +6,6 @@ import { Type } from "typebox";
 import { afterEach, describe, test, vi } from "vitest";
 import { WorkflowActivityHub } from "../../packages/coding-agent/src/core/extensions/workflow-activity-hub.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { isLiveRunningWorkflow } from "../../packages/workflows/src/durable/resume-eligibility.js";
 import {
@@ -34,6 +33,7 @@ import { effectiveRunStatus } from "../../packages/workflows/src/shared/returned
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import type { WorkflowTaskResult } from "../../packages/workflows/src/shared/types.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import { structuredOutputMockSession } from "./executor-shared.js";
 import { assistantMessageWithUsage } from "./stage-runner-helpers.js";
 

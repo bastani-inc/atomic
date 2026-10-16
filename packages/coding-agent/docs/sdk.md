@@ -232,6 +232,21 @@ Web provider configuration caches are session-local. Configuration discovery and
 
 `session.sessionSummary` returns the current branch's latest `SessionSummaryEntry`, or `undefined` when none is available. Read `summary` for the generated text and `summarizedThroughId` for the last message it describes. `SessionManager.list()` and `SessionManager.listAll()` expose those same fields on each `SessionInfo`. Stored summaries remain readable when `sessionSummary.enabled` is false; that setting controls generation only.
 
+### Workflow journal selection
+
+Standalone workflow `run()` accepts `RunOpts.journal` to choose a local SQLite file, a caller-owned connection, process-local memory, or a supplied `RunJournal`:
+
+```typescript
+import { run } from "@bastani/atomic/workflows";
+
+await run(myWorkflow, inputs, { journal: { path: "./workflow-runs.sqlite" } });
+await run(myWorkflow, inputs, { journal: { memory: true } });
+```
+
+Use `{ database }` for an existing `node:sqlite` `DatabaseSync`; Atomic does not close that connection. A supplied `RunJournal` is used as-is. Memory is an explicit choice and cannot recover runs after the process exits.
+
+Without a per-run option, a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH` overrides `workflows.journal.path` or `workflows.journal.memory` in settings. Relative settings paths resolve against the Atomic home directory. The default file is `~/.atomic/workflows/journal.sqlite`. Keep the original journal and working directory to resume saved runs. Storage failures reject the action rather than switching to memory. See [Workflow storage settings](/settings#workflow-storage).
+
 ### Workflow run control
 
 `session.workflows` controls this session's runs without slash commands or the model-facing `workflow` tool. A fresh session can inspect a durable root by its full UUID within the same working directory and journal. Inspection stays read-only and does not add the run to `listRuns()`.

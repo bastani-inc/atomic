@@ -4,8 +4,7 @@ import { join } from "node:path";
 import { Type } from "typebox";
 import { afterAll, describe, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { createInMemoryTestBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { discoverWorkflows } from "../../packages/workflows/src/extension/discovery.js";
 import { dispatch } from "../../packages/workflows/src/extension/dispatcher.js";
@@ -21,6 +20,10 @@ import {
 	sleep,
 	writeTextSync,
 } from "../helpers/runtime.js";
+import {
+	createMemoryTestBackend as createInMemoryTestBackend,
+	MemoryJournalBackend as InMemoryDurableBackend,
+} from "../helpers/workflow-journal.js";
 
 const SCANNED = ["orchestrator-*", "pull-request", "reviewer-error"] as const;
 

@@ -1,8 +1,8 @@
 // @ts-nocheck
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { testRunId } from "../helpers/run-id.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import type { ChatSurfacePayload, ExtensionAPI, PiCommandContext, PiCommandOptions } from "./slash-dispatch-utils.js";
 import {
 	addFactoryStubs,

@@ -555,9 +555,22 @@ Arrays support glob patterns and exclusions. Use `!pattern` to exclude. Use `+pa
 
 #### Workflow storage
 
-Workflow runs use a local SQLite journal at `~/.atomic/workflows/journal.sqlite`. Set `ATOMIC_WORKFLOW_JOURNAL_PATH` before starting Atomic to choose another file. Keep the journal on durable local storage and preserve it when upgrading or restarting. Changing the path selects a different run history; use the original journal to inspect or resume existing runs.
+Workflow runs use a local SQLite journal at `~/.atomic/workflows/journal.sqlite`. Set `workflows.journal.path` in `settings.json` to choose another file:
 
-Configure workflow resource paths with `workflows: ["./workflows"]` or `workflows: { "paths": ["./workflows"] }`. Storage does not require a separate server or connection settings. If the journal cannot be opened or written, the workflow action fails rather than switching to non-durable execution. Restore filesystem access and inspect the retained run before retrying. See [Durable workflows](/workflows/operations#durable-workflows-and-cross-session-resume).
+```json
+{
+  "workflows": {
+    "paths": ["./workflows"],
+    "journal": { "path": "workflows/project.sqlite" }
+  }
+}
+```
+
+Relative settings paths resolve against the Atomic home directory, normally `~/.atomic`, not the project directory. A non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH` overrides the settings path. SDK `RunOpts.journal` takes precedence over both. Empty environment and settings paths leave the next source in effect.
+
+To keep workflow records only in memory, set `"journal": { "memory": true }`. Do not combine `memory: true` with a non-empty `path`. Memory must be selected explicitly and cannot recover runs after the process exits; an environment path still takes precedence over this setting.
+
+Changing the journal selects a different run history. Preserve the original file to inspect or resume its runs. Storage needs no separate server. If the selected journal cannot be opened or written, the action fails with a typed storage error rather than selecting memory. Restore filesystem access and inspect the retained run before retrying. See [Durable workflows](/workflows/operations#durable-workflows-and-cross-session-resume).
 
 #### packages
 

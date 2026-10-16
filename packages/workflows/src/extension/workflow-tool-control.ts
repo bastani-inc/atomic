@@ -667,7 +667,7 @@ export async function workflowResumeAction(
 				await runtime.prepareDurableResumableForIds([target.runId]);
 			else await runtime.prepareDurableResumable(target.runId);
 		} catch {
-			// Compatibility preparation remains best-effort before the authoritative check.
+			// Refresh remains best-effort before the authoritative check.
 		}
 		deps.signal?.throwIfAborted();
 		if (!backend.isWorkflowLoadable(target.runId)) {

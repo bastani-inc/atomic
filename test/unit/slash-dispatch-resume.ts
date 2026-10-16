@@ -1,11 +1,11 @@
 // @ts-nocheck
 import { describe, test } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { openCompletedDurableWorkflow } from "../../packages/workflows/src/durable/completed-inspection.js";
 // InMemoryDurableBackend is already bound at line 46. Bun tolerated the repeated
 // binding; every standards-conforming parser rejects it, and vitest's did.
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { testRunId } from "../helpers/run-id.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import type {
 	PiCommandContext,
 	PiCustomOverlayFactoryTui,
@@ -202,6 +202,14 @@ describe("/workflow resume <runId> — exact live fast path", () => {
 		const handler = commands.find((command) => command.name === "workflow")!.options.handler;
 		const runId = testRunId(`nested-paused-resume-${Date.now()}`);
 		const stageId = "stage-nested-paused";
+		backend.registerWorkflow({
+			workflowId: runId,
+			name: "nested-worker",
+			inputs: {},
+			status: "paused",
+			createdAt: 1,
+			rootWorkflowId: "parent-run",
+		});
 		store.recordRunStart({
 			...makeInflightRun(runId),
 			parentRunId: "parent-run",

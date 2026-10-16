@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import type { Message } from "../../packages/intercom/types.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableWorkflowMetadata } from "../../packages/workflows/src/durable/types.js";
@@ -17,6 +16,7 @@ import {
 import { stickyStageDeliveryStatuses } from "../../packages/workflows/src/shared/sticky-stage-delivery-status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const RUN_ID = "run-1";
 const STAGE_KEY = " Reviewer Stage ";

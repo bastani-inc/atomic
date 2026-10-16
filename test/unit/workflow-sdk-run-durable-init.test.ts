@@ -7,6 +7,7 @@ import {
 	setDurableBackend,
 } from "../../packages/workflows/src/durable/factory.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
@@ -51,7 +52,7 @@ test("standalone SDK initializes and retains the process journal across runs", a
 	assert.ok(backend.getWorkflow("second"));
 	await backend.close();
 	setDurableBackend(undefined);
-	const reopened = await JournalDurableBackend.open(process.env.ATOMIC_WORKFLOW_JOURNAL_PATH);
+	const reopened = await JournalDurableBackend.open(new SqliteRunJournal(process.env.ATOMIC_WORKFLOW_JOURNAL_PATH));
 	try {
 		assert.equal(reopened.getWorkflow("first")?.status, "completed");
 		assert.equal(reopened.getWorkflow("second")?.status, "completed");
@@ -73,10 +74,7 @@ test("standalone SDK surfaces the configured journal open failure", async () => 
 
 test("explicit memory SDK runs do not initialize a persistent journal", async () => {
 	process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = directory;
-	assert.equal(
-		(await run(definition, {}, { store: createStore(), durability: { mode: "memory" } })).status,
-		"completed",
-	);
+	assert.equal((await run(definition, {}, { store: createStore(), journal: { memory: true } })).status, "completed");
 	assert.equal(getAvailableDurableBackend(), undefined);
 });
 
@@ -135,7 +133,9 @@ for (const outcome of ["success", "failure", "stop", "quit"] as const) {
 			result.status,
 			outcome === "success" ? "completed" : outcome === "quit" ? "paused" : outcome === "stop" ? "killed" : "failed",
 		);
-		const contender = await JournalDurableBackend.open(process.env.ATOMIC_WORKFLOW_JOURNAL_PATH);
+		const contender = await JournalDurableBackend.open(
+			new SqliteRunJournal(process.env.ATOMIC_WORKFLOW_JOURNAL_PATH),
+		);
 		try {
 			assert.equal(contender.workflowOwnership("settled"), "available");
 			assert.equal(

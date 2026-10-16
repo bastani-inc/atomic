@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { openCompletedDurableWorkflow } from "../../packages/workflows/src/durable/completed-inspection.js";
 import {
 	createWorkflowLifecycleNotificationState,
@@ -18,6 +17,7 @@ import type { RunSnapshot } from "../../packages/workflows/src/shared/store-type
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { computeLayout, NODE_H, NODE_W } from "../../packages/workflows/src/tui/layout.js";
 import { testRunId } from "../helpers/run-id.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 import { mockSession, type StageSessionRuntime } from "./executor-shared.js";
 import { defaultTheme, makeTestTui, visibleText } from "./overlay-graph-helpers.js";

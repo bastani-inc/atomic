@@ -6,9 +6,10 @@ const jiti = createJiti(import.meta.url, { fsCache: false });
 const { JournalDurableBackend } = await jiti.import(
 	resolve("packages/workflows/src/durable/journal/journal-backend.ts"),
 );
+const { SqliteRunJournal } = await jiti.import(resolve("packages/workflows/src/durable/journal/sqlite-run-journal.ts"));
 const [, , path, length] = process.argv;
 assert.ok(path);
-const backend = await JournalDurableBackend.open(path);
+const backend = await JournalDurableBackend.open(new SqliteRunJournal(path));
 try {
 	await backend.deleteWorkflow("run");
 	backend.registerWorkflow({

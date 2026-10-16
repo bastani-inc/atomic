@@ -12,11 +12,13 @@ import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const openConnection = (database: DatabaseSync) => new SqliteRunJournal(database);
 
-test("caller-owned memory connections receive schema and remain open after journal close", async () => {
-	const database = new DatabaseSync(":memory:");
+test("caller-owned connections receive schema and remain open after journal close", async () => {
+	const directory = makeTempDirectory("journal-owned-");
+	const path = join(directory, "journal.sqlite");
+	const database = new DatabaseSync(path);
 	try {
 		const journal = openConnection(database);
-		assert.equal(journal.path, ":memory:");
+		assert.equal(journal.path, path);
 		await journal.createRun({ runId: "run", name: "workflow", cwd: "/", createdAt: 0, status: "running" });
 		await journal.close();
 		await journal.close();
@@ -27,11 +29,13 @@ test("caller-owned memory connections receive schema and remain open after journ
 		assert.equal(database.prepare("PRAGMA busy_timeout").get()?.timeout, 5000);
 	} finally {
 		database.close();
+		removeTempDirectory(directory);
 	}
 });
 
 test("caller-owned schema failures preserve the connection and typed version fields", () => {
-	const database = new DatabaseSync(":memory:");
+	const directory = makeTempDirectory("journal-version-");
+	const database = new DatabaseSync(join(directory, "journal.sqlite"));
 	try {
 		database.exec("CREATE TABLE meta(schema_version); INSERT INTO meta VALUES (42)");
 		assert.throws(
@@ -46,13 +50,14 @@ test("caller-owned schema failures preserve the connection and typed version fie
 		assert.equal(database.prepare("SELECT schema_version FROM meta").get()?.schema_version, 42);
 	} finally {
 		database.close();
+		removeTempDirectory(directory);
 	}
 });
 
-test("caller-owned corrupt metadata reports memory fallback or absolute file location", () => {
+test("caller-owned corrupt metadata reports its file location", () => {
 	const directory = makeTempDirectory("journal-connection-");
 	try {
-		for (const path of [":memory:", join(directory, "journal.sqlite")]) {
+		for (const path of [join(directory, "journal.sqlite")]) {
 			const database = new DatabaseSync(path);
 			try {
 				database.exec("CREATE TABLE meta(schema_version); INSERT INTO meta VALUES (1), (1)");
@@ -60,7 +65,7 @@ test("caller-owned corrupt metadata reports memory fallback or absolute file loc
 					() => openConnection(database),
 					(error: Error) => {
 						assert.ok(error instanceof JournalMetaCorruptError);
-						assert.equal(error.path, database.location() || ":memory:");
+						assert.equal(error.path, database.location());
 						assert.equal(error.path, path);
 						assert.equal(error.rowCount, 2);
 						return true;

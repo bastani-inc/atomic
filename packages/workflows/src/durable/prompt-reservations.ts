@@ -12,7 +12,7 @@ export function claimDurablePromptToken(
 	backend: DurableWorkflowBackend,
 	workflowId: string,
 	reservationId: string,
-): PromptReservationToken | undefined {
+): ReturnType<DurableWorkflowBackend["pendingPromptToken"]> {
 	return backend.pendingPromptToken(workflowId, reservationId);
 }
 
@@ -20,7 +20,7 @@ export function reserveDurablePrompt(
 	backend: DurableWorkflowBackend,
 	workflowId: string,
 	reservationId: string,
-): PromptReservationToken {
+): ReturnType<DurableWorkflowBackend["reservePendingPrompt"]> {
 	return backend.reservePendingPrompt(workflowId, reservationId);
 }
 
@@ -29,8 +29,8 @@ export function releaseDurablePrompt(
 	workflowId: string,
 	reservationId: string,
 	token: PromptReservationToken,
-): void {
-	backend.releasePendingPrompt(workflowId, reservationId, token);
+): void | Promise<void> {
+	return backend.releasePendingPrompt(workflowId, reservationId, token);
 }
 
 export type { PromptReservationToken } from "./prompt-reservation-state.js";

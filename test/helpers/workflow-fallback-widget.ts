@@ -4,10 +4,11 @@ import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/age
 import { _emitModelChanged } from "../../packages/coding-agent/src/core/agent-session-models.js";
 import { _trySwitchToFallbackModel } from "../../packages/coding-agent/src/core/agent-session-retry.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { createInMemoryTestBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { makeMockSession } from "../unit/stage-runner-helpers.js";
+import { createMemoryTestBackend as createInMemoryTestBackend } from "./workflow-journal.js";
 
 /** Real SDK fallback selection/events with a controlled transport and pending workflow prompts. */
 export async function startFallbackWidgetScenario(explicitModel = true) {

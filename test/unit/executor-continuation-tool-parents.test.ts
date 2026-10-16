@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { GraphFrontierTracker } from "../../packages/workflows/src/engine/graph-inference.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
@@ -13,6 +12,7 @@ import { createContinuationReplayIndex } from "../../packages/workflows/src/runs
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import { waitForExecutorStagePendingPrompt } from "./executor-shared.js";
 
 function toolNode(id: string, status: ToolNodeSnapshot["status"] = "completed"): ToolNodeSnapshot {

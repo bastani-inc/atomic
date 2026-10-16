@@ -353,36 +353,10 @@ const WorkflowsSettingsSchema = Type.Union(
 					},
 				),
 			),
-			durability: Type.Optional(
-				Type.Object(
-					{
-						poolSize: Type.Optional(
-							Type.Integer({
-								minimum: 2,
-								default: 10,
-								description: "Maximum connections per workflow database pool (at least 2).",
-							}),
-						),
-						systemDatabaseUrl: Type.Optional(
-							Type.String({ description: "PostgreSQL URL for the workflow database." }),
-						),
-						systemDatabaseUrlFile: Type.Optional(
-							Type.String({
-								description:
-									"Read the PostgreSQL URL from a UTF-8 file instead of storing credentials in settings.",
-							}),
-						),
-					},
-					{
-						description: "Existing PostgreSQL database for durable workflows. Set only one URL source per scope.",
-						additionalProperties: false,
-					},
-				),
-			),
 		}),
 	],
 	{
-		description: 'Local workflow paths, or an object with "paths" and "durability" for the workflow database.',
+		description: 'Local workflow paths, or an object with "paths" and "journal" storage settings.',
 	},
 );
 

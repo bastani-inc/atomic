@@ -3,11 +3,11 @@ import { Type } from "typebox";
 import { describe, test, vi } from "vitest";
 import { setCallbackActivityReporter } from "../../packages/coding-agent/src/core/callback-activity.ts";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { createToolPrimitive } from "../../packages/workflows/src/durable/tool-primitive.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowToolFailure } from "../../packages/workflows/src/shared/types.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const TIMEOUT_MS = 20;
 
@@ -455,6 +455,7 @@ describe("ctx.tool timeoutMs", () => {
 
 	test("replays cached calls without starting a new deadline timer", async () => {
 		vi.useFakeTimers();
+		const deadlineTimers = vi.spyOn(globalThis, "setTimeout");
 		try {
 			const backend = new InMemoryDurableBackend();
 			backend.registerWorkflow({
@@ -464,6 +465,7 @@ describe("ctx.tool timeoutMs", () => {
 				createdAt: 0,
 				status: "running",
 			});
+			const journalTimerCount = vi.getTimerCount();
 			const tool = createToolPrimitive({
 				workflowId: "timeout-cached",
 				backend,
@@ -482,7 +484,8 @@ describe("ctx.tool timeoutMs", () => {
 			);
 			await vi.advanceTimersByTimeAsync(0);
 			assert.equal(await first, "done");
-			assert.equal(vi.getTimerCount(), 0);
+			assert.equal(vi.getTimerCount(), journalTimerCount);
+			deadlineTimers.mockClear();
 			const resumedTool = createToolPrimitive({
 				workflowId: "timeout-cached",
 				backend,
@@ -502,8 +505,10 @@ describe("ctx.tool timeoutMs", () => {
 				"done",
 			);
 			assert.equal(callbackCalls, 1);
-			assert.equal(vi.getTimerCount(), 0);
+			assert.equal(vi.getTimerCount(), journalTimerCount);
+			assert.equal(deadlineTimers.mock.calls.length, 0);
 		} finally {
+			deadlineTimers.mockRestore();
 			vi.useRealTimers();
 		}
 	});

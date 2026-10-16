@@ -7,10 +7,10 @@ import { test } from "vitest";
 import { runGoalWorkflow } from "../../packages/workflows/builtin/goal-runner.js";
 import type { GoalLedger, ReviewDecision } from "../../packages/workflows/builtin/goal-types.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifacts.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const completeReview = JSON.stringify({
 	findings: [],

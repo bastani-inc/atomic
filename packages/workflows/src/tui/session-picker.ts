@@ -99,7 +99,7 @@ const RECENT_WINDOW_MS = 60 * 60 * 1000;
 /**
  * Slice runs into picker rows. Active = `endedAt === undefined`. Terminal =
  * retained terminal runs. Resume intent uses the shared resumability predicate;
- * connect/attach and the legacy status list retain their broader listing.
+ * connect/attach and the status list retain their broader listing.
  * With `includeAll` false, terminal rows are limited to the recent-ended window.
  */
 export function selectRunsForPicker(

@@ -19,13 +19,15 @@ function transitionsFor(backend: DurableWorkflowBackend): Set<string> {
 }
 
 /** Whether a previous visible resume still needs its durable running write. */
-export function hasPendingDurableResumeTransition(runId: string): boolean {
-	return pendingRunningTransitions.get(getDurableBackend())?.has(runId) ?? false;
+export function hasPendingDurableResumeTransition(runId: string, backend = getDurableBackend()): boolean {
+	return pendingRunningTransitions.get(backend)?.has(runId) ?? false;
 }
 
 /** Persist the root running transition after visible local resume. */
-export async function markDurableResumed(runId: string): Promise<DurableResumeTransitionOutcome> {
-	const backend = getDurableBackend();
+export async function markDurableResumed(
+	runId: string,
+	backend = getDurableBackend(),
+): Promise<DurableResumeTransitionOutcome> {
 	const pending = transitionsFor(backend);
 	const handle = getLoadableDurableWorkflow(backend, runId);
 	if (handle === undefined || handle.status === "running") return "not_needed";

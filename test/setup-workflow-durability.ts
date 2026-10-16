@@ -1,10 +1,10 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeEach } from "vitest";
-import { InMemoryDurableBackend } from "../packages/workflows/src/durable/backend.js";
+import { afterEach, beforeEach } from "vitest";
 import { getDurableBackendProcessOwner } from "../packages/workflows/src/durable/backend-process-owner.js";
 import { ENV_WORKFLOW_ARTIFACT_DIR } from "../packages/workflows/src/shared/workflow-artifact-env.js";
+import { closeMemoryTestBackends, MemoryJournalBackend as InMemoryDurableBackend } from "./helpers/workflow-journal.js";
 
 /**
  * Durable workflow artifacts (stage transcripts, ledgers, run notes) default to
@@ -45,3 +45,5 @@ if (process.env[ENV_WORKFLOW_ARTIFACT_DIR] === undefined) {
 beforeEach(() => {
 	getDurableBackendProcessOwner().injectedBackend = new InMemoryDurableBackend();
 });
+
+afterEach(closeMemoryTestBackends);

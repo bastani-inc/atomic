@@ -151,8 +151,8 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 		return this.inner.persistPendingStageMessages(this.scope.rootWorkflowId, messages, logicalRunId);
 	}
 
-	recordCheckpoint(checkpoint: DurableCheckpoint): void {
-		this.inner.recordCheckpoint(this.remap(checkpoint));
+	recordCheckpoint(checkpoint: DurableCheckpoint): void | Promise<void> {
+		return this.inner.recordCheckpoint(this.remap(checkpoint));
 	}
 
 	async recordCheckpointAsync(
@@ -166,7 +166,7 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 		return await this.inner.recordAdditiveCheckpointBestEffort(this.remap(checkpoint));
 	}
 
-	workflowOwnership(_workflowId: string): "local" | "foreign" | "available" {
+	workflowOwnership(_workflowId: string): ReturnType<DurableWorkflowBackend["workflowOwnership"]> {
 		return this.inner.workflowOwnership(this.scope.rootWorkflowId);
 	}
 
@@ -237,24 +237,34 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 		return false;
 	}
 
-	adjustPendingPrompts(_workflowId: string, delta: number): void {
-		this.inner.adjustPendingPrompts(this.scope.rootWorkflowId, delta);
+	adjustPendingPrompts(_workflowId: string, delta: number): void | Promise<void> {
+		return this.inner.adjustPendingPrompts(this.scope.rootWorkflowId, delta);
 	}
 
 	promptReservationScope(_workflowId: string): { readonly rootWorkflowId: string; readonly scope: string } {
 		return this.effectivePromptScope();
 	}
 
-	pendingPromptToken(_workflowId: string, reservationId: string): PromptReservationToken | undefined {
+	pendingPromptToken(
+		_workflowId: string,
+		reservationId: string,
+	): ReturnType<DurableWorkflowBackend["pendingPromptToken"]> {
 		return claimDurablePromptToken(this.inner, this.scope.rootWorkflowId, reservationId);
 	}
 
-	reservePendingPrompt(_workflowId: string, reservationId: string): PromptReservationToken {
+	reservePendingPrompt(
+		_workflowId: string,
+		reservationId: string,
+	): ReturnType<DurableWorkflowBackend["reservePendingPrompt"]> {
 		return reserveDurablePrompt(this.inner, this.scope.rootWorkflowId, reservationId);
 	}
 
-	releasePendingPrompt(_workflowId: string, reservationId: string, token: PromptReservationToken): void {
-		releaseDurablePrompt(this.inner, this.scope.rootWorkflowId, reservationId, token);
+	releasePendingPrompt(
+		_workflowId: string,
+		reservationId: string,
+		token: PromptReservationToken,
+	): void | Promise<void> {
+		return releaseDurablePrompt(this.inner, this.scope.rootWorkflowId, reservationId, token);
 	}
 
 	listResumableWorkflows(): readonly ResumableWorkflowEntry[] {

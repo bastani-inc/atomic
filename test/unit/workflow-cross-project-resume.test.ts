@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { SessionManager } from "@bastani/atomic";
 import { test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { forkDurableWorkflow } from "../../packages/workflows/src/durable/fork-workflow.js";
 import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
@@ -17,6 +16,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { testRunId } from "../helpers/run-id.js";
 import { readText, writeFileEnsuringDir } from "../helpers/runtime.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 for (const decision of [undefined, false, true] as const) {
 	test(`cross-project resume ${decision === undefined ? "requires interactive confirmation" : decision ? "forks checkpoints" : "declines without changes"} (#3577)`, async () => {
@@ -157,7 +157,7 @@ test("cross-project fork replays nested stage and tool checkpoints without chang
 	});
 	assert.ok(result.ok, result.message);
 	await jobs.get(result.runId)?.promise;
-	assert.equal(backend.getWorkflow(result.runId)?.status, "completed", backend.getWorkflow(result.runId)?.error);
+	assert.equal(backend.getWorkflow(result.runId)?.status, "completed", JSON.stringify(store.runs()));
 	assert.equal(calls, 2);
 	assert.deepEqual(backend.listCheckpoints(id), original);
 	assert.ok(store.runs().every((snapshot) => snapshot.id !== id));
