@@ -14,6 +14,9 @@ const failure = new StorageUnavailableError("cached-stage-journal", cause);
 const journal = Object.fromEntries(
 	[
 		"createRun",
+		"getRun",
+		"leaseState",
+		"takeoverExpired",
 		"listRuns",
 		"acquire",
 		"takeover",
