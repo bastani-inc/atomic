@@ -954,9 +954,11 @@ describe("resource selector tools", () => {
 				const db = new Database(join(dir, "data.sqlite"));
 				db.run("create table users (uuid text primary key, name text)");
 				db.run("create table items (id integer primary key, body text)");
+				db.run("BEGIN");
 				db.run("insert into users values ('42', 'Ada')");
 				db.run("insert into users values ('abc', 'Ada Text')");
 				for (let i = 1; i <= 1001; i++) db.run("insert into items values (?, ?)", i, i === 1001 ? "needle-target" : "other");
+				db.run("COMMIT");
 				db.close();
 				const other = new Database(join(dir, "other.sqlite"));
 				other.run("create table users (uuid text primary key, name text)");
@@ -1284,7 +1286,9 @@ describe("resource selector tools", () => {
 		).rejects.toThrow(/Invalid SQLite where/);
 		const manyDb = new Database(join(testDir, "many.sqlite"));
 		manyDb.run("create table rows (id integer primary key, name text)");
+		manyDb.run("BEGIN");
 		for (let index = 1; index <= 10; index++) manyDb.run(`insert into rows values (${index}, 'row ${index}')`);
+		manyDb.run("COMMIT");
 		manyDb.close();
 		const sample = textOutput(
 			await createReadToolDefinition(testDir).execute(
