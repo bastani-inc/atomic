@@ -135,7 +135,7 @@ export function prepareExecutionContext(input: {
 			effectiveParams = { ...effectiveParams, task: `${readInstruction}\n\n${effectiveParams.task ?? ""}` };
 	}
 
-	let sessionManagerForIndex: (idx?: number) => Promise<SessionManager | undefined> = async () => undefined;
+	let sessionManagerForIndex: (idx?: number) => Promise<SessionManager | undefined>;
 	try {
 		sessionManagerForIndex = createForkContextResolver(
 			ctx.sessionManager,

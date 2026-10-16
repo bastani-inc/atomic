@@ -25,7 +25,7 @@
  *   - pi docs/sdk.md (AgentSession.prompt/steer/followUp/abort)
  */
 
-import type { AgentSession, AgentSessionEvent } from "@bastani/atomic";
+import type { AgentSession, AgentSessionEvent, SessionStore } from "@bastani/atomic";
 import { createSessionScopedSingleton } from "../../shared/session-scoped-singleton.js";
 import type { StageDeliveryActivityEvent } from "./stage-delivery-activity.js";
 import type { StageQueuedUserMessages } from "./stage-queued-user-messages.js";
@@ -156,6 +156,8 @@ export interface WorkflowRunControlHandle {
 }
 
 export interface StageControlRegistry {
+	/** Changes whenever cleanup invalidates pending asynchronous handle acquisition. */
+	readonly generation: number;
 	/**
 	 * Register a stage handle. The returned disposer removes the chat handle
 	 * entirely. Stage completion should normally call `detachControl()` first so
@@ -188,6 +190,8 @@ export interface StageControlRegistry {
 	detachControl(runId: string, stageId: string, handle?: StageControlHandle): boolean;
 	/** Resolve one stage handle by run + stage id, including detached chats. */
 	get(runId: string, stageId: string): StageControlHandle | undefined;
+	/** Owning store retained after a live handle is removed, until the registry is cleared. */
+	getSessionStore(runId: string, stageId: string): SessionStore | undefined;
 	/** Resolve all currently-registered chat handles for a run. */
 	forRun(runId: string): readonly StageControlHandle[];
 	/** True when this run currently has a registration map. */
@@ -224,6 +228,18 @@ export function createStageControlRegistry(): StageControlRegistry {
 
 	const _byRun = new Map<string, Map<string, RegistryEntry>>();
 	const pendingDisposals = new Set<Promise<void>>();
+	const sessionStores = new Map<string, Map<string, SessionStore>>();
+	let generation = 0;
+	function rememberSessionStore(handle: StageControlHandle): void {
+		const store = handle.sessionStore;
+		if (store === undefined) return;
+		let stores = sessionStores.get(handle.runId);
+		if (stores === undefined) {
+			stores = new Map();
+			sessionStores.set(handle.runId, stores);
+		}
+		stores.set(handle.stageId, store);
+	}
 
 	function ensureRun(runId: string): Map<string, RegistryEntry> {
 		let runMap = _byRun.get(runId);
@@ -328,7 +344,11 @@ export function createStageControlRegistry(): StageControlRegistry {
 	}
 
 	return {
+		get generation() {
+			return generation;
+		},
 		register(handle: StageControlHandle): () => void {
+			rememberSessionStore(handle);
 			const runMap = ensureRun(handle.runId);
 			const displaced = runMap.get(handle.stageId);
 			runMap.set(handle.stageId, {
@@ -344,6 +364,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 				const existing = _byRun.get(handle.runId);
 				if (!existing) return;
 				if (existing.get(handle.stageId)?.handle === handle) {
+					rememberSessionStore(handle);
 					existing.delete(handle.stageId);
 				}
 				if (existing.size === 0) _byRun.delete(handle.runId);
@@ -421,6 +442,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 			const entry = _byRun.get(runId)?.get(stageId);
 			if (!entry) return false;
 			if (handle !== undefined && entry.handle !== handle) return false;
+			rememberSessionStore(entry.handle);
 			if (!entry.controlsDependencies) return false;
 			entry.controlsDependencies = false;
 			return true;
@@ -436,6 +458,9 @@ export function createStageControlRegistry(): StageControlRegistry {
 		get(runId: string, stageId: string): StageControlHandle | undefined {
 			return _byRun.get(runId)?.get(stageId)?.handle;
 		},
+		getSessionStore(runId: string, stageId: string): SessionStore | undefined {
+			return _byRun.get(runId)?.get(stageId)?.handle.sessionStore ?? sessionStores.get(runId)?.get(stageId);
+		},
 		forRun(runId: string): readonly StageControlHandle[] {
 			const runMap = _byRun.get(runId);
 			if (!runMap) return [];
@@ -448,15 +473,19 @@ export function createStageControlRegistry(): StageControlRegistry {
 			return makeRunHandle(runId);
 		},
 		async clear(): Promise<void> {
+			generation += 1;
 			const entries = [..._byRun.values()].flatMap((runMap) => [...runMap.values()]);
 			_byRun.clear();
+			sessionStores.clear();
 			await disposeEntries(entries);
 		},
 		async clearDetached(): Promise<void> {
 			const entries: RegistryEntry[] = [];
+			generation += 1;
 			for (const [runId, runMap] of [..._byRun]) {
 				for (const [stageId, entry] of [...runMap]) {
 					if (entry.controlsDependencies) continue;
+					rememberSessionStore(entry.handle);
 					runMap.delete(stageId);
 					entries.push(entry);
 				}

@@ -16,9 +16,12 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { SessionManager } from "@bastani/atomic";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
 import {
+	acquirePostMortemStageHandle,
+	createPostMortemStageHandle,
 	ensurePostMortemStageHandle,
 	isPostMortemEligibleStage,
 } from "../../packages/workflows/src/runs/foreground/postmortem-stage-chat.js";
@@ -118,6 +121,47 @@ describe("ensurePostMortemStageHandle", () => {
 		assert.equal(stage.status, "completed");
 	});
 
+	test("reopens a removed custom-store stage handle without falling back to the host store", async () => {
+		const registry = createStageControlRegistry();
+		const customStore = await JsonlSessionStore.open(join(tempDir, "custom"), { exactDirectory: true });
+		const manager = await SessionManager.create(customStore, tempDir);
+		await manager.appendMessage({ role: "user", content: "Custom conversation", timestamp: 1 });
+		const stage = completedStage({ sessionId: manager.getSessionId() });
+		let restored: SessionManager | undefined;
+		const adapters: StageAdapters = {
+			sessionStore,
+			agentSession: {
+				async create(options) {
+					restored = options.sessionManager;
+					return mockSession();
+				},
+			},
+		};
+		const original = createPostMortemStageHandle(
+			"run-1",
+			stage,
+			manager.getSessionId(),
+			adapters,
+			tempDir,
+			undefined,
+			customStore,
+		);
+		const unregister = registry.register(original);
+		unregister();
+		await original.dispose?.();
+		try {
+			const result = await ensurePostMortemStageHandle("run-1", stage, { registry, adapters, cwd: tempDir });
+			assert.equal(result.ok, true);
+			if (!result.ok) return;
+			await result.handle.ensureAttached();
+			assert.deepEqual(restored?.buildSessionContext().messages, manager.buildSessionContext().messages);
+			assert.equal(restored?.getSessionStore(), customStore);
+		} finally {
+			await registry.clear();
+			await customStore.close();
+		}
+	});
+
 	test("single-flights repeated calls onto one handle and one session create", async () => {
 		const registry = createStageControlRegistry();
 		const { sessionFile, sessionId } = retainedSession("single-flight");
@@ -176,6 +220,35 @@ describe("ensurePostMortemStageHandle", () => {
 		assert.equal(result.handle.isDisposed, true);
 		assert.deepEqual(registry.forRun("run-1"), []);
 	});
+	for (const resolve of [ensurePostMortemStageHandle, acquirePostMortemStageHandle]) {
+		test(`${resolve.name} does not register a retained handle after its registry is cleared during validation`, async () => {
+			const registry = createStageControlRegistry();
+			const stage = completedStage(retainedSession("shutdown-race"));
+			const started = Promise.withResolvers<void>();
+			const finish = Promise.withResolvers<void>();
+			const load = sessionStore.load.bind(sessionStore);
+			const loading = vi.spyOn(sessionStore, "load").mockImplementation(async (id) => {
+				started.resolve();
+				await finish.promise;
+				return load(id);
+			});
+			try {
+				const pending = resolve("run-1", stage, {
+					registry,
+					adapters: adaptersRecording(mockSession(), { creates: 0 }),
+				});
+				await started.promise;
+				await registry.clear();
+				finish.resolve();
+				assert.equal((await pending).ok, false);
+				assert.deepEqual(registry.forRun("run-1"), []);
+			} finally {
+				finish.resolve();
+				loading.mockRestore();
+				await registry.clear();
+			}
+		});
+	}
 
 	test("rejects post-mortem pause and resume without appending a prompt", async () => {
 		const registry = createStageControlRegistry();

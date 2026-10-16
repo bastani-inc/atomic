@@ -15,8 +15,8 @@ export async function forkDurableWorkflow(
 	sessionStore?: SessionStore,
 ): Promise<string> {
 	source = structuredClone(source);
-	const selectedStore =
-		sessionStore ?? (await stageSessionStore({ cwd: source.workflowCwd ?? source.invocationCwd ?? cwd }));
+	const sourceStore = await stageSessionStore({ cwd: source.workflowCwd ?? source.invocationCwd ?? cwd });
+	const destinationStore = sessionStore ?? (await stageSessionStore({ cwd }));
 	const workflowId = randomUUID();
 	const ids = new Map([[source.workflowId, workflowId]]);
 	const mapId = (id: string): string => {
@@ -70,10 +70,20 @@ export async function forkDurableWorkflow(
 			copy.sessionId ?? (typeof taskOutput?.sessionId === "string" ? taskOutput.sessionId : undefined);
 		let session = sessionId === undefined ? undefined : sessions.get(sessionId);
 		if (session === undefined && sessionId !== undefined) {
-			session = await forkStageSession(selectedStore, sessionId, cwd, {
-				internal: true,
-				workflow: { runId: workflowId, stageId: stageTopology?.stageId ?? copy.checkpointId, stageName: copy.name },
-			});
+			session = await forkStageSession(
+				sourceStore,
+				sessionId,
+				cwd,
+				{
+					internal: true,
+					workflow: {
+						runId: workflowId,
+						stageId: stageTopology?.stageId ?? copy.checkpointId,
+						stageName: copy.name,
+					},
+				},
+				destinationStore,
+			);
 			sessions.set(sessionId, session);
 		}
 		const childOutput = boundary === undefined ? undefined : parseWorkflowChildResult(copy.output);

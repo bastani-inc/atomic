@@ -174,3 +174,32 @@ test("ordinary completed-stage sends retain the existing late-message route", ()
 	assert.equal(event.handled, false);
 	assert.equal(event.completion, undefined);
 });
+
+for (const boundary of ["resolution", "attachment"] as const) {
+	test(`disposing the completed-stage router during ${boundary} prevents delivery`, async () => {
+		const harness = eventHarness();
+		const started = Promise.withResolvers<void>();
+		const finish = Promise.withResolvers<void>();
+		let prompts = 0;
+		const wait = async () => {
+			started.resolve();
+			await finish.promise;
+		};
+		const handle = completedHandle(
+			async () => {
+				prompts++;
+			},
+			boundary === "attachment" ? wait : undefined,
+		);
+		const dispose = registerCompletedStageIntercomAskRouter(harness.pi, async () => {
+			if (boundary === "resolution") await wait();
+			return { ok: true, handle };
+		});
+		const event = harness.emit(askEvent());
+		await started.promise;
+		dispose();
+		finish.resolve();
+		await assert.rejects(event.completion!, /closed/);
+		assert.equal(prompts, 0);
+	});
+}

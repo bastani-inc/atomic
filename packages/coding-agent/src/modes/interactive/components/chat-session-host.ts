@@ -68,6 +68,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	private taskSession?: object;
 	private unsubscribeTaskBinding?: () => void;
 	private taskInspector?: TaskInspector;
+	private historyHydrated = false;
 
 	constructor(opts: ChatSessionHostOpts<TExtraEntry>) {
 		// `/tasks` stays a local action owned by the host's `commands.handleSlashCommand`
@@ -143,7 +144,12 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	}
 
 	async loadSession(store: SessionStore, sessionId: string | undefined): Promise<boolean> {
-		if (this.state.transcript.length > 0 || sessionId === undefined) return true;
+		if (
+			this.historyHydrated ||
+			this.state.transcript.length > this.state.extraEntries.length ||
+			sessionId === undefined
+		)
+			return true;
 		let messages: readonly AgentSnapshotMessage[];
 		try {
 			const manager = await SessionManager.open(store, sessionId);
@@ -154,8 +160,11 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 			return false;
 		}
 		if (this.state.disposed) return false;
-		if (this.state.transcript.length > 0) return true;
+		if (this.historyHydrated || this.state.transcript.length > this.state.extraEntries.length) return true;
+		this.historyHydrated = true;
+		const extras = this.state.transcript.splice(0);
 		this.state.liveChat.appendMessages(messages);
+		this.state.transcript.push(...extras);
 		this.state.requestRender?.();
 		return true;
 	}

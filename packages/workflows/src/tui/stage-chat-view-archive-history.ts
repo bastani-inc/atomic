@@ -22,6 +22,8 @@ import { applyStageLabelToAwaitingInputTopRule } from "./stage-input-label.js";
 
 function postMortemUnavailableMessage(reason: StageChatViewContext["postMortemUnavailableReason"]): string | undefined {
 	switch (reason) {
+		case "closed":
+			return "Post-mortem chat is unavailable because its owning session has closed.";
 		case "no_adapter":
 			return "Post-mortem chat is unavailable because no agent session adapter is configured.";
 		case "not_terminal":

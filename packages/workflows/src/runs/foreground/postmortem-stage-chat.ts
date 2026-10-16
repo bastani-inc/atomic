@@ -41,7 +41,7 @@ import { createStageContext, type StageAdapters } from "./stage-runner.js";
 import type { StageUserMessagePreparation } from "./stage-runner-types.js";
 
 /** Why a terminal stage could not be revived as an interactive post-mortem chat. */
-export type PostMortemUnavailableReason = "no_adapter" | "not_terminal" | "no_session" | "invalid_session";
+export type PostMortemUnavailableReason = "no_adapter" | "not_terminal" | "no_session" | "invalid_session" | "closed";
 
 export type EnsurePostMortemStageHandleResult =
 	| { readonly ok: true; readonly handle: StageControlHandle }
@@ -85,6 +85,7 @@ export async function ensurePostMortemStageHandle(
 	stage: StageSnapshot,
 	deps: PostMortemStageChatDeps,
 ): Promise<EnsurePostMortemStageHandleResult> {
+	const generation = deps.registry.generation;
 	if (!TERMINAL_POSTMORTEM_STATUSES.has(stage.status)) return { ok: false, reason: "not_terminal" };
 	const existing = deps.registry.claim(runId, stage.id);
 	if (existing !== undefined && existing.isDisposed !== true) {
@@ -94,10 +95,15 @@ export async function ensurePostMortemStageHandle(
 	const sessionId = stage.sessionId;
 	if (sessionId === undefined) return { ok: false, reason: "no_session" };
 	const sessionStore = await stageSessionStore(
-		{ sessionStore: deps.sessionStore ?? deps.adapters.sessionStore, cwd: deps.cwd },
+		{
+			sessionStore:
+				deps.registry.getSessionStore(runId, stage.id) ?? deps.sessionStore ?? deps.adapters.sessionStore,
+			cwd: deps.cwd,
+		},
 		deps.defaultSessionDir,
 	);
 	if (!(await isReopenableSession(sessionStore, sessionId))) return { ok: false, reason: "invalid_session" };
+	if (deps.registry.generation !== generation) return { ok: false, reason: "closed" };
 
 	const adapters = deps.adapters;
 	const handle = deps.registry.getOrCreateDetached(runId, stage.id, () =>
@@ -112,6 +118,7 @@ export async function acquirePostMortemStageHandle(
 	stage: StageSnapshot,
 	deps: PostMortemStageChatDeps,
 ): Promise<AcquirePostMortemStageHandleResult> {
+	const generation = deps.registry.generation;
 	if (!TERMINAL_POSTMORTEM_STATUSES.has(stage.status)) return { ok: false, reason: "not_terminal" };
 	const existing = deps.registry.peek(runId, stage.id);
 	if (existing !== undefined && existing.isDisposed !== true) {
@@ -124,10 +131,15 @@ export async function acquirePostMortemStageHandle(
 	const sessionId = stage.sessionId;
 	if (sessionId === undefined) return { ok: false, reason: "no_session" };
 	const sessionStore = await stageSessionStore(
-		{ sessionStore: deps.sessionStore ?? deps.adapters.sessionStore, cwd: deps.cwd },
+		{
+			sessionStore:
+				deps.registry.getSessionStore(runId, stage.id) ?? deps.sessionStore ?? deps.adapters.sessionStore,
+			cwd: deps.cwd,
+		},
 		deps.defaultSessionDir,
 	);
 	if (!(await isReopenableSession(sessionStore, sessionId))) return { ok: false, reason: "invalid_session" };
+	if (deps.registry.generation !== generation) return { ok: false, reason: "closed" };
 	const adapters = deps.adapters;
 	const lease = deps.registry.acquireDetached(runId, stage.id, () =>
 		createPostMortemStageHandle(runId, stage, sessionId, adapters, deps.cwd, deps.defaultSessionDir, sessionStore),

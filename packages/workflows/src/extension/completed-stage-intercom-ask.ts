@@ -52,11 +52,14 @@ export function registerCompletedStageIntercomAskRouter(
 ): () => void {
 	const queues = new Map<string, Promise<void>>();
 	let disposed = false;
+	const assertActive = (): void => {
+		if (disposed) throw new Error("Intercom ask target is unavailable: its owning session has closed.");
+	};
 	const subscription = pi.events?.on?.(LATE_STAGE_MESSAGE_EVENT, (payload) => {
 		if (disposed || !isCompletedStageAskEvent(payload) || payload.handled === true) return;
 		payload.handled = true;
 		payload.completion = enqueueTargetTurn(queues, `${payload.workflowRunId}:${payload.workflowStageId}`, () =>
-			deliverAsPostMortemTurn(payload, resolveHandle),
+			deliverAsPostMortemTurn(payload, resolveHandle, assertActive),
 		);
 	});
 	const dispose = (): void => {
@@ -109,8 +112,11 @@ function enqueueTargetTurn(
 async function deliverAsPostMortemTurn(
 	event: CompletedStageAskEvent & { readonly workflowRunId: string; readonly workflowStageId: string },
 	resolveHandle: CompletedStageHandleResolver,
+	assertActive: () => void,
 ): Promise<void> {
+	assertActive();
 	const resolution = await resolveHandle(event.workflowRunId, event.workflowStageId);
+	assertActive();
 	if (resolution === undefined) {
 		throw new Error(
 			`Intercom ask target is unavailable: completed workflow stage ${event.workflowRunId}/${event.workflowStageId} was deleted or is no longer retained.`,
@@ -127,6 +133,7 @@ async function deliverAsPostMortemTurn(
 	}
 	await attachWithTimeout(handle);
 	for (const message of event.messages) {
+		assertActive();
 		if (handle.isStreaming) await handle.followUp(message.content);
 		else await handle.prompt(message.content);
 	}
@@ -155,6 +162,8 @@ async function attachWithTimeout(handle: StageControlHandle): Promise<void> {
 function unavailableReason(runId: string, stageId: string, reason: PostMortemUnavailableReason): string {
 	const target = `${runId}/${stageId}`;
 	switch (reason) {
+		case "closed":
+			return `Intercom ask target is unavailable: the owning session for workflow stage ${target} has closed.`;
 		case "not_terminal":
 			return `Intercom ask target is not resumable: workflow stage ${target} is not a completed stage with a retained conversation.`;
 		case "no_session":

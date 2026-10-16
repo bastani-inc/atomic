@@ -29,10 +29,11 @@ export async function forkStageSession(
 	sessionId: string,
 	cwd: string,
 	options: NewSessionOptions,
+	destination: SessionStore = store,
 ): Promise<SessionManager> {
 	const source = await store.load(sessionId);
 	const id = randomUUID();
-	await store.create(
+	await destination.create(
 		{
 			id,
 			version: 4,
@@ -44,5 +45,5 @@ export async function forkStageSession(
 		},
 		source.entries,
 	);
-	return SessionManager.open(store, id, cwd);
+	return SessionManager.open(destination, id, cwd);
 }
