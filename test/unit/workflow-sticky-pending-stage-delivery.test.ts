@@ -35,7 +35,7 @@ import {
 } from "../../packages/workflows/src/shared/workflow-stage-path-matching.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const ROOT_RUN_ID = testRunId("sticky-root");
 const CHILD_RUN_ID = testRunId("sticky-child");
@@ -313,7 +313,7 @@ function baseStage(
 	};
 }
 
-function rootFixture(
+async function rootFixture(
 	stage: ReturnType<typeof baseStage> | ReturnType<typeof baseStage>[] = baseStage(),
 	possibleStages?: readonly string[],
 ) {
@@ -328,15 +328,21 @@ function rootFixture(
 		startedAt: 1,
 		...(possibleStages === undefined ? {} : { possibleStages }),
 	});
-	const backend = new InMemoryDurableBackend();
-	backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	const backend = await createMemoryTestBackend();
+	await backend.registerWorkflow({
+		workflowId: ROOT_RUN_ID,
+		name: "flow",
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+	});
 	bindStoreDurableBackend(store, backend);
 	return { store, backend };
 }
 
 describe("pre-start sticky drain", () => {
 	test("recovers nested logical-message counts under the root durable owner (#3467)", async () => {
-		const { store } = rootFixture();
+		const { store } = await rootFixture();
 		store.recordRunStart({
 			id: CHILD_RUN_ID,
 			name: "child",
@@ -389,7 +395,7 @@ describe("pre-start sticky drain", () => {
 		);
 	});
 	test("does not repeat an optional-recipient callback after the first metadata save fails (#3467)", async () => {
-		const { store } = rootFixture(baseStage({ status: "failed" }));
+		const { store } = await rootFixture(baseStage({ status: "failed" }));
 		let failMetadata = false;
 		const backend = await metadataFailureBackend(() => failMetadata, "metadata-only fault");
 		await backend.registerWorkflow({
@@ -441,7 +447,7 @@ describe("pre-start sticky drain", () => {
 		assert.equal(restored.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 2);
 	});
 	test("bounds sticky session receipts while retaining old-session deduplication (#3467)", async () => {
-		const { store } = rootFixture();
+		const { store } = await rootFixture();
 		const backend = await JournalTestBackend.create();
 		await backend.registerWorkflow({
 			workflowId: ROOT_RUN_ID,
@@ -483,7 +489,7 @@ describe("pre-start sticky drain", () => {
 	});
 
 	test("deduplicates archived no-recipient sticky delivery after failed-stage retry and cold hydration (#3467)", async () => {
-		const { store } = rootFixture([]);
+		const { store } = await rootFixture([]);
 		const backend = await JournalTestBackend.create();
 		await backend.registerWorkflow({
 			workflowId: ROOT_RUN_ID,
@@ -549,7 +555,7 @@ describe("pre-start sticky drain", () => {
 	test.each(["context", "transport"] as const)(
 		"preserves no-recipient deduplication of archived %s admissions (#3467)",
 		async (admission) => {
-			const { store } = rootFixture([]);
+			const { store } = await rootFixture([]);
 			const backend = await JournalTestBackend.create();
 			await backend.registerWorkflow({
 				workflowId: ROOT_RUN_ID,
@@ -611,7 +617,7 @@ describe("pre-start sticky drain", () => {
 	);
 
 	test("bounds failed-iteration sticky receipts through resume and settlement (#3467)", async () => {
-		const { store } = rootFixture([]);
+		const { store } = await rootFixture([]);
 		const backend = await JournalTestBackend.create();
 		await backend.registerWorkflow({
 			workflowId: ROOT_RUN_ID,
@@ -703,7 +709,7 @@ describe("pre-start sticky drain", () => {
 	});
 
 	test("settlement archives sticky receipts whose failed stages are no longer materialized (#3467)", async () => {
-		const { store } = rootFixture([]);
+		const { store } = await rootFixture([]);
 		const backend = await JournalTestBackend.create();
 		await backend.registerWorkflow({
 			workflowId: ROOT_RUN_ID,
@@ -752,7 +758,7 @@ describe("pre-start sticky drain", () => {
 	});
 
 	test("bounds sticky receipts across completed iterations and preserves resumed delivery (#3467)", async () => {
-		const { store, backend } = rootFixture([]);
+		const { store, backend } = await rootFixture([]);
 		await store.queueStickyStageMessage(stickyInput("bounded", `workflow:${ROOT_RUN_ID}/**`), GROUP, GROUP, backend);
 		for (let index = 0; index < 100; index++) {
 			const stage = { ...baseStage(), id: `iteration-${index}`, name: `iteration-${index}` };
@@ -786,7 +792,7 @@ describe("pre-start sticky drain", () => {
 	});
 
 	test("delivers a matching pattern entry once and keeps the entry queued for later iterations", async () => {
-		const { store, backend } = rootFixture();
+		const { store, backend } = await rootFixture();
 		const queued = await store.queueStickyStageMessage(
 			stickyInput("loop", `workflow:${ROOT_RUN_ID}/orchestrator-*`),
 			GROUP,
@@ -855,8 +861,14 @@ describe("pre-start sticky drain", () => {
 			stages: [baseStage({ id: "child-reviewer-id", name: "reviewer-a" })],
 			startedAt: 2,
 		});
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "root", inputs: {}, status: "running", createdAt: 1 });
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({
+			workflowId: ROOT_RUN_ID,
+			name: "root",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		bindStoreDurableBackend(store, backend);
 		assert.equal(
 			(
@@ -909,7 +921,7 @@ describe("pre-start sticky drain", () => {
 	});
 
 	test("concurrently draining matching stages each receive the sticky entry (parallel reviewers)", async () => {
-		const { store, backend } = rootFixture([
+		const { store, backend } = await rootFixture([
 			baseStage({ id: "reviewer-a-id", name: "reviewer-a", status: "pending", sessionId: undefined }),
 			baseStage({ id: "reviewer-b-id", name: "reviewer-b", status: "pending", sessionId: undefined }),
 		]);
@@ -969,8 +981,14 @@ describe("pre-start sticky drain", () => {
 			stages: [baseStage({ id: "child-reviewer-id", name: "reviewer-a" })],
 			startedAt: 2,
 		});
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "root", inputs: {}, status: "running", createdAt: 1 });
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({
+			workflowId: ROOT_RUN_ID,
+			name: "root",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		bindStoreDurableBackend(store, backend);
 		for (const target of [
 			`workflow:${ROOT_RUN_ID}/${CHILD_RUN_ID}/reviewer-*`,
@@ -1004,7 +1022,7 @@ describe("pre-start sticky drain", () => {
 	});
 
 	test("ready() gates on sticky-only queues", async () => {
-		const { store, backend } = rootFixture(baseStage({ status: "pending", sessionId: undefined }));
+		const { store, backend } = await rootFixture(baseStage({ status: "pending", sessionId: undefined }));
 		const delivery = createWorkflowPendingStageDelivery(store, ROOT_RUN_ID, "orch-3-id", "orchestrator-3");
 		assert.equal(delivery.ready(), undefined);
 		const queued = await store.queueStickyStageMessage(
@@ -1244,7 +1262,7 @@ interface StickyBridgeHarness {
 	dispose(): void;
 }
 
-function stickyBridgeFixture(
+async function stickyBridgeFixture(
 	stages: Parameters<typeof rootFixture>[0] | Parameters<typeof rootFixture>[0][],
 	options: {
 		readonly possibleStages?: readonly string[];
@@ -1252,7 +1270,7 @@ function stickyBridgeFixture(
 		readonly backend?: DurableWorkflowBackend;
 		readonly store?: ReturnType<typeof createStore>;
 	} = {},
-): StickyBridgeHarness {
+): Promise<StickyBridgeHarness> {
 	const store = options.store ?? createStore();
 	const stageList = Array.isArray(stages) ? stages : [stages];
 	if (options.store === undefined) {
@@ -1281,9 +1299,15 @@ function stickyBridgeFixture(
 			startedAt: 2,
 		});
 	}
-	const backend = options.backend ?? new InMemoryDurableBackend();
+	const backend = options.backend ?? (await createMemoryTestBackend());
 	if (backend.getWorkflow(ROOT_RUN_ID) === undefined) {
-		backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.registerWorkflow({
+			workflowId: ROOT_RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 	}
 	bindStoreDurableBackend(store, backend);
 	const listeners = new Map<string, (payload: unknown) => void>();
@@ -1363,7 +1387,7 @@ describe("pending-stage bridge sticky delivery", () => {
 		async (admission) => {
 			const backend = await JournalTestBackend.create();
 			const stage = baseStage({ id: "live-id", status: "running", sessionId: "original-session" });
-			const harness = stickyBridgeFixture(stage, { backend });
+			const harness = await stickyBridgeFixture(stage, { backend });
 			const target = `workflow:${ROOT_RUN_ID}/**`;
 			const deliveredTargets = [`${GROUP}/live-id`];
 			try {
@@ -1398,7 +1422,7 @@ describe("pending-stage bridge sticky delivery", () => {
 				stages: [{ ...stage, status: "running" }],
 				pendingStageMessages: [...(resumed.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages ?? [])],
 			});
-			const restored = stickyBridgeFixture(stage, { backend: resumed, store });
+			const restored = await stickyBridgeFixture(stage, { backend: resumed, store });
 			try {
 				const retried = await restored.request("archived-transport", { target });
 				assert.equal(retried.result?.outcome, "queued");
@@ -1439,7 +1463,7 @@ describe("pending-stage bridge sticky delivery", () => {
 				baseStage({ id: "running-a", status: "running", sessionId: "session-a" }),
 				baseStage({ id: "failed-b", status: "failed", sessionId: "session-b" }),
 			];
-			const harness = stickyBridgeFixture(stages, { backend });
+			const harness = await stickyBridgeFixture(stages, { backend });
 			const target = `workflow:${ROOT_RUN_ID}/**`;
 			const records = stages.map((stage) => ({
 				runId: ROOT_RUN_ID,
@@ -1474,7 +1498,7 @@ describe("pending-stage bridge sticky delivery", () => {
 				...harness.store.runs()[0]!,
 				pendingStageMessages: [...(resumed.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages ?? [])],
 			});
-			const restored = stickyBridgeFixture(stages, { backend: resumed, store });
+			const restored = await stickyBridgeFixture(stages, { backend: resumed, store });
 			try {
 				assert.equal(await restored.confirm("mixed-batch", target, [`${GROUP}/running-a`]), false);
 				const retry = await restored.request("mixed-batch", { target });
@@ -1490,7 +1514,7 @@ describe("pending-stage bridge sticky delivery", () => {
 	test("recovers sticky delivery accounting after receipt archival outlives metadata persistence (#3467)", async () => {
 		const backend = await JournalTestBackend.create();
 		const stage = baseStage({ id: "live-id", status: "running", sessionId: "same-session" });
-		const harness = stickyBridgeFixture(stage, { backend });
+		const harness = await stickyBridgeFixture(stage, { backend });
 		const target = `workflow:${ROOT_RUN_ID}/**`;
 		const record = {
 			runId: ROOT_RUN_ID,
@@ -1541,7 +1565,7 @@ describe("pending-stage bridge sticky delivery", () => {
 				stages: [{ ...stage, status: "running" }],
 				pendingStageMessages: [...(resumed.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages ?? [])],
 			});
-			const restored = stickyBridgeFixture(stage, { backend: resumed, store });
+			const restored = await stickyBridgeFixture(stage, { backend: resumed, store });
 			try {
 				const retry = await restored.request("interrupted-context", { target });
 				assert.equal(retry.result?.outcome, "queued");
@@ -1578,7 +1602,7 @@ describe("pending-stage bridge sticky delivery", () => {
 			createdAt: 1,
 		});
 		const stage = baseStage({ id: "live-id", status: "failed", sessionId: "same-session" });
-		const harness = stickyBridgeFixture(stage, { backend });
+		const harness = await stickyBridgeFixture(stage, { backend });
 		const record = {
 			runId: ROOT_RUN_ID,
 			stageId: stage.id,
@@ -1625,7 +1649,7 @@ describe("pending-stage bridge sticky delivery", () => {
 		async (failure) => {
 			const backend = await JournalTestBackend.create();
 			const stage = baseStage({ id: "live-id", status: "failed", sessionId: "same-session" });
-			const harness = stickyBridgeFixture(stage, { backend });
+			const harness = await stickyBridgeFixture(stage, { backend });
 			const record = {
 				runId: ROOT_RUN_ID,
 				stageId: stage.id,
@@ -1683,7 +1707,7 @@ describe("pending-stage bridge sticky delivery", () => {
 	test("deduplicates concurrent confirmations when the stage finishes before queued updates (#3467)", async () => {
 		const backend = await JournalTestBackend.create();
 		const stage = baseStage({ id: "live-id", status: "running", sessionId: "same-session" });
-		const harness = stickyBridgeFixture(stage, { backend });
+		const harness = await stickyBridgeFixture(stage, { backend });
 		const target = `workflow:${ROOT_RUN_ID}/**`;
 		try {
 			await harness.request("racing-confirmation", { target });
@@ -1703,7 +1727,7 @@ describe("pending-stage bridge sticky delivery", () => {
 
 	test("deduplicates a transport confirmation queued behind pre-start context admission (#3467)", async () => {
 		const stage = baseStage({ id: "live-id", status: "running", sessionId: "same-session" });
-		const harness = stickyBridgeFixture(stage);
+		const harness = await stickyBridgeFixture(stage);
 		const target = `workflow:${ROOT_RUN_ID}/**`;
 		try {
 			await harness.request("context-confirmation", { target });
@@ -1723,7 +1747,9 @@ describe("pending-stage bridge sticky delivery", () => {
 	});
 
 	test("keeps transport retries deduplicated when older session receipts are archived (#3467)", async () => {
-		const harness = stickyBridgeFixture(baseStage({ id: "live-id", status: "running", sessionId: "session-0" }));
+		const harness = await stickyBridgeFixture(
+			baseStage({ id: "live-id", status: "running", sessionId: "session-0" }),
+		);
 		try {
 			const target = `workflow:${ROOT_RUN_ID}/**`;
 			await harness.request("transport-history", { target });
@@ -1744,7 +1770,7 @@ describe("pending-stage bridge sticky delivery", () => {
 	afterEach(() => setDurableBackend(undefined));
 
 	test("queues a pattern target speculatively with notInKnownSet when the scan excludes it", async () => {
-		const harness = stickyBridgeFixture(baseStage(), { possibleStages: ["reviewer", "pull-request"] });
+		const harness = await stickyBridgeFixture(baseStage(), { possibleStages: ["reviewer", "pull-request"] });
 		const { handled, result } = await harness.request("1");
 		assert.equal(handled, true);
 		assert.deepEqual(result, {
@@ -1758,11 +1784,13 @@ describe("pending-stage bridge sticky delivery", () => {
 	});
 
 	test("omits notInKnownSet when the persisted possible-stage set matches the target", async () => {
-		const knownHarness = stickyBridgeFixture(baseStage(), { possibleStages: ["orchestrator-*", "pull-request"] });
+		const knownHarness = await stickyBridgeFixture(baseStage(), {
+			possibleStages: ["orchestrator-*", "pull-request"],
+		});
 		const literal = await knownHarness.request("1");
 		assert.deepEqual(literal.result, { outcome: "queued", position: 1 });
 
-		const patternHarness = stickyBridgeFixture(baseStage(), { possibleStages: ["pull-request"] });
+		const patternHarness = await stickyBridgeFixture(baseStage(), { possibleStages: ["pull-request"] });
 		const wildcardTarget = await patternHarness.request("2", { target: `workflow:${ROOT_RUN_ID}/pull-*` });
 		assert.deepEqual(wildcardTarget.result, { outcome: "queued", position: 1 });
 
@@ -1777,7 +1805,7 @@ describe("pending-stage bridge sticky delivery", () => {
 		// so the literal target is accepted speculatively as a sticky entry without the
 		// notInKnownSet flag. A target that resolves to a materialized stage instead
 		// keeps today's exactly-once queueing (covered by the exact-path suites).
-		const harness = stickyBridgeFixture(baseStage(), { possibleStages: ["orchestrator-*", "pull-request"] });
+		const harness = await stickyBridgeFixture(baseStage(), { possibleStages: ["orchestrator-*", "pull-request"] });
 		const { result } = await harness.request("1", { target: `workflow:${ROOT_RUN_ID}/orchestrator-9` });
 		assert.deepEqual(result, { outcome: "queued", position: 1 });
 		const entry = harness.store.runs()[0]?.pendingStageMessages?.[0];
@@ -1788,7 +1816,7 @@ describe("pending-stage bridge sticky delivery", () => {
 	});
 
 	test("refuses asks to pattern targets and terminal roots", async () => {
-		const harness = stickyBridgeFixture(baseStage());
+		const harness = await stickyBridgeFixture(baseStage());
 		const ask = await harness.request("ask", { expectsReply: true });
 		assert.deepEqual(ask.result, {
 			outcome: "refused",
@@ -1807,7 +1835,7 @@ describe("pending-stage bridge sticky delivery", () => {
 			stages: [],
 			startedAt: 1,
 		});
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		await backend.registerWorkflow({
 			workflowId: ROOT_RUN_ID,
 			name: "flow",
@@ -1861,7 +1889,7 @@ describe("pending-stage bridge sticky delivery", () => {
 	test("queues sticky when the target resolves to one terminal stage instead of forwarding to a dead alias", async () => {
 		// Round-1 review, finding 6: reviewer-a completed in iteration 1 (its stale
 		// sessionId used to route the send to `forward` and die with Session not found).
-		const harness = stickyBridgeFixture(
+		const harness = await stickyBridgeFixture(
 			baseStage({ id: "rev-a-1", name: "reviewer-a", status: "completed", sessionId: "stale-session" }),
 			{ possibleStages: ["reviewer-a", "pull-request"] },
 		);
@@ -1915,8 +1943,14 @@ describe("pending-stage bridge sticky delivery", () => {
 			],
 			startedAt: 2,
 		});
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "root", inputs: {}, status: "running", createdAt: 1 });
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({
+			workflowId: ROOT_RUN_ID,
+			name: "root",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		bindStoreDurableBackend(store, backend);
 		const listeners = new Map<string, (payload: unknown) => void>();
 		const dispose = registerPendingStageIntercomBridge(
@@ -1967,7 +2001,7 @@ describe("pending-stage bridge sticky delivery", () => {
 	});
 
 	test("records a live delivery only after the broker confirms the write, and a dedup retry re-forwards the unconfirmed target", async () => {
-		const harness = stickyBridgeFixture([
+		const harness = await stickyBridgeFixture([
 			baseStage({ id: "live-id", name: "orchestrator-1", status: "running", sessionId: "session-live" }),
 			baseStage({ id: "future-id", name: "orchestrator-2" }),
 		]);
@@ -2014,7 +2048,7 @@ describe("pending-stage bridge sticky delivery", () => {
 	test("settles sticky entries at terminal status: undeliverable with notice for zero deliveries, delivered silently otherwise", async () => {
 		const store = createStore();
 		terminalStickyFixture(store, "sticky-zero", "sticky-delivered");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		await backend.registerWorkflow({
 			workflowId: ROOT_RUN_ID,
 			name: "flow",
@@ -2071,7 +2105,7 @@ describe("pending-stage bridge sticky delivery", () => {
 	});
 
 	test("exact-id pending-stage queueing still consumes the entry on first delivery", async () => {
-		const { store, backend } = rootFixture();
+		const { store, backend } = await rootFixture();
 		const accepted = await store.queueStageMessage(
 			{
 				runId: ROOT_RUN_ID,
@@ -2118,7 +2152,7 @@ function terminalStickyFixture(store: ReturnType<typeof createStore>, ..._ids: s
 
 test("replacement readiness waits for its own sticky admission after prior successful drain (#3406)", async () => {
 	const store = createStore();
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	bindStoreDurableBackend(store, backend);
 	store.recordRunStart({
 		id: ROOT_RUN_ID,

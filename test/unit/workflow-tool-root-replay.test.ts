@@ -7,7 +7,7 @@ import * as toolPrimitives from "../../packages/workflows/src/durable/tool-primi
 import type { DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 test("resumes interrupted current root tool work without repeating its callback", async () => {
 	const runId = "current-root-replay";
@@ -27,7 +27,7 @@ test("resumes interrupted current root tool work without repeating its callback"
 			return { value };
 		},
 	});
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	const first = await run(definition, {}, { runId, store: createStore(), durableBackend: backend });
 	assert.equal(first.status, "failed");
 	const checkpoints = backend.listCheckpoints(runId);
@@ -47,11 +47,11 @@ test("resumes interrupted current root tool work without repeating its callback"
 });
 
 test("rejects a cached tool without topology instead of replaying or upgrading it", async () => {
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	const workflowId = "missing-topology";
 	const argsHash = durableHash({ name: "effect", args: {}, ordinal: 1 });
-	backend.registerWorkflow({ workflowId, name: "missing-topology", inputs: {}, createdAt: 1, status: "paused" });
-	backend.recordCheckpoint({
+	await backend.registerWorkflow({ workflowId, name: "missing-topology", inputs: {}, createdAt: 1, status: "paused" });
+	await backend.recordCheckpoint({
 		kind: "tool",
 		workflowId,
 		checkpointId: `tool:${argsHash}`,

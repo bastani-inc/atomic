@@ -20,7 +20,10 @@ import { createRegistry } from "../../packages/workflows/src/workflows/registry.
 import { testRunId } from "../helpers/run-id.js";
 import { sleep } from "../helpers/runtime.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import {
+	createMemoryTestBackend,
+	type MemoryJournalBackend as InMemoryDurableBackend,
+} from "../helpers/workflow-journal.js";
 import { buildCtx, installSlashDispatchTestHooks, registerWorkflowCommand } from "./slash-dispatch-utils.js";
 
 const fixtureRunId = (seed: string): string => testRunId(seed);
@@ -53,13 +56,13 @@ function handle(input: {
 	};
 }
 
-function seedNested(
+async function seedNested(
 	targetStore: ReturnType<typeof createStore>,
 	backend: InMemoryDurableBackend,
 	rootId: string,
 	childId: string,
 	stageIds: readonly string[],
-): void {
+): Promise<void> {
 	targetStore.recordRunStart({
 		id: rootId,
 		name: "root",
@@ -101,7 +104,7 @@ function seedNested(
 	}
 	targetStore.recordRunPaused(childId, undefined, { resumable: true, exitReason: "quit" });
 	targetStore.recordRunPaused(rootId, undefined, { resumable: true, exitReason: "quit" });
-	backend.registerWorkflow({
+	await backend.registerWorkflow({
 		workflowId: rootId,
 		name: "root",
 		inputs: {},
@@ -109,7 +112,7 @@ function seedNested(
 		status: "paused",
 		resumable: true,
 	});
-	backend.recordCheckpoint({
+	await backend.recordCheckpoint({
 		kind: "tool",
 		workflowId: rootId,
 		checkpointId: "progress",
@@ -126,7 +129,7 @@ function toolHandler() {
 }
 
 async function startAnsweredQuitSyntheticPrompt(runId: string): Promise<InMemoryDurableBackend> {
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	setDurableBackend(backend);
 	const definition = workflow({
 		name: runId,
@@ -167,7 +170,7 @@ afterEach(() => setDurableBackend(undefined));
 
 describe("post-commit quit and nested resume coherence", () => {
 	test("quit records a fulfilled conforming pause handle in the Store before returning snapshots", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const targetStore = createStore();
 		const registry = createStageControlRegistry();
@@ -189,7 +192,7 @@ describe("post-commit quit and nested resume coherence", () => {
 			parentIds: [],
 			toolEvents: [],
 		});
-		backend.registerWorkflow({ workflowId: runId, name: runId, inputs: {}, createdAt: 1, status: "running" });
+		await backend.registerWorkflow({ workflowId: runId, name: runId, inputs: {}, createdAt: 1, status: "running" });
 		registry.register(
 			handle({
 				runId,
@@ -216,13 +219,13 @@ describe("post-commit quit and nested resume coherence", () => {
 	});
 
 	test("targeted primitive child resume reconciles child, aggregate root, and root durability", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const targetStore = createStore();
 		const registry = createStageControlRegistry();
 		const rootId = fixtureRunId("root-primitive");
 		const childId = fixtureRunId("child-primitive");
-		seedNested(targetStore, backend, rootId, childId, ["child-stage"]);
+		await seedNested(targetStore, backend, rootId, childId, ["child-stage"]);
 		let calls = 0;
 		registry.register(
 			handle({
@@ -257,11 +260,11 @@ describe("post-commit quit and nested resume coherence", () => {
 	});
 
 	test.sequential("slash-targeted nested progress then tool root retry does not duplicate resumed descendants", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const rootId = fixtureRunId("root-reverse-surface-retry");
 		const childId = fixtureRunId("child-reverse-surface-retry");
-		seedNested(singletonStore, backend, rootId, childId, ["first", "second"]);
+		await seedNested(singletonStore, backend, rootId, childId, ["first", "second"]);
 		const calls = new Map<string, number>();
 		for (const stageId of ["first", "second"]) {
 			stageControlRegistry.register(
@@ -310,11 +313,11 @@ describe("post-commit quit and nested resume coherence", () => {
 	});
 
 	test.sequential("tool-targeted nested progress then slash root retry resumes only the remaining descendant", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const rootId = fixtureRunId("root-surface-retry");
 		const childId = fixtureRunId("child-surface-retry");
-		seedNested(singletonStore, backend, rootId, childId, ["first-child-stage", "second-child-stage"]);
+		await seedNested(singletonStore, backend, rootId, childId, ["first-child-stage", "second-child-stage"]);
 		const calls = new Map<string, number>();
 		for (const stageId of ["first-child-stage", "second-child-stage"]) {
 			stageControlRegistry.register(
@@ -411,7 +414,7 @@ describe("post-commit quit and nested resume coherence", () => {
 	});
 
 	test.sequential("slash resume reports terminal completion acknowledged by a paused control", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const runId = fixtureRunId("resume-terminal-slash");
 		const stageId = "awaiting-answer";
@@ -434,7 +437,7 @@ describe("post-commit quit and nested resume coherence", () => {
 		});
 		singletonStore.recordStagePaused(runId, stageId);
 		singletonStore.recordRunPaused(runId, undefined, { resumable: true, exitReason: "quit" });
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: runId,
 			name: runId,
 			inputs: {},
@@ -442,7 +445,7 @@ describe("post-commit quit and nested resume coherence", () => {
 			status: "paused",
 			resumable: true,
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "tool",
 			workflowId: runId,
 			checkpointId: "progress",
@@ -468,7 +471,7 @@ describe("post-commit quit and nested resume coherence", () => {
 						result: "held-answer",
 					});
 					singletonStore.recordRunEnd(runId, "completed", { answer: "held-answer" });
-					backend.setWorkflowStatus(runId, "completed");
+					await backend.setWorkflowStatus(runId, "completed");
 					return undefined;
 				},
 			}),
@@ -496,7 +499,7 @@ describe("post-commit quit and nested resume coherence", () => {
 	});
 
 	test.sequential("tool resume reports async terminal completion as successful progress", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const runId = fixtureRunId("resume-terminal-tool");
 		const stageId = "awaiting-answer";
@@ -519,7 +522,7 @@ describe("post-commit quit and nested resume coherence", () => {
 		});
 		singletonStore.recordStagePaused(runId, stageId);
 		singletonStore.recordRunPaused(runId, undefined, { resumable: true, exitReason: "quit" });
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: runId,
 			name: runId,
 			inputs: {},
@@ -527,7 +530,7 @@ describe("post-commit quit and nested resume coherence", () => {
 			status: "paused",
 			resumable: true,
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "tool",
 			workflowId: runId,
 			checkpointId: "progress",
@@ -554,7 +557,7 @@ describe("post-commit quit and nested resume coherence", () => {
 						result: "held-answer",
 					});
 					singletonStore.recordRunEnd(runId, "completed", { answer: "held-answer" });
-					backend.setWorkflowStatus(runId, "completed");
+					await backend.setWorkflowStatus(runId, "completed");
 					return undefined;
 				},
 			}),
@@ -572,7 +575,7 @@ describe("post-commit quit and nested resume coherence", () => {
 	});
 
 	test.sequential("tool resume retains noop for a pre-existing paused snapshot with no paused control", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const runId = fixtureRunId("resume-no-paused-control");
 		const stageId = "stale-paused-stage";
@@ -594,7 +597,7 @@ describe("post-commit quit and nested resume coherence", () => {
 		});
 		singletonStore.recordStagePaused(runId, stageId);
 		singletonStore.recordRunPaused(runId, undefined, { resumable: true, exitReason: "quit" });
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: runId,
 			name: runId,
 			inputs: {},
@@ -602,7 +605,7 @@ describe("post-commit quit and nested resume coherence", () => {
 			status: "paused",
 			resumable: true,
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "tool",
 			workflowId: runId,
 			checkpointId: "progress",
@@ -638,7 +641,7 @@ describe("post-commit quit and nested resume coherence", () => {
 	});
 
 	test.sequential("slash quit, held synthetic prompt answer, and resume reports one truthful acknowledgment", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const runId = fixtureRunId("resume-synthetic-prompt-command");
 		const definition = workflow({

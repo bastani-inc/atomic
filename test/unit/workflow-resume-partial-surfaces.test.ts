@@ -13,10 +13,13 @@ import {
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { testRunId } from "../helpers/run-id.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import {
+	createMemoryTestBackend,
+	type MemoryJournalBackend as InMemoryDurableBackend,
+} from "../helpers/workflow-journal.js";
 
-function seedPartialRun(runId: string): InMemoryDurableBackend {
-	const backend = new InMemoryDurableBackend();
+async function seedPartialRun(runId: string): Promise<InMemoryDurableBackend> {
+	const backend = await createMemoryTestBackend();
 	setDurableBackend(backend);
 	store.recordRunStart({
 		id: runId,
@@ -32,8 +35,8 @@ function seedPartialRun(runId: string): InMemoryDurableBackend {
 		store.recordStagePaused(runId, stageId);
 	}
 	store.recordRunPaused(runId, undefined, { resumable: true, exitReason: "quit" });
-	backend.registerWorkflow({ workflowId: runId, name: "partial", inputs: {}, createdAt: 1, status: "paused" });
-	backend.recordCheckpoint({
+	await backend.registerWorkflow({ workflowId: runId, name: "partial", inputs: {}, createdAt: 1, status: "paused" });
+	await backend.recordCheckpoint({
 		kind: "tool",
 		workflowId: runId,
 		checkpointId: "progress",
@@ -104,7 +107,7 @@ describe("partial resume command surfaces", () => {
 		test.sequential(`runtime resume failure reports only acknowledged progress: ${parentAcknowledged} (#3670)`, async () => {
 			const runId = testRunId("runtime-resume-progress");
 			const childRunId = testRunId("runtime-resume-child");
-			const backend = new InMemoryDurableBackend();
+			const backend = await createMemoryTestBackend();
 			setDurableBackend(backend);
 			store.recordRunStart({
 				id: runId,
@@ -178,7 +181,7 @@ describe("partial resume command surfaces", () => {
 
 	test.sequential("failed targeted resume ignores an unchanged running sibling (#3670)", async () => {
 		const runId = testRunId("targeted-resume-no-progress");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		store.recordRunStart({
 			id: runId,
@@ -199,7 +202,13 @@ describe("partial resume command surfaces", () => {
 			});
 		}
 		store.recordStagePaused(runId, "target");
-		backend.registerWorkflow({ workflowId: runId, name: "targeted", inputs: {}, createdAt: 1, status: "running" });
+		await backend.registerWorkflow({
+			workflowId: runId,
+			name: "targeted",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
 		let resumeCalls = 0;
 		registerHandle(runId, "target", async () => {
 			resumeCalls += 1;
@@ -227,7 +236,7 @@ describe("partial resume command surfaces", () => {
 
 	test.sequential("workflow tool preserves result identity and reports partial failure", async () => {
 		const runId = testRunId("tool-partial-resume");
-		const backend = seedPartialRun(runId);
+		const backend = await seedPartialRun(runId);
 		const runtime = createExtensionRuntime({ definitions: [], store });
 		const execute = makeExecuteWorkflowTool(
 			runtime,
@@ -248,16 +257,20 @@ describe("partial resume command surfaces", () => {
 	});
 
 	test.sequential("workflow tool reports durable resume failure as partial when a stage is running", async () => {
-		class ThrowRunningBackend extends InMemoryDurableBackend {
-			override async transitionWorkflowStatus(
-				...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>
-			): Promise<boolean> {
-				if (args[2] === "running") throw new Error("durable running write failed");
-				return await super.transitionWorkflowStatus(...args);
-			}
+		async function createThrowRunningBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), {});
+			const basetransitionWorkflowStatus = backend.transitionWorkflowStatus.bind(backend);
+			return Object.assign(backend, {
+				async transitionWorkflowStatus(
+					...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>
+				): Promise<boolean> {
+					if (args[2] === "running") throw new Error("durable running write failed");
+					return await basetransitionWorkflowStatus(...args);
+				},
+			});
 		}
 		const runId = testRunId("tool-durable-resume-failure");
-		const backend = new ThrowRunningBackend();
+		const backend = await createThrowRunningBackend();
 		setDurableBackend(backend);
 		store.recordRunStart({
 			id: runId,
@@ -271,8 +284,14 @@ describe("partial resume command surfaces", () => {
 		store.recordStageStart(runId, { id: "only", name: "only", status: "running", parentIds: [], toolEvents: [] });
 		store.recordStagePaused(runId, "only");
 		store.recordRunPaused(runId, undefined, { resumable: true, exitReason: "quit" });
-		backend.registerWorkflow({ workflowId: runId, name: "partial", inputs: {}, createdAt: 1, status: "paused" });
-		backend.recordCheckpoint({
+		await backend.registerWorkflow({
+			workflowId: runId,
+			name: "partial",
+			inputs: {},
+			createdAt: 1,
+			status: "paused",
+		});
+		await backend.recordCheckpoint({
 			kind: "tool",
 			workflowId: runId,
 			checkpointId: "progress",
@@ -303,18 +322,21 @@ describe("partial resume command surfaces", () => {
 	});
 
 	test.sequential("workflow tool retries transient durable reconciliation on a later resume request", async () => {
-		class TransientRunningBackend extends InMemoryDurableBackend {
-			runningAttempts = 0;
-			override async transitionWorkflowStatus(
-				...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>
-			): Promise<boolean> {
-				if (args[2] === "running" && ++this.runningAttempts === 1)
-					throw new Error("transient public durable failure");
-				return await super.transitionWorkflowStatus(...args);
-			}
+		async function createTransientRunningBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), { runningAttempts: 0 });
+			const basetransitionWorkflowStatus = backend.transitionWorkflowStatus.bind(backend);
+			return Object.assign(backend, {
+				async transitionWorkflowStatus(
+					...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>
+				): Promise<boolean> {
+					if (args[2] === "running" && ++backend.runningAttempts === 1)
+						throw new Error("transient public durable failure");
+					return await basetransitionWorkflowStatus(...args);
+				},
+			});
 		}
 		const runId = testRunId("tool-durable-resume-retry");
-		const backend = new TransientRunningBackend();
+		const backend = await createTransientRunningBackend();
 		setDurableBackend(backend);
 		store.recordRunStart({
 			id: runId,
@@ -328,8 +350,14 @@ describe("partial resume command surfaces", () => {
 		store.recordStageStart(runId, { id: "only", name: "only", status: "running", parentIds: [], toolEvents: [] });
 		store.recordStagePaused(runId, "only");
 		store.recordRunPaused(runId, undefined, { resumable: true, exitReason: "quit" });
-		backend.registerWorkflow({ workflowId: runId, name: "partial", inputs: {}, createdAt: 1, status: "paused" });
-		backend.recordCheckpoint({
+		await backend.registerWorkflow({
+			workflowId: runId,
+			name: "partial",
+			inputs: {},
+			createdAt: 1,
+			status: "paused",
+		});
+		await backend.recordCheckpoint({
 			kind: "tool",
 			workflowId: runId,
 			checkpointId: "progress",
@@ -367,7 +395,7 @@ describe("partial resume command surfaces", () => {
 
 	test.sequential("no-target slash selector reports resume rejection through the reporter", async () => {
 		const runId = testRunId("slash-picker-resume-failure");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		store.recordRunStart({
 			id: runId,
@@ -381,8 +409,8 @@ describe("partial resume command surfaces", () => {
 		store.recordStageStart(runId, { id: "only", name: "only", status: "running", parentIds: [], toolEvents: [] });
 		store.recordStagePaused(runId, "only");
 		store.recordRunPaused(runId, undefined, { resumable: true, exitReason: "quit" });
-		backend.registerWorkflow({ workflowId: runId, name: "picker", inputs: {}, createdAt: 1, status: "paused" });
-		backend.recordCheckpoint({
+		await backend.registerWorkflow({ workflowId: runId, name: "picker", inputs: {}, createdAt: 1, status: "paused" });
+		await backend.recordCheckpoint({
 			kind: "tool",
 			workflowId: runId,
 			checkpointId: "progress",
@@ -427,7 +455,7 @@ describe("partial resume command surfaces", () => {
 
 	test.sequential("slash resume reports the same partial failure instead of success or noop", async () => {
 		const runId = testRunId("slash-partial-resume");
-		const backend = seedPartialRun(runId);
+		const backend = await seedPartialRun(runId);
 		const runtime = createExtensionRuntime({ definitions: [], store });
 		const info: string[] = [];
 		const errors: string[] = [];

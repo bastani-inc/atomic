@@ -8,7 +8,7 @@ import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { restoreOnSessionStart, type SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 describe("workflow returned status outputs", () => {
 	test("failed result.status makes the run fail instead of completing successfully", async () => {
@@ -96,7 +96,7 @@ describe("workflow returned status outputs", () => {
 			},
 		});
 
-		const durableBackend = new InMemoryDurableBackend();
+		const durableBackend = await createMemoryTestBackend();
 		const calls: Array<{ type: string; payload: Record<string, unknown> }> = [];
 		const persistence = {
 			appendEntry(type: string, payload: Record<string, unknown>): string {
@@ -147,7 +147,7 @@ describe("workflow returned status outputs", () => {
 			},
 		});
 
-		const durableBackend = new InMemoryDurableBackend();
+		const durableBackend = await createMemoryTestBackend();
 		const result = await run(
 			def,
 			{},
@@ -276,7 +276,7 @@ describe("workflow returned status outputs", () => {
 			},
 		});
 
-		const durableBackend = new InMemoryDurableBackend();
+		const durableBackend = await createMemoryTestBackend();
 		const calls: Array<{ type: string; payload: Record<string, unknown> }> = [];
 		const persistence = {
 			appendEntry(type: string, payload: Record<string, unknown>): string {

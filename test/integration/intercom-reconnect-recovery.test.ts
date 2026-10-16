@@ -35,7 +35,7 @@ const { IntercomClient } = await import("../../packages/intercom/broker/client.j
 const { default: intercomHeavy } = await import("../../packages/intercom/index-heavy.js");
 const { default: intercomLightweight } = await import("../../packages/intercom/index.js");
 const { reconnectDelayMs } = await import("../../packages/intercom/reconnect-backoff.js");
-const { MemoryJournalBackend: InMemoryDurableBackend } = await import("../helpers/workflow-journal.js");
+const { createMemoryTestBackend } = await import("../helpers/workflow-journal.js");
 const { setDurableBackend } = await import("../../packages/workflows/src/durable/factory.js");
 const { registerPendingStageIntercomBridge } = await import(
 	"../../packages/workflows/src/extension/pending-stage-intercom.js"
@@ -668,8 +668,8 @@ test(
 		const stageName = "reviewer";
 		const workflowGroup = `workflow:${runId}`;
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({
 			workflowId: runId,
 			name: "reconnect-flow",
 			inputs: {},

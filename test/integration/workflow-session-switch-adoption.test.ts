@@ -19,7 +19,7 @@ import type { ExtensionAPI, WorkflowToolArgs } from "../../packages/workflows/sr
 import { fileExists } from "../helpers/runtime.js";
 import { currentStoreBackend as getDurableBackend } from "../helpers/store-backend.js";
 import { decisionModel, registeredDecisionRuntime } from "../helpers/structured-output.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 /** Real resource loader, real SDK sessions, and a real `/new` or `/fork` transaction. */
 const HOST_SWITCH_TIMEOUT_MS = 120_000;
@@ -90,7 +90,7 @@ async function switchHost(
 	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
 	vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
 	vi.stubEnv("TYPESAFE_API_KEY", "");
-	setDurableBackend(new InMemoryDurableBackend());
+	setDurableBackend(await createMemoryTestBackend());
 	const { runtime: modelRuntime } = await registeredDecisionRuntime(() => {
 		throw new Error("the switch-adoption workflow makes no model calls");
 	});

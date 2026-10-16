@@ -25,7 +25,6 @@ import type {
 	DurableWorkflowHandle,
 	DurableWorkflowStatus,
 } from "../types.js";
-import { type SynchronousRunJournal, synchronousJournal } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import { MemoryRunJournal } from "./memory-run-journal.js";
 import {
@@ -42,8 +41,8 @@ import {
 } from "./types.js";
 
 const PROCESS_HOLDER_ID = randomUUID();
-const DEFER_REBUILD = Symbol("defer-rebuild");
 type Operation<T> = Generator<Promise<void>, T, void>;
+type BackendState = "open" | "closing" | "closed";
 type SnapshotPayload = { readonly handle: DurableWorkflowHandle; readonly prompts?: PromptReservationSnapshot };
 type DeliveryPayload = {
 	readonly messageId: string;
@@ -68,16 +67,11 @@ type BackendEvent =
 			DurableWorkflowHandle
 	  >;
 
-function isPromise<T>(value: T | Promise<T>): value is Promise<T> {
-	return typeof (value as Promise<T> | undefined)?.then === "function";
-}
-
-function* invoke<T>(action: () => T | Promise<T>, synchronous = false): Operation<T> {
+function* invoke<T>(action: () => Promise<T>): Operation<T> {
 	try {
 		const result = action();
-		if (synchronous) return result as T;
 		let value: T;
-		yield Promise.resolve(result).then((resolved) => {
+		yield result.then((resolved) => {
 			value = resolved;
 		});
 		return value!;
@@ -90,12 +84,17 @@ function* invoke<T>(action: () => T | Promise<T>, synchronous = false): Operatio
 	}
 }
 
-function execute<T>(operation: Operation<T>, step = operation.next()): T | Promise<T> {
-	if (step.done) return step.value;
-	return step.value.then(
-		() => execute(operation),
-		(error: Error) => execute(operation, operation.throw(error)),
-	);
+async function execute<T>(operation: Operation<T>): Promise<T> {
+	let step = operation.next();
+	while (!step.done) {
+		try {
+			await step.value;
+			step = operation.next();
+		} catch (error) {
+			step = operation.throw(error);
+		}
+	}
+	return step.value;
 }
 
 export class JournalOwnershipError extends WorkflowInstanceOwnershipError {
@@ -147,28 +146,27 @@ interface WorkflowLeaseExecution {
 export class JournalDurableBackend<Journal extends RunJournal = RunJournal> implements DurableWorkflowBackend {
 	readonly persistent: boolean;
 	private readonly projection = createJournalProjection();
-	private readonly synchronous: SynchronousRunJournal | undefined;
 	private readonly sequences = new Map<string, number>();
 	private readonly leases = new Map<string, Lease>();
 	private readonly executions = new Map<string, WorkflowLeaseExecution>();
 	private readonly executionContext = new AsyncLocalStorage<ReadonlyMap<string, WorkflowLeaseExecution>>();
-	private readonly pending = new Map<string, Promise<void>>();
+	private readonly pending = new Map<string | symbol, Promise<void>>();
+	private readonly catalogQueue = Symbol("catalog");
 	private readonly lost = new Map<string, Error>();
 	private readonly prompts = new Map<string, PromptReservationState>();
 	private timer: ReturnType<typeof setInterval> | undefined;
-	private closed = false;
+	private state: BackendState = "open";
+	private closing: Promise<void> | undefined;
+	private renewing: Promise<void> | undefined;
+	private readonly mutationContext = new AsyncLocalStorage<ReadonlySet<WorkflowLeaseExecution>>();
 	private processExitCleanup: (() => void) | undefined;
 
-	constructor(
+	private constructor(
 		readonly journal: Journal,
 		readonly holderId = `${PROCESS_HOLDER_ID}:${randomUUID()}`,
-		rebuild?: typeof DEFER_REBUILD,
 		private readonly ownsJournal = true,
 	) {
-		this.synchronous = synchronousJournal(journal);
 		this.persistent = !(journal instanceof MemoryRunJournal);
-		if (rebuild !== DEFER_REBUILD && this.synchronous !== undefined)
-			for (const run of this.synchronous.listRunsSync()) execute(this.refresh(run.runId));
 	}
 
 	static async open<Journal extends RunJournal>(
@@ -177,7 +175,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	): Promise<JournalDurableBackend<Journal>> {
 		let backend: JournalDurableBackend<Journal> | undefined;
 		try {
-			backend = new JournalDurableBackend(journal, undefined, DEFER_REBUILD, options.ownsJournal ?? true);
+			backend = new JournalDurableBackend(journal, undefined, options.ownsJournal ?? true);
 			for (const run of await journal.listRuns())
 				for await (const entry of journal.read(run.runId)) backend.fold(entry);
 			return backend;
@@ -198,22 +196,44 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		}
 	}
 
-	private serialize<T>(runId: string, action: () => Operation<T>): T | Promise<T> {
-		const prior = this.pending.get(runId);
-		if (prior !== undefined) return prior.then(() => this.serialize(runId, action));
-		const result = execute(action());
-		if (!isPromise(result)) return result;
+	private serialize<T>(
+		runId: string | symbol,
+		action: () => Operation<T>,
+		requiresActiveExecution = true,
+	): Promise<T> {
+		try {
+			this.ensureOpen();
+			if (requiresActiveExecution) this.assertExecutionActive(runId);
+		} catch (error) {
+			return Promise.reject(error);
+		}
+		const admitted = new Set(
+			[...(this.executionContext.getStore()?.values() ?? [])].filter((execution) => !execution.retired),
+		);
+		return this.enqueue(runId, action, admitted);
+	}
+
+	// Internal nested work inherits admission; public mutations must enter through serialize.
+	private enqueue<T>(
+		runId: string | symbol,
+		action: () => Operation<T>,
+		admitted = this.mutationContext.getStore() ?? new Set<WorkflowLeaseExecution>(),
+	): Promise<T> {
+		const prior = this.pending.get(runId) ?? Promise.resolve();
+		const result = prior.then(() => this.mutationContext.run(admitted, () => execute(action())));
 		const settled = result.then(
 			() => {},
 			() => {},
 		);
 		this.pending.set(runId, settled);
-		return result.finally(() => {
+		void settled.then(() => {
 			if (this.pending.get(runId) === settled) this.pending.delete(runId);
 		});
+		return result;
 	}
 
 	private fold(entry: JournalEntry): void {
+		if (entry.seq <= (this.sequences.get(entry.runId) ?? 0)) return;
 		const event = entry.event as BackendEvent;
 		if (event.type === E.checkpointRecorded) {
 			const checkpoint = event.payload;
@@ -258,7 +278,6 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	}
 
 	private *entries(runId: string, fromSeq?: number): Operation<readonly JournalEntry[]> {
-		if (this.synchronous !== undefined) return this.synchronous.readEntries(runId, fromSeq);
 		return yield* invoke(async () => {
 			const entries: JournalEntry[] = [];
 			for await (const entry of this.journal.read(runId, fromSeq)) entries.push(entry);
@@ -278,7 +297,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	}
 	private *current(runId: string): Operation<DurableWorkflowHandle | undefined> {
 		this.ensureOpen();
-		this.assertExecutionActive(runId);
+		this.assertExecutionActive(runId, true);
 		yield* this.refresh(runId);
 		if (this.projection.getWorkflow(runId) === undefined) return undefined;
 		try {
@@ -292,25 +311,23 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		return this.projection.getWorkflow(runId);
 	}
 	private ensureOpen(): void {
-		if (this.closed) throw new JournalBackendClosedError();
+		if (this.state === "closed" || (this.state === "closing" && !this.mutationContext.getStore()))
+			throw new JournalBackendClosedError();
 	}
-	private assertExecutionActive(runId: string): void {
-		for (const execution of this.executionContext.getStore()?.values() ?? [])
-			if (execution.retired) throw new JournalExecutionRetiredError(runId);
+	private assertExecutionActive(runId: string | symbol, admitted = false): void {
+		for (const [executionRunId, execution] of this.executionContext.getStore() ?? [])
+			if (execution.retired && !(admitted && this.mutationContext.getStore()?.has(execution)))
+				throw new JournalExecutionRetiredError(typeof runId === "string" ? runId : executionRunId);
 	}
 	private *ownership(runId: string): Operation<Lease> {
 		this.ensureOpen();
-		this.assertExecutionActive(runId);
+		this.assertExecutionActive(runId, true);
 		const lost = this.lost.get(runId);
 		if (lost) throw lost;
 		const existing = this.leases.get(runId);
 		if (existing) return existing;
-		const result = yield* invoke(
-			() =>
-				this.synchronous !== undefined
-					? this.synchronous.takeoverExpiredSync(runId, this.holderId, FOREIGN_LIVE_WORKFLOW_WINDOW_MS)
-					: this.journal.takeoverExpired(runId, this.holderId, FOREIGN_LIVE_WORKFLOW_WINDOW_MS),
-			this.synchronous !== undefined,
+		const result = yield* invoke(() =>
+			this.journal.takeoverExpired(runId, this.holderId, FOREIGN_LIVE_WORKFLOW_WINDOW_MS),
 		);
 		if (result.status === "held") throw new JournalOwnershipError(runId, result.holderId);
 		this.leases.set(runId, result.lease);
@@ -320,7 +337,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			}, STAGE_SESSION_HEARTBEAT_INTERVAL_MS);
 			this.timer.unref();
 		}
-		const execution = this.executions.get(runId);
+		const execution = this.executionContext.getStore()?.get(runId) ?? this.executions.get(runId);
 		if (execution !== undefined) execution.lease = result.lease;
 		yield* this.rebuild(runId);
 		return result.lease;
@@ -330,11 +347,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		let failure = new JournalOwnershipError(runId, null, error);
 		this.lost.set(runId, failure);
 		try {
-			const current = yield* invoke(
-				() =>
-					this.synchronous !== undefined ? this.synchronous.leaseStateSync(runId) : this.journal.leaseState(runId),
-				this.synchronous !== undefined,
-			);
+			const current = yield* invoke(() => this.journal.leaseState(runId));
 			failure = new JournalOwnershipError(runId, current?.holderId ?? null, error);
 			this.lost.set(runId, failure);
 		} catch {
@@ -349,14 +362,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	): Operation<void> {
 		const lease = yield* this.ownership(runId);
 		try {
-			yield* invoke(
-				() =>
-					this.synchronous !== undefined
-						? this.synchronous.appendSync(lease, event, options)
-						: this.journal.append(lease, event, options),
-				this.synchronous !== undefined,
-			);
-			yield* this.refresh(runId);
+			const outcome = yield* invoke(() => this.journal.append(lease, event, options));
+			this.fold(outcome.entry);
 		} catch (error) {
 			if (error instanceof Error) throw yield* this.mapOwnership(error, runId);
 			throw error;
@@ -384,11 +391,11 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		return draft;
 	}
 
-	registerWorkflow(input: WorkflowRegistrationInput): void | Promise<void> {
+	registerWorkflow(input: WorkflowRegistrationInput): Promise<void> {
 		return this.serialize(input.workflowId, () => this.register(input));
 	}
 	private *register(input: WorkflowRegistrationInput): Operation<void> {
-		this.assertExecutionActive(input.workflowId);
+		this.assertExecutionActive(input.workflowId, true);
 		this.ensureOpen();
 		const header = {
 			runId: input.workflowId,
@@ -398,10 +405,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			status: input.status,
 			inputs: input.inputs,
 		};
-		yield* invoke(
-			() => this.synchronous?.createRunSync(header) ?? this.journal.createRun(header),
-			this.synchronous !== undefined,
-		);
+		yield* invoke(() => this.journal.createRun(header));
 		yield* this.ownership(input.workflowId);
 		yield* this.refresh(input.workflowId);
 		const draft = yield* this.draft(input.workflowId);
@@ -419,7 +423,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		)
 			throw new DurableNestedTopologyError(`missing invocation fingerprint at ${checkpoint.checkpointId}`);
 	}
-	recordCheckpoint(checkpoint: DurableCheckpoint): void | Promise<void> {
+	recordCheckpoint(checkpoint: DurableCheckpoint): Promise<void> {
 		return this.serialize(checkpoint.workflowId, () => this.checkpoint(checkpoint));
 	}
 	private *checkpoint(checkpoint: DurableCheckpoint): Operation<void> {
@@ -453,14 +457,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			return false;
 		}
 	}
-	workflowOwnership(runId: string): "local" | "foreign" | "available" | Promise<"local" | "foreign" | "available"> {
-		if (this.synchronous !== undefined) {
-			const lease = this.synchronous.leaseStateSync(runId);
-			if (lease === undefined || isWorkflowLeaseExpired(0, FOREIGN_LIVE_WORKFLOW_WINDOW_MS, lease.ageMs))
-				return "available";
-			return lease.holderId === this.holderId ? "local" : "foreign";
-		}
-		return this.serialize(runId, () => this.probeOwnership(runId));
+	workflowOwnership(runId: string): Promise<"local" | "foreign" | "available"> {
+		return this.serialize(runId, () => this.probeOwnership(runId), false);
 	}
 	private *probeOwnership(runId: string): Operation<"local" | "foreign" | "available"> {
 		this.ensureOpen();
@@ -475,7 +473,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		pendingPrompts?: number,
 		resumable?: boolean,
 		failure?: DurableWorkflowFailureMetadata,
-	): void | Promise<void> {
+	): Promise<void> {
 		return this.serialize(runId, () => this.setStatus(runId, status, pendingPrompts, resumable, failure));
 	}
 	private *setStatus(
@@ -583,7 +581,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		});
 		return result;
 	}
-	adjustPendingPrompts(runId: string, delta: number): void | Promise<void> {
+	adjustPendingPrompts(runId: string, delta: number): Promise<void> {
 		return this.serialize(runId, () =>
 			this.promptChange(runId, delta >= 0 ? E.promptAsked : E.promptReleased, (state) => state.adjust(delta)),
 		);
@@ -591,18 +589,12 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	promptReservationScope(runId: string) {
 		return { rootWorkflowId: runId, scope: "root" };
 	}
-	pendingPromptToken(
-		runId: string,
-		reservationId: string,
-	): PromptReservationToken | undefined | Promise<PromptReservationToken | undefined> {
+	pendingPromptToken(runId: string, reservationId: string): Promise<PromptReservationToken | undefined> {
 		return this.serialize(runId, () =>
 			this.promptChange(runId, E.promptAsked, (state) => state.claim(reservationId), true),
 		);
 	}
-	reservePendingPrompt(
-		runId: string,
-		reservationId: string,
-	): PromptReservationToken | Promise<PromptReservationToken> {
+	reservePendingPrompt(runId: string, reservationId: string): Promise<PromptReservationToken> {
 		return this.serialize(runId, () => this.reserve(runId, reservationId));
 	}
 	private *reserve(runId: string, reservationId: string): Operation<PromptReservationToken> {
@@ -611,7 +603,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			inactivePromptReservationToken(reservationId)
 		);
 	}
-	releasePendingPrompt(runId: string, reservationId: string, token: PromptReservationToken): void | Promise<void> {
+	releasePendingPrompt(runId: string, reservationId: string, token: PromptReservationToken): Promise<void> {
 		return this.serialize(runId, () =>
 			this.promptChange(runId, E.promptReleased, (state) => state.release(reservationId, token)),
 		);
@@ -739,12 +731,16 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		return this.getPendingStageMessageDeliveryCount(runId, messageId, logicalRunId);
 	}
 	async hydrateWorkflow(runId: string): Promise<void> {
-		await this.serialize(runId, () => this.rebuild(runId));
+		await this.serialize(runId, () => this.rebuild(runId), false);
 	}
-	async hydrateResumableWorkflows(): Promise<void> {
-		const runs = await execute(invoke(() => this.journal.listRuns()));
-		for (const runId of new Set([...this.sequences.keys(), ...runs.map((run) => run.runId)]))
-			await this.hydrateWorkflow(runId);
+	hydrateResumableWorkflows(): Promise<void> {
+		return this.serialize(this.catalogQueue, () =>
+			invoke(async () => {
+				const runs = await this.journal.listRuns();
+				for (const runId of new Set([...this.sequences.keys(), ...runs.map((run) => run.runId)]))
+					await this.hydrateWorkflow(runId);
+			}),
+		);
 	}
 	async prepareWorkflowCatalog() {
 		await this.hydrateResumableWorkflows();
@@ -753,12 +749,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	private *deleteOwned(runId: string, expectSeq?: number): Operation<void> {
 		try {
 			const lease = yield* this.ownership(runId);
-			if (expectSeq !== undefined) {
-				const entries = yield* this.entries(runId);
-				const actualSeq = entries.at(-1)?.seq ?? 0;
-				if (actualSeq !== expectSeq) throw new JournalCasConflictError(runId, expectSeq, actualSeq);
-			}
-			yield* invoke(() => this.journal.deleteOwnedRun(lease));
+			yield* invoke(() => this.journal.deleteOwnedRun(lease, expectSeq));
 		} catch (error) {
 			if (!(error instanceof RunNotFoundError)) {
 				if (error instanceof Error) throw yield* this.mapOwnership(error, runId);
@@ -795,29 +786,28 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			}
 		}
 	}
-	reset(): void | Promise<void> {
-		return execute(this.resetJournal());
+	reset(): Promise<void> {
+		return this.serialize(this.catalogQueue, () => this.resetJournal());
 	}
 	private *resetJournal(): Operation<void> {
-		const runs = yield* invoke(
-			() => this.synchronous?.listRunsSync() ?? this.journal.listRuns(),
-			this.synchronous !== undefined,
-		);
-		for (const run of runs)
-			yield* invoke(() => {
-				if (this.synchronous !== undefined) return this.synchronous.deleteRunSync(run.runId);
-				return this.journal.deleteRun(run.runId);
-			}, this.synchronous !== undefined);
-		this.projection.reset();
-		this.sequences.clear();
-		this.leases.clear();
-		this.lost.clear();
-		this.prompts.clear();
+		const runIds = new Set(this.sequences.keys());
+		const runs = yield* invoke(() => this.journal.listRuns());
+		for (const run of runs) runIds.add(run.runId);
+		for (const runId of runIds) yield this.enqueue(runId, () => this.deleteOwned(runId));
 	}
-	private async renewLeases(): Promise<void> {
+	private renewLeases(): Promise<void> {
+		if (this.renewing !== undefined) return this.renewing;
+		if (this.state !== "open") return Promise.resolve();
+		this.renewing = this.renewOwnedLeases().finally(() => {
+			this.renewing = undefined;
+		});
+		return this.renewing;
+	}
+	private async renewOwnedLeases(): Promise<void> {
 		for (const [runId, lease] of this.leases) {
+			if (this.state !== "open") return;
 			try {
-				await this.serialize(runId, () => this.renewLease(runId, lease));
+				await this.serialize(runId, () => this.renewLease(runId, lease), false);
 			} catch (error) {
 				if (error instanceof Error) this.lost.set(runId, error);
 				this.dropLease(runId);
@@ -827,10 +817,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	private *renewLease(runId: string, lease: Lease): Operation<void> {
 		if (this.leases.get(runId) !== lease || this.lost.has(runId)) return;
 		try {
-			yield* invoke(() => {
-				if (this.synchronous !== undefined) return this.synchronous.renewSync(lease);
-				return this.journal.renew(lease);
-			}, this.synchronous !== undefined);
+			yield* invoke(() => this.journal.renew(lease));
 		} catch (error) {
 			if (this.leases.get(runId) === lease) {
 				if (error instanceof Error) this.lost.set(runId, yield* this.mapOwnership(error, runId));
@@ -876,21 +863,18 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		if (execution.retired) return;
 		execution.retired = true;
 		if (this.executions.get(runId) === execution) this.executions.delete(runId);
-		if (execution.lease !== undefined && this.leases.get(runId) === execution.lease)
-			return this.serialize(runId, () => this.release(runId));
+		if (this.state !== "open") return this.closing;
+		return this.serialize(runId, () => this.release(runId, execution), false);
 	}
-	releaseWorkflow(runId: string): void | Promise<void> {
+	releaseWorkflow(runId: string): Promise<void> {
 		this.assertExecutionActive(runId);
 		return this.serialize(runId, () => this.release(runId));
 	}
-	private *release(runId: string): Operation<void> {
+	private *release(runId: string, execution?: WorkflowLeaseExecution): Operation<void> {
 		const lease = this.leases.get(runId);
-		if (lease === undefined) return;
+		if (lease === undefined || (execution !== undefined && execution.lease !== lease)) return;
 		try {
-			yield* invoke(() => {
-				if (this.synchronous !== undefined) return this.synchronous.releaseSync(lease);
-				return this.journal.release(lease);
-			}, this.synchronous !== undefined);
+			yield* invoke(() => this.journal.release(lease));
 		} catch (error) {
 			if (!(error instanceof StaleLeaseError)) throw error;
 		} finally {
@@ -900,26 +884,31 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	private dropLease(runId: string): void {
 		this.leases.delete(runId);
 		if (this.leases.size === 0) {
-			clearInterval(this.timer);
+			if (this.timer !== undefined) clearInterval(this.timer);
 			this.timer = undefined;
 		}
 	}
-	private *releaseAll(): Operation<void> {
-		for (const runId of this.leases.keys()) yield* this.release(runId);
-	}
-	async close(): Promise<void> {
+	close(): Promise<void> {
+		if (this.closing !== undefined) return this.closing;
+		this.state = "closing";
 		if (this.processExitCleanup !== undefined) {
 			process.off("exit", this.processExitCleanup);
 			this.processExitCleanup = undefined;
 		}
-		if (this.closed) return;
 		if (this.timer !== undefined) clearInterval(this.timer);
-		if (this.pending.size > 0) await Promise.all(this.pending.values());
+		this.timer = undefined;
+		this.closing = this.drainAndClose();
+		return this.closing;
+	}
+	private async drainAndClose(): Promise<void> {
 		try {
-			const released = execute(this.releaseAll());
-			if (isPromise(released)) await released;
+			await this.renewing;
+			while (this.pending.size > 0) await Promise.all(this.pending.values());
+			for (const runId of this.leases.keys()) await execute(this.release(runId));
 		} finally {
-			this.closed = true;
+			if (this.timer !== undefined) clearInterval(this.timer);
+			this.timer = undefined;
+			this.state = "closed";
 			if (this.ownsJournal) await execute(invoke(() => this.journal.close()));
 		}
 	}

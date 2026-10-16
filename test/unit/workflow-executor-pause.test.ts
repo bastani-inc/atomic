@@ -17,7 +17,7 @@ import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore, store } from "../../packages/workflows/src/shared/store.js";
 import { INTERACTIVE_WORKFLOW_POLICY } from "../../packages/workflows/src/shared/types.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 afterEach(() => {
@@ -28,7 +28,7 @@ afterEach(() => {
 // PR #2885: executor-only control must retain the live owner and actually resume it.
 for (const action of ["pause"] as const) {
 	test(`${action} gates node-less body work and public resume advances the same owner exactly once`, async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const entered = Promise.withResolvers<void>();
 		const body = Promise.withResolvers<void>();
@@ -113,7 +113,7 @@ for (const action of ["pause"] as const) {
 
 for (const outcome of ["resolve", "reject"] as const) {
 	test(`node-less body ${outcome} cannot settle a paused owner before resume`, async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const entered = Promise.withResolvers<void>();
 		const body = Promise.withResolvers<void>();
@@ -153,7 +153,7 @@ for (const outcome of ["resolve", "reject"] as const) {
 
 for (const outcome of ["resolve", "reject"] as const) {
 	test(`quit retires a paused zero-progress owner before late body ${outcome}`, async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const entered = Promise.withResolvers<void>();
 		const body = Promise.withResolvers<void>();
@@ -203,7 +203,7 @@ for (const outcome of ["resolve", "reject"] as const) {
 
 for (const cached of [false, true]) {
 	test(`${cached ? "cached" : "live"} stage admission waits on the executor pause barrier`, async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const entered = Promise.withResolvers<void>();
 		const body = Promise.withResolvers<void>();
@@ -264,7 +264,7 @@ for (const cached of [false, true]) {
 
 for (const primitive of ["task", "workflow", "ui", "tool"] as const) {
 	test(`cached ${primitive} replay cannot pass a paused node-less owner`, async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const entered = Promise.withResolvers<void>();
 		const body = Promise.withResolvers<void>();
@@ -353,7 +353,7 @@ for (const primitive of ["task", "workflow", "ui", "tool"] as const) {
 }
 
 test("an author exit after a node-less pause waits for resume", async () => {
-	setDurableBackend(new InMemoryDurableBackend());
+	setDurableBackend(await createMemoryTestBackend());
 	const entered = Promise.withResolvers<void>();
 	const body = Promise.withResolvers<void>();
 	const definition = workflow({
@@ -388,7 +388,7 @@ test("an author exit after a node-less pause waits for resume", async () => {
 });
 
 test("paused stage declarations retain replay identity when methods run in reverse order", async () => {
-	setDurableBackend(new InMemoryDurableBackend());
+	setDurableBackend(await createMemoryTestBackend());
 	const entered = Promise.withResolvers<void>();
 	const body = Promise.withResolvers<void>();
 	let waiting = false;
@@ -442,7 +442,7 @@ test("paused stage declarations retain replay identity when methods run in rever
 });
 
 test("prompt-node continuation UI waits for the node-less pause barrier", async () => {
-	setDurableBackend(new InMemoryDurableBackend());
+	setDurableBackend(await createMemoryTestBackend());
 	const entered = Promise.withResolvers<void>();
 	const body = Promise.withResolvers<void>();
 	let answers = 0;
@@ -506,7 +506,7 @@ test("prompt-node continuation UI waits for the node-less pause barrier", async 
 for (const primitive of ["tool", "stage", "completion"] as const) {
 	for (const action of ["resume", "quit"] as const) {
 		test(`whole-run pause holds an already-live child's ${primitive} until ${action}`, async () => {
-			const backend = new InMemoryDurableBackend();
+			const backend = await createMemoryTestBackend();
 			setDurableBackend(backend);
 			const entered = Promise.withResolvers<string>();
 			const body = Promise.withResolvers<void>();
@@ -612,7 +612,7 @@ for (const primitive of ["tool", "stage", "completion"] as const) {
 
 for (const scope of ["root", "branch"] as const) {
 	test(`${scope} executor pause traverses owned grandchildren without crossing sibling scopes`, async () => {
-		setDurableBackend(new InMemoryDurableBackend());
+		setDurableBackend(await createMemoryTestBackend());
 		const leafEntered = Promise.withResolvers<string>();
 		const siblingEntered = Promise.withResolvers<string>();
 		const body = Promise.withResolvers<void>();

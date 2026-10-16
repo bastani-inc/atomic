@@ -26,7 +26,7 @@ import {
 	messageStream,
 	registeredDecisionRuntime,
 } from "../helpers/structured-output.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { createStore, run, structuredOutputMockSession, Type, workflow } from "./executor-shared.js";
 import { createStageContext, makeMockSession, makeOpts } from "./stage-runner-helpers.js";
 
@@ -1013,7 +1013,7 @@ for (const method of ["prompt", "complete"] as const) {
 
 for (const change of ["empty catalog", "price exceeds maxInputCost", "still eligible"] as const) {
 	test(`public live auto resume with ${change} retains one selection and session`, async () => {
-		setDurableBackend(new InMemoryDurableBackend());
+		setDurableBackend(await createMemoryTestBackend());
 		const f = await fixture();
 		const controls = createStageControlRegistry();
 		const started = Promise.withResolvers<void>();

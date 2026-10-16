@@ -32,7 +32,7 @@ import type { PendingStageMessage } from "../../packages/workflows/src/shared/st
 import { JournalTestDatabase } from "../helpers/journal-database.js";
 import { assertLeaseStateUnchanged } from "../helpers/journal-lease-state.js";
 import { bunExecutable, makeTempDirectory, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 async function entries(journal: RunJournal): Promise<JournalEntry[]> {
 	const result: JournalEntry[] = [];
@@ -422,7 +422,7 @@ test("owner release and reclaim match the in-memory backend before and after reo
 	vi.setSystemTime(1_000);
 	const path = database();
 	let journal = await open(path);
-	const memory = new InMemoryDurableBackend();
+	const memory = await createMemoryTestBackend();
 	const input = {
 		workflowId: "run",
 		name: "owned",

@@ -23,7 +23,7 @@ import { computeLayout, NODE_H, NODE_W } from "../../packages/workflows/src/tui/
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { testRunId } from "../helpers/run-id.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { defaultTheme } from "./overlay-graph-helpers.js";
 
 function recordToolOnly(target = createStore(), status: "running" | "completed" = "running") {
@@ -451,10 +451,10 @@ describe("non-attachable tool interactions", () => {
 	);
 
 	test("tool resumes a failed author exit through the durable backend", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const id = testRunId("failed-author-exit-tool");
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: id,
 			name: "failed-author-exit-tool-flow",
 			inputs: {},
@@ -502,11 +502,11 @@ describe("non-attachable tool interactions", () => {
 	});
 
 	test("budget_exceeded run resumes through the shipped workflow tool with a raised budget", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const id = testRunId("budget-tool-resume");
 		const stageId = `${id}:frontier`;
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: id,
 			name: "budget-tool-resume-flow",
 			inputs: {},
@@ -553,7 +553,7 @@ describe("non-attachable tool interactions", () => {
 	});
 
 	test("budget resume action launches a raised-budget continuation through the real runtime", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const definition = workflow({
 			name: "budget-surface-resume",
@@ -601,7 +601,7 @@ describe("non-attachable tool interactions", () => {
 	});
 
 	test("tool does not snapshot-resume an exited failure without a durable registration", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const id = testRunId("missing-author-exit-tool");
 		store.recordRunStart({

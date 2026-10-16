@@ -28,7 +28,10 @@ import type { WorkflowActor } from "../../packages/workflows/src/shared/store-ty
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import type { WorkflowRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { testRunId } from "../helpers/run-id.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import {
+	createMemoryTestBackend,
+	type MemoryJournalBackend as InMemoryDurableBackend,
+} from "../helpers/workflow-journal.js";
 
 interface CapturedNotice {
 	readonly content: string;
@@ -69,9 +72,9 @@ describe("durable resume lifecycle notices", () => {
 	let cancellation: ReturnType<typeof createCancellationRegistry>;
 	let jobs: ReturnType<typeof createJobTracker>;
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		store = createStore();
-		backend = new InMemoryDurableBackend();
+		backend = await createMemoryTestBackend();
 		cancellation = createCancellationRegistry();
 		jobs = createJobTracker();
 	});
@@ -94,8 +97,8 @@ describe("durable resume lifecycle notices", () => {
 		return { sent, unsubscribe };
 	}
 
-	function registerQuitWorkflow(workflowId: string, origin?: WorkflowActor): void {
-		backend.registerWorkflow({
+	async function registerQuitWorkflow(workflowId: string, origin?: WorkflowActor): Promise<void> {
+		await backend.registerWorkflow({
 			workflowId,
 			name: "resumable-pipeline",
 			inputs: { topic: "data" },
@@ -121,7 +124,7 @@ describe("durable resume lifecycle notices", () => {
 
 	test("a user durable resume reports a resume, never a start", async () => {
 		const workflowId = testRunId("wf-durable-resumed");
-		registerQuitWorkflow(workflowId, "agent");
+		await registerQuitWorkflow(workflowId, "agent");
 		const { sent, unsubscribe } = install(["started", "resumed", "completed"]);
 		try {
 			const result = await resumeDurableWorkflow(workflowId, deps("user"));
@@ -149,7 +152,7 @@ describe("durable resume lifecycle notices", () => {
 
 	test("an agent durable resume reports nothing", async () => {
 		const workflowId = testRunId("wf-durable-agent");
-		registerQuitWorkflow(workflowId, "user");
+		await registerQuitWorkflow(workflowId, "user");
 		const { sent, unsubscribe } = install(["started", "resumed"]);
 		try {
 			const result = await resumeDurableWorkflow(workflowId, deps("agent"));
@@ -162,7 +165,7 @@ describe("durable resume lifecycle notices", () => {
 
 	test("a durable resume of a run with no recorded origin omits the attribution clause", async () => {
 		const workflowId = testRunId("wf-durable-legacy");
-		registerQuitWorkflow(workflowId);
+		await registerQuitWorkflow(workflowId);
 		const { sent, unsubscribe } = install(["started", "resumed"]);
 		try {
 			const result = await resumeDurableWorkflow(workflowId, deps("user"));

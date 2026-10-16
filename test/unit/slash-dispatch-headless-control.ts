@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { testRunId } from "../helpers/run-id.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import type { ChatSurfacePayload, ExtensionAPI, PiCommandContext, PiCommandOptions } from "./slash-dispatch-utils.js";
 import {
 	addFactoryStubs,
@@ -24,7 +24,7 @@ import {
 installSlashDispatchTestHooks();
 const MISSING_RUN_ID = testRunId("definitely-missing");
 
-beforeEach(() => setDurableBackend(new InMemoryDurableBackend()));
+beforeEach(async () => setDurableBackend(await createMemoryTestBackend()));
 afterEach(() => setDurableBackend(undefined));
 
 describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", () => {

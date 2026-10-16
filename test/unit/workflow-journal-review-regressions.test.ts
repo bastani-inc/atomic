@@ -101,8 +101,14 @@ for (const method of ["takeoverExpired", "leaseState"] as const) {
 		const memory = new MemoryRunJournal();
 		const journal = asyncJournal(memory);
 		const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
-		const register = () =>
-			backend.registerWorkflow({ workflowId: "run", name: "test", inputs: {}, createdAt: 1, status: "running" });
+		const register = async () =>
+			await backend.registerWorkflow({
+				workflowId: "run",
+				name: "test",
+				inputs: {},
+				createdAt: 1,
+				status: "running",
+			});
 		try {
 			for (const failure of [new RunNotFoundError("run"), new TypeError("adapter failed")]) {
 				for (const completion of ["throw", "reject"] as const) {
@@ -114,8 +120,8 @@ for (const method of ["takeoverExpired", "leaseState"] as const) {
 						return result;
 					};
 					await assert.rejects(
-						Promise.resolve().then(() =>
-							method === "takeoverExpired" ? register() : backend.workflowOwnership("run"),
+						Promise.resolve().then(async () =>
+							method === "takeoverExpired" ? await register() : await backend.workflowOwnership("run"),
 						),
 						(error: Error) => {
 							if (failure instanceof RunNotFoundError) assert.equal(error, failure);
@@ -300,7 +306,7 @@ test("async-only ownership inspection is read-only and expired takeover fences t
 		assert.equal(current?.epoch, initial.epoch + 1);
 		assert.equal(current?.holderId, reader.holderId);
 		await assert.rejects(
-			Promise.resolve().then(() => writer.setWorkflowStatus("run", "failed")),
+			Promise.resolve().then(async () => await writer.setWorkflowStatus("run", "failed")),
 			JournalOwnershipError,
 		);
 		assert.equal((await memory.getRun("run"))?.status, "paused");
@@ -355,7 +361,7 @@ test("release waits for an in-flight heartbeat and permits a fresh resume lease 
 		});
 		vi.advanceTimersByTime(STAGE_SESSION_HEARTBEAT_INTERVAL_MS);
 		await started.promise;
-		releasing = Promise.resolve(backend.releaseWorkflow("heartbeat"));
+		releasing = backend.releaseWorkflow("heartbeat");
 		await Promise.resolve();
 		assert.equal(releases, 0, "release must not overtake a renewal of the same lease");
 		finish.resolve();

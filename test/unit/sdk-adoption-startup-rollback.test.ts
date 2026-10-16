@@ -5,13 +5,18 @@ import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resu
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import {
+	createMemoryTestBackend,
+	type MemoryJournalBackend as InMemoryDurableBackend,
+} from "../helpers/workflow-journal.js";
 
-function fixture(
-	backend = new InMemoryDurableBackend(),
+async function fixture(
+	backend: Awaited<ReturnType<typeof createMemoryTestBackend>> | undefined = undefined,
 	overrides: Partial<Parameters<InMemoryDurableBackend["registerWorkflow"]>[0]> = {},
 ) {
-	backend.workflowOwnership = () => "available";
+	backend ??= await createMemoryTestBackend();
+
+	backend.workflowOwnership = async () => "available";
 	const definition = workflow({
 		name: "adoption-startup",
 		description: "",
@@ -20,7 +25,7 @@ function fixture(
 		run: async () => ({}),
 	});
 	const id = crypto.randomUUID();
-	backend.registerWorkflow({
+	await backend.registerWorkflow({
 		workflowId: id,
 		name: definition.name,
 		inputs: {},
@@ -62,15 +67,15 @@ function fixture(
 
 for (const status of ["running", "paused", "cancelled", "completed"] as const) {
 	test(`adoption failed startup preserves newer ${status} control and snapshot (#3419)`, async () => {
-		const f = fixture();
+		const f = await fixture();
 		let controlled: ReturnType<typeof f.store.runs>[number] | undefined;
 		const result = await resumeDurableWorkflow(f.id, {
 			...f.deps,
 			baseRunOpts: {
 				...f.deps.baseRunOpts,
 				persistence: {
-					appendEntry() {
-						f.backend.setWorkflowStatus(f.id, status, 2, false);
+					async appendEntry() {
+						await f.backend.setWorkflowStatus(f.id, status, 2, false);
 						controlled = { ...f.source, status: status === "cancelled" ? "failed" : status, endedAt: 3 };
 						f.store.recordRunStart(controlled);
 						throw new Error("startup write failed");
@@ -89,7 +94,7 @@ for (const status of ["running", "paused", "cancelled", "completed"] as const) {
 }
 
 test("uncontended synchronous adoption rollback retains the adopted owner and checkpoints (#3419)", async () => {
-	const f = fixture();
+	const f = await fixture();
 	const result = await resumeDurableWorkflow(f.id, {
 		...f.deps,
 		jobs: Object.assign(createJobTracker(), {
@@ -106,7 +111,7 @@ test("uncontended synchronous adoption rollback retains the adopted owner and ch
 });
 
 test("adoption preserves current startup failure metadata rather than restoring running (#3419)", async () => {
-	const f = fixture();
+	const f = await fixture();
 	const result = await resumeDurableWorkflow(f.id, {
 		...f.deps,
 		baseRunOpts: {
@@ -126,18 +131,20 @@ test("adoption preserves current startup failure metadata rather than restoring 
 });
 
 test("synchronous adoption launch refusal preserves newer pause and snapshot (#3419)", async () => {
-	const f = fixture();
+	const f = await fixture();
 	const controlled = { ...f.source, status: "paused" as const, endedAt: 3 };
+	let pauseWrite = Promise.resolve();
 	const result = await resumeDurableWorkflow(f.id, {
 		...f.deps,
 		jobs: Object.assign(createJobTracker(), {
 			register() {
-				f.backend.setWorkflowStatus(f.id, "paused", 2, false);
+				pauseWrite = f.backend.setWorkflowStatus(f.id, "paused", 2, false);
 				f.store.recordRunStart(controlled);
 				throw new Error("startup registration failed");
 			},
 		}),
 	});
+	await pauseWrite;
 	assert.equal(result.ok, false);
 	assert.equal(f.backend.getWorkflow(f.id)?.status, "paused");
 	assert.equal(f.backend.getWorkflow(f.id)?.modelOwner, "new-session");
@@ -149,23 +156,27 @@ test("aborted adoption claim retains newer running metadata without launching (#
 	const claimed = Promise.withResolvers<void>();
 	const release = Promise.withResolvers<void>();
 	const settled = Promise.withResolvers<void>();
-	class DelayedClaimBackend extends InMemoryDurableBackend {
-		override async transitionWorkflowStatus(...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>) {
-			const accepted = await super.transitionWorkflowStatus(...args);
-			claimed.resolve();
-			await release.promise;
-			settled.resolve();
-			return accepted;
-		}
+	async function createDelayedClaimBackend() {
+		const backend = Object.assign(await createMemoryTestBackend(), {});
+		const basetransitionWorkflowStatus = backend.transitionWorkflowStatus.bind(backend);
+		return Object.assign(backend, {
+			async transitionWorkflowStatus(...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>) {
+				const accepted = await basetransitionWorkflowStatus(...args);
+				claimed.resolve();
+				await release.promise;
+				settled.resolve();
+				return accepted;
+			},
+		});
 	}
-	const f = fixture(new DelayedClaimBackend());
+	const f = await fixture(await createDelayedClaimBackend());
 	const controller = new AbortController();
 	const reason = new Error("abort adoption");
 	const pending = resumeDurableWorkflow(f.id, { ...f.deps, signal: controller.signal }).catch((error) => error);
 	await claimed.promise;
 	controller.abort(reason);
 	assert.equal(await pending, reason);
-	f.backend.setWorkflowStatus(f.id, "running", 4, false);
+	await f.backend.setWorkflowStatus(f.id, "running", 4, false);
 	const controlled = f.backend.getWorkflow(f.id);
 	release.resolve();
 	await settled.promise;
@@ -176,7 +187,7 @@ test("aborted adoption claim retains newer running metadata without launching (#
 });
 
 test("failed startup of a released-owner adoption restores the paused run under the adopter (#3566)", async () => {
-	const f = fixture(new InMemoryDurableBackend(), {
+	const f = await fixture(await createMemoryTestBackend(), {
 		status: "paused",
 		releasedModelOwner: "old-session",
 		ownerLiveness: "alive",

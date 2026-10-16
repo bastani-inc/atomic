@@ -8,7 +8,7 @@ import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { testRunId } from "../helpers/run-id.js";
 import { spawnSyncCollect } from "../helpers/runtime.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { makeMockSession } from "./stage-runner-helpers.js";
 
 afterEach(() => setDurableBackend(undefined));
@@ -17,7 +17,7 @@ afterEach(() => setDurableBackend(undefined));
 // registration while its owner's announcement was still awaiting broker processing.
 test("cold workflow waits for acknowledged route authority before creating its first stage session", async () => {
 	const store = createStore();
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	setDurableBackend(backend);
 	const runId = testRunId("cold-authority-readiness");
 	const publication = Promise.withResolvers<void>();
@@ -95,12 +95,12 @@ test("cold workflow waits for acknowledged route authority before creating its f
 	}
 });
 
-function authorityFixture(
+async function authorityFixture(
 	claim: (payload: Record<string, unknown>) => void,
 	options: { beforePrompt?: () => Promise<void>; signal?: AbortSignal } = {},
 ) {
 	const store = createStore();
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	setDurableBackend(backend);
 	const started = Promise.withResolvers<void>();
 	let creations = 0;
@@ -159,7 +159,7 @@ const drainRunnableWork = () => new Promise<void>((resolve) => setImmediate(reso
 
 test("a rejected claimed publication fails the waiting stage without creating a session", async () => {
 	const publication = Promise.withResolvers<void>();
-	const fixture = authorityFixture((payload) => {
+	const fixture = await authorityFixture((payload) => {
 		payload.completion = publication.promise;
 	});
 	try {
@@ -179,7 +179,7 @@ test("a rejected claimed publication fails the waiting stage without creating a 
 
 test("a publication rejected before admission is not mistaken for an absent consumer", async () => {
 	const publication = Promise.withResolvers<void>();
-	const fixture = authorityFixture(
+	const fixture = await authorityFixture(
 		(payload) => {
 			payload.completion = publication.promise;
 		},
@@ -201,7 +201,7 @@ test("a publication rejected before admission is not mistaken for an absent cons
 
 test("an optional consumer that does not claim publication never blocks stage startup", async () => {
 	let announcements = 0;
-	const fixture = authorityFixture(() => {
+	const fixture = await authorityFixture(() => {
 		announcements++;
 	});
 	try {
@@ -216,7 +216,7 @@ test("an optional consumer that does not claim publication never blocks stage st
 test("aborting a workflow releases its authority wait and fences late acknowledgement", async () => {
 	const publication = Promise.withResolvers<void>();
 	const abort = new AbortController();
-	const fixture = authorityFixture(
+	const fixture = await authorityFixture(
 		(payload) => {
 			payload.completion = publication.promise;
 		},
@@ -240,7 +240,7 @@ test("aborting a workflow releases its authority wait and fences late acknowledg
 
 test("disposing the bridge rejects waiting startup without awaiting its publication", async () => {
 	const publication = Promise.withResolvers<void>();
-	const fixture = authorityFixture((payload) => {
+	const fixture = await authorityFixture((payload) => {
 		payload.completion = publication.promise;
 	});
 	try {
@@ -261,7 +261,7 @@ test("disposing the bridge rejects waiting startup without awaiting its publicat
 
 test("replacement cannot lend authority to old waiters and old disposal cannot retire the replacement", async () => {
 	const publication = Promise.withResolvers<void>();
-	const fixture = authorityFixture((payload) => {
+	const fixture = await authorityFixture((payload) => {
 		payload.completion = publication.promise;
 	});
 	let disposeReplacement = () => {};
@@ -300,7 +300,7 @@ test("a later roster publication is immediate but does not extend an admitted st
 	const later = Promise.withResolvers<void>();
 	let current = first.promise;
 	let announcements = 0;
-	const fixture = authorityFixture((payload) => {
+	const fixture = await authorityFixture((payload) => {
 		announcements++;
 		payload.completion = current;
 	});
@@ -333,7 +333,7 @@ test("a later roster publication is immediate but does not extend an admitted st
 test("overlapping roots in one store wait only for their own authority", async () => {
 	const first = Promise.withResolvers<void>();
 	const second = Promise.withResolvers<void>();
-	const fixture = authorityFixture((payload) => {
+	const fixture = await authorityFixture((payload) => {
 		payload.completion = payload.runId === testRunId("authority-lifecycle") ? first.promise : second.promise;
 	});
 	let other: ReturnType<typeof fixture.launch> | undefined;
@@ -360,7 +360,7 @@ test("overlapping roots in one store wait only for their own authority", async (
 
 test("bridge retirement racing acknowledgement still fences startup before session creation", async () => {
 	const publication = Promise.withResolvers<void>();
-	const fixture = authorityFixture((payload) => {
+	const fixture = await authorityFixture((payload) => {
 		payload.completion = publication.promise;
 	});
 	try {

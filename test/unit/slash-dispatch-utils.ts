@@ -51,7 +51,7 @@ import { WORKFLOW_INVALID_PROVIDER_CREDENTIALS_MESSAGE } from "../../packages/wo
 import type { ChatSurfacePayload } from "../../packages/workflows/src/tui/chat-surface-message.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 export type {
 	ChatSurfacePayload,
@@ -104,9 +104,9 @@ export {
 	writeFile,
 };
 
-export function resetSlashDispatchTestStateBeforeEach(): void {
+export async function resetSlashDispatchTestStateBeforeEach(): Promise<void> {
 	delete process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
-	setDurableBackend(new InMemoryDurableBackend());
+	setDurableBackend(await createMemoryTestBackend());
 }
 
 export async function cleanupSlashDispatchTestStateAfterEach(): Promise<void> {

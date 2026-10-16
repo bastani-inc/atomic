@@ -143,7 +143,7 @@ describe("tool run-control actions", () => {
 			failureMessage: "HTTP 429",
 		});
 		const durableBackend = getDurableBackend();
-		durableBackend.registerWorkflow({
+		await durableBackend.registerWorkflow({
 			workflowId: sourceRunId,
 			name: def.name,
 			inputs: {},
@@ -241,7 +241,7 @@ describe("tool run-control actions", () => {
 			resumable: true,
 		});
 		const backend = getDurableBackend();
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: sourceRunId,
 			name: def.name,
 			inputs: {},
@@ -359,7 +359,7 @@ describe("tool run-control actions", () => {
 			},
 		];
 		restoreOnSessionStart({ getEntries: () => entries }, { resumeInFlight: "never", persistRuns: true }, store);
-		getDurableBackend().registerWorkflow({
+		await getDurableBackend().registerWorkflow({
 			workflowId: sourceRunId,
 			name: def.name,
 			inputs: {},

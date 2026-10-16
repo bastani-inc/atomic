@@ -19,7 +19,7 @@ import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { sleep } from "../helpers/runtime.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 import { TEST_TIMEOUT_MS } from "../helpers/test-timeout.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { mockSession } from "../unit/executor-shared.js";
 
 async function waitFor(predicate: () => boolean): Promise<void> {
@@ -51,7 +51,7 @@ test.each([
 	async (mode) => {
 		let backend: DurableWorkflowBackend = mode.startsWith("journal")
 			? await JournalTestBackend.create()
-			: new InMemoryDurableBackend();
+			: await createMemoryTestBackend();
 		setDurableBackend(backend);
 		let completedCalls = 0;
 		let modelCalls = 0;
@@ -121,8 +121,8 @@ test.each([
 			restoredSessionStore,
 		);
 		assert.equal(restoredSessionStore.runs()[0]?.toolNodes?.[0]?.status, "cancelled");
-		if (backend instanceof JournalTestBackend) {
-			backend = await backend.reopen();
+		if ("databasePath" in backend) {
+			backend = await (backend as JournalTestBackend).reopen();
 			await backend.hydrateWorkflow(runId);
 			setDurableBackend(backend);
 			runtime = createExtensionRuntime(runtimeOptions);
@@ -139,7 +139,7 @@ test.each([
 			}
 			if (mode === "session-missing-checkpoint") {
 				const retained = backend;
-				backend = new InMemoryDurableBackend();
+				backend = await createMemoryTestBackend();
 				await backend.registerWorkflow(retained.getWorkflow(runId)!);
 				for (const checkpoint of retained.listCheckpoints(runId)) {
 					if (checkpoint.kind === "tool" && checkpoint.name === "prepare") continue;
@@ -347,7 +347,7 @@ test.each(["missing-parent", "cycle", "ambiguous", "completed", "missing", "unre
 			delete source.failedToolNodeId;
 			source = { ...source, toolNodes: [{ ...frontier, parentIds: [] }] };
 		}
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		await backend.registerWorkflow({
 			workflowId: source.id,
 			name: source.name,
@@ -366,7 +366,7 @@ test.each(["missing-parent", "cycle", "ambiguous", "completed", "missing", "unre
 );
 
 test("tool-only return-mode resume preserves repeated-call ordinals and never replays cancellation as data", async () => {
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	setDurableBackend(backend);
 	let calls = 0;
 	const args = { raw: "  untouched\n", items: ["b", "a", "b"] };

@@ -18,15 +18,18 @@ import { restoreOnSessionStart } from "../../packages/workflows/src/shared/persi
 import { createStore, store } from "../../packages/workflows/src/shared/store.js";
 import { testRunId } from "../helpers/run-id.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import {
+	createMemoryTestBackend,
+	type MemoryJournalBackend as InMemoryDurableBackend,
+} from "../helpers/workflow-journal.js";
 
-function seedRestoredShadow(
+async function seedRestoredShadow(
 	backend: InMemoryDurableBackend,
 	workflowId: string,
 	status: Extract<DurableWorkflowStatus, "paused" | "running">,
-): void {
-	backend.workflowOwnership = () => "available";
-	backend.registerWorkflow({
+): Promise<void> {
+	backend.workflowOwnership = async () => "available";
+	await backend.registerWorkflow({
 		workflowId,
 		name: "restored-workflow",
 		inputs: {},
@@ -34,7 +37,7 @@ function seedRestoredShadow(
 		status,
 		resumable: true,
 	});
-	backend.recordCheckpoint({
+	await backend.recordCheckpoint({
 		kind: "tool",
 		workflowId,
 		checkpointId: `tool:${workflowId}`,
@@ -58,8 +61,12 @@ function seedRestoredShadow(
 	);
 }
 
-function seedDurableOnly(backend: InMemoryDurableBackend, workflowId: string, withProgress = true): void {
-	backend.registerWorkflow({
+async function seedDurableOnly(
+	backend: InMemoryDurableBackend,
+	workflowId: string,
+	withProgress = true,
+): Promise<void> {
+	await backend.registerWorkflow({
 		workflowId,
 		name: "restored-workflow",
 		inputs: {},
@@ -68,7 +75,7 @@ function seedDurableOnly(backend: InMemoryDurableBackend, workflowId: string, wi
 		resumable: true,
 	});
 	if (!withProgress) return;
-	backend.recordCheckpoint({
+	await backend.recordCheckpoint({
 		kind: "tool",
 		workflowId,
 		checkpointId: `tool:${workflowId}`,
@@ -79,12 +86,12 @@ function seedDurableOnly(backend: InMemoryDurableBackend, workflowId: string, wi
 	});
 }
 
-function seedZeroProgressRestoredOrphan(
+async function seedZeroProgressRestoredOrphan(
 	backend: InMemoryDurableBackend,
 	workflowId: string,
 	status: Extract<DurableWorkflowStatus, "paused" | "running">,
-): void {
-	backend.registerWorkflow({
+): Promise<void> {
+	await backend.registerWorkflow({
 		workflowId,
 		name: "restored-workflow",
 		inputs: {},
@@ -181,9 +188,9 @@ describe("gracefully quit durable workflow session restore", () => {
 		"slash resume recovers authoritative durable %s shadow with the original workflow id",
 		async (durableStatus) => {
 			const workflowId = testRunId(`slash-restored-${durableStatus}`);
-			const backend = new InMemoryDurableBackend();
+			const backend = await createMemoryTestBackend();
 			setDurableBackend(backend);
-			seedRestoredShadow(backend, workflowId, durableStatus);
+			await seedRestoredShadow(backend, workflowId, durableStatus);
 			assert.equal(store.runs().find((run) => run.id === workflowId)?.status, "running");
 			assert.equal(jobTracker.has(workflowId), false);
 			assert.equal(stageControlRegistry.run(workflowId).stages().length, 0);
@@ -223,9 +230,9 @@ describe("gracefully quit durable workflow session restore", () => {
 		"workflow tool resume recovers authoritative durable %s shadow with the original workflow id",
 		async (durableStatus) => {
 			const workflowId = testRunId(`tool-restored-${durableStatus}`);
-			const backend = new InMemoryDurableBackend();
+			const backend = await createMemoryTestBackend();
 			setDurableBackend(backend);
-			seedRestoredShadow(backend, workflowId, durableStatus);
+			await seedRestoredShadow(backend, workflowId, durableStatus);
 			const releaseResumedStage = Promise.withResolvers<void>();
 			const runtime = resumableRuntime(releaseResumedStage.promise);
 			const execute = makeExecuteWorkflowTool(
@@ -255,9 +262,9 @@ describe("gracefully quit durable workflow session restore", () => {
 		["short prefix rejected", (workflowId: string) => workflowId.slice(0, 18)],
 	] as const)("workflow tool resume rejects unsupported durable-only truncations", async (_label, selectTarget) => {
 		const workflowId = testRunId(`tool-durable-only-${Date.now()}`);
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		seedDurableOnly(backend, workflowId);
+		await seedDurableOnly(backend, workflowId);
 		assert.deepEqual(store.runs(), []);
 		const release = Promise.withResolvers<void>();
 		const execute = makeExecuteWorkflowTool(
@@ -291,9 +298,9 @@ describe("gracefully quit durable workflow session restore", () => {
 		const secondId = `${firstId.slice(0, 8)}-${testRunId(`tool-durable-ambiguous-${Date.now()}-beta`).slice(9)}`;
 		const prefix = firstId.slice(0, 8);
 		const workflowIds = [firstId, secondId];
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		for (const workflowId of workflowIds) seedDurableOnly(backend, workflowId);
+		for (const workflowId of workflowIds) await seedDurableOnly(backend, workflowId);
 		const release = Promise.withResolvers<void>();
 		const execute = makeExecuteWorkflowTool(
 			resumableRuntime(release.promise),
@@ -331,10 +338,10 @@ describe("gracefully quit durable workflow session restore", () => {
 				resumable: true,
 			});
 		}
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		seedDurableOnly(backend, durableId);
-		seedDurableOnly(backend, localId);
+		await seedDurableOnly(backend, durableId);
+		await seedDurableOnly(backend, localId);
 		const release = Promise.withResolvers<void>();
 		const execute = makeExecuteWorkflowTool(
 			resumableRuntime(release.promise),
@@ -385,9 +392,9 @@ describe("gracefully quit durable workflow session restore", () => {
 			endedAt: 2,
 			resumable: false,
 		});
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		seedDurableOnly(backend, liveId);
+		await seedDurableOnly(backend, liveId);
 		stageControlRegistry.register(liveControl(liveId, "paused"));
 		const release = Promise.withResolvers<void>();
 		const execute = makeExecuteWorkflowTool(
@@ -407,9 +414,9 @@ describe("gracefully quit durable workflow session restore", () => {
 
 	test.sequential("workflow tool refuses a durable-only zero-progress target without local synthesis", async () => {
 		const workflowId = testRunId(`tool-durable-ineligible-${Date.now()}`);
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		seedDurableOnly(backend, workflowId, false);
+		await seedDurableOnly(backend, workflowId, false);
 		const release = Promise.withResolvers<void>();
 		const execute = makeExecuteWorkflowTool(
 			resumableRuntime(release.promise),
@@ -428,9 +435,9 @@ describe("gracefully quit durable workflow session restore", () => {
 
 	test.sequential("workflow tool surfaces resource loading failure before durable-only lookup", async () => {
 		const workflowId = testRunId(`tool-durable-loader-failure-${Date.now()}`);
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		seedDurableOnly(backend, workflowId);
+		await seedDurableOnly(backend, workflowId);
 		const release = Promise.withResolvers<void>();
 		const execute = makeExecuteWorkflowTool(
 			resumableRuntime(release.promise),
@@ -454,10 +461,10 @@ describe("gracefully quit durable workflow session restore", () => {
 		["running", "job"],
 		["paused", "control"],
 		["running", "control"],
-	] as const)("durable %s snapshot is not a resume shadow while a live %s exists", (durableStatus, liveKind) => {
+	] as const)("durable %s snapshot is not a resume shadow while a live %s exists", async (durableStatus, liveKind) => {
 		const workflowId = testRunId(`live-${durableStatus}-${liveKind}`);
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({
 			workflowId,
 			name: "restored-workflow",
 			inputs: {},
@@ -498,9 +505,9 @@ describe("gracefully quit durable workflow session restore", () => {
 		"zero-progress durable %s orphan stays unmodified and tool resume is a noop",
 		async (durableStatus) => {
 			const workflowId = testRunId(`zero-tool-${durableStatus}`);
-			const backend = new InMemoryDurableBackend();
+			const backend = await createMemoryTestBackend();
 			setDurableBackend(backend);
-			seedZeroProgressRestoredOrphan(backend, workflowId, durableStatus);
+			await seedZeroProgressRestoredOrphan(backend, workflowId, durableStatus);
 			const before = structuredClone(store.runs().find((run) => run.id === workflowId));
 			assert.ok(before);
 			assert.equal(reconcileDurableResumeShadow(before, store, { backend }), false);
@@ -530,9 +537,9 @@ describe("gracefully quit durable workflow session restore", () => {
 		"zero-progress durable %s orphan stays unmodified through slash resume",
 		async (durableStatus) => {
 			const workflowId = testRunId(`zero-slash-${durableStatus}`);
-			const backend = new InMemoryDurableBackend();
+			const backend = await createMemoryTestBackend();
 			setDurableBackend(backend);
-			seedZeroProgressRestoredOrphan(backend, workflowId, durableStatus);
+			await seedZeroProgressRestoredOrphan(backend, workflowId, durableStatus);
 			const before = structuredClone(store.runs().find((run) => run.id === workflowId));
 			assert.ok(before);
 			const release = Promise.withResolvers<void>();

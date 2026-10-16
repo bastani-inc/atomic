@@ -27,7 +27,7 @@ import type {
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
 import { configureTestStoreBackend } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const tempDirs: string[] = [];
 
@@ -48,7 +48,7 @@ function pendingMessage(runId: string, stageKey: string, expectsReply = false): 
 
 async function lifecycleFixture(runStatus: RunStatus, stageStatus: StageStatus = "pending") {
 	const activeStore = createStore();
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	const runId = testRunId(`pending-delivery-${runStatus}-${stageStatus}`);
 	activeStore.recordRunStart({
 		id: runId,
@@ -82,7 +82,7 @@ async function lifecycleFixture(runStatus: RunStatus, stageStatus: StageStatus =
 async function renamedLifecycleFixture(runStatus: RunStatus, restoredStageStatus: StageStatus) {
 	const runId = testRunId(`pending-delivery-renamed-${runStatus}-${restoredStageStatus}`);
 	const group = `workflow:${runId}`;
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	await backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 	setDurableBackend(backend);
 	const writerStore = createStore();
@@ -177,7 +177,7 @@ describe("pending workflow stage delivery lifecycle", () => {
 		);
 		await new Promise((resolve) => setImmediate(resolve));
 
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const runId = testRunId("pending-delivery-after-empty-startup");
 		await backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		bindStoreDurableBackend(activeStore, backend);
@@ -373,8 +373,14 @@ describe("pending workflow stage delivery lifecycle", () => {
 			],
 			startedAt: 2,
 		});
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({ workflowId: rootRunId, name: "root", inputs: {}, status: "running", createdAt: 1 });
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({
+			workflowId: rootRunId,
+			name: "root",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		bindStoreDurableBackend(activeStore, backend);
 		const childBackend = new ScopedDurableBackend(backend, {
 			rootWorkflowId: rootRunId,
@@ -403,7 +409,7 @@ describe("pending workflow stage delivery lifecycle", () => {
 	test("settles a name-addressed skipped destination by canonical identity after durable reload and rename", async () => {
 		const runId = testRunId("pending-delivery-canonical-rename");
 		const group = `workflow:${runId}`;
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		await backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		setDurableBackend(backend);
 		const writerStore = createStore();

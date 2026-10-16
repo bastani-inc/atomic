@@ -17,26 +17,30 @@ import {
 	currentStoreBackend,
 	configureCurrentTestStoreBackend as setDurableBackend,
 } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const previousWorkflowStageSubagentGuard = process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
 
-class HydrationCapableBackend extends InMemoryDurableBackend {
-	hydrateCalls = 0;
-	async hydrateWorkflow(): Promise<void> {
-		this.hydrateCalls += 1;
-	}
+async function createHydrationCapableBackend() {
+	const backend = Object.assign(await createMemoryTestBackend(), { hydrateCalls: 0 });
+	return Object.assign(backend, {
+		async hydrateWorkflow(): Promise<void> {
+			backend.hydrateCalls += 1;
+		},
+	});
 }
 
-class UnclassifiedHydrationBackend extends HydrationCapableBackend {
-	loadable = false;
-	override isWorkflowLoadable(): boolean {
-		return this.loadable;
-	}
-	async hydrateResumableWorkflows(): Promise<void> {
-		this.hydrateCalls += 1;
-		this.loadable = true;
-	}
+async function createUnclassifiedHydrationBackend(...args: Parameters<typeof createHydrationCapableBackend>) {
+	const backend = Object.assign(await createHydrationCapableBackend(...args), { loadable: false });
+	return Object.assign(backend, {
+		isWorkflowLoadable(): boolean {
+			return backend.loadable;
+		},
+		async hydrateResumableWorkflows(): Promise<void> {
+			backend.hydrateCalls += 1;
+			backend.loadable = true;
+		},
+	});
 }
 
 function registerFactory(piOverrides: Partial<ExtensionAPI> = {}): Array<{ name: string; options: PiCommandOptions }> {
@@ -70,9 +74,9 @@ function registerFactory(piOverrides: Partial<ExtensionAPI> = {}): Array<{ name:
 	return commands;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
 	delete process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
-	setDurableBackend(new InMemoryDurableBackend());
+	setDurableBackend(await createMemoryTestBackend());
 });
 
 afterEach(() => {
@@ -197,7 +201,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 	});
 
 	test("/workflow resume keeps hydration-capable current live runs on the lazy fast path", async () => {
-		const backend = new HydrationCapableBackend();
+		const backend = await createHydrationCapableBackend();
 		setDurableBackend(backend);
 		let refreshCalls = 0;
 		const commands = registerFactory({
@@ -228,7 +232,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 	});
 
 	test("/workflow resume prepares unclassified hydration-capable restored runs before choosing live path", async () => {
-		const backend = new UnclassifiedHydrationBackend();
+		const backend = await createUnclassifiedHydrationBackend();
 		setDurableBackend(backend);
 		let refreshCalls = 0;
 		const commands = registerFactory({
@@ -381,7 +385,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 	});
 
 	test("workflow tool failed resume re-resolves runtime after lazy discovery", async () => {
-		const backend = new HydrationCapableBackend();
+		const backend = await createHydrationCapableBackend();
 		setDurableBackend(backend);
 		const sourceRunId = testRunId("lazy-tool-model-resume-source");
 		store.recordRunStart({

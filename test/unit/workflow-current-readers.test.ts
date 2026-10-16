@@ -22,7 +22,7 @@ import type {
 	RunSnapshot,
 	StageSnapshot,
 } from "../../packages/workflows/src/shared/store-types.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 function message(id: string, admissionOrder: number): PendingStageMessage {
 	return {
@@ -69,8 +69,8 @@ test("foreground sticky delivery rejects a missing order before admission", asyn
 	Reflect.deleteProperty(missing, "admissionOrder");
 	const activeStore = createStore();
 	activeStore.recordRunStart({ ...run(), id: rootId, status: "running", pendingStageMessages: [missing] });
-	const backend = new InMemoryDurableBackend();
-	backend.registerWorkflow({ workflowId: rootId, name: "reader", inputs: {}, createdAt: 1, status: "running" });
+	const backend = await createMemoryTestBackend();
+	await backend.registerWorkflow({ workflowId: rootId, name: "reader", inputs: {}, createdAt: 1, status: "running" });
 	setDurableBackend(backend);
 	try {
 		const delivery = createWorkflowPendingStageDelivery(activeStore, rootId, "stage", "stage");

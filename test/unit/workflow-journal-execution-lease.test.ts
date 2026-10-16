@@ -70,24 +70,29 @@ test("rejected same-id SDK inputs preserve the active execution lease (#3647)", 
 	}
 });
 
-class DeferredPauseBackend extends JournalDurableBackend {
-	readonly pauseWritten = Promise.withResolvers<void>();
-	readonly finishPause = Promise.withResolvers<void>();
-	override async transitionWorkflowStatus(...args: Parameters<JournalDurableBackend["transitionWorkflowStatus"]>) {
-		const result = await super.transitionWorkflowStatus(...args);
-		if (args[2] === "paused") {
-			this.pauseWritten.resolve();
-			await this.finishPause.promise;
-		}
-		return result;
-	}
+async function createDeferredPauseBackend(journal: Parameters<typeof JournalDurableBackend.open>[0]) {
+	const backend = Object.assign(await JournalDurableBackend.open(journal), {
+		pauseWritten: Promise.withResolvers<void>(),
+		finishPause: Promise.withResolvers<void>(),
+	});
+	const basetransitionWorkflowStatus = backend.transitionWorkflowStatus.bind(backend);
+	return Object.assign(backend, {
+		async transitionWorkflowStatus(...args: Parameters<JournalDurableBackend["transitionWorkflowStatus"]>) {
+			const result = await basetransitionWorkflowStatus(...args);
+			if (args[2] === "paused") {
+				backend.pauseWritten.resolve();
+				await backend.finishPause.promise;
+			}
+			return result;
+		},
+	});
 }
 
 test("detached quit releases only its own lease after final persistence and permits resume (#3647)", async () => {
 	const runId = testRunId("detached-quit-lease");
 	const directory = makeTempDirectory("detached-quit-lease-");
 	const path = join(directory, "journal.sqlite");
-	const backend = new DeferredPauseBackend(await openSqlRunJournal(path));
+	const backend = await createDeferredPauseBackend(await openSqlRunJournal(path));
 	const contender = await openSqlRunJournal(path);
 	const controls = createToolControlRegistry();
 	const jobs = createJobTracker();
@@ -203,7 +208,7 @@ test("detached quit releases only its own lease after final persistence and perm
 test("quit retires a cancelled tool's executor without waiting for caught-cancellation cleanup (#3647)", async () => {
 	const runId = testRunId("quit-pending-cleanup");
 	const directory = makeTempDirectory("quit-pending-cleanup-");
-	const backend = new DeferredPauseBackend(await openSqlRunJournal(join(directory, "journal.sqlite")));
+	const backend = await createDeferredPauseBackend(await openSqlRunJournal(join(directory, "journal.sqlite")));
 	const store = createStore();
 	const controls = createToolControlRegistry();
 	const jobs = createJobTracker();
@@ -227,7 +232,7 @@ test("quit retires a cancelled tool's executor without waiting for caught-cancel
 		);
 		await assert.rejects(async () => await backend.releaseWorkflow(runId), JournalExecutionRetiredError);
 		await assert.rejects(
-			backend.withWorkflowLease(runId, async () => backend.setWorkflowStatus(runId, "completed")),
+			backend.withWorkflowLease(runId, async () => await backend.setWorkflowStatus(runId, "completed")),
 			JournalExecutionRetiredError,
 		);
 	};

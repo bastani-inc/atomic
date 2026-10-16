@@ -6,7 +6,7 @@ import { run } from "../../packages/workflows/src/engine/run.js";
 import { buildWorkflowStatusListing } from "../../packages/workflows/src/extension/workflow-status-summary.js";
 import { topLevelExpandedSnapshots } from "../../packages/workflows/src/extension/workflow-targets.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 beforeEach(() => store.clear());
 afterEach(() => store.clear());
@@ -42,7 +42,7 @@ describe("nested ctx.tool status replay", () => {
 		const pending = run(
 			parent,
 			{},
-			{ runId: "live-nested-status-root", store, durableBackend: new InMemoryDurableBackend() },
+			{ runId: "live-nested-status-root", store, durableBackend: await createMemoryTestBackend() },
 		);
 
 		await entered.promise;
@@ -64,7 +64,7 @@ describe("nested ctx.tool status replay", () => {
 
 	test("replay and completed restoration expose one cached child tool without rerunning its callback", async () => {
 		const runId = "nested-status-replay-root";
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		let callbackCalls = 0;
 		const child = workflow({
 			name: "nested-status-child",

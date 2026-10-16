@@ -30,7 +30,7 @@ import type { WorkflowSerializableValue } from "../../packages/workflows/src/sha
 import { classifyWorkflowFailure } from "../../packages/workflows/src/shared/workflow-failures.js";
 import { sleep } from "../helpers/runtime.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { lifecycleConfig } from "./workflow-lifecycle-parent-reconciliation-support.js";
 
 interface PersistedEntry {
@@ -53,7 +53,7 @@ describe("interactive durable tool failure lifecycle", () => {
 	});
 
 	test("reports one failed notice and reconciliation when a post-admission durable callback throws", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const store = workflowStore;
 		store.clear();

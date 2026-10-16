@@ -16,7 +16,7 @@ import {
 import { stickyStageDeliveryStatuses } from "../../packages/workflows/src/shared/sticky-stage-delivery-status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const RUN_ID = "run-1";
 const STAGE_KEY = " Reviewer Stage ";
@@ -171,21 +171,26 @@ describe("workflow stage messages store", () => {
 			{ adapter: "node-sqlite", location: "journal.sqlite" },
 			new Error("interrupted persistence"),
 		);
-		class FailingBackend extends JournalTestBackend {
-			override async archivePendingStageMessage(runId: string, entry: PendingStageMessage): Promise<void> {
-				if (failedOperation === "archive") throw failure;
-				await super.archivePendingStageMessage(runId, entry);
-			}
-			override async persistPendingStageMessages(
-				runId: string,
-				messages: readonly PendingStageMessage[],
-				logicalRunId?: string,
-			): Promise<boolean> {
-				if (failedOperation === "snapshot") throw failure;
-				return super.persistPendingStageMessages(runId, messages, logicalRunId);
-			}
+		async function createFailingBackend(...args: Parameters<typeof JournalTestBackend.create>) {
+			const backend = Object.assign(await JournalTestBackend.create(...args), {});
+			const basearchivePendingStageMessage = backend.archivePendingStageMessage.bind(backend);
+			const basepersistPendingStageMessages = backend.persistPendingStageMessages.bind(backend);
+			return Object.assign(backend, {
+				async archivePendingStageMessage(runId: string, entry: PendingStageMessage): Promise<void> {
+					if (failedOperation === "archive") throw failure;
+					await basearchivePendingStageMessage(runId, entry);
+				},
+				async persistPendingStageMessages(
+					runId: string,
+					messages: readonly PendingStageMessage[],
+					logicalRunId?: string,
+				): Promise<boolean> {
+					if (failedOperation === "snapshot") throw failure;
+					return basepersistPendingStageMessages(runId, messages, logicalRunId);
+				},
+			});
 		}
-		const backend = await FailingBackend.create();
+		const backend = await createFailingBackend();
 		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		const store = createStore();
 		store.recordRunStart({
@@ -278,7 +283,7 @@ describe("workflow stage messages store", () => {
 	});
 
 	test("deduplicates a durable retry across volatile sender presence changes", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		const original = pendingMessage("presence", {
 			senderReturnAddress: "host-session-planner",
@@ -799,7 +804,7 @@ describe("workflow stage messages store", () => {
 	});
 
 	test("shares identity, dedupe, positions, and the exact cap across a stage id and unique name", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		const store = createStore();
 		store.recordRunStart({
@@ -880,7 +885,7 @@ describe("workflow stage messages store", () => {
 	});
 
 	test("live store methods publish only persisted message transitions", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		const store = createStore();
 		store.recordRunStart({
@@ -972,7 +977,7 @@ describe("durable workflow stage messages metadata", () => {
 		const accepted = queueStageMessage([], pendingMessage("memory"), RUN_GROUP, RUN_GROUP);
 		assert.equal(accepted.ok, true);
 		if (!accepted.ok) return;
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		await backend.registerWorkflow({
 			workflowId: RUN_ID,
 			name: "flow",
@@ -982,7 +987,13 @@ describe("durable workflow stage messages metadata", () => {
 			pendingStageMessages: accepted.messages,
 		});
 		assert.deepEqual(backend.toMetadata(RUN_ID)?.pendingStageMessages, accepted.messages);
-		backend.registerWorkflow({ workflowId: "empty", name: "empty", inputs: {}, status: "running", createdAt: 1 });
+		await backend.registerWorkflow({
+			workflowId: "empty",
+			name: "empty",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		assert.deepEqual(backend.getWorkflow("empty")?.pendingStageMessages, []);
 	});
 
@@ -1082,17 +1093,21 @@ describe("durable workflow stage messages metadata", () => {
 			{ adapter: "node-sqlite", location: "journal.sqlite" },
 			new Error("write rejected"),
 		);
-		class FailingBackend extends JournalTestBackend {
-			override async persistPendingStageMessages(
-				runId: string,
-				messages: readonly PendingStageMessage[],
-				logicalRunId?: string,
-			): Promise<boolean> {
-				if (rejectWrites) throw failure;
-				return super.persistPendingStageMessages(runId, messages, logicalRunId);
-			}
+		async function createFailingBackend(...args: Parameters<typeof JournalTestBackend.create>) {
+			const backend = Object.assign(await JournalTestBackend.create(...args), {});
+			const basepersistPendingStageMessages = backend.persistPendingStageMessages.bind(backend);
+			return Object.assign(backend, {
+				async persistPendingStageMessages(
+					runId: string,
+					messages: readonly PendingStageMessage[],
+					logicalRunId?: string,
+				): Promise<boolean> {
+					if (rejectWrites) throw failure;
+					return basepersistPendingStageMessages(runId, messages, logicalRunId);
+				},
+			});
 		}
-		const backend = await FailingBackend.create();
+		const backend = await createFailingBackend();
 		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		const store = createStore();
 		store.recordRunStart({

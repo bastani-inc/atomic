@@ -13,7 +13,7 @@ import { stageControlRegistry } from "../../packages/workflows/src/runs/foregrou
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { testRunId } from "../helpers/run-id.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const PREVIOUS_SESSION = "previous-session";
 const SUCCESSOR_SESSION = "successor-session";
@@ -58,12 +58,12 @@ function sessionContext(sessionId: string): PiEventContext {
 	};
 }
 
-function registerRun(
+async function registerRun(
 	backend: DurableWorkflowBackend,
 	runId: string,
 	overrides: Partial<Parameters<DurableWorkflowBackend["registerWorkflow"]>[0]> = {},
-): void {
-	backend.registerWorkflow({
+): Promise<void> {
+	await backend.registerWorkflow({
 		workflowId: runId,
 		name: "session-run-control",
 		inputs: {},
@@ -105,9 +105,9 @@ async function rejection(operation: Promise<unknown>): Promise<Error> {
 	throw new assert.AssertionError({ message: "expected the operation to reject" });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
 	store.clear();
-	setDurableBackend(new InMemoryDurableBackend());
+	setDurableBackend(await createMemoryTestBackend());
 });
 
 afterEach(() => {
@@ -123,9 +123,9 @@ describe("the model-facing workflow tool adopts runs released by a switched-away
 	] as const) {
 		test.sequential(`the successor session's model resumes a released ${label} run and takes ownership (#3569)`, async () => {
 			const runId = testRunId(`tool-released-adoption-${label}`);
-			const backend = new InMemoryDurableBackend();
+			const backend = await createMemoryTestBackend();
 			setDurableBackend(backend);
-			registerRun(backend, runId, progress);
+			await registerRun(backend, runId, progress);
 			const { execute } = setup();
 			const result = await execute({ action: "resume", runId }, modelContext(SUCCESSOR_SESSION));
 			assert.equal(result.action, "resume");
@@ -141,9 +141,9 @@ describe("the model-facing workflow tool adopts runs released by a switched-away
 
 	test.sequential("the successor adopts a released run whose paused snapshot is still in the shared run store (#3569)", async () => {
 		const runId = testRunId("tool-released-adoption-shared-store");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		registerRun(backend, runId);
+		await registerRun(backend, runId);
 		store.recordRunStart({
 			id: runId,
 			name: "session-run-control",
@@ -167,9 +167,9 @@ describe("the model-facing workflow tool adopts runs released by a switched-away
 
 	test.sequential("the original owner resuming its own released run keeps working (#3569)", async () => {
 		const runId = testRunId("tool-released-original-owner");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		registerRun(backend, runId);
+		await registerRun(backend, runId);
 		const { execute } = setup();
 		const result = await execute({ action: "resume", runId }, modelContext(PREVIOUS_SESSION));
 		assert.equal("status" in result && result.status, "running");
@@ -201,9 +201,9 @@ describe("the model-facing workflow tool adopts runs released by a switched-away
 		for (const [index, { label, overrides }] of cases.entries()) {
 			store.clear();
 			const runId = testRunId(`tool-released-refusal-${index}`);
-			const backend = new InMemoryDurableBackend();
+			const backend = await createMemoryTestBackend();
 			setDurableBackend(backend);
-			registerRun(backend, runId, overrides);
+			await registerRun(backend, runId, overrides);
 			const before = structuredClone(backend.getWorkflow(runId));
 			const { execute } = setup();
 			const error = await rejection(execute({ action: "resume", runId }, modelContext(SUCCESSOR_SESSION)));
@@ -216,9 +216,9 @@ describe("the model-facing workflow tool adopts runs released by a switched-away
 
 	test.sequential("the model tool still refuses mutating actions on a released run it has not adopted (#3569)", async () => {
 		const runId = testRunId("tool-released-mutating-actions");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		registerRun(backend, runId);
+		await registerRun(backend, runId);
 		const before = structuredClone(backend.getWorkflow(runId));
 		const { execute } = setup();
 		for (const action of ["pause", "quit"] as const) {
@@ -245,9 +245,9 @@ describe("the model-facing workflow tool adopts runs released by a switched-away
 			for (const inStore of [false, true]) {
 				store.clear();
 				const runId = testRunId(`tool-released-inspection-refusal-${index}-${inStore}`);
-				const backend = new InMemoryDurableBackend();
+				const backend = await createMemoryTestBackend();
 				setDurableBackend(backend);
-				registerRun(backend, runId, overrides);
+				await registerRun(backend, runId, overrides);
 				if (inStore) recordPredecessorSnapshot(runId);
 				const before = structuredClone(backend.getWorkflow(runId));
 				const { execute } = setup();
@@ -263,9 +263,9 @@ describe("the model-facing workflow tool adopts runs released by a switched-away
 
 	test.sequential("the successor's model inspects a released run's status before adopting it (#3569)", async () => {
 		const runId = testRunId("tool-released-status-detail");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		registerRun(backend, runId);
+		await registerRun(backend, runId);
 		const before = structuredClone(backend.getWorkflow(runId));
 		const { execute } = setup();
 		const result = await execute({ action: "status", runId }, modelContext(SUCCESSOR_SESSION));
@@ -278,9 +278,9 @@ describe("the model-facing workflow tool adopts runs released by a switched-away
 
 	test.sequential("the successor's model inspects a released run whose predecessor snapshot is still in the store (#3569)", async () => {
 		const runId = testRunId("tool-released-status-shared-store");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		registerRun(backend, runId);
+		await registerRun(backend, runId);
 		recordPredecessorSnapshot(runId);
 		const before = structuredClone(backend.getWorkflow(runId));
 		const { execute } = setup();
@@ -301,9 +301,9 @@ describe("the model-facing workflow tool adopts runs released by a switched-away
 
 	test.sequential("the successor's model inspects a released run's stages without a store snapshot (#3569)", async () => {
 		const runId = testRunId("tool-released-stages-durable");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		registerRun(backend, runId);
+		await registerRun(backend, runId);
 		const { execute } = setup();
 		const stages = await execute({ action: "stages", runId }, modelContext(SUCCESSOR_SESSION));
 		assert.equal(stages.action, "stages");
@@ -312,9 +312,9 @@ describe("the model-facing workflow tool adopts runs released by a switched-away
 
 	test.sequential("once another session adopts a released run, the predecessor's inspection is refused again (#3569)", async () => {
 		const runId = testRunId("tool-released-inspection-after-adoption");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		registerRun(backend, runId);
+		await registerRun(backend, runId);
 		const { execute } = setup();
 		const first = await execute({ action: "resume", runId }, modelContext(SUCCESSOR_SESSION));
 		assert.equal("status" in first && first.status, "running");
@@ -335,9 +335,9 @@ describe("the model-facing workflow tool adopts runs released by a switched-away
 
 	test.sequential("a released run adopted by one session tells the second adopter it is now owned elsewhere (#3569)", async () => {
 		const runId = testRunId("tool-released-second-adopter");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		registerRun(backend, runId, { releasedModelOwner: undefined });
+		await registerRun(backend, runId, { releasedModelOwner: undefined });
 		await releasePausedRunsOwnedBy(backend, PREVIOUS_SESSION);
 		assert.equal(backend.getWorkflow(runId)?.releasedModelOwner, PREVIOUS_SESSION);
 		const { execute } = setup();
@@ -353,9 +353,9 @@ describe("the model-facing workflow tool adopts runs released by a switched-away
 
 	test.sequential("the runtime resume guard reports a lost adoption race as owned by another session (#3569)", async () => {
 		const runId = testRunId("runtime-released-second-adopter");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		registerRun(backend, runId, { releasedModelOwner: undefined });
+		await registerRun(backend, runId, { releasedModelOwner: undefined });
 		await releasePausedRunsOwnedBy(backend, PREVIOUS_SESSION);
 		assert.equal(
 			await backend.transitionWorkflowStatus(
@@ -381,9 +381,9 @@ describe("the model-facing workflow tool adopts runs released by a switched-away
 describe("SDK session control adopts runs released by a switched-away session (#3569)", () => {
 	test.sequential("the SDK adopts a released run whose paused snapshot is still in the shared run store (#3569)", async () => {
 		const runId = testRunId("sdk-released-adoption-shared-store");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		registerRun(backend, runId);
+		await registerRun(backend, runId);
 		store.recordRunStart({
 			id: runId,
 			name: "session-run-control",
@@ -412,9 +412,9 @@ describe("SDK session control adopts runs released by a switched-away session (#
 
 	test.sequential("the SDK's second adopter gets an ownership error naming the adoption (#3569)", async () => {
 		const runId = testRunId("sdk-released-second-adopter");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		registerRun(backend, runId, { releasedModelOwner: undefined });
+		await registerRun(backend, runId, { releasedModelOwner: undefined });
 		await releasePausedRunsOwnedBy(backend, PREVIOUS_SESSION);
 		const { execute } = setup();
 		const sdk = (sessionId: string) =>

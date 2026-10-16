@@ -12,26 +12,32 @@ import { stageControlRegistry } from "../../packages/workflows/src/runs/foregrou
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { testRunId } from "../helpers/run-id.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
-class TrackingHydrationBackend extends InMemoryDurableBackend {
-	targetedHydrationCalls: string[] = [];
-	catalogHydrationCalls = 0;
-
-	override async hydrateWorkflow(workflowId: string): Promise<void> {
-		this.targetedHydrationCalls.push(workflowId);
-	}
-
-	override async hydrateResumableWorkflows(): Promise<void> {
-		this.catalogHydrationCalls += 1;
-	}
+async function createTrackingHydrationBackend() {
+	const backend = Object.assign(await createMemoryTestBackend(), {
+		targetedHydrationCalls: [] as string[],
+		catalogHydrationCalls: 0,
+	});
+	return Object.assign(backend, {
+		async hydrateWorkflow(workflowId: string): Promise<void> {
+			backend.targetedHydrationCalls.push(workflowId);
+		},
+		async hydrateResumableWorkflows(): Promise<void> {
+			backend.catalogHydrationCalls += 1;
+		},
+	});
 }
 
-class FailingHydrationBackend extends TrackingHydrationBackend {
-	override async hydrateWorkflow(workflowId: string): Promise<void> {
-		await super.hydrateWorkflow(workflowId);
-		throw new Error("durable hydration exploded");
-	}
+async function createFailingHydrationBackend(...args: Parameters<typeof createTrackingHydrationBackend>) {
+	const backend = Object.assign(await createTrackingHydrationBackend(...args), {});
+	const basehydrateWorkflow = backend.hydrateWorkflow.bind(backend);
+	return Object.assign(backend, {
+		async hydrateWorkflow(workflowId: string): Promise<void> {
+			await basehydrateWorkflow(workflowId);
+			throw new Error("durable hydration exploded");
+		},
+	});
 }
 
 beforeEach(() => {
@@ -56,9 +62,9 @@ afterEach(async () => {
 describe("workflow tool durable-only checkpoint replay", () => {
 	test.sequential("resume keeps the original id and does not repeat a completed ctx.tool side effect", async () => {
 		const workflowId = testRunId("tool-durable-replay-original-id");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId,
 			name: "tool-durable-replay",
 			inputs: {},
@@ -68,7 +74,7 @@ describe("workflow tool durable-only checkpoint replay", () => {
 		});
 		const args = { path: "artifact.txt" };
 		const argsHash = durableHash({ name: "write-once", args, ordinal: 1 });
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "tool",
 			workflowId,
 			checkpointId: `tool:${argsHash}`,
@@ -139,7 +145,7 @@ describe("workflow tool durable-only checkpoint replay", () => {
 		assert.equal(store.runs().find((run) => run.id === workflowId)?.status, "completed");
 	});
 	test.sequential("unknown full-ID resume hydrates only its target while ordinary status remains local", async () => {
-		const backend = new TrackingHydrationBackend();
+		const backend = await createTrackingHydrationBackend();
 		setDurableBackend(backend);
 		const definition = workflow({ name: "lookup", description: "", inputs: {}, outputs: {}, run: () => ({}) });
 		const execute = makeExecuteWorkflowTool(
@@ -167,7 +173,7 @@ describe("workflow tool durable-only checkpoint replay", () => {
 	});
 
 	test.sequential("full-ID resume surfaces targeted hydration failures and keeps --all unsupported", async () => {
-		const backend = new FailingHydrationBackend();
+		const backend = await createFailingHydrationBackend();
 		setDurableBackend(backend);
 		const definition = workflow({
 			name: testRunId("tool-durable-failure"),
@@ -204,7 +210,7 @@ describe("workflow tool durable-only checkpoint replay", () => {
 
 	test.sequential("quit with an in-flight tool re-runs only that call at the same node identity", async () => {
 		const workflowId = testRunId("tool-durable-replay-quit-in-flight");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const args = { path: "artifact.txt" };
 		const firstArgsHash = durableHash({ name: "write-twice", args, ordinal: 1, failureMode: "return" });
@@ -321,7 +327,7 @@ describe("workflow tool durable-only checkpoint replay", () => {
 
 	test.sequential("resume supersedes an abandoned detached job and isolates its late callback", async () => {
 		const workflowId = testRunId("tool-durable-replay-abandoned-relaunch");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const doneArgs = { path: "already-done.txt" };
 		const args = { path: "abandoned.txt" };
@@ -438,7 +444,7 @@ describe("workflow tool durable-only checkpoint replay", () => {
 
 	test.sequential("return-mode callback that fulfills after abort writes one inspection-only record", async () => {
 		const workflowId = testRunId("tool-durable-late-return-cancellation");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const args = { path: "late-return.txt" };
 		const argsHash = durableHash({ name: "late-return", args, ordinal: 1, failureMode: "return" });

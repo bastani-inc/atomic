@@ -12,7 +12,7 @@ import type { DurableStageCheckpoint } from "../../packages/workflows/src/durabl
 import { queueStageMessage } from "../../packages/workflows/src/shared/pending-stage-delivery.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { PendingStageMessageInput } from "../../packages/workflows/src/shared/store-types.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const runId = "current-replay-root";
 const childResult = { workflow: "child", runId: "child-run", status: "completed", exited: false, outputs: {} } as const;
@@ -31,10 +31,10 @@ function checkpoint(replayKey: string): DurableStageCheckpoint {
 }
 
 test("child invocation always uses the supplied current replay key despite an old scope", async () => {
-	const backend = new InMemoryDurableBackend();
-	backend.registerWorkflow({ workflowId: runId, name: "root", inputs: {}, status: "running", createdAt: 1 });
+	const backend = await createMemoryTestBackend();
+	await backend.registerWorkflow({ workflowId: runId, name: "root", inputs: {}, status: "running", createdAt: 1 });
 	const child = workflow({ name: "child", description: "", inputs: {}, outputs: {}, run: async () => ({}) });
-	backend.recordCheckpoint(checkpoint(`workflow:workflow:${child.normalizedName}:1`));
+	await backend.recordCheckpoint(checkpoint(`workflow:workflow:${child.normalizedName}:1`));
 	let scope: string | undefined;
 	const invoke = createDurableChildWorkflowPrimitive({
 		workflowId: runId,
@@ -71,13 +71,13 @@ test("cached child projection requires the current completed result discriminato
 	assert.deepEqual(stages[1]!.workflowChild, { alias: "child", ...childResult });
 });
 
-test("completed boundaries without lifecycle topology are not replayable", () => {
-	const backend = new InMemoryDurableBackend();
-	backend.registerWorkflow({ workflowId: runId, name: "root", inputs: {}, status: "running", createdAt: 1 });
+test("completed boundaries without lifecycle topology are not replayable", async () => {
+	const backend = await createMemoryTestBackend();
+	await backend.registerWorkflow({ workflowId: runId, name: "root", inputs: {}, status: "running", createdAt: 1 });
 	const replayKey = "workflow:child:fingerprint:1";
 	const cached = { ...checkpoint(replayKey), output: childResult };
-	backend.recordCheckpoint(cached);
-	backend.recordCheckpoint({
+	await backend.recordCheckpoint(cached);
+	await backend.recordCheckpoint({
 		...checkpoint(`${replayKey}:stage:leaf:1`),
 		checkpointId: `${replayKey}:leaf`,
 		topology: {

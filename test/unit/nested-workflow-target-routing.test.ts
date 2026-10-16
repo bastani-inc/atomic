@@ -27,7 +27,7 @@ import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.j
 import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
 import { testRunId } from "../helpers/run-id.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const fixtureRunId = (seed: string): string => testRunId(seed);
 
@@ -642,8 +642,8 @@ describe("nested workflow stage target routing", () => {
 		assert.equal(leftCalls.pauses, 0);
 		assert.equal(rightCalls.pauses, 1);
 
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({
 			workflowId: fixtureRunId("root-run"),
 			rootWorkflowId: fixtureRunId("root-run"),
 			name: "root",

@@ -19,7 +19,7 @@ import {
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 function stageHandle(input: {
 	runId: string;
@@ -80,7 +80,7 @@ afterEach(() => setDurableBackend(undefined));
 
 describe("graceful workflow quit acknowledgement", () => {
 	test("between stages quit suspends the executor and fences the next stage", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -137,7 +137,7 @@ describe("graceful workflow quit acknowledgement", () => {
 	});
 
 	test("same-run quit settles every stage pause and aggregates stage-specific failures", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -163,7 +163,13 @@ describe("graceful workflow quit acknowledgement", () => {
 				toolEvents: [],
 			});
 		}
-		backend.registerWorkflow({ workflowId: runId, name: "reject", inputs: {}, createdAt: 1, status: "running" });
+		await backend.registerWorkflow({
+			workflowId: runId,
+			name: "reject",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
 		registry.register(
 			stageHandle({
 				runId,
@@ -215,7 +221,7 @@ describe("graceful workflow quit acknowledgement", () => {
 	});
 
 	test("successful quit waits for pause acknowledgement and remains resumable", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -232,7 +238,7 @@ describe("graceful workflow quit acknowledgement", () => {
 			startedAt: 1,
 		});
 		store.recordStageStart(runId, { id: "stage-1", name: "stage", status: "running", parentIds: [], toolEvents: [] });
-		backend.registerWorkflow({ workflowId: runId, name: "ack", inputs: {}, createdAt: 1, status: "running" });
+		await backend.registerWorkflow({ workflowId: runId, name: "ack", inputs: {}, createdAt: 1, status: "running" });
 		registry.register(
 			stageHandle({
 				runId,
@@ -270,7 +276,7 @@ describe("graceful workflow quit acknowledgement", () => {
 	});
 
 	test("bulk quit settles fast rejection and late acknowledgement with per-run reasons", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -293,7 +299,13 @@ describe("graceful workflow quit acknowledgement", () => {
 				parentIds: [],
 				toolEvents: [],
 			});
-			backend.registerWorkflow({ workflowId: runId, name: runId, inputs: {}, createdAt: 1, status: "running" });
+			await backend.registerWorkflow({
+				workflowId: runId,
+				name: runId,
+				inputs: {},
+				createdAt: 1,
+				status: "running",
+			});
 		}
 		registry.register(
 			stageHandle({
@@ -353,7 +365,7 @@ describe("graceful workflow quit acknowledgement", () => {
 	});
 
 	test("production pause rejection leaves stage, run, and durability running", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -422,7 +434,7 @@ describe("graceful workflow quit acknowledgement", () => {
 	});
 
 	test("production quit then acknowledged resume keeps store, stage, and durable state coherent", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -498,7 +510,7 @@ describe("graceful workflow quit acknowledgement", () => {
 	});
 
 	test("production quit and session disposal preserve the confirmed paused run", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -626,12 +638,15 @@ describe("graceful workflow quit acknowledgement", () => {
 		}
 	});
 	test("durable transition failure propagates instead of claiming a resumable pause", async () => {
-		class TransitionFailingBackend extends InMemoryDurableBackend {
-			override async transitionWorkflowStatus(): Promise<boolean> {
-				throw new Error("durable transition write failed");
-			}
+		async function createTransitionFailingBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), {});
+			return Object.assign(backend, {
+				async transitionWorkflowStatus(): Promise<boolean> {
+					throw new Error("durable transition write failed");
+				},
+			});
 		}
-		const backend = new TransitionFailingBackend();
+		const backend = await createTransitionFailingBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -647,7 +662,13 @@ describe("graceful workflow quit acknowledgement", () => {
 			startedAt: 1,
 		});
 		store.recordStageStart(runId, { id: "stage-1", name: "stage", status: "running", parentIds: [], toolEvents: [] });
-		backend.registerWorkflow({ workflowId: runId, name: "durable", inputs: {}, createdAt: 1, status: "running" });
+		await backend.registerWorkflow({
+			workflowId: runId,
+			name: "durable",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
 		registry.register(
 			stageHandle({
 				runId,
@@ -684,7 +705,7 @@ function abortObserved(signal: AbortSignal): Promise<void> {
 
 describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
 	test("tool-only run pauses as resumable instead of reporting no controllable stages", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -756,7 +777,7 @@ describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
 	});
 
 	test("durable paused transition waits for the aborted callback to settle", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -813,7 +834,7 @@ describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
 	});
 
 	test("a callback that ignores its signal is abandoned after the bounded wait and reported", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -879,7 +900,7 @@ describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
 	});
 
 	test("mixed run pauses its stage and aborts its tool before the durable transition", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -963,7 +984,7 @@ describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
 	});
 
 	test("aborts a nested child run's tool node and suspends the whole boundary", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -1028,7 +1049,7 @@ describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
 	});
 
 	test("a tool admitted while a stage pause is pending is included in quit", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -1127,7 +1148,7 @@ describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
 	});
 
 	test("refuses a ctx.tool call admitted after quit closed admission", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -1196,7 +1217,7 @@ describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
 	});
 
 	test("keeps nested abandoned identities distinct when children share a local node id", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -1266,7 +1287,7 @@ describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
 	});
 
 	test("author catch cannot overwrite a tool-only quit pause", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -1324,7 +1345,7 @@ describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
 	});
 
 	test("a stage-only quit that is resumed still completes normally", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -1342,7 +1363,13 @@ describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
 			startedAt: 1,
 		});
 		store.recordStageStart(runId, { id: "stage-1", name: "stage", status: "running", parentIds: [], toolEvents: [] });
-		backend.registerWorkflow({ workflowId: runId, name: "stage-only", inputs: {}, createdAt: 1, status: "running" });
+		await backend.registerWorkflow({
+			workflowId: runId,
+			name: "stage-only",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
 		registry.register(
 			stageHandle({
 				runId,
@@ -1384,12 +1411,15 @@ describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
 	 * stopped. These three cover the durable outcomes that used to skip it.
 	 */
 	test("a durable transition failure after the tool abort still reports the suspended run as paused", async () => {
-		class TransitionFailingBackend extends InMemoryDurableBackend {
-			override async transitionWorkflowStatus(): Promise<boolean> {
-				throw new Error("durable transition write failed");
-			}
+		async function createTransitionFailingBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), {});
+			return Object.assign(backend, {
+				async transitionWorkflowStatus(): Promise<boolean> {
+					throw new Error("durable transition write failed");
+				},
+			});
 		}
-		const backend = new TransitionFailingBackend();
+		const backend = await createTransitionFailingBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -1439,21 +1469,24 @@ describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
 	});
 
 	test("quit retried after a durable failure upgrades the pause to resumable", async () => {
-		class FlakyTransitionBackend extends InMemoryDurableBackend {
-			attempts = 0;
-			override async transitionWorkflowStatus(
-				workflowId: string,
-				expected: readonly DurableWorkflowStatus[],
-				status: DurableWorkflowStatus,
-				pendingPrompts?: number,
-				resumable?: boolean,
-			): Promise<boolean> {
-				this.attempts += 1;
-				if (this.attempts === 1) throw new Error("durable transition write failed");
-				return await super.transitionWorkflowStatus(workflowId, expected, status, pendingPrompts, resumable);
-			}
+		async function createFlakyTransitionBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), { attempts: 0 });
+			const basetransitionWorkflowStatus = backend.transitionWorkflowStatus.bind(backend);
+			return Object.assign(backend, {
+				async transitionWorkflowStatus(
+					workflowId: string,
+					expected: readonly DurableWorkflowStatus[],
+					status: DurableWorkflowStatus,
+					pendingPrompts?: number,
+					resumable?: boolean,
+				): Promise<boolean> {
+					backend.attempts += 1;
+					if (backend.attempts === 1) throw new Error("durable transition write failed");
+					return await basetransitionWorkflowStatus(workflowId, expected, status, pendingPrompts, resumable);
+				},
+			});
 		}
-		const backend = new FlakyTransitionBackend();
+		const backend = await createFlakyTransitionBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -1502,12 +1535,15 @@ describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
 	});
 
 	test("a refused durable transition after the tool abort does not leave the run reported as running", async () => {
-		class RefusingBackend extends InMemoryDurableBackend {
-			override async transitionWorkflowStatus(): Promise<boolean> {
-				return false;
-			}
+		async function createRefusingBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), {});
+			return Object.assign(backend, {
+				async transitionWorkflowStatus(): Promise<boolean> {
+					return false;
+				},
+			});
 		}
-		const backend = new RefusingBackend();
+		const backend = await createRefusingBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();

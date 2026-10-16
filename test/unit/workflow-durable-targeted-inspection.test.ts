@@ -16,7 +16,7 @@ import { JournalTestDatabase } from "../helpers/journal-database.js";
 import { readJournalEntries } from "../helpers/journal-internals.js";
 import { testRunId } from "../helpers/run-id.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { mockSession } from "./executor-shared.js";
 import { buildCtx, registerWorkflowCommand } from "./slash-dispatch-utils.js";
 
@@ -40,7 +40,7 @@ afterEach(() => {
 
 describe("targeted durable workflow inspection", () => {
 	test("rejects malformed truncations before loading the durable catalog", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		backend.prepareWorkflowCatalog = async () => {
 			throw new Error("malformed selectors must not load the durable catalog");
 		};
@@ -52,11 +52,11 @@ describe("targeted durable workflow inspection", () => {
 
 	test("resolves a unique 8-hex durable prefix and reports catalog collisions", async () => {
 		// Regression: #2603 — status/stage/transcript durable inspection shares the UUID-prefix contract.
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const firstId = "2603abcd-1111-4222-8333-123456789abc";
 		const secondId = "2603abcd-9999-4222-8333-123456789abc";
-		const seed = (workflowId: string) => {
-			backend.registerWorkflow({
+		const seed = async (workflowId: string) => {
+			await backend.registerWorkflow({
 				workflowId,
 				name: workflowId,
 				inputs: {},
@@ -64,7 +64,7 @@ describe("targeted durable workflow inspection", () => {
 				status: "paused",
 				completedCheckpoints: 1,
 			});
-			backend.recordCheckpoint({
+			await backend.recordCheckpoint({
 				topology: { version: 1, nodeId: `tool:${`proof:${workflowId}`}`, ordinal: 1, order: 1, parentIds: [] },
 				kind: "tool",
 				workflowId,
@@ -75,13 +75,13 @@ describe("targeted durable workflow inspection", () => {
 				completedAt: 2,
 			});
 		};
-		seed(firstId);
+		await seed(firstId);
 
 		const unique = await inspectTargetedDurableWorkflow(backend, "2603abcd");
 		assert.equal(unique.kind, "found");
 		if (unique.kind === "found") assert.equal(unique.detail.runId, firstId);
 
-		seed(secondId);
+		await seed(secondId);
 		const ambiguous = await inspectTargetedDurableWorkflow(backend, "2603abcd");
 		assert.equal(ambiguous.kind, "malformed");
 		assert.match(ambiguous.message, /ambiguous/);
@@ -272,8 +272,14 @@ describe("targeted durable workflow inspection", () => {
 
 	test("fails closed for cyclic, orphaned, and nonreciprocal retained topology", async () => {
 		const cyclicId = testRunId("targeted-cyclic");
-		const cyclic = new InMemoryDurableBackend();
-		cyclic.registerWorkflow({ workflowId: cyclicId, name: "cyclic", inputs: {}, createdAt: 1, status: "running" });
+		const cyclic = await createMemoryTestBackend();
+		await cyclic.registerWorkflow({
+			workflowId: cyclicId,
+			name: "cyclic",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
 		for (const [stageId, parentId] of [
 			["left", "right"],
 			["right", "left"],
@@ -299,7 +305,7 @@ describe("targeted durable workflow inspection", () => {
 
 		const orphanRootId = testRunId("targeted-orphan-root");
 		const orphanRunId = testRunId("targeted-orphan-child");
-		const orphaned = new InMemoryDurableBackend();
+		const orphaned = await createMemoryTestBackend();
 		await orphaned.registerWorkflow({
 			workflowId: orphanRootId,
 			name: "orphan-root",
@@ -338,8 +344,14 @@ describe("targeted durable workflow inspection", () => {
 
 		const rootId = testRunId("targeted-nonreciprocal-root");
 		const childId = testRunId("targeted-nonreciprocal-child");
-		const nonreciprocal = new InMemoryDurableBackend();
-		nonreciprocal.registerWorkflow({ workflowId: rootId, name: "root", inputs: {}, createdAt: 1, status: "running" });
+		const nonreciprocal = await createMemoryTestBackend();
+		await nonreciprocal.registerWorkflow({
+			workflowId: rootId,
+			name: "root",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
 		await nonreciprocal.recordCheckpoint({
 			kind: "stage",
 			workflowId: rootId,
@@ -397,12 +409,18 @@ describe("targeted durable workflow inspection", () => {
 	});
 
 	test("rejects active boundary identity and replay-scope ambiguity", async () => {
-		const makeNested = (suffix: string, invocationFingerprint: string, childReplayKey: string) => {
+		const makeNested = async (suffix: string, invocationFingerprint: string, childReplayKey: string) => {
 			const rootId = testRunId(`targeted-boundary-${suffix}`);
 			const childId = testRunId(`targeted-child-${suffix}`);
-			const backend = new InMemoryDurableBackend();
-			backend.registerWorkflow({ workflowId: rootId, name: "root", inputs: {}, createdAt: 1, status: "running" });
-			backend.recordCheckpoint({
+			const backend = await createMemoryTestBackend();
+			await backend.registerWorkflow({
+				workflowId: rootId,
+				name: "root",
+				inputs: {},
+				createdAt: 1,
+				status: "running",
+			});
+			await backend.recordCheckpoint({
 				kind: "stage",
 				workflowId: rootId,
 				checkpointId: "boundary-start",
@@ -434,7 +452,7 @@ describe("targeted durable workflow inspection", () => {
 					},
 				},
 			});
-			backend.recordCheckpoint({
+			await backend.recordCheckpoint({
 				kind: "stage",
 				workflowId: rootId,
 				checkpointId: "child-session",
@@ -460,13 +478,13 @@ describe("targeted durable workflow inspection", () => {
 			return { backend, rootId };
 		};
 
-		const escaped = makeNested("escaped-scope", "h00000000000000000000000000000000", "stage:outside:1");
+		const escaped = await makeNested("escaped-scope", "h00000000000000000000000000000000", "stage:outside:1");
 		assert.equal((await inspectTargetedDurableWorkflow(escaped.backend, escaped.rootId)).kind, "malformed");
 	});
 
 	test("rejects cycles across stages and tools", async () => {
 		const toolCycleId = testRunId("targeted-tool-cycle");
-		const toolCycle = new InMemoryDurableBackend();
+		const toolCycle = await createMemoryTestBackend();
 		await toolCycle.registerWorkflow({
 			workflowId: toolCycleId,
 			name: "tool-cycle",
@@ -499,8 +517,14 @@ describe("targeted durable workflow inspection", () => {
 		assert.equal((await inspectTargetedDurableWorkflow(toolCycle, toolCycleId)).kind, "malformed");
 
 		const mixedId = testRunId("targeted-stage-tool-cycle");
-		const mixed = new InMemoryDurableBackend();
-		mixed.registerWorkflow({ workflowId: mixedId, name: "mixed-cycle", inputs: {}, createdAt: 1, status: "running" });
+		const mixed = await createMemoryTestBackend();
+		await mixed.registerWorkflow({
+			workflowId: mixedId,
+			name: "mixed-cycle",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
 		await mixed.recordCheckpoint({
 			kind: "stage",
 			workflowId: mixedId,
@@ -540,7 +564,7 @@ describe("targeted durable workflow inspection", () => {
 
 	test("rejects root ownership claims and conflicting tool run ownership", async () => {
 		const rootClaimId = testRunId("targeted-root-claim");
-		const rootClaim = new InMemoryDurableBackend();
+		const rootClaim = await createMemoryTestBackend();
 		await rootClaim.registerWorkflow({
 			workflowId: rootClaimId,
 			name: "root-claim",
@@ -574,7 +598,7 @@ describe("targeted durable workflow inspection", () => {
 		assert.equal((await inspectTargetedDurableWorkflow(rootClaim, rootClaimId)).kind, "malformed");
 
 		const conflictId = testRunId("targeted-tool-owner-conflict");
-		const conflict = new InMemoryDurableBackend();
+		const conflict = await createMemoryTestBackend();
 		await conflict.registerWorkflow({
 			workflowId: conflictId,
 			name: "owner-conflict",
@@ -601,12 +625,18 @@ describe("targeted durable workflow inspection", () => {
 	});
 
 	test("rejects empty or duplicate tool node ids while preserving distinct graph targets", async () => {
-		const makeTools = (suffix: string, nodeIds: readonly string[]) => {
+		const makeTools = async (suffix: string, nodeIds: readonly string[]) => {
 			const runId = testRunId(`targeted-tool-ids-${suffix}`);
-			const backend = new InMemoryDurableBackend();
-			backend.registerWorkflow({ workflowId: runId, name: "tool-ids", inputs: {}, createdAt: 1, status: "running" });
-			nodeIds.forEach((nodeId, index) => {
-				backend.recordCheckpoint({
+			const backend = await createMemoryTestBackend();
+			await backend.registerWorkflow({
+				workflowId: runId,
+				name: "tool-ids",
+				inputs: {},
+				createdAt: 1,
+				status: "running",
+			});
+			for (const [index, nodeId] of nodeIds.entries()) {
+				await backend.recordCheckpoint({
 					kind: "tool",
 					workflowId: runId,
 					checkpointId: `tool-${index}`,
@@ -623,14 +653,14 @@ describe("targeted durable workflow inspection", () => {
 						run: { runId, runName: "tool-ids" },
 					},
 				});
-			});
+			}
 			return { backend, runId };
 		};
 
-		for (const malformed of [makeTools("empty", [""]), makeTools("duplicate", ["same", "same"])]) {
+		for (const malformed of [await makeTools("empty", [""]), await makeTools("duplicate", ["same", "same"])]) {
 			assert.equal((await inspectTargetedDurableWorkflow(malformed.backend, malformed.runId)).kind, "malformed");
 		}
-		const valid = makeTools("valid", ["left", "right"]);
+		const valid = await makeTools("valid", ["left", "right"]);
 		const inspected = await inspectTargetedDurableWorkflow(valid.backend, valid.runId);
 		assert.equal(inspected.kind, "found");
 		if (inspected.kind === "found") {
@@ -642,8 +672,14 @@ describe("targeted durable workflow inspection", () => {
 
 	test("keeps UI-only durable roots inspectable without fabricating graph nodes", async () => {
 		const runId = testRunId("targeted-ui-only");
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({ workflowId: runId, name: "ui-only", inputs: {}, createdAt: 1, status: "running" });
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({
+			workflowId: runId,
+			name: "ui-only",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
 		await backend.recordCheckpoint({
 			kind: "ui",
 			workflowId: runId,
@@ -665,7 +701,7 @@ describe("targeted durable workflow inspection", () => {
 
 	test("returns deep-cloned durable runs that cannot mutate later inspection", async () => {
 		const runId = testRunId("targeted-clone-isolation");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		await backend.registerWorkflow({
 			workflowId: runId,
 			name: "clone-isolation",

@@ -23,12 +23,12 @@ import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.j
 import { renderNodeCard } from "../../packages/workflows/src/tui/node-card.js";
 import { testRunId } from "../helpers/run-id.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 describe("ctx.tool workflow graph execution", () => {
 	test("tool-only workflow completes with its declared output and one durable side effect", async () => {
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		let calls = 0;
 		const definition = workflow({
 			name: "tool-only-graph",
@@ -88,7 +88,7 @@ describe("ctx.tool workflow graph execution", () => {
 
 	test("admits a running tool node before invoking its callback and records failures", async () => {
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const observedStatuses: string[] = [];
 		const unsubscribe = store.subscribe((snapshot) => {
 			const status = snapshot.runs[0]?.toolNodes?.[0]?.status;
@@ -166,7 +166,7 @@ describe("ctx.tool workflow graph execution", () => {
 			{},
 			{
 				store,
-				durableBackend: new InMemoryDurableBackend(),
+				durableBackend: await createMemoryTestBackend(),
 				adapters: { prompt: { prompt: async (text) => text } },
 			},
 		);
@@ -200,7 +200,7 @@ describe("ctx.tool workflow graph execution", () => {
 		const result = await run(
 			definition,
 			{ mutate: true },
-			{ store: createStore(), durableBackend: new InMemoryDurableBackend() },
+			{ store: createStore(), durableBackend: await createMemoryTestBackend() },
 		);
 		assert.equal(result.status, "completed");
 		assert.equal(result.toolNodes?.[0]?.name, "conditional");
@@ -208,7 +208,7 @@ describe("ctx.tool workflow graph execution", () => {
 
 	test("cancellation leaves a cancelled node and no completed tool checkpoint", async () => {
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const controller = new AbortController();
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
@@ -275,7 +275,7 @@ describe("ctx.tool node cancellation controls", () => {
 
 	test("hands the callback a live abort signal that a run abort reaches promptly", async () => {
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const controller = new AbortController();
 		const entered = Promise.withResolvers<void>();
 		let abortedAtEntry: boolean | undefined;
@@ -313,7 +313,7 @@ describe("ctx.tool node cancellation controls", () => {
 	});
 
 	test("quit with a tool node id aborts only that node and leaves siblings running", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const runId = testRunId("tool-node-targeted-quit");
 		const enteredTarget = Promise.withResolvers<void>();
@@ -392,7 +392,7 @@ describe("ctx.tool node cancellation controls", () => {
 	});
 
 	test("an uncaught awaited cancellation reports the node cancelled and the run's real status", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const runId = testRunId("tool-node-uncaught-abort");
 		const entered = Promise.withResolvers<void>();
@@ -448,7 +448,7 @@ describe("ctx.tool node cancellation controls", () => {
 	});
 
 	test("pause resolves a unique tool name and rejects an ambiguous one", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const runId = testRunId("tool-node-name-routing");
 		const entered: Array<Promise<void>> = [];
@@ -512,7 +512,7 @@ describe("ctx.tool node cancellation controls", () => {
 
 	test("a cancelled tool node renders distinctly from a failed one", async () => {
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const toolControls = createToolControlRegistry();
 		const entered = Promise.withResolvers<void>();
 		const definition = workflow({

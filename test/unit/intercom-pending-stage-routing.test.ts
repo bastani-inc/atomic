@@ -20,7 +20,7 @@ import { registerPendingStageIntercomBridge } from "../../packages/workflows/src
 import { createWorkflowPendingStageDelivery } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
 import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const RUN_ID = "4ac72924-c452-4e5f-9e63-2435722109f7";
 const CHILD_RUN_ID = "5bd82a35-c563-4f60-9a74-3546832210a8";
@@ -192,7 +192,7 @@ test("pending-stage ask refusal recommends nonblocking send", async () => {
 });
 
 describe("workflows-owned pending-stage delivery event bridge", () => {
-	function harness(onRoute?: (payload: Record<string, unknown>) => void) {
+	async function harness(onRoute?: (payload: Record<string, unknown>) => void) {
 		const store = createStore();
 		store.recordRunStart({
 			id: RUN_ID,
@@ -212,8 +212,8 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			],
 			startedAt: 1,
 		});
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		bindStoreDurableBackend(store, backend);
 		const listeners = new Map<string, (payload: unknown) => void>();
 		const emitted: Array<{ event: string; payload: Record<string, unknown> }> = [];
@@ -266,7 +266,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 	}
 
 	test("announces ownership and enforces group isolation without requesting", async () => {
-		const { store, emitted, request, dispose } = harness();
+		const { store, emitted, request, dispose } = await harness();
 		assert.equal(
 			emitted.some(({ event }) => event === "atomic:workflow-pending-stage-route"),
 			true,
@@ -282,7 +282,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 	});
 
 	test("announces discoverable pending workflow stages with canonical targets", async () => {
-		const { emitted, dispose } = harness();
+		const { emitted, dispose } = await harness();
 		const route = emitted.find(({ event }) => event === "atomic:workflow-pending-stage-route");
 		// Regression: #2784
 		assert.deepEqual(route?.payload.stages, [
@@ -299,7 +299,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 	});
 
 	test("enforces one exact 50-message cap across stage id and name aliases", async () => {
-		const { store, backend, request, dispose } = harness();
+		const { store, backend, request, dispose } = await harness();
 		for (let index = 1; index <= 50; index += 1) {
 			const stageKey = index % 2 === 0 ? "reviewer-id" : "reviewer";
 			assert.deepEqual((await request(String(index), GROUP, stageKey)).result, {
@@ -318,7 +318,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 	});
 
 	test("deduplicates identical alias replays and rejects conflicting message-id reuse", async () => {
-		const { store, backend, request, dispose } = harness();
+		const { store, backend, request, dispose } = await harness();
 		const original = message("stable", 100);
 		assert.deepEqual((await request("stable", GROUP, "reviewer", original)).result, {
 			outcome: "queued",
@@ -346,7 +346,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 	});
 
 	test("accepts an unknown stage key speculatively as a sticky entry (slice 3, D3/D4)", async () => {
-		const { store, request, dispose } = harness();
+		const { store, request, dispose } = await harness();
 		const { payload, result } = await request("1", GROUP, "unknown-stage");
 		assert.equal(payload.handled, true);
 		assert.deepEqual(result, { outcome: "queued", position: 1, notInKnownSet: true });
@@ -359,7 +359,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 	});
 
 	test("validates the stage before refusing an ask", async () => {
-		const { store, request, dispose } = harness();
+		const { store, request, dispose } = await harness();
 		const ask = { ...message("ask"), expectsReply: true };
 		// A future-stage target refuses the ask through the sticky flow (slice 3).
 		const unknown = await request("ask", GROUP, "unknown-stage", ask);
@@ -428,7 +428,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			],
 			startedAt: 2,
 		});
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		await backend.registerWorkflow({ workflowId: RUN_ID, name: "root", inputs: {}, status: "running", createdAt: 1 });
 		bindStoreDurableBackend(store, backend);
 		const rootMessage = message("root-existing", 100);
@@ -592,7 +592,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			],
 			startedAt: 3,
 		});
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		await backend.registerWorkflow({ workflowId: RUN_ID, name: "root", inputs: {}, status: "running", createdAt: 1 });
 		bindStoreDurableBackend(store, backend);
 		const routeAnnouncements: Array<{ runId: string; stages: Array<{ stageId: string; target: string }> }> = [];
@@ -777,8 +777,8 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			store.recordStageAttached(RUN_ID, "reviewer-id", index % 2 === 0);
 		}
 	};
-	const claimingHarness = (routes: Record<string, unknown>[], claims: PromiseWithResolvers<void>[]) =>
-		harness((payload) => {
+	const claimingHarness = async (routes: Record<string, unknown>[], claims: PromiseWithResolvers<void>[]) =>
+		await harness((payload) => {
 			routes.push(payload);
 			const claim = Promise.withResolvers<void>();
 			claims.push(claim);
@@ -789,7 +789,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 	test("an unchanged route is republished neither while its acknowledgement is pending nor after it resolves", async () => {
 		const routes: Record<string, unknown>[] = [];
 		const claims: PromiseWithResolvers<void>[] = [];
-		const { store, dispose } = claimingHarness(routes, claims);
+		const { store, dispose } = await claimingHarness(routes, claims);
 		assert.equal(routes.length, 1);
 		assert.deepEqual(routes[0]?.stages, pendingReviewerStages);
 		// 1,000 attachment toggles leave the route projection identical. Before the fix
@@ -812,7 +812,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 	test("a rejected route publication is retried on the next unchanged invalidation", async () => {
 		const routes: Record<string, unknown>[] = [];
 		const claims: PromiseWithResolvers<void>[] = [];
-		const { store, dispose } = claimingHarness(routes, claims);
+		const { store, dispose } = await claimingHarness(routes, claims);
 		assert.equal(routes.length, 1);
 		claims[0]?.reject(new Error("relay failed"));
 		await turn();
@@ -829,7 +829,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 	test("a stale rejection cannot evict the claim of a route republished after A -> B -> A", async () => {
 		const routes: Record<string, unknown>[] = [];
 		const claims: PromiseWithResolvers<void>[] = [];
-		const { store, dispose } = claimingHarness(routes, claims);
+		const { store, dispose } = await claimingHarness(routes, claims);
 		const initialRun = structuredClone(store.runs()[0]!);
 		assert.equal(routes.length, 1);
 		assert.deepEqual(routes[0]?.stages, pendingReviewerStages);
@@ -853,7 +853,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 	test("an unclaimed announcement republishes until a consumer acknowledges it", async () => {
 		const routes: Record<string, unknown>[] = [];
 		let acknowledging = false;
-		const { store, dispose } = harness((payload) => {
+		const { store, dispose } = await harness((payload) => {
 			routes.push(payload);
 			if (acknowledging) payload.completion = Promise.resolve();
 		});
@@ -873,7 +873,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 	test("a replacement bridge republishes once and survives the disposed bridge's late rejection", async () => {
 		const routes: Record<string, unknown>[] = [];
 		const claims: PromiseWithResolvers<void>[] = [];
-		const { store, pi, dispose } = claimingHarness(routes, claims);
+		const { store, pi, dispose } = await claimingHarness(routes, claims);
 		assert.equal(routes.length, 1);
 		dispose();
 		const replacement = registerPendingStageIntercomBridge(pi, store);
@@ -967,7 +967,7 @@ test("reloads and drains aliases by durable deposit order rather than sender tim
 
 test("concurrent stage drains claim one queued message exactly once", async () => {
 	const store = createStore();
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 	bindStoreDurableBackend(store, backend);
 	store.recordRunStart({
@@ -1197,7 +1197,7 @@ test("durable acknowledgement failure replays through the recipient idempotency 
 });
 
 describe("possible future stage rows in the route announcement (D7)", () => {
-	function rowHarness(
+	async function rowHarness(
 		options: {
 			readonly possibleStages?: readonly string[];
 			readonly extraStages?: readonly {
@@ -1273,8 +1273,8 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 				startedAt: 2,
 			});
 		}
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 		bindStoreDurableBackend(store, backend);
 		const listeners = new Map<string, (payload: unknown) => void>();
 		const emitted: Array<{ event: string; payload: Record<string, unknown> }> = [];
@@ -1314,7 +1314,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 	}
 
 	test("announces scan rows with canonical path targets, suppresses materialized literals, and appends the broadcast row", async () => {
-		const { routePayload, dispose } = rowHarness({
+		const { routePayload, dispose } = await rowHarness({
 			possibleStages: ["setup", "orchestrator-*", "reviewer", "child-boundary/inner-stage"],
 		});
 		// "reviewer" is a glob-free entry whose stage is route-eligible materialized: it is
@@ -1329,7 +1329,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 	});
 
 	test("pattern entries stay listed while a matching stage is materialized", async () => {
-		const { routePayload, dispose } = rowHarness({
+		const { routePayload, dispose } = await rowHarness({
 			possibleStages: ["orchestrator-*"],
 			extraStages: [{ id: "orch-1-id", name: "orchestrator-1", status: "running" }],
 		});
@@ -1346,7 +1346,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 	});
 
 	test("queued sticky messages expose row counts and per-stage delivery state (#3406)", async () => {
-		const { routePayload, queueSticky, dispose } = rowHarness({
+		const { routePayload, queueSticky, dispose } = await rowHarness({
 			possibleStages: ["orchestrator-*", "setup"],
 		});
 		assert.deepEqual(await queueSticky("s1", `workflow:${RUN_ID}/orchestrator-*`), {
@@ -1384,7 +1384,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 
 	test("listing retains sticky delivery states outside the scan and after exact materialization (#3406)", async () => {
 		const { requireStoreDurableBackend } = await import("../../packages/workflows/src/durable/store-backend.js");
-		const { store, queueSticky, routePayload, dispose } = rowHarness({ possibleStages: ["later"] });
+		const { store, queueSticky, routePayload, dispose } = await rowHarness({ possibleStages: ["later"] });
 		try {
 			await queueSticky("outside-3406", `workflow:${RUN_ID}/dynamic-*`);
 			await queueSticky("exact-3406", `workflow:${RUN_ID}/later`);
@@ -1465,7 +1465,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 	test("terminal sticky stages give terminal guidance unless context receipt is confirmed (#3406)", async () => {
 		const { requireStoreDurableBackend } = await import("../../packages/workflows/src/durable/store-backend.js");
 		const { inspectRun } = await import("../../packages/workflows/src/runs/background/run-inspect.js");
-		const { store, queueSticky, dispose } = rowHarness({});
+		const { store, queueSticky, dispose } = await rowHarness({});
 		try {
 			await queueSticky("terminal-3406", `workflow:${RUN_ID}/**`);
 			const actual: { stageId: string; state?: string; actionable: boolean }[] = [];
@@ -1519,7 +1519,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 		const { summarizeRunSnapshot } = await import(
 			"../../packages/workflows/src/extension/workflow-status-summary.js"
 		);
-		const { store, queueSticky, dispose } = rowHarness({ childRun: true });
+		const { store, queueSticky, dispose } = await rowHarness({ childRun: true });
 		try {
 			await queueSticky("status-3406", `workflow:${RUN_ID}/**`);
 			const reviewer = store.runs()[0]!.stages[0]!;
@@ -1594,7 +1594,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 	});
 
 	test("rows disappear when the owning run reaches a terminal status", async () => {
-		const { store, routePayload, dispose } = rowHarness({ possibleStages: ["setup"] });
+		const { store, routePayload, dispose } = await rowHarness({ possibleStages: ["setup"] });
 		assert.equal(((routePayload()?.possibleStages ?? []) as unknown[]).length, 2);
 		store.recordRunEnd(RUN_ID, "completed");
 		assert.deepEqual(routePayload()?.possibleStages, []);
@@ -1602,7 +1602,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 	});
 
 	test("only the root run's announcement carries the possible-stage rows", async () => {
-		const { emitted, dispose } = rowHarness({ possibleStages: ["setup"], childRun: true });
+		const { emitted, dispose } = await rowHarness({ possibleStages: ["setup"], childRun: true });
 		const rootRoute = emitted.find(({ payload }) => payload.runId === RUN_ID && payload.possibleStages !== undefined);
 		const childRoute = emitted.find(({ payload }) => payload.runId === CHILD_RUN_ID);
 		assert.ok(rootRoute);

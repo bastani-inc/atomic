@@ -12,7 +12,7 @@ import { createJobTracker } from "../../packages/workflows/src/runs/background/j
 import type { WorkflowTaskOptions, WorkflowTaskStep } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { readJson } from "../helpers/runtime.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import {
 	appendProseTurn,
 	type CreateAgentSessionOptions,
@@ -47,7 +47,7 @@ function withoutAutoModel<T extends WorkflowTaskOptions | WorkflowTaskStep>(opti
 
 describe("resume after a completed ctx.parallel", () => {
 	test("replays the parallel fan-in and re-executes only the failed downstream task (#3207)", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const executions: string[] = [];
 		let failPullRequest = true;
@@ -87,7 +87,7 @@ describe("resume after a completed ctx.parallel", () => {
 		assert.ok(source);
 		assert.equal(source.failureRecoverability, "recoverable");
 		assert.equal(source.stages.find((stage) => stage.id === source.failedStageId)?.name, "pull-request");
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: source.id,
 			name: definition.name,
 			inputs: {},
@@ -118,7 +118,7 @@ describe("resume after a completed ctx.parallel", () => {
 	});
 
 	test("a Goal whose pull-request stage failed after reviewer approval resumes by replaying its turns (#3207)", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const sessions: string[] = [];
 		let failPullRequest = true;
@@ -187,7 +187,7 @@ describe("resume after a completed ctx.parallel", () => {
 		assert.equal(source.failureRecoverability, "recoverable");
 		assert.equal(source.resumable, true);
 		assert.equal(source.stages.find((stage) => stage.id === source.failedStageId)?.name, "pull-request");
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: source.id,
 			name: definition.name,
 			inputs,

@@ -13,7 +13,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowInputValues } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { waitForExecutorStagePendingPrompt } from "./executor-shared.js";
 
 afterEach(() => {
@@ -21,7 +21,9 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-function fixture(lifecycle = false, failOnce = false, backend: DurableWorkflowBackend = new InMemoryDurableBackend()) {
+async function fixture(lifecycle = false, failOnce = false, backend: DurableWorkflowBackend | undefined = undefined) {
+	backend ??= await createMemoryTestBackend();
+
 	setDurableBackend(backend);
 	const store = createStore();
 	const jobs = createJobTracker();
@@ -86,13 +88,13 @@ function fixture(lifecycle = false, failOnce = false, backend: DurableWorkflowBa
 	};
 }
 
-function runIdOf(result: Awaited<ReturnType<ReturnType<typeof fixture>["launch"]>>): string {
+function runIdOf(result: Awaited<ReturnType<Awaited<ReturnType<typeof fixture>>["launch"]>>): string {
 	assert.ok("runId" in result && result.runId, JSON.stringify(result));
 	return result.runId;
 }
 
 test("model run launches the named workflow and rejects invalid inputs without admission", async () => {
-	const f = fixture();
+	const f = await fixture();
 	const invalid = await f.launch(f.ctx, { objective: 42 });
 	assert.equal("status" in invalid && invalid.status, "failed");
 	assert.equal(f.store.runs().length, 0);
@@ -107,7 +109,7 @@ test("model run launches the named workflow and rejects invalid inputs without a
 });
 
 test("distinct runs execute independently and remain inspectable only by their owner", async () => {
-	const f = fixture();
+	const f = await fixture();
 	const ids = (await Promise.all([f.launch(), f.launch()])).map(runIdOf);
 	assert.notEqual(ids[0], ids[1]);
 	await Promise.all(f.jobs.runIds().map((id) => f.jobs.get(id)!.promise));
@@ -125,7 +127,7 @@ test("distinct runs execute independently and remain inspectable only by their o
 });
 
 test("agent-launched identity survives pending input and pause/resume", async () => {
-	const f = fixture(true);
+	const f = await fixture(true);
 	const runId = runIdOf(await f.launch());
 	await f.gapReached;
 	assert.equal(f.body.mock.calls.length, 1);
@@ -148,7 +150,7 @@ test("agent-launched identity survives pending input and pause/resume", async ()
 });
 
 test("foreign caller cannot pause the implicit active agent-launched instance", async () => {
-	const f = fixture(true);
+	const f = await fixture(true);
 	try {
 		await f.launch();
 		await f.gapReached;
@@ -164,7 +166,7 @@ test("foreign caller cannot pause the implicit active agent-launched instance", 
 });
 
 test("terminal ownership survives model tool recreation", async () => {
-	const f = fixture();
+	const f = await fixture();
 	const runId = runIdOf(await f.launch());
 	await Promise.all(f.jobs.runIds().map((id) => f.jobs.get(id)!.promise));
 	const recreated = makeExecuteWorkflowTool(
@@ -184,7 +186,7 @@ test("terminal ownership survives model tool recreation", async () => {
 });
 
 test("lifecycle authorizes padded/default/prefix selectors and prompts after recreation", async () => {
-	const f = fixture(true);
+	const f = await fixture(true);
 	const runId = runIdOf(await f.launch());
 	await f.gapReached;
 	const execute = makeExecuteWorkflowTool(
@@ -230,7 +232,7 @@ test("lifecycle authorizes padded/default/prefix selectors and prompts after rec
 test.each(["pause", "quit"] as const)(
 	"%s bulk selectors preauthorize every actual target atomically",
 	async (action) => {
-		const f = fixture(true);
+		const f = await fixture(true);
 		const contexts = [f.ctx, { ...f.ctx, sessionId: "other-owner" }];
 		for (const ctx of contexts) await f.launch(ctx);
 		await vi.waitFor(() => assert.equal(f.gapCount, 2));
@@ -263,7 +265,7 @@ test.each(["pause", "quit"] as const)(
 
 test("terminal ownership survives runtime replacement and durable-only inspection", async () => {
 	const backend = await JournalTestBackend.create();
-	const f = fixture(false, false, backend);
+	const f = await fixture(false, false, backend);
 	const runId = runIdOf(await f.launch());
 	await Promise.all(f.jobs.runIds().map((id) => f.jobs.get(id)!.promise));
 	setDurableBackend(await backend.reopen());
@@ -293,7 +295,7 @@ test("terminal ownership survives runtime replacement and durable-only inspectio
 });
 
 test("checkpointed agent-launched instance resumes under its owner after runtime replacement", async () => {
-	const f = fixture(false, true);
+	const f = await fixture(false, true);
 	const runId = runIdOf(await f.launch());
 	await Promise.all(f.jobs.runIds().map((id) => f.jobs.get(id)!.promise));
 	const store = createStore();
@@ -325,7 +327,7 @@ test("checkpointed agent-launched instance resumes under its owner after runtime
 test.each(["agent", "user", undefined] as const)(
 	"lifecycle admission distinguishes %s origin without model ownership",
 	async (origin) => {
-		const f = fixture();
+		const f = await fixture();
 		const started = await f.runtime.dispatch(
 			{ action: "run", workflow: "registered", inputs: { objective: "approved" } },
 			{ origin },
@@ -342,7 +344,7 @@ test.each(["agent", "user", undefined] as const)(
 );
 
 test("owner can pause all and resume each independent agent-launched instance", async () => {
-	const f = fixture(true);
+	const f = await fixture(true);
 	const ids: string[] = [];
 	for (let index = 0; index < 2; index++) {
 		const started = await f.launch();

@@ -7,7 +7,10 @@ import { createToolPrimitive } from "../../packages/workflows/src/durable/tool-p
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowToolFailure } from "../../packages/workflows/src/shared/types.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import {
+	createMemoryTestBackend,
+	type MemoryJournalBackend as InMemoryDurableBackend,
+} from "../helpers/workflow-journal.js";
 
 const TIMEOUT_MS = 20;
 
@@ -21,7 +24,7 @@ function runOptions(backend: InMemoryDurableBackend, signal?: AbortSignal) {
 
 describe("ctx.tool timeoutMs", () => {
 	test("releases a signal-ignoring callback, aborts its signal, and preserves repair evidence", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const entered = Promise.withResolvers<void>();
 		const repairPrompts: string[] = [];
 		let callbackSignal: AbortSignal | undefined;
@@ -104,7 +107,7 @@ describe("ctx.tool timeoutMs", () => {
 			finished: (activityId) => activeCallbackIds.delete(activityId),
 		});
 		try {
-			const backend = new InMemoryDurableBackend();
+			const backend = await createMemoryTestBackend();
 			const tool = createToolPrimitive({
 				workflowId: "timeout-callback-activity",
 				backend,
@@ -129,7 +132,7 @@ describe("ctx.tool timeoutMs", () => {
 	});
 
 	test("retries a timeout with a fresh signal and deadline for every attempt", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const signals: AbortSignal[] = [];
 		let observed: WorkflowToolFailure | undefined;
 		const definition = workflow({
@@ -173,7 +176,7 @@ describe("ctx.tool timeoutMs", () => {
 	});
 
 	test("default throw mode throws and records the timeout-specific failure", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const definition = workflow({
 			name: "tool-timeout-throw",
 			description: "",
@@ -206,7 +209,7 @@ describe("ctx.tool timeoutMs", () => {
 	});
 
 	test("does not alter a callback that finishes inside the bound", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		let callbackSignal: AbortSignal | undefined;
 		const definition = workflow({
 			name: "tool-timeout-success",
@@ -239,7 +242,7 @@ describe("ctx.tool timeoutMs", () => {
 	test("large positive finite deadlines do not overflow the host timer", async () => {
 		const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
 		try {
-			const backend = new InMemoryDurableBackend();
+			const backend = await createMemoryTestBackend();
 			const tool = createToolPrimitive({
 				workflowId: "timeout-large-finite",
 				backend,
@@ -266,7 +269,7 @@ describe("ctx.tool timeoutMs", () => {
 	});
 
 	test("operator cancellation remains cancellation rather than timeout", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const controller = new AbortController();
 		const entered = Promise.withResolvers<void>();
 		const definition = workflow({
@@ -302,7 +305,7 @@ describe("ctx.tool timeoutMs", () => {
 	});
 
 	test("later cancellation after a timed-out attempt wins during retry backoff", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const controller = new AbortController();
 		const firstTimeout = Promise.withResolvers<void>();
 		let attempts = 0;
@@ -354,8 +357,8 @@ describe("ctx.tool timeoutMs", () => {
 	});
 
 	test("preserves timeout evidence when timeout abort handlers then cancel the run", async () => {
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({
 			workflowId: "timeout-wins-cancellation-race",
 			name: "timeout-wins-cancellation-race",
 			inputs: {},
@@ -407,7 +410,7 @@ describe("ctx.tool timeoutMs", () => {
 
 	test("rejects invalid timeout values before invoking or checkpointing", async () => {
 		for (const timeoutMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
-			const backend = new InMemoryDurableBackend();
+			const backend = await createMemoryTestBackend();
 			let callbackCalls = 0;
 			const tool = createToolPrimitive({
 				workflowId: `invalid-timeout-${String(timeoutMs)}`,
@@ -437,7 +440,7 @@ describe("ctx.tool timeoutMs", () => {
 	test("clears the deadline timer after a successful callback", async () => {
 		vi.useFakeTimers();
 		try {
-			const backend = new InMemoryDurableBackend();
+			const backend = await createMemoryTestBackend();
 			const tool = createToolPrimitive({
 				workflowId: "timeout-cleanup",
 				backend,
@@ -457,8 +460,8 @@ describe("ctx.tool timeoutMs", () => {
 		vi.useFakeTimers();
 		const deadlineTimers = vi.spyOn(globalThis, "setTimeout");
 		try {
-			const backend = new InMemoryDurableBackend();
-			backend.registerWorkflow({
+			const backend = await createMemoryTestBackend();
+			await backend.registerWorkflow({
 				workflowId: "timeout-cached",
 				name: "timeout-cached",
 				inputs: {},
@@ -513,7 +516,7 @@ describe("ctx.tool timeoutMs", () => {
 		}
 	});
 	test("omitting timeoutMs keeps the existing unbounded callback path", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		let callbackSignal: AbortSignal | undefined;
 		const tool = createToolPrimitive({
 			workflowId: "timeout-omitted",

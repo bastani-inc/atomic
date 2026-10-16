@@ -9,7 +9,7 @@ import { createStageSessionHeartbeat } from "../../packages/workflows/src/runs/f
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { mockSession, type StageSessionRuntime } from "./executor-shared.js";
 
 const HEARTBEAT_MS = 30_000;
@@ -96,17 +96,21 @@ describe("active workflow stage session durability", () => {
 		const store = createStore();
 		const runId = testRunId("stage-heartbeat-order");
 		const observedStatuses: string[] = [];
-		class ObservingBackend extends InMemoryDurableBackend {
-			override async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
-				if (checkpoint.kind === "stage" && checkpoint.sessionFile !== undefined) {
-					observedStatuses.push(
-						store.runs().find((candidate) => candidate.id === runId)?.stages[0]?.status ?? "missing",
-					);
-				}
-				await super.recordCheckpointAsync(checkpoint);
-			}
+		async function createObservingBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), {});
+			const baserecordCheckpointAsync = backend.recordCheckpointAsync.bind(backend);
+			return Object.assign(backend, {
+				async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+					if (checkpoint.kind === "stage" && checkpoint.sessionFile !== undefined) {
+						observedStatuses.push(
+							store.runs().find((candidate) => candidate.id === runId)?.stages[0]?.status ?? "missing",
+						);
+					}
+					await baserecordCheckpointAsync(checkpoint);
+				},
+			});
 		}
-		const backend = new ObservingBackend();
+		const backend = await createObservingBackend();
 		const release = Promise.withResolvers<string>();
 		const session: StageSessionRuntime = {
 			...mockSession(),
@@ -241,7 +245,7 @@ describe("active workflow stage session durability", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(2_500_000);
 		const store = createStore();
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const runId = testRunId("sessionless-stage-heartbeat");
 		const release = Promise.withResolvers<string>();
 		const definition = workflow({
@@ -284,15 +288,19 @@ describe("active workflow stage session durability", () => {
 		const releaseIdentityWrite = Promise.withResolvers<void>();
 		let identityPersisted = false;
 		let modelTurnStarted = false;
-		class BlockingIdentityBackend extends InMemoryDurableBackend {
-			override async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
-				if (checkpoint.kind === "stage" && checkpoint.sessionFile !== undefined && !identityPersisted) {
-					identityWriteStarted.resolve();
-					await releaseIdentityWrite.promise;
-					identityPersisted = true;
-				}
-				await super.recordCheckpointAsync(checkpoint);
-			}
+		async function createBlockingIdentityBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), {});
+			const baserecordCheckpointAsync = backend.recordCheckpointAsync.bind(backend);
+			return Object.assign(backend, {
+				async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+					if (checkpoint.kind === "stage" && checkpoint.sessionFile !== undefined && !identityPersisted) {
+						identityWriteStarted.resolve();
+						await releaseIdentityWrite.promise;
+						identityPersisted = true;
+					}
+					await baserecordCheckpointAsync(checkpoint);
+				},
+			});
 		}
 		const session: StageSessionRuntime = {
 			...mockSession(),
@@ -318,7 +326,7 @@ describe("active workflow stage session durability", () => {
 			{
 				runId,
 				store,
-				durableBackend: new BlockingIdentityBackend(),
+				durableBackend: await createBlockingIdentityBackend(),
 				adapters: { agentSession: { create: async () => session } },
 			},
 		);
@@ -336,14 +344,17 @@ describe("active workflow stage session durability", () => {
 		vi.useFakeTimers();
 		const store = createStore();
 		const runId = testRunId("initial-identity-failure-cleanup");
-		class FailingIdentityBackend extends InMemoryDurableBackend {
-			public override readonly persistent = true;
-			override async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
-				if (checkpoint.kind === "stage" && checkpoint.name === "first" && checkpoint.sessionFile !== undefined) {
-					throw new Error("initial identity persistence failed");
-				}
-				await super.recordCheckpointAsync(checkpoint);
-			}
+		async function createFailingIdentityBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), { persistent: true });
+			const baserecordCheckpointAsync = backend.recordCheckpointAsync.bind(backend);
+			return Object.assign(backend, {
+				async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+					if (checkpoint.kind === "stage" && checkpoint.name === "first" && checkpoint.sessionFile !== undefined) {
+						throw new Error("initial identity persistence failed");
+					}
+					await baserecordCheckpointAsync(checkpoint);
+				},
+			});
 		}
 		let secondPromptCalled = false;
 		const definition = workflow({
@@ -368,7 +379,7 @@ describe("active workflow stage session durability", () => {
 			{
 				runId,
 				store,
-				durableBackend: new FailingIdentityBackend(),
+				durableBackend: await createFailingIdentityBackend(),
 				config: SERIAL_CONFIG,
 				adapters: {
 					agentSession: {
@@ -427,7 +438,7 @@ describe("active workflow stage session durability", () => {
 			{},
 			{
 				store,
-				durableBackend: new InMemoryDurableBackend(),
+				durableBackend: await createMemoryTestBackend(),
 				config: SERIAL_CONFIG,
 				mcp: {
 					setScope() {
@@ -488,7 +499,7 @@ describe("active workflow stage session durability", () => {
 			{},
 			{
 				store,
-				durableBackend: new InMemoryDurableBackend(),
+				durableBackend: await createMemoryTestBackend(),
 				config: SERIAL_CONFIG,
 				mcp: {
 					setScope() {},
@@ -524,15 +535,19 @@ describe("active workflow stage session durability", () => {
 			{ adapter: "node-sqlite", location: "journal.sqlite" },
 			new Error("sessionless timing persistence failed"),
 		);
-		class FailingHeartbeatBackend extends JournalTestBackend {
-			override async recordCheckpoint(checkpoint: DurableCheckpoint): Promise<void> {
-				if (checkpoint.checkpointId.startsWith("run-timing:")) throw failure;
-				await super.recordCheckpoint(checkpoint);
-			}
+		async function createFailingHeartbeatBackend(...args: Parameters<typeof JournalTestBackend.create>) {
+			const backend = Object.assign(await JournalTestBackend.create(...args), {});
+			const baserecordCheckpoint = backend.recordCheckpoint.bind(backend);
+			return Object.assign(backend, {
+				async recordCheckpoint(checkpoint: DurableCheckpoint): Promise<void> {
+					if (checkpoint.checkpointId.startsWith("run-timing:")) throw failure;
+					await baserecordCheckpoint(checkpoint);
+				},
+			});
 		}
 		const store = createStore();
 		const runId = testRunId("sessionless-heartbeat-failure");
-		const backend = await FailingHeartbeatBackend.create();
+		const backend = await createFailingHeartbeatBackend();
 		const never = Promise.withResolvers<string>();
 		const promptStarted = Promise.withResolvers<void>();
 		const definition = workflow({
@@ -581,17 +596,19 @@ describe("active workflow stage session durability", () => {
 		vi.setSystemTime(3_000_000);
 		const store = createStore();
 		const runId = testRunId("stage-heartbeat-failure");
-		class FailingHeartbeatBackend extends InMemoryDurableBackend {
-			public override readonly persistent = true;
-			private sessionWrites = 0;
-			override async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
-				if (checkpoint.kind === "stage" && checkpoint.sessionFile !== undefined && ++this.sessionWrites > 1) {
-					throw new Error("durable heartbeat write failed");
-				}
-				await super.recordCheckpointAsync(checkpoint);
-			}
+		async function createFailingHeartbeatBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), { persistent: true, sessionWrites: 0 });
+			const baserecordCheckpointAsync = backend.recordCheckpointAsync.bind(backend);
+			return Object.assign(backend, {
+				async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+					if (checkpoint.kind === "stage" && checkpoint.sessionFile !== undefined && ++backend.sessionWrites > 1) {
+						throw new Error("durable heartbeat write failed");
+					}
+					await baserecordCheckpointAsync(checkpoint);
+				},
+			});
 		}
-		const backend = new FailingHeartbeatBackend();
+		const backend = await createFailingHeartbeatBackend();
 		const never = Promise.withResolvers<string>();
 		const session: StageSessionRuntime = {
 			...mockSession(),
@@ -659,7 +676,7 @@ describe("active workflow stage session durability", () => {
 			{
 				runId,
 				store,
-				durableBackend: new InMemoryDurableBackend(),
+				durableBackend: await createMemoryTestBackend(),
 				config: SERIAL_CONFIG,
 				onStageSession(_stageRunId, snapshot, options) {
 					if (snapshot.name !== "first" || options?.awaitDurable !== true || !turnResolved) return;
@@ -732,7 +749,7 @@ describe("active workflow stage session durability", () => {
 			{
 				runId,
 				store,
-				durableBackend: new InMemoryDurableBackend(),
+				durableBackend: await createMemoryTestBackend(),
 				config: SERIAL_CONFIG,
 				async onStageSession(_stageRunId, snapshot, options) {
 					if (snapshot.name !== "long-turn" || options?.awaitDurable !== true || !armHeartbeatFailure) return;

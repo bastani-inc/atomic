@@ -15,7 +15,7 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createWorkflowObservation } from "../../packages/workflows/src/extension/workflow-observation.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 // #2891: the full path from workflow execution through the host activity hub to the
 // built-in reporter's `herdr` CLI invocations, against a fake executable capturing argv.
@@ -104,7 +104,7 @@ test("reporter reports working, blocked, working, idle for a real workflow with 
 			{
 				store,
 				signal: controller.signal,
-				durableBackend: new InMemoryDurableBackend(),
+				durableBackend: await createMemoryTestBackend(),
 				usePromptNodesForUi: true,
 				adapters: { complete: { complete: async (text) => text } },
 			},
@@ -210,7 +210,7 @@ test("reporter returns to idle after a blocked workflow executor stops without a
 				},
 			}),
 			{},
-			{ store, signal: controller.signal, durableBackend: new InMemoryDurableBackend() },
+			{ store, signal: controller.signal, durableBackend: await createMemoryTestBackend() },
 		);
 		const working = await fake.waitFor(2);
 		assert.equal(arg(working.at(-1)!.args, "--state"), "working");

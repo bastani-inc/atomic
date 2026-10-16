@@ -6,22 +6,25 @@ import type { DurableCheckpoint, DurableToolCheckpoint } from "../../packages/wo
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 describe("tool checkpoint failures", () => {
 	test("journal best-effort storage rejection leaves checkpoints unchanged and permits a later write", async () => {
-		class RejectAdditiveBackend extends JournalTestBackend {
-			rejectWrite = false;
-			override async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
-				if (this.rejectWrite)
-					throw new StorageUnavailableError(
-						{ adapter: "node-sqlite", location: this.databasePath },
-						new Error("write rejected"),
-					);
-				await super.recordCheckpointAsync(checkpoint);
-			}
+		async function createRejectAdditiveBackend(...args: Parameters<typeof JournalTestBackend.create>) {
+			const backend = Object.assign(await JournalTestBackend.create(...args), { rejectWrite: false });
+			const baserecordCheckpointAsync = backend.recordCheckpointAsync.bind(backend);
+			return Object.assign(backend, {
+				async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+					if (backend.rejectWrite)
+						throw new StorageUnavailableError(
+							{ adapter: "node-sqlite", location: backend.databasePath },
+							new Error("write rejected"),
+						);
+					await baserecordCheckpointAsync(checkpoint);
+				},
+			});
 		}
-		const backend = await RejectAdditiveBackend.create();
+		const backend = await createRejectAdditiveBackend();
 		await backend.registerWorkflow({
 			workflowId: "journal-best-effort",
 			name: "journal",
@@ -50,15 +53,19 @@ describe("tool checkpoint failures", () => {
 	});
 
 	test("authoritative fresh checkpoint failures still fail the run", async () => {
-		class RejectAuthoritativeBackend extends InMemoryDurableBackend {
-			override async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
-				if (checkpoint.kind === "tool")
-					throw new StorageUnavailableError(
-						{ adapter: "node-sqlite", location: "authoritative write rejected" },
-						new Error("fixture storage failure"),
-					);
-				await super.recordCheckpointAsync(checkpoint);
-			}
+		async function createRejectAuthoritativeBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), {});
+			const baserecordCheckpointAsync = backend.recordCheckpointAsync.bind(backend);
+			return Object.assign(backend, {
+				async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+					if (checkpoint.kind === "tool")
+						throw new StorageUnavailableError(
+							{ adapter: "node-sqlite", location: "authoritative write rejected" },
+							new Error("fixture storage failure"),
+						);
+					await baserecordCheckpointAsync(checkpoint);
+				},
+			});
 		}
 		let callbackCalls = 0;
 		const result = await run(
@@ -76,7 +83,7 @@ describe("tool checkpoint failures", () => {
 				},
 			}),
 			{},
-			{ store: createStore(), durableBackend: new RejectAuthoritativeBackend() },
+			{ store: createStore(), durableBackend: await createRejectAuthoritativeBackend() },
 		);
 		assert.equal(result.status, "failed");
 		assert.equal(callbackCalls, 1);
@@ -85,10 +92,13 @@ describe("tool checkpoint failures", () => {
 	});
 
 	test("cached checkpoint lookup failures surface before callbacks or migration", async () => {
-		class RejectLookupBackend extends InMemoryDurableBackend {
-			override getToolCheckpoint(): DurableToolCheckpoint | undefined {
-				throw new Error("lookup rejected");
-			}
+		async function createRejectLookupBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), {});
+			return Object.assign(backend, {
+				getToolCheckpoint(): DurableToolCheckpoint | undefined {
+					throw new Error("lookup rejected");
+				},
+			});
 		}
 		let callbackCalls = 0;
 		const result = await run(
@@ -106,7 +116,7 @@ describe("tool checkpoint failures", () => {
 				},
 			}),
 			{},
-			{ store: createStore(), durableBackend: new RejectLookupBackend() },
+			{ store: createStore(), durableBackend: await createRejectLookupBackend() },
 		);
 		assert.equal(result.status, "failed");
 		assert.equal(callbackCalls, 0);

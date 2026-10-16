@@ -14,7 +14,7 @@ import {
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { sleep } from "../helpers/runtime.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 async function waitForPrompt(store: ReturnType<typeof createStore>): Promise<{
 	readonly runId: string;
@@ -66,7 +66,7 @@ afterEach(() => setDurableBackend(undefined));
 
 describe("graceful quit at user-input boundaries", () => {
 	test("a synthetic prompt stays paused after an answer until explicit resume", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -125,7 +125,7 @@ describe("graceful quit at user-input boundaries", () => {
 	});
 
 	test("a second quit creates a fresh answer barrier after an unanswered resume", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -170,7 +170,7 @@ describe("graceful quit at user-input boundaries", () => {
 	});
 
 	test("controllerless synthetic pending prompt is distinct from between-stage state", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -188,7 +188,7 @@ describe("graceful quit at user-input boundaries", () => {
 		});
 		store.recordStageStart(runId, { id: stageId, name: "input", status: "running", parentIds: [], toolEvents: [] });
 		assert.equal(store.recordStagePendingPrompt(runId, stageId, prompt), true);
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: runId,
 			name: "prompt",
 			inputs: {},
@@ -210,7 +210,7 @@ describe("graceful quit at user-input boundaries", () => {
 	});
 
 	test("awaiting-input controls acknowledge pause and already-paused quit is idempotent", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -234,7 +234,7 @@ describe("graceful quit at user-input boundaries", () => {
 			parentIds: [],
 			toolEvents: [],
 		});
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: runId,
 			name: "awaiting",
 			inputs: {},

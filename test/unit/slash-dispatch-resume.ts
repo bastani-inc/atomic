@@ -5,7 +5,7 @@ import { testRunId } from "../helpers/run-id.js";
 // InMemoryDurableBackend is already bound at line 46. Bun tolerated the repeated
 // binding; every standards-conforming parser rejects it, and vitest's did.
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import type {
 	PiCommandContext,
 	PiCustomOverlayFactoryTui,
@@ -128,16 +128,17 @@ describe("/workflow resume <runId> — active run is refused", () => {
 
 describe("/workflow resume <runId> — exact live fast path", () => {
 	test.sequential("exact paused live target bypasses completed durable catalog in headless mode", async () => {
-		class CatalogTrapBackend extends InMemoryDurableBackend {
-			completedCatalogCalls = 0;
-
-			override listCompletedWorkflows() {
-				this.completedCatalogCalls += 1;
-				throw new Error("completed durable catalog must not be enumerated");
-			}
+		async function createCatalogTrapBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), { completedCatalogCalls: 0 });
+			return Object.assign(backend, {
+				listCompletedWorkflows() {
+					backend.completedCatalogCalls += 1;
+					throw new Error("completed durable catalog must not be enumerated");
+				},
+			});
 		}
 
-		const backend = new CatalogTrapBackend();
+		const backend = await createCatalogTrapBackend();
 		setDurableBackend(backend);
 		const { pi, commands, sent } = buildMockPi();
 		addFactoryStubs(pi);
@@ -146,7 +147,7 @@ describe("/workflow resume <runId> — exact live fast path", () => {
 		const handler = commands.find((command) => command.name === "workflow")!.options.handler;
 		const runId = testRunId(`headless-fast-resume-${Date.now()}`);
 		const stageId = "stage-fast-resume";
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: runId,
 			name: "durable-duplicate",
 			inputs: {},
@@ -184,16 +185,18 @@ describe("/workflow resume <runId> — exact live fast path", () => {
 		assert.match(content, /Resumed 1 stage\(s\)/);
 	});
 	test.sequential("exact paused nested child remains excluded from top-level resume targets", async () => {
-		class CatalogCountingBackend extends InMemoryDurableBackend {
-			completedCatalogCalls = 0;
-
-			override listCompletedWorkflows() {
-				this.completedCatalogCalls += 1;
-				return super.listCompletedWorkflows();
-			}
+		async function createCatalogCountingBackend() {
+			const backend = Object.assign(await createMemoryTestBackend(), { completedCatalogCalls: 0 });
+			const baselistCompletedWorkflows = backend.listCompletedWorkflows.bind(backend);
+			return Object.assign(backend, {
+				listCompletedWorkflows() {
+					backend.completedCatalogCalls += 1;
+					return baselistCompletedWorkflows();
+				},
+			});
 		}
 
-		const backend = new CatalogCountingBackend();
+		const backend = await createCatalogCountingBackend();
 		setDurableBackend(backend);
 		const { pi, commands } = buildMockPi();
 		addFactoryStubs(pi);
@@ -202,7 +205,7 @@ describe("/workflow resume <runId> — exact live fast path", () => {
 		const handler = commands.find((command) => command.name === "workflow")!.options.handler;
 		const runId = testRunId(`nested-paused-resume-${Date.now()}`);
 		const stageId = "stage-nested-paused";
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: runId,
 			name: "nested-worker",
 			inputs: {},
@@ -339,7 +342,7 @@ describe("/workflow attach <rootRunId> <nestedStageId>", () => {
 		const boundaryId = "hydrated-boundary";
 		const stageId = "hydrated-review";
 		const replayKey = "workflow:hydrated-child:1";
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const child = {
 			runId: childRunId,
 			runName: "hydrated-child",
@@ -355,7 +358,7 @@ describe("/workflow attach <rootRunId> <nestedStageId>", () => {
 			invocationFingerprint: "hydrated-fixture-fingerprint",
 			child,
 		};
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: rootRunId,
 			name: "hydrated-root",
 			inputs: {},
@@ -363,7 +366,7 @@ describe("/workflow attach <rootRunId> <nestedStageId>", () => {
 			updatedAt: 5,
 			status: "completed",
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: rootRunId,
 			checkpointId: "hydrated-start",
@@ -380,7 +383,7 @@ describe("/workflow attach <rootRunId> <nestedStageId>", () => {
 				boundary: { ...identity, event: "start", status: "running" },
 			},
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: rootRunId,
 			checkpointId: `${replayKey}:review`,
@@ -398,7 +401,7 @@ describe("/workflow attach <rootRunId> <nestedStageId>", () => {
 				run: child,
 			},
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: rootRunId,
 			checkpointId: "hydrated-terminal",

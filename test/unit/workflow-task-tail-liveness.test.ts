@@ -33,7 +33,7 @@ import { effectiveRunStatus } from "../../packages/workflows/src/shared/returned
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import type { WorkflowTaskResult } from "../../packages/workflows/src/shared/types.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { structuredOutputMockSession } from "./executor-shared.js";
 import { assistantMessageWithUsage } from "./stage-runner-helpers.js";
 
@@ -69,46 +69,60 @@ class Gate {
 	});
 }
 
-class DelayedTaskCheckpointBackend extends InMemoryDurableBackend {
-	readonly gate = new Gate();
-	failTaskCheckpoint = false;
-	taskCheckpoints = 0;
-	override async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
-		if (checkpoint.kind === "stage" && checkpoint.checkpointId.startsWith("task:")) {
-			this.taskCheckpoints += 1;
-			await this.gate.barrier;
-			if (this.failTaskCheckpoint) throw new Error("task-result checkpoint failed");
-		}
-		await super.recordCheckpointAsync(checkpoint);
-	}
-}
-
-class PostTaskUsageCheckpointBackend extends InMemoryDurableBackend {
-	readonly gate = new Gate();
-	readonly taskResults: Extract<DurableCheckpoint, { readonly kind: "stage" }>[] = [];
-	onAllTaskResultsPersisted: () => void = () => {};
-	override async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
-		await super.recordCheckpointAsync(checkpoint);
-		if (checkpoint.kind !== "stage" || !checkpoint.checkpointId.startsWith("task:")) return;
-		this.taskResults.push(checkpoint);
-		if (this.taskResults.length === 2) {
-			try {
-				this.onAllTaskResultsPersisted();
-			} finally {
-				this.gate.release();
+async function createDelayedTaskCheckpointBackend() {
+	const backend = Object.assign(await createMemoryTestBackend(), {
+		gate: new Gate(),
+		failTaskCheckpoint: false,
+		taskCheckpoints: 0,
+	});
+	const baserecordCheckpointAsync = backend.recordCheckpointAsync.bind(backend);
+	return Object.assign(backend, {
+		async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+			if (checkpoint.kind === "stage" && checkpoint.checkpointId.startsWith("task:")) {
+				backend.taskCheckpoints += 1;
+				await backend.gate.barrier;
+				if (backend.failTaskCheckpoint) throw new Error("task-result checkpoint failed");
 			}
-		}
-		await this.gate.barrier;
-	}
+			await baserecordCheckpointAsync(checkpoint);
+		},
+	});
 }
 
-class DropTaskResultBackend extends InMemoryDurableBackend {
-	override async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
-		if (checkpoint.kind === "stage" && checkpoint.checkpointId.startsWith("task:")) {
-			throw new Error("task-result checkpoint failed");
-		}
-		await super.recordCheckpointAsync(checkpoint);
-	}
+async function createPostTaskUsageCheckpointBackend() {
+	const backend = Object.assign(await createMemoryTestBackend(), {
+		gate: new Gate(),
+		taskResults: [] as Extract<DurableCheckpoint, { readonly kind: "stage" }>[],
+		onAllTaskResultsPersisted: (() => {}) as () => void,
+	});
+	const baserecordCheckpointAsync = backend.recordCheckpointAsync.bind(backend);
+	return Object.assign(backend, {
+		async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+			await baserecordCheckpointAsync(checkpoint);
+			if (checkpoint.kind !== "stage" || !checkpoint.checkpointId.startsWith("task:")) return;
+			backend.taskResults.push(checkpoint);
+			if (backend.taskResults.length === 2) {
+				try {
+					backend.onAllTaskResultsPersisted();
+				} finally {
+					backend.gate.release();
+				}
+			}
+			await backend.gate.barrier;
+		},
+	});
+}
+
+async function createDropTaskResultBackend() {
+	const backend = Object.assign(await createMemoryTestBackend(), {});
+	const baserecordCheckpointAsync = backend.recordCheckpointAsync.bind(backend);
+	return Object.assign(backend, {
+		async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+			if (checkpoint.kind === "stage" && checkpoint.checkpointId.startsWith("task:")) {
+				throw new Error("task-result checkpoint failed");
+			}
+			await baserecordCheckpointAsync(checkpoint);
+		},
+	});
 }
 
 async function replayAfterDroppedTaskPersist(
@@ -121,7 +135,7 @@ async function replayAfterDroppedTaskPersist(
 	readonly replayed: Awaited<ReturnType<typeof run>>;
 	readonly prompts: number;
 }> {
-	const backend = new DropTaskResultBackend();
+	const backend = await createDropTaskResultBackend();
 	const runId = `wf-live-${name}`;
 	const def = workflow({
 		name,
@@ -194,7 +208,7 @@ describe("ctx.task tail liveness", () => {
 	test("delayed task-result checkpoint past the duration ceiling becomes budget_exceeded", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(0);
-		const backend = new DelayedTaskCheckpointBackend();
+		const backend = await createDelayedTaskCheckpointBackend();
 		const store = createStore();
 		const pending = run(
 			taskThenTool,
@@ -231,7 +245,7 @@ describe("ctx.task tail liveness", () => {
 	test("parallel post-task budget stops remain structured, deterministic, and resumable", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(0);
-		const backend = new DelayedTaskCheckpointBackend();
+		const backend = await createDelayedTaskCheckpointBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const jobs = createJobTracker();
@@ -341,7 +355,7 @@ describe("ctx.task tail liveness", () => {
 	test("parallel budget selection requires every authored step to complete", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(0);
-		const backend = new DelayedTaskCheckpointBackend();
+		const backend = await createDelayedTaskCheckpointBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const jobs = createJobTracker();
@@ -417,7 +431,7 @@ describe("ctx.task tail liveness", () => {
 	});
 
 	test("parallel post-task token budget stops replay completed structured results", async () => {
-		const backend = new PostTaskUsageCheckpointBackend();
+		const backend = await createPostTaskUsageCheckpointBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const jobs = createJobTracker();
@@ -560,7 +574,7 @@ describe("ctx.task tail liveness", () => {
 	test("an ordinary failure still wins over a concurrent post-task budget stop", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(0);
-		const backend = new DelayedTaskCheckpointBackend();
+		const backend = await createDelayedTaskCheckpointBackend();
 		const store = createStore();
 		let taskExecutions = 0;
 		const Report = Type.Object({ approved: Type.Boolean() }, { additionalProperties: false });
@@ -621,7 +635,7 @@ describe("ctx.task tail liveness", () => {
 	});
 
 	test("task-result checkpoint failure rejects the root instead of leaving it pending", async () => {
-		const backend = new DelayedTaskCheckpointBackend();
+		const backend = await createDelayedTaskCheckpointBackend();
 		backend.failTaskCheckpoint = true;
 		const store = createStore();
 		const pending = run(
@@ -644,15 +658,15 @@ describe("ctx.task tail liveness", () => {
 	});
 
 	test("resumed replay reuses the completed task checkpoint without rerunning it", async () => {
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({
 			workflowId: "wf-task-tail-replay",
 			name: "task-replay-only",
 			inputs: {},
 			createdAt: 1,
 			status: "running",
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: "wf-task-tail-replay",
 			checkpointId: "task:stage:task:review:1",
@@ -692,15 +706,15 @@ describe("ctx.task tail liveness", () => {
 	});
 
 	test("terminal-only stage checkpoint replays a completed task without rerunning it", async () => {
-		const backend = new InMemoryDurableBackend();
-		backend.registerWorkflow({
+		const backend = await createMemoryTestBackend();
+		await backend.registerWorkflow({
 			workflowId: "wf-task-terminal-only",
 			name: "task-terminal-only",
 			inputs: {},
 			createdAt: 1,
 			status: "running",
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: "wf-task-terminal-only",
 			checkpointId: "stage:stage:task:review:1",
@@ -767,7 +781,7 @@ describe("ctx.task tail liveness", () => {
 	});
 
 	test("terminal-only stage checkpoint preserves fallback metadata without rerunning the task", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const attemptedModels = ["openai/gpt-primary", "anthropic/claude-fallback", "openai/gpt-primary"];
 		const modelAttempts = [
 			{
@@ -784,14 +798,14 @@ describe("ctx.task tail liveness", () => {
 				usage: { input: 17, output: 9, cacheRead: 5, cacheWrite: 6, cost: 0.75, turns: 2 },
 			},
 		];
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: "wf-task-terminal-only",
 			name: "task-terminal-only",
 			inputs: {},
 			createdAt: 1,
 			status: "running",
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: "wf-task-terminal-only",
 			checkpointId: "stage:stage:task:review:1",
@@ -864,16 +878,16 @@ describe("ctx.task tail liveness", () => {
 	});
 
 	test("terminal-only replay returns structured artifacts and warnings without rerunning", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const replayKey = "stage:task:review:1";
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: "wf-task-terminal-fields",
 			name: "task-terminal-fields",
 			inputs: {},
 			createdAt: 1,
 			status: "running",
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: "wf-task-terminal-fields",
 			checkpointId: `stage:${replayKey}`,
@@ -906,16 +920,16 @@ describe("ctx.task tail liveness", () => {
 	});
 
 	test("terminal-only replay preserves schema task text", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const replayKey = "stage:task:review:1";
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: "wf-schema-receipt",
 			name: "schema-receipt",
 			inputs: {},
 			createdAt: 1,
 			status: "running",
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: "wf-schema-receipt",
 			checkpointId: `stage:${replayKey}`,
@@ -959,18 +973,18 @@ describe("ctx.task tail liveness", () => {
 	});
 
 	test("terminal-only schema maxOutput replay keeps the truncated text", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const replayKey = "stage:task:review:1";
 		const structured = { approved: true, notes: "line1\nline2\nline3" };
 		const truncated = `{\n\n[workflow output truncated; limits: 204800 bytes, 1 lines]`;
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: "wf-schema-max-output",
 			name: "schema-max-output",
 			inputs: {},
 			createdAt: 1,
 			status: "running",
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: "wf-schema-max-output",
 			checkpointId: `stage:${replayKey}`,
@@ -1073,16 +1087,16 @@ describe("ctx.task tail liveness", () => {
 	});
 
 	test("direct nested task-tail quit settles the aggregate root", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		backend.registerWorkflow({
+		await backend.registerWorkflow({
 			workflowId: "parent",
 			name: "parent",
 			inputs: {},
 			createdAt: 1,
 			status: "running",
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "stage",
 			workflowId: "parent",
 			checkpointId: "task:stage:task:review:1",
@@ -1235,7 +1249,7 @@ describe("ctx.task tail liveness", () => {
 
 	// #2912: checkpoint suspension must report the requested pause, not its quit implementation.
 	test("pause terminates a root awaiting a never-settling task-result checkpoint", async () => {
-		const backend = new DelayedTaskCheckpointBackend();
+		const backend = await createDelayedTaskCheckpointBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const hub = new WorkflowActivityHub();
@@ -1291,7 +1305,7 @@ describe("ctx.task tail liveness", () => {
 	});
 
 	test("a caught task-tail quit still pauses instead of completing", async () => {
-		const backend = new DelayedTaskCheckpointBackend();
+		const backend = await createDelayedTaskCheckpointBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();
@@ -1351,7 +1365,7 @@ describe("ctx.task tail liveness", () => {
 		};
 		process.on("unhandledRejection", onUnhandled);
 		try {
-			const backend = new InMemoryDurableBackend();
+			const backend = await createMemoryTestBackend();
 			const controller = new AbortController();
 			const reason = new Error("cancelled before checkpoint");
 			const task = createDurableTaskPrimitive({
@@ -1380,7 +1394,7 @@ describe("ctx.task tail liveness", () => {
 	test("an active task-checkpoint control is not diagnosed as a stranded root", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(0);
-		const backend = new DelayedTaskCheckpointBackend();
+		const backend = await createDelayedTaskCheckpointBackend();
 		const store = createStore();
 		const toolControls = createToolControlRegistry();
 		const pending = run(
@@ -1450,7 +1464,7 @@ describe("ctx.task tail liveness", () => {
 	});
 
 	test("pauseAllRuns forwards an injected tool-control registry to a task tail", async () => {
-		const backend = new DelayedTaskCheckpointBackend();
+		const backend = await createDelayedTaskCheckpointBackend();
 		setDurableBackend(backend);
 		const store = createStore();
 		const registry = createStageControlRegistry();

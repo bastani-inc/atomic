@@ -11,7 +11,7 @@ import { createWorkflowObservation } from "../../packages/workflows/src/extensio
 import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
 import { pauseRun, resumeRun } from "../../packages/workflows/src/runs/background/status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 // #2891: activity observes execution rather than notification delivery.
 test("tool-only execution publishes working then idle without notifications", async () => {
@@ -42,7 +42,7 @@ test("tool-only execution publishes working then idle without notifications", as
 			},
 		}),
 		{},
-		{ store, durableBackend: new InMemoryDurableBackend() },
+		{ store, durableBackend: await createMemoryTestBackend() },
 	);
 	try {
 		await entered.promise;
@@ -100,7 +100,7 @@ for (const parallel of [false, true]) {
 				},
 			}),
 			{},
-			{ store, durableBackend: new InMemoryDurableBackend(), usePromptNodesForUi: true },
+			{ store, durableBackend: await createMemoryTestBackend(), usePromptNodesForUi: true },
 		);
 		try {
 			await waiting.promise;
@@ -157,7 +157,7 @@ test("pause is idle and quit remains working until its tool drains", async () =>
 			},
 		}),
 		{},
-		{ store, durableBackend: new InMemoryDurableBackend() },
+		{ store, durableBackend: await createMemoryTestBackend() },
 	);
 	await admitted.promise;
 	const id = store.runs()[0]!.id;
@@ -216,7 +216,7 @@ test("re-running a quit run id publishes executing rather than stopping", async 
 			return {};
 		},
 	});
-	const first = run(definition, {}, { store, durableBackend: new InMemoryDurableBackend() });
+	const first = run(definition, {}, { store, durableBackend: await createMemoryTestBackend() });
 	await entered[0]!.promise;
 	const id = store.runs()[0]!.id;
 	try {
@@ -228,7 +228,7 @@ test("re-running a quit run id publishes executing rather than stopping", async 
 		assert.ok(done.availability === "ready");
 		assert.equal(done.roots[0]?.state, "idle");
 		store.removeRun(id);
-		const second = run(definition, {}, { store, durableBackend: new InMemoryDurableBackend(), runId: id });
+		const second = run(definition, {}, { store, durableBackend: await createMemoryTestBackend(), runId: id });
 		try {
 			await entered[1]!.promise;
 			const rerun = hub.getSnapshotFrame();
@@ -275,7 +275,7 @@ for (const shape of ["repeated quit after drain", "hydrated run without an execu
 		let id: string;
 		try {
 			if (shape === "repeated quit after drain") {
-				const first = run(definition, {}, { store, durableBackend: new InMemoryDurableBackend() });
+				const first = run(definition, {}, { store, durableBackend: await createMemoryTestBackend() });
 				await entered[0]!.promise;
 				id = store.runs()[0]!.id;
 				const quitting = quitRun(id, { store, actor: "user" });
@@ -304,7 +304,7 @@ for (const shape of ["repeated quit after drain", "hydrated run without an execu
 			assert.ok(settled.availability === "ready");
 			assert.equal(settled.roots[0]?.state, "idle");
 			store.removeRun(id);
-			const second = run(definition, {}, { store, durableBackend: new InMemoryDurableBackend(), runId: id });
+			const second = run(definition, {}, { store, durableBackend: await createMemoryTestBackend(), runId: id });
 			try {
 				await entered[1]!.promise;
 				const rerun = hub.getSnapshotFrame();
@@ -341,7 +341,7 @@ test("settled workflow failure is idle with attention", async () => {
 			},
 		}),
 		{},
-		{ store, durableBackend: new InMemoryDurableBackend() },
+		{ store, durableBackend: await createMemoryTestBackend() },
 	);
 	const frame = hub.getSnapshotFrame();
 	assert.ok(frame.availability === "ready");
@@ -376,7 +376,7 @@ test("caller cancellation publishes stopping while its admitted tool drains", as
 			},
 		}),
 		{},
-		{ store, durableBackend: new InMemoryDurableBackend(), signal: controller.signal },
+		{ store, durableBackend: await createMemoryTestBackend(), signal: controller.signal },
 	);
 	await entered.promise;
 	try {
@@ -418,7 +418,7 @@ test("aborted HIL publishes a cancelled prompt lifecycle", async () => {
 			},
 		}),
 		{},
-		{ store, durableBackend: new InMemoryDurableBackend(), signal: controller.signal, usePromptNodesForUi: true },
+		{ store, durableBackend: await createMemoryTestBackend(), signal: controller.signal, usePromptNodesForUi: true },
 	);
 	await waiting.promise;
 	controller.abort();
@@ -445,7 +445,7 @@ test("pre-aborted caller publishes exactly one kill after run registration", asy
 		await run(
 			workflow({ name: "pre-aborted", description: "", inputs: {}, outputs: {}, run: async () => ({}) }),
 			{},
-			{ store, durableBackend: new InMemoryDurableBackend(), signal: controller.signal },
+			{ store, durableBackend: await createMemoryTestBackend(), signal: controller.signal },
 		);
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		assert.deepEqual(actions, ["kill"]);

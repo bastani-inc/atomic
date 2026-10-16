@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import {
 	createStageControlRegistry,
 	createStore,
@@ -22,7 +22,7 @@ const COMPLETE_TEXT = "Complete scope: all relevant workflow resume paths were i
 
 describe("executor — live chain resume", () => {
 	test("empty-message quit and resume completes the interrupted stage before durable handoff", async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		const registry = createStageControlRegistry();
 		const store = createStore();
 		const pauseAcknowledged = deferred();

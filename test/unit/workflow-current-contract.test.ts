@@ -7,7 +7,7 @@ import * as sdk from "../../packages/workflows/src/sdk-surface.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import * as targets from "../../packages/workflows/src/shared/workflow-stage-target.js";
 import { parseTerminalMouseInput } from "../../packages/workflows/src/tui/mouse-input.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const rootId = "00000000-0000-4000-8000-000000000001";
 
@@ -43,7 +43,7 @@ test("model candidates use authored reasoning suffixes, not separate old reasoni
 	assert.equal(buildModelCandidates({ fallbackModels: ["provider/model:high"] })[0]?.reasoningLevel, "high");
 });
 
-test("tool resume requires the persisted failed tool identity, not matching error text", () => {
+test("tool resume requires the persisted failed tool identity, not matching error text", async () => {
 	const error = "atomic-workflows: ctx.tool effect aborted by node abort";
 	const source: RunSnapshot = {
 		id: rootId,
@@ -67,9 +67,15 @@ test("tool resume requires the persisted failed tool identity, not matching erro
 		],
 		error,
 	};
-	const backend = new InMemoryDurableBackend();
-	backend.registerWorkflow({ workflowId: rootId, name: "frontier", inputs: {}, createdAt: 1, status: "blocked" });
-	backend.recordCheckpoint({
+	const backend = await createMemoryTestBackend();
+	await backend.registerWorkflow({
+		workflowId: rootId,
+		name: "frontier",
+		inputs: {},
+		createdAt: 1,
+		status: "blocked",
+	});
+	await backend.recordCheckpoint({
 		kind: "tool",
 		workflowId: rootId,
 		checkpointId: "failure",

@@ -16,7 +16,7 @@ import { INTERACTIVE_WORKFLOW_POLICY, type StageExecutionMeta } from "../../pack
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 import { TEST_TIMEOUT_MS } from "../helpers/test-timeout.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { assistantMessageWithUsage, makeMockSession } from "./stage-runner-helpers.js";
 
 const ZERO_USAGE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 } as const;
@@ -73,7 +73,7 @@ async function waitForSignal(signal: Promise<void>, message: string): Promise<vo
 }
 
 test("raised-budget continuation replays tool-parented parallel tasks", async () => {
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	setDurableBackend(backend);
 	const completedTaskNames = ["completed-1", "completed-2", "completed-3"] as const;
 	const taskNames = [...completedTaskNames, "incomplete"] as const;
@@ -262,7 +262,7 @@ test("raised-budget continuation replays tool-parented parallel tasks", async ()
 });
 
 test("fresh-id continuation replays a return-mode tool failure instead of rerunning it", async () => {
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	let toolCalls = 0;
 	const definition = workflow({
 		name: "return-failure-fresh-id",

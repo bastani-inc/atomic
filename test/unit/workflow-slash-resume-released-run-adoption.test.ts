@@ -15,7 +15,7 @@ import { stageControlRegistry } from "../../packages/workflows/src/runs/foregrou
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { testRunId } from "../helpers/run-id.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const PREVIOUS_SESSION = "previous-session";
 const SUCCESSOR_SESSION = "successor-session";
@@ -51,12 +51,12 @@ function setup() {
 	return { runtime, execute };
 }
 
-function registerRun(
+async function registerRun(
 	backend: DurableWorkflowBackend,
 	runId: string,
 	overrides: Partial<Parameters<DurableWorkflowBackend["registerWorkflow"]>[0]> = {},
-): void {
-	backend.registerWorkflow({
+): Promise<void> {
+	await backend.registerWorkflow({
 		workflowId: runId,
 		name: "session-run-control",
 		inputs: {},
@@ -95,9 +95,9 @@ async function slashResume(
 	return { info, errors };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
 	store.clear();
-	setDurableBackend(new InMemoryDurableBackend());
+	setDurableBackend(await createMemoryTestBackend());
 });
 
 afterEach(() => {
@@ -109,9 +109,9 @@ afterEach(() => {
 describe("/workflow resume transfers ownership of a run released by the previous session (#3569)", () => {
 	test.sequential("the slash command makes the successor the owner and clears the release record (#3569)", async () => {
 		const runId = testRunId("slash-released-adoption");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		registerRun(backend, runId);
+		await registerRun(backend, runId);
 		const { runtime, execute } = setup();
 
 		const { errors } = await slashResume(runtime, runId, slashContext(SUCCESSOR_SESSION));
@@ -137,9 +137,9 @@ describe("/workflow resume transfers ownership of a run released by the previous
 
 	test.sequential("the slash command adopts when the predecessor's snapshot is still in the shared run store (#3569)", async () => {
 		const runId = testRunId("slash-released-adoption-shared-store");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		registerRun(backend, runId);
+		await registerRun(backend, runId);
 		store.recordRunStart({
 			id: runId,
 			name: "session-run-control",
@@ -165,9 +165,9 @@ describe("/workflow resume transfers ownership of a run released by the previous
 
 	test.sequential("the slash command resolves a run-id prefix and still transfers ownership (#3569)", async () => {
 		const runId = testRunId("slash-released-adoption-prefix");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		registerRun(backend, runId);
+		await registerRun(backend, runId);
 		const { runtime } = setup();
 
 		const { errors } = await slashResume(runtime, runId.slice(0, 8), slashContext(SUCCESSOR_SESSION));
@@ -186,9 +186,9 @@ describe("/workflow resume transfers ownership of a run released by the previous
 		for (const [index, { label, overrides }] of cases.entries()) {
 			store.clear();
 			const runId = testRunId(`slash-unreleased-${index}`);
-			const backend = new InMemoryDurableBackend();
+			const backend = await createMemoryTestBackend();
 			setDurableBackend(backend);
-			registerRun(backend, runId, overrides);
+			await registerRun(backend, runId, overrides);
 			const { runtime } = setup();
 
 			await slashResume(runtime, runId, slashContext(SUCCESSOR_SESSION));
@@ -199,9 +199,9 @@ describe("/workflow resume transfers ownership of a run released by the previous
 
 	test.sequential("slash resume does not adopt a crashed owner's running run (#3569)", async () => {
 		const runId = testRunId("slash-crashed-owner");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		registerRun(backend, runId, {
+		await registerRun(backend, runId, {
 			status: "running",
 			releasedModelOwner: undefined,
 			ownerExecutorId: "atomic-db-00000000-0000-4000-8000-000000000001",
@@ -216,9 +216,9 @@ describe("/workflow resume transfers ownership of a run released by the previous
 
 	test.sequential("the original owner's slash resume of its own released run keeps working (#3569)", async () => {
 		const runId = testRunId("slash-released-original-owner");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		registerRun(backend, runId);
+		await registerRun(backend, runId);
 		const { runtime } = setup();
 
 		const { errors } = await slashResume(runtime, runId, slashContext(PREVIOUS_SESSION));
@@ -232,16 +232,16 @@ describe("/workflow resume transfers ownership of a run released by the previous
 
 for (const accept of [false, true]) {
 	test.sequential(`cross-project slash resume ${accept ? "forks on yes" : "aborts on no"} (#3577)`, async () => {
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const runId = testRunId(`slash-cross-project-${accept}`);
-		registerRun(backend, runId, {
+		await registerRun(backend, runId, {
 			invocationCwd: "/other-project",
 			label: "Saved objective",
 			summary: "Review finished; implementation pending.",
 			summarizedThrough: 1234,
 		});
-		backend.recordCheckpoint({
+		await backend.recordCheckpoint({
 			kind: "ui",
 			workflowId: runId,
 			checkpointId: "answer",
@@ -301,10 +301,10 @@ for (const accept of [false, true]) {
 }
 
 test.sequential("cross-project tool and headless resume give an actionable error (#3577)", async () => {
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	setDurableBackend(backend);
 	const runId = testRunId("cross-project-headless");
-	registerRun(backend, runId, { invocationCwd: "/other-project" });
+	await registerRun(backend, runId, { invocationCwd: "/other-project" });
 	const original = structuredClone(backend.getWorkflow(runId));
 	const { runtime, execute } = setup();
 	const result = await slashResume(runtime, runId, slashContext(SUCCESSOR_SESSION));

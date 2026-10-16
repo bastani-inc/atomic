@@ -9,7 +9,7 @@ import { subscribeStoreInvalidation } from "../../packages/workflows/src/shared/
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { startFallbackWidgetScenario } from "../helpers/workflow-fallback-widget.js";
-import { createMemoryTestBackend as createInMemoryTestBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 import { makeMockSession } from "./stage-runner-helpers.js";
 
@@ -89,7 +89,7 @@ for (const explicitModel of [true, false]) {
 
 // #3110: the runner-owned replacement path must retain explicit candidate identity too.
 test("workflow fallback replacements keep explicit model and effort labels through each attempt", async () => {
-	setDurableBackend(createInMemoryTestBackend());
+	setDurableBackend(await createMemoryTestBackend());
 	const store = createStore();
 	const attempts: string[] = [];
 	const frames: string[] = [];

@@ -8,7 +8,7 @@ import {
 import { workflow } from "../../packages/workflows/src/authoring/workflow.ts";
 import { run } from "../../packages/workflows/src/engine/run.ts";
 import { createStore } from "../../packages/workflows/src/shared/store.ts";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 test.sequential("real workflow author, ctx.tool, and stage adapter callbacks report activity", async () => {
 	const started: CallbackActivity[] = [];
@@ -31,7 +31,7 @@ test.sequential("real workflow author, ctx.tool, and stage adapter callbacks rep
 			{
 				runId: "activity-run",
 				store: createStore(),
-				durableBackend: new InMemoryDurableBackend(),
+				durableBackend: await createMemoryTestBackend(),
 				adapters: { complete: { complete: async (text) => text } },
 				onStageStart: () => {},
 				onStageEnd: () => {},

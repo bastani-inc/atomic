@@ -8,7 +8,7 @@ import { Type } from "typebox";
 import { createHarness, getUserTexts } from "../../packages/coding-agent/test/suite/harness.js";
 import { createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { createMemoryTestBackend as createInMemoryTestBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner-types.js";
@@ -67,7 +67,7 @@ export async function createStageSkillFixture() {
 		},
 	});
 	const running = run(definition, {}, {
-		durableBackend: createInMemoryTestBackend(),
+		durableBackend: (await createMemoryTestBackend()),
 		store, stageControlRegistry: registry, signal: abort.signal,
 		adapters: { agentSession: { async create() { return stage.session as StageSessionRuntime; } } },
 		onStageStart(runId, snapshot) { identity = { runId, stageId: snapshot.id }; },

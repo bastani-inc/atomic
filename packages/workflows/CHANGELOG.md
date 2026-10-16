@@ -8,12 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Breaking Changes
 
+- Construct `JournalDurableBackend` with asynchronous `open()`; direct construction and internal synchronous journal methods have been removed.
 - `RunOpts.journal.database` requires the async SQLite facade; wrap an existing native connection with `wrapNodeSqliteDatabase`. Journal selection errors now use `StorageConfigError` and its `source`, `field`, and `reason` fields instead of `JournalConfigurationError`.
 - Replaced `forkFromSessionFile` with `forkFromSessionId`. Use the prior task's `sessionId` in the selected session store. `recordStageSession` now accepts `{ sessionId }` only. Retained chat validation and completed inspection are asynchronous, and transcript paths are display metadata, not resume or fork identities.
 
 ### Added
 
 - Added journal adapter module selection with environment/file secret references and shared `storage` settings. SDK options override environment, journal settings, shared storage, and persistent defaults; nearer settings replace complete selections. Caller-owned database selections accept the async SQLite facade and remain open after journal close.
+
+### Fixed
+
+- Workflow journal shutdown waits for queued writes before releasing ownership. Status claims and checkpoints on the same run remain ordered with asynchronous journals.
 
 ## [0.9.38-alpha.6] - 2026-10-16
 

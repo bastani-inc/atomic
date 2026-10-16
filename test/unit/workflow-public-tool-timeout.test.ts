@@ -16,7 +16,7 @@ import {
 import { jobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { createStore, store as workflowStore } from "../../packages/workflows/src/shared/store.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const READ_ONLY_ACTIONS = ["models", "list", "get", "inputs", "status", "stages", "stage", "transcript"] as const;
 const MUTATING_ACTIONS = ["reload", "run", "answer", "pause", "resume", "quit"] as const;
@@ -202,7 +202,7 @@ describe("public workflow tool request deadline", () => {
 		vi.useFakeTimers();
 		const acknowledgement = Promise.withResolvers<void>();
 		const releaseBody = Promise.withResolvers<void>();
-		setDurableBackend(new InMemoryDurableBackend());
+		setDurableBackend(await createMemoryTestBackend());
 		const bodyEntered = Promise.withResolvers<void>();
 		let bodyExecutions = 0;
 		const definition = workflow({

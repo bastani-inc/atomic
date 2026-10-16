@@ -1,5 +1,5 @@
 import type { StorageDescriptor } from "@bastani/atomic/storage";
-import { JOURNAL_READ_PAGE_SIZE, registerSynchronousJournal } from "./internal.js";
+import { JOURNAL_READ_PAGE_SIZE } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import {
 	type AppendOutcome,
@@ -33,17 +33,6 @@ export class MemoryRunJournal implements RunJournal {
 
 	constructor(storage?: StorageDescriptor) {
 		this.storage = storage === undefined ? undefined : { ...storage };
-		registerSynchronousJournal(this, {
-			createRunSync: this.createRunSync.bind(this),
-			listRunsSync: this.listRunsSync.bind(this),
-			takeoverExpiredSync: this.takeoverExpiredSync.bind(this),
-			leaseStateSync: this.leaseStateSync.bind(this),
-			renewSync: this.renewSync.bind(this),
-			releaseSync: this.releaseSync.bind(this),
-			appendSync: this.appendSync.bind(this),
-			readEntries: this.readEntries.bind(this),
-			deleteRunSync: this.deleteRunSync.bind(this),
-		});
 	}
 
 	private ensureOpen(): void {
@@ -52,10 +41,6 @@ export class MemoryRunJournal implements RunJournal {
 	}
 
 	async createRun(header: RunHeader): Promise<"created" | "exists"> {
-		return this.createRunSync(header);
-	}
-
-	private createRunSync(header: RunHeader): "created" | "exists" {
 		this.ensureOpen();
 		validateText("runId", header.runId);
 		validateText("name", header.name);
@@ -76,10 +61,6 @@ export class MemoryRunJournal implements RunJournal {
 	}
 
 	async listRuns(filter?: { cwd?: string }): Promise<readonly RunSummary[]> {
-		return this.listRunsSync(filter);
-	}
-
-	private listRunsSync(filter?: { cwd?: string }): readonly RunSummary[] {
 		this.ensureOpen();
 		if (filter?.cwd !== undefined) validateText("cwd", filter.cwd);
 		return [...this.runs.values()]
@@ -105,10 +86,6 @@ export class MemoryRunJournal implements RunJournal {
 	}
 
 	async acquire(runId: string, holderId: string): Promise<LeaseOutcome> {
-		return this.acquireSync(runId, holderId);
-	}
-
-	private acquireSync(runId: string, holderId: string): LeaseOutcome {
 		this.ensureOpen();
 		validateText("runId", runId);
 		validateText("holderId", holderId);
@@ -138,26 +115,27 @@ export class MemoryRunJournal implements RunJournal {
 	}
 
 	async takeoverExpired(runId: string, holderId: string, staleAfterMs: number): Promise<LeaseOutcome> {
-		return this.takeoverExpiredSync(runId, holderId, staleAfterMs);
-	}
-
-	private takeoverExpiredSync(runId: string, holderId: string, staleAfterMs: number): LeaseOutcome {
 		this.ensureOpen();
 		validateText("runId", runId);
 		validateText("holderId", holderId);
 		this.requireRun(runId);
-		const current = this.leaseStateSync(runId);
-		if (current?.holderId === holderId) return this.acquireSync(runId, holderId);
-		if (current !== undefined && !isWorkflowLeaseExpired(0, staleAfterMs, current.ageMs))
+		const current = this.leases.get(runId);
+		if (current?.holderId === holderId)
+			return { status: "acquired", lease: { runId, holderId, epoch: current.epoch } };
+		if (
+			current?.holderId !== undefined &&
+			current.holderId !== null &&
+			!isWorkflowLeaseExpired(
+				0,
+				staleAfterMs,
+				Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Date.now() - current.renewedAt)),
+			)
+		)
 			return { status: "held", holderId: current.holderId, epoch: current.epoch };
 		return this.grant(runId, holderId);
 	}
 
 	async leaseState(runId: string): Promise<LeaseState | undefined> {
-		return this.leaseStateSync(runId);
-	}
-
-	private leaseStateSync(runId: string): LeaseState | undefined {
 		this.ensureOpen();
 		validateText("runId", runId);
 		const current = this.leases.get(runId);
@@ -180,9 +158,6 @@ export class MemoryRunJournal implements RunJournal {
 	}
 
 	async renew(lease: Lease): Promise<void> {
-		this.renewSync(lease);
-	}
-	private renewSync(lease: Lease): void {
 		this.ensureOpen();
 		validateText("runId", lease.runId);
 		validateText("holderId", lease.holderId);
@@ -191,9 +166,6 @@ export class MemoryRunJournal implements RunJournal {
 	}
 
 	async release(lease: Lease): Promise<void> {
-		this.releaseSync(lease);
-	}
-	private releaseSync(lease: Lease): void {
 		this.ensureOpen();
 		validateText("runId", lease.runId);
 		validateText("holderId", lease.holderId);
@@ -202,10 +174,6 @@ export class MemoryRunJournal implements RunJournal {
 	}
 
 	async append(lease: Lease, event: RunEvent, options?: { key?: string; expectSeq?: number }): Promise<AppendOutcome> {
-		return this.appendSync(lease, event, options);
-	}
-
-	private appendSync(lease: Lease, event: RunEvent, options?: { key?: string; expectSeq?: number }): AppendOutcome {
 		this.ensureOpen();
 		validateText("runId", lease.runId);
 		validateText("holderId", lease.holderId);
@@ -271,14 +239,6 @@ export class MemoryRunJournal implements RunJournal {
 			: [];
 	}
 
-	private readEntries(runId: string, fromSeq = 1): readonly JournalEntry[] {
-		this.ensureOpen();
-		validateText("runId", runId);
-		return (this.runs.get(runId)?.entries ?? [])
-			.filter((entry) => entry.seq >= fromSeq)
-			.map((entry) => this.copyEntry(entry));
-	}
-
 	async readKey(runId: string, key: string): Promise<JournalEntry | undefined> {
 		this.ensureOpen();
 		validateText("runId", runId);
@@ -288,9 +248,6 @@ export class MemoryRunJournal implements RunJournal {
 	}
 
 	async deleteRun(runId: string): Promise<void> {
-		this.deleteRunSync(runId);
-	}
-	private deleteRunSync(runId: string): void {
 		this.ensureOpen();
 		validateText("runId", runId);
 		const current = this.leases.get(runId);
@@ -307,7 +264,7 @@ export class MemoryRunJournal implements RunJournal {
 		const actual = this.runs.get(lease.runId)?.entries.at(-1)?.seq ?? 0;
 		if (expectSeq !== undefined && expectSeq !== actual)
 			throw new JournalCasConflictError(lease.runId, expectSeq, actual);
-		this.deleteRunSync(lease.runId);
+		await this.deleteRun(lease.runId);
 	}
 
 	async close(): Promise<void> {

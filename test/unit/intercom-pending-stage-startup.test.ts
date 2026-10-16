@@ -13,7 +13,7 @@ import {
 } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { classifyWorkflowFailure } from "../../packages/workflows/src/shared/workflow-failures.js";
-import { MemoryJournalBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 vi.mock("../../packages/intercom/broker/spawn.js", () => ({ spawnBrokerIfNeeded: vi.fn() }));
 afterEach(() => {
@@ -25,9 +25,9 @@ test("admits targeted and sticky instructions to replacement sessions without br
 	const runId = "36280000-0000-4000-8000-000000000001";
 	const group = `workflow:${runId}`;
 	const store = createStore();
-	const backend = new MemoryJournalBackend();
+	const backend = await createMemoryTestBackend();
 	bindStoreDurableBackend(store, backend);
-	backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+	await backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 	store.recordRunStart({
 		id: runId,
 		name: "flow",
@@ -140,9 +140,15 @@ for (const sticky of [false, true]) {
 			const runId = "36280000-0000-4000-8000-000000000002";
 			const group = `workflow:${runId}`;
 			const store = createStore();
-			const backend = new MemoryJournalBackend();
+			const backend = await createMemoryTestBackend();
 			bindStoreDurableBackend(store, backend);
-			backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+			await backend.registerWorkflow({
+				workflowId: runId,
+				name: "flow",
+				inputs: {},
+				status: "running",
+				createdAt: 1,
+			});
 			store.recordRunStart({
 				id: runId,
 				name: "flow",

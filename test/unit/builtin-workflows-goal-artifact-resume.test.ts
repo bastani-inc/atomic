@@ -17,7 +17,7 @@ import { run } from "../../packages/workflows/src/engine/run.js";
 import { taskReadInstruction } from "../../packages/workflows/src/runs/foreground/executor-task-prompts.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifacts.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { makeMockCtx } from "./builtin-workflows-helpers.js";
 
 const posix = (value: string): string => value.replaceAll("\\", "/");
@@ -61,7 +61,7 @@ test("a fresh-id workflow continuation reads a replayed producer artifact withou
 	const root = await mkdtemp(join(tmpdir(), "goal-artifact-workflow-resume-"));
 	const previousRoot = process.env[ENV_WORKFLOW_ARTIFACT_DIR];
 	process.env[ENV_WORKFLOW_ARTIFACT_DIR] = root;
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	let producerRuns = 0;
 	let consumerRuns = 0;
 	let receiptPath: string | undefined;
@@ -153,9 +153,15 @@ test("a fresh-id continuation replays the complete Goal artifact root and reads 
 	const root = await mkdtemp(join(tmpdir(), "goal-artifact-resume-"));
 	const previousRoot = process.env[ENV_WORKFLOW_ARTIFACT_DIR];
 	process.env[ENV_WORKFLOW_ARTIFACT_DIR] = root;
-	const backend = new InMemoryDurableBackend();
-	backend.registerWorkflow({ workflowId: "source-run", name: "goal", inputs: {}, createdAt: 1, status: "failed" });
-	backend.registerWorkflow({
+	const backend = await createMemoryTestBackend();
+	await backend.registerWorkflow({
+		workflowId: "source-run",
+		name: "goal",
+		inputs: {},
+		createdAt: 1,
+		status: "failed",
+	});
+	await backend.registerWorkflow({
 		workflowId: "continuation-run",
 		name: "goal",
 		inputs: {},

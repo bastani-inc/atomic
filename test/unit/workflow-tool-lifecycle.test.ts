@@ -8,7 +8,7 @@ import {
 	type WorkflowLifecycleNoticeDetails,
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 interface SentNotice {
 	readonly content?: string;
@@ -49,7 +49,7 @@ describe("ctx.tool lifecycle notices", () => {
 				},
 			}),
 			{},
-			{ store, durableBackend: new InMemoryDurableBackend() },
+			{ store, durableBackend: await createMemoryTestBackend() },
 		);
 		unsubscribe();
 
@@ -76,7 +76,7 @@ describe("ctx.tool lifecycle notices", () => {
 				},
 			}),
 			{},
-			{ store, durableBackend: new InMemoryDurableBackend() },
+			{ store, durableBackend: await createMemoryTestBackend() },
 		);
 		unsubscribe();
 
@@ -112,7 +112,7 @@ describe("ctx.tool lifecycle notices", () => {
 				},
 			}),
 			{},
-			{ store, durableBackend: new InMemoryDurableBackend() },
+			{ store, durableBackend: await createMemoryTestBackend() },
 		);
 		unsubscribe();
 

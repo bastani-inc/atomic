@@ -8,7 +8,7 @@ import { restoreOnSessionStart, type SessionEntry } from "../../packages/workflo
 import { effectiveRunStatus } from "../../packages/workflows/src/shared/returned-run-status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import {
 	type AgentSession,
 	type AgentSessionAdapter,
@@ -48,7 +48,7 @@ test("budget boundary-only exhaustion survives durable session restore without a
 		{
 			store: sourceStore,
 			persistence,
-			durableBackend: new InMemoryDurableBackend(),
+			durableBackend: await createMemoryTestBackend(),
 			adapters: {
 				complete: { complete: async (text) => text },
 				prompt: { prompt: async () => "must not wrap without a live turn" },

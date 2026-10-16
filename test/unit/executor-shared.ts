@@ -29,7 +29,7 @@ import {
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 import { decisionMessage } from "../helpers/structured-output.js";
-import { createMemoryTestBackend as createInMemoryTestBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { executeWorkflowDecision, workflowDecisionArgs } from "./structured-output-workflow-fixture.js";
 
 async function waitForExecutorStagePendingPrompt(
@@ -104,8 +104,8 @@ function callThroughStack<T>(depth: number, fn: () => Promise<T>): Promise<T> {
 
 let savedGitEnv: Map<string, string | undefined> | undefined;
 
-beforeEach(() => {
-	setDurableBackend(createInMemoryTestBackend());
+beforeEach(async () => {
+	setDurableBackend(await createMemoryTestBackend());
 	savedGitEnv = new Map<string, string | undefined>();
 	for (const key of Object.keys(process.env).filter((candidate) => candidate.startsWith("GIT_"))) {
 		savedGitEnv.set(key, process.env[key]);

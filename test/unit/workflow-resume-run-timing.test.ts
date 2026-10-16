@@ -4,7 +4,7 @@ import {
 	inheritedRunElapsedMs,
 	priorRunElapsedMs,
 	RUN_TIMING_CHECKPOINT_NAME,
-	recordRunTimingCheckpoint,
+	recordRunTimingCheckpointAsync,
 } from "../../packages/workflows/src/durable/run-timing.js";
 import { recordStageSessionCheckpoint } from "../../packages/workflows/src/durable/stage-primitive.js";
 import { finalizeDurableTerminalStatus } from "../../packages/workflows/src/engine/run-durable-finalize.js";
@@ -15,7 +15,10 @@ import type { RunSnapshot } from "../../packages/workflows/src/shared/store-type
 import { elapsedRunMs } from "../../packages/workflows/src/shared/timing.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { currentStoreBackend as getDurableBackend } from "../helpers/store-backend.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import {
+	createMemoryTestBackend,
+	type MemoryJournalBackend as InMemoryDurableBackend,
+} from "../helpers/workflow-journal.js";
 import { assert, createStore, run, Type, test, workflow } from "./executor-shared.js";
 
 const RUN_ID = "wf-run-timing";
@@ -33,9 +36,9 @@ function makeRun(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
 	};
 }
 
-function makeBackend(): InMemoryDurableBackend {
-	const backend = new InMemoryDurableBackend();
-	backend.registerWorkflow({ workflowId: RUN_ID, name: "timing", inputs: {}, createdAt: 1, status: "running" });
+async function makeBackend(): Promise<InMemoryDurableBackend> {
+	const backend = await createMemoryTestBackend();
+	await backend.registerWorkflow({ workflowId: RUN_ID, name: "timing", inputs: {}, createdAt: 1, status: "running" });
 	return backend;
 }
 
@@ -78,33 +81,36 @@ describe("run timer math with inherited elapsed", () => {
 
 describe("durable run-timing checkpoints", () => {
 	test("records run elapsed only once the workflow has durable progress", async () => {
-		const backend = makeBackend();
+		const backend = await makeBackend();
 		const snapshot = makeRun({ startedAt: 0 });
-		assert.equal(recordRunTimingCheckpoint(backend, snapshot, { now: 10_000 }), false);
+		assert.equal(await recordRunTimingCheckpointAsync(backend, snapshot, { now: 10_000 }), false);
 		assert.equal(priorRunElapsedMs(backend, RUN_ID), undefined);
 
-		recordProgressCheckpoint(backend);
-		assert.equal(recordRunTimingCheckpoint(backend, snapshot, { now: 10_000 }), true);
+		await recordProgressCheckpoint(backend);
+		assert.equal(await recordRunTimingCheckpointAsync(backend, snapshot, { now: 10_000 }), true);
 		assert.equal(priorRunElapsedMs(backend, RUN_ID), 10_000);
 	});
 
 	test("debounces inside a 30s bucket and refreshes across buckets", async () => {
-		const backend = makeBackend();
-		recordProgressCheckpoint(backend);
+		const backend = await makeBackend();
+		await recordProgressCheckpoint(backend);
 		const snapshot = makeRun({ startedAt: 0 });
-		assert.equal(recordRunTimingCheckpoint(backend, snapshot, { now: 10_000, debounce: true }), true);
-		assert.equal(recordRunTimingCheckpoint(backend, snapshot, { now: 20_000, debounce: true }), false);
+		assert.equal(await recordRunTimingCheckpointAsync(backend, snapshot, { now: 10_000, debounce: true }), true);
+		assert.equal(await recordRunTimingCheckpointAsync(backend, snapshot, { now: 20_000, debounce: true }), false);
 		assert.equal(priorRunElapsedMs(backend, RUN_ID), 10_000);
-		assert.equal(recordRunTimingCheckpoint(backend, snapshot, { now: 40_000, debounce: true }), true);
+		assert.equal(await recordRunTimingCheckpointAsync(backend, snapshot, { now: 40_000, debounce: true }), true);
 		assert.equal(priorRunElapsedMs(backend, RUN_ID), 40_000);
 	});
 
 	test("never regresses the recorded elapsed", async () => {
-		const backend = makeBackend();
-		recordProgressCheckpoint(backend);
-		assert.equal(recordRunTimingCheckpoint(backend, makeRun({ startedAt: 0 }), { now: 40_000 }), true);
+		const backend = await makeBackend();
+		await recordProgressCheckpoint(backend);
+		assert.equal(await recordRunTimingCheckpointAsync(backend, makeRun({ startedAt: 0 }), { now: 40_000 }), true);
 		// A snapshot with a smaller elapsed value must not overwrite the record.
-		assert.equal(recordRunTimingCheckpoint(backend, makeRun({ startedAt: 39_000 }), { now: 40_000 }), false);
+		assert.equal(
+			await recordRunTimingCheckpointAsync(backend, makeRun({ startedAt: 39_000 }), { now: 40_000 }),
+			false,
+		);
 		assert.equal(priorRunElapsedMs(backend, RUN_ID), 40_000);
 	});
 
@@ -118,26 +124,26 @@ describe("durable run-timing checkpoints", () => {
 			status: "running",
 		});
 		await recordProgressCheckpoint(backend);
-		assert.equal(await recordRunTimingCheckpoint(backend, makeRun({ startedAt: 0 }), { now: 90_000 }), true);
+		assert.equal(await recordRunTimingCheckpointAsync(backend, makeRun({ startedAt: 0 }), { now: 90_000 }), true);
 		const rehydrated = await backend.reopen();
 		assert.equal(priorRunElapsedMs(rehydrated, RUN_ID), 90_000);
 	});
 
 	test("inheritedRunElapsedMs prefers the live continuation source snapshot", async () => {
-		const backend = makeBackend();
+		const backend = await makeBackend();
 		const source = makeRun({ startedAt: 1000, endedAt: 2000, durationMs: 1234, status: "failed" });
 		assert.equal(inheritedRunElapsedMs({ backend, runId: RUN_ID, continuationSource: source }), 1234);
 		assert.equal(inheritedRunElapsedMs({ backend, runId: RUN_ID }), undefined);
 
-		recordProgressCheckpoint(backend);
-		recordRunTimingCheckpoint(backend, makeRun({ startedAt: 0 }), { now: 5_000 });
+		await recordProgressCheckpoint(backend);
+		await recordRunTimingCheckpointAsync(backend, makeRun({ startedAt: 0 }), { now: 5_000 });
 		assert.equal(inheritedRunElapsedMs({ backend, runId: RUN_ID }), 5_000);
 	});
 });
 
 describe("stage timing durability boundaries", () => {
 	test("forced sub-30-second checkpoint records exact elapsed and topology", async () => {
-		const backend = makeBackend();
+		const backend = await makeBackend();
 		const deps = {
 			workflowId: RUN_ID,
 			backend,
@@ -180,7 +186,7 @@ describe("stage timing durability boundaries", () => {
 describe("resumed runs inherit elapsed time", () => {
 	test("durable resume seeds run total and mid-running stage timers", async () => {
 		const runId = "wf-durable-resume-timing";
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		await backend.registerWorkflow({ workflowId: runId, name: "timing", inputs: {}, createdAt: 1, status: "paused" });
 		// Mid-running stage session persisted by the prior session (700ms elapsed).
 		await backend.recordCheckpoint({
@@ -306,8 +312,8 @@ describe("run elapsed persistence at pause/failure boundaries", () => {
 	});
 
 	test("terminal failure finalize persists the exact accumulated elapsed", async () => {
-		const backend = makeBackend();
-		recordProgressCheckpoint(backend);
+		const backend = await makeBackend();
+		await recordProgressCheckpoint(backend);
 		const snapshot = makeRun({
 			status: "failed",
 			startedAt: 1000,

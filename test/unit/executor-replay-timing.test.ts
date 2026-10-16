@@ -1,7 +1,7 @@
 import { restoreOnSessionStart, type SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { stageTimingFields } from "../../packages/workflows/src/shared/timing.js";
-import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import {
 	assert,
 	createStore,
@@ -231,16 +231,16 @@ test("durable cached stages retain zero and partial legacy execution timing", as
 		for (let mask = 0; mask < 8; mask++) {
 			const expected: Partial<StageSnapshot> = {};
 			for (const [index, key] of timingKeys.entries()) if (mask & (1 << index)) expected[key] = values[index];
-			const backend = new InMemoryDurableBackend();
+			const backend = await createMemoryTestBackend();
 			const runId = crypto.randomUUID();
-			backend.registerWorkflow({
+			await backend.registerWorkflow({
 				workflowId: runId,
 				name: "legacy-timing",
 				inputs: {},
 				createdAt: 1,
 				status: "running",
 			});
-			backend.recordCheckpoint({
+			await backend.recordCheckpoint({
 				kind: "stage",
 				workflowId: runId,
 				checkpointId: "stage:stage:work:1",
@@ -337,7 +337,7 @@ test("answered prompt replay preserves original timing", async () => {
 
 // #3038: same-ID durable recovery must retain answered prompt timing in a fresh Store.
 test("durable answered prompt timing survives repeated fresh-Store recovery", async () => {
-	const backend = new InMemoryDurableBackend();
+	const backend = await createMemoryTestBackend();
 	const store = createStore();
 	const runId = crypto.randomUUID();
 	let answers = 0;
