@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+	loadStorageAdapter,
 	openNodeSqliteDatabase,
 	StorageAdapterLoadError,
 	StorageConfigError,
@@ -10,6 +11,7 @@ import {
 	StorageSchemaVersionError,
 	type StorageSelection,
 	StorageUnavailableError,
+	storageSelectionKey,
 } from "@bastani/atomic/storage";
 import { test } from "vitest";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
@@ -305,3 +307,147 @@ test("invalid prefix strings retain typed prefix errors before a database file i
 		removeTempDirectory(root);
 	}
 });
+
+test("domain journal hooks isolate records and deletion by selected prefix (#3699)", async () => {
+	const root = makeTempDirectory("storage-domain-prefix-");
+	const provider = new StorageProvider({ memory: () => new MemoryRunJournal(), sql: SqlRunJournal.open });
+	const selection = {
+		kind: "adapter",
+		module: join(moduleDir(import.meta.url), "../fixtures/storage-prefixed-domain-adapter.ts"),
+		options: { path: join(root, "domains.sqlite") },
+	} as const;
+	assert.notEqual(
+		storageSelectionKey({ ...selection, prefix: "first_" }, root),
+		storageSelectionKey({ ...selection, prefix: "second_" }, root),
+	);
+	const first = await provider.openRunJournal(
+		{ ...selection, prefix: "first_" },
+		{ agentDir: root, domain: "journal" },
+	);
+	const second = await provider.openRunJournal(
+		{ ...selection, prefix: "second_" },
+		{ agentDir: root, domain: "journal" },
+	);
+	try {
+		await first.createRun({ runId: "same", name: "first", cwd: root, createdAt: 1, status: "running" });
+		assert.equal(await second.getRun("same"), undefined);
+		await second.createRun({ runId: "same", name: "second", cwd: root, createdAt: 1, status: "running" });
+		await second.deleteRun("same");
+		assert.equal((await first.getRun("same"))?.name, "first");
+	} finally {
+		await first.close();
+		await second.close();
+		removeTempDirectory(root);
+	}
+});
+
+test("domain session hooks isolate records and deletion by selected prefix (#3699)", async () => {
+	const root = makeTempDirectory("storage-domain-prefix-");
+	const provider = new StorageProvider({ memory: () => new MemoryRunJournal(), sql: SqlRunJournal.open });
+	const selection = {
+		kind: "adapter",
+		module: join(moduleDir(import.meta.url), "../fixtures/storage-prefixed-domain-adapter.ts"),
+		options: { path: join(root, "domains.sqlite") },
+	} as const;
+	const first = await provider.openSessionStore(
+		{ ...selection, prefix: "first_" },
+		{ agentDir: root, domain: "sessions" },
+	);
+	const second = await provider.openSessionStore(
+		{ ...selection, prefix: "second_" },
+		{ agentDir: root, domain: "sessions" },
+	);
+	try {
+		const header = { id: "same", version: 4, cwd: root, createdAt: "2026-01-01T00:00:00.000Z" } as const;
+		await first.create(header, []);
+		assert.equal(await second.readHeader("same"), undefined);
+		await second.create({ ...header, cwd: "second" }, []);
+		await second.delete("same");
+		assert.equal((await first.readHeader("same"))?.cwd, root);
+	} finally {
+		await first.close();
+		await second.close();
+		removeTempDirectory(root);
+	}
+});
+
+for (const kind of ["memory", "jsonl", "database", "sqlite", "adapter-domain", "adapter-database"] as const) {
+	for (const domain of kind === "jsonl" ? (["sessions"] as const) : (["sessions", "journal"] as const)) {
+		test(`${domain} provider close is repeatable for ${kind} (#3699)`, async () => {
+			const root = makeTempDirectory("storage-close-");
+			const database = await openNodeSqliteDatabase(":memory:");
+			const provider = new StorageProvider({ memory: () => new MemoryRunJournal(), sql: SqlRunJournal.open });
+			const selections = {
+				memory: { kind: "memory" },
+				jsonl: { kind: "jsonl", dir: join(root, "sessions") },
+				database: { kind: "database", database },
+				sqlite: { kind: "sqlite", path: join(root, "owned.sqlite") },
+				"adapter-domain": {
+					kind: "adapter",
+					module: join(moduleDir(import.meta.url), "../fixtures/storage-domain-adapter.ts"),
+				},
+				"adapter-database": {
+					kind: "adapter",
+					module: join(moduleDir(import.meta.url), "../fixtures/storage-adapter.ts"),
+					options: { path: join(root, "adapter.sqlite") },
+				},
+			} satisfies Record<string, StorageSelection>;
+			try {
+				const context = { agentDir: root, domain };
+				const store =
+					domain === "sessions"
+						? await provider.openSessionStore(selections[kind], context)
+						: await provider.openRunJournal(selections[kind], context);
+				await store.close();
+				await store.close();
+				assert.equal((await database.get("SELECT 42 AS answer"))?.answer, 42);
+			} finally {
+				await database.close();
+				removeTempDirectory(root);
+			}
+		});
+	}
+}
+
+for (const domain of ["sessions", "journal"] as const) {
+	test(`${domain} opening retains the typed schema error when cleanup also rejects (#3699)`, async () => {
+		const root = makeTempDirectory("storage-open-cleanup-");
+		const path = join(root, "schema.sqlite");
+		const lifecycle = join(root, "lifecycle.txt");
+		const database = await openNodeSqliteDatabase(path);
+		const table = domain === "sessions" ? "session_meta" : "wf_meta";
+		await database.exec(`CREATE TABLE ${table} (schema_version INTEGER); INSERT INTO ${table} VALUES (99)`);
+		await database.close();
+		const provider = new StorageProvider({ memory: () => new MemoryRunJournal(), sql: SqlRunJournal.open });
+		const selection = {
+			kind: "adapter",
+			module: join(moduleDir(import.meta.url), "../fixtures/storage-adapter.ts"),
+			options: { path, lifecycle, closeFailure: true },
+		} as const;
+		try {
+			const context = { agentDir: root, domain };
+			type FailureAdapter = typeof import("../fixtures/storage-adapter.js").default;
+			const adapter = (await loadStorageAdapter(selection.module, context)) as FailureAdapter;
+			await assert.rejects(
+				() =>
+					domain === "sessions"
+						? provider.openSessionStore(selection, context)
+						: provider.openRunJournal(selection, context),
+				(error: Error) => {
+					assert.ok(error instanceof StorageSchemaVersionError);
+					assert.equal(error.domain, domain);
+					assert.equal(error.found, 99);
+					assert.equal(error.supported, 1);
+					assert.ok(error.cleanupCause instanceof adapter.cleanupErrorType);
+					assert.equal(error.cleanupCause, adapter.cleanupFailure);
+					assert.ok(error.cleanupCause.cause instanceof Error);
+					assert.equal(error.cleanupCause.cause.message, "injected-close-failure");
+					return true;
+				},
+			);
+			assert.equal(await readText(lifecycle), "open\nclose\n");
+		} finally {
+			removeTempDirectory(root);
+		}
+	});
+}

@@ -13,6 +13,7 @@
 ### Fixed
 
 - Session shutdown and replacement now wait for already-admitted extension session entries to finish saving before releasing their resources.
+- Storage providers now preserve domain-adapter prefixes, make returned stores safe to close repeatedly, and retain typed opening errors when cleanup also fails.
 
 ## [0.9.38-alpha.6] - 2026-10-16
 

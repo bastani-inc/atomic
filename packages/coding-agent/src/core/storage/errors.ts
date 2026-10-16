@@ -3,6 +3,7 @@ import type { SqliteValue, StorageDescriptor } from "./database.js";
 export type StorageFailureCause = object | SqliteValue | boolean | symbol | undefined;
 
 export class StorageError extends Error {
+	declare readonly cleanupCause?: StorageFailureCause;
 	constructor(message: string, options?: ErrorOptions) {
 		super(message, options);
 		this.name = new.target.name;

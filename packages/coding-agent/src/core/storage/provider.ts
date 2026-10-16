@@ -38,8 +38,16 @@ export interface StorageOpenContext {
 export interface StorageAdapterModule {
 	readonly atomicStorageAdapter: 1;
 	openDatabase?(options: AdapterOptions, context: StorageOpenContext): Promise<SqliteDatabase>;
-	openSessionStore?(options: AdapterOptions, context: StorageOpenContext): Promise<SessionStore>;
-	openRunJournal?(options: AdapterOptions, context: StorageOpenContext): Promise<RunJournal>;
+	openSessionStore?(
+		options: AdapterOptions,
+		context: StorageOpenContext,
+		storage: { readonly prefix?: string },
+	): Promise<SessionStore>;
+	openRunJournal?(
+		options: AdapterOptions,
+		context: StorageOpenContext,
+		storage: { readonly prefix?: string },
+	): Promise<RunJournal>;
 }
 export interface JournalFactories {
 	memory(descriptor: StorageDescriptor): RunJournal;
@@ -130,6 +138,22 @@ async function adapterOptions(
 	return options;
 }
 
+function withIdempotentClose<T extends { close(): Promise<void> }>(store: T, release?: () => Promise<void>): T {
+	const close = store.close.bind(store);
+	let closing: Promise<void> | undefined;
+	store.close = () => {
+		closing ??= (async () => {
+			try {
+				await close();
+			} finally {
+				await release?.();
+			}
+		})();
+		return closing;
+	};
+	return store;
+}
+
 interface SharedDatabase {
 	readonly ready: Promise<SqliteDatabase>;
 	references: number;
@@ -152,7 +176,7 @@ export const StorageProvider: new (journals: JournalFactories) => StorageProvide
 		return this.open<SessionStore>(selection, context, {
 			memory: async () => new (await import("./session/memory-session-store.js")).MemorySessionStore(),
 			jsonl: async (dir) => (await import("./session/jsonl-session-store.js")).JsonlSessionStore.open(dir),
-			direct: (adapter, options) => adapter.openSessionStore?.(options, context),
+			direct: (adapter, options, storage) => adapter.openSessionStore?.(options, context, storage),
 			sql: async (database, options) =>
 				(await import("./session/sql-session-store.js")).SqlSessionStore.open(database, options),
 		});
@@ -161,7 +185,7 @@ export const StorageProvider: new (journals: JournalFactories) => StorageProvide
 	async openRunJournal(selection: StorageSelection, context: StorageOpenContext): Promise<RunJournal> {
 		return this.open<RunJournal>(selection, context, {
 			memory: () => this.journals.memory({ adapter: "memory", location: ":memory:" }),
-			direct: (adapter, options) => adapter.openRunJournal?.(options, context),
+			direct: (adapter, options, storage) => adapter.openRunJournal?.(options, context, storage),
 			sql: async (database, options) => {
 				const journal = await this.journals.sql(database, options);
 				const createRun = journal.createRun.bind(journal);
@@ -177,7 +201,11 @@ export const StorageProvider: new (journals: JournalFactories) => StorageProvide
 		factories: {
 			memory(): T | Promise<T>;
 			jsonl?(dir: string): Promise<T>;
-			direct(adapter: StorageAdapterModule, options: AdapterOptions): Promise<T> | undefined;
+			direct(
+				adapter: StorageAdapterModule,
+				options: AdapterOptions,
+				storage: { readonly prefix?: string },
+			): Promise<T> | undefined;
 			sql(database: SqliteDatabase, options: { readonly prefix?: string }): Promise<T>;
 		},
 	): Promise<T> {
@@ -212,10 +240,10 @@ export const StorageProvider: new (journals: JournalFactories) => StorageProvide
 				"",
 			);
 		}
-		if (selection.kind === "memory") return factories.memory();
+		if (selection.kind === "memory") return withIdempotentClose(await factories.memory());
 		if (selection.kind === "jsonl") {
 			if (typeof selection.dir !== "string") throw new StorageConfigError("sdk", "dir", "invalid-dir");
-			if (factories.jsonl) return factories.jsonl(selection.dir);
+			if (factories.jsonl) return withIdempotentClose(await factories.jsonl(selection.dir));
 			throw new StorageConfigError("sdk", "dir", "adapter-domain-unsupported");
 		}
 		validateStoragePrefix(selection.prefix);
@@ -224,8 +252,8 @@ export const StorageProvider: new (journals: JournalFactories) => StorageProvide
 			const adapter = await loadStorageAdapter(selection.module, context);
 			const options = await adapterOptions(selection, context);
 			try {
-				const direct = factories.direct(adapter, options);
-				if (direct !== undefined) return await direct;
+				const direct = factories.direct(adapter, options, { prefix: selection.prefix });
+				if (direct !== undefined) return withIdempotentClose(await direct);
 			} catch (cause) {
 				if (cause instanceof StorageError) throw cause;
 				throw new StorageUnavailableError(
@@ -247,7 +275,7 @@ export const StorageProvider: new (journals: JournalFactories) => StorageProvide
 				}
 			};
 		} else if (selection.kind === "database") {
-			return factories.sql(selection.database, { prefix: selection.prefix });
+			return withIdempotentClose(await factories.sql(selection.database, { prefix: selection.prefix }));
 		} else {
 			openDatabase = () => openNodeSqliteDatabase(selection.path);
 		}
@@ -273,16 +301,18 @@ export const StorageProvider: new (journals: JournalFactories) => StorageProvide
 			}
 		};
 		try {
-			const store = await factories.sql(database, { prefix: selection.prefix });
-			const close = store.close.bind(store);
-			let closing: Promise<void> | undefined;
-			store.close = () => {
-				closing ??= close().finally(release);
-				return closing;
-			};
-			return store;
+			return withIdempotentClose(await factories.sql(database, { prefix: selection.prefix }), release);
 		} catch (cause) {
-			await release();
+			try {
+				await release();
+			} catch (cleanupCause) {
+				const openingError =
+					cause instanceof Error
+						? cause
+						: new StorageUnavailableError(database.descriptor, cause as StorageFailureCause);
+				Object.defineProperty(openingError, "cleanupCause", { value: cleanupCause, configurable: true });
+				throw openingError;
+			}
 			throw cause;
 		}
 	}
