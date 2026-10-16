@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { runInNewContext } from "node:vm";
 import { afterEach, test } from "vitest";
 import { registerRunJournalConformance } from "../../packages/workflows/src/durable/journal/conformance.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
@@ -44,3 +45,36 @@ registerRunJournalConformance(
 	},
 	observeJournalRead,
 );
+
+for (const method of ["getRun", "takeoverExpired", "leaseState"] as const) {
+	test(`conformance accepts VM-native promises from ${method} individually`, async () => {
+		const ForeignPromise = runInNewContext("Promise") as PromiseConstructor;
+		function foreign<Value>(promise: Promise<Value>): Promise<Value> {
+			const result = ForeignPromise.resolve(promise);
+			assert.ok(result instanceof ForeignPromise);
+			assert.equal(result instanceof Promise, false);
+			return result;
+		}
+		const checks: (() => Promise<void>)[] = [];
+		registerRunJournalConformance(
+			(_name, body) => checks.push(body),
+			`VM-native ${method}`,
+			() => {
+				const journal = new MemoryRunJournal();
+				if (method === "getRun") {
+					const original = journal.getRun.bind(journal);
+					journal.getRun = (...args) => foreign(original(...args));
+				} else if (method === "takeoverExpired") {
+					const original = journal.takeoverExpired.bind(journal);
+					journal.takeoverExpired = (...args) => foreign(original(...args));
+				} else {
+					const original = journal.leaseState.bind(journal);
+					journal.leaseState = (...args) => foreign(original(...args));
+				}
+				return journal;
+			},
+			observeJournalRead,
+		);
+		for (const check of checks) await check();
+	});
+}

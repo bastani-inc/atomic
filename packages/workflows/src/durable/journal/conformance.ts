@@ -66,9 +66,7 @@ export function registerRunJournalConformance(
 		const original = { ...header, inputs: { values: [2, 1, 2], text: "\u0000\ud800" } };
 		await journal.createRun(original);
 		original.inputs.values.push(9);
-		const found = journal.getRun(header.runId);
-		assert.ok(found instanceof Promise);
-		const summary = await found;
+		const summary = await journal.getRun(header.runId);
 		assert.deepEqual(summary, { ...header, inputs: { values: [2, 1, 2], text: "\u0000\ud800" } });
 		(summary!.inputs as { values: number[] }).values.push(9);
 		Reflect.set(summary!, "name", "changed");
@@ -82,14 +80,10 @@ export function registerRunJournalConformance(
 	check("inspects detached lease state and takes over only strictly expired renewals", async (journal) => {
 		assert.equal(await journal.leaseState(header.runId), undefined);
 		await journal.createRun(header);
-		const acquired = journal.takeoverExpired(header.runId, "first", Number.POSITIVE_INFINITY);
-		assert.ok(acquired instanceof Promise);
-		const first = await acquired;
+		const first = await journal.takeoverExpired(header.runId, "first", Number.POSITIVE_INFINITY);
 		assert.equal(first.status, "acquired");
 		if (first.status !== "acquired") assert.fail("lease not acquired");
-		const state = journal.leaseState(header.runId);
-		assert.ok(state instanceof Promise);
-		const initial = await state;
+		const initial = await journal.leaseState(header.runId);
 		assert.ok(initial);
 		assert.deepEqual(initial, { ...first.lease, renewedAt: initial.renewedAt });
 		Reflect.set(initial, "holderId", "changed");
