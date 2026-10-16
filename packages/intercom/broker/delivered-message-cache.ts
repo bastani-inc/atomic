@@ -33,6 +33,7 @@ interface DeliveredMessage {
 	signature: string;
 	targetIdentity?: string;
 	questionRoute?: DeliveredQuestionRoute;
+	questionAnswered?: boolean;
 }
 
 interface SqliteStatement {
@@ -69,7 +70,8 @@ function parseStoredMessage(row: Record<string, unknown> | undefined): Delivered
 		typeof row.delivered_at !== "number" ||
 		!Number.isSafeInteger(row.delivered_at) ||
 		row.delivered_at < 0 ||
-		(row.target_identity !== null && !validStoredString(row.target_identity))
+		(row.target_identity !== null && !validStoredString(row.target_identity)) ||
+		(row.question_answered !== 0 && row.question_answered !== 1)
 	) {
 		return "invalid";
 	}
@@ -80,6 +82,7 @@ function parseStoredMessage(row: Record<string, unknown> | undefined): Delivered
 		state: row.state,
 		deliveredAt: row.delivered_at,
 		signature: row.signature,
+		questionAnswered: row.question_answered === 1,
 		...(typeof row.target_identity === "string" ? { targetIdentity: row.target_identity } : {}),
 		...(hasQuestionRoute
 			? {
@@ -170,6 +173,17 @@ export class DeliveredMessageCache {
 			database.exec("PRAGMA journal_mode = WAL");
 			database.exec("PRAGMA synchronous = FULL");
 			database.exec("PRAGMA trusted_schema = OFF");
+			database.exec("BEGIN IMMEDIATE");
+			const layout = database
+				.prepare(`
+					SELECT
+						(SELECT count(*) FROM pragma_table_info('delivered_messages')) AS columns,
+						(SELECT count(*) FROM pragma_table_info('delivered_messages') WHERE name = 'question_answered') AS answered
+				`)
+				.get() as { columns: number; answered: number } | undefined;
+			if (layout !== undefined && layout.columns > 0 && layout.answered === 0) {
+				database.exec("DROP TABLE delivered_messages");
+			}
 			database.exec(`
 				CREATE TABLE IF NOT EXISTS delivered_messages (
 					state TEXT NOT NULL CHECK (state IN ('reserved', 'accepted')),
@@ -178,12 +192,16 @@ export class DeliveredMessageCache {
 					delivered_at INTEGER NOT NULL,
 					target_identity TEXT,
 					question_target_session_id TEXT,
-					question_sender_group_identity TEXT
+					question_sender_group_identity TEXT,
+					question_answered INTEGER NOT NULL DEFAULT 0 CHECK (question_answered IN (0, 1))
 				) STRICT;
 				CREATE INDEX IF NOT EXISTS delivered_messages_age
 					ON delivered_messages(delivered_at);
 			`);
-			database.prepare("SELECT state, signature, delivered_at, target_identity FROM delivered_messages LIMIT 0").get();
+			database.exec("COMMIT");
+			database
+				.prepare("SELECT state, signature, delivered_at, target_identity, question_answered FROM delivered_messages LIMIT 0")
+				.get();
 			restrictExistingAuthorityArtifacts(storagePath, getDeliveredMessageAuthorityKeyPath(storagePath));
 		} catch {
 			database?.close();
@@ -234,6 +252,34 @@ export class DeliveredMessageCache {
 			return undefined;
 		}
 		return delivered.questionRoute.targetSessionId;
+	}
+
+	isQuestionAnswered(messageId: string): boolean {
+		if (this.storageInvalid) return true;
+		const delivered = this.read(messageId);
+		return delivered === "invalid" || delivered?.questionAnswered === true;
+	}
+
+	settleQuestion(messageId: string): void {
+		try {
+			const delivered = this.read(messageId);
+			if (
+				delivered === undefined ||
+				delivered === "invalid" ||
+				delivered.state !== "accepted" ||
+				delivered.questionRoute === undefined
+			) return;
+			if (this.database === undefined) {
+				delivered.questionAnswered = true;
+				return;
+			}
+			this.database
+				.prepare("UPDATE delivered_messages SET question_answered = 1 WHERE message_id = ?")
+				.run(messageId);
+			this.restrictArtifacts();
+		} catch {
+			this.storageInvalid = true;
+		}
 	}
 
 	record(
@@ -470,7 +516,7 @@ export class DeliveredMessageCache {
 		const row = this.database
 			?.prepare(`
 				SELECT state, signature, delivered_at, target_identity,
-					question_target_session_id, question_sender_group_identity
+					question_target_session_id, question_sender_group_identity, question_answered
 				FROM delivered_messages WHERE message_id = ?
 			`)
 			.get(messageId);

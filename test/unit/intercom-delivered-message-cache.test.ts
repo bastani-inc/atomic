@@ -92,6 +92,52 @@ test("accepted delivery and question metadata survive cache process replacement"
 	}
 });
 
+test("answered question state survives process replacement (#3666)", () => {
+	const dir = mkdtempSync(join(tmpdir(), "intercom-answered-cache-"));
+	const path = join(dir, "accepted.sqlite");
+	const route = { targetSessionId: "target", senderGroupIdentity: "groups" };
+	try {
+		const first = new DeliveredMessageCache(100, 3, path);
+		assert.equal(first.recordQuestion("ask", "signature", route, 10), "recorded");
+		assert.equal(first.isQuestionAnswered("ask"), false);
+		first.settleQuestion("ask");
+		assert.equal(first.isQuestionAnswered("ask"), true);
+		assert.equal(first.recordQuestion("ask", "signature", route, 11), "match");
+		first.close();
+		const replacement = new DeliveredMessageCache(100, 3, path);
+		assert.equal(replacement.lookupQuestionTarget("ask", "signature", "groups", 12), "target");
+		assert.equal(replacement.isQuestionAnswered("ask"), true);
+		assert.equal(replacement.lookup("ask", "signature", 111), "miss");
+		assert.equal(replacement.isQuestionAnswered("ask"), false);
+		replacement.close();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("a delivered-message cache with an older table layout is discarded and recreated (#3666)", () => {
+	const dir = mkdtempSync(join(tmpdir(), "intercom-answered-cache-layout-"));
+	const path = join(dir, "accepted.sqlite");
+	const route = { targetSessionId: "target", senderGroupIdentity: "groups" };
+	try {
+		const first = new DeliveredMessageCache(100, 3, path);
+		assert.equal(first.recordQuestion("ask", "signature", route, 10), "recorded");
+		first.close();
+		const older = new DatabaseSync(path);
+		older.exec("ALTER TABLE delivered_messages DROP COLUMN question_answered");
+		older.close();
+		const reopened = new DeliveredMessageCache(100, 3, path);
+		assert.equal(reopened.lookupQuestionTarget("ask", "signature", "groups", 11), undefined);
+		assert.equal(reopened.isQuestionAnswered("ask"), false);
+		assert.equal(reopened.recordQuestion("ask", "signature", route, 12), "recorded");
+		reopened.settleQuestion("ask");
+		assert.equal(reopened.isQuestionAnswered("ask"), true);
+		reopened.close();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("a crash between durable reservation and proven forwarding stays uncertain and fails closed", () => {
 	const dir = mkdtempSync(join(tmpdir(), "intercom-delivered-uncertain-"));
 	const path = join(dir, "accepted.sqlite");
