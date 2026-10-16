@@ -24,6 +24,8 @@ import type {
 } from "../../packages/coding-agent/src/core/extensions/types.ts";
 import { sessionLifecycleScopes } from "../../packages/coding-agent/src/core/session-lifecycle-scope.ts";
 import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.ts";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { requireStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import type { ToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.ts";
 import type { CancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.ts";
 import type { JobTracker } from "../../packages/workflows/src/runs/background/job-tracker.ts";
@@ -36,6 +38,7 @@ import { buildStagePromptAdapter } from "../../packages/workflows/src/shared/sta
 import type { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.ts";
 import type { Store } from "../../packages/workflows/src/shared/store.ts";
 import { readText } from "../helpers/runtime.ts";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 beforeEach(() => {
 	resetSessionScopedSingletonPreAdoptionForTests();
@@ -70,7 +73,7 @@ interface WorkflowGeneration {
 	readonly jobTracker: JobTracker;
 	readonly stageUiBroker: StageUiBroker;
 	readonly factory: ExtensionFactory;
-	readonly createMemoryTestBackend: () => DurableWorkflowBackend;
+	readonly createMemoryTestBackend: () => Promise<DurableWorkflowBackend>;
 	readonly setDurableBackend: (backend: DurableWorkflowBackend | undefined) => void;
 	readonly adoptWorkflowSessionRunState?: (scope: object | undefined) => void;
 }
@@ -573,16 +576,16 @@ test.sequential(
 			const scope = {};
 			const widget = createWidgetUi();
 			const context = { hasUI: true, sessionId: "active-chat-turn", ui: widget.ui };
+			// Install the shared backend before either graph constructs its owning store.
+			const durableBackend = await createMemoryTestBackend();
+			setDurableBackend(durableBackend);
 			const first = await evaluateInstalledWorkflowGraph();
-			// Each jiti generation owns its durable factory, so install one shared
-			// in-memory backend across the full-reload boundary.
-			const durableBackend = first.createMemoryTestBackend();
-			first.setDurableBackend(durableBackend);
 			firstGeneration = first;
 			const firstRuntime = createHostRuntime(scope);
 			runtimes.push(firstRuntime);
 			firstExtension = await loadExtensionFromFactory(first.factory, repoRoot, bus, firstRuntime);
 			await emitSessionEvent(firstExtension, "session_start", { reason: "startup" }, context);
+			assert.equal(requireStoreDurableBackend(first.store), durableBackend);
 			await emitSessionEvent(firstExtension, "turn_start", { type: "turn_start" }, context);
 
 			const beforeLaunchReload = await executeWorkflowTool(
@@ -672,13 +675,14 @@ test.sequential(
 			const reloadWidgetCallStart = widget.calls.length;
 			await emitSessionEvent(firstExtension, "session_shutdown", { reason: "reload" });
 			firstRuntime.invalidate();
+			setDurableBackend(durableBackend);
 			const second = await evaluateInstalledWorkflowGraph();
-			second.setDurableBackend(durableBackend);
 			secondGeneration = second;
 			const secondRuntime = createHostRuntime(scope);
 			runtimes.push(secondRuntime);
 			secondExtension = await loadExtensionFromFactory(second.factory, repoRoot, bus, secondRuntime);
 			await emitSessionEvent(secondExtension, "session_start", { reason: "reload" }, context);
+			assert.equal(requireStoreDurableBackend(second.store), durableBackend);
 
 			const adopted = second.store.runs().find((run) => run.id === launched.runId);
 			assert.ok(adopted, "the installed replacement must adopt the user-global agent run");
@@ -784,8 +788,7 @@ test.sequential(
 						await emitSessionEvent(cleanupExtension, "session_shutdown", { reason: "quit" });
 					}
 				} finally {
-					firstGeneration?.setDurableBackend(undefined);
-					secondGeneration?.setDurableBackend(undefined);
+					setDurableBackend(undefined);
 					for (const runtime of runtimes) runtime.invalidate();
 					listenersAfterCleanup = trackedBus.listenerCount();
 				}

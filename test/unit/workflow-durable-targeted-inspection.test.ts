@@ -635,7 +635,7 @@ describe("targeted durable workflow inspection", () => {
 				createdAt: 1,
 				status: "running",
 			});
-			nodeIds.forEach(async (nodeId, index) => {
+			for (const [index, nodeId] of nodeIds.entries()) {
 				await backend.recordCheckpoint({
 					kind: "tool",
 					workflowId: runId,
@@ -653,7 +653,7 @@ describe("targeted durable workflow inspection", () => {
 						run: { runId, runName: "tool-ids" },
 					},
 				});
-			});
+			}
 			return { backend, runId };
 		};
 
