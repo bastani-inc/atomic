@@ -173,7 +173,7 @@ async function resumeDurableWorkflowClaimed(
 			if (hasActiveLiveRun(deps.baseRunOpts.store, direct.workflowId)) {
 				return alreadyRunningResult(direct.name, direct.workflowId, deps.baseRunOpts.store);
 			}
-			if (backend.workflowOwnership(direct.workflowId) === "foreign") {
+			if ((await backend.workflowOwnership(direct.workflowId)) === "foreign") {
 				return foreignRunningResult(direct.name, direct.workflowId);
 			}
 		}
@@ -214,7 +214,7 @@ async function resumeDurableWorkflowClaimed(
 		if (hasActiveLiveRun(deps.baseRunOpts.store, resolved.workflowId)) {
 			return alreadyRunningResult(handle.name, resolved.workflowId, deps.baseRunOpts.store);
 		}
-		if (backend.workflowOwnership(handle.workflowId) === "foreign") {
+		if ((await backend.workflowOwnership(handle.workflowId)) === "foreign") {
 			return foreignRunningResult(handle.name, resolved.workflowId);
 		}
 	}
@@ -230,7 +230,7 @@ async function resumeDurableWorkflowClaimed(
 		requestedOwner !== undefined &&
 		requestedOwner !== handle.modelOwner &&
 		(handle.modelOwner !== undefined || handle.origin === "agent");
-	if (adopting && !isSdkRunAdoptable(handle, deps.baseRunOpts.cwd, backend)) {
+	if (adopting && !(await isSdkRunAdoptable(handle, deps.baseRunOpts.cwd, backend))) {
 		return { ok: false, reason: "owned_elsewhere", message: foreignInstanceMessage(backend, resolved.workflowId) };
 	}
 
@@ -547,7 +547,7 @@ export async function prepareTargetedDurableResumable(
 		if (
 			handle === undefined ||
 			!isDurableWorkflowResumable(handle) ||
-			(handle.status === "running" && backend.workflowOwnership(workflowId) !== "available")
+			(handle.status === "running" && (await backend.workflowOwnership(workflowId)) !== "available")
 		)
 			continue;
 		entries.push(resumableEntryFromHandle(handle));

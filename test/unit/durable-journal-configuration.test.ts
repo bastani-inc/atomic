@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "vitest";
 import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import {
+	JournalClosedError,
 	JournalMetaCorruptError,
 	JournalSchemaVersionError,
 	StorageUnavailableError,
@@ -22,7 +23,12 @@ test("caller-owned connections receive schema and remain open after journal clos
 		await journal.createRun({ runId: "run", name: "workflow", cwd: "/", createdAt: 0, status: "running" });
 		await journal.close();
 		await journal.close();
-		assert.equal((await journal.listRuns()).length, 1);
+		await assert.rejects(journal.listRuns(), (error: Error) => {
+			assert.ok(error instanceof StorageUnavailableError);
+			assert.ok(error.cause instanceof JournalClosedError);
+			assert.equal(error.path, path);
+			return true;
+		});
 		assert.equal(database.prepare("SELECT COUNT(*) AS count FROM runs").get()?.count, 1);
 		assert.equal(database.prepare("PRAGMA foreign_keys").get()?.foreign_keys, 1);
 		assert.equal(database.prepare("PRAGMA synchronous").get()?.synchronous, 2);

@@ -1015,7 +1015,7 @@ test("status claims recheck the acquired equal-sequence incarnation", async () =
 	const replacement = await open(path);
 	class InterleavedJournal extends SqliteRunJournal {
 		override takeoverExpiredSync(runId: string, holderId: string, expiredBefore: number) {
-			void replacement.deleteWorkflow(runId);
+			replacement.journal.deleteRunSync(runId);
 			replacement.registerWorkflow({
 				workflowId: runId,
 				name: "replacement",
@@ -1045,7 +1045,7 @@ test("inactive deletion rechecks the acquired equal-sequence incarnation", async
 	const replacement = await open(path);
 	class InterleavedJournal extends SqliteRunJournal {
 		override takeoverExpiredSync(runId: string, holderId: string, expiredBefore: number) {
-			void replacement.deleteWorkflow(runId);
+			replacement.journal.deleteRunSync(runId);
 			replacement.registerWorkflow({
 				workflowId: runId,
 				name: "replacement",
@@ -1242,7 +1242,7 @@ for (const [length, oldLength, newLength] of [
 	for (const predicate of ["matching", "status mismatch", "timestamp mismatch"] as const) {
 		test(`claim uses acquired ${length} sequence and ${predicate} predicate`, async () => {
 			const { path, observer } = await interleaveAcquisition((replacement) => {
-				void replacement.deleteWorkflow("run");
+				replacement.journal.deleteRunSync("run");
 				for (let index = 0; index < newLength; index++) {
 					replacement.registerWorkflow({
 						workflowId: "run",
@@ -1271,7 +1271,7 @@ for (const [length, oldLength, newLength] of [
 	for (const status of ["running", "paused"] as const) {
 		test(`inactive deletion uses acquired ${length} sequence and ${status} status`, async () => {
 			const { path, observer } = await interleaveAcquisition((replacement) => {
-				void replacement.deleteWorkflow("run");
+				replacement.journal.deleteRunSync("run");
 				for (let index = 0; index < newLength; index++) {
 					replacement.registerWorkflow({
 						workflowId: "run",
@@ -1297,7 +1297,7 @@ for (const [length, oldLength, newLength] of [
 for (const action of ["claim", "delete"] as const) {
 	test(`${action} refuses a fresh competitor acquired during the guard gap`, async () => {
 		const { path, observer, replacement } = await interleaveAcquisition((backend) => {
-			void backend.deleteWorkflow("run");
+			backend.journal.deleteRunSync("run");
 			backend.registerWorkflow({
 				workflowId: "run",
 				name: "replacement",

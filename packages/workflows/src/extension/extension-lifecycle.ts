@@ -216,17 +216,18 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			const currentCwd = canonicalDirectory(
 				ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? runtimeState.resolveInvocationCwd(),
 			);
-			const isInterruptedInProject = (entry: ResumableWorkflowEntry): boolean => {
+			const isInterruptedInProject = async (entry: ResumableWorkflowEntry): Promise<boolean> => {
 				const handle = backend.getWorkflow(entry.workflowId) ?? entry;
 				return (
 					handle.status === "running" &&
 					(handle.pendingPrompts ?? entry.pendingPrompts) === 0 &&
-					backend.workflowOwnership(entry.workflowId) === "available" &&
+					(await backend.workflowOwnership(entry.workflowId)) === "available" &&
 					handle.invocationCwd !== undefined &&
 					canonicalDirectory(handle.invocationCwd) === currentCwd
 				);
 			};
-			const interrupted = catalog.filter(isInterruptedInProject);
+			const interrupted: ResumableWorkflowEntry[] = [];
+			for (const entry of catalog) if (await isInterruptedInProject(entry)) interrupted.push(entry);
 			if (interrupted.length === 0) return;
 			if (
 				mode === "ask" &&

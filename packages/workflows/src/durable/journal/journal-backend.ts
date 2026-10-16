@@ -102,7 +102,6 @@ function synchronousJournal(journal: RunJournal): SynchronousRunJournal | undefi
 		"appendSync",
 		"readEntries",
 		"deleteRunSync",
-		"deleteOwnedRunSync",
 	] as const;
 	return methods.every((method) => typeof candidate[method] === "function")
 		? (candidate as RunJournal & SynchronousRunJournal)
@@ -163,7 +162,6 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal & Syn
 	private readonly synchronous: SynchronousRunJournal | undefined;
 	private readonly sequences = new Map<string, number>();
 	private readonly leases = new Map<string, Lease>();
-	private readonly released = new Set<string>();
 	private readonly executions = new Map<string, WorkflowLeaseExecution>();
 	private readonly executionContext = new AsyncLocalStorage<ReadonlyMap<string, WorkflowLeaseExecution>>();
 	private readonly pending = new Map<string, Promise<void>>();
@@ -223,12 +221,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal & Syn
 		const event = entry.event as BackendEvent;
 		if (event.type === E.checkpointRecorded) {
 			const checkpoint = event.payload;
-			if (
-				checkpoint.kind === "stage" &&
-				checkpoint.topology?.boundary !== undefined &&
-				typeof checkpoint.topology.boundary.invocationFingerprint !== "string"
-			)
-				throw new DurableNestedTopologyError(`missing invocation fingerprint at ${checkpoint.checkpointId}`);
+			this.validateCheckpoint(checkpoint);
 			this.projection.recordCheckpoint(checkpoint);
 		} else if (event.type === E.messageSettled) {
 			void this.projection.archivePendingStageMessage(entry.runId, event.payload.message);
@@ -323,7 +316,6 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal & Syn
 		);
 		if (result.status === "held") throw new JournalOwnershipError(runId, result.holderId);
 		this.leases.set(runId, result.lease);
-		this.released.delete(runId);
 		if (this.timer === undefined) {
 			this.timer = setInterval(() => void this.renewLeases(), STAGE_SESSION_HEARTBEAT_INTERVAL_MS);
 			this.timer.unref();
@@ -403,10 +395,19 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal & Syn
 			this.sequences.has(input.workflowId) ? E.statusChanged : E.runStarted,
 		);
 	}
+	private validateCheckpoint(checkpoint: DurableCheckpoint): void {
+		if (
+			checkpoint.kind === "stage" &&
+			checkpoint.topology?.boundary !== undefined &&
+			typeof checkpoint.topology.boundary.invocationFingerprint !== "string"
+		)
+			throw new DurableNestedTopologyError(`missing invocation fingerprint at ${checkpoint.checkpointId}`);
+	}
 	recordCheckpoint(checkpoint: DurableCheckpoint): void | Promise<void> {
 		return this.serialize(checkpoint.workflowId, () => this.checkpoint(checkpoint));
 	}
 	private *checkpoint(checkpoint: DurableCheckpoint): Operation<void> {
+		this.validateCheckpoint(checkpoint);
 		if (!(yield* this.current(checkpoint.workflowId))) return;
 		yield* this.append(
 			checkpoint.workflowId,
@@ -436,12 +437,31 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal & Syn
 			return false;
 		}
 	}
-	workflowOwnership(runId: string): "local" | "foreign" | "available" {
-		if (this.synchronous === undefined)
-			return this.leases.has(runId) ? "local" : this.released.has(runId) ? "available" : "foreign";
-		const lease = this.synchronous.leaseState(runId);
-		if (lease === undefined || Date.now() - lease.renewedAt >= FOREIGN_LIVE_WORKFLOW_WINDOW_MS) return "available";
-		return lease.holderId === this.holderId ? "local" : "foreign";
+	workflowOwnership(runId: string): "local" | "foreign" | "available" | Promise<"local" | "foreign" | "available"> {
+		if (this.synchronous !== undefined) {
+			const lease = this.synchronous.leaseState(runId);
+			if (lease === undefined || Date.now() - lease.renewedAt >= FOREIGN_LIVE_WORKFLOW_WINDOW_MS) return "available";
+			return lease.holderId === this.holderId ? "local" : "foreign";
+		}
+		return this.serialize(runId, () => this.probeOwnership(runId));
+	}
+	private *probeOwnership(runId: string): Operation<"local" | "foreign" | "available"> {
+		this.ensureOpen();
+		const local = this.leases.get(runId);
+		try {
+			if (local !== undefined) {
+				yield* invoke(() => this.journal.renew(local));
+				return "local";
+			}
+			const result = yield* invoke(() => this.journal.acquire(runId, randomUUID()));
+			if (result.status === "held") return "foreign";
+			yield* invoke(() => this.journal.release(result.lease));
+			return "available";
+		} catch (error) {
+			if (error instanceof StaleLeaseError) return "foreign";
+			if (error instanceof RunNotFoundError) return "available";
+			throw error;
+		}
 	}
 	setWorkflowStatus(
 		runId: string,
@@ -727,11 +747,12 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal & Syn
 	private *deleteOwned(runId: string, expectSeq?: number): Operation<void> {
 		try {
 			const lease = yield* this.ownership(runId);
-			if (this.synchronous !== undefined) this.synchronous.deleteOwnedRunSync(lease, expectSeq);
-			else {
-				yield* invoke(() => this.journal.renew(lease));
-				yield* invoke(() => this.journal.deleteRun(runId));
+			if (expectSeq !== undefined) {
+				const entries = yield* this.entries(runId);
+				const actualSeq = entries.at(-1)?.seq ?? 0;
+				if (actualSeq !== expectSeq) throw new JournalCasConflictError(runId, expectSeq, actualSeq);
 			}
+			yield* invoke(() => this.journal.deleteOwnedRun(lease));
 		} catch (error) {
 			if (!(error instanceof RunNotFoundError)) {
 				if (error instanceof Error) throw this.mapOwnership(error, runId);
@@ -852,7 +873,6 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal & Syn
 				if (this.synchronous !== undefined) return this.synchronous.releaseSync(lease);
 				return this.journal.release(lease);
 			});
-			this.released.add(runId);
 		} catch (error) {
 			if (!(error instanceof StaleLeaseError)) throw error;
 		} finally {

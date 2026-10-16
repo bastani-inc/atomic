@@ -130,6 +130,7 @@ export interface RunJournal {
 	append(lease: Lease, event: RunEvent, options?: { key?: string; expectSeq?: number }): Promise<AppendOutcome>;
 	read(runId: string, fromSeq?: number): AsyncIterable<JournalEntry>;
 	readKey(runId: string, key: string): Promise<JournalEntry | undefined>;
+	deleteOwnedRun(lease: Lease): Promise<void>;
 	deleteRun(runId: string): Promise<void>;
 	close(): Promise<void>;
 }
@@ -145,10 +146,16 @@ export interface SynchronousRunJournal {
 	appendSync(lease: Lease, event: RunEvent, options?: { key?: string; expectSeq?: number }): AppendOutcome;
 	readEntries(runId: string, fromSeq?: number): readonly JournalEntry[];
 	deleteRunSync(runId: string): void;
-	deleteOwnedRunSync(lease: Lease, expectSeq?: number): void;
 }
 
 export class JournalError extends Error {}
+
+export class JournalClosedError extends JournalError {
+	constructor() {
+		super("Journal is closed");
+		this.name = "JournalClosedError";
+	}
+}
 
 export class JournalConfigurationError extends JournalError {
 	readonly source: "settings";

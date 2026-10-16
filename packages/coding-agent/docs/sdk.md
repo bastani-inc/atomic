@@ -243,7 +243,9 @@ await run(myWorkflow, inputs, { journal: { path: "./workflow-runs.sqlite" } });
 await run(myWorkflow, inputs, { journal: { memory: true } });
 ```
 
-Use `{ database }` for an existing `node:sqlite` `DatabaseSync`; Atomic does not close that connection. A supplied `RunJournal` is used as-is. Memory is an explicit choice and cannot recover runs after the process exits.
+Use `{ database }` for an existing `node:sqlite` `DatabaseSync`; Atomic does not close that connection. A supplied `RunJournal` is used as-is. Memory is an explicit opt-in for tests or ephemeral runs and cannot recover runs after the process exits.
+
+Custom journals implement the full `RunJournal` interface, including `deleteOwnedRun(lease)` for atomic lease-fenced deletion. A stale lease rejects with `StaleLeaseError` without deleting the successor's data. Validate custom journals with `registerRunJournalConformance`; see [Choosing the durable backend](/workflows/api-reference#choosing-the-durable-backend).
 
 Without a per-run option, a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH` overrides `workflows.journal.path` or `workflows.journal.memory` in settings. Relative settings paths resolve against the Atomic home directory. The default file is `~/.atomic/workflows/journal.sqlite`. Keep the original journal and working directory to resume saved runs. Storage failures reject the action rather than switching to memory. See [Workflow storage settings](/settings#workflow-storage).
 

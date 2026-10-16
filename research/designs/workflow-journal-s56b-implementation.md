@@ -6,7 +6,7 @@ Wire the configured run journal into all workflow run entry points, remove the s
 
 ## Acceptance matrix
 
-The commands in the verification table passed on the final executable changes. â€œUnitâ€ and â€œintegrationâ€ below refer to those complete suites, not selected subsets. Source and diff inspections were performed in the feature checkout.
+The table records initial implementation evidence and the amended review-repair evidence. Independent review found three defects, all repaired and covered by durable regressions. The final amended gates below pass.
 
 | Clause | Evidence | Result |
 | --- | --- | --- |
@@ -14,7 +14,7 @@ The commands in the verification table passed on the final executable changes. â
 | Factory uses a caller-owned `DatabaseSync`. | Wiring and `durable-journal-configuration.test.ts`, unit suite. | Pass |
 | Explicit `{ memory: true }` selects a memory journal. | Wiring and resolver tests, unit suite. | Pass |
 | A supplied `RunJournal` retains its identity. | Wiring test covers supplied journals, including a SQLite journal with its own `path` property. | Pass |
-| Async-only custom journals need no synchronous methods. | Wiring test delays a custom journal append and checks that workflow completion waits. | Pass |
+| Async-only custom journals need no synchronous methods. | Wiring, actual recovery and owned-deletion regressions use an adapter implementing exactly the amended async interface. | Focused pass |
 | TUI/CLI extension runs use invocation settings. | Extension runtime wiring scenario, unit suite. | Pass |
 | SDK runs use the selected journal. | Wiring and SDK initialization/replay tests, unit suite. | Pass |
 | Background runs use the selected journal. | Detached-run wiring scenario, unit suite. | Pass |
@@ -39,7 +39,7 @@ The commands in the verification table passed on the final executable changes. â
 | Tests use a shared memory-journal helper. | `test/helpers/workflow-journal.ts` and migrated imports. | Pass |
 | Storage fixtures use per-test SQLite files, not SQLite `:memory:`. | Modified configuration/runtime fixtures and file-path inspection. | Pass |
 | `DurableWorkflowBoundaryTopology.invocationFingerprint` is required. | Type declaration and typecheck. | Pass |
-| Missing boundary fingerprints cause typed rejection. | `durable-journal-backend.test.ts` opening regression asserts `DurableNestedTopologyError` and reason. | Pass |
+| Missing boundary fingerprints cause typed rejection. | Repair regressions assert unchanged event history and successful reopen for memory and file SQLite. | Pass, current unit suite |
 | Remove the retired recovery module, argument and pending fields. | Workflow source inspection and typecheck. | Pass |
 | Remove remaining old-reader, alias and compatibility paths. | Source sweep, current-contract tests, unit/integration suites. | Pass |
 | Inventory `legacy|compat|deprecat|migrat|upgrade|fallback` hits. | Requested `git grep` inventory; every path/line is listed with its reason in the commit body. Expanded inventory matches the actual hit list exactly. | Pass |
@@ -57,11 +57,11 @@ The commands in the verification table passed on the final executable changes. â
 | The removed `@bastani/workflows` alias names `@bastani/atomic/workflows` as its replacement. | Both Unreleased changelog sections. | Pass |
 | No duplicate changelog headings or released-section changes. | Changelog diff inspection and unit tests. | Pass |
 | Changelogs describe shipped behavior only. | Entry review; temporary implementation failures are recorded below instead. | Pass |
-| No journal schema v1 names, event tags, encoding or lease constants change. | `durable/journal/types.ts` has no diff. | Pass |
+| Journal schema v1 names, event tags, encoding and lease constants remain unchanged. | The authorized amendment adds required `deleteOwnedRun(lease)` and a shared closed-error cause, without changing schema names or values. | Pass |
 | Dense ordered sequence numbers. | Shared conformance and SQLite contention suites. | Pass |
 | Keyed first-writer-wins returns the first entry without a second write. | Shared journal conformance, unit suite. | Pass |
 | CAS mismatch writes nothing. | Conformance and backend acquisition tests. | Pass |
-| Lease epochs fence stale writers. | Conformance and execution-lease tests. | Pass |
+| Lease epochs fence stale writers and stale deletion. | Shared owned-deletion conformance and backend takeover interleaving preserve successor records and events. | Focused pass |
 | Deletion retains epoch tombstones. | Shared journal conformance. | Pass |
 | Counter violations retain their typed errors. | Kernel/conformance tests; unchanged contract types. | Pass |
 | Text validation rejects NUL before malformed Unicode. | Kernel/conformance text tests. | Pass |
@@ -71,7 +71,7 @@ The commands in the verification table passed on the final executable changes. â
 | WAL, FULL synchronization, busy timeout and foreign keys remain configured. | SQLite configuration tests and unchanged kernel. | Pass |
 | Writes are visible on fresh connections; interrupted transactions are atomic. | Kernel and contention integration suites. | Pass |
 | Bun can open, append and read the journal. | Public SDK/kernel child fixtures. | Pass |
-| Pause, quit, answer, resume, status, catalog, heartbeat and delivery still work. | Complete unit/integration suites and execution-retirement regressions. | Pass |
+| Pause, quit, answer, resume, status, catalog, heartbeat and delivery still work. | Review regressions exercise actual async-only resume and completed tool replay; complete amended unit and integration suites pass. | Pass |
 | Public SDK types compile using ES2022 default libraries. | Strict standalone consumer check and the extended repository runtime-surface consumer fixture. | Pass |
 | Importing the public SDK does not load `node:sqlite`. | Built SDK import guard. | Pass |
 | Coding-agent source keeps relative self-imports and established extensions. | Source diff and import-consistency unit tests. | Pass |
@@ -84,11 +84,11 @@ The commands in the verification table passed on the final executable changes. â
 
 ## Implementation decisions
 
-The public `RunJournal` contract is asynchronous. Backend operations accept immediate or Promise results, while runtime callers await persistence. Internal synchronous capabilities preserve atomic expired-lease takeover and conditional deletion for the built-in journals. Async-only custom journals need no additional methods; their public contract has no expiry inspection or conditional-delete operation, so foreign ownership remains conservative rather than inventing automatic expired takeover.
+The public `RunJournal` contract is asynchronous. Backend operations accept immediate or Promise results, while runtime callers await persistence. Internal synchronous capabilities preserve built-in acquisition and cached reads. Ownership queries for async-only journals probe actual acquisition availability under a temporary holder and release it before returning available; recovery, adoption and inspection await the query. A held foreign lease remains foreign. The user-authorized required `deleteOwnedRun(lease)` now performs atomic lease-fenced deletion in both journals. Backend owned deletion calls only that method. Unconditional deletion remains for administrative reset and kernel administrative tests.
 
 The approved process-owner cache keys explicit files by resolved identity and caller-owned databases, supplied journals, and memory-option objects by object identity. Distinct memory-option objects remain isolated. Defaults resolve the current context before selecting a cached journal. Caller-owned journals are not closed by backend cleanup; owned journals are closed, and caller-owned database connections retain their existing non-closing rule.
 
-## Final verification
+## Initial implementation verification
 
 All executable checks ran remotely. No local package installation, build, test, compiler or formatter was used.
 
@@ -116,9 +116,75 @@ The consumer fixture was extended after the complete integration run and passed 
 - One final unit attempt reported an unexpected worker exit, with `subagents-foreground-intercom-detach.test.ts` absent from its completed-file list. Its cause was not established. A subsequent full unit run passed all 883 files, including all 16 tests in that file, with no unhandled errors.
 - The first standalone consumer invocation was rejected by TypeScript 7 with TS5112 because files were passed alongside a repository config. Adding `--ignoreConfig` corrected the invocation; the strict ES2022 check passed.
 
+## Consolidated review repair
+
+The seven consolidated findings share three causes. The following rows supersede initial implementation pass claims where indicated.
+
+| Cause | Regression or exact check | Current result |
+| --- | --- | --- |
+| Missing fingerprint was rejected after persistence. | `workflow-journal-review-regressions.test.ts` asserts a typed error, unchanged journal entries and successful reopen for memory and file SQLite. | Failed on baseline; passes after repair. |
+| Reopened async-only journals treated unheld runs as foreign. | Same file tests foreign-owner refusal, release, available ownership, targeted discovery, actual resume and completed-tool replay. | Failed on baseline; passes after repair. |
+| Custom deletion could erase a successor after takeover. | `journal-custom-delete-race.ts`, exercised by the root regression suite, checks exact stale-error fields through the ownership wrapper and a surviving running record. | Failed before authorized API change; passes after implementation. |
+
+Initially, the exact `RunJournal` interface offered only unconditional deletion, so caller-side checks could not close the takeover race. The user then authorized required atomic `deleteOwnedRun(lease)`, superseding that blocker. Both journals check holder and epoch and delete atomically while retaining the fencing tombstone. SQLite uses a single immediate transaction. Backend deletion retains its existing `JournalOwnershipError` mapping with exact `StaleLeaseError` cause. No optional-method compatibility path is added.
+
+### Repair validation
+
+- Controlled reversal of the backend changes made all three new regression cases fail for the reviewed causes. Restoring the changes passed them. Focused backend/wiring/regression coverage passed 83 tests; root TypeScript check passed.
+- The first complete repair unit run exposed discarded Promise authorization callbacks: 12 failed tests and 30 unhandled rejections. All control helper callers now await authorization. The following complete unit run passed 884 files and 10,083 tests, with the same 25 existing skips.
+- Before the additional user amendments, full check/build, unit 884 files and 10,083 tests, integration 99 files and 1,198 tests, coding-agent 704 files and 6,190 tests, docs 94 pages, the ES2022 consumer fixture, scripts 15 tests and SDK lazy-import guard passed. These are historical results, not final amended gate claims.
+- New conformance first reproduced missing `deleteOwnedRun` and started iterators silently continuing after close. Logical wrapper guards now reject even when a caller-owned SQLite connection remains open. Closed errors use `StorageUnavailableError` with the shared `JournalClosedError` cause; repeated close remains idempotent.
+- After the async deletion change, 19 acquisition-interleaving tests exposed fixtures that discarded deletion promises before recreating records. Administrative fixture seeding now uses direct journal administrative deletion; all original guards/assertions remain. The amended focused suite passed 126 tests in four files; root typecheck and formatting passed. Final amended broad gates subsequently passed as listed below.
+- The closed-state amendment is interpreted to take precedence over malformed input after close. The added invalid-input closed cases failed in all three storage modes before logical guards were moved ahead of validation. Open-journal NUL/Unicode precedence, typed validation fields, no-SQL checks and no-mutation assertions remain. Existing kernel closed-state expectations were updated to the newly required exact storage error and closed cause.
+- One unchanged interactive-engine isolation heartbeat test exceeded its existing 100 ms assertion during a failed full attempt. The following complete unit suite passed without changing that test or its budget. Its transient cause was not established.
+- Final amended unit verification passes 885 files and 10,117 tests, with the same 25 existing skips. Final integration passes 99 files and 1,198 tests, with 2 files and 12 tests already skipped. Final coding-agent verification passes 704 files and 6,190 tests, with 5 files and 52 tests already skipped. No new skips, weakened assertions, or timeout changes were introduced.
+- Optional quality CLI installation was attempted once with a bounded setup timeout and did not complete; no quality CLI analysis is claimed. Repository Biome/typecheck remains authoritative. One failure-capture download encountered the local disk reserve; command stdout and retained remote logs remain evidence, and no user data was removed.
+
+### Final amended gates
+
+All executable validation ran remotely. Formatting patches were replayed into the feature checkout. Only implementation notes changed after the final executable snapshot.
+
+| Command or check | Result |
+| --- | --- |
+| `npm run check`, coding-agent `dist` moved aside and restored | Pass |
+| `npm run build` on the final production source | Pass |
+| `npm run test:unit` | 885 files, 10,117 tests passed; 25 existing skips |
+| `npm run test:integration` | 99 files, 1,198 tests passed; 2 files/12 existing skips |
+| `npm run test --workspace=@bastani/atomic` | 704 files, 6,190 tests passed; 5 files/52 existing skips |
+| `npm --prefix packages/coding-agent run docs:check` | 94 pages passed |
+| `npm run test:scripts` | 15 tests passed |
+| Focused amended journal/public SDK/entrypoint suite | 65 tests passed; Node and Bun public conformance included |
+| Node resolver hook rejecting `node:sqlite` during built public SDK import | Pass |
+| Consumer ES2022 fixture | Passed in the complete integration suite |
+| Scoped Biome, including fixture stdin formatter comparison | Pass |
+| Source keyword inventory versus prior exact hit list | Identical; full inventory retained in follow-up commit body |
+
+The retired recovery code, docs, changelog, schema and import constraints remain covered by the complete gates and prior source inspections. The only public journal contract change is the explicitly authorized deletion method and shared typed closed cause. Close stays idempotent; closed-state errors precede invalid arguments, while open-journal validation behavior is preserved.
+
 ## Contract amendments received
 
-None. The implementation decisions above came from the supervisor and do not amend the user's frozen behavior contract.
+User amendment received during review repair:
+
+> in-memory storage is supported but is NEVER the default. With no RunOpts.journal, no ATOMIC_WORKFLOW_JOURNAL_PATH and no workflows.journal setting, every run entry point (TUI/CLI, slash command, workflow tool, SDK run(), background and resume) must resolve the persistent SQLite journal at the default path. MemoryRunJournal is selected only by an explicit `{ memory: true }` / a passed MemoryRunJournal / `workflows.journal.memory: true`. No code path may fall back to memory when the file can't be opened (raise the typed error). Your current resolveRunJournal already matches this; keep it that way across all entry points, and add or keep a test proving that default resolution through each public entry point yields a SqliteRunJournal at the default path, never memory. Tests and helpers may choose memory explicitly. Docs must describe memory as an opt-in for tests or ephemeral runs, not the default.
+
+> add a REQUIRED `deleteOwnedRun(lease)` method to the public RunJournal interface. It deletes the run atomically ONLY if that lease (runId, holderId, epoch) still holds it; otherwise it throws the typed StaleLeaseError {runId, heldEpoch, currentEpoch} and deletes nothing. Implement it in SqliteRunJournal (one BEGIN IMMEDIATE transaction: check lease holder and epoch, then delete with the same tombstone semantics as today) and MemoryRunJournal (equivalent atomic check-and-delete), add it to the shared registerRunJournalConformance suite (cases: owner deletes; a stale lease after takeover throws StaleLeaseError with the successor's run and events intact; the tombstone still fences a recreated run), and make JournalDurableBackend use only deleteOwnedRun for owned deletion (no unconditional deleteRun on any ownership-sensitive path). Keep the existing unconditional deleteRun for administrative deletion only if something genuinely needs it; otherwise remove it, and say which in the commit body. RunJournal is unreleased, so there's no compatibility path. Update the custom-journal docs and the packages/workflows changelog Added entry for RunJournal to describe deleteOwnedRun as part of the interface (append to the existing Unreleased subsection). Add the reviewers' interleaving as a regression: renew succeeds, a successor takes over and appends, then the old owner's delete raises StaleLeaseError and the successor's data survives.
+
+> draw on upstream pi-durable (@earendil-works/pi-durable, packages/durable) where relevant. Applied to this slice: since you're already extending registerRunJournalConformance for deleteOwnedRun, add the pi-durable storage-conformance cases our session-store suite already has but the run-journal suite lacks (packages/workflows/src/durable/journal/conformance.ts): (1) detachment: mutating an event payload or run header object after append/createRun, and mutating entries returned by read/readKey/listRuns, never changes stored data (re-read and compare); (2) after close(), every operation (including a second close, if the contract says close is idempotent then assert that instead) rejects with the journal's typed closed or storage error, never silently succeeding; (3) all-or-nothing: an append rejected by expectSeq CAS, a stale lease or a text-validation error leaves no partial row, seq gap or status change, and a failed deleteOwnedRun leaves the run and its events intact. Run them against both SqliteRunJournal and MemoryRunJournal. Use typed errors, and add a typed JournalClosedError only if none exists (reuse StorageUnavailableError semantics if that's what closed journals already raise, and keep it consistent across both journals). Don't copy pi-durable's single-process-owner model: Atomic needs leases and epochs because several processes share one journal file.
+
+The latter two user amendments authorize a changed public journal contract and additional conformance cases. The earlier deletion blocker is superseded by this authorization. Code and user guides describe the behavior without comparative implementation discussion.
+
+| Amended requirement | Evidence | Status |
+| --- | --- | --- |
+| Default SQLite selection through SDK, background, extension dispatch, TUI slash, CLI slash, workflow tool and resume. | `workflow-journal-default-entrypoints.test.ts` clears the injected backend, isolates Atomic home, omits journal/environment/settings selection, and asserts `SqliteRunJournal`, exact default path and persistent state. | 8 focused tests pass |
+| Memory requires explicit selection. | Existing resolver/wiring tests cover memory options, a supplied memory journal and settings memory. | Pass |
+| Opening failure never selects memory. | Default-path directory failure and existing configured-path failure tests assert typed storage rejection and no installed backend. | Focused pass |
+| User guides describe memory only as opt-in. | Existing settings, API and operations guidance; SDK now explicitly identifies tests and ephemeral runs. | Inspected |
+| Required atomic `deleteOwnedRun(lease)` in both journals. | Shared conformance checks owner deletion, stale takeover rejection with exact error fields, and recreation tombstones. | Focused pass |
+| Owned backend deletion uses only the required journal method. | Adversarial renewal/takeover regression and source audit; administrative reset retains unconditional deletion. | Focused pass |
+| Public custom-journal docs and existing Added entry describe the new method. | API reference, SDK guide and workflow changelog updated without released-section changes. | Inspected |
+| Detached original and returned values. | Shared conformance mutates headers, payloads, append result, read, keyed read and list results, then rereads. | Pass for both journals and caller-owned connection |
+| Closed journals reject every operation and started iterators, with idempotent close. | Shared conformance including a caller-owned SQLite wrapper; caller connection remains usable afterward. | Focused pass |
+| Failed CAS, stale lease, invalid text and owned deletion leave state unchanged. | Shared conformance compares history, status, next sequence and successor data. | Focused pass |
 
 ## Deferred observations
 

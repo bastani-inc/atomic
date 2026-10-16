@@ -75,7 +75,9 @@ export type DurableInactiveDeleteResult =
 export interface DurableWorkflowBackend {
 	/** Whether state survives the current process. */
 	readonly persistent: boolean;
-	workflowOwnership(workflowId: string): "local" | "foreign" | "available";
+	workflowOwnership(
+		workflowId: string,
+	): "local" | "foreign" | "available" | Promise<"local" | "foreign" | "available">;
 	persistSummary?(workflowId: string, summary: string, summarizedThrough: number): Promise<boolean>;
 	/** Register or update a workflow's top-level metadata. */
 	registerWorkflow(handle: WorkflowRegistrationInput): void | Promise<void>;

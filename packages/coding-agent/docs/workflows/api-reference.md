@@ -1375,6 +1375,8 @@ type JournalOption = { path: string } | { database: DatabaseSync } | { memory: t
 - `{ memory: true }` explicitly selects `MemoryRunJournal`. Records last only for the process and cannot recover runs after exit.
 - A `RunJournal` instance is used as supplied. `SqliteRunJournal`, `MemoryRunJournal`, journal error classes, and `registerRunJournalConformance` are exported from `@bastani/atomic/workflows`.
 
+Custom `RunJournal` implementations must provide `deleteOwnedRun(lease): Promise<void>`. It atomically deletes a run only while the lease's `runId`, `holderId`, and `epoch` still match; otherwise it rejects with `StaleLeaseError` and preserves the run and its events. Deletion keeps the last epoch so an old lease cannot delete or write a recreated run. `deleteRun(runId)` is an unconditional administrative operation, not an execution-owned deletion. Use `registerRunJournalConformance` to check an adapter, including ownership fencing, detached values, failure atomicity, and rejection after close. `close()` is idempotent.
+
 Precedence is `RunOpts.journal`, non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, `workflows.journal.path` or `workflows.journal.memory`, then the default `~/.atomic/workflows/journal.sqlite`. Relative settings paths resolve against the Atomic home directory. Storage failures reject the call; Atomic never selects memory as a recovery step. Keep the same journal and working directory when resuming stored runs.
 
 ```ts

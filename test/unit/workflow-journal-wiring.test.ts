@@ -108,6 +108,7 @@ test("async-only custom journal delays workflow completion until its checkpoint 
 		},
 		read: (runId, fromSeq) => memory.read(runId, fromSeq),
 		readKey: (runId, key) => memory.readKey(runId, key),
+		deleteOwnedRun: (lease) => memory.deleteOwnedRun(lease),
 		deleteRun: (runId) => memory.deleteRun(runId),
 		close: () => memory.close(),
 	};

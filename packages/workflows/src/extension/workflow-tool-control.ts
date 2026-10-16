@@ -51,7 +51,7 @@ export interface WorkflowControlActionDeps {
 	beforeResume?: (runId: string) => Promise<void>;
 	owner?: WorkflowOwnerResources;
 	/** Model-tool boundary only; slash/internal callers retain their explicit exception. */
-	authorize?: (runId: string) => void;
+	authorize?: (runId: string) => void | Promise<void>;
 }
 
 export type WorkflowForeignRunGuard = Pick<WorkflowControlActionDeps, "getRuntime" | "authorize">;
@@ -78,7 +78,7 @@ async function foreignRunFailure(
 		code: "owned_elsewhere",
 	});
 	try {
-		guard.authorize?.(runId);
+		await guard.authorize?.(runId);
 	} catch (error) {
 		if (error instanceof WorkflowInstanceOwnershipError) return foreign(error.message);
 		throw error;
@@ -427,7 +427,7 @@ async function resumeDurableShadow(
 		warning = formatWorkflowResourceLoadWarning(error);
 	}
 	deps.signal?.throwIfAborted();
-	deps.authorize?.(runId);
+	await deps.authorize?.(runId);
 	const resumed = await runtime.resumeDurableWorkflow(runId, {
 		policy: deps.policy,
 		actor: "agent",
@@ -453,7 +453,7 @@ async function resumePreparedDurableTarget(
 	>,
 	budget?: WorkflowToolArgs["budget"],
 ): Promise<WorkflowToolResult> {
-	deps.authorize?.(runId);
+	await deps.authorize?.(runId);
 	try {
 		deps.signal?.throwIfAborted();
 		const resumed = await deps.getRuntime().resumeDurableWorkflow(runId, {
@@ -535,7 +535,7 @@ async function resolveExplicitDurableTarget(
 		return { action: "resume", runId: target, status: "noop", message: resolved.message, code: "run_not_found" };
 	}
 	if (resolved.kind === "durable" || resolved.kind === "live" || resolved.kind === "completed")
-		deps.authorize?.(resolved.workflowId);
+		await deps.authorize?.(resolved.workflowId);
 	if (resolved.kind === "durable") {
 		const refusal = refuseStageScopedDurableResume(resolved.workflowId, args);
 		if (refusal !== undefined) return refusal;
@@ -554,7 +554,7 @@ async function resolveExplicitDurableTarget(
 		};
 	}
 	const durableHandle = getDurableBackend().getWorkflow(target);
-	if (durableHandle !== undefined) deps.authorize?.(target);
+	if (durableHandle !== undefined) await deps.authorize?.(target);
 	const isZeroProgressCandidate =
 		durableHandle !== undefined &&
 		(durableHandle.status === "paused" || durableHandle.status === "running") &&
@@ -619,7 +619,7 @@ export async function workflowResumeAction(
 		}
 		return { action: "resume", runId: target.target, status: "noop", message: target.message, code: "run_not_found" };
 	}
-	deps.authorize?.(target.runId);
+	await deps.authorize?.(target.runId);
 	// Any exact id or unique prefix has been normalized to the canonical full id,
 	// so it cannot disagree with the resolved run; the old re-resolution branch
 	// here is unreachable.
