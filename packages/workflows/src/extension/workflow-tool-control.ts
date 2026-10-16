@@ -12,6 +12,7 @@ import {
 } from "../runs/background/workflow-lifecycle-aggregate.js";
 import { isFullRunId, isRunIdPrefix } from "../shared/run-id.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
+import type { Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowExecutionPolicy, WorkflowToolNodeIdentity } from "../shared/types.js";
 import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
@@ -354,12 +355,14 @@ export async function workflowPauseAction(
 			const paused = results.filter((result) => result.ok).length;
 			const failedRuns = bulkFailedRuns(results);
 			if (failedRuns.length > 0) {
-				const failedRunIds = new Set(
-					results.filter((result) => !result.ok && result.reason === "pause_failed").map((result) => result.runId),
+				const failedControlRunIds = new Set(
+					results
+						.filter((result) => !result.ok && result.reason === "pause_failed")
+						.flatMap((result) => expandedControlRunIds(store, result.runId)),
 				);
 				const retained = retainedPauseMessage(
 					store,
-					pauseTargets.filter((pauseTarget) => failedRunIds.has(pauseTarget.runId)),
+					pauseTargets.filter((pauseTarget) => failedControlRunIds.has(pauseTarget.runId)),
 				);
 				return {
 					action,

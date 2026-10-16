@@ -306,6 +306,74 @@ describe("non-attachable tool interactions", () => {
 		},
 	);
 
+	test("bulk pause reports a retained nested child pause under its parent run (#3671)", async () => {
+		const parentId = testRunId("pause-nested-parent");
+		const childId = testRunId("pause-nested-child");
+		store.recordRunStart({
+			id: parentId,
+			name: "nested parent",
+			inputs: {},
+			status: "running",
+			startedAt: 1,
+			toolNodes: [],
+			stages: [
+				{
+					id: "boundary",
+					name: "boundary",
+					status: "running",
+					parentIds: [],
+					toolEvents: [],
+					workflowChildRun: { alias: "child", workflow: "nested child", runId: childId },
+				},
+			],
+		});
+		store.recordRunStart({
+			id: childId,
+			name: "nested child",
+			inputs: {},
+			status: "running",
+			startedAt: 2,
+			toolNodes: [],
+			parentRunId: parentId,
+			parentStageId: "boundary",
+			rootRunId: parentId,
+			stages: [{ id: "target", name: "target", status: "running", parentIds: [], toolEvents: [] }],
+		});
+		const child = store.runs().find((candidate) => candidate.id === childId)!;
+		const error = new Error("child durable capture unavailable");
+		stageControlRegistry.register(
+			createStageControlHandle({
+				runId: childId,
+				stageId: "target",
+				name: "target",
+				stageSnapshot: child.stages[0],
+				activeStore: store,
+				state: { liveHandleReleased: false, readinessController: new AbortController() },
+				innerCtx: { subscribe: () => () => {}, __requestPause: async () => {} },
+				scheduler: {
+					ensureReleaseBarrier: () => {},
+					releaseStageBarrier: () => {},
+					hasCascadePauseOwners: () => false,
+					cascadePauseFrom: async () => {},
+				},
+				throwIfStageMutationBlocked() {},
+				releaseLiveHandle: async () => {},
+				captureStageSessionMeta: async () => {
+					throw error;
+				},
+			}),
+		);
+
+		const result = await workflowPauseAction({ action: "pause", all: true });
+
+		assert.equal(child.stages[0].status, "paused");
+		assert.equal(result.status, "partial", result.message);
+		assert.equal(result.code, undefined);
+		assert.match(result.message, new RegExp(`${childId}/target`));
+		assert.match(result.message, /pause.*remain.*effect/i);
+		assert.ok(result.failedRuns?.some((failed) => failed.runId === parentId));
+	});
+
 	test.each([false, true])(
 		"whole-run pause separates retained holds from a later failure, SDK refused: %s (#3671)",
 		async (refused) => {
