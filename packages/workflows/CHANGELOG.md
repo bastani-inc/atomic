@@ -31,6 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Journal run summaries and status validation now use the serialized `StatusChanged` payload, including transformations by `toJSON`, so recorded events and summaries agree. Ownership inspection now honors the journal clock even when the process clock is skewed.
 - Fixed workflow error cards hiding text-only failures as `no result`. Errors without structured details now show their text and an error indication in collapsed and expanded cards ([#3669](https://github.com/bastani-inc/atomic/issues/3669)).
 - Fixed failed workflow resumes reporting partial progress solely because a sibling was already running. Requests with no acknowledged effect now report no change and retain their failure code ([#3670](https://github.com/bastani-inc/atomic/issues/3670)).
+- Fixed workflow pause reporting `noop` after a stage pause took effect but durable capture failed, including whole-run and bulk requests. The result now reports `partial`, explains that the pause remains in effect, and preserves the failure code and message ([#3671](https://github.com/bastani-inc/atomic/issues/3671)).
 
 ## [0.9.38-alpha.5] - 2026-10-16
 
