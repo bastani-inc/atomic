@@ -1,7 +1,7 @@
 import type { Component, Focusable } from "@earendil-works/pi-tui";
 import type { AgentSessionEvent, CompactionReason } from "../../../core/agent-session.js";
 import { repairOrphanToolResults } from "../../../core/messages.ts";
-import { SessionManager } from "../../../core/session-manager.ts";
+import { loadEntriesFromFile, SessionManager } from "../../../core/session-manager.ts";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { getOwnerTaskStore, type OwnerTaskStore, watchOwnerTaskStoreBinding } from "../../../core/tasks/owner-store.js";
 import {
@@ -141,17 +141,23 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		if (this.state.liveChat.hydrateStreamingAssistantMessage(message)) this.state.requestRender?.();
 	}
 
-	loadSessionFile(sessionFile: string | undefined): void {
-		if (this.state.transcript.length > 0 || sessionFile === undefined) return;
+	loadSessionFile(sessionFile: string | undefined): boolean {
+		if (this.state.transcript.length > 0 || sessionFile === undefined) return true;
 		let messages: readonly AgentSnapshotMessage[];
 		try {
-			messages = repairOrphanToolResults(SessionManager.open(sessionFile).buildSessionContext().messages, {
-				repairTrailing: true,
-			}) as readonly AgentSnapshotMessage[];
+			const entries = loadEntriesFromFile(sessionFile);
+			if (entries.length === 0) return false;
+			messages = repairOrphanToolResults(
+				SessionManager.inMemory(undefined, undefined, entries).buildSessionContext().messages,
+				{
+					repairTrailing: true,
+				},
+			) as readonly AgentSnapshotMessage[];
 		} catch {
-			return;
+			return false;
 		}
 		this.state.liveChat.appendMessages(messages);
+		return true;
 	}
 
 	appendExtraEntry(entry: TExtraEntry): void {

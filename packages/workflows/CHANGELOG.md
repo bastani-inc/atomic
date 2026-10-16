@@ -26,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Fixed workflow fallback leaking the original stage session when an intervening candidate fails to initialize. The original session is now disposed exactly once after it becomes idle when a successor is adopted, or during final cleanup if no successor is created ([#3655](https://github.com/bastani-inc/atomic/issues/3655)).
+- Fixed retained stage history load failures appearing as empty archives. Missing, unreadable, malformed, empty, or deleted session files now show an actionable session-unavailable warning without creating a blank session or discarding displayed messages ([#3658](https://github.com/bastani-inc/atomic/issues/3658)).
 
 ## [0.9.38-alpha.1] - 2026-10-15
 

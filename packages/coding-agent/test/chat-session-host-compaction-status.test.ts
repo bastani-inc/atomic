@@ -12,6 +12,8 @@ import type {
 	ChatSessionHostStyle,
 } from "../src/modes/interactive/components/chat-session-host-types.ts";
 
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
+
 const identity = (text: string): string => text;
 
 const style: ChatSessionHostStyle = {
@@ -86,6 +88,21 @@ describe("chat session compaction status", () => {
 
 		expect(rendered).toContain("Compacting context... (ctrl+c Cancel)");
 	});
+});
+
+test("preserves displayed messages when retained history loading is skipped (#3658)", () => {
+	initTheme("dark");
+	const host = makeHost();
+	try {
+		host.appendMessages([{ role: "user", content: "Already displayed", timestamp: 1 }]);
+		const entries = [...host.entries()];
+		assert.equal(host.loadSessionFile(undefined), true);
+		assert.equal(host.loadSessionFile("/missing/retained-session.jsonl"), true);
+		assert.deepEqual(host.entries(), entries);
+		assert.match(host.renderBody(80, 20).join("\n"), /Already displayed/);
+	} finally {
+		host.dispose();
+	}
 });
 
 test("rehydrates reason-specific labels for every compaction reason", () => {
