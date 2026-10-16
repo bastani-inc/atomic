@@ -41,7 +41,7 @@ for (const decision of [undefined, false, true] as const) {
 		const registry = createRegistry().register(def);
 		const id = testRunId("cross-project-source");
 		await run(def, {}, { runId: id, durableBackend: backend, store: createStore(), cwd: "/source-project" });
-		await backend.setWorkflowStatus(id, "paused", 0, true);
+		await backend.commitWorkflowStatus(id, "paused", 0, true);
 		const original = structuredClone(backend.getWorkflow(id));
 		let prompted = false;
 		const result = await resumeDurableWorkflow(id, {
@@ -90,7 +90,7 @@ test("same-project resume retains its identity without prompting (#3577)", async
 	});
 	const id = testRunId("same-project");
 	await run(def, {}, { runId: id, durableBackend: backend, cwd: process.cwd(), store: createStore() });
-	await backend.setWorkflowStatus(id, "paused", 0, true);
+	await backend.commitWorkflowStatus(id, "paused", 0, true);
 	const result = await resumeDurableWorkflow(id, {
 		registry: createRegistry().register(def),
 		durableBackend: backend,
@@ -145,7 +145,7 @@ test("cross-project fork replays nested stage and tool checkpoints without chang
 		},
 	};
 	await run(def, {}, { runId: id, durableBackend: backend, cwd: "/source-project", store: createStore(), adapters });
-	await backend.setWorkflowStatus(id, "paused", 0, true);
+	await backend.commitWorkflowStatus(id, "paused", 0, true);
 	const original = structuredClone(backend.listCheckpoints(id));
 	assert.equal(calls, 2);
 	const result = await resumeDurableWorkflow(id, {
@@ -193,7 +193,7 @@ test("forked stage conversations copy history without sharing the source session
 		await writeFileEnsuringDir(sourcePath, history);
 		const backend = await createMemoryTestBackend();
 		const id = testRunId("stage-session-source");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: id,
 			name: "history",
 			inputs: { items: ["source"] },
@@ -201,7 +201,7 @@ test("forked stage conversations copy history without sharing the source session
 			createdAt: 1,
 			invocationCwd: sourceCwd,
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: id,
 			checkpointId: "stage",
@@ -219,7 +219,7 @@ test("forked stage conversations copy history without sharing the source session
 			completedAt: 1,
 		});
 		const originalCheckpoint = backend.listCheckpoints(id)[0];
-		await backend.recordCheckpoint({ ...originalCheckpoint, checkpointId: "second-stage" });
+		await backend.commitCheckpoint({ ...originalCheckpoint, checkpointId: "second-stage" });
 		const sessionStore = await JsonlSessionStore.open(root, { exactDirectory: true });
 		const forkSession = vi.spyOn(sessionStore, "create");
 		let forkId: string;
@@ -273,7 +273,7 @@ test("cross-project forks read the source project store and write the selected d
 		await source.appendMessage({ role: "user", content: "Source conversation", timestamp: 1 });
 		const backend = await createMemoryTestBackend();
 		const sourceId = testRunId("separate-stores");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: sourceId,
 			name: "history",
 			inputs: {},
@@ -281,7 +281,7 @@ test("cross-project forks read the source project store and write the selected d
 			createdAt: 1,
 			invocationCwd: sourceCwd,
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: sourceId,
 			checkpointId: "saved",
@@ -359,9 +359,15 @@ test("cross-project fork retries an interrupted tool frontier and replays earlie
 test("interrupted cross-project checkpoint copies never become resumable (#3577)", async () => {
 	const backend = await createMemoryTestBackend();
 	const sourceId = testRunId("interrupted-copy");
-	await backend.registerWorkflow({ workflowId: sourceId, name: "copy", inputs: {}, status: "paused", createdAt: 1 });
+	await backend.commitWorkflowRegistration({
+		workflowId: sourceId,
+		name: "copy",
+		inputs: {},
+		status: "paused",
+		createdAt: 1,
+	});
 	for (const name of ["first", "second"]) {
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "tool",
 			workflowId: sourceId,
 			checkpointId: name,
@@ -371,9 +377,9 @@ test("interrupted cross-project checkpoint copies never become resumable (#3577)
 			completedAt: 1,
 		});
 	}
-	const original = backend.recordCheckpointAsync.bind(backend);
+	const original = backend.commitCheckpoint.bind(backend);
 	let incompleteId: string | undefined;
-	const copy = vi.spyOn(backend, "recordCheckpointAsync").mockImplementation(async (checkpoint) => {
+	const copy = vi.spyOn(backend, "commitCheckpoint").mockImplementation(async (checkpoint) => {
 		incompleteId = checkpoint.workflowId;
 		assert.ok(!backend.listResumableWorkflows().some((entry) => entry.workflowId === incompleteId));
 		if (checkpoint.kind === "tool" && checkpoint.name === "second") throw new Error("copy interrupted");
@@ -408,7 +414,13 @@ test("forked sticky messages reach stages under the fork root (#3577)", async ()
 		stages: [],
 		startedAt: 1,
 	});
-	await backend.registerWorkflow({ workflowId: sourceId, name: "sticky", inputs: {}, status: "paused", createdAt: 1 });
+	await backend.commitWorkflowRegistration({
+		workflowId: sourceId,
+		name: "sticky",
+		inputs: {},
+		status: "paused",
+		createdAt: 1,
+	});
 	const target = `workflow:${sourceId}/review-*`;
 	await sourceStore.queueStickyStageMessage(
 		{

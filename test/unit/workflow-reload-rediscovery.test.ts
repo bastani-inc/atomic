@@ -529,7 +529,7 @@ describe("workflow reload rediscovery matrix", () => {
 			}),
 		});
 		const durableBackend = await createMemoryTestBackend();
-		await durableBackend.registerWorkflow({
+		await durableBackend.commitWorkflowRegistration({
 			workflowId: testRunId("durable-reload-retained"),
 			name: "reload-inflight",
 			inputs: { message: "resume" },

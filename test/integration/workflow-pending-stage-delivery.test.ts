@@ -619,7 +619,7 @@ test("the real two-session route owner is hidden and rejects ordinary messages w
 				},
 			],
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "recipient-flow",
 			inputs: {},
@@ -976,7 +976,7 @@ test("ctx.ui run prompts and synthetic prompt stages are hidden and broker-refus
 			toolNodes: [],
 			stages: [promptStage, customStage, restoredStage, agentStage],
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: rootId,
 			name: "prompt-root",
 			inputs: {},
@@ -1410,7 +1410,7 @@ test.each(["tool", "prompt"] as const)(
 					}
 				: {}),
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "ambiguity",
 			inputs: {},
@@ -1526,7 +1526,7 @@ test("live agent aliases survive same-name tools when pending capability disappe
 			completions.push(completion);
 		});
 		store.recordRunStart(snapshot(true));
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "alias-transitions",
 			inputs: {},
@@ -1807,7 +1807,7 @@ test.each([
 		};
 		try {
 			store.recordRunStart(snapshot(false));
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: runId,
 				name: "reactivation",
 				inputs: {},
@@ -1976,7 +1976,13 @@ test("nested known tools are broker-refused through every supported boundary and
 				},
 			],
 		});
-		await backend.registerWorkflow({ workflowId: rootId, name: "root", inputs: {}, status: "running", createdAt: 1 });
+		await backend.commitWorkflowRegistration({
+			workflowId: rootId,
+			name: "root",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		disposeBridge = registerPendingStageIntercomBridge(owner.pi as never, store);
 		await Promise.all(routeCompletions);
 		await sender.register("nested-purpose-sender", group);
@@ -2156,7 +2162,7 @@ test("materialized ctx.tool IDs and names never become speculative future-agent 
 				},
 			],
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "tool-node-flow",
 			inputs: {},
@@ -2274,7 +2280,7 @@ test("the production owner route respects pending delivery tool restrictions", a
 		const group = `workflow:${scenario.runId}`;
 		const store = createStore();
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: scenario.runId,
 			name: scenario.name,
 			inputs: {},
@@ -2352,7 +2358,7 @@ test("an invocation controls pending and live delivery into an owned isolated st
 	const isolatedGroup = `${workflowGroup}/isolated-reviewers`;
 	const store = createStore();
 	const backend = await createMemoryTestBackend();
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: runId,
 		name: "isolated-live",
 		inputs: {},
@@ -2602,7 +2608,13 @@ test("one composite workflow-stage target transitions atomically from durable qu
 			],
 			startedAt: 1,
 		});
-		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.commitWorkflowRegistration({
+			workflowId: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		await owner.waitForEventCompletion("atomic:workflow-pending-stage-route");
 		await sender.start();
 
@@ -2861,7 +2873,13 @@ test("route-neutral store churn preserves durable queueing and live delivery for
 
 	try {
 		await owner.start();
-		await backend.registerWorkflow({ workflowId: runId, name: "burst", inputs: {}, status: "running", createdAt: 1 });
+		await backend.commitWorkflowRegistration({
+			workflowId: runId,
+			name: "burst",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		store.recordRunStart({
 			id: runId,
 			name: "burst",
@@ -2955,7 +2973,7 @@ test("a durable pending admission survives a real stage-session fallback attempt
 	const attemptSessionIds = ["2717-reviewer-attempt-1", "2717-reviewer-attempt-2"] as const;
 	const store = createStore();
 	const backend = await createMemoryTestBackend();
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: RUN_ID,
 		name: "attempt-restart",
 		inputs: {},
@@ -3182,7 +3200,7 @@ test("an identical durable delivered retry is acknowledged as delivered through 
 	const group = `workflow:${runId}`;
 	const message = { id: "durable-delivered-retry", timestamp: 1_787_860_000_001, content: { text: "exactly once" } };
 	const writer = await JournalTestBackend.create();
-	await writer.registerWorkflow({
+	await writer.commitWorkflowRegistration({
 		workflowId: runId,
 		name: "delivered-retry",
 		inputs: {},
@@ -3295,7 +3313,7 @@ test("a drained message ID is revalidated by its durable owner after a broker re
 	const target = `workflow:${runId}/reviewer`;
 	const messageId = "drained-live-conflict";
 	const writer = await JournalTestBackend.create();
-	await writer.registerWorkflow({
+	await writer.commitWorkflowRegistration({
 		workflowId: runId,
 		name: "live-conflict",
 		inputs: {},
@@ -3597,7 +3615,7 @@ test("raw malformed messages are rejected before durable mutation and valid opti
 	const group = `workflow:${runId}`;
 	const target = `workflow:${runId}/reviewer`;
 	const writer = await JournalTestBackend.create();
-	await writer.registerWorkflow({
+	await writer.commitWorkflowRegistration({
 		workflowId: runId,
 		name: "wire-validation",
 		inputs: {},
@@ -3743,7 +3761,7 @@ test("an ordinary queued send receives one correlated failure when its stage bec
 			],
 			startedAt: 1,
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "undeliverable",
 			inputs: {},
@@ -3821,7 +3839,7 @@ test("the workflow owner session receives its own undeliverable notice when it i
 			],
 			startedAt: 1,
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "self-notice",
 			inputs: {},
@@ -3875,7 +3893,7 @@ test("a reconnected logical sender receives its durable undeliverable notice aft
 		workflowStageName: "nested-planner",
 	};
 	const writer = await JournalTestBackend.create();
-	await writer.registerWorkflow({
+	await writer.commitWorkflowRegistration({
 		workflowId: runId,
 		name: "sender-reconnect",
 		inputs: {},
@@ -4115,7 +4133,13 @@ test("a sticky pattern preludes every materializing iteration and ** broadcasts 
 			],
 			startedAt: 1,
 		});
-		await backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
+		await backend.commitWorkflowRegistration({
+			workflowId: RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
 		await owner.waitForEventCompletion("atomic:workflow-pending-stage-route");
 		await sender.start();
 		raw = new RawBrokerClient();
@@ -4379,7 +4403,7 @@ for (const scenario of ["startup replacement", "durable acknowledgment replay"] 
 		try {
 			await owner.start();
 			await sender.start();
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: RUN_ID,
 				name: "issue-3406",
 				inputs: {},
@@ -4449,7 +4473,7 @@ test("retired real startup context cannot acknowledge a dropped sticky message (
 			],
 			startedAt: 1,
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: RUN_ID,
 			name: "retired-startup",
 			inputs: {},

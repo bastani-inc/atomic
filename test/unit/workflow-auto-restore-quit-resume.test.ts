@@ -29,7 +29,7 @@ async function seedRestoredShadow(
 	status: Extract<DurableWorkflowStatus, "paused" | "running">,
 ): Promise<void> {
 	backend.workflowOwnership = async () => "available";
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId,
 		name: "restored-workflow",
 		inputs: {},
@@ -37,7 +37,7 @@ async function seedRestoredShadow(
 		status,
 		resumable: true,
 	});
-	await backend.recordCheckpoint({
+	await backend.commitCheckpoint({
 		kind: "tool",
 		workflowId,
 		checkpointId: `tool:${workflowId}`,
@@ -66,7 +66,7 @@ async function seedDurableOnly(
 	workflowId: string,
 	withProgress = true,
 ): Promise<void> {
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId,
 		name: "restored-workflow",
 		inputs: {},
@@ -75,7 +75,7 @@ async function seedDurableOnly(
 		resumable: true,
 	});
 	if (!withProgress) return;
-	await backend.recordCheckpoint({
+	await backend.commitCheckpoint({
 		kind: "tool",
 		workflowId,
 		checkpointId: `tool:${workflowId}`,
@@ -91,7 +91,7 @@ async function seedZeroProgressRestoredOrphan(
 	workflowId: string,
 	status: Extract<DurableWorkflowStatus, "paused" | "running">,
 ): Promise<void> {
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId,
 		name: "restored-workflow",
 		inputs: {},
@@ -464,7 +464,7 @@ describe("gracefully quit durable workflow session restore", () => {
 	] as const)("durable %s snapshot is not a resume shadow while a live %s exists", async (durableStatus, liveKind) => {
 		const workflowId = testRunId(`live-${durableStatus}-${liveKind}`);
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId,
 			name: "restored-workflow",
 			inputs: {},

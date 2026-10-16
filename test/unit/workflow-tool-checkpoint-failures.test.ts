@@ -12,9 +12,9 @@ describe("tool checkpoint failures", () => {
 	test("journal best-effort storage rejection leaves checkpoints unchanged and permits a later write", async () => {
 		async function createRejectAdditiveBackend(...args: Parameters<typeof JournalTestBackend.create>) {
 			const backend = Object.assign(await JournalTestBackend.create(...args), { rejectWrite: false });
-			const baserecordCheckpointAsync = backend.recordCheckpointAsync.bind(backend);
+			const baserecordCheckpointAsync = backend.commitCheckpoint.bind(backend);
 			return Object.assign(backend, {
-				async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+				async commitCheckpoint(checkpoint: DurableCheckpoint): Promise<void> {
 					if (backend.rejectWrite)
 						throw new StorageUnavailableError(
 							{ adapter: "node-sqlite", location: backend.databasePath },
@@ -25,7 +25,7 @@ describe("tool checkpoint failures", () => {
 			});
 		}
 		const backend = await createRejectAdditiveBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "journal-best-effort",
 			name: "journal",
 			inputs: {},
@@ -43,10 +43,10 @@ describe("tool checkpoint failures", () => {
 			topology: { version: 1, nodeId: "tool:tool", ordinal: 1, order: 1, parentIds: [], endedAt: 2 },
 		};
 		backend.rejectWrite = true;
-		assert.equal(await backend.recordAdditiveCheckpointBestEffort(checkpoint), false);
+		assert.equal(await backend.commitAdditiveCheckpointBestEffort(checkpoint), false);
 		assert.equal(backend.getToolCheckpoint("journal-best-effort", "tool-hash"), undefined);
 		backend.rejectWrite = false;
-		assert.equal(await backend.recordAdditiveCheckpointBestEffort(checkpoint), true);
+		assert.equal(await backend.commitAdditiveCheckpointBestEffort(checkpoint), true);
 		assert.equal(backend.getToolCheckpoint("journal-best-effort", "tool-hash")?.output, "cached");
 		const reopened = await backend.reopen();
 		assert.equal(reopened.getToolCheckpoint("journal-best-effort", "tool-hash")?.output, "cached");
@@ -55,9 +55,9 @@ describe("tool checkpoint failures", () => {
 	test("authoritative fresh checkpoint failures still fail the run", async () => {
 		async function createRejectAuthoritativeBackend() {
 			const backend = Object.assign(await createMemoryTestBackend(), {});
-			const baserecordCheckpointAsync = backend.recordCheckpointAsync.bind(backend);
+			const baserecordCheckpointAsync = backend.commitCheckpoint.bind(backend);
 			return Object.assign(backend, {
-				async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+				async commitCheckpoint(checkpoint: DurableCheckpoint): Promise<void> {
 					if (checkpoint.kind === "tool")
 						throw new StorageUnavailableError(
 							{ adapter: "node-sqlite", location: "authoritative write rejected" },

@@ -187,7 +187,7 @@ describe("workflow lazy-startup continuation fixes", () => {
 				completedCheckpoints: 1,
 				invocationCwd: root,
 			};
-			await backend.registerWorkflow(handle);
+			await backend.commitWorkflowRegistration(handle);
 			const { handlers } = registerFactory({
 				refreshWorkflowResources: async () => [{ path: workflowPath, enabled: true }],
 			});
@@ -203,7 +203,7 @@ describe("workflow lazy-startup continuation fixes", () => {
 						notify: () => undefined,
 						confirm: async () => {
 							prompts += 1;
-							await backend.registerWorkflow({ ...handle, invocationCwd: join(root, "elsewhere") });
+							await backend.commitWorkflowRegistration({ ...handle, invocationCwd: join(root, "elsewhere") });
 							changedHandle = backend.getWorkflow(runId);
 							return true;
 						},
@@ -239,7 +239,7 @@ describe("workflow lazy-startup continuation fixes", () => {
 					process.chdir(projectA);
 					const backend = getDurableBackend();
 					const runId = testRunId(`startup-project-${mode}-${ownership}`);
-					await backend.registerWorkflow({
+					await backend.commitWorkflowRegistration({
 						workflowId: runId,
 						name: "shared",
 						inputs: {},
@@ -250,7 +250,7 @@ describe("workflow lazy-startup continuation fixes", () => {
 						...(ownership === "legacy" ? {} : { invocationCwd: projectA }),
 						...(ownership === "agent" ? { origin: "agent", modelOwner: "previous-session" } : {}),
 					});
-					await backend.recordCheckpoint({
+					await backend.commitCheckpoint({
 						kind: "tool",
 						workflowId: runId,
 						checkpointId: "saved-progress",
@@ -328,13 +328,13 @@ describe("workflow lazy-startup continuation fixes", () => {
 		test(`session_start agent recovery ${scenario} preserves ownership fencing (#3468)`, async () => {
 			async function createClaimBackend() {
 				const backend = Object.assign(await createMemoryTestBackend(), {});
-				const basetransitionWorkflowStatus = backend.transitionWorkflowStatus.bind(backend);
+				const basetransitionWorkflowStatus = backend.commitWorkflowStatusTransition.bind(backend);
 				return Object.assign(backend, {
 					workflowOwnership(): "foreign" | "available" {
 						return scenario === "unknown-owner" ? "foreign" : "available";
 					},
-					async transitionWorkflowStatus(
-						...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>
+					async commitWorkflowStatusTransition(
+						...args: Parameters<InMemoryDurableBackend["commitWorkflowStatusTransition"]>
 					): Promise<boolean> {
 						if (scenario === "concurrent-claim" && args[6] !== undefined) {
 							const [id, expected, status, prompts, resumable, updatedAt] = args;
@@ -375,7 +375,7 @@ export default workflow({
 				);
 				process.chdir(root);
 				const runId = testRunId(`startup-owner-${scenario}`);
-				await backend.registerWorkflow({
+				await backend.commitWorkflowRegistration({
 					workflowId: runId,
 					name: "startup-owner",
 					inputs: {},
@@ -446,7 +446,7 @@ export default workflow({
 				await writePromptWorkflowFixture(workflowPath, "startup-generations");
 				process.chdir(root);
 				const runId = testRunId("startup-generations");
-				await getDurableBackend().registerWorkflow({
+				await getDurableBackend().commitWorkflowRegistration({
 					workflowId: runId,
 					name: "startup-generations",
 					inputs: {},
@@ -559,7 +559,7 @@ export default workflow({
 				process.chdir(root);
 				const runId = testRunId("startup-policy");
 				const backend = getDurableBackend();
-				await backend.registerWorkflow({
+				await backend.commitWorkflowRegistration({
 					workflowId: runId,
 					name: "startup-workflow",
 					inputs: {},
@@ -621,7 +621,7 @@ export default workflow({
 			process.chdir(root);
 			const backend = getDurableBackend();
 			const runId = testRunId("startup-nonblocking-ask");
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: runId,
 				name: "shared",
 				inputs: {},
@@ -680,7 +680,7 @@ export default workflow({
 			process.chdir(root);
 			const backend = getDurableBackend();
 			const runId = testRunId("startup-default-never");
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: runId,
 				name: "shared",
 				inputs: {},
@@ -730,7 +730,7 @@ export default workflow({
 			process.chdir(root);
 			const backend = getDurableBackend();
 			const runId = testRunId("startup-retired-ask");
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: runId,
 				name: "shared",
 				inputs: {},
@@ -789,7 +789,7 @@ export default workflow({
 					? "foreign"
 					: "available";
 			for (const status of ["paused", "failed", "blocked", "running"] as const) {
-				await backend.registerWorkflow({
+				await backend.commitWorkflowRegistration({
 					workflowId: testRunId(`startup-excluded-${status}`),
 					name: "excluded",
 					inputs: {},
@@ -800,7 +800,7 @@ export default workflow({
 					invocationCwd: root,
 				});
 			}
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: testRunId("startup-awaiting-input"),
 				name: "excluded",
 				inputs: {},
@@ -810,7 +810,7 @@ export default workflow({
 				pendingPrompts: 1,
 				invocationCwd: root,
 			});
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: testRunId("startup-live-quiet-owner"),
 				name: "excluded",
 				inputs: {},
@@ -873,7 +873,7 @@ export default workflow({
 				mkdirSync(workflowConfigDir(root), { recursive: true });
 				writeFileSync(join(workflowConfigDir(root), "config.json"), JSON.stringify({ resumeInFlight: mode }));
 				process.chdir(root);
-				await backend.registerWorkflow({
+				await backend.commitWorkflowRegistration({
 					workflowId: testRunId("presentation-startup"),
 					name: "presentation-startup",
 					inputs: {},
@@ -1190,7 +1190,7 @@ export default workflow({
 				error: "boom",
 			});
 			store.recordRunEnd(sourceRunId, "failed", undefined, "boom", { resumable: true, failedStageId: "retry-old" });
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: sourceRunId,
 				name: "slash-resume-lazy",
 				inputs: {},
@@ -1251,7 +1251,7 @@ export default workflow({
 		});
 		store.recordRunEnd(sourceRunId, "failed", undefined, "boom", { resumable: true, failedStageId: "retry-old" });
 		// #3106: resume requires the original durable instance, not a snapshot-only fork.
-		await getDurableBackend().registerWorkflow({
+		await getDurableBackend().commitWorkflowRegistration({
 			workflowId: sourceRunId,
 			name: def.name,
 			inputs: {},

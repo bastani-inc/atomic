@@ -139,7 +139,7 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 		);
 	}
 
-	registerWorkflow(_handle: WorkflowRegistrationInput): void {
+	async commitWorkflowRegistration(_handle: WorkflowRegistrationInput): Promise<void> {
 		// Child runs are not independently resumable; only the root is registered.
 	}
 
@@ -151,19 +151,12 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 		return this.inner.persistPendingStageMessages(this.scope.rootWorkflowId, messages, logicalRunId);
 	}
 
-	recordCheckpoint(checkpoint: DurableCheckpoint): void | Promise<void> {
-		return this.inner.recordCheckpoint(this.remap(checkpoint));
+	async commitCheckpoint(checkpoint: DurableCheckpoint, options?: { readonly signal?: AbortSignal }): Promise<void> {
+		await this.inner.commitCheckpoint(this.remap(checkpoint), options);
 	}
 
-	async recordCheckpointAsync(
-		checkpoint: DurableCheckpoint,
-		options?: { readonly signal?: AbortSignal },
-	): Promise<void> {
-		await this.inner.recordCheckpointAsync(this.remap(checkpoint), options);
-	}
-
-	async recordAdditiveCheckpointBestEffort(checkpoint: DurableCheckpoint): Promise<boolean> {
-		return await this.inner.recordAdditiveCheckpointBestEffort(this.remap(checkpoint));
+	async commitAdditiveCheckpointBestEffort(checkpoint: DurableCheckpoint): Promise<boolean> {
+		return await this.inner.commitAdditiveCheckpointBestEffort(this.remap(checkpoint));
 	}
 
 	workflowOwnership(_workflowId: string): ReturnType<DurableWorkflowBackend["workflowOwnership"]> {
@@ -218,16 +211,16 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 		return undefined;
 	}
 
-	setWorkflowStatus(
+	async commitWorkflowStatus(
 		_workflowId: string,
 		_status: DurableWorkflowStatus,
 		_pendingPrompts?: number,
 		_resumable?: boolean,
-	): void {
+	): Promise<void> {
 		// No-op: child status is reflected via the root workflow boundary.
 	}
 
-	async transitionWorkflowStatus(
+	async commitWorkflowStatusTransition(
 		_workflowId: string,
 		_expectedStatuses: readonly DurableWorkflowStatus[],
 		_status: DurableWorkflowStatus,
@@ -237,8 +230,8 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 		return false;
 	}
 
-	adjustPendingPrompts(_workflowId: string, delta: number): void | Promise<void> {
-		return this.inner.adjustPendingPrompts(this.scope.rootWorkflowId, delta);
+	commitPendingPromptAdjustment(_workflowId: string, delta: number): Promise<void> {
+		return this.inner.commitPendingPromptAdjustment(this.scope.rootWorkflowId, delta);
 	}
 
 	promptReservationScope(_workflowId: string): { readonly rootWorkflowId: string; readonly scope: string } {
@@ -295,7 +288,7 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 		return false;
 	}
 
-	reset(): void {
+	async commitReset(): Promise<void> {
 		// No-op: scoped backends never own root state.
 	}
 

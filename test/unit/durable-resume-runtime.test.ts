@@ -144,7 +144,7 @@ describe("resumeDurableWorkflow", () => {
 	// #3106: a failed resume attempt must not delete state belonging to the instance.
 	test("paused resume startup failure preserves the original snapshot and notices", async () => {
 		const workflowId = testRunId("paused-resume-startup-failure");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId,
 			name: "resumable-pipeline",
 			inputs: { topic: "data" },
@@ -207,7 +207,7 @@ describe("resumeDurableWorkflow", () => {
 		}
 		const exactBackend = await createExactOnlyLoadableBackend();
 		const fullId = testRunId("wf-prefix-current");
-		await exactBackend.registerWorkflow({
+		await exactBackend.commitWorkflowRegistration({
 			workflowId: fullId,
 			name: "resumable-pipeline",
 			inputs: { topic: "data" },
@@ -226,7 +226,7 @@ describe("resumeDurableWorkflow", () => {
 	test("rejects a shared prefix while full workflow ids remain independently addressable", async () => {
 		const firstId = testRunId("ambiguous-first");
 		const secondId = `${firstId.slice(0, 8)}-${testRunId("ambiguous-second").slice(9)}`;
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: firstId,
 			name: "resumable-pipeline",
 			inputs: { topic: "a" },
@@ -234,7 +234,7 @@ describe("resumeDurableWorkflow", () => {
 			status: "paused",
 			completedCheckpoints: 1,
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: secondId,
 			name: "resumable-pipeline",
 			inputs: { topic: "b" },
@@ -259,7 +259,7 @@ describe("resumeDurableWorkflow", () => {
 
 	test("returns not_resumable when status is completed", async () => {
 		const workflowId = testRunId("wf-done-1");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId,
 			name: "resumable-pipeline",
 			inputs: { topic: "a" },
@@ -276,7 +276,7 @@ describe("resumeDurableWorkflow", () => {
 
 	test("rejects when authoritative backend state is ineligible despite stale catalog progress", async () => {
 		const workflowId = testRunId("wf-zero-progress");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId,
 			name: "resumable-pipeline",
 			inputs: { topic: "data" },
@@ -294,7 +294,7 @@ describe("resumeDurableWorkflow", () => {
 
 	test("returns workflow_not_found when definition is missing", async () => {
 		const workflowId = testRunId("wf-ghost-1");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId,
 			name: "missing-workflow",
 			inputs: {},
@@ -317,7 +317,7 @@ describe("resumeDurableWorkflow", () => {
 			outputs: { wrong: Type.Boolean() },
 			run: async () => ({ wrong: true }),
 		}) as unknown as WorkflowDefinition;
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId,
 			name: definition.name,
 			inputs: { topic: "fresh" },
@@ -365,7 +365,7 @@ describe("resumeDurableWorkflow", () => {
 				return { done: true };
 			},
 		}) as unknown as WorkflowDefinition;
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId,
 			name: "resumable-pipeline",
 			inputs: { topic: "data" },
@@ -387,7 +387,7 @@ describe("resumeDurableWorkflow", () => {
 
 	test("returns invalid_inputs when cached inputs fail schema validation", async () => {
 		const workflowId = testRunId("wf-bad-in-1");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId,
 			name: "resumable-pipeline",
 			inputs: {},
@@ -402,7 +402,7 @@ describe("resumeDurableWorkflow", () => {
 
 	test("successfully re-dispatches with the ORIGINAL workflow id", async () => {
 		const workflowId = testRunId("wf-resume-target");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId,
 			name: "resumable-pipeline",
 			inputs: { topic: "data" },
@@ -421,7 +421,7 @@ describe("resumeDurableWorkflow", () => {
 	});
 	test("includes the full workflow id in a successful resume message", async () => {
 		const workflowId = "d4e5f6a1-77b2-4c31-9e0a-2f1c8b4d6e5f";
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId,
 			name: "resumable-pipeline",
 			inputs: { topic: "data" },
@@ -436,7 +436,7 @@ describe("resumeDurableWorkflow", () => {
 
 	test("resume succeeds when the backend has durable checkpoint state for the workflow", async () => {
 		const workflowId = testRunId("wf-has-state");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId,
 			name: "resumable-pipeline",
 			inputs: { topic: "data" },
@@ -452,7 +452,7 @@ describe("resumeDurableWorkflow", () => {
 
 	test("resume refuses only when a running handle has an active live run in this session", async () => {
 		const workflowId = testRunId("wf-active");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId,
 			name: "resumable-pipeline",
 			inputs: { topic: "data" },
@@ -466,7 +466,7 @@ describe("resumeDurableWorkflow", () => {
 		assert.equal(result.ok, true);
 
 		// With an active live run in this session, resume is refused.
-		await backend.setWorkflowStatus(workflowId, "running");
+		await backend.commitWorkflowStatus(workflowId, "running");
 		store.recordRunStart({
 			id: workflowId,
 			name: "resumable-pipeline",
@@ -491,7 +491,7 @@ describe("resumeDurableWorkflow", () => {
 	test("running and paused workflows are both resumable at the catalog level", async () => {
 		const runningId = testRunId("wf-running");
 		const pausedId = testRunId("wf-paused");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runningId,
 			name: "resumable-pipeline",
 			inputs: {},
@@ -499,7 +499,7 @@ describe("resumeDurableWorkflow", () => {
 			status: "running",
 			completedCheckpoints: 1,
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: pausedId,
 			name: "resumable-pipeline",
 			inputs: {},
@@ -514,7 +514,7 @@ describe("resumeDurableWorkflow", () => {
 
 	test("resume removes stale quit store shadow before reusing workflow id", async () => {
 		const workflowId = testRunId("wf-shadow");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId,
 			name: "resumable-pipeline",
 			inputs: { topic: "data" },
@@ -543,7 +543,7 @@ describe("resumeDurableWorkflow", () => {
 
 	test("successful resume result includes runId for overlay connection (issue #1498)", async () => {
 		const workflowId = testRunId("wf-overlay-connect");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId,
 			name: "resumable-pipeline",
 			inputs: { topic: "overlay" },
@@ -566,7 +566,7 @@ describe("resumeDurableWorkflow", () => {
 			return Object.assign(backend, {
 				async hydrateResumableWorkflows(): Promise<void> {
 					backend.hydrated = true;
-					await backend.registerWorkflow({
+					await backend.commitWorkflowRegistration({
 						workflowId: testRunId("wf-hydrated"),
 						name: "resumable-pipeline",
 						inputs: { topic: "data" },
@@ -601,7 +601,7 @@ describe("durable pending-stage resume", () => {
 		const replayKey = "stage:receiver:1";
 		const receiverStageId = "receiver-before-process-exit";
 		const writer = await JournalTestBackend.create();
-		await writer.registerWorkflow({
+		await writer.commitWorkflowRegistration({
 			workflowId,
 			name: "pending-stage-process-resume",
 			inputs: {},
@@ -652,7 +652,7 @@ describe("durable pending-stage resume", () => {
 			writer,
 		);
 		assert.equal(queued?.ok, true);
-		await writer.recordCheckpoint({
+		await writer.commitCheckpoint({
 			kind: "stage",
 			workflowId,
 			checkpointId: "stage:stage:sender:1",
@@ -670,7 +670,7 @@ describe("durable pending-stage resume", () => {
 				run: { runId: workflowId, runName: "pending-stage-process-resume" },
 			},
 		});
-		await writer.setWorkflowStatus(workflowId, "paused", 0, true);
+		await writer.commitWorkflowStatus(workflowId, "paused", 0, true);
 		assert.equal(writer.getWorkflow(workflowId)?.pendingStageMessages?.[0]?.id, messageId);
 
 		// Process boundary: no Store, backend mirror, runtime, or extension object survives.

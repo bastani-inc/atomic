@@ -387,9 +387,9 @@ describe("ctx.tool persistence and cancellation races", () => {
 	test("writer rejection after callback success fails node and root without a completed checkpoint", async () => {
 		async function createRejectingBackend() {
 			const backend = Object.assign(await createMemoryTestBackend(), {});
-			const baserecordCheckpointAsync = backend.recordCheckpointAsync.bind(backend);
+			const baserecordCheckpointAsync = backend.commitCheckpoint.bind(backend);
 			return Object.assign(backend, {
-				async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+				async commitCheckpoint(checkpoint: DurableCheckpoint): Promise<void> {
 					if (checkpoint.kind === "tool")
 						throw new StorageUnavailableError(
 							{ adapter: "node-sqlite", location: "durable writer rejected" },
@@ -436,9 +436,9 @@ describe("ctx.tool persistence and cancellation races", () => {
 				writeStarted: Promise.withResolvers<void>(),
 				releaseWrite: Promise.withResolvers<void>(),
 			});
-			const baserecordCheckpointAsync = backend.recordCheckpointAsync.bind(backend);
+			const baserecordCheckpointAsync = backend.commitCheckpoint.bind(backend);
 			return Object.assign(backend, {
-				async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+				async commitCheckpoint(checkpoint: DurableCheckpoint): Promise<void> {
 					if (checkpoint.kind === "tool") {
 						backend.writeStarted.resolve();
 						await backend.releaseWrite.promise;
@@ -481,9 +481,9 @@ describe("ctx.tool persistence and cancellation races", () => {
 				writeStarted: Promise.withResolvers<void>(),
 				releaseWrite: Promise.withResolvers<void>(),
 			});
-			const baserecordCheckpointAsync = backend.recordCheckpointAsync.bind(backend);
+			const baserecordCheckpointAsync = backend.commitCheckpoint.bind(backend);
 			return Object.assign(backend, {
-				async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+				async commitCheckpoint(checkpoint: DurableCheckpoint): Promise<void> {
 					if (checkpoint.kind === "tool") {
 						backend.writeStarted.resolve();
 						await backend.releaseWrite.promise;

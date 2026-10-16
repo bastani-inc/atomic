@@ -118,7 +118,7 @@ describe("completed workflow inspection", () => {
 				promptCalls.push(text);
 			},
 		};
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: testRunId("completed-inspection"),
 			name: "completed-flow",
 			inputs: { topic: "done" },
@@ -126,7 +126,7 @@ describe("completed workflow inspection", () => {
 			updatedAt: 3,
 			status: "completed",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("completed-inspection"),
 			checkpointId: "stage:1",
@@ -205,7 +205,7 @@ describe("completed workflow inspection", () => {
 		const workflowId = testRunId("full-workflow-id");
 		const backend = await createMemoryTestBackend();
 		const store = createStore();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId,
 			name: "completed-flow",
 			inputs: {},
@@ -213,7 +213,7 @@ describe("completed workflow inspection", () => {
 			updatedAt: 3,
 			status: "completed",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId,
 			checkpointId: "stage:1",
@@ -233,14 +233,14 @@ describe("completed workflow inspection", () => {
 		const backend = await createMemoryTestBackend();
 		const store = createStore();
 		const sessionFile = retainedSession(testRunId("same-id"));
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: testRunId("same-id"),
 			name: "completed-flow",
 			inputs: {},
 			createdAt: 1,
 			status: "completed",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("same-id"),
 			checkpointId: "stage:1",
@@ -271,14 +271,14 @@ describe("completed workflow inspection", () => {
 		const backend = await createMemoryTestBackend();
 		const store = createStore();
 		const sessionFile = retainedSession(testRunId("authoritative"));
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: testRunId("authoritative"),
 			name: "durable-name",
 			inputs: {},
 			createdAt: 1,
 			status: "completed",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("authoritative"),
 			checkpointId: "stage:1",
@@ -317,14 +317,14 @@ describe("completed workflow inspection", () => {
 		const registry = createStageControlRegistry();
 		const firstSessionFile = retainedSession("first-authoritative");
 		const secondSessionFile = retainedSession("second-authoritative");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: testRunId("refresh-chat"),
 			name: "completed-flow",
 			inputs: {},
 			createdAt: 1,
 			status: "completed",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("refresh-chat"),
 			checkpointId: "stage:1",
@@ -352,7 +352,7 @@ describe("completed workflow inspection", () => {
 		assert.equal((await openCompletedDurableWorkflow(testRunId("refresh-chat"), deps)).ok, true);
 		const firstHandle = registry.get(testRunId("refresh-chat"), "final-source");
 		assert.equal(firstHandle?.sessionFile, firstSessionFile);
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("refresh-chat"),
 			checkpointId: "stage:2",
@@ -377,14 +377,14 @@ describe("completed workflow inspection", () => {
 		const registry = createStageControlRegistry();
 		const invalidatedSessionFile = retainedSession("invalidated-stage");
 		const retainedSessionFile = retainedSession("still-retained-stage");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: testRunId("invalidate-chat"),
 			name: "completed-flow",
 			inputs: {},
 			createdAt: 1,
 			status: "completed",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("invalidate-chat"),
 			checkpointId: "stage:1",
@@ -395,7 +395,7 @@ describe("completed workflow inspection", () => {
 			completedAt: 2,
 			topology: completedTopology("first-source", 0),
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("invalidate-chat"),
 			checkpointId: "stage:2",
@@ -435,14 +435,14 @@ describe("completed workflow inspection", () => {
 		const store = createStore();
 		const internalSessionFile = retainedSession(testRunId("internal-completed"), true);
 		retainedSession("regular-history");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: testRunId("internal-completed"),
 			name: "completed-flow",
 			inputs: {},
 			createdAt: 1,
 			status: "completed",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("internal-completed"),
 			checkpointId: "stage:1",
@@ -469,14 +469,14 @@ describe("completed workflow inspection", () => {
 		const backend = await createMemoryTestBackend();
 		const store = createStore();
 		const registry = createStageControlRegistry();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: testRunId("completed-tool-only"),
 			name: "tool-only",
 			inputs: {},
 			createdAt: 1,
 			status: "completed",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			topology: { version: 1, nodeId: `tool:${"publish-hash"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: testRunId("completed-tool-only"),
@@ -517,7 +517,7 @@ describe("completed workflow inspection", () => {
 		const lifecycle = lifecycleRestoration(store);
 		const runId = testRunId("silent-nested-root");
 		const childRunId = testRunId("silent-nested-child");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "nested root",
 			inputs: {},
@@ -525,7 +525,7 @@ describe("completed workflow inspection", () => {
 			updatedAt: 4,
 			status: "completed",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: runId,
 			checkpointId: "boundary",
@@ -540,7 +540,7 @@ describe("completed workflow inspection", () => {
 				run: { runId, runName: "nested root" },
 			},
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "tool",
 			workflowId: runId,
 			checkpointId: "child-tool",
@@ -596,7 +596,7 @@ describe("completed workflow inspection", () => {
 				sent.push({ message, options });
 			},
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: testRunId("silent-tool-only"),
 			name: "silent tool",
 			inputs: {},
@@ -604,7 +604,7 @@ describe("completed workflow inspection", () => {
 			updatedAt: 3,
 			status: "completed",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			topology: { version: 1, nodeId: `tool:${"publish-hash"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: testRunId("silent-tool-only"),
@@ -657,7 +657,7 @@ describe("completed workflow inspection", () => {
 		});
 		store.recordRunEnd(testRunId("live-then-inspect"), "completed", {});
 		assert.equal(sent.length, 1);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: testRunId("live-then-inspect"),
 			name: "live tool",
 			inputs: {},
@@ -665,7 +665,7 @@ describe("completed workflow inspection", () => {
 			updatedAt: 3,
 			status: "completed",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			topology: { version: 1, nodeId: `tool:${"done-hash"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: testRunId("live-then-inspect"),

@@ -51,7 +51,7 @@ function seedBlockedRun() {
 }
 
 async function registerBlockedDurable(backend: InMemoryDurableBackend, completedCheckpoints = 1) {
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: runId,
 		name: "claim-flow",
 		inputs: {},
@@ -64,9 +64,11 @@ async function registerBlockedDurable(backend: InMemoryDurableBackend, completed
 
 async function createFailingInvocationMetadataBackend() {
 	const backend = Object.assign(await createMemoryTestBackend(), {});
-	const baseregisterWorkflow = backend.registerWorkflow.bind(backend);
+	const baseregisterWorkflow = backend.commitWorkflowRegistration.bind(backend);
 	return Object.assign(backend, {
-		async registerWorkflow(handle: Parameters<InMemoryDurableBackend["registerWorkflow"]>[0]): Promise<void> {
+		async commitWorkflowRegistration(
+			handle: Parameters<InMemoryDurableBackend["commitWorkflowRegistration"]>[0],
+		): Promise<void> {
 			if (handle.invocationCwd !== undefined) {
 				throw new Error("invocation metadata persistence failed");
 			}
@@ -290,9 +292,11 @@ describe("active-blocked resume claim", () => {
 		const release = Promise.withResolvers<void>();
 		async function createHeldAdmissionBackend() {
 			const backend = Object.assign(await createMemoryTestBackend(), {});
-			const basetransitionWorkflowStatus = backend.transitionWorkflowStatus.bind(backend);
+			const basetransitionWorkflowStatus = backend.commitWorkflowStatusTransition.bind(backend);
 			return Object.assign(backend, {
-				async transitionWorkflowStatus(...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>) {
+				async commitWorkflowStatusTransition(
+					...args: Parameters<InMemoryDurableBackend["commitWorkflowStatusTransition"]>
+				) {
 					entered.resolve();
 					await release.promise;
 					return basetransitionWorkflowStatus(...args);
@@ -320,7 +324,7 @@ describe("active-blocked resume claim", () => {
 		});
 		const pending = runtime.resumeFailedRun(runId);
 		await entered.promise;
-		await backend.setWorkflowStatus(runId, "cancelled", 0, false);
+		await backend.commitWorkflowStatus(runId, "cancelled", 0, false);
 		assert.equal(store.recordRunEnd(runId, "killed"), true);
 		release.resolve();
 		const result = await pending;
@@ -339,9 +343,11 @@ describe("active-blocked resume claim", () => {
 		const release = Promise.withResolvers<void>();
 		async function createHeldAdmissionBackend() {
 			const backend = Object.assign(await createMemoryTestBackend(), {});
-			const basetransitionWorkflowStatus = backend.transitionWorkflowStatus.bind(backend);
+			const basetransitionWorkflowStatus = backend.commitWorkflowStatusTransition.bind(backend);
 			return Object.assign(backend, {
-				async transitionWorkflowStatus(...args: Parameters<InMemoryDurableBackend["transitionWorkflowStatus"]>) {
+				async commitWorkflowStatusTransition(
+					...args: Parameters<InMemoryDurableBackend["commitWorkflowStatusTransition"]>
+				) {
 					entered.resolve();
 					await release.promise;
 					return basetransitionWorkflowStatus(...args);

@@ -98,7 +98,7 @@ describe("durable resume lifecycle notices", () => {
 	}
 
 	async function registerQuitWorkflow(workflowId: string, origin?: WorkflowActor): Promise<void> {
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId,
 			name: "resumable-pipeline",
 			inputs: { topic: "data" },

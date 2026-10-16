@@ -51,7 +51,7 @@ for (const storage of ["memory", "sqlite"] as const) {
 			try {
 				const writer = await JournalDurableBackend.open(contract, { ownsJournal: false });
 				backends.push(writer);
-				await writer.registerWorkflow({
+				await writer.commitWorkflowRegistration({
 					workflowId: "run",
 					name: "expiry",
 					inputs: {},
@@ -69,7 +69,7 @@ for (const storage of ["memory", "sqlite"] as const) {
 
 				vi.setSystemTime(initial.renewedAt + FOREIGN_LIVE_WORKFLOW_WINDOW_MS);
 				await assert.rejects(async () => {
-					await reader.setWorkflowStatus("run", "paused");
+					await reader.commitWorkflowStatus("run", "paused");
 				}, JournalOwnershipError);
 				assertLeaseStateUnchanged(await journal.leaseState("run"), initial);
 				assert.equal(await reader.workflowOwnership("run"), "foreign");
@@ -77,7 +77,7 @@ for (const storage of ["memory", "sqlite"] as const) {
 				vi.setSystemTime(initial.renewedAt + FOREIGN_LIVE_WORKFLOW_WINDOW_MS + 1);
 				assert.equal(await reader.workflowOwnership("run"), "available");
 				assertLeaseStateUnchanged(await journal.leaseState("run"), initial, "inspection must not change the lease");
-				await reader.setWorkflowStatus("run", "paused");
+				await reader.commitWorkflowStatus("run", "paused");
 				assert.equal(await reader.workflowOwnership("run"), "local");
 				assert.deepEqual(await journal.leaseState("run"), {
 					runId: "run",

@@ -34,7 +34,7 @@ test("nested post-mortem chat reopens in the durable root cwd while retaining ch
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const durableCwd = join(tempRoot, durableCwdField);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "root-run",
 			rootWorkflowId: "root-run",
 			name: "root-workflow",

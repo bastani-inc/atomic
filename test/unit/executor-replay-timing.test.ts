@@ -233,14 +233,14 @@ test("durable cached stages retain zero and partial legacy execution timing", as
 			for (const [index, key] of timingKeys.entries()) if (mask & (1 << index)) expected[key] = values[index];
 			const backend = await createMemoryTestBackend();
 			const runId = crypto.randomUUID();
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: runId,
 				name: "legacy-timing",
 				inputs: {},
 				createdAt: 1,
 				status: "running",
 			});
-			await backend.recordCheckpoint({
+			await backend.commitCheckpoint({
 				kind: "stage",
 				workflowId: runId,
 				checkpointId: "stage:stage:work:1",

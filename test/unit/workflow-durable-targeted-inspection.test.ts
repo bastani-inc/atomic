@@ -56,7 +56,7 @@ describe("targeted durable workflow inspection", () => {
 		const firstId = "2603abcd-1111-4222-8333-123456789abc";
 		const secondId = "2603abcd-9999-4222-8333-123456789abc";
 		const seed = async (workflowId: string) => {
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId,
 				name: workflowId,
 				inputs: {},
@@ -64,7 +64,7 @@ describe("targeted durable workflow inspection", () => {
 				status: "paused",
 				completedCheckpoints: 1,
 			});
-			await backend.recordCheckpoint({
+			await backend.commitCheckpoint({
 				topology: { version: 1, nodeId: `tool:${`proof:${workflowId}`}`, ordinal: 1, order: 1, parentIds: [] },
 				kind: "tool",
 				workflowId,
@@ -93,14 +93,14 @@ describe("targeted durable workflow inspection", () => {
 	test.each([ROOT_ID, ROOT_ID.slice(0, 8)])("reads a released journal root via %s without writes", async (target) => {
 		const writer = await JournalTestBackend.create();
 		const staleAt = Date.now() - FOREIGN_LIVE_WORKFLOW_WINDOW_MS - 1;
-		await writer.registerWorkflow({
+		await writer.commitWorkflowRegistration({
 			workflowId: ROOT_ID,
 			name: "paper-writer",
 			status: "running",
 			createdAt: staleAt,
 			inputs: { topic: "durability" },
 		});
-		await writer.recordCheckpoint({
+		await writer.commitCheckpoint({
 			kind: "stage",
 			workflowId: ROOT_ID,
 			checkpointId: "boundary-start:phase-6",
@@ -132,7 +132,7 @@ describe("targeted durable workflow inspection", () => {
 				},
 			},
 		});
-		await writer.recordCheckpoint({
+		await writer.commitCheckpoint({
 			kind: "stage",
 			workflowId: ROOT_ID,
 			checkpointId: "workflow:paper-writer-phase-6:1:stage-session:draft",
@@ -213,7 +213,7 @@ describe("targeted durable workflow inspection", () => {
 		const absentId = testRunId("targeted-absent");
 		const deletedId = testRunId("targeted-deleted");
 		const writer = await JournalTestBackend.create();
-		await writer.registerWorkflow({
+		await writer.commitWorkflowRegistration({
 			workflowId: deletedId,
 			name: "deleted",
 			inputs: {},
@@ -235,8 +235,14 @@ describe("targeted durable workflow inspection", () => {
 			[liveId, "running"],
 			[terminalId, "completed"],
 		] as const) {
-			await owner.registerWorkflow({ workflowId, name: workflowId, inputs: {}, createdAt: Date.now(), status });
-			await owner.recordCheckpoint({
+			await owner.commitWorkflowRegistration({
+				workflowId,
+				name: workflowId,
+				inputs: {},
+				createdAt: Date.now(),
+				status,
+			});
+			await owner.commitCheckpoint({
 				kind: "stage",
 				workflowId,
 				checkpointId: "stage:work",
@@ -252,7 +258,7 @@ describe("targeted durable workflow inspection", () => {
 					run: { runId: workflowId, runName: workflowId },
 				},
 			});
-			if (status === "completed") await owner.setWorkflowStatus(workflowId, status, 0, false);
+			if (status === "completed") await owner.commitWorkflowStatus(workflowId, status, 0, false);
 		}
 		const beforeInspection = await readJournalEntries(owner.journal, liveId);
 		const observer = await JournalTestBackend.create(owner.databasePath);
@@ -273,7 +279,7 @@ describe("targeted durable workflow inspection", () => {
 	test("fails closed for cyclic, orphaned, and nonreciprocal retained topology", async () => {
 		const cyclicId = testRunId("targeted-cyclic");
 		const cyclic = await createMemoryTestBackend();
-		await cyclic.registerWorkflow({
+		await cyclic.commitWorkflowRegistration({
 			workflowId: cyclicId,
 			name: "cyclic",
 			inputs: {},
@@ -284,7 +290,7 @@ describe("targeted durable workflow inspection", () => {
 			["left", "right"],
 			["right", "left"],
 		] as const) {
-			await cyclic.recordCheckpoint({
+			await cyclic.commitCheckpoint({
 				kind: "stage",
 				workflowId: cyclicId,
 				checkpointId: `stage-session:${stageId}`,
@@ -306,7 +312,7 @@ describe("targeted durable workflow inspection", () => {
 		const orphanRootId = testRunId("targeted-orphan-root");
 		const orphanRunId = testRunId("targeted-orphan-child");
 		const orphaned = await createMemoryTestBackend();
-		await orphaned.registerWorkflow({
+		await orphaned.commitWorkflowRegistration({
 			workflowId: orphanRootId,
 			name: "orphan-root",
 			inputs: {},
@@ -317,7 +323,7 @@ describe("targeted durable workflow inspection", () => {
 			[orphanRootId, undefined],
 			[orphanRunId, "missing-parent"],
 		] as const) {
-			await orphaned.recordCheckpoint({
+			await orphaned.commitCheckpoint({
 				kind: "stage",
 				workflowId: orphanRootId,
 				checkpointId: `stage-session:${runId}`,
@@ -345,14 +351,14 @@ describe("targeted durable workflow inspection", () => {
 		const rootId = testRunId("targeted-nonreciprocal-root");
 		const childId = testRunId("targeted-nonreciprocal-child");
 		const nonreciprocal = await createMemoryTestBackend();
-		await nonreciprocal.registerWorkflow({
+		await nonreciprocal.commitWorkflowRegistration({
 			workflowId: rootId,
 			name: "root",
 			inputs: {},
 			createdAt: 1,
 			status: "running",
 		});
-		await nonreciprocal.recordCheckpoint({
+		await nonreciprocal.commitCheckpoint({
 			kind: "stage",
 			workflowId: rootId,
 			checkpointId: "boundary-start",
@@ -383,7 +389,7 @@ describe("targeted durable workflow inspection", () => {
 				},
 			},
 		});
-		await nonreciprocal.recordCheckpoint({
+		await nonreciprocal.commitCheckpoint({
 			kind: "stage",
 			workflowId: rootId,
 			checkpointId: "child-session",
@@ -413,14 +419,14 @@ describe("targeted durable workflow inspection", () => {
 			const rootId = testRunId(`targeted-boundary-${suffix}`);
 			const childId = testRunId(`targeted-child-${suffix}`);
 			const backend = await createMemoryTestBackend();
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: rootId,
 				name: "root",
 				inputs: {},
 				createdAt: 1,
 				status: "running",
 			});
-			await backend.recordCheckpoint({
+			await backend.commitCheckpoint({
 				kind: "stage",
 				workflowId: rootId,
 				checkpointId: "boundary-start",
@@ -452,7 +458,7 @@ describe("targeted durable workflow inspection", () => {
 					},
 				},
 			});
-			await backend.recordCheckpoint({
+			await backend.commitCheckpoint({
 				kind: "stage",
 				workflowId: rootId,
 				checkpointId: "child-session",
@@ -485,7 +491,7 @@ describe("targeted durable workflow inspection", () => {
 	test("rejects cycles across stages and tools", async () => {
 		const toolCycleId = testRunId("targeted-tool-cycle");
 		const toolCycle = await createMemoryTestBackend();
-		await toolCycle.registerWorkflow({
+		await toolCycle.commitWorkflowRegistration({
 			workflowId: toolCycleId,
 			name: "tool-cycle",
 			inputs: {},
@@ -496,7 +502,7 @@ describe("targeted durable workflow inspection", () => {
 			["tool:left", "tool:right"],
 			["tool:right", "tool:left"],
 		] as const) {
-			await toolCycle.recordCheckpoint({
+			await toolCycle.commitCheckpoint({
 				kind: "tool",
 				workflowId: toolCycleId,
 				checkpointId: nodeId,
@@ -518,14 +524,14 @@ describe("targeted durable workflow inspection", () => {
 
 		const mixedId = testRunId("targeted-stage-tool-cycle");
 		const mixed = await createMemoryTestBackend();
-		await mixed.registerWorkflow({
+		await mixed.commitWorkflowRegistration({
 			workflowId: mixedId,
 			name: "mixed-cycle",
 			inputs: {},
 			createdAt: 1,
 			status: "running",
 		});
-		await mixed.recordCheckpoint({
+		await mixed.commitCheckpoint({
 			kind: "stage",
 			workflowId: mixedId,
 			checkpointId: "stage-session",
@@ -542,7 +548,7 @@ describe("targeted durable workflow inspection", () => {
 				run: { runId: mixedId, runName: "mixed-cycle" },
 			},
 		});
-		await mixed.recordCheckpoint({
+		await mixed.commitCheckpoint({
 			kind: "tool",
 			workflowId: mixedId,
 			checkpointId: "tool",
@@ -565,14 +571,14 @@ describe("targeted durable workflow inspection", () => {
 	test("rejects root ownership claims and conflicting tool run ownership", async () => {
 		const rootClaimId = testRunId("targeted-root-claim");
 		const rootClaim = await createMemoryTestBackend();
-		await rootClaim.registerWorkflow({
+		await rootClaim.commitWorkflowRegistration({
 			workflowId: rootClaimId,
 			name: "root-claim",
 			inputs: {},
 			createdAt: 1,
 			status: "running",
 		});
-		await rootClaim.recordCheckpoint({
+		await rootClaim.commitCheckpoint({
 			kind: "stage",
 			workflowId: rootClaimId,
 			checkpointId: "root-stage",
@@ -599,7 +605,7 @@ describe("targeted durable workflow inspection", () => {
 
 		const conflictId = testRunId("targeted-tool-owner-conflict");
 		const conflict = await createMemoryTestBackend();
-		await conflict.registerWorkflow({
+		await conflict.commitWorkflowRegistration({
 			workflowId: conflictId,
 			name: "owner-conflict",
 			inputs: {},
@@ -610,7 +616,7 @@ describe("targeted durable workflow inspection", () => {
 			["left", "owner-conflict"],
 			["right", "different-name"],
 		] as const) {
-			await conflict.recordCheckpoint({
+			await conflict.commitCheckpoint({
 				kind: "tool",
 				workflowId: conflictId,
 				checkpointId: nodeId,
@@ -628,7 +634,7 @@ describe("targeted durable workflow inspection", () => {
 		const makeTools = async (suffix: string, nodeIds: readonly string[]) => {
 			const runId = testRunId(`targeted-tool-ids-${suffix}`);
 			const backend = await createMemoryTestBackend();
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: runId,
 				name: "tool-ids",
 				inputs: {},
@@ -636,7 +642,7 @@ describe("targeted durable workflow inspection", () => {
 				status: "running",
 			});
 			for (const [index, nodeId] of nodeIds.entries()) {
-				await backend.recordCheckpoint({
+				await backend.commitCheckpoint({
 					kind: "tool",
 					workflowId: runId,
 					checkpointId: `tool-${index}`,
@@ -673,14 +679,14 @@ describe("targeted durable workflow inspection", () => {
 	test("keeps UI-only durable roots inspectable without fabricating graph nodes", async () => {
 		const runId = testRunId("targeted-ui-only");
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "ui-only",
 			inputs: {},
 			createdAt: 1,
 			status: "running",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "ui",
 			workflowId: runId,
 			checkpointId: "ui:confirm",
@@ -702,14 +708,14 @@ describe("targeted durable workflow inspection", () => {
 	test("returns deep-cloned durable runs that cannot mutate later inspection", async () => {
 		const runId = testRunId("targeted-clone-isolation");
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "clone-isolation",
 			inputs: { nested: { value: "original" } },
 			createdAt: 1,
 			status: "running",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "tool",
 			workflowId: runId,
 			checkpointId: "tool",
@@ -750,7 +756,7 @@ describe("targeted durable workflow inspection", () => {
 		vi.spyOn(Date, "now").mockImplementation(() => clock);
 		const workflowId = testRunId("targeted-process-loss-replay");
 		const crashedOwner = await JournalTestBackend.create();
-		await crashedOwner.registerWorkflow({
+		await crashedOwner.commitWorkflowRegistration({
 			workflowId,
 			name: "process-loss-replay",
 			inputs: {},
@@ -758,7 +764,7 @@ describe("targeted durable workflow inspection", () => {
 			status: "running",
 		});
 		const argsHash = durableHash({ name: "once", args: {}, ordinal: 1 });
-		await crashedOwner.recordCheckpoint({
+		await crashedOwner.commitCheckpoint({
 			kind: "tool",
 			workflowId,
 			checkpointId: `tool:${argsHash}`,
@@ -777,7 +783,7 @@ describe("targeted durable workflow inspection", () => {
 				run: { runId: workflowId, runName: "process-loss-replay" },
 			},
 		});
-		await crashedOwner.recordCheckpoint({
+		await crashedOwner.commitCheckpoint({
 			kind: "stage",
 			workflowId,
 			checkpointId: "stage-session:long",
@@ -872,14 +878,14 @@ describe("targeted durable workflow inspection", () => {
 		const workflowId = testRunId("targeted-slash-status");
 		const staleAt = Date.now() - FOREIGN_LIVE_WORKFLOW_WINDOW_MS - 1;
 		const writer = await JournalTestBackend.create();
-		await writer.registerWorkflow({
+		await writer.commitWorkflowRegistration({
 			workflowId,
 			name: "slash-crashed",
 			inputs: {},
 			status: "running",
 			createdAt: staleAt,
 		});
-		await writer.recordCheckpoint({
+		await writer.commitCheckpoint({
 			kind: "tool",
 			workflowId,
 			checkpointId: "tool:done",

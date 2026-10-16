@@ -129,14 +129,14 @@ test("state-aware retention prunes terminal history but keeps old resumable, qui
 	const quitId = "quit-old";
 	const blockedId = "blocked-old";
 	try {
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: terminalId,
 			name: terminalId,
 			inputs: {},
 			createdAt: 1,
 			status: "completed",
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: pausedId,
 			name: pausedId,
 			inputs: {},
@@ -145,7 +145,7 @@ test("state-aware retention prunes terminal history but keeps old resumable, qui
 			completedCheckpoints: 1,
 			resumable: true,
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: quitId,
 			name: quitId,
 			inputs: {},
@@ -165,7 +165,7 @@ test("state-aware retention prunes terminal history but keeps old resumable, qui
 			resumable: true,
 			exitReason: "quit",
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: blockedId,
 			name: blockedId,
 			inputs: {},
@@ -209,7 +209,7 @@ test("a stale failed run is pruned even though it remains resumable", async () =
 	const failedId = "failed-old";
 	const runningId = "running-old";
 	try {
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: failedId,
 			name: failedId,
 			inputs: {},
@@ -218,7 +218,7 @@ test("a stale failed run is pruned even though it remains resumable", async () =
 			completedCheckpoints: 1,
 			resumable: true,
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runningId,
 			name: runningId,
 			inputs: {},
@@ -252,7 +252,13 @@ test("terminal artifact pruning preserves the directory when durable deletion is
 	const runId = "terminal-refused";
 	setDurableBackend(backend);
 	try {
-		await backend.registerWorkflow({ workflowId: runId, name: runId, inputs: {}, createdAt: 1, status: "completed" });
+		await backend.commitWorkflowRegistration({
+			workflowId: runId,
+			name: runId,
+			inputs: {},
+			createdAt: 1,
+			status: "completed",
+		});
 		const directory = join(root, runId);
 		await mkdir(directory, { recursive: true });
 		const staleTime = new Date(now - WORKFLOW_ARTIFACT_RETENTION_MS - 1);
@@ -276,7 +282,7 @@ test("state-aware pruning never leaves a resumable durable entry without its art
 	setDurableBackend(backend);
 	const runId = "resumable-ordering";
 	try {
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: runId,
 			inputs: {},
@@ -314,7 +320,7 @@ test("a live continuation transitively protects the original artifact owner", as
 			[middleId, "failed"],
 			[continuationId, "running"],
 		] as const) {
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: id,
 				name: "goal",
 				inputs: {},
@@ -382,7 +388,7 @@ test("a live run mentioning an unrelated terminal artifact owner does not preven
 	setDurableBackend(backend);
 	try {
 		await withEnv({ [ENV_WORKFLOW_ARTIFACT_DIR]: root }, async () => {
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: terminalId,
 				name: "goal",
 				inputs: {},

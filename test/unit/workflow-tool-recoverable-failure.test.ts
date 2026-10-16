@@ -553,13 +553,13 @@ describe("ctx.tool recoverable failures", () => {
 		async function createRejectingBackend() {
 			const backend = Object.assign(await createMemoryTestBackend(), {});
 			return Object.assign(backend, {
-				async recordCheckpointAsync(_checkpoint: DurableCheckpoint): Promise<void> {
+				async commitCheckpoint(_checkpoint: DurableCheckpoint): Promise<void> {
 					throw new Error("checkpoint storage unavailable");
 				},
 			});
 		}
 		const backend = await createRejectingBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "recoverable-storage-failure",
 			name: "recoverable-storage-failure",
 			inputs: {},

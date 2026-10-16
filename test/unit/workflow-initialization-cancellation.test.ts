@@ -156,14 +156,14 @@ test("an aborted public resume never mutates after non-cancellable resource load
 	const backend = await createMemoryTestBackend();
 	setDurableBackend(backend);
 	const runId = crypto.randomUUID();
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: runId,
 		name: "resume-after-load",
 		inputs: {},
 		status: "paused",
 		createdAt: 1,
 	});
-	await backend.setWorkflowStatus(runId, "paused", 1, true);
+	await backend.commitWorkflowStatus(runId, "paused", 1, true);
 	const loading = Promise.withResolvers<void>();
 	let resumeCalls = 0;
 	const runtime = {
@@ -193,9 +193,9 @@ test("durable resume cancellation during its claim restores the source without l
 	const release = Promise.withResolvers<void>();
 	async function createDelayedClaim() {
 		const backend = Object.assign(await createMemoryTestBackend(), {});
-		const basetransitionWorkflowStatus = backend.transitionWorkflowStatus.bind(backend);
+		const basetransitionWorkflowStatus = backend.commitWorkflowStatusTransition.bind(backend);
 		return Object.assign(backend, {
-			async transitionWorkflowStatus(
+			async commitWorkflowStatusTransition(
 				id: string,
 				expected: readonly DurableWorkflowStatus[],
 				status: DurableWorkflowStatus,
@@ -223,14 +223,14 @@ test("durable resume cancellation during its claim restores the source without l
 		},
 	});
 	const runId = crypto.randomUUID();
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: runId,
 		name: definition.name,
 		inputs: {},
 		status: "paused",
 		createdAt: 1,
 	});
-	await backend.setWorkflowStatus(runId, "paused", 1, true);
+	await backend.commitWorkflowStatus(runId, "paused", 1, true);
 	const runtime = createExtensionRuntime({ registry: createRegistry([definition]), store, jobs });
 	const caller = new AbortController();
 	const reason = new Error("cancel durable resume");

@@ -70,7 +70,7 @@ export async function recordRunTimingCheckpointAsync(
 ): Promise<boolean> {
 	const checkpoints = [runTimingCheckpoint(backend, run, options), runUsageCheckpoint(backend, run, options?.now)];
 	if (checkpoints.every((checkpoint) => checkpoint === undefined)) return false;
-	for (const checkpoint of checkpoints) if (checkpoint !== undefined) await backend.recordCheckpointAsync(checkpoint);
+	for (const checkpoint of checkpoints) if (checkpoint !== undefined) await backend.commitCheckpoint(checkpoint);
 	return true;
 }
 

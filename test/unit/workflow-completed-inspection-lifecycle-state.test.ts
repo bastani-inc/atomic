@@ -29,7 +29,7 @@ async function seedCompletedTool(
 	runId: string,
 	name = "historical workflow",
 ): Promise<void> {
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: runId,
 		name,
 		inputs: {},
@@ -37,7 +37,7 @@ async function seedCompletedTool(
 		updatedAt: 3,
 		status: "completed",
 	});
-	await backend.recordCheckpoint({
+	await backend.commitCheckpoint({
 		topology: { version: 1, nodeId: `tool:${"done-hash"}`, ordinal: 1, order: 1, parentIds: [] },
 		kind: "tool",
 		workflowId: runId,

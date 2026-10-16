@@ -188,8 +188,20 @@ test("explicit journal selection reuses each identity without replacing other jo
 	const second = await initializeDurableBackend({ journal: secondChoice });
 	assert.equal(await initializeDurableBackend({ journal: firstChoice }), first);
 	assert.notEqual(second, first);
-	await first.registerWorkflow({ workflowId: "same", name: "first", inputs: {}, createdAt: 1, status: "paused" });
-	await second.registerWorkflow({ workflowId: "same", name: "second", inputs: {}, createdAt: 1, status: "paused" });
+	await first.commitWorkflowRegistration({
+		workflowId: "same",
+		name: "first",
+		inputs: {},
+		createdAt: 1,
+		status: "paused",
+	});
+	await second.commitWorkflowRegistration({
+		workflowId: "same",
+		name: "second",
+		inputs: {},
+		createdAt: 1,
+		status: "paused",
+	});
 	assert.equal(first.getWorkflow("same")?.name, "first");
 	assert.equal(second.getWorkflow("same")?.name, "second");
 	assert.ok(first instanceof JournalDurableBackend);
@@ -560,7 +572,7 @@ test("factory adapter selections isolate typed options and reuse equal values", 
 			assert.notEqual(backend, previous);
 			assert.equal(previous.getWorkflow(name), undefined);
 		}
-		await backend.registerWorkflow({ workflowId: name, name, inputs: {}, createdAt: 1, status: "paused" });
+		await backend.commitWorkflowRegistration({ workflowId: name, name, inputs: {}, createdAt: 1, status: "paused" });
 		backends.push(backend);
 		const repeatedValue = value instanceof Uint8Array ? value.slice() : value;
 		assert.equal(

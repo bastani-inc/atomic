@@ -70,7 +70,7 @@ for (const operation of ["inspection", "recovery"] as const) {
 		const writer = await JournalDurableBackend.open(journal, { ownsJournal: false });
 		let reader: Awaited<ReturnType<typeof JournalDurableBackend.open>> | undefined;
 		try {
-			await writer.registerWorkflow({
+			await writer.commitWorkflowRegistration({
 				workflowId: "run",
 				name: "recovery",
 				inputs: {},
@@ -94,7 +94,7 @@ for (const operation of ["inspection", "recovery"] as const) {
 				assert.ok(expired && expired.ageMs > initial.ageMs);
 				assert.equal(reader.getWorkflow("run")?.status, "running");
 			} else {
-				await reader.setWorkflowStatus("run", "paused");
+				await reader.commitWorkflowStatus("run", "paused");
 				const recovered = await sqlite.leaseState("run");
 				assert.equal(recovered?.epoch, crashed.lease.epoch + 1);
 				assert.equal(recovered?.holderId, reader.holderId);

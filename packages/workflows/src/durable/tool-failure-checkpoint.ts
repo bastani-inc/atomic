@@ -8,6 +8,7 @@ export interface ThrowingToolFailureCheckpointInput {
 	readonly workflowId: string;
 	readonly backend: DurableWorkflowBackend;
 	readonly nextCheckpointId: () => string;
+	readonly beforeCheckpoint?: () => void | Promise<void>;
 	readonly runTopology?: DurableStageRunTopology;
 }
 
@@ -27,9 +28,10 @@ export async function recordThrowingToolFailure(
 	attempts: number,
 	cancelled = false,
 ): Promise<{ readonly message: string; readonly failedAt: number }> {
+	await input.beforeCheckpoint?.();
 	const message = workflowToolFailure(error, attempts, false).error.message;
 	const failedAt = Date.now();
-	await input.backend.recordAdditiveCheckpointBestEffort({
+	await input.backend.commitAdditiveCheckpointBestEffort({
 		kind: "tool",
 		workflowId: input.workflowId,
 		checkpointId: `tool-failure:${identity.argsHash}:${input.nextCheckpointId()}`,

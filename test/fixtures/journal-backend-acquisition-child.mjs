@@ -14,7 +14,7 @@ assert.ok(path);
 const backend = await JournalDurableBackend.open(await openSqlRunJournal(path));
 try {
 	await backend.deleteWorkflow("run");
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: "run",
 		name: "replacement",
 		inputs: { identity: "replacement" },
@@ -23,7 +23,7 @@ try {
 		status: "running",
 	});
 	if (length === "longer") {
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "tool",
 			workflowId: "run",
 			checkpointId: "new",

@@ -56,7 +56,7 @@ const journal: RunJournal = {
 };
 const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
 try {
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: "run",
 		name: "delete-race",
 		inputs: {},

@@ -178,7 +178,7 @@ test("resume reopens the default SQLite journal without an injected backend", as
 	const result = await run(def, {}, { cwd: directory, store });
 	assert.equal(result.status, "completed", JSON.stringify(result));
 	const backend = defaultBackend(store);
-	await backend.setWorkflowStatus(result.runId, "paused", 0, true);
+	await backend.commitWorkflowStatus(result.runId, "paused", 0, true);
 	await backend.close();
 	setDurableBackend(undefined);
 	assert.equal(getDurableBackendProcessOwner().selectedBackends, undefined);
@@ -229,7 +229,7 @@ test("fresh /workflow resume opens the picker before loading saved journal runs 
 	const saved = await run(def, {}, { cwd: directory, store: previousStore });
 	assert.equal(saved.status, "completed", JSON.stringify(saved));
 	const previousBackend = defaultBackend(previousStore);
-	await previousBackend.setWorkflowStatus(saved.runId, "paused", 0, true);
+	await previousBackend.commitWorkflowStatus(saved.runId, "paused", 0, true);
 	await previousBackend.close();
 	setDurableBackend(undefined);
 

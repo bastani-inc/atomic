@@ -50,8 +50,14 @@ test("rejects a cached tool without topology instead of replaying or upgrading i
 	const backend = await createMemoryTestBackend();
 	const workflowId = "missing-topology";
 	const argsHash = durableHash({ name: "effect", args: {}, ordinal: 1 });
-	await backend.registerWorkflow({ workflowId, name: "missing-topology", inputs: {}, createdAt: 1, status: "paused" });
-	await backend.recordCheckpoint({
+	await backend.commitWorkflowRegistration({
+		workflowId,
+		name: "missing-topology",
+		inputs: {},
+		createdAt: 1,
+		status: "paused",
+	});
+	await backend.commitCheckpoint({
 		kind: "tool",
 		workflowId,
 		checkpointId: `tool:${argsHash}`,

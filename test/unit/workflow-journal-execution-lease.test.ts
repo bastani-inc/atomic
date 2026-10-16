@@ -75,9 +75,11 @@ async function createDeferredPauseBackend(journal: Parameters<typeof JournalDura
 		pauseWritten: Promise.withResolvers<void>(),
 		finishPause: Promise.withResolvers<void>(),
 	});
-	const basetransitionWorkflowStatus = backend.transitionWorkflowStatus.bind(backend);
+	const basetransitionWorkflowStatus = backend.commitWorkflowStatusTransition.bind(backend);
 	return Object.assign(backend, {
-		async transitionWorkflowStatus(...args: Parameters<JournalDurableBackend["transitionWorkflowStatus"]>) {
+		async commitWorkflowStatusTransition(
+			...args: Parameters<JournalDurableBackend["commitWorkflowStatusTransition"]>
+		) {
 			const result = await basetransitionWorkflowStatus(...args);
 			if (args[2] === "paused") {
 				backend.pauseWritten.resolve();
@@ -227,12 +229,12 @@ test("quit retires a cancelled tool's executor without waiting for caught-cancel
 	let bodySettled = false;
 	const verifyLateWrites = async (): Promise<void> => {
 		await assert.rejects(
-			async () => await backend.setWorkflowStatus(runId, "completed"),
+			async () => await backend.commitWorkflowStatus(runId, "completed"),
 			JournalExecutionRetiredError,
 		);
 		await assert.rejects(async () => await backend.releaseWorkflow(runId), JournalExecutionRetiredError);
 		await assert.rejects(
-			backend.withWorkflowLease(runId, async () => await backend.setWorkflowStatus(runId, "completed")),
+			backend.withWorkflowLease(runId, async () => await backend.commitWorkflowStatus(runId, "completed")),
 			JournalExecutionRetiredError,
 		);
 	};
@@ -410,7 +412,7 @@ test("completed detached runs release their lease for deletion without unlocking
 					if (error instanceof Error) completionError = error;
 					observerStarted.resolve();
 					await finishObserver.promise;
-					await backend.setWorkflowStatus("completed", "completed");
+					await backend.commitWorkflowStatus("completed", "completed");
 				},
 			},
 		);

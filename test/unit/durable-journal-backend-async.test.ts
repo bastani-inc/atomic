@@ -27,7 +27,13 @@ async function open() {
 	const journal = new MemoryRunJournal();
 	const backend = await JournalDurableBackend.open(journal);
 	backends.push(backend);
-	await backend.registerWorkflow({ workflowId: "run", name: "test", inputs: {}, createdAt: 1, status: "paused" });
+	await backend.commitWorkflowRegistration({
+		workflowId: "run",
+		name: "test",
+		inputs: {},
+		createdAt: 1,
+		status: "paused",
+	});
 	return { backend, journal };
 }
 function checkpoint(id = "one", workflowId = "run") {
@@ -49,7 +55,13 @@ afterEach(async () => {
 
 test("a status claim racing a checkpoint serializes one run without blocking another", async () => {
 	const { backend, journal } = await open();
-	await backend.registerWorkflow({ workflowId: "other", name: "test", inputs: {}, createdAt: 1, status: "running" });
+	await backend.commitWorkflowRegistration({
+		workflowId: "other",
+		name: "test",
+		inputs: {},
+		createdAt: 1,
+		status: "running",
+	});
 	const entered = gate();
 	const proceed = gate();
 	const append = journal.append.bind(journal);
@@ -62,11 +74,11 @@ test("a status claim racing a checkpoint serializes one run without blocking ano
 		events.push(`${lease.runId}:${event.type}`);
 		return append(lease, event, options);
 	};
-	const claim = backend.transitionWorkflowStatus("run", ["paused"], "running");
+	const claim = backend.commitWorkflowStatusTransition("run", ["paused"], "running");
 	await entered.promise;
-	const saved = backend.recordCheckpoint(checkpoint());
+	const saved = backend.commitCheckpoint(checkpoint());
 	try {
-		await backend.recordCheckpoint(checkpoint("independent", "other"));
+		await backend.commitCheckpoint(checkpoint("independent", "other"));
 		assert.equal(backend.getToolOutput("other", "independent"), "independent");
 		assert.equal(backend.getToolOutput("run", "one"), undefined);
 	} finally {
@@ -77,7 +89,7 @@ test("a status claim racing a checkpoint serializes one run without blocking ano
 	assert.equal(backend.getWorkflow("run")?.status, "running");
 	assert.equal(backend.getToolOutput("run", "one"), "one");
 	assert.deepEqual(events, ["other:CheckpointRecorded", "run:StatusChanged", "run:CheckpointRecorded"]);
-	assert.equal(await backend.transitionWorkflowStatus("run", ["paused"], "completed"), false);
+	assert.equal(await backend.commitWorkflowStatusTransition("run", ["paused"], "completed"), false);
 });
 
 test("owned appends fold their returned entry without rereading and duplicate keys cannot rewind the cursor", async () => {
@@ -95,15 +107,15 @@ test("owned appends fold their returned entry without rereading and duplicate ke
 		operations.push("append");
 		return append(...args);
 	};
-	await backend.recordCheckpoint(checkpoint());
+	await backend.commitCheckpoint(checkpoint());
 	assert.equal(operations.at(-1), "append");
-	await backend.recordCheckpoint(checkpoint("two"));
-	await backend.recordCheckpoint({ ...checkpoint(), output: "discarded" });
+	await backend.commitCheckpoint(checkpoint("two"));
+	await backend.commitCheckpoint({ ...checkpoint(), output: "discarded" });
 	assert.equal(backend.getToolOutput("run", "one"), "one");
 	assert.equal(backend.getToolOutput("run", "two"), "two");
 	assert.equal(backend.listCheckpoints("run").length, 2);
 	const beforeClaim = readCursors.length;
-	assert.equal(await backend.transitionWorkflowStatus("run", ["paused"], "running"), true);
+	assert.equal(await backend.commitWorkflowStatusTransition("run", ["paused"], "running"), true);
 	const claimCursors = readCursors.slice(beforeClaim);
 	assert.ok(claimCursors.length > 0);
 	assert.ok(claimCursors.every((cursor) => cursor >= 4));
@@ -138,14 +150,14 @@ test("close drains every accepted mutation before releasing and rejects new muta
 		operations.push("close");
 		await close();
 	};
-	const first = backend.recordCheckpoint(checkpoint());
+	const first = backend.commitCheckpoint(checkpoint());
 	await entered.promise;
-	const second = backend.recordCheckpoint(checkpoint("two"));
-	const third = backend.setWorkflowStatus("run", "completed");
+	const second = backend.commitCheckpoint(checkpoint("two"));
+	const third = backend.commitWorkflowStatus("run", "completed");
 	const closing = backend.close();
 	assert.equal(backend.close(), closing);
 	try {
-		await assert.rejects(backend.recordCheckpoint(checkpoint("late")), JournalBackendClosedError);
+		await assert.rejects(backend.commitCheckpoint(checkpoint("late")), JournalBackendClosedError);
 		assert.deepEqual(operations, []);
 	} finally {
 		proceed.resolve();
@@ -197,7 +209,7 @@ test("close drains an accepted reset while its catalog read is pending", async (
 		await proceed.promise;
 		return listRuns(...args);
 	};
-	const resetting = backend.reset();
+	const resetting = backend.commitReset();
 	await entered.promise;
 	const closing = backend.close();
 	proceed.resolve();
@@ -213,7 +225,7 @@ for (const storage of ["memory", "sqlite"] as const) {
 				storage === "memory" ? new MemoryRunJournal() : await openSqlRunJournal(join(directory, "journal.sqlite"));
 			const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
 			try {
-				await backend.registerWorkflow({
+				await backend.commitWorkflowRegistration({
 					workflowId: "run",
 					name: "test",
 					inputs: {},
@@ -222,15 +234,15 @@ for (const storage of ["memory", "sqlite"] as const) {
 				});
 				await backend.withWorkflowLease("run", async () => {
 					const retire = backend.captureWorkflowRetirement("run");
-					const resetting = backend.reset();
+					const resetting = backend.commitReset();
 					const retiring = retire();
 					const closing = closeDuringReset ? backend.close() : Promise.resolve();
 					await Promise.all([resetting, retiring, closing]);
 					if (!closeDuringReset) {
-						await assert.rejects(backend.reset(), JournalExecutionRetiredError);
-						await assert.rejects(backend.recordCheckpoint(checkpoint("late")), JournalExecutionRetiredError);
+						await assert.rejects(backend.commitReset(), JournalExecutionRetiredError);
+						await assert.rejects(backend.commitCheckpoint(checkpoint("late")), JournalExecutionRetiredError);
 					} else {
-						await assert.rejects(backend.reset(), JournalBackendClosedError);
+						await assert.rejects(backend.commitReset(), JournalBackendClosedError);
 					}
 				});
 				assert.equal(backend.getWorkflow("run"), undefined);
@@ -253,10 +265,16 @@ for (const storage of ["memory", "sqlite"] as const) {
 		const owner = await JournalDurableBackend.open(journal, { ownsJournal: false });
 		let observer: JournalDurableBackend | undefined;
 		try {
-			await owner.registerWorkflow({ workflowId: "run", name: "test", inputs: {}, createdAt: 1, status: "paused" });
+			await owner.commitWorkflowRegistration({
+				workflowId: "run",
+				name: "test",
+				inputs: {},
+				createdAt: 1,
+				status: "paused",
+			});
 			observer = await JournalDurableBackend.open(observerJournal, { ownsJournal: false });
 			const lease = await journal.leaseState("run");
-			await assert.rejects(observer.reset(), (error: Error) => {
+			await assert.rejects(observer.commitReset(), (error: Error) => {
 				assert.ok(error instanceof JournalOwnershipError);
 				assert.equal(error.runId, "run");
 				assert.equal(error.holderId, owner.holderId);
@@ -268,9 +286,9 @@ for (const storage of ["memory", "sqlite"] as const) {
 			assert.equal((await journal.leaseState("run"))?.epoch, lease?.epoch);
 			assert.equal((await journal.getRun("run"))?.status, "paused");
 			assert.equal(observer.getWorkflow("run")?.status, "paused");
-			await owner.recordCheckpoint(checkpoint());
+			await owner.commitCheckpoint(checkpoint());
 			assert.equal(owner.getToolOutput("run", "one"), "one");
-			await observer.registerWorkflow({
+			await observer.commitWorkflowRegistration({
 				workflowId: "other",
 				name: "test",
 				inputs: {},
@@ -278,7 +296,7 @@ for (const storage of ["memory", "sqlite"] as const) {
 				status: "paused",
 			});
 			await owner.releaseWorkflow("run");
-			await observer.reset();
+			await observer.commitReset();
 			assert.deepEqual(await observerJournal.listRuns(), []);
 			assert.equal(observer.getWorkflow("run"), undefined);
 			assert.equal(observer.getWorkflow("other"), undefined);
@@ -299,7 +317,7 @@ for (const storage of ["memory", "sqlite"] as const) {
 		const deleteOwnedRun = journal.deleteOwnedRun.bind(journal);
 		const failure = new Error("foreign driver failure");
 		try {
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: "run",
 				name: "test",
 				inputs: {},
@@ -309,7 +327,7 @@ for (const storage of ["memory", "sqlite"] as const) {
 			journal.deleteOwnedRun = async () => {
 				throw failure;
 			};
-			await assert.rejects(backend.reset(), (error: Error) => {
+			await assert.rejects(backend.commitReset(), (error: Error) => {
 				assert.ok(error instanceof StorageUnavailableError);
 				assert.equal(error.adapter, "custom");
 				assert.equal(error.location, "custom journal");
@@ -320,8 +338,8 @@ for (const storage of ["memory", "sqlite"] as const) {
 			assert.equal((await journal.getRun("run"))?.status, "paused");
 			assert.equal(backend.getWorkflow("run")?.status, "paused");
 			journal.deleteOwnedRun = deleteOwnedRun;
-			await backend.recordCheckpoint(checkpoint());
-			await backend.reset();
+			await backend.commitCheckpoint(checkpoint());
+			await backend.commitReset();
 			assert.equal(await journal.getRun("run"), undefined);
 			assert.equal(backend.getWorkflow("run"), undefined);
 		} finally {
@@ -339,15 +357,15 @@ test("reset preserves an unsnapshotted registration's cache, storage and close c
 	backends.push(backend);
 	try {
 		for (let index = 0; index < 5; index++)
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: `old-${index}`,
 				name: "test",
 				inputs: {},
 				createdAt: 1,
 				status: "paused",
 			});
-		const resetting = backend.reset();
-		const registering = backend.registerWorkflow({
+		const resetting = backend.commitReset();
+		const registering = backend.commitWorkflowRegistration({
 			workflowId: "new",
 			name: "test",
 			inputs: {},
@@ -385,14 +403,14 @@ test("reset preserves an unsnapshotted registration's cache, storage and close c
 
 test("reset removes cached state for a run already deleted from storage", async () => {
 	const { backend: writer, journal } = await open();
-	await writer.recordCheckpoint(checkpoint());
+	await writer.commitCheckpoint(checkpoint());
 	await writer.reservePendingPrompt("run", "prompt");
 	const observer = await JournalDurableBackend.open(journal, { ownsJournal: false });
 	backends.unshift(observer);
 	assert.equal(observer.getWorkflow("run")?.pendingPrompts, 1);
 	assert.equal(observer.getToolOutput("run", "one"), "one");
 	await writer.deleteWorkflow("run");
-	await observer.reset();
+	await observer.commitReset();
 	assert.equal(observer.getWorkflow("run"), undefined);
 	assert.deepEqual(observer.listCheckpoints("run"), []);
 	assert.deepEqual(await journal.listRuns(), []);
@@ -407,16 +425,28 @@ test("reset keeps registrations admitted after its catalog snapshot independent"
 	const proceed = gate();
 	const listRuns = journal.listRuns.bind(journal);
 	try {
-		await backend.registerWorkflow({ workflowId: "old", name: "test", inputs: {}, createdAt: 1, status: "paused" });
+		await backend.commitWorkflowRegistration({
+			workflowId: "old",
+			name: "test",
+			inputs: {},
+			createdAt: 1,
+			status: "paused",
+		});
 		journal.listRuns = async (...args) => {
 			const runs = await listRuns(...args);
 			entered.resolve();
 			await proceed.promise;
 			return runs;
 		};
-		const resetting = backend.reset();
+		const resetting = backend.commitReset();
 		await entered.promise;
-		await backend.registerWorkflow({ workflowId: "new", name: "test", inputs: {}, createdAt: 1, status: "paused" });
+		await backend.commitWorkflowRegistration({
+			workflowId: "new",
+			name: "test",
+			inputs: {},
+			createdAt: 1,
+			status: "paused",
+		});
 		assert.equal(backend.getWorkflow("new")?.status, "paused");
 		proceed.resolve();
 		await resetting;
@@ -441,29 +471,41 @@ test("reset deletion serializes same-run recreation and close drains it without 
 	const proceed = gate();
 	const deleteOwnedRun = journal.deleteOwnedRun.bind(journal);
 	try {
-		await backend.registerWorkflow({ workflowId: "run", name: "old", inputs: {}, createdAt: 1, status: "paused" });
-		await backend.recordCheckpoint(checkpoint("old"));
+		await backend.commitWorkflowRegistration({
+			workflowId: "run",
+			name: "old",
+			inputs: {},
+			createdAt: 1,
+			status: "paused",
+		});
+		await backend.commitCheckpoint(checkpoint("old"));
 		await backend.reservePendingPrompt("run", "old-prompt");
 		journal.deleteOwnedRun = async (...args) => {
 			entered.resolve();
 			await proceed.promise;
 			await deleteOwnedRun(...args);
 		};
-		const resetting = backend.reset();
+		const resetting = backend.commitReset();
 		await entered.promise;
-		const registering = backend.registerWorkflow({
+		const registering = backend.commitWorkflowRegistration({
 			workflowId: "run",
 			name: "new",
 			inputs: {},
 			createdAt: 2,
 			status: "paused",
 		});
-		const saving = backend.recordCheckpoint(checkpoint("new"));
-		await backend.registerWorkflow({ workflowId: "other", name: "test", inputs: {}, createdAt: 1, status: "paused" });
+		const saving = backend.commitCheckpoint(checkpoint("new"));
+		await backend.commitWorkflowRegistration({
+			workflowId: "other",
+			name: "test",
+			inputs: {},
+			createdAt: 1,
+			status: "paused",
+		});
 		assert.equal((await journal.getRun("other"))?.status, "paused");
 		const closing = backend.close();
 		await assert.rejects(
-			backend.registerWorkflow({
+			backend.commitWorkflowRegistration({
 				workflowId: "late",
 				name: "test",
 				inputs: {},
@@ -492,7 +534,13 @@ test("reset deletion serializes same-run recreation and close drains it without 
 test("close during renewal still releases every run's lease", async () => {
 	vi.useFakeTimers();
 	const { backend, journal } = await open();
-	await backend.registerWorkflow({ workflowId: "other", name: "test", inputs: {}, createdAt: 1, status: "running" });
+	await backend.commitWorkflowRegistration({
+		workflowId: "other",
+		name: "test",
+		inputs: {},
+		createdAt: 1,
+		status: "running",
+	});
 	const entered = gate();
 	const proceed = gate();
 	const renew = journal.renew.bind(journal);
@@ -537,7 +585,7 @@ test("retirement drains an admitted terminal mutation but rejects new writes fro
 		retire = backend.captureWorkflowRetirement("run");
 		saving = backend.persistPendingStageMessages("run", []);
 		await finishBody.promise;
-		await assert.rejects(backend.setWorkflowStatus("run", "completed"), JournalExecutionRetiredError);
+		await assert.rejects(backend.commitWorkflowStatus("run", "completed"), JournalExecutionRetiredError);
 	});
 	await entered.promise;
 	const retirement = retire();
@@ -577,7 +625,7 @@ test.each(["queued", "in-flight"] as const)(
 		}
 		await backend.withWorkflowLease("run", async () => {
 			const retire = backend.captureWorkflowRetirement("run");
-			const registration = backend.registerWorkflow({
+			const registration = backend.commitWorkflowRegistration({
 				workflowId: "run",
 				name: "test",
 				inputs: {},
@@ -588,13 +636,13 @@ test.each(["queued", "in-flight"] as const)(
 			const retirement = retire();
 			proceed.resolve();
 			await Promise.all([registration, retirement]);
-			await assert.rejects(backend.setWorkflowStatus("run", "completed"), JournalExecutionRetiredError);
+			await assert.rejects(backend.commitWorkflowStatus("run", "completed"), JournalExecutionRetiredError);
 		});
 		assert.equal(backend.getWorkflow("run")?.status, "paused");
 		assert.equal(await journal.leaseState("run"), undefined);
 		const contender = await JournalDurableBackend.open(journal, { ownsJournal: false });
 		try {
-			await contender.setWorkflowStatus("run", "running");
+			await contender.commitWorkflowStatus("run", "running");
 			assert.equal((await journal.leaseState("run"))?.holderId, contender.holderId);
 			assert.equal(contender.getWorkflow("run")?.status, "running");
 		} finally {
@@ -613,7 +661,7 @@ test("retirement joins close while the first admitted registration is still queu
 	try {
 		await backend.withWorkflowLease("run", async () => {
 			const retire = backend.captureWorkflowRetirement("run");
-			const registration = backend.registerWorkflow({
+			const registration = backend.commitWorkflowRegistration({
 				workflowId: "run",
 				name: "test",
 				inputs: {},

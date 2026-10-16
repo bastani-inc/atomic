@@ -92,8 +92,8 @@ async function registerInspectableCompleted(
 			}),
 		].join("\n")}\n`,
 	);
-	await backend.registerWorkflow({ workflowId, name, inputs: {}, createdAt: 1, status: "completed" });
-	await backend.recordCheckpoint({
+	await backend.commitWorkflowRegistration({ workflowId, name, inputs: {}, createdAt: 1, status: "completed" });
+	await backend.commitCheckpoint({
 		kind: "stage",
 		workflowId,
 		checkpointId: "stage:1",
@@ -145,7 +145,7 @@ describe("/workflow resume — overlay integration", () => {
 	test("resume with no runId opens durable picker when only durable entries exist", async () => {
 		singletonStore.clear();
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "durable-picker-run",
 			name: "durable-wf",
 			inputs: {},
@@ -185,7 +185,7 @@ describe("/workflow resume — overlay integration", () => {
 		});
 		singletonStore.recordRunEnd(completedRunId, "completed", {});
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "durable-after-completed",
 			name: "durable-history",
 			inputs: {},
@@ -262,7 +262,7 @@ describe("/workflow resume — overlay integration", () => {
 		});
 		singletonStore.recordRunPaused(liveRunId);
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: liveRunId,
 			name: "live-wf",
 			inputs: {},
@@ -276,7 +276,7 @@ describe("/workflow resume — overlay integration", () => {
 			async resume() {},
 			async quit() {},
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "durable-alongside-live",
 			name: "durable-cross-session",
 			inputs: {},
@@ -521,7 +521,7 @@ describe("/workflow attach — top-level command", () => {
 		});
 		singletonStore.recordRunPaused(liveRunId);
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: liveRunId,
 			name: "live-older-wf",
 			inputs: {},
@@ -535,7 +535,7 @@ describe("/workflow attach — top-level command", () => {
 			async resume() {},
 			async quit() {},
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "durable-combined-wf",
 			name: "durable-newer-wf",
 			inputs: {},
@@ -605,7 +605,7 @@ describe("/workflow attach — top-level command", () => {
 		});
 		singletonStore.recordRunPaused(liveRunId);
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "durable-dismiss-wf",
 			name: "durable-dismiss",
 			inputs: {},
@@ -649,7 +649,7 @@ describe("/workflow attach — top-level command", () => {
 		});
 		singletonStore.recordRunPaused(liveRunId);
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: liveRunId,
 			name: "live-hydrate-wf",
 			inputs: {},
@@ -663,7 +663,7 @@ describe("/workflow attach — top-level command", () => {
 			async resume() {},
 			async quit() {},
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "durable-hydrate-wf",
 			name: "durable-hydrate",
 			inputs: {},

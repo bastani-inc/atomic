@@ -106,7 +106,7 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 				return;
 			}
 			topology = makeTopology(input, boundaryId, childRunId, parentIds, sourceOrder, "start", "running");
-			await input.backend.recordCheckpointAsync({
+			await input.backend.commitCheckpoint({
 				kind: "stage",
 				workflowId: input.workflowId,
 				checkpointId: `boundary-start:${input.replayKey}`,
@@ -147,7 +147,7 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 				.filter((stage) => stage.replayKey === input.replayKey && stage.topology?.boundary?.event === "terminal")
 				.reduce((latest, stage) => Math.max(latest, stage.completedAt), 0);
 			const now = Math.max(Date.now(), priorTerminalAt + 1);
-			await input.backend.recordCheckpointAsync({
+			await input.backend.commitCheckpoint({
 				kind: "stage",
 				workflowId: input.workflowId,
 				checkpointId: `boundary-terminal:${input.replayKey}:${status}`,

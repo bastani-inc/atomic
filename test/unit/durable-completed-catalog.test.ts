@@ -57,7 +57,7 @@ function writeSessionTranscript(path: string, id: string): void {
 }
 
 async function registerCompleted(backend: InMemoryDurableBackend, id: string): Promise<void> {
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: id,
 		name: "completed-flow",
 		inputs: { topic: "done" },
@@ -70,7 +70,7 @@ async function registerCompleted(backend: InMemoryDurableBackend, id: string): P
 describe("completed durable catalog", () => {
 	test("keeps completed listing distinct from resumability predicates", async () => {
 		const backend = await InMemoryDurableBackend.create();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: testRunId("paused"),
 			name: "paused-flow",
 			inputs: {},
@@ -79,7 +79,7 @@ describe("completed durable catalog", () => {
 			completedCheckpoints: 1,
 		});
 		await registerCompleted(backend, testRunId("completed"));
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			topology: { version: 1, nodeId: `tool:${"hash"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: testRunId("completed"),
@@ -120,7 +120,7 @@ describe("completed durable catalog", () => {
 		const transcript = join(tempDir, "stage.jsonl");
 		writeSessionTranscript(transcript, "valid-session");
 		await registerCompleted(backend, testRunId("valid-completed"));
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("valid-completed"),
 			checkpointId: "stage:1",
@@ -133,7 +133,7 @@ describe("completed durable catalog", () => {
 			completedAt: 20,
 		});
 		await registerCompleted(backend, testRunId("stale-completed"));
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("stale-completed"),
 			checkpointId: "stage:1",
@@ -187,7 +187,7 @@ describe("completed durable catalog", () => {
 		);
 		for (const item of cases) {
 			await registerCompleted(backend, item.id);
-			await backend.recordCheckpoint({
+			await backend.commitCheckpoint({
 				kind: "stage",
 				workflowId: item.id,
 				checkpointId: "stage:1",
@@ -198,7 +198,7 @@ describe("completed durable catalog", () => {
 			});
 		}
 		await registerCompleted(backend, testRunId("tool-only"));
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			topology: { version: 1, nodeId: `tool:${"hash"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: testRunId("tool-only"),
@@ -232,7 +232,7 @@ describe("completed durable catalog", () => {
 		const validTranscript = join(tempDir, "retained.jsonl");
 		writeSessionTranscript(validTranscript, "retained-session");
 		await registerCompleted(backend, testRunId("merged-stage"));
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("merged-stage"),
 			checkpointId: "stage:1",
@@ -243,7 +243,7 @@ describe("completed durable catalog", () => {
 			completedAt: 20,
 			topology: { version: 1, stageId: "final-source", parentIds: [], sourceOrder: 0, status: "completed" },
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("merged-stage"),
 			checkpointId: "stage:2",
@@ -271,7 +271,7 @@ describe("completed durable catalog", () => {
 		const validTranscript = join(tempDir, "usable.jsonl");
 		writeSessionTranscript(validTranscript, "usable-session");
 		await registerCompleted(backend, testRunId("partially-retained"));
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("partially-retained"),
 			checkpointId: "stage:1",
@@ -281,7 +281,7 @@ describe("completed durable catalog", () => {
 			sessionId: "usable-session",
 			completedAt: 20,
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("partially-retained"),
 			checkpointId: "stage:2",
@@ -331,7 +331,7 @@ describe("completed durable catalog", () => {
 			{ id: testRunId("blank-text-block"), content: [{ type: "text", text: "" }] },
 		] as const;
 		await registerCompleted(backend, testRunId("partially-malformed"));
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("partially-malformed"),
 			checkpointId: "stage:1",
@@ -362,7 +362,7 @@ describe("completed durable catalog", () => {
 				].join("\n"),
 			);
 			await registerCompleted(backend, item.id);
-			await backend.recordCheckpoint({
+			await backend.commitCheckpoint({
 				kind: "stage",
 				workflowId: item.id,
 				checkpointId: "stage:1",
@@ -405,7 +405,7 @@ describe("completed durable catalog", () => {
 			].join("\n"),
 		);
 		await registerCompleted(backend, testRunId("structured-context"));
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("structured-context"),
 			checkpointId: "stage:1",
@@ -428,7 +428,7 @@ describe("completed durable catalog", () => {
 		writeSessionTranscript(transcript, "nested-child-session");
 		const runId = testRunId("completed-nested");
 		const childRunId = testRunId("completed-nested-child");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "nested-root",
 			inputs: {},
@@ -511,9 +511,9 @@ describe("completed durable catalog", () => {
 				topology: { version: 1 as const, stageId: "abandoned", parentIds: ["old-boundary-id"], run: rootRun },
 			},
 		]) {
-			await backend.recordCheckpoint({ kind: "stage", workflowId: runId, completedAt: 2_000, ...checkpoint });
+			await backend.commitCheckpoint({ kind: "stage", workflowId: runId, completedAt: 2_000, ...checkpoint });
 		}
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "tool",
 			workflowId: runId,
 			checkpointId: "run-timing:12345",
@@ -564,7 +564,7 @@ describe("completed durable catalog", () => {
 			child,
 		};
 		for (const checkpointId of ["boundary-start:a", "boundary-start:b"]) {
-			await backend.recordCheckpoint({
+			await backend.commitCheckpoint({
 				kind: "stage",
 				workflowId: testRunId("duplicate-boundary"),
 				checkpointId,
@@ -595,7 +595,7 @@ describe("completed durable catalog", () => {
 			["a", ["b"]],
 			["b", ["a"]],
 		] as const) {
-			await backend.recordCheckpoint({
+			await backend.commitCheckpoint({
 				kind: "stage",
 				workflowId: testRunId("cyclic"),
 				checkpointId: `stage:${stageId}`,
@@ -613,7 +613,7 @@ describe("completed durable catalog", () => {
 		}
 		await registerCompleted(backend, testRunId("duplicate-stage-id"));
 		for (const replayKey of ["stage:one:1", "stage:two:1"]) {
-			await backend.recordCheckpoint({
+			await backend.commitCheckpoint({
 				kind: "stage",
 				workflowId: testRunId("duplicate-stage-id"),
 				checkpointId: replayKey,
@@ -646,7 +646,7 @@ describe("completed durable catalog", () => {
 			parentStageId: "boundary",
 			rootRunId: "mismatched-terminal",
 		} as const;
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("mismatched-terminal"),
 			checkpointId: "boundary-start:workflow:child:1",
@@ -672,7 +672,7 @@ describe("completed durable catalog", () => {
 				},
 			},
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: testRunId("mismatched-terminal"),
 			checkpointId: "boundary-terminal:workflow:child:1:completed",
@@ -724,7 +724,7 @@ describe("completed durable catalog", () => {
 			parentStageId: "boundary",
 			rootRunId: runId,
 		} as const;
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: runId,
 			checkpointId: "stage:root",
@@ -741,7 +741,7 @@ describe("completed durable catalog", () => {
 				run: rootRun,
 			},
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: runId,
 			checkpointId: `boundary-start:${replayKey}`,
@@ -767,7 +767,7 @@ describe("completed durable catalog", () => {
 				},
 			},
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: runId,
 			checkpointId: `${replayKey}:stage:child:1`,

@@ -150,7 +150,7 @@ for (const responds of [true, false]) {
 		};
 		const store = createStore();
 		const backend = await createInMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "terminal",
 			name: "build",
 			inputs: {},

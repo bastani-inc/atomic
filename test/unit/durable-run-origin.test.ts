@@ -7,7 +7,7 @@ describe("durable workflow origin", () => {
 		const backend = await createMemoryTestBackend();
 		for (const origin of ["user", "agent"] as const) {
 			const workflowId = `origin-${origin}`;
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId,
 				name: `workflow-${origin}`,
 				inputs: {},
@@ -29,7 +29,7 @@ describe("durable workflow origin", () => {
 
 	test("a handle registered without origin keeps origin absent rather than guessing", async () => {
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "origin-omitted",
 			name: "legacy-workflow",
 			inputs: {},
@@ -47,7 +47,7 @@ describe("durable workflow origin", () => {
 
 	test("re-registering without origin preserves the previously recorded origin", async () => {
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "origin-preserved",
 			name: "preserved-workflow",
 			inputs: {},
@@ -55,7 +55,7 @@ describe("durable workflow origin", () => {
 			status: "running",
 			origin: "agent",
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "origin-preserved",
 			name: "preserved-workflow",
 			inputs: {},

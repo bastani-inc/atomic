@@ -351,7 +351,7 @@ async function resumeDurableWorkflowClaimed(
 		if (adopting) {
 			const current = backend.getWorkflow(resolved.workflowId);
 			if (adoptedClaimUpdatedAt === undefined || current?.modelOwner !== requestedOwner) return false;
-			const restored = await backend.transitionWorkflowStatus(
+			const restored = await backend.commitWorkflowStatusTransition(
 				resolved.workflowId,
 				["running"],
 				handle.status,
@@ -362,7 +362,7 @@ async function resumeDurableWorkflowClaimed(
 			if (restored) onRestored?.();
 			return restored;
 		}
-		await backend.setWorkflowStatus(
+		await backend.commitWorkflowStatus(
 			resolved.workflowId,
 			handle.status,
 			handle.pendingPrompts,
@@ -386,7 +386,7 @@ async function resumeDurableWorkflowClaimed(
 		}
 		unsettled.add(resolved.workflowId);
 		try {
-			claimed = await backend.transitionWorkflowStatus(
+			claimed = await backend.commitWorkflowStatusTransition(
 				resolved.workflowId,
 				[handle.status],
 				"running",
@@ -443,7 +443,7 @@ async function resumeDurableWorkflowClaimed(
 					const current = deps.baseRunOpts.store?.runs().find((run) => run.id === resolved.workflowId);
 					// Do not undo a concurrent terminal control decision.
 					if (current?.status === "failed" && current.error === message) {
-						await backend.setWorkflowStatus(
+						await backend.commitWorkflowStatus(
 							resolved.workflowId,
 							handle.status,
 							handle.pendingPrompts,

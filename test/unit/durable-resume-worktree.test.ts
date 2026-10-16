@@ -90,7 +90,7 @@ describe("durable resume with reusable git worktrees", () => {
 					return { observed_cwd };
 				},
 			}) as unknown as WorkflowDefinition;
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: testRunId("wf-worktree-resume"),
 				name: "worktree-resume-pipeline",
 				inputs: { git_worktree_dir: "../resume-reused-wt" },
@@ -143,7 +143,7 @@ describe("durable resume with reusable git worktrees", () => {
 					return { ok: true };
 				},
 			}) as unknown as WorkflowDefinition;
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: testRunId("wf-worktree-partial-fails"),
 				name: "worktree-partial-fails",
 				inputs: { git_worktree_dir: "../partial-wt" },

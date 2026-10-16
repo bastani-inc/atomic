@@ -24,7 +24,7 @@ async function seedCompletedBoundary(
 		parentStageId: "boundary",
 		rootRunId: runId,
 	} as const;
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: runId,
 		name: "completed-parent",
 		inputs: {},
@@ -33,7 +33,7 @@ async function seedCompletedBoundary(
 		updatedAt: 5,
 		resumable: false,
 	});
-	await backend.recordCheckpoint({
+	await backend.commitCheckpoint({
 		kind: "stage",
 		workflowId: runId,
 		checkpointId: `boundary-start:${replayKey}`,
@@ -59,7 +59,7 @@ async function seedCompletedBoundary(
 			},
 		},
 	});
-	await backend.recordCheckpoint({
+	await backend.commitCheckpoint({
 		kind: "stage",
 		workflowId: runId,
 		checkpointId: `${replayKey}:stage:child:1`,
@@ -76,7 +76,7 @@ async function seedCompletedBoundary(
 			run: { ...child, runId: childRunId },
 		},
 	});
-	await backend.recordCheckpoint({
+	await backend.commitCheckpoint({
 		kind: "stage",
 		workflowId: runId,
 		checkpointId: `boundary-terminal:${replayKey}:completed`,

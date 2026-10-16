@@ -672,7 +672,7 @@ describe("continuation tool-parent identity map", () => {
 		assert.equal(source.resumable, true);
 		assert.equal(source.endedAt, undefined);
 		assert.equal(source.failureRecoverability, "recoverable");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: source.id,
 			name: definition.name,
 			inputs: {},
@@ -765,7 +765,7 @@ describe("continuation tool-parent identity map", () => {
 		const source = store.runs().find((candidate) => candidate.id === first.runId);
 		assert.ok(source);
 		assert.equal(source.resumable, true);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: source.id,
 			name: definition.name,
 			inputs: {},
@@ -863,7 +863,7 @@ describe("continuation tool-parent identity map", () => {
 			message: "WORKFLOW BLOCKED",
 			createdAt: Date.now(),
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: source.id,
 			name: definition.name,
 			inputs: {},

@@ -327,7 +327,7 @@ describe("workflow control lifecycle notices", () => {
 		const store = createStore();
 		const registry = createStageControlRegistry();
 		liveRun(store, registry, "run-control", { name: "goal", origin: "agent" });
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "run-control",
 			name: "goal",
 			inputs: {},
@@ -366,7 +366,7 @@ describe("workflow control lifecycle notices", () => {
 		const store = createStore();
 		const registry = createStageControlRegistry();
 		liveRun(store, registry, "run-tool", { origin: "agent" });
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "run-tool",
 			name: "goal",
 			inputs: {},
@@ -639,7 +639,7 @@ describe("workflow control lifecycle notices", () => {
 		const workflowId = "run-restored-quit-no-timestamp";
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId,
 			name: "goal",
 			inputs: {},
@@ -929,7 +929,7 @@ describe("workflow control lifecycle notices", () => {
 		registry.register(
 			executorStyleHandle({ store, runId: "run-quit-failed", stageId: "stage-1", failAfterPausing: true }),
 		);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "run-quit-failed",
 			name: "ralph",
 			inputs: {},

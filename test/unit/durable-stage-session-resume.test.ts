@@ -60,7 +60,7 @@ describe("durable stage session resume", () => {
 
 	beforeEach(async () => {
 		backend = await InMemoryDurableBackend.create();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: WORKFLOW_ID,
 			name: "stage-test",
 			inputs: {},
@@ -92,7 +92,7 @@ describe("durable stage session resume", () => {
 		// Running (active) workflows are hidden from resume; quitting flips the
 		// durable handle to paused, which is when an in-progress stage session
 		// becomes resumable.
-		await backend.setWorkflowStatus(WORKFLOW_ID, "paused");
+		await backend.commitWorkflowStatus(WORKFLOW_ID, "paused");
 		assert.equal(backend.listResumableWorkflows().length, 1);
 	});
 

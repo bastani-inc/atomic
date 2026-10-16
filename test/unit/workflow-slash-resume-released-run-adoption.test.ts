@@ -54,9 +54,9 @@ function setup() {
 async function registerRun(
 	backend: DurableWorkflowBackend,
 	runId: string,
-	overrides: Partial<Parameters<DurableWorkflowBackend["registerWorkflow"]>[0]> = {},
+	overrides: Partial<Parameters<DurableWorkflowBackend["commitWorkflowRegistration"]>[0]> = {},
 ): Promise<void> {
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: runId,
 		name: "session-run-control",
 		inputs: {},
@@ -241,7 +241,7 @@ for (const accept of [false, true]) {
 			summary: "Review finished; implementation pending.",
 			summarizedThrough: 1234,
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "ui",
 			workflowId: runId,
 			checkpointId: "answer",

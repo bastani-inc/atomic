@@ -76,14 +76,14 @@ async function registerCompleted(
 	id: string,
 	sessionFile = retainedSession(id),
 ): Promise<void> {
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: id,
 		name: `${id}-flow`,
 		inputs: {},
 		createdAt: 1,
 		status: "completed",
 	});
-	await backend.recordCheckpoint({
+	await backend.commitCheckpoint({
 		kind: "stage",
 		workflowId: id,
 		checkpointId: "stage:1",
@@ -97,14 +97,14 @@ async function registerCompleted(
 }
 
 async function registerCompletedTool(backend: InMemoryDurableBackend, id: string): Promise<void> {
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: id,
 		name: `${id}-flow`,
 		inputs: {},
 		createdAt: 1,
 		status: "completed",
 	});
-	await backend.recordCheckpoint({
+	await backend.commitCheckpoint({
 		topology: { version: 1, nodeId: `tool:${"done-hash"}`, ordinal: 1, order: 1, parentIds: [] },
 		kind: "tool",
 		workflowId: id,
@@ -381,7 +381,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 		// Regression: #2603 — restored local shadows must not turn a stage selector into whole-root resume.
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: root,
 			name: "fixture",
 			inputs: {},
@@ -389,7 +389,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 			status: "paused",
 			completedCheckpoints: 1,
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			topology: { version: 1, nodeId: `tool:${"seed"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: root,
@@ -438,7 +438,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 	test("workflow tool prefix restored-shadow resume without a stage still dispatches the canonical root", async () => {
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: root,
 			name: "fixture",
 			inputs: {},
@@ -446,7 +446,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 			status: "paused",
 			completedCheckpoints: 1,
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			topology: { version: 1, nodeId: `tool:${"seed"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: root,
@@ -503,7 +503,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 	test("slash prefix plus a stage selector refuses durable dispatch", async () => {
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: root,
 			name: "fixture",
 			inputs: {},
@@ -511,7 +511,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 			status: "paused",
 			completedCheckpoints: 1,
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			topology: { version: 1, nodeId: `tool:${"seed"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: root,
@@ -542,7 +542,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 	test("slash exact durable id plus a stage selector refuses durable dispatch", async () => {
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: root,
 			name: "fixture",
 			inputs: {},
@@ -550,7 +550,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 			status: "paused",
 			completedCheckpoints: 1,
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			topology: { version: 1, nodeId: `tool:${"seed"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: root,
@@ -633,7 +633,13 @@ test("exact-id runtime resume never hydrates the full durable catalog", async ()
 	}
 	const backend = await createNoCatalogBackend();
 	const id = testRunId("exact-runtime-without-catalog");
-	await backend.registerWorkflow({ workflowId: id, name: "completed", inputs: {}, createdAt: 1, status: "completed" });
+	await backend.commitWorkflowRegistration({
+		workflowId: id,
+		name: "completed",
+		inputs: {},
+		createdAt: 1,
+		status: "completed",
+	});
 	const runtime = createDurableResumeRuntime({
 		registry: createExtensionRuntime({ store }).registry,
 		store,
@@ -657,7 +663,7 @@ test("targeted exact-id resume rejects another session's live workflow without c
 	const backend = await createNoCatalogBackend();
 	backend.workflowOwnership = async () => "foreign";
 	const id = testRunId("foreign-live-without-catalog");
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: id,
 		name: "foreign-live",
 		inputs: {},
@@ -740,8 +746,8 @@ describe("/workflow resume completed target", () => {
 		const backend = await createMemoryTestBackend();
 		const id = testRunId("cold-failed-command-target");
 		await registerCompleted(backend, id);
-		await backend.setWorkflowStatus(id, "failed", 0, true);
-		await backend.recordCheckpoint({
+		await backend.commitWorkflowStatus(id, "failed", 0, true);
+		await backend.commitCheckpoint({
 			topology: { version: 1, nodeId: `tool:${"frontier-hash"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: id,
@@ -784,8 +790,14 @@ describe("/workflow resume completed target", () => {
 		const id = "2603abcd-1111-4222-8333-123456789abc";
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		await backend.registerWorkflow({ workflowId: id, name: "local", inputs: {}, createdAt: 1, status: "paused" });
-		await backend.recordCheckpoint({
+		await backend.commitWorkflowRegistration({
+			workflowId: id,
+			name: "local",
+			inputs: {},
+			createdAt: 1,
+			status: "paused",
+		});
+		await backend.commitCheckpoint({
 			topology: { version: 1, nodeId: `tool:${"proof"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: id,
@@ -927,7 +939,7 @@ describe("/workflow resume completed target", () => {
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const runId = testRunId("zero-progress-explicit");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "zero-progress-flow",
 			inputs: {},
@@ -957,7 +969,7 @@ describe("/workflow resume completed target", () => {
 	test("reports a stale completed target instead of dispatching it", async () => {
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: testRunId("stale-completed-target"),
 			name: "completed-flow",
 			inputs: {},
@@ -985,7 +997,7 @@ describe("/workflow resume completed target", () => {
 		const backend = await createMemoryTestBackend();
 		const workflowId = testRunId("retained-stale-completed-target");
 		setDurableBackend(backend);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId,
 			name: "completed-flow",
 			inputs: {},
@@ -1023,7 +1035,7 @@ describe("/workflow resume completed target", () => {
 	test("does not let a retained completed snapshot bypass authoritative stale checks", async () => {
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: testRunId("retained-stale"),
 			name: "completed-flow",
 			inputs: {},
@@ -1066,14 +1078,14 @@ describe("/workflow resume completed target", () => {
 		const completedId = testRunId("shared-completed");
 		const liveId = `${completedId.slice(0, 8)}-${testRunId("shared-live").slice(9)}`;
 		await registerCompleted(backend, completedId);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: liveId,
 			name: "live-flow",
 			inputs: {},
 			status: "paused",
 			createdAt: 1,
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "tool",
 			workflowId: liveId,
 			checkpointId: "progress",
@@ -1148,7 +1160,7 @@ describe("/workflow resume completed target", () => {
 	test("keeps quit shadows on the durable resume path", async () => {
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: testRunId("quit-shadow"),
 			name: "quit-flow",
 			inputs: {},
@@ -1228,7 +1240,7 @@ describe("/workflow resume completed target", () => {
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const id = testRunId("failed-resumable-command-target");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: id,
 			name: "failed-resumable-flow",
 			inputs: {},
@@ -1237,7 +1249,7 @@ describe("/workflow resume completed target", () => {
 			resumable: true,
 			error: "durable tool failed",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			topology: { version: 1, nodeId: `tool:${"failed-tool-hash"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: id,
@@ -1301,7 +1313,7 @@ describe("/workflow resume completed target", () => {
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const id = testRunId("failed-author-exit-command");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: id,
 			name: "failed-author-exit-flow",
 			inputs: {},
@@ -1421,7 +1433,7 @@ describe("/workflow resume completed target", () => {
 	test("includes active recoverable blocks in the no-argument resume picker", async () => {
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: testRunId("picker-active-block"),
 			name: "picker-flow",
 			inputs: {},
@@ -1455,7 +1467,7 @@ describe("/workflow resume completed target", () => {
 	test("resume picker omits a paused snapshot with no durable checkpoint", async () => {
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: testRunId("picker-no-checkpoint"),
 			name: "picker-flow",
 			inputs: {},
@@ -1486,7 +1498,7 @@ describe("/workflow resume completed target", () => {
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const runId = testRunId("picker-missing-artifact");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "picker-flow",
 			inputs: {},
@@ -1494,7 +1506,7 @@ describe("/workflow resume completed target", () => {
 			status: "paused",
 			resumable: true,
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: runId,
 			checkpointId: "stage:1",

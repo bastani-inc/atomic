@@ -82,8 +82,14 @@ test.each([
 ])("public task replay preserves $label", async ({ base, checkpoint, expected, terminal }) => {
 	const runId = "task-thinking-precedence";
 	const backend = await createMemoryTestBackend();
-	await backend.registerWorkflow({ workflowId: runId, name: runId, inputs: {}, createdAt: 1, status: "failed" });
-	await backend.recordCheckpoint({
+	await backend.commitWorkflowRegistration({
+		workflowId: runId,
+		name: runId,
+		inputs: {},
+		createdAt: 1,
+		status: "failed",
+	});
+	await backend.commitCheckpoint({
 		kind: "stage",
 		workflowId: runId,
 		checkpointId: "recorded-task",

@@ -80,7 +80,7 @@ describe("wrapUiWithDurable", () => {
 
 	beforeEach(async () => {
 		backend = await InMemoryDurableBackend.create();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: WORKFLOW_ID,
 			name: "ui-test",
 			inputs: {},
@@ -117,7 +117,7 @@ describe("wrapUiWithDurable", () => {
 		assert.equal(await promptInputAtStableCallsite(wrap(baseA), "checkpointed before cleanup"), "raw-input");
 		const checkpoint = backend.listCheckpoints(WORKFLOW_ID)[0]!;
 		backend = await InMemoryDurableBackend.create();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: WORKFLOW_ID,
 			name: "ui-test",
 			inputs: {},
@@ -125,7 +125,7 @@ describe("wrapUiWithDurable", () => {
 			status: "running",
 			pendingPrompts: 1,
 		});
-		await backend.recordCheckpoint(checkpoint);
+		await backend.commitCheckpoint(checkpoint);
 		assert.equal(backend.getWorkflow(WORKFLOW_ID)?.pendingPrompts, 1);
 
 		const baseB = makeBaseUi();
@@ -465,13 +465,13 @@ describe("wrapUiWithDurable", () => {
 		assert.equal(backend.getWorkflow(WORKFLOW_ID)?.pendingPrompts, 0);
 		assert.equal(backend.listCheckpoints(WORKFLOW_ID).length, 2);
 
-		await backend.adjustPendingPrompts(WORKFLOW_ID, -1);
+		await backend.commitPendingPromptAdjustment(WORKFLOW_ID, -1);
 		assert.equal(backend.getWorkflow(WORKFLOW_ID)?.pendingPrompts, 0);
 	});
 
 	test("reuses a persisted scoped-child prompt reservation after restart", async () => {
 		const rootBackend = await InMemoryDurableBackend.create();
-		await rootBackend.registerWorkflow({
+		await rootBackend.commitWorkflowRegistration({
 			workflowId: WORKFLOW_ID,
 			name: "ui-test",
 			inputs: {},

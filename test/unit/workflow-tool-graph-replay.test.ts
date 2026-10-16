@@ -231,7 +231,7 @@ describe("ctx.tool durable graph replay", () => {
 		assert.equal(cachedChildTool?.kind, "tool");
 		if (cachedChildTool?.kind !== "tool") return;
 		const partialBackend = await createMemoryTestBackend();
-		await partialBackend.registerWorkflow({
+		await partialBackend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: parent.name,
 			inputs: {},
@@ -243,8 +243,8 @@ describe("ctx.tool durable graph replay", () => {
 			.listCheckpoints(runId)
 			.find((checkpoint) => checkpoint.kind === "stage" && checkpoint.topology?.boundary?.event === "start");
 		assert.ok(boundaryStart);
-		await partialBackend.recordCheckpoint(boundaryStart);
-		await partialBackend.recordCheckpoint(cachedChildTool);
+		await partialBackend.commitCheckpoint(boundaryStart);
+		await partialBackend.commitCheckpoint(cachedChildTool);
 		const partialStore = createStore();
 		const partial = await run(parent, {}, { runId, store: partialStore, durableBackend: partialBackend });
 		assert.equal(partial.status, "completed");

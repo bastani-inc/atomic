@@ -87,7 +87,7 @@ describe("resume after a completed ctx.parallel", () => {
 		assert.ok(source);
 		assert.equal(source.failureRecoverability, "recoverable");
 		assert.equal(source.stages.find((stage) => stage.id === source.failedStageId)?.name, "pull-request");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: source.id,
 			name: definition.name,
 			inputs: {},
@@ -187,7 +187,7 @@ describe("resume after a completed ctx.parallel", () => {
 		assert.equal(source.failureRecoverability, "recoverable");
 		assert.equal(source.resumable, true);
 		assert.equal(source.stages.find((stage) => stage.id === source.failedStageId)?.name, "pull-request");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: source.id,
 			name: definition.name,
 			inputs,

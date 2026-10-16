@@ -98,9 +98,9 @@ describe("active workflow stage session durability", () => {
 		const observedStatuses: string[] = [];
 		async function createObservingBackend() {
 			const backend = Object.assign(await createMemoryTestBackend(), {});
-			const baserecordCheckpointAsync = backend.recordCheckpointAsync.bind(backend);
+			const baserecordCheckpointAsync = backend.commitCheckpoint.bind(backend);
 			return Object.assign(backend, {
-				async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+				async commitCheckpoint(checkpoint: DurableCheckpoint): Promise<void> {
 					if (checkpoint.kind === "stage" && checkpoint.sessionFile !== undefined) {
 						observedStatuses.push(
 							store.runs().find((candidate) => candidate.id === runId)?.stages[0]?.status ?? "missing",
@@ -290,9 +290,9 @@ describe("active workflow stage session durability", () => {
 		let modelTurnStarted = false;
 		async function createBlockingIdentityBackend() {
 			const backend = Object.assign(await createMemoryTestBackend(), {});
-			const baserecordCheckpointAsync = backend.recordCheckpointAsync.bind(backend);
+			const baserecordCheckpointAsync = backend.commitCheckpoint.bind(backend);
 			return Object.assign(backend, {
-				async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+				async commitCheckpoint(checkpoint: DurableCheckpoint): Promise<void> {
 					if (checkpoint.kind === "stage" && checkpoint.sessionFile !== undefined && !identityPersisted) {
 						identityWriteStarted.resolve();
 						await releaseIdentityWrite.promise;
@@ -346,9 +346,9 @@ describe("active workflow stage session durability", () => {
 		const runId = testRunId("initial-identity-failure-cleanup");
 		async function createFailingIdentityBackend() {
 			const backend = Object.assign(await createMemoryTestBackend(), { persistent: true });
-			const baserecordCheckpointAsync = backend.recordCheckpointAsync.bind(backend);
+			const baserecordCheckpointAsync = backend.commitCheckpoint.bind(backend);
 			return Object.assign(backend, {
-				async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+				async commitCheckpoint(checkpoint: DurableCheckpoint): Promise<void> {
 					if (checkpoint.kind === "stage" && checkpoint.name === "first" && checkpoint.sessionFile !== undefined) {
 						throw new Error("initial identity persistence failed");
 					}
@@ -537,9 +537,9 @@ describe("active workflow stage session durability", () => {
 		);
 		async function createFailingHeartbeatBackend(...args: Parameters<typeof JournalTestBackend.create>) {
 			const backend = Object.assign(await JournalTestBackend.create(...args), {});
-			const baserecordCheckpoint = backend.recordCheckpoint.bind(backend);
+			const baserecordCheckpoint = backend.commitCheckpoint.bind(backend);
 			return Object.assign(backend, {
-				async recordCheckpoint(checkpoint: DurableCheckpoint): Promise<void> {
+				async commitCheckpoint(checkpoint: DurableCheckpoint): Promise<void> {
 					if (checkpoint.checkpointId.startsWith("run-timing:")) throw failure;
 					await baserecordCheckpoint(checkpoint);
 				},
@@ -598,9 +598,9 @@ describe("active workflow stage session durability", () => {
 		const runId = testRunId("stage-heartbeat-failure");
 		async function createFailingHeartbeatBackend() {
 			const backend = Object.assign(await createMemoryTestBackend(), { persistent: true, sessionWrites: 0 });
-			const baserecordCheckpointAsync = backend.recordCheckpointAsync.bind(backend);
+			const baserecordCheckpointAsync = backend.commitCheckpoint.bind(backend);
 			return Object.assign(backend, {
-				async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+				async commitCheckpoint(checkpoint: DurableCheckpoint): Promise<void> {
 					if (checkpoint.kind === "stage" && checkpoint.sessionFile !== undefined && ++backend.sessionWrites > 1) {
 						throw new Error("durable heartbeat write failed");
 					}

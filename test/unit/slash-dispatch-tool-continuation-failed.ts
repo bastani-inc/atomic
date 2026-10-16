@@ -128,7 +128,7 @@ describe("tool run-control actions", () => {
 			failedStageId: "old-second",
 			failureKind: "rate_limit",
 		});
-		await getDurableBackend().registerWorkflow({
+		await getDurableBackend().commitWorkflowRegistration({
 			workflowId: sourceRunId,
 			name: def.name,
 			inputs: {},

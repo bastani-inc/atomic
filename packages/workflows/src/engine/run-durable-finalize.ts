@@ -67,7 +67,7 @@ export async function finalizeDurableTerminalStatus(input: DurableTerminalFinali
 							: {}),
 					}
 				: undefined;
-		await input.durableBackend.setWorkflowStatus(
+		await input.durableBackend.commitWorkflowStatus(
 			input.runId,
 			durableStatus,
 			undefined,

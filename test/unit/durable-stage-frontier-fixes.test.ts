@@ -42,7 +42,7 @@ describe("empty string stage outputs (issue #1498)", () => {
 
 	beforeEach(async () => {
 		backend = await InMemoryDurableBackend.create();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: WORKFLOW_ID,
 			name: "test",
 			inputs: {},

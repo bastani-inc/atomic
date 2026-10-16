@@ -107,6 +107,7 @@ export interface CreateToolPrimitiveInput {
 	/** Deterministic boundary hooks before dispatch and after a tool node settles. */
 	readonly beforeToolCall?: () => void | Promise<void>;
 	readonly afterToolCall?: () => void | Promise<void>;
+	readonly beforeCheckpoint?: () => void | Promise<void>;
 	readonly trackExecution?: <T>(execution: Promise<T>) => WorkflowToolExecutionAdmission | undefined;
 	/** Observe a logical throwing-mode failure before graph publication or promise rejection. */
 	readonly onFailureObserved?: (error: unknown, nodeId: string) => void;
@@ -538,6 +539,26 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 	const startedAt = Date.now();
 	let attempts = 0;
 	let callbackCompleted = false;
+	const cancelInvocation = async (cancellation: Error): Promise<never> => {
+		control.noteCancelled();
+		// Cancellation is inspection-only: resume must retry this ordinal.
+		if (
+			returnFailure ||
+			(isWorkflowToolAbortError(cancellation) && cancellation.scope === "node") ||
+			input.runFailing?.() === true
+		) {
+			await recordCancelledToolInspection(live, startedAt, cancellation, attempts);
+		}
+		const endedAt = Date.now();
+		input.onNodeEnd?.(node.id, {
+			status: "cancelled",
+			endedAt,
+			durationMs: Math.max(0, endedAt - startedAt),
+			error: cancellation.message,
+		});
+		input.onNodeSettle?.(node.id);
+		throw cancellation;
+	};
 	input.onNodeRunning?.(node.id, startedAt);
 	try {
 		const result = await executeWithRetries(
@@ -590,6 +611,8 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 				...(input.runTopology !== undefined ? { run: { ...input.runTopology } } : {}),
 			},
 		};
+		await input.beforeCheckpoint?.();
+		throwIfInvocationCancelled(input, toolSignal);
 		await recordCheckpointDurably(input.backend, checkpoint);
 		input.onNodeEnd?.(node.id, {
 			status: "completed",
@@ -603,29 +626,7 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 	} catch (error) {
 		const timeoutFailure = error instanceof WorkflowToolTimeoutError;
 		const cancellation = timeoutFailure ? undefined : invocationCancellation(input, toolSignal);
-		if (cancellation !== undefined) {
-			control.noteCancelled();
-			// A cancelled call never writes a replayable `tool:` checkpoint and never
-			// a `return_failure` outcome, so resume re-executes it at the same
-			// ordinal instead of replaying a cancellation as data. A targeted
-			// abort needs an inspection-only frontier in either failure mode.
-			if (
-				returnFailure ||
-				(isWorkflowToolAbortError(cancellation) && cancellation.scope === "node") ||
-				input.runFailing?.() === true
-			) {
-				await recordCancelledToolInspection(live, startedAt, cancellation, attempts);
-			}
-			const endedAt = Date.now();
-			input.onNodeEnd?.(node.id, {
-				status: "cancelled",
-				endedAt,
-				durationMs: Math.max(0, endedAt - startedAt),
-				error: cancellation.message,
-			});
-			input.onNodeSettle?.(node.id);
-			throw cancellation;
-		}
+		if (cancellation !== undefined) return await cancelInvocation(cancellation);
 		const callbackFailure = callbackError ?? error;
 		if (returnFailure && !callbackCompleted && isExplicitCallbackCancellation(callbackFailure)) {
 			input.onFailureObserved?.(callbackFailure, node.id);
@@ -671,8 +672,12 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 				},
 			};
 			try {
+				await input.beforeCheckpoint?.();
+				if (!timeoutFailure) throwIfInvocationCancelled(input, toolSignal);
 				await recordCheckpointDurably(input.backend, checkpoint);
 			} catch (persistenceError) {
+				const cancellation = timeoutFailure ? undefined : invocationCancellation(input, toolSignal);
+				if (cancellation !== undefined) return await cancelInvocation(cancellation);
 				input.onFailureObserved?.(persistenceError, node.id);
 				const endedAt = Date.now();
 				input.onNodeEnd?.(node.id, {
@@ -869,7 +874,7 @@ async function recordReplayedToolTopology(
 		JSON.stringify(cached.topology.run) === JSON.stringify(topology.run) &&
 		cached.topology.endedAt === topology.endedAt;
 	if (unchanged) return;
-	await input.backend.recordAdditiveCheckpointBestEffort({
+	await input.backend.commitAdditiveCheckpointBestEffort({
 		kind: "tool",
 		workflowId: input.workflowId,
 		checkpointId: `tool-replay-meta:${durableHash({ argsHash, topology })}`,
@@ -902,7 +907,7 @@ export async function recordCheckpointDurably(
 	checkpoint: DurableCheckpoint,
 	signal?: AbortSignal,
 ): Promise<void> {
-	await backend.recordCheckpointAsync(checkpoint, signal === undefined ? undefined : { signal });
+	await backend.commitCheckpoint(checkpoint, signal === undefined ? undefined : { signal });
 }
 
 async function executeWithRetries<T>(

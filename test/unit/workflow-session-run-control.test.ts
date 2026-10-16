@@ -225,7 +225,7 @@ describe("session workflow run control", () => {
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		backend.workflowOwnership = async () => "available";
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "session-run-control",
 			inputs: {},
@@ -254,7 +254,7 @@ describe("session workflow run control", () => {
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		backend.workflowOwnership = async () => "available";
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "session-run-control",
 			inputs: {},
@@ -283,7 +283,7 @@ describe("session workflow run control", () => {
 		const runId = testRunId("sdk-user-durable-resume");
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "session-run-control",
 			inputs: {},
@@ -307,7 +307,7 @@ describe("session workflow run control", () => {
 			const backend = await createMemoryTestBackend();
 			setDurableBackend(backend);
 			backend.workflowOwnership = async () => "available";
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: runId,
 				name: "session-run-control",
 				inputs: {},
@@ -342,7 +342,7 @@ describe("session workflow run control", () => {
 			const runId = testRunId(`sdk-released-adoption-${label}`);
 			const backend = await createMemoryTestBackend();
 			setDurableBackend(backend);
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: runId,
 				name: "session-run-control",
 				inputs: {},
@@ -374,7 +374,7 @@ describe("session workflow run control", () => {
 		const runId = testRunId("sdk-unreleased-paused");
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "session-run-control",
 			inputs: {},
@@ -412,7 +412,7 @@ describe("session workflow run control", () => {
 			const runId = testRunId(`sdk-released-refusal-${index}`);
 			const backend = await createMemoryTestBackend();
 			setDurableBackend(backend);
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: runId,
 				name: "session-run-control",
 				inputs: {},
@@ -540,7 +540,7 @@ describe("session workflow run control", () => {
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		backend.workflowOwnership = async () => "foreign";
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "session-run-control",
 			inputs: {},
@@ -564,7 +564,7 @@ describe("session workflow run control", () => {
 		const backend = await createMemoryTestBackend();
 		backend.workflowOwnership = async () => "foreign";
 		setDurableBackend(backend);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "session-run-control",
 			inputs: {},
@@ -589,7 +589,7 @@ describe("session workflow run control", () => {
 		const runId = testRunId("session-run-control-foreign-session-durable");
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "session-run-control",
 			inputs: {},
@@ -613,7 +613,7 @@ describe("session workflow run control", () => {
 		const foreignId = testRunId("session-run-control-prefix-foreign");
 		const backend = await createCatalogScanCountingBackend();
 		setDurableBackend(backend);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: foreignId,
 			name: "session-run-control",
 			inputs: {},
@@ -667,7 +667,7 @@ describe("session workflow run control", () => {
 		const noProgressId = testRunId("session-run-control-no-progress");
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: noProgressId,
 			name: "session-run-control",
 			inputs: {},
@@ -851,7 +851,7 @@ describe("session workflow run control", () => {
 		const runId = testRunId("session-run-control-stage-durable-resume");
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "session-run-control",
 			inputs: {},
@@ -1431,7 +1431,7 @@ describe("session workflow run control", () => {
 		const backend = await createMemoryTestBackend();
 		backend.workflowOwnership = async () => "foreign";
 		setDurableBackend(backend);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "session-run-control",
 			inputs: {},
@@ -1544,7 +1544,7 @@ test("SDK details retain stored generated summary metadata for durable and compl
 	const { control } = setup();
 	for (const status of ["paused", "completed"] as const) {
 		const runId = testRunId(`stored-summary-${status}`);
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "session-run-control",
 			inputs: { objective: "Build parser" },

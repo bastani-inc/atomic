@@ -30,6 +30,7 @@ export interface DurableStageDeps {
 	readonly runTopology?: DurableStageRunTopology;
 	readonly sourceOrderForStage?: (stage: StageSnapshot) => number | undefined;
 	readonly now?: () => number;
+	readonly beforeCheckpoint?: () => void | Promise<void>;
 }
 
 export async function recordStageCheckpoint(
@@ -62,6 +63,7 @@ export async function recordStageCheckpoint(
 				completedAt: stage.endedAt ?? Date.now(),
 				...metadata,
 			};
+	await deps.beforeCheckpoint?.();
 	await recordCheckpointDurably(deps.backend, checkpoint);
 	return true;
 }
@@ -104,6 +106,7 @@ export async function recordStageSessionCheckpoint(
 		durationMs,
 		completedAt: checkpointNow,
 	};
+	await deps.beforeCheckpoint?.();
 	await recordCheckpointDurably(deps.backend, checkpoint);
 	return true;
 }
@@ -148,6 +151,8 @@ export function createDurableStagePrimitive(input: {
 	readonly nextReplayKey: (stageName: string) => string;
 	readonly stage: (name: string, options: StageOptions | undefined, replayKey: string) => StageContext;
 	readonly durableIntercomGroup?: (replayKey: string, stageId: string | undefined) => string | undefined;
+	readonly beforeCall?: () => void | Promise<void>;
+	readonly beforeCheckpoint?: () => void | Promise<void>;
 	readonly recordCachedStage?: (
 		name: string,
 		replayKey: string,
@@ -159,7 +164,10 @@ export function createDurableStagePrimitive(input: {
 		const cached = stageCheckpointWithOutput(input.backend, input.workflowId, replayKey);
 		if (cached !== undefined) {
 			const recorded = input.recordCachedStage?.(name, replayKey, cached);
-			return createCachedStageContext(name, cached.output, cached.result, recorded);
+			return withStageWriteBarrier(
+				createCachedStageContext(name, cached.output, cached.result, recorded),
+				input.beforeCall,
+			);
 		}
 		const session = input.backend.getStageSession(input.workflowId, replayKey);
 		const isMidSessionResume = session?.sessionId !== undefined;
@@ -181,16 +189,40 @@ export function createDurableStagePrimitive(input: {
 					}
 				: {}),
 		};
-		const live = withMidSessionResumePrompt(input.stage(name, liveOptions, replayKey), isMidSessionResume);
+		const live = withStageWriteBarrier(
+			withMidSessionResumePrompt(input.stage(name, liveOptions, replayKey), isMidSessionResume),
+			input.beforeCall,
+		);
 		if (options?.schema === undefined) return live;
 		return wrapSchemaStageForDurability({
 			stage: live,
 			workflowId: input.workflowId,
 			backend: input.backend,
 			replayKey,
+			beforeCheckpoint: input.beforeCheckpoint,
 			name,
 		});
 	};
+}
+
+function withStageWriteBarrier(stage: StageContext, beforeCall?: () => void | Promise<void>): StageContext {
+	if (beforeCall === undefined) return stage;
+	const wrapped = Object.create(stage) as StageContext;
+	Object.defineProperties(wrapped, {
+		prompt: {
+			value: async (...args: Parameters<StageContext["prompt"]>) => {
+				await beforeCall();
+				return stage.prompt(...args);
+			},
+		},
+		complete: {
+			value: async (...args: Parameters<StageContext["complete"]>) => {
+				await beforeCall();
+				return stage.complete(...args);
+			},
+		},
+	});
+	return wrapped;
 }
 
 export const TASK_RESULT_CHECKPOINT_CONTROL_PREFIX = "task-checkpoint:";
@@ -212,6 +244,7 @@ export function createDurableTaskPrimitive(input: {
 		stageFailFastScope?: ParallelFailFastScope,
 	) => void | Promise<void>;
 	readonly afterLiveResult?: (name: string) => Promise<void>;
+	readonly beforeCheckpoint?: () => void | Promise<void>;
 	readonly signal?: AbortSignal;
 	readonly registerTailControl?: (registration: {
 		readonly nodeId: string;
@@ -265,6 +298,8 @@ export function createDurableTaskPrimitive(input: {
 		});
 		const signal = mergeAbortSignals(input.signal, tailController.signal);
 		try {
+			await input.beforeCheckpoint?.();
+			if (signal?.aborted) throw abortReasonError(signal);
 			await awaitAbortable(
 				signal,
 				recordCheckpointDurably(
@@ -436,6 +471,7 @@ function wrapSchemaStageForDurability(input: {
 	readonly workflowId: string;
 	readonly backend: DurableWorkflowBackend;
 	readonly replayKey: string;
+	readonly beforeCheckpoint?: () => void | Promise<void>;
 	readonly name: string;
 }): StageContext {
 	const stage = input.stage;
@@ -448,6 +484,7 @@ function wrapSchemaStageForDurability(input: {
 			// being dropped (treated as no checkpoint).
 			// cross-ref: issue #1498 — empty string stage outputs must survive durable checkpointing.
 			if (typeof result !== "string" || result.length === 0) {
+				await input.beforeCheckpoint?.();
 				await recordCheckpointDurably(input.backend, {
 					kind: "stage",
 					workflowId: input.workflowId,

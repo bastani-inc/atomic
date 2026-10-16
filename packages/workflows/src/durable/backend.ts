@@ -80,7 +80,7 @@ export interface DurableWorkflowBackend {
 	): "local" | "foreign" | "available" | Promise<"local" | "foreign" | "available">;
 	persistSummary?(workflowId: string, summary: string, summarizedThrough: number): Promise<boolean>;
 	/** Register or update a workflow's top-level metadata. */
-	registerWorkflow(handle: WorkflowRegistrationInput): void | Promise<void>;
+	commitWorkflowRegistration(handle: WorkflowRegistrationInput): Promise<void>;
 	/** Persist one logical run's pending-stage transition under its durable owner. */
 	persistPendingStageMessages(
 		workflowId: string,
@@ -115,14 +115,11 @@ export interface DurableWorkflowBackend {
 		delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
 		logicalRunId?: string,
 	): Promise<boolean>;
-	/** Record a completed checkpoint. Idempotent: same (kind, checkpointId) is a no-op. */
-	recordCheckpoint(checkpoint: DurableCheckpoint): void | Promise<void>;
-
-	/** Persist a checkpoint before exposing its side effect. */
-	recordCheckpointAsync(checkpoint: DurableCheckpoint, options?: { readonly signal?: AbortSignal }): Promise<void>;
+	/** Persist a checkpoint before exposing its side effect. Duplicate identities retain the first write. */
+	commitCheckpoint(checkpoint: DurableCheckpoint, options?: { readonly signal?: AbortSignal }): Promise<void>;
 
 	/** Returns false only when additive metadata could not be stored. */
-	recordAdditiveCheckpointBestEffort(checkpoint: DurableCheckpoint): Promise<boolean>;
+	commitAdditiveCheckpointBestEffort(checkpoint: DurableCheckpoint): Promise<boolean>;
 
 	/**
 	 * Look up a cached tool output by content hash. Returns `undefined` if the
@@ -169,19 +166,19 @@ export interface DurableWorkflowBackend {
 	getLoadableWorkflow(workflowId: string): DurableWorkflowHandle | undefined;
 
 	/** Update workflow status (running/paused/completed/failed/cancelled/blocked). */
-	setWorkflowStatus(
+	commitWorkflowStatus(
 		workflowId: string,
 		status: DurableWorkflowStatus,
 		pendingPrompts?: number,
 		resumable?: boolean,
 		failure?: DurableWorkflowFailureMetadata,
-	): void | Promise<void>;
+	): Promise<void>;
 	/**
 	 * Atomically update status only when the authoritative status is expected.
 	 * `modelOwner` adopts the run for a new session. `releasedModelOwner` durably records that
 	 * the session owning the run was disposed; every transition without it clears that record.
 	 */
-	transitionWorkflowStatus(
+	commitWorkflowStatusTransition(
 		workflowId: string,
 		expectedStatuses: readonly DurableWorkflowStatus[],
 		status: DurableWorkflowStatus,
@@ -192,7 +189,7 @@ export interface DurableWorkflowBackend {
 		releasedModelOwner?: string,
 	): Promise<boolean>;
 	/** Atomically adjust unresolved UI prompt count, clamped at zero. */
-	adjustPendingPrompts(workflowId: string, delta: number): void | Promise<void>;
+	commitPendingPromptAdjustment(workflowId: string, delta: number): Promise<void>;
 
 	/**
 	 * List resumable root workflows: running/paused runs with progress and
@@ -216,7 +213,7 @@ export interface DurableWorkflowBackend {
 	isWorkflowLoadable(workflowId: string): boolean;
 
 	/** Clear all state (for tests). */
-	reset(): void | Promise<void>;
+	commitReset(): Promise<void>;
 
 	/** Hydrate one workflow from persistent storage. */
 	hydrateWorkflow(workflowId: string): Promise<void>;

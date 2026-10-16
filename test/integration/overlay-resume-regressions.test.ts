@@ -195,7 +195,7 @@ describe("/workflow resume — durable regression coverage", () => {
 
 	test("no-arg durable picker renders the /resume selector chrome", async () => {
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "durable-tree-ui",
 			name: "durable-tree-wf",
 			inputs: {},
@@ -223,14 +223,14 @@ describe("/workflow resume — durable regression coverage", () => {
 
 	test("no-arg durable picker hides stale failed/running entries without current definitions", async () => {
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "old-failed-run",
 			name: "old-missing-definition",
 			inputs: {},
 			createdAt: Date.now(),
 			status: "failed",
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "old-running-run",
 			name: "old-running-definition",
 			inputs: {},
@@ -238,7 +238,7 @@ describe("/workflow resume — durable regression coverage", () => {
 			status: "running",
 			completedCheckpoints: 1,
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "visible-paused-run",
 			name: "visible-paused-definition",
 			inputs: {},
@@ -266,7 +266,7 @@ describe("/workflow resume — durable regression coverage", () => {
 	test("no-arg durable picker resolves selection before dispose", async () => {
 		const backend = await createMemoryTestBackend();
 		const workflowId = testRunId("durable-select-race");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId,
 			name: "missing-selection-def",
 			inputs: {},
@@ -304,7 +304,7 @@ describe("/workflow resume — durable regression coverage", () => {
 		});
 		singletonStore.recordRunPaused(liveRunId, now + 2);
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: liveRunId,
 			name: "live-select-wf",
 			inputs: {},
@@ -327,7 +327,7 @@ describe("/workflow resume — durable regression coverage", () => {
 			},
 			async quit() {},
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: testRunId("durable-select-alongside"),
 			name: "durable-select",
 			inputs: {},
@@ -369,7 +369,7 @@ describe("/workflow resume — durable regression coverage", () => {
 			resumable: true,
 		});
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: failedRunId,
 			name: "missing-continuation-wf",
 			inputs: {},
@@ -378,7 +378,7 @@ describe("/workflow resume — durable regression coverage", () => {
 			completedCheckpoints: 1,
 			resumable: true,
 		});
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: testRunId("durable-with-failed-live"),
 			name: "durable-select",
 			inputs: {},
@@ -407,7 +407,7 @@ describe("/workflow resume — durable regression coverage", () => {
 		const now = Date.now();
 		const failedRunId = testRunId(`failed-author-exit-${now}`);
 		const backend = await createMemoryTestBackend();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: failedRunId,
 			name: "failed-author-exit-wf",
 			inputs: {},

@@ -7,8 +7,14 @@ test("ctx.task replay prefers task-shaped checkpoint and hydrates lifecycle meta
 	const backend = await InMemoryDurableBackend.create();
 	const workflowId = "wf-task-selector";
 	const replayKey = "stage:task:review:1";
-	await backend.registerWorkflow({ workflowId, name: "task-selector", inputs: {}, createdAt: 1, status: "running" });
-	await backend.recordCheckpoint({
+	await backend.commitWorkflowRegistration({
+		workflowId,
+		name: "task-selector",
+		inputs: {},
+		createdAt: 1,
+		status: "running",
+	});
+	await backend.commitCheckpoint({
 		kind: "stage",
 		workflowId,
 		checkpointId: `stage:${replayKey}`,
@@ -24,7 +30,7 @@ test("ctx.task replay prefers task-shaped checkpoint and hydrates lifecycle meta
 		sessionFile: "/tmp/task.jsonl",
 		model: "model-task",
 	});
-	await backend.recordCheckpoint({
+	await backend.commitCheckpoint({
 		kind: "stage",
 		workflowId,
 		checkpointId: `task:${replayKey}`,

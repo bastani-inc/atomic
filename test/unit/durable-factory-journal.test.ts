@@ -54,7 +54,13 @@ test("shared journal initialization releases its exit listener on explicit close
 	setDurableBackend(undefined);
 	const reopened = await initializeDurableBackend();
 	assert.ok(reopened instanceof JournalDurableBackend);
-	await reopened.registerWorkflow({ workflowId: "reset", name: "reset", inputs: {}, status: "paused", createdAt: 1 });
+	await reopened.commitWorkflowRegistration({
+		workflowId: "reset",
+		name: "reset",
+		inputs: {},
+		status: "paused",
+		createdAt: 1,
+	});
 	setDurableBackend(undefined);
 	assert.equal(process.listenerCount("exit"), listenersBefore);
 	const observer = await JournalDurableBackend.open(await openSqlRunJournal(process.env.ATOMIC_WORKFLOW_JOURNAL_PATH));

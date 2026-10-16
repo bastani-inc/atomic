@@ -760,7 +760,13 @@ test("stage auto sends stored classifier auth to the session's configured TypeSa
 test("durable session checkpoint roundtrip restores selection without another inference", async () => {
 	const f = await fixture();
 	const backend = await JournalTestBackend.create();
-	await backend.registerWorkflow({ workflowId: "auto", name: "auto", inputs: {}, createdAt: 1, status: "running" });
+	await backend.commitWorkflowRegistration({
+		workflowId: "auto",
+		name: "auto",
+		inputs: {},
+		createdAt: 1,
+		status: "running",
+	});
 	const selection = { model: "decision-test/chat", effort: null };
 	await recordStageSessionCheckpoint(
 		{ backend, workflowId: "auto", nextCheckpointId: () => "cp", nextReplayKey: () => "stage:test" },
@@ -807,7 +813,7 @@ test("durable session checkpoint roundtrip restores selection without another in
 	await stage.prompt("Original prompt");
 	assert.equal(f.infer.mock.calls.length, 0);
 	assert.equal(f.admissions.length, 1);
-	await restored.recordCheckpoint({
+	await restored.commitCheckpoint({
 		...decoded,
 		checkpointId: "completed",
 		output: "Saved result",
@@ -1125,7 +1131,7 @@ test("ranked stage candidates run before configured fallback and survive checkpo
 			{ model: "decision-test/b", effort: null },
 		]);
 		const backend = await JournalTestBackend.create();
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: "ranked",
 			name: "ranked",
 			inputs: {},
@@ -1242,7 +1248,13 @@ test("builtin stages that omit a model route only to models the modelRouting gat
 
 test("durable checkpoints keep routerSelection candidates and reject malformed lists (#3528)", async () => {
 	const backend = await JournalTestBackend.create();
-	await backend.registerWorkflow({ workflowId: "auto", name: "auto", inputs: {}, createdAt: 1, status: "running" });
+	await backend.commitWorkflowRegistration({
+		workflowId: "auto",
+		name: "auto",
+		inputs: {},
+		createdAt: 1,
+		status: "running",
+	});
 	const selection = { model: "decision-test/chat", effort: null, candidates: ["decision-test/chat", "other/model"] };
 	await recordStageSessionCheckpoint(
 		{ backend, workflowId: "auto", nextCheckpointId: () => "cp", nextReplayKey: () => "stage:test" },

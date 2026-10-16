@@ -9,6 +9,7 @@ export type AdmittedToolExecutionAdmission =
 	| { readonly accepted: false; readonly error: Error; bindNode(nodeId: string): void; noteCancelled(): void };
 
 export interface AdmittedToolExecutionTracker {
+	readonly closed: boolean;
 	track<T>(execution: Promise<T>): AdmittedToolExecutionAdmission;
 	observeFailure(error: unknown, nodeId: string): void;
 	closeAndDrain(): Promise<void>;
@@ -90,6 +91,9 @@ export function createAdmittedToolExecutionTracker(
 	};
 
 	return {
+		get closed(): boolean {
+			return state === "CLOSED" || options.signal?.aborted === true;
+		},
 		track<T>(execution: Promise<T>): AdmittedToolExecutionAdmission {
 			if (state === "CLOSED" || options.signal?.aborted) {
 				const error = new Error("atomic-workflows: ctx.tool admission is closed for this run");

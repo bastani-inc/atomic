@@ -1501,7 +1501,7 @@ describe("workflow heartbeat anchor checkpoint", () => {
 		backend: Awaited<ReturnType<typeof createMemoryTestBackend>>,
 		runId: string,
 	): Promise<void> {
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "heartbeat-workflow",
 			inputs: {},
@@ -1515,7 +1515,7 @@ describe("workflow heartbeat anchor checkpoint", () => {
 		backend: Awaited<ReturnType<typeof createMemoryTestBackend>>,
 		runId: string,
 	): Promise<void> {
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			topology: { version: 1, nodeId: `tool:${"some-tool"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: runId,
@@ -1531,7 +1531,7 @@ describe("workflow heartbeat anchor checkpoint", () => {
 		const backend = await createMemoryTestBackend();
 		const runId = testRunId("heartbeat-anchor-requires-cadence");
 		await registerRun(backend, runId);
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "tool",
 			workflowId: runId,
 			checkpointId: WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME,
@@ -1611,7 +1611,7 @@ describe("workflow heartbeat anchor checkpoint", () => {
 		// durability boundary. This checkpoint is the run's first resumable
 		// progress, after the scheduler has stopped scheduling the paused run.
 		originalStore.recordRunPaused(runId, pauseAt);
-		await backend.setWorkflowStatus(runId, "paused");
+		await backend.commitWorkflowStatus(runId, "paused");
 		const recordPausedStageSession = createDurableStageSessionRecorder({
 			runId,
 			deps: {
@@ -1654,7 +1654,7 @@ describe("workflow heartbeat anchor checkpoint", () => {
 		// A durable resume re-registers the same workflow id with a freshly minted
 		// startedAt. The next process must still derive from the original series.
 		const resumedStartedAt = STARTED_AT + 7 * MINUTE_MS;
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "heartbeat-workflow",
 			inputs: {},
@@ -1754,7 +1754,7 @@ describe("workflow heartbeat anchor checkpoint", () => {
 		// Neither may reach a run that is already in flight.
 		const resumedStartedAt = STARTED_AT + 7 * MINUTE_MS;
 		const editedIntervalMinutes = 30;
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "heartbeat-workflow",
 			inputs: {},
@@ -1796,7 +1796,7 @@ describe("workflow heartbeat anchor checkpoint", () => {
 		const corruptBackend = await createMemoryTestBackend();
 		const corruptRunId = testRunId("heartbeat-anchor-corrupt-shape");
 		await registerRun(corruptBackend, corruptRunId);
-		await corruptBackend.recordCheckpoint({
+		await corruptBackend.commitCheckpoint({
 			kind: "tool",
 			workflowId: corruptRunId,
 			checkpointId: WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME,
@@ -1902,14 +1902,14 @@ describe("workflow heartbeat anchor checkpoint", () => {
 
 describe("workflow heartbeat anchor durable acknowledgement", () => {
 	async function registerProgress(backend: JournalTestBackend, runId: string): Promise<void> {
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "heartbeat-workflow",
 			inputs: {},
 			createdAt: STARTED_AT,
 			status: "running",
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			topology: { version: 1, nodeId: `tool:${"some-tool"}`, ordinal: 1, order: 1, parentIds: [] },
 			kind: "tool",
 			workflowId: runId,
@@ -1926,8 +1926,8 @@ describe("workflow heartbeat anchor durable acknowledgement", () => {
 		const runId = testRunId("heartbeat-anchor-journal-ack");
 		let failNextAnchorWrite = true;
 		const backend = await JournalTestBackend.create();
-		const record = backend.recordCheckpoint.bind(backend);
-		backend.recordCheckpoint = async (checkpoint) => {
+		const record = backend.commitCheckpoint.bind(backend);
+		backend.commitCheckpoint = async (checkpoint) => {
 			if (
 				checkpoint.kind === "tool" &&
 				checkpoint.name === WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME &&

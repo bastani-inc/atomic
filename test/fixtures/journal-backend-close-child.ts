@@ -7,7 +7,7 @@ import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/
 const path = resolve(process.argv[2]!);
 const backend = await JournalDurableBackend.open(await openSqlRunJournal(path));
 try {
-	await backend.registerWorkflow({ workflowId: "closed-run", name: "close", inputs: {}, createdAt: 1, status: "running" });
+	await backend.commitWorkflowRegistration({ workflowId: "closed-run", name: "close", inputs: {}, createdAt: 1, status: "running" });
 	await backend.close();
 	if (process.platform === "linux") {
 		const retained = readdirSync("/proc/self/fd").flatMap((fd) => {

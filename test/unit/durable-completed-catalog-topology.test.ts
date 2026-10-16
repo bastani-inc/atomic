@@ -12,7 +12,7 @@ test("reconstructs multi-level boundary edges when durable completion order is r
 	const rootId = "durable-root";
 	const childId = "durable-child";
 	const grandId = "durable-grand";
-	await backend.registerWorkflow({
+	await backend.commitWorkflowRegistration({
 		workflowId: rootId,
 		name: "durable-root",
 		inputs: {},
@@ -115,7 +115,7 @@ test("reconstructs multi-level boundary edges when durable completion order is r
 		},
 	];
 	for (const checkpoint of checkpoints) {
-		await backend.recordCheckpoint({ kind: "stage", workflowId: rootId, ...checkpoint });
+		await backend.commitCheckpoint({ kind: "stage", workflowId: rootId, ...checkpoint });
 	}
 
 	const runs = await completedWorkflowRunSnapshots(backend, listCompletedFromBackend(backend)[0]!);
