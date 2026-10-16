@@ -24,12 +24,14 @@
 - Extension provider registration and removal now return promises too: await `pi.registerProvider`, `pi.registerProviderAlias`, and `pi.unregisterProvider` before dependent model or session work.
 - Workflow SQLite journals now use `SqlRunJournal` with async initialization and `wf_` table names. Use `await openSqlRunJournal(pathOrDatabase?)` or `await SqlRunJournal.open(database, { prefix })`, and await `resolveRunJournal`. Earlier unreleased bare tables are not read or migrated. Workflow `StorageUnavailableError` now provides `adapter`, `location`, and `cause` instead of `path`.
 - Session selection now uses IDs instead of file paths: `--session` and `--fork` accept exact IDs or unique eight-hex UUID prefixes; use `--import <file>` for format-4 JSONL exports. Extension `switchSession` takes an ID, lifecycle events use `previousSessionId` and `targetSessionId`, and RPC `switch_session` takes `sessionId`. RPC state reports `sessionLocation` for optional display instead of `sessionFile`. Shell tools no longer expose `ATOMIC_SESSION_FILE` or `PI_SESSION_FILE`; use `ATOMIC_SESSION_ID` or `PI_SESSION_ID`.
+- `RunOpts.journal.database` now takes an async `SqliteDatabase` facade, not a raw `node:sqlite` connection; use `wrapNodeSqliteDatabase` for an existing connection. Journal configuration failures now use `StorageConfigError` with `source`, `field`, and `reason` instead of `JournalConfigurationError`.
 
 ### Added
 
 - Added the `workflows.journal.path` and `workflows.journal.memory` settings, plus SDK `RunOpts.journal` for a file, caller-owned SQLite connection, explicit memory journal, or supplied journal. TUI, CLI, background, and SDK runs use the selected journal. Relative settings paths resolve against the Atomic home directory.
 - Added `ctx.sessionSignal` so extension commands can close long-running resources when reload or shutdown begins, before admitted work is drained. Custom UI is now dismissed automatically at that boundary while preserving caller-signal cancellation.
 - Added `wrapNodeSqliteDatabase(connection)` for caller-owned connections and facade-backed workflow journals that can share a database with the session store or use a user-supplied SQLite-compatible driver.
+- Added user-installed journal adapter modules, environment/file secret references, shared `storage` defaults, and `StorageProvider` for explicit session/journal opens with shared database lifetime. `RunOpts.journal.database` accepts an async SQLite facade; invalid selections raise `StorageConfigError` without falling back to memory.
 
 ### Fixed
 

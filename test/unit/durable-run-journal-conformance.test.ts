@@ -2,14 +2,15 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { runInNewContext } from "node:vm";
+import { loadStorageAdapter } from "@bastani/atomic/storage";
 import { afterEach, test } from "vitest";
 import { registerRunJournalConformance } from "../../packages/workflows/src/durable/journal/conformance.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
-import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+import { openSqlRunJournal, SqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { StaleLeaseError } from "../../packages/workflows/src/durable/journal/types.js";
 import { assertLeaseStateUnchanged } from "../helpers/journal-lease-state.js";
 import { observeJournalRead } from "../helpers/journal-read-observation.js";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
 
 registerRunJournalConformance(test, "memory", () => new MemoryRunJournal(), observeJournalRead);
 registerRunJournalConformance(
@@ -21,6 +22,32 @@ registerRunJournalConformance(
 		const close = journal.close.bind(journal);
 		journal.close = async () => {
 			await close();
+			removeTempDirectory(directory);
+		};
+		return journal;
+	},
+	observeJournalRead,
+);
+
+registerRunJournalConformance(
+	test,
+	"module-selected SQLite adapter",
+	async () => {
+		const directory = makeTempDirectory("adapter-journal-conformance-");
+		const adapter = await loadStorageAdapter(join(moduleDir(import.meta.url), "../fixtures/storage-adapter.ts"), {
+			agentDir: directory,
+			domain: "journal",
+		});
+		assert.ok(adapter.openDatabase);
+		const database = await adapter.openDatabase(
+			{ path: join(directory, "runs.sqlite") },
+			{ agentDir: directory, domain: "journal" },
+		);
+		const journal = await SqlRunJournal.open(database);
+		const close = journal.close.bind(journal);
+		journal.close = async () => {
+			await close();
+			await database.close();
 			removeTempDirectory(directory);
 		};
 		return journal;

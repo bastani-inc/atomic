@@ -144,13 +144,22 @@ export function createWorkflowExtensionRuntimeState(
 	const { resolveHostCwd, resolveLiveModelContext } = options;
 	const { store, stageUiBroker, cancellationRegistry, jobs, stageControlRegistry, toolControlRegistry } =
 		options.runState ?? currentWorkflowSessionRunState();
-	const scopedRunOptions = { store, jobs, stageControlRegistry, toolControlRegistry, stageUiBroker };
+	let projectTrusted: boolean | undefined;
+	const scopedRunOptions = {
+		store,
+		jobs,
+		stageControlRegistry,
+		toolControlRegistry,
+		stageUiBroker,
+		isProjectTrusted: () => projectTrusted ?? pi.getResourceLoaderInheritanceSnapshot?.()?.projectTrusted ?? true,
+	};
 	// #3105: discovery follows the SDK session, never the process working directory.
 	let contextCwd: string | undefined;
 	const resolveCwd = (): string => resolveHostCwd?.() ?? contextCwd ?? pi.sessionManager?.getCwd?.() ?? process.cwd();
 	let detachHumanInput: (() => void) | undefined;
 	pi.on?.("session_start", (_event, ctx) => {
 		contextCwd = ctx?.cwd ?? ctx?.sessionManager?.getCwd?.();
+		projectTrusted = ctx?.isProjectTrusted?.();
 		detachHumanInput?.();
 		detachHumanInput = ctx === undefined ? undefined : bindWorkflowHumanInput(store, ctx, stageUiBroker);
 		if (ctx)
@@ -390,8 +399,9 @@ export function createWorkflowExtensionRuntimeState(
 	};
 
 	function runtimeForContext(ctx?: DurabilityWarningContext): ExtensionRuntime {
+		const contextTrusted = ctx?.isProjectTrusted?.();
 		const models = workflowModelCatalogFromContext(ctx, resolveLiveModelContext);
-		if (models === undefined && !ctx?.generateWorkflowSummary) return runtimeProxy;
+		if (models === undefined && !ctx?.generateWorkflowSummary && contextTrusted === undefined) return runtimeProxy;
 		return createExtensionRuntime({
 			registry: runtimeRef.current.registry,
 			cwd: resolveCwd(),
@@ -399,6 +409,7 @@ export function createWorkflowExtensionRuntimeState(
 			adapters,
 			cancellation: cancellationRegistry,
 			...scopedRunOptions,
+			isProjectTrusted: () => contextTrusted ?? scopedRunOptions.isProjectTrusted(),
 			persistence: persistenceRef.current,
 			mcp: mcpPort,
 			config: runtimeConfigRef.current,

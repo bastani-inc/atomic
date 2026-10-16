@@ -1,3 +1,4 @@
+import type { StorageDescriptor } from "@bastani/atomic/storage";
 import { JOURNAL_READ_PAGE_SIZE, registerSynchronousJournal } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import {
@@ -28,8 +29,10 @@ export class MemoryRunJournal implements RunJournal {
 	private readonly runs = new Map<string, MemoryRun>();
 	private readonly leases = new Map<string, { holderId: string | null; epoch: number; renewedAt: number }>();
 	private closed = false;
+	private readonly storage?: StorageDescriptor;
 
-	constructor() {
+	constructor(storage?: StorageDescriptor) {
+		this.storage = storage === undefined ? undefined : { ...storage };
 		registerSynchronousJournal(this, {
 			createRunSync: this.createRunSync.bind(this),
 			listRunsSync: this.listRunsSync.bind(this),
@@ -58,7 +61,8 @@ export class MemoryRunJournal implements RunJournal {
 		validateText("name", header.name);
 		validateText("cwd", header.cwd);
 		validateText("status", header.status);
-		const stored = storageBoundary(":memory:", () => JSON.parse(serializeJson(header)) as RunHeader);
+		const record = this.storage === undefined ? header : { ...header, storage: this.storage };
+		const stored = storageBoundary(":memory:", () => JSON.parse(serializeJson(record)) as RunHeader);
 		if (this.runs.has(header.runId)) return "exists";
 		this.runs.set(header.runId, { header: stored, entries: [] });
 		return "created";

@@ -52,6 +52,7 @@ import { raceWorkflowRequestAbort } from "./workflow-request-abort.js";
 export interface ExtensionRuntimeOpts {
 	/** Journal selection retained for this runtime's execution and recovery. */
 	journal?: RunJournalOption;
+	isProjectTrusted?: () => boolean;
 	/**
 	 * Pre-populated registry — takes precedence over `definitions`.
 	 * Pass the output of a discovery worker / createBundledWorkflowRegistry here.
@@ -195,7 +196,11 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 	const ensureReady = () =>
 		(ready ??= (
 			presetBackend === undefined
-				? initializeDurableBackend({ cwd: runtimeCwd, journal: opts.journal })
+				? initializeDurableBackend({
+						cwd: runtimeCwd,
+						journal: opts.journal,
+						projectTrusted: opts.isProjectTrusted?.(),
+					})
 				: Promise.resolve(presetBackend)
 		)
 			.then((backend) => {

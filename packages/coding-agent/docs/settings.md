@@ -566,11 +566,26 @@ Workflow runs use a local SQLite journal at `~/.atomic/workflows/journal.sqlite`
 }
 ```
 
-Relative settings paths resolve against the Atomic home directory, normally `~/.atomic`, not the project directory. A non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH` overrides the settings path. SDK `RunOpts.journal` takes precedence over both. Empty environment and settings paths leave the next source in effect.
+Relative settings paths resolve against the Atomic home directory, normally `~/.atomic`, not the project directory. Precedence is SDK `RunOpts.journal`, non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, `workflows.journal`, shared top-level `storage`, then the default journal file. An empty environment variable is ignored. A present empty journal block selects the journal default rather than inheriting shared storage.
 
 To keep workflow records only in memory, set `"journal": { "memory": true }`. Do not combine `memory: true` with a non-empty `path`. Memory must be selected explicitly and cannot recover runs after the process exits; an environment path still takes precedence over this setting.
 
-Project `workflows.journal` replaces the global journal block as a whole. For example, a project can select `{ "memory": true }` over a global path, or a project path over global memory. Within either settings file, combining `memory: true` with a non-empty `path` is still an error.
+Project `workflows.journal` and `storage` each replace their global selection as a whole, including options, secrets, and prefix. For example, a project can select `{ "memory": true }` over a global path. Invalid selected settings raise `StorageConfigError` instead of trying a lower-precedence selection. Combining `memory: true` with a non-empty `path` is an error.
+
+To use your own database driver, install an adapter module and select it by module specifier:
+
+```json
+{
+  "storage": {
+    "adapter": "@example/atomic-sqlite",
+    "options": { "url": "libsql://database.example" },
+    "secrets": { "authToken": { "env": "DATABASE_TOKEN" } },
+    "prefix": "project_"
+  }
+}
+```
+
+The shared `storage` setting currently supplies a journal default; session selection is unchanged. Use `workflows.journal` with the same shape for a journal-only override. A shared empty selection uses `~/.atomic/storage.sqlite`. Atomic bundles no remote driver. Adapter modules execute code, so review them before trusting project settings. Secret references accept `{ "env": "VARIABLE" }` or `{ "file": "token.txt" }`; relative secret files resolve against Atomic home and their contents are passed verbatim. See [Storage adapters](/storage#selecting-an-adapter).
 
 Changing the journal selects a different run history. Preserve the original file to inspect or resume its runs. Storage needs no separate server. If the selected journal cannot be opened or written, the action fails with a typed storage error rather than selecting memory. Restore filesystem access and inspect the retained run before retrying. See [Durable workflows](/workflows/operations#durable-workflows-and-cross-session-resume).
 
