@@ -14,6 +14,7 @@ import {
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
 import { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
 import type { RpcModelRefreshResult } from "../../packages/coding-agent/src/modes/rpc/rpc-types.ts";
@@ -79,6 +80,7 @@ test("isolated host treats an engine-published extension model as configured aft
 		modelRuntime,
 		scopedModels: [],
 		sessionFile: undefined,
+		sessionManager: await SessionManager.create(new MemorySessionStore(), process.cwd()),
 		agent: {
 			state: { model: undefined, thinkingLevel: "off", messages: [] },
 			steeringMode: "all",
@@ -146,6 +148,7 @@ test("an aborted isolated refresh does not replace the current model catalog", a
 		modelRuntime,
 		scopedModels: [],
 		sessionFile: undefined,
+		sessionManager: await SessionManager.create(new MemorySessionStore(), process.cwd()),
 		agent: {
 			state: { model: undefined, thinkingLevel: "off", messages: [] },
 			steeringMode: "all",
@@ -548,7 +551,7 @@ test("isolated queue pause reaches the engine before abort and resumes remotely"
 		modelRuntime,
 		scopedModels: [],
 		sessionFile: undefined,
-		sessionManager: {},
+		sessionManager: await SessionManager.create(new MemorySessionStore(), process.cwd()),
 		agent: {
 			state: { model: undefined, thinkingLevel: "off", messages: [] },
 			steeringMode: "all",

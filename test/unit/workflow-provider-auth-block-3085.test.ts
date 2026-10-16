@@ -152,6 +152,7 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 			cwd: dir,
 			registry: createRegistry([definition]),
 			adapters: {
+				sessionStore: parent.getSessionStore(),
 				agentSession: {
 					create: async (options) => {
 						const credentials = AuthStorage.inMemory({
@@ -193,6 +194,7 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 								}),
 						});
 						const sessionDir = mkdtempSync(join(dir, "stage-"));
+						assert.ok(options.sessionManager);
 						const { session } = await createAgentSession({
 							cwd: sessionDir,
 							agentDir: sessionDir,
@@ -205,7 +207,7 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 								retry: { enabled: true, maxRetries: 3, baseDelayMs: 2000, maxAgentDelayMs: 60_000 },
 								compaction: { enabled: false },
 							}),
-							sessionManager: await SessionManager.create(sessionDir, join(sessionDir, "sessions")),
+							sessionManager: options.sessionManager,
 							resourceLoader: createTestResourceLoader(),
 						});
 						cleanup.push(() => session.dispose());

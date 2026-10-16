@@ -150,7 +150,7 @@ describe("ralph", () => {
 				create_pr: false,
 			},
 			{
-				sessionFile: (name) => `/tmp/ralph-${name}.jsonl`,
+				sessionId: (name) => `ralph-${name}`,
 			},
 		);
 
@@ -159,8 +159,8 @@ describe("ralph", () => {
 		assert.equal(ctx.calls.taskOptions["research-prompt-refinement-1"]?.[0]?.context, undefined);
 		assert.equal(ctx.calls.taskOptions["research-prompt-refinement-2"]?.[0]?.context, "fork");
 		assert.equal(
-			ctx.calls.taskOptions["research-prompt-refinement-2"]?.[0]?.forkFromSessionFile,
-			"/tmp/ralph-research-prompt-refinement-1.jsonl",
+			ctx.calls.taskOptions["research-prompt-refinement-2"]?.[0]?.forkFromSessionId,
+			"ralph-research-prompt-refinement-1",
 		);
 		const forkedRefinementPrompt = ctx.calls.prompts["research-prompt-refinement-2"]?.[0] ?? "";
 		// Forked continuations inherit the skill, request, and contracts from
@@ -170,17 +170,14 @@ describe("ralph", () => {
 		assert.doesNotMatch(forkedRefinementPrompt, /<literal_contract>/);
 
 		assert.equal(ctx.calls.taskOptions["research-2"]?.[0]?.context, "fork");
-		assert.equal(ctx.calls.taskOptions["research-2"]?.[0]?.forkFromSessionFile, "/tmp/ralph-research-1.jsonl");
+		assert.equal(ctx.calls.taskOptions["research-2"]?.[0]?.forkFromSessionId, "ralph-research-1");
 		const forkedResearchPrompt = ctx.calls.prompts["research-2"]?.[0] ?? "";
 		assert.doesNotMatch(forkedResearchPrompt, /\/skill:research-codebase/);
 		assert.match(forkedResearchPrompt, /Research this updated question against the current repository state/);
 		assert.doesNotMatch(forkedResearchPrompt, /<literal_contract>/);
 
 		assert.equal(ctx.calls.taskOptions["orchestrator-2"]?.[0]?.context, "fork");
-		assert.equal(
-			ctx.calls.taskOptions["orchestrator-2"]?.[0]?.forkFromSessionFile,
-			"/tmp/ralph-orchestrator-1.jsonl",
-		);
+		assert.equal(ctx.calls.taskOptions["orchestrator-2"]?.[0]?.forkFromSessionId, "ralph-orchestrator-1");
 		const forkedOrchestratorPrompt = ctx.calls.prompts["orchestrator-2"]?.[0] ?? "";
 		assert.match(forkedOrchestratorPrompt, /Continue implementing from the latest research findings/i);
 		// The forked orchestrator inherits contracts, E2E guidance, and the
@@ -198,7 +195,7 @@ describe("ralph", () => {
 			assert.equal(entries.length, 2, reviewerName);
 			for (const [index, options] of entries.entries()) {
 				assert.equal(options.context, undefined, `${reviewerName}-${index}`);
-				assert.equal(options.forkFromSessionFile, undefined, `${reviewerName}-${index}`);
+				assert.equal(options.forkFromSessionId, undefined, `${reviewerName}-${index}`);
 			}
 		}
 	});

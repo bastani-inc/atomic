@@ -70,7 +70,7 @@ test("every non-quit session shutdown invalidates a post-mortem prompt whose ses
 			const created = Promise.withResolvers<StageSessionRuntime>();
 			let disposeCalls = 0;
 			let promptCalls = 0;
-			const result = ensurePostMortemStageHandle(
+			const result = await ensurePostMortemStageHandle(
 				"run-1",
 				{
 					id: "stage-1",
@@ -79,10 +79,12 @@ test("every non-quit session shutdown invalidates a post-mortem prompt whose ses
 					parentIds: [],
 					toolEvents: [],
 					sessionFile,
+					sessionId: `${reason}-session`,
 				},
 				{
 					registry: stageControlRegistry,
 					cwd: root,
+					defaultSessionDir: root,
 					adapters: {
 						agentSession: {
 							async create() {

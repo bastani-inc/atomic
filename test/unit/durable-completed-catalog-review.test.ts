@@ -64,17 +64,17 @@ function tool(
 	};
 }
 
-function reconstructed(
+async function reconstructed(
 	backend: DurableWorkflowBackend,
 	workflowId: string,
-): {
+): Promise<{
 	runs: readonly RunSnapshot[];
 	root: RunSnapshot;
 	names: string[];
 	orders: Array<number | undefined>;
-} {
+}> {
 	const entry = listCompletedFromBackend(backend).find((item) => item.workflowId === workflowId)!;
-	const runs = completedWorkflowRunSnapshots(backend, entry);
+	const runs = await completedWorkflowRunSnapshots(backend, entry);
 	const root = runs.find((run) => run.id === workflowId)!;
 	const graph = expandWorkflowGraph({ runs, notices: [], version: 1 }, workflowId);
 	return {
@@ -86,7 +86,7 @@ function reconstructed(
 }
 
 describe("completed catalog reviewer regressions", () => {
-	test("keeps a public workflow-run-timing tool visible while excluding the internal timing checkpoint", () => {
+	test("keeps a public workflow-run-timing tool visible while excluding the internal timing checkpoint", async () => {
 		const backend = new InMemoryDurableBackend();
 		const workflowId = testRunId("public-run-timing-name");
 		registerCompleted(backend, workflowId);
@@ -110,10 +110,10 @@ describe("completed catalog reviewer regressions", () => {
 		);
 
 		assert.deepEqual(
-			listOpenableCompletedWorkflows(backend).map((entry) => entry.workflowId),
+			(await listOpenableCompletedWorkflows(backend)).map((entry) => entry.workflowId),
 			[workflowId],
 		);
-		const resolved = resolveCompletedWorkflow(workflowId, backend);
+		const resolved = await resolveCompletedWorkflow(workflowId, backend);
 		assert.equal(resolved.kind, "found");
 		if (resolved.kind !== "found") return;
 		assert.equal(resolved.snapshot.durationMs, 12_345);
@@ -133,7 +133,7 @@ describe("completed catalog reviewer regressions", () => {
 		);
 	});
 
-	test("retains a scoped child tool whose public name matches the run-timing sentinel", () => {
+	test("retains a scoped child tool whose public name matches the run-timing sentinel", async () => {
 		const backend = new InMemoryDurableBackend();
 		const workflowId = testRunId("scoped-name-root");
 		const childRunId = testRunId("scoped-name-child");
@@ -165,8 +165,8 @@ describe("completed catalog reviewer regressions", () => {
 			}),
 		);
 
-		assert.equal(resolveCompletedWorkflow(workflowId, backend).kind, "found");
-		const { runs } = reconstructed(backend, workflowId);
+		assert.equal((await resolveCompletedWorkflow(workflowId, backend)).kind, "found");
+		const { runs } = await reconstructed(backend, workflowId);
 		const child = runs.find((run) => run.id === childRunId)!;
 		assert.deepEqual(
 			child.toolNodes?.map((node) => ({ name: node.name, attachable: node.attachable })),
@@ -184,7 +184,7 @@ describe("completed catalog reviewer regressions", () => {
 		);
 	});
 
-	test("persisted topology order overrides contradictory checkpoint sequence", () => {
+	test("persisted topology order overrides contradictory checkpoint sequence", async () => {
 		const backend = new InMemoryDurableBackend();
 		const workflowId = testRunId("topology-over-sequence");
 		registerCompleted(backend, workflowId);
@@ -207,12 +207,12 @@ describe("completed catalog reviewer regressions", () => {
 			}),
 		);
 
-		const result = reconstructed(backend, workflowId);
+		const result = await reconstructed(backend, workflowId);
 		assert.deepEqual(result.names, ["before", "middle", "after"]);
 		assert.deepEqual(result.orders, [1, 2, 3]);
 	});
 
-	test("preserves nested topology-aware order and boundary fan-in", () => {
+	test("preserves nested topology-aware order and boundary fan-in", async () => {
 		const backend = new InMemoryDurableBackend();
 		const workflowId = testRunId("nested-topology-order");
 		const childRunId = testRunId("nested-topology-child");
@@ -259,7 +259,7 @@ describe("completed catalog reviewer regressions", () => {
 		])
 			backend.recordCheckpoint(checkpoint);
 
-		const { runs } = reconstructed(backend, workflowId);
+		const { runs } = await reconstructed(backend, workflowId);
 		const graph = expandWorkflowGraph({ runs, notices: [], version: 1 }, workflowId);
 		assert.deepEqual(
 			graph.nodes.map((node) => (node.kind === "stage" ? node.stage.name : node.tool.name)),
@@ -274,6 +274,6 @@ describe("completed catalog reviewer regressions", () => {
 		assert.deepEqual(childTool.parentIds, [before.id]);
 		assert.deepEqual(right.parentIds, [before.id]);
 		assert.deepEqual(new Set(after.parentIds), new Set([left.id, childTool.id, right.id]));
-		assert.equal(completedWorkflowSnapshot(backend, listCompletedFromBackend(backend)[0]!)?.id, workflowId);
+		assert.equal((await completedWorkflowSnapshot(backend, listCompletedFromBackend(backend)[0]!))?.id, workflowId);
 	});
 });

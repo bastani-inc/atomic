@@ -35,7 +35,7 @@ function input(runSync: Input["runtime"]["runSync"]): Input {
 		signal: new AbortController().signal,
 		runId: "parallel-detach",
 		sessionDirForIndex: () => undefined,
-		sessionFileForIndex: async () => undefined,
+		sessionManagerForIndex: async () => undefined,
 		shareEnabled: false,
 		artifactConfig: {
 			enabled: false,

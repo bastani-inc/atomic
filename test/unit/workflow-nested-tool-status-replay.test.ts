@@ -114,7 +114,7 @@ describe("nested ctx.tool status replay", () => {
 
 		const entry = backend.listCompletedWorkflows().find((candidate) => candidate.workflowId === runId);
 		assert.ok(entry !== undefined);
-		const restored = completedWorkflowRunSnapshots(backend, entry);
+		const restored = await completedWorkflowRunSnapshots(backend, entry);
 		store.clear();
 		for (const snapshot of restored) store.recordRunStart(snapshot);
 		listing = buildWorkflowStatusListing(topLevelExpandedSnapshots(), "all");

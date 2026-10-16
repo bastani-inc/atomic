@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { durableHash } from "../../packages/workflows/src/durable/backend.js";
 import { FOREIGN_LIVE_WORKFLOW_WINDOW_MS } from "../../packages/workflows/src/durable/resume-eligibility.js";
@@ -705,6 +706,11 @@ describe("targeted durable workflow inspection", () => {
 
 	test("replays a process-lost journal root exactly once only after explicit resume", async () => {
 		let clock = 10_000;
+		const sessionStore = new MemorySessionStore();
+		await sessionStore.create(
+			{ id: "lost-session", version: 4, createdAt: new Date().toISOString(), cwd: process.cwd() },
+			[],
+		);
 		vi.spyOn(Date, "now").mockImplementation(() => clock);
 		const workflowId = testRunId("targeted-process-loss-replay");
 		const crashedOwner = await JournalTestBackend.create();
@@ -798,7 +804,10 @@ describe("targeted durable workflow inspection", () => {
 				registry: createRegistry([definition]),
 				baseRunOpts: {
 					store: resumedStore,
-					adapters: { agentSession: { create: async () => mockSession() } },
+					adapters: {
+						sessionStore,
+						agentSession: { create: async (options) => mockSession(options.sessionManager) },
+					},
 				},
 				durableBackend: recoverer,
 				jobs,

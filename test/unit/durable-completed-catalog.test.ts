@@ -3,29 +3,42 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
+import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
 import {
-	completedWorkflowRunSnapshots,
-	completedWorkflowSnapshot,
 	listCompletedFromBackend,
-	listOpenableCompletedWorkflows,
-	resolveCompletedWorkflow,
+	listOpenableCompletedWorkflows as loadOpenable,
+	completedWorkflowRunSnapshots as loadRunSnapshots,
+	completedWorkflowSnapshot as loadSnapshot,
+	resolveCompletedWorkflow as resolveCompleted,
 } from "../../packages/workflows/src/durable/completed-catalog.js";
 import {
 	formatResumableWorkflowList,
 	listResumableFromBackend,
 } from "../../packages/workflows/src/durable/resume-catalog.js";
+import type { ResumableWorkflowEntry } from "../../packages/workflows/src/durable/types.js";
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
 
 let tempDir = "";
+let sessionStore: JsonlSessionStore;
 
-beforeEach(() => {
+beforeEach(async () => {
 	tempDir = mkdtempSync(join(tmpdir(), "atomic-completed-catalog-"));
+	sessionStore = await JsonlSessionStore.open(tempDir, { exactDirectory: true });
 });
-afterEach(() => {
+afterEach(async () => {
+	await sessionStore.close();
 	rmSync(tempDir, { recursive: true, force: true });
 });
+
+const completedWorkflowRunSnapshots = (backend: InMemoryDurableBackend, entry: ResumableWorkflowEntry) =>
+	loadRunSnapshots(backend, entry, sessionStore);
+const completedWorkflowSnapshot = (backend: InMemoryDurableBackend, entry: ResumableWorkflowEntry) =>
+	loadSnapshot(backend, entry, sessionStore);
+const listOpenableCompletedWorkflows = (backend: InMemoryDurableBackend) => loadOpenable(backend, sessionStore);
+const resolveCompletedWorkflow = (id: string, backend: InMemoryDurableBackend) =>
+	resolveCompleted(id, backend, undefined, sessionStore);
 
 function writeSessionTranscript(path: string, id: string): void {
 	writeFileSync(
@@ -115,6 +128,7 @@ describe("completed durable catalog", () => {
 			replayKey: "stage:summarize:1",
 			output: "finished",
 			sessionFile: transcript,
+			sessionId: "valid-session",
 			model: "provider/model",
 			completedAt: 20,
 		});
@@ -126,27 +140,28 @@ describe("completed durable catalog", () => {
 			name: "missing",
 			replayKey: "stage:missing:1",
 			sessionFile: join(tempDir, "missing.jsonl"),
+			sessionId: "missing",
 			completedAt: 20,
 		});
 
 		assert.deepEqual(
-			new Set(listOpenableCompletedWorkflows(backend).map((entry) => entry.workflowId)),
+			new Set((await listOpenableCompletedWorkflows(backend)).map((entry) => entry.workflowId)),
 			new Set([testRunId("valid-completed"), testRunId("stale-completed")]),
 		);
 		const entries = listCompletedFromBackend(backend);
-		const snapshot = completedWorkflowSnapshot(
+		const snapshot = await completedWorkflowSnapshot(
 			backend,
 			entries.find((entry) => entry.workflowId === testRunId("valid-completed"))!,
 		);
 		assert.equal(snapshot?.status, "completed");
 		assert.equal(snapshot?.stages[0]?.result, "finished");
 		assert.equal(snapshot?.stages[0]?.model, "provider/model");
-		const stale = completedWorkflowSnapshot(
+		const stale = await completedWorkflowSnapshot(
 			backend,
 			entries.find((entry) => entry.workflowId === testRunId("stale-completed"))!,
 		);
 		assert.equal(stale?.stages[0]?.sessionFile, undefined);
-		assert.equal(resolveCompletedWorkflow(testRunId("stale-completed"), backend).kind, "found");
+		assert.equal((await resolveCompletedWorkflow(testRunId("stale-completed"), backend)).kind, "found");
 	});
 
 	test("keeps completed graphs open without retained chat and opens tool-only runs read-only", async () => {
@@ -178,7 +193,7 @@ describe("completed durable catalog", () => {
 				checkpointId: "stage:1",
 				name: "final",
 				replayKey: "stage:final:1",
-				...(item.sessionFile === undefined ? {} : { sessionFile: item.sessionFile }),
+				...(item.sessionFile === undefined ? {} : { sessionFile: item.sessionFile, sessionId: item.id }),
 				completedAt: 20,
 			});
 		}
@@ -194,10 +209,10 @@ describe("completed durable catalog", () => {
 			completedAt: 20,
 		});
 
-		const ids = listOpenableCompletedWorkflows(backend).map((entry) => entry.workflowId);
+		const ids = (await listOpenableCompletedWorkflows(backend)).map((entry) => entry.workflowId);
 		assert.deepEqual(new Set(ids), new Set([...cases.map((item) => item.id), testRunId("tool-only")]));
-		for (const item of cases) assert.equal(resolveCompletedWorkflow(item.id, backend).kind, "found");
-		const toolOnly = resolveCompletedWorkflow(testRunId("tool-only"), backend);
+		for (const item of cases) assert.equal((await resolveCompletedWorkflow(item.id, backend)).kind, "found");
+		const toolOnly = await resolveCompletedWorkflow(testRunId("tool-only"), backend);
 		assert.equal(toolOnly.kind, "found");
 		if (toolOnly.kind === "found") {
 			assert.equal(toolOnly.snapshot.stages.length, 0);
@@ -224,6 +239,7 @@ describe("completed durable catalog", () => {
 			name: "final",
 			replayKey: "stage:final:1",
 			sessionFile: join(tempDir, "obsolete-missing.jsonl"),
+			sessionId: "obsolete-session",
 			completedAt: 20,
 			topology: { version: 1, stageId: "final-source", parentIds: [], sourceOrder: 0, status: "completed" },
 		});
@@ -234,17 +250,18 @@ describe("completed durable catalog", () => {
 			name: "final",
 			replayKey: "stage:final:1",
 			sessionFile: validTranscript,
+			sessionId: "retained-session",
 			output: "done",
 			completedAt: 30,
 			topology: { version: 1, stageId: "final-source", parentIds: [], sourceOrder: 0, status: "completed" },
 		});
 
 		assert.deepEqual(
-			listOpenableCompletedWorkflows(backend).map((entry) => entry.workflowId),
+			(await listOpenableCompletedWorkflows(backend)).map((entry) => entry.workflowId),
 			[testRunId("merged-stage")],
 		);
 		assert.equal(
-			completedWorkflowSnapshot(backend, listCompletedFromBackend(backend)[0]!)?.stages[0]?.sessionFile,
+			(await completedWorkflowSnapshot(backend, listCompletedFromBackend(backend)[0]!))?.stages[0]?.sessionFile,
 			validTranscript,
 		);
 	});
@@ -261,6 +278,7 @@ describe("completed durable catalog", () => {
 			name: "retained",
 			replayKey: "stage:retained:1",
 			sessionFile: validTranscript,
+			sessionId: "usable-session",
 			completedAt: 20,
 		});
 		await backend.recordCheckpoint({
@@ -270,12 +288,13 @@ describe("completed durable catalog", () => {
 			name: "stale",
 			replayKey: "stage:stale:1",
 			sessionFile: join(tempDir, "missing.jsonl"),
+			sessionId: "missing",
 			completedAt: 21,
 		});
 
-		const snapshot = completedWorkflowSnapshot(backend, listCompletedFromBackend(backend)[0]!);
+		const snapshot = await completedWorkflowSnapshot(backend, listCompletedFromBackend(backend)[0]!);
 		assert.deepEqual(
-			listOpenableCompletedWorkflows(backend).map((item) => item.workflowId),
+			(await listOpenableCompletedWorkflows(backend)).map((item) => item.workflowId),
 			[testRunId("partially-retained")],
 		);
 		assert.equal(snapshot?.stages[0]?.sessionFile, validTranscript);
@@ -288,7 +307,13 @@ describe("completed durable catalog", () => {
 		writeFileSync(
 			malformed,
 			[
-				JSON.stringify({ type: "session", id: testRunId("partially-malformed") }),
+				JSON.stringify({
+					type: "session",
+					version: 4,
+					id: testRunId("partially-malformed"),
+					createdAt: new Date().toISOString(),
+					cwd: tempDir,
+				}),
 				JSON.stringify({
 					type: "message",
 					id: "valid",
@@ -313,6 +338,7 @@ describe("completed durable catalog", () => {
 			name: "final",
 			replayKey: "stage:final:1",
 			sessionFile: malformed,
+			sessionId: testRunId("partially-malformed"),
 			completedAt: 20,
 		});
 		for (const item of emptyContent) {
@@ -320,7 +346,13 @@ describe("completed durable catalog", () => {
 			writeFileSync(
 				path,
 				[
-					JSON.stringify({ type: "session", id: item.id }),
+					JSON.stringify({
+						type: "session",
+						version: 4,
+						id: item.id,
+						createdAt: new Date().toISOString(),
+						cwd: tempDir,
+					}),
 					JSON.stringify({
 						type: "message",
 						id: `${item.id}-message`,
@@ -337,17 +369,18 @@ describe("completed durable catalog", () => {
 				name: "final",
 				replayKey: "stage:final:1",
 				sessionFile: path,
+				sessionId: item.id,
 				completedAt: 20,
 			});
 		}
 
-		const entries = listOpenableCompletedWorkflows(backend);
+		const entries = await listOpenableCompletedWorkflows(backend);
 		assert.deepEqual(
 			new Set(entries.map((entry) => entry.workflowId)),
 			new Set([testRunId("partially-malformed"), ...emptyContent.map((item) => item.id)]),
 		);
 		for (const entry of entries)
-			assert.equal(completedWorkflowSnapshot(backend, entry)?.stages[0]?.sessionFile, undefined);
+			assert.equal((await completedWorkflowSnapshot(backend, entry))?.stages[0]?.sessionFile, undefined);
 	});
 
 	test("accepts a retained transcript with a meaningful structured content block", async () => {
@@ -356,7 +389,13 @@ describe("completed durable catalog", () => {
 		writeFileSync(
 			path,
 			[
-				JSON.stringify({ type: "session", id: testRunId("structured-context") }),
+				JSON.stringify({
+					type: "session",
+					version: 4,
+					id: testRunId("structured-context"),
+					createdAt: new Date().toISOString(),
+					cwd: tempDir,
+				}),
 				JSON.stringify({
 					type: "message",
 					id: "structured-context-message",
@@ -373,11 +412,12 @@ describe("completed durable catalog", () => {
 			name: "final",
 			replayKey: "stage:final:1",
 			sessionFile: path,
+			sessionId: testRunId("structured-context"),
 			completedAt: 20,
 		});
 
 		assert.deepEqual(
-			listOpenableCompletedWorkflows(backend).map((item) => item.workflowId),
+			(await listOpenableCompletedWorkflows(backend)).map((item) => item.workflowId),
 			[testRunId("structured-context")],
 		);
 	});
@@ -432,6 +472,7 @@ describe("completed durable catalog", () => {
 				replayKey: "child:left",
 				output: "left",
 				sessionFile: transcript,
+				sessionId: "nested-child-session",
 				topology: { version: 1 as const, stageId: "left", parentIds: [], run: childRun },
 			},
 			{
@@ -483,12 +524,12 @@ describe("completed durable catalog", () => {
 		});
 
 		const entry = listCompletedFromBackend(backend)[0]!;
-		const runs = completedWorkflowRunSnapshots(backend, entry);
+		const runs = await completedWorkflowRunSnapshots(backend, entry);
 		assert.equal(runs.length, 2);
 		const root = runs.find((run) => run.id === runId)!;
 		const childSnapshot = runs.find((run) => run.id === childRunId)!;
 		assert.equal(childSnapshot.parentStageId, root.stages.find((stage) => stage.replayKey === "boundary")?.id);
-		assert.equal(completedWorkflowSnapshot(backend, entry)?.durationMs, 12_345);
+		assert.equal((await completedWorkflowSnapshot(backend, entry))?.durationMs, 12_345);
 		const graph = expandWorkflowGraph({ runs, notices: [], version: 1 }, runId);
 		assert.deepEqual(
 			graph.stages.map((stage) => stage.name),
@@ -542,9 +583,9 @@ describe("completed durable catalog", () => {
 			});
 		}
 
-		assert.equal(listOpenableCompletedWorkflows(backend).length, 0);
-		assert.equal(resolveCompletedWorkflow(testRunId("duplicate-boundary"), backend).kind, "stale");
-		assert.equal(completedWorkflowSnapshot(backend, listCompletedFromBackend(backend)[0]!), undefined);
+		assert.equal((await listOpenableCompletedWorkflows(backend)).length, 0);
+		assert.equal((await resolveCompletedWorkflow(testRunId("duplicate-boundary"), backend)).kind, "stale");
+		assert.equal(await completedWorkflowSnapshot(backend, listCompletedFromBackend(backend)[0]!), undefined);
 	});
 
 	test("hides cyclic and duplicated stage topology", async () => {
@@ -589,9 +630,9 @@ describe("completed durable catalog", () => {
 			});
 		}
 
-		assert.equal(listOpenableCompletedWorkflows(backend).length, 0);
-		assert.equal(resolveCompletedWorkflow(testRunId("cyclic"), backend).kind, "stale");
-		assert.equal(resolveCompletedWorkflow(testRunId("duplicate-stage-id"), backend).kind, "stale");
+		assert.equal((await listOpenableCompletedWorkflows(backend)).length, 0);
+		assert.equal((await resolveCompletedWorkflow(testRunId("cyclic"), backend)).kind, "stale");
+		assert.equal((await resolveCompletedWorkflow(testRunId("duplicate-stage-id"), backend)).kind, "stale");
 	});
 
 	test("hides a boundary terminal that disagrees with its start identity", async () => {
@@ -666,8 +707,8 @@ describe("completed durable catalog", () => {
 			},
 		});
 
-		assert.equal(listOpenableCompletedWorkflows(backend).length, 0);
-		assert.equal(resolveCompletedWorkflow(testRunId("mismatched-terminal"), backend).kind, "stale");
+		assert.equal((await listOpenableCompletedWorkflows(backend)).length, 0);
+		assert.equal((await resolveCompletedWorkflow(testRunId("mismatched-terminal"), backend)).kind, "stale");
 	});
 	test("marks a completed root stale when a current boundary start has no terminal", async () => {
 		const backend = await InMemoryDurableBackend.create();
@@ -750,8 +791,8 @@ describe("completed durable catalog", () => {
 			},
 		});
 
-		assert.deepEqual(completedWorkflowRunSnapshots(backend, listCompletedFromBackend(backend)[0]!), []);
-		assert.deepEqual(listOpenableCompletedWorkflows(backend), []);
-		assert.equal(resolveCompletedWorkflow(runId, backend).kind, "stale");
+		assert.deepEqual(await completedWorkflowRunSnapshots(backend, listCompletedFromBackend(backend)[0]!), []);
+		assert.deepEqual(await listOpenableCompletedWorkflows(backend), []);
+		assert.equal((await resolveCompletedWorkflow(runId, backend)).kind, "stale");
 	});
 });

@@ -99,6 +99,7 @@ export interface BuildGraphOverlayAdapterOpts {
 	 * Defaults to the singleton registry registered alongside the store.
 	 */
 	stageControlRegistry?: StageControlRegistry;
+	resolveSessionStore?: () => import("@bastani/atomic").SessionStore | undefined;
 	/**
 	 * Resolver that revives a post-mortem chat handle for an eligible terminal
 	 * agent stage with a valid retained session but no process-local handle.
@@ -297,8 +298,8 @@ export function buildGraphOverlayAdapter(
 
 		// Already mounted but hidden — flip visibility without remounting.
 		if (mounted && currentHandle?.isHidden()) {
-			currentView?.retarget(runId, stageId, stageRunId);
 			currentView?.setVisible(true);
+			currentView?.retarget(runId, stageId, stageRunId);
 			updateTerminalAutowrap(true);
 			currentHandle.setHidden(false);
 			currentHandle.focus();
@@ -358,6 +359,7 @@ export function buildGraphOverlayAdapter(
 				graphTheme: deriveGraphThemeFromPiTheme(theme),
 				runId,
 				stageControlRegistry: registry,
+				sessionStore: buildOpts.resolveSessionStore?.(),
 				resolvePostMortemHandle,
 				stageUiBroker,
 				onClose: finish,

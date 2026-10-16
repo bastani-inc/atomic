@@ -385,7 +385,7 @@ export function createWorkflowExtensionRuntimeState(
 		prepareCompletedDurable() {
 			return runtimeRef.current.prepareCompletedDurable?.() ?? Promise.resolve([]);
 		},
-		openCompletedDurableWorkflow(workflowId, catalog) {
+		async openCompletedDurableWorkflow(workflowId, catalog) {
 			const open = runtimeRef.current.openCompletedDurableWorkflow;
 			if (open === undefined) {
 				return {
@@ -709,6 +709,7 @@ export function createWorkflowExtensionRuntimeState(
 			reinstallWorkflowHeartbeatScheduler();
 		},
 		updateHostStageSessionDir(sessionManager) {
+			adapters.sessionStore = sessionManager?.getSessionStore?.();
 			try {
 				hostStageSessionDir.current =
 					sessionManager?.usesDefaultSessionDir?.() === false ? sessionManager.getSessionDir?.() : undefined;

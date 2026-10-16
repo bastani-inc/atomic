@@ -6,10 +6,14 @@ import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
 import type { GraphTheme } from "./graph-theme.js";
 
-export type PostMortemHandleResolution = EnsurePostMortemStageHandleResult | undefined;
+export type PostMortemHandleResolution =
+	| EnsurePostMortemStageHandleResult
+	| undefined
+	| Promise<EnsurePostMortemStageHandleResult | undefined>;
 
 export interface WorkflowAttachPaneOpts {
 	store: Store;
+	sessionStore?: import("@bastani/atomic").SessionStore;
 	graphTheme: GraphTheme;
 	runId: string | null;
 	/**

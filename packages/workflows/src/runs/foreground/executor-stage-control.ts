@@ -8,12 +8,12 @@ import { StageToolExecutionBuffer } from "./stage-tool-execution-buffer.js";
 export function createStageControlHandle(runtime: LiveStageRuntime): StageControlHandle {
 	const messagePreparation = (): StageUserMessagePreparation => {
 		const meta = runtime.innerCtx.__sessionMeta();
-		if (meta.sessionId !== undefined || meta.sessionFile !== undefined) {
+		if (meta.sessionId !== undefined) {
 			return { beforePreparation: runtime.throwIfStageMutationBlocked };
 		}
-		if (runtime.stageSnapshot.sessionFile !== undefined) {
+		if (runtime.stageSnapshot.sessionId !== undefined) {
 			return {
-				sessionFile: runtime.stageSnapshot.sessionFile,
+				sessionId: runtime.stageSnapshot.sessionId,
 				beforePreparation: runtime.throwIfStageMutationBlocked,
 			};
 		}
@@ -25,9 +25,9 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 		return { beforePreparation: runtime.throwIfStageMutationBlocked };
 	};
 	const ensureMessagingSession = async (): Promise<void> => {
-		const sessionFile = messagePreparation().sessionFile;
-		if (sessionFile === undefined) return;
-		await runtime.innerCtx.__ensureSessionFromFile(sessionFile);
+		const sessionId = messagePreparation().sessionId;
+		if (sessionId === undefined) return;
+		await runtime.innerCtx.__ensureSessionFromId(sessionId);
 		await runtime.captureStageSessionMeta({ awaitDurable: true });
 	};
 	const toolExecutions = new StageToolExecutionBuffer();
@@ -45,6 +45,9 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 		stageName: runtime.name,
 		get status() {
 			return runtime.stageSnapshot.status;
+		},
+		get sessionStore() {
+			return runtime.innerCtx.__agentSession()?.sessionManager.getSessionStore();
 		},
 		get sessionId() {
 			return runtime.innerCtx.__sessionMeta().sessionId ?? runtime.stageSnapshot.sessionId;

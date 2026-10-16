@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test, vi } from "vitest";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import {
 	type AgentSession,
 	type CreateAgentSessionOptions,
@@ -161,6 +161,7 @@ async function runStageAgainstConfiguredChains(
 		adapters,
 		models: workflowModelCatalogFromContext(parentContext),
 		stageOptions: {
+			sessionDir: join(agentDir, "sessions"),
 			model: `${ACCOUNTS.stagePrimary}/${MODEL_ID}:low`,
 			fallbackModels: [
 				sameAccount
@@ -177,7 +178,7 @@ async function runStageAgainstConfiguredChains(
 			await saved.appendModelChange(ACCOUNTS.stageFallback, MODEL_ID);
 			await saved.appendThinkingLevelChange("high");
 			await saved.appendMessage({ role: "user", content: "previous turn", timestamp: Date.now() });
-			await stage.__ensureSessionFromFile(saved.getSessionFile()!);
+			await stage.__ensureSessionFromId(saved.getSessionId());
 		}
 		let reply: string | undefined;
 		if (exhaust) await assert.rejects(stage.prompt("reply once"), /usage limit/i);
@@ -260,11 +261,12 @@ describe("stage session creation owns fallback only for stages that declare a mo
 		reattach = false,
 	): Promise<StageSessionCreateOptions[]> {
 		const created: StageSessionCreateOptions[] = [];
+		const saved = await SessionManager.create(new MemorySessionStore(), process.cwd());
 		const stage = createStageContext({
 			stageId: "owned",
 			stageName: "owned",
 			runId: "own-chain-options",
-			stageOptions,
+			stageOptions: { ...stageOptions, sessionStore: saved.getSessionStore() },
 			adapters: {
 				agentSession: {
 					async create(options: StageSessionCreateOptions) {
@@ -275,7 +277,7 @@ describe("stage session creation owns fallback only for stages that declare a mo
 			},
 		});
 		try {
-			if (reattach) await stage.__ensureSessionFromFile(join(tmpdir(), "stage-own-chain-missing.jsonl"));
+			if (reattach) await stage.__ensureSessionFromId(saved.getSessionId());
 			else await stage.__ensureSession();
 		} finally {
 			await stage.__dispose();

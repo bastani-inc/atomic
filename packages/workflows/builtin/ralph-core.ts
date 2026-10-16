@@ -330,15 +330,15 @@ export function compactReviewReport(path: string | undefined): string {
 
 type ForkContinuationOptions = {
   readonly context?: "fork";
-  readonly forkFromSessionFile?: string;
+  readonly forkFromSessionId?: string;
 };
 
 export function forkContinuationOptions(
-  sessionFile: string | undefined,
+  sessionId: string | undefined,
 ): ForkContinuationOptions {
-  return sessionFile === undefined || sessionFile.length === 0
+  return sessionId === undefined
     ? {}
-    : { context: "fork", forkFromSessionFile: sessionFile };
+    : { context: "fork", forkFromSessionId: sessionId };
 }
 
 export function renderResearchPromptRefinementPrompt(args: {

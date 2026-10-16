@@ -75,7 +75,7 @@ export async function prepareWorkflowResumeCatalog(
 		shared?.completed ??
 		(runtime.prepareCompletedDurable !== undefined
 			? await runtime.prepareCompletedDurable()
-			: listOpenableCompletedWorkflows(fallbackBackend ?? runtime.durableBackend()));
+			: await listOpenableCompletedWorkflows(fallbackBackend ?? runtime.durableBackend()));
 	return {
 		resumable,
 		completed: completed.filter((entry) => isDisplayLoadable(entry)),
@@ -133,7 +133,7 @@ export async function handleDurableResume(
 			return await resumeDurableTarget(resolved.workflowId, ctx, reporter, deps, runtime);
 		}
 
-		const completedAttempt = openCompleted(
+		const completedAttempt = await openCompleted(
 			runtime,
 			target,
 			catalog.completed,
@@ -310,15 +310,15 @@ async function resumeDurableTarget(
 	return true;
 }
 
-function openCompletedTarget(
+async function openCompletedTarget(
 	workflowId: string,
 	catalog: readonly ResumableWorkflowEntry[],
 	ctx: PiCommandContext,
 	reporter: WorkflowCommandReporter,
 	deps: WorkflowRunControlDeps,
 	runtime: ExtensionRuntime,
-): boolean {
-	const result = openCompleted(runtime, workflowId, catalog, deps.beforeRestoreCompleted, deps.owner?.store);
+): Promise<boolean> {
+	const result = await openCompleted(runtime, workflowId, catalog, deps.beforeRestoreCompleted, deps.owner?.store);
 	if (!result.ok) reporter.error(result.message);
 	else {
 		reporter.info(result.message);

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ExtensionContext } from "@bastani/atomic";
+import type { ExtensionContext, SessionManager } from "@bastani/atomic";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.js";
 import type { AgentConfig } from "../../agents/agents.js";
 import {
@@ -135,9 +135,12 @@ export function prepareExecutionContext(input: {
 			effectiveParams = { ...effectiveParams, task: `${readInstruction}\n\n${effectiveParams.task ?? ""}` };
 	}
 
-	let sessionFileForIndex: (idx?: number) => Promise<string | undefined> = async () => undefined;
+	let sessionManagerForIndex: (idx?: number) => Promise<SessionManager | undefined>;
 	try {
-		sessionFileForIndex = createForkContextResolver(ctx.sessionManager, effectiveParams.context).sessionFileForIndex;
+		sessionManagerForIndex = createForkContextResolver(
+			ctx.sessionManager,
+			effectiveParams.context,
+		).sessionManagerForIndex;
 	} catch (error) {
 		return { error: toExecutionErrorResult(effectiveParams, error) };
 	}
@@ -170,8 +173,6 @@ export function prepareExecutionContext(input: {
 		};
 	}
 	const sessionDirForIndex = (idx?: number) => path.join(sessionRoot, `run-${idx ?? 0}`);
-	const childSessionFileForIndex = async (idx?: number) =>
-		(await sessionFileForIndex(idx)) ?? path.join(sessionDirForIndex(idx), "session.jsonl");
 
 	const onUpdateWithContext = onUpdate
 		? (r: SubagentToolResult) => onUpdate(withForkContext(r, effectiveParams.context))
@@ -189,7 +190,7 @@ export function prepareExecutionContext(input: {
 		shareEnabled,
 		sessionRoot,
 		sessionDirForIndex,
-		sessionFileForIndex: childSessionFileForIndex,
+		sessionManagerForIndex,
 		artifactConfig,
 		artifactsDir,
 		parentDepth: depth,

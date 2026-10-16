@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
+import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
 import type { RpcEvent, RpcSessionState } from "../src/modes/rpc/rpc-types.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
@@ -473,6 +475,50 @@ test("isolated label refresh resolves an empty ID in its store after its display
 	} finally {
 		await harness.cleanup();
 		await store.close();
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+test.each(["", "shared-reload-id"])("isolated reload reads committed ID %j without a file location", async (id) => {
+	const directory = mkdtempSync(join(tmpdir(), "isolated-store-reload-"));
+	const database = await openNodeSqliteDatabase(join(directory, "selected.sqlite"));
+	const writerDatabase = await openNodeSqliteDatabase(join(directory, "selected.sqlite"));
+	const otherDatabase = await openNodeSqliteDatabase(join(directory, "other.sqlite"));
+	const selected = await SqlSessionStore.open(database);
+	const writerStore = await SqlSessionStore.open(writerDatabase);
+	const other = await SqlSessionStore.open(otherDatabase);
+	const header = { id, version: 4 as const, createdAt: new Date().toISOString(), cwd: directory };
+	await selected.create(header, []);
+	await other.create(header, []);
+	const writer = await SessionManager.open(writerStore, id);
+	const otherWriter = await SessionManager.open(other, id);
+	await otherWriter.appendMessage({ role: "user", content: "other project", timestamp: 1 });
+	const harness = await createHarness({ sessionManager: await SessionManager.open(selected, id) });
+	try {
+		const probe = createUnresponsiveEngineClient();
+		probe.client.getState = async () => ({ ...createState(), sessionId: id });
+		const local = new AgentSessionRuntime(harness.session, servicesFor(harness) as never, async () => {
+			assert.fail("reload must retain the selected store");
+		});
+		const runtime = new IsolatedInteractiveRuntime(
+			local,
+			async () => {
+				assert.fail("reload must not replace the runtime");
+			},
+			probe.client as never,
+		);
+		assert.equal(runtime.session.sessionFile, undefined);
+		await writer.appendMessage({ role: "user", content: "committed child turn", timestamp: 2 });
+		await runtime.session.reload();
+		assert.equal(runtime.session.sessionManager.getSessionStore(), selected);
+		assert.equal(runtime.session.sessionId, id);
+		assert.deepEqual(runtime.session.sessionManager.getEntries(), writer.getEntries());
+		assert.deepEqual(runtime.session.messages, writer.buildSessionContext().messages);
+		assert.equal(otherWriter.buildSessionContext().messages[0]?.content, "other project");
+	} finally {
+		await harness.cleanup();
+		await Promise.all([selected.close(), writerStore.close(), other.close()]);
+		await Promise.all([database.close(), writerDatabase.close(), otherDatabase.close()]);
 		rmSync(directory, { recursive: true, force: true });
 	}
 });

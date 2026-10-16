@@ -26,7 +26,9 @@
  *   - src/shared/session-transcript.ts (retained-session validation)
  */
 
-import { isReopenableSessionTranscript } from "../../shared/session-transcript.js";
+import type { SessionStore } from "@bastani/atomic";
+import { isReopenableSession } from "../../shared/session-transcript.js";
+import { stageSessionStore } from "../../shared/stage-session-store.js";
 import type { StageSnapshot } from "../../shared/store-types.js";
 import type {
 	AgentSessionEventListener,
@@ -39,7 +41,7 @@ import { createStageContext, type StageAdapters } from "./stage-runner.js";
 import type { StageUserMessagePreparation } from "./stage-runner-types.js";
 
 /** Why a terminal stage could not be revived as an interactive post-mortem chat. */
-export type PostMortemUnavailableReason = "no_adapter" | "not_terminal" | "no_session" | "invalid_session";
+export type PostMortemUnavailableReason = "no_adapter" | "not_terminal" | "no_session" | "invalid_session" | "closed";
 
 export type EnsurePostMortemStageHandleResult =
 	| { readonly ok: true; readonly handle: StageControlHandle }
@@ -56,6 +58,7 @@ export interface PostMortemStageChatDeps {
 	readonly cwd?: string;
 	/** Default stage session directory to restore after a host restart. */
 	readonly defaultSessionDir?: string;
+	readonly sessionStore?: SessionStore;
 }
 
 /** Terminal statuses whose retained agent session may be reopened for follow-up. */
@@ -63,15 +66,10 @@ const TERMINAL_POSTMORTEM_STATUSES = new Set<StageSnapshot["status"]>(["complete
 
 /**
  * True when the snapshot is an eligible terminal agent stage: a completed stage
- * that retains a `sessionFile`. Prompt/boundary/summary/skipped nodes without
- * their own agent session are excluded because they have no `sessionFile`.
+ * that retains a session ID. Nodes without their own agent session are excluded.
  */
 export function isPostMortemEligibleStage(stage: StageSnapshot): boolean {
-	return (
-		TERMINAL_POSTMORTEM_STATUSES.has(stage.status) &&
-		typeof stage.sessionFile === "string" &&
-		stage.sessionFile.length > 0
-	);
+	return TERMINAL_POSTMORTEM_STATUSES.has(stage.status) && stage.sessionId !== undefined;
 }
 
 /**
@@ -82,34 +80,45 @@ export function isPostMortemEligibleStage(stage: StageSnapshot): boolean {
  * handle keyed by the real `{ runId, stageId }`. Returns an explicit
  * unavailable reason so callers can preserve the read-only transcript.
  */
-export function ensurePostMortemStageHandle(
+export async function ensurePostMortemStageHandle(
 	runId: string,
 	stage: StageSnapshot,
 	deps: PostMortemStageChatDeps,
-): EnsurePostMortemStageHandleResult {
+): Promise<EnsurePostMortemStageHandleResult> {
+	const generation = deps.registry.generation;
 	if (!TERMINAL_POSTMORTEM_STATUSES.has(stage.status)) return { ok: false, reason: "not_terminal" };
 	const existing = deps.registry.claim(runId, stage.id);
 	if (existing !== undefined && existing.isDisposed !== true) {
 		return { ok: true, handle: existing };
 	}
 	if (deps.adapters?.agentSession === undefined) return { ok: false, reason: "no_adapter" };
-	const sessionFile = stage.sessionFile;
-	if (typeof sessionFile !== "string" || sessionFile.length === 0) return { ok: false, reason: "no_session" };
-	if (!isReopenableSessionTranscript(sessionFile)) return { ok: false, reason: "invalid_session" };
+	const sessionId = stage.sessionId;
+	if (sessionId === undefined) return { ok: false, reason: "no_session" };
+	const sessionStore = await stageSessionStore(
+		{
+			sessionStore:
+				deps.registry.getSessionStore(runId, stage.id) ?? deps.sessionStore ?? deps.adapters.sessionStore,
+			cwd: deps.cwd,
+		},
+		deps.defaultSessionDir,
+	);
+	if (!(await isReopenableSession(sessionStore, sessionId))) return { ok: false, reason: "invalid_session" };
+	if (deps.registry.generation !== generation) return { ok: false, reason: "closed" };
 
 	const adapters = deps.adapters;
 	const handle = deps.registry.getOrCreateDetached(runId, stage.id, () =>
-		createPostMortemStageHandle(runId, stage, sessionFile, adapters, deps.cwd, deps.defaultSessionDir),
+		createPostMortemStageHandle(runId, stage, sessionId, adapters, deps.cwd, deps.defaultSessionDir, sessionStore),
 	);
 	return { ok: true, handle };
 }
 
 /** Acquire a tentative detached handle for programmatic message admission. */
-export function acquirePostMortemStageHandle(
+export async function acquirePostMortemStageHandle(
 	runId: string,
 	stage: StageSnapshot,
 	deps: PostMortemStageChatDeps,
-): AcquirePostMortemStageHandleResult {
+): Promise<AcquirePostMortemStageHandleResult> {
+	const generation = deps.registry.generation;
 	if (!TERMINAL_POSTMORTEM_STATUSES.has(stage.status)) return { ok: false, reason: "not_terminal" };
 	const existing = deps.registry.peek(runId, stage.id);
 	if (existing !== undefined && existing.isDisposed !== true) {
@@ -119,28 +128,38 @@ export function acquirePostMortemStageHandle(
 		};
 	}
 	if (deps.adapters?.agentSession === undefined) return { ok: false, reason: "no_adapter" };
-	const sessionFile = stage.sessionFile;
-	if (typeof sessionFile !== "string" || sessionFile.length === 0) return { ok: false, reason: "no_session" };
-	if (!isReopenableSessionTranscript(sessionFile)) return { ok: false, reason: "invalid_session" };
+	const sessionId = stage.sessionId;
+	if (sessionId === undefined) return { ok: false, reason: "no_session" };
+	const sessionStore = await stageSessionStore(
+		{
+			sessionStore:
+				deps.registry.getSessionStore(runId, stage.id) ?? deps.sessionStore ?? deps.adapters.sessionStore,
+			cwd: deps.cwd,
+		},
+		deps.defaultSessionDir,
+	);
+	if (!(await isReopenableSession(sessionStore, sessionId))) return { ok: false, reason: "invalid_session" };
+	if (deps.registry.generation !== generation) return { ok: false, reason: "closed" };
 	const adapters = deps.adapters;
 	const lease = deps.registry.acquireDetached(runId, stage.id, () =>
-		createPostMortemStageHandle(runId, stage, sessionFile, adapters, deps.cwd, deps.defaultSessionDir),
+		createPostMortemStageHandle(runId, stage, sessionId, adapters, deps.cwd, deps.defaultSessionDir, sessionStore),
 	);
 	return { ok: true, lease };
 }
 
 /**
- * Build a lazy session-only stage-control handle that reopens `sessionFile` on
+ * Build a lazy session-only stage-control handle that reopens the session ID on
  * first use and appends follow-up conversation without dispatching the
  * workflow. Pause/resume of workflow execution is rejected.
  */
 export function createPostMortemStageHandle(
 	runId: string,
-	stage: Pick<StageSnapshot, "id" | "name" | "sessionId">,
-	sessionFile: string,
+	stage: Pick<StageSnapshot, "id" | "name" | "sessionId" | "sessionFile">,
+	sessionId: string,
 	adapters: StageAdapters,
 	cwd: string | undefined,
 	defaultSessionDir: string | undefined,
+	sessionStore?: SessionStore,
 ): StageControlHandle {
 	const context = createStageContext({
 		runId,
@@ -148,7 +167,8 @@ export function createPostMortemStageHandle(
 		stageName: stage.name,
 		adapters,
 		stageOptions: {
-			resumeFromSessionFile: sessionFile,
+			resumeFromSessionId: sessionId,
+			sessionStore,
 			...(cwd !== undefined ? { cwd } : {}),
 		},
 		...(defaultSessionDir !== undefined ? { defaultSessionDir } : {}),
@@ -158,14 +178,14 @@ export function createPostMortemStageHandle(
 		if (disposed) throw new Error(`Post-mortem stage chat "${stage.name}" is closed.`);
 	};
 	const messagePreparation = (): StageUserMessagePreparation => ({
-		...(context.__sessionMeta().sessionFile === undefined ? { sessionFile } : {}),
+		...(context.__sessionMeta().sessionId === undefined ? { sessionId } : {}),
 		beforePreparation: throwIfClosed,
 	});
 	const ensureAttached = async (): Promise<void> => {
 		throwIfClosed();
-		const sessionFileToRestore = messagePreparation().sessionFile;
-		if (sessionFileToRestore !== undefined) {
-			await context.__ensureSessionFromFile(sessionFileToRestore);
+		const sessionIdToRestore = messagePreparation().sessionId;
+		if (sessionIdToRestore !== undefined) {
+			await context.__ensureSessionFromId(sessionIdToRestore);
 		}
 	};
 	// Same runtime queue projection the live handle keeps, so a retained-session
@@ -177,11 +197,12 @@ export function createPostMortemStageHandle(
 		stageId: stage.id,
 		stageName: stage.name,
 		status: "completed",
+		sessionStore,
 		get sessionId() {
-			return context.__sessionMeta().sessionId ?? stage.sessionId;
+			return context.__sessionMeta().sessionId ?? sessionId;
 		},
 		get sessionFile() {
-			return context.__sessionMeta().sessionFile ?? sessionFile;
+			return context.__sessionMeta().sessionFile ?? stage.sessionFile;
 		},
 		get isStreaming() {
 			return context.isStreaming;

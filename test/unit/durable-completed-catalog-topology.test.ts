@@ -118,7 +118,7 @@ test("reconstructs multi-level boundary edges when durable completion order is r
 		await backend.recordCheckpoint({ kind: "stage", workflowId: rootId, ...checkpoint });
 	}
 
-	const runs = completedWorkflowRunSnapshots(backend, listCompletedFromBackend(backend)[0]!);
+	const runs = await completedWorkflowRunSnapshots(backend, listCompletedFromBackend(backend)[0]!);
 	assert.equal(runs.length, 3);
 	const graph = expandWorkflowGraph({ runs, notices: [], version: 1 }, rootId);
 	assert.deepEqual(

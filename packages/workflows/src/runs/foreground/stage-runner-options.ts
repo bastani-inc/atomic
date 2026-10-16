@@ -1,5 +1,6 @@
 import { type CreateAgentSessionOptions, SessionManager } from "@bastani/atomic";
 import { resolveStageGroup, stageHasIntercomAccess } from "../../shared/intercom-group.js";
+import { forkStageSession, stageSessionStore } from "../../shared/stage-session-store.js";
 import type { StageExecutionMeta, StageOptions } from "../../shared/types.js";
 import type { AgentSessionConsumer } from "./stage-runner-types.js";
 
@@ -54,8 +55,9 @@ export async function stripWorkflowOnlyOptions(
 		inheritedModelConstraints: _inheritedModelConstraints,
 		routerSelection: _routerSelection,
 		context,
-		forkFromSessionFile,
-		resumeFromSessionFile,
+		forkFromSessionId,
+		resumeFromSessionId,
+		sessionStore,
 		durableReplayKey: _durableReplayKey,
 		durableAccumulatedDurationMs: _durableAccumulatedDurationMs,
 		durableStageId: _durableStageId,
@@ -67,20 +69,29 @@ export async function stripWorkflowOnlyOptions(
 		group: _group,
 		...sessionOptions
 	} = options;
-	if (sessionOptions.sessionManager === undefined) {
-		const cwd = sessionOptions.cwd ?? process.cwd();
-		const effectiveSessionDir = sessionDir ?? defaultSessionDir;
-		if (resumeFromSessionFile !== undefined) {
-			sessionOptions.sessionManager = await SessionManager.open(resumeFromSessionFile, effectiveSessionDir, cwd);
-		} else if (context === "fork" && forkFromSessionFile !== undefined) {
-			sessionOptions.sessionManager = await SessionManager.forkFrom(
-				forkFromSessionFile,
+	const cwd = sessionOptions.cwd ?? process.cwd();
+	if (resumeFromSessionId !== undefined) {
+		sessionOptions.sessionManager = await SessionManager.open(
+			await stageSessionStore(options, defaultSessionDir),
+			resumeFromSessionId,
+			cwd,
+		);
+	} else if (context === "fork" && forkFromSessionId !== undefined) {
+		sessionOptions.sessionManager = await forkStageSession(
+			await stageSessionStore(options, defaultSessionDir),
+			forkFromSessionId,
+			cwd,
+			classification,
+		);
+	} else if (sessionOptions.sessionManager === undefined) {
+		if (sessionStore !== undefined) {
+			sessionOptions.sessionManager = await SessionManager.create(sessionStore, cwd, classification);
+		} else if ((sessionDir ?? defaultSessionDir) !== undefined) {
+			sessionOptions.sessionManager = await SessionManager.create(
 				cwd,
-				effectiveSessionDir,
+				sessionDir ?? defaultSessionDir,
 				classification,
 			);
-		} else if (effectiveSessionDir !== undefined) {
-			sessionOptions.sessionManager = await SessionManager.create(cwd, effectiveSessionDir, classification);
 		}
 	}
 	return {

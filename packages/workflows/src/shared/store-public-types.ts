@@ -301,13 +301,8 @@ export interface Store {
 	getStagePromptAnswer(runId: string, stageId: string): PromptAnswerRecord | undefined;
 	/** Clear the live-only prompt answer record for a stage. Primarily used by tests/cleanup. */
 	clearStagePromptAnswer(runId: string, stageId: string): void;
-	/**
-	 * Record Pi/pi SDK session metadata for a stage after lazy attach. The
-	 * serializable snapshot tracks this so post-mortem reopen via
-	 * `SessionManager.open(sessionFile)` is possible without storing live
-	 * handles in the store. Returns `true` when state changed.
-	 */
-	recordStageSession(runId: string, stageId: string, session: { sessionId?: string; sessionFile?: string }): boolean;
+	/** Record a stage's session ID for reopening in the selected session store. */
+	recordStageSession(runId: string, stageId: string, session: { sessionId: string }): boolean;
 	/** Toggle the `attachable` flag on a stage. */
 	recordStageAttachable(runId: string, stageId: string, attachable: boolean): boolean;
 	/** Toggle the `attached` flag on a stage. Snapshot-only. */

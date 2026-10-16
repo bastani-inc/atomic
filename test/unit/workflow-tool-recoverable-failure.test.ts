@@ -154,7 +154,9 @@ describe("ctx.tool recoverable failures", () => {
 
 		await run(definition, {}, { runId, store: createStore(), durableBackend: backend });
 		const entry = backend.listCompletedWorkflows().find((candidate) => candidate.workflowId === runId)!;
-		const restored = completedWorkflowRunSnapshots(backend, entry).find((candidate) => candidate.id === runId)!;
+		const restored = (await completedWorkflowRunSnapshots(backend, entry)).find(
+			(candidate) => candidate.id === runId,
+		)!;
 
 		assert.equal(restored.status, "completed");
 		assert.equal(restored.toolNodes?.[0]?.status, "failed");

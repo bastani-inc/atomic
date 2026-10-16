@@ -263,6 +263,7 @@ describe("non-attachable tool interactions", () => {
 				state: { liveHandleReleased: false, readinessController: new AbortController() },
 				innerCtx: {
 					subscribe: () => () => {},
+					__agentSession: () => undefined,
 					__requestPause: async () => {
 						if (refused) throw error;
 					},
@@ -349,7 +350,7 @@ describe("non-attachable tool interactions", () => {
 				stageSnapshot: child.stages[0],
 				activeStore: store,
 				state: { liveHandleReleased: false, readinessController: new AbortController() },
-				innerCtx: { subscribe: () => () => {}, __requestPause: async () => {} },
+				innerCtx: { subscribe: () => () => {}, __agentSession: () => undefined, __requestPause: async () => {} },
 				scheduler: {
 					ensureReleaseBarrier: () => {},
 					releaseStageBarrier: () => {},
@@ -411,6 +412,7 @@ describe("non-attachable tool interactions", () => {
 						state: { liveHandleReleased: false, readinessController: new AbortController() },
 						innerCtx: {
 							subscribe: () => () => {},
+							__agentSession: () => undefined,
 							__requestPause: async () => {
 								if (stage.id === "second" && refused) throw new Error("second SDK pause refused");
 							},

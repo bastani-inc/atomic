@@ -413,13 +413,12 @@ export interface StageSnapshot {
 	 */
 	mcpScope?: { allow: string[] | null; deny: string[] | null };
 	/**
-	 * Pi/pi SDK session metadata, populated lazily once the stage
-	 * acquires an AgentSession. Carried on the serializable snapshot so
-	 * the attached chat surface can reopen completed sessions via
-	 * `SessionManager.open(sessionFile)` without keeping live handles in
-	 * the store.
+	 * Session ID populated once the stage acquires an AgentSession.
+	 * The attached chat surface reopens it in the selected session store
+	 * without keeping live handles in the serializable snapshot.
 	 */
 	sessionId?: string;
+	/** Optional transcript location for display, not a session identity. */
 	sessionFile?: string;
 	/** Live startup phase/age. Historical snapshots do not prove an active owner. */
 	startup?: import("./stage-startup.js").StageStartupSnapshot;

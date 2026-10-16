@@ -78,6 +78,7 @@ function registerCompleted(backend: InMemoryDurableBackend, id: string, sessionF
 		replayKey: "stage:final:1",
 		output: "ok",
 		sessionFile,
+		sessionId: `${id}-session`,
 		completedAt: 2,
 	});
 }
@@ -791,7 +792,7 @@ describe("/workflow resume completed target", () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
 		registerCompleted(backend, testRunId("completed-command-target"));
-		const baseRuntime = createExtensionRuntime({ store });
+		const baseRuntime = createExtensionRuntime({ store, resolveDefaultStageSessionDir: () => tempDir });
 		let resumeCalls = 0;
 		const runtime: ExtensionRuntime = {
 			...baseRuntime,

@@ -16,6 +16,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { JsonlSessionStore } from "../../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
 import { workflow } from "../../../packages/workflows/src/authoring/workflow.js";
 import { setDurableBackend } from "../../../packages/workflows/src/durable/factory.js";
 import { JournalDurableBackend } from "../../../packages/workflows/src/durable/journal/journal-backend.js";
@@ -108,14 +109,18 @@ export async function resumeIssue3085FromPersistedState(dir: string): Promise<Is
 			cwd: dir,
 			registry: createRegistry([definition]),
 			adapters: {
+				sessionStore: await JsonlSessionStore.open(join(dir, "parent-sessions"), { exactDirectory: true }),
 				agentSession: {
-					create: async (options) =>
-						createIssue3085StageSession({
+					create: async (options) => {
+						assert.ok(options.sessionManager);
+						return createIssue3085StageSession({
 							dir,
+							sessionManager: options.sessionManager,
 							model: options.model,
 							fallbackModels: options.fallbackModels,
 							recovered: true,
-						}),
+						});
+					},
 				},
 			},
 		});

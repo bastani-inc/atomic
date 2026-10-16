@@ -22,6 +22,8 @@ import { applyStageLabelToAwaitingInputTopRule } from "./stage-input-label.js";
 
 function postMortemUnavailableMessage(reason: StageChatViewContext["postMortemUnavailableReason"]): string | undefined {
 	switch (reason) {
+		case "closed":
+			return "Post-mortem chat is unavailable because its owning session has closed.";
 		case "no_adapter":
 			return "Post-mortem chat is unavailable because no agent session adapter is configured.";
 		case "not_terminal":
@@ -29,7 +31,7 @@ function postMortemUnavailableMessage(reason: StageChatViewContext["postMortemUn
 		case "no_session":
 			return "No retained agent session is available for this stage.";
 		case "invalid_session":
-			return "The retained session is missing, unreadable, or invalid. Check that the session file still exists and is readable.";
+			return "The retained session is missing, unreadable, or invalid in the selected session store.";
 		case undefined:
 			return undefined;
 	}
@@ -66,7 +68,7 @@ export function renderReadOnlyArchiveBody(
 			unavailableMessage === undefined ? "◌" : "!",
 			unavailableMessage === undefined ? "READ-ONLY SESSION" : "SESSION UNAVAILABLE",
 			unavailableMessage === undefined
-				? stage?.sessionFile
+				? stage?.sessionId !== undefined
 					? "archived transcript"
 					: "no live chat session"
 				: "post-mortem chat cannot be reopened",

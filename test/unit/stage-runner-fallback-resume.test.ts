@@ -17,16 +17,30 @@
  */
 
 import assert from "node:assert/strict";
-import { describe, test } from "vitest";
+import { beforeEach, describe, test } from "vitest";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import type {
 	StageRunnerOpts,
 	StageSessionCreateOptions,
 	StageSessionRuntime,
 } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
-import { createStageContext } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
+import { createStageContext as createBaseStageContext } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { unresolvedContextOverflowFailure } from "../../packages/workflows/src/runs/foreground/stage-runner-unresolved-overflow.js";
 import { assistantMessageWithUsage, Type } from "./stage-runner-helpers.js";
 import { executeWorkflowDecision } from "./structured-output-workflow-fixture.js";
+
+let sessionStore: MemorySessionStore;
+beforeEach(async () => {
+	sessionStore = new MemorySessionStore();
+	await sessionStore.create(
+		{ id: "saved-session", version: 4, createdAt: new Date().toISOString(), cwd: process.cwd() },
+		[],
+	);
+});
+
+function createStageContext(options: StageRunnerOpts) {
+	return createBaseStageContext({ ...options, stageOptions: { ...options.stageOptions, sessionStore } });
+}
 
 interface FakeSessionConfig {
 	/** Model object the session reports via `.model` (drives workflowModelId). */
@@ -179,7 +193,7 @@ describe("reattached follow-up resumes on the last working model (#1431 follow-u
 		}, createdWith);
 
 		const ctx = createStageContext(opts);
-		await ctx.__ensureSessionFromFile("/tmp/does-not-exist-resume.jsonl");
+		await ctx.__ensureSessionFromId("saved-session");
 		await ctx.prompt("follow up");
 		await ctx.__dispose();
 
@@ -229,7 +243,7 @@ describe("reattached follow-up resumes on the last working model (#1431 follow-u
 		}, createdWith);
 
 		const ctx = createStageContext(opts);
-		await ctx.__ensureSessionFromFile("/tmp/does-not-exist-restart.jsonl");
+		await ctx.__ensureSessionFromId("saved-session");
 		await ctx.prompt("follow up");
 		await ctx.__dispose();
 
@@ -286,7 +300,7 @@ describe("reattached follow-up resumes on the last working model (#1431 follow-u
 		};
 
 		const ctx = createStageContext(opts);
-		await ctx.__ensureSessionFromFile("/tmp/does-not-exist-structured-resume.jsonl");
+		await ctx.__ensureSessionFromId("saved-session");
 		await ctx.prompt("follow up");
 		await ctx.__dispose();
 
@@ -340,7 +354,7 @@ describe("reattached context overflow resumes fallback after the restored tier",
 		}, createdWith);
 
 		const ctx = createStageContext(opts);
-		await ctx.__ensureSessionFromFile("/tmp/does-not-exist-overflow-middle.jsonl");
+		await ctx.__ensureSessionFromId("saved-session");
 		await ctx.prompt("follow up");
 		await ctx.__dispose();
 
@@ -371,7 +385,7 @@ describe("reattached context overflow resumes fallback after the restored tier",
 		}, createdWith);
 
 		const ctx = createStageContext(opts);
-		await ctx.__ensureSessionFromFile("/tmp/does-not-exist-overflow-final.jsonl");
+		await ctx.__ensureSessionFromId("saved-session");
 		await assert.rejects(() => ctx.prompt("follow up"), /context exhausted/);
 		await ctx.__dispose();
 
@@ -409,7 +423,7 @@ describe("reattached context overflow resumes fallback after the restored tier",
 			},
 		});
 		try {
-			await stage.__ensureSessionFromFile("/tmp/does-not-exist-unspecified-resume.jsonl");
+			await stage.__ensureSessionFromId("saved-session");
 			await stage.prompt("follow up");
 			assert.deepEqual(
 				created.map((options) => options.model),
@@ -443,7 +457,7 @@ describe("reattached context overflow resumes fallback after the restored tier",
 			},
 		});
 		try {
-			await stage.__ensureSessionFromFile("/tmp/does-not-exist-unsuffixed-resume.jsonl");
+			await stage.__ensureSessionFromId("saved-session");
 			await assert.rejects(stage.prompt("follow up"), /context exhausted/);
 			assert.equal(created.length, 1, "an exhausted saved reasoning tier must not create another attempt");
 			assert.equal(prompts.length, 1, "the saved final tier must receive only one provider dispatch");
@@ -478,7 +492,7 @@ describe("reattached context overflow resumes fallback after the restored tier",
 			},
 		});
 		try {
-			await stage.__ensureSessionFromFile("/tmp/does-not-exist-reasoning-resume.jsonl");
+			await stage.__ensureSessionFromId("saved-session");
 			await assert.rejects(stage.prompt("follow up"), /context exhausted/);
 			assert.equal(created.length, 1);
 			assert.equal(prompts.length, 1);

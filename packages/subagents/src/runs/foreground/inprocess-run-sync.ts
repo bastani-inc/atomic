@@ -277,7 +277,7 @@ export async function runSingleInProcess(
 		agent,
 		cwd,
 		testSession: testSession,
-		sessionFile: options.sessionFile,
+		sessionManager: options.sessionManager,
 		...(options.progressPath ? { progressPath: options.progressPath } : {}),
 		...(options.progressArtifactPath
 			? { progressArtifactPath: options.progressArtifactPath }

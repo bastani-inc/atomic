@@ -534,8 +534,9 @@ test("editable postmortem skill invocation appends to its own retained session w
 			endedAt: Date.now(),
 			sessionFile: file,
 		};
-		const resolved = ensurePostMortemStageHandle(fixture.runId, snapshot, {
+		const resolved = await ensurePostMortemStageHandle(fixture.runId, snapshot, {
 			registry,
+			sessionStore: fixture.stage.session.sessionManager.getSessionStore(),
 			cwd: fixture.directory,
 			adapters: {
 				agentSession: {
@@ -621,8 +622,9 @@ test("concurrent lazy discovery across stage panes attaches once and keeps the r
 		assert.ok(file);
 		const snapshot = { ...fixture.store.runs()[0]!.stages[0]!, status: "completed" as const, endedAt: Date.now() };
 		fixture.store.recordStageEnd(fixture.runId, snapshot);
-		const resolved = ensurePostMortemStageHandle(fixture.runId, snapshot, {
+		const resolved = await ensurePostMortemStageHandle(fixture.runId, snapshot, {
 			registry,
+			sessionStore: fixture.stage.session.sessionManager.getSessionStore(),
 			cwd: fixture.directory,
 			adapters: {
 				agentSession: {
@@ -710,8 +712,9 @@ test("lazy stage skill discovery failures are contained, diagnosed and retryable
 		const snapshot = { ...fixture.store.runs()[0]!.stages[0]!, status: "completed" as const, endedAt: Date.now() };
 		fixture.store.recordStageEnd(fixture.runId, snapshot);
 		let creations = 0;
-		const resolved = ensurePostMortemStageHandle(fixture.runId, snapshot, {
+		const resolved = await ensurePostMortemStageHandle(fixture.runId, snapshot, {
 			registry,
+			sessionStore: fixture.stage.session.sessionManager.getSessionStore(),
 			cwd: fixture.directory,
 			adapters: {
 				agentSession: {

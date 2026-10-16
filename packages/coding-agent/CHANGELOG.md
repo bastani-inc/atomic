@@ -5,6 +5,7 @@
 ### Breaking Changes
 
 - `RunOpts.journal.database` now takes an async `SqliteDatabase` facade, not a raw `node:sqlite` connection; use `wrapNodeSqliteDatabase` for an existing connection. Journal configuration failures now use `StorageConfigError` with `source`, `field`, and `reason` instead of `JournalConfigurationError`.
+- Workflow stage forks now take `forkFromSessionId`, and stage resume, retained chat, and subagent forks resolve IDs within the selected session store. File paths are not session identities. Embedded chat hosts must use `await host.loadSession(store, sessionId)` instead of `loadSessionFile(path)`.
 
 ### Added
 

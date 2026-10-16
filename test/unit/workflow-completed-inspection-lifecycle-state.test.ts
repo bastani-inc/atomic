@@ -99,7 +99,7 @@ describe("completed inspection lifecycle delivery state", () => {
 		store.recordRunEnd(testRunId("pending-live"), "completed", {});
 		assert.equal(admissions.length, 1);
 
-		const opened = openCompletedDurableWorkflow(testRunId("pending-live"), {
+		const opened = await openCompletedDurableWorkflow(testRunId("pending-live"), {
 			durableBackend: backend,
 			store,
 			beforeRestore(snapshots) {
@@ -155,7 +155,7 @@ describe("completed inspection lifecycle delivery state", () => {
 			const originalContent = admissions[0]?.content;
 			assert.equal(originalDetails?.workflowName, "original live");
 
-			const opened = openCompletedDurableWorkflow(testRunId("retry-live"), {
+			const opened = await openCompletedDurableWorkflow(testRunId("retry-live"), {
 				durableBackend: backend,
 				store,
 				beforeRestore(snapshots) {

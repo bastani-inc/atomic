@@ -148,7 +148,7 @@ interface ForkFixture {
 	readonly agentDir: string;
 	readonly sessionDir: string;
 	/** A real session file carrying the parent's message and `model_change`. */
-	readonly parentSessionFile: string;
+	readonly parentSession: SessionManager;
 	readonly modelRuntime: ModelRuntime;
 	readonly registry: ModelRegistry;
 	readonly childModel: Model<Api>;
@@ -200,7 +200,7 @@ async function createForkFixture(): Promise<ForkFixture> {
 	const parentSessionFile = parent.getSessionFile();
 	assert.ok(parentSessionFile, "the parent session must be file-backed");
 
-	return { cwd, agentDir, sessionDir, parentSessionFile, modelRuntime, registry, childModel, parentModel };
+	return { cwd, agentDir, sessionDir, parentSession: parent, modelRuntime, registry, childModel, parentModel };
 }
 
 function agentConfig(model: string): AgentConfig {
@@ -227,7 +227,7 @@ async function selectCandidate(fixture: ForkFixture, options: { resolve: boolean
 		cwd: fixture.cwd,
 		runId: "run-1",
 		testSession: { output: "done" },
-		sessionFile: fixture.parentSessionFile,
+		sessionManager: fixture.parentSession,
 		availableModels: [
 			{ provider: CHILD_PROVIDER, id: CHILD_MODEL_ID, fullId: CHILD_FULL_ID },
 			{ provider: PARENT_PROVIDER, id: PARENT_MODEL_ID, fullId: PARENT_FULL_ID },
@@ -243,11 +243,15 @@ async function selectCandidate(fixture: ForkFixture, options: { resolve: boolean
 
 /**
  * Create the child session exactly as `runChildAttempt` does for a fork:
- * `SessionManager.open` on the inherited file, and
+ * `SessionManager.open` in the inherited store by ID, and
  * `model: candidate.model ?? policy.model` — this run carries no policy model.
  */
 async function openChildSession(fixture: ForkFixture, candidate: ModelCandidate): Promise<Model<Api> | undefined> {
-	const sessionManager = await SessionManager.open(fixture.parentSessionFile, fixture.sessionDir, fixture.cwd);
+	const sessionManager = await SessionManager.open(
+		fixture.parentSession.getSessionStore(),
+		fixture.parentSession.getSessionId(),
+		fixture.cwd,
+	);
 	const { session } = await createAgentSession({
 		cwd: fixture.cwd,
 		agentDir: fixture.agentDir,

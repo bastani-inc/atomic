@@ -174,7 +174,7 @@ describe("goal", () => {
 		const ctx = makeMockCtx(
 			{ objective: "Finish the migration" },
 			{
-				sessionFile: (name) => `/tmp/goal-${name}.jsonl`,
+				sessionId: (name) => `goal-${name}`,
 				task: (name, _options, calls) => {
 					if (name.startsWith("completion-reviewer-") || name.startsWith("evidence-reviewer-")) {
 						const firstRound = calls.task.includes("orchestrator-2") === false;
@@ -201,9 +201,9 @@ describe("goal", () => {
 
 		assert.equal(result.status, "complete");
 		assert.equal(ctx.calls.taskOptions["orchestrator-1"]?.[0]?.context, undefined);
-		assert.equal(ctx.calls.taskOptions["orchestrator-1"]?.[0]?.forkFromSessionFile, undefined);
+		assert.equal(ctx.calls.taskOptions["orchestrator-1"]?.[0]?.forkFromSessionId, undefined);
 		assert.equal(ctx.calls.taskOptions["orchestrator-2"]?.[0]?.context, "fork");
-		assert.equal(ctx.calls.taskOptions["orchestrator-2"]?.[0]?.forkFromSessionFile, "/tmp/goal-orchestrator-1.jsonl");
+		assert.equal(ctx.calls.taskOptions["orchestrator-2"]?.[0]?.forkFromSessionId, "goal-orchestrator-1");
 		assert.match(
 			ctx.calls.prompts["orchestrator-2"]?.[0] ?? "",
 			/Continue the same goal-runner orchestrator thread/i,
@@ -212,7 +212,7 @@ describe("goal", () => {
 
 		for (const reviewerName of ["completion-reviewer-2", "evidence-reviewer-2", "risk-reviewer-2"]) {
 			assert.equal(ctx.calls.taskOptions[reviewerName]?.[0]?.context, undefined, reviewerName);
-			assert.equal(ctx.calls.taskOptions[reviewerName]?.[0]?.forkFromSessionFile, undefined, reviewerName);
+			assert.equal(ctx.calls.taskOptions[reviewerName]?.[0]?.forkFromSessionId, undefined, reviewerName);
 		}
 	});
 

@@ -1,4 +1,5 @@
 import { describe, test } from "vitest";
+import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
 import type { AgentSessionAdapter, InternalStageContext, StageSessionCreateOptions } from "./stage-runner-helpers.js";
 import {
 	assert,
@@ -48,6 +49,7 @@ describe("createStageContext — inherited session directories", () => {
 	test("keeps an explicit per-stage sessionDir ahead of defaultSessionDir", async () => {
 		const hostDir = await mkdtemp(join(tmpdir(), "pi-workflows-host-session-dir-"));
 		const stageDir = await mkdtemp(join(tmpdir(), "pi-workflows-stage-session-dir-"));
+		const hostStore = await JsonlSessionStore.open(hostDir, { exactDirectory: true });
 		try {
 			let createOptions: StageSessionCreateOptions | undefined;
 			const agentSession: AgentSessionAdapter = {
@@ -58,7 +60,7 @@ describe("createStageContext — inherited session directories", () => {
 			};
 			const ctx = createStageContext(
 				makeOpts({
-					adapters: { agentSession },
+					adapters: { agentSession, sessionStore: hostStore },
 					defaultSessionDir: hostDir,
 					stageOptions: { cwd: hostDir, sessionDir: stageDir },
 				}),
@@ -68,6 +70,7 @@ describe("createStageContext — inherited session directories", () => {
 
 			assert.equal(createOptions?.sessionManager?.getSessionDir(), stageDir);
 		} finally {
+			await hostStore.close();
 			await rm(hostDir, { recursive: true, force: true });
 			await rm(stageDir, { recursive: true, force: true });
 		}
@@ -109,7 +112,7 @@ describe("createStageContext — inherited session directories", () => {
 		const hostDir = await mkdtemp(join(tmpdir(), "pi-workflows-host-session-dir-"));
 		const sourceDir = await mkdtemp(join(tmpdir(), "pi-workflows-source-session-dir-"));
 		try {
-			const sourceSessionFile = join(sourceDir, "source.jsonl");
+			const sourceSessionFile = join(hostDir, "source.jsonl");
 			await writeFile(
 				sourceSessionFile,
 				`${JSON.stringify({
@@ -135,7 +138,7 @@ describe("createStageContext — inherited session directories", () => {
 					stageOptions: {
 						cwd: sourceDir,
 						context: "fork",
-						forkFromSessionFile: sourceSessionFile,
+						forkFromSessionId: "source-session",
 					},
 				}),
 			) as InternalStageContext;

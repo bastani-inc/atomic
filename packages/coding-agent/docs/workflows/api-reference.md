@@ -513,14 +513,14 @@ For large handoffs, write artifacts to files, pass their paths with `reads`, and
 
 See [Compression and Artifact Handoffs](/workflows/reliable-design#compression-and-artifact-handoffs) and [Filesystem Context](/workflows/reliable-design#filesystem-context) for complete patterns.
 
-### `context` / `forkFromSessionFile`
+### `context` / `forkFromSessionId`
 
 ```typescript
 readonly context?: "fresh" | "fork";
-readonly forkFromSessionFile?: string;
+readonly forkFromSessionId?: string;
 ```
 
-Select a clean session or a forked context, with `forkFromSessionFile` naming an explicit fork source. Omitting `context` creates a fresh session unless the runtime is reopening durable state; see [Locally Scoped Stage Prompts](/workflows/reliable-design#locally-scoped-stage-prompts) for choosing fresh reviewer context versus coherent implementation context.
+Select a clean session or a forked context, with `forkFromSessionId` naming an explicit session ID in the selected session store. Use the earlier task's `sessionId`, not its transcript file path. IDs are preserved verbatim, including an empty stored ID. Omitting `context` creates a fresh session unless the runtime is reopening durable state; see [Locally Scoped Stage Prompts](/workflows/reliable-design#locally-scoped-stage-prompts) for choosing fresh reviewer context versus coherent implementation context.
 
 ### `group`
 
@@ -767,7 +767,7 @@ readonly orchestrationContext?: CreateAgentSessionOptions["orchestrationContext"
 
 These are advanced host-supplied SDK seams on the runtime `StageOptions` used by embedded integrations, not ordinary workflow-file defaults. The standalone workflow-package authoring declaration intentionally omits most of them and types `sessionManager` and `settingsManager` as `never`, so package-authored workflows should not pass these fields directly.
 
-The runtime strips workflow-owned fields before forwarding session options. Internal durable fields such as `resumeFromSessionFile`, `durableReplayKey`, and `durableAccumulatedDurationMs` are not public authoring options.
+The runtime strips workflow-owned fields before forwarding session options. Internal durable fields such as `resumeFromSessionId`, `durableReplayKey`, and `durableAccumulatedDurationMs` are not public authoring options.
 
 ### `name` (step items)
 
@@ -924,7 +924,7 @@ readonly sessionId: string;
 readonly sessionFile: string | undefined;
 ```
 
-Expose the retained session identifier and its optional transcript file. `sessionFile` is `undefined` when no file is available.
+Expose the retained session identifier and its optional transcript file. Use `sessionId` to identify a session in its selected store. `sessionFile` is display metadata and is `undefined` when no file is available; it cannot be used as a fork or resume identity.
 
 ### `stage.setModel(model)` / `stage.setThinkingLevel(level)` / `stage.cycleModel()` / `stage.cycleThinkingLevel()`
 

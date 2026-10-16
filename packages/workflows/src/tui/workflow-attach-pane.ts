@@ -32,6 +32,7 @@ import type { WorkflowAttachPaneMode, WorkflowAttachPaneOpts } from "./workflow-
 const ENTER_TRANSITION_QUARANTINE_MS = 200;
 export class WorkflowAttachPane implements Component {
 	private store: Store;
+	private sessionStore?: WorkflowAttachPaneOpts["sessionStore"];
 	private theme: GraphTheme;
 	private runId: string | null;
 	private registry: StageControlRegistry | undefined;
@@ -52,6 +53,7 @@ export class WorkflowAttachPane implements Component {
 	private now: () => number;
 	private mode: WorkflowAttachPaneMode = "graph";
 	private visible = true;
+	private attachmentGeneration = 0;
 	private graphView: GraphView;
 	private chatView: StageChatView | null = null;
 	private unsubscribeStore: (() => void) | null = null;
@@ -67,6 +69,7 @@ export class WorkflowAttachPane implements Component {
 	private lastStageAwaitingInputKey: string | null = null;
 	constructor(opts: WorkflowAttachPaneOpts) {
 		this.store = opts.store;
+		this.sessionStore = opts.sessionStore;
 		this.theme = opts.graphTheme;
 		this.runId = opts.runId;
 		this.registry = opts.stageControlRegistry;
@@ -153,11 +156,12 @@ export class WorkflowAttachPane implements Component {
 		const run = snap.runs.find((r) => r.id === runId);
 		return run?.name ?? "workflow";
 	}
-	private _attachToStage(
+	private async _attachToStage(
 		runId: string,
 		stageId: string,
 		options: { suppressInitialPromptSubmit?: boolean } = { suppressInitialPromptSubmit: true },
-	): void {
+	): Promise<void> {
+		const generation = ++this.attachmentGeneration;
 		this.graphEnterQuarantineUntil = 0;
 		const snapshot = readGraphStoreSnapshot(this.store);
 		const graphRunId = this._resolveRunId();
@@ -169,16 +173,14 @@ export class WorkflowAttachPane implements Component {
 				: 0;
 		this.attachedRunId = runId;
 		this.lastAttachedStageId = stageId;
-		const { handle, postMortemUnavailableReason } = resolveAttachedStageHandle(
-			this.registry,
-			this.resolvePostMortemHandle,
-			runId,
-			stageId,
-		);
+		const resolution = resolveAttachedStageHandle(this.registry, this.resolvePostMortemHandle, runId, stageId);
+		const { handle, postMortemUnavailableReason } = resolution instanceof Promise ? await resolution : resolution;
+		if (generation !== this.attachmentGeneration || !this.visible) return;
 		this.chatView?.dispose();
 		let chatView!: StageChatView;
 		chatView = new StageChatView({
 			store: this.store,
+			sessionStore: this.sessionStore,
 			graphTheme: this.theme,
 			runId,
 			stageId,
@@ -210,8 +212,10 @@ export class WorkflowAttachPane implements Component {
 		this.chatView = chatView;
 		this.mode = "stage-chat";
 		this.store.recordStageAttached(runId, stageId, this.visible);
+		this.hostRequestRender?.();
 	}
 	private _detachFromStage(reason: StageChatDetachReason = "user", metadata: StageChatDetachMetadata = {}): void {
+		this.attachmentGeneration += 1;
 		this.composerDrafts.capture(this.attachedRunId, this.lastAttachedStageId, this.chatView?._inputBuffer);
 		if (this.chatView && this.attachedRunId && this.lastAttachedStageId) {
 			this.store.recordStageAttached(this.attachedRunId, this.lastAttachedStageId, false);
@@ -233,6 +237,7 @@ export class WorkflowAttachPane implements Component {
 				: 0;
 	}
 	retarget(runId: string | null, stageId?: string, stageRunId?: string): void {
+		this.attachmentGeneration += 1;
 		if (this.chatView && this.attachedRunId && this.lastAttachedStageId) {
 			this.store.recordStageAttached(this.attachedRunId, this.lastAttachedStageId, false);
 		}
@@ -311,6 +316,7 @@ export class WorkflowAttachPane implements Component {
 	}
 	setVisible(visible: boolean): void {
 		this.visible = visible;
+		if (!visible) this.attachmentGeneration += 1;
 		if (this.mode === "stage-chat" && this.attachedRunId && this.lastAttachedStageId) {
 			this.store.recordStageAttached(this.attachedRunId, this.lastAttachedStageId, visible);
 		}
@@ -447,6 +453,7 @@ export class WorkflowAttachPane implements Component {
 		else this.graphView.invalidate();
 	}
 	dispose(): void {
+		this.attachmentGeneration += 1;
 		this.unsubscribeStore?.();
 		this.unsubscribeStore = null;
 		if (this.chatView && this.attachedRunId && this.lastAttachedStageId) {

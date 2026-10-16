@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type { AgentSession } from "@bastani/atomic";
 import { Type } from "typebox";
 import { afterEach, beforeEach, test } from "vitest";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { BUDGET_WRAP_UP_PROMPT } from "../../packages/workflows/src/engine/run-budget.js";
@@ -117,11 +118,13 @@ test("raised-budget continuation replays tool-parented parallel tasks", async ()
 			resumeInFlight: WORKFLOW_CONFIG_DEFAULTS.resumeInFlight,
 		},
 		adapters: {
+			sessionStore: new MemorySessionStore(),
 			agentSession: {
-				async create(_options, meta: StageExecutionMeta) {
+				async create(options, meta: StageExecutionMeta) {
 					const messages: AgentSession["messages"] = [];
 					let lastText: string | undefined;
 					return makeMockSession({
+						sessionId: options.sessionManager!.getSessionId(),
 						messages,
 						async prompt(text) {
 							if (text === BUDGET_WRAP_UP_PROMPT) {

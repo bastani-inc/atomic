@@ -79,15 +79,15 @@ export async function runRalphWorkflow(
   const artifactDir = await createWorkflowArtifactDirectory(runId);
   let approved = false;
   let iterationsCompleted = 0;
-  let previousResearchPromptRefinementSessionFile: string | undefined;
+  let previousResearchPromptRefinementSessionId: string | undefined;
   const convergenceEntries: ConvergenceEntry[] = [];
-  let previousResearchSessionFile: string | undefined;
-  let previousOrchestratorSessionFile: string | undefined;
+  let previousResearchSessionId: string | undefined;
+  let previousOrchestratorSessionId: string | undefined;
   for (let iteration = 1; iteration <= maxLoops; iteration += 1) {
     iterationsCompleted = iteration;
-    const researchPromptRefinementForkOptions = forkContinuationOptions(previousResearchPromptRefinementSessionFile);
+    const researchPromptRefinementForkOptions = forkContinuationOptions(previousResearchPromptRefinementSessionId);
     const researchPromptRefinement = await ctx.task(`research-prompt-refinement-${iteration}`, {
-      prompt: researchPromptRefinementForkOptions.forkFromSessionFile === undefined
+      prompt: researchPromptRefinementForkOptions.forkFromSessionId === undefined
         ? renderResearchPromptRefinementPrompt({
             request: workflowPrompt,
             acceptanceCriteria,
@@ -99,11 +99,11 @@ export async function runRalphWorkflow(
       ...promptEngineerModelConfig,
       ...researchPromptRefinementForkOptions,
     });
-    previousResearchPromptRefinementSessionFile = researchPromptRefinement.sessionFile;
+    previousResearchPromptRefinementSessionId = researchPromptRefinement.sessionId;
     finalPlan = researchPromptRefinement.text;
-    const researchForkOptions = forkContinuationOptions(previousResearchSessionFile);
+    const researchForkOptions = forkContinuationOptions(previousResearchSessionId);
     const research = await ctx.task(`research-${iteration}`, {
-      prompt: researchForkOptions.forkFromSessionFile === undefined
+      prompt: researchForkOptions.forkFromSessionId === undefined
         ? renderResearchPrompt({
             transformedResearchQuestion: researchPromptRefinement.text,
             prompt: workflowPrompt,
@@ -121,14 +121,14 @@ export async function runRalphWorkflow(
       ...researchModelConfig,
       ...researchForkOptions,
     });
-    previousResearchSessionFile = research.sessionFile;
+    previousResearchSessionId = research.sessionId;
     finalResearch = research.text || `Research artifact: ${workflowResearchPath}`;
     const researchPath = workflowResearchPath;
     finalResearchPath = researchPath;
     finalPlanPath = researchPath;
     const orchestratorReportPath = join(artifactDir, "orchestrator-report.md");
-    const orchestratorForkOptions = forkContinuationOptions(previousOrchestratorSessionFile);
-    const orchestratorPrompt = orchestratorForkOptions.forkFromSessionFile === undefined
+    const orchestratorForkOptions = forkContinuationOptions(previousOrchestratorSessionId);
+    const orchestratorPrompt = orchestratorForkOptions.forkFromSessionId === undefined
       ? taggedPrompt([
         ["acceptance_criteria", keepContext(acceptanceCriteria)],
         ["literal_contract", LITERAL_OBJECTIVE_CONTRACT],
@@ -203,7 +203,7 @@ export async function runRalphWorkflow(
       ...orchestratorModelConfig,
       ...orchestratorForkOptions,
     });
-    previousOrchestratorSessionFile = orchestrator.sessionFile;
+    previousOrchestratorSessionId = orchestrator.sessionId;
     finalResult = orchestrator.text || `Orchestrator report artifact: ${orchestratorReportPath}`;
     const reviewPrompt = renderRalphReviewerPrompt({
       workflowPrompt,

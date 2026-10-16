@@ -771,7 +771,7 @@ test("durable session checkpoint roundtrip restores selection without another in
 			parentIds: [],
 			toolEvents: [],
 			replayKey: "stage:test",
-			sessionFile: "/synthetic/session.jsonl",
+			sessionId: "synthetic-session",
 			routerSelection: selection,
 			model: "different/actual",
 		},
@@ -1141,7 +1141,7 @@ test("ranked stage candidates run before configured fallback and survive checkpo
 				parentIds: [],
 				toolEvents: [],
 				replayKey: "stage:ranked",
-				sessionFile: "/synthetic/session.jsonl",
+				sessionId: "synthetic-session",
 				routerSelection: selection,
 			},
 		);
@@ -1253,7 +1253,7 @@ test("durable checkpoints keep routerSelection candidates and reject malformed l
 			parentIds: [],
 			toolEvents: [],
 			replayKey: "stage:test",
-			sessionFile: "/synthetic/session.jsonl",
+			sessionId: "synthetic-session",
 			routerSelection: selection,
 		},
 	);

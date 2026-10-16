@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type net from "node:net";
 import type { CreateAgentSessionOptions } from "@bastani/atomic";
 import { test } from "vitest";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-message-cache.js";
 import { type BrokerConnectedSession, handleBrokerSend } from "../../packages/intercom/broker/send-handler.js";
 import { SupervisorChannelCache } from "../../packages/intercom/broker/supervisor-channel.js";
@@ -354,6 +355,7 @@ test("delivery failure preserves sticky instructions for resumed and later stage
 
 test("fresh durable replay restores a nested stage to the top-level invocation group", async () => {
 	const rootRunId = "durable-invocation-group-root";
+	const sessionStore = new MemorySessionStore();
 	const firstBackend = await JournalTestBackend.create();
 	const firstStore = createStore();
 	const promptStarted = Promise.withResolvers<void>();
@@ -391,11 +393,12 @@ test("fresh durable replay restores a nested stage to the top-level invocation g
 			durableBackend: firstBackend,
 			signal: firstController.signal,
 			adapters: {
+				sessionStore,
 				agentSession: {
 					async create(options) {
 						initialGroup = capturedGroup(options);
 						return {
-							...mockSession(),
+							...mockSession(options.sessionManager),
 							async prompt() {
 								promptStarted.resolve();
 								await releasePrompt.promise;
@@ -432,6 +435,7 @@ test("fresh durable replay restores a nested stage to the top-level invocation g
 			store: createStore(),
 			durableBackend: freshBackend,
 			adapters: {
+				sessionStore,
 				agentSession: {
 					async create(options, meta) {
 						captures.push({
@@ -439,7 +443,7 @@ test("fresh durable replay restores a nested stage to the top-level invocation g
 							workflowRunId: options.orchestrationContext?.workflowRunId,
 							intercomGroup: capturedGroup(options),
 						});
-						return mockSession();
+						return mockSession(options.sessionManager);
 					},
 				},
 			},
@@ -460,6 +464,7 @@ test("fresh durable replay restores a nested stage to the top-level invocation g
 // Regression coverage for #2784.
 test("active durable boolean subgroup resume preserves the persisted group identity", async () => {
 	const rootRunId = "27840003-3528-413e-84c4-87a43e5037a2";
+	const sessionStore = new MemorySessionStore();
 	const promptStarted = Promise.withResolvers<void>();
 	const releasePrompt = Promise.withResolvers<void>();
 	let initialGroup: string | undefined;
@@ -485,11 +490,12 @@ test("active durable boolean subgroup resume preserves the persisted group ident
 			durableBackend: firstBackend,
 			signal: firstController.signal,
 			adapters: {
+				sessionStore,
 				agentSession: {
 					async create(options) {
 						initialGroup = capturedGroup(options);
 						return {
-							...mockSession(),
+							...mockSession(options.sessionManager),
 							async prompt() {
 								promptStarted.resolve();
 								await releasePrompt.promise;
@@ -518,10 +524,11 @@ test("active durable boolean subgroup resume preserves the persisted group ident
 			store: createStore(),
 			durableBackend: freshBackend,
 			adapters: {
+				sessionStore,
 				agentSession: {
 					async create(options) {
 						resumedGroup = capturedGroup(options);
-						return mockSession();
+						return mockSession(options.sessionManager);
 					},
 				},
 			},

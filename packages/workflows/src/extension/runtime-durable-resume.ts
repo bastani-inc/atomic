@@ -57,7 +57,7 @@ export interface DurableResumeRuntime {
 	openCompletedDurableWorkflow?(
 		workflowId: string,
 		catalog?: readonly ResumableWorkflowEntry[],
-	): OpenCompletedDurableResult;
+	): Promise<OpenCompletedDurableResult>;
 }
 
 export interface DurableResumeRuntimeDeps {
@@ -219,25 +219,26 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 				try {
 					await backend.hydrateResumableWorkflows();
 					await hydrateStoredWorkflowCandidates(backend);
-					return listOpenableCompletedWorkflows(backend);
+					return await listOpenableCompletedWorkflows(backend, deps.adapters?.sessionStore);
 				} finally {
 					purgeSuppressedWorkflowRuns(backend, deps.store, deps.toolControlRegistry);
 				}
 			});
 		},
-		openCompletedDurableWorkflow(workflowId, catalog) {
+		async openCompletedDurableWorkflow(workflowId, catalog) {
 			const finish = workflowObservationRuntime(deps.store).beginRecovery();
 			try {
 				const backend = selectedBackend(workflowId);
 				const entry = resolveCatalogEntry(workflowId, catalog ?? []);
 				const handle = backend.getWorkflow(entry?.workflowId ?? workflowId);
-				return openCompletedSnapshot(
+				return await openCompletedSnapshot(
 					workflowId,
 					{
 						durableBackend: backend,
 						store: deps.store,
 						stageControlRegistry: deps.stageControlRegistry,
 						adapters: deps.adapters,
+						sessionStore: deps.adapters?.sessionStore,
 						cwd: handle?.workflowCwd ?? handle?.invocationCwd ?? deps.runtimeCwd,
 						defaultSessionDir: deps.resolveDefaultStageSessionDir?.(),
 						beforeRestore: deps.beforeRestoreCompleted,

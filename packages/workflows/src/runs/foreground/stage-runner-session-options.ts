@@ -1,4 +1,4 @@
-import { type CreateAgentSessionOptions, SessionManager } from "@bastani/atomic";
+import type { CreateAgentSessionOptions } from "@bastani/atomic";
 import type { StageOptions } from "../../shared/types.js";
 import type { WorkflowResolvedModelCandidate, WorkflowResolvedScopedModel } from "../shared/model-fallback.js";
 
@@ -9,7 +9,7 @@ interface StageSessionOptionsInput {
 	/** Scoped models already resolved through the stage's model catalog. */
 	readonly scopedModels?: readonly WorkflowResolvedScopedModel[];
 	readonly restoreSavedModel?: boolean;
-	readonly reattachSessionFile: string | undefined;
+	readonly reattachSessionId: string | undefined;
 	readonly sharedModelRuntime: CreateAgentSessionOptions["modelRuntime"];
 	/** Directory for stages without an explicit cwd, applied before any session manager is created. */
 	readonly defaultCwd?: string;
@@ -44,11 +44,10 @@ export async function buildStageSessionOptions(input: StageSessionOptionsInput):
 	}
 	if (input.restoreSavedModel === true) delete options.model;
 
-	if (input.reattachSessionFile !== undefined && options.sessionManager === undefined) {
-		const cwd = options.cwd ?? process.cwd();
-		options.sessionManager = await SessionManager.open(input.reattachSessionFile, options.sessionDir, cwd);
+	if (input.reattachSessionId !== undefined) {
+		options.resumeFromSessionId = input.reattachSessionId;
 		options.context = undefined;
-		options.forkFromSessionFile = undefined;
+		options.forkFromSessionId = undefined;
 	}
 	if (input.sharedModelRuntime !== undefined && options.modelRuntime === undefined) {
 		options.modelRuntime = input.sharedModelRuntime;

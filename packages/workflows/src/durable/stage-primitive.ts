@@ -79,7 +79,7 @@ export async function recordStageSessionCheckpoint(
 	options?: { readonly force?: boolean },
 ): Promise<boolean> {
 	const replayKey = deps.replayKeyForCompletedStage?.(stage) ?? stage.replayKey ?? deps.nextReplayKey(stage.name);
-	if (stage.sessionFile === undefined) return false;
+	if (stage.sessionId === undefined) return false;
 	const checkpointNow = deps.now?.() ?? Date.now();
 	const durationMs = elapsedStageMs(stage, checkpointNow) ?? 0;
 	const current = deps.backend.getStageSession(deps.workflowId, replayKey);
@@ -87,7 +87,6 @@ export async function recordStageSessionCheckpoint(
 		options?.force !== true &&
 		current !== undefined &&
 		current.sessionId === stage.sessionId &&
-		current.sessionFile === stage.sessionFile &&
 		current.startedAt === stage.startedAt &&
 		stageSessionDurationBucket(current.durationMs) === stageSessionDurationBucket(durationMs)
 	)
@@ -163,7 +162,7 @@ export function createDurableStagePrimitive(input: {
 			return createCachedStageContext(name, cached.output, cached.result, recorded);
 		}
 		const session = input.backend.getStageSession(input.workflowId, replayKey);
-		const isMidSessionResume = session?.sessionFile !== undefined;
+		const isMidSessionResume = session?.sessionId !== undefined;
 		const topology = activeStageTopology(input.backend, input.workflowId, replayKey);
 		const durableStageId =
 			topology?.stageId ?? pendingStageIdForReplay(input.backend, input.workflowId, replayKey, name);
@@ -176,7 +175,7 @@ export function createDurableStagePrimitive(input: {
 			...(durableIntercomGroup !== undefined ? { durableIntercomGroup } : {}),
 			...(isMidSessionResume
 				? {
-						resumeFromSessionFile: session.sessionFile,
+						resumeFromSessionId: session.sessionId,
 						routerSelection: session.routerSelection,
 						durableAccumulatedDurationMs: session.durationMs ?? 0,
 					}
@@ -246,9 +245,9 @@ export function createDurableTaskPrimitive(input: {
 					}
 				: {}),
 			...(durableIntercomGroup !== undefined ? { durableIntercomGroup } : {}),
-			...(session?.sessionFile !== undefined
+			...(session?.sessionId !== undefined
 				? {
-						resumeFromSessionFile: session.sessionFile,
+						resumeFromSessionId: session.sessionId,
 						routerSelection: session.routerSelection,
 						durableAccumulatedDurationMs: session.durationMs ?? 0,
 					}
@@ -633,7 +632,6 @@ export function stableCheckpointId(kind: string, replayKey: string): string {
 function stageSessionCheckpointId(replayKey: string, stage: StageSnapshot, durationMs: number): string {
 	return `${stableCheckpointId("stage-session", replayKey)}:${durableHash({
 		sessionId: stage.sessionId ?? "",
-		sessionFile: stage.sessionFile ?? "",
 		startedAt: stage.startedAt ?? 0,
 		durationMs,
 	})}`;

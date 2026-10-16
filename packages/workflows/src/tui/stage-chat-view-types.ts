@@ -26,6 +26,7 @@ export function isReadOnlyArchiveStatus(status: StageStatus): boolean {
 
 export interface StageChatViewOpts {
 	store: Store;
+	sessionStore?: import("@bastani/atomic").SessionStore;
 	graphTheme: GraphTheme;
 	runId: string;
 	stageId: string;
@@ -111,6 +112,7 @@ export interface PaintOpts {
 export interface StageChatViewContext {
 	focused: boolean;
 	store: Store;
+	sessionStore?: import("@bastani/atomic").SessionStore;
 	theme: GraphTheme;
 	runId: string;
 	stageId: string;

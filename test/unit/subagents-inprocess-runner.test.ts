@@ -463,7 +463,6 @@ test("parallel siblings share one control plane and persist distinct terminal ar
 					runId: "parallel-parent",
 					index,
 					sessionDir: join(sessionRoot, `run-${index}`),
-					sessionFile: join(sessionRoot, `run-${index}`, "session.jsonl"),
 					artifactsDir,
 					artifactConfig: {
 						enabled: true,
@@ -662,7 +661,6 @@ test("terminal artifacts use the configured prefix exactly once", async () => {
 			runId: "prefix-parent",
 			index: 1,
 			sessionDir: join(root, "sessions", "run-1"),
-			sessionFile: join(root, "sessions", "run-1", "session.jsonl"),
 			artifactsDir,
 			artifactConfig: {
 				enabled: true,

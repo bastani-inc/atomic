@@ -21,7 +21,7 @@ import { createExtensionRuntime } from "../../../packages/coding-agent/src/core/
 import { ModelRuntime } from "../../../packages/coding-agent/src/core/model-runtime.js";
 import type { ResourceLoader } from "../../../packages/coding-agent/src/core/resource-loader-types.js";
 import { createAgentSession } from "../../../packages/coding-agent/src/core/sdk.js";
-import { SessionManager } from "../../../packages/coding-agent/src/core/session-manager.js";
+import type { SessionManager } from "../../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../../packages/coding-agent/src/core/settings-manager.js";
 import type {
 	StageSessionCreateOptions,
@@ -116,6 +116,7 @@ function createIssue3085ResourceLoader(): ResourceLoader {
 
 export async function createIssue3085StageSession(input: {
 	readonly dir: string;
+	readonly sessionManager: SessionManager;
 	readonly model: StageSessionCreateOptions["model"];
 	readonly fallbackModels?: StageSessionCreateOptions["fallbackModels"];
 	readonly recovered: boolean;
@@ -177,7 +178,7 @@ export async function createIssue3085StageSession(input: {
 			},
 			compaction: { enabled: false },
 		}),
-		sessionManager: await SessionManager.create(sessionDir, join(sessionDir, "sessions")),
+		sessionManager: input.sessionManager,
 		resourceLoader: createIssue3085ResourceLoader(),
 	});
 	return session as unknown as StageSessionRuntime;

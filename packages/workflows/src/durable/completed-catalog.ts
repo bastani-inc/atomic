@@ -1,5 +1,7 @@
+import type { SessionStore } from "@bastani/atomic";
 import { flattenTruncatedString } from "../shared/flat-string.js";
-import { isReopenableSessionTranscript } from "../shared/session-transcript.js";
+import { isReopenableSession } from "../shared/session-transcript.js";
+import { stageSessionStore } from "../shared/stage-session-store.js";
 import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
 import { boundedToolPayload, boundedToolPayloadRecord, boundedToolText } from "../shared/tool-payload-bounds.js";
 import type { WorkflowInputValues, WorkflowSerializableValue } from "../shared/types.js";
@@ -69,21 +71,28 @@ export function listCompletedFromBackend(backend: DurableWorkflowBackend): reado
 }
 
 /** Completed rows whose authoritative stage topology reconstructs safely. */
-export function listOpenableCompletedWorkflows(backend: DurableWorkflowBackend): readonly ResumableWorkflowEntry[] {
-	return listCompletedFromBackend(backend)
-		.filter((entry) => completedWorkflowSnapshot(backend, entry) !== undefined)
-		.sort((a, b) => b.updatedAt - a.updatedAt);
+export async function listOpenableCompletedWorkflows(
+	backend: DurableWorkflowBackend,
+	sessionStore?: SessionStore,
+): Promise<readonly ResumableWorkflowEntry[]> {
+	const entries = listCompletedFromBackend(backend);
+	const snapshots = await Promise.all(entries.map((entry) => completedWorkflowSnapshot(backend, entry, sessionStore)));
+	return entries.filter((_entry, index) => snapshots[index] !== undefined).sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
-export function resolveCompletedWorkflow(
+export async function resolveCompletedWorkflow(
 	workflowId: string,
 	backend: DurableWorkflowBackend,
-	openableCatalog: readonly ResumableWorkflowEntry[] = listOpenableCompletedWorkflows(backend),
-): CompletedWorkflowResolution {
-	const resolved = resolveDurableEntry(workflowId, openableCatalog);
+	openableCatalog?: readonly ResumableWorkflowEntry[],
+	sessionStore?: SessionStore,
+): Promise<CompletedWorkflowResolution> {
+	const resolved = resolveDurableEntry(
+		workflowId,
+		openableCatalog ?? (await listOpenableCompletedWorkflows(backend, sessionStore)),
+	);
 	if (resolved !== undefined) {
 		if ("kind" in resolved) return { kind: "malformed", message: resolved.message };
-		const snapshot = completedWorkflowSnapshot(backend, resolved);
+		const snapshot = await completedWorkflowSnapshot(backend, resolved, sessionStore);
 		if (snapshot === undefined) {
 			return { kind: "stale", entry: resolved };
 		}
@@ -96,30 +105,38 @@ export function resolveCompletedWorkflow(
 	return { kind: "stale", entry: authoritative };
 }
 
-export function completedWorkflowSnapshot(
+export async function completedWorkflowSnapshot(
 	backend: DurableWorkflowBackend,
 	entry: ResumableWorkflowEntry,
-): RunSnapshot | undefined {
-	const runs = completedWorkflowRunSnapshots(backend, entry);
+	sessionStore?: SessionStore,
+): Promise<RunSnapshot | undefined> {
+	const runs = await completedWorkflowRunSnapshots(backend, entry, sessionStore);
 	return runs.find((run) => run.id === entry.workflowId);
 }
 
 /** Rebuild the root plus every nested child run required by graph expansion. */
-export function completedWorkflowRunSnapshots(
+export async function completedWorkflowRunSnapshots(
 	backend: DurableWorkflowBackend,
 	entry: ResumableWorkflowEntry,
-): readonly RunSnapshot[] {
+	sessionStore?: SessionStore,
+): Promise<readonly RunSnapshot[]> {
 	const handle = backend.getWorkflow(entry.workflowId);
 	if (handle === undefined || (handle.status !== "completed" && handle.status !== "failed")) return [];
 	const checkpoints = backend.listCheckpoints(entry.workflowId);
 	if (checkpoints.length === 0) return [];
-	const runs = runSnapshotsFromCheckpoints(
-		checkpoints,
-		handle.workflowId,
-		handle.name,
-		handle.updatedAt,
-		COMPLETED_RECONSTRUCTION,
-	).map((run) => ({ ...run, stages: run.stages.map(validatedStageTranscript) }));
+	const selectedStore = sessionStore ?? (await stageSessionStore({ cwd: handle.workflowCwd ?? handle.invocationCwd }));
+	const runs = await Promise.all(
+		runSnapshotsFromCheckpoints(
+			checkpoints,
+			handle.workflowId,
+			handle.name,
+			handle.updatedAt,
+			COMPLETED_RECONSTRUCTION,
+		).map(async (run) => ({
+			...run,
+			stages: await Promise.all(run.stages.map((stage) => validatedStageTranscript(stage, selectedStore))),
+		})),
+	);
 	const rootIndex = runs.findIndex((run) => run.id === handle.workflowId);
 	if (rootIndex < 0) return [];
 	const rootDuration =
@@ -216,11 +233,10 @@ export function durableNestedRunSnapshots(
 	).filter((run) => run.id !== rootWorkflowId);
 }
 
-function validatedStageTranscript(stage: StageSnapshot): StageSnapshot {
-	if (stage.sessionFile === undefined || isReopenableSessionTranscript(stage.sessionFile)) return stage;
-	const { sessionFile, ...withoutSessionFile } = stage;
-	void sessionFile;
-	return withoutSessionFile;
+async function validatedStageTranscript(stage: StageSnapshot, store: SessionStore): Promise<StageSnapshot> {
+	if (stage.sessionId !== undefined && (await isReopenableSession(store, stage.sessionId))) return stage;
+	const { sessionId: _sessionId, sessionFile: _sessionFile, ...withoutSession } = stage;
+	return withoutSession;
 }
 
 /** Enumerate checkpoints once so stage and tool nodes share one order domain. */

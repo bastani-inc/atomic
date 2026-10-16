@@ -72,7 +72,7 @@ describe("WorkflowParametersSchema", () => {
 			async: true,
 			intercom: { enabled: true },
 			context: "fresh",
-			forkFromSessionFile: "/tmp/session.jsonl",
+			forkFromSessionId: "source-session",
 			output: "result.md",
 			outputMode: "file-only",
 			reads: ["input.md"],
