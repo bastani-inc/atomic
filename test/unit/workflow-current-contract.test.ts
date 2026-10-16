@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { resolveToolResumeFrontier } from "../../packages/workflows/src/durable/tool-resume-frontier.js";
 import * as lifecycle from "../../packages/workflows/src/runs/foreground/executor-lifecycle.js";
 import { buildModelCandidates } from "../../packages/workflows/src/runs/shared/model-fallback-candidates.js";
@@ -8,6 +7,7 @@ import * as sdk from "../../packages/workflows/src/sdk-surface.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import * as targets from "../../packages/workflows/src/shared/workflow-stage-target.js";
 import { parseTerminalMouseInput } from "../../packages/workflows/src/tui/mouse-input.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const rootId = "00000000-0000-4000-8000-000000000001";
 

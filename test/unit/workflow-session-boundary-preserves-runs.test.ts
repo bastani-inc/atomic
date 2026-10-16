@@ -4,12 +4,7 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.ts";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { type DurableWorkflowBackend, InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import {
-	getDurableBackend,
-	initializeDurableBackend,
-	setDurableBackend,
-} from "../../packages/workflows/src/durable/factory.js";
+import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
 import { reclaimReleasedRunsOwnedBy } from "../../packages/workflows/src/durable/sdk-owner-release.js";
 import { adoptWorkflowSessionRunState } from "../../packages/workflows/src/extension/adopt-session-run-state.js";
 import {
@@ -34,6 +29,11 @@ import { store } from "../../packages/workflows/src/shared/store.js";
 import { adoptStore, currentWorkflowStore } from "../../packages/workflows/src/shared/store-factory.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
+import {
+	currentStoreBackend as getDurableBackend,
+	configureCurrentTestStoreBackend as setDurableBackend,
+} from "../helpers/store-backend.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 type SessionEventHandler = (event?: unknown, ctx?: unknown) => Promise<unknown>;
 
@@ -225,10 +225,10 @@ test("owner quit drains retained generations, preserves sibling and borrowed bac
 	assert.equal(firstDisposed, true);
 	assert.equal(successorDisposed, true);
 	assert.equal(siblingDisposed, false);
-	assert.equal(await initializeDurableBackend(), backend);
+	assert.equal(getDurableBackend(), backend);
 	await sibling.get("session_shutdown")!({ reason: "quit" });
 	assert.equal(siblingDisposed, true);
-	assert.equal(await initializeDurableBackend(), backend);
+	assert.equal(getDurableBackend(), backend);
 });
 
 test("owner quit attempts all generation cleanup after a disposal failure", async () => {

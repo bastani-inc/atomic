@@ -106,7 +106,7 @@ describe("DefaultPackageManager", () => {
 			const workflowSettings = SettingsManager.inMemory({
 				workflows: {
 					paths: ["configured.ts"],
-					durability: { systemDatabaseUrl: "postgresql://user:secret@db.example/workflows" },
+					journal: { path: "workflow-runs.sqlite" },
 				},
 			});
 			const configured = new DefaultPackageManager({ cwd: tempDir, agentDir, settingsManager: workflowSettings });

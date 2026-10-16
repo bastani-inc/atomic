@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { afterEach, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { isWorkflowRunResumable } from "../../packages/workflows/src/durable/resume-eligibility.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { restoreOnSessionStart, type SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
 import { effectiveRunStatus } from "../../packages/workflows/src/shared/returned-run-status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import {
 	type AgentSession,
 	type AgentSessionAdapter,

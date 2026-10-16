@@ -6,13 +6,13 @@ import type {
 	WorkflowEvent,
 } from "../../packages/coding-agent/src/core/extensions/workflow-events.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createDurableResumeRuntime } from "../../packages/workflows/src/extension/runtime-durable-resume.js";
 import { installWorkflowHeartbeatScheduler } from "../../packages/workflows/src/extension/workflow-heartbeat-scheduler.js";
 import { createWorkflowObservation } from "../../packages/workflows/src/extension/workflow-observation.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 // #2891: restoring graph records must never manufacture execution ownership.
 test("historical tool transitions without an executor stay idle", () => {

@@ -25,15 +25,15 @@ export function isSdkDurableRunInScope<
 	);
 }
 
-export function isSdkCrashedRunAdoptable(
+export async function isSdkCrashedRunAdoptable(
 	handle: DurableWorkflowHandle,
 	cwd: string | undefined,
 	backend: DurableWorkflowBackend,
-): boolean {
+): Promise<boolean> {
 	return (
 		isSdkDurableRunInScope(handle, cwd) &&
 		handle.status === "running" &&
-		backend.workflowOwnership(handle.workflowId) === "available"
+		(await backend.workflowOwnership(handle.workflowId)) === "available"
 	);
 }
 
@@ -48,10 +48,10 @@ export function isSdkReleasedRunAdoptable(handle: DurableWorkflowHandle, cwd: st
 }
 
 /** Another SDK session may take over a run its owner crashed on or disposed its session over. */
-export function isSdkRunAdoptable(
+export async function isSdkRunAdoptable(
 	handle: DurableWorkflowHandle,
 	cwd: string | undefined,
 	backend: DurableWorkflowBackend,
-): boolean {
-	return isSdkCrashedRunAdoptable(handle, cwd, backend) || isSdkReleasedRunAdoptable(handle, cwd);
+): Promise<boolean> {
+	return (await isSdkCrashedRunAdoptable(handle, cwd, backend)) || isSdkReleasedRunAdoptable(handle, cwd);
 }

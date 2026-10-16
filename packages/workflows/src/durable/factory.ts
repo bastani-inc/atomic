@@ -1,25 +1,22 @@
-import { type DurableWorkflowBackend, InMemoryDurableBackend } from "./backend.js";
-import { getDurableBackendProcessOwner, resetDurableBackendProcessOwner } from "./backend-process-owner.js";
+import { resolve } from "node:path";
+import { SettingsManager } from "@bastani/atomic";
+import type { DurableWorkflowBackend } from "./backend.js";
+import {
+	getDurableBackendProcessOwner,
+	resetDurableBackendProcessOwner,
+	type SelectedDurableBackend,
+} from "./backend-process-owner.js";
 import { JournalDurableBackend } from "./journal/journal-backend.js";
-import { JournalError } from "./journal/types.js";
+import {
+	type RunJournalOption,
+	type RunJournalSettings,
+	resolveRunJournal,
+	selectRunJournal,
+} from "./journal/resolution.js";
 
-export class DurableBackendNotInitializedError extends JournalError {
-	constructor() {
-		super("Workflow journal has not been initialized");
-		this.name = "DurableBackendNotInitializedError";
-	}
-}
+const DEFAULT_MEMORY_JOURNAL = "memory";
 
-export function getDurableBackend(): DurableWorkflowBackend {
-	const backend = getAvailableDurableBackend();
-	if (backend === undefined) throw new DurableBackendNotInitializedError();
-	return backend;
-}
-
-export function getAvailableDurableBackend(): DurableWorkflowBackend | undefined {
-	const owner = getDurableBackendProcessOwner();
-	return owner.injectedBackend ?? owner.initializedBackend;
-}
+/** Internal test injection, captured only when an owning store is constructed. */
 
 export function setDurableBackend(backend: DurableWorkflowBackend | undefined): void {
 	if (backend === undefined) {
@@ -29,23 +26,54 @@ export function setDurableBackend(backend: DurableWorkflowBackend | undefined): 
 	getDurableBackendProcessOwner().injectedBackend = backend;
 }
 
-export function createInMemoryTestBackend(): InMemoryDurableBackend {
-	return new InMemoryDurableBackend();
+export interface DurableBackendOptions {
+	journal?: RunJournalOption;
+	settings?: RunJournalSettings;
+	cwd?: string;
 }
 
-export async function initializeDurableBackend(): Promise<DurableWorkflowBackend> {
+export async function initializeDurableBackend(options: DurableBackendOptions = {}): Promise<DurableWorkflowBackend> {
 	const owner = getDurableBackendProcessOwner();
-	if (owner.injectedBackend !== undefined) return owner.injectedBackend;
-	if (owner.initializedBackend !== undefined) return owner.initializedBackend;
-	owner.initializing ??= JournalDurableBackend.open()
-		.then((backend) => {
-			backend.closeOnProcessExit();
-			owner.closeInitializedBackend = () => backend.close();
-			owner.initializedBackend = backend;
-			return backend;
-		})
-		.finally(() => {
-			owner.initializing = undefined;
-		});
-	return await owner.initializing;
+	const choice = options.journal;
+	const selection = selectRunJournal({
+		journal: choice,
+		settings:
+			choice === undefined
+				? (options.settings ?? SettingsManager.create(options.cwd ?? process.cwd()).getSettings())
+				: undefined,
+	});
+	const key =
+		"createRun" in selection
+			? selection
+			: "path" in selection
+				? resolve(selection.path)
+				: "database" in selection
+					? selection.database
+					: choice === undefined
+						? DEFAULT_MEMORY_JOURNAL
+						: choice;
+	const ownsJournal = choice === undefined || !("createRun" in choice);
+	owner.selectedBackends ??= new Map();
+	const selected = owner.selectedBackends;
+	const existing = selected.get(key);
+	let backend: DurableWorkflowBackend;
+	if (existing !== undefined) {
+		backend = await existing.ready;
+	} else {
+		const journal = resolveRunJournal({ journal: selection });
+		const ready = JournalDurableBackend.open(journal, { ownsJournal })
+			.then((opened) => {
+				if (ownsJournal) opened.closeOnProcessExit();
+				entry.close = () => opened.close();
+				return opened;
+			})
+			.catch((error: Error) => {
+				selected.delete(key);
+				throw error;
+			});
+		const entry: SelectedDurableBackend = { ready };
+		selected.set(key, entry);
+		backend = await ready;
+	}
+	return backend;
 }

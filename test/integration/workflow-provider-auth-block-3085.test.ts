@@ -7,6 +7,7 @@ import { afterEach, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import {
 	installWorkflowLifecycleNotifications,
 	LIFECYCLE_NOTICE_CUSTOM_TYPE,
@@ -62,7 +63,7 @@ test(
 		const sessions: StageSessionRuntime[] = [];
 		try {
 			const journalPath = join(dir, "journal.sqlite");
-			const backend = await JournalDurableBackend.open(journalPath);
+			const backend = await JournalDurableBackend.open(new SqliteRunJournal(journalPath));
 			setDurableBackend(backend);
 
 			const parent = SessionManager.create(dir, join(dir, "parent-sessions"));

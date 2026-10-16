@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { completedWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
 import { createToolPrimitive } from "../../packages/workflows/src/durable/tool-primitive.js";
 import type { DurableCheckpoint } from "../../packages/workflows/src/durable/types.js";
@@ -14,6 +13,7 @@ import {
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowToolFailure } from "../../packages/workflows/src/shared/types.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 describe("ctx.tool recoverable failures", () => {
 	test("returns a typed failure after retries while the workflow continues", async () => {

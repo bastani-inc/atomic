@@ -4,6 +4,7 @@ import { createStore, type Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { durableWorkflowRunSnapshots } from "./completed-catalog.js";
+import { bindStoreDurableBackend } from "./store-backend.js";
 
 export type TargetedDurableInspection =
 	| {
@@ -17,7 +18,7 @@ export type TargetedDurableInspection =
 /**
  * Hydrate and reconstruct one exact or uniquely-prefixed durable root for inspection only.
  *
- * This path never claims ownership, changes durable status, starts execution,
+ * This path never retains ownership, changes durable status, starts execution,
  * or restores snapshots into the current session store.
  */
 export async function inspectTargetedDurableWorkflow(
@@ -54,11 +55,12 @@ export async function inspectTargetedDurableWorkflow(
 	const runs = structuredClone(reconstructed);
 
 	const inspectionStore = createStore();
+	bindStoreDurableBackend(inspectionStore, backend);
 	for (const run of runs) inspectionStore.recordRunStart(structuredClone(run));
 	const inspected = inspectRun(resolvedWorkflowId, { store: inspectionStore });
 	if (!inspected.ok) return malformed(resolvedWorkflowId, "the durable checkpoint graph has no reciprocal root");
 
-	const ownership = backend.workflowOwnership(resolvedWorkflowId);
+	const ownership = await backend.workflowOwnership(resolvedWorkflowId);
 	const foreignLive = handle.status === "running" && ownership === "foreign";
 	const live = handle.status === "running" && ownership !== "available";
 	const crashed = handle.status === "running" && !live;

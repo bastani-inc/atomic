@@ -1,5 +1,5 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
-import { durableBackendForRun } from "../durable/run-owner-backend.js";
+import { availableRunDurableBackend, durableBackendForRun } from "../durable/run-owner-backend.js";
 import {
 	compactStickyStageMessageDeliveries,
 	markPendingStageMessageDelivered,
@@ -85,8 +85,7 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 			return await serialize(input.runId, async () => {
 				const run = context.findRun(input.runId);
 				if (run === undefined) return undefined;
-				const { getAvailableDurableBackend } = await import("../durable/factory.js");
-				const availableBackend = getAvailableDurableBackend();
+				const availableBackend = availableRunDurableBackend(context.state.runs, input.runId) ?? context.backend;
 				const backend =
 					availableBackend === undefined
 						? undefined

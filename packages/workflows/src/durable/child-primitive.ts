@@ -28,7 +28,11 @@ export function createDurableChildWorkflowPrimitive(input: {
 	readonly rootWorkflowId: string;
 	readonly backend: DurableWorkflowBackend;
 	readonly nextReplayKey: (name: string, invocationFingerprint: string) => string;
-	readonly recordCachedStage: (name: string, replayKey: string, checkpoint: DurableCompletedStageCheckpoint) => void;
+	readonly recordCachedStage: (
+		name: string,
+		replayKey: string,
+		checkpoint: DurableCompletedStageCheckpoint,
+	) => void | Promise<void>;
 	readonly runTopology: DurableStageRunTopology;
 	/** Publish the validated durable identity consumed by the child runner. */
 	readonly setChildDurableInvocation: (invocation: DurableChildInvocation) => void;
@@ -86,7 +90,7 @@ export function createDurableChildWorkflowPrimitive(input: {
 		const cachedResult = parseWorkflowChildResult(cached?.output);
 		if (cached !== undefined && cachedResult !== undefined) {
 			validateDurableCompletedBoundary({ ...descriptor, checkpoint: cached, output: cachedResult });
-			input.recordCachedStage(boundaryName, replayKey, cached);
+			await input.recordCachedStage(boundaryName, replayKey, cached);
 			return cachedResult as WorkflowChildResult<TChildOutputs>;
 		}
 		validateDurableChildInvocation(descriptor);

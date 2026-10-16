@@ -1,3 +1,5 @@
+import { availableStoreDurableBackend } from "../durable/store-backend.js";
+import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 /**
  * Mount adapter for the workflow session picker.
  *
@@ -83,7 +85,9 @@ export function openSessionPicker(
 		let unsubscribe: (() => void) | null = null;
 		let pickerRevision = 0;
 
-		const resumeCandidateCache = createSessionPickerResumeCandidateCache();
+		const resumeCandidateCache = createSessionPickerResumeCandidateCache((run, runs) =>
+			workflowRunResumeCandidate(run, runs, availableStoreDurableBackend(store, run.id)),
+		);
 
 		const factory = (
 			tui: PiCustomOverlayFactoryTui,

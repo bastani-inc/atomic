@@ -4,7 +4,6 @@ import {
 	type OpenCompletedDurableResult,
 	openCompletedDurableWorkflow as openCompletedSnapshot,
 } from "../durable/completed-inspection.js";
-import { getDurableBackend } from "../durable/factory.js";
 import {
 	prepareRuntimeDurableResumable,
 	prepareTargetedDurableResumable,
@@ -13,8 +12,11 @@ import {
 	type ResumeDurableResult,
 	resumeDurableWorkflow as resumeDurableWorkflowAdapter,
 } from "../durable/resume-runtime.js";
+import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
+import { bindStoreDurableBackend, DurableBackendNotInitializedError } from "../durable/store-backend.js";
 import { inspectTargetedDurableWorkflow, type TargetedDurableInspection } from "../durable/targeted-inspection.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
+import type { ToolControlRegistry } from "../engine/run-tool-control-registry.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
 import type { RunOpts } from "../runs/foreground/executor.js";
 import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
@@ -30,6 +32,7 @@ import { discoverWorkflows } from "./discovery.js";
 import { raceWorkflowRequestAbort } from "./workflow-request-abort.js";
 
 export interface DurableResumeRuntime {
+	durableBackend(): DurableWorkflowBackend;
 	resumeDurableWorkflow(
 		workflowId: string,
 		options?: {
@@ -61,9 +64,11 @@ export interface DurableResumeRuntimeDeps {
 	readonly registry: WorkflowRegistry;
 	readonly store: Store;
 	readonly stageControlRegistry?: StageControlRegistry;
+	readonly toolControlRegistry?: ToolControlRegistry;
 	readonly adapters?: StageAdapters;
 	readonly runtimeCwd: string;
 	readonly ensureReady: () => Promise<DurableWorkflowBackend>;
+	readonly backendRef?: { current: DurableWorkflowBackend | undefined };
 	readonly resolveDefaultStageSessionDir?: () => string | undefined;
 	readonly baseRunOpts: (policy?: WorkflowExecutionPolicy) => RunOpts;
 	readonly beforeRestoreCompleted?: (snapshots: readonly RunSnapshot[]) => void;
@@ -72,7 +77,13 @@ export interface DurableResumeRuntimeDeps {
 }
 
 export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): DurableResumeRuntime {
-	let retainedBackend: DurableWorkflowBackend | undefined;
+	const backendRef = deps.backendRef ?? { current: undefined };
+	const selectedBackend = (workflowId?: string): DurableWorkflowBackend => {
+		const backend = workflowId === undefined ? undefined : availableRunDurableBackend(deps.store.runs(), workflowId);
+		if (backend !== undefined) return backend;
+		if (backendRef.current === undefined) throw new DurableBackendNotInitializedError();
+		return backendRef.current;
+	};
 	const withRecovery = async <T>(operation: () => Promise<T>): Promise<T> => {
 		const finish = workflowObservationRuntime(deps.store).beginRecovery();
 		try {
@@ -83,9 +94,8 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 	};
 	const ensureReady = async (): Promise<DurableWorkflowBackend> => {
 		const backend = await deps.ensureReady();
-		// Catalogs and completed opens are one logical operation: retain the backend that produced the catalog
-		// so a process-global owner reset cannot make the synchronous open resolve it against a different backend.
-		retainedBackend = backend;
+		backendRef.current = backend;
+		bindStoreDurableBackend(deps.store, backend);
 		return backend;
 	};
 	const hydrateStoredWorkflowCandidates = async (backend: DurableWorkflowBackend, target?: string): Promise<void> => {
@@ -93,13 +103,14 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			.runs()
 			.map((run) => run.id)
 			.filter((id) => target === undefined || id === target);
-		for (const id of ids) await backend.hydrateWorkflow(id);
+		for (const id of ids) await (availableRunDurableBackend(deps.store.runs(), id) ?? backend).hydrateWorkflow(id);
 	};
 	let preparedCatalog: readonly ResumableWorkflowEntry[] = [];
 	return {
+		durableBackend: selectedBackend,
 		async inspectDurableWorkflow(workflowId) {
 			return withRecovery(async () => {
-				const backend = await ensureReady();
+				const backend = availableRunDurableBackend(deps.store.runs(), workflowId) ?? (await ensureReady());
 				return inspectTargetedDurableWorkflow(backend, workflowId);
 			});
 		},
@@ -108,9 +119,9 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			return raceWorkflowRequestAbort(
 				(async () => {
 					const backend = await withRecovery(async () => {
-						const backend = await ensureReady();
+						const backend = availableRunDurableBackend(deps.store.runs(), workflowId) ?? (await ensureReady());
 						options?.signal?.throwIfAborted();
-						if (preparedCatalog.length === 0)
+						if (resolveCatalogEntry(workflowId, preparedCatalog) === undefined)
 							preparedCatalog = isFullRunId(workflowId)
 								? await prepareTargetedDurableResumable(backend, [workflowId])
 								: await prepareRuntimeDurableResumable(() => backend, workflowId);
@@ -148,17 +159,19 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			);
 		},
 		listDurableResumable(): readonly ResumableWorkflowEntry[] {
-			return getDurableBackend().listResumableWorkflows();
+			return selectedBackend().listResumableWorkflows();
 		},
 		async prepareDurableResumable(workflowId) {
 			return withRecovery(async () => {
-				const backend = await ensureReady();
+				const backend =
+					(workflowId === undefined ? undefined : availableRunDurableBackend(deps.store.runs(), workflowId)) ??
+					(await ensureReady());
 				try {
 					await hydrateStoredWorkflowCandidates(backend, workflowId);
 					preparedCatalog = await prepareRuntimeDurableResumable(() => backend, workflowId);
 					return preparedCatalog;
 				} finally {
-					purgeSuppressedWorkflowRuns(backend, deps.store);
+					purgeSuppressedWorkflowRuns(backend, deps.store, deps.toolControlRegistry);
 				}
 			});
 		},
@@ -166,12 +179,18 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			return withRecovery(async () => {
 				const backend = await ensureReady();
 				try {
-					await hydrateStoredWorkflowCandidates(backend);
 					const catalog = await backend.prepareWorkflowCatalog();
+					const known = new Set(
+						catalog.inspectableIds ??
+							[...catalog.resumable, ...catalog.completed].map((entry) => entry.workflowId),
+					);
+					for (const run of deps.store.runs())
+						if (!known.has(run.id))
+							await (availableRunDurableBackend(deps.store.runs(), run.id) ?? backend).hydrateWorkflow(run.id);
 					preparedCatalog = catalog.resumable;
 					return catalog;
 				} finally {
-					purgeSuppressedWorkflowRuns(backend, deps.store);
+					purgeSuppressedWorkflowRuns(backend, deps.store, deps.toolControlRegistry);
 				}
 			});
 		},
@@ -179,10 +198,18 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			return withRecovery(async () => {
 				const backend = await ensureReady();
 				try {
-					preparedCatalog = await prepareTargetedDurableResumable(backend, workflowIds);
+					preparedCatalog = (
+						await Promise.all(
+							workflowIds.map((id) =>
+								prepareTargetedDurableResumable(availableRunDurableBackend(deps.store.runs(), id) ?? backend, [
+									id,
+								]),
+							),
+						)
+					).flat();
 					return preparedCatalog;
 				} finally {
-					purgeSuppressedWorkflowRuns(backend, deps.store);
+					purgeSuppressedWorkflowRuns(backend, deps.store, deps.toolControlRegistry);
 				}
 			});
 		},
@@ -194,14 +221,14 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 					await hydrateStoredWorkflowCandidates(backend);
 					return listOpenableCompletedWorkflows(backend);
 				} finally {
-					purgeSuppressedWorkflowRuns(backend, deps.store);
+					purgeSuppressedWorkflowRuns(backend, deps.store, deps.toolControlRegistry);
 				}
 			});
 		},
 		openCompletedDurableWorkflow(workflowId, catalog) {
 			const finish = workflowObservationRuntime(deps.store).beginRecovery();
 			try {
-				const backend = retainedBackend ?? getDurableBackend();
+				const backend = selectedBackend(workflowId);
 				const entry = resolveCatalogEntry(workflowId, catalog ?? []);
 				const handle = backend.getWorkflow(entry?.workflowId ?? workflowId);
 				return openCompletedSnapshot(

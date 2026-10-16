@@ -13,6 +13,7 @@
  * cross-ref: issue #2078; src/runs/foreground/stage-control-registry.ts
  */
 
+import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { createSessionScopedSingleton } from "../shared/session-scoped-singleton.js";
 import type { WorkflowToolNodeIdentity } from "../shared/types.js";
 import type { ToolAdmissionBoundary } from "./run-tool-admission-boundary.js";
@@ -46,13 +47,14 @@ export interface ToolControlHandle {
 /** Executor control for initialization and between-node awaits; never a graph node. */
 export interface WorkflowRunControlHandle {
 	readonly paused: boolean;
+	readonly durableBackend?: DurableWorkflowBackend;
 	/** Root startup still owns durable registration; controls acknowledge locally. */
 	readonly admitting?: boolean;
 	readonly admissionSettlement?: Promise<void>;
 	/** Keep execution ownership until a control operation's final writes settle. */
 	settlePersistence?(settlement: Promise<void>): void;
 	/** Revoke local control and write ownership after quit's final persistence. */
-	retire?(): void;
+	retire?(): void | Promise<void>;
 	pause(): Promise<void>;
 	resume(): Promise<void>;
 	quit(): Promise<void>;

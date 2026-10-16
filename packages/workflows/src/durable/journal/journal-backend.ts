@@ -5,11 +5,12 @@ import type { PendingStageMessage, PendingStageMessageDelivery } from "../../sha
 import type { WorkflowSerializableValue } from "../../shared/types.js";
 import { WorkflowInstanceOwnershipError } from "../../shared/workflow-instance-ownership-error.js";
 import {
+	createJournalProjection,
 	type DurableWorkflowBackend,
-	InMemoryDurableBackend,
 	replacePendingStageMessagesForRun,
 	type WorkflowRegistrationInput,
 } from "../backend.js";
+import { DurableNestedTopologyError } from "../boundary-topology.js";
 import {
 	inactivePromptReservationToken,
 	type PromptReservationSnapshot,
@@ -23,7 +24,7 @@ import type {
 	DurableWorkflowHandle,
 	DurableWorkflowStatus,
 } from "../types.js";
-import { SqliteRunJournal } from "./sqlite-run-journal.js";
+import { MemoryRunJournal } from "./memory-run-journal.js";
 import {
 	RUN_EVENT_TYPES as E,
 	JournalCasConflictError,
@@ -39,17 +40,14 @@ import {
 } from "./types.js";
 
 const PROCESS_HOLDER_ID = randomUUID();
-/** Module-private construction marker: `open()` folds the journal itself through paged reads. */
 const DEFER_REBUILD = Symbol("defer-rebuild");
-
-type BackendJournal = RunJournal & SynchronousRunJournal;
+type Operation<T> = Generator<Promise<void>, T, void>;
 type SnapshotPayload = { readonly handle: DurableWorkflowHandle; readonly prompts?: PromptReservationSnapshot };
 type DeliveryPayload = {
 	readonly messageId: string;
 	readonly delivery: PendingStageMessageDelivery;
 	readonly accounting?: { readonly messageRunId: string; readonly deliveryCount: number };
 };
-
 type JsonPayload<Value> = Value extends WorkflowSerializableValue | undefined
 	? Value
 	: Value extends object
@@ -68,6 +66,52 @@ type BackendEvent =
 			DurableWorkflowHandle
 	  >;
 
+function isPromise<T>(value: T | Promise<T>): value is Promise<T> {
+	return typeof (value as Promise<T> | undefined)?.then === "function";
+}
+
+function* invoke<T>(action: () => T | Promise<T>): Operation<T> {
+	try {
+		const result = action();
+		if (!isPromise(result)) return result;
+		let value: T;
+		yield Promise.resolve(result).then((resolved) => {
+			value = resolved;
+		});
+		return value!;
+	} catch (error) {
+		if (error instanceof JournalError) throw error;
+		throw new StorageUnavailableError("custom journal", error instanceof Error ? error : new Error(String(error)));
+	}
+}
+
+function execute<T>(operation: Operation<T>, step = operation.next()): T | Promise<T> {
+	if (step.done) return step.value;
+	return step.value.then(
+		() => execute(operation),
+		(error: Error) => execute(operation, operation.throw(error)),
+	);
+}
+
+function synchronousJournal(journal: RunJournal): SynchronousRunJournal | undefined {
+	const candidate = journal as RunJournal & Partial<SynchronousRunJournal>;
+	const methods = [
+		"createRunSync",
+		"listRunsSync",
+		"acquireSync",
+		"takeoverExpiredSync",
+		"leaseState",
+		"renewSync",
+		"releaseSync",
+		"appendSync",
+		"readEntries",
+		"deleteRunSync",
+	] as const;
+	return methods.every((method) => typeof candidate[method] === "function")
+		? (candidate as RunJournal & SynchronousRunJournal)
+		: undefined;
+}
+
 export class JournalOwnershipError extends WorkflowInstanceOwnershipError {
 	constructor(
 		readonly runId: string,
@@ -78,14 +122,12 @@ export class JournalOwnershipError extends WorkflowInstanceOwnershipError {
 		this.name = "JournalOwnershipError";
 	}
 }
-
 export class JournalBackendClosedError extends JournalError {
 	constructor() {
 		super("Journal backend is closed");
 		this.name = "JournalBackendClosedError";
 	}
 }
-
 export class JournalOperationAbortedError extends JournalError {
 	constructor(
 		readonly runId: string,
@@ -95,14 +137,12 @@ export class JournalOperationAbortedError extends JournalError {
 		this.name = "JournalOperationAbortedError";
 	}
 }
-
 export class JournalExecutionRetiredError extends JournalError {
 	constructor(readonly runId: string) {
 		super(`Workflow execution for ${runId} is retired`);
 		this.name = "JournalExecutionRetiredError";
 	}
 }
-
 export class JournalMessageScopeError extends JournalError {
 	constructor(
 		readonly runId: string,
@@ -112,59 +152,83 @@ export class JournalMessageScopeError extends JournalError {
 		this.name = "JournalMessageScopeError";
 	}
 }
-
 interface WorkflowLeaseExecution {
 	lease?: Lease;
 	users: number;
 	retired: boolean;
 }
 
-export class JournalDurableBackend implements DurableWorkflowBackend {
-	readonly persistent = true;
-	private readonly projection = new InMemoryDurableBackend();
+export class JournalDurableBackend<Journal extends RunJournal = RunJournal & SynchronousRunJournal>
+	implements DurableWorkflowBackend
+{
+	readonly persistent: boolean;
+	private readonly projection = createJournalProjection();
+	private readonly synchronous: SynchronousRunJournal | undefined;
 	private readonly sequences = new Map<string, number>();
 	private readonly leases = new Map<string, Lease>();
 	private readonly executions = new Map<string, WorkflowLeaseExecution>();
 	private readonly executionContext = new AsyncLocalStorage<ReadonlyMap<string, WorkflowLeaseExecution>>();
+	private readonly pending = new Map<string, Promise<void>>();
 	private readonly lost = new Map<string, Error>();
 	private readonly prompts = new Map<string, PromptReservationState>();
-	private readonly timer: ReturnType<typeof setInterval>;
+	private timer: ReturnType<typeof setInterval> | undefined;
 	private closed = false;
 	private processExitCleanup: (() => void) | undefined;
 
 	constructor(
-		readonly journal: BackendJournal = new SqliteRunJournal(),
+		readonly journal: Journal,
 		readonly holderId = `${PROCESS_HOLDER_ID}:${randomUUID()}`,
 		rebuild?: typeof DEFER_REBUILD,
+		private readonly ownsJournal = true,
 	) {
-		if (rebuild !== DEFER_REBUILD) for (const run of journal.listRunsSync()) this.refresh(run.runId);
-		this.timer = setInterval(() => this.renewLeases(), STAGE_SESSION_HEARTBEAT_INTERVAL_MS);
-		this.timer.unref();
+		this.synchronous = synchronousJournal(journal);
+		this.persistent = !(journal instanceof MemoryRunJournal);
+		if (rebuild !== DEFER_REBUILD && this.synchronous !== undefined)
+			for (const run of this.synchronous.listRunsSync()) execute(this.refresh(run.runId));
 	}
 
-	static async open(path?: string): Promise<JournalDurableBackend> {
-		const journal = new SqliteRunJournal(path);
-		let backend: JournalDurableBackend | undefined;
+	static async open<Journal extends RunJournal>(
+		journal: Journal,
+		options: { ownsJournal?: boolean } = {},
+	): Promise<JournalDurableBackend<Journal>> {
+		let backend: JournalDurableBackend<Journal> | undefined;
 		try {
-			backend = new JournalDurableBackend(journal, undefined, DEFER_REBUILD);
-			for (const run of await journal.listRuns()) {
+			backend = new JournalDurableBackend(journal, undefined, DEFER_REBUILD, options.ownsJournal ?? true);
+			for (const run of await journal.listRuns())
 				for await (const entry of journal.read(run.runId)) backend.fold(entry);
-			}
 			return backend;
 		} catch (error) {
-			if (backend === undefined) await journal.close();
-			else await backend.close();
-			throw error;
+			if (backend === undefined) {
+				if (options.ownsJournal !== false) await journal.close();
+			} else await backend.close();
+			if (error instanceof JournalError || error instanceof DurableNestedTopologyError) throw error;
+			throw new StorageUnavailableError("custom journal", error instanceof Error ? error : new Error(String(error)));
 		}
+	}
+
+	private serialize<T>(runId: string, action: () => Operation<T>): T | Promise<T> {
+		const prior = this.pending.get(runId);
+		if (prior !== undefined) return prior.then(() => this.serialize(runId, action));
+		const result = execute(action());
+		if (!isPromise(result)) return result;
+		const settled = result.then(
+			() => {},
+			() => {},
+		);
+		this.pending.set(runId, settled);
+		return result.finally(() => {
+			if (this.pending.get(runId) === settled) this.pending.delete(runId);
+		});
 	}
 
 	private fold(entry: JournalEntry): void {
 		const event = entry.event as BackendEvent;
 		if (event.type === E.checkpointRecorded) {
-			this.projection.recordCheckpoint(event.payload);
+			const checkpoint = event.payload;
+			this.validateCheckpoint(checkpoint);
+			this.projection.recordCheckpoint(checkpoint);
 		} else if (event.type === E.messageSettled) {
-			const payload = event.payload;
-			void this.projection.archivePendingStageMessage(entry.runId, payload.message);
+			void this.projection.archivePendingStageMessage(entry.runId, event.payload.message);
 		} else if (event.type === E.messageDelivered) {
 			const payload = event.payload;
 			void this.projection.archivePendingStageDeliveryReceipt(
@@ -174,9 +238,11 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 				payload.accounting,
 			);
 		} else if (event.type === E.promptAsked || event.type === E.promptReleased) {
-			const payload = event.payload;
-			this.projection.applyWorkflowSnapshot(payload.handle);
-			this.prompts.set(entry.runId, new PromptReservationState(payload.handle.pendingPrompts, payload.prompts));
+			this.projection.applyWorkflowSnapshot(event.payload.handle);
+			this.prompts.set(
+				entry.runId,
+				new PromptReservationState(event.payload.handle.pendingPrompts, event.payload.prompts),
+			);
 		} else {
 			const handle = event.payload;
 			const previous = this.projection.getWorkflow(entry.runId);
@@ -199,91 +265,95 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 		this.sequences.set(entry.runId, entry.seq);
 	}
 
-	private rebuild(runId: string): void {
-		const entries = this.journal.readEntries(runId);
+	private *entries(runId: string, fromSeq?: number): Operation<readonly JournalEntry[]> {
+		if (this.synchronous !== undefined) return this.synchronous.readEntries(runId, fromSeq);
+		return yield* invoke(async () => {
+			const entries: JournalEntry[] = [];
+			for await (const entry of this.journal.read(runId, fromSeq)) entries.push(entry);
+			return entries;
+		});
+	}
+	private *rebuild(runId: string): Operation<void> {
+		const entries = yield* this.entries(runId);
 		void this.projection.deleteWorkflow(runId);
 		this.sequences.delete(runId);
 		this.prompts.delete(runId);
 		for (const entry of entries) this.fold(entry);
 	}
-
-	private refresh(runId: string): void {
-		if (!this.leases.has(runId)) {
-			this.rebuild(runId);
-			return;
-		}
-		for (const entry of this.journal.readEntries(runId, (this.sequences.get(runId) ?? 0) + 1)) this.fold(entry);
+	private *refresh(runId: string): Operation<void> {
+		if (!this.leases.has(runId)) return yield* this.rebuild(runId);
+		for (const entry of yield* this.entries(runId, (this.sequences.get(runId) ?? 0) + 1)) this.fold(entry);
 	}
-
-	private current(runId: string): DurableWorkflowHandle | undefined {
+	private *current(runId: string): Operation<DurableWorkflowHandle | undefined> {
 		this.ensureOpen();
 		this.assertExecutionActive(runId);
-		this.refresh(runId);
+		yield* this.refresh(runId);
 		if (this.projection.getWorkflow(runId) === undefined) return undefined;
 		try {
-			this.ownership(runId);
+			yield* this.ownership(runId);
 		} catch (error) {
 			if (!(error instanceof RunNotFoundError)) throw error;
-			this.rebuild(runId);
+			yield* this.rebuild(runId);
 			return undefined;
 		}
-		this.refresh(runId);
+		yield* this.refresh(runId);
 		return this.projection.getWorkflow(runId);
 	}
-
 	private ensureOpen(): void {
 		if (this.closed) throw new JournalBackendClosedError();
 	}
-
 	private assertExecutionActive(runId: string): void {
-		for (const execution of this.executionContext.getStore()?.values() ?? []) {
+		for (const execution of this.executionContext.getStore()?.values() ?? [])
 			if (execution.retired) throw new JournalExecutionRetiredError(runId);
-		}
 	}
-
-	private ownership(runId: string): Lease {
+	private *ownership(runId: string): Operation<Lease> {
 		this.ensureOpen();
 		this.assertExecutionActive(runId);
 		const lost = this.lost.get(runId);
 		if (lost) throw lost;
 		const existing = this.leases.get(runId);
 		if (existing) return existing;
-		const result = this.journal.takeoverExpiredSync(
-			runId,
-			this.holderId,
-			Date.now() - FOREIGN_LIVE_WORKFLOW_WINDOW_MS,
+		const result = yield* invoke(() =>
+			this.synchronous !== undefined
+				? this.synchronous.takeoverExpiredSync(runId, this.holderId, Date.now() - FOREIGN_LIVE_WORKFLOW_WINDOW_MS)
+				: this.journal.acquire(runId, this.holderId),
 		);
 		if (result.status === "held") throw new JournalOwnershipError(runId, result.holderId);
 		this.leases.set(runId, result.lease);
+		if (this.timer === undefined) {
+			this.timer = setInterval(() => void this.renewLeases(), STAGE_SESSION_HEARTBEAT_INTERVAL_MS);
+			this.timer.unref();
+		}
 		const execution = this.executions.get(runId);
 		if (execution !== undefined) execution.lease = result.lease;
-		this.rebuild(runId);
+		yield* this.rebuild(runId);
 		return result.lease;
 	}
-
 	private mapOwnership(error: Error, runId: string): Error {
 		if (!(error instanceof StaleLeaseError)) return error;
-		const failure = new JournalOwnershipError(runId, this.journal.leaseState(runId)?.holderId ?? null, error);
+		const failure = new JournalOwnershipError(runId, this.synchronous?.leaseState(runId)?.holderId ?? null, error);
 		this.lost.set(runId, failure);
 		return failure;
 	}
-
-	private append(
+	private *append(
 		runId: string,
 		event: BackendEvent,
 		options?: { readonly key?: string; readonly expectSeq?: number },
-	): void {
-		const lease = this.ownership(runId);
+	): Operation<void> {
+		const lease = yield* this.ownership(runId);
 		try {
-			this.journal.appendSync(lease, event, options);
-			this.refresh(runId);
+			yield* invoke(() =>
+				this.synchronous !== undefined
+					? this.synchronous.appendSync(lease, event, options)
+					: this.journal.append(lease, event, options),
+			);
+			yield* this.refresh(runId);
 		} catch (error) {
 			if (error instanceof Error) throw this.mapOwnership(error, runId);
 			throw error;
 		}
 	}
-
-	private snapshot(
+	private *snapshot(
 		handle: DurableWorkflowHandle,
 		type:
 			| typeof E.statusChanged
@@ -291,41 +361,59 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 			| typeof E.messageQueued
 			| typeof E.summaryRecorded = E.statusChanged,
 		expectSeq?: number,
-	): void {
-		this.append(handle.workflowId, { type, payload: handle }, expectSeq === undefined ? undefined : { expectSeq });
+	): Operation<void> {
+		yield* this.append(
+			handle.workflowId,
+			{ type, payload: handle },
+			expectSeq === undefined ? undefined : { expectSeq },
+		);
 	}
-
-	private draft(runId: string): InMemoryDurableBackend {
-		const draft = new InMemoryDurableBackend();
-		const handle = this.current(runId);
+	private *draft(runId: string): Operation<ReturnType<typeof createJournalProjection>> {
+		const draft = createJournalProjection();
+		const handle = yield* this.current(runId);
 		if (handle) draft.registerWorkflow(handle, true);
 		return draft;
 	}
 
-	registerWorkflow(input: WorkflowRegistrationInput): void {
+	registerWorkflow(input: WorkflowRegistrationInput): void | Promise<void> {
+		return this.serialize(input.workflowId, () => this.register(input));
+	}
+	private *register(input: WorkflowRegistrationInput): Operation<void> {
 		this.assertExecutionActive(input.workflowId);
 		this.ensureOpen();
-		this.journal.createRunSync({
+		const header = {
 			runId: input.workflowId,
 			name: input.name,
 			cwd: input.invocationCwd ?? process.cwd(),
 			createdAt: input.createdAt,
 			status: input.status,
 			inputs: input.inputs,
-		});
-		this.ownership(input.workflowId);
-		this.refresh(input.workflowId);
-		const draft = this.draft(input.workflowId);
+		};
+		yield* invoke(() => this.synchronous?.createRunSync(header) ?? this.journal.createRun(header));
+		yield* this.ownership(input.workflowId);
+		yield* this.refresh(input.workflowId);
+		const draft = yield* this.draft(input.workflowId);
 		draft.registerWorkflow(input, true);
-		this.snapshot(
+		yield* this.snapshot(
 			draft.getWorkflow(input.workflowId)!,
 			this.sequences.has(input.workflowId) ? E.statusChanged : E.runStarted,
 		);
 	}
-
-	recordCheckpoint(checkpoint: DurableCheckpoint): void {
-		if (!this.current(checkpoint.workflowId)) return;
-		this.append(
+	private validateCheckpoint(checkpoint: DurableCheckpoint): void {
+		if (
+			checkpoint.kind === "stage" &&
+			checkpoint.topology?.boundary !== undefined &&
+			typeof checkpoint.topology.boundary.invocationFingerprint !== "string"
+		)
+			throw new DurableNestedTopologyError(`missing invocation fingerprint at ${checkpoint.checkpointId}`);
+	}
+	recordCheckpoint(checkpoint: DurableCheckpoint): void | Promise<void> {
+		return this.serialize(checkpoint.workflowId, () => this.checkpoint(checkpoint));
+	}
+	private *checkpoint(checkpoint: DurableCheckpoint): Operation<void> {
+		this.validateCheckpoint(checkpoint);
+		if (!(yield* this.current(checkpoint.workflowId))) return;
+		yield* this.append(
 			checkpoint.workflowId,
 			{ type: E.checkpointRecorded, payload: checkpoint },
 			{
@@ -333,7 +421,6 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 			},
 		);
 	}
-
 	async recordCheckpointAsync(
 		checkpoint: DurableCheckpoint,
 		options?: { readonly signal?: AbortSignal },
@@ -343,9 +430,8 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 				checkpoint.workflowId,
 				options.signal.reason instanceof Error ? options.signal.reason : undefined,
 			);
-		this.recordCheckpoint(checkpoint);
+		await this.recordCheckpoint(checkpoint);
 	}
-
 	async recordAdditiveCheckpointBestEffort(checkpoint: DurableCheckpoint): Promise<boolean> {
 		try {
 			await this.recordCheckpointAsync(checkpoint);
@@ -355,26 +441,53 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 			return false;
 		}
 	}
-
-	workflowOwnership(runId: string): "local" | "foreign" | "available" {
-		const lease = this.journal.leaseState(runId);
-		if (lease === undefined || Date.now() - lease.renewedAt >= FOREIGN_LIVE_WORKFLOW_WINDOW_MS) return "available";
-		return lease.holderId === this.holderId ? "local" : "foreign";
+	workflowOwnership(runId: string): "local" | "foreign" | "available" | Promise<"local" | "foreign" | "available"> {
+		if (this.synchronous !== undefined) {
+			const lease = this.synchronous.leaseState(runId);
+			if (lease === undefined || Date.now() - lease.renewedAt >= FOREIGN_LIVE_WORKFLOW_WINDOW_MS) return "available";
+			return lease.holderId === this.holderId ? "local" : "foreign";
+		}
+		return this.serialize(runId, () => this.probeOwnership(runId));
 	}
-
+	private *probeOwnership(runId: string): Operation<"local" | "foreign" | "available"> {
+		this.ensureOpen();
+		const local = this.leases.get(runId);
+		try {
+			if (local !== undefined) {
+				yield* invoke(() => this.journal.renew(local));
+				return "local";
+			}
+			const result = yield* invoke(() => this.journal.acquire(runId, randomUUID()));
+			if (result.status === "held") return "foreign";
+			yield* invoke(() => this.journal.release(result.lease));
+			return "available";
+		} catch (error) {
+			if (error instanceof StaleLeaseError) return "foreign";
+			if (error instanceof RunNotFoundError) return "available";
+			throw error;
+		}
+	}
 	setWorkflowStatus(
 		runId: string,
 		status: DurableWorkflowStatus,
 		pendingPrompts?: number,
 		resumable?: boolean,
 		failure?: DurableWorkflowFailureMetadata,
-	): void {
-		const draft = this.draft(runId);
+	): void | Promise<void> {
+		return this.serialize(runId, () => this.setStatus(runId, status, pendingPrompts, resumable, failure));
+	}
+	private *setStatus(
+		runId: string,
+		status: DurableWorkflowStatus,
+		pendingPrompts?: number,
+		resumable?: boolean,
+		failure?: DurableWorkflowFailureMetadata,
+	): Operation<void> {
+		const draft = yield* this.draft(runId);
 		draft.setWorkflowStatus(runId, status, pendingPrompts, resumable, failure);
 		const handle = draft.getWorkflow(runId);
-		if (handle) this.snapshot(handle);
+		if (handle) yield* this.snapshot(handle);
 	}
-
 	async transitionWorkflowStatus(
 		runId: string,
 		expected: readonly DurableWorkflowStatus[],
@@ -385,7 +498,30 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 		modelOwner?: string,
 		releasedModelOwner?: string,
 	): Promise<boolean> {
-		this.refresh(runId);
+		return await this.serialize(runId, () =>
+			this.transition(
+				runId,
+				expected,
+				status,
+				pendingPrompts,
+				resumable,
+				expectedUpdatedAt,
+				modelOwner,
+				releasedModelOwner,
+			),
+		);
+	}
+	private *transition(
+		runId: string,
+		expected: readonly DurableWorkflowStatus[],
+		status: DurableWorkflowStatus,
+		pendingPrompts?: number,
+		resumable?: boolean,
+		expectedUpdatedAt?: number,
+		modelOwner?: string,
+		releasedModelOwner?: string,
+	): Operation<boolean> {
+		yield* this.refresh(runId);
 		const current = this.projection.getWorkflow(runId);
 		if (
 			!current ||
@@ -393,7 +529,7 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 			(expectedUpdatedAt !== undefined && current.updatedAt !== expectedUpdatedAt)
 		)
 			return false;
-		const draft = this.draft(runId);
+		const draft = yield* this.draft(runId);
 		const acquired = draft.getWorkflow(runId);
 		if (
 			!acquired ||
@@ -405,7 +541,7 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 		draft.setWorkflowStatus(runId, status, pendingPrompts, resumable);
 		const { releasedModelOwner: _oldRelease, ...handle } = draft.getWorkflow(runId)!;
 		try {
-			this.snapshot(
+			yield* this.snapshot(
 				{
 					...handle,
 					...(modelOwner !== undefined ? { modelOwner } : {}),
@@ -414,34 +550,29 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 				E.statusChanged,
 				seq,
 			);
-			if (releasedModelOwner !== undefined) {
-				const lease = this.leases.get(runId);
-				if (lease !== undefined) this.journal.releaseSync(lease);
-				this.leases.delete(runId);
-			}
+			if (releasedModelOwner !== undefined) yield* this.release(runId);
 			return true;
 		} catch (error) {
 			if (error instanceof JournalCasConflictError) {
-				this.refresh(runId);
+				yield* this.refresh(runId);
 				return false;
 			}
 			throw error;
 		}
 	}
-
-	private promptChange<T>(
+	private *promptChange<T>(
 		runId: string,
 		type: typeof E.promptAsked | typeof E.promptReleased,
 		change: (state: PromptReservationState) => T,
-		options?: { readonly skipUnchanged?: boolean },
-	): T | undefined {
-		const handle = this.current(runId);
+		skipUnchanged = false,
+	): Operation<T | undefined> {
+		const handle = yield* this.current(runId);
 		if (!handle) return undefined;
 		const state = new PromptReservationState(handle.pendingPrompts, this.prompts.get(runId)?.snapshot());
-		const before = options?.skipUnchanged ? JSON.stringify(state.snapshot()) : undefined;
+		const before = skipUnchanged ? JSON.stringify(state.snapshot()) : undefined;
 		const result = change(state);
 		if (before !== undefined && before === JSON.stringify(state.snapshot())) return result;
-		this.append(runId, {
+		yield* this.append(runId, {
 			type,
 			payload: {
 				handle: { ...handle, pendingPrompts: state.pendingPrompts, updatedAt: Date.now() },
@@ -450,43 +581,65 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 		});
 		return result;
 	}
-
-	adjustPendingPrompts(runId: string, delta: number): void {
-		this.promptChange(runId, delta >= 0 ? E.promptAsked : E.promptReleased, (state) => state.adjust(delta));
+	adjustPendingPrompts(runId: string, delta: number): void | Promise<void> {
+		return this.serialize(runId, () =>
+			this.promptChange(runId, delta >= 0 ? E.promptAsked : E.promptReleased, (state) => state.adjust(delta)),
+		);
 	}
 	promptReservationScope(runId: string) {
 		return { rootWorkflowId: runId, scope: "root" };
 	}
-	pendingPromptToken(runId: string, reservationId: string): PromptReservationToken | undefined {
-		return this.promptChange(runId, E.promptAsked, (state) => state.claim(reservationId), { skipUnchanged: true });
+	pendingPromptToken(
+		runId: string,
+		reservationId: string,
+	): PromptReservationToken | undefined | Promise<PromptReservationToken | undefined> {
+		return this.serialize(runId, () =>
+			this.promptChange(runId, E.promptAsked, (state) => state.claim(reservationId), true),
+		);
 	}
-	reservePendingPrompt(runId: string, reservationId: string): PromptReservationToken {
+	reservePendingPrompt(
+		runId: string,
+		reservationId: string,
+	): PromptReservationToken | Promise<PromptReservationToken> {
+		return this.serialize(runId, () => this.reserve(runId, reservationId));
+	}
+	private *reserve(runId: string, reservationId: string): Operation<PromptReservationToken> {
 		return (
-			this.promptChange(runId, E.promptAsked, (state) => state.reserve(reservationId)) ??
+			(yield* this.promptChange(runId, E.promptAsked, (state) => state.reserve(reservationId))) ??
 			inactivePromptReservationToken(reservationId)
 		);
 	}
-	releasePendingPrompt(runId: string, reservationId: string, token: PromptReservationToken): void {
-		this.promptChange(runId, E.promptReleased, (state) => state.release(reservationId, token));
+	releasePendingPrompt(runId: string, reservationId: string, token: PromptReservationToken): void | Promise<void> {
+		return this.serialize(runId, () =>
+			this.promptChange(runId, E.promptReleased, (state) => state.release(reservationId, token)),
+		);
 	}
-
 	async persistSummary(runId: string, summary: string, summarizedThrough: number): Promise<boolean> {
-		const handle = this.current(runId);
+		return await this.serialize(runId, () => this.summary(runId, summary, summarizedThrough));
+	}
+	private *summary(runId: string, summary: string, summarizedThrough: number): Operation<boolean> {
+		const handle = yield* this.current(runId);
 		if (!handle || (handle.summarizedThrough ?? -Infinity) > summarizedThrough) return false;
-		this.snapshot({ ...handle, summary, summarizedThrough }, E.summaryRecorded);
+		yield* this.snapshot({ ...handle, summary, summarizedThrough }, E.summaryRecorded);
 		return true;
 	}
-
 	async persistPendingStageMessages(
 		runId: string,
 		messages: readonly PendingStageMessage[],
 		logicalRunId = runId,
 	): Promise<boolean> {
-		const handle = this.current(runId);
+		return await this.serialize(runId, () => this.messages(runId, messages, logicalRunId));
+	}
+	private *messages(
+		runId: string,
+		messages: readonly PendingStageMessage[],
+		logicalRunId: string,
+	): Operation<boolean> {
+		const handle = yield* this.current(runId);
 		if (!handle) return false;
 		for (const message of messages)
 			if (message.runId !== logicalRunId) throw new JournalMessageScopeError(logicalRunId, message.runId);
-		this.snapshot(
+		yield* this.snapshot(
 			{
 				...handle,
 				pendingStageMessages: replacePendingStageMessagesForRun(
@@ -500,12 +653,13 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 		);
 		return true;
 	}
-
 	async archivePendingStageMessage(runId: string, message: PendingStageMessage): Promise<void> {
-		this.append(
-			runId,
-			{ type: E.messageSettled, payload: { message } },
-			{ key: JSON.stringify([E.messageSettled, message.runId, message.id]) },
+		await this.serialize(runId, () =>
+			this.append(
+				runId,
+				{ type: E.messageSettled, payload: { message } },
+				{ key: JSON.stringify([E.messageSettled, message.runId, message.id]) },
+			),
 		);
 	}
 	async archivePendingStageDeliveryReceipt(
@@ -514,109 +668,168 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 		delivery: PendingStageMessageDelivery,
 		accounting?: { readonly messageRunId: string; readonly deliveryCount: number },
 	): Promise<void> {
-		this.append(runId, {
-			type: E.messageDelivered,
-			payload: { messageId, delivery, ...(accounting === undefined ? {} : { accounting }) },
-		});
+		await this.serialize(runId, () =>
+			this.append(runId, {
+				type: E.messageDelivered,
+				payload: { messageId, delivery, ...(accounting === undefined ? {} : { accounting }) },
+			}),
+		);
 	}
 
-	getToolOutput = this.projection.getToolOutput.bind(this.projection);
-	getToolCheckpoint = this.projection.getToolCheckpoint.bind(this.projection);
-	getUiResponse = this.projection.getUiResponse.bind(this.projection);
-	getStageOutput = this.projection.getStageOutput.bind(this.projection);
-	getStageSession = this.projection.getStageSession.bind(this.projection);
-	listCheckpoints = this.projection.listCheckpoints.bind(this.projection);
-	getWorkflow = this.projection.getWorkflow.bind(this.projection);
-	getLoadableWorkflow = this.projection.getLoadableWorkflow.bind(this.projection);
-	listResumableWorkflows = this.projection.listResumableWorkflows.bind(this.projection);
-	listCompletedWorkflows = this.projection.listCompletedWorkflows.bind(this.projection);
-	toMetadata = this.projection.toMetadata.bind(this.projection);
-	isWorkflowLoadable = this.projection.isWorkflowLoadable.bind(this.projection);
-	readSettledPendingStageMessage = this.projection.readSettledPendingStageMessage.bind(this.projection);
-	getPendingStageMessageDeliveryCount = this.projection.getPendingStageMessageDeliveryCount.bind(this.projection);
-	hasPendingStageDeliveryReceipt = this.projection.hasPendingStageDeliveryReceipt.bind(this.projection);
-	hasCachedPendingStageDeliveryReceipt = this.projection.hasCachedPendingStageDeliveryReceipt.bind(this.projection);
+	getToolOutput(...args: Parameters<DurableWorkflowBackend["getToolOutput"]>) {
+		return this.projection.getToolOutput(...args);
+	}
+	getToolCheckpoint(...args: Parameters<DurableWorkflowBackend["getToolCheckpoint"]>) {
+		return this.projection.getToolCheckpoint(...args);
+	}
+	getUiResponse(...args: Parameters<DurableWorkflowBackend["getUiResponse"]>) {
+		return this.projection.getUiResponse(...args);
+	}
+	getStageOutput(...args: Parameters<DurableWorkflowBackend["getStageOutput"]>) {
+		return this.projection.getStageOutput(...args);
+	}
+	getStageSession(...args: Parameters<DurableWorkflowBackend["getStageSession"]>) {
+		return this.projection.getStageSession(...args);
+	}
+	listCheckpoints(runId: string) {
+		return this.projection.listCheckpoints(runId);
+	}
+	getWorkflow(runId: string) {
+		return this.projection.getWorkflow(runId);
+	}
+	getLoadableWorkflow(runId: string) {
+		return this.projection.getLoadableWorkflow(runId);
+	}
+	listResumableWorkflows() {
+		return this.projection.listResumableWorkflows();
+	}
+	listCompletedWorkflows() {
+		return this.projection.listCompletedWorkflows();
+	}
+	toMetadata(runId: string) {
+		return this.projection.toMetadata(runId);
+	}
+	isWorkflowLoadable(runId: string) {
+		return this.projection.isWorkflowLoadable(runId);
+	}
+	readSettledPendingStageMessage(
+		...args: Parameters<NonNullable<DurableWorkflowBackend["readSettledPendingStageMessage"]>>
+	) {
+		return this.projection.readSettledPendingStageMessage(...args);
+	}
+	getPendingStageMessageDeliveryCount(
+		...args: Parameters<NonNullable<DurableWorkflowBackend["getPendingStageMessageDeliveryCount"]>>
+	) {
+		return this.projection.getPendingStageMessageDeliveryCount(...args);
+	}
+	hasPendingStageDeliveryReceipt(
+		...args: Parameters<NonNullable<DurableWorkflowBackend["hasPendingStageDeliveryReceipt"]>>
+	) {
+		return this.projection.hasPendingStageDeliveryReceipt(...args);
+	}
+	hasCachedPendingStageDeliveryReceipt(
+		...args: Parameters<NonNullable<DurableWorkflowBackend["hasCachedPendingStageDeliveryReceipt"]>>
+	) {
+		return this.projection.hasCachedPendingStageDeliveryReceipt(...args);
+	}
 
 	async readPendingStageMessageDeliveryCount(runId: string, messageId: string, logicalRunId = runId): Promise<number> {
 		return this.getPendingStageMessageDeliveryCount(runId, messageId, logicalRunId);
 	}
 	async hydrateWorkflow(runId: string): Promise<void> {
-		this.rebuild(runId);
+		await this.serialize(runId, () => this.rebuild(runId));
 	}
 	async hydrateResumableWorkflows(): Promise<void> {
-		const runIds = new Set([...this.sequences.keys(), ...this.journal.listRunsSync().map((run) => run.runId)]);
-		for (const runId of runIds) await this.hydrateWorkflow(runId);
+		const runs = await execute(invoke(() => this.journal.listRuns()));
+		for (const runId of new Set([...this.sequences.keys(), ...runs.map((run) => run.runId)]))
+			await this.hydrateWorkflow(runId);
 	}
 	async prepareWorkflowCatalog() {
 		await this.hydrateResumableWorkflows();
 		return this.projection.prepareWorkflowCatalog();
 	}
-
-	private async deleteOwned(runId: string, expectSeq?: number): Promise<void> {
-		if (this.leases.has(runId) || this.journal.listRunsSync().some((run) => run.runId === runId)) {
-			try {
-				this.journal.deleteOwnedRunSync(this.ownership(runId), expectSeq);
-			} catch (error) {
-				if (!(error instanceof RunNotFoundError)) {
-					if (error instanceof Error) throw this.mapOwnership(error, runId);
-					throw error;
-				}
+	private *deleteOwned(runId: string, expectSeq?: number): Operation<void> {
+		try {
+			const lease = yield* this.ownership(runId);
+			if (expectSeq !== undefined) {
+				const entries = yield* this.entries(runId);
+				const actualSeq = entries.at(-1)?.seq ?? 0;
+				if (actualSeq !== expectSeq) throw new JournalCasConflictError(runId, expectSeq, actualSeq);
+			}
+			yield* invoke(() => this.journal.deleteOwnedRun(lease));
+		} catch (error) {
+			if (!(error instanceof RunNotFoundError)) {
+				if (error instanceof Error) throw this.mapOwnership(error, runId);
+				throw error;
 			}
 		}
 		this.leases.delete(runId);
 		this.sequences.delete(runId);
 		this.prompts.delete(runId);
-		await this.projection.deleteWorkflow(runId);
+		void this.projection.deleteWorkflow(runId);
 	}
-
 	async deleteWorkflow(runId: string): Promise<void> {
-		await this.deleteOwned(runId);
+		await this.serialize(runId, () => this.deleteOwned(runId));
 	}
-
 	async deleteWorkflowIfInactive(runId: string) {
+		return await this.serialize(runId, () => this.deleteInactive(runId));
+	}
+	private *deleteInactive(
+		runId: string,
+	): Operation<{ readonly ok: true } | { readonly ok: false; readonly reason: "not_found" | "running" }> {
 		for (;;) {
-			this.refresh(runId);
+			yield* this.refresh(runId);
 			const handle = this.projection.getWorkflow(runId);
-			if (!handle) return { ok: false, reason: "not_found" } as const;
-			if (handle.status === "running") return { ok: false, reason: "running" } as const;
-			const acquired = this.current(runId);
-			if (!acquired) return { ok: false, reason: "not_found" } as const;
-			if (acquired.status === "running") return { ok: false, reason: "running" } as const;
+			if (!handle) return { ok: false, reason: "not_found" };
+			if (handle.status === "running") return { ok: false, reason: "running" };
+			const acquired = yield* this.current(runId);
+			if (!acquired) return { ok: false, reason: "not_found" };
+			if (acquired.status === "running") return { ok: false, reason: "running" };
 			try {
-				await this.deleteOwned(runId, this.sequences.get(runId) ?? 0);
-				return { ok: true } as const;
+				yield* this.deleteOwned(runId, this.sequences.get(runId) ?? 0);
+				return { ok: true };
 			} catch (error) {
 				if (!(error instanceof JournalCasConflictError)) throw error;
 			}
 		}
 	}
-
-	reset(): void {
-		for (const run of this.journal.listRunsSync()) this.journal.deleteRunSync(run.runId);
+	reset(): void | Promise<void> {
+		return execute(this.resetJournal());
+	}
+	private *resetJournal(): Operation<void> {
+		const runs = yield* invoke(() => this.synchronous?.listRunsSync() ?? this.journal.listRuns());
+		for (const run of runs)
+			yield* invoke(() => {
+				if (this.synchronous !== undefined) return this.synchronous.deleteRunSync(run.runId);
+				return this.journal.deleteRun(run.runId);
+			});
 		this.projection.reset();
 		this.sequences.clear();
 		this.leases.clear();
 		this.lost.clear();
 		this.prompts.clear();
 	}
-
-	private renewLeases(): void {
+	private async renewLeases(): Promise<void> {
 		for (const [runId, lease] of this.leases) {
-			if (this.lost.has(runId)) continue;
-			try {
-				this.journal.renewSync(lease);
-			} catch (error) {
-				if (error instanceof Error) this.lost.set(runId, this.mapOwnership(error, runId));
-			}
+			await this.serialize(runId, () => this.renewLease(runId, lease));
 		}
 	}
-
-	/** Only factory-owned journals participate in process shutdown. */
+	private *renewLease(runId: string, lease: Lease): Operation<void> {
+		if (this.leases.get(runId) !== lease || this.lost.has(runId)) return;
+		try {
+			yield* invoke(() => {
+				if (this.synchronous !== undefined) return this.synchronous.renewSync(lease);
+				return this.journal.renew(lease);
+			});
+		} catch (error) {
+			if (this.leases.get(runId) === lease && error instanceof Error)
+				this.lost.set(runId, this.mapOwnership(error, runId));
+		}
+	}
 	closeOnProcessExit(): void {
 		this.ensureOpen();
 		if (this.processExitCleanup !== undefined) return;
 		this.processExitCleanup = () => {
-			// Lease release and SQLite close complete before close() first awaits.
 			void this.close().catch((error: Error) => {
 				console.error(error);
 				process.exitCode = 1;
@@ -624,81 +837,75 @@ export class JournalDurableBackend implements DurableWorkflowBackend {
 		};
 		process.once("exit", this.processExitCleanup);
 	}
-
-	/** Share one acquisition owner across admission, executor and final persistence. */
-	async withWorkflowLease<T>(runId: string, execute: () => Promise<T>): Promise<T> {
+	async withWorkflowLease<T>(runId: string, action: () => Promise<T>): Promise<T> {
 		this.ensureOpen();
 		this.assertExecutionActive(runId);
 		const context = this.executionContext.getStore();
 		const active = this.executions.get(runId);
-		if (active !== undefined && context?.get(runId) !== active) {
-			throw new JournalOwnershipError(runId, this.holderId);
-		}
+		if (active !== undefined && context?.get(runId) !== active) throw new JournalOwnershipError(runId, this.holderId);
 		const execution = active ?? { lease: this.leases.get(runId), users: 0, retired: false };
 		execution.users++;
 		this.executions.set(runId, execution);
-		const ownedContext = new Map(context);
+		const ownedContext = new Map<string, WorkflowLeaseExecution>();
 		ownedContext.set(runId, execution);
 		try {
-			return await this.executionContext.run(ownedContext, execute);
+			return await this.executionContext.run(ownedContext, action);
 		} finally {
-			if (--execution.users === 0) {
-				this.retireExecution(runId, execution);
-			}
+			if (--execution.users === 0) await this.retireExecution(runId, execution);
 		}
 	}
-
-	/** Capture identity now; a delayed quit must never retire a replacement execution. */
-	captureWorkflowRetirement(runId: string): () => void {
+	captureWorkflowRetirement(runId: string): () => void | Promise<void> {
 		const execution = this.executionContext.getStore()?.get(runId);
 		return () => {
-			if (execution !== undefined) this.retireExecution(runId, execution);
+			if (execution !== undefined) return this.retireExecution(runId, execution);
 		};
 	}
-
-	private retireExecution(runId: string, execution: WorkflowLeaseExecution): void {
+	private retireExecution(runId: string, execution: WorkflowLeaseExecution): void | Promise<void> {
 		if (execution.retired) return;
 		execution.retired = true;
 		if (this.executions.get(runId) === execution) this.executions.delete(runId);
-		if (execution.lease !== undefined && this.leases.get(runId) === execution.lease) this.releaseLease(runId);
+		if (execution.lease !== undefined && this.leases.get(runId) === execution.lease)
+			return this.serialize(runId, () => this.release(runId));
 	}
-
-	/** Release this execution's lease without closing the shared journal. */
-	releaseWorkflow(runId: string): void {
+	releaseWorkflow(runId: string): void | Promise<void> {
 		this.assertExecutionActive(runId);
-		this.releaseLease(runId);
+		return this.serialize(runId, () => this.release(runId));
 	}
-
-	private releaseLease(runId: string): void {
+	private *release(runId: string): Operation<void> {
 		const lease = this.leases.get(runId);
 		if (lease === undefined) return;
 		try {
-			this.journal.releaseSync(lease);
+			yield* invoke(() => {
+				if (this.synchronous !== undefined) return this.synchronous.releaseSync(lease);
+				return this.journal.release(lease);
+			});
 		} catch (error) {
 			if (!(error instanceof StaleLeaseError)) throw error;
 		} finally {
 			this.leases.delete(runId);
+			if (this.leases.size === 0) {
+				clearInterval(this.timer);
+				this.timer = undefined;
+			}
 		}
 	}
-
+	private *releaseAll(): Operation<void> {
+		for (const runId of this.leases.keys()) yield* this.release(runId);
+	}
 	async close(): Promise<void> {
 		if (this.processExitCleanup !== undefined) {
 			process.off("exit", this.processExitCleanup);
 			this.processExitCleanup = undefined;
 		}
 		if (this.closed) return;
-		clearInterval(this.timer);
+		if (this.timer !== undefined) clearInterval(this.timer);
+		if (this.pending.size > 0) await Promise.all(this.pending.values());
 		try {
-			for (const lease of this.leases.values()) {
-				try {
-					this.journal.releaseSync(lease);
-				} catch (error) {
-					if (!(error instanceof StaleLeaseError)) throw error;
-				}
-			}
+			const released = execute(this.releaseAll());
+			if (isPromise(released)) await released;
 		} finally {
 			this.closed = true;
-			await this.journal.close();
+			if (this.ownsJournal) await execute(invoke(() => this.journal.close()));
 		}
 	}
 }

@@ -1,4 +1,5 @@
 import type { SessionInfo } from "@bastani/atomic";
+import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import type { DurableWorkflowDeleteOutcome } from "../durable/retention-policy.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
@@ -35,6 +36,7 @@ export interface WorkflowResumeSelectorOptions {
 	readonly refreshIntervalMs?: number;
 	/** The owning session's runs, used to follow resume sources of live rows. */
 	readonly sessionRuns?: () => readonly RunSnapshot[];
+	readonly durableBackend?: () => DurableWorkflowBackend | undefined;
 }
 
 export type WorkflowResumeRefresh = () => Promise<{
@@ -60,8 +62,12 @@ function completedStageCount(run: RunSnapshot): number {
 	return run.stages.filter((stage) => stage.status === "completed" || stage.status === "failed").length;
 }
 
-function isResumePickerLiveRun(run: RunSnapshot, sessionRuns: readonly RunSnapshot[] | undefined): boolean {
-	return isWorkflowRunResumable(workflowRunResumeCandidate(run, sessionRuns));
+function isResumePickerLiveRun(
+	run: RunSnapshot,
+	sessionRuns: readonly RunSnapshot[] | undefined,
+	backend?: DurableWorkflowBackend,
+): boolean {
+	return isWorkflowRunResumable(workflowRunResumeCandidate(run, sessionRuns, backend));
 }
 interface WorkflowStatusPresentation {
 	readonly label: string;
@@ -144,8 +150,12 @@ export function workflowResumeSelectorItems(
 	durableEntries: readonly ResumableWorkflowEntry[],
 	completedEntries: readonly ResumableWorkflowEntry[] = [],
 	sessionRuns?: readonly RunSnapshot[],
+	backend?: DurableWorkflowBackend,
 ): WorkflowResumeSelectorItem[] {
-	const classifiedLiveRuns = liveRuns.map((run) => ({ run, resumable: isResumePickerLiveRun(run, sessionRuns) }));
+	const classifiedLiveRuns = liveRuns.map((run) => ({
+		run,
+		resumable: isResumePickerLiveRun(run, sessionRuns, backend),
+	}));
 	const eligibleLiveRuns = classifiedLiveRuns.filter(({ resumable }) => resumable).map(({ run }) => run);
 	const visibleLiveIds = new Set(eligibleLiveRuns.map((run) => run.id));
 	// An actively executing live snapshot is intentionally not resumable here, but its durable
@@ -237,7 +247,13 @@ export function openWorkflowResumeSelector(
 
 	let currentLiveRuns = liveRuns;
 	let resolvedCatalog: WorkflowResumeCatalogRows = EMPTY_CATALOG;
-	const liveItems = workflowResumeSelectorItems(currentLiveRuns, [], [], options.sessionRuns?.());
+	const liveItems = workflowResumeSelectorItems(
+		currentLiveRuns,
+		[],
+		[],
+		options.sessionRuns?.(),
+		options.durableBackend?.(),
+	);
 	let sessions = liveItems.map((item) => item.session);
 	let resultByPath = new Map(liveItems.map((item) => [item.session.path, item.result]));
 	let settled = false;
@@ -252,6 +268,7 @@ export function openWorkflowResumeSelector(
 			catalog.durable,
 			catalog.completed,
 			options.sessionRuns?.(),
+			options.durableBackend?.(),
 		);
 		sessions = items.map((item) => item.session);
 		resultByPath = new Map(items.map((item) => [item.session.path, item.result]));

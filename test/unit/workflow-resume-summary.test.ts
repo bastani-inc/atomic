@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { createInMemoryTestBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import type { ExtensionAPI, PiCommandContext } from "../../packages/workflows/src/extension/public-types.js";
 import { injectWorkflowResumeSummary } from "../../packages/workflows/src/extension/workflow-resume-summary.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { createMemoryTestBackend as createInMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 function run(): RunSnapshot {
 	return {
@@ -90,16 +91,16 @@ test("durable resumes without snapshots deliver again after pause or detach, not
 		const ctx: PiCommandContext = { ui: { notify() {} } };
 		for (const boundary of ["initial", "pause", "detach"]) {
 			if (boundary !== "initial") backend.setWorkflowStatus("durable-summary", "paused");
-			await injectWorkflowResumeSummary(pi, ctx, "durable-summary");
-			await injectWorkflowResumeSummary(pi, ctx, "durable-summary");
+			await injectWorkflowResumeSummary(pi, ctx, "durable-summary", undefined, undefined, backend);
+			await injectWorkflowResumeSummary(pi, ctx, "durable-summary", undefined, undefined, backend);
 			backend.setWorkflowStatus("durable-summary", "running");
-			await injectWorkflowResumeSummary(pi, ctx, "durable-summary");
+			await injectWorkflowResumeSummary(pi, ctx, "durable-summary", undefined, undefined, backend);
 			assert.equal(messages.length, ["initial", "pause", "detach"].indexOf(boundary) + 1);
 		}
 		backend.setWorkflowStatus("durable-summary", "paused");
-		await injectWorkflowResumeSummary(pi, ctx, "durable-summary");
+		await injectWorkflowResumeSummary(pi, ctx, "durable-summary", undefined, undefined, backend);
 		await backend.persistSummary("durable-summary", "Updated review context", 2000);
-		await injectWorkflowResumeSummary(pi, ctx, "durable-summary");
+		await injectWorkflowResumeSummary(pi, ctx, "durable-summary", undefined, undefined, backend);
 		assert.equal(messages.length, 4, "summary writes do not create a resume boundary");
 		assert.match(messages[0]!, /Ready for review/);
 		assert.equal(
@@ -124,9 +125,9 @@ test("missing durable summary lookups cannot prevent workflow recovery", async (
 				messages.push(String(message.content));
 			},
 		};
-		await injectWorkflowResumeSummary(pi, { ui: { notify() {} } }, "missing-run");
+		await injectWorkflowResumeSummary(pi, { ui: { notify() {} } }, "missing-run", undefined, undefined, backend);
 		assert.deepEqual(messages, []);
-		await injectWorkflowResumeSummary(pi, { ui: { notify() {} } }, "summary-run", run());
+		await injectWorkflowResumeSummary(pi, { ui: { notify() {} } }, "summary-run", run(), undefined, backend);
 		assert.equal(messages.length, 1);
 	} finally {
 		setDurableBackend(undefined);

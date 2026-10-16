@@ -1,6 +1,5 @@
 import { describe } from "vitest";
-import { type DurableWorkflowBackend, InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { getDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
 import {
 	inheritedRunElapsedMs,
 	priorRunElapsedMs,
@@ -15,6 +14,8 @@ import { appendRunStart } from "../../packages/workflows/src/shared/persistence-
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { elapsedRunMs } from "../../packages/workflows/src/shared/timing.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
+import { currentStoreBackend as getDurableBackend } from "../helpers/store-backend.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import { assert, createStore, run, Type, test, workflow } from "./executor-shared.js";
 
 const RUN_ID = "wf-run-timing";

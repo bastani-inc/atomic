@@ -135,12 +135,12 @@ export function createDurableCachedStageRecorder(input: {
 		replayKey: string,
 		checkpoint: DurableCompletedStageCheckpoint,
 		scope?: ParallelFailFastScope,
-	) => void;
+	) => void | Promise<void>;
 	readonly metadata: (replayKey: string) => Partial<DurableCompletedStageCheckpoint>;
 } {
 	const replaySourceOrders = new Map<string, number>();
 	return {
-		record(name, replayKey, checkpoint, scope): void {
+		record(name, replayKey, checkpoint, scope): void | Promise<void> {
 			const cachedChildRunId = workflowChildRunId(checkpoint);
 			const runById = new Map(input.store.runs().map((run) => [run.id, run]));
 			if (!runById.has(input.run.id)) runById.set(input.run.id, input.run);
@@ -179,21 +179,22 @@ export function createDurableCachedStageRecorder(input: {
 				.runs()
 				.find((run) => run.id === input.run.id)
 				?.stages.find((candidate) => candidate.replayKey === replayKey);
-			if (stage !== undefined) {
-				input.backend.recordCheckpoint({
-					kind: "stage",
-					workflowId: input.run.id,
-					checkpointId: `stage-replay-meta:${durableHash({ replayKey, stageId: stage.id, parentIds: stage.parentIds })}`,
-					name,
-					replayKey,
-					completedAt: Date.now(),
-					...durableStageCheckpointMetadata(
-						stage,
-						durableRunTopology(input.run),
-						sourceOrder ?? input.run.stages.findIndex((candidate) => candidate.id === stage.id),
-					),
-				});
-			}
+			const persistence =
+				stage === undefined
+					? undefined
+					: input.backend.recordCheckpoint({
+							kind: "stage",
+							workflowId: input.run.id,
+							checkpointId: `stage-replay-meta:${durableHash({ replayKey, stageId: stage.id, parentIds: stage.parentIds })}`,
+							name,
+							replayKey,
+							completedAt: Date.now(),
+							...durableStageCheckpointMetadata(
+								stage,
+								durableRunTopology(input.run),
+								sourceOrder ?? input.run.stages.findIndex((candidate) => candidate.id === stage.id),
+							),
+						});
 			for (const childRun of cachedDescendants ?? []) {
 				const existingRun = input.store.runs().find((candidate) => candidate.id === childRun.id);
 				const isDirectChild =
@@ -216,6 +217,7 @@ export function createDurableCachedStageRecorder(input: {
 					isDirectChild && stage !== undefined ? { ...childRun, parentStageId: stage.id } : childRun;
 				input.store.recordRunStart(hydratedRun);
 			}
+			return persistence;
 		},
 		metadata(replayKey) {
 			const stage = input.run.stages.find((candidate) => candidate.replayKey === replayKey);

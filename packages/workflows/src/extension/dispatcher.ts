@@ -7,7 +7,8 @@
  * real errors so bugs surface instead of being swallowed as success-shaped results.
  */
 
-import { getDurableBackend } from "../durable/factory.js";
+import type { DurableWorkflowBackend } from "../durable/backend.js";
+import { requireStoreDurableBackend } from "../durable/store-backend.js";
 import type { CancellationRegistry } from "../runs/background/cancellation-registry.js";
 import { jobTracker as defaultJobTracker, type JobTracker } from "../runs/background/job-tracker.js";
 import { launchDetachedUntilStartup, workflowStartupFailureMessage } from "../runs/background/startup-admission.js";
@@ -45,11 +46,11 @@ function failedRunResult(name: string | undefined, runId: string, error: string)
 	};
 }
 async function discardUnadmittedRun(runId: string, activeStore: Store): Promise<void> {
+	const backend = requireStoreDurableBackend(activeStore, runId);
 	activeStore.removeRun(runId);
-	const backend = getDurableBackend();
 	const handle = backend.getWorkflow(runId);
 	if (handle?.status === "running") {
-		backend.setWorkflowStatus(runId, "failed", handle.pendingPrompts, false);
+		await backend.setWorkflowStatus(runId, "failed", handle.pendingPrompts, false);
 	}
 	const deleted = await backend.deleteWorkflowIfInactive(runId);
 	if (!deleted.ok && deleted.reason !== "not_found") {
@@ -62,6 +63,7 @@ async function discardUnadmittedRun(runId: string, activeStore: Store): Promise<
 // ---------------------------------------------------------------------------
 
 export interface DispatcherOpts {
+	durableBackend?: DurableWorkflowBackend;
 	/** Registry of compiled workflow definitions. */
 	registry: WorkflowRegistry;
 	/** Stage adapters forwarded to the executor (prompt/complete). */
@@ -223,6 +225,7 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 					registry: opts.registry,
 					adapters: opts.adapters,
 					store: opts.store,
+					durableBackend: opts.durableBackend,
 					cancellation: opts.cancellation,
 					jobs: opts.jobs,
 					stageControlRegistry: opts.stageControlRegistry,

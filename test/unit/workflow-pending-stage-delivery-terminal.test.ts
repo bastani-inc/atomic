@@ -22,8 +22,8 @@ import assert from "node:assert/strict";
 import { afterEach, describe, test } from "vitest";
 import { IntercomClientDisconnectedError } from "../../packages/intercom/recoverable-disconnect.js";
 import { IntercomWarmUpExhaustedError } from "../../packages/intercom/warm-up-exhaustion.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import {
 	createWorkflowPendingStageDelivery,
 	isWorkflowPendingStageDeliveryFailure,
@@ -38,6 +38,7 @@ import type { PendingStageMessageInput } from "../../packages/workflows/src/shar
 import { classifyWorkflowFailure } from "../../packages/workflows/src/shared/workflow-failures.js";
 import { testRunId } from "../helpers/run-id.js";
 import { sleep } from "../helpers/runtime.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 /** The exact reason chain `packages/intercom/index.ts` hands to `fail()` in production. */
 function productionWarmUpExhaustedReason(): IntercomWarmUpExhaustedError {
@@ -65,7 +66,7 @@ function fixture() {
 	});
 	const backend = new InMemoryDurableBackend();
 	backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
-	setDurableBackend(backend);
+	bindStoreDurableBackend(store, backend);
 	return { store, backend };
 }
 

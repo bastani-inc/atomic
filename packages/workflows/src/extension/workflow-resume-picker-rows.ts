@@ -8,8 +8,10 @@
  * bounded cross-session poll), so state transitions appear while it is open.
  */
 
-import { getDurableBackend } from "../durable/factory.js";
+import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
+import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
+import { availableStoreDurableBackend, requireStoreDurableBackend } from "../durable/store-backend.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { Store } from "../shared/store.js";
@@ -33,9 +35,13 @@ export interface ResumePickerLiveSource {
  * a restored snapshot that depends on durable state is filtered by its shadow
  * classification instead.
  */
-function isResumableLiveRun(run: RunSnapshot, sessionRuns: readonly RunSnapshot[]): boolean {
-	if (!getDurableBackend().isWorkflowLoadable(run.id)) return false;
-	return isWorkflowRunResumable(workflowRunResumeCandidate(run, sessionRuns));
+function isResumableLiveRun(
+	run: RunSnapshot,
+	sessionRuns: readonly RunSnapshot[],
+	backend: DurableWorkflowBackend,
+): boolean {
+	if (!backend.isWorkflowLoadable(run.id)) return false;
+	return isWorkflowRunResumable(workflowRunResumeCandidate(run, sessionRuns, backend));
 }
 
 export function collectResumePickerLiveRuns(runStore: Store, deps?: DurableResumeShadowDeps): ResumePickerLiveSource {
@@ -43,10 +49,23 @@ export function collectResumePickerLiveRuns(runStore: Store, deps?: DurableResum
 	// rows have no durable checkpoint or pending prompt progress, so the resume
 	// path would refuse them. Only `not_shadow` runs can actually be resumed here.
 	const runs = topLevelWorkflowRuns(runStore.runs());
+	// A fresh picker mounts before catalog hydration prepares and binds its journal.
+	if (runs.length === 0) return { liveRuns: [], suppressedLiveIds: new Set() };
 	const shadowClassification = new Map(runs.map((run) => [run.id, classifyDurableResumeShadow(run, runStore, deps)]));
 	const isOfferable = (run: RunSnapshot): boolean => shadowClassification.get(run.id) === "not_shadow";
 	const sessionRuns = runStore.runs();
-	const resumableById = new Map(runs.map((run) => [run.id, isResumableLiveRun(run, sessionRuns)]));
+	const resumableById = new Map(
+		runs.map((run) => [
+			run.id,
+			isResumableLiveRun(
+				run,
+				sessionRuns,
+				availableRunDurableBackend(sessionRuns, run.id) ??
+					deps?.backend ??
+					requireStoreDurableBackend(runStore, run.id),
+			),
+		]),
+	);
 	const liveRuns = runs.filter((run) => isOfferable(run) && resumableById.get(run.id) === true);
 	const isCurrentlyRunning = (run: RunSnapshot): boolean =>
 		run.endedAt === undefined && run.status === "running" && run.exitReason !== "quit";
@@ -73,6 +92,7 @@ export interface ResumePickerLiveUpdateOptions {
 	readonly watch: (onChange: () => void) => () => void;
 	readonly refresh: WorkflowResumeRefresh;
 	readonly sessionRuns: () => readonly RunSnapshot[];
+	readonly durableBackend: () => DurableWorkflowBackend | undefined;
 }
 
 export function resumePickerLiveUpdateOptions(
@@ -81,6 +101,7 @@ export function resumePickerLiveUpdateOptions(
 	deps?: DurableResumeShadowDeps,
 ): ResumePickerLiveUpdateOptions {
 	return {
+		durableBackend: () => deps?.backend ?? availableStoreDurableBackend(runStore),
 		watch: (onChange) => subscribeStoreInvalidation(runStore, onChange),
 		sessionRuns: () => runStore.runs(),
 		refresh: async () => {

@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { toolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import type { ExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
 import type { WorkflowExecutionPolicy } from "../../packages/workflows/src/shared/types.js";
 import { testRunId } from "../helpers/run-id.js";
+import {
+	currentStoreBackend,
+	configureCurrentTestStoreBackend as setDurableBackend,
+} from "../helpers/store-backend.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import {
 	buildMockPi,
 	buildPrintCtxWithRealCustom,
@@ -23,13 +27,17 @@ describe("/workflow resume — durable regression coverage", () => {
 		setDurableBackend(new InMemoryDurableBackend());
 		initTheme("dark");
 	});
-	afterEach(() => setDurableBackend(undefined));
+	afterEach(() => {
+		setDurableBackend(undefined);
+		toolControlRegistry.clear();
+	});
 
 	// #3105: missing presentation UI must not invent an execution restriction.
 	test("durable resume does not infer non-interactive policy from missing UI", async () => {
 		let capturedPolicy: WorkflowExecutionPolicy | undefined;
 		const workflowId = testRunId("durable-policy-run");
 		const runtime = {
+			durableBackend: currentStoreBackend,
 			prepareDurableResumable: async () => [
 				{
 					workflowId,
@@ -73,6 +81,7 @@ describe("/workflow resume — durable regression coverage", () => {
 
 	test("headless no-arg durable resume prints catalog without awaiting no-op custom UI", async () => {
 		const runtime = {
+			durableBackend: currentStoreBackend,
 			prepareDurableResumable: async () => [
 				{
 					workflowId: "durable-headless-catalog",
@@ -124,6 +133,7 @@ describe("/workflow resume — durable regression coverage", () => {
 	test("targeted stale running durable resume does not print stale catalog", async () => {
 		const workflowId = testRunId("stale-running-id");
 		const runtime = {
+			durableBackend: currentStoreBackend,
 			registry: { has: () => false },
 			prepareDurableResumable: async () => [
 				{
@@ -295,6 +305,29 @@ describe("/workflow resume — durable regression coverage", () => {
 		singletonStore.recordRunPaused(liveRunId, now + 2);
 		const backend = new InMemoryDurableBackend();
 		backend.registerWorkflow({
+			workflowId: liveRunId,
+			name: "live-select-wf",
+			inputs: {},
+			createdAt: now,
+			updatedAt: now + 2,
+			status: "paused",
+			completedCheckpoints: 1,
+		});
+		let paused = true;
+		toolControlRegistry.registerRun(liveRunId, {
+			get paused() {
+				return paused;
+			},
+			async pause() {
+				paused = true;
+			},
+			async resume() {
+				paused = false;
+				singletonStore.recordRunResumed(liveRunId);
+			},
+			async quit() {},
+		});
+		backend.registerWorkflow({
 			workflowId: testRunId("durable-select-alongside"),
 			name: "durable-select",
 			inputs: {},
@@ -336,6 +369,15 @@ describe("/workflow resume — durable regression coverage", () => {
 			resumable: true,
 		});
 		const backend = new InMemoryDurableBackend();
+		backend.registerWorkflow({
+			workflowId: failedRunId,
+			name: "missing-continuation-wf",
+			inputs: {},
+			createdAt: now,
+			status: "failed",
+			completedCheckpoints: 1,
+			resumable: true,
+		});
 		backend.registerWorkflow({
 			workflowId: testRunId("durable-with-failed-live"),
 			name: "durable-select",
@@ -393,6 +435,7 @@ describe("/workflow resume — durable regression coverage", () => {
 		const entry = backend.listResumableWorkflows()[0]!;
 		let resumeCalls = 0;
 		const runtime = {
+			durableBackend: currentStoreBackend,
 			registry: { has: () => true },
 			prepareDurableResumable: async () => [entry],
 			prepareCompletedDurable: async () => [],

@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { createInMemoryTestBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { subscribeStoreInvalidation } from "../../packages/workflows/src/shared/store-observation.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { startFallbackWidgetScenario } from "../helpers/workflow-fallback-widget.js";
+import { createMemoryTestBackend as createInMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 import { makeMockSession } from "./stage-runner-helpers.js";
 

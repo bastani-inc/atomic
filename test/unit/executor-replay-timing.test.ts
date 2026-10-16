@@ -1,7 +1,7 @@
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { restoreOnSessionStart, type SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { stageTimingFields } from "../../packages/workflows/src/shared/timing.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import {
 	assert,
 	createStore,

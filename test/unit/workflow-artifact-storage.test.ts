@@ -3,8 +3,6 @@ import { mkdir, mkdtemp, rm, stat, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { isWorkflowRunResumable } from "../../packages/workflows/src/durable/resume-eligibility.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
 import {
@@ -17,6 +15,8 @@ import {
 	workflowRunArtifactsIntact,
 	workflowRunHasArtifactReference,
 } from "../../packages/workflows/src/shared/workflow-artifacts.js";
+import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 // Path assertions compare shapes, not separators: `join` yields "\" on Windows.
 const posix = (value: string): string => value.replaceAll("\\", "/");

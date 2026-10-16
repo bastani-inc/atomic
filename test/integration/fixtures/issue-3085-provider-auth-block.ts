@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { workflow } from "../../../packages/workflows/src/authoring/workflow.js";
 import { setDurableBackend } from "../../../packages/workflows/src/durable/factory.js";
 import { JournalDurableBackend } from "../../../packages/workflows/src/durable/journal/journal-backend.js";
+import { SqliteRunJournal } from "../../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { createExtensionRuntime } from "../../../packages/workflows/src/extension/runtime.js";
 import { createJobTracker } from "../../../packages/workflows/src/runs/background/job-tracker.js";
 import { effectiveRunStatus } from "../../../packages/workflows/src/shared/returned-run-status.js";
@@ -86,7 +87,7 @@ export function createIssue3085Definition(dir: string) {
 
 export async function resumeIssue3085FromPersistedState(dir: string): Promise<Issue3085ResumeResult> {
 	const persisted = JSON.parse(readFileSync(persistPath(dir), "utf8")) as Issue3085PersistedState;
-	const backend = await JournalDurableBackend.open(persisted.journalPath);
+	const backend = await JournalDurableBackend.open(new SqliteRunJournal(persisted.journalPath));
 	setDurableBackend(backend);
 	try {
 		await backend.hydrateWorkflow(persisted.runId);

@@ -79,10 +79,7 @@ export type OnNotify = (payload: IntercomControlPayload) => void | Promise<void>
 export interface IntercomControlCallbacks {
 	onNeedDecision?: OnNeedDecision;
 	onNotify?: OnNotify;
-	/**
-	 * Fallback called for unknown `type` values — useful for forward
-	 * compatibility as pi-subagents adds new escalation kinds.
-	 */
+	/** Called for an unrecognized control-event type. */
 	onUnknown?: (payload: IntercomControlPayload) => void | Promise<void>;
 }
 

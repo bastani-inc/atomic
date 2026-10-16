@@ -7,7 +7,7 @@ interface StageTimerSnapshot {
 	readonly replayed?: boolean;
 }
 
-/** Copy recorded execution timing without measuring hydration or filling legacy gaps. */
+/** Copy recorded execution timing without measuring hydration. */
 export function stageTimingFields(
 	stage: StageTimerSnapshot = {},
 ): Pick<StageTimerSnapshot, "startedAt" | "endedAt" | "durationMs"> {

@@ -1,6 +1,6 @@
 import { resumableEntryFromHandle } from "../durable/backend.js";
-import { getDurableBackend } from "../durable/factory.js";
 import { isDurableWorkflowResumable, isWorkflowRunResumable } from "../durable/resume-eligibility.js";
+import { requireStoreDurableBackend } from "../durable/store-backend.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { quitAllRuns, quitRun } from "../runs/background/quit.js";
 import { abortToolNode } from "../runs/background/quit-tool-node.js";
@@ -51,7 +51,7 @@ export interface WorkflowControlActionDeps {
 	beforeResume?: (runId: string) => Promise<void>;
 	owner?: WorkflowOwnerResources;
 	/** Model-tool boundary only; slash/internal callers retain their explicit exception. */
-	authorize?: (runId: string) => void;
+	authorize?: (runId: string) => void | Promise<void>;
 }
 
 export type WorkflowForeignRunGuard = Pick<WorkflowControlActionDeps, "getRuntime" | "authorize">;
@@ -78,7 +78,7 @@ async function foreignRunFailure(
 		code: "owned_elsewhere",
 	});
 	try {
-		guard.authorize?.(runId);
+		await guard.authorize?.(runId);
 	} catch (error) {
 		if (error instanceof WorkflowInstanceOwnershipError) return foreign(error.message);
 		throw error;
@@ -427,7 +427,7 @@ async function resumeDurableShadow(
 		warning = formatWorkflowResourceLoadWarning(error);
 	}
 	deps.signal?.throwIfAborted();
-	deps.authorize?.(runId);
+	await deps.authorize?.(runId);
 	const resumed = await runtime.resumeDurableWorkflow(runId, {
 		policy: deps.policy,
 		actor: "agent",
@@ -453,7 +453,7 @@ async function resumePreparedDurableTarget(
 	>,
 	budget?: WorkflowToolArgs["budget"],
 ): Promise<WorkflowToolResult> {
-	deps.authorize?.(runId);
+	await deps.authorize?.(runId);
 	try {
 		deps.signal?.throwIfAborted();
 		const resumed = await deps.getRuntime().resumeDurableWorkflow(runId, {
@@ -511,7 +511,7 @@ async function resolveExplicitDurableTarget(
 		deps.signal?.throwIfAborted();
 		if (isFullRunId(target) && runtime.prepareDurableResumableForIds !== undefined) {
 			durable = await runtime.prepareDurableResumableForIds([target]);
-			const handle = getDurableBackend().getLoadableWorkflow(target);
+			const handle = runtime.durableBackend().getLoadableWorkflow(target);
 			const historical =
 				handle !== undefined &&
 				(handle.rootWorkflowId === undefined || handle.rootWorkflowId === handle.workflowId) &&
@@ -524,18 +524,25 @@ async function resolveExplicitDurableTarget(
 			completed =
 				catalog?.completed ??
 				(await runtime.prepareCompletedDurable?.()) ??
-				getDurableBackend().listCompletedWorkflows();
+				runtime.durableBackend().listCompletedWorkflows();
 		}
 	} catch (error) {
 		return controlFailure("resume", target, error);
 	}
 	deps.signal?.throwIfAborted();
-	const resolved = resolveWorkflowResumeTarget(target, liveRuns, durable, completed, deps.owner?.store.runs());
+	const resolved = resolveWorkflowResumeTarget(
+		target,
+		liveRuns,
+		durable,
+		completed,
+		deps.owner?.store.runs(),
+		runtime.durableBackend(),
+	);
 	if (resolved.kind === "malformed" || resolved.kind === "ambiguous") {
 		return { action: "resume", runId: target, status: "noop", message: resolved.message, code: "run_not_found" };
 	}
 	if (resolved.kind === "durable" || resolved.kind === "live" || resolved.kind === "completed")
-		deps.authorize?.(resolved.workflowId);
+		await deps.authorize?.(resolved.workflowId);
 	if (resolved.kind === "durable") {
 		const refusal = refuseStageScopedDurableResume(resolved.workflowId, args);
 		if (refusal !== undefined) return refusal;
@@ -553,8 +560,8 @@ async function resolveExplicitDurableTarget(
 			code: "not_resumable",
 		};
 	}
-	const durableHandle = getDurableBackend().getWorkflow(target);
-	if (durableHandle !== undefined) deps.authorize?.(target);
+	const durableHandle = runtime.durableBackend().getWorkflow(target);
+	if (durableHandle !== undefined) await deps.authorize?.(target);
 	const isZeroProgressCandidate =
 		durableHandle !== undefined &&
 		(durableHandle.status === "paused" || durableHandle.status === "running") &&
@@ -619,7 +626,7 @@ export async function workflowResumeAction(
 		}
 		return { action: "resume", runId: target.target, status: "noop", message: target.message, code: "run_not_found" };
 	}
-	deps.authorize?.(target.runId);
+	await deps.authorize?.(target.runId);
 	// Any exact id or unique prefix has been normalized to the canonical full id,
 	// so it cannot disagree with the resolved run; the old re-resolution branch
 	// here is unreachable.
@@ -633,7 +640,7 @@ export async function workflowResumeAction(
 			code: requestedStage.code,
 		};
 	}
-	const backend = getDurableBackend();
+	const backend = requireStoreDurableBackend(store, target.runId);
 	const exact = store.runs().find((run) => run.id === target.runId);
 	const shadow =
 		exact === undefined
@@ -667,7 +674,7 @@ export async function workflowResumeAction(
 				await runtime.prepareDurableResumableForIds([target.runId]);
 			else await runtime.prepareDurableResumable(target.runId);
 		} catch {
-			// Compatibility preparation remains best-effort before the authoritative check.
+			// Refresh remains best-effort before the authoritative check.
 		}
 		deps.signal?.throwIfAborted();
 		if (!backend.isWorkflowLoadable(target.runId)) {
@@ -697,7 +704,7 @@ export async function workflowResumeAction(
 		run !== undefined &&
 		!isPaused &&
 		run.exitReason !== "quit" &&
-		isWorkflowRunResumable(workflowRunResumeCandidate(run, store.runs()));
+		isWorkflowRunResumable(workflowRunResumeCandidate(run, store.runs(), backend));
 	if (isDurableAuthorExit) {
 		const refusal = refuseStageScopedDurableResume(stageRunId, args);
 		if (refusal !== undefined) return refusal;

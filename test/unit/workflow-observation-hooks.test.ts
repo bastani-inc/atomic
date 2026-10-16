@@ -12,10 +12,10 @@ import type {
 	WorkflowRootActivity,
 } from "../../packages/coding-agent/src/core/extensions/workflow-events.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createWorkflowObservation } from "../../packages/workflows/src/extension/workflow-observation.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 

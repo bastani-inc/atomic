@@ -4,8 +4,9 @@ import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getAgentDir, getEnvValue } from "@bastani/atomic";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
-import { getDurableBackend } from "../durable/factory.js";
 import { type WorkflowRunResumeCandidate, workflowRunHasPausedState } from "../durable/resume-eligibility.js";
+import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
+import { requireStoreDurableBackend } from "../durable/store-backend.js";
 import { store } from "./store.js";
 import type { RunSnapshot } from "./store-types.js";
 import { ENV_WORKFLOW_ARTIFACT_DIR, WORKFLOW_ARTIFACT_RETENTION_MS } from "./workflow-artifact-env.js";
@@ -111,11 +112,13 @@ export function workflowRunArtifactsIntact(
 export function workflowRunResumeCandidate(
 	run: RunSnapshot,
 	sessionRuns: readonly RunSnapshot[] = store.runs(),
+	backend?: DurableWorkflowBackend,
 ): WorkflowRunResumeCandidate {
+	backend = availableRunDurableBackend(sessionRuns, run.id) ?? backend;
 	const artifactsIntact = workflowRunArtifactsIntact(run, sessionRuns);
 	let hasDurableCheckpoint: boolean | undefined;
 	try {
-		hasDurableCheckpoint = getDurableBackend().isWorkflowLoadable(run.id);
+		hasDurableCheckpoint = backend?.isWorkflowLoadable(run.id);
 	} catch {
 		// A backend that is not ready cannot prove a missing checkpoint.
 	}
@@ -198,7 +201,7 @@ export function createWorkflowArtifactRunStateResolver(): WorkflowArtifactRunSta
 	let backend: DurableWorkflowBackend | undefined;
 	let backendReady = true;
 	try {
-		backend = getDurableBackend();
+		backend = requireStoreDurableBackend(store);
 	} catch {
 		backendReady = false;
 	}
@@ -214,7 +217,7 @@ export function createWorkflowArtifactRunStateResolver(): WorkflowArtifactRunSta
 		let durable: WorkflowArtifactRunState | undefined;
 		if (backend !== undefined) {
 			try {
-				durable = durableRunState(backend, runId);
+				durable = durableRunState(availableRunDurableBackend(store.runs(), runId) ?? backend, runId);
 			} catch {
 				backendReady = false;
 				return localState === "protected" ? "protected" : undefined;
@@ -235,7 +238,7 @@ export function resolveWorkflowArtifactRunState(runId: string): WorkflowArtifact
 async function deleteTerminalDurableEntry(runId: string): Promise<boolean> {
 	let backend: DurableWorkflowBackend;
 	try {
-		backend = getDurableBackend();
+		backend = requireStoreDurableBackend(store, runId);
 	} catch {
 		return false;
 	}

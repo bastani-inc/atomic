@@ -7,12 +7,6 @@ import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import {
-	createInMemoryTestBackend,
-	getDurableBackend,
-	setDurableBackend,
-} from "../../packages/workflows/src/durable/factory.js";
 import { settleStartupWorkflowRecoveries } from "../../packages/workflows/src/extension/extension-lifecycle.js";
 import factory, { type ExtensionAPI, type PiCommandOptions } from "../../packages/workflows/src/extension/index.js";
 import { createExtensionRuntime, type ExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
@@ -26,6 +20,14 @@ import { store } from "../../packages/workflows/src/shared/store.js";
 import type { ChatSurfacePayload } from "../../packages/workflows/src/tui/chat-surface-message.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { testRunId } from "../helpers/run-id.js";
+import {
+	currentStoreBackend as getDurableBackend,
+	configureCurrentTestStoreBackend as setDurableBackend,
+} from "../helpers/store-backend.js";
+import {
+	createMemoryTestBackend as createInMemoryTestBackend,
+	MemoryJournalBackend as InMemoryDurableBackend,
+} from "../helpers/workflow-journal.js";
 
 interface SentMessage {
 	customType?: string;

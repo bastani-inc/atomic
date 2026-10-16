@@ -1,11 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import { durableWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
-import {
-	createInMemoryTestBackend,
-	DurableBackendNotInitializedError,
-} from "../../packages/workflows/src/durable/factory.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
+import { DurableBackendNotInitializedError } from "../../packages/workflows/src/durable/store-backend.js";
 import {
 	InvalidWorkflowHeartbeatAnchorError,
 	readWorkflowHeartbeatAnchor,
@@ -40,6 +37,7 @@ import {
 } from "../../packages/workflows/src/shared/workflow-heartbeat-contract.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
+import { createMemoryTestBackend as createInMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 type Store = ReturnType<typeof createStore>;
 

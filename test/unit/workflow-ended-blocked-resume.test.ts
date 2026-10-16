@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { isWorkflowRunResumable } from "../../packages/workflows/src/durable/resume-eligibility.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { workflowPolicyFromContext } from "../../packages/workflows/src/extension/workflow-policy.js";
@@ -14,6 +12,8 @@ import type { RunSnapshot } from "../../packages/workflows/src/shared/store-type
 import { workflowRunResumeCandidate } from "../../packages/workflows/src/shared/workflow-artifacts.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { testRunId } from "../helpers/run-id.js";
+import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const sourceId = testRunId("ended-blocked-reviewer");
 

@@ -8,8 +8,6 @@ import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
 import { Type } from "typebox";
 import { afterEach, beforeEach } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import type {
 	ExtensionAPI,
 	PiArgumentCompletion,
@@ -52,6 +50,8 @@ import type { WorkflowDefinition, WorkflowPersistencePort } from "../../packages
 import { WORKFLOW_INVALID_PROVIDER_CREDENTIALS_MESSAGE } from "../../packages/workflows/src/shared/workflow-failures.js";
 import type { ChatSurfacePayload } from "../../packages/workflows/src/tui/chat-surface-message.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 export type {
 	ChatSurfacePayload,

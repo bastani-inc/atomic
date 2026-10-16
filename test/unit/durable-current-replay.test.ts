@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import {
 	DurableNestedTopologyError,
 	validateDurableCompletedBoundary,
@@ -13,6 +12,7 @@ import type { DurableStageCheckpoint } from "../../packages/workflows/src/durabl
 import { queueStageMessage } from "../../packages/workflows/src/shared/pending-stage-delivery.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { PendingStageMessageInput } from "../../packages/workflows/src/shared/store-types.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const runId = "current-replay-root";
 const childResult = { workflow: "child", runId: "child-run", status: "completed", exited: false, outputs: {} } as const;

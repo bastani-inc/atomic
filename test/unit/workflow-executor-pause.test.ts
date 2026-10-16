@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { isDurableWorkflowResumable } from "../../packages/workflows/src/durable/resume-eligibility.js";
 import { toolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
@@ -18,6 +16,8 @@ import { pauseRun, resumeRun } from "../../packages/workflows/src/runs/backgroun
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore, store } from "../../packages/workflows/src/shared/store.js";
 import { INTERACTIVE_WORKFLOW_POLICY } from "../../packages/workflows/src/shared/types.js";
+import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 afterEach(() => {

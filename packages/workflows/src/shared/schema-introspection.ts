@@ -1,6 +1,6 @@
 /**
  * schema-introspection — single adapter between TypeBox input/output schemas
- * and the legacy normalized field descriptor (`WorkflowInputEntry`) consumed by
+ * and the normalized field descriptor (`WorkflowInputEntry`) consumed by
  * the inputs picker UI, validation, dispatch, and render paths.
  *
  * Authors declare inputs/outputs with TypeBox schemas (`Type.String`,
@@ -25,7 +25,7 @@ import {
 } from "typebox";
 import type { WorkflowInputEntry } from "../extension/render-result.js";
 
-/** Field-kind label expected by the legacy descriptor consumers. */
+/** Field-kind label used by the input picker and validation. */
 export type SchemaFieldKind = "text" | "number" | "integer" | "boolean" | "select" | "object" | "array" | "unknown";
 
 interface SchemaMeta {
@@ -46,7 +46,7 @@ function isStringLiteralUnion(schema: TSchema): boolean {
 	return members.length > 0 && members.every((m) => IsLiteralString(m));
 }
 
-/** Map a TypeBox schema to the legacy field-kind label. */
+/** Map a TypeBox schema to its field-kind label. */
 export function schemaFieldKind(schema: TSchema): SchemaFieldKind {
 	if (isStringLiteralUnion(schema)) return "select";
 	if (IsLiteralString(schema)) return "text";
@@ -82,14 +82,13 @@ export function schemaChoices(schema: TSchema): readonly string[] | undefined {
  * supply it — when it is neither wrapped in `Type.Optional(...)` nor carries a
  * `default`. A defaulted input is a required KEY at the type level (it is always
  * present after defaults are applied) but the user need not provide it, so it is
- * reported as not-required here, matching the legacy descriptor semantics where
- * `{ default }` implied `required: false`.
+ * reported as not-required here.
  */
 export function schemaIsRequired(schema: TSchema): boolean {
 	return !IsOptional(schema) && schemaDefault(schema) === undefined;
 }
 
-/** Derive the legacy normalized input descriptor for a single named field. */
+/** Derive the normalized input descriptor for a single named field. */
 export function deriveInputField(name: string, schema: TSchema): WorkflowInputEntry {
 	const choices = schemaChoices(schema);
 	const def = schemaDefault(schema);

@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { durableHash, InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { durableHash } from "../../packages/workflows/src/durable/backend.js";
 import { FOREIGN_LIVE_WORKFLOW_WINDOW_MS } from "../../packages/workflows/src/durable/resume-eligibility.js";
 import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
 import { inspectTargetedDurableWorkflow } from "../../packages/workflows/src/durable/targeted-inspection.js";
@@ -13,6 +12,8 @@ import { createStore, store } from "../../packages/workflows/src/shared/store.js
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
+import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import { mockSession } from "./executor-shared.js";
 import { buildCtx, registerWorkflowCommand } from "./slash-dispatch-utils.js";
 
@@ -350,6 +351,7 @@ describe("targeted durable workflow inspection", () => {
 					replayScope: "workflow:child:1",
 					alias: "child",
 					workflow: "child",
+					invocationFingerprint: "child-fingerprint",
 					child: {
 						runId: childId,
 						runName: "child",
@@ -386,7 +388,7 @@ describe("targeted durable workflow inspection", () => {
 	});
 
 	test("rejects active boundary identity and replay-scope ambiguity", async () => {
-		const makeNested = (suffix: string, invocationFingerprint: string | undefined, childReplayKey: string) => {
+		const makeNested = (suffix: string, invocationFingerprint: string, childReplayKey: string) => {
 			const rootId = testRunId(`targeted-boundary-${suffix}`);
 			const childId = testRunId(`targeted-child-${suffix}`);
 			const backend = new InMemoryDurableBackend();
@@ -412,7 +414,7 @@ describe("targeted durable workflow inspection", () => {
 						replayScope: "workflow:child:1",
 						alias: "child",
 						workflow: "child",
-						...(invocationFingerprint === undefined ? {} : { invocationFingerprint }),
+						invocationFingerprint,
 						child: {
 							runId: childId,
 							runName: "child",
@@ -448,9 +450,6 @@ describe("targeted durable workflow inspection", () => {
 			});
 			return { backend, rootId };
 		};
-
-		const legacyActive = makeNested("legacy-active", undefined, "workflow:child:1:stage:work:1");
-		assert.equal((await inspectTargetedDurableWorkflow(legacyActive.backend, legacyActive.rootId)).kind, "malformed");
 
 		const escaped = makeNested("escaped-scope", "h00000000000000000000000000000000", "stage:outside:1");
 		assert.equal((await inspectTargetedDurableWorkflow(escaped.backend, escaped.rootId)).kind, "malformed");

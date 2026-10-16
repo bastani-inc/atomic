@@ -33,11 +33,10 @@ bun add -g @bastani/atomic
 
 Atomic does not require package install scripts. Add `--ignore-scripts` if you want to disable dependency lifecycle scripts during a package install.
 
-Embedded PostgreSQL is available without install scripts or a first-run download on Linux x64/ARM64, both glibc and musl, macOS x64/ARM64, and Windows x64/ARM64.
+Workflow persistence uses a local SQLite journal. No database server or separate database installation is needed. The default file is `~/.atomic/workflows/journal.sqlite`; configure another location with `ATOMIC_WORKFLOW_JOURNAL_PATH` or the [workflow storage settings](/settings#workflow-storage).
 
 Keep a standalone archive's complete directory, including `node_modules`, libraries, and licenses. Package managers select the runtime for your platform automatically.
 
-Windows ARM64 uses Windows x64 PostgreSQL under Windows 11's x64 emulation, not native PostgreSQL ARM64. It requires the Microsoft Visual C++ x64 v14 Redistributable. Windows 10 on ARM cannot run this x64 runtime, and Windows ARM64 execution still needs hardware validation.
 
 ### Release archive
 

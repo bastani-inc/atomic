@@ -1,10 +1,10 @@
 import { keybindingIdentity } from "@bastani/atomic";
 import { getKeybindings, type KeybindingsConfig, matchesKey } from "@earendil-works/pi-tui";
 
-// Distinct key ids can share raw control bytes or ESC-prefixed legacy inputs.
+// Distinct key ids can share raw control bytes or ESC-prefixed inputs.
 // Ask the parser in its current protocol/environment mode rather than equating
 // those ids: their explicit CSI-u/modifyOtherKeys inputs can remain distinct.
-const legacyInputs = Array.from({ length: 128 }, (_, code) => String.fromCharCode(code)).flatMap((data) => [
+const rawInputs = Array.from({ length: 128 }, (_, code) => String.fromCharCode(code)).flatMap((data) => [
 	data,
 	`\x1b${data}`,
 ]);
@@ -17,7 +17,7 @@ export function workflowScrollHint(
 		.map((action) => {
 			const configured = bindings[action] ?? [];
 			return (Array.isArray(configured) ? configured : [configured]).find((key) => {
-				const inputs = legacyInputs.filter((data) => matchesKey(data, key));
+				const inputs = rawInputs.filter((data) => matchesKey(data, key));
 				return !Object.entries(bindings).some(
 					([other, values]) =>
 						other !== action &&

@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 import { WorkflowActivityHub } from "../../packages/coding-agent/src/core/extensions/workflow-activity-hub.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import {
 	createWorkflowLifecycleNotificationState,
@@ -12,6 +11,7 @@ import { createWorkflowObservation } from "../../packages/workflows/src/extensio
 import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
 import { pauseRun, resumeRun } from "../../packages/workflows/src/runs/background/status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 // #2891: activity observes execution rather than notification delivery.
 test("tool-only execution publishes working then idle without notifications", async () => {

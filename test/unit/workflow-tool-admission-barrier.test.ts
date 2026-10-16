@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { createToolPrimitive } from "../../packages/workflows/src/durable/tool-primitive.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createAdmittedToolExecutionTracker } from "../../packages/workflows/src/engine/run-tool-execution-tracker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { sleep } from "../helpers/runtime.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 describe("ctx.tool admitted execution barrier", () => {
 	test("tracking returns the exact execution promise and callback value", async () => {

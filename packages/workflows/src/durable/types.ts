@@ -85,7 +85,6 @@ export interface DurableWorkflowHandle {
 	readonly failedToolNodeId?: string;
 	/** Executor id of the Atomic process that last wrote this workflow's metadata. */
 	readonly ownerExecutorId?: string;
-	readonly legacyRecoveryPending?: true;
 	readonly ownerLiveness?: "alive" | "dead" | "unknown";
 	/** Durable pre-start stage messages owned by this workflow run. */
 	readonly pendingStageMessages?: readonly PendingStageMessage[];
@@ -196,7 +195,7 @@ interface DurableWorkflowBoundaryIdentity {
 	readonly alias: string;
 	readonly workflow: string;
 	/** Definition + exact validated inputs. */
-	readonly invocationFingerprint?: string;
+	readonly invocationFingerprint: string;
 	readonly child: DurableBoundaryChildTopology;
 }
 
@@ -305,7 +304,6 @@ export interface DurableWorkflowMetadata {
 	readonly ownerExecutorId?: string;
 	/** Unique winner token for a first-writer-wins status-transition generation. */
 	readonly transitionClaimId?: string;
-	readonly legacyRecoveryPending?: true;
 	readonly sessionFile?: string;
 	readonly label?: string;
 	readonly summary?: string;

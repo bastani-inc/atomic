@@ -1,10 +1,15 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeEach } from "vitest";
-import { InMemoryDurableBackend } from "../packages/workflows/src/durable/backend.js";
+import { afterEach, beforeEach } from "vitest";
 import { getDurableBackendProcessOwner } from "../packages/workflows/src/durable/backend-process-owner.js";
+import {
+	bindStoreDurableBackend,
+	workflowStoreBackendOverride,
+} from "../packages/workflows/src/durable/store-backend.js";
+import type { Store } from "../packages/workflows/src/shared/store-public-types.js";
 import { ENV_WORKFLOW_ARTIFACT_DIR } from "../packages/workflows/src/shared/workflow-artifact-env.js";
+import { closeMemoryTestBackends, MemoryJournalBackend as InMemoryDurableBackend } from "./helpers/workflow-journal.js";
 
 /**
  * Durable workflow artifacts (stage transcripts, ledgers, run notes) default to
@@ -41,7 +46,27 @@ if (process.env[ENV_WORKFLOW_ARTIFACT_DIR] === undefined) {
 	});
 }
 
+// Do not import the store factory here: its host barrel would run before test-local mocks.
+// Reset only the already-constructed singleton fixture, never independently constructed stores.
+function resetConstructedStoreFixture(backend: InMemoryDurableBackend): void {
+	type Registry = { readonly byKey: Map<string, { readonly local: Store; readonly instance?: Store }> };
+	const registry = (globalThis as typeof globalThis & Record<symbol, Registry | undefined>)[
+		Symbol.for("atomic-workflows/session-scoped-singleton-pre-adoption@1")
+	];
+	const slot = registry?.byKey.get("workflows:store:v1");
+	if (slot !== undefined) {
+		const store = slot.instance ?? slot.local;
+		bindStoreDurableBackend(store, backend);
+		(store as Store & { [workflowStoreBackendOverride]?: InMemoryDurableBackend })[workflowStoreBackendOverride] =
+			backend;
+	}
+}
+
 /** Tests inject an isolated backend unless they explicitly open a journal. */
 beforeEach(() => {
-	getDurableBackendProcessOwner().injectedBackend = new InMemoryDurableBackend();
+	const backend = new InMemoryDurableBackend();
+	getDurableBackendProcessOwner().injectedBackend = backend;
+	resetConstructedStoreFixture(backend);
 });
+
+afterEach(closeMemoryTestBackends);

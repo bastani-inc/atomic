@@ -12,10 +12,10 @@ import {
 	SettingsManager,
 } from "../../packages/coding-agent/src/index.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { workflowPolicyFromContext } from "../../packages/workflows/src/extension/workflow-policy.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import { WorkflowProcessHome } from "../helpers/workflow-process.js";
 import { attachedCliPresentation, forwardCliDialogs } from "./fixtures/sdk-host-cli.js";
 import { runBuiltNodeFixture } from "./sdk-builtin-host-parity-helpers.js";

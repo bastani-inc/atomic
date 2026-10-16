@@ -1,12 +1,13 @@
 import { registerExtensionContextRetirementEffect, sessionScopedExtensionState } from "@bastani/atomic";
-import { getAvailableDurableBackend, getDurableBackend } from "../durable/factory.js";
 import { reclaimReleasedRunsOwnedBy, releasePausedRunsOwnedBy } from "../durable/sdk-owner-release.js";
 import { canonicalDirectory, isSdkReleasedRunAdoptable } from "../durable/sdk-recovery-scope.js";
+import { availableStoreDurableBackend, requireStoreDurableBackend } from "../durable/store-backend.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { quitAllRuns } from "../runs/background/quit.js";
 import { killAllRuns } from "../runs/background/status.js";
 import { installCompactionHook } from "../shared/persistence-compaction-policy.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
+import type { Store } from "../shared/store.js";
 import { clearForms } from "../tui/inline-form-store.js";
 import { installStoreWidget } from "../tui/store-widget-installer.js";
 import { currentWorkflowSessionRunState, type WorkflowSessionRunState } from "./adopt-session-run-state.js";
@@ -96,8 +97,8 @@ export function sessionSwitchQuitConfirmation(
 }
 
 /** The departing session's checkpointed runs become adoptable; a crash never gets here. */
-async function releasePausedRunsOfSession(sessionCaller: string | undefined): Promise<readonly string[]> {
-	const backend = getAvailableDurableBackend();
+async function releasePausedRunsOfSession(sessionCaller: string | undefined, store: Store): Promise<readonly string[]> {
+	const backend = availableStoreDurableBackend(store);
 	return sessionCaller !== undefined && backend !== undefined ? releasePausedRunsOwnedBy(backend, sessionCaller) : [];
 }
 
@@ -212,21 +213,22 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		try {
 			const catalog = await runtimeState.runtimeForContext(ctx).prepareDurableResumable();
 			if (!isCurrent()) return;
-			const backend = getDurableBackend();
+			const backend = requireStoreDurableBackend(store);
 			const currentCwd = canonicalDirectory(
 				ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? runtimeState.resolveInvocationCwd(),
 			);
-			const isInterruptedInProject = (entry: ResumableWorkflowEntry): boolean => {
+			const isInterruptedInProject = async (entry: ResumableWorkflowEntry): Promise<boolean> => {
 				const handle = backend.getWorkflow(entry.workflowId) ?? entry;
 				return (
 					handle.status === "running" &&
 					(handle.pendingPrompts ?? entry.pendingPrompts) === 0 &&
-					backend.workflowOwnership(entry.workflowId) === "available" &&
+					(await backend.workflowOwnership(entry.workflowId)) === "available" &&
 					handle.invocationCwd !== undefined &&
 					canonicalDirectory(handle.invocationCwd) === currentCwd
 				);
 			};
-			const interrupted = catalog.filter(isInterruptedInProject);
+			const interrupted: ResumableWorkflowEntry[] = [];
+			for (const entry of catalog) if (await isInterruptedInProject(entry)) interrupted.push(entry);
 			if (interrupted.length === 0) return;
 			if (
 				mode === "ask" &&
@@ -300,7 +302,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		switchHandoff ??= attemptAll([
 			...[...lifetime.generations].map((quitRuns) => () => quitRuns("switch")),
 			async () => {
-				const released = await releasePausedRunsOfSession(sessionCaller);
+				const released = await releasePausedRunsOfSession(sessionCaller, store);
 				lifetime.releasedRunIds = [...new Set([...(lifetime.releasedRunIds ?? []), ...released])];
 			},
 		]);
@@ -344,14 +346,14 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			deps.storeWidgetRef.current = installStoreWidget({ ui: ctx.ui }, store);
 		}
 		if (isSessionSwitch(reason) && sessionCaller !== undefined) {
-			const backend = getAvailableDurableBackend();
+			const backend = availableStoreDurableBackend(store);
 			if (backend !== undefined) await reclaimReleasedRunsOwnedBy(backend, sessionCaller).catch(() => undefined);
 		}
 		if (reason !== "reload") {
 			const releasedRunIds = lifetime.releasedRunIds;
 			lifetime.releasedRunIds = undefined;
 			if (isSessionSwitch(reason) && releasedRunIds !== undefined && releasedRunIds.length > 0) {
-				const backend = getAvailableDurableBackend();
+				const backend = availableStoreDurableBackend(store);
 				const cwd = ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? runtimeState.resolveInvocationCwd();
 				const adoptable = releasedRunIds.flatMap((runId) => {
 					const handle = backend?.getWorkflow(runId);
@@ -390,7 +392,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 				() => lifetime.activeSwitchHandoff?.catch(() => undefined),
 				closeGeneration,
 				...lifetime.generations,
-				() => releasePausedRunsOfSession(sessionCaller),
+				() => releasePausedRunsOfSession(sessionCaller, store),
 				() => {
 					lifetime.generations.clear();
 				},

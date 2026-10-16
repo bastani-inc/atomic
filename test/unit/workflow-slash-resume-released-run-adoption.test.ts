@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { type DurableWorkflowBackend, InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
 import type {
 	ExtensionAPI,
 	PiCommandContext,
@@ -15,6 +14,8 @@ import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/
 import { stageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { testRunId } from "../helpers/run-id.js";
+import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const PREVIOUS_SESSION = "previous-session";
 const SUCCESSOR_SESSION = "successor-session";

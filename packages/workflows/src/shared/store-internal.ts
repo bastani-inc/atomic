@@ -1,3 +1,4 @@
+import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { createGraphStoreSnapshot } from "./graph-store-snapshot.js";
 import type { PromptAnswerRecord, RunEndMetadata } from "./store-public-types.js";
 import type {
@@ -52,6 +53,7 @@ export interface StoreState {
 }
 
 export interface StoreContext {
+	backend?: DurableWorkflowBackend;
 	readonly state: StoreState;
 	readonly observation: WorkflowObservationRuntime;
 	snapshot(): StoreSnapshot;

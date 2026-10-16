@@ -1,3 +1,4 @@
+import type { DurableWorkflowBackend } from "../durable/backend.js";
 /**
  * Concise per-run summaries for the workflow tool `status` listing.
  *
@@ -123,6 +124,7 @@ export interface WorkflowStatusControlLookup {
 }
 
 export interface WorkflowStatusSummaryOptions {
+	readonly durableBackend?: DurableWorkflowBackend;
 	readonly toolControlRegistry?: WorkflowStatusControlLookup;
 	readonly allRuns?: readonly RunSnapshot[];
 	/** Owning-run lifecycle authority for stages projected from nested child runs. */
@@ -273,7 +275,7 @@ export function summarizeRunSnapshot(
 			status: stage.status,
 		})),
 		pendingStages: pendingWorkflowStageStatuses(run, options?.owningRunStatus, options?.resolveBoundarySegments),
-		deliveryStates: stickyStageDeliveryStatuses(options?.allRuns ?? [run], run.id),
+		deliveryStates: stickyStageDeliveryStatuses(options?.allRuns ?? [run], run.id, options?.durableBackend),
 		tools: run.toolNodes.map((tool) => {
 			const owner = tool as typeof tool & {
 				readonly runId?: string;

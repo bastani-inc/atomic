@@ -9,10 +9,10 @@ import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-
 import { type BrokerConnectedSession, handleBrokerSend } from "../../packages/intercom/broker/send-handler.js";
 import { InboundMessageAdmission } from "../../packages/intercom/inbound-message-admission.js";
 import type { BrokerMessage, Message, SessionInfo } from "../../packages/intercom/types.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import { ScopedDurableBackend } from "../../packages/workflows/src/durable/scoped-backend.js";
+import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import {
 	registerPendingStageIntercomBridge,
 	settleUndeliverablePendingStageMessages,
@@ -26,6 +26,8 @@ import type {
 } from "../../packages/workflows/src/shared/store-types.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
+import { configureTestStoreBackend } from "../helpers/store-backend.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const tempDirs: string[] = [];
 
@@ -66,7 +68,7 @@ async function lifecycleFixture(runStatus: RunStatus, stageStatus: StageStatus =
 		...(stageStatus === "skipped" ? { skippedReason: "fail-fast" } : {}),
 	});
 	backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
-	setDurableBackend(backend);
+	bindStoreDurableBackend(activeStore, backend);
 	const accepted = await activeStore.queueStageMessage(
 		pendingMessage(runId, "review-stage"),
 		`workflow:${runId}`,
@@ -141,6 +143,7 @@ describe("pending workflow stage delivery lifecycle", () => {
 	test("registers against an empty store without touching an uninitialized durable backend", async () => {
 		const activeStore = createStore();
 		setDurableBackend(undefined);
+		configureTestStoreBackend(activeStore, undefined);
 		const warnings: unknown[][] = [];
 		const originalWarn = console.warn;
 		console.warn = (...args: unknown[]) => warnings.push(args);
@@ -157,6 +160,7 @@ describe("pending workflow stage delivery lifecycle", () => {
 	test("sweeps eligible durable state added after empty startup exactly once", async () => {
 		const activeStore = createStore();
 		setDurableBackend(undefined);
+		configureTestStoreBackend(activeStore, undefined);
 		let notifications = 0;
 		const dispose = registerPendingStageIntercomBridge(
 			{
@@ -176,7 +180,7 @@ describe("pending workflow stage delivery lifecycle", () => {
 		const backend = new InMemoryDurableBackend();
 		const runId = testRunId("pending-delivery-after-empty-startup");
 		backend.registerWorkflow({ workflowId: runId, name: "flow", inputs: {}, status: "running", createdAt: 1 });
-		setDurableBackend(backend);
+		bindStoreDurableBackend(activeStore, backend);
 		activeStore.recordRunStart({
 			id: runId,
 			name: "flow",
@@ -218,7 +222,7 @@ describe("pending workflow stage delivery lifecycle", () => {
 
 	test("reports a durable backend error when eligible settlement work exists", async () => {
 		const { activeStore } = await lifecycleFixture("completed");
-		setDurableBackend(undefined);
+		configureTestStoreBackend(activeStore, undefined);
 		const warnings: unknown[][] = [];
 		const originalWarn = console.warn;
 		console.warn = (...args: unknown[]) => warnings.push(args);
@@ -256,7 +260,7 @@ describe("pending workflow stage delivery lifecycle", () => {
 
 	test("deduplicates repeated sweep failures without discarding pending work", async () => {
 		const { activeStore, runId } = await lifecycleFixture("completed");
-		setDurableBackend(undefined);
+		configureTestStoreBackend(activeStore, undefined);
 		const warnings: string[] = [];
 		const originalWarn = console.warn;
 		console.warn = (message: string) => {
@@ -371,7 +375,7 @@ describe("pending workflow stage delivery lifecycle", () => {
 		});
 		const backend = new InMemoryDurableBackend();
 		backend.registerWorkflow({ workflowId: rootRunId, name: "root", inputs: {}, status: "running", createdAt: 1 });
-		setDurableBackend(backend);
+		bindStoreDurableBackend(activeStore, backend);
 		const childBackend = new ScopedDurableBackend(backend, {
 			rootWorkflowId: rootRunId,
 			scopePrefix: "workflow:child:1",
@@ -807,7 +811,7 @@ test("a crash after sender-visible failure notification reloads to exactly one n
 		startedAt: 1,
 		pendingStageMessages: [...(reader.getWorkflow(runId)?.pendingStageMessages ?? [])],
 	});
-	setDurableBackend(reader);
+	bindStoreDurableBackend(reloadedStore, reader);
 	// Simulate broker and sender-stage process restarts from their durable records.
 	deliveredMessages = new DeliveredMessageCache();
 	const recipientSessionFile = recipientSession.getSessionFile();

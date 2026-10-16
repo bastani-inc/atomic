@@ -267,7 +267,7 @@ export async function POST(request: Request): Promise<Response> {
         const result = await run(reviewWorkflow, { topic }, {
           cwd: WORKSPACE,
           signal: abort.signal,
-          durability: { mode: "memory" },
+          journal: { memory: true },
           adapters: {
             agentSession: createAgentSessionAdapter({ cwd: WORKSPACE, tools: ["read", "find", "search"] }),
           },
@@ -298,14 +298,13 @@ export async function POST(request: Request): Promise<Response> {
 
 `onStageSessionEvent` receives every stage's session events tagged with its run and stage ids, including stages that switch to a fallback model and stages of nested workflows. Aborting `signal`, here when the client disconnects, cancels the run.
 
-### Choose workflow durability
+### Choose workflow storage
 
-By default, `run()` persists workflow state in a local SQLite journal so eligible runs can resume after the process exits. Keep that file on durable local storage in deployments that need restart recovery.
+By default, `run()` persists workflow state in the local SQLite journal at `~/.atomic/workflows/journal.sqlite`. Keep it on durable local storage when your service needs restart recovery.
 
-- **`durability: { mode: "durable" }`** explicitly requires persistent state. Journal open or write failures stop the run; they do not select non-durable execution.
-- **`durability: { mode: "memory" }`** explicitly keeps state for this call only and cannot resume after process exit. Use it only when that lifetime is intentional.
+Use `journal: { path: "/var/lib/my-service/workflows.sqlite" }` to select a file for a run, or `journal: { memory: true }` for process-local state that cannot survive a restart. A caller-owned `node:sqlite` connection can be supplied as `{ database }`; Atomic does not close it. You can also supply a `RunJournal` instance.
 
-Set `ATOMIC_WORKFLOW_JOURNAL_PATH` before the first workflow action to choose the journal file. See [Choosing the durable backend](/workflows/api-reference#choosing-the-durable-backend) and [Workflows](/workflows).
+`RunOpts.journal` overrides a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, which overrides `workflows.journal.path` or `workflows.journal.memory` in settings. Relative settings paths resolve against the Atomic home directory. Journal open or write failures stop the run instead of switching to memory. See [Choosing the durable backend](/workflows/api-reference#choosing-the-durable-backend).
 
 ## Secure the endpoint
 

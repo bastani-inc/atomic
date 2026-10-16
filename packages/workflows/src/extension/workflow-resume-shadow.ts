@@ -1,6 +1,7 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
-import { getDurableBackend } from "../durable/factory.js";
 import { isDurableWorkflowResumable } from "../durable/resume-eligibility.js";
+import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
+import { requireStoreDurableBackend } from "../durable/store-backend.js";
 import { getLoadableDurableWorkflow } from "../durable/workflow-status-transition.js";
 import { type ToolControlRegistry, toolControlRegistry } from "../engine/run-tool-control-registry.js";
 import { type JobTracker, jobTracker } from "../runs/background/job-tracker.js";
@@ -25,7 +26,8 @@ export function classifyDurableResumeShadow(
 	store: Store,
 	deps: DurableResumeShadowDeps = {},
 ): DurableResumeShadowClassification {
-	const backend = deps.backend ?? getDurableBackend();
+	const backend =
+		availableRunDurableBackend(store.runs(), run.id) ?? deps.backend ?? requireStoreDurableBackend(store, run.id);
 	const toolControls = deps.toolControls ?? toolControlRegistry;
 	// Quit may detach an abandoned executor before its finally unregisters the
 	// run control. Only an open admission boundary still represents a live owner;

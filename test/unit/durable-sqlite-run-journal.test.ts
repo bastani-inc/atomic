@@ -16,6 +16,7 @@ import {
 	JOURNAL_PAYLOAD_ENCODING,
 	JOURNAL_SCHEMA_VERSION,
 	JournalCasConflictError,
+	JournalClosedError,
 	JournalCounterRangeError,
 	type JournalEntry,
 	JournalError,
@@ -437,6 +438,16 @@ const invalidTextCases: readonly {
 	},
 ];
 
+function closedJournal(path: string) {
+	return (error: Error): boolean => {
+		assert.equal(error.constructor, StorageUnavailableError);
+		assert.ok(error instanceof StorageUnavailableError);
+		assert.ok(error.cause instanceof JournalClosedError);
+		assert.equal(error.path, path);
+		return true;
+	};
+}
+
 for (const scenario of invalidTextCases) {
 	test(`${scenario.name} rejects NUL before SQL without changing prefix ownership or records`, async () => {
 		await withJournal(async (journal) => {
@@ -465,7 +476,10 @@ for (const scenario of invalidTextCases) {
 					assert.deepEqual(await read(journal, "prefix"), [appended.entry]);
 				}
 				await journal.close();
-				await assert.rejects(() => scenario.call(journal, lease, "prefix\u0000suffix"), invalid);
+				await assert.rejects(
+					() => scenario.call(journal, lease, "prefix\u0000suffix"),
+					closedJournal(journal.path),
+				);
 			} finally {
 				db.close();
 			}
@@ -475,7 +489,7 @@ for (const scenario of invalidTextCases) {
 
 for (const scenario of invalidTextCases) {
 	test.each([...illFormedExamples, "\ud800\u0000"])(
-		`${scenario.name} rejects invalid Unicode %j before SQL, including on a closed journal`,
+		`${scenario.name} validates open input %j before SQL and rejects closed journals`,
 		async (text) => {
 			await withJournal(async (journal) => {
 				await journal.createRun({ ...header, runId: "prefix" });
@@ -498,7 +512,10 @@ for (const scenario of invalidTextCases) {
 							["transaction", "exec", "get", "all", "getCounters", "allCounters", "run"] as const
 						).map((method) => vi.spyOn(JournalDatabase.prototype, method));
 						try {
-							await assert.rejects(() => scenario.call(journal, lease, text), invalid);
+							await assert.rejects(
+								() => scenario.call(journal, lease, text),
+								state === "closed" ? closedJournal(journal.path) : invalid,
+							);
 							for (const call of calls) assert.equal(call.mock.calls.length, 0);
 						} finally {
 							for (const call of calls) call.mockRestore();

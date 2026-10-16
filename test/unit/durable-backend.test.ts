@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { beforeEach, describe, test } from "vitest";
-import { durableHash, InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { durableHash } from "../../packages/workflows/src/durable/backend.js";
 import {
 	createCheckpointIdGenerator,
 	createToolPrimitive,
@@ -13,6 +13,7 @@ import {
 import type { DurableCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { finalizeDurableTerminalStatus } from "../../packages/workflows/src/engine/run-durable-finalize.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const WORKFLOW_ID = "wf-test-001";
 

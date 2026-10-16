@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { afterEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { durableBackendForRun } from "../../packages/workflows/src/durable/run-owner-backend.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
@@ -10,6 +9,7 @@ import { createWorkflowPendingStageDelivery } from "../../packages/workflows/src
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { PendingStageMessage } from "../../packages/workflows/src/shared/store-types.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const ROOT_RUN_ID = "11111111-1111-4111-8111-111111111111";
 const CHILD_RUN_ID = "22222222-2222-4222-8222-222222222222";

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
@@ -10,6 +9,7 @@ import { stageTimingFields } from "../../packages/workflows/src/shared/timing.js
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { sleep } from "../helpers/runtime.js";
 import { TEST_TIMEOUT_MS } from "../helpers/test-timeout.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import { waitForExecutorStagePendingPrompt } from "../unit/executor-shared.js";
 
 afterEach(() => setDurableBackend(undefined));

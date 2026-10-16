@@ -78,15 +78,6 @@ export interface PiOverlayHandle {
  * `@bastani/atomic docs/tui.md` and
  * `@earendil-works/pi-tui dist/tui.d.ts`.
  *
- * Host-compatibility note: pi's interactive
- * `ExtensionUiController.custom` hardcodes the overlay geometry when
- * `overlay: true` to `{ anchor: "bottom-center", width: "100%",
- * maxHeight: "100%", margin: 0 }`, and does NOT forward this object's
- * `overlayOptions` field. Consumers MUST NOT rely on `overlayOptions`
- * for actual placement in interactive pi mode — the field is
- * retained for forward-compatibility (future hosts and the test seam
- * may consume it).
- *
  * Workflow pickers (`session-overlays.ts`, `inputs-overlay.ts`) mount
  * with `overlay: false`, which causes the host to REPLACE the editor
  * with the picker inline at the editor's natural position — see
@@ -126,12 +117,7 @@ export interface PiCustomOverlayOptions {
 	handlesCtrlC?: boolean;
 	/** Declare that this component claims internal UI actions such as jump-to-bottom. */
 	handlesInternalUiAction?: boolean;
-	/**
-	 * Geometry / anchoring intended for pi-tui's `resolveOverlayLayout`.
-	 * NOT forwarded by current pi interactive `custom()` — see
-	 * the host-compatibility note above. Treat as advisory metadata
-	 * until the host wires it through.
-	 */
+	/** Geometry and anchoring for the host overlay layout. */
 	overlayOptions?: PiOverlayOptions;
 	/**
 	 * Optional callback invoked with the OverlayHandle once pi-tui

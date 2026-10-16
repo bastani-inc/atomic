@@ -1,5 +1,9 @@
-import { getAvailableDurableBackend } from "../durable/factory.js";
-import { durableBackendForRun, durableRootRunIdForRun } from "../durable/run-owner-backend.js";
+import type { DurableWorkflowBackend } from "../durable/backend.js";
+import {
+	availableRunDurableBackend,
+	durableBackendForRun,
+	durableRootRunIdForRun,
+} from "../durable/run-owner-backend.js";
 import { stageMatchesPathPattern, workflowBoundaryHops } from "./pending-stage-status.js";
 import type { RunSnapshot } from "./store-types.js";
 import { parseWorkflowStageTarget } from "./workflow-stage-target.js";
@@ -24,11 +28,12 @@ export interface StickyStageDeliveryStatus {
 export function stickyStageDeliveryStatuses(
 	runs: readonly RunSnapshot[],
 	rootRunId: string,
+	availableBackend?: DurableWorkflowBackend,
 ): StickyStageDeliveryStatus[] {
 	const root = runs.find((run) => run.id === rootRunId);
 	const entries = (root?.pendingStageMessages ?? []).filter((entry) => entry.sticky === true);
 	const result: StickyStageDeliveryStatus[] = [];
-	const availableBackend = getAvailableDurableBackend();
+	availableBackend = availableRunDurableBackend(runs, rootRunId) ?? availableBackend;
 	const backend = availableBackend === undefined ? undefined : durableBackendForRun(availableBackend, runs, rootRunId);
 	for (const run of runs) {
 		if (run.id !== rootRunId && run.rootRunId !== rootRunId && durableRootRunIdForRun(runs, run.id) !== rootRunId)
@@ -91,8 +96,7 @@ export function stickyStageDeliveryStatuses(
 					)
 				) {
 					state = "receipt-unverified";
-					reason =
-						"Legacy or live transport receipt only; inspect the session transcript to confirm context admission";
+					reason = "Live delivery receipt only; inspect the session transcript to confirm context admission";
 				} else if (stage.pendingStageDeliveryAvailable !== true) {
 					state = "delivery-unavailable";
 					reason = "Stage has no pre-start Intercom helper; enable Intercom in the invocation group";

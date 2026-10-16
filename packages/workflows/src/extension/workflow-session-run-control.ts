@@ -267,7 +267,6 @@ export function createSessionRunControl(host: SessionRunControlHost): WorkflowRu
 					runId,
 					...(options?.stageId === undefined ? {} : { stageId: options.stageId }),
 					...(options?.message === undefined ? {} : { message: options.message }),
-					...(options?.legacyRecovery === undefined ? {} : { legacyRecovery: options.legacyRecovery }),
 				}),
 			);
 		},

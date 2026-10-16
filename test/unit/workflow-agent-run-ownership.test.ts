@@ -3,7 +3,6 @@ import { Type } from "typebox";
 import { afterEach, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import type { PiExecuteContext } from "../../packages/workflows/src/extension/public-types.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
@@ -14,6 +13,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowInputValues } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import { waitForExecutorStagePendingPrompt } from "./executor-shared.js";
 
 afterEach(() => {

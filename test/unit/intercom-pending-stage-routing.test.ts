@@ -13,13 +13,14 @@ import {
 	PENDING_STAGE_ASK_REFUSAL,
 } from "../../packages/intercom/broker/send-handler.js";
 import type { BrokerMessage, Message, SessionInfo } from "../../packages/intercom/types.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
+import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import { registerPendingStageIntercomBridge } from "../../packages/workflows/src/extension/pending-stage-intercom.js";
 import { createWorkflowPendingStageDelivery } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
 import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const RUN_ID = "4ac72924-c452-4e5f-9e63-2435722109f7";
 const CHILD_RUN_ID = "5bd82a35-c563-4f60-9a74-3546832210a8";
@@ -213,7 +214,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		});
 		const backend = new InMemoryDurableBackend();
 		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
-		setDurableBackend(backend);
+		bindStoreDurableBackend(store, backend);
 		const listeners = new Map<string, (payload: unknown) => void>();
 		const emitted: Array<{ event: string; payload: Record<string, unknown> }> = [];
 		const pi = {
@@ -429,7 +430,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		});
 		const backend = new InMemoryDurableBackend();
 		backend.registerWorkflow({ workflowId: RUN_ID, name: "root", inputs: {}, status: "running", createdAt: 1 });
-		setDurableBackend(backend);
+		bindStoreDurableBackend(store, backend);
 		const rootMessage = message("root-existing", 100);
 		assert.equal(
 			(
@@ -593,7 +594,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		});
 		const backend = new InMemoryDurableBackend();
 		backend.registerWorkflow({ workflowId: RUN_ID, name: "root", inputs: {}, status: "running", createdAt: 1 });
-		setDurableBackend(backend);
+		bindStoreDurableBackend(store, backend);
 		const routeAnnouncements: Array<{ runId: string; stages: Array<{ stageId: string; target: string }> }> = [];
 		const listeners = new Map<string, (payload: unknown) => void>();
 		const dispose = registerPendingStageIntercomBridge(
@@ -901,7 +902,7 @@ test("reloads and drains aliases by durable deposit order rather than sender tim
 		stages: [{ id: "stage-id", name: "reviewer", status: "pending", parentIds: [], toolEvents: [] }],
 		startedAt: 1,
 	});
-	setDurableBackend(writer);
+	bindStoreDurableBackend(store, writer);
 	const from = sender({} as net.Socket).info;
 	await store.queueStageMessage(
 		{ runId: RUN_ID, stageKey: "reviewer", from, message: message("deposit-a", 200), queuedAt: "2026-01-02" },
@@ -928,7 +929,7 @@ test("reloads and drains aliases by durable deposit order rather than sender tim
 		startedAt: 1,
 		pendingStageMessages: [...(reader.getWorkflow(RUN_ID)?.pendingStageMessages ?? [])],
 	});
-	setDurableBackend(reader);
+	bindStoreDurableBackend(reloadedStore, reader);
 	const delivered: Array<{ id: string; name?: string; cwd: string; timestamp: number }> = [];
 	const firstAttempt = createWorkflowPendingStageDelivery(reloadedStore, RUN_ID, "stage-id", "reviewer");
 	await firstAttempt.deliverPending((entryFrom, entryMessage) => {
@@ -968,7 +969,7 @@ test("concurrent stage drains claim one queued message exactly once", async () =
 	const store = createStore();
 	const backend = new InMemoryDurableBackend();
 	backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
-	setDurableBackend(backend);
+	bindStoreDurableBackend(store, backend);
 	store.recordRunStart({
 		id: RUN_ID,
 		name: "flow",
@@ -1064,7 +1065,7 @@ test("rejected inbound delivery remains queued and retries after durable reload"
 		startedAt: 1,
 		pendingStageMessages: [...(fresh.getWorkflow(RUN_ID)?.pendingStageMessages ?? [])],
 	});
-	setDurableBackend(fresh);
+	bindStoreDurableBackend(reloadedStore, fresh);
 	let retries = 0;
 	await createWorkflowPendingStageDelivery(reloadedStore, RUN_ID, "reviewer-id", "reviewer").deliverPending(
 		async () => {
@@ -1163,7 +1164,7 @@ test("durable acknowledgement failure replays through the recipient idempotency 
 		startedAt: 1,
 		pendingStageMessages: [...(reader.getWorkflow(RUN_ID)?.pendingStageMessages ?? [])],
 	});
-	setDurableBackend(reader);
+	bindStoreDurableBackend(reloadedStore, reader);
 	assert.deepEqual(
 		recipientSession.getBranch().map((entry) => ("stageAdmissionKey" in entry ? entry.stageAdmissionKey : undefined)),
 		["intercom:retry-after-ack-failure"],
@@ -1272,7 +1273,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 		}
 		const backend = new InMemoryDurableBackend();
 		backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
-		setDurableBackend(backend);
+		bindStoreDurableBackend(store, backend);
 		const listeners = new Map<string, (payload: unknown) => void>();
 		const emitted: Array<{ event: string; payload: Record<string, unknown> }> = [];
 		const pi = {
@@ -1380,7 +1381,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 	});
 
 	test("listing retains sticky delivery states outside the scan and after exact materialization (#3406)", async () => {
-		const { getDurableBackend } = await import("../../packages/workflows/src/durable/factory.js");
+		const { requireStoreDurableBackend } = await import("../../packages/workflows/src/durable/store-backend.js");
 		const { store, queueSticky, routePayload, dispose } = rowHarness({ possibleStages: ["later"] });
 		try {
 			await queueSticky("outside-3406", `workflow:${RUN_ID}/dynamic-*`);
@@ -1431,7 +1432,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 						},
 					],
 					"2026-10-03T00:00:00Z",
-					getDurableBackend(),
+					requireStoreDurableBackend(store),
 				);
 			}
 			const deliveredRows = routePayload()?.possibleStages as {
@@ -1460,7 +1461,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 	});
 
 	test("terminal sticky stages give terminal guidance unless context receipt is confirmed (#3406)", async () => {
-		const { getDurableBackend } = await import("../../packages/workflows/src/durable/factory.js");
+		const { requireStoreDurableBackend } = await import("../../packages/workflows/src/durable/store-backend.js");
 		const { inspectRun } = await import("../../packages/workflows/src/runs/background/run-inspect.js");
 		const { store, queueSticky, dispose } = rowHarness({});
 		try {
@@ -1486,7 +1487,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 							"terminal-3406",
 							[{ runId: RUN_ID, stageId, sessionId: `${stageId}-session`, admission }],
 							"2026-10-03T00:00:00Z",
-							getDurableBackend(),
+							requireStoreDurableBackend(store),
 						);
 					}
 					const detail = inspectRun(RUN_ID, { store });
@@ -1511,7 +1512,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 	});
 
 	test("workflow status distinguishes acknowledged sessions and actionable sticky skips (#3406)", async () => {
-		const { getDurableBackend } = await import("../../packages/workflows/src/durable/factory.js");
+		const { requireStoreDurableBackend } = await import("../../packages/workflows/src/durable/store-backend.js");
 		const { inspectRun } = await import("../../packages/workflows/src/runs/background/run-inspect.js");
 		const { summarizeRunSnapshot } = await import(
 			"../../packages/workflows/src/extension/workflow-status-summary.js"
@@ -1544,7 +1545,10 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 				const detail = inspectRun(RUN_ID, { store });
 				assert.ok(detail.ok);
 				assert.deepEqual(
-					summarizeRunSnapshot(store.runs()[0]!, Date.now(), { allRuns: store.runs() }).deliveryStates,
+					summarizeRunSnapshot(store.runs()[0]!, Date.now(), {
+						allRuns: store.runs(),
+						durableBackend: requireStoreDurableBackend(store),
+					}).deliveryStates,
 					detail.detail.deliveryStates,
 				);
 				return detail.detail.deliveryStates ?? [];
@@ -1564,7 +1568,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 				"status-3406",
 				[{ runId: RUN_ID, stageId: reviewer.id }],
 				"2026-10-02T00:00:00Z",
-				getDurableBackend(),
+				requireStoreDurableBackend(store),
 			);
 			assert.equal(states().find((delivery) => delivery.stageId === reviewer.id)?.state, "receipt-unverified");
 			await store.recordPendingStageMessageDeliveries(
@@ -1572,7 +1576,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 				"status-3406",
 				[{ runId: RUN_ID, stageId: reviewer.id, sessionId: "current-session", admission: "context" }],
 				"2026-10-02T00:00:01Z",
-				getDurableBackend(),
+				requireStoreDurableBackend(store),
 			);
 			assert.equal(states().find((delivery) => delivery.stageId === reviewer.id)?.state, "delivered");
 			reviewer.sessionId = "replacement-session";

@@ -14,8 +14,10 @@
  * cross-ref: spec detached-runner
  */
 
-import { getDurableBackend } from "../../durable/factory.js";
+import { initializeDurableBackend } from "../../durable/factory.js";
 import { JournalDurableBackend } from "../../durable/journal/journal-backend.js";
+import { availableRunDurableBackend } from "../../durable/run-owner-backend.js";
+import { availableStoreDurableBackendOverride, bindStoreDurableBackend } from "../../durable/store-backend.js";
 import type { Store } from "../../shared/store.js";
 import { store as defaultStore } from "../../shared/store.js";
 import type {
@@ -190,21 +192,31 @@ export function runDetached<TInputs extends WorkflowInputValues, TRunInputs exte
 	};
 	let backgroundPromise: Promise<RunResult>;
 	try {
-		const execute = async (): Promise<RunResult> => {
-			try {
-				const result = await syncRun(def, inputs, execOpts);
-				await observe(true, result, undefined);
-				return result;
-			} catch (error) {
-				await observe(false, undefined, error);
-				throw error;
+		backgroundPromise = (async () => {
+			const preset =
+				opts.durableBackend ??
+				(opts.journal === undefined
+					? (availableRunDurableBackend(store.runs(), opts.continuation?.source.id ?? runId) ??
+						availableStoreDurableBackendOverride(store))
+					: undefined);
+			const backend = preset ?? (await initializeDurableBackend({ journal: opts.journal, cwd: opts.cwd }));
+			if (opts.parentRun === undefined && opts.journal === undefined && opts.durableBackend === undefined) {
+				bindStoreDurableBackend(store, backend);
 			}
-		};
-		const backend = opts.durableBackend ?? getDurableBackend();
-		backgroundPromise =
-			opts.parentRun === undefined && backend instanceof JournalDurableBackend
-				? backend.withWorkflowLease(runId, execute)
-				: execute();
+			const execute = async (): Promise<RunResult> => {
+				try {
+					const result = await syncRun(def, inputs, { ...execOpts, durableBackend: backend });
+					await observe(true, result, undefined);
+					return result;
+				} catch (error) {
+					await observe(false, undefined, error);
+					throw error;
+				}
+			};
+			return opts.parentRun === undefined && backend instanceof JournalDurableBackend
+				? await backend.withWorkflowLease(runId, execute)
+				: await execute();
+		})();
 	} catch (error) {
 		detachStartup();
 		controller.abort(error);

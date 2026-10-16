@@ -197,8 +197,9 @@ describe("recordStageCheckpoint", () => {
 			workflowId: WORKFLOW_ID,
 			backend,
 			nextReplayKey: () => replayKey,
-			recordCachedStage: (name, key, checkpoint) =>
-				recorded.push({ name, replayKey: key, output: String(checkpoint.output) }),
+			recordCachedStage: (name, key, checkpoint) => {
+				recorded.push({ name, replayKey: key, output: String(checkpoint.output) });
+			},
 			stage: () => {
 				throw new Error("live stage should not run");
 			},

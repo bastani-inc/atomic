@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { describe, test } from "vitest";
-import { getDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { testRunId } from "../helpers/run-id.js";
+import { currentStoreBackend as getDurableBackend } from "../helpers/store-backend.js";
 import type { ExtensionRuntime, SessionEntry, WorkflowPersistencePort } from "./slash-dispatch-utils.js";
 import {
 	assert,

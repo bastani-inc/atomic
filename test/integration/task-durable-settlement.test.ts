@@ -4,9 +4,9 @@ import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-
 import type { OperationId, TaskResult } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { runAgentTask, taskToolResult } from "../../packages/subagents/src/runs/foreground/task-execution.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { createToolPrimitive } from "../../packages/workflows/src/durable/tool-primitive.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 // RFC PR #2884: observation yield must never complete a durable DAG node.
 test("a live admitted task prevents durable node completion and yielded checkpoints", async () => {

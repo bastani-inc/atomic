@@ -123,18 +123,18 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
 	};
 
 	const releasePending = async (identity: { readonly hash: string }, token: PromptReservationToken): Promise<void> => {
-		releaseDurablePrompt(deps.backend, deps.workflowId, identity.hash, token);
+		await releaseDurablePrompt(deps.backend, deps.workflowId, identity.hash, token);
 	};
-	const beginPending = (identity: {
+	const beginPending = async (identity: {
 		readonly hash: string;
-	}): {
+	}): Promise<{
 		readonly token: PromptReservationToken;
-	} => {
-		const token = reserveDurablePrompt(deps.backend, deps.workflowId, identity.hash);
+	}> => {
+		const token = await reserveDurablePrompt(deps.backend, deps.workflowId, identity.hash);
 		return { token };
 	};
 	const releaseCached = async (identity: { readonly hash: string }): Promise<void> => {
-		const token = claimDurablePromptToken(deps.backend, deps.workflowId, identity.hash);
+		const token = await claimDurablePromptToken(deps.backend, deps.workflowId, identity.hash);
 		if (token !== undefined) await releasePending(identity, token);
 	};
 
@@ -149,7 +149,7 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
 				await releaseCached(identity);
 				return hit;
 			}
-			const pending = beginPending(identity);
+			const pending = await beginPending(identity);
 			try {
 				const response = await withPromptCallerStack(callerStack, () => base.input(promptText));
 				await record("input", identity, response);
@@ -168,7 +168,7 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
 				await releaseCached(identity);
 				return hit;
 			}
-			const pending = beginPending(identity);
+			const pending = await beginPending(identity);
 			try {
 				const response = await withPromptCallerStack(callerStack, () => base.confirm(message));
 				await record("confirm", identity, response);
@@ -187,7 +187,7 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
 				await releaseCached(identity);
 				return hit as T;
 			}
-			const pending = beginPending(identity);
+			const pending = await beginPending(identity);
 			try {
 				const response = await withPromptCallerStack(callerStack, () => base.select<T>(message, options));
 				await record("select", identity, response);
@@ -206,7 +206,7 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
 				await releaseCached(identity);
 				return hit;
 			}
-			const pending = beginPending(identity);
+			const pending = await beginPending(identity);
 			try {
 				const response = await withPromptCallerStack(callerStack, () => base.editor(initial));
 				await record("editor", identity, response);
@@ -232,7 +232,7 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
 				await releaseCached(identity);
 				return hit.response as T;
 			}
-			const pending = beginPending(identity);
+			const pending = await beginPending(identity);
 			try {
 				const response = await withPromptCallerStack(callerStack, () => base.custom<T>(factory, options));
 				await record("custom", identity, response as WorkflowSerializableValue);

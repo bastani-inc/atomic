@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import { priorRunElapsedMs } from "../../packages/workflows/src/durable/run-timing.js";
 import type { DurableCheckpoint, DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
@@ -10,6 +9,7 @@ import { createStageSessionHeartbeat } from "../../packages/workflows/src/runs/f
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import { mockSession, type StageSessionRuntime } from "./executor-shared.js";
 
 const HEARTBEAT_MS = 30_000;

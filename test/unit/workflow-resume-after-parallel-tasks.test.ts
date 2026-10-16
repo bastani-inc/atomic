@@ -4,7 +4,6 @@ import { Type } from "typebox";
 import { afterEach, describe, test } from "vitest";
 import { runGoalWorkflow } from "../../packages/workflows/builtin/goal-runner.js";
 import { isBrandedWorkflowDefinition, workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
@@ -12,6 +11,7 @@ import { createJobTracker } from "../../packages/workflows/src/runs/background/j
 import type { WorkflowTaskOptions, WorkflowTaskStep } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { readJson } from "../helpers/runtime.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import {
 	appendProseTurn,
 	type CreateAgentSessionOptions,

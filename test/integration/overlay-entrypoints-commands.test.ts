@@ -3,9 +3,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { toolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { testRunId } from "../helpers/run-id.js";
+import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import {
 	attachHostCustomUiState,
 	buildGraphOverlayAdapter,
@@ -32,6 +33,8 @@ import {
 	waitForStagePendingPrompt,
 	workflow,
 } from "./overlay-entrypoints-helpers.js";
+
+afterEach(() => toolControlRegistry.clear());
 
 void [
 	buildGraphOverlayAdapter,
@@ -252,6 +255,20 @@ describe("/workflow resume — overlay integration", () => {
 		});
 		singletonStore.recordRunPaused(liveRunId);
 		const backend = new InMemoryDurableBackend();
+		backend.registerWorkflow({
+			workflowId: liveRunId,
+			name: "live-wf",
+			inputs: {},
+			createdAt: Date.now(),
+			status: "paused",
+			completedCheckpoints: 1,
+		});
+		toolControlRegistry.registerRun(liveRunId, {
+			paused: true,
+			async pause() {},
+			async resume() {},
+			async quit() {},
+		});
 		backend.registerWorkflow({
 			workflowId: "durable-alongside-live",
 			name: "durable-cross-session",
@@ -498,6 +515,20 @@ describe("/workflow attach — top-level command", () => {
 		singletonStore.recordRunPaused(liveRunId);
 		const backend = new InMemoryDurableBackend();
 		backend.registerWorkflow({
+			workflowId: liveRunId,
+			name: "live-older-wf",
+			inputs: {},
+			createdAt: now,
+			status: "paused",
+			completedCheckpoints: 1,
+		});
+		toolControlRegistry.registerRun(liveRunId, {
+			paused: true,
+			async pause() {},
+			async resume() {},
+			async quit() {},
+		});
+		backend.registerWorkflow({
 			workflowId: "durable-combined-wf",
 			name: "durable-newer-wf",
 			inputs: {},
@@ -611,6 +642,20 @@ describe("/workflow attach — top-level command", () => {
 		});
 		singletonStore.recordRunPaused(liveRunId);
 		const backend = new InMemoryDurableBackend();
+		backend.registerWorkflow({
+			workflowId: liveRunId,
+			name: "live-hydrate-wf",
+			inputs: {},
+			createdAt: Date.now(),
+			status: "paused",
+			completedCheckpoints: 1,
+		});
+		toolControlRegistry.registerRun(liveRunId, {
+			paused: true,
+			async pause() {},
+			async resume() {},
+			async quit() {},
+		});
 		backend.registerWorkflow({
 			workflowId: "durable-hydrate-wf",
 			name: "durable-hydrate",

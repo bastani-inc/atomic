@@ -11,26 +11,31 @@ export interface RunJournalSettings {
 	workflows?: string[] | { journal?: { path?: string; memory?: boolean } };
 }
 
-export function resolveRunJournal(
+/** Resolve configuration without opening storage, so callers can reuse an existing selection. */
+export function selectRunJournal(
 	options: { journal?: RunJournalOption; settings?: RunJournalSettings } = {},
-): RunJournal {
-	const explicit = options.journal;
-	if (explicit !== undefined) {
-		if ("createRun" in explicit) return explicit;
-		if ("path" in explicit) return new SqliteRunJournal(explicit.path);
-		if ("database" in explicit) return new SqliteRunJournal(explicit.database);
-		return new MemoryRunJournal();
-	}
+): RunJournalOption {
+	if (options.journal !== undefined) return options.journal;
 	const environment = process.env.ATOMIC_WORKFLOW_JOURNAL_PATH;
-	if (environment !== undefined && environment.length > 0) return new SqliteRunJournal(environment);
+	if (environment !== undefined && environment.length > 0) return { path: environment };
 	const workflows = options.settings?.workflows;
 	const settings = Array.isArray(workflows) ? undefined : workflows?.journal;
 	const path = settings?.path;
 	if (path !== undefined && path.length > 0) {
 		if (settings?.memory === true)
 			throw new JournalConfigurationError("settings", "workflows.journal", "path-and-memory");
-		return new SqliteRunJournal(isAbsolute(path) ? path : join(dirname(getAgentDir()), path));
+		return { path: isAbsolute(path) ? path : join(dirname(getAgentDir()), path) };
 	}
-	if (settings?.memory === true) return new MemoryRunJournal();
-	return new SqliteRunJournal(workflowJournalPath());
+	if (settings?.memory === true) return { memory: true };
+	return { path: workflowJournalPath() };
+}
+
+export function resolveRunJournal(
+	options: { journal?: RunJournalOption; settings?: RunJournalSettings } = {},
+): RunJournal {
+	const selected = selectRunJournal(options);
+	if ("createRun" in selected) return selected;
+	if ("path" in selected) return new SqliteRunJournal(selected.path);
+	if ("database" in selected) return new SqliteRunJournal(selected.database);
+	return new MemoryRunJournal();
 }

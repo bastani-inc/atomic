@@ -1,5 +1,4 @@
 import { getSupportedThinkingLevels } from "@bastani/pi-ai/compat";
-import { getDurableBackend } from "../durable/factory.js";
 import { crossProjectResumeMessage } from "../durable/resume-runtime.js";
 import {
 	canonicalDirectory,
@@ -7,6 +6,7 @@ import {
 	isSdkDurableRunInScope,
 	isSdkReleasedRunAdoptable,
 } from "../durable/sdk-recovery-scope.js";
+import { availableStoreDurableBackend, requireStoreDurableBackend } from "../durable/store-backend.js";
 import { inspectRun } from "../runs/background/status.js";
 import { workflowBoundarySegments } from "../shared/pending-stage-status.js";
 import { isFullRunId } from "../shared/run-id.js";
@@ -123,11 +123,11 @@ export function makeExecuteWorkflowTool(
 		}
 		const recoveryCwd = typeof ctx.cwd === "string" ? ctx.cwd : undefined;
 		const adoptsReleasedRun = (id: string): boolean => {
-			const handle = getDurableBackend().getLoadableWorkflow(id);
+			const handle = requireStoreDurableBackend(store, id).getLoadableWorkflow(id);
 			return handle !== undefined && isSdkReleasedRunAdoptable(handle, recoveryCwd);
 		};
-		const authorize = (id: string): void => {
-			const handle = getDurableBackend().getLoadableWorkflow(id);
+		const authorize = async (id: string): Promise<void> => {
+			const handle = requireStoreDurableBackend(store, id).getLoadableWorkflow(id);
 			if (
 				(action === "resume" || action === "status" || action === "stages") &&
 				handle !== undefined &&
@@ -141,7 +141,7 @@ export function makeExecuteWorkflowTool(
 					action === "stages" ||
 					(action === "resume" &&
 						handle !== undefined &&
-						isSdkCrashedRunAdoptable(handle, recoveryCwd, getDurableBackend()))) &&
+						(await isSdkCrashedRunAdoptable(handle, recoveryCwd, requireStoreDurableBackend(store, id))))) &&
 				!store.runs().some((run) => run.id === id) &&
 				handle !== undefined &&
 				isSdkDurableRunInScope(handle, recoveryCwd)
@@ -158,15 +158,15 @@ export function makeExecuteWorkflowTool(
 			}
 		};
 		if (action === "status" && args.runId === undefined) {
-			for (const run of topLevelWorkflowRuns(store.runs())) authorize(run.id);
+			for (const run of topLevelWorkflowRuns(store.runs())) await authorize(run.id);
 		} else if (["stages", "stage", "transcript", "pause", "quit", "answer"].includes(action)) {
 			const target = resolveToolRunTarget(args, "", store);
 			if (target.kind === "all" && (action === "pause" || action === "quit")) {
 				// Preauthorize the entire batch before the first control can mutate anything.
 				for (const run of topLevelWorkflowRuns(store.runs()).filter((run) => run.endedAt === undefined))
-					authorize(run.id);
+					await authorize(run.id);
 			} else if (target.kind === "run") {
-				authorize(target.runId);
+				await authorize(target.runId);
 				args = { ...args, runId: target.runId };
 			}
 		}
@@ -177,7 +177,14 @@ export function makeExecuteWorkflowTool(
 			return {
 				...resolved,
 				resumeDurableWorkflow: async (id, options) => {
-					await injectWorkflowResumeSummary(pi, ctx, id);
+					await injectWorkflowResumeSummary(
+						pi,
+						ctx,
+						id,
+						undefined,
+						undefined,
+						requireStoreDurableBackend(store, id),
+					);
 					return resolved.resumeDurableWorkflow(
 						id,
 						access === "sdk" || adoptsReleasedRun(id) ? { ...options, modelOwner: workflowCaller(ctx) } : options,
@@ -233,7 +240,7 @@ export function makeExecuteWorkflowTool(
 					}
 					if (resolved.kind === "not_found") {
 						const durable = await awaitRequest(getRuntime().inspectDurableWorkflow(target));
-						if (durable.kind === "found") authorize(durable.detail.runId);
+						if (durable.kind === "found") await authorize(durable.detail.runId);
 						return durable.kind === "found"
 							? { action: "statusDetail", runId: durable.detail.runId, detail: durable.detail }
 							: { action: "statusDetail", runId: target, error: durable.message };
@@ -241,7 +248,7 @@ export function makeExecuteWorkflowTool(
 					if (!isResolvedRunId(resolved)) {
 						return { action: "statusDetail", runId: target, error: `run not found: ${target}` };
 					}
-					authorize(resolved.runId);
+					await authorize(resolved.runId);
 					const inspected = inspectRun(resolved.runId, owner);
 					if (!inspected.ok) {
 						return { action: "statusDetail", runId: target, error: `run not found: ${target}` };
@@ -262,7 +269,8 @@ export function makeExecuteWorkflowTool(
 					Date.now(),
 					{
 						toolControlRegistry,
-						allRuns: capturedRuns,
+						durableBackend: availableStoreDurableBackend(store),
+						allRuns: store.runs(),
 						owningRunStatus: (owningRunId) => statusByRunId.get(owningRunId),
 						resolveBoundarySegments: (runId) => workflowBoundarySegments(capturedRuns, runId),
 					},
@@ -281,7 +289,7 @@ export function makeExecuteWorkflowTool(
 			case "transcript": {
 				const resolved = await awaitRequest(resolveDurableInspectionSource(args, getRuntime(), owner));
 				if (resolved.kind === "error") return durableInspectionError(action, args.runId ?? "", resolved.message);
-				if (resolved.kind === "durable") authorize(resolved.runId);
+				if (resolved.kind === "durable") await authorize(resolved.runId);
 				const source = resolved.kind === "durable" ? resolved.source : owner;
 				const canonicalArgs = resolved.kind === "durable" ? { ...args, runId: resolved.runId } : args;
 				if (action === "stages") return workflowStagesResult(canonicalArgs, source);
@@ -312,6 +320,8 @@ export function makeExecuteWorkflowTool(
 								ctx,
 								id,
 								store.runs().find((run) => run.id === id),
+								undefined,
+								requireStoreDurableBackend(store, id),
 							),
 					}),
 				);

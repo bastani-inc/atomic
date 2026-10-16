@@ -259,7 +259,6 @@ export interface WorkflowToolArgs {
 	all?: boolean;
 	stageId?: string;
 	message?: string;
-	legacyRecovery?: { readonly olderWorkersStopped: true };
 	statusFilter?: StageStatus | RunStatus | "all";
 	format?: "text" | "json";
 	limit?: number;

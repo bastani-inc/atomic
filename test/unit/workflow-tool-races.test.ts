@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import {
@@ -13,6 +13,7 @@ import { createCancellationRegistry } from "../../packages/workflows/src/runs/ba
 import { killRun } from "../../packages/workflows/src/runs/background/status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { sleep } from "../helpers/runtime.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 function installFailureNotices(store: ReturnType<typeof createStore>): {
 	readonly notices: WorkflowLifecycleNoticeDetails[];
@@ -386,7 +387,8 @@ describe("ctx.tool persistence and cancellation races", () => {
 	test("writer rejection after callback success fails node and root without a completed checkpoint", async () => {
 		class RejectingBackend extends InMemoryDurableBackend {
 			override async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
-				if (checkpoint.kind === "tool") throw new Error("durable writer rejected");
+				if (checkpoint.kind === "tool")
+					throw new StorageUnavailableError("durable writer rejected", new Error("fixture storage failure"));
 				await super.recordCheckpointAsync(checkpoint);
 			}
 		}

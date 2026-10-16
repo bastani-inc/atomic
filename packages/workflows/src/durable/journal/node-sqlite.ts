@@ -2,7 +2,13 @@ import { mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { JOURNAL_COLUMNS as c, JournalCounterRangeError, JournalError, StorageUnavailableError } from "./types.js";
+import {
+	JOURNAL_COLUMNS as c,
+	JournalClosedError,
+	JournalCounterRangeError,
+	JournalError,
+	StorageUnavailableError,
+} from "./types.js";
 
 export type SqliteValue = string | number | null;
 export type SqliteStoredValue = string | number | bigint | Uint8Array | null;
@@ -31,6 +37,7 @@ export function storageBoundary<T>(path: string, operation: () => T): T {
 export class JournalDatabase {
 	private readonly database: DatabaseSync;
 	private readonly ownsDatabase: boolean;
+	private closed = false;
 	readonly path: string;
 
 	constructor(source: string | DatabaseSync) {
@@ -60,19 +67,27 @@ export class JournalDatabase {
 		});
 	}
 
+	ensureOpen(): void {
+		if (this.closed) throw new StorageUnavailableError(this.path, new JournalClosedError());
+	}
+
 	exec(sql: string): void {
+		this.ensureOpen();
 		storageBoundary(this.path, () => this.database.exec(sql));
 	}
 
 	get<Row>(sql: string, ...values: SqliteValue[]): Row | undefined {
+		this.ensureOpen();
 		return storageBoundary(this.path, () => this.database.prepare(sql).get(...values) as unknown as Row | undefined);
 	}
 
 	all<Row>(sql: string, ...values: SqliteValue[]): Row[] {
+		this.ensureOpen();
 		return storageBoundary(this.path, () => this.database.prepare(sql).all(...values) as unknown as Row[]);
 	}
 
 	getWide<Row>(sql: string, ...values: SqliteValue[]): Row | undefined {
+		this.ensureOpen();
 		return storageBoundary(this.path, () => {
 			const statement = this.database.prepare(sql);
 			statement.setReadBigInts(true);
@@ -85,6 +100,7 @@ export class JournalDatabase {
 	}
 
 	allCounters<Row>(runId: string, sql: string, ...values: SqliteValue[]): Row[] {
+		this.ensureOpen();
 		return storageBoundary(this.path, () => {
 			const statement = this.database.prepare(sql);
 			statement.setReadBigInts(true);
@@ -105,6 +121,7 @@ export class JournalDatabase {
 	}
 
 	run(sql: string, ...values: SqliteValue[]): number {
+		this.ensureOpen();
 		return storageBoundary(this.path, () => Number(this.database.prepare(sql).run(...values).changes));
 	}
 
@@ -122,6 +139,8 @@ export class JournalDatabase {
 		});
 	}
 	close(): void {
+		if (this.closed) return;
+		this.closed = true;
 		if (!this.ownsDatabase) return;
 		storageBoundary(this.path, () => {
 			this.database.close();

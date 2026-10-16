@@ -1,11 +1,4 @@
-/**
- * Compatibility exports for the shared Atomic retry policy, plus the workflow's
- * abort-aware sleep.
- *
- * The decision/backoff policy is implemented in @bastani/atomic so main chat and
- * workflow stages cannot drift into different budgets for the same
- * `settings.retry` values.
- */
+/** Shared Atomic retry policy and abort-aware workflow sleep. */
 
 export type { RetryDecision, RetryPolicySettings } from "@bastani/atomic";
 export { nextRetryDecision } from "@bastani/atomic";

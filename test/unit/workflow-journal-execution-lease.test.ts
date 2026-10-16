@@ -25,7 +25,7 @@ import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 test("rejected same-id SDK inputs preserve the active execution lease (#3647)", async () => {
 	const directory = makeTempDirectory("execution-lease-");
 	const path = join(directory, "journal.sqlite");
-	const backend = await JournalDurableBackend.open(path);
+	const backend = await JournalDurableBackend.open(new SqliteRunJournal(path));
 	const contender = new SqliteRunJournal(path);
 	const started = Promise.withResolvers<void>();
 	const release = Promise.withResolvers<void>();
@@ -160,7 +160,7 @@ test("detached quit releases only its own lease after final persistence and perm
 		assert.equal(source.status, "paused");
 		assert.equal(source.resumable, true);
 		releaseBody.resolve();
-		const successor = await JournalDurableBackend.open(path);
+		const successor = await JournalDurableBackend.open(new SqliteRunJournal(path));
 		try {
 			const resumedStore = createStore();
 			let completion: Promise<void> | undefined;
@@ -348,8 +348,8 @@ test("quit retires a cancelled tool's executor without waiting for caught-cancel
 test("completed detached runs release their lease for deletion without unlocking active runs (#3647)", async () => {
 	const directory = makeTempDirectory("detached-completed-lease-");
 	const path = join(directory, "journal.sqlite");
-	const backend = await JournalDurableBackend.open(path);
-	const successor = await JournalDurableBackend.open(path);
+	const backend = await JournalDurableBackend.open(new SqliteRunJournal(path));
+	const successor = await JournalDurableBackend.open(new SqliteRunJournal(path));
 	const contender = new SqliteRunJournal(path);
 	const jobs = createJobTracker();
 	const started = Promise.withResolvers<void>();

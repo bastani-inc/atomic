@@ -129,7 +129,7 @@ function renderStatusToolContent(result: Extract<WorkflowToolResult, { action: "
 			lines.push(`    control: ${run.controlRequestedStatus} (${run.controlPersistence})`);
 		}
 		for (const entry of run.awaitingInput) lines.push(statusAwaitingInputLine(entry));
-		for (const delivery of run.deliveryStates ?? stickyStageDeliveryStatuses(allRuns, run.runId)) {
+		for (const delivery of run.deliveryStates ?? stickyStageDeliveryStatuses(allRuns, run.runId, undefined)) {
 			lines.push(
 				`    Intercom delivery ${delivery.messageId} target=${delivery.target} stage=${delivery.runId}/${delivery.stageId}${delivery.sessionId === undefined ? "" : ` session=${delivery.sessionId}`} state=${delivery.state} — ${delivery.reason}`,
 			);

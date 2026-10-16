@@ -52,7 +52,7 @@ export function workflowSerializableTypeName(value: unknown): string {
 	return typeof value;
 }
 
-/** Convert a TypeBox `instancePath` ("/a/0/b") to the legacy "a[0].b" form. */
+/** Format a TypeBox `instancePath` ("/a/0/b") as "a[0].b" for error messages. */
 function formatInstancePath(instancePath: string): string {
 	if (!instancePath) return "";
 	const segments = instancePath.split("/").filter((s) => s.length > 0);

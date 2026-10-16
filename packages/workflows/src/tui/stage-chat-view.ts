@@ -1,11 +1,7 @@
 /**
  * StageChatView — attached workflow-stage chat surface.
  *
- * This file is the compatibility facade for the historical
- * `src/tui/stage-chat-view.js` import path. The implementation is split by
- * responsibility into sibling `stage-chat-view-*` modules so each authored
- * source file stays focused while preserving the
- * same public class, options, detach metadata, and test seams.
+ * Rendering, input, and lifecycle helpers live in sibling `stage-chat-view-*` modules.
  *
  * Behaviour:
  *  - Idle stage (empty transcript, not streaming, not settled): Enter prompts.

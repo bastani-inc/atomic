@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import {
 	JournalCasConflictError,
+	JournalClosedError,
 	type JournalEntry,
 	JournalInvalidTextError,
 	type Lease,
 	type RunJournal,
 	RunNotFoundError,
 	StaleLeaseError,
+	StorageUnavailableError,
 } from "./types.js";
 
 export type RunJournalConformanceRunner = (name: string, body: () => Promise<void>) => void;
@@ -123,6 +125,54 @@ export function registerRunJournalConformance(
 		await journal.createRun(header);
 		assert.equal((await lease(journal)).epoch, 4);
 	});
+	check("owned deletion removes the owner's run and events", async (journal) => {
+		await journal.createRun(header);
+		const held = await lease(journal);
+		await journal.append(held, { type: "RunStarted", payload: null }, { key: "one" });
+		await journal.deleteOwnedRun(held);
+		assert.deepEqual(await journal.listRuns(), []);
+		assert.deepEqual(await entries(journal), []);
+		assert.equal(await journal.readKey(header.runId, "one"), undefined);
+	});
+	check("owned deletion rejects a stale lease without changing the successor", async (journal) => {
+		await journal.createRun(header);
+		const first = await lease(journal);
+		await journal.renew(first);
+		const successor = await journal.takeover(header.runId, "successor", first.holderId);
+		assert.equal(successor.status, "acquired");
+		if (successor.status !== "acquired") assert.fail("successor not acquired");
+		await journal.append(successor.lease, { type: "StatusChanged", payload: { status: "running" } });
+		const before = await entries(journal);
+		await assert.rejects(journal.deleteOwnedRun(first), (error: Error) => {
+			assert.ok(error instanceof StaleLeaseError);
+			assert.equal(error.runId, header.runId);
+			assert.equal(error.heldEpoch, first.epoch);
+			assert.equal(error.currentEpoch, successor.lease.epoch);
+			return true;
+		});
+		assert.deepEqual(await journal.listRuns(), [header]);
+		assert.deepEqual(await entries(journal), before);
+		await journal.renew(successor.lease);
+	});
+	check("owned deletion keeps its epoch tombstone when the run is recreated", async (journal) => {
+		await journal.createRun(header);
+		const first = await lease(journal);
+		await journal.deleteOwnedRun(first);
+		await journal.createRun(header);
+		const recreated = await lease(journal);
+		assert.equal(recreated.epoch, first.epoch + 1);
+		await journal.append(recreated, { type: "RunStarted", payload: "recreated" });
+		const before = await entries(journal);
+		await assert.rejects(journal.deleteOwnedRun(first), (error: Error) => {
+			assert.ok(error instanceof StaleLeaseError);
+			assert.equal(error.runId, header.runId);
+			assert.equal(error.heldEpoch, first.epoch);
+			assert.equal(error.currentEpoch, recreated.epoch);
+			return true;
+		});
+		assert.deepEqual(await entries(journal), before);
+		assert.deepEqual(await journal.listRuns(), [header]);
+	});
 	check("reports absent runs and empty reads without inventing records", async (journal) => {
 		for (const acquire of [() => journal.acquire("missing", "h"), () => journal.takeover("missing", "h", "old")]) {
 			await assert.rejects(acquire(), (error: Error) => {
@@ -155,6 +205,59 @@ export function registerRunJournalConformance(
 		assert.deepEqual((await entries(journal))[0], first.entry);
 		assert.equal("key" in first.entry, false);
 	});
+	check("detaches original and returned headers and payloads", async (journal) => {
+		const original = { ...header, inputs: { nested: { value: "original" } } };
+		const expectedHeader = structuredClone(original);
+		await journal.createRun(original);
+		original.name = "changed";
+		original.inputs.nested.value = "changed";
+		const held = await lease(journal);
+		const payload = { nested: { value: "original" } };
+		const appended = await journal.append(held, { type: "RunStarted", payload }, { key: "entry" });
+		const expectedEntry = structuredClone(appended.entry);
+		payload.nested.value = "changed";
+		(appended.entry.event.payload as { nested: { value: string } }).nested.value = "changed";
+		const fromRead = (await entries(journal))[0]!;
+		(fromRead.event.payload as { nested: { value: string } }).nested.value = "changed";
+		const fromKey = await journal.readKey(header.runId, "entry");
+		assert.ok(fromKey);
+		(fromKey.event.payload as { nested: { value: string } }).nested.value = "changed";
+		const fromList = (await journal.listRuns())[0]!;
+		(fromList.inputs as { nested: { value: string } }).nested.value = "changed";
+		Reflect.set(fromList, "name", "changed");
+		assert.deepEqual(await journal.listRuns(), [expectedHeader]);
+		assert.deepEqual(await entries(journal), [expectedEntry]);
+		assert.deepEqual(await journal.readKey(header.runId, "entry"), expectedEntry);
+	});
+	check("rejected appends leave all rows, sequence and status unchanged", async (journal) => {
+		await journal.createRun(header);
+		const first = await lease(journal);
+		await journal.append(first, { type: "RunStarted", payload: "first" });
+		const before = await entries(journal);
+		await assert.rejects(
+			journal.append(first, { type: "StatusChanged", payload: { status: "failed" } }, { expectSeq: 0 }),
+			JournalCasConflictError,
+		);
+		assert.deepEqual(await entries(journal), before);
+		assert.deepEqual(await journal.listRuns(), [header]);
+		await assert.rejects(
+			journal.append(first, { type: "StatusChanged", payload: { status: "bad\u0000status" } }),
+			JournalInvalidTextError,
+		);
+		assert.deepEqual(await entries(journal), before);
+		assert.deepEqual(await journal.listRuns(), [header]);
+		const successor = await journal.takeover(header.runId, "successor", first.holderId);
+		assert.equal(successor.status, "acquired");
+		if (successor.status !== "acquired") assert.fail("successor not acquired");
+		await assert.rejects(
+			journal.append(first, { type: "StatusChanged", payload: { status: "failed" } }),
+			StaleLeaseError,
+		);
+		assert.deepEqual(await entries(journal), before);
+		assert.deepEqual(await journal.listRuns(), [header]);
+		const appended = await journal.append(successor.lease, { type: "RunFinished", payload: "next" });
+		assert.equal(appended.entry.seq, 2);
+	});
 	for (const invalid of ["\u0000\ud800", "\ud800", "\udfff", "a\ud800b"]) {
 		check(`rejects invalid identifier ${JSON.stringify(invalid)} before mutation`, async (journal) => {
 			await journal.createRun(header);
@@ -186,8 +289,46 @@ export function registerRunJournalConformance(
 			assert.deepEqual(await entries(journal), []);
 		});
 	}
-	check("close is idempotent", async (journal) => {
+	check("closed journals reject operations and started reads while close remains idempotent", async (journal) => {
+		await journal.createRun(header);
+		const held = await lease(journal);
+		await journal.append(held, { type: "RunStarted", payload: "one" });
+		await journal.append(held, { type: "RunFinished", payload: "two" });
+		const started = journal.read(header.runId)[Symbol.asyncIterator]();
+		assert.equal((await started.next()).done, false);
 		await journal.close();
 		await journal.close();
+		const operations = [
+			() => journal.createRun(header),
+			() => journal.listRuns(),
+			() => journal.acquire(header.runId, "holder"),
+			() => journal.takeover(header.runId, "next", "holder"),
+			() => journal.renew(held),
+			() => journal.release(held),
+			() => journal.append(held, { type: "RunFinished", payload: null }),
+			() => journal.read(header.runId)[Symbol.asyncIterator]().next(),
+			() => started.next(),
+			() => journal.readKey(header.runId, "entry"),
+			() => journal.deleteOwnedRun(held),
+			() => journal.deleteRun(header.runId),
+			() => journal.createRun({ ...header, runId: "\u0000" }),
+			() => journal.listRuns({ cwd: "\u0000" }),
+			() => journal.acquire("\u0000", "holder"),
+			() => journal.takeover("\u0000", "next", "holder"),
+			() => journal.renew({ ...held, holderId: "\u0000" }),
+			() => journal.release({ ...held, holderId: "\u0000" }),
+			() => journal.append(held, { type: "StatusChanged", payload: { status: "\u0000" } }),
+			() => journal.read("\u0000")[Symbol.asyncIterator]().next(),
+			() => journal.readKey(header.runId, "\u0000"),
+			() => journal.deleteOwnedRun({ ...held, holderId: "\u0000" }),
+			() => journal.deleteRun("\u0000"),
+		];
+		for (const operation of operations)
+			await assert.rejects(operation(), (error: Error) => {
+				assert.ok(error instanceof StorageUnavailableError);
+				assert.ok(error.cause instanceof JournalClosedError);
+				assert.ok(error.path.length > 0);
+				return true;
+			});
 	});
 }

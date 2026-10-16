@@ -1,10 +1,11 @@
+import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { listOpenableCompletedWorkflows } from "../durable/completed-catalog.js";
 import { openCompletedDurableWorkflow } from "../durable/completed-inspection.js";
-import { getDurableBackend } from "../durable/factory.js";
 import { formatResumableWorkflowList } from "../durable/resume-catalog.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import { type DurableWorkflowDeleteOutcome, deleteDurableWorkflowIfSafe } from "../durable/retention-policy.js";
 import { isSdkReleasedRunAdoptable } from "../durable/sdk-recovery-scope.js";
+import { requireStoreDurableBackend } from "../durable/store-backend.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { resolveRunIdTarget } from "../shared/run-id.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
@@ -61,7 +62,7 @@ export async function prepareWorkflowResumeCatalog(
 ): Promise<WorkflowResumeCatalog> {
 	const shared = await runtime.prepareDurableCatalog?.();
 	const prepared = shared?.resumable ?? (await runtime.prepareDurableResumable(target));
-	const fallbackBackend = shared === undefined ? getDurableBackend() : undefined;
+	const fallbackBackend = shared === undefined ? runtime.durableBackend() : undefined;
 	const isDisplayLoadable = (entry: ResumableWorkflowEntry): boolean =>
 		fallbackBackend === undefined || fallbackBackend.isWorkflowLoadable(entry.workflowId);
 	// The durable catalog is already produced by `listResumableWorkflows()`, which
@@ -74,7 +75,7 @@ export async function prepareWorkflowResumeCatalog(
 		shared?.completed ??
 		(runtime.prepareCompletedDurable !== undefined
 			? await runtime.prepareCompletedDurable()
-			: listOpenableCompletedWorkflows(fallbackBackend ?? getDurableBackend()));
+			: listOpenableCompletedWorkflows(fallbackBackend ?? runtime.durableBackend()));
 	return {
 		resumable,
 		completed: completed.filter((entry) => isDisplayLoadable(entry)),
@@ -85,7 +86,7 @@ export function deleteWorkflowResumeEntry(
 	workflowId: string,
 	store: Store = defaultStore,
 ): Promise<DurableWorkflowDeleteOutcome> {
-	return deleteDurableWorkflowIfSafe(getDurableBackend(), workflowId, (candidateId) => {
+	return deleteDurableWorkflowIfSafe(requireStoreDurableBackend(store, workflowId), workflowId, (candidateId) => {
 		const run = store.runs().find((candidate) => candidate.id === candidateId);
 		return run !== undefined && run.status !== "completed" && (run.endedAt === undefined || run.status === "paused");
 	});
@@ -147,8 +148,9 @@ export async function handleDurableResume(
 			policy,
 			actor: "user",
 			...crossProjectConfirmation(ctx),
-			onBeforeResume: (runId, forkedFrom) => injectWorkflowResumeSummary(deps.pi, ctx, runId, undefined, forkedFrom),
-			...releasedRunAdoption("workflowId" in resolved ? resolved.workflowId : target, ctx),
+			onBeforeResume: (runId, forkedFrom) =>
+				injectWorkflowResumeSummary(deps.pi, ctx, runId, undefined, forkedFrom, runtime.durableBackend()),
+			...releasedRunAdoption("workflowId" in resolved ? resolved.workflowId : target, ctx, runtime),
 		});
 		if (result.ok) {
 			print(result.message);
@@ -216,6 +218,7 @@ export function resolveWorkflowResumeTarget(
 	resumable: readonly ResumableWorkflowEntry[],
 	completed: readonly ResumableWorkflowEntry[],
 	sessionRuns?: readonly RunSnapshot[],
+	backend?: DurableWorkflowBackend,
 ): WorkflowResumeTargetResolution {
 	const targets = new Map<string, WorkflowResumeTarget>();
 	for (const entry of resumable) {
@@ -227,7 +230,9 @@ export function resolveWorkflowResumeTarget(
 		}
 	}
 	// Nested children stay reachable by exact id; prefix resume uses the top-level namespace.
-	for (const run of topLevelWorkflowRuns(liveRuns).filter((live) => isExplicitResumeCandidate(live, sessionRuns))) {
+	for (const run of topLevelWorkflowRuns(liveRuns).filter((live) =>
+		isExplicitResumeCandidate(live, sessionRuns, backend),
+	)) {
 		targets.set(run.id, {
 			kind: run.status === "completed" ? "completed" : "live",
 			workflowId: run.id,
@@ -241,17 +246,25 @@ export function resolveWorkflowResumeTarget(
 	return targets.get(resolution.runId) ?? { kind: "not_found" };
 }
 
-function isExplicitResumeCandidate(run: RunSnapshot, sessionRuns: readonly RunSnapshot[] | undefined): boolean {
+function isExplicitResumeCandidate(
+	run: RunSnapshot,
+	sessionRuns: readonly RunSnapshot[] | undefined,
+	backend?: DurableWorkflowBackend,
+): boolean {
 	if (run.status === "completed") return true;
 	return (
-		isWorkflowRunResumable(workflowRunResumeCandidate(run, sessionRuns)) ||
+		isWorkflowRunResumable(workflowRunResumeCandidate(run, sessionRuns, backend)) ||
 		(run.endedAt === undefined && run.status === "running")
 	);
 }
 
 /** A run released by its previous session moves to the session resuming it; every other run keeps its owner. */
-function releasedRunAdoption(workflowId: string, ctx: PiEventContext): { readonly modelOwner?: string } {
-	const handle = getDurableBackend().getLoadableWorkflow(workflowId);
+function releasedRunAdoption(
+	workflowId: string,
+	ctx: PiEventContext,
+	runtime: ExtensionRuntime,
+): { readonly modelOwner?: string } {
+	const handle = runtime.durableBackend().getLoadableWorkflow(workflowId);
 	return handle !== undefined && isSdkReleasedRunAdoptable(handle, ctx.cwd) ? { modelOwner: workflowCaller(ctx) } : {};
 }
 
@@ -283,8 +296,9 @@ async function resumeDurableTarget(
 		policy: workflowPolicyFromContext(ctx),
 		actor: "user",
 		...crossProjectConfirmation(ctx),
-		onBeforeResume: (runId, forkedFrom) => injectWorkflowResumeSummary(deps.pi, ctx, runId, undefined, forkedFrom),
-		...releasedRunAdoption(workflowId, ctx),
+		onBeforeResume: (runId, forkedFrom) =>
+			injectWorkflowResumeSummary(deps.pi, ctx, runId, undefined, forkedFrom, runtime.durableBackend()),
+		...releasedRunAdoption(workflowId, ctx, runtime),
 	});
 	if (!result.ok) reporter.error(result.message);
 	else {
@@ -327,7 +341,7 @@ function openCompleted(
 		openCompletedDurableWorkflow(
 			workflowId,
 			{
-				durableBackend: getDurableBackend(),
+				durableBackend: runtime.durableBackend(),
 				store,
 				beforeRestore: beforeRestoreCompleted,
 			},

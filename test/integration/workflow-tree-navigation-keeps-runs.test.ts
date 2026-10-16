@@ -7,9 +7,9 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "../../packages/coding-agent/src/index.js";
-import { getDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import type { WorkflowToolArgs } from "../../packages/workflows/src/extension/public-types.js";
 import { fileExists, makeTempDirectory, removePath, writeFileEnsuringDir } from "../helpers/runtime.js";
+import { currentStoreBackend as getDurableBackend } from "../helpers/store-backend.js";
 
 /** One real SDK host session loading the builtin workflows extension. */
 const IN_PROCESS_SDK_SESSION_TIMEOUT_MS = 90_000;

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import type { Message } from "../../packages/intercom/types.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableWorkflowMetadata } from "../../packages/workflows/src/durable/types.js";
@@ -17,6 +16,7 @@ import {
 import { stickyStageDeliveryStatuses } from "../../packages/workflows/src/shared/sticky-stage-delivery-status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const RUN_ID = "run-1";
 const STAGE_KEY = " Reviewer Stage ";
@@ -91,7 +91,8 @@ describe("workflow stage messages store", () => {
 			}
 			assert.equal(store.runs()[0]!.pendingStageMessages![0]!.deliveries?.length, 0);
 			assert.equal(
-				stickyStageDeliveryStatuses(store.runs(), RUN_ID).filter(({ state }) => state === "delivered").length,
+				stickyStageDeliveryStatuses(store.runs(), RUN_ID, backend).filter(({ state }) => state === "delivered")
+					.length,
 				20,
 			);
 			const resumed = await backend.reopen();
@@ -104,14 +105,15 @@ describe("workflow stage messages store", () => {
 			});
 			assert.equal(restored.runs()[0]!.pendingStageMessages![0]!.deliveries?.length, 0);
 			assert.equal(
-				stickyStageDeliveryStatuses(restored.runs(), RUN_ID).filter(({ state }) => state === "delivered").length,
+				stickyStageDeliveryStatuses(restored.runs(), RUN_ID, resumed).filter(({ state }) => state === "delivered")
+					.length,
 				20,
 			);
 			const stage = restored.runs()[0]!.stages[0]!;
 			delete stage.sessionId;
-			assert.equal(stickyStageDeliveryStatuses(restored.runs(), RUN_ID)[0]!.state, "delivered");
+			assert.equal(stickyStageDeliveryStatuses(restored.runs(), RUN_ID, resumed)[0]!.state, "delivered");
 			stage.sessionId = "replacement";
-			assert.equal(stickyStageDeliveryStatuses(restored.runs(), RUN_ID)[0]!.state, "stage-terminal");
+			assert.equal(stickyStageDeliveryStatuses(restored.runs(), RUN_ID, resumed)[0]!.state, "stage-terminal");
 		} finally {
 			setDurableBackend(undefined);
 		}

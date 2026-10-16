@@ -1,8 +1,8 @@
 import type { DurableWorkflowBackend } from "../../durable/backend.js";
-import { getDurableBackend } from "../../durable/factory.js";
 import { isDurableWorkflowResumable } from "../../durable/resume-eligibility.js";
-import { recordRunTimingCheckpoint } from "../../durable/run-timing.js";
+import { recordRunTimingCheckpointAsync } from "../../durable/run-timing.js";
 import { TASK_RESULT_CHECKPOINT_CONTROL_PREFIX } from "../../durable/stage-primitive.js";
+import { availableStoreDurableBackend } from "../../durable/store-backend.js";
 import {
 	getLoadableDurableWorkflow,
 	transitionDurableWorkflowStatus,
@@ -122,8 +122,8 @@ export async function quitRunWithAction(
 	const job = (opts?.jobs ?? defaultJobTracker).get(runId);
 	control?.settlePersistence?.(settled.promise);
 	try {
-		return await executeQuitRunWithAction(runId, opts, action, () => {
-			control?.retire?.();
+		return await executeQuitRunWithAction(runId, opts, action, async () => {
+			await control?.retire?.();
 			if (job !== undefined) (opts?.jobs ?? defaultJobTracker).detach(runId, job);
 		});
 	} finally {
@@ -135,7 +135,7 @@ async function executeQuitRunWithAction(
 	runId: string,
 	opts: Parameters<typeof quitRunWithAction>[1],
 	action: "quit" | "pause",
-	retire: () => void,
+	retire: () => void | Promise<void>,
 ): Promise<QuitRunResult> {
 	const activeStore = opts?.store ?? defaultStore;
 	const registry = opts?.stageControlRegistry ?? defaultStageControlRegistry;
@@ -145,6 +145,9 @@ async function executeQuitRunWithAction(
 	if (run.endedAt !== undefined) return { ok: false, runId, reason: "already_ended" };
 	workflowObservationRuntime(activeStore).control(runId, action, opts?.actor);
 	const aggregateRootRunId = aggregateWorkflowRootRunId(activeStore, runId);
+	const durableBackend =
+		toolControls.runControl(aggregateRootRunId)?.durableBackend ??
+		availableStoreDurableBackend(activeStore, aggregateRootRunId);
 	if (aggregateRootRunId !== runId) {
 		const hasTaskTail = expandedControlRunIds(activeStore, runId).some((controlRunId) =>
 			toolControls
@@ -213,11 +216,11 @@ async function executeQuitRunWithAction(
 	await closeToolAdmission(admissionBoundaries, runId);
 	if (runtimeQuit !== undefined) {
 		// Local suspension acknowledges independently of durable registration.
-		publishLocalQuit(activeStore, runId, pausedRunIds, hasDurableQuitProgress(runId), opts?.actor);
+		publishLocalQuit(activeStore, runId, pausedRunIds, hasDurableQuitProgress(runId, durableBackend), opts?.actor);
 		try {
 			await runtimeQuit;
 		} catch (error) {
-			const resumable = hasDurableQuitProgress(runId);
+			const resumable = hasDurableQuitProgress(runId, durableBackend);
 			publishLocalQuit(activeStore, runId, pausedRunIds, resumable, opts?.actor);
 			throw new Error(unrecordedDurableQuitMessage(error, resumable), { cause: error });
 		}
@@ -236,30 +239,31 @@ async function executeQuitRunWithAction(
 	// whole-run quit, so its executor suspends without writing any terminal
 	// record, and only the publication below can report that the run stopped.
 	const suspendedByAbort = toolHandles.length > 0 || runtimeQuit !== undefined;
-	const publish = (resumable: boolean): void => {
+	const publish = async (resumable: boolean): Promise<void> => {
 		publishLocalQuit(activeStore, runId, pausedRunIds, resumable, opts?.actor);
 		// Persistence is settled, so revoke this execution's authority without
 		// waiting for author cleanup. Stage-only pauses retain their live control.
-		if (suspendedByAbort) retire();
+		if (suspendedByAbort) await retire();
 	};
 	const needsProgressCheck = runtimeQuit !== undefined || (current.resumable === false && graph.nodes.length === 0);
-	const resumable = !needsProgressCheck || hasDurableQuitProgress(runId);
+	const resumable = !needsProgressCheck || hasDurableQuitProgress(runId, durableBackend);
 	// Existing checkpoints survive an unconfirmed transition; a fresh run cannot
 	// become resumable merely because its executor stopped locally.
-	if (runtimeQuit !== undefined) publishLocalQuit(activeStore, runId, pausedRunIds, hasDurableQuitProgress(runId));
+	if (runtimeQuit !== undefined)
+		publishLocalQuit(activeStore, runId, pausedRunIds, hasDurableQuitProgress(runId, durableBackend));
 	const settle = async (): Promise<DurableQuitOutcome> => {
-		const durableTransition = await markDurableQuit(runId, current, resumable);
+		const durableTransition = await markDurableQuit(runId, current, resumable, durableBackend);
 		if (durableTransition === "refused") {
-			if (suspendedByAbort) publish(hasDurableQuitProgress(runId));
+			if (suspendedByAbort) await publish(hasDurableQuitProgress(runId, durableBackend));
 			return durableTransition;
 		}
-		publish(resumable);
+		await publish(resumable);
 		return durableTransition;
 	};
 	try {
 		if ((await settle()) === "refused") return { ok: false, runId, reason: "already_ended" };
 	} catch (error) {
-		if (suspendedByAbort) publish(hasDurableQuitProgress(runId));
+		if (suspendedByAbort) await publish(hasDurableQuitProgress(runId, durableBackend));
 		throw error;
 	}
 	const message =
@@ -314,8 +318,8 @@ function unrecordedDurableQuitMessage(error: unknown, resumable: boolean): strin
 }
 
 /** Progress already recorded survives a failed attempt to persist the quit. */
-function hasDurableQuitProgress(runId: string): boolean {
-	const handle = discoverDurableQuitBackend(runId)?.getWorkflow(runId);
+function hasDurableQuitProgress(runId: string, backend?: DurableWorkflowBackend): boolean {
+	const handle = discoverDurableQuitBackend(runId, backend)?.getWorkflow(runId);
 	return handle !== undefined && isDurableWorkflowResumable({ ...handle, status: "paused", resumable: true });
 }
 
@@ -416,8 +420,13 @@ function controllableHandles(
 
 type DurableQuitOutcome = "transitioned" | "not_needed" | "refused";
 
-async function markDurableQuit(runId: string, run: RunSnapshot, resumable = true): Promise<DurableQuitOutcome> {
-	const backend = discoverDurableQuitBackend(runId);
+async function markDurableQuit(
+	runId: string,
+	run: RunSnapshot,
+	resumable = true,
+	selectedBackend?: DurableWorkflowBackend,
+): Promise<DurableQuitOutcome> {
+	const backend = discoverDurableQuitBackend(runId, selectedBackend);
 	if (backend === undefined) return "not_needed";
 	// A run an earlier session switch already quit and released stays released: re-quitting it would clear the release.
 	const durable = backend.getWorkflow(runId);
@@ -437,23 +446,16 @@ async function markDurableQuit(runId: string, run: RunSnapshot, resumable = true
 	if (!transitioned) return "refused";
 	// Persist the exact accumulated run elapsed at quit time so a later durable
 	// resume seeds the total workflow duration with prior-session time.
-	recordRunTimingCheckpoint(backend, run);
+	await recordRunTimingCheckpointAsync(backend, run);
 	return "transitioned";
 }
 
-/**
- * Resolve the durable backend only when `runId` is durably tracked. Discovery
- * stays best-effort for custom backends that throw on unsupported inspection;
- * the persistence writes performed after a positive match are intentionally
- * left to propagate so genuine durable failures are not masked.
- */
-function discoverDurableQuitBackend(runId: string): DurableWorkflowBackend | undefined {
-	try {
-		const backend = getDurableBackend();
-		return getLoadableDurableWorkflow(backend, runId) !== undefined ? backend : undefined;
-	} catch {
-		return undefined;
-	}
+function discoverDurableQuitBackend(
+	runId: string,
+	selectedBackend?: DurableWorkflowBackend,
+): DurableWorkflowBackend | undefined {
+	const backend = selectedBackend;
+	return backend !== undefined && getLoadableDurableWorkflow(backend, runId) !== undefined ? backend : undefined;
 }
 
 export async function quitAllRuns(opts?: {

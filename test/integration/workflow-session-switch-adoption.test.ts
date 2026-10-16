@@ -13,12 +13,13 @@ import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/reso
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { getDurableBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import workflowExtension from "../../packages/workflows/src/extension/index.js";
 import type { ExtensionAPI, WorkflowToolArgs } from "../../packages/workflows/src/extension/public-types.js";
 import { fileExists } from "../helpers/runtime.js";
+import { currentStoreBackend as getDurableBackend } from "../helpers/store-backend.js";
 import { decisionModel, registeredDecisionRuntime } from "../helpers/structured-output.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 /** Real resource loader, real SDK sessions, and a real `/new` or `/fork` transaction. */
 const HOST_SWITCH_TIMEOUT_MS = 120_000;

@@ -14,9 +14,7 @@
  * upstream already preserves types — string-typed values reaching this point
  * are user mistakes worth surfacing.
  *
- * The legacy `{ type }` descriptor is gone; the field kind, choices, and
- * required-ness are derived from the TypeBox schema via schema-introspection,
- * keeping the historical error wording byte-for-byte stable.
+ * Field kinds, choices, and requiredness come from the TypeBox schema.
  */
 
 import { Value } from "typebox/value";

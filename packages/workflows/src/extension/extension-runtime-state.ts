@@ -1,5 +1,5 @@
 import { registerExtensionContextRetirementEffect } from "@bastani/atomic";
-import { getDurableBackend } from "../durable/factory.js";
+import { requireStoreDurableBackend } from "../durable/store-backend.js";
 import {
 	InvalidWorkflowHeartbeatAnchorError,
 	readWorkflowHeartbeatAnchor,
@@ -8,6 +8,7 @@ import {
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import type { SessionManager } from "../shared/persistence-restore.js";
 import { resolveBuiltinDefinitionSource } from "../shared/possible-stages.js";
+import type { Store } from "../shared/store.js";
 import { readGraphStoreSnapshot } from "../shared/store-observation.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type {
@@ -73,11 +74,11 @@ interface DurabilityWarningContext extends PiModelContext {
  * The scheduler installs before any workflow has initialized its journal, so
  * both sides tolerate an unavailable backend and retry on the next pass.
  */
-function durableWorkflowHeartbeatAnchorStore(): WorkflowHeartbeatAnchorStore {
+function durableWorkflowHeartbeatAnchorStore(store: Store): WorkflowHeartbeatAnchorStore {
 	return {
 		readAnchorAt(runId) {
 			try {
-				return readWorkflowHeartbeatAnchor(getDurableBackend(), runId);
+				return readWorkflowHeartbeatAnchor(requireStoreDurableBackend(store, runId), runId);
 			} catch (error) {
 				if (error instanceof InvalidWorkflowHeartbeatAnchorError) throw error;
 				return undefined;
@@ -85,7 +86,7 @@ function durableWorkflowHeartbeatAnchorStore(): WorkflowHeartbeatAnchorStore {
 		},
 		async recordAnchorAt(runId, record) {
 			try {
-				return await recordWorkflowHeartbeatAnchor(getDurableBackend(), {
+				return await recordWorkflowHeartbeatAnchor(requireStoreDurableBackend(store, runId), {
 					runId,
 					anchorAt: record.anchorAt,
 					intervalMinutes: record.intervalMinutes,
@@ -311,7 +312,7 @@ export function createWorkflowExtensionRuntimeState(
 			onSummaryBoundary: (runId) => requestWorkflowSummary(store, runId),
 			resolveIntervalMinutes: (workflowName) => runtimeProxy.registry.get(workflowName)?.heartbeatIntervalMinutes,
 			parentAvailabilityReported,
-			anchorStore: durableWorkflowHeartbeatAnchorStore(),
+			anchorStore: durableWorkflowHeartbeatAnchorStore(store),
 		});
 	};
 
@@ -345,6 +346,7 @@ export function createWorkflowExtensionRuntimeState(
 	};
 	const configLoadRef: { current: ConfigLoadResult | null } = { current: null };
 	const runtimeProxy: ExtensionRuntime = {
+		durableBackend: () => runtimeRef.current.durableBackend(),
 		get registry() {
 			return runtimeRef.current.registry;
 		},

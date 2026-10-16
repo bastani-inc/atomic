@@ -113,6 +113,9 @@ export function createSessionScopedSingleton<T extends object>(
 			}
 			return value;
 		},
+		set(_target, prop, value) {
+			return Reflect.set(live(), prop, value, live());
+		},
 		has(_target, prop) {
 			return Reflect.has(live(), prop);
 		},

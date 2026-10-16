@@ -1,6 +1,8 @@
 import { raceAbort } from "../shared/abort.js";
+import { currentWorkflowStore } from "../shared/store-factory.js";
 /** Resume workflows from durable checkpoints without repeating completed work. */
 
+import { currentToolControlRegistry, type ToolControlRegistry } from "../engine/run-tool-control-registry.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
 import { launchDetachedUntilStartup, workflowStartupFailureMessage } from "../runs/background/startup-admission.js";
 import {
@@ -14,12 +16,13 @@ import type { WorkflowDefinition, WorkflowInputValues } from "../shared/types.js
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import { type DurableWorkflowBackend, resumableEntryFromHandle } from "./backend.js";
 import { durableWorkflowRunSnapshots } from "./completed-catalog.js";
-import { getDurableBackend } from "./factory.js";
 import { forkDurableWorkflow } from "./fork-workflow.js";
 import { JournalDurableBackend } from "./journal/journal-backend.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
+import { availableRunDurableBackend } from "./run-owner-backend.js";
 import { foreignInstanceMessage } from "./sdk-owner-release.js";
 import { canonicalDirectory, isSdkRunAdoptable } from "./sdk-recovery-scope.js";
+import { requireStoreDurableBackend } from "./store-backend.js";
 import { resolveToolResumeFrontier } from "./tool-resume-frontier.js";
 import type { ResumableWorkflowEntry } from "./types.js";
 
@@ -43,7 +46,7 @@ export interface ResumeDurableDeps {
 	readonly registry: WorkflowRegistry;
 	/** Base run options forwarded to the detached runner (store, persistence, …). */
 	readonly baseRunOpts: RunOpts;
-	/** Durable backend override (defaults to the global singleton). */
+	/** Backend selected by the owning runtime or store. */
 	readonly durableBackend?: DurableWorkflowBackend;
 	/** Resolve a definition from its original invocation directory after restart. */
 	readonly resolveDefinition?: (name: string, cwd: string | undefined) => Promise<WorkflowDefinition | undefined>;
@@ -56,12 +59,21 @@ export interface ResumeDurableDeps {
 	readonly forkModelOwner?: string;
 }
 
+function resumeBackend(deps: ResumeDurableDeps, workflowId?: string): DurableWorkflowBackend {
+	const store = deps.baseRunOpts.store ?? currentWorkflowStore();
+	return (
+		(workflowId === undefined ? undefined : availableRunDurableBackend(store.runs(), workflowId)) ??
+		deps.durableBackend ??
+		requireStoreDurableBackend(store, workflowId)
+	);
+}
+
 /** Refresh metadata and checkpoints before synchronous replay reads. */
 export async function prepareDurableResume(
 	workflowId: string | undefined,
 	deps: ResumeDurableDeps,
 ): Promise<readonly ResumableWorkflowEntry[]> {
-	const backend = deps.durableBackend ?? getDurableBackend();
+	const backend = resumeBackend(deps, workflowId);
 	await backend.hydrateResumableWorkflows();
 	const catalog = backend.listResumableWorkflows();
 	// If a specific target was requested, hydrate that workflow too (it might
@@ -108,9 +120,12 @@ export async function resumeDurableWorkflow(
 	deps: ResumeDurableDeps,
 	catalog?: readonly ResumableWorkflowEntry[],
 ): Promise<ResumeDurableResult> {
-	const backend = deps.durableBackend ?? getDurableBackend();
+	const backend = resumeBackend(deps, workflowId);
 	const target = resolveDurableEntry(workflowId, catalog ?? backend.listResumableWorkflows());
 	const id = target !== undefined && !("kind" in target) ? target.workflowId : workflowId;
+	const handle = backend.getWorkflow(id);
+	if (handle?.status === "running" && hasActiveLiveRun(deps.baseRunOpts.store, id))
+		return alreadyRunningResult(handle.name, id, deps.baseRunOpts.store);
 	let pending = pendingResumes.get(backend);
 	if (pending === undefined) {
 		pending = new Set();
@@ -124,7 +139,7 @@ export async function resumeDurableWorkflow(
 		};
 	pending.add(id);
 	try {
-		const resume = () => resumeDurableWorkflowClaimed(workflowId, deps, catalog);
+		const resume = () => resumeDurableWorkflowClaimed(workflowId, { ...deps, durableBackend: backend }, catalog);
 		const execution = backend instanceof JournalDurableBackend ? backend.withWorkflowLease(id, resume) : resume();
 		return await raceAbort(execution, deps.signal);
 	} finally {
@@ -139,7 +154,7 @@ async function resumeDurableWorkflowClaimed(
 	catalog?: readonly ResumableWorkflowEntry[],
 ): Promise<ResumeDurableResult> {
 	deps.signal?.throwIfAborted();
-	const backend = deps.durableBackend ?? getDurableBackend();
+	const backend = resumeBackend(deps, workflowId);
 	const knownCatalog = catalog ?? backend.listResumableWorkflows();
 	const target = resolveRunIdTarget(
 		workflowId,
@@ -169,11 +184,11 @@ async function resumeDurableWorkflowClaimed(
 			if (hasActiveLiveRun(deps.baseRunOpts.store, direct.workflowId)) {
 				return alreadyRunningResult(direct.name, direct.workflowId, deps.baseRunOpts.store);
 			}
-			if (backend.workflowOwnership(direct.workflowId) === "foreign") {
+			if ((await backend.workflowOwnership(direct.workflowId)) === "foreign") {
 				return foreignRunningResult(direct.name, direct.workflowId);
 			}
 		}
-		if (!backend.isWorkflowLoadable(workflowId)) {
+		if (direct !== undefined && !backend.isWorkflowLoadable(workflowId)) {
 			return {
 				ok: false,
 				reason: "not_registered",
@@ -210,7 +225,7 @@ async function resumeDurableWorkflowClaimed(
 		if (hasActiveLiveRun(deps.baseRunOpts.store, resolved.workflowId)) {
 			return alreadyRunningResult(handle.name, resolved.workflowId, deps.baseRunOpts.store);
 		}
-		if (backend.workflowOwnership(handle.workflowId) === "foreign") {
+		if ((await backend.workflowOwnership(handle.workflowId)) === "foreign") {
 			return foreignRunningResult(handle.name, resolved.workflowId);
 		}
 	}
@@ -226,7 +241,7 @@ async function resumeDurableWorkflowClaimed(
 		requestedOwner !== undefined &&
 		requestedOwner !== handle.modelOwner &&
 		(handle.modelOwner !== undefined || handle.origin === "agent");
-	if (adopting && !isSdkRunAdoptable(handle, deps.baseRunOpts.cwd, backend)) {
+	if (adopting && !(await isSdkRunAdoptable(handle, deps.baseRunOpts.cwd, backend))) {
 		return { ok: false, reason: "owned_elsewhere", message: foreignInstanceMessage(backend, resolved.workflowId) };
 	}
 
@@ -341,7 +356,7 @@ async function resumeDurableWorkflowClaimed(
 			if (restored) onRestored?.();
 			return restored;
 		}
-		backend.setWorkflowStatus(
+		await backend.setWorkflowStatus(
 			resolved.workflowId,
 			handle.status,
 			handle.pendingPrompts,
@@ -422,7 +437,7 @@ async function resumeDurableWorkflowClaimed(
 					const current = deps.baseRunOpts.store?.runs().find((run) => run.id === resolved.workflowId);
 					// Do not undo a concurrent terminal control decision.
 					if (current?.status === "failed" && current.error === message) {
-						backend.setWorkflowStatus(
+						await backend.setWorkflowStatus(
 							resolved.workflowId,
 							handle.status,
 							handle.pendingPrompts,
@@ -517,11 +532,12 @@ function hasActiveLiveRun(store: RunOpts["store"] | undefined, workflowId: strin
 export function purgeSuppressedWorkflowRuns(
 	backend: DurableWorkflowBackend,
 	store: RunOpts["store"],
+	controls: ToolControlRegistry = currentToolControlRegistry(),
 ): readonly string[] {
 	if (store === undefined) return [];
 	const removed: string[] = [];
 	for (const run of store.runs()) {
-		if (backend.isWorkflowLoadable(run.id)) continue;
+		if (controls.runControl(run.id) !== undefined || backend.isWorkflowLoadable(run.id)) continue;
 		if (store.removeRun(run.id)) removed.push(run.id);
 	}
 	return removed;
@@ -542,7 +558,7 @@ export async function prepareTargetedDurableResumable(
 		if (
 			handle === undefined ||
 			!isDurableWorkflowResumable(handle) ||
-			(handle.status === "running" && backend.workflowOwnership(workflowId) !== "available")
+			(handle.status === "running" && (await backend.workflowOwnership(workflowId)) !== "available")
 		)
 			continue;
 		entries.push(resumableEntryFromHandle(handle));

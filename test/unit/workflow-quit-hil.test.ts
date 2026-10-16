@@ -3,8 +3,6 @@ import type { ExtensionUIContext } from "@bastani/atomic";
 import { afterEach, test } from "vitest";
 import { createAskUserQuestionToolDefinition } from "../../packages/coding-agent/src/core/tools/ask-user-question/ask-user-question.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import type { PiCommandContext } from "../../packages/workflows/src/extension/public-types.js";
 import { buildRuntimeAdapters } from "../../packages/workflows/src/extension/wiring.js";
 import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
@@ -14,6 +12,8 @@ import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { stageControlRegistry as registry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { type StageCustomUiRequest, StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
+import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
+import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import { makeMockSession } from "./stage-runner-helpers.js";
 
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
