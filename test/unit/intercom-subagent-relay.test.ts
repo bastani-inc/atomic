@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
-import { describe, test } from "vitest";
+import { describe, test, vi } from "vitest";
+import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/session/errors.js";
 import {
 	DeliveredMessageCache,
 	getDeliveredMessageAuthorityKeyPath,
@@ -27,6 +28,7 @@ interface RelayHarnessOptions {
 	localDeliveryMaxEntries?: number;
 	localDeliveryAuthority?: DeliveredMessageCache;
 	afterLocalDelivery?(): void;
+	appendCommit?: Promise<void>;
 }
 
 function createRelayHarness(options: RelayHarnessOptions) {
@@ -48,7 +50,8 @@ function createRelayHarness(options: RelayHarnessOptions) {
 		},
 	} as never;
 	const pi = {
-		appendEntry(type: string, data: { error?: string }) {
+		async appendEntry(type: string, data: { error?: string }) {
+			await options.appendCommit;
 			errorEntries.push({ type, error: data.error });
 		},
 		events: {
@@ -279,6 +282,42 @@ describe("subagent result relay lifecycle acknowledgements", () => {
 			[false, true],
 		);
 		assert.match(harness.deliveries[0]?.error ?? "", /uncertain local delivery state/);
+	});
+
+	test("local failure acknowledgement stays independent while a rejected diagnostic commit is safely awaited", async () => {
+		let rejectCommit: (error: Error) => void = () => {};
+		const commit = new Promise<void>((_resolve, reject) => {
+			rejectCommit = reject;
+		});
+		let observed: () => void = () => {};
+		const diagnostic = new Promise<void>((resolve) => {
+			observed = resolve;
+		});
+		const failure = new StorageUnavailableError({ adapter: "test", location: "relay" }, new Error("write failed"));
+		const errors: Error[] = [];
+		const spy = vi.spyOn(console, "error").mockImplementation((label: string, error: Error) => {
+			assert.equal(label, "Failed to record local subagent relay error:");
+			errors.push(error);
+			observed();
+		});
+		try {
+			const harness = createRelayHarness({
+				liveChecks: [true],
+				local: true,
+				localFailures: 1,
+				appendCommit: commit,
+			});
+			harness.emitResult();
+			await settleRelay();
+			assert.equal(harness.deliveries[0]?.delivered, false);
+			assert.equal(harness.errorEntries.length, 0);
+			assert.equal(errors.length, 0);
+			rejectCommit(failure);
+			await diagnostic;
+			assert.deepEqual(errors, [failure]);
+		} finally {
+			spy.mockRestore();
+		}
 	});
 
 	test("rejects conflicting local request-id reuse without forwarding the new payload", async () => {

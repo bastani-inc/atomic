@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { STALE_EXTENSION_CONTEXT_MESSAGE } from "../../packages/coding-agent/src/core/extensions/stale-context.js";
+import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/session/errors.js";
 
 interface WebSearchConfig {
 	shortcuts?: {
@@ -29,7 +30,7 @@ interface SearchReturnPayload {
 	details: Record<string, string | null>;
 }
 
-type SearchReturnBuilder = (opts: SearchReturnOptions) => SearchReturnPayload;
+type SearchReturnBuilder = (opts: SearchReturnOptions) => Promise<SearchReturnPayload>;
 
 interface WebSearchFeaturesModule {
 	registerWebSearchFeatures(pi: ExtensionAPI, initConfig: WebSearchConfig): void;
@@ -117,10 +118,10 @@ vi.mock("../../packages/web-access/web-search-tool.js", () => ({
 }));
 
 vi.mock("../../packages/web-access/web-search-return.js", () => ({
-	buildSearchReturn: (
+	buildSearchReturn: async (
 		_opts: SearchReturnOptions,
 		deps: { startBackgroundFetch(urls: string[]): string | null },
-	): SearchReturnPayload => {
+	): Promise<SearchReturnPayload> => {
 		const fetchId = deps.startBackgroundFetch(["https://example.test/article"]);
 		return {
 			content: [{ type: "text", text: "background fetch started" }],
@@ -141,11 +142,14 @@ function deferred<T>(): Deferred<T> {
 	return { promise, resolve: resolvePromise };
 }
 
-function createPi(options: { appendError?: Error; contentAdmission?: Promise<void> } = {}): ExtensionAPI {
+function createPi(
+	options: { appendError?: Error; appendCommit?: Promise<void>; contentAdmission?: Promise<void> } = {},
+): ExtensionAPI {
 	const on = (event: string, handler: EventHandler): void => {
 		state.handlers.set(event, handler);
 	};
-	const appendEntry = (_customType: string, _data: Record<string, string | number | null>): void => {
+	const appendEntry = async (_customType: string, _data: Record<string, string | number | null>): Promise<void> => {
+		await options.appendCommit;
 		if (options.appendError) throw options.appendError;
 	};
 	const sendMessage = (
@@ -220,7 +224,7 @@ async function waitForNotifications(): Promise<void> {
 	await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
-function buildBackgroundFetch(): SearchReturnPayload {
+function buildBackgroundFetch(): Promise<SearchReturnPayload> {
 	assert.ok(state.buildReturn, "web search return builder should be registered");
 	const options: SearchReturnOptions = {
 		queryList: ["example"],
@@ -240,16 +244,18 @@ afterEach(async () => {
 });
 
 test("a non-stale appendEntry failure posts a visible web-search-error entry", async () => {
-	setup({ appendError: new Error("append failed") });
+	setup({
+		appendError: new StorageUnavailableError({ adapter: "test", location: "test" }, new Error("append failed")),
+	});
 	await startSession();
 
-	buildBackgroundFetch();
+	await buildBackgroundFetch();
 	await waitForNotifications();
 
 	assert.deepEqual(state.messages, [
 		{
 			customType: "web-search-error",
-			content: "Content fetch failed [fetch-1]: append failed",
+			content: "Content fetch failed [fetch-1]: Storage unavailable: test at test",
 			triggerTurn: false,
 		},
 	]);
@@ -260,11 +266,35 @@ test("a stale appendEntry failure is contained without posting a web-search-erro
 	setup({ appendError: new Error(STALE_EXTENSION_CONTEXT_MESSAGE) });
 	await startSession();
 
-	buildBackgroundFetch();
+	await buildBackgroundFetch();
 	await waitForNotifications();
 
 	assert.deepEqual(state.messages, []);
 	assert.equal(errorSpy.mock.calls.length, 0);
+});
+
+test("content-ready notification waits for the search-result commit", async () => {
+	const commit = deferred<void>();
+	setup({ appendCommit: commit.promise });
+	await startSession();
+	await buildBackgroundFetch();
+	await waitForNotifications();
+	assert.equal(state.messages.length, 0);
+	commit.resolve();
+	await waitForNotifications();
+	assert.equal(state.messages[0]?.customType, "web-search-content-ready");
+});
+
+test("a fetch whose commit finishes after session shutdown does not notify the retired session", async () => {
+	const commit = deferred<void>();
+	setup({ appendCommit: commit.promise });
+	await startSession();
+	await buildBackgroundFetch();
+	await waitForNotifications();
+	await shutdownSession();
+	commit.resolve();
+	await waitForNotifications();
+	assert.deepEqual(state.messages, []);
 });
 
 test("pending fetch cleanup waits for content-ready message admission", async () => {
@@ -272,7 +302,7 @@ test("pending fetch cleanup waits for content-ready message admission", async ()
 	setup({ contentAdmission: admission.promise });
 	await startSession();
 
-	buildBackgroundFetch();
+	await buildBackgroundFetch();
 	await waitForNotifications();
 	assert.equal(state.messages[0]?.customType, "web-search-content-ready");
 	assert.ok(state.fetchSignal, "fetch signal should be captured");
@@ -290,7 +320,7 @@ test("sibling shutdown preserves a pending fetch until its own owner closes", as
 	setup({ contentAdmission: admission.promise });
 	await startSession();
 	const firstShutdown = state.handlers.get("session_shutdown")!;
-	buildBackgroundFetch();
+	await buildBackgroundFetch();
 	await waitForNotifications();
 	const firstSignal = state.fetchSignal!;
 	assert.equal(firstSignal.aborted, false);

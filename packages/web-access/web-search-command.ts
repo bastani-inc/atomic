@@ -11,7 +11,7 @@ import {
 	extractDomain,
 	filterByQueryIndices,
 } from "./web-search-formatting.js";
-import type { SearchReturnBuilder, SearchReturnOptions, SearchReturnPayload } from "./web-search-return.js";
+import type { SearchReturnBuilder, SearchReturnOptions } from "./web-search-return.js";
 import { generateSummaryForSelectedIndices, loadSummaryModelChoices, resolveSummaryForSubmit, rewriteSearchQuery } from "./web-search-summary.js";
 import type { WebSearchRuntimeState } from "./web-search-types.js";
 import { loadCuratorBootstrap, normalizeProviderInput, normalizeQueryList, saveConfig, type CuratorBootstrap } from "./web-search-config.js";
@@ -58,9 +58,14 @@ export function registerWebSearchCommand(pi: ExtensionAPI, deps: RegisterWebSear
 			const searchAbort = new AbortController();
 			let aborted = false;
 			let commandHandle: CuratorServerHandle | null = null;
+			let finishCommand: (options?: SearchReturnOptions) => void = () => {};
+			const commandCompletion = new Promise<SearchReturnOptions | undefined>((resolve) => {
+				finishCommand = resolve;
+			});
 
-			function sendFollowUpFromReturn(payload: SearchReturnPayload) {
-				pi.sendMessage({
+			async function sendFollowUpFromReturn(options: SearchReturnOptions): Promise<void> {
+				const payload = await deps.buildSearchReturn(options);
+				await pi.sendMessage({
 					customType: "web-search-results",
 					content: payload.content,
 					display: "tool",
@@ -114,17 +119,20 @@ export function registerWebSearchCommand(pi: ExtensionAPI, deps: RegisterWebSear
 								base.approvedSummary = resolvedSummary.approvedSummary;
 								base.summaryMeta = resolvedSummary.summaryMeta;
 							}
-							sendFollowUpFromReturn(deps.buildSearchReturn(base));
+							finishCommand(base);
 							deps.closeCurator();
 						},
 						onCancel(reason) {
-							if (commandHandle && deps.state.activeCurator !== commandHandle) return;
+							if (commandHandle && deps.state.activeCurator !== commandHandle) {
+								finishCommand();
+								return;
+							}
 							aborted = true;
 							searchAbort.abort();
 							if (reason === "timeout") {
 								const all = collectAllResultsAndUrls(collected);
 								const resolvedSummary = resolveSummaryForSubmit({ selectedQueryIndices: [], summary: undefined, summaryMeta: undefined }, collected);
-								sendFollowUpFromReturn(deps.buildSearchReturn({
+								finishCommand({
 									queryList: all.results.map(r => r.query),
 									results: all.results,
 									urls: all.urls,
@@ -134,7 +142,9 @@ export function registerWebSearchCommand(pi: ExtensionAPI, deps: RegisterWebSear
 									workflow: "summary-review",
 									approvedSummary: resolvedSummary.approvedSummary,
 									summaryMeta: resolvedSummary.summaryMeta,
-								}));
+								});
+							} else {
+								finishCommand();
 							}
 							deps.closeCurator();
 						},
@@ -233,6 +243,8 @@ export function registerWebSearchCommand(pi: ExtensionAPI, deps: RegisterWebSear
 				} else {
 					if (deps.state.activeCurator === handle) handle.searchesDone();
 				}
+				const options = await commandCompletion;
+				if (options) await sendFollowUpFromReturn(options);
 			} catch (err) {
 				deps.closeCurator();
 				const message = err instanceof Error ? err.message : String(err);

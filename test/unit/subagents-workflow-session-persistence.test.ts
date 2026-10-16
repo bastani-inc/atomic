@@ -55,11 +55,11 @@ function childCliSource(): string {
 		const sessionFile = valueAfter("--session");
 		const sessionDir = valueAfter("--session-dir");
 		const manager = sessionFile
-			? SessionManager.open(sessionFile, undefined, process.cwd())
-			: SessionManager.create(process.cwd(), sessionDir);
-		applyInheritedWorkflowSessionClassification(manager);
-		manager.appendMessage({ role: "user", content: "child task", timestamp: Date.now() });
-		manager.appendMessage({
+			? await SessionManager.open(sessionFile, undefined, process.cwd())
+			: await SessionManager.create(process.cwd(), sessionDir);
+		await applyInheritedWorkflowSessionClassification(manager);
+		await manager.appendMessage({ role: "user", content: "child task", timestamp: Date.now() });
+		await manager.appendMessage({
 			role: "assistant", content: [{ type: "text", text: "done" }],
 			api: "openai-responses", provider: "openai", model: "gpt-5.4",
 			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,

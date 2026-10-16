@@ -77,7 +77,7 @@ export function registerIntercomOverlay(pi: ExtensionAPI, deps: OverlayDeps): vo
     ).catch(() => undefined);
 
     if (result?.sent && result.messageId && result.text && deps.getLiveContext(ctx, overlayGeneration)) {
-      pi.appendEntry("intercom_sent", {
+      await pi.appendEntry("intercom_sent", {
         to: selectedSession.name || selectedSession.id,
         message: { text: result.text },
         messageId: result.messageId,

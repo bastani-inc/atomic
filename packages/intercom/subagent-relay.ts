@@ -106,17 +106,21 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
     if (!dispatched) return Promise.resolve(sendIncomingMessage(entry, "trigger")).then(() => {});
     return Promise.resolve();
   }
-  function recordSubagentDeliveryError(entryType: string, to: string, message: string, error: unknown): void {
-    pi.appendEntry(entryType, {
+  async function recordSubagentDeliveryError(
+    entryType: string, to: string, message: string, error: Parameters<typeof getErrorMessage>[0],
+  ): Promise<void> {
+    await pi.appendEntry(entryType, {
       to,
       message,
       error: getErrorMessage(error),
       timestamp: Date.now(),
     });
   }
-  function recordSubagentDeliveryErrorSafely(entryType: string, to: string, message: string, error: unknown): void {
+  async function recordSubagentDeliveryErrorSafely(
+    entryType: string, to: string, message: string, error: Parameters<typeof getErrorMessage>[0],
+  ): Promise<void> {
     try {
-      recordSubagentDeliveryError(entryType, to, message, error);
+      await recordSubagentDeliveryError(entryType, to, message, error);
     } catch (recordError) {
       if (!reportOwnedIntercomDiagnostic()) console.error("Failed to record local subagent relay error:", recordError);
     }
@@ -192,12 +196,13 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
       }
       acknowledgeResult(options, parsed.requestId, true);
     } catch (error) {
-      recordSubagentDeliveryErrorSafely(options.errorEntryType, parsed.to, parsed.message, error);
+      const recorded = recordSubagentDeliveryErrorSafely(options.errorEntryType, parsed.to, parsed.message, error);
       try {
         acknowledgeResult(options, parsed.requestId, false, error);
       } catch (ackError) {
         if (!reportOwnedIntercomDiagnostic()) console.error("Failed to acknowledge local subagent relay error:", ackError);
       }
+      await recorded;
     }
   }
   function relaySubagentIntercomPayload(payload: unknown, options: {
@@ -242,7 +247,7 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
           acknowledgeResult(options, parsed.requestId, false, error);
           return;
         }
-        recordSubagentDeliveryErrorSafely(options.errorEntryType, parsed.to, parsed.message, error);
+        await recordSubagentDeliveryErrorSafely(options.errorEntryType, parsed.to, parsed.message, error);
         acknowledgeResult(options, parsed.requestId, false, error);
         return;
       }
@@ -267,7 +272,7 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
         }
         if (!result.delivered) {
           const error = new Error(result.reason ?? "Session may not exist or has disconnected.");
-          recordSubagentDeliveryErrorSafely(options.errorEntryType, parsed.to, parsed.message, error);
+          await recordSubagentDeliveryErrorSafely(options.errorEntryType, parsed.to, parsed.message, error);
           acknowledgeResult(options, parsed.requestId, false, error);
           return;
         }
@@ -277,7 +282,7 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
           acknowledgeResult(options, parsed.requestId, false, error);
           return;
         }
-        recordSubagentDeliveryErrorSafely(options.errorEntryType, parsed.to, parsed.message, error);
+        await recordSubagentDeliveryErrorSafely(options.errorEntryType, parsed.to, parsed.message, error);
         acknowledgeResult(options, parsed.requestId, false, error);
       }
     })().catch((error) => {

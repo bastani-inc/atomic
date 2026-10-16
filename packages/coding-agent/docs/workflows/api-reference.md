@@ -1264,7 +1264,7 @@ Executes a compiled definition programmatically with validated inputs. Empty-inp
 
 #### Stage sessions and adapters
 
-When `opts.adapters` supplies neither `agentSession` nor `prompt`, `run()` uses `createAgentSessionAdapter({ cwd: opts.cwd })`. Each stage then runs its own in-process Atomic `createAgentSession` session with an in-memory `SessionManager`, unless the stage sets `sessionDir` or resumes or forks a session. Stage sessions resolve models, credentials, settings, and resources the same way `createAgentSession` does. A `prompt` adapter on its own answers stage prompts itself, so `run()` adds no default session adapter beside it.
+When `opts.adapters` supplies neither `agentSession` nor `prompt`, `run()` uses `createAgentSessionAdapter({ cwd: opts.cwd })`. Each stage then runs its own in-process Atomic `createAgentSession` session with persistent session storage by default. Use the stage's `sessionDir` to choose its session directory, or supply an explicitly selected in-memory session manager through a custom adapter for ephemeral stages. A persistent storage failure fails stage creation; it never falls back to memory. Stage sessions resolve models, credentials, settings, and resources the same way `createAgentSession` does. A `prompt` adapter on its own answers stage prompts itself, so `run()` adds no default session adapter beside it.
 
 ```typescript
 function createAgentSessionAdapter(
@@ -1286,7 +1286,7 @@ A custom adapter's `create(options, meta)` receives the stage's session options,
 ```ts
 import { createAgentSessionAdapter, run } from "@bastani/atomic/workflows";
 
-// Default: in-process stage sessions with in-memory session managers.
+// Default: in-process stage sessions with persistent session storage.
 await run(helloWorld, { name: "Atomic" }, { cwd: process.cwd() });
 
 // Shared options for every stage.

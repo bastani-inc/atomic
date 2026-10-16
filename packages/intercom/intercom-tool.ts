@@ -581,7 +581,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             if (result.queued === true) {
               retryIdentities.release(retryIdentity);
               retryIdentity = undefined;
-              pi.appendEntry("intercom_sent", {
+              await pi.appendEntry("intercom_sent", {
                 to,
                 message: { text: message, attachments, replyTo },
                 messageId: result.id,
@@ -627,7 +627,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             }
             retryIdentities.release(retryIdentity);
             retryIdentity = undefined;
-            pi.appendEntry("intercom_sent", {
+            await pi.appendEntry("intercom_sent", {
               to,
               message: { text: message, attachments, replyTo },
               messageId: result.id,
@@ -842,7 +842,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               retryIdentities.release(retryIdentity);
               retryIdentity = undefined;
               wait.cancel(new Error(`Message queued for ${to}`));
-              pi.appendEntry("intercom_sent", {
+              await pi.appendEntry("intercom_sent", {
                 to,
                 message: { text: message, attachments, replyTo },
                 messageId: sendResult.id,
@@ -887,7 +887,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               };
             }
             askDelivered = true;
-            pi.appendEntry("intercom_sent", {
+            await pi.appendEntry("intercom_sent", {
               to,
               message: { text: message, attachments, replyTo },
               messageId: sendResult.id,
@@ -900,7 +900,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             const replyAttachments = replyMessage.content.attachments?.length
               ? formatAttachments(replyMessage.content.attachments)
               : "";
-            pi.appendEntry("intercom_received", {
+            await pi.appendEntry("intercom_received", {
               from: to,
               message: { text: replyText, attachments: replyMessage.content.attachments },
               messageId: replyMessage.id,
@@ -1051,13 +1051,13 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             if (result.queued === true) {
               retryIdentities.release(retryIdentity);
               retryIdentity = undefined;
-              activeReplyTracker().markReplied(route.messageId);
-              pi.appendEntry("intercom_sent", {
+              await pi.appendEntry("intercom_sent", {
                 to: displayTarget,
                 message: { text: message, attachments, replyTo: route.messageId },
                 messageId: result.id,
                 timestamp: Date.now(),
               });
+              activeReplyTracker().markReplied(route.messageId);
               return {
                 content: [{ type: "text", text: `Reply queued for ${displayTarget}` }],
                 isError: false,
@@ -1092,13 +1092,13 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             }
             retryIdentities.release(retryIdentity);
             retryIdentity = undefined;
-            activeReplyTracker().markReplied(route.messageId);
-            pi.appendEntry("intercom_sent", {
+            await pi.appendEntry("intercom_sent", {
               to: displayTarget,
               message: { text: message, attachments, replyTo: route.messageId },
               messageId: result.id,
               timestamp: Date.now(),
             });
+            activeReplyTracker().markReplied(route.messageId);
             return {
               content: [{ type: "text", text: `Reply sent to ${displayTarget}` }],
               isError: false,
