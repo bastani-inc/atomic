@@ -120,12 +120,14 @@ InteractiveModeBase.prototype.flushCompactionQueue = async function (
 	this.compactionQueuedMessages = [];
 	this.updatePendingMessagesDisplay();
 
-	const restoreQueue = (error: unknown) => {
-		this.session.clearQueue();
-		this.compactionQueuedMessages = queuedMessages;
+	const restoreQueue = (error: unknown, messages = queuedMessages) => {
+		this.compactionQueuedMessages = [
+			...messages,
+			...this.compactionQueuedMessages.filter((message) => !messages.includes(message)),
+		];
 		this.updatePendingMessagesDisplay();
 		this.showError(
-			`Failed to send queued message${queuedMessages.length > 1 ? "s" : ""}: ${
+			`Failed to send queued message${messages.length > 1 ? "s" : ""}: ${
 				error instanceof Error ? error.message : String(error)
 			}`,
 		);
@@ -178,7 +180,7 @@ InteractiveModeBase.prototype.flushCompactionQueue = async function (
 		const promptPromise = this.session
 			.prompt(firstPrompt.text, { streamingBehavior: firstPrompt.mode })
 			.catch((error) => {
-				restoreQueue(error);
+				restoreQueue(error, [firstPrompt]);
 			});
 
 		// Queue remaining messages
@@ -194,6 +196,7 @@ InteractiveModeBase.prototype.flushCompactionQueue = async function (
 		this.updatePendingMessagesDisplay();
 		void promptPromise;
 	} catch (error) {
+		this.session.clearQueue();
 		restoreQueue(error);
 	}
 };
