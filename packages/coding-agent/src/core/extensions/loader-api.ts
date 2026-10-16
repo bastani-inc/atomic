@@ -427,7 +427,7 @@ export function createExtensionAPI(
 
 		async appendEntry<T>(customType: string, data?: T): Promise<void> {
 			assertActive();
-			await runtime.appendEntry(customType, data);
+			await trackAPIWork(() => runtime.appendEntry(customType, data));
 		},
 
 		async setSessionName(name: string): Promise<void> {

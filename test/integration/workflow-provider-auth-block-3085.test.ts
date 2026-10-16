@@ -129,7 +129,9 @@ test(
 				effectiveRunStatus(store.runs().find((run) => run.id === startedRun.runId)!) !== "blocked"
 			) {
 				await realSleep(5);
-				await vi.advanceTimersByTimeAsync(1000);
+				// Advance actual deadlines, not empty one-second slices that spend the I/O
+				// budget yielding to a loaded host before the auth timeout can even fire.
+				await vi.advanceTimersToNextTimerAsync();
 			}
 			const source = store.runs().find((run) => run.id === startedRun.runId);
 			assert.ok(source);
