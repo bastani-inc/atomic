@@ -107,7 +107,7 @@ describe("partial resume command surfaces", () => {
 		test.sequential(`runtime resume failure reports only acknowledged progress: ${parentAcknowledged} (#3670)`, async () => {
 			const runId = testRunId("runtime-resume-progress");
 			const childRunId = testRunId("runtime-resume-child");
-			const backend = new InMemoryDurableBackend();
+			const backend = await createMemoryTestBackend();
 			setDurableBackend(backend);
 			store.recordRunStart({
 				id: runId,
@@ -181,7 +181,7 @@ describe("partial resume command surfaces", () => {
 
 	test.sequential("failed targeted resume ignores an unchanged running sibling (#3670)", async () => {
 		const runId = testRunId("targeted-resume-no-progress");
-		const backend = new InMemoryDurableBackend();
+		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		store.recordRunStart({
 			id: runId,
@@ -202,7 +202,13 @@ describe("partial resume command surfaces", () => {
 			});
 		}
 		store.recordStagePaused(runId, "target");
-		backend.registerWorkflow({ workflowId: runId, name: "targeted", inputs: {}, createdAt: 1, status: "running" });
+		await backend.registerWorkflow({
+			workflowId: runId,
+			name: "targeted",
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
 		let resumeCalls = 0;
 		registerHandle(runId, "target", async () => {
 			resumeCalls += 1;
