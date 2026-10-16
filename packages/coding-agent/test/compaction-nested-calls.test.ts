@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { resolve } from "node:path";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { test } from "vitest";
 import { computeFileLists, createFileOps, extractFileOpsFromMessage } from "../src/core/compaction/utils.js";
 
@@ -95,3 +96,31 @@ for (const nested of [false, true]) {
 		});
 	}
 }
+
+test("compaction resolves file-operation paths like the file tools do (#3656)", () => {
+	const cwd = resolve("/repo");
+	const operations = createFileOps();
+	extractFileOpsFromMessage(
+		{
+			role: "toolResult",
+			toolCallId: "script",
+			toolName: "codemode",
+			content: [],
+			isError: false,
+			timestamp: 1,
+			nestedCalls: {
+				complete: true,
+				calls: [
+					{ id: "write-home", name: "write", arguments: { path: "~/../shared/file.ts" }, status: "ok" },
+					{ id: "read-at", name: "read", arguments: { path: "@src/app.ts" }, status: "ok" },
+				],
+			},
+		},
+		operations,
+		cwd,
+	);
+	assert.deepEqual(computeFileLists(operations), {
+		readFiles: [join("src", "app.ts")],
+		modifiedFiles: [resolve(homedir(), "../shared/file.ts")],
+	});
+});

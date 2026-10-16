@@ -2,10 +2,11 @@
  * Shared utilities for compaction and branch summarization.
  */
 
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { isAbsolute, relative, sep } from "node:path";
 import type { Message } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { Patch } from "../tools/hashline-engine/index.ts";
+import { resolveToCwd } from "../tools/path-utils.ts";
 import type { LineRange } from "./compaction-types.js";
 
 // ============================================================================
@@ -65,7 +66,7 @@ function addFileOp(
 
 export function normalizeFileOpPath(path: string, cwd?: string): string {
 	if (cwd === undefined || /^[a-z][a-z0-9+.-]*:\/\//i.test(path)) return path;
-	const absolutePath = resolve(cwd, path);
+	const absolutePath = resolveToCwd(path, cwd);
 	const relativePath = relative(cwd, absolutePath);
 	return relativePath === ".." || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)
 		? absolutePath
