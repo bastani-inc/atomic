@@ -12,7 +12,7 @@ import type {
 	ChatSessionHostStyle,
 } from "../src/modes/interactive/components/chat-session-host-types.ts";
 
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 const identity = (text: string): string => text;
 
