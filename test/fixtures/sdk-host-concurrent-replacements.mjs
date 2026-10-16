@@ -49,9 +49,11 @@ async function factory({ cwd, agentDir, sessionManager, sessionStartEvent }) {
 const manager = await SessionManager.create(root, join(root, "sessions"));
 const runtime = await createAgentSessionRuntime(factory, { cwd: root, agentDir, sessionManager: manager });
 const entry = await manager.appendMessage({ role: "user", content: "fork me", timestamp: 0 });
-const source = manager.getSessionFile();
+const source = manager.getSessionId();
+const imports = operation === "import" ? [await SessionManager.create(root, join(root, "exports")), await SessionManager.create(root, join(root, "exports"))] : [];
+let importIndex = 0;
 runtime.setRebindSession(async session => { await tick(); assert.equal(runtime.session, session); rebound.push(session); });
-const invoke = () => operation === "fork" ? runtime.fork(entry) : operation === "resume" ? runtime.switchSession(source) : operation === "import" ? runtime.importFromJsonl(source) : runtime.newSession();
+const invoke = () => operation === "fork" ? runtime.fork(entry) : operation === "resume" ? runtime.switchSession(source) : operation === "import" ? runtime.importFromJsonl(imports[importIndex++].getSessionFile()) : runtime.newSession();
 if (workflow) {
  await runtime.session.prompt("/workflow sdk-host-durable --no-picker");
  const tool = runtime.session.agent.state.tools.find(tool => tool.name === "workflow");

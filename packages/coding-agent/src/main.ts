@@ -60,7 +60,6 @@ import { ModelRuntime } from "./core/model-runtime.js";
 import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { formatBorrowedExtensionSourceTrustPrompt, resolveProjectTrusted } from "./core/project-trust.ts";
 import { getMissingSessionCwdIssue, MissingSessionCwdError } from "./core/session-cwd.ts";
-import { SessionManager } from "./core/session-manager.ts";
 import { deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { endTimingSpan, printTimings, resetTimings, startTimingSpan, time } from "./core/timings.ts";
@@ -90,7 +89,9 @@ import {
 	applyInheritedWorkflowSessionClassification,
 	createSessionManager,
 	promptForMissingSessionCwd,
+	SessionSelectorConflictError,
 	validateForkFlags,
+	validateImportFlags,
 	validateSessionIdFlags,
 } from "./main-session.ts";
 import { buildSessionOptions } from "./main-session-options.ts";
@@ -371,6 +372,13 @@ export async function main(argv: string[], options?: MainOptions) {
 		process.exit(1);
 	}
 
+	try {
+		validateImportFlags(parsed);
+	} catch (error) {
+		if (!(error instanceof SessionSelectorConflictError)) throw error;
+		console.error(chalk.red(`Error: ${error.message}`));
+		process.exit(1);
+	}
 	validateForkFlags(parsed);
 	validateSessionIdFlags(parsed);
 
@@ -488,7 +496,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			if (!selectedCwd) {
 				process.exit(0);
 			}
-			sessionManager = await SessionManager.open(missingSessionCwdIssue.sessionFile!, sessionDir, selectedCwd);
+			sessionManager = await sessionManager.openSessionById(sessionManager.getSessionId(), selectedCwd);
 		} else {
 			console.error(chalk.red(new MissingSessionCwdError(missingSessionCwdIssue).message));
 			process.exit(1);

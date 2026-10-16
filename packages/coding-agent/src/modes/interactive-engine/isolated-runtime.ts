@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { dirname } from "node:path";
 import type { AuthInteraction } from "@bastani/pi-ai";
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { AgentSession, CompactionReason } from "../../core/agent-session.js";
@@ -11,6 +12,7 @@ import { serializeSessionMutation } from "../../core/session-mutation-queue.ts";
 import type { ToolStatusReport } from "../../core/tool-status.js";
 import { captureHerdrEnvironment } from "../../extensions/herdr/environment.js";
 import { releaseUnownedPaneRegistration } from "../../extensions/herdr/pane-owner.js";
+import { canonicalizePath } from "../../utils/paths.ts";
 import { sleep } from "../../utils/sleep.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
@@ -143,7 +145,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			restart: async () => {
 				this.engineRecoveryFailure = undefined;
 				try {
-					await this.client.restart(this.remoteSessionFile);
+					const manager = super.session.sessionManager;
+					await this.client.restart(this.remoteSessionFile ? manager.getSessionId() : undefined, {
+						cwd: manager.getCwd(),
+						sessionDirectory: this.remoteSessionFile ? manager.getSessionDir() : undefined,
+					});
 					await this.initializeFromEngine();
 				} catch (error) {
 					const failure = markRpcTransportFailure(error);
@@ -226,8 +232,13 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				allowPartialResources: true,
 			});
 			if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
-			if (state.sessionFile && super.session.sessionManager.getSessionFile() !== state.sessionFile) {
-				await super.switchSession(state.sessionFile);
+			if (
+				state.sessionLocation &&
+				(state.sessionId !== super.session.sessionId ||
+					canonicalizePath(dirname(state.sessionLocation)) !==
+						canonicalizePath(super.session.sessionManager.getSessionDir()))
+			) {
+				await super.switchSession(state.sessionId, { sessionDirectory: dirname(state.sessionLocation) });
 				if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
 			}
 			const session = super.session;
@@ -251,7 +262,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			this.resourceOverlaps = state.resourceOverlaps ?? [];
 			this.updateResourceExtensions(state.resourceExtensions ?? []);
 			this.remoteSessionName = state.sessionName;
-			this.remoteSessionFile = state.sessionFile;
+			this.remoteSessionFile = state.sessionLocation;
 			this.streaming = state.isStreaming;
 			this.compacting = state.isCompacting;
 			this.compactionReason = state.isCompacting ? state.compactionReason : undefined;
@@ -483,7 +494,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		const generation = this.client.getGeneration();
 		const state = await this.client.getState();
 		if (!this.isCurrentResourceGeneration(generation)) return;
-		this.remoteSessionFile = state.sessionFile;
+		this.remoteSessionFile = state.sessionLocation;
 		this.remoteSessionName = state.sessionName;
 		this.resourceOverlaps = state.resourceOverlaps ?? [];
 		this.updateResourceExtensions(state.resourceExtensions ?? []);
@@ -541,12 +552,15 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	}
 
 	override async switchSession(
-		sessionPath: string,
+		sessionId: string,
 		options?: Parameters<AgentSessionRuntime["switchSession"]>[1],
 	): Promise<{ cancelled: boolean }> {
-		const result = await this.client.switchSession(sessionPath, options?.cwdOverride);
+		const result = await this.client.switchSession(sessionId, options?.cwdOverride, options?.sessionDirectory);
 		if (!result.cancelled) {
-			await super.switchSession(sessionPath, { cwdOverride: options?.cwdOverride });
+			await super.switchSession(sessionId, {
+				cwdOverride: options?.cwdOverride,
+				sessionDirectory: options?.sessionDirectory,
+			});
 			await this.initializeFromEngine();
 			if (options?.withSession) await options.withSession(this.session.createReplacedSessionContext());
 		}
@@ -557,7 +571,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		const result = await this.client.newSession(options?.parentSession);
 		if (result.cancelled) return result;
 		const state = await this.client.getState();
-		if (state.sessionFile) await super.switchSession(state.sessionFile);
+		if (state.sessionLocation)
+			await super.switchSession(state.sessionId, { sessionDirectory: dirname(state.sessionLocation) });
 		else await this.resetUnpersistedSessionView();
 		await this.initializeFromEngine();
 		return result;
@@ -571,7 +586,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		});
 		if (result.cancelled) return result;
 		const state = await this.client.getState();
-		if (state.sessionFile) await super.switchSession(state.sessionFile);
+		if (state.sessionLocation)
+			await super.switchSession(state.sessionId, { sessionDirectory: dirname(state.sessionLocation) });
 		await this.initializeFromEngine();
 		return result;
 	}
@@ -591,7 +607,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		}
 		if (cancelled) return { cancelled: true };
 		const state = await this.client.getState();
-		if (state.sessionFile) await super.switchSession(state.sessionFile);
+		if (state.sessionLocation)
+			await super.switchSession(state.sessionId, { sessionDirectory: dirname(state.sessionLocation) });
 		await this.initializeFromEngine();
 		return { cancelled: false, selectedText };
 	}
@@ -971,7 +988,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		const sessionFile = session.sessionFile;
 		if (!sessionFile) return;
 		const currentManager = session.sessionManager;
-		const refreshed = await SessionManager.open(sessionFile, currentManager.getSessionDir(), currentManager.getCwd());
+		const refreshed = await SessionManager.open(
+			currentManager.getSessionStore(),
+			currentManager.getSessionId(),
+			currentManager.getCwd(),
+		);
 		Object.defineProperty(session, "sessionManager", { configurable: true, value: refreshed });
 		this.patchSessionManager(refreshed);
 		session.agent.state.messages = refreshed.buildSessionContext().messages;

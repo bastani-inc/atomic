@@ -76,9 +76,9 @@ function writeIsolatedState(agentDir: string, baseUrl: string): void {
 	);
 }
 
-function commonArgs(sessionFile?: string): string[] {
+function commonArgs(sessionId?: string): string[] {
 	return [
-		...(sessionFile ? ["--session", sessionFile] : ["--no-session"]),
+		...(sessionId ? ["--session", sessionId] : ["--no-session"]),
 		"--no-extensions",
 		"--no-skills",
 		"--no-prompt-templates",
@@ -181,7 +181,7 @@ describe("unsupported provider in headless modes", () => {
 	let cwd: string;
 	let agentDir: string;
 	let sessionDir: string;
-	let persistedSessionFile: string;
+	let persistedSessionId: string;
 	let server: Server | undefined;
 
 	beforeEach(async () => {
@@ -239,7 +239,7 @@ describe("unsupported provider in headless modes", () => {
 		});
 		const createdFile = persisted.getSessionFile();
 		if (!createdFile) throw new Error("persisted session fixture did not create a file");
-		persistedSessionFile = createdFile;
+		persistedSessionId = persisted.getSessionId();
 	});
 
 	afterEach(async () => {
@@ -268,8 +268,8 @@ describe("unsupported provider in headless modes", () => {
 		it(`${mode} print classifies a persisted stale model plus unsupported default before prompting`, async () => {
 			const args =
 				mode === "text"
-					? ["-p", "do not send", ...commonArgs(persistedSessionFile)]
-					: ["--mode", "json", "do not send", ...commonArgs(persistedSessionFile)];
+					? ["-p", "do not send", ...commonArgs(persistedSessionId)]
+					: ["--mode", "json", "do not send", ...commonArgs(persistedSessionId)];
 			const result = await runCliProcess(args, { cwd, env: isolatedEnv(agentDir, sessionDir) });
 			expect(result.timedOut).toBe(false);
 			expect(result.code).toBe(1);
@@ -282,7 +282,7 @@ describe("unsupported provider in headless modes", () => {
 	it(
 		"RPC keeps persisted stale state recoverable through explicit set_model",
 		async () => {
-			const rpc = startRpc(cwd, agentDir, sessionDir, persistedSessionFile);
+			const rpc = startRpc(cwd, agentDir, sessionDir, persistedSessionId);
 			try {
 				const blocked = await rpc.send({ type: "prompt", message: "blocked persisted prompt" });
 				expect(responseError(blocked)).toBe(WARNING);
@@ -302,7 +302,7 @@ describe("unsupported provider in headless modes", () => {
 	it(
 		"RPC cycle_model clears persisted unsupported lock before the next prompt",
 		async () => {
-			const rpc = startRpc(cwd, agentDir, sessionDir, persistedSessionFile);
+			const rpc = startRpc(cwd, agentDir, sessionDir, persistedSessionId);
 			try {
 				expect(responseError(await rpc.send({ type: "prompt", message: "blocked before cycle" }))).toBe(WARNING);
 				const cycled = await rpc.send({ type: "cycle_model", direction: "forward" });

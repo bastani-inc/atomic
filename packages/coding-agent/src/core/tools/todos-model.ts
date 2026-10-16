@@ -53,8 +53,8 @@ export function sortTodos(todos: TodoFrontMatter[]): TodoFrontMatter[] {
 		const aClosed = isTodoClosed(a.status);
 		const bClosed = isTodoClosed(b.status);
 		if (aClosed !== bClosed) return aClosed ? 1 : -1;
-		const aAssigned = !aClosed && Boolean(a.assigned_to_session);
-		const bAssigned = !bClosed && Boolean(b.assigned_to_session);
+		const aAssigned = !aClosed && a.assigned_to_session !== undefined;
+		const bAssigned = !bClosed && b.assigned_to_session !== undefined;
 		if (aAssigned !== bAssigned) return aAssigned ? -1 : 1;
 		return (a.created_at || "").localeCompare(b.created_at || "");
 	});
@@ -73,7 +73,7 @@ export function splitTodosByAssignment(todos: TodoFrontMatter[]): {
 			closedTodos.push(todo);
 			continue;
 		}
-		if (todo.assigned_to_session) {
+		if (todo.assigned_to_session !== undefined) {
 			assignedTodos.push(todo);
 		} else {
 			openTodos.push(todo);

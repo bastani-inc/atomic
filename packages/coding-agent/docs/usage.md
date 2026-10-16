@@ -122,10 +122,11 @@ Sessions are saved automatically to `~/.atomic/agent/sessions/`, organized by wo
 atomic -c                  # Continue most recent session
 atomic -r                  # Browse and select a session
 atomic --no-session        # Ephemeral mode; do not save
-atomic --session <path|id> # Use a file, exact ID, or unique 8-hex UUID prefix
+atomic --session <id|prefix> # Use an exact ID or unique 8-hex UUID prefix
+atomic --import <file>       # Import a format-4 JSONL export into session storage
 atomic --session-id <id>   # Use/create an exact project-local session ID
 atomic --name "Refactor"   # Set the session display name
-atomic --fork <path|id>    # Fork a file, exact ID, or unique 8-hex UUID prefix
+atomic --fork <id|prefix>    # Fork an exact ID or unique 8-hex UUID prefix
 ```
 
 When `--session-id` does not match an exact session in the current project, Atomic warns that no session was found and then creates the requested new session. Reusing an existing exact ID opens it without that warning.

@@ -1,5 +1,6 @@
 import type { Args } from "../../cli/args.ts";
 import type { SessionManager } from "../../core/session-manager.ts";
+import { resolvePath } from "../../utils/paths.ts";
 
 export interface InteractiveEngineResourcePaths {
 	extensions?: readonly string[];
@@ -24,10 +25,15 @@ export function buildInteractiveEngineArgs(
 	resources: InteractiveEngineResourcePaths,
 ): string[] {
 	const args: string[] = [];
-	const sessionFile = sessionManager.getSessionFile();
-	if (parsed.noSession || !sessionFile) args.push("--no-session");
-	else args.push("--session", sessionFile);
-	appendValue(args, "--session-dir", parsed.sessionDir);
+	if (parsed.noSession || !sessionManager.isPersisted()) {
+		args.push("--no-session");
+		if (parsed.import !== undefined) args.push("--import", resolvePath(parsed.import));
+	} else args.push("--session", sessionManager.getSessionId());
+	appendValue(
+		args,
+		"--session-dir",
+		sessionManager.isPersisted() ? sessionManager.getSessionDir() : parsed.sessionDir,
+	);
 	appendValue(args, "--provider", parsed.provider);
 	appendValue(args, "--model", parsed.model);
 	appendValue(args, "--thinking", parsed.thinking);

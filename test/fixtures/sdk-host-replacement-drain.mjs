@@ -36,7 +36,8 @@ const manager = await SessionManager.create(root, join(root, "sessions"));
 const runtime = await createAgentSessionRuntime(factory, { cwd: root, agentDir, sessionManager: manager });
 const old = runtime.session;
 const entry = await manager.appendMessage({ role: "user", content: "fork me", timestamp: 0 });
-const invoke = () => operation === "fork" ? runtime.fork(entry) : operation === "resume" ? runtime.switchSession(manager.getSessionFile()) : operation === "import" ? runtime.importFromJsonl(manager.getSessionFile()) : runtime.newSession();
+const importSource = operation === "import" ? await SessionManager.create(root, join(root, "exports")) : undefined;
+const invoke = () => operation === "fork" ? runtime.fork(entry) : operation === "resume" ? runtime.switchSession(manager.getSessionId()) : operation === "import" ? runtime.importFromJsonl(importSource.getSessionFile()) : runtime.newSession();
 const result = invoke().catch(error => error);
 try {
  await entered.promise;

@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import {
 	type Component,
 	type Focusable,
@@ -18,9 +19,9 @@ import { canonicalizePath, formatSessionDate, shortenPath } from "./session-sele
  * Custom session list component with multi-line items and search
  */
 export class SessionList implements Component, Focusable {
-	public getSelectedSessionPath(): string | undefined {
+	public getSelectedSessionId(): string | undefined {
 		const selected = this.filteredSessions[this.selectedIndex];
-		return selected?.session.path;
+		return selected?.session.id;
 	}
 	private allSessions: SessionInfo[] = [];
 	private filteredSessions: FlatSessionNode[] = [];
@@ -32,8 +33,8 @@ export class SessionList implements Component, Focusable {
 	private keybindings: KeybindingsManager;
 	private showPath = false;
 	private confirmingDeletePath: string | null = null;
-	private currentSessionCanonicalPath?: string;
-	public onSelect?: (sessionPath: string) => void;
+	private currentSession?: { id: string; directory: string };
+	public onSelect?: (session: SessionInfo) => void;
 	public onCancel?: () => void;
 	public onExit: () => void = () => {};
 	public onToggleScope?: () => void;
@@ -42,7 +43,7 @@ export class SessionList implements Component, Focusable {
 	public onTogglePath?: (showPath: boolean) => void;
 	public onDeleteConfirmationChange?: (path: string | null) => void;
 	public onDeleteSession?: (sessionPath: string) => Promise<void>;
-	public onRenameSession?: (sessionPath: string) => void;
+	public onRenameSession?: (session: SessionInfo) => void;
 	public onError?: (message: string) => void;
 	private maxVisible: number = 10; // Max sessions visible (one line each)
 
@@ -62,7 +63,7 @@ export class SessionList implements Component, Focusable {
 		sortMode: SortMode,
 		nameFilter: NameFilter,
 		keybindings: KeybindingsManager,
-		currentSessionFilePath?: string,
+		currentSession?: { id: string; directory: string },
 	) {
 		this.allSessions = sessions;
 		this.filteredSessions = [];
@@ -71,7 +72,7 @@ export class SessionList implements Component, Focusable {
 		this.sortMode = sortMode;
 		this.nameFilter = nameFilter;
 		this.keybindings = keybindings;
-		this.currentSessionCanonicalPath = canonicalizePath(currentSessionFilePath);
+		this.currentSession = currentSession;
 		this.filterSessions("");
 
 		// Handle Enter in search input - select current item
@@ -79,7 +80,7 @@ export class SessionList implements Component, Focusable {
 			if (this.filteredSessions[this.selectedIndex]) {
 				const selected = this.filteredSessions[this.selectedIndex];
 				if (this.onSelect) {
-					this.onSelect(selected.session.path);
+					this.onSelect(selected.session);
 				}
 			}
 		};
@@ -133,7 +134,7 @@ export class SessionList implements Component, Focusable {
 		if (!selected) return;
 
 		// Prevent deleting current session
-		if (this.isCurrentSessionPath(selected.session.path)) {
+		if (this.isCurrentSession(selected.session)) {
 			this.onError?.("Cannot delete the currently active session");
 			return;
 		}
@@ -141,9 +142,12 @@ export class SessionList implements Component, Focusable {
 		this.setConfirmingDeletePath(selected.session.path);
 	}
 
-	private isCurrentSessionPath(path: string): boolean {
-		if (!this.currentSessionCanonicalPath) return false;
-		return (canonicalizePath(path) ?? path) === this.currentSessionCanonicalPath;
+	private isCurrentSession(session: SessionInfo): boolean {
+		return (
+			this.currentSession !== undefined &&
+			session.id === this.currentSession.id &&
+			canonicalizePath(dirname(session.path)) === canonicalizePath(this.currentSession.directory)
+		);
 	}
 
 	invalidate(): void {}
@@ -193,7 +197,7 @@ export class SessionList implements Component, Focusable {
 			const session = node.session;
 			const isSelected = i === this.selectedIndex;
 			const isConfirmingDelete = session.path === this.confirmingDeletePath;
-			const isCurrent = this.isCurrentSessionPath(session.path);
+			const isCurrent = this.isCurrentSession(session);
 
 			// Build tree prefix
 			const prefix = this.buildTreePrefix(node);
@@ -349,7 +353,7 @@ export class SessionList implements Component, Focusable {
 		if (kb.matches(keyData, "app.session.rename")) {
 			const selected = this.filteredSessions[this.selectedIndex];
 			if (selected) {
-				this.onRenameSession?.(selected.session.path);
+				this.onRenameSession?.(selected.session);
 			}
 			return true;
 		}
@@ -387,7 +391,7 @@ export class SessionList implements Component, Focusable {
 		else if (kb.matches(keyData, "tui.select.confirm")) {
 			const selected = this.filteredSessions[this.selectedIndex];
 			if (selected && this.onSelect) {
-				this.onSelect(selected.session.path);
+				this.onSelect(selected.session);
 			}
 		}
 		// Escape - cancel

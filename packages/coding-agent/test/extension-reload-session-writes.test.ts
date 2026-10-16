@@ -5,13 +5,19 @@ import { join } from "node:path";
 import { test } from "vitest";
 import type { ExtensionFactory } from "../src/core/extensions/types.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
 import { createHarness } from "./suite/harness.ts";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
 
 for (const outcome of ["startup-rejection", "publication-rejection", "success"] as const) {
-	test(`reload isolates candidate session writes until publication (${outcome})`, async () => {
+	test.each(["", "reload-session-id"])(`reload isolates writes (${outcome}, ID %j)`, async (id) => {
 		const directory = mkdtempSync(join(tmpdir(), "reload-session-writes-"));
-		const manager = await SessionManager.create(directory, directory);
+		const store = await JsonlSessionStore.open(directory, { exactDirectory: true });
+		const otherStore = await JsonlSessionStore.open(join(directory, "other"), { exactDirectory: true });
+		const header = { id, version: 4 as const, createdAt: new Date().toISOString(), cwd: directory };
+		await store.create(header, []);
+		await otherStore.create(header, []);
+		const manager = await SessionManager.open(store, id);
 		const target = await manager.appendCustomEntry("original", {});
 		await manager.appendSessionInfo("original name");
 		await manager.appendLabelChange(target, "original label");
@@ -21,6 +27,7 @@ for (const outcome of ["startup-rejection", "publication-rejection", "success"] 
 		const harness = await createHarness({ sessionManager: manager, resourceLoader: loader });
 		const baseline = manager.getEntries();
 		let isolatedDuringStartup = false;
+		let reopenedStore: JsonlSessionStore | undefined;
 		const factory: ExtensionFactory = (pi) => {
 			pi.on("session_start", async () => {
 				await pi.appendEntry("candidate entry", { saved: true });
@@ -55,7 +62,10 @@ for (const outcome of ["startup-rejection", "publication-rejection", "success"] 
 				await assert.rejects(harness.session.reload(), /candidate .* rejected|Extension startup failed/);
 				assert.equal(harness.session.extensionRunner, original);
 			}
-			const reopened = await SessionManager.open(manager.getSessionFile()!);
+			reopenedStore = await JsonlSessionStore.open(directory, { exactDirectory: true });
+			const reopened = await SessionManager.open(reopenedStore, id);
+			assert.equal(reopened.getSessionId(), id);
+			assert.deepEqual((await otherStore.load(id)).entries, []);
 			if (outcome === "success") {
 				assert.deepEqual(
 					reopened
@@ -78,6 +88,9 @@ for (const outcome of ["startup-rejection", "publication-rejection", "success"] 
 			assert.equal(isolatedDuringStartup, true, "candidate writes and notifications stay isolated during startup");
 		} finally {
 			await harness.cleanup();
+			await store.close();
+			await otherStore.close();
+			await reopenedStore?.close();
 			rmSync(directory, { recursive: true, force: true });
 		}
 	});

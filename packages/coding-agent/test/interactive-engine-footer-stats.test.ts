@@ -584,10 +584,8 @@ test("switchSession never shows the previous session's stats, even when the old 
 	const first = await createHarness();
 	const second = await createHarness();
 	try {
-		const target = await SessionManager.create(second.tempDir, second.tempDir);
-
-		const targetPath = target.getSessionFile();
-		if (!targetPath) throw new Error("missing target session path");
+		const target = await SessionManager.create(first.session.sessionManager.getSessionStore(), second.tempDir);
+		const targetId = target.getSessionId();
 		const probe = createStatsEngineClient(first.getModel());
 		const localRuntime = new AgentSessionRuntime(first.session, servicesFor(first), async () => {
 			throw new Error("unused runtime factory");
@@ -604,7 +602,7 @@ test("switchSession never shows the previous session's stats, even when the old 
 		});
 		const heldRequest = probe.pendingStatsIndexes()[0] ?? -1;
 
-		await runtime.switchSession(targetPath);
+		await runtime.switchSession(targetId);
 		assert.equal(runtime.session, second.session);
 		assert.doesNotMatch(usageLine(runtime), /\$0\.172|2\.1%\/1\.0M/);
 

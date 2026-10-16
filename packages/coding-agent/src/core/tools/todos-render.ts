@@ -36,7 +36,7 @@ export function serializeTodoListForAgent(todos: TodoFrontMatter[]): string {
 }
 
 function renderAssignmentSuffix(theme: Theme, todo: TodoFrontMatter, currentSessionId?: string): string {
-	if (!todo.assigned_to_session) return "";
+	if (todo.assigned_to_session === undefined) return "";
 	const isCurrent = todo.assigned_to_session === currentSessionId;
 	const color = isCurrent ? "success" : "dim";
 	const suffix = isCurrent ? ", current" : "";

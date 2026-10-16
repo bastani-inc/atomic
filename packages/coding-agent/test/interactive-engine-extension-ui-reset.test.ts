@@ -24,7 +24,7 @@ afterEach(async () => {
  * (`engine_extension_ui_reset`), binds the new one, whose `session_start` sets a widget, and only then
  * answers the request. All of it goes through one stdout stream, in that order.
  */
-function writeEngineScript(sessionFile: string): string {
+function writeEngineScript(sessionFile: string, sessionId: string): string {
 	const dir = mkdtempSync(join(tmpdir(), "atomic-engine-ui-reset-"));
 	tempDirs.push(dir);
 	const path = join(dir, "engine.mjs");
@@ -43,7 +43,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 		case "get_state":
 			respond({
 				thinkingLevel: "off", isStreaming: false, isCompacting: false, steeringMode: "all", followUpMode: "all",
-				sessionFile: ${JSON.stringify(sessionFile)}, sessionId: "engine-session", autoCompactionEnabled: true,
+				sessionLocation: ${JSON.stringify(sessionFile)}, sessionId: ${JSON.stringify(sessionId)}, autoCompactionEnabled: true,
 				messageCount: 0, pendingMessageCount: 0, queuedMessagesPaused: false,
 			});
 			break;
@@ -76,7 +76,9 @@ async function startHost() {
 
 	const targetSessionFile = targetManager.getSessionFile();
 	if (!targetSessionFile) throw new Error("Missing target session file");
-	const first = await createHarness();
+	const first = await createHarness({
+		sessionManager: await SessionManager.create(targetManager.getSessionStore(), dir),
+	});
 	const second = await createHarness({ sessionManager: targetManager });
 	cleanups.push(
 		() => first.cleanup(),
@@ -91,7 +93,7 @@ async function startHost() {
 	});
 
 	const client = new RpcClient({
-		cliPath: writeEngineScript(targetSessionFile),
+		cliPath: writeEngineScript(targetSessionFile, targetManager.getSessionId()),
 		interactiveEngine: { onDiagnostic: () => {} },
 	});
 	await client.start();
@@ -121,20 +123,20 @@ async function startHost() {
 		log.push("resetExtensionUI");
 		widgets.clear();
 	});
-	return { runtime, log, widgets, targetSessionFile };
+	return { runtime, log, widgets, targetSessionId: targetManager.getSessionId() };
 }
 
 describe("isolated interactive extension UI reset", () => {
 	test.each([
-		["resume", (runtime: IsolatedInteractiveRuntime, sessionFile: string) => runtime.switchSession(sessionFile)],
+		["resume", (runtime: IsolatedInteractiveRuntime, sessionId: string) => runtime.switchSession(sessionId)],
 		["new", (runtime: IsolatedInteractiveRuntime) => runtime.newSession()],
 		["fork", (runtime: IsolatedInteractiveRuntime) => runtime.fork("entry")],
 	])(
 		"keeps the widget the engine's new session sets on %s and resets the old UI once, before it (#3561)",
 		async (_reason, replace) => {
-			const { runtime, log, widgets, targetSessionFile } = await startHost();
+			const { runtime, log, widgets, targetSessionId } = await startHost();
 
-			await replace(runtime, targetSessionFile);
+			await replace(runtime, targetSessionId);
 
 			// The engine retired the old session before it bound the new one; the host's later mirror
 			// teardown of its own session must not reset again, which would clear the new widget.
@@ -144,8 +146,8 @@ describe("isolated interactive extension UI reset", () => {
 	);
 
 	test("still resets the extension UI when the host quits (#3561)", async () => {
-		const { runtime, log, widgets, targetSessionFile } = await startHost();
-		await runtime.switchSession(targetSessionFile);
+		const { runtime, log, widgets, targetSessionId } = await startHost();
+		await runtime.switchSession(targetSessionId);
 		log.length = 0;
 
 		await runtime.dispose();

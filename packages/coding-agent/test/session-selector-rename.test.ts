@@ -76,8 +76,8 @@ describe("session selector rename", () => {
 		expect(output).not.toContain("Rename");
 	});
 
-	it("enters rename mode on Ctrl+R and submits with Enter", async () => {
-		const sessions = [makeSession({ id: "a", name: "Old" })];
+	it.each(["a", ""])("renames selected session %j with Ctrl+R and Enter", async (id) => {
+		const sessions = [makeSession({ id, name: "Old" })];
 		const renameSession = vi.fn(async () => {});
 
 		const keybindings = new KeybindingsManager();
@@ -106,6 +106,6 @@ describe("session selector rename", () => {
 		await flushPromises();
 
 		expect(renameSession).toHaveBeenCalledTimes(1);
-		expect(renameSession).toHaveBeenCalledWith(sessions[0]!.path, "XOld");
+		expect(renameSession).toHaveBeenCalledWith(sessions[0]!, "XOld");
 	});
 });

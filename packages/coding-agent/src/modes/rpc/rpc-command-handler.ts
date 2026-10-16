@@ -146,7 +146,7 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "abort");
 			}
 			case "new_session": {
-				const options = command.parentSession ? { parentSession: command.parentSession } : undefined;
+				const options = command.parentSession !== undefined ? { parentSession: command.parentSession } : undefined;
 				const result = await runtimeHost.newSession(options);
 				if (!result.cancelled) {
 					await rebindSession();
@@ -188,7 +188,7 @@ export function createRpcCommandHandler({
 					compactionReason: session.compactionReason,
 					steeringMode: session.steeringMode,
 					followUpMode: session.followUpMode,
-					sessionFile: session.sessionFile,
+					...(session.sessionFile ? { sessionLocation: session.sessionFile } : {}),
 					sessionId: session.sessionId,
 					sessionName: session.sessionName,
 					autoCompactionEnabled: session.autoCompactionEnabled,
@@ -440,7 +440,10 @@ export function createRpcCommandHandler({
 			}
 
 			case "switch_session": {
-				const result = await runtimeHost.switchSession(command.sessionPath, { cwdOverride: command.cwdOverride });
+				const result = await runtimeHost.switchSession(command.sessionId, {
+					cwdOverride: command.cwdOverride,
+					sessionDirectory: command.sessionDirectory,
+				});
 				if (!result.cancelled) {
 					await rebindSession();
 				}

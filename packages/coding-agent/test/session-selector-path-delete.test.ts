@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { setKeybindings } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
@@ -295,7 +295,7 @@ describe("session selector path/delete interactions", () => {
 			() => {},
 			() => {},
 			{ keybindings },
-			paths.parentAliasA,
+			{ id: "parent", directory: dirname(paths.parentAliasA) },
 		);
 		await flushPromises();
 

@@ -154,7 +154,8 @@ Sessions are saved automatically:
 atomic -c                  # Continue most recent session
 atomic -r                  # Browse previous sessions
 atomic --name "my task"    # Set session display name at startup
-atomic --session <path|id> # Open a specific session
+atomic --session <id|prefix> # Open an exact ID or unique 8-hex UUID prefix
+atomic --import <file>       # Import a format-4 JSONL export
 ```
 
 Inside Atomic, use `/resume`, `/new`, `/tree`, `/fork`, and `/clone` to manage sessions.

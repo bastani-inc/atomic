@@ -394,10 +394,10 @@ export function createExtensionCommandContext(
 		source.assertAction?.();
 		return source.navigateTree(targetId, options);
 	};
-	context.switchSession = (sessionPath, options) => {
+	context.switchSession = (sessionId, options) => {
 		source.assertActive();
 		source.assertAction?.();
-		return source.switchSession(sessionPath, options);
+		return source.switchSession(sessionId, options);
 	};
 	context.reload = () => {
 		source.assertActive();

@@ -30,7 +30,7 @@ export async function claimTodoAssignment(
 			return { error: `Todo ${displayTodoId(id)} is closed` };
 		}
 		const assigned = existing.assigned_to_session;
-		if (assigned && assigned !== sessionId && !force) {
+		if (assigned !== undefined && assigned !== sessionId && !force) {
 			return {
 				error: `Todo ${displayTodoId(id)} is already assigned to session ${assigned}. Use force to override.`,
 			};
@@ -63,7 +63,7 @@ export async function releaseTodoAssignment(
 		const existing = await ensureTodoExists(filePath, normalizedId);
 		if (!existing) return { error: `Todo ${displayTodoId(id)} not found` };
 		const assigned = existing.assigned_to_session;
-		if (!assigned) {
+		if (assigned === undefined) {
 			return existing;
 		}
 		if (assigned !== sessionId && !force) {

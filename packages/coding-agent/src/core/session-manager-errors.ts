@@ -1,6 +1,6 @@
 export class SessionEntryError extends Error {
 	readonly entryId: string;
-	readonly reason: "missing" | "inactive" | "not-editable" | "invalid-replacement";
+	readonly reason: "missing" | "inactive" | "not-editable" | "not-forkable" | "invalid-replacement";
 
 	constructor(entryId: string, reason: SessionEntryError["reason"]) {
 		super(
@@ -10,7 +10,9 @@ export class SessionEntryError extends Error {
 					? `Entry ${entryId} is not on the active branch`
 					: reason === "not-editable"
 						? `Entry ${entryId} does not contribute editable model content`
-						: "Context edit replacement must be null or contain string/array content",
+						: reason === "not-forkable"
+							? `Entry ${entryId} is not a user message for forking`
+							: "Context edit replacement must be null or contain string/array content",
 		);
 		this.name = "SessionEntryError";
 		this.entryId = entryId;

@@ -66,7 +66,7 @@ function getDefaultAttributionHeaders(
 }
 
 function getSessionHeaders(model: Model<Api>, sessionId: string | undefined): Record<string, string> | undefined {
-	if (!sessionId) return undefined;
+	if (sessionId === undefined) return undefined;
 	if (
 		model.provider !== "opencode" &&
 		model.provider !== "opencode-go" &&

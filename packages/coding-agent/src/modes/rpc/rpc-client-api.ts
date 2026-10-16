@@ -228,8 +228,12 @@ export abstract class RpcClientApi {
 	async exportHtml(outputPath?: string): Promise<{ path: string }> {
 		return this.data(await this.request({ type: "export_html", outputPath }));
 	}
-	async switchSession(sessionPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }> {
-		return this.data(await this.request({ type: "switch_session", sessionPath, cwdOverride }));
+	async switchSession(
+		sessionId: string,
+		cwdOverride?: string,
+		sessionDirectory?: string,
+	): Promise<{ cancelled: boolean }> {
+		return this.data(await this.request({ type: "switch_session", sessionId, cwdOverride, sessionDirectory }));
 	}
 	async fork(entryId: string): Promise<{ text: string; cancelled: boolean }> {
 		return this.data(await this.request({ type: "fork", entryId }));

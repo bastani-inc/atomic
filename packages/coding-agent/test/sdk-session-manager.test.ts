@@ -192,7 +192,7 @@ describe("createAgentSession session manager defaults", () => {
 
 		expect(output.trim().split("\n")).toEqual([
 			session.sessionId,
-			session.sessionFile,
+			"",
 			model!.provider,
 			model!.id,
 			session.thinkingLevel,

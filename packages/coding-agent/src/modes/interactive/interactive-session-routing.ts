@@ -1,3 +1,5 @@
+import { dirname } from "node:path";
+import { canonicalizePath } from "../../utils/paths.ts";
 import { withHostProjectTrustPrompt } from "../interactive-engine/extension-ui-bridge.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
@@ -261,10 +263,10 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 				this.sessionManager.usesDefaultSessionDir()
 					? SessionManager.listAll(onProgress)
 					: SessionManager.listAll(this.sessionManager.getSessionDir(), onProgress),
-			async (sessionPath) => {
+			async (selected) => {
 				selector.dispose();
 				done();
-				await this.handleResumeSession(sessionPath);
+				await this.handleResumeSession(selected.id, undefined, dirname(selected.path));
 			},
 			() => {
 				selector.dispose();
@@ -277,17 +279,25 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 			},
 			() => this.ui.requestRender(),
 			{
-				renameSession: async (sessionFilePath: string, nextName: string | undefined) => {
+				renameSession: async (selected, nextName) => {
 					const next = (nextName ?? "").trim();
 					if (!next) return;
-					const mgr = await SessionManager.open(sessionFilePath);
-					await mgr.appendSessionInfo(next);
+					const directory = dirname(selected.path);
+					if (
+						selected.id === this.sessionManager.getSessionId() &&
+						canonicalizePath(directory) === canonicalizePath(this.sessionManager.getSessionDir())
+					) {
+						await this.session.setSessionName(next);
+					} else {
+						const mgr = await this.sessionManager.openSessionById(selected.id, undefined, directory);
+						await mgr.appendSessionInfo(next);
+					}
 				},
 				showRenameHint: true,
 				keybindings: this.keybindings,
 			},
 
-			this.sessionManager.getSessionFile(),
+			{ id: this.sessionManager.getSessionId(), directory: this.sessionManager.getSessionDir() },
 		);
 		return { component: selector, focus: selector };
 	});
@@ -295,15 +305,17 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 
 InteractiveModeBase.prototype.handleResumeSession = async function (
 	this: InteractiveModeBase,
-	sessionPath: string,
+	sessionId: string,
 	options?: Parameters<ExtensionCommandContext["switchSession"]>[1],
+	sessionDirectory?: string,
 ): Promise<{ cancelled: boolean }> {
 	await this.ensureDeferredStartupComplete();
 	InteractiveModeBase.prototype.clearWorkingLoader.call(this);
 	mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
 	try {
-		const result = await this.runtimeHost.switchSession(sessionPath, {
+		const result = await this.runtimeHost.switchSession(sessionId, {
 			withSession: options?.withSession,
+			sessionDirectory,
 			projectTrustContextFactory: (cwd) => this.createProjectTrustContext(cwd),
 		});
 		if (result.cancelled) {
@@ -322,8 +334,9 @@ InteractiveModeBase.prototype.handleResumeSession = async function (
 				this.showStatus("Resume cancelled");
 				return { cancelled: true };
 			}
-			const result = await this.runtimeHost.switchSession(sessionPath, {
+			const result = await this.runtimeHost.switchSession(sessionId, {
 				cwdOverride: selectedCwd,
+				sessionDirectory,
 				withSession: options?.withSession,
 				projectTrustContextFactory: (cwd) => this.createProjectTrustContext(cwd),
 			});

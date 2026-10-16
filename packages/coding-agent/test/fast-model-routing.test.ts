@@ -488,6 +488,19 @@ describe("codex fast-route first-party transport", () => {
 		expect(closeSessions).toHaveBeenCalledWith(sessionId);
 	});
 
+	it("an empty stored ID never closes other sessions' provider caches on route changes", async () => {
+		const closeSessions = vi.fn<(sessionId?: string) => void>();
+		const fastModel = fullModel({ ...codexModel, id: "gpt-5.6-sol-fast", fastRoute: codexFastRoute });
+		const fast = withChatGptCodexTransportRouting(fastModel, { sessionId: "" }, closeSessions);
+		await fast.onPayload?.(
+			{ model: codexFastRoute.upstreamModelId, service_tier: FAST_MODEL_SERVICE_TIER },
+			fastModel,
+		);
+		const normal = withChatGptCodexTransportRouting(codexModel, { sessionId: "" }, closeSessions);
+		await normal.onPayload?.({ model: codexModel.id }, codexModel);
+		expect(closeSessions).not.toHaveBeenCalled();
+	});
+
 	it("derives the Codex harness identity from the model route, not a caller-supplied tier", async () => {
 		const normalOptions = withChatGptCodexTransportRouting(codexModel, {
 			headers: { originator: "pi" },

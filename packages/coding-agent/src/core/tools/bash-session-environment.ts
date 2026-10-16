@@ -28,13 +28,11 @@ export function snapshotBashSessionEnvironment(
 ): NodeJS.ProcessEnv {
 	if (!exposeSessionEnvironment || !context?.sessionManager) return {};
 	const sessionId = context.sessionManager.getSessionId();
-	const sessionFile = context.sessionManager.getSessionFile();
 	const model = context.model;
 	const thinkingLevel = context.thinkingLevel;
 	return {
 		ATOMIC_SESSION_ID: sessionId,
 		PI_SESSION_ID: sessionId,
-		...(sessionFile ? { ATOMIC_SESSION_FILE: sessionFile, PI_SESSION_FILE: sessionFile } : {}),
 		...(model
 			? {
 					ATOMIC_PROVIDER: model.provider,

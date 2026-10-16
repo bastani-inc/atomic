@@ -233,7 +233,7 @@ describe("RPC bash ownership across session replacement", () => {
 				{ name: "new", command: { id: "swap-new", type: "new_session" }, replaces: true },
 				{
 					name: "switch",
-					command: { id: "swap-switch", type: "switch_session", sessionPath: "/tmp/target.jsonl" },
+					command: { id: "swap-switch", type: "switch_session", sessionId: "target-id" },
 					replaces: true,
 				},
 				{
@@ -309,7 +309,7 @@ describe("RPC bash ownership across session replacement", () => {
 	});
 
 	// #3105: replacement aborts and drains old generation shell work before cloning.
-	it("settles the source shell before replacing an unpersisted shared manager", async () => {
+	it("settles the source shell before forking an explicit memory session", async () => {
 		const gate = createBashGate("shared-manager");
 		try {
 			const source = await createHarness({ sessionManager: SessionManager.inMemory(gate.cwd) });
@@ -360,7 +360,8 @@ describe("RPC bash ownership across session replacement", () => {
 				await waitForOutput(output, "shared-manager", "source");
 				expect(gate.isWaiting(marker)).toBe(true);
 				await expect(handle({ id: "clone", type: "clone" })).resolves.toMatchObject({ success: true });
-				expect(source.sessionManager.getSessionId()).not.toBe(startingSessionId);
+				expect(source.sessionManager.getSessionId()).toBe(startingSessionId);
+				expect(current.sessionManager.getSessionId()).not.toBe(startingSessionId);
 			} finally {
 				gate.release(marker);
 			}
@@ -369,10 +370,15 @@ describe("RPC bash ownership across session replacement", () => {
 			expect(source.session.messages.filter((message) => message.role === "bashExecution")).toHaveLength(2);
 			expect(target?.session.messages.filter((message) => message.role === "bashExecution")).toHaveLength(1);
 			expect(
-				source.sessionManager
+				target?.sessionManager
 					.getEntries()
 					.filter((entry) => entry.type === "message" && entry.message.role === "bashExecution"),
 			).toHaveLength(1);
+			expect(
+				source.sessionManager
+					.getEntries()
+					.filter((entry) => entry.type === "message" && entry.message.role === "bashExecution"),
+			).toHaveLength(2);
 
 			target?.cleanup();
 			source.cleanup();

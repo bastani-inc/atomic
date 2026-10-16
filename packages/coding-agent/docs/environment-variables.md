@@ -60,7 +60,6 @@ Every built-in, factory-created, direct, workflow-stage, and isolated bash or Po
 | Atomic variable | Exact Pi alias | Value |
 |---|---|---|
 | `ATOMIC_SESSION_ID` | `PI_SESSION_ID` | Active session ID |
-| `ATOMIC_SESSION_FILE` | `PI_SESSION_FILE` | Active JSONL file; omitted for unsaved/ephemeral sessions |
 | `ATOMIC_PROVIDER` | `PI_PROVIDER` | Active provider; omitted when no model is selected |
 | `ATOMIC_MODEL` | `PI_MODEL` | Active model ID; omitted when no model is selected |
 | `ATOMIC_REASONING_LEVEL` | `PI_REASONING_LEVEL` | Active reasoning level |

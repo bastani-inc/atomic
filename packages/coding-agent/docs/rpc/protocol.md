@@ -157,7 +157,7 @@ Start a fresh session. Can be cancelled by a `session_before_switch` extension e
 
 With optional parent session tracking:
 ```json
-{"type": "new_session", "parentSession": "/path/to/parent-session.jsonl"}
+{"type": "new_session", "parentSession": "parent-session-id"}
 ```
 
 Response:
@@ -193,7 +193,7 @@ Response:
     "isCompacting": false,
     "steeringMode": "all",
     "followUpMode": "one-at-a-time",
-    "sessionFile": "/path/to/session.jsonl",
+    "sessionLocation": "/path/to/session.jsonl",
     "sessionId": "abc123",
     "sessionName": "my-feature-work",
     "autoCompactionEnabled": true,
@@ -744,10 +744,16 @@ Response:
 
 #### switch_session
 
-Load a different session file. Can be cancelled by a `session_before_switch` extension event handler.
+Load a different session by its exact ID. Can be cancelled by a `session_before_switch` extension event handler. `sessionLocation` in `get_state` is optional display text, not a switch target.
 
 ```json
-{"type": "switch_session", "sessionPath": "/path/to/session.jsonl"}
+{"type": "switch_session", "sessionId": "abc123"}
+```
+
+When choosing a session from another project's JSONL store, pass `sessionDirectory` to bind the ID lookup to that directory. IDs may repeat in different project stores; an explicitly selected directory never falls back to another store. `cwdOverride` changes the resumed working directory, not the store used for lookup.
+
+```json
+{"type": "switch_session", "sessionId": "abc123", "sessionDirectory": "/path/to/project-sessions"}
 ```
 
 Response:

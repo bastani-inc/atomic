@@ -50,17 +50,17 @@ async function bindSession() {
 }
 
 let session = await bindSession();
-const originalSessionFile = session.sessionFile;
-console.log("Initial session:", originalSessionFile);
+const originalSessionId = session.sessionId;
+console.log("Initial session:", originalSessionId);
 
 await runtime.newSession();
 session = await bindSession();
-console.log("After newSession():", session.sessionFile);
+console.log("After newSession():", session.sessionId);
 
-if (originalSessionFile) {
-	await runtime.switchSession(originalSessionFile);
+if (originalSessionId) {
+	await runtime.switchSession(originalSessionId);
 	session = await bindSession();
-	console.log("After switchSession():", session.sessionFile);
+	console.log("After switchSession():", session.sessionId);
 }
 
 unsubscribe?.();

@@ -61,7 +61,7 @@ function readSessionInfoNames(sessionFile: string): string[] {
 }
 
 async function runCli(args: string[], dirs: CliDirs): Promise<CliResult> {
-	const result = await runCliProcess(args, {
+	const result = await runCliProcess(["--session-dir", resolve(dirs.sessionFile, ".."), ...args], {
 		cwd: dirs.projectDir,
 		env: {
 			...process.env,
@@ -90,7 +90,7 @@ describe("startup session name", () => {
 	it("sets --name on the selected session before runtime model validation", async () => {
 		const dirs = setup();
 		const result = await runCli(
-			["--session", dirs.sessionFile, "--name", "  CLI Named Session  ", "--model", "missing-model", "-p", "hi"],
+			["--session", "existing-session", "--name", "  CLI Named Session  ", "--model", "missing-model", "-p", "hi"],
 			dirs,
 		);
 
@@ -102,7 +102,7 @@ describe("startup session name", () => {
 	it("rejects empty --name values without appending session metadata", async () => {
 		const dirs = setup();
 		const result = await runCli(
-			["--session", dirs.sessionFile, "--name", "   ", "--model", "missing-model", "-p", "hi"],
+			["--session", "existing-session", "--name", "   ", "--model", "missing-model", "-p", "hi"],
 			dirs,
 		);
 

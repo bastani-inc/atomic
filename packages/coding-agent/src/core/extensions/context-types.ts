@@ -295,9 +295,9 @@ export interface ExtensionCommandContext extends ExtensionContext {
 		options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string },
 	): Promise<{ cancelled: boolean }>;
 
-	/** Switch to a different session file. */
+	/** Switch to a different session by ID. */
 	switchSession(
-		sessionPath: string,
+		sessionId: string,
 		options?: { withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
 	): Promise<{ cancelled: boolean }>;
 
