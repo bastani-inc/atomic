@@ -29,6 +29,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed workflow recovery reporting a foreign run as available at the exact lease-expiry boundary before takeover is permitted ([#3681](https://github.com/bastani-inc/atomic/pull/3681)).
 - SQL journals snapshot append payloads at invocation, including keyed retries, preserving status/event consistency during queued writes. User-supplied facades may return readonly rows. Header and append serialization failures now retain typed storage errors and their original causes without changing fencing, replay, or sequence-check precedence.
 - Journal run summaries and status validation now use the serialized `StatusChanged` payload, including transformations by `toJSON`, so recorded events and summaries agree. Ownership inspection now honors the journal clock even when the process clock is skewed.
+- Fixed workflow error cards hiding text-only failures as `no result`. Errors without structured details now show their text and an error indication in collapsed and expanded cards ([#3669](https://github.com/bastani-inc/atomic/issues/3669)).
 
 ## [0.9.38-alpha.5] - 2026-10-16
 

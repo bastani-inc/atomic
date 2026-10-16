@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import { beforeEach, describe, test } from "vitest";
+import type { PiRenderComponent } from "../../packages/workflows/src/extension/public-types.js";
 import type { WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";
 import { testRunId } from "../helpers/run-id.js";
 import type { WorkflowToolArgs } from "./mock-extension-api-helpers.js";
@@ -14,6 +15,10 @@ import {
 	runTool,
 	WORKFLOW_TOOL_DESCRIPTION,
 } from "./mock-extension-api-helpers.js";
+
+function renderToolCard(component: PiRenderComponent | string): string {
+	return typeof component === "string" ? component : component.render(80).join("\n");
+}
 
 function registryModel(overrides: Partial<Model<Api>> & Pick<Model<Api>, "id" | "provider">): Model<Api> {
 	return {
@@ -341,6 +346,59 @@ describe("MockExtensionAPI — tool registration", () => {
 		};
 		const out = slot({ content: [{ type: "text", text: "" }], details }, {}, {} as never, {} as never);
 		assert.ok(out.includes("abc"));
+	});
+
+	test("tool renders content-only errors in collapsed and expanded cards (#3669)", () => {
+		const slot = mock.tools[0]!.opts.renderResult!;
+		for (const expanded of [false, true]) {
+			const out = slot(
+				{ isError: true, content: [{ type: "text", text: "database unavailable" }] },
+				{ expanded },
+				{} as never,
+				{} as never,
+			);
+			const rendered = renderToolCard(out);
+			assert.match(rendered, /database unavailable/);
+			assert.match(rendered, /ERROR/);
+			assert.doesNotMatch(rendered, /no result/);
+		}
+	});
+
+	test("tool renders errors supplied through the host render context (#3669)", () => {
+		const slot = mock.tools[0]!.opts.renderResult!;
+		for (const expanded of [false, true]) {
+			const out = slot({ content: [{ type: "text", text: "database unavailable" }] }, { expanded }, {} as never, {
+				isError: true,
+			});
+			const rendered = renderToolCard(out);
+			assert.match(rendered, /database unavailable/);
+			assert.match(rendered, /ERROR/);
+			assert.doesNotMatch(rendered, /no result/);
+		}
+	});
+
+	test("tool preserves structured and non-error rendering with fallback content (#3669)", () => {
+		const slot = mock.tools[0]!.opts.renderResult!;
+		const details: WorkflowToolResult = {
+			action: "run",
+			runId: "abc",
+			status: "pending",
+			message: "not yet implemented",
+		};
+		for (const expanded of [false, true]) {
+			const opts = { expanded };
+			const content = [{ type: "text" as const, text: "database unavailable" }];
+			const structured = renderToolCard(slot({ content, details }, opts, {} as never, {} as never));
+			assert.equal(
+				renderToolCard(slot({ isError: true, content, details }, opts, {} as never, {} as never)),
+				structured,
+			);
+			for (const isError of [false, undefined]) {
+				const rendered = renderToolCard(slot({ isError, content }, opts, {} as never, {} as never));
+				assert.match(rendered, /no result/);
+				assert.doesNotMatch(rendered, /ERROR|database unavailable/);
+			}
+		}
 	});
 });
 
