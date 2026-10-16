@@ -145,6 +145,7 @@ export async function navigateTree(
 			assertSessionOpen(this);
 			const branchSummarySettings = this.settingsManager.getBranchSummarySettings();
 			const result = await generateBranchSummary(entriesToSummarize, {
+				cwd: this._cwd,
 				model,
 				apiKey,
 				headers,

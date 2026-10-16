@@ -213,6 +213,7 @@ export async function _applyVerbatimCompaction(
 				this._modelRuntime.getAllModels(),
 			),
 			summaryEntries: pathEntries,
+			cwd: this._cwd,
 		});
 		compacted = {
 			text: run.text,

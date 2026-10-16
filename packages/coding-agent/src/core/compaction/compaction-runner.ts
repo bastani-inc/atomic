@@ -71,6 +71,7 @@ export interface CompactionRunRequest extends CompactionPlanOptions {
 		options?: ClassifierOptions,
 	) => Promise<ClassifierResult>;
 	summaryEntries?: SessionEntry[];
+	cwd?: string;
 }
 
 export type CompactionRungResult = CompactedTranscript & {
@@ -483,12 +484,10 @@ export async function runVerbatimCompaction(
 		lastTerminal = attempt.outcome;
 		if (attempt.outcome.kind === "policyRefusal" && request.summaryEntries) {
 			try {
-				const summary = await runPiSummaryFallback(
-					request.summaryEntries,
-					preparation.settings,
-					planner,
-					plannerOptions,
-				);
+				const summary = await runPiSummaryFallback(request.summaryEntries, preparation.settings, planner, {
+					...plannerOptions,
+					cwd: request.cwd,
+				});
 				return {
 					text: summary.summary,
 					ranges: [],
