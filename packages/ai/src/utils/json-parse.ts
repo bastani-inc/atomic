@@ -111,6 +111,44 @@ export function parseToolCallArguments(json: string | undefined): Pick<ToolCall,
 	}
 }
 
+type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+
+function restoreJsonStrings(value: JsonValue): JsonValue {
+	if (typeof value === "string") return value.slice(1);
+	if (Array.isArray(value)) return value.map(restoreJsonStrings);
+	if (value !== null && typeof value === "object") {
+		return Object.fromEntries(Object.entries(value).map(([key, item]) => [key.slice(1), restoreJsonStrings(item)]));
+	}
+	return value;
+}
+
+function prefixJsonStrings(json: string): string {
+	let prefixed = "";
+	let inString = false;
+	for (let index = 0; index < json.length; index++) {
+		const char = json[index];
+		prefixed += char;
+		if (!inString) {
+			if (char === '"') {
+				inString = true;
+				prefixed += "$";
+			}
+			continue;
+		}
+		if (char === "\\") {
+			index += 1;
+			if (index < json.length) prefixed += json[index];
+		} else if (char === '"') {
+			inString = false;
+		}
+	}
+	return prefixed;
+}
+
+function parsePartialJson(json: string): JsonValue {
+	return restoreJsonStrings(partialParse(prefixJsonStrings(json)) as JsonValue);
+}
+
 /**
  * Attempts to parse potentially incomplete JSON during streaming.
  * Always returns a valid object, even if the JSON is incomplete.
@@ -127,11 +165,11 @@ export function parseStreamingJson<T = Record<string, unknown>>(partialJson: str
 		return parseJsonWithRepair<T>(partialJson);
 	} catch {
 		try {
-			const result = partialParse(partialJson);
+			const result = parsePartialJson(partialJson);
 			return (result ?? {}) as T;
 		} catch {
 			try {
-				const result = partialParse(repairJson(partialJson));
+				const result = parsePartialJson(repairJson(partialJson));
 				return (result ?? {}) as T;
 			} catch {
 				return {} as T;
