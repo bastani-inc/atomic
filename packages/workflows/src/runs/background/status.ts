@@ -241,6 +241,7 @@ export async function resumeRun(
 		message?: string;
 		/** Who requested this resume. Omitted for internal callers. */
 		actor?: WorkflowActor;
+		onResumeAcknowledged?: () => void;
 	},
 ): Promise<ResumeResult> {
 	const activeStore = opts?.store ?? defaultStore;
@@ -269,7 +270,10 @@ export async function resumeRun(
 			: [];
 	if (runtimeControls.length > 0) {
 		// Parent first: persist its durable running transition before releasing any child.
-		for (const { handle } of runtimeControls) await handle.resume();
+		for (const { handle } of runtimeControls) {
+			await handle.resume();
+			opts?.onResumeAcknowledged?.();
+		}
 		activeStore.recordRunResumed(runId, undefined, {
 			source: "run_control",
 			...(opts?.actor === undefined ? {} : { actor: opts.actor }),
@@ -344,10 +348,9 @@ export async function resumeRun(
 				activeStore.recordStageResumed(runId, opts.stageId, undefined, { actor: opts.actor });
 			}
 		}
-		const reconciledRoot = activeStore.runs().find((candidate) => candidate.id === runId);
 		if (acknowledgements.failures.length > 0) {
 			const failureMessage = `Failed to resume workflow stages: ${acknowledgements.failures.join("; ")}`;
-			if (reconciledRoot?.status !== "running") throw new Error(failureMessage);
+			if (acknowledgements.acknowledged === 0) throw new Error(failureMessage);
 			partialFailureMessage =
 				"Partially resumed " +
 				runId +
