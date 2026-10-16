@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.38-alpha.5] - 2026-10-16
+
 ### Fixed
 
 - Fixed queued workflow instructions being blocked by broker warm-up during model fallback. Stored instructions are admitted before connecting, including sticky messages for replacement sessions ([#3628](https://github.com/bastani-inc/atomic/issues/3628)).
