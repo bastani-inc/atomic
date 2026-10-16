@@ -2,6 +2,7 @@ import type { SessionEntry } from "../../session-manager-types.ts";
 import {
 	SessionConflictError,
 	SessionExistsError,
+	SessionIdMismatchError,
 	SessionNotFoundError,
 	StorageUnavailableError,
 	StoreClosedError,
@@ -59,6 +60,7 @@ export class MemorySessionStore implements SessionStore {
 		this.forWrite(sessionId, options);
 		validateSessionHeader(header);
 		validateSessionEntries(entries);
+		if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
 		this.records.set(sessionId, this.encode({ header, entries, lastSeq: entries.length }));
 		return { lastSeq: entries.length };
 	}

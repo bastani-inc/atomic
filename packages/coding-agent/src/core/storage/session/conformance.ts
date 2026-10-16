@@ -3,6 +3,7 @@ import type { SessionEntry } from "../../session-manager-types.ts";
 import {
 	SessionConflictError,
 	SessionExistsError,
+	SessionIdMismatchError,
 	SessionInvalidTextError,
 	SessionInvalidTimestampError,
 	SessionNotFoundError,
@@ -169,6 +170,25 @@ export function registerSessionStoreConformance(
 				store = await reload(store);
 				assert.deepEqual(await store.readHeader("session"), replacement);
 				assert.deepEqual(await store.load("session"), { header: replacement, entries, lastSeq: 2 });
+			});
+
+			check("rejects replacing a session ID without changing either session (#3650)", async (store, reload) => {
+				const entries = [message("saved", "saved")];
+				await store.create(header(), entries);
+				store = await reload(store);
+				await assert.rejects(
+					store.replace("session", header("replacement"), [message("new", "new")], { expectSeq: 1 }),
+					(error: Error) => {
+						assert.ok(error instanceof SessionIdMismatchError);
+						assert.equal(error.requested, "session");
+						assert.equal(error.found, "replacement");
+						return true;
+					},
+				);
+				store = await reload(store);
+				assert.deepEqual(await store.load("session"), { header: header(), entries, lastSeq: 1 });
+				assert.equal(await store.readHeader("replacement"), undefined);
+				await assert.rejects(store.load("replacement"), notFound("replacement"));
 			});
 
 			check("filters exact projects and hides internal sessions in list and most recent", async (store, reload) => {

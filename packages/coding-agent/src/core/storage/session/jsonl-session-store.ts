@@ -24,6 +24,7 @@ import {
 	SessionConflictError,
 	SessionExistsError,
 	SessionFormatVersionError,
+	SessionIdMismatchError,
 	SessionInvalidTextError,
 	SessionInvalidTimestampError,
 	type SessionJsonValue,
@@ -109,10 +110,7 @@ export class JsonlSessionStore implements SessionStore {
 			validateSessionHeader(header);
 			validateSessionEntries(entries);
 			const existing = await this.locate(header.id);
-			if (existing) {
-				await this.readHeaderAt(existing);
-				throw new SessionExistsError(header.id);
-			}
+			if (existing) throw new SessionExistsError(header.id);
 			const payload = this.encode(header, entries);
 			const projectName = `--${resolve(header.cwd)
 				.replace(/^[/\\]/, "")
@@ -193,6 +191,7 @@ export class JsonlSessionStore implements SessionStore {
 			const { path } = await this.forWrite(sessionId, options);
 			validateSessionHeader(header);
 			validateSessionEntries(entries);
+			if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
 			const payload = this.encode(header, entries);
 			const temporary = `${path}.${randomUUID()}.tmp`;
 			try {
@@ -210,27 +209,28 @@ export class JsonlSessionStore implements SessionStore {
 
 	load(sessionId: string): Promise<SessionSnapshot> {
 		return this.run(async () => {
-			const path = await this.locate(sessionId);
-			if (!path) throw new SessionNotFoundError(sessionId);
-			return this.readSnapshot(path);
+			const located = await this.locate(sessionId);
+			if (!located) throw new SessionNotFoundError(sessionId);
+			return this.readSnapshot(located.path, located.header);
 		});
 	}
 
 	readHeader(sessionId: string): Promise<SessionRecordHeader | undefined> {
 		return this.run(async () => {
-			const path = await this.locate(sessionId);
-			return path ? this.readHeaderAt(path) : undefined;
+			return (await this.locate(sessionId))?.header;
 		});
 	}
 
 	delete(sessionId: string): Promise<void> {
 		return this.run(async () => {
-			const path = await this.locate(sessionId);
-			if (path) {
-				await this.readHeaderAt(path);
-				await unlink(path);
-				this.fileStates.delete(path);
+			const known = [...this.fileStates.values()].some((state) => state.headerId === sessionId);
+			const located = await this.locate(sessionId);
+			if (!located) {
+				if (known) throw new SessionNotFoundError(sessionId);
+				return;
 			}
+			await unlink(located.path);
+			this.fileStates.delete(located.path);
 		});
 	}
 
@@ -296,6 +296,7 @@ export class JsonlSessionStore implements SessionStore {
 					cause instanceof SessionConflictError ||
 					cause instanceof SessionExistsError ||
 					cause instanceof SessionNotFoundError ||
+					cause instanceof SessionIdMismatchError ||
 					cause instanceof SessionInvalidTextError ||
 					cause instanceof SessionInvalidTimestampError ||
 					cause instanceof SessionFormatVersionError ||
@@ -358,21 +359,37 @@ export class JsonlSessionStore implements SessionStore {
 		return paths;
 	}
 
-	private async locate(sessionId: string): Promise<string | undefined> {
+	private async locate(
+		sessionId: string,
+	): Promise<
+		{ path: string; header: SessionRecordHeader; stats: BigIntStats; state: SessionFileState | undefined } | undefined
+	> {
 		validateSessionText("sessionId", sessionId);
 		for (const path of await this.paths()) {
-			const key = basename(path).match(/_([0-9a-f]{64})\.jsonl$/)?.[1];
-			if (key) {
-				if (key === this.key(sessionId)) return path;
+			const cached = this.fileStates.get(path);
+			let stored: { id?: string; version?: JsonValue };
+			try {
+				stored = await this.readFirstLine(path);
+			} catch (cause) {
+				// Preserve requested-file errors only while its cached inode still owns the path.
+				if (cached?.headerId === sessionId) {
+					const stats = await stat(path, { bigint: true });
+					if (cached.identity === `${stats.dev}:${stats.ino}`) throw cause;
+					this.fileStates.delete(path);
+				} else if (basename(path).match(/_([0-9a-f]{64})\.jsonl$/)?.[1] === this.key(sessionId)) {
+					throw cause;
+				}
+				// An unidentifiable file cannot block lookup of unrelated sessions.
 				continue;
 			}
-			if (this.fileStates.get(path)?.headerId === sessionId) return path;
-			try {
-				if ((await this.readFirstLine(path)).id === sessionId) return path;
-			} catch {
-				// An unidentifiable file cannot block lookup of unrelated sessions.
-				// Listing still examines it independently; no failure is cached here.
-			}
+			if (cached && cached.headerId !== stored.id) this.fileStates.delete(path);
+			if (stored.id !== sessionId) continue;
+			const header = await this.readHeaderAt(path, stored);
+			const stats = await stat(path, { bigint: true });
+			const state = this.fileStates.get(path);
+			// Keep same-ID baselines only as conflict evidence: forWrite checks the current inode
+			// and rejects structural changes until an explicit load establishes a new baseline.
+			return { path, header, stats, state };
 		}
 		return undefined;
 	}
@@ -408,8 +425,11 @@ export class JsonlSessionStore implements SessionStore {
 		}
 	}
 
-	private async readHeaderAt(path: string): Promise<SessionRecordHeader> {
-		const stored = await this.readFirstLine(path);
+	private async readHeaderAt(
+		path: string,
+		stored?: { id?: string; version?: JsonValue },
+	): Promise<SessionRecordHeader> {
+		stored ??= await this.readFirstLine(path);
 		if (stored.version !== SESSION_FORMAT_VERSION) throw new SessionFormatVersionError(path, stored.version);
 		const { type: _type, ...header } = stored as SessionRecordHeader & { type: "session" };
 		if (
@@ -424,8 +444,8 @@ export class JsonlSessionStore implements SessionStore {
 		return header;
 	}
 
-	private async readSnapshot(path: string): Promise<SessionSnapshot> {
-		const header = await this.readHeaderAt(path);
+	private async readSnapshot(path: string, header?: SessionRecordHeader): Promise<SessionSnapshot> {
+		header ??= await this.readHeaderAt(path);
 		const content = await readFile(path, "utf8");
 		const lines = content.split("\n");
 		if (lines.at(-1) === "") lines.pop();
@@ -474,11 +494,10 @@ export class JsonlSessionStore implements SessionStore {
 		sessionId: string,
 		options: SessionWriteOptions,
 	): Promise<{ path: string; state: SessionFileState }> {
-		const path = await this.locate(sessionId);
-		if (!path) throw new SessionNotFoundError(sessionId);
-		const header = await this.readHeaderAt(path);
-		const stats = await stat(path, { bigint: true });
-		let state = this.fileStates.get(path);
+		const located = await this.locate(sessionId);
+		if (!located) throw new SessionNotFoundError(sessionId);
+		const { path, header, stats } = located;
+		let state = located.state;
 		if (!state) {
 			await this.readSnapshot(path);
 			state = this.fileStates.get(path)!;

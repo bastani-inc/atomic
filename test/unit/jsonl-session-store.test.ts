@@ -21,6 +21,8 @@ import { registerSessionStoreConformance } from "../../packages/coding-agent/src
 import {
 	SessionConflictError,
 	SessionExistsError,
+	SessionIdMismatchError,
+	SessionNotFoundError,
 	StorageUnavailableError,
 	StoreClosedError,
 } from "../../packages/coding-agent/src/core/storage/session/errors.js";
@@ -314,6 +316,108 @@ it("continues listing when another handle deletes a pending session between yiel
 	});
 });
 
+for (const filename of ["named", "keyed"] as const) {
+	for (const operation of ["delete", "append", "replace", "load", "readHeader"] as const) {
+		it(`preserves a replacement session during ${operation} through a cached ${filename} path (#3650)`, async () => {
+			await withStore(async (store, directory) => {
+				await store.create(header, [entry]);
+				let path = await location(store);
+				if (filename === "named") {
+					const named = join(directory, "named.jsonl");
+					await rename(path, named);
+					path = named;
+				}
+				assert.deepEqual(await store.load(header.id), { header, entries: [entry], lastSeq: 1 });
+				const other = await JsonlSessionStore.open(directory);
+				const replacement = { ...header, id: "replacement" };
+				try {
+					await other.create(replacement, [{ ...entry, id: "saved" }]);
+					const replacementPath = (await collect(other.list({}))).find(
+						(summary) => summary.id === replacement.id,
+					)?.location;
+					assert.ok(replacementPath);
+					await rename(replacementPath, path);
+					const bytes = await readFile(path);
+					if (operation === "readHeader") {
+						assert.equal(await store.readHeader(header.id), undefined);
+					} else {
+						const pending =
+							operation === "delete"
+								? store.delete(header.id)
+								: operation === "append"
+									? store.append(header.id, [{ ...entry, id: "unwanted" }], { expectSeq: 1 })
+									: operation === "replace"
+										? store.replace(header.id, header, [], { expectSeq: 1 })
+										: store.load(header.id);
+						await pending.catch((error: Error) => assert.ok(error instanceof SessionNotFoundError));
+						assert.deepEqual(await readFile(path), bytes, "replacement file and entries must remain intact");
+						await assert.rejects(pending, (error: Error) => {
+							assert.ok(error instanceof SessionNotFoundError);
+							assert.equal(error.sessionId, header.id);
+							return true;
+						});
+					}
+					assert.deepEqual(await readFile(path), bytes);
+					assert.deepEqual(await other.load(replacement.id), {
+						header: replacement,
+						entries: [{ ...entry, id: "saved" }],
+						lastSeq: 1,
+					});
+				} finally {
+					await other.close();
+				}
+			});
+		});
+	}
+}
+
+it("finds a moved session before deleting rather than touching its replacement (#3650)", async () => {
+	await withStore(async (store, directory) => {
+		await store.create(header, [entry]);
+		const path = await location(store);
+		await store.load(header.id);
+		const other = await JsonlSessionStore.open(directory);
+		try {
+			await rename(path, join(directory, "moved.jsonl"));
+			const replacement = { ...header, id: "replacement" };
+			await other.create(replacement, [entry]);
+			const replacementPath = (await collect(other.list({}))).find(
+				(summary) => summary.id === replacement.id,
+			)?.location;
+			assert.ok(replacementPath);
+			await rename(replacementPath, path);
+			const bytes = await readFile(path);
+			await store.delete(header.id);
+			await assert.rejects(other.load(header.id), SessionNotFoundError);
+			assert.deepEqual(await readFile(path), bytes);
+			assert.deepEqual(await other.load(replacement.id), { header: replacement, entries: [entry], lastSeq: 1 });
+		} finally {
+			await other.close();
+		}
+	});
+});
+
+it("creates a missing session after discarding its replaced named path (#3650)", async () => {
+	await withStore(async (store, directory) => {
+		const path = join(directory, "named.jsonl");
+		await writeFile(path, `${JSON.stringify({ type: "session", ...header })}\n`);
+		await store.load(header.id);
+		const other = await JsonlSessionStore.open(directory);
+		try {
+			const replacement = { ...header, id: "replacement" };
+			await other.replace(header.id, header, [entry], { expectSeq: 0 });
+			const bytes = `${JSON.stringify({ type: "session", ...replacement })}\n${JSON.stringify(entry)}\n`;
+			await writeFile(path, bytes);
+			await store.create(header, []);
+			assert.equal(await readFile(path, "utf8"), bytes);
+			assert.deepEqual(await other.load(header.id), { header, entries: [], lastSeq: 0 });
+			assert.deepEqual(await other.load(replacement.id), { header: replacement, entries: [entry], lastSeq: 1 });
+		} finally {
+			await other.close();
+		}
+	});
+});
+
 it("retains a known unkeyed session identity when its requested header becomes unreadable", async () => {
 	await withStore(async (store, directory) => {
 		const path = join(directory, "named.jsonl");
@@ -567,14 +671,18 @@ it("wraps an unavailable configured directory without a fallback", async () => {
 	}
 });
 
-it("keeps the session key when replacing verbatim header identity and project fields", async () => {
+it("rejects replacing the session ID while preserving verbatim project fields (#3650)", async () => {
 	await withStore(async (store, directory) => {
 		await store.create(header, []);
 		const replacement = { ...header, id: "other", cwd: "/other/../project" };
-		await store.replace(header.id, replacement, [], { expectSeq: 0 });
+		const path = await location(store);
+		const bytes = await readFile(path);
+		await assert.rejects(store.replace(header.id, replacement, [], { expectSeq: 0 }), SessionIdMismatchError);
+		assert.deepEqual(await readFile(path), bytes);
+		await store.replace(header.id, { ...replacement, id: header.id }, [], { expectSeq: 0 });
 		const reopened = await JsonlSessionStore.open(directory);
 		try {
-			assert.deepEqual(await reopened.readHeader(header.id), replacement);
+			assert.deepEqual(await reopened.readHeader(header.id), { ...replacement, id: header.id });
 			assert.equal(await reopened.readHeader("other"), undefined);
 			await reopened.append(header.id, [entry], { expectSeq: 0 });
 			assert.deepEqual((await reopened.load(header.id)).entries, [entry]);
@@ -661,8 +769,15 @@ for (const id of ["文".repeat(32), "x".repeat(200)]) {
 			const reopened = await JsonlSessionStore.open(directory);
 			try {
 				assert.deepEqual(await reopened.load(id), { header: input, entries: [entry], lastSeq: 1 });
-				await reopened.replace(id, { ...input, id: `${id}-changed` }, [], { expectSeq: 1 });
-				assert.equal((await store.readHeader(id))?.id, `${id}-changed`);
+				const path = await location(reopened);
+				const bytes = await readFile(path);
+				await assert.rejects(
+					reopened.replace(id, { ...input, id: `${id}-changed` }, [], { expectSeq: 1 }),
+					SessionIdMismatchError,
+				);
+				assert.deepEqual(await readFile(path), bytes);
+				assert.equal((await store.readHeader(id))?.id, id);
+				assert.equal(await store.readHeader(`${id}-changed`), undefined);
 				await store.delete(id);
 			} finally {
 				await reopened.close();
@@ -892,6 +1007,8 @@ it("requires an explicit load after competing replacement or recreation without 
 		try {
 			await other.replace(header.id, header, [entry, entry], { expectSeq: 1 });
 			const replaced = await readFile(path, "utf8");
+			await assert.rejects(store.append(header.id, [entry], { expectSeq: 2 }), SessionConflictError);
+			assert.equal(await readFile(path, "utf8"), replaced);
 			await assert.rejects(store.append(header.id, [entry], { expectSeq: 2 }), SessionConflictError);
 			assert.equal(await readFile(path, "utf8"), replaced);
 			assert.equal((await store.load(header.id)).lastSeq, 2);

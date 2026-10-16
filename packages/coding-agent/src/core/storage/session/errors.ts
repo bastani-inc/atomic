@@ -57,6 +57,18 @@ export class SessionNotFoundError extends Error {
 	}
 }
 
+export class SessionIdMismatchError extends Error {
+	readonly requested: string;
+	readonly found: string;
+
+	constructor(requested: string, found: string) {
+		super(`Session ID mismatch: requested ${requested}, found ${found}`);
+		this.name = "SessionIdMismatchError";
+		this.requested = requested;
+		this.found = found;
+	}
+}
+
 export class SessionExistsError extends Error {
 	readonly sessionId: string;
 
