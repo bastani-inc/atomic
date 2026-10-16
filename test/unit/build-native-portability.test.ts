@@ -1,3 +1,4 @@
+import { TaskSupervisor } from "@bastani/atomic-natives";
 import { test } from "vitest";
 
 // These contracts drive the build script through bash-shebang stub executables
@@ -6,24 +7,44 @@ import { test } from "vitest";
 const unixTest = process.platform === "win32" ? test.skip : test;
 
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bunExecutable, spawnSyncCollect } from "../helpers/runtime.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
-const script = join(root, "packages/natives/scripts/build-native.ts");
-const output = join(root, "packages/natives/native/atomic_natives.linux-x64-gnu.node");
+function stageBuildScript(stage: string) {
+	const packageRoot = join(stage, "packages/natives");
+	// The real script writes its binding and generated files relative to its own location.
+	// Never run the stub build against artifacts already mapped by other unit workers.
+	for (const file of [
+		"scripts/build-native.ts",
+		"scripts/spawn-error.ts",
+		"scripts/generated-binding-fixes.ts",
+		"native/index.js",
+		"native/index.d.ts",
+		"package.json",
+	]) {
+		const destination = join(packageRoot, file);
+		mkdirSync(dirname(destination), { recursive: true });
+		copyFileSync(join(root, "packages/natives", file), destination);
+	}
+	return {
+		script: join(packageRoot, "scripts/build-native.ts"),
+		output: join(packageRoot, "native/atomic_natives.linux-x64-gnu.node"),
+	};
+}
 
 unixTest("glibc-suffixed Linux targets use cargo-zigbuild and copy from the bare target directory", () => {
 	const stage = mkdtempSync(join(tmpdir(), "atomic-zigbuild-contract-"));
 	const bin = join(stage, "bin");
 	const target = join(stage, "target");
 	const args = join(stage, "cargo-args.txt");
-	const existing = existsSync(output) ? readFileSync(output) : undefined;
+	const supervisor = new TaskSupervisor();
 
 	try {
+		const { script, output } = stageBuildScript(stage);
 		mkdirSync(bin);
 		const cargo = join(bin, "cargo");
 		writeFileSync(
@@ -33,7 +54,7 @@ unixTest("glibc-suffixed Linux targets use cargo-zigbuild and copy from the bare
 		chmodSync(cargo, 0o755);
 
 		const result = spawnSyncCollect([bunExecutable(), script], {
-			cwd: root,
+			cwd: stage,
 			env: {
 				...process.env,
 				PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
@@ -49,10 +70,10 @@ unixTest("glibc-suffixed Linux targets use cargo-zigbuild and copy from the bare
 		assert.match(readFileSync(args, "utf8"), /^zigbuild .*--target x86_64-unknown-linux-gnu\.2\.17 --release/u);
 		assert.equal(readFileSync(output, "utf8"), "portable-fixture");
 	} finally {
-		if (existing) writeFileSync(output, existing);
-		else rmSync(output, { force: true });
 		rmSync(stage, { recursive: true, force: true });
 	}
+	// Other unit workers can already have this binding mapped while the build contract runs.
+	assert.ok(supervisor.bindHostSession({ kind: "session", sessionId: "build-native-contract" }));
 });
 
 unixTest("musl targets use NAPI-RS cross compilation without a glibc floor suffix", () => {
@@ -61,12 +82,13 @@ unixTest("musl targets use NAPI-RS cross compilation without a glibc floor suffi
 	const args = join(stage, "bunx-args.txt");
 
 	try {
+		const { script } = stageBuildScript(stage);
 		mkdirSync(bin);
 		const bunx = join(bin, "bunx");
 		writeFileSync(bunx, `#!/usr/bin/env bash\nprintf '%s\\n' "$*" > "$BUNX_ARGS_FILE"\n`);
 		chmodSync(bunx, 0o755);
 		const result = spawnSyncCollect([bunExecutable(), script], {
-			cwd: root,
+			cwd: stage,
 			env: {
 				...process.env,
 				PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
@@ -92,12 +114,13 @@ unixTest("explicit Darwin targets stay native and do not request cross compilati
 	const args = join(stage, "bunx-args.txt");
 
 	try {
+		const { script } = stageBuildScript(stage);
 		mkdirSync(bin);
 		const bunx = join(bin, "bunx");
 		writeFileSync(bunx, `#!/usr/bin/env bash\nprintf '%s\\n' "$*" > "$BUNX_ARGS_FILE"\n`);
 		chmodSync(bunx, 0o755);
 		const result = spawnSyncCollect([bunExecutable(), script], {
-			cwd: root,
+			cwd: stage,
 			env: {
 				...process.env,
 				PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
