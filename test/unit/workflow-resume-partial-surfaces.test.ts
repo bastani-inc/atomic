@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { type AgentSession, WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
 import { afterEach, beforeEach, describe, test } from "vitest";
+import { toolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
@@ -93,11 +94,137 @@ beforeEach(() => {
 afterEach(() => {
 	delete process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
 	stageControlRegistry.clear();
+	toolControlRegistry.clear();
 	store.clear();
 	setDurableBackend(undefined);
 });
 
 describe("partial resume command surfaces", () => {
+	for (const parentAcknowledged of [false, true]) {
+		test.sequential(`runtime resume failure reports only acknowledged progress: ${parentAcknowledged} (#3670)`, async () => {
+			const runId = testRunId("runtime-resume-progress");
+			const childRunId = testRunId("runtime-resume-child");
+			const backend = new InMemoryDurableBackend();
+			setDurableBackend(backend);
+			store.recordRunStart({
+				id: runId,
+				name: "parent",
+				inputs: {},
+				status: "paused",
+				toolNodes: [],
+				stages: [
+					{
+						id: "child",
+						name: "child",
+						status: "awaiting_input",
+						parentIds: [],
+						toolEvents: [],
+						workflowChildRun: { alias: "child", workflow: "child", runId: childRunId },
+					},
+				],
+				startedAt: 1,
+			});
+			store.recordRunStart({
+				id: childRunId,
+				name: "child",
+				inputs: {},
+				status: "paused",
+				toolNodes: [],
+				stages: [],
+				parentRunId: runId,
+				parentStageId: "child",
+				startedAt: 1,
+			});
+			let parentCalls = 0;
+			let childCalls = 0;
+			toolControlRegistry.registerRun(runId, {
+				paused: true,
+				async pause() {},
+				async quit() {},
+				async resume() {
+					parentCalls += 1;
+					if (!parentAcknowledged) throw new Error("parent resume refused");
+					store.recordRunResumed(runId);
+				},
+			});
+			toolControlRegistry.registerRun(childRunId, {
+				paused: true,
+				async pause() {},
+				async quit() {},
+				async resume() {
+					childCalls += 1;
+					throw new Error("child resume refused");
+				},
+			});
+			const runtime = createExtensionRuntime({ definitions: [], store });
+			const execute = makeExecuteWorkflowTool(
+				runtime,
+				() => undefined,
+				() => undefined,
+			);
+
+			const result = await execute({ action: "resume", runId }, {} as never);
+
+			assert.equal(parentCalls, 1);
+			assert.equal(childCalls, parentAcknowledged ? 1 : 0);
+			assert.equal(result.action, "resume");
+			assert.equal(result.status, parentAcknowledged ? "partial" : "noop");
+			assert.equal(result.code, parentAcknowledged ? undefined : "control_failed");
+			assert.match(result.message, parentAcknowledged ? /child resume refused/ : /parent resume refused/);
+			assert.equal(store.runs().find((run) => run.id === runId)?.status, parentAcknowledged ? "running" : "paused");
+			assert.equal(store.runs().find((run) => run.id === childRunId)?.status, "paused");
+		});
+	}
+
+	test.sequential("failed targeted resume ignores an unchanged running sibling (#3670)", async () => {
+		const runId = testRunId("targeted-resume-no-progress");
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		store.recordRunStart({
+			id: runId,
+			name: "targeted",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
+		for (const stageId of ["target", "sibling"]) {
+			store.recordStageStart(runId, {
+				id: stageId,
+				name: stageId,
+				status: "running",
+				parentIds: [],
+				toolEvents: [],
+			});
+		}
+		store.recordStagePaused(runId, "target");
+		backend.registerWorkflow({ workflowId: runId, name: "targeted", inputs: {}, createdAt: 1, status: "running" });
+		let resumeCalls = 0;
+		registerHandle(runId, "target", async () => {
+			resumeCalls += 1;
+			throw new Error("delivery refused before release");
+		});
+		const runtime = createExtensionRuntime({ definitions: [], store });
+		const execute = makeExecuteWorkflowTool(
+			runtime,
+			() => undefined,
+			() => undefined,
+		);
+
+		const result = await execute({ action: "resume", runId, stageId: "target" }, {} as never);
+
+		assert.equal(resumeCalls, 1);
+		const run = store.runs().find((candidate) => candidate.id === runId);
+		assert.equal(run?.stages.find((stage) => stage.id === "target")?.status, "paused");
+		assert.equal(run?.stages.find((stage) => stage.id === "sibling")?.status, "running");
+		assert.equal(result.action, "resume");
+		assert.equal(result.status, "noop");
+		assert.equal(result.code, "control_failed");
+		assert.match(result.message, /delivery refused before release/);
+		assert.doesNotMatch(result.message, /partially resumed/i);
+	});
+
 	test.sequential("workflow tool preserves result identity and reports partial failure", async () => {
 		const runId = testRunId("tool-partial-resume");
 		const backend = seedPartialRun(runId);

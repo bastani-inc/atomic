@@ -8,7 +8,6 @@ import { pauseAllRuns, pauseRun, resumeRun } from "../runs/background/status.js"
 import { workflowHasPausedStages, workflowHasPausedState } from "../runs/background/workflow-lifecycle-aggregate.js";
 import { isFullRunId, isRunIdPrefix } from "../shared/run-id.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
-import type { Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowExecutionPolicy, WorkflowToolNodeIdentity } from "../shared/types.js";
 import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
@@ -105,20 +104,14 @@ function controlFailure(
 	};
 }
 
-function resumeControlFailure(runId: string, error: unknown, store: Store): WorkflowToolResult {
-	const run = store.runs().find((candidate) => candidate.id === runId);
-	const visiblyRunning =
-		run?.status === "running" ||
-		run?.stages.some(
-			(stage) => stage.status === "running" || stage.status === "pending" || stage.status === "awaiting_input",
-		) === true;
+function resumeControlFailure(runId: string, error: unknown, acknowledged: boolean): WorkflowToolResult {
 	const detail = error instanceof Error ? error.message : String(error);
 	return {
 		action: "resume",
 		runId,
-		status: visiblyRunning ? "partial" : "noop",
+		status: acknowledged ? "partial" : "noop",
 		message: `Failed to resume run ${runId}: ${detail}`,
-		...(visiblyRunning ? {} : { code: classifyControlError(error) }),
+		...(acknowledged ? {} : { code: classifyControlError(error) }),
 	};
 }
 
@@ -734,6 +727,7 @@ export async function workflowResumeAction(
 			...(continuation.ok ? {} : { code: resumeFailureCode(continuation.reason) }),
 		};
 	}
+	let resumeAcknowledged = false;
 	try {
 		await deps.beforeResume?.(stageRunId);
 		const result = await resumeRun(stageRunId, {
@@ -741,6 +735,9 @@ export async function workflowResumeAction(
 			stageId: stage.stageId,
 			message: args.message,
 			actor: "agent",
+			onResumeAcknowledged: () => {
+				resumeAcknowledged = true;
+			},
 		});
 		if (result.ok) {
 			const runLevelResumed =
@@ -781,6 +778,6 @@ export async function workflowResumeAction(
 			code: "run_not_found",
 		};
 	} catch (error) {
-		return resumeControlFailure(stageRunId, error, store);
+		return resumeControlFailure(stageRunId, error, resumeAcknowledged);
 	}
 }
