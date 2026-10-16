@@ -154,6 +154,154 @@ test("an in-flight tool checkpoint observes a later cached-stage write failure",
 	);
 });
 
+test("a throwing tool rethrows failed cached-stage metadata before its diagnostic checkpoint", async () => {
+	const backend = await createMemoryTestBackend();
+	const failure = new StorageUnavailableError({ adapter: "memory", location: "throwing-tool" }, new Error("rejected"));
+	const callbackError = new RangeError("callback failed");
+	let replay = false;
+	let observed: Error | undefined;
+	let metadataWrites = 0;
+	const definition = workflow({
+		name: "throwing-tracked-checkpoint",
+		description: "",
+		inputs: {},
+		outputs: {},
+		async run(ctx) {
+			if (!replay) {
+				await ctx.stage("cached").complete("saved");
+				return {};
+			}
+			try {
+				await ctx.tool("throwing", {}, async () => {
+					ctx.stage("cached");
+					throw callbackError;
+				});
+			} catch (error) {
+				assert.ok(error instanceof Error);
+				observed = error;
+			}
+			return {};
+		},
+	});
+	const options = {
+		runId: "throwing-tracked-checkpoint",
+		durableBackend: backend,
+		adapters: { complete: { complete: async (text: string) => text } },
+	};
+	assert.equal((await run(definition, {}, { ...options, store: createStore() })).status, "completed");
+	const append = backend.journal.append.bind(backend.journal);
+	backend.journal.append = async (lease, event, appendOptions) => {
+		if (
+			event.type === "CheckpointRecorded" &&
+			typeof event.payload === "object" &&
+			event.payload !== null &&
+			!Array.isArray(event.payload) &&
+			typeof event.payload.checkpointId === "string" &&
+			event.payload.checkpointId.startsWith("stage-replay-meta:")
+		) {
+			metadataWrites++;
+			throw failure;
+		}
+		return append(lease, event, appendOptions);
+	};
+	replay = true;
+	assert.equal((await run(definition, {}, { ...options, store: createStore() })).status, "failed");
+	assert.equal(metadataWrites, 1);
+	assert.equal(observed, failure);
+	assert.equal(
+		backend.listCheckpoints(options.runId).filter((checkpoint) => checkpoint.checkpointId.startsWith("tool-failure:"))
+			.length,
+		0,
+	);
+});
+
+for (const cached of [false, true]) {
+	test(`throwing tools retain callback failure after ${cached ? "pending" : "no"} replay metadata`, async () => {
+		const backend = await createMemoryTestBackend();
+		const callbackError = new RangeError("callback failed");
+		const metadataEntered = Promise.withResolvers<void>();
+		const metadataRelease = Promise.withResolvers<void>();
+		const writes: string[] = [];
+		let replay = false;
+		let observed: Error | undefined;
+		const definition = workflow({
+			name: "throwing-checkpoint-order",
+			description: "",
+			inputs: {},
+			outputs: {},
+			async run(ctx) {
+				if (!replay) {
+					await ctx.stage("cached").complete("saved");
+					return {};
+				}
+				try {
+					await ctx.tool("throwing", {}, async () => {
+						if (cached) ctx.stage("cached");
+						throw callbackError;
+					});
+				} catch (error) {
+					assert.ok(error instanceof Error);
+					observed = error;
+					throw error;
+				}
+				return {};
+			},
+		});
+		const options = {
+			runId: `throwing-checkpoint-order-${cached}`,
+			durableBackend: backend,
+			adapters: { complete: { complete: async (text: string) => text } },
+		};
+		assert.equal((await run(definition, {}, { ...options, store: createStore() })).status, "completed");
+		const append = backend.journal.append.bind(backend.journal);
+		backend.journal.append = async (lease, event, appendOptions) => {
+			if (
+				event.type === "CheckpointRecorded" &&
+				typeof event.payload === "object" &&
+				event.payload !== null &&
+				!Array.isArray(event.payload) &&
+				typeof event.payload.checkpointId === "string"
+			) {
+				if (event.payload.checkpointId.startsWith("stage-replay-meta:")) {
+					metadataEntered.resolve();
+					await metadataRelease.promise;
+					writes.push("metadata");
+				}
+				if (event.payload.checkpointId.startsWith("tool-failure:")) writes.push("diagnostic");
+			}
+			return append(lease, event, appendOptions);
+		};
+		replay = true;
+		const execution = run(definition, {}, { ...options, store: createStore() });
+		try {
+			if (cached) {
+				await metadataEntered.promise;
+				assert.equal(observed, undefined);
+				assert.deepEqual(writes, []);
+				assert.equal(
+					backend
+						.listCheckpoints(options.runId)
+						.some((checkpoint) => checkpoint.checkpointId.startsWith("tool-failure:")),
+					false,
+				);
+			}
+		} finally {
+			metadataRelease.resolve();
+			await execution;
+		}
+		assert.equal((await execution).status, "failed");
+		assert.equal(observed, callbackError);
+		assert.deepEqual(writes, cached ? ["metadata", "diagnostic"] : ["diagnostic"]);
+		const diagnostics = backend
+			.listCheckpoints(options.runId)
+			.filter((checkpoint) => checkpoint.kind === "tool" && checkpoint.checkpointId.startsWith("tool-failure:"));
+		assert.equal(diagnostics.length, 1);
+		const diagnostic = diagnostics[0];
+		assert.ok(diagnostic?.kind === "tool");
+		assert.equal(diagnostic.throwingFailureError, callbackError.message);
+	});
+}
+
 const CACHED_STAGE_UI_CHILD_TIMEOUT_MS = 20_000;
 test("cached-stage UI drains pending metadata and returns from successive prompts", async () => {
 	const child = spawnProcess([

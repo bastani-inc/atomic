@@ -225,7 +225,7 @@ for (const storage of ["memory", "sqlite"] as const) {
 				storage === "memory" ? new MemoryRunJournal() : await openSqlRunJournal(join(directory, "journal.sqlite"));
 			const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
 			try {
-				await backend.registerWorkflow({
+				await backend.commitWorkflowRegistration({
 					workflowId: "run",
 					name: "test",
 					inputs: {},
@@ -234,15 +234,15 @@ for (const storage of ["memory", "sqlite"] as const) {
 				});
 				await backend.withWorkflowLease("run", async () => {
 					const retire = backend.captureWorkflowRetirement("run");
-					const resetting = backend.reset();
+					const resetting = backend.commitReset();
 					const retiring = retire();
 					const closing = closeDuringReset ? backend.close() : Promise.resolve();
 					await Promise.all([resetting, retiring, closing]);
 					if (!closeDuringReset) {
-						await assert.rejects(backend.reset(), JournalExecutionRetiredError);
-						await assert.rejects(backend.recordCheckpoint(checkpoint("late")), JournalExecutionRetiredError);
+						await assert.rejects(backend.commitReset(), JournalExecutionRetiredError);
+						await assert.rejects(backend.commitCheckpoint(checkpoint("late")), JournalExecutionRetiredError);
 					} else {
-						await assert.rejects(backend.reset(), JournalBackendClosedError);
+						await assert.rejects(backend.commitReset(), JournalBackendClosedError);
 					}
 				});
 				assert.equal(backend.getWorkflow("run"), undefined);
@@ -265,10 +265,16 @@ for (const storage of ["memory", "sqlite"] as const) {
 		const owner = await JournalDurableBackend.open(journal, { ownsJournal: false });
 		let observer: JournalDurableBackend | undefined;
 		try {
-			await owner.registerWorkflow({ workflowId: "run", name: "test", inputs: {}, createdAt: 1, status: "paused" });
+			await owner.commitWorkflowRegistration({
+				workflowId: "run",
+				name: "test",
+				inputs: {},
+				createdAt: 1,
+				status: "paused",
+			});
 			observer = await JournalDurableBackend.open(observerJournal, { ownsJournal: false });
 			const lease = await journal.leaseState("run");
-			await assert.rejects(observer.reset(), (error: Error) => {
+			await assert.rejects(observer.commitReset(), (error: Error) => {
 				assert.ok(error instanceof JournalOwnershipError);
 				assert.equal(error.runId, "run");
 				assert.equal(error.holderId, owner.holderId);
@@ -280,9 +286,9 @@ for (const storage of ["memory", "sqlite"] as const) {
 			assert.equal((await journal.leaseState("run"))?.epoch, lease?.epoch);
 			assert.equal((await journal.getRun("run"))?.status, "paused");
 			assert.equal(observer.getWorkflow("run")?.status, "paused");
-			await owner.recordCheckpoint(checkpoint());
+			await owner.commitCheckpoint(checkpoint());
 			assert.equal(owner.getToolOutput("run", "one"), "one");
-			await observer.registerWorkflow({
+			await observer.commitWorkflowRegistration({
 				workflowId: "other",
 				name: "test",
 				inputs: {},
@@ -290,7 +296,7 @@ for (const storage of ["memory", "sqlite"] as const) {
 				status: "paused",
 			});
 			await owner.releaseWorkflow("run");
-			await observer.reset();
+			await observer.commitReset();
 			assert.deepEqual(await observerJournal.listRuns(), []);
 			assert.equal(observer.getWorkflow("run"), undefined);
 			assert.equal(observer.getWorkflow("other"), undefined);
@@ -311,7 +317,7 @@ for (const storage of ["memory", "sqlite"] as const) {
 		const deleteOwnedRun = journal.deleteOwnedRun.bind(journal);
 		const failure = new Error("foreign driver failure");
 		try {
-			await backend.registerWorkflow({
+			await backend.commitWorkflowRegistration({
 				workflowId: "run",
 				name: "test",
 				inputs: {},
@@ -321,7 +327,7 @@ for (const storage of ["memory", "sqlite"] as const) {
 			journal.deleteOwnedRun = async () => {
 				throw failure;
 			};
-			await assert.rejects(backend.reset(), (error: Error) => {
+			await assert.rejects(backend.commitReset(), (error: Error) => {
 				assert.ok(error instanceof StorageUnavailableError);
 				assert.equal(error.adapter, "custom");
 				assert.equal(error.location, "custom journal");
@@ -332,8 +338,8 @@ for (const storage of ["memory", "sqlite"] as const) {
 			assert.equal((await journal.getRun("run"))?.status, "paused");
 			assert.equal(backend.getWorkflow("run")?.status, "paused");
 			journal.deleteOwnedRun = deleteOwnedRun;
-			await backend.recordCheckpoint(checkpoint());
-			await backend.reset();
+			await backend.commitCheckpoint(checkpoint());
+			await backend.commitReset();
 			assert.equal(await journal.getRun("run"), undefined);
 			assert.equal(backend.getWorkflow("run"), undefined);
 		} finally {

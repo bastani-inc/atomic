@@ -572,7 +572,7 @@ test("factory adapter selections isolate typed options and reuse equal values", 
 			assert.notEqual(backend, previous);
 			assert.equal(previous.getWorkflow(name), undefined);
 		}
-		await backend.registerWorkflow({ workflowId: name, name, inputs: {}, createdAt: 1, status: "paused" });
+		await backend.commitWorkflowRegistration({ workflowId: name, name, inputs: {}, createdAt: 1, status: "paused" });
 		backends.push(backend);
 		const repeatedValue = value instanceof Uint8Array ? value.slice() : value;
 		assert.equal(

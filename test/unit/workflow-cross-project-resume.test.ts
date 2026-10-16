@@ -273,7 +273,7 @@ test("cross-project forks read the source project store and write the selected d
 		await source.appendMessage({ role: "user", content: "Source conversation", timestamp: 1 });
 		const backend = await createMemoryTestBackend();
 		const sourceId = testRunId("separate-stores");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: sourceId,
 			name: "history",
 			inputs: {},
@@ -281,7 +281,7 @@ test("cross-project forks read the source project store and write the selected d
 			createdAt: 1,
 			invocationCwd: sourceCwd,
 		});
-		await backend.recordCheckpoint({
+		await backend.commitCheckpoint({
 			kind: "stage",
 			workflowId: sourceId,
 			checkpointId: "saved",

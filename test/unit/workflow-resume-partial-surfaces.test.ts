@@ -208,7 +208,7 @@ describe("partial resume command surfaces", () => {
 			});
 		}
 		store.recordStagePaused(runId, "target");
-		await backend.registerWorkflow({
+		await backend.commitWorkflowRegistration({
 			workflowId: runId,
 			name: "targeted",
 			inputs: {},
