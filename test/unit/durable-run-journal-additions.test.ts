@@ -36,7 +36,7 @@ for (const storage of ["memory", "sqlite"] as const) {
 			assert.equal(taken.status, "acquired");
 			if (taken.status !== "acquired") assert.fail("expired lease not acquired");
 			assert.equal(taken.lease.epoch, first.lease.epoch + 1);
-			assert.deepEqual(await journal.leaseState("run"), { ...taken.lease, renewedAt: 1_201 });
+			assert.deepEqual(await journal.leaseState("run"), { ...taken.lease, renewedAt: 1_201, ageMs: 0 });
 			await assert.rejects(journal.renew(first.lease), (error: Error) => {
 				assert.ok(error instanceof StaleLeaseError);
 				assert.equal(error.runId, "run");

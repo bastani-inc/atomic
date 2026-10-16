@@ -55,7 +55,9 @@ await assert.rejects(
 	serializationError,
 );
 assert.deepEqual(await file.listRuns(), [header]);
-assert.deepEqual(await file.leaseState(header.runId), leaseBefore);
+const leaseAfter = await file.leaseState(header.runId);
+assert.ok(Number.isSafeInteger(leaseAfter.ageMs) && leaseAfter.ageMs >= leaseBefore.ageMs);
+assert.deepEqual(leaseAfter, { ...leaseBefore, ageMs: leaseAfter.ageMs });
 const entries = [];
 for await (const entry of file.read(header.runId)) entries.push(entry);
 assert.deepEqual(entries, []);

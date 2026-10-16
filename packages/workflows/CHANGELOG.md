@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Invocation records require `invocationFingerprint`.
 - SDK workflow stages now use persistent session storage by default, including stages without `sessionDir`. Ephemeral stages must explicitly supply an in-memory session manager through an adapter. Storage failures do not fall back to memory.
 - Replaced `SqliteRunJournal` with async `SqlRunJournal.open(database, { prefix })` and `openSqlRunJournal(pathOrDatabase?)`; await `resolveRunJournal`. Journal tables now use the `wf_` namespace with no migration of earlier unreleased tables. Journal storage errors use the shared `StorageUnavailableError` fields `adapter`, `location`, and `cause` instead of `path`.
+- Custom journals must return `LeaseState.ageMs`, a non-negative safe-integer renewal age measured by the journal clock in the same read as the lease state. Ownership probes use this age rather than the process clock.
 
 ### Added
 
@@ -47,6 +48,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - SQL journals snapshot append payloads at invocation, including keyed retries, preserving status/event consistency during queued writes. User-supplied facades may return readonly rows. Header and append serialization failures now retain typed storage errors and their original causes without changing fencing, replay, or sequence-check precedence.
+- Journal run summaries and status validation now use the serialized `StatusChanged` payload, including transformations by `toJSON`, so recorded events and summaries agree. Ownership inspection now honors the journal clock even when the process clock is skewed.
 
 ### Removed
 

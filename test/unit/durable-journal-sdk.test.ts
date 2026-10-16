@@ -31,7 +31,7 @@ const memoryPublicShape: Equal<keyof MemoryRunJournal, keyof RunJournal> = true;
 const sqlitePublicShape: Equal<Exclude<keyof SqlRunJournal, "path" | "descriptor">, keyof RunJournal> = true;
 const runLookupIdentity: Equal<ReturnType<RunJournal["getRun"]>, Promise<RunSummary | undefined>> = true;
 const leaseLookupIdentity: Equal<ReturnType<RunJournal["leaseState"]>, Promise<LeaseState | undefined>> = true;
-const leaseStateIdentity: Equal<LeaseState, Lease & { readonly renewedAt: number }> = true;
+const leaseStateIdentity: Equal<LeaseState, Lease & { readonly renewedAt: number; readonly ageMs: number }> = true;
 const SDK_PROCESS_TIMEOUT_MS = 120_000;
 
 test("public journal types retain exact option and RunJournal identities", () => {
@@ -78,7 +78,7 @@ for (const runtime of ["node", "bun"] as const) {
 				assert.equal(result.exitCode, 0, result.stderr.toString() + result.stdout.toString());
 				assert.deepEqual(JSON.parse(result.stdout.toString()), {
 					runtime,
-					publicConformance: 20,
+					publicConformance: 22,
 					status: "passed",
 				});
 			} finally {

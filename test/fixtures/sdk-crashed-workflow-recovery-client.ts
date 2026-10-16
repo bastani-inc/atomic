@@ -9,11 +9,11 @@ import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/reso
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import { FOREIGN_LIVE_WORKFLOW_WINDOW_MS } from "../../packages/workflows/src/durable/resume-eligibility.js";
 import { availableCurrentStoreBackend as getAvailableDurableBackend, currentStoreBackend as getDurableBackend } from "../helpers/store-backend.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { fileExists, readText, sleep } from "../helpers/runtime.js";
 import { serializeFixtureError } from "../helpers/fixture-error.js";
+import { expireWorkflowLease } from "../helpers/workflow-lease.js";
 
 const home = process.env.ATOMIC_FAULT_TEST_HOME;
 assert.ok(home && resolve(homedir()) === resolve(home), "requires disposable HOME");
@@ -23,9 +23,7 @@ const packageDir = join(home, "workflow-package");
 const effectFile = join(home, "completed-effect.txt");
 const reachedFile = join(home, "frontier-reached.txt");
 let session: AgentSession | undefined;
-let clockOffset = 0;
 const wallClock = Date.now.bind(Date);
-Date.now = () => wallClock() + clockOffset;
 
 async function ready(): Promise<AgentSession> {
 	if (session !== undefined) return session;
@@ -118,7 +116,8 @@ for await (const line of createInterface({ input: process.stdin })) {
 		} else if (command === "dispose") {
 			await session?.dispose();
 		} else if (command === "expire") {
-			clockOffset = FOREIGN_LIVE_WORKFLOW_WINDOW_MS + 1000;
+			assert.ok(runId);
+			expireWorkflowLease(join(home, "journal.sqlite"), runId);
 		} else if (command === "resume") {
 			assert.ok(runId);
 			const host = await ready();

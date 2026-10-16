@@ -18,6 +18,7 @@ import {
 	JournalInvalidTextError,
 	StaleLeaseError,
 } from "../../packages/workflows/src/durable/journal/types.js";
+import { assertLeaseStateUnchanged } from "../helpers/journal-lease-state.js";
 import { observeJournalRead } from "../helpers/journal-read-observation.js";
 import { fileExists, makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -200,7 +201,7 @@ test.each(["administrative", "owned"] as const)(
 		);
 		assert.deepEqual(await journal.getRun(header.runId), header);
 		assert.deepEqual(await journal.readKey(header.runId, "retained"), appended.entry);
-		assert.deepEqual(await journal.leaseState(header.runId), beforeLease);
+		assertLeaseStateUnchanged(await journal.leaseState(header.runId), beforeLease);
 		await db.exec("DROP TRIGGER reject_delete");
 		await journal.deleteOwnedRun(lease, 1);
 		await journal.close();
@@ -292,7 +293,21 @@ test.each(["header", "append"] as const)(
 			await assert.rejects(journal.append(lease, event, { expectSeq: 0 }), JournalCasConflictError);
 			await assert.rejects(
 				journal.append(lease, { type: "StatusChanged", payload: { status: "bad\u0000status", inputs } }),
-				JournalInvalidTextError,
+				(error: Error) => {
+					assert.ok(error instanceof StorageUnavailableError);
+					assert.equal(error.adapter, db.descriptor.adapter);
+					assert.equal(error.location, db.descriptor.location);
+					assert.equal(error.cause, cause);
+					return true;
+				},
+			);
+			await assert.rejects(
+				journal.append(lease, { type: "StatusChanged", payload: { status: "bad\u0000status" } }),
+				(error: Error) => {
+					assert.ok(error instanceof JournalInvalidTextError);
+					assert.equal(error.field, "status");
+					return true;
+				},
 			);
 		}
 		const rejected =
@@ -314,7 +329,7 @@ test.each(["header", "append"] as const)(
 		const entries = [];
 		for await (const entry of journal.read(header.runId)) entries.push(entry);
 		assert.deepEqual(entries, [first.entry]);
-		assert.deepEqual(await journal.leaseState(header.runId), state);
+		assertLeaseStateUnchanged(await journal.leaseState(header.runId), state);
 		assert.equal(
 			(await journal.append(lease, { type: "RunFinished", payload: null }, { expectSeq: 1 })).entry.seq,
 			2,

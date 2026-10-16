@@ -74,7 +74,7 @@ const sqliteShape: Equal<Exclude<keyof SqlRunJournal, "path" | "descriptor">, ke
 const descriptorShape: Equal<SqlRunJournal["descriptor"], StorageDescriptor> = true;
 declare const database: SqliteDatabase;
 const opened: Promise<SqlRunJournal> = SqlRunJournal.open(database, { prefix: "example_" });
-const leaseShape: Equal<LeaseState, Lease & { readonly renewedAt: number }> = true;
+const leaseShape: Equal<LeaseState, Lease & { readonly renewedAt: number; readonly ageMs: number }> = true;
 void [runLookup, leaseLookup, takeover, memoryShape, sqliteShape, leaseShape, descriptorShape, opened];
 const journalOptions: readonly RunOpts[] = [
 	{ journal }, { journal: { memory: true } }, { journal: { path: "runs.sqlite" } },

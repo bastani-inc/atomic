@@ -250,9 +250,18 @@ export class SqlRunJournal implements RunJournal {
 		this.assertOpen();
 		validateText("runId", runId);
 		return this.operation(async () => {
-			const row = await this.leaseRow(this.database, runId);
+			const row = await this.database.get<LeaseRow & { age_ms: number }>(
+				`SELECT *, MIN(${Number.MAX_SAFE_INTEGER}, MAX(0, ${STORE_NOW} - ${c.renewedAt})) AS age_ms FROM ${this.tables.leases} WHERE ${c.runId} = ?`,
+				runId,
+			);
 			return row && row[c.holderId] !== null
-				? { runId, holderId: row[c.holderId]!, epoch: row[c.epoch], renewedAt: Number(row[c.renewedAt]) }
+				? {
+						runId,
+						holderId: row[c.holderId]!,
+						epoch: journalCounter(runId, "epoch", row[c.epoch]),
+						renewedAt: Number(row[c.renewedAt]),
+						ageMs: Number(row.age_ms),
+					}
 				: undefined;
 		});
 	}
@@ -329,13 +338,17 @@ export class SqlRunJournal implements RunJournal {
 		validateText("runId", lease.runId);
 		validateText("holderId", lease.holderId);
 		if (options?.key !== undefined) validateText("key", options.key);
-		if (event.type === RUN_EVENT_TYPES.statusChanged) validateText("status", event.payload.status);
 		const owned = { ...lease };
 		const key = options?.key;
 		const expected = options?.expectSeq;
 		const type = event.type;
-		const status = event.type === RUN_EVENT_TYPES.statusChanged ? event.payload.status : undefined;
 		const payload = this.snapshotJson(event.payload);
+		const status =
+			type === RUN_EVENT_TYPES.statusChanged && !(payload instanceof StorageUnavailableError)
+				? (JSON.parse(payload) as { status: string }).status
+				: undefined;
+		if (type === RUN_EVENT_TYPES.statusChanged && !(payload instanceof StorageUnavailableError))
+			validateText("status", status!);
 		return this.operation(() =>
 			this.database.transaction(async (tx) => {
 				await this.checkLease(tx, owned);

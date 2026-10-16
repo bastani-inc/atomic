@@ -20,6 +20,7 @@ import { run } from "../../packages/workflows/src/runs/foreground/sdk-run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { readJournalEntries } from "../helpers/journal-internals.js";
+import { assertLeaseStateUnchanged } from "../helpers/journal-lease-state.js";
 import { testRunId } from "../helpers/run-id.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -329,7 +330,7 @@ test("quit retires a cancelled tool's executor without waiting for caught-cancel
 		await job.promise;
 		assert.equal(bodySettled, true);
 		assert.deepEqual(await readJournalEntries(backend.journal, runId), entries);
-		assert.deepEqual(
+		assertLeaseStateUnchanged(
 			await backend.journal.leaseState(runId),
 			lease,
 			"late settlement cannot release the resumed lease",

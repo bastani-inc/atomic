@@ -30,6 +30,7 @@ import { classifyControlError } from "../../packages/workflows/src/extension/wor
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../../packages/workflows/src/runs/foreground/stage-session-heartbeat.js";
 import type { PendingStageMessage } from "../../packages/workflows/src/shared/store-types.js";
 import { JournalTestDatabase } from "../helpers/journal-database.js";
+import { assertLeaseStateUnchanged } from "../helpers/journal-lease-state.js";
 import { bunExecutable, makeTempDirectory, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
 import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
@@ -94,6 +95,22 @@ afterEach(async () => {
 	} finally {
 		vi.useRealTimers();
 		for (const dir of dirs.splice(0)) removeTempDirectory(dir);
+	}
+});
+
+test("ownership probes use store-clock lease age despite a skewed process clock", async () => {
+	const path = database();
+	const writer = await open(path);
+	await register(writer);
+	const observer = await open(path);
+	const clock = vi.spyOn(Date, "now").mockReturnValue(Number.MAX_SAFE_INTEGER);
+	try {
+		assert.equal(await observer.workflowOwnership("run"), "foreign");
+		expire(path);
+		clock.mockReturnValue(0);
+		assert.equal(await observer.workflowOwnership("run"), "available");
+	} finally {
+		clock.mockRestore();
 	}
 });
 
@@ -990,7 +1007,7 @@ test("late registration deletion refuses a fresh foreign holder before deleting 
 		return true;
 	});
 	assert.deepEqual(await entries(writer.journal), before);
-	assert.deepEqual(await writer.journal.leaseState("run"), lease);
+	assertLeaseStateUnchanged(await writer.journal.leaseState("run"), lease);
 	assert.deepEqual((await open(path)).getWorkflow("run"), writer.getWorkflow("run"));
 	await writer.close();
 	await observer.deleteWorkflow("run");

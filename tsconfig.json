@@ -19,6 +19,7 @@
         "verbatimModuleSyntax": true,
         "paths": {
             "@bastani/atomic": ["./packages/coding-agent/src/index.ts"],
+            "@bastani/atomic/storage": ["./packages/coding-agent/src/core/storage/index.ts"],
             "@bastani/atomic/workflows": ["./packages/workflows/src/authoring.ts"],
             "@bastani/atomic/workflows/builtin": ["./packages/workflows/builtin/index.ts"],
             "@bastani/atomic/workflows/builtin/*": ["./packages/workflows/builtin/*"],

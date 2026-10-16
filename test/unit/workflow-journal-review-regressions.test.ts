@@ -26,6 +26,7 @@ import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../../packages/workflows/sr
 import { run, workflow } from "../../packages/workflows/src/sdk-surface.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { assertLeaseStateUnchanged } from "../helpers/journal-lease-state.js";
 import { testRunId } from "../helpers/run-id.js";
 import {
 	bunExecutable,
@@ -88,7 +89,7 @@ for (const method of ["takeoverExpired", "leaseState"] as const) {
 			const state = await memory.leaseState("run");
 			assert.equal(state?.holderId, backend.holderId);
 			assert.equal(await backend.workflowOwnership("run"), "local");
-			assert.deepEqual(await memory.leaseState("run"), state);
+			assertLeaseStateUnchanged(await memory.leaseState("run"), state);
 		} finally {
 			await backend.close();
 			await memory.close();
@@ -290,10 +291,10 @@ test("async-only ownership inspection is read-only and expired takeover fences t
 		vi.setSystemTime(1_001);
 		assert.equal(await writer.workflowOwnership("run"), "local");
 		assert.equal(await reader.workflowOwnership("run"), "foreign");
-		assert.deepEqual(await memory.leaseState("run"), initial);
+		assertLeaseStateUnchanged(await memory.leaseState("run"), initial);
 		vi.setSystemTime(1_000 + FOREIGN_LIVE_WORKFLOW_WINDOW_MS + 1);
 		assert.equal(await reader.workflowOwnership("run"), "available");
-		assert.deepEqual(await memory.leaseState("run"), initial);
+		assertLeaseStateUnchanged(await memory.leaseState("run"), initial);
 		await reader.setWorkflowStatus("run", "paused");
 		const current = await memory.leaseState("run");
 		assert.equal(current?.epoch, initial.epoch + 1);

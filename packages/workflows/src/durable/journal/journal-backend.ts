@@ -448,7 +448,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	workflowOwnership(runId: string): "local" | "foreign" | "available" | Promise<"local" | "foreign" | "available"> {
 		if (this.synchronous !== undefined) {
 			const lease = this.synchronous.leaseStateSync(runId);
-			if (lease === undefined || isWorkflowLeaseExpired(lease.renewedAt, FOREIGN_LIVE_WORKFLOW_WINDOW_MS))
+			if (lease === undefined || isWorkflowLeaseExpired(0, FOREIGN_LIVE_WORKFLOW_WINDOW_MS, lease.ageMs))
 				return "available";
 			return lease.holderId === this.holderId ? "local" : "foreign";
 		}
@@ -457,7 +457,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	private *probeOwnership(runId: string): Operation<"local" | "foreign" | "available"> {
 		this.ensureOpen();
 		const lease = yield* invoke(() => this.journal.leaseState(runId));
-		if (lease === undefined || isWorkflowLeaseExpired(lease.renewedAt, FOREIGN_LIVE_WORKFLOW_WINDOW_MS))
+		if (lease === undefined || isWorkflowLeaseExpired(0, FOREIGN_LIVE_WORKFLOW_WINDOW_MS, lease.ageMs))
 			return "available";
 		return lease.holderId === this.holderId ? "local" : "foreign";
 	}

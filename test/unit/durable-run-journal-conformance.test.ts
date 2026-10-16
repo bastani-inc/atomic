@@ -7,6 +7,7 @@ import { registerRunJournalConformance } from "../../packages/workflows/src/dura
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { StaleLeaseError } from "../../packages/workflows/src/durable/journal/types.js";
+import { assertLeaseStateUnchanged } from "../helpers/journal-lease-state.js";
 import { observeJournalRead } from "../helpers/journal-read-observation.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -68,7 +69,7 @@ for (const source of ["node", "caller-owned"] as const) {
 			await journal.close();
 			journal = await openSqlRunJournal(connection ?? path);
 			assert.deepEqual(await journal.getRun(header.runId), { ...header, status: "paused" });
-			assert.deepEqual(await journal.leaseState(header.runId), state);
+			assertLeaseStateUnchanged(await journal.leaseState(header.runId), state);
 			assert.deepEqual(
 				await journal.append(acquired.lease, { type: "RunFinished", payload: null }, { key: "", expectSeq: 0 }),
 				{ status: "exists", entry: appended.entry },

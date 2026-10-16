@@ -31,10 +31,10 @@ test(
 				resume: ownedElsewhere,
 			});
 			await producer.crash();
-			await recoverer.request("expire");
+			await recoverer.request("expire", runId);
 			assert.equal((await recoverer.request<Inspection>("inspect", runId)).status, "crashed");
 			const competitor = home.client({}, FIXTURE);
-			await competitor.request("expire");
+			await competitor.request("expire", runId);
 			const attempts = await Promise.allSettled([
 				recoverer.request<Inspection>("resume", runId),
 				competitor.request<Inspection>("resume", runId),

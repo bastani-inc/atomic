@@ -93,7 +93,7 @@ export interface Lease {
 	readonly epoch: number;
 }
 
-export type LeaseState = Lease & { readonly renewedAt: number };
+export type LeaseState = Lease & { readonly renewedAt: number; readonly ageMs: number };
 
 export type LeaseOutcome =
 	| { readonly status: "acquired"; readonly lease: Lease }
