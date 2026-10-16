@@ -203,14 +203,23 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	): Promise<T> {
 		try {
 			this.ensureOpen();
-			if (requiresActiveExecution && typeof runId === "string") this.assertExecutionActive(runId);
+			if (requiresActiveExecution) this.assertExecutionActive(runId);
 		} catch (error) {
 			return Promise.reject(error);
 		}
-		const prior = this.pending.get(runId) ?? Promise.resolve();
 		const admitted = new Set(
 			[...(this.executionContext.getStore()?.values() ?? [])].filter((execution) => !execution.retired),
 		);
+		return this.enqueue(runId, action, admitted);
+	}
+
+	// Internal nested work inherits admission; public mutations must enter through serialize.
+	private enqueue<T>(
+		runId: string | symbol,
+		action: () => Operation<T>,
+		admitted = this.mutationContext.getStore() ?? new Set<WorkflowLeaseExecution>(),
+	): Promise<T> {
+		const prior = this.pending.get(runId) ?? Promise.resolve();
 		const result = prior.then(() => this.mutationContext.run(admitted, () => execute(action())));
 		const settled = result.then(
 			() => {},
@@ -305,10 +314,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		if (this.state === "closed" || (this.state === "closing" && !this.mutationContext.getStore()))
 			throw new JournalBackendClosedError();
 	}
-	private assertExecutionActive(runId: string, admitted = false): void {
-		for (const execution of this.executionContext.getStore()?.values() ?? [])
+	private assertExecutionActive(runId: string | symbol, admitted = false): void {
+		for (const [executionRunId, execution] of this.executionContext.getStore() ?? [])
 			if (execution.retired && !(admitted && this.mutationContext.getStore()?.has(execution)))
-				throw new JournalExecutionRetiredError(runId);
+				throw new JournalExecutionRetiredError(typeof runId === "string" ? runId : executionRunId);
 	}
 	private *ownership(runId: string): Operation<Lease> {
 		this.ensureOpen();
@@ -784,7 +793,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		const runIds = new Set(this.sequences.keys());
 		const runs = yield* invoke(() => this.journal.listRuns());
 		for (const run of runs) runIds.add(run.runId);
-		for (const runId of runIds) yield* invoke(() => this.serialize(runId, () => this.deleteOwned(runId)));
+		for (const runId of runIds) yield this.enqueue(runId, () => this.deleteOwned(runId));
 	}
 	private renewLeases(): Promise<void> {
 		if (this.renewing !== undefined) return this.renewing;

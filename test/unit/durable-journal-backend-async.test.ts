@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
 import {
 	JournalBackendClosedError,
 	JournalDurableBackend,
 	JournalExecutionRetiredError,
+	JournalOwnershipError,
 } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
-import { RUN_EVENT_TYPES } from "../../packages/workflows/src/durable/journal/types.js";
+import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+import { RUN_EVENT_TYPES, StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
+import { classifyControlError } from "../../packages/workflows/src/extension/workflow-control-failure.js";
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../../packages/workflows/src/runs/foreground/stage-session-heartbeat.js";
+import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 function gate() {
 	let resolve!: () => void;
@@ -199,6 +204,134 @@ test("close drains an accepted reset while its catalog read is pending", async (
 	await Promise.all([resetting, closing]);
 	assert.equal(backend.getWorkflow("run"), undefined);
 });
+
+for (const storage of ["memory", "sqlite"] as const) {
+	for (const closeDuringReset of [false, true]) {
+		test(`${storage}: an admitted reset survives retirement${closeDuringReset ? " and close" : ""}`, async () => {
+			const directory = makeTempDirectory("journal-reset-");
+			const journal =
+				storage === "memory" ? new MemoryRunJournal() : await openSqlRunJournal(join(directory, "journal.sqlite"));
+			const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
+			try {
+				await backend.registerWorkflow({
+					workflowId: "run",
+					name: "test",
+					inputs: {},
+					createdAt: 1,
+					status: "paused",
+				});
+				await backend.withWorkflowLease("run", async () => {
+					const retire = backend.captureWorkflowRetirement("run");
+					const resetting = backend.reset();
+					const retiring = retire();
+					const closing = closeDuringReset ? backend.close() : Promise.resolve();
+					await Promise.all([resetting, retiring, closing]);
+					if (!closeDuringReset) {
+						await assert.rejects(backend.reset(), JournalExecutionRetiredError);
+						await assert.rejects(backend.recordCheckpoint(checkpoint("late")), JournalExecutionRetiredError);
+					} else {
+						await assert.rejects(backend.reset(), JournalBackendClosedError);
+					}
+				});
+				assert.equal(backend.getWorkflow("run"), undefined);
+				assert.deepEqual(backend.listCheckpoints("run"), []);
+				assert.equal(await journal.getRun("run"), undefined);
+				assert.equal(await journal.leaseState("run"), undefined);
+			} finally {
+				await backend.close();
+				await journal.close();
+				removeTempDirectory(directory);
+			}
+		});
+	}
+
+	test(`${storage}: a refused reset preserves the ownership error and both queues remain usable`, async () => {
+		const directory = makeTempDirectory("journal-reset-owner-");
+		const path = join(directory, "journal.sqlite");
+		const journal = storage === "memory" ? new MemoryRunJournal() : await openSqlRunJournal(path);
+		const observerJournal = storage === "memory" ? journal : await openSqlRunJournal(path);
+		const owner = await JournalDurableBackend.open(journal, { ownsJournal: false });
+		let observer: JournalDurableBackend | undefined;
+		try {
+			await owner.registerWorkflow({ workflowId: "run", name: "test", inputs: {}, createdAt: 1, status: "paused" });
+			observer = await JournalDurableBackend.open(observerJournal, { ownsJournal: false });
+			const lease = await journal.leaseState("run");
+			await assert.rejects(observer.reset(), (error: Error) => {
+				assert.ok(error instanceof JournalOwnershipError);
+				assert.equal(error.runId, "run");
+				assert.equal(error.holderId, owner.holderId);
+				assert.equal(error.cause, undefined);
+				assert.equal(classifyControlError(error), "owned_elsewhere");
+				return true;
+			});
+			assert.equal((await journal.leaseState("run"))?.holderId, owner.holderId);
+			assert.equal((await journal.leaseState("run"))?.epoch, lease?.epoch);
+			assert.equal((await journal.getRun("run"))?.status, "paused");
+			assert.equal(observer.getWorkflow("run")?.status, "paused");
+			await owner.recordCheckpoint(checkpoint());
+			assert.equal(owner.getToolOutput("run", "one"), "one");
+			await observer.registerWorkflow({
+				workflowId: "other",
+				name: "test",
+				inputs: {},
+				createdAt: 1,
+				status: "paused",
+			});
+			await owner.releaseWorkflow("run");
+			await observer.reset();
+			assert.deepEqual(await observerJournal.listRuns(), []);
+			assert.equal(observer.getWorkflow("run"), undefined);
+			assert.equal(observer.getWorkflow("other"), undefined);
+		} finally {
+			await observer?.close();
+			await owner.close();
+			await observerJournal.close();
+			await journal.close();
+			removeTempDirectory(directory);
+		}
+	});
+
+	test(`${storage}: reset wraps a foreign journal failure without poisoning the queue`, async () => {
+		const directory = makeTempDirectory("journal-reset-driver-");
+		const journal =
+			storage === "memory" ? new MemoryRunJournal() : await openSqlRunJournal(join(directory, "journal.sqlite"));
+		const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
+		const deleteOwnedRun = journal.deleteOwnedRun.bind(journal);
+		const failure = new Error("foreign driver failure");
+		try {
+			await backend.registerWorkflow({
+				workflowId: "run",
+				name: "test",
+				inputs: {},
+				createdAt: 1,
+				status: "paused",
+			});
+			journal.deleteOwnedRun = async () => {
+				throw failure;
+			};
+			await assert.rejects(backend.reset(), (error: Error) => {
+				assert.ok(error instanceof StorageUnavailableError);
+				assert.equal(error.adapter, "custom");
+				assert.equal(error.location, "custom journal");
+				assert.equal(error.cause, failure);
+				assert.equal(classifyControlError(error), "storage_unavailable");
+				return true;
+			});
+			assert.equal((await journal.getRun("run"))?.status, "paused");
+			assert.equal(backend.getWorkflow("run")?.status, "paused");
+			journal.deleteOwnedRun = deleteOwnedRun;
+			await backend.recordCheckpoint(checkpoint());
+			await backend.reset();
+			assert.equal(await journal.getRun("run"), undefined);
+			assert.equal(backend.getWorkflow("run"), undefined);
+		} finally {
+			journal.deleteOwnedRun = deleteOwnedRun;
+			await backend.close();
+			await journal.close();
+			removeTempDirectory(directory);
+		}
+	});
+}
 
 test("reset preserves an unsnapshotted registration's cache, storage and close cleanup", async () => {
 	const journal = new MemoryRunJournal();
