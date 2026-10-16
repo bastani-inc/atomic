@@ -3,7 +3,7 @@ import { test } from "vitest";
 import { StageSessionReplacement } from "../../packages/workflows/src/runs/foreground/stage-runner-replacement.js";
 import { makeMockSession } from "./stage-runner-helpers.js";
 
-test("fallback replacement does not dispose an admitted turn before the old session becomes idle", async () => {
+test("fallback replacement waits for idle after a missing session (#3655)", async () => {
 	const idle = Promise.withResolvers<void>();
 	let disposed = false;
 	const previous = makeMockSession({
@@ -16,6 +16,7 @@ test("fallback replacement does not dispose an admitted turn before the old sess
 	const replacement = new StageSessionReplacement();
 
 	replacement.retire(previous);
+	replacement.retire(undefined);
 	replacement.adopt(target);
 	await Promise.resolve();
 	assert.equal(disposed, false);
@@ -24,3 +25,25 @@ test("fallback replacement does not dispose an admitted turn before the old sess
 	await replacement.dispose();
 	assert.equal(disposed, true);
 });
+
+test.each([true, false])(
+	"fallback retains cleanup after a missing session with successor=%s (#3655)",
+	async (adopt) => {
+		let disposeCount = 0;
+		const previous = makeMockSession({
+			dispose() {
+				disposeCount++;
+			},
+		}).session;
+		const replacement = new StageSessionReplacement();
+
+		replacement.retire(previous);
+		replacement.retire(undefined);
+		if (adopt) replacement.adopt(makeMockSession().session);
+		await replacement.dispose();
+		assert.equal(disposeCount, 1);
+
+		await replacement.dispose();
+		assert.equal(disposeCount, 1);
+	},
+);
