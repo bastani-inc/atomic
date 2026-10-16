@@ -1,4 +1,5 @@
 import { raceAbort } from "../shared/abort.js";
+import { currentWorkflowStore } from "../shared/store-factory.js";
 /** Resume workflows from durable checkpoints without repeating completed work. */
 
 import { currentToolControlRegistry, type ToolControlRegistry } from "../engine/run-tool-control-registry.js";
@@ -15,12 +16,12 @@ import type { WorkflowDefinition, WorkflowInputValues } from "../shared/types.js
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import { type DurableWorkflowBackend, resumableEntryFromHandle } from "./backend.js";
 import { durableWorkflowRunSnapshots } from "./completed-catalog.js";
-import { getDurableBackend } from "./factory.js";
 import { forkDurableWorkflow } from "./fork-workflow.js";
 import { JournalDurableBackend } from "./journal/journal-backend.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import { foreignInstanceMessage } from "./sdk-owner-release.js";
 import { canonicalDirectory, isSdkRunAdoptable } from "./sdk-recovery-scope.js";
+import { requireStoreDurableBackend } from "./store-backend.js";
 import { resolveToolResumeFrontier } from "./tool-resume-frontier.js";
 import type { ResumableWorkflowEntry } from "./types.js";
 
@@ -44,7 +45,7 @@ export interface ResumeDurableDeps {
 	readonly registry: WorkflowRegistry;
 	/** Base run options forwarded to the detached runner (store, persistence, …). */
 	readonly baseRunOpts: RunOpts;
-	/** Durable backend override (defaults to the global singleton). */
+	/** Backend selected by the owning runtime or store. */
 	readonly durableBackend?: DurableWorkflowBackend;
 	/** Resolve a definition from its original invocation directory after restart. */
 	readonly resolveDefinition?: (name: string, cwd: string | undefined) => Promise<WorkflowDefinition | undefined>;
@@ -62,7 +63,7 @@ export async function prepareDurableResume(
 	workflowId: string | undefined,
 	deps: ResumeDurableDeps,
 ): Promise<readonly ResumableWorkflowEntry[]> {
-	const backend = deps.durableBackend ?? getDurableBackend();
+	const backend = deps.durableBackend ?? requireStoreDurableBackend(deps.baseRunOpts.store ?? currentWorkflowStore());
 	await backend.hydrateResumableWorkflows();
 	const catalog = backend.listResumableWorkflows();
 	// If a specific target was requested, hydrate that workflow too (it might
@@ -109,7 +110,7 @@ export async function resumeDurableWorkflow(
 	deps: ResumeDurableDeps,
 	catalog?: readonly ResumableWorkflowEntry[],
 ): Promise<ResumeDurableResult> {
-	const backend = deps.durableBackend ?? getDurableBackend();
+	const backend = deps.durableBackend ?? requireStoreDurableBackend(deps.baseRunOpts.store ?? currentWorkflowStore());
 	const target = resolveDurableEntry(workflowId, catalog ?? backend.listResumableWorkflows());
 	const id = target !== undefined && !("kind" in target) ? target.workflowId : workflowId;
 	const handle = backend.getWorkflow(id);
@@ -143,7 +144,7 @@ async function resumeDurableWorkflowClaimed(
 	catalog?: readonly ResumableWorkflowEntry[],
 ): Promise<ResumeDurableResult> {
 	deps.signal?.throwIfAborted();
-	const backend = deps.durableBackend ?? getDurableBackend();
+	const backend = deps.durableBackend ?? requireStoreDurableBackend(deps.baseRunOpts.store ?? currentWorkflowStore());
 	const knownCatalog = catalog ?? backend.listResumableWorkflows();
 	const target = resolveRunIdTarget(
 		workflowId,

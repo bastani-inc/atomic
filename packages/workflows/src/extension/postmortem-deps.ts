@@ -12,7 +12,7 @@
  *   - src/tui/overlay-adapter.ts (attach pane wiring)
  * */
 
-import { getDurableBackend } from "../durable/factory.js";
+import { requireStoreDurableBackend } from "../durable/store-backend.js";
 import {
 	type EnsurePostMortemStageHandleResult,
 	ensurePostMortemStageHandle,
@@ -35,7 +35,7 @@ export interface PostMortemResolverDeps {
 /** Persisted original/resolved cwd for a durable run tree, when still available. */
 function resolveStageCwd(runId: string, runStore: Store): string | undefined {
 	try {
-		const backend = getDurableBackend();
+		const backend = requireStoreDurableBackend(runStore);
 		const owningHandle = backend.getWorkflow(runId);
 		const run = readGraphStoreSnapshot(runStore).runs.find((candidate) => candidate.id === runId);
 		const rootRunId = run?.rootRunId ?? owningHandle?.rootWorkflowId;

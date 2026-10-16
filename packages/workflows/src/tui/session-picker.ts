@@ -125,7 +125,7 @@ export function selectRunsForPicker(
 		if (!isTopLevelWorkflowRun(r)) continue;
 		if (!matches(r)) continue;
 		if (intent === "resume") {
-			const candidate = resumeCandidateLookup?.(r) ?? workflowRunResumeCandidate(r, runs);
+			const candidate = resumeCandidateLookup?.(r) ?? workflowRunResumeCandidate(r, runs, undefined);
 			if (!isWorkflowRunResumable(candidate)) continue;
 		}
 		const endedAt = r.endedAt;

@@ -1,5 +1,5 @@
-import { getDurableBackend } from "../durable/factory.js";
 import { foreignInstanceMessage } from "../durable/sdk-owner-release.js";
+import { requireStoreDurableBackend } from "../durable/store-backend.js";
 import type { Store } from "../shared/store.js";
 import { WorkflowInstanceOwnershipError } from "../shared/workflow-instance-ownership-error.js";
 import type { PiExecuteContext } from "./public-types.js";
@@ -24,7 +24,7 @@ export function workflowCaller(ctx: Pick<PiExecuteContext, "sessionId" | "sessio
 /** Admission metadata, not the disposable routing reservation, owns a live or retained instance. */
 export function assertWorkflowInstanceOwner(id: string, ctx: PiExecuteContext, store: Store): void {
 	const runs = store.runs();
-	const backend = getDurableBackend();
+	const backend = requireStoreDurableBackend(store);
 	const seen = new Set<string>();
 	const assertOne = (runId: string): void => {
 		if (seen.has(runId)) return;

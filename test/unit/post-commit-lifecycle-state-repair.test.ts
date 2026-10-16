@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import type { AgentSession } from "@bastani/atomic";
 import { afterEach, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
 import { jobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
@@ -20,6 +19,7 @@ import { createStore, store as singletonStore } from "../../packages/workflows/s
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { testRunId } from "../helpers/run-id.js";
 import { sleep } from "../helpers/runtime.js";
+import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import { buildCtx, installSlashDispatchTestHooks, registerWorkflowCommand } from "./slash-dispatch-utils.js";
 

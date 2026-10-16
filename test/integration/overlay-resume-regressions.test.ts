@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { toolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import type { ExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
 import type { WorkflowExecutionPolicy } from "../../packages/workflows/src/shared/types.js";
 import { testRunId } from "../helpers/run-id.js";
+import {
+	currentStoreBackend,
+	configureCurrentTestStoreBackend as setDurableBackend,
+} from "../helpers/store-backend.js";
 import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import {
 	buildMockPi,
@@ -34,6 +37,7 @@ describe("/workflow resume — durable regression coverage", () => {
 		let capturedPolicy: WorkflowExecutionPolicy | undefined;
 		const workflowId = testRunId("durable-policy-run");
 		const runtime = {
+			durableBackend: currentStoreBackend,
 			prepareDurableResumable: async () => [
 				{
 					workflowId,
@@ -77,6 +81,7 @@ describe("/workflow resume — durable regression coverage", () => {
 
 	test("headless no-arg durable resume prints catalog without awaiting no-op custom UI", async () => {
 		const runtime = {
+			durableBackend: currentStoreBackend,
 			prepareDurableResumable: async () => [
 				{
 					workflowId: "durable-headless-catalog",
@@ -128,6 +133,7 @@ describe("/workflow resume — durable regression coverage", () => {
 	test("targeted stale running durable resume does not print stale catalog", async () => {
 		const workflowId = testRunId("stale-running-id");
 		const runtime = {
+			durableBackend: currentStoreBackend,
 			registry: { has: () => false },
 			prepareDurableResumable: async () => [
 				{
@@ -429,6 +435,7 @@ describe("/workflow resume — durable regression coverage", () => {
 		const entry = backend.listResumableWorkflows()[0]!;
 		let resumeCalls = 0;
 		const runtime = {
+			durableBackend: currentStoreBackend,
 			registry: { has: () => true },
 			prepareDurableResumable: async () => [entry],
 			prepareCompletedDurable: async () => [],

@@ -3,7 +3,6 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import type { ResumableWorkflowEntry } from "../../packages/workflows/src/durable/types.js";
 import {
 	createWorkflowLifecycleNotificationState,
@@ -25,6 +24,10 @@ import { workflowResumeAction } from "../../packages/workflows/src/extension/wor
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifacts.js";
 import { testRunId } from "../helpers/run-id.js";
+import {
+	currentStoreBackend,
+	configureCurrentTestStoreBackend as setDurableBackend,
+} from "../helpers/store-backend.js";
 import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 let tempDir = "";
@@ -222,6 +225,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 			endedAt: 2,
 		});
 		const runtime = {
+			durableBackend: currentStoreBackend,
 			prepareDurableCatalog: async () => ({
 				resumable: [],
 				completed: [
@@ -251,6 +255,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 	test("workflow tool resumes an exact paused durable id without loading unrelated workflows", async () => {
 		const calls: string[] = [];
 		const runtime = {
+			durableBackend: currentStoreBackend,
 			prepareDurableCatalog: async () => {
 				assert.fail("an exact id must not scan the durable catalog");
 			},
@@ -274,6 +279,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 		setDurableBackend(backend);
 		registerCompletedTool(backend, root);
 		const runtime = {
+			durableBackend: currentStoreBackend,
 			prepareDurableCatalog: async () => {
 				assert.fail("exact completed id must not scan the catalog");
 			},
@@ -292,6 +298,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 
 	test("workflow tool reports a missing exact id without loading the catalog", async () => {
 		const runtime = {
+			durableBackend: currentStoreBackend,
 			prepareDurableCatalog: async () => {
 				assert.fail("missing exact id must not scan the catalog");
 			},
@@ -311,6 +318,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 	test("workflow tool prefix plus a stage selector refuses durable dispatch", async () => {
 		const calls: unknown[] = [];
 		const runtime = {
+			durableBackend: currentStoreBackend,
 			prepareDurableCatalog: async () => ({ resumable: [pausedDurableEntry(root)], completed: [] }),
 			resumeDurableWorkflow: async (...args: unknown[]) => {
 				calls.push(args);
@@ -330,6 +338,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 	test("workflow tool exact durable id plus a stage selector refuses durable dispatch", async () => {
 		const calls: unknown[] = [];
 		const runtime = {
+			durableBackend: currentStoreBackend,
 			prepareDurableCatalog: async () => ({ resumable: [pausedDurableEntry(root)], completed: [] }),
 			prepareDurableResumable: async () => [pausedDurableEntry(root)],
 			prepareCompletedDurable: async () => [],
@@ -373,6 +382,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 		const entry = pausedDurableEntry(root);
 		const calls: unknown[] = [];
 		const runtime = {
+			durableBackend: currentStoreBackend,
 			prepareDurableCatalog: async () => ({ resumable: [entry], completed: [] }),
 			prepareDurableResumable: async () => [entry],
 			resumeDurableWorkflow: async (...args: unknown[]) => {
@@ -440,6 +450,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 		const entry = pausedDurableEntry(root);
 		const calls: unknown[] = [];
 		const runtime = {
+			durableBackend: currentStoreBackend,
 			prepareDurableCatalog: async () => ({ resumable: [entry], completed: [] }),
 			prepareDurableResumable: async () => [entry],
 			resumeDurableWorkflow: async (...args: unknown[]) => {
@@ -456,6 +467,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 	test("workflow tool prefix durable resume without a stage still dispatches the canonical root", async () => {
 		const calls: unknown[] = [];
 		const runtime = {
+			durableBackend: currentStoreBackend,
 			prepareDurableCatalog: async () => ({ resumable: [pausedDurableEntry(root)], completed: [] }),
 			resumeDurableWorkflow: async (...args: unknown[]) => {
 				calls.push(args);
@@ -491,6 +503,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 		});
 		let resumeCalls = 0;
 		const runtime = {
+			durableBackend: currentStoreBackend,
 			registry: { has: () => true },
 			prepareDurableCatalog: async () => ({ resumable: [pausedDurableEntry(root)], completed: [] }),
 			prepareDurableResumable: async () => [pausedDurableEntry(root)],
@@ -529,6 +542,7 @@ describe("durable prefix resume namespace and stage scope", () => {
 		});
 		let resumeCalls = 0;
 		const runtime = {
+			durableBackend: currentStoreBackend,
 			registry: { has: () => true },
 			prepareDurableResumable: async () => [pausedDurableEntry(root)],
 			prepareCompletedDurable: async () => [],
@@ -1159,6 +1173,7 @@ describe("/workflow resume completed target", () => {
 			};
 			let resumeCalls = 0;
 			const runtime = {
+				durableBackend: currentStoreBackend,
 				registry: { has: () => true },
 				prepareDurableResumable: async () => [entry],
 				prepareCompletedDurable: async () => [],
@@ -1204,6 +1219,7 @@ describe("/workflow resume completed target", () => {
 		let resumeCalls = 0;
 		let completedOpenCalls = 0;
 		const runtime = {
+			durableBackend: currentStoreBackend,
 			registry: { has: () => true },
 			prepareDurableResumable: async () => [resumableRow],
 			prepareCompletedDurable: async () => [completedCollision],
@@ -1277,6 +1293,7 @@ describe("/workflow resume completed target", () => {
 		const entry = backend.listResumableWorkflows()[0]!;
 		let resumeCalls = 0;
 		const runtime = {
+			durableBackend: currentStoreBackend,
 			registry: { has: () => true },
 			prepareDurableResumable: async () => [entry],
 			prepareCompletedDurable: async () => [],
@@ -1317,6 +1334,7 @@ describe("/workflow resume completed target", () => {
 
 		let resumeCalls = 0;
 		const runtime = {
+			durableBackend: currentStoreBackend,
 			registry: { has: () => true },
 			prepareDurableResumable: async () => [],
 			prepareCompletedDurable: async () => [],

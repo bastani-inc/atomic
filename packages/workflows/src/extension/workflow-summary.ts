@@ -1,4 +1,4 @@
-import { getAvailableDurableBackend } from "../durable/factory.js";
+import { availableStoreDurableBackend } from "../durable/store-backend.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { isTerminalRunStatus } from "../shared/store-internal.js";
 import { subscribeStoreInvalidation } from "../shared/store-observation.js";
@@ -31,7 +31,7 @@ export function ensureWorkflowSummaryService(store: Store, context: WorkflowSumm
 			store,
 			resolveContext: () => services.get(store)?.context ?? context,
 			persist: async (runId, summary, summarizedThrough) => {
-				await getAvailableDurableBackend()?.persistSummary?.(runId, summary, summarizedThrough);
+				await availableStoreDurableBackend(store)?.persistSummary?.(runId, summary, summarizedThrough);
 				store.recordRunSummary?.(runId, summary, summarizedThrough);
 			},
 		}),

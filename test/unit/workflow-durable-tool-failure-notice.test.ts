@@ -5,7 +5,6 @@ import { afterEach, describe, test } from "vitest";
 import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../../packages/coding-agent/src/core/agent-session-persistent-custom-messages.js";
 import { createHarness, getMessageText, type Harness } from "../../packages/coding-agent/test/suite/harness.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { createWorkflowExtensionRuntimeState } from "../../packages/workflows/src/extension/extension-runtime-state.js";
 import {
 	createWorkflowLifecycleNotificationState,
@@ -30,6 +29,7 @@ import { createStore, store as workflowStore } from "../../packages/workflows/sr
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
 import { classifyWorkflowFailure } from "../../packages/workflows/src/shared/workflow-failures.js";
 import { sleep } from "../helpers/runtime.js";
+import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import { lifecycleConfig } from "./workflow-lifecycle-parent-reconciliation-support.js";
 

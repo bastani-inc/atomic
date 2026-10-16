@@ -4,8 +4,7 @@ import { afterEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
 import { durableWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
-import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
-import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import { createExtensionRuntime, type ExtensionRuntimeOpts } from "../../packages/workflows/src/extension/runtime.js";
 import {
 	workflowPauseAction,
 	workflowResumeAction,
@@ -18,6 +17,7 @@ import { INTERACTIVE_WORKFLOW_POLICY } from "../../packages/workflows/src/shared
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { sleep } from "../helpers/runtime.js";
+import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 import { TEST_TIMEOUT_MS } from "../helpers/test-timeout.js";
 import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import { mockSession } from "../unit/executor-shared.js";
@@ -80,7 +80,7 @@ test.each([
 			},
 		});
 		const entries: SessionEntry[] = [];
-		const runtime = createExtensionRuntime({
+		const runtimeOptions: ExtensionRuntimeOpts = {
 			store,
 			registry: createRegistry([definition]),
 			adapters: {
@@ -100,7 +100,8 @@ test.each([
 					});
 				},
 			},
-		});
+		};
+		let runtime = createExtensionRuntime(runtimeOptions);
 		const started = await runtime.dispatch({ action: "run", workflow: definition.name, inputs: {} });
 		assert.equal(started.action, "run");
 		assert.ok("runId" in started);
@@ -124,6 +125,7 @@ test.each([
 			backend = await backend.reopen();
 			await backend.hydrateWorkflow(runId);
 			setDurableBackend(backend);
+			runtime = createExtensionRuntime(runtimeOptions);
 		}
 		if (mode.includes("session")) {
 			store.clear();
@@ -144,6 +146,7 @@ test.each([
 					backend.recordCheckpoint(checkpoint);
 				}
 				setDurableBackend(backend);
+				runtime = createExtensionRuntime(runtimeOptions);
 			}
 		} else if (mode !== "live") {
 			const snapshots = durableWorkflowRunSnapshots(backend, backend.getWorkflow(runId)!);
@@ -244,7 +247,7 @@ test.each(["live", "restored"] as const)(
 				return {};
 			},
 		});
-		const runtime = createExtensionRuntime({
+		const runtimeOptions: ExtensionRuntimeOpts = {
 			store,
 			registry: createRegistry([definition]),
 			adapters: {
@@ -255,7 +258,8 @@ test.each(["live", "restored"] as const)(
 					},
 				},
 			},
-		});
+		};
+		let runtime = createExtensionRuntime(runtimeOptions);
 		const started = await runtime.dispatch({ action: "run", workflow: definition.name, inputs: {} });
 		assert.ok(started.action === "run");
 		await waitFor(() => store.runs().some((run) => run.id === started.runId && run.endedAt !== undefined));
@@ -267,6 +271,7 @@ test.each(["live", "restored"] as const)(
 				backend = await backend.reopen();
 				await backend.hydrateWorkflow(source.id);
 				setDurableBackend(backend);
+				runtime = createExtensionRuntime(runtimeOptions);
 				const restored = durableWorkflowRunSnapshots(backend, backend.getWorkflow(source.id)!);
 				assert.equal(restored.length, 1, "retained continuation reconstructs after restart");
 				store.clear();
@@ -535,7 +540,7 @@ test.each(
 		const resumed = await workflowResumeAction(
 			{ action: "resume", runId: source.id },
 			{
-				getRuntime: () => runtime,
+				getRuntime: () => createExtensionRuntime({ store, registry: createRegistry([definition]) }),
 				policy: INTERACTIVE_WORKFLOW_POLICY,
 				ensureWorkflowResourcesLoaded: async () => {},
 			},

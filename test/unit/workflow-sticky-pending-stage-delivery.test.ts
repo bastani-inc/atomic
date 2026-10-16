@@ -5,6 +5,7 @@ import type { DurableWorkflowBackend } from "../../packages/workflows/src/durabl
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import { ScopedDurableBackend } from "../../packages/workflows/src/durable/scoped-backend.js";
+import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import type { DurableWorkflowMetadata } from "../../packages/workflows/src/durable/types.js";
 import {
 	registerPendingStageIntercomBridge,
@@ -325,7 +326,7 @@ function rootFixture(
 	});
 	const backend = new InMemoryDurableBackend();
 	backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
-	setDurableBackend(backend);
+	bindStoreDurableBackend(store, backend);
 	return { store, backend };
 }
 
@@ -382,7 +383,7 @@ describe("pre-start sticky drain", () => {
 		let failMetadata = false;
 		const backend = metadataFailureBackend(() => failMetadata, "metadata-only fault");
 		backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
-		setDurableBackend(backend);
+		bindStoreDurableBackend(store, backend);
 		await store.queueStickyStageMessage(
 			stickyInput("callback-fault", `workflow:${ROOT_RUN_ID}/**`),
 			GROUP,
@@ -427,7 +428,7 @@ describe("pre-start sticky drain", () => {
 		const { store } = rootFixture();
 		const backend = new JournalTestBackend();
 		backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
-		setDurableBackend(backend);
+		bindStoreDurableBackend(store, backend);
 		await store.queueStickyStageMessage(stickyInput("sessions", `workflow:${ROOT_RUN_ID}/**`), GROUP, GROUP, backend);
 		for (let index = 0; index < 100; index++) {
 			await createWorkflowPendingStageDelivery(store, ROOT_RUN_ID, "orch-3-id", "orchestrator-3").deliverPending(
@@ -463,7 +464,7 @@ describe("pre-start sticky drain", () => {
 		const { store } = rootFixture([]);
 		const backend = new JournalTestBackend();
 		backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
-		setDurableBackend(backend);
+		bindStoreDurableBackend(store, backend);
 		await store.queueStickyStageMessage(
 			stickyInput("optional-recipient", `workflow:${ROOT_RUN_ID}/**`),
 			GROUP,
@@ -529,7 +530,7 @@ describe("pre-start sticky drain", () => {
 				status: "running",
 				createdAt: 1,
 			});
-			setDurableBackend(backend);
+			bindStoreDurableBackend(store, backend);
 			await store.queueStickyStageMessage(
 				stickyInput("mixed-recipient", `workflow:${ROOT_RUN_ID}/**`),
 				GROUP,
@@ -585,7 +586,7 @@ describe("pre-start sticky drain", () => {
 		const { store } = rootFixture([]);
 		const backend = new JournalTestBackend();
 		backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
-		setDurableBackend(backend);
+		bindStoreDurableBackend(store, backend);
 		await store.queueStickyStageMessage(
 			stickyInput("failed-loop", `workflow:${ROOT_RUN_ID}/**`),
 			GROUP,
@@ -671,7 +672,7 @@ describe("pre-start sticky drain", () => {
 		const { store } = rootFixture([]);
 		const backend = new JournalTestBackend();
 		backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
-		setDurableBackend(backend);
+		bindStoreDurableBackend(store, backend);
 		await store.queueStickyStageMessage(
 			stickyInput("missing-stages", `workflow:${ROOT_RUN_ID}/**`),
 			GROUP,
@@ -732,6 +733,7 @@ describe("pre-start sticky drain", () => {
 		assert.equal(pending[0]?.deliveryCount, 100);
 		assert.ok(JSON.stringify(pending).length < 1500);
 		const restored = createStore();
+		bindStoreDurableBackend(restored, backend);
 		restored.recordRunStart({ ...store.runs()[0]!, pendingStageMessages: [...pending] });
 		let delivered = 0;
 		await createWorkflowPendingStageDelivery(restored, ROOT_RUN_ID, "future", "future").deliverPending(() => {
@@ -815,7 +817,7 @@ describe("pre-start sticky drain", () => {
 		});
 		const backend = new InMemoryDurableBackend();
 		backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "root", inputs: {}, status: "running", createdAt: 1 });
-		setDurableBackend(backend);
+		bindStoreDurableBackend(store, backend);
 		assert.equal(
 			(
 				await store.queueStickyStageMessage(
@@ -929,7 +931,7 @@ describe("pre-start sticky drain", () => {
 		});
 		const backend = new InMemoryDurableBackend();
 		backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "root", inputs: {}, status: "running", createdAt: 1 });
-		setDurableBackend(backend);
+		bindStoreDurableBackend(store, backend);
 		for (const target of [
 			`workflow:${ROOT_RUN_ID}/${CHILD_RUN_ID}/reviewer-*`,
 			`workflow:${ROOT_RUN_ID}/${CHILD_RUN_ID}/reviewer-a`,
@@ -1231,7 +1233,7 @@ function stickyBridgeFixture(
 	if (backend.getWorkflow(ROOT_RUN_ID) === undefined) {
 		backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
 	}
-	setDurableBackend(backend);
+	bindStoreDurableBackend(store, backend);
 	const listeners = new Map<string, (payload: unknown) => void>();
 	const emitted: Array<{ event: string; payload: Record<string, unknown> }> = [];
 	const dispose = registerPendingStageIntercomBridge(
@@ -1747,7 +1749,7 @@ describe("pending-stage bridge sticky delivery", () => {
 			status: "completed",
 			createdAt: 1,
 		});
-		setDurableBackend(backend);
+		bindStoreDurableBackend(terminalStore, backend);
 		const listeners = new Map<string, (payload: unknown) => void>();
 		const terminalHarnessDispose = registerPendingStageIntercomBridge(
 			{
@@ -1849,7 +1851,7 @@ describe("pending-stage bridge sticky delivery", () => {
 		});
 		const backend = new InMemoryDurableBackend();
 		backend.registerWorkflow({ workflowId: ROOT_RUN_ID, name: "root", inputs: {}, status: "running", createdAt: 1 });
-		setDurableBackend(backend);
+		bindStoreDurableBackend(store, backend);
 		const listeners = new Map<string, (payload: unknown) => void>();
 		const dispose = registerPendingStageIntercomBridge(
 			{
@@ -1954,7 +1956,7 @@ describe("pending-stage bridge sticky delivery", () => {
 			status: "cancelled",
 			createdAt: 1,
 		});
-		setDurableBackend(backend);
+		bindStoreDurableBackend(store, backend);
 		await store.queueStickyStageMessage(
 			stickyInput("sticky-zero", `workflow:${ROOT_RUN_ID}/never-*`),
 			GROUP,
@@ -2051,7 +2053,7 @@ function terminalStickyFixture(store: ReturnType<typeof createStore>, ..._ids: s
 test("replacement readiness waits for its own sticky admission after prior successful drain (#3406)", async () => {
 	const store = createStore();
 	const backend = new InMemoryDurableBackend();
-	setDurableBackend(backend);
+	bindStoreDurableBackend(store, backend);
 	store.recordRunStart({
 		id: ROOT_RUN_ID,
 		name: "replacement-ready",

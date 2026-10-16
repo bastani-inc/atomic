@@ -9,6 +9,7 @@ import { setDurableBackend } from "../../packages/workflows/src/durable/factory.
 import { forkDurableWorkflow } from "../../packages/workflows/src/durable/fork-workflow.js";
 import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
 import { createDurableTaskPrimitive } from "../../packages/workflows/src/durable/stage-primitive.js";
+import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { createWorkflowPendingStageDelivery } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
@@ -385,7 +386,7 @@ test("forked sticky messages reach stages under the fork root (#3577)", async ()
 		stages: [{ id: "review-stage", name: "review-one", status: "pending", parentIds: [], toolEvents: [] }],
 		pendingStageMessages: pending === undefined ? undefined : [...pending],
 	});
-	setDurableBackend(backend);
+	bindStoreDurableBackend(store, backend);
 	try {
 		let delivered = 0;
 		await createWorkflowPendingStageDelivery(store, forkId, "review-stage", "review-one").deliverPending(() => {

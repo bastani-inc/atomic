@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { DurableNestedTopologyError } from "../../packages/workflows/src/durable/boundary-topology.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
@@ -12,6 +12,7 @@ import {
 } from "../../packages/workflows/src/durable/resume-runtime.js";
 import type { DurableCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
+import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../../packages/workflows/src/runs/foreground/stage-session-heartbeat.js";
 import { run, workflow } from "../../packages/workflows/src/sdk-surface.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
@@ -183,4 +184,52 @@ test("owned deletion rejects takeover between renewal and deletion without erasi
 		staleDeletionRejected: true,
 		survivingRuns: [{ runId: "run", status: "running" }],
 	});
+});
+
+test("release waits for an in-flight heartbeat and permits a fresh resume lease (#3674)", async () => {
+	vi.useFakeTimers();
+	const memory = new MemoryRunJournal();
+	const started = Promise.withResolvers<void>();
+	const finish = Promise.withResolvers<void>();
+	let releases = 0;
+	const journal: RunJournal = {
+		...asyncJournal(memory),
+		async renew(lease) {
+			started.resolve();
+			await finish.promise;
+			await memory.renew(lease);
+		},
+		async release(lease) {
+			releases++;
+			await memory.release(lease);
+		},
+	};
+	const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
+	let releasing: Promise<void> | undefined;
+	try {
+		await backend.registerWorkflow({
+			workflowId: "heartbeat",
+			name: "test",
+			inputs: {},
+			createdAt: 1,
+			status: "paused",
+		});
+		vi.advanceTimersByTime(STAGE_SESSION_HEARTBEAT_INTERVAL_MS);
+		await started.promise;
+		releasing = Promise.resolve(backend.releaseWorkflow("heartbeat"));
+		await Promise.resolve();
+		assert.equal(releases, 0, "release must not overtake a renewal of the same lease");
+		finish.resolve();
+		await releasing;
+		assert.equal(releases, 1);
+		await backend.setWorkflowStatus("heartbeat", "running");
+		assert.equal(backend.getWorkflow("heartbeat")?.status, "running");
+		assert.equal(await backend.workflowOwnership("heartbeat"), "local");
+	} finally {
+		finish.resolve();
+		await releasing;
+		await backend.close();
+		await memory.close();
+		vi.useRealTimers();
+	}
 });

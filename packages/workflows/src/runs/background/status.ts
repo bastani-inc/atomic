@@ -1,3 +1,4 @@
+import { requireStoreDurableBackend } from "../../durable/store-backend.js";
 import { workflowObservationRuntime } from "../../shared/store-factory.js";
 /**
  * Status, internal cancellation, and resume helpers for retained workflow runs.
@@ -372,7 +373,8 @@ export async function resumeRun(
 		try {
 			const transition = await markDurableResumed(
 				aggregateRootRunId,
-				(opts?.toolControlRegistry ?? defaultToolControlRegistry).runControl(aggregateRootRunId)?.durableBackend,
+				(opts?.toolControlRegistry ?? defaultToolControlRegistry).runControl(aggregateRootRunId)?.durableBackend ??
+					requireStoreDurableBackend(activeStore),
 			);
 			if (transition === "refused") {
 				durabilityFailure = `authoritative durable workflow ${aggregateRootRunId} refused the running transition`;

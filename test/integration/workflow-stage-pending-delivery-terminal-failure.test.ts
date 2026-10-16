@@ -20,7 +20,7 @@
  * creation, exactly one recorded model attempt, and no `[fallback]` warning.
  */
 
-import { getDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { requireStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import { effectiveRunStatus } from "../../packages/workflows/src/shared/returned-run-status.js";
 import type { StageExecutionMeta } from "../../packages/workflows/src/shared/types.js";
 import {
@@ -102,7 +102,7 @@ test("a stage whose pending Intercom delivery fails blocks resumably without spe
 							},
 							group,
 							group,
-							getDurableBackend(),
+							requireStoreDurableBackend(store),
 						);
 						assert.equal(queued?.ok, true, "the steering is queued");
 						delivery.fail(productionWarmUpExhaustedReason());

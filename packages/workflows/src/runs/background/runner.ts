@@ -14,9 +14,9 @@
  * cross-ref: spec detached-runner
  */
 
-import { getDurableBackendProcessOwner } from "../../durable/backend-process-owner.js";
 import { initializeDurableBackend } from "../../durable/factory.js";
 import { JournalDurableBackend } from "../../durable/journal/journal-backend.js";
+import { availableStoreDurableBackend, bindStoreDurableBackend } from "../../durable/store-backend.js";
 import type { Store } from "../../shared/store.js";
 import { store as defaultStore } from "../../shared/store.js";
 import type {
@@ -193,9 +193,9 @@ export function runDetached<TInputs extends WorkflowInputValues, TRunInputs exte
 	try {
 		backgroundPromise = (async () => {
 			const preset =
-				opts.durableBackend ??
-				(opts.journal === undefined ? getDurableBackendProcessOwner().injectedBackend : undefined);
+				opts.durableBackend ?? (opts.journal === undefined ? availableStoreDurableBackend(store) : undefined);
 			const backend = preset ?? (await initializeDurableBackend({ journal: opts.journal, cwd: opts.cwd }));
+			if (opts.parentRun === undefined) bindStoreDurableBackend(store, backend);
 			const execute = async (): Promise<RunResult> => {
 				try {
 					const result = await syncRun(def, inputs, { ...execOpts, durableBackend: backend });

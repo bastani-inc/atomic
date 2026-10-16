@@ -1,5 +1,4 @@
 import { type DurableWorkflowBackend, pendingStageMessagesForDurableRun } from "../durable/backend.js";
-import { getDurableBackendProcessOwner } from "../durable/backend-process-owner.js";
 import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
 import { initializeDurableBackend } from "../durable/factory.js";
@@ -11,6 +10,7 @@ import {
 	createDurableTaskPrimitive,
 	createStageReplayKeyGenerator,
 } from "../durable/stage-primitive.js";
+import { availableStoreDurableBackend, bindStoreDurableBackend } from "../durable/store-backend.js";
 import { createCheckpointIdGenerator } from "../durable/tool-primitive.js";
 import { transitionDurableWorkflowStatus } from "../durable/workflow-status-transition.js";
 import {
@@ -137,10 +137,13 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 
 	const resolvedInputs = resolveAndValidateInputs(def.inputs, inputs, `workflow "${def.name}"`);
 	const runId = opts.runId ?? crypto.randomUUID();
+	const activeStore = opts.store ?? defaultStore;
 	const preset =
-		opts.durableBackend ?? (opts.journal === undefined ? getDurableBackendProcessOwner().injectedBackend : undefined);
+		opts.durableBackend ?? (opts.journal === undefined ? availableStoreDurableBackend(activeStore) : undefined);
 	const backend = preset ?? (await initializeDurableBackend({ journal: opts.journal, cwd: opts.cwd }));
-	const execute = () => executeRun(def, resolvedInputs, { ...opts, runId, durableBackend: backend });
+	if (opts.parentRun === undefined) bindStoreDurableBackend(activeStore, backend);
+	const execute = () =>
+		executeRun(def, resolvedInputs, { ...opts, store: activeStore, runId, durableBackend: backend });
 	return opts.parentRun === undefined && backend instanceof JournalDurableBackend
 		? await backend.withWorkflowLease(runId, execute)
 		: await execute();

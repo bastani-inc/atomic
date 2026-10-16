@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { durableHash } from "../../packages/workflows/src/durable/backend.js";
-import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { FOREIGN_LIVE_WORKFLOW_WINDOW_MS } from "../../packages/workflows/src/durable/resume-eligibility.js";
 import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
 import { inspectTargetedDurableWorkflow } from "../../packages/workflows/src/durable/targeted-inspection.js";
@@ -13,6 +12,7 @@ import { createStore, store } from "../../packages/workflows/src/shared/store.js
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
+import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import { mockSession } from "./executor-shared.js";
 import { buildCtx, registerWorkflowCommand } from "./slash-dispatch-utils.js";

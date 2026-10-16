@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import factory, { type ExtensionAPI, type PiCommandOptions } from "../../packages/workflows/src/extension/index.js";
 import type { WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";
 import type { ExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
@@ -14,6 +13,10 @@ import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { testRunId } from "../helpers/run-id.js";
+import {
+	currentStoreBackend,
+	configureCurrentTestStoreBackend as setDurableBackend,
+} from "../helpers/store-backend.js";
 import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const previousWorkflowStageSubagentGuard = process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
@@ -291,6 +294,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 				return { ok: true, runId: target, message: `Resumed durable ${target}` };
 			},
 			registry: { has: () => true },
+			durableBackend: currentStoreBackend,
 		} as unknown as ExtensionRuntime;
 		const deps: WorkflowRunControlDeps = {
 			pi: {} as never,
@@ -340,6 +344,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 			const canSeeLazyWorkflow = registryLoaded;
 			return {
 				registry: canSeeLazyWorkflow ? loadedRegistry : emptyRegistry,
+				durableBackend: currentStoreBackend,
 				dispatch: async (): Promise<WorkflowToolResult> =>
 					canSeeLazyWorkflow
 						? {
@@ -410,6 +415,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 		const runtimeForCurrentRegistry = (): ExtensionRuntime => {
 			const canResume = registryLoaded;
 			return {
+				durableBackend: currentStoreBackend,
 				resumeFailedRun: () =>
 					canResume
 						? { ok: true, runId: testRunId("continued-run"), message: "Resuming failed workflow" }

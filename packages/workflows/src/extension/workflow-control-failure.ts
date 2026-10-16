@@ -1,6 +1,6 @@
-import { DurableBackendNotInitializedError } from "../durable/factory.js";
 import { StorageUnavailableError } from "../durable/journal/types.js";
 import type { ResumeDurableResult } from "../durable/resume-runtime.js";
+import { DurableBackendNotInitializedError } from "../durable/store-backend.js";
 import type { ResumeFailedRunResult } from "./runtime.js";
 import { WorkflowInstanceOwnershipError } from "./workflow-instance-owner.js";
 

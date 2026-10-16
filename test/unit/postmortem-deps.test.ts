@@ -3,12 +3,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "vitest";
-import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { postMortemDepsForRun } from "../../packages/workflows/src/extension/postmortem-deps.js";
 import { ensurePostMortemStageHandle } from "../../packages/workflows/src/runs/foreground/postmortem-stage-chat.js";
 import { stageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { StageSessionCreateOptions } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
+import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import { mockSession } from "./executor-shared.js";
 

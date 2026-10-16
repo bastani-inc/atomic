@@ -4,6 +4,7 @@ import { createStore, type Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { durableWorkflowRunSnapshots } from "./completed-catalog.js";
+import { bindStoreDurableBackend } from "./store-backend.js";
 
 export type TargetedDurableInspection =
 	| {
@@ -54,6 +55,7 @@ export async function inspectTargetedDurableWorkflow(
 	const runs = structuredClone(reconstructed);
 
 	const inspectionStore = createStore();
+	bindStoreDurableBackend(inspectionStore, backend);
 	for (const run of runs) inspectionStore.recordRunStart(structuredClone(run));
 	const inspected = inspectRun(resolvedWorkflowId, { store: inspectionStore });
 	if (!inspected.ok) return malformed(resolvedWorkflowId, "the durable checkpoint graph has no reciprocal root");

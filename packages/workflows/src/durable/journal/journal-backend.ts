@@ -811,17 +811,19 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal & Syn
 	}
 	private async renewLeases(): Promise<void> {
 		for (const [runId, lease] of this.leases) {
-			if (this.lost.has(runId)) continue;
-			try {
-				await execute(
-					invoke(() => {
-						if (this.synchronous !== undefined) return this.synchronous.renewSync(lease);
-						return this.journal.renew(lease);
-					}),
-				);
-			} catch (error) {
-				if (error instanceof Error) this.lost.set(runId, this.mapOwnership(error, runId));
-			}
+			await this.serialize(runId, () => this.renewLease(runId, lease));
+		}
+	}
+	private *renewLease(runId: string, lease: Lease): Operation<void> {
+		if (this.leases.get(runId) !== lease || this.lost.has(runId)) return;
+		try {
+			yield* invoke(() => {
+				if (this.synchronous !== undefined) return this.synchronous.renewSync(lease);
+				return this.journal.renew(lease);
+			});
+		} catch (error) {
+			if (this.leases.get(runId) === lease && error instanceof Error)
+				this.lost.set(runId, this.mapOwnership(error, runId));
 		}
 	}
 	closeOnProcessExit(): void {
@@ -863,7 +865,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal & Syn
 		execution.retired = true;
 		if (this.executions.get(runId) === execution) this.executions.delete(runId);
 		if (execution.lease !== undefined && this.leases.get(runId) === execution.lease)
-			return execute(this.release(runId));
+			return this.serialize(runId, () => this.release(runId));
 	}
 	releaseWorkflow(runId: string): void | Promise<void> {
 		this.assertExecutionActive(runId);

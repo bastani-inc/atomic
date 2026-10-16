@@ -1,10 +1,10 @@
 // @ts-nocheck
 import { describe, test } from "vitest";
 import { openCompletedDurableWorkflow } from "../../packages/workflows/src/durable/completed-inspection.js";
+import { testRunId } from "../helpers/run-id.js";
 // InMemoryDurableBackend is already bound at line 46. Bun tolerated the repeated
 // binding; every standards-conforming parser rejects it, and vitest's did.
-import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
-import { testRunId } from "../helpers/run-id.js";
+import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import type {
 	PiCommandContext,

@@ -14,11 +14,7 @@ export {
 	type OpenCompletedDurableResult,
 	openCompletedDurableWorkflow,
 } from "./completed-inspection.js";
-export {
-	getDurableBackend,
-	initializeDurableBackend,
-	setDurableBackend,
-} from "./factory.js";
+export { initializeDurableBackend } from "./factory.js";
 export { formatResumableWorkflowList, listResumableFromBackend } from "./resume-catalog.js";
 export {
 	prepareDurableResume,

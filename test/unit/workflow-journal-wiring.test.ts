@@ -330,3 +330,71 @@ test("extension entry point resolves the invocation project's journal settings",
 		else process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = previousPath;
 	}
 });
+
+test("runtime resumes its own SQLite checkpoint after another runtime initializes and lists (#3674)", async () => {
+	setDurableBackend(undefined);
+	const firstPath = journalPath();
+	const secondPath = journalPath();
+	let tools = 0;
+	let attempts = 0;
+	const def = definition(() => {
+		tools++;
+	});
+	const jobs = createJobTracker();
+	const firstStore = createStore();
+	vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", firstPath);
+	const first = createExtensionRuntime({
+		definitions: [def],
+		store: firstStore,
+		jobs,
+		adapters: {
+			prompt: {
+				prompt: async () => {
+					if (++attempts === 1) throw new Error("retry stage");
+					return "finished";
+				},
+			},
+		},
+	});
+	const launched = await first.dispatch({ action: "run", workflow: def.name });
+	assert.ok("runId" in launched && launched.runId);
+	await jobs.get(launched.runId)?.promise;
+	assert.equal(firstStore.runs().find((run) => run.id === launched.runId)?.status, "failed");
+	vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", secondPath);
+	const second = createExtensionRuntime({ store: createStore() });
+	assert.deepEqual(await second.prepareDurableResumable(), []);
+	assert.deepEqual(
+		first.listDurableResumable().map((entry) => entry.workflowId),
+		[launched.runId],
+	);
+	assert.equal((await first.inspectDurableWorkflow(launched.runId)).kind, "found");
+	const resumed = await first.resumeFailedRun(launched.runId);
+	assert.equal(resumed.ok, true, JSON.stringify(resumed));
+	await jobs.get(launched.runId)?.promise;
+	assert.equal(firstStore.runs().find((run) => run.id === launched.runId)?.status, "completed");
+	assert.equal(tools, 1, "the first journal's saved tool is replayed");
+	assert.equal(attempts, 2);
+	assert.deepEqual(second.listDurableResumable(), []);
+});
+
+test("stores retain their construction-time test backend after a later injection (#3674)", async () => {
+	const firstBackend = await JournalDurableBackend.open(new MemoryRunJournal());
+	const secondBackend = await JournalDurableBackend.open(new MemoryRunJournal());
+	try {
+		setDurableBackend(firstBackend);
+		const firstStore = createStore();
+		setDurableBackend(secondBackend);
+		const secondStore = createStore();
+		const first = createExtensionRuntime({ store: firstStore });
+		const second = createExtensionRuntime({ store: secondStore });
+		await first.dispatch({ action: "list" });
+		await second.dispatch({ action: "list" });
+		assert.equal(first.durableBackend(), firstBackend);
+		assert.equal(second.durableBackend(), secondBackend);
+		assert.deepEqual(first.listDurableResumable(), []);
+		assert.deepEqual(second.listDurableResumable(), []);
+	} finally {
+		await firstBackend.close();
+		await secondBackend.close();
+	}
+});

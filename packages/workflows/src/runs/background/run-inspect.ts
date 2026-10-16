@@ -1,3 +1,4 @@
+import { availableStoreDurableBackend } from "../../durable/store-backend.js";
 /**
  * Read-only per-run inspection surface.
  *
@@ -139,9 +140,11 @@ export function inspectRun(
 		inputs: copy.inputs,
 		stages: expandedStages.map((stage) => structuredClone(stage)),
 		tools: expandedGraph.tools.map((tool) => structuredClone(tool)),
-		deliveryStates: stickyStageDeliveryStatuses(activeStore.runs(), copy.rootRunId ?? copy.id).filter(
-			(delivery) => copy.id === (copy.rootRunId ?? copy.id) || delivery.runId === copy.id,
-		),
+		deliveryStates: stickyStageDeliveryStatuses(
+			activeStore.runs(),
+			copy.rootRunId ?? copy.id,
+			availableStoreDurableBackend(activeStore),
+		).filter((delivery) => copy.id === (copy.rootRunId ?? copy.id) || delivery.runId === copy.id),
 		result: copy.result,
 		error:
 			copy.error ??

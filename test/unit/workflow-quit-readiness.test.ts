@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import type { PiCommandContext } from "../../packages/workflows/src/extension/public-types.js";
 import { buildRuntimeAdapters } from "../../packages/workflows/src/extension/wiring.js";
 import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
@@ -18,6 +17,7 @@ import {
 	type StageCustomUiRequest,
 } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
+import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import { makeMockSession } from "./stage-runner-helpers.js";
 

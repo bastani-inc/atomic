@@ -10,7 +10,7 @@ import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js"
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { FOREIGN_LIVE_WORKFLOW_WINDOW_MS } from "../../packages/workflows/src/durable/resume-eligibility.js";
-import { getAvailableDurableBackend, getDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { availableCurrentStoreBackend as getAvailableDurableBackend, currentStoreBackend as getDurableBackend } from "../helpers/store-backend.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { fileExists, readText, sleep } from "../helpers/runtime.js";
 import { serializeFixtureError } from "../helpers/fixture-error.js";

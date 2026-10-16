@@ -9,7 +9,6 @@ import {
 	WorkflowRunNotResumableError,
 	WorkflowRunOwnershipError,
 } from "../../packages/coding-agent/src/index.js";
-import { getDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import {
 	fileExists,
 	makeTempDirectory,
@@ -18,6 +17,7 @@ import {
 	sleep,
 	writeFileEnsuringDir,
 } from "../helpers/runtime.js";
+import { currentStoreBackend as getDurableBackend } from "../helpers/store-backend.js";
 
 /** Two real SDK host sessions in one process, each loading the builtin workflows extension. */
 const IN_PROCESS_SDK_SESSIONS_TIMEOUT_MS = 90_000;

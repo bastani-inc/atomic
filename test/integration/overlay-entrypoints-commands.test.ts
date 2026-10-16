@@ -3,9 +3,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { toolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { testRunId } from "../helpers/run-id.js";
+import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 import {
 	attachHostCustomUiState,

@@ -1,3 +1,6 @@
+import type { DurableWorkflowBackend } from "../durable/backend.js";
+import { getDurableBackendProcessOwner } from "../durable/backend-process-owner.js";
+import { workflowStoreBackend } from "../durable/store-backend.js";
 import { createSessionScopedSingleton } from "./session-scoped-singleton.js";
 import { createStoreContext, isTerminalRunStatus } from "./store-internal.js";
 import { createPendingStageDeliveryStoreMethods } from "./store-pending-stage-delivery-methods.js";
@@ -10,8 +13,15 @@ import { type WorkflowObservationRuntime, workflowObservationRuntimeKey } from "
 
 export function createStore(): Store {
 	const context = createStoreContext();
+	context.backend = getDurableBackendProcessOwner().injectedBackend;
 	const created = {
 		[workflowObservationRuntimeKey]: context.observation,
+		get [workflowStoreBackend](): DurableWorkflowBackend | undefined {
+			return context.backend;
+		},
+		set [workflowStoreBackend](backend: DurableWorkflowBackend | undefined) {
+			context.backend = backend;
+		},
 		...createRunStoreMethods(context),
 		...createPendingStageDeliveryStoreMethods(context),
 		...createStageStoreMethods(context),

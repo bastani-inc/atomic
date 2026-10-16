@@ -12,7 +12,6 @@ export interface SelectedDurableBackend {
 export interface DurableBackendProcessOwner {
 	readonly version: 1;
 	injectedBackend: DurableWorkflowBackend | undefined;
-	initializedBackend: DurableWorkflowBackend | undefined;
 	selectedBackends?: Map<string | object, SelectedDurableBackend>;
 }
 
@@ -20,7 +19,6 @@ function emptyOwner(): DurableBackendProcessOwner {
 	return {
 		version: 1,
 		injectedBackend: undefined,
-		initializedBackend: undefined,
 	};
 }
 
@@ -47,5 +45,4 @@ export function resetDurableBackendProcessOwner(): void {
 	}
 	owner.selectedBackends = undefined;
 	owner.injectedBackend = undefined;
-	owner.initializedBackend = undefined;
 }

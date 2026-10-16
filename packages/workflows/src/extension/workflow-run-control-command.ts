@@ -1,6 +1,6 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
-import { DurableBackendNotInitializedError, getDurableBackend } from "../durable/factory.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
+import { DurableBackendNotInitializedError, requireStoreDurableBackend } from "../durable/store-backend.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { hasPendingDurableResumeTransition } from "../runs/background/durable-resume-transition.js";
 import { quitAllRuns, quitRun } from "../runs/background/quit.js";
@@ -283,14 +283,23 @@ export async function handleRunControlCommand(
 						return true;
 					}
 					const run = store.runs().find((r) => r.id === resolved.runId);
-					await injectWorkflowResumeSummary(deps.pi, ctx, resolved.runId, run);
+					await injectWorkflowResumeSummary(
+						deps.pi,
+						ctx,
+						resolved.runId,
+						run,
+						undefined,
+						requireStoreDurableBackend(store),
+					);
 					const isPaused = run !== undefined && workflowHasPausedState(store, resolved.runId);
 					const isDurableAuthorExit = run?.exited === true && run.status === "failed" && run.resumable === true;
 					const isResumableContinuation =
 						run !== undefined &&
 						!isPaused &&
 						run.exitReason !== "quit" &&
-						isWorkflowRunResumable(workflowRunResumeCandidate(run, store.runs()));
+						isWorkflowRunResumable(
+							workflowRunResumeCandidate(run, store.runs(), requireStoreDurableBackend(store)),
+						);
 					if (isDurableAuthorExit) {
 						return await handleDurableResume(resolved.runId, ctx, reporter, deps);
 					}
@@ -333,13 +342,13 @@ export async function handleRunControlCommand(
 			let backend: DurableWorkflowBackend;
 			try {
 				try {
-					backend = getDurableBackend();
+					backend = requireStoreDurableBackend(store);
 				} catch (error) {
 					if (!(error instanceof DurableBackendNotInitializedError)) throw error;
 					// Fresh CLI sessions have no backend until a durable operation prepares it.
 					await ensureWorkflowResourcesVisible();
 					await deps.runtimeForContext(ctx).prepareDurableResumable(target);
-					backend = getDurableBackend();
+					backend = requireStoreDurableBackend(store);
 				}
 			} catch (error) {
 				fail(`Failed to resolve workflow resume target: ${error instanceof Error ? error.message : String(error)}`);
@@ -376,7 +385,7 @@ export async function handleRunControlCommand(
 				!exactHasPausedState &&
 				exactBeforePreparation.exitReason !== "quit" &&
 				!exactIsRecoverableBlock &&
-				!hasPendingDurableResumeTransition(exactBeforePreparation.id);
+				!hasPendingDurableResumeTransition(exactBeforePreparation.id, backend);
 			if (exactIsActivelyRunning) {
 				fail(
 					`Workflow ${exactBeforePreparation.id} is already running in this session. Attach with \`/workflow connect ${exactBeforePreparation.id}\` instead of resuming.`,
@@ -428,7 +437,14 @@ export async function handleRunControlCommand(
 						backend.isWorkflowLoadable(run.id) &&
 						!reconcileDurableResumeShadow(run, store, { ...shadowDeps, backend }),
 				);
-				const combined = resolveWorkflowResumeTarget(target, loadableRuns, durable, completed, store.runs());
+				const combined = resolveWorkflowResumeTarget(
+					target,
+					loadableRuns,
+					durable,
+					completed,
+					store.runs(),
+					backend,
+				);
 				if (combined.kind === "malformed" || combined.kind === "ambiguous") {
 					fail(combined.message);
 					return true;
@@ -494,7 +510,7 @@ export async function handleRunControlCommand(
 			run !== undefined &&
 			!isPaused &&
 			run.exitReason !== "quit" &&
-			isWorkflowRunResumable(workflowRunResumeCandidate(run, store.runs()));
+			isWorkflowRunResumable(workflowRunResumeCandidate(run, store.runs(), requireStoreDurableBackend(store)));
 		const isActivelyRunning =
 			run !== undefined &&
 			run.endedAt === undefined &&
@@ -505,14 +521,14 @@ export async function handleRunControlCommand(
 			isActivelyRunning &&
 			!isResumableContinuation &&
 			action === "resume" &&
-			!hasPendingDurableResumeTransition(stageRunId)
+			!hasPendingDurableResumeTransition(stageRunId, requireStoreDurableBackend(store))
 		) {
 			fail(
 				`Workflow ${stageRunId} is already running in this session. Attach with \`/workflow connect ${stageRunId}\` instead of resuming.`,
 			);
 			return true;
 		}
-		await injectWorkflowResumeSummary(deps.pi, ctx, stageRunId, run);
+		await injectWorkflowResumeSummary(deps.pi, ctx, stageRunId, run, undefined, requireStoreDurableBackend(store));
 		if (isDurableAuthorExit) {
 			return await handleDurableResume(stageRunId, ctx, reporter, deps);
 		}

@@ -2,12 +2,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, test } from "vitest";
-import {
-	getAvailableDurableBackend,
-	initializeDurableBackend,
-	setDurableBackend,
-} from "../../packages/workflows/src/durable/factory.js";
+import { DatabaseSync } from "node:sqlite";
+import { afterEach, test, vi } from "vitest";
+import { getDurableBackendProcessOwner } from "../../packages/workflows/src/durable/backend-process-owner.js";
+import { initializeDurableBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
@@ -16,8 +14,10 @@ const directories: string[] = [];
 const previousPath = process.env.ATOMIC_WORKFLOW_JOURNAL_PATH;
 
 afterEach(async () => {
-	const backend = getAvailableDurableBackend();
-	if (backend instanceof JournalDurableBackend) await backend.close();
+	for (const entry of getDurableBackendProcessOwner().selectedBackends?.values() ?? []) {
+		await entry.ready.catch(() => undefined);
+		await entry.close?.();
+	}
 	setDurableBackend(undefined);
 	if (previousPath === undefined) delete process.env.ATOMIC_WORKFLOW_JOURNAL_PATH;
 	else process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = previousPath;
@@ -35,7 +35,7 @@ test("journal open failure throws typed storage error without installing a fallb
 		assert.ok(error.cause instanceof Error);
 		return true;
 	});
-	assert.equal(getAvailableDurableBackend(), undefined);
+	assert.equal(getDurableBackendProcessOwner().selectedBackends?.size, 0);
 });
 
 test("shared journal initialization releases its exit listener on explicit close and reset", async () => {
@@ -62,5 +62,24 @@ test("shared journal initialization releases its exit listener on explicit close
 		assert.equal(observer.workflowOwnership("reset"), "available");
 	} finally {
 		await observer.close();
+	}
+});
+
+test("cached SQLite selection initializes storage only once (#3674)", async () => {
+	setDurableBackend(undefined);
+	const directory = mkdtempSync(join(tmpdir(), "journal-cache-"));
+	directories.push(directory);
+	process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = join(directory, "journal.sqlite");
+	const exec = vi.spyOn(DatabaseSync.prototype, "exec");
+	try {
+		const first = await initializeDurableBackend();
+		assert.equal(await initializeDurableBackend(), first);
+		assert.equal(
+			await initializeDurableBackend({ journal: { path: process.env.ATOMIC_WORKFLOW_JOURNAL_PATH } }),
+			first,
+		);
+		assert.equal(exec.mock.calls.filter(([sql]) => sql.includes("CREATE TABLE IF NOT EXISTS meta")).length, 1);
+	} finally {
+		exec.mockRestore();
 	}
 });

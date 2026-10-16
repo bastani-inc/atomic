@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { getAgentDir } from "@bastani/atomic";
 import { afterEach, beforeEach, test, vi } from "vitest";
-import { getAvailableDurableBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { getDurableBackendProcessOwner } from "../../packages/workflows/src/durable/backend-process-owner.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { SqliteRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
+import { availableStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import type { ExtensionAPI } from "../../packages/workflows/src/extension/public-types.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
@@ -17,7 +19,7 @@ import { runDetached } from "../../packages/workflows/src/runs/background/runner
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { run, workflow } from "../../packages/workflows/src/sdk-surface.js";
 import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
 import type { GraphOverlayPort } from "../../packages/workflows/src/tui/overlay-adapter.js";
 import { makeDirectorySync, makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { buildCtx } from "./slash-dispatch-utils.js";
@@ -31,11 +33,13 @@ beforeEach(() => {
 	vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", undefined);
 	expectedPath = join(directory, "workflows", "journal.sqlite");
 	assert.equal(getAgentDir(), join(directory, "agent"));
-	assert.equal(getAvailableDurableBackend(), undefined);
+	assert.equal(getDurableBackendProcessOwner().selectedBackends, undefined);
 });
 afterEach(async () => {
-	const backend = getAvailableDurableBackend();
-	if (backend instanceof JournalDurableBackend) await backend.close();
+	for (const entry of getDurableBackendProcessOwner().selectedBackends?.values() ?? []) {
+		await entry.ready.catch(() => undefined);
+		await entry.close?.();
+	}
 	setDurableBackend(undefined);
 	vi.unstubAllEnvs();
 	removeTempDirectory(directory);
@@ -53,8 +57,8 @@ function definition() {
 		},
 	});
 }
-function defaultBackend() {
-	const backend = getAvailableDurableBackend();
+function defaultBackend(store: Store) {
+	const backend = availableStoreDurableBackend(store);
 	assert.ok(backend instanceof JournalDurableBackend);
 	assert.ok(backend.journal instanceof SqliteRunJournal);
 	assert.equal(backend.journal.path, expectedPath);
@@ -74,14 +78,15 @@ function resources() {
 
 async function settle(owner: ReturnType<typeof resources>): Promise<void> {
 	await Promise.all(owner.jobs.runIds().map((id) => owner.jobs.get(id)?.promise));
-	const backend = defaultBackend();
+	const backend = defaultBackend(owner.store);
 	assert.equal((await backend.journal.listRuns()).length, 1);
 }
 
 test("SDK run defaults to the persistent SQLite journal without an injected backend", async () => {
-	const result = await run(definition(), {}, { cwd: directory, store: createStore() });
+	const store = createStore();
+	const result = await run(definition(), {}, { cwd: directory, store });
 	assert.equal(result.status, "completed", JSON.stringify(result));
-	assert.equal((await defaultBackend().journal.listRuns()).length, 1);
+	assert.equal((await defaultBackend(store).journal.listRuns()).length, 1);
 });
 
 test("background run defaults to the persistent SQLite journal without an injected backend", async () => {
@@ -147,21 +152,38 @@ test("workflow tool defaults to the persistent SQLite journal without settings",
 	await settle(owner);
 });
 
+test("empty workflow status stays local without initializing a journal (#3674)", async () => {
+	const owner = resources();
+	const runtime = createExtensionRuntime({ ...owner, cwd: directory });
+	const execute = makeExecuteWorkflowTool(
+		runtime,
+		() => undefined,
+		() => undefined,
+		owner,
+	);
+	const { ctx } = buildCtx();
+	const result = await execute({ action: "status" }, { ...ctx, cwd: directory, hasUI: false });
+	assert.ok(result.action === "status");
+	assert.deepEqual(result.runs, []);
+	assert.equal(getDurableBackendProcessOwner().selectedBackends, undefined);
+});
+
 test("resume reopens the default SQLite journal without an injected backend", async () => {
 	const def = definition();
-	const result = await run(def, {}, { cwd: directory, store: createStore() });
+	const store = createStore();
+	const result = await run(def, {}, { cwd: directory, store });
 	assert.equal(result.status, "completed", JSON.stringify(result));
-	const backend = defaultBackend();
+	const backend = defaultBackend(store);
 	await backend.setWorkflowStatus(result.runId, "paused", 0, true);
 	await backend.close();
 	setDurableBackend(undefined);
-	assert.equal(getAvailableDurableBackend(), undefined);
+	assert.equal(getDurableBackendProcessOwner().selectedBackends, undefined);
 	const owner = resources();
 	const runtime = createExtensionRuntime({ ...owner, cwd: directory, definitions: [def] });
 	const resumed = await runtime.resumeDurableWorkflow(result.runId);
 	assert.equal(resumed.ok, true);
 	await settle(owner);
-	assert.equal(defaultBackend().getWorkflow(result.runId)?.status, "completed");
+	assert.equal(defaultBackend(owner.store).getWorkflow(result.runId)?.status, "completed");
 });
 
 test("an unopenable default SQLite journal fails without selecting memory", async () => {
@@ -171,5 +193,28 @@ test("an unopenable default SQLite journal fails without selecting memory", asyn
 		assert.equal(error.path, expectedPath);
 		return true;
 	});
-	assert.equal(getAvailableDurableBackend(), undefined);
+	assert.equal(getDurableBackendProcessOwner().selectedBackends?.size, 0);
+});
+
+test("runtime retries failed initialization but retains a successful journal selection (#3674)", async () => {
+	process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = directory;
+	const runtime = createExtensionRuntime({ store: createStore(), cwd: directory });
+	await assert.rejects(runtime.dispatch({ action: "list" }), (error: Error) => {
+		assert.ok(error instanceof StorageUnavailableError);
+		assert.equal(error.path, directory);
+		return true;
+	});
+	process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = expectedPath;
+	const results = await Promise.all([runtime.dispatch({ action: "list" }), runtime.dispatch({ action: "list" })]);
+	assert.deepEqual(results, [
+		{ action: "list", items: [] },
+		{ action: "list", items: [] },
+	]);
+	const selected = runtime.durableBackend();
+	assert.ok(selected instanceof JournalDurableBackend);
+	assert.ok(selected.journal instanceof SqliteRunJournal);
+	assert.equal(selected.journal.path, expectedPath);
+	process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = directory;
+	assert.deepEqual(await runtime.dispatch({ action: "list" }), { action: "list", items: [] });
+	assert.equal(runtime.durableBackend(), selected);
 });

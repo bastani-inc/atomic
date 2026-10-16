@@ -11,9 +11,11 @@ import { ensureWorkflowSummaryService, type WorkflowSummaryContext } from "./wor
  *            src/workflows/registry.ts
  */
 
-import { resumableEntryFromHandle } from "../durable/backend.js";
-import { getDurableBackend, initializeDurableBackend } from "../durable/factory.js";
+import { type DurableWorkflowBackend, resumableEntryFromHandle } from "../durable/backend.js";
+import { initializeDurableBackend } from "../durable/factory.js";
+import type { RunJournalOption } from "../durable/journal/resolution.js";
 import { resumeDurableWorkflow } from "../durable/resume-runtime.js";
+import { availableStoreDurableBackend, bindStoreDurableBackend } from "../durable/store-backend.js";
 import { resolveToolResumeFrontier } from "../durable/tool-resume-frontier.js";
 import { currentToolControlRegistry, type ToolControlRegistry } from "../engine/run-tool-control-registry.js";
 import { type CancellationRegistry, currentCancellationRegistry } from "../runs/background/cancellation-registry.js";
@@ -47,6 +49,8 @@ import { raceWorkflowRequestAbort } from "./workflow-request-abort.js";
 // ---------------------------------------------------------------------------
 
 export interface ExtensionRuntimeOpts {
+	/** Journal selection retained for this runtime's execution and recovery. */
+	journal?: RunJournalOption;
 	/**
 	 * Pre-populated registry — takes precedence over `definitions`.
 	 * Pass the output of a discovery worker / createBundledWorkflowRegistry here.
@@ -184,13 +188,31 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 	const resolveDefaultStageSessionDir = opts.resolveDefaultStageSessionDir;
 	const resolvePossibleStageEntry = opts.resolvePossibleStageEntry;
 	const beforeRestoreCompleted = opts.beforeRestoreCompleted;
-	const ensureReady = () => initializeDurableBackend({ cwd: runtimeCwd });
+	const presetBackend = opts.journal === undefined ? availableStoreDurableBackend(activeStore) : undefined;
+	const backendRef = { current: presetBackend };
+	let ready: Promise<DurableWorkflowBackend> | undefined;
+	const ensureReady = () =>
+		(ready ??= (
+			presetBackend === undefined
+				? initializeDurableBackend({ cwd: runtimeCwd, journal: opts.journal })
+				: Promise.resolve(presetBackend)
+		)
+			.then((backend) => {
+				backendRef.current = backend;
+				bindStoreDurableBackend(activeStore, backend);
+				return backend;
+			})
+			.catch((error: Error) => {
+				ready = undefined;
+				throw error;
+			}));
 
 	function runOptions(policy?: WorkflowExecutionPolicy): RunOpts {
 		const defaultSessionDir = resolveDefaultStageSessionDir?.();
 		return {
 			adapters,
 			store: activeStore,
+			durableBackend: backendRef.current,
 			cancellation,
 			stageControlRegistry,
 			toolControlRegistry,
@@ -244,6 +266,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 
 	function resolveResumeStage(
 		source: RunSnapshot,
+		backend: DurableWorkflowBackend,
 		stageId?: string,
 	):
 		| { ok: true; stageId?: string; toolNodeId?: string; retryToolNodes?: readonly ToolNodeSnapshot[] }
@@ -259,12 +282,12 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			return { ok: true, stageId: stage.id };
 		}
 		if (source.failedToolNodeId !== undefined && source.failedStageId === undefined) {
-			return resolveToolResumeFrontier(source, getDurableBackend());
+			return resolveToolResumeFrontier(source, backend);
 		}
 		const failedStageId = source.failedStageId ?? source.stages.find((stage) => stage.status === "failed")?.id;
 		if (failedStageId !== undefined) return { ok: true, stageId: failedStageId };
 		if (budgetExceededSource && source.stages.length === 0) return { ok: true };
-		if (source.toolNodes.length > 0) return resolveToolResumeFrontier(source, getDurableBackend());
+		if (source.toolNodes.length > 0) return resolveToolResumeFrontier(source, backend);
 		return { ok: false, message: `insufficient_state: failed run ${source.id} does not identify a failed stage` };
 	}
 
@@ -297,7 +320,8 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 		if (def === undefined) {
 			return { ok: false, reason: "workflow_not_found", message: `workflow_not_found: ${source.name}` };
 		}
-		const resolvedStage = resolveResumeStage(source, stageId);
+		const backend = await ensureReady();
+		const resolvedStage = resolveResumeStage(source, backend, stageId);
 		if (!resolvedStage.ok) {
 			return { ok: false, reason: "insufficient_state", message: resolvedStage.message };
 		}
@@ -311,7 +335,6 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				message: `insufficient_state: ${err instanceof Error ? err.message : String(err)}`,
 			};
 		}
-		const backend = getDurableBackend();
 		const handle = backend.getWorkflow(source.id);
 		if (handle === undefined)
 			return { ok: false, reason: "insufficient_state", message: `No durable checkpoint state for ${source.id}.` };
@@ -369,11 +392,12 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 
 		async dispatch(args: WorkflowToolArgs, options?: RuntimeDispatchOptions): Promise<WorkflowToolResult> {
 			options?.signal?.throwIfAborted();
-			await raceWorkflowRequestAbort(ensureReady(), options?.signal);
+			const backend = await raceWorkflowRequestAbort(ensureReady(), options?.signal);
 			options?.signal?.throwIfAborted();
 			const defaultSessionDir = resolveDefaultStageSessionDir?.();
 			return dispatch(args, {
 				registry,
+				durableBackend: backend,
 				adapters,
 				store: activeStore,
 				cancellation,
@@ -407,6 +431,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			runtimeCwd,
 			getWorkflowHostModules: opts.getWorkflowHostModules,
 			ensureReady,
+			backendRef,
 			resolveDefaultStageSessionDir,
 			baseRunOpts: (policy) => runOptions(policy),
 			beforeRestoreCompleted,

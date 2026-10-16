@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import type {
 	ExtensionAPI,
 	PiExecuteContext,
@@ -16,6 +15,7 @@ import {
 } from "../../packages/workflows/src/extension/workflow-tool-registration.js";
 import { jobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { createStore, store as workflowStore } from "../../packages/workflows/src/shared/store.js";
+import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 const READ_ONLY_ACTIONS = ["models", "list", "get", "inputs", "status", "stages", "stage", "transcript"] as const;

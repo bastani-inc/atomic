@@ -1,4 +1,4 @@
-import { getAvailableDurableBackend } from "../durable/factory.js";
+import type { DurableWorkflowBackend } from "../durable/backend.js";
 import type { DurableWorkflowHandle } from "../durable/types.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { ExtensionAPI, PiCommandContext, PiExecuteContext } from "./public-types.js";
@@ -11,6 +11,7 @@ export async function injectWorkflowResumeSummary(
 	runId: string,
 	run?: RunSnapshot,
 	forkedFrom?: string,
+	backend?: DurableWorkflowBackend,
 ): Promise<void> {
 	if (ctx.isSessionSummaryEnabled?.() === false || pi.sendMessage === undefined) return;
 	const owner =
@@ -21,7 +22,7 @@ export async function injectWorkflowResumeSummary(
 	const seen = delivered.get(owner) ?? new Map<string, string | number | undefined>();
 	let handle: DurableWorkflowHandle | undefined;
 	try {
-		handle = getAvailableDurableBackend()?.getLoadableWorkflow(runId);
+		handle = backend?.getLoadableWorkflow(runId);
 	} catch {}
 	const boundary = run?.pausedAt ?? (handle?.status !== "running" ? handle?.transitionClaimId : undefined);
 	if (seen.has(key) && (boundary === undefined || seen.get(key) === boundary)) return;

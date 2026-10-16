@@ -1,8 +1,8 @@
 import type { DurableWorkflowBackend } from "../../durable/backend.js";
-import { getAvailableDurableBackend } from "../../durable/factory.js";
 import { isDurableWorkflowResumable } from "../../durable/resume-eligibility.js";
 import { recordRunTimingCheckpointAsync } from "../../durable/run-timing.js";
 import { TASK_RESULT_CHECKPOINT_CONTROL_PREFIX } from "../../durable/stage-primitive.js";
+import { availableStoreDurableBackend } from "../../durable/store-backend.js";
 import {
 	getLoadableDurableWorkflow,
 	transitionDurableWorkflowStatus,
@@ -145,7 +145,8 @@ async function executeQuitRunWithAction(
 	if (run.endedAt !== undefined) return { ok: false, runId, reason: "already_ended" };
 	workflowObservationRuntime(activeStore).control(runId, action, opts?.actor);
 	const aggregateRootRunId = aggregateWorkflowRootRunId(activeStore, runId);
-	const durableBackend = toolControls.runControl(aggregateRootRunId)?.durableBackend;
+	const durableBackend =
+		toolControls.runControl(aggregateRootRunId)?.durableBackend ?? availableStoreDurableBackend(activeStore);
 	if (aggregateRootRunId !== runId) {
 		const hasTaskTail = expandedControlRunIds(activeStore, runId).some((controlRunId) =>
 			toolControls
@@ -452,7 +453,7 @@ function discoverDurableQuitBackend(
 	runId: string,
 	selectedBackend?: DurableWorkflowBackend,
 ): DurableWorkflowBackend | undefined {
-	const backend = selectedBackend ?? getAvailableDurableBackend();
+	const backend = selectedBackend;
 	return backend !== undefined && getLoadableDurableWorkflow(backend, runId) !== undefined ? backend : undefined;
 }
 

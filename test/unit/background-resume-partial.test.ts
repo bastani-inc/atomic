@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type { AgentSession } from "@bastani/atomic";
 import { afterEach, describe, test } from "vitest";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import { resumeRun } from "../../packages/workflows/src/runs/background/status.js";
 import {
 	createStageControlRegistry,
@@ -46,7 +47,7 @@ function seedPausedRun(
 		output: "done",
 		completedAt: 2,
 	});
-	setDurableBackend(backend);
+	bindStoreDurableBackend(store, backend);
 	return { store, backend, registry: createStageControlRegistry() };
 }
 

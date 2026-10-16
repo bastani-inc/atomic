@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { type AgentSession, WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
@@ -12,6 +11,7 @@ import {
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { testRunId } from "../helpers/run-id.js";
+import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 import { MemoryJournalBackend as InMemoryDurableBackend } from "../helpers/workflow-journal.js";
 
 function seedPartialRun(runId: string): InMemoryDurableBackend {

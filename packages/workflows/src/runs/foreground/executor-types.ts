@@ -131,9 +131,7 @@ export interface RunOpts
 	/** Replay completed stages from a failed source run, then resume at this stage. */
 	continuation?: RunContinuationOpts;
 	/**
-	 * Durable workflow backend override (for testing). Defaults to the global
-	 * backend resolved by `getDurableBackend()`.
-	 *
+	 * Durable workflow backend selected for this execution and its readers.
 	 */
 	durableBackend?: import("../../durable/backend.js").DurableWorkflowBackend;
 	/** Internal physical backend used to reconstruct full nested topology through stacked scopes. */

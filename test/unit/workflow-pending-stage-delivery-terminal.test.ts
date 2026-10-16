@@ -23,6 +23,7 @@ import { afterEach, describe, test } from "vitest";
 import { IntercomClientDisconnectedError } from "../../packages/intercom/recoverable-disconnect.js";
 import { IntercomWarmUpExhaustedError } from "../../packages/intercom/warm-up-exhaustion.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import {
 	createWorkflowPendingStageDelivery,
 	isWorkflowPendingStageDeliveryFailure,
@@ -65,7 +66,7 @@ function fixture() {
 	});
 	const backend = new InMemoryDurableBackend();
 	backend.registerWorkflow({ workflowId: RUN_ID, name: "flow", inputs: {}, status: "running", createdAt: 1 });
-	setDurableBackend(backend);
+	bindStoreDurableBackend(store, backend);
 	return { store, backend };
 }
 

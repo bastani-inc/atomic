@@ -1,5 +1,4 @@
 import { getSupportedThinkingLevels } from "@bastani/pi-ai/compat";
-import { getDurableBackend } from "../durable/factory.js";
 import { crossProjectResumeMessage } from "../durable/resume-runtime.js";
 import {
 	canonicalDirectory,
@@ -7,6 +6,7 @@ import {
 	isSdkDurableRunInScope,
 	isSdkReleasedRunAdoptable,
 } from "../durable/sdk-recovery-scope.js";
+import { availableStoreDurableBackend, requireStoreDurableBackend } from "../durable/store-backend.js";
 import { inspectRun } from "../runs/background/status.js";
 import { workflowBoundarySegments } from "../shared/pending-stage-status.js";
 import { isFullRunId } from "../shared/run-id.js";
@@ -123,11 +123,11 @@ export function makeExecuteWorkflowTool(
 		}
 		const recoveryCwd = typeof ctx.cwd === "string" ? ctx.cwd : undefined;
 		const adoptsReleasedRun = (id: string): boolean => {
-			const handle = getDurableBackend().getLoadableWorkflow(id);
+			const handle = requireStoreDurableBackend(store).getLoadableWorkflow(id);
 			return handle !== undefined && isSdkReleasedRunAdoptable(handle, recoveryCwd);
 		};
 		const authorize = async (id: string): Promise<void> => {
-			const handle = getDurableBackend().getLoadableWorkflow(id);
+			const handle = requireStoreDurableBackend(store).getLoadableWorkflow(id);
 			if (
 				(action === "resume" || action === "status" || action === "stages") &&
 				handle !== undefined &&
@@ -141,7 +141,7 @@ export function makeExecuteWorkflowTool(
 					action === "stages" ||
 					(action === "resume" &&
 						handle !== undefined &&
-						(await isSdkCrashedRunAdoptable(handle, recoveryCwd, getDurableBackend())))) &&
+						(await isSdkCrashedRunAdoptable(handle, recoveryCwd, requireStoreDurableBackend(store))))) &&
 				!store.runs().some((run) => run.id === id) &&
 				handle !== undefined &&
 				isSdkDurableRunInScope(handle, recoveryCwd)
@@ -177,7 +177,7 @@ export function makeExecuteWorkflowTool(
 			return {
 				...resolved,
 				resumeDurableWorkflow: async (id, options) => {
-					await injectWorkflowResumeSummary(pi, ctx, id);
+					await injectWorkflowResumeSummary(pi, ctx, id, undefined, undefined, requireStoreDurableBackend(store));
 					return resolved.resumeDurableWorkflow(
 						id,
 						access === "sdk" || adoptsReleasedRun(id) ? { ...options, modelOwner: workflowCaller(ctx) } : options,
@@ -262,6 +262,7 @@ export function makeExecuteWorkflowTool(
 					Date.now(),
 					{
 						toolControlRegistry,
+						durableBackend: availableStoreDurableBackend(store),
 						allRuns: capturedRuns,
 						owningRunStatus: (owningRunId) => statusByRunId.get(owningRunId),
 						resolveBoundarySegments: (runId) => workflowBoundarySegments(capturedRuns, runId),
@@ -312,6 +313,8 @@ export function makeExecuteWorkflowTool(
 								ctx,
 								id,
 								store.runs().find((run) => run.id === id),
+								undefined,
+								requireStoreDurableBackend(store),
 							),
 					}),
 				);

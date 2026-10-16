@@ -7,29 +7,16 @@ import {
 	type SelectedDurableBackend,
 } from "./backend-process-owner.js";
 import { JournalDurableBackend } from "./journal/journal-backend.js";
-import { type RunJournalOption, type RunJournalSettings, resolveRunJournal } from "./journal/resolution.js";
-import { SqliteRunJournal } from "./journal/sqlite-run-journal.js";
-import { JournalError } from "./journal/types.js";
+import {
+	type RunJournalOption,
+	type RunJournalSettings,
+	resolveRunJournal,
+	selectRunJournal,
+} from "./journal/resolution.js";
 
 const DEFAULT_MEMORY_JOURNAL = "memory";
 
-export class DurableBackendNotInitializedError extends JournalError {
-	constructor() {
-		super("Workflow journal has not been initialized");
-		this.name = "DurableBackendNotInitializedError";
-	}
-}
-
-export function getDurableBackend(): DurableWorkflowBackend {
-	const backend = getAvailableDurableBackend();
-	if (backend === undefined) throw new DurableBackendNotInitializedError();
-	return backend;
-}
-
-export function getAvailableDurableBackend(): DurableWorkflowBackend | undefined {
-	const owner = getDurableBackendProcessOwner();
-	return owner.injectedBackend ?? owner.initializedBackend;
-}
+/** Internal test injection, captured only when an owning store is constructed. */
 
 export function setDurableBackend(backend: DurableWorkflowBackend | undefined): void {
 	if (backend === undefined) {
@@ -48,8 +35,7 @@ export interface DurableBackendOptions {
 export async function initializeDurableBackend(options: DurableBackendOptions = {}): Promise<DurableWorkflowBackend> {
 	const owner = getDurableBackendProcessOwner();
 	const choice = options.journal;
-	if (choice === undefined && owner.injectedBackend !== undefined) return owner.injectedBackend;
-	const journal = resolveRunJournal({
+	const selection = selectRunJournal({
 		journal: choice,
 		settings:
 			choice === undefined
@@ -57,16 +43,14 @@ export async function initializeDurableBackend(options: DurableBackendOptions = 
 				: undefined,
 	});
 	const key =
-		choice === undefined
-			? journal instanceof SqliteRunJournal
-				? resolve(journal.path)
-				: DEFAULT_MEMORY_JOURNAL
-			: "createRun" in choice
-				? choice
-				: "path" in choice
-					? resolve(choice.path)
-					: "database" in choice
-						? choice.database
+		"createRun" in selection
+			? selection
+			: "path" in selection
+				? resolve(selection.path)
+				: "database" in selection
+					? selection.database
+					: choice === undefined
+						? DEFAULT_MEMORY_JOURNAL
 						: choice;
 	const ownsJournal = choice === undefined || !("createRun" in choice);
 	owner.selectedBackends ??= new Map();
@@ -74,9 +58,9 @@ export async function initializeDurableBackend(options: DurableBackendOptions = 
 	const existing = selected.get(key);
 	let backend: DurableWorkflowBackend;
 	if (existing !== undefined) {
-		if (ownsJournal) await journal.close();
 		backend = await existing.ready;
 	} else {
+		const journal = resolveRunJournal({ journal: selection });
 		const ready = JournalDurableBackend.open(journal, { ownsJournal })
 			.then((opened) => {
 				if (ownsJournal) opened.closeOnProcessExit();
@@ -91,6 +75,5 @@ export async function initializeDurableBackend(options: DurableBackendOptions = 
 		selected.set(key, entry);
 		backend = await ready;
 	}
-	if (choice === undefined) owner.initializedBackend = backend;
 	return backend;
 }

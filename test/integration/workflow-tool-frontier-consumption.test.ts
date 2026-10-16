@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { afterEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
-import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import { createExtensionRuntime, type ExtensionRuntimeOpts } from "../../packages/workflows/src/extension/runtime.js";
 import {
 	workflowPauseAction,
 	workflowQuitAction,
@@ -17,6 +16,7 @@ import { INTERACTIVE_WORKFLOW_POLICY } from "../../packages/workflows/src/shared
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { sleep } from "../helpers/runtime.js";
+import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 import { TEST_TIMEOUT_MS } from "../helpers/test-timeout.js";
 
 async function waitFor(predicate: () => boolean): Promise<void> {
@@ -180,7 +180,7 @@ test.each(
 			},
 		});
 		const entries: SessionEntry[] = [];
-		const runtime = createExtensionRuntime({
+		const runtimeOptions: ExtensionRuntimeOpts = {
 			store,
 			registry: createRegistry([definition]),
 			adapters: {
@@ -201,7 +201,8 @@ test.each(
 					});
 				},
 			},
-		});
+		};
+		let runtime = createExtensionRuntime(runtimeOptions);
 		const started = await runtime.dispatch({ action: "run", workflow: definition.name, inputs: {} });
 		assert.ok(started.action === "run");
 		await waitFor(() => targetCalls === 1);
@@ -214,6 +215,7 @@ test.each(
 		backend = await backend.reopen();
 		await backend.hydrateWorkflow(source.id);
 		setDurableBackend(backend);
+		runtime = createExtensionRuntime(runtimeOptions);
 		store.clear();
 		const durableOnly = ending.startsWith("durable-");
 		if (!durableOnly) {
