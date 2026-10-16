@@ -781,13 +781,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		return this.serialize(this.catalogQueue, () => this.resetJournal());
 	}
 	private *resetJournal(): Operation<void> {
+		const runIds = new Set(this.sequences.keys());
 		const runs = yield* invoke(() => this.journal.listRuns());
-		for (const run of runs) yield* invoke(() => this.serialize(run.runId, () => this.deleteOwned(run.runId)));
-		this.projection.reset();
-		this.sequences.clear();
-		this.leases.clear();
-		this.lost.clear();
-		this.prompts.clear();
+		for (const run of runs) runIds.add(run.runId);
+		for (const runId of runIds) yield* invoke(() => this.serialize(runId, () => this.deleteOwned(runId)));
 	}
 	private renewLeases(): Promise<void> {
 		if (this.renewing !== undefined) return this.renewing;
