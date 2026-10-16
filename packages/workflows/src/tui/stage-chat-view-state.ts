@@ -347,7 +347,10 @@ function snapshotMessagesFromHandle(ctx: StageChatViewContext): void {
 }
 
 function snapshotMessagesFromSessionFile(ctx: StageChatViewContext, stage: StageSnapshot | undefined): void {
-	ctx.chatHost.loadSessionFile(liveHandle(ctx)?.sessionFile ?? stage?.sessionFile);
+	const handle = liveHandle(ctx);
+	if (!ctx.chatHost.loadSessionFile(handle?.sessionFile ?? stage?.sessionFile) && !handle) {
+		ctx.postMortemUnavailableReason ??= "invalid_session";
+	}
 }
 
 function absorbStageNotices(ctx: StageChatViewContext, stage: StageSnapshot | undefined): boolean {

@@ -12,6 +12,9 @@
  */
 
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AgentSession } from "@bastani/atomic";
 import { describe, test } from "vitest";
 import { createPostMortemHandleResolver } from "../../packages/workflows/src/extension/postmortem-deps.js";
@@ -20,8 +23,9 @@ import { createStageControlRegistry } from "../../packages/workflows/src/runs/fo
 import { createStore, store as globalStore } from "../../packages/workflows/src/shared/store.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
+import { readText, writeFileEnsuringDir } from "../helpers/runtime.js";
 
-function setupCompletedRun(store: ReturnType<typeof createStore>, runId: string) {
+function setupCompletedRun(store: ReturnType<typeof createStore>, runId: string, sessionFile = "/tmp/a.jsonl") {
 	store.recordRunStart({
 		id: runId,
 		name: "test-wf",
@@ -38,7 +42,7 @@ function setupCompletedRun(store: ReturnType<typeof createStore>, runId: string)
 		parentIds: [],
 		toolEvents: [],
 		result: "done",
-		sessionFile: "/tmp/a.jsonl",
+		sessionFile,
 		attachable: false,
 	});
 }
@@ -169,6 +173,46 @@ describe("WorkflowAttachPane post-mortem revival", () => {
 		assert.doesNotMatch(visible, /archived transcript/);
 		pane.dispose();
 	});
+
+	test.each(["malformed", "unreadable", "empty", "missing", "deleted"])(
+		"warns when retained history is %s without a preflight reason (#3658)",
+		async (failure) => {
+			const dir = mkdtempSync(join(tmpdir(), "atomic-3658-"));
+			const sessionFile = failure === "unreadable" ? dir : join(dir, "session.jsonl");
+			try {
+				if (failure === "malformed" || failure === "empty" || failure === "deleted") {
+					await writeFileEnsuringDir(sessionFile, failure === "malformed" ? "not json\n" : "");
+				}
+				if (failure === "deleted") rmSync(sessionFile);
+				const store = createStore();
+				setupCompletedRun(store, "run-1", sessionFile);
+				const pane = new WorkflowAttachPane({
+					store,
+					graphTheme: deriveGraphTheme({}),
+					runId: "run-1",
+					stageControlRegistry: createStageControlRegistry(),
+					onClose: () => {},
+					initialAttachStageId: "stage-a",
+				});
+				try {
+					const visible = pane
+						.render(80)
+						.join("\n")
+						.replace(/\x1b\[[0-9;]*m/g, "")
+						.replace(/\s+/g, " ");
+					assert.match(visible, /SESSION UNAVAILABLE/);
+					assert.match(visible, /Check that the session file still exists and is readable\./);
+					assert.doesNotMatch(visible, /archived transcript|READ-ONLY SESSION/);
+					assert.equal(pane._mode, "stage-chat");
+					if (failure === "empty") assert.equal(await readText(sessionFile), "");
+				} finally {
+					pane.dispose();
+				}
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+	);
 
 	test.sequential("the extension resolver preserves invalid-session reasons", () => {
 		globalStore.clear();
