@@ -25,6 +25,7 @@ import type {
 	DurableWorkflowStatus,
 } from "../types.js";
 import { type SynchronousRunJournal, synchronousJournal } from "./internal.js";
+import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import { MemoryRunJournal } from "./memory-run-journal.js";
 import {
 	RUN_EVENT_TYPES as E,
@@ -434,7 +435,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	workflowOwnership(runId: string): "local" | "foreign" | "available" | Promise<"local" | "foreign" | "available"> {
 		if (this.synchronous !== undefined) {
 			const lease = this.synchronous.leaseStateSync(runId);
-			if (lease === undefined || Date.now() - lease.renewedAt >= FOREIGN_LIVE_WORKFLOW_WINDOW_MS) return "available";
+			if (lease === undefined || isWorkflowLeaseExpired(lease.renewedAt, FOREIGN_LIVE_WORKFLOW_WINDOW_MS))
+				return "available";
 			return lease.holderId === this.holderId ? "local" : "foreign";
 		}
 		return this.serialize(runId, () => this.probeOwnership(runId));
@@ -442,7 +444,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	private *probeOwnership(runId: string): Operation<"local" | "foreign" | "available"> {
 		this.ensureOpen();
 		const lease = yield* invoke(() => this.journal.leaseState(runId));
-		if (lease === undefined || Date.now() - lease.renewedAt >= FOREIGN_LIVE_WORKFLOW_WINDOW_MS) return "available";
+		if (lease === undefined || isWorkflowLeaseExpired(lease.renewedAt, FOREIGN_LIVE_WORKFLOW_WINDOW_MS))
+			return "available";
 		return lease.holderId === this.holderId ? "local" : "foreign";
 	}
 	setWorkflowStatus(

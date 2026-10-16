@@ -20,6 +20,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Extended shared journal conformance checks to cover detached values, closed-journal rejection, failure atomicity, and deletion tombstones.
 - Added stale-only async journal takeover and read-only ownership inspection. Keyed append retries return the original entry before checking sequence expectations. Shared journal conformance covers stale-only takeover and early read termination.
 
+### Fixed
+
+- Fixed workflow recovery reporting a foreign run as available at the exact lease-expiry boundary before takeover is permitted ([#3681](https://github.com/bastani-inc/atomic/pull/3681)).
+
 ## [0.9.38-alpha.5] - 2026-10-16
 
 ### Fixed

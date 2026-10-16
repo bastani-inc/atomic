@@ -1,4 +1,5 @@
 import { JOURNAL_READ_PAGE_SIZE, registerSynchronousJournal } from "./internal.js";
+import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import { journalCounter, storageBoundary } from "./node-sqlite.js";
 import {
 	type AppendOutcome,
@@ -146,7 +147,7 @@ export class MemoryRunJournal implements RunJournal {
 		if (
 			current?.holderId !== undefined &&
 			current.holderId !== null &&
-			!(Date.now() - current.renewedAt > staleAfterMs)
+			!isWorkflowLeaseExpired(current.renewedAt, staleAfterMs)
 		)
 			return { status: "held", holderId: current.holderId, epoch: current.epoch };
 		return this.grant(runId, holderId);
