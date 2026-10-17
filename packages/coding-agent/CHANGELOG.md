@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.38-alpha.7] - 2026-10-17
+
 ### Breaking Changes
 
 - `RunOpts.journal.database` now takes an async `SqliteDatabase` facade, not a raw `node:sqlite` connection; use `wrapNodeSqliteDatabase` for an existing connection. Journal configuration failures now use `StorageConfigError` with `source`, `field`, and `reason` instead of `JournalConfigurationError`.
