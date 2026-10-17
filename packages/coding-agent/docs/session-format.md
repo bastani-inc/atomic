@@ -18,7 +18,7 @@ Delete individual sessions from `/resume`: select a session, press `CTRL+D`, the
 
 ## Session Version
 
-SessionManager writes version 4 headers. Sessions in formats 1, 2, and 3 are upgraded automatically when opened, resumed, imported, or forked. Reading converts older records in memory; listing sessions and looking up headers leave files unchanged. Opening an older JSONL session persists its upgrade atomically under the file lock before new entries are saved. Future versions, unrecognized version values, and structurally invalid entries remain rejected; unloadable sessions are omitted from resume listings. A complete final record without a newline is accepted; a torn final record is rejected.
+SessionManager writes version 4 headers with `createdAt` and `parentSessionId`. Sessions in formats 1, 2, and 3, and early version-4 files whose header has `timestamp` and `parentSession` instead, are upgraded automatically when opened, resumed, imported, or forked. Reading converts older records in memory; listing sessions and looking up headers leave files unchanged. Opening an older JSONL session persists its upgrade atomically under the file lock before new entries are saved. Future versions, unrecognized version values, and structurally invalid entries remain rejected; unloadable sessions are omitted from resume listings. A complete final record without a newline is accepted; a torn final record is rejected.
 
 ## Source Files
 

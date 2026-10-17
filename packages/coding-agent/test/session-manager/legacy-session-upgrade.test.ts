@@ -13,7 +13,8 @@ import { userMsg } from "../utilities.js";
 type JsonRecord = Record<string, string | number | boolean | null | object>;
 
 interface LegacyFixture {
-	readonly version: 1 | 2 | 3;
+	readonly version: 1 | 2 | 3 | 4;
+	readonly title?: string;
 	readonly id: string;
 	readonly createdAt: string;
 	readonly name?: string;
@@ -120,6 +121,51 @@ const fixtures: readonly LegacyFixture[] = [
 			},
 		],
 	},
+	{
+		version: 4,
+		title: "4 with a timestamp header",
+		id: "0191f0a1-0000-7000-8000-000000000006",
+		createdAt: "2026-10-15T10:00:00.000Z",
+		name: "Alpha.4 session",
+		firstMessage: "Resume the early format 4 session",
+		lines: (cwd) => [
+			{
+				type: "session",
+				version: 4,
+				id: "0191f0a1-0000-7000-8000-000000000006",
+				timestamp: "2026-10-15T10:00:00.000Z",
+				cwd,
+				parentSession: "0191f0a1-0000-7000-8000-000000000002",
+			},
+			{
+				type: "message",
+				id: "e0000001",
+				parentId: null,
+				timestamp: "2026-10-15T10:00:01.000Z",
+				message: { role: "user", content: "Resume the early format 4 session", timestamp: 1791540001000 },
+			},
+			{
+				type: "message",
+				id: "e0000002",
+				parentId: "e0000001",
+				timestamp: "2026-10-15T10:00:02.000Z",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "Resumed." }],
+					provider: "anthropic",
+					model: "claude",
+					timestamp: 1791540002000,
+				},
+			},
+			{
+				type: "session_info",
+				id: "e0000003",
+				parentId: "e0000002",
+				timestamp: "2026-10-15T10:00:03.000Z",
+				name: "Alpha.4 session",
+			},
+		],
+	},
 ];
 
 function readLines(path: string): JsonRecord[] {
@@ -159,7 +205,7 @@ describe("resume of pre-format-4 sessions", () => {
 	}
 
 	for (const fixture of fixtures) {
-		describe(`format ${fixture.version}`, () => {
+		describe(`format ${fixture.title ?? fixture.version}`, () => {
 			it("is listed for /resume without changing the file", async () => {
 				const path = writeLegacy(fixture);
 				const before = readFileSync(path);
@@ -232,11 +278,11 @@ describe("resume of pre-format-4 sessions", () => {
 		assert.equal(readLines(path)[0]!.parentSessionId, "0191f0a1-0000-7000-8000-000000000002");
 	});
 
-	function writeLegacyFork(parentSession: string): { path: string; id: string } {
+	function writeLegacyFork(parentSession: string, version: 3 | 4 = 3): { path: string; id: string } {
 		const id = "0191f0a1-0000-7000-8000-000000000004";
 		const path = join(sessionDir, `2025-09-01T10-00-00-000Z_${id}.jsonl`);
 		const lines: JsonRecord[] = [
-			{ type: "session", version: 3, id, timestamp: "2025-09-01T10:00:00.000Z", cwd, parentSession },
+			{ type: "session", version, id, timestamp: "2025-09-01T10:00:00.000Z", cwd, parentSession },
 			{
 				type: "message",
 				id: "c0000001",
@@ -266,6 +312,22 @@ describe("resume of pre-format-4 sessions", () => {
 			assert.equal(listed.find((session) => session.id === fork.id)?.parentSessionPath, parentPath);
 			assert.equal(manager.getHeader()?.parentSessionId, fixtures[1]!.id);
 			assert.equal(readLines(fork.path)[0]!.parentSessionId, fixtures[1]!.id);
+		});
+
+		it(`resolves an early format 4 ${platform} parent session file path to the parent session id`, async () => {
+			const parentPath = writeLegacy(fixtures[1]!);
+			const fork = writeLegacyFork(toParentSession(parentPath), 4);
+
+			const listed = await SessionManager.list(cwd, sessionDir);
+			const manager = await SessionManager.open(fork.path, sessionDir);
+
+			assert.equal(listed.find((session) => session.id === fork.id)?.parentSessionPath, parentPath);
+			assert.equal(manager.getHeader()?.parentSessionId, fixtures[1]!.id);
+			const [header] = readLines(fork.path);
+			assert.equal(header!.version, 4);
+			assert.equal(header!.parentSessionId, fixtures[1]!.id);
+			assert.equal(header!.parentSession, undefined);
+			assert.equal(header!.timestamp, undefined);
 		});
 	}
 
@@ -357,6 +419,105 @@ describe("resume of pre-format-4 sessions", () => {
 			assert.equal(readFileSync(path, "utf8"), content);
 		});
 	}
+
+	describe("early format 4 through the JSONL store", () => {
+		const early = fixtures[3]!;
+
+		it("lists, reads the header of, and loads a session with a timestamp header", async () => {
+			const path = writeLegacy(early);
+			const content = readFileSync(path, "utf8");
+			const store = await JsonlSessionStore.open(sessionDir, { exactDirectory: true });
+			try {
+				const summaries = [];
+				for await (const summary of store.list({ cwd })) summaries.push(summary);
+				const header = await store.readHeader(early.id);
+
+				assert.deepEqual(
+					summaries.map((summary) => [summary.id, summary.createdAt, summary.name, summary.parentSessionId]),
+					[[early.id, early.createdAt, early.name, "0191f0a1-0000-7000-8000-000000000002"]],
+				);
+				assert.equal(header?.createdAt, early.createdAt);
+				assert.equal(header?.version, 4);
+				assert.equal(readFileSync(path, "utf8"), content);
+
+				const snapshot = await store.load(early.id);
+				assert.equal(snapshot.header.createdAt, early.createdAt);
+				assert.deepEqual(
+					snapshot.entries.map((entry) => entry.id),
+					["e0000001", "e0000002", "e0000003"],
+				);
+				assert.equal(readLines(path)[0]!.createdAt, early.createdAt);
+				assert.equal(readLines(path)[0]!.timestamp, undefined);
+			} finally {
+				await store.close();
+			}
+		});
+
+		it("finds a session with a timestamp header in a project directory of the global store", async () => {
+			const projectDir = join(sessionDir, "--project--");
+			mkdirSync(projectDir);
+			const path = join(projectDir, basename(writeLegacy(early)));
+			renameSync(join(sessionDir, basename(path)), path);
+			const store = await JsonlSessionStore.open(sessionDir);
+			try {
+				assert.equal(await store.findFile(early.id), path);
+				assert.equal((await store.load(early.id)).header.createdAt, early.createdAt);
+				const summaries = [];
+				for await (const summary of store.list({})) summaries.push(summary.id);
+				assert.deepEqual(summaries, [early.id]);
+			} finally {
+				await store.close();
+			}
+		});
+
+		it("rejects appending to an unloaded session with a timestamp header", async () => {
+			const path = writeLegacy(early);
+			const content = readFileSync(path, "utf8");
+			const store = await JsonlSessionStore.open(sessionDir, { exactDirectory: true, scanExisting: false });
+			try {
+				await assert.rejects(
+					store.append(
+						early.id,
+						[{ type: "session_info", id: "new", parentId: null, timestamp: early.createdAt, name: "x" }],
+						{ expectSeq: 0 },
+					),
+					SessionFormatVersionError,
+				);
+			} finally {
+				await store.close();
+			}
+			assert.equal(readFileSync(path, "utf8"), content);
+		});
+
+		const rejectedHeaders: ReadonlyArray<readonly [string, JsonRecord]> = [
+			["neither timestamp nor createdAt", { version: 4 }],
+			["a numeric createdAt and no timestamp", { version: 4, createdAt: 1 }],
+			["a numeric timestamp and no createdAt", { version: 4, timestamp: 1 }],
+			["a future version with a timestamp", { version: 5, timestamp: "2026-10-15T10:00:00.000Z" }],
+			["version 0 with a timestamp", { version: 0, timestamp: "2026-10-15T10:00:00.000Z" }],
+		];
+
+		for (const [name, fields] of rejectedHeaders) {
+			it(`still rejects a header with ${name}`, async () => {
+				const id = "0191f0a1-0000-7000-8000-000000000009";
+				const path = join(sessionDir, `2026-10-15T10-00-00-000Z_${id}.jsonl`);
+				const content = `${JSON.stringify({ type: "session", id, cwd, ...fields })}\n`;
+				writeFileSync(path, content);
+				const store = await JsonlSessionStore.open(sessionDir, { exactDirectory: true });
+				try {
+					await assert.rejects(SessionManager.open(path, sessionDir), SessionFormatVersionError);
+					await assert.rejects(store.load(id), SessionFormatVersionError);
+					assert.deepEqual(await SessionManager.list(cwd, sessionDir), []);
+					const summaries = [];
+					for await (const summary of store.list({})) summaries.push(summary.id);
+					assert.deepEqual(summaries, []);
+					assert.equal(readFileSync(path, "utf8"), content);
+				} finally {
+					await store.close();
+				}
+			});
+		}
+	});
 
 	it("upgrades through the global store only under the project directory lock so project appends survive", async () => {
 		const fixture = fixtures[2]!;

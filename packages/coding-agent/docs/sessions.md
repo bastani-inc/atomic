@@ -12,6 +12,8 @@ Sessions auto-save to the local SQLite database at `~/.atomic/workflows/journal.
 
 To choose another store, set `sessions.storage` in settings. Use shared `storage` to select one database for both sessions and workflow runs. JSONL is available only when explicitly selected. Memory is available through `--no-session`, `{ "memory": true }` in settings, or an explicit SDK option; it is never a fallback for a failed persistent store.
 
+When the default SQLite store is selected, Atomic copies sessions saved before it became the default into the database once at startup. It reads the JSONL files under `~/.atomic/agent/sessions`, including sessions in formats 1, 2, and 3 and early 0.9.38 alpha sessions, so they appear in `/resume` and open with `--continue`, `--session`, and `--fork`. The original files are never modified or deleted. A session whose ID is already in the database is skipped, unreadable files are ignored, and workflow stage sessions stay hidden from `/resume` but remain openable by session ID. The import runs only once: sessions you delete afterward stay deleted, and files added to the old directory later are not imported. If the import is interrupted by a database error, it is retried at the next startup. Selecting a store yourself, as described below, skips the import.
+
 Project-local storage settings apply after you approve project trust, including on the first launch. Atomic re-selects storage before saving a new conversation; resumed conversations stay in their original store. Generated resume commands for JSONL sessions include `--session-dir`; keep that option when reopening the conversation, even if the directory was previously the default.
 
 For SQLite, resume with `atomic --session-store "/data/project A/sessions.sqlite" --session-prefix project_ --session <id>`.
@@ -44,7 +46,7 @@ Imported IDs are kept verbatim, including an empty ID. Resume an imported empty 
 
 This selects JSONL under `~/.atomic/sessions`. Use `{ "path": "sessions.sqlite" }` for another local SQLite file, `{ "memory": true }` for ephemeral sessions, or an adapter selection for a user-installed database driver. The `sessionDir` setting has been removed without an alias.
 
-Precedence is SDK `sessionStore`, `--no-session`, `--session-dir <dir>` or `--session-store <path>` (mutually exclusive CLI selections), non-empty `ATOMIC_CODING_AGENT_SESSION_DIR`, `sessions.storage`, shared `storage`, then the default SQLite file. Each selection wins as a whole; project selections replace global ones rather than merging fields. Relative settings paths resolve against Atomic home; CLI paths and environment directories resolve against the working directory. Changing stores selects a different history without migrating sessions; keep the original store to return to it.
+Precedence is SDK `sessionStore`, `--no-session`, `--session-dir <dir>` or `--session-store <path>` (mutually exclusive CLI selections), non-empty `ATOMIC_CODING_AGENT_SESSION_DIR`, `sessions.storage`, shared `storage`, then the default SQLite file. Each selection wins as a whole; project selections replace global ones rather than merging fields. Relative settings paths resolve against Atomic home; CLI paths and environment directories resolve against the working directory. Changing stores selects a different history, and only the default store imports earlier JSONL sessions; keep the original store to return to it.
 
 `--session-store` cannot be combined with `--session-dir` or `--no-session`. `--session-prefix` requires `--session-store` and defaults to empty, giving `session_` table names. A non-empty prefix is prepended to those names, must match `[A-Za-z_][A-Za-z0-9_]*`, and must not start with `sqlite_` (case-insensitive). Invalid configuration or unavailable storage raises a typed error, never a fallback to another store.
 
@@ -85,7 +87,7 @@ For the JSONL file format and SessionManager API, see [Session Format](/session-
 
 `/resume` opens an interactive session picker for the current project. `atomic -r` opens the same picker at startup.
 
-Sessions written in formats 1, 2, and 3 appear in the picker and upgrade automatically to format 4 when opened, including with `--continue`, `--session`, or `--fork`. Browsing the picker does not change session files. Opening an older session rewrites only that file; no flag or confirmation is needed.
+Sessions written in formats 1, 2, and 3, and early 0.9.38 alpha sessions whose header uses `timestamp`, appear in the picker and upgrade automatically to format 4. In the default store this happens when they are imported at startup. In an explicit JSONL store it happens when you open them, including with `--continue`, `--session`, or `--fork`; browsing the picker does not change session files, and opening an older session rewrites only that file. No flag or confirmation is needed.
 
 Resuming restores saved verbatim compaction without another planning request. Older sessions with retired logical-deletion compaction can bring previously hidden content back into context.
 

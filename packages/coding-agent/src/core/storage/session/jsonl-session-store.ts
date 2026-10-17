@@ -15,7 +15,6 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { StringDecoder } from "node:string_decoder";
 import { setTimeout as delay } from "node:timers/promises";
 import lockfile from "proper-lockfile";
 import { createSessionCwdMatcher } from "../../../utils/canonical-path.ts";
@@ -33,17 +32,21 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
-import { type StoredSessionHeader, upgradeLegacySessionEntries, upgradeLegacySessionHeader } from "./legacy-format.js";
-import { summarizeSession } from "./session-summary.js";
 import {
-	SESSION_FORMAT_VERSION,
-	type SessionListQuery,
-	type SessionRecordHeader,
-	type SessionSnapshot,
-	type SessionStore,
-	type SessionSummary,
-	type SessionWriteOptions,
-	type StorageDescriptor,
+	isCurrentSessionHeader,
+	type StoredSessionHeader,
+	upgradeLegacySessionEntries,
+	upgradeLegacySessionHeader,
+} from "./legacy-format.js";
+import { summarizeSession } from "./session-summary.js";
+import type {
+	SessionListQuery,
+	SessionRecordHeader,
+	SessionSnapshot,
+	SessionStore,
+	SessionSummary,
+	SessionWriteOptions,
+	StorageDescriptor,
 } from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
@@ -60,6 +63,14 @@ interface SessionFileState {
 }
 
 type JsonValue = SessionJsonValue;
+
+const SCAN_FIRST_LINE_CHUNK_BYTES = 4096;
+
+export interface JsonlSessionFile {
+	readonly location: string;
+	readonly header: SessionRecordHeader;
+	read(): Promise<SessionSnapshot>;
+}
 
 export { SessionFormatVersionError } from "./errors.js";
 
@@ -243,8 +254,7 @@ export class JsonlSessionStore implements SessionStore {
 	private async readPersisted(path: string, stored?: StoredSessionHeader): Promise<SessionSnapshot> {
 		stored ??= await this.readFirstLine(path);
 		const directory = dirname(path);
-		if (stored.version === SESSION_FORMAT_VERSION || directory === this.directory)
-			return this.readSnapshot(path, stored, true);
+		if (isCurrentSessionHeader(stored) || directory === this.directory) return this.readSnapshot(path, stored, true);
 		return this.exclusive(() => this.readSnapshot(path, undefined, true), undefined, directory);
 	}
 
@@ -304,6 +314,21 @@ export class JsonlSessionStore implements SessionStore {
 			if (summary) yield summary;
 		}
 		await this.run(async () => this.checkAbort(query.signal), true, query.signal);
+	}
+
+	async *scanFiles(): AsyncIterable<JsonlSessionFile> {
+		for (const location of await this.run(() => this.paths({ skipUnreadableDirectories: true }), false)) {
+			let header: SessionRecordHeader;
+			try {
+				header = await this.run(
+					async () => this.readHeaderAt(location, await this.readFirstLine(location, SCAN_FIRST_LINE_CHUNK_BYTES)),
+					false,
+				);
+			} catch {
+				continue;
+			}
+			yield { location, header, read: () => this.run(() => this.readSnapshot(location), false) };
+		}
 	}
 
 	async findMostRecent(query: {
@@ -388,13 +413,14 @@ export class JsonlSessionStore implements SessionStore {
 		if (signal?.aborted) throw new DOMException("Session listing aborted", "AbortError");
 	}
 
-	private async paths(): Promise<string[]> {
+	private async paths(options: { readonly skipUnreadableDirectories?: boolean } = {}): Promise<string[]> {
 		const paths: string[] = [];
 		for (const entry of await readdir(this.directory, { withFileTypes: true })) {
 			const path = join(this.directory, entry.name);
 			if ((entry.isDirectory() || entry.isSymbolicLink()) && !this.exactDirectory) {
 				const children = await readdir(path, { withFileTypes: true }).catch((cause: NodeJS.ErrnoException) => {
 					if (cause.code === "ENOENT" || cause.code === "ENOTDIR") return [];
+					if (options.skipUnreadableDirectories && (cause.code === "EACCES" || cause.code === "EPERM")) return [];
 					throw cause;
 				});
 				for (const child of children) {
@@ -449,25 +475,19 @@ export class JsonlSessionStore implements SessionStore {
 		return createHash("sha256").update(sessionId).digest("hex");
 	}
 
-	private async readFirstLine(path: string): Promise<StoredSessionHeader> {
+	private async readFirstLine(path: string, chunkBytes = 1): Promise<StoredSessionHeader> {
 		const file = await open(path, "r");
 		try {
-			const decoder = new StringDecoder("utf8");
-			const buffer = Buffer.alloc(1);
-			let line = "";
+			const chunks: Buffer[] = [];
+			const buffer = Buffer.alloc(chunkBytes);
 			while (true) {
 				const { bytesRead } = await file.read(buffer, 0, buffer.length, null);
-				if (!bytesRead) {
-					line += decoder.end();
-					break;
-				}
-				if (buffer[0] === 10) {
-					line += decoder.end();
-					break;
-				}
-				line += decoder.write(buffer);
+				if (!bytesRead) break;
+				const newline = buffer.subarray(0, bytesRead).indexOf(10);
+				chunks.push(Buffer.from(buffer.subarray(0, newline === -1 ? bytesRead : newline)));
+				if (newline !== -1) break;
 			}
-			const value = JSON.parse(line) as JsonValue;
+			const value = JSON.parse(Buffer.concat(chunks).toString("utf8")) as JsonValue;
 			return value !== null && typeof value === "object" && !Array.isArray(value)
 				? (value as StoredSessionHeader)
 				: {};
@@ -478,10 +498,9 @@ export class JsonlSessionStore implements SessionStore {
 
 	private async readHeaderAt(path: string, stored?: StoredSessionHeader): Promise<SessionRecordHeader> {
 		stored ??= await this.readFirstLine(path);
-		const { type: _type, ...header } =
-			stored.version === SESSION_FORMAT_VERSION
-				? (stored as SessionRecordHeader & { type: "session" })
-				: upgradeLegacySessionHeader(stored, path);
+		const { type: _type, ...header } = isCurrentSessionHeader(stored)
+			? (stored as SessionRecordHeader & { type: "session" })
+			: upgradeLegacySessionHeader(stored, path);
 		if (
 			_type !== "session" ||
 			typeof header.id !== "string" ||
@@ -524,7 +543,7 @@ export class JsonlSessionStore implements SessionStore {
 			lines.close();
 			input.destroy();
 		}
-		if (stored.version !== SESSION_FORMAT_VERSION) {
+		if (!isCurrentSessionHeader(stored)) {
 			const upgraded = upgradeLegacySessionEntries(stored, entries, path).entries;
 			validateSessionEntryStructure(upgraded, path);
 			validateSessionEntries(upgraded);
@@ -585,7 +604,7 @@ export class JsonlSessionStore implements SessionStore {
 		const located = await this.locate(sessionId);
 		if (!located) throw new SessionNotFoundError(sessionId);
 		const { path, header, stored, stats } = located;
-		if (stored.version !== SESSION_FORMAT_VERSION) throw new SessionFormatVersionError(path, stored.version);
+		if (!isCurrentSessionHeader(stored)) throw new SessionFormatVersionError(path, stored.version);
 		let state = located.state;
 		if (!state) {
 			await this.readSnapshot(path);

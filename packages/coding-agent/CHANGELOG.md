@@ -6,6 +6,10 @@
 
 - Subagent parallel task limits can now be raised above 50 with `parallel.maxTasks`. Configure `parallel.concurrency` and the new `parallel.runningCapacity` together to run more than four child turns per parent; defaults remain 50 tasks, concurrency 3, and running capacity 4.
 
+### Fixed
+
+- Fixed sessions saved before the SQLite default disappearing from `/resume` and failing to open with `--continue`, `--session`, or `--fork`. With the default store, Atomic now copies sessions from `~/.atomic/agent/sessions` into the database once at startup, including workflow stage sessions and early 0.9.38 alpha sessions that use a `timestamp` header. The import runs only once, so sessions you delete afterward stay deleted. Original files are left untouched, and explicitly selected stores are not imported into.
+
 ## [0.9.38-alpha.7] - 2026-10-17
 
 ### Breaking Changes

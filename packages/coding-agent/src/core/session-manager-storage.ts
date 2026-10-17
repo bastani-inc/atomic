@@ -3,16 +3,15 @@ import { join } from "path";
 import { StringDecoder } from "string_decoder";
 import { createSessionCwdMatcher, normalizePath, resolvePath } from "../utils/paths.ts";
 import { isClassifiedWorkflowSession } from "./session-manager-classification.ts";
-import {
-	CURRENT_SESSION_VERSION,
-	type FileEntry,
-	type SessionEntry,
-	type SessionHeader,
-} from "./session-manager-types.ts";
+import type { FileEntry, SessionEntry, SessionHeader } from "./session-manager-types.ts";
 import { validateSessionFileEntries } from "./session-manager-validation.ts";
 
 import { StorageUnavailableError } from "./storage/session/errors.js";
-import { type StoredSessionHeader, upgradeLegacySessionEntries } from "./storage/session/legacy-format.js";
+import {
+	isCurrentSessionHeader,
+	type StoredSessionHeader,
+	upgradeLegacySessionEntries,
+} from "./storage/session/legacy-format.js";
 
 const SESSION_READ_BUFFER_SIZE = 1024 * 1024;
 /**
@@ -48,7 +47,7 @@ export function parseStoredSessionEntries(content: string): FileEntry[] {
 
 export function upgradeStoredSessionEntries(entries: FileEntry[], path: string): FileEntry[] {
 	const header = entries[0];
-	if (header?.type !== "session" || header.version === CURRENT_SESSION_VERSION) return entries;
+	if (header?.type !== "session" || isCurrentSessionHeader(header as StoredSessionHeader)) return entries;
 	const upgraded = upgradeLegacySessionEntries(
 		header as StoredSessionHeader,
 		entries.slice(1) as SessionEntry[],
