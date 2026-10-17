@@ -91,5 +91,3 @@ export function formatParallelResultContent(
 	const ok = results.filter((result) => result.status === "ok").length;
 	return `${ok}/${results.length} succeeded\n\n${aggregateParallelOutputs(results, headerFormat)}`;
 }
-
-export const MAX_PARALLEL_CONCURRENCY = 4;

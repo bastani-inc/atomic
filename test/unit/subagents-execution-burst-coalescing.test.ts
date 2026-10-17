@@ -908,7 +908,10 @@ test("rejects a coalesced burst above the expanded 50-task cap before launch", a
 		assert.equal(launches, 0);
 		for (const output of outputs) {
 			assert.equal(output.isError, true);
-			assert.equal(output.content[0]?.type === "text" ? output.content[0].text : "", "Max 50 tasks");
+			assert.equal(
+				output.content[0]?.type === "text" ? output.content[0].text : "",
+				"Too many parallel tasks (51 after count expansion). Maximum is 50 (configure parallel.maxTasks in ~/.atomic/agent/extensions/subagent/config.json).",
+			);
 			assert.deepEqual(output.details, { mode: "parallel", results: [] });
 		}
 	} finally {

@@ -245,16 +245,29 @@ Observation yields do not release these worktrees. Cancelling a queued child bef
 
 Fresh children inherit the invoking session's SDK configuration, resource-discovery inputs, model/auth runtime and host callbacks. Child tool selections can narrow the parent's permissions but cannot restore disabled packages or excluded tools. Intercom has no mandatory bypass; a child without access receives no supervisor grant. Model fallback keeps the same inherited restrictions. See [SDK child configuration](/sdk#workflow-and-subagent-children).
 
-Top-level parallel calls support up to 50 subagents after expanding each task's optional `count`. Two settings control the set:
+Top-level parallel calls apply these settings from `~/.atomic/agent/extensions/subagent/config.json` after expanding each task's optional `count`:
 
-- `parallel.maxTasks` defaults to 50 and can enforce a lower task limit.
-- `parallel.concurrency` defaults to 3 and controls how many children run at once. Explicit configuration overrides the default; per-call `concurrency` takes precedence over configuration.
+- `parallel.maxTasks` defaults to 50 and limits the number of tasks in a parallel set. There is no hard upper cap; raise or lower it as needed.
+- `parallel.concurrency` defaults to 3 and limits how many children are dispatched at once. Per-call `concurrency` takes precedence.
+- `parallel.runningCapacity` defaults to 4 and limits simultaneously running child turns per parent.
 
-At most four turns per parent can run at once, even when a higher subagent concurrency is configured.
+To run up to 100 children at once, raise both concurrency and running capacity as well as the task limit:
+
+```json
+{
+  "parallel": {
+    "maxTasks": 100,
+    "concurrency": 100,
+    "runningCapacity": 100
+  }
+}
+```
+
+Running capacity is selected when a parent's first child is created. Restart Atomic after changing this setting to apply the new capacity.
 
 When one assistant response emits several sibling execution-mode `subagent` tool calls, Atomic collects that synchronous burst before starting a child and runs it as one indexed parallel set. Each original tool call still receives one result containing only the children it requested, and its live result, progress, control, and artifact updates are projected to that same route without sibling data. The TUI redraws the shared run as one aggregate parallel widget rather than retaining one widget per original call. A single call keeps its original SINGLE or PARALLEL mode, calls awaited in sequence remain separate runs, and management actions bypass collection. An execution call that arrives after a child has started still receives the existing in-progress rejection. Prefer one explicit `{ tasks: [...] }` call when planning parallel work; burst collection handles sibling calls emitted by a model.
 
-For a collected burst, each call contributes its top-level `agent` task first and then its `tasks` entries in array order. Atomic preserves duplicates, expands `count` in place, and applies the configured task cap after flattening and expansion; the hard maximum remains 50. Each call-level `cwd` selects that call's agent-discovery scope and child base directory. A task-level `cwd` stays relative to that call base and changes only that child's execution directory, not agent discovery. This per-origin discovery rule applies only to collected sibling calls; an ordinary explicit `{ tasks: [...] }` call keeps one discovery scope from its top-level `cwd`. Per-call and per-task `group` values also stay with their originating children. Shared run options must match across every sibling call: `concurrency`, `worktree`, `context`, `share`, `control`, `sessionDir`, `maxOutput`, `artifacts`, `includeProgress`, and `agentScope`. A mismatch rejects the whole burst before any child launches and names the incompatible field.
+For a collected burst, each call contributes its top-level `agent` task first and then its `tasks` entries in array order. Atomic preserves duplicates, expands `count` in place, and applies `parallel.maxTasks` after flattening and expansion. Each call-level `cwd` selects that call's agent-discovery scope and child base directory. A task-level `cwd` stays relative to that call base and changes only that child's execution directory, not agent discovery. This per-origin discovery rule applies only to collected sibling calls; an ordinary explicit `{ tasks: [...] }` call keeps one discovery scope from its top-level `cwd`. Per-call and per-task `group` values also stay with their originating children. Shared run options must match across every sibling call: `concurrency`, `worktree`, `context`, `share`, `control`, `sessionDir`, `maxOutput`, `artifacts`, `includeProgress`, and `agentScope`. A mismatch rejects the whole burst before any child launches and names the incompatible field.
 
 For a collected `worktree: true` burst, every call-level `cwd` must resolve to the same path. That common path becomes the shared worktree root; differing origins reject the burst before launch, and any task-level `cwd` must still resolve to that root. Each projected caller result keeps shared worktree diff text and terminal control guidance while its child results and standard child-output sections remain route-local.
 

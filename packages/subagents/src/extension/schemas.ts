@@ -162,8 +162,7 @@ export const SubagentParams = Type.Object(
 		),
 		tasks: Type.Optional(
 			Type.Array(TaskItem, {
-				maxItems: MAX_PARALLEL_TASKS,
-				description: `PARALLEL mode: [{agent, task, count?, output?, outputMode?, reads?, progress?}, ...]. Maximum ${MAX_PARALLEL_TASKS} tasks after count expansion.`,
+				description: `PARALLEL mode: [{agent, task, count?, output?, outputMode?, reads?, progress?}, ...]. Maximum tasks after count expansion is configured by parallel.maxTasks (default ${MAX_PARALLEL_TASKS}).`,
 			}),
 		),
 		concurrency: Type.Optional(

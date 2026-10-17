@@ -213,6 +213,7 @@ export async function runSinglePath(
 			ctx.getChildSessionOptions?.({ tools: agentConfig.tools }),
 		);
 		const runOptions: RunSyncOptions = {
+			runningCapacity: deps.config.parallel?.runningCapacity,
 			getChildSessionOptions: ctx.getChildSessionOptions,
 			resourceLoaderInheritanceSnapshot: deps.pi.getResourceLoaderInheritanceSnapshot?.(),
 			cwd: effectiveCwd,
