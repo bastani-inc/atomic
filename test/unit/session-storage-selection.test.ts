@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { parseArgs } from "../../packages/coding-agent/src/cli/args.js";
+import * as sessionPicker from "../../packages/coding-agent/src/cli/session-picker.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import {
 	canIsolateSessionStore,
@@ -17,7 +18,7 @@ import {
 	SessionExistsError,
 } from "../../packages/coding-agent/src/core/storage/session/errors.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
-import { createSessionManager } from "../../packages/coding-agent/src/main-session.js";
+import { createSessionManager, refreshSessionStorage } from "../../packages/coding-agent/src/main-session.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { stageSessionStore } from "../../packages/workflows/src/shared/stage-session-store.js";
 import {
@@ -434,6 +435,79 @@ test("higher-priority session selections ignore malformed losing values", () => 
 	} finally {
 		if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_SESSION_DIR;
 		else process.env.ATOMIC_CODING_AGENT_SESSION_DIR = previous;
+		removeTempDirectory(root);
+	}
+});
+
+test("reopened conversations keep their selected store across project settings refreshes", async () => {
+	const root = makeTempDirectory("session-refresh-existing-");
+	const originalSettings = SettingsManager.inMemory({
+		sessions: { storage: { path: join(root, "original.sqlite") } },
+	});
+	const projectSettings = SettingsManager.inMemory({ sessions: { storage: { path: join(root, "project.sqlite") } } });
+	const source = await resolveSessionStore(root, { settings: originalSettings.getSettings() });
+	const destination = await resolveSessionStore(root, { settings: projectSettings.getSettings() });
+	// Replace terminal input only; listing, opening, refreshing and writes use the real stores.
+	const picker = vi.spyOn(sessionPicker, "selectSession").mockImplementation(async (_local, all) => {
+		const [selected] = await all();
+		assert.ok(selected);
+		return selected;
+	});
+	try {
+		const initial = await SessionManager.create(source, root, { id: "selected-conversation" });
+		for (const flags of [
+			["--resume"],
+			["--session", initial.getSessionId()],
+			["--session-id", initial.getSessionId()],
+			["--continue"],
+		]) {
+			const parsed = parseArgs(flags);
+			for (let attempt = 0; attempt < 2; attempt++) {
+				const manager = await createSessionManager(
+					parsed,
+					parsed.resume ? join(root, "..") : root,
+					undefined,
+					originalSettings,
+				);
+				try {
+					assert.equal(manager.getCwd(), root);
+					assert.equal(await refreshSessionStorage(manager, parsed, projectSettings), undefined);
+					await manager.appendSessionInfo(`continued ${attempt}`);
+					const last = (await source.load(initial.getSessionId())).entries.at(-1);
+					assert.equal(last?.type, "session_info");
+					if (last?.type === "session_info") assert.equal(last.name, `continued ${attempt}`);
+					assert.equal(await destination.readHeader(initial.getSessionId()), undefined);
+				} finally {
+					await manager.getSessionStore().close();
+				}
+			}
+		}
+	} finally {
+		picker.mockRestore();
+		await source.close();
+		await destination.close();
+		removeTempDirectory(root);
+	}
+});
+
+test("a provisional conversation stops being movable after its first write", async () => {
+	const root = makeTempDirectory("session-refresh-written-");
+	const originalSettings = SettingsManager.inMemory({
+		sessions: { storage: { path: join(root, "original.sqlite") } },
+	});
+	const projectSettings = SettingsManager.inMemory({ sessions: { storage: { path: join(root, "project.sqlite") } } });
+	const parsed = parseArgs([]);
+	const manager = await createSessionManager(parsed, root, undefined, originalSettings);
+	const original = manager.getSessionStore();
+	try {
+		await manager.appendSessionInfo("already written");
+		assert.equal(await refreshSessionStorage(manager, parsed, projectSettings), undefined);
+		assert.equal(manager.getSessionStore(), original);
+		const last = (await original.load(manager.getSessionId())).entries.at(-1);
+		assert.equal(last?.type, "session_info");
+		if (last?.type === "session_info") assert.equal(last.name, "already written");
+	} finally {
+		await manager.getSessionStore().close();
 		removeTempDirectory(root);
 	}
 });

@@ -161,6 +161,13 @@ export async function applyInheritedWorkflowSessionClassification(
 }
 
 const initialStorageKeys = new WeakMap<SessionManager, string>();
+const provisionalSessions = new WeakSet<SessionManager>();
+
+async function createProvisionalSession(store: SessionStore, cwd: string, id?: string): Promise<SessionManager> {
+	const manager = await SessionManager.create(store, cwd, { id });
+	provisionalSessions.add(manager);
+	return manager;
+}
 
 /** Finalize a CLI-owned provisional store after trusted settings become available. */
 export async function refreshSessionStorage(
@@ -169,6 +176,9 @@ export async function refreshSessionStorage(
 	settingsManager: SettingsManager,
 	sessionStore?: SessionStore | StorageSelection,
 ): Promise<SessionStore | undefined> {
+	// An opened conversation belongs to the store that supplied it, even when its
+	// project's newly trusted settings select a different store for new sessions.
+	if (!provisionalSessions.has(manager) || manager.getEntries().length > 0) return undefined;
 	const options = {
 		sessionStore,
 		settings: settingsManager.getSettings(),
@@ -183,15 +193,7 @@ export async function refreshSessionStorage(
 	const previous = manager.getSessionStore();
 	const next = await resolveSessionStore(manager.getCwd(), options);
 	try {
-		await manager.rebindStore(
-			next,
-			parsed.session === undefined &&
-				!parsed.resume &&
-				!parsed.continue &&
-				parsed.fork === undefined &&
-				parsed.import === undefined &&
-				parsed.sessionId === undefined,
-		);
+		await manager.rebindStore(next, true);
 	} catch (error) {
 		await next.close();
 		throw error;
@@ -240,7 +242,7 @@ async function createSessionManagerWithStore(
 	store: SessionStore,
 ): Promise<SessionManager> {
 	if (parsed.import !== undefined) return SessionManager.importFromJsonl(resolvePath(parsed.import, cwd), cwd, store);
-	if (parsed.noSession) return SessionManager.create(store, cwd, { id: parsed.sessionId });
+	if (parsed.noSession) return createProvisionalSession(store, cwd, parsed.sessionId);
 
 	if (parsed.fork !== undefined) {
 		if (parsed.sessionId !== undefined) {
@@ -315,7 +317,8 @@ async function createSessionManagerWithStore(
 	}
 
 	if (parsed.continue) {
-		return await SessionManager.continueRecent(store, cwd);
+		const recent = await store.findMostRecent({ cwd: resolvePath(cwd) });
+		return recent ? SessionManager.open(store, recent.id) : createProvisionalSession(store, cwd);
 	}
 
 	if (parsed.sessionId !== undefined) {
@@ -326,7 +329,7 @@ async function createSessionManagerWithStore(
 		console.error(chalk.yellow(`No session found with id '${parsed.sessionId}'; creating a new session.`));
 	}
 
-	return await SessionManager.create(store, cwd, { id: parsed.sessionId });
+	return createProvisionalSession(store, cwd, parsed.sessionId);
 }
 
 export async function promptForMissingSessionCwd(

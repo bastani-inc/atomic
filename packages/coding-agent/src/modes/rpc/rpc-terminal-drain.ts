@@ -44,15 +44,23 @@ export class RpcTerminalDrain {
 		if (this.generation === generation && this.settlement) return this.settlement;
 		this.generation = generation;
 		let done = false;
+		const completion = Promise.withResolvers<void>();
 		const finish = (): void => {
 			if (done) return;
 			done = true;
 			clearTimeout(timer);
-			settle(cause);
+			try {
+				settle(cause);
+				completion.resolve();
+			} catch (error) {
+				completion.reject(error);
+			}
 		};
 		const timer = setTimeout(finish, EXIT_DRAIN_TIMEOUT_MS);
 		timer.unref?.();
-		this.settlement = drained.then(finish, finish);
+		// Both EOF and the deadline release callers waiting for transport teardown.
+		this.settlement = completion.promise;
+		void drained.then(finish, finish);
 		return this.settlement;
 	}
 

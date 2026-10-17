@@ -76,14 +76,22 @@ test("a request accepted while the exit rejection waits for the drain is not rep
 	assert.ok(isRpcRequestAcceptedFailure(settled.rejected), "the queued admission was ignored");
 });
 
-test("a drain that never completes still fails pending requests", async () => {
+test("a drain that never completes releases shutdown and fails pending requests", async () => {
 	const pending = new RpcPendingRequests();
 	const settled = track(pending, "req_1");
-	void new RpcTerminalDrain().begin(1, new Promise<void>(() => {}), EXIT(), (error) => pending.rejectAll(error));
+	const drain = new RpcTerminalDrain();
+	let shutdownReleased = false;
+	void drain
+		.begin(1, new Promise<void>(() => {}), EXIT(), (error) => pending.rejectAll(error))
+		.then(() => {
+			shutdownReleased = true;
+		});
 
 	await sleep(EXIT_DRAIN_TIMEOUT_MS + 50);
 	assert.ok(isRpcTransportFailure(settled.rejected), "a descendant holding stdout must not strand the caller");
 	assert.equal(isRpcRequestAcceptedFailure(settled.rejected), false);
+	assert.equal(shutdownReleased, true, "a descendant holding stdout must not strand transport shutdown");
+	await drain.settled(1);
 });
 
 test("the first terminal cause owns the error, and settlement happens once", async () => {
