@@ -13,7 +13,7 @@ import {
 	unlink,
 	writeFile,
 } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { StringDecoder } from "node:string_decoder";
 import { setTimeout as delay } from "node:timers/promises";
@@ -32,6 +32,7 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
+import { type StoredSessionHeader, upgradeLegacySessionEntries, upgradeLegacySessionHeader } from "./legacy-format.js";
 import { summarizeSession } from "./session-summary.js";
 import {
 	SESSION_FORMAT_VERSION,
@@ -207,31 +208,43 @@ export class JsonlSessionStore implements SessionStore {
 			validateSessionHeader(header);
 			validateSessionEntries(entries);
 			if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
-			const payload = this.encode(header, entries);
-			const temporary = `${path}.${randomUUID()}.tmp`;
-			try {
-				await writeFile(temporary, payload, { flag: "wx" });
-				await rename(temporary, path);
-			} finally {
-				await unlink(temporary).catch((cause: NodeJS.ErrnoException) => {
-					if (cause.code !== "ENOENT") throw cause;
-				});
-			}
-			await this.remember(path, this.contentState(header, entries, payload));
+			await this.commit(path, header, entries);
 			return { lastSeq: entries.length };
 		});
+	}
+
+	private async commit(path: string, header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<void> {
+		const payload = this.encode(header, entries);
+		const temporary = `${path}.${randomUUID()}.tmp`;
+		try {
+			await writeFile(temporary, payload, { flag: "wx" });
+			await rename(temporary, path);
+		} finally {
+			await unlink(temporary).catch((cause: NodeJS.ErrnoException) => {
+				if (cause.code !== "ENOENT") throw cause;
+			});
+		}
+		await this.remember(path, this.contentState(header, entries, payload));
 	}
 
 	load(sessionId: string): Promise<SessionSnapshot> {
 		return this.run(async () => {
 			const located = await this.locate(sessionId);
 			if (!located) throw new SessionNotFoundError(sessionId);
-			return this.readSnapshot(located.path, located.header);
+			return this.readPersisted(located.path, located.stored);
 		});
 	}
 
 	loadFile(path: string): Promise<SessionSnapshot> {
-		return this.run(() => this.readSnapshot(resolve(path)));
+		return this.run(() => this.readPersisted(resolve(path)));
+	}
+
+	private async readPersisted(path: string, stored?: StoredSessionHeader): Promise<SessionSnapshot> {
+		stored ??= await this.readFirstLine(path);
+		const directory = dirname(path);
+		if (stored.version === SESSION_FORMAT_VERSION || directory === this.directory)
+			return this.readSnapshot(path, stored, true);
+		return this.exclusive(() => this.readSnapshot(path, undefined, true), undefined, directory);
 	}
 
 	findFile(sessionId: string): Promise<string | undefined> {
@@ -337,13 +350,17 @@ export class JsonlSessionStore implements SessionStore {
 		return result;
 	}
 
-	private async exclusive<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+	private async exclusive<T>(
+		operation: () => Promise<T>,
+		signal?: AbortSignal,
+		directory = this.directory,
+	): Promise<T> {
 		let release: () => Promise<void>;
 		for (;;) {
 			this.checkAbort(signal);
 			try {
-				release = await lockfile.lock(this.directory, {
-					lockfilePath: join(this.directory, ".session.lock"),
+				release = await lockfile.lock(directory, {
+					lockfilePath: join(directory, ".session.lock"),
 					onCompromised: (cause) => {
 						this.poisoned = new StorageUnavailableError(this.descriptor, cause);
 					},
@@ -382,15 +399,20 @@ export class JsonlSessionStore implements SessionStore {
 		return paths;
 	}
 
-	private async locate(
-		sessionId: string,
-	): Promise<
-		{ path: string; header: SessionRecordHeader; stats: BigIntStats; state: SessionFileState | undefined } | undefined
+	private async locate(sessionId: string): Promise<
+		| {
+				path: string;
+				header: SessionRecordHeader;
+				stored: StoredSessionHeader;
+				stats: BigIntStats;
+				state: SessionFileState | undefined;
+		  }
+		| undefined
 	> {
 		validateSessionText("sessionId", sessionId);
 		for (const path of await this.paths()) {
 			const cached = this.fileStates.get(path);
-			let stored: { id?: string; version?: JsonValue };
+			let stored: StoredSessionHeader;
 			try {
 				stored = await this.readFirstLine(path);
 			} catch (cause) {
@@ -412,7 +434,7 @@ export class JsonlSessionStore implements SessionStore {
 			const state = this.fileStates.get(path);
 			// Keep same-ID baselines only as conflict evidence: forWrite checks the current inode
 			// and rejects structural changes until an explicit load establishes a new baseline.
-			return { path, header, stats, state };
+			return { path, header, stored, stats, state };
 		}
 		return undefined;
 	}
@@ -421,7 +443,7 @@ export class JsonlSessionStore implements SessionStore {
 		return createHash("sha256").update(sessionId).digest("hex");
 	}
 
-	private async readFirstLine(path: string): Promise<{ id?: string; version?: JsonValue }> {
+	private async readFirstLine(path: string): Promise<StoredSessionHeader> {
 		const file = await open(path, "r");
 		try {
 			const decoder = new StringDecoder("utf8");
@@ -441,20 +463,19 @@ export class JsonlSessionStore implements SessionStore {
 			}
 			const value = JSON.parse(line) as JsonValue;
 			return value !== null && typeof value === "object" && !Array.isArray(value)
-				? (value as { id?: string; version?: JsonValue })
+				? (value as StoredSessionHeader)
 				: {};
 		} finally {
 			await file.close();
 		}
 	}
 
-	private async readHeaderAt(
-		path: string,
-		stored?: { id?: string; version?: JsonValue },
-	): Promise<SessionRecordHeader> {
+	private async readHeaderAt(path: string, stored?: StoredSessionHeader): Promise<SessionRecordHeader> {
 		stored ??= await this.readFirstLine(path);
-		if (stored.version !== SESSION_FORMAT_VERSION) throw new SessionFormatVersionError(path, stored.version);
-		const { type: _type, ...header } = stored as SessionRecordHeader & { type: "session" };
+		const { type: _type, ...header } =
+			stored.version === SESSION_FORMAT_VERSION
+				? (stored as SessionRecordHeader & { type: "session" })
+				: upgradeLegacySessionHeader(stored, path);
 		if (
 			_type !== "session" ||
 			typeof header.id !== "string" ||
@@ -467,8 +488,13 @@ export class JsonlSessionStore implements SessionStore {
 		return header;
 	}
 
-	private async readSnapshot(path: string, header?: SessionRecordHeader): Promise<SessionSnapshot> {
-		header ??= await this.readHeaderAt(path);
+	private async readSnapshot(
+		path: string,
+		stored?: StoredSessionHeader,
+		persistUpgrade = false,
+	): Promise<SessionSnapshot> {
+		stored ??= await this.readFirstLine(path);
+		const header = await this.readHeaderAt(path, stored);
 		const input = createReadStream(path);
 		let witness: Buffer = Buffer.alloc(0);
 		let terminated = false;
@@ -491,6 +517,13 @@ export class JsonlSessionStore implements SessionStore {
 		} finally {
 			lines.close();
 			input.destroy();
+		}
+		if (stored.version !== SESSION_FORMAT_VERSION) {
+			const upgraded = upgradeLegacySessionEntries(stored, entries, path).entries;
+			validateSessionEntryStructure(upgraded, path);
+			validateSessionEntries(upgraded);
+			if (persistUpgrade) await this.commit(path, header, upgraded);
+			return { header, entries: upgraded, lastSeq: upgraded.length };
 		}
 		validateSessionEntryStructure(entries, path);
 		validateSessionEntries(entries);
@@ -545,7 +578,8 @@ export class JsonlSessionStore implements SessionStore {
 	): Promise<{ path: string; state: SessionFileState }> {
 		const located = await this.locate(sessionId);
 		if (!located) throw new SessionNotFoundError(sessionId);
-		const { path, header, stats } = located;
+		const { path, header, stored, stats } = located;
+		if (stored.version !== SESSION_FORMAT_VERSION) throw new SessionFormatVersionError(path, stored.version);
 		let state = located.state;
 		if (!state) {
 			await this.readSnapshot(path);
