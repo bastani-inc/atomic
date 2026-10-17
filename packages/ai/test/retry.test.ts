@@ -93,6 +93,15 @@ describe("provider retry classification", () => {
 		assert.equal(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage })), true);
 	});
 
+	it.each([
+		"unknown: Unable to forward upstream stream",
+		"upstream_error: Upstream request failed",
+		"upstream_stream_read_error: Upstream response stream was interrupted",
+		"Upstream HTTP/2 stream failed",
+	])("matches gateway upstream failure wording (#10920): %s", (errorMessage) => {
+		assert.equal(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage })), true);
+	});
+
 	it("matches OpenAI Responses streams that end before terminal events", () => {
 		expect(
 			isRetryableAssistantError(
