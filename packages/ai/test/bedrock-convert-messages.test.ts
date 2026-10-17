@@ -1,3 +1,5 @@
+import assert from "node:assert/strict";
+import type { ContentBlock } from "@aws-sdk/client-bedrock-runtime";
 import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
 
@@ -389,7 +391,7 @@ describe("bedrock convertMessages skips unknown content types", () => {
 			},
 		];
 		const payload = (await capturePayload({ messages })) as {
-			messages: Array<{ role: string; content: Array<Record<string, any>> }>;
+			messages: Array<{ role: string; content: ContentBlock[] }>;
 		};
 		const content = payload.messages[1].content;
 		expect(content).toHaveLength(4);
@@ -402,6 +404,7 @@ describe("bedrock convertMessages skips unknown content types", () => {
 			],
 			status: "error",
 		});
+		assert.ok(content[1].toolResult);
 		expect(content[1].toolResult.status).toBe("success");
 		expect(content[1].toolResult.content).toEqual([{ image: expect.objectContaining({ format: "png" }) }]);
 		expect(content[2]).toEqual({ text: "Images from the error result of tool call call-1 (codemode):" });
@@ -423,7 +426,7 @@ describe("bedrock convertMessages skips unknown content types", () => {
 			},
 		];
 		const payload = (await capturePayload({ messages }, novaModel)) as {
-			messages: Array<{ role: string; content: Array<Record<string, any>> }>;
+			messages: Array<{ role: string; content: ContentBlock[] }>;
 		};
 		expect(payload.messages[0].content).toEqual([
 			{
