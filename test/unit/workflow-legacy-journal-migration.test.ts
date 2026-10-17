@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "vitest";
@@ -9,7 +8,7 @@ import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/
 import { type JournalEntry, RUN_EVENT_TYPES } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { stripWorkflowOnlyOptions } from "../../packages/workflows/src/runs/foreground/stage-runner-options.js";
-import { makeTempDirectory, removeTempDirectory, writeTextSync } from "../helpers/runtime.js";
+import { makeTempDirectory, readText, removeTempDirectory, writeTextSync } from "../helpers/runtime.js";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -229,5 +228,5 @@ test("resumes a pre-#3700 stage from its transcript when the selected store has 
 	assert.ok(message?.role === "user");
 	assert.equal(message.content, "Finish the review");
 	assert.equal((await store.load(sessionId)).header.internal, true);
-	assert.equal(readFileSync(sessionFile, "utf8"), transcript);
+	assert.equal(await readText(sessionFile), transcript);
 });
