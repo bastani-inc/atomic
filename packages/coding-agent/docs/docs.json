@@ -195,6 +195,7 @@
             "pages": [
               "providers/reference",
               "models/reference",
+              "models-configuration",
               "compaction/reference",
               "skills/reference",
               "subagents/reference",

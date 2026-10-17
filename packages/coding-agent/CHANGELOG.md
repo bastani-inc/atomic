@@ -13,6 +13,7 @@
 - Added user-installed journal adapter modules, environment/file secret references, shared `storage` defaults, and `StorageProvider` for explicit session/journal opens with shared database lifetime. `RunOpts.journal.database` accepts an async SQLite facade; invalid selections raise `StorageConfigError` without falling back to memory.
 - Added `sessions.storage` and SDK `sessionStore` to select SQLite, explicit JSONL or memory, a caller-owned database, or a user-installed adapter. Shared `storage` settings now configure sessions too; SDK, CLI and environment overrides take precedence without merging selections. Store-open failures raise typed errors rather than falling back to memory.
 - Added `--session-store <path>` and `--session-prefix <prefix>` to select a SQLite session database from the CLI. SQLite resume hints and Herdr commands always include `--session-store` and include `--session-prefix` when non-default.
+- Added a Models Configuration reference generated from the `models.json` schema, listing provider, model, model override, and compatibility fields ([#10790](https://github.com/earendil-works/pi/issues/10790)).
 
 ### Changed
 
@@ -28,6 +29,7 @@
 - Fixed repeated codemode timeouts or aborts accumulating surviving workers. At most two codemode workers may be alive across all sessions, and a cancelled worker counts against that limit until it actually exits ([#10748](https://github.com/earendil-works/pi/issues/10748)).
 - Fixed sessions in symlinked project directories, including macOS temporary directories, being omitted from session lookup or mistaken for sessions from another project.
 - Fixed compaction fallback and branch summaries failing with "generation hit the token cap" when reasoning used most of a fixed output budget. The provider now sizes summary output, and `compaction.reserveTokens` only controls when automatic compaction starts ([#9512](https://github.com/earendil-works/pi/issues/9512), [#9075](https://github.com/earendil-works/pi/issues/9075)).
+- Fixed `models.schema.json` missing descriptions for provider and model fields, so editors now show hints for them ([#10790](https://github.com/earendil-works/pi/issues/10790)).
 
 ## [0.9.38-alpha.6] - 2026-10-16
 
