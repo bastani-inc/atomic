@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { dirname, resolve } from "node:path";
 import {
 	type CreateAgentSessionOptions,
 	JsonlSessionStore,
@@ -47,4 +48,32 @@ export async function forkStageSession(
 		source.entries,
 	);
 	return SessionManager.open(destination, id, cwd);
+}
+
+/**
+ * Import a stage conversation recorded before #3700 into the store it now resumes from.
+ *
+ * Stage checkpoints written before #3700 point at a JSONL transcript. The session
+ * import at startup covers only the default session directory, so a stage whose
+ * transcript lives elsewhere (for example a host `--session-dir`) would resume by an
+ * ID the selected store has never seen. The transcript is read without rewriting it.
+ */
+export async function migrateLegacyStageSession(
+	store: SessionStore,
+	sessionId: string,
+	sessionFile: string | undefined,
+): Promise<void> {
+	if (sessionFile === undefined || (await store.readHeader(sessionId)) !== undefined) return;
+	const location = resolve(sessionFile);
+	const legacy = await JsonlSessionStore.open(dirname(location), { exactDirectory: true, scanExisting: false });
+	try {
+		for await (const file of legacy.scanFiles()) {
+			if (resolve(file.location) !== location || file.header.id !== sessionId) continue;
+			const snapshot = await file.read();
+			if ((await store.readHeader(sessionId)) === undefined) await store.create(snapshot.header, snapshot.entries);
+			return;
+		}
+	} finally {
+		await legacy.close();
+	}
 }

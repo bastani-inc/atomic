@@ -184,6 +184,7 @@ export function createDurableStagePrimitive(input: {
 			...(isMidSessionResume
 				? {
 						resumeFromSessionId: session.sessionId,
+						...(session.sessionFile !== undefined ? { resumeFromLegacySessionFile: session.sessionFile } : {}),
 						routerSelection: session.routerSelection,
 						durableAccumulatedDurationMs: session.durationMs ?? 0,
 					}
@@ -281,6 +282,7 @@ export function createDurableTaskPrimitive(input: {
 			...(session?.sessionId !== undefined
 				? {
 						resumeFromSessionId: session.sessionId,
+						...(session.sessionFile !== undefined ? { resumeFromLegacySessionFile: session.sessionFile } : {}),
 						routerSelection: session.routerSelection,
 						durableAccumulatedDurationMs: session.durationMs ?? 0,
 					}

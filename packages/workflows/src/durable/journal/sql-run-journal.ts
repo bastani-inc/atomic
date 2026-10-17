@@ -11,6 +11,7 @@ import {
 } from "@bastani/atomic/storage";
 import { JOURNAL_READ_PAGE_SIZE } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
+import { migrateLegacyJournalTables } from "./legacy-journal-tables.js";
 import {
 	type AppendOutcome,
 	JOURNAL_COLUMNS as c,
@@ -102,6 +103,7 @@ export class SqlRunJournal implements RunJournal {
 				);
 			`);
 		});
+		if (!options.prefix) await migrateLegacyJournalTables(database);
 		return new SqlRunJournal(database, t);
 	}
 

@@ -1,6 +1,6 @@
 import { type CreateAgentSessionOptions, SessionManager } from "@bastani/atomic";
 import { resolveStageGroup, stageHasIntercomAccess } from "../../shared/intercom-group.js";
-import { forkStageSession, stageSessionStore } from "../../shared/stage-session-store.js";
+import { forkStageSession, migrateLegacyStageSession, stageSessionStore } from "../../shared/stage-session-store.js";
 import type { StageExecutionMeta, StageOptions } from "../../shared/types.js";
 import type { AgentSessionConsumer } from "./stage-runner-types.js";
 
@@ -57,6 +57,7 @@ export async function stripWorkflowOnlyOptions(
 		context,
 		forkFromSessionId,
 		resumeFromSessionId,
+		resumeFromLegacySessionFile,
 		sessionStore,
 		durableReplayKey: _durableReplayKey,
 		durableAccumulatedDurationMs: _durableAccumulatedDurationMs,
@@ -71,11 +72,9 @@ export async function stripWorkflowOnlyOptions(
 	} = options;
 	const cwd = sessionOptions.cwd ?? process.cwd();
 	if (resumeFromSessionId !== undefined) {
-		sessionOptions.sessionManager = await SessionManager.open(
-			await stageSessionStore(options, defaultSessionDir),
-			resumeFromSessionId,
-			cwd,
-		);
+		const store = await stageSessionStore(options, defaultSessionDir);
+		await migrateLegacyStageSession(store, resumeFromSessionId, resumeFromLegacySessionFile);
+		sessionOptions.sessionManager = await SessionManager.open(store, resumeFromSessionId, cwd);
 	} else if (context === "fork" && forkFromSessionId !== undefined) {
 		sessionOptions.sessionManager = await forkStageSession(
 			await stageSessionStore(options, defaultSessionDir),
