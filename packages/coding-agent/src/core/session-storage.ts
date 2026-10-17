@@ -23,10 +23,15 @@ export interface SessionStorageOptions {
 
 const provider = new StorageProvider();
 const sources = new WeakMap<StorageSelection, { source: "settings" | "cli" | "env"; field: string }>();
+const defaultSelections = new WeakSet<StorageSelection>();
 type EngineSessionStorage = Extract<StorageSelection, { kind: "sqlite" }>;
 const engineSelections = new WeakMap<SessionStore, EngineSessionStorage | null>();
 const isolatedCliMemoryStores = new WeakSet<SessionStore>();
 export const ENGINE_SESSION_STORAGE_FLAG = "--internal-session-storage";
+
+export function isDefaultSessionStorage(selection: SessionStore | StorageSelection): boolean {
+	return defaultSelections.has(selection as StorageSelection);
+}
 
 export function getEngineSessionStorage(store: SessionStore): EngineSessionStorage | undefined {
 	return engineSelections.get(store) ?? undefined;
@@ -130,7 +135,11 @@ export function selectSessionStorage(
 		throw new StorageConfigError("settings", "sessions", "selection-object-required");
 	}
 	const value = settings.sessions?.storage !== undefined ? settings.sessions.storage : settings.storage;
-	if (value === undefined) return { kind: "sqlite", path: defaultPath };
+	if (value === undefined) {
+		const selection = { kind: "sqlite", path: defaultPath } as const;
+		defaultSelections.add(selection);
+		return selection;
+	}
 	const field = settings.sessions?.storage !== undefined ? "sessions.storage" : "storage";
 	if (!Value.Check(SessionStorageSelectionSchema, value) || (field === "storage" && "dir" in value)) {
 		throw new StorageConfigError("settings", field, "invalid-selection");
