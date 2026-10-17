@@ -73,6 +73,7 @@ export function resolveTempScopeId(options?: {
 
 export const MAX_PARALLEL_TASKS = 50;
 export const MAX_CONCURRENCY = 3;
+export const DEFAULT_RUNNING_CAPACITY = 4;
 export const TEMP_ROOT_DIR = path.join(os.tmpdir(), `${APP_NAME}-subagents-${resolveTempScopeId()}`);
 export const TEMP_ARTIFACTS_DIR = path.join(TEMP_ROOT_DIR, "artifacts");
 export const SLASH_RESULT_TYPE = "subagent-slash-result";
@@ -96,12 +97,15 @@ function normalizeTopLevelParallelValue(value: unknown): number | undefined {
 }
 
 export function resolveTopLevelParallelMaxTasks(value: unknown): number {
-	const configuredMax = normalizeTopLevelParallelValue(value);
-	return configuredMax === undefined ? MAX_PARALLEL_TASKS : Math.min(configuredMax, MAX_PARALLEL_TASKS);
+	return normalizeTopLevelParallelValue(value) ?? MAX_PARALLEL_TASKS;
 }
 
 export function resolveTopLevelParallelConcurrency(override: unknown, configValue: unknown): number {
 	return normalizeTopLevelParallelValue(override) ?? normalizeTopLevelParallelValue(configValue) ?? MAX_CONCURRENCY;
+}
+
+export function resolveTopLevelParallelRunningCapacity(value: unknown): number {
+	return normalizeTopLevelParallelValue(value) ?? DEFAULT_RUNNING_CAPACITY;
 }
 
 export function wrapForkTask(task: string, preamble?: string | false): string {

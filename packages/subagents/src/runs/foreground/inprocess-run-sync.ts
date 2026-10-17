@@ -13,6 +13,7 @@ import type {
 	SubagentToolResult,
 	Usage,
 } from "../../shared/types.js";
+import { resolveTopLevelParallelRunningCapacity } from "../../shared/types.js";
 import { getOrCreateSubagentControl } from "../inprocess/control-registry.js";
 import type { AttemptOutcome, ChildSpec, ParentContext } from "../inprocess/runner.js";
 import { isParentCancellation } from "../shared/cancellation-recovery.js";
@@ -256,7 +257,11 @@ export async function runSingleInProcess(
 		...(orchestrationContext ? { orchestrationContext } : {}),
 	};
 	const sessionRoot = options.sessionDir ?? join(options.artifactsDir ?? cwd, ".atomic", "subagents");
-	const control = getOrCreateSubagentControl(parent, sessionRoot);
+	const control = getOrCreateSubagentControl(
+		parent,
+		sessionRoot,
+		resolveTopLevelParallelRunningCapacity(options.runningCapacity),
+	);
 	control.registerAgents([agent]);
 	const artifactsDir =
 		options.artifactsDir && options.artifactConfig?.enabled !== false ? options.artifactsDir : undefined;

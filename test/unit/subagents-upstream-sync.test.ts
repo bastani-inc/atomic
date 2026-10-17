@@ -111,6 +111,7 @@ function makeExecutor(input: {
 	cwd: string;
 	agents: AgentConfig[];
 	runSync: SubagentExecutorRuntimeDeps["runSync"];
+	parallel?: ExecutorDeps["config"]["parallel"];
 }): ReturnType<typeof createSubagentExecutor> {
 	const deps: ExecutorDeps = {
 		pi: {
@@ -118,7 +119,7 @@ function makeExecutor(input: {
 			getSessionName: () => "parent-session-name",
 		} as unknown as ExecutorDeps["pi"],
 		state: makeState(),
-		config: { parallel: { concurrency: 4, maxTasks: 50 } } as ExecutorDeps["config"],
+		config: { parallel: input.parallel ?? { concurrency: 4, maxTasks: 50 } },
 		tempArtifactsDir: join(input.cwd, "artifacts"),
 		getSubagentSessionRoot: () => join(input.cwd, "sessions"),
 		expandTilde: (p) => p,
@@ -230,13 +231,17 @@ describe("recent upstream subagent syncs", () => {
 		}
 	});
 
-	test("defaults the top-level parallel task maximum to 50 and only allows config to lower it", () => {
+	test("defaults the top-level parallel task maximum to 50 and honors configured limits", () => {
 		assert.equal(resolveTopLevelParallelMaxTasks(undefined), 50);
 		assert.equal(resolveTopLevelParallelMaxTasks(12), 12);
-		assert.equal(resolveTopLevelParallelMaxTasks(51), 50);
+		assert.equal(resolveTopLevelParallelMaxTasks(100), 100);
+		assert.equal(resolveTopLevelParallelMaxTasks("100"), 100);
+		for (const invalid of [0, -1, 1.5, NaN, "abc", null]) {
+			assert.equal(resolveTopLevelParallelMaxTasks(invalid), 50);
+		}
 	});
 
-	test("accepts 50 top-level parallel tasks in the tool schema and rejects 51", () => {
+	test("accepts top-level parallel task arrays above the default limit in the tool schema", () => {
 		const makeTasks = (count: number) =>
 			Array.from({ length: count }, (_, index) => ({
 				agent: "worker",
@@ -244,15 +249,17 @@ describe("recent upstream subagent syncs", () => {
 			}));
 
 		assert.equal(Value.Check(SubagentParams, { tasks: makeTasks(50) }), true);
-		assert.equal(Value.Check(SubagentParams, { tasks: makeTasks(51) }), false);
+		assert.equal(Value.Check(SubagentParams, { tasks: makeTasks(51) }), true);
+		assert.equal(Value.Check(SubagentParams, { tasks: makeTasks(100) }), true);
 	});
 
-	test("rejects more than 50 expanded top-level parallel tasks at runtime", async () => {
+	test("rejects expanded parallel tasks above the configured maximum before launching children", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-parallel-limit-"));
 		try {
 			let runCount = 0;
 			const executor = makeExecutor({
 				cwd,
+				parallel: { maxTasks: 100 },
 				agents: [makeAgent("worker")],
 				runSync: async (_parentCwd, _agents, agentName, task) => {
 					runCount += 1;
@@ -263,7 +270,7 @@ describe("recent upstream subagent syncs", () => {
 			const output = await executor.execute(
 				"parallel-limit",
 				{
-					tasks: [{ agent: "worker", task: "Repeated task", count: 51 }],
+					tasks: [{ agent: "worker", task: "Repeated task", count: 101 }],
 				},
 				new AbortController().signal,
 				undefined,
@@ -272,8 +279,54 @@ describe("recent upstream subagent syncs", () => {
 			const text = output.content[0]?.type === "text" ? output.content[0].text : "";
 
 			assert.equal(output.isError, true);
-			assert.equal(text, "Max 50 tasks");
+			assert.equal(
+				text,
+				"Too many parallel tasks (101 after count expansion). Maximum is 100 (configure parallel.maxTasks in ~/.atomic/agent/extensions/subagent/config.json).",
+			);
 			assert.equal(runCount, 0);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("runs more than 50 expanded tasks in explicit and collected parallel calls when configured", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-raised-limit-"));
+		try {
+			let runCount = 0;
+			let active = 0;
+			let peak = 0;
+			const executor = makeExecutor({
+				cwd,
+				parallel: { maxTasks: 100, concurrency: 100, runningCapacity: 100 },
+				agents: [makeAgent("worker")],
+				runSync: async (_parentCwd, _agents, agentName, task, options) => {
+					assert.equal(options?.runningCapacity, 100);
+					runCount += 1;
+					active += 1;
+					peak = Math.max(peak, active);
+					await Promise.resolve();
+					active -= 1;
+					return result(agentName, task);
+				},
+			});
+			const execute = (id: string, count: number) =>
+				executor.execute(
+					id,
+					{ tasks: [{ agent: "worker", task: "Repeated task", count }] },
+					new AbortController().signal,
+					undefined,
+					makeContext(cwd),
+				);
+			const explicit = await execute("explicit", 100);
+			assert.equal(explicit.isError, undefined);
+			assert.equal(explicit.details?.results.length, 100);
+			assert.equal(peak, 100);
+			const siblings = await Promise.all([execute("sibling-one", 30), execute("sibling-two", 30)]);
+			for (const sibling of siblings) {
+				assert.equal(sibling.isError, undefined);
+				assert.equal(sibling.details?.results.length, 30);
+			}
+			assert.equal(runCount, 160);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}

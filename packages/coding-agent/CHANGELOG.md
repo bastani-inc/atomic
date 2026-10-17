@@ -20,6 +20,7 @@
 ### Changed
 
 - Changed the default NVIDIA model to `nvidia/nemotron-3.5-super-vl-120b-a12b` ([#10910](https://github.com/earendil-works/pi/pull/10910) by [@cv](https://github.com/cv)).
+- Subagent parallel task limits can now be raised above 50 with `parallel.maxTasks`. Configure `parallel.concurrency` and the new `parallel.runningCapacity` together to run more than four child turns per parent; defaults remain 50 tasks, concurrency 3, and running capacity 4.
 
 ### Fixed
 

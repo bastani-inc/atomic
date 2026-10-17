@@ -13,13 +13,17 @@ export function registerSubagentControl(control: SubagentControlRuntime): void {
 	controls.set(control.parent.path, control);
 }
 
-export function getOrCreateSubagentControl(parent: ParentContext, sessionRoot: string): SubagentControlRuntime {
+export function getOrCreateSubagentControl(
+	parent: ParentContext,
+	sessionRoot: string,
+	runningCapacity?: number,
+): SubagentControlRuntime {
 	const existing = controls.get(parent.path);
 	// The control plane is parent-scoped. Parallel callers pass their per-child
 	// session directories here, but those storage paths must not split identity
 	// allocation across fresh native registries.
 	if (existing) return existing;
-	const control = createSubagentControl(parent, sessionRoot);
+	const control = createSubagentControl(parent, sessionRoot, runningCapacity);
 	controls.set(parent.path, control);
 	return control;
 }

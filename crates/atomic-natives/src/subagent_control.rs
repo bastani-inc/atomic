@@ -98,6 +98,10 @@ fn native_refusal(refusal: AdmissionRefusal) -> NativeAdmissionRefusal {
 		},
 	}
 }
+fn resolve_execution_capacity(capacity: Option<u32>) -> usize {
+	capacity.filter(|value| *value > 0).map_or(EXECUTION_CAPACITY, |value| value as usize)
+}
+
 /// N-API wrapper around the root-scoped Rust control plane. The host marker is
 /// intentionally held by the wrapper while the cloneable core stores only a
 /// weak reference to it.
@@ -110,11 +114,15 @@ pub struct NapiSubagentControl {
 #[napi]
 impl NapiSubagentControl {
 	#[napi(constructor)]
-	pub fn new(parent_path: String) -> Self {
+	pub fn new(parent_path: String, execution_capacity: Option<u32>) -> Self {
 		let parent_path = ChildPath::new(&parent_path)
 			.unwrap_or_else(|reason| panic!("invalid parent path: {reason}"));
 		let host = Arc::new(HostMarker);
-		let inner = SubagentControl::with_host(parent_path, &host);
+		let inner = SubagentControl::with_host(
+			parent_path,
+			&host,
+			resolve_execution_capacity(execution_capacity),
+		);
 		Self { inner, _host: host }
 	}
 
@@ -262,7 +270,7 @@ impl NapiSubagentControl {
 /// a top-level session admits a depth-1 child, and that child admits nothing.
 /// Not configurable.
 pub const MAX_DEPTH: u8 = 1;
-/// Maximum number of active child turns for one root control plane.
+/// Default maximum number of active child turns for one root control plane.
 pub const EXECUTION_CAPACITY: usize = 4;
 /// Codex's literal cooperative-interruption grace period.
 pub const GRACEFUL_INTERRUPTION_TIMEOUT_MS: u64 = 100;

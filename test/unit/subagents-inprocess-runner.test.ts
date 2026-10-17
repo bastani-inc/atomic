@@ -48,6 +48,43 @@ function sampleSpec(cwd: string): ChildSpec {
 	return { taskName: "analysis", task: "inspect the fixture", agent: sampleAgent(), cwd };
 }
 
+test("configured running capacity admits that many concurrent child turns and defaults to four", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-capacity-"));
+	clearSubagentControls();
+	try {
+		for (const capacity of [undefined, 6]) {
+			const runId = `capacity-parent-${capacity ?? 4}`;
+			const seeded = await runSingleInProcess(root, sampleAgent(), "inspect fixture", {
+				runId,
+				runningCapacity: capacity,
+				sessionDir: root,
+				testSession: { output: "seeded" },
+			});
+			assert.equal(seeded.status, "ok");
+			const control = findSubagentControl(runId);
+			assert.ok(control);
+			const tokens: number[] = [];
+			for (let index = 0; index <= (capacity ?? 4); index++) {
+				const admitted = control.admitChildSession(sampleSpec(root));
+				assert.ok(admitted.admitted);
+				const attempt: ReturnType<NativeSubagentControl["beginChildAttempt"]> = control.native.beginChildAttempt(
+					admitted.admitted.identity.path,
+				);
+				if (index < (capacity ?? 4)) {
+					assert.ok(attempt.token);
+					tokens.push(attempt.token);
+				} else {
+					assert.equal(attempt.refusal?.kind, "capacityExhausted");
+				}
+			}
+			for (const token of tokens) control.native.finishChildAttempt(token, "ok");
+		}
+	} finally {
+		clearSubagentControls();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("a run's parent depth reaches admission and the door refuses the level past the maximum", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-depth-"));
 	clearSubagentControls();

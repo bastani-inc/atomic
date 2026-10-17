@@ -10,8 +10,8 @@ use std::{
 use napi::threadsafe_function::ThreadsafeFunctionCallMode;
 
 use super::{
-	AdmissionRefusal, AdmittedChild, AgentStatus, ChildPath, ExecutionGuard, ExecutionLimiter,
-	GRACEFUL_INTERRUPTION_TIMEOUT_MS, Residency, ResidencyError, StatusCallback,
+	AdmissionRefusal, AdmittedChild, AgentStatus, ChildPath, EXECUTION_CAPACITY, ExecutionGuard,
+	ExecutionLimiter, GRACEFUL_INTERRUPTION_TIMEOUT_MS, Residency, ResidencyError, StatusCallback,
 	StatusUpdateCallback, TerminationCause,
 };
 /// Explicit termination causes. Timer/idle/wall-clock causes are intentionally
@@ -118,11 +118,11 @@ struct ControlState {
 }
 
 impl ControlState {
-	fn new() -> Self {
+	fn new(execution_capacity: usize) -> Self {
 		Self {
 			registry: super::AgentRegistry::new(),
-			limiter: ExecutionLimiter::default(),
-			residency: Residency::default(),
+			limiter: ExecutionLimiter::with_capacity(execution_capacity),
+			residency: Residency::new(execution_capacity),
 			dispatch: Arc::new(DispatchGate::default()),
 			attempts: Mutex::new(HashMap::new()),
 			termination_receipts: Mutex::new(HashMap::new()),
@@ -149,12 +149,23 @@ pub struct SubagentControl {
 
 impl SubagentControl {
 	pub fn new(parent_path: impl AsRef<str>) -> Result<Self, String> {
-		let parent_path = ChildPath::new(parent_path)?;
-		Ok(Self { state: Arc::new(ControlState::new()), host: Weak::new(), parent_path })
+		Self::with_execution_capacity(parent_path, EXECUTION_CAPACITY)
 	}
 
-	pub(crate) fn with_host(parent_path: ChildPath, host: &Arc<HostMarker>) -> Self {
-		Self { state: Arc::new(ControlState::new()), host: Arc::downgrade(host), parent_path }
+	pub fn with_execution_capacity(
+		parent_path: impl AsRef<str>,
+		capacity: usize,
+	) -> Result<Self, String> {
+		let parent_path = ChildPath::new(parent_path)?;
+		Ok(Self { state: Arc::new(ControlState::new(capacity)), host: Weak::new(), parent_path })
+	}
+
+	pub(crate) fn with_host(
+		parent_path: ChildPath,
+		host: &Arc<HostMarker>,
+		capacity: usize,
+	) -> Self {
+		Self { state: Arc::new(ControlState::new(capacity)), host: Arc::downgrade(host), parent_path }
 	}
 
 	pub fn parent_path(&self) -> &ChildPath {
@@ -564,6 +575,46 @@ mod tests {
 		let guard = limiter.try_acquire().expect("slot released between turns");
 		assert_eq!(limiter.active(), 4);
 		drop(guard);
+	}
+
+	#[test]
+	fn configured_execution_guards_use_the_requested_capacity() {
+		let limiter = ExecutionLimiter::with_capacity(100);
+		let guards: Vec<_> = (0..100).map(|_| limiter.try_acquire().expect("slot")).collect();
+		assert_eq!(limiter.active(), 100);
+		assert!(matches!(limiter.try_acquire(), Err(AdmissionRefusal::CapacityExhausted)));
+		drop(guards);
+		assert_eq!(limiter.active(), 0);
+	}
+
+	#[test]
+	fn configured_control_sizes_execution_and_residency_together() {
+		let control = SubagentControl::with_execution_capacity("parent", 8).expect("control");
+		let parent = ParentContext::new("parent", 0).expect("parent");
+		let mut attempts = Vec::new();
+		for index in 0..=8 {
+			let child = control
+				.admit_child_session(ChildSpec::new(format!("task-{index}")), parent.clone())
+				.expect("child");
+			let attempt = control.begin_child_attempt(&child);
+			if index < 8 {
+				attempts.push(attempt.expect("configured slot"));
+			} else {
+				assert_eq!(attempt, Err(AdmissionRefusal::CapacityExhausted));
+			}
+		}
+		assert_eq!(control.residency().loaded_count(), 8);
+		for attempt in attempts {
+			control.finish_child_attempt(attempt, AgentStatus::Ok).expect("finish");
+		}
+		assert_eq!(control.limiter().active(), 0);
+	}
+
+	#[test]
+	fn native_execution_capacity_defaults_when_missing_or_zero() {
+		assert_eq!(super::super::resolve_execution_capacity(None), 4);
+		assert_eq!(super::super::resolve_execution_capacity(Some(0)), 4);
+		assert_eq!(super::super::resolve_execution_capacity(Some(100)), 100);
 	}
 
 	#[test]

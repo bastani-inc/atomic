@@ -84,7 +84,12 @@ export async function runParallelPath(
 
 	if (tasks.length > maxParallelTasks)
 		return {
-			content: [{ type: "text", text: `Max ${maxParallelTasks} tasks` }],
+			content: [
+				{
+					type: "text",
+					text: `Too many parallel tasks (${tasks.length} after count expansion). Maximum is ${maxParallelTasks} (configure parallel.maxTasks in ~/.atomic/agent/extensions/subagent/config.json).`,
+				},
+			],
 			isError: true,
 			details: { mode: "parallel" as const, results: [] },
 		};
@@ -278,6 +283,7 @@ export async function runParallelPath(
 			sharedAutoIntercomGroup: sharedAutoGroupForSet(params.group, tasks),
 			foregroundControl,
 			concurrencyLimit: parallelConcurrency,
+			runningCapacity: deps.config.parallel?.runningCapacity,
 			parentDepth: data.parentDepth,
 			liveResults,
 			liveProgress,
