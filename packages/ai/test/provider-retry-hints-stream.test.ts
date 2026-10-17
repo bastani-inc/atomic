@@ -30,7 +30,7 @@ const modelBase = {
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	contextWindow: 1000,
 	maxTokens: 100,
-} as const;
+} satisfies Pick<Model<"openai-responses">, "name" | "reasoning" | "input" | "cost" | "contextWindow" | "maxTokens">;
 
 const responsesModel: Model<"openai-responses"> = {
 	...modelBase,
@@ -139,7 +139,8 @@ test("openai-completions reads Retry-After-Ms and Retry-After headers from a 503
 
 test("openai-codex-responses ignores a non-JSON 520 page without a hint (#3623)", async () => {
 	const fetch = vi.fn(
-		async () => new Response("<html><title>520: Web server is returning an unknown error</title></html>", { status: 520 }),
+		async () =>
+			new Response("<html><title>520: Web server is returning an unknown error</title></html>", { status: 520 }),
 	);
 	const result = await streamOpenAICodexResponses(codexModel, context, {
 		apiKey: codexToken(),

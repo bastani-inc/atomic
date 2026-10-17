@@ -27,7 +27,7 @@
     "test:all": "npm run test:unit && npm run test:integration",
     "test:scripts": "node --test \"scripts/*.test.mjs\"",
     "test:mcp-conformance": "bun run packages/coding-agent/test/mcp-conformance/run.ts",
-    "typecheck": "npm --workspace=@bastani/pi-ai run build && node scripts/alias-pi-ai.mjs && tsc --noEmit && npm --workspace=@bastani/atomic run typecheck",
+    "typecheck": "npm --workspace=@bastani/pi-ai run build && npm --workspace=@bastani/pi-ai run typecheck && node scripts/alias-pi-ai.mjs && tsc --noEmit && npm --workspace=@bastani/atomic run typecheck",
     "format": "biome format --write .",
     "check": "biome check --error-on-warnings . && npm run typecheck && npm run check:shrinkwrap",
     "lint": "npm run check",
