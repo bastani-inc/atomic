@@ -5,6 +5,8 @@ export const SESSION_FORMAT_VERSION = 4;
 export interface StorageDescriptor {
 	readonly adapter: string;
 	readonly location: string;
+	/** Non-default SQL table prefix, when the store uses one. */
+	readonly prefix?: string;
 }
 
 export interface SessionRecordHeader {

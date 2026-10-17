@@ -9,18 +9,25 @@ import { resolveSessionStore } from "../../packages/coding-agent/src/core/sessio
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { StorageProvider } from "../../packages/coding-agent/src/core/storage/provider.js";
 import { AuthStorage, ModelRuntime, SessionManager, SettingsManager } from "../../packages/coding-agent/src/index.js";
+import { DurableNestedTopologyError } from "../../packages/workflows/src/durable/boundary-topology.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { requireStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
+import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
 import type { RunOpts, RunResult } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import { createWorkflowPendingStageDelivery } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
-import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
+import {
+	createStageControlRegistry,
+	stageControlRegistry,
+} from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createAgentSessionAdapter, run, workflow } from "../../packages/workflows/src/sdk-surface.js";
 import { adoptStore, currentWorkflowStore, store } from "../../packages/workflows/src/shared/store-factory.js";
+import type { WorkflowRunContext } from "../../packages/workflows/src/shared/types.js";
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
 
 const BUILTINS = { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false } as const;
 
 interface StageRunOutcome {
+	readonly runId: string;
 	readonly status: string;
 	readonly error?: string;
 	readonly reply: RunResult<{ reply: string }>["result"];
@@ -34,6 +41,7 @@ async function runOneTaskStage(
 	cwd: string,
 	runOpts: (cwd: string) => RunOpts,
 	stageOptions: { sessionDir?: string } = {},
+	afterTask?: (ctx: WorkflowRunContext) => void | Promise<void>,
 ): Promise<StageRunOutcome> {
 	const faux = registerFauxProvider();
 	try {
@@ -81,12 +89,14 @@ async function runOneTaskStage(
 				});
 				sessionFile = result.sessionFile;
 				sessionId = result.sessionId;
+				await afterTask?.(ctx);
 				return { reply: result.text };
 			},
 		});
 
 		const result = await run(def, {}, { ...runOpts(cwd), journal: { memory: true } });
 		return {
+			runId: result.runId,
 			status: result.status,
 			...(result.error !== undefined ? { error: result.error } : {}),
 			reply: result.result,
@@ -143,6 +153,70 @@ test("standalone run releases its default stage session store before returning",
 	}
 });
 
+test("terminally failed standalone runs release their stage handles and native connections", async () => {
+	const cwd = makeTempDirectory("atomic-sdk-failed-store-release-");
+	const acquisitions = vi.spyOn(StorageProvider.prototype, "openSessionStore");
+	const databaseClose = vi.spyOn(DatabaseSync.prototype, "close");
+	try {
+		const outcome = await runOneTaskStage(
+			cwd,
+			(dir) => ({ cwd: dir }),
+			{},
+			() => {
+				throw new DurableNestedTopologyError("failure after a completed task");
+			},
+		);
+		assert.equal(outcome.status, "failed");
+		assert.match(outcome.error ?? "", /failure after a completed task/);
+		assert.ok(outcome.sessionId);
+		assert.equal(outcome.callCount, 1);
+		assert.deepEqual(
+			{ registered: stageControlRegistry.has(outcome.runId), nativeCloses: databaseClose.mock.calls.length },
+			{ registered: false, nativeCloses: 1 },
+		);
+		assert.deepEqual(stageControlRegistry.forRun(outcome.runId), []);
+		assert.ok(acquisitions.mock.results.length > 0);
+		for (const acquisition of acquisitions.mock.results) {
+			await assert.rejects((await acquisition.value).load(outcome.sessionId), { name: "StoreClosedError" });
+		}
+		assert.equal(databaseClose.mock.calls.length, 1);
+	} finally {
+		await stageControlRegistry.clear();
+		for (const acquisition of acquisitions.mock.results) await (await acquisition.value).close();
+		databaseClose.mockRestore();
+		acquisitions.mockRestore();
+		removeTempDirectory(cwd);
+	}
+});
+
+for (const status of ["cancelled", "skipped", "blocked", "killed"] as const) {
+	test(`${status} standalone runs release completed task sessions`, async () => {
+		const cwd = makeTempDirectory("atomic-sdk-terminal-store-release-");
+		const controller = new AbortController();
+		const databaseClose = vi.spyOn(DatabaseSync.prototype, "close");
+		try {
+			const outcome = await runOneTaskStage(
+				cwd,
+				(dir) => ({ cwd: dir, signal: controller.signal }),
+				{},
+				(ctx) => {
+					if (status === "killed") controller.abort(new Error("cancel after completed task"));
+					else ctx.exit({ status, reason: "quit after completed task" });
+				},
+			);
+			assert.equal(outcome.status, status, outcome.error);
+			assert.ok(outcome.sessionId);
+			assert.equal(stageControlRegistry.has(outcome.runId), false);
+			assert.deepEqual(stageControlRegistry.forRun(outcome.runId), []);
+			assert.equal(databaseClose.mock.calls.length, 1);
+		} finally {
+			await stageControlRegistry.clear();
+			databaseClose.mockRestore();
+			removeTempDirectory(cwd);
+		}
+	});
+}
+
 test("a supplied registry owns retained stage sessions until explicitly cleared", async () => {
 	const cwd = makeTempDirectory("atomic-sdk-retained-store-");
 	const registry = createStageControlRegistry();
@@ -164,6 +238,49 @@ test("a supplied registry owns retained stage sessions until explicitly cleared"
 		removeTempDirectory(cwd);
 	}
 });
+
+for (const retention of ["caller-owned registry", "resumable failure", "graceful quit"] as const) {
+	test(`${retention} keeps completed task sessions open until its owner clears them`, async () => {
+		const cwd = makeTempDirectory("atomic-sdk-retained-failure-store-");
+		const callerOwned = retention === "caller-owned registry";
+		const registry = callerOwned ? createStageControlRegistry() : stageControlRegistry;
+		const databaseClose = vi.spyOn(DatabaseSync.prototype, "close");
+		try {
+			const outcome = await runOneTaskStage(
+				cwd,
+				(dir) => ({ cwd: dir, ...(callerOwned ? { stageControlRegistry: registry } : {}) }),
+				{},
+				async (ctx) => {
+					if (retention === "graceful quit") {
+						assert.ok(ctx.runId);
+						assert.equal((await quitRun(ctx.runId)).ok, true);
+					} else if (callerOwned) {
+						throw new DurableNestedTopologyError("caller owns the failed task session");
+					} else {
+						throw new Error("resumable failure after a completed task");
+					}
+				},
+			);
+			assert.equal(outcome.status, retention === "graceful quit" ? "paused" : "failed");
+			assert.ok(outcome.sessionId);
+			assert.equal(registry.has(outcome.runId), true);
+			const handles = registry.forRun(outcome.runId);
+			assert.equal(handles.length, 1);
+			const sessionStore = handles[0]?.sessionStore;
+			assert.ok(sessionStore);
+			assert.equal((await sessionStore.load(outcome.sessionId)).header.cwd, cwd);
+			assert.equal(databaseClose.mock.calls.length, 0);
+			await registry.clear(outcome.runId);
+			assert.equal(registry.has(outcome.runId), false);
+			await assert.rejects(sessionStore.load(outcome.sessionId), { name: "StoreClosedError" });
+			assert.equal(databaseClose.mock.calls.length, 1);
+		} finally {
+			await registry.clear();
+			databaseClose.mockRestore();
+			removeTempDirectory(cwd);
+		}
+	});
+}
 
 for (const [label, runOpts] of [
 	["run() cwd", (dir: string): RunOpts => ({ cwd: dir })],

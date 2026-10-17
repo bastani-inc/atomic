@@ -14,6 +14,8 @@ To choose another store, set `sessions.storage` in settings. Use shared `storage
 
 Project-local storage settings apply after you approve project trust, including on the first launch. Atomic re-selects storage before saving a new conversation; resumed conversations stay in their original store. Generated resume commands for JSONL sessions include `--session-dir`; keep that option when reopening the conversation, even if the directory was previously the default.
 
+For SQLite, resume with `atomic --session-store "/data/project A/sessions.sqlite" --session-prefix project_ --session <id>`.
+
 ```bash
 atomic -c                  # Continue most recent session
 atomic -r                  # Browse and select from past sessions
@@ -42,7 +44,11 @@ Imported IDs are kept verbatim, including an empty ID. Resume an imported empty 
 
 This selects JSONL under `~/.atomic/sessions`. Use `{ "path": "sessions.sqlite" }` for another local SQLite file, `{ "memory": true }` for ephemeral sessions, or an adapter selection for a user-installed database driver. The `sessionDir` setting has been removed without an alias.
 
-Precedence is SDK `sessionStore`, `--no-session`, `--session-dir <dir>`, non-empty `ATOMIC_CODING_AGENT_SESSION_DIR`, `sessions.storage`, shared `storage`, then the default SQLite file. Each selection wins as a whole; project selections replace global ones rather than merging fields. Relative settings paths resolve against Atomic home. CLI and environment directories resolve against the working directory. Changing stores selects a different history and does not migrate existing sessions. Keep the original store to return to that history. Invalid configuration raises `StorageConfigError`; unavailable storage raises a typed storage error. Restore access rather than expecting an in-memory fallback.
+Precedence is SDK `sessionStore`, `--no-session`, `--session-dir <dir>` or `--session-store <path>` (mutually exclusive CLI selections), non-empty `ATOMIC_CODING_AGENT_SESSION_DIR`, `sessions.storage`, shared `storage`, then the default SQLite file. Each selection wins as a whole; project selections replace global ones rather than merging fields. Relative settings paths resolve against Atomic home; CLI paths and environment directories resolve against the working directory. Changing stores selects a different history without migrating sessions; keep the original store to return to it.
+
+`--session-store` cannot be combined with `--session-dir` or `--no-session`. `--session-prefix` requires `--session-store` and defaults to empty, giving `session_` table names. A non-empty prefix is prepended to those names, must match `[A-Za-z_][A-Za-z0-9_]*`, and must not start with `sqlite_` (case-insensitive). Invalid configuration or unavailable storage raises a typed error, never a fallback to another store.
+
+Generated SQLite resume hints and Herdr commands always include `--session-store` and include `--session-prefix` when non-empty, regardless of project trust or settings. Keep these flags when reopening the conversation.
 
 From the SDK, pass a `SessionStore` or `StorageSelection`:
 

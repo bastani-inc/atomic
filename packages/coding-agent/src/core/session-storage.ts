@@ -17,6 +17,8 @@ export interface SessionStorageOptions {
 	readonly sessionStore?: SessionStore | StorageSelection;
 	readonly noSession?: boolean;
 	readonly sessionDir?: string;
+	readonly sessionStorePath?: string;
+	readonly sessionPrefix?: string;
 }
 
 const provider = new StorageProvider();
@@ -98,6 +100,15 @@ export function selectSessionStorage(
 			return value;
 		}
 		return value;
+	}
+	if (options.sessionStorePath !== undefined) {
+		const selection = {
+			kind: "sqlite",
+			path: resolveStoragePath(options.sessionStorePath, cwd, "cli", "--session-store"),
+			...(options.sessionPrefix === undefined ? {} : { prefix: options.sessionPrefix }),
+		} as const;
+		sources.set(selection, { source: "cli", field: "--session-store" });
+		return selection;
 	}
 	if (options.noSession) return { kind: "memory" };
 	const directory = options.sessionDir !== undefined ? options.sessionDir : process.env[ENV_SESSION_DIR];

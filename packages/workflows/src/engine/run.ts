@@ -59,6 +59,7 @@ import { coercePossibleStages } from "../shared/possible-stages.js";
 import { currentStageUiBroker } from "../shared/stage-ui-broker.js";
 import { store as defaultStore } from "../shared/store.js";
 import { workflowObservationRuntime } from "../shared/store-factory.js";
+import { isTerminalRunStatus } from "../shared/store-internal.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type {
 	StageOptions,
@@ -1205,12 +1206,13 @@ async function executeRun(
 					unregisterToolAdmission();
 				} finally {
 					terminalEvents.dispose();
-					// Standalone completed runs have no host to own retained SDK sessions.
-					// Supplied registries keep their direct chat handles until their owner clears them.
+					// Standalone terminal runs have no host to own retained SDK sessions.
+					// Preserve caller-owned registries and handles needed for continuation.
 					if (
 						opts.stageControlRegistry === undefined &&
 						opts.executionMode !== "interactive" &&
-						runSnapshot.status === "completed"
+						isTerminalRunStatus(runSnapshot.status) &&
+						runSnapshot.resumable !== true
 					) {
 						await stageRegistry.clear(runId);
 					}

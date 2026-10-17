@@ -1,4 +1,5 @@
 import { builtinProviders } from "@bastani/pi-ai/providers/all";
+import { sqliteSessionResumeArgs } from "../../core/session-resume-args.js";
 import { quoteIfNeeded } from "./chat-input-actions.ts";
 import {
 	APP_NAME,
@@ -111,6 +112,8 @@ export function formatResumeCommand(sessionManager: SessionManager): string | un
 	const args = [APP_NAME];
 	if (sessionManager.getSessionStore().descriptor.adapter === "jsonl") {
 		args.push("--session-dir", quoteIfNeeded(sessionManager.getSessionDir()));
+	} else {
+		args.push(...sqliteSessionResumeArgs(sessionManager.getSessionStore()).map(quoteIfNeeded));
 	}
 	args.push("--session", quoteIfNeeded(sessionManager.getSessionId()));
 	return args.join(" ");

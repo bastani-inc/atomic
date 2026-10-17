@@ -138,8 +138,12 @@ When a print-mode turn correctly finishes by calling an opt-in terminating struc
 | `--session-id <id>` | Use an exact project session ID; warn and create it when missing |
 | `--fork <id\|prefix>` | Fork an exact ID or unique 8-hex UUID prefix into a new session |
 | `--session-dir <dir>` | Custom session storage directory |
+| `--session-store <path>` | Select a SQLite session database; relative paths resolve from the working directory |
+| `--session-prefix <prefix>` | Use a non-default table prefix with `--session-store` |
 | `--name <name>`, `-n <name>` | Set the session display name |
 | `--no-session` | Ephemeral mode; do not save |
+
+See [Choosing a store](/sessions#choosing-a-store) for precedence, prefix rules, and conflicts.
 
 ## Tool Options
 

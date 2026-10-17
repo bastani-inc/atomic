@@ -2,6 +2,7 @@ import { APP_NAME } from "../../config.js";
 import { getExtensionContextOwner, publishExtensionContextEffect } from "../../core/extensions/runner-context.ts";
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "../../core/extensions/types.ts";
 import type { WorkflowRootActivity } from "../../core/extensions/workflow-events.js";
+import { sqliteSessionResumeArgs } from "../../core/session-resume-args.js";
 import { SETTINGS_DEFAULTS } from "../../core/settings-defaults.ts";
 import { SettingsManager } from "../../core/settings-manager.ts";
 import { OwnerTaskStore } from "../../core/tasks/owner-store.js";
@@ -28,7 +29,7 @@ function resumeArgv(sessionManager: ExtensionContext["sessionManager"]): string[
 	const sessionDir =
 		sessionManager.getSessionStore().descriptor.adapter === "jsonl"
 			? ["--session-dir", sessionManager.getSessionDir()]
-			: [];
+			: sqliteSessionResumeArgs(sessionManager.getSessionStore());
 	return [APP_NAME, ...sessionDir, "--session", sessionId];
 }
 

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { test, vi } from "vitest";
 import { APP_NAME } from "../src/config.js";
@@ -8,6 +9,8 @@ import { ExtensionRunner } from "../src/core/extensions/runner.js";
 import { noOpUIContext } from "../src/core/extensions/runner-ui.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { getDefaultSessionDirPath } from "../src/core/session-manager-paths.ts";
+import { resolveSessionStore } from "../src/core/session-storage.js";
+import { ProjectTrustStore } from "../src/core/trust-manager.ts";
 import { createHerdrExtension } from "../src/extensions/herdr/index.js";
 import { claimPaneReporting, releasePaneReporting, reportPaneActivity } from "../src/extensions/herdr/pane-owner.js";
 import type { HerdrDiagnostic } from "../src/extensions/herdr/transport.js";
@@ -88,6 +91,53 @@ test("first Herdr report carries the exact session's resume argv after -- (#3492
 		await fake.dispose();
 	}
 });
+
+test.each(["different project", "invalid overridden settings", "matching untrusted project"])(
+	"Herdr resume argv retains the selected SQLite store: %s (#3709)",
+	async (scenario) => {
+		const fake = await fakeHerdr();
+		const agentDir = join(fake.dir, "agent");
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
+		const path = join(fake.dir, "project A store.sqlite");
+		if (scenario === "invalid overridden settings") {
+			mkdirSync(agentDir, { recursive: true });
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({ sessions: { storage: { memory: "invalid" } } }),
+			);
+		} else if (scenario === "matching untrusted project") {
+			mkdirSync(join(fake.dir, ".atomic"), { recursive: true });
+			writeFileSync(
+				join(fake.dir, ".atomic", "settings.json"),
+				JSON.stringify({ sessions: { storage: { path, prefix: "kept_" } } }),
+			);
+			new ProjectTrustStore(agentDir).set(fake.dir, false);
+		}
+		const store = await resolveSessionStore(fake.dir, { sessionStorePath: path, sessionPrefix: "kept_" });
+		await store.create({ id: "", version: 4, cwd: fake.dir, createdAt: new Date().toISOString() }, []);
+		const session = await SessionManager.open(store, "");
+		const runner = await startReporter(fake, session);
+		try {
+			await runner.emit({ type: "session_start" });
+			const [first] = await fake.waitFor(1);
+			assert.deepEqual(resumeOf(first.args), [
+				APP_NAME,
+				"--session-store",
+				path,
+				"--session-prefix",
+				"kept_",
+				"--session",
+				"",
+			]);
+		} finally {
+			await runner.emit({ type: "session_shutdown", reason: "quit" });
+			runner.invalidate();
+			await store.close();
+			vi.unstubAllEnvs();
+			await fake.dispose();
+		}
+	},
+);
 
 test("resume argv selects JSONL even for the default session directory (#3492)", async () => {
 	const fake = await fakeHerdr();
