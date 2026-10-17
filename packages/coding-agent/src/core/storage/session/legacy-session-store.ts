@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { createSessionCwdMatcher } from "../../../utils/canonical-path.js";
+import { createSessionCwdMatcher } from "../../../utils/canonical-path.ts";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import type { SqliteDatabase } from "../database.js";
 import { openNodeSqliteDatabase } from "../node-sqlite.js";
