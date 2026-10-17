@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.38-alpha.9] - 2026-10-17
+
 ### Fixed
 
 - Fixed slow interactive startup on machines with many sessions saved before the SQLite default, a follow-up to [#3721](https://github.com/bastani-inc/atomic/pull/3721). Opening a session by its exact ID, which the interactive engine does at launch, now looks up only that session instead of scanning `~/.atomic/agent/sessions`. `/resume`, `--resume`, and `--continue` list unconverted sessions larger than 32 KiB from their first message and most recent entries rather than parsing every file, so their message count is a lower bound and `/resume` search sees only that text until you open one, which still converts it in full.
