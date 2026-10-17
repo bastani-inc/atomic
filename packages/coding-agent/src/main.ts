@@ -107,7 +107,6 @@ import {
 } from "./main-stdio.ts";
 import type { MainOptions } from "./main-types.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
-import { migrateLegacySessionsToDefaultStore } from "./migrations-sessions.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { isUnknownModel } from "./modes/interactive/interactive-mode-helpers.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
@@ -476,17 +475,6 @@ export async function main(argv: string[], options?: MainOptions) {
 		}
 		process.exit(0);
 	}
-
-	await migrateLegacySessionsToDefaultStore(cwd, {
-		agentDir,
-		sessionStore: sessionStorage,
-		settings: startupSettingsManager.getSettings(),
-		noSession: parsed.noSession,
-		sessionDir: parsed.sessionDir,
-		sessionStorePath: parsed.sessionStorePath,
-		sessionPrefix: parsed.sessionPrefix,
-	});
-	time("migrateLegacySessions");
 
 	// Decide the final runtime cwd before creating cwd-bound runtime services.
 	// --session and --resume may select a session from another project, so project-local

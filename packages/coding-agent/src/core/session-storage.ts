@@ -9,6 +9,7 @@ import { StorageConfigError } from "./storage/errors.js";
 import { StorageProvider, type StorageSelection } from "./storage/provider.js";
 import { selectStorage } from "./storage/selection.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
+import { LegacySessionStore } from "./storage/session/legacy-session-store.js";
 import type { SessionStore } from "./storage/session/types.js";
 
 export interface SessionStorageOptions {
@@ -23,15 +24,10 @@ export interface SessionStorageOptions {
 
 const provider = new StorageProvider();
 const sources = new WeakMap<StorageSelection, { source: "settings" | "cli" | "env"; field: string }>();
-const defaultSelections = new WeakSet<StorageSelection>();
 type EngineSessionStorage = Extract<StorageSelection, { kind: "sqlite" }>;
 const engineSelections = new WeakMap<SessionStore, EngineSessionStorage | null>();
 const isolatedCliMemoryStores = new WeakSet<SessionStore>();
 export const ENGINE_SESSION_STORAGE_FLAG = "--internal-session-storage";
-
-export function isDefaultSessionStorage(selection: SessionStore | StorageSelection): boolean {
-	return defaultSelections.has(selection as StorageSelection);
-}
 
 export function getEngineSessionStorage(store: SessionStore): EngineSessionStorage | undefined {
 	return engineSelections.get(store) ?? undefined;
@@ -135,11 +131,7 @@ export function selectSessionStorage(
 		throw new StorageConfigError("settings", "sessions", "selection-object-required");
 	}
 	const value = settings.sessions?.storage !== undefined ? settings.sessions.storage : settings.storage;
-	if (value === undefined) {
-		const selection = { kind: "sqlite", path: defaultPath } as const;
-		defaultSelections.add(selection);
-		return selection;
-	}
+	if (value === undefined) return { kind: "sqlite", path: defaultPath };
 	const field = settings.sessions?.storage !== undefined ? "sessions.storage" : "storage";
 	if (!Value.Check(SessionStorageSelectionSchema, value) || (field === "storage" && "dir" in value)) {
 		throw new StorageConfigError("settings", field, "invalid-selection");
@@ -162,14 +154,35 @@ export function selectSessionStorage(
 	return selection;
 }
 
+/**
+ * The shared default database, selected directly or handed to the engine child. Sessions saved
+ * before it became the default stay readable from the agent directory's JSONL files.
+ */
+function isDefaultDatabase(
+	selection: StorageSelection,
+	agentDir: string,
+): selection is Extract<StorageSelection, { kind: "sqlite" }> {
+	return (
+		selection.kind === "sqlite" &&
+		!selection.prefix &&
+		selection.path !== "" &&
+		selection.path !== ":memory:" &&
+		resolve(selection.path) === resolve(join(dirname(agentDir), "workflows", "journal.sqlite"))
+	);
+}
+
 export async function resolveSessionStore(cwd: string, options: SessionStorageOptions = {}): Promise<SessionStore> {
 	const selection = selectSessionStorage(cwd, options);
 	if (selection !== null && typeof selection === "object" && "load" in selection) return selection;
+	const agentDir = options.agentDir ?? getAgentDir();
 	try {
-		const store = await provider.openSessionStore(selection, {
-			agentDir: options.agentDir ?? getAgentDir(),
-			domain: "sessions",
-		});
+		const opened = await provider.openSessionStore(selection, { agentDir, domain: "sessions" });
+		const store = isDefaultDatabase(selection, agentDir)
+			? new LegacySessionStore(opened, {
+					legacyDirectory: join(agentDir, "sessions"),
+					databasePath: resolve(selection.path),
+				})
+			: opened;
 		if (selection.kind === "sqlite" && selection.path !== "" && selection.path !== ":memory:") {
 			engineSelections.set(store, {
 				kind: "sqlite",

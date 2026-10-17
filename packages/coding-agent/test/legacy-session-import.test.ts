@@ -11,8 +11,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
-import lockfile from "proper-lockfile";
+import { join, relative } from "node:path";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
 import { parseArgs } from "../src/cli/args.js";
 import { ENV_AGENT_DIR, ENV_SESSION_DIR } from "../src/config.js";
@@ -23,8 +22,8 @@ import { SettingsManager } from "../src/core/settings-manager.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import type { SessionStore } from "../src/core/storage/session/types.js";
 import { createSessionManager } from "../src/main-session.js";
-import { migrateLegacySessionsToDefaultStore } from "../src/migrations-sessions.js";
 import { runCliProcess } from "./cli-test-helpers.js";
+import { TestSqliteDatabase } from "./helpers/sqlite.js";
 
 type JsonRecord = Record<string, string | number | boolean | null | object>;
 
@@ -196,13 +195,12 @@ function snapshotFiles(directory: string): Record<string, { content: string; mti
 	return files;
 }
 
-describe("legacy JSONL session import into the default store", () => {
+describe("legacy JSONL sessions in the default store", () => {
 	let root: string;
 	let agentDir: string;
 	let cwd: string;
 	let legacyDirectory: string;
 	let defaultDatabase: string;
-	let importMarker: string;
 
 	beforeEach(() => {
 		root = mkdtempSync(join(tmpdir(), "atomic-legacy-import-"));
@@ -211,7 +209,6 @@ describe("legacy JSONL session import into the default store", () => {
 		mkdirSync(cwd, { recursive: true });
 		legacyDirectory = getDefaultSessionDirPath(cwd, agentDir);
 		defaultDatabase = join(root, "workflows", "journal.sqlite");
-		importMarker = `${defaultDatabase}.legacy-session-import.json`;
 		vi.stubEnv(ENV_AGENT_DIR, agentDir);
 		vi.stubEnv(ENV_SESSION_DIR, "");
 	});
@@ -237,8 +234,18 @@ describe("legacy JSONL session import into the default store", () => {
 		return { paths: { v1, v2, v3, early4, v4 } };
 	}
 
-	const migrate = (options: SessionStorageOptions = {}) =>
-		migrateLegacySessionsToDefaultStore(cwd, { agentDir, settings: {}, ...options });
+	function convertedIds(): string[] {
+		if (!existsSync(defaultDatabase)) return [];
+		const database = new TestSqliteDatabase(defaultDatabase);
+		try {
+			return database
+				.query("SELECT id FROM session_sessions ORDER BY id")
+				.all()
+				.map((row) => String(row.id));
+		} finally {
+			database.close();
+		}
+	}
 
 	async function withDefaultStore<T>(body: (store: SessionStore) => Promise<T>): Promise<T> {
 		const store = await resolveSessionStore(cwd, { agentDir, settings: {} });
@@ -251,8 +258,6 @@ describe("legacy JSONL session import into the default store", () => {
 
 	it("lists sessions of every legacy format for /resume, newest first", async () => {
 		writeAllFormats();
-
-		await migrate();
 
 		await withDefaultStore(async (store) => {
 			const listed = await SessionManager.list(cwd, store);
@@ -273,8 +278,6 @@ describe("legacy JSONL session import into the default store", () => {
 
 	it("opens each imported session with upgraded entries and parent links", async () => {
 		writeAllFormats();
-
-		await migrate();
 
 		await withDefaultStore(async (store) => {
 			const v1 = await SessionManager.open(store, ids.v1);
@@ -319,13 +322,10 @@ describe("legacy JSONL session import into the default store", () => {
 
 	it("resumes an imported session and keeps its new messages across later startups", async () => {
 		writeAllFormats();
-		await migrate();
 		await withDefaultStore(async (store) => {
 			const resumed = await SessionManager.open(store, ids.v3);
 			await resumed.appendMessage({ role: "user", content: "follow-up after import", timestamp: Date.now() });
 		});
-
-		await migrate();
 
 		await withDefaultStore(async (store) => {
 			const reopened = await SessionManager.open(store, ids.v3);
@@ -336,117 +336,71 @@ describe("legacy JSONL session import into the default store", () => {
 		});
 	});
 
-	it("keeps imported sessions unchanged when run again", async () => {
+	it("lists legacy sessions without converting them, and converts only the one that is opened", async () => {
 		writeAllFormats();
-		await migrate();
-		const before = await withDefaultStore(async (store) =>
-			JSON.stringify(await Promise.all(Object.values(ids).map((id) => store.load(id).catch(() => null)))),
-		);
-
-		await migrate();
-		await migrate();
 
 		await withDefaultStore(async (store) => {
-			assert.equal((await SessionManager.listAll(store)).length, 5);
-			const after = JSON.stringify(
-				await Promise.all(Object.values(ids).map((id) => store.load(id).catch(() => null))),
-			);
-			assert.equal(after, before);
+			assert.equal((await SessionManager.list(cwd, store)).length, 5);
+			assert.equal((await store.findMostRecent({ cwd }))?.id, ids.v4);
+		});
+		assert.deepEqual(convertedIds(), []);
+
+		await withDefaultStore((store) => SessionManager.open(store, ids.v2));
+
+		assert.deepEqual(convertedIds(), [ids.v2]);
+		await withDefaultStore(async (store) => {
+			assert.equal((await SessionManager.list(cwd, store)).length, 5);
 		});
 	});
 
-	it("does not bring back a session deleted after the import", async () => {
-		writeAllFormats();
-		await migrate();
-		await withDefaultStore((store) => store.delete(ids.v2));
+	it("refreshes a listed legacy session when its file changes on disk", async () => {
+		const { paths } = writeAllFormats();
+		await withDefaultStore(async (store) => {
+			const before = await SessionManager.list(cwd, store);
+			assert.equal(before.find((session) => session.id === ids.v3)?.name, "Legacy auth refactor");
 
-		await migrate();
+			const lines = fixtures.v3.lines(cwd, paths.v2);
+			lines.push({
+				type: "session_info",
+				id: "b0000003",
+				parentId: "b0000002",
+				timestamp: "2025-08-01T10:00:03.000Z",
+				name: "Renamed elsewhere",
+			});
+			writeFileSync(paths.v3, encode(lines));
+
+			const after = await SessionManager.list(cwd, store);
+			assert.equal(after.find((session) => session.id === ids.v3)?.name, "Renamed elsewhere");
+		});
+	});
+
+	it("converts a legacy session once and reads it from the database afterwards", async () => {
+		writeAllFormats();
+		const first = await withDefaultStore(async (store) => (await store.load(ids.v1)).entries);
+
+		const again = await withDefaultStore(async (store) => (await store.load(ids.v1)).entries);
+
+		assert.deepEqual(again, first);
+		assert.deepEqual(convertedIds(), [ids.v1]);
+	});
+
+	it("does not list a legacy session again after it is deleted", async () => {
+		writeAllFormats();
+		await withDefaultStore((store) => SessionManager.open(store, ids.v2));
+		await withDefaultStore(async (store) => {
+			await store.delete(ids.v2);
+			await store.delete(ids.v1);
+		});
 
 		await withDefaultStore(async (store) => {
+			assert.equal(await store.readHeader(ids.v1), undefined);
 			assert.equal(await store.readHeader(ids.v2), undefined);
+			await assert.rejects(store.load(ids.v1));
 			assert.deepEqual(
 				(await SessionManager.listAll(store)).map((session) => session.id).sort(),
-				[ids.v1, ids.v3, ids.early4, ids.v4].sort(),
+				[ids.v3, ids.early4, ids.v4].sort(),
 			);
 		});
-	});
-
-	it("imports only once, so legacy files added after the first import are ignored", async () => {
-		writeAllFormats();
-		await migrate();
-
-		writeLegacy(fixtures.stage);
-		await migrate();
-
-		await withDefaultStore(async (store) => {
-			assert.equal(await store.readHeader(ids.stage), undefined);
-			assert.equal((await SessionManager.listAll(store, undefined, { includeInternal: true })).length, 5);
-		});
-		assert.equal(existsSync(importMarker), true);
-	});
-
-	it("records completion outside the legacy session directory", async () => {
-		writeAllFormats();
-		const before = snapshotFiles(join(agentDir, "sessions"));
-
-		await migrate();
-
-		assert.equal(existsSync(importMarker), true);
-		assert.deepEqual(snapshotFiles(join(agentDir, "sessions")), before);
-	});
-
-	it("does not record completion when the default store cannot be opened, and imports on the next run", async () => {
-		writeAllFormats();
-		mkdirSync(defaultDatabase, { recursive: true });
-
-		await assert.doesNotReject(migrate());
-
-		assert.equal(existsSync(importMarker), false);
-		rmSync(defaultDatabase, { recursive: true, force: true });
-
-		await migrate();
-
-		assert.equal(existsSync(importMarker), true);
-		await withDefaultStore(async (store) => {
-			assert.equal((await SessionManager.listAll(store)).length, 5);
-		});
-	});
-
-	it("records completion after skipping unreadable files so they are not rescanned", async () => {
-		writeAllFormats();
-		writeFileSync(join(legacyDirectory, "garbage.jsonl"), "this is not a session\n");
-
-		await migrate();
-
-		assert.equal(existsSync(importMarker), true);
-	});
-
-	it("imports again when the completion record is unreadable", async () => {
-		writeAllFormats();
-		mkdirSync(dirname(importMarker), { recursive: true });
-		writeFileSync(importMarker, "{not json");
-
-		await migrate();
-
-		await withDefaultStore(async (store) => {
-			assert.equal((await SessionManager.listAll(store)).length, 5);
-		});
-		assert.equal(JSON.parse(readFileSync(importMarker, "utf8")).version, 1);
-	});
-
-	it("still imports when the completion record cannot be written", async () => {
-		writeAllFormats();
-		mkdirSync(importMarker, { recursive: true });
-
-		await assert.doesNotReject(migrate());
-
-		await withDefaultStore(async (store) => {
-			assert.equal((await SessionManager.listAll(store)).length, 5);
-		});
-		assert.deepEqual(
-			readdirSync(dirname(importMarker)).filter((name) => name.endsWith(".tmp")),
-			[],
-		);
 	});
 
 	it("leaves the original session files and directories untouched", async () => {
@@ -454,83 +408,97 @@ describe("legacy JSONL session import into the default store", () => {
 		writeLegacy(fixtures.stage);
 		const before = snapshotFiles(join(agentDir, "sessions"));
 
-		await migrate();
-		await migrate();
+		await withDefaultStore(async (store) => {
+			await SessionManager.listAll(store, undefined, { includeInternal: true });
+			for (const id of Object.values(ids)) await SessionManager.open(store, id);
+			await store.delete(ids.v1);
+		});
 
 		assert.deepEqual(snapshotFiles(join(agentDir, "sessions")), before);
 	});
 
-	it("does nothing when there is no legacy session directory", async () => {
-		await migrate();
+	it("does not create the legacy directory or extra tables when there is none", async () => {
+		await withDefaultStore(async (store) => {
+			assert.deepEqual(await SessionManager.listAll(store), []);
+			assert.equal(await store.readHeader(ids.v1), undefined);
+		});
 
-		assert.equal(existsSync(defaultDatabase), false);
-		assert.equal(existsSync(importMarker), false);
 		assert.equal(existsSync(join(agentDir, "sessions")), false);
+		const database = new TestSqliteDatabase(defaultDatabase);
+		try {
+			assert.equal(
+				database.query("SELECT name FROM sqlite_master WHERE name = 'session_legacy_deleted'").get(),
+				undefined,
+			);
+		} finally {
+			database.close();
+		}
 	});
 
-	const explicitSelections: ReadonlyArray<readonly [string, () => SessionStorageOptions, () => string]> = [
+	const explicitSelections: ReadonlyArray<readonly [string, () => SessionStorageOptions]> = [
 		[
 			"settings sessions.storage.dir",
 			() => ({ settings: { sessions: { storage: { dir: join(root, "explicit-jsonl") } } } }),
-			() => join(root, "explicit-jsonl"),
 		],
 		[
 			"settings sessions.storage path",
 			() => ({ settings: { sessions: { storage: { path: join(root, "settings.sqlite") } } } }),
-			() => join(root, "settings.sqlite"),
 		],
-		[
-			"settings shared storage path",
-			() => ({ settings: { storage: { path: join(root, "shared.sqlite") } } }),
-			() => join(root, "shared.sqlite"),
-		],
-		["--session-dir", () => ({ sessionDir: join(root, "cli-jsonl") }), () => join(root, "cli-jsonl")],
-		["--session-store", () => ({ sessionStorePath: join(root, "cli.sqlite") }), () => join(root, "cli.sqlite")],
+		["settings shared storage path", () => ({ settings: { storage: { path: join(root, "shared.sqlite") } } })],
+		["--session-dir", () => ({ settings: {}, sessionDir: join(root, "cli-jsonl") })],
+		["--session-store", () => ({ settings: {}, sessionStorePath: join(root, "cli.sqlite") })],
 		[
 			"an SDK sessionStore selection",
-			() => ({ sessionStore: { kind: "sqlite", path: join(root, "sdk.sqlite") } }),
-			() => join(root, "sdk.sqlite"),
+			() => ({ settings: {}, sessionStore: { kind: "sqlite", path: join(root, "sdk.sqlite") } }),
 		],
+		["a caller-supplied session store", () => ({ settings: {}, sessionStore: new MemorySessionStore() })],
 	];
 
-	for (const [name, options, selectedLocation] of explicitSelections) {
-		it(`does not import when ${name} selects the store`, async () => {
+	for (const [name, options] of explicitSelections) {
+		it(`does not show legacy sessions when ${name} selects the store`, async () => {
 			writeAllFormats();
-
-			await migrate(options());
-
+			const store = await resolveSessionStore(cwd, { agentDir, ...options() });
+			try {
+				assert.deepEqual(await SessionManager.listAll(store), []);
+				assert.equal(await store.readHeader(ids.v1), undefined);
+			} finally {
+				await store.close();
+			}
 			assert.equal(existsSync(defaultDatabase), false);
-			assert.equal(existsSync(importMarker), false);
-			assert.equal(existsSync(selectedLocation()), false);
 		});
 	}
 
-	it("does not import when ATOMIC_CODING_AGENT_SESSION_DIR selects the store", async () => {
+	it("does not show legacy sessions when ATOMIC_CODING_AGENT_SESSION_DIR selects the store", async () => {
 		writeAllFormats();
 		vi.stubEnv(ENV_SESSION_DIR, join(root, "env-jsonl"));
-
-		await migrate();
-
+		const store = await resolveSessionStore(cwd, { agentDir, settings: {} });
+		try {
+			assert.deepEqual(await SessionManager.listAll(store), []);
+		} finally {
+			await store.close();
+		}
 		assert.equal(existsSync(defaultDatabase), false);
-		assert.equal(existsSync(importMarker), false);
-		assert.equal(existsSync(join(root, "env-jsonl")), false);
 	});
 
-	it("does not import into a caller-supplied session store", async () => {
+	it("shows legacy sessions in the engine child, which receives the default database explicitly", async () => {
 		writeAllFormats();
-		const supplied = new MemorySessionStore();
-
-		await migrate({ sessionStore: supplied });
-
-		assert.equal(existsSync(defaultDatabase), false);
-		assert.equal(existsSync(importMarker), false);
-		assert.deepEqual(await SessionManager.listAll(supplied), []);
+		const store = await resolveSessionStore(cwd, {
+			agentDir,
+			settings: {},
+			sessionStore: { kind: "sqlite", path: defaultDatabase },
+		});
+		try {
+			assert.equal((await SessionManager.list(cwd, store)).length, 5);
+		} finally {
+			await store.close();
+		}
 	});
 
-	it("skips unreadable and unsupported files while importing the valid ones", async () => {
+	it("skips unreadable, unsupported and damaged files while listing the valid ones", async () => {
 		writeAllFormats();
 		mkdirSync(legacyDirectory, { recursive: true });
 		const header = { type: "session", id: "broken", createdAt: "2026-10-16T09:00:00.000Z", cwd };
+		const damagedAt = "2024-01-01T00:00:00.000Z";
 		const broken: Record<string, string> = {
 			"garbage.jsonl": "this is not a session\n",
 			"empty.jsonl": "",
@@ -540,11 +508,18 @@ describe("legacy JSONL session import into the default store", () => {
 				{ type: "session", version: 3, id: "bad-entry", timestamp: header.createdAt, cwd },
 				{ type: "message", id: "m1", parentId: null, timestamp: header.createdAt, message: null },
 			]),
+			"null-block.jsonl": encode([
+				{ type: "session", version: 3, id: "null-block", timestamp: damagedAt, cwd },
+				{
+					type: "message",
+					id: "d0000001",
+					parentId: null,
+					timestamp: damagedAt,
+					message: { role: "user", content: [null], timestamp: Date.parse(damagedAt) },
+				},
+			]),
 		};
 		for (const [name, content] of Object.entries(broken)) writeFileSync(join(legacyDirectory, name), content);
-		const before = snapshotFiles(join(agentDir, "sessions"));
-
-		await assert.doesNotReject(migrate());
 
 		await withDefaultStore(async (store) => {
 			assert.deepEqual(
@@ -552,71 +527,51 @@ describe("legacy JSONL session import into the default store", () => {
 				[ids.v1, ids.v2, ids.v3, ids.early4, ids.v4].sort(),
 			);
 		});
-		assert.deepEqual(snapshotFiles(join(agentDir, "sessions")), before);
+	});
+
+	it("uses a readable copy when an earlier copy of the same session is damaged", async () => {
+		const damagedCopy = join(agentDir, "sessions", "--a-damaged-copy--");
+		mkdirSync(damagedCopy, { recursive: true });
+		writeFileSync(
+			join(damagedCopy, `copy_${ids.v3}.jsonl`),
+			encode([
+				{ type: "session", version: 3, id: ids.v3, timestamp: fixtures.v3.createdAt, cwd },
+				{
+					type: "message",
+					id: "e0000001",
+					parentId: null,
+					timestamp: fixtures.v3.createdAt,
+					message: { role: "user", content: [null], timestamp: Date.parse(fixtures.v3.createdAt) },
+				},
+			]),
+		);
+		writeLegacy(fixtures.v3);
+
+		await withDefaultStore(async (store) => {
+			assert.deepEqual(
+				(await SessionManager.list(cwd, store)).map((session) => session.name),
+				["Legacy auth refactor"],
+			);
+			assert.equal((await SessionManager.open(store, ids.v3)).getSessionName(), "Legacy auth refactor");
+		});
 	});
 
 	it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
-		"imports readable projects when another legacy project directory cannot be read",
+		"lists readable projects when another legacy project directory cannot be read",
 		async () => {
 			writeAllFormats();
 			const locked = join(agentDir, "sessions", "--locked-project--");
 			mkdirSync(locked, { recursive: true });
 			chmodSync(locked, 0o000);
 			try {
-				await migrate();
+				await withDefaultStore(async (store) => {
+					assert.equal((await SessionManager.listAll(store)).length, 5);
+				});
 			} finally {
 				chmodSync(locked, 0o755);
 			}
-
-			await withDefaultStore(async (store) => {
-				assert.equal((await SessionManager.listAll(store)).length, 5);
-			});
-			assert.equal(existsSync(importMarker), true);
 		},
 	);
-
-	it("skips a transcript with a damaged content block and imports the sessions after it", async () => {
-		writeAllFormats();
-		const damagedId = "0191f0a1-0000-7000-8000-0000000000aa";
-		const createdAt = "2024-01-01T00:00:00.000Z";
-		writeLegacy({
-			id: damagedId,
-			createdAt,
-			lines: (projectCwd) => [
-				{ type: "session", version: 3, id: damagedId, timestamp: createdAt, cwd: projectCwd },
-				{
-					type: "message",
-					id: "d0000001",
-					parentId: null,
-					timestamp: createdAt,
-					message: { role: "user", content: [null], timestamp: Date.parse(createdAt) },
-				},
-			],
-		});
-
-		await migrate();
-
-		await withDefaultStore(async (store) => {
-			assert.equal(await store.readHeader(damagedId), undefined);
-			assert.equal((await SessionManager.listAll(store)).length, 5);
-		});
-		assert.equal(existsSync(importMarker), true);
-	});
-
-	it("waits for a concurrent import and does not repeat it once that import has finished", async () => {
-		writeAllFormats();
-		mkdirSync(dirname(importMarker), { recursive: true });
-		const release = await lockfile.lock(importMarker, { realpath: false });
-
-		const waiting = migrate();
-		writeFileSync(importMarker, `${JSON.stringify({ version: 1, completedAt: new Date().toISOString() })}\n`);
-		await release();
-		await waiting;
-
-		await withDefaultStore(async (store) => {
-			assert.deepEqual(await SessionManager.listAll(store), []);
-		});
-	});
 
 	it("imports sessions from other projects and a repeated id without aborting the batch", async () => {
 		const otherCwd = join(root, "other-project");
@@ -628,8 +583,6 @@ describe("legacy JSONL session import into the default store", () => {
 			undefined,
 			getDefaultSessionDirPath(otherCwd, agentDir),
 		);
-
-		await migrate();
 
 		await withDefaultStore(async (store) => {
 			assert.deepEqual(
@@ -650,8 +603,6 @@ describe("legacy JSONL session import into the default store", () => {
 	it("keeps workflow stage sessions hidden from /resume but loadable with their parent link", async () => {
 		const { paths } = writeAllFormats();
 		writeLegacy(fixtures.stage, paths.v4);
-
-		await migrate();
 
 		await withDefaultStore(async (store) => {
 			assert.ok(!(await SessionManager.list(cwd, store)).some((session) => session.id === ids.stage));
@@ -676,7 +627,6 @@ describe("legacy JSONL session import into the default store", () => {
 	it("lets --session and --continue reach imported sessions", async () => {
 		const { paths } = writeAllFormats();
 		writeLegacy(fixtures.stage, paths.v4);
-		await migrate();
 		const settings = SettingsManager.inMemory();
 		const open = async (args: string[]) => {
 			const manager = await createSessionManager(parseArgs(args), cwd, undefined, settings);
