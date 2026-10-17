@@ -14,6 +14,10 @@
 - Added `sessions.storage` and SDK `sessionStore` to select SQLite, explicit JSONL or memory, a caller-owned database, or a user-installed adapter. Shared `storage` settings now configure sessions too; SDK, CLI and environment overrides take precedence without merging selections. Store-open failures raise typed errors rather than falling back to memory.
 - Added `--session-store <path>` and `--session-prefix <prefix>` to select a SQLite session database from the CLI. SQLite resume hints and Herdr commands always include `--session-store` and include `--session-prefix` when non-default.
 
+### Changed
+
+- Changed the default NVIDIA model to `nvidia/nemotron-3.5-super-vl-120b-a12b` ([#10910](https://github.com/earendil-works/pi/pull/10910) by [@cv](https://github.com/cv)).
+
 ### Fixed
 
 - Session shutdown and replacement now wait for already-admitted extension session entries to finish saving before releasing their resources.
