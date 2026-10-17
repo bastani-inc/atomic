@@ -33,7 +33,7 @@ bun add -g @bastani/atomic
 
 Atomic does not require package install scripts. Add `--ignore-scripts` if you want to disable dependency lifecycle scripts during a package install.
 
-Workflow persistence uses a local SQLite journal. No database server or separate database installation is needed. The default file is `~/.atomic/workflows/journal.sqlite`; configure another location with `ATOMIC_WORKFLOW_JOURNAL_PATH` or the [workflow storage settings](/settings#workflow-storage).
+Workflow persistence uses a local SQLite journal by default. No database server or separate database installation is needed. The default file is `~/.atomic/workflows/journal.sqlite`; configure another location with `ATOMIC_WORKFLOW_JOURNAL_PATH` or the [workflow storage settings](/settings#workflow-storage). To share runs across machines, see [Sharing storage across hosts](/storage#sharing-storage-across-hosts).
 
 Keep a standalone archive's complete directory, including `node_modules`, libraries, and licenses. Package managers select the runtime for your platform automatically.
 

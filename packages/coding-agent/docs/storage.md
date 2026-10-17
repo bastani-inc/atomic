@@ -318,6 +318,21 @@ If opening storage fails and closing its owned database also fails, the original
 
 Factory-created journal headers record a credential-free `storage` descriptor for diagnostics. Full domain adapters are responsible for recording their own safe descriptor. Directly supplied journals and their caller-provided headers are not rewritten.
 
+## Sharing storage across hosts
+
+By default, sessions and workflow runs live in a local file that serves one machine. To share them across machines, for example several service replicas or a CI fleet, select the same remote SQLite-compatible database on every host through an [adapter](#selecting-an-adapter), such as the libSQL/Turso wrapper above. Give each project or tenant its own `prefix`. Do not put the local SQLite file on a network filesystem; use a database driver instead.
+
+With a shared journal:
+
+- Any host can inspect any run with `status` or `stages` without taking ownership.
+- Each run has one executor at a time. A run whose owner is alive cannot be claimed from another host. After its owner crashes and stops renewing its lease for about two minutes, the run appears as `crashed` and any host can resume it. Concurrent resume attempts admit one executor.
+- Lease expiry uses the database clock, so clock differences between hosts do not affect ownership.
+- A displaced executor cannot save new checkpoints; its writes fail with `StaleLeaseError`.
+
+The database stores sessions and workflow checkpoints only. To resume a run on another host, that host also needs the same workflow definition and the run's original working directory, including any worktrees and artifacts the run uses. Effects that were not checkpointed may run again after a takeover, so make external effects idempotent. Every checkpoint commits before it is reported, so a remote database adds network latency to each durable `ctx.*` step. Backends may also enforce payload limits that raise `StoragePayloadTooLargeError`.
+
+Scale by running more workflows, not by splitting one: a single run and a single session each have one writer. The built-in journal uses SQLite SQL, so `openDatabase` adapters need a SQLite-compatible driver. For another kind of database, implement `openRunJournal` and `openSessionStore` and validate them with the conformance suites below.
+
 ## Storage errors
 
 Use error classes and their fields, not message matching. Configuration and facade errors are exported from `@bastani/atomic/storage`. `@bastani/atomic/workflows` exports the journal contract's error classes.
