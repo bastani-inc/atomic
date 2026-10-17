@@ -12,6 +12,7 @@ import {
 	type WorkflowRegistrationInput,
 } from "../backend.js";
 import { DurableNestedTopologyError } from "../boundary-topology.js";
+import { registerExecutionStorages } from "../execution-context-boundary.js";
 import {
 	inactivePromptReservationToken,
 	type PromptReservationSnapshot,
@@ -160,6 +161,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	private renewing: Promise<void> | undefined;
 	private readonly mutationContext = new AsyncLocalStorage<ReadonlySet<WorkflowLeaseExecution>>();
 	private processExitCleanup: (() => void) | undefined;
+	private readonly unregisterExecutionStorages = registerExecutionStorages(
+		this.executionContext,
+		this.mutationContext,
+	);
 
 	private constructor(
 		readonly journal: Journal,
@@ -905,6 +910,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			if (this.timer !== undefined) clearInterval(this.timer);
 			this.timer = undefined;
 			this.state = "closed";
+			this.unregisterExecutionStorages();
 			if (this.ownsJournal) await execute(invoke(() => this.journal.close()));
 		}
 	}

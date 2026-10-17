@@ -29,6 +29,7 @@ import {
 	ModelRuntime,
 	resolveRestoredModelReference,
 } from "@bastani/atomic";
+import { outsideWorkflowExecutions } from "../durable/execution-context-boundary.js";
 import type {
 	AgentSessionAdapter,
 	StageAdapters,
@@ -357,20 +358,23 @@ function makeWorkflowStageOrchestrationContext(
 				if (intercomRoute) return intercomRoute;
 				const sendMessage = pi.sendMessage;
 				if (!sendMessage) throw new Error("atomic-workflows: main-chat late-message route is unavailable");
-				return routeThroughStaleContextGuard(() => sendMessage(message, options));
+				return routeThroughStaleContextGuard(() => outsideWorkflowExecutions(() => sendMessage(message, options)));
 			},
 			routeMessages(messages, options) {
 				const intercomRoute = emitLateIntercomRoute(pi, meta, messages, options, true);
 				if (intercomRoute) return intercomRoute;
 				const sendMessages = pi.sendMessages;
-				if (sendMessages) return routeThroughStaleContextGuard(() => sendMessages(messages, options));
+				if (sendMessages)
+					return routeThroughStaleContextGuard(() =>
+						outsideWorkflowExecutions(() => sendMessages(messages, options)),
+					);
 				const sendMessage = pi.sendMessage;
 				if (!sendMessage) throw new Error("atomic-workflows: main-chat late-message route is unavailable");
-				return (async () => {
+				return outsideWorkflowExecutions(async () => {
 					for (const [index, message] of messages.entries()) {
 						await sendMessage(message, index === 0 ? options : { deliverAs: "followUp" });
 					}
-				})();
+				});
 			},
 		},
 	};

@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Workflow journal shutdown waits for queued writes before releasing ownership. Status claims and checkpoints on the same run remain ordered with asynchronous journals.
 - Completed standalone SDK runs now release their stage sessions when no caller registry owns them. Workflow forks and completed-history inspection release temporary session-store connections while preserving caller-owned stores.
+- Starting a workflow after a workflow's completed, failed, or blocked notice no longer fails with `Workflow execution for <runId> is retired`. Notices and late stage messages now reach the chat outside the finished run's execution context.
 
 ## [0.9.38-alpha.6] - 2026-10-16
 
