@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "vitest";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { migrateStageSessionCheckpoint } from "../../packages/workflows/src/durable/backend.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { type JournalEntry, RUN_EVENT_TYPES } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
+import { stripWorkflowOnlyOptions } from "../../packages/workflows/src/runs/foreground/stage-runner-options.js";
 import { makeTempDirectory, removeTempDirectory, writeTextSync } from "../helpers/runtime.js";
 
 const directories: string[] = [];
@@ -193,4 +196,38 @@ test("keeps stage checkpoints that already carry a session ID or whose transcrip
 
 	const missing = stageCheckpoint({ sessionFile: join(tempDirectory(), "missing.jsonl") });
 	assert.equal(migrateStageSessionCheckpoint(missing).sessionId, undefined);
+});
+
+test("resumes a pre-#3700 stage from its transcript when the selected store has never seen it", async () => {
+	const directory = tempDirectory();
+	const sessionId = "01a1363a-b000-7000-8000-000000000002";
+	const createdAt = "2026-10-13T17:06:16.398Z";
+	const sessionFile = join(directory, "2026-10-13T17-06-16-398Z_01a1363a-a8ce-7ee4-8cea-1c498f2a706d.jsonl");
+	const transcript = `${[
+		{ type: "session", version: 3, id: sessionId, timestamp: createdAt, cwd: directory, internal: true },
+		{
+			type: "message",
+			id: "e0000001",
+			parentId: null,
+			timestamp: createdAt,
+			message: { role: "user", content: "Finish the review", timestamp: Date.parse(createdAt) },
+		},
+	]
+		.map((line) => JSON.stringify(line))
+		.join("\n")}\n`;
+	writeTextSync(sessionFile, transcript);
+	const store = new MemorySessionStore();
+
+	const resumed = await stripWorkflowOnlyOptions(
+		{ sessionStore: store, resumeFromSessionId: sessionId, resumeFromLegacySessionFile: sessionFile, cwd: directory },
+		undefined,
+		{ runId: "legacy-run", stageId: "stage", stageName: "review" },
+	);
+
+	assert.equal(resumed.sessionManager?.getSessionId(), sessionId);
+	const message = resumed.sessionManager?.buildSessionContext().messages[0];
+	assert.ok(message?.role === "user");
+	assert.equal(message.content, "Finish the review");
+	assert.equal((await store.load(sessionId)).header.internal, true);
+	assert.equal(readFileSync(sessionFile, "utf8"), transcript);
 });
