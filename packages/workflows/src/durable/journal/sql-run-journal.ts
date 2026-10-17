@@ -11,7 +11,7 @@ import {
 } from "@bastani/atomic/storage";
 import { JOURNAL_READ_PAGE_SIZE } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
-import { migrateLegacyJournalTables } from "./legacy-journal-tables.js";
+import { LegacyJournalRuns } from "./legacy-journal-tables.js";
 import {
 	type AppendOutcome,
 	JOURNAL_COLUMNS as c,
@@ -64,10 +64,13 @@ export class SqlRunJournal implements RunJournal {
 	private closePromise?: Promise<void>;
 	private readonly database: SqliteDatabase;
 	private readonly tables: Tables;
+	private readonly legacy: LegacyJournalRuns | undefined;
+	private readonly settledRunIds = new Set<string>();
 
-	private constructor(database: SqliteDatabase, tables: Tables) {
+	private constructor(database: SqliteDatabase, tables: Tables, legacy: LegacyJournalRuns | undefined) {
 		this.database = database;
 		this.tables = tables;
+		this.legacy = legacy;
 	}
 
 	static async open(database: SqliteDatabase, options: { readonly prefix?: string } = {}): Promise<SqlRunJournal> {
@@ -103,8 +106,8 @@ export class SqlRunJournal implements RunJournal {
 				);
 			`);
 		});
-		if (!options.prefix) await migrateLegacyJournalTables(database);
-		return new SqlRunJournal(database, t);
+		const legacy = options.prefix ? undefined : await LegacyJournalRuns.open(database);
+		return new SqlRunJournal(database, t, legacy);
 	}
 
 	get descriptor(): StorageDescriptor {
@@ -168,7 +171,8 @@ export class SqlRunJournal implements RunJournal {
 				`SELECT ${c.headerJson}, ${c.status} FROM ${this.tables.runs} WHERE ${c.runId} = ?`,
 				runId,
 			);
-			return row ? { ...(JSON.parse(row[c.headerJson]) as RunHeader), status: row[c.status] } : undefined;
+			const found = row ?? (await this.legacy?.find(this.database, runId));
+			return found ? { ...(JSON.parse(found[c.headerJson]) as RunHeader), status: found[c.status] } : undefined;
 		});
 	}
 
@@ -180,13 +184,24 @@ export class SqlRunJournal implements RunJournal {
 				`SELECT ${c.headerJson}, ${c.status} FROM ${this.tables.runs} ${filter?.cwd === undefined ? "" : `WHERE ${c.cwd} = ?`} ORDER BY ${c.runId}`,
 				...(filter?.cwd === undefined ? [] : [filter.cwd]),
 			);
-			return rows.map((row) => ({ ...(JSON.parse(row[c.headerJson]) as RunHeader), status: row[c.status] }));
+			const legacy = (await this.legacy?.pending(this.database, filter)) ?? [];
+			return [...rows, ...legacy]
+				.map((row) => ({ ...(JSON.parse(row[c.headerJson]) as RunHeader), status: row[c.status] }))
+				.sort((left, right) => (left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : 0));
 		});
 	}
 
 	private async requireRun(tx: SqliteExecutor, runId: string): Promise<void> {
-		if (!(await tx.get(`SELECT ${c.runId} FROM ${this.tables.runs} WHERE ${c.runId} = ?`, runId)))
-			throw new RunNotFoundError(runId);
+		if (await tx.get(`SELECT ${c.runId} FROM ${this.tables.runs} WHERE ${c.runId} = ?`, runId)) return;
+		if (!(await this.legacy?.convert(tx, runId))) throw new RunNotFoundError(runId);
+		this.settledRunIds.add(runId);
+	}
+
+	/** Convert a legacy run before reading it; checked once per run for this journal. */
+	private async convertLegacyRun(runId: string): Promise<void> {
+		if (this.legacy === undefined || this.settledRunIds.has(runId)) return;
+		await this.legacy.ensureConverted(runId);
+		this.settledRunIds.add(runId);
 	}
 
 	private async leaseRow(tx: SqliteExecutor, runId: string): Promise<LeaseRow | undefined> {
@@ -253,6 +268,7 @@ export class SqlRunJournal implements RunJournal {
 		this.assertOpen();
 		validateText("runId", runId);
 		return this.operation(async () => {
+			await this.convertLegacyRun(runId);
 			const row = await this.database.get<LeaseRow & { age_ms: number }>(
 				`SELECT *, MIN(${Number.MAX_SAFE_INTEGER}, MAX(0, ${STORE_NOW} - ${c.renewedAt})) AS age_ms FROM ${this.tables.leases} WHERE ${c.runId} = ?`,
 				runId,
@@ -394,6 +410,7 @@ export class SqlRunJournal implements RunJournal {
 		this.assertOpen();
 		validateText("runId", runId);
 		let nextSeq = fromSeq;
+		await this.operation(() => this.convertLegacyRun(runId));
 		for (;;) {
 			const page = await this.operation(async () => {
 				const rows = await this.database.all<EventRow>(
@@ -420,6 +437,7 @@ export class SqlRunJournal implements RunJournal {
 		validateText("runId", runId);
 		validateText("key", key);
 		return this.operation(async () => {
+			await this.convertLegacyRun(runId);
 			const row = await this.database.get<EventRow>(
 				`SELECT * FROM ${this.tables.events} WHERE ${c.runId} = ? AND ${c.key} = ?`,
 				runId,
@@ -453,6 +471,7 @@ export class SqlRunJournal implements RunJournal {
 	}
 
 	private async deleteRunData(tx: SqliteExecutor, runId: string): Promise<void> {
+		await this.legacy?.markDeleted(tx, runId);
 		await this.leaseRow(tx, runId);
 		await tx.run(
 			`UPDATE ${this.tables.leases} SET ${c.holderId} = ? WHERE ${c.runId} = ?`,
