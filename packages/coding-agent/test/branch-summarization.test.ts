@@ -150,7 +150,7 @@ describe("safe prose summarization", () => {
 		expect(requestOptions?.toolChoice).toBeUndefined();
 	});
 
-	it("caps branch summary output at 4096 tokens", async () => {
+	it("leaves branch summary output sizing to the provider (#11036)", async () => {
 		resetIds();
 		let requestOptions: import("@bastani/pi-ai/compat").SimpleStreamOptions | undefined;
 		await generateBranchSummary([entry(user("summarize safely"))], {
@@ -163,23 +163,7 @@ describe("safe prose summarization", () => {
 				return stream;
 			},
 		});
-		expect(requestOptions?.maxTokens).toBe(4096);
-	});
-
-	it("clamps the branch summary output cap to the model limit", async () => {
-		resetIds();
-		let requestOptions: import("@bastani/pi-ai/compat").SimpleStreamOptions | undefined;
-		await generateBranchSummary([entry(user("summarize safely"))], {
-			model: { ...nonCopilotModel(), maxTokens: 1024 },
-			signal: new AbortController().signal,
-			streamFn: async (_requestModel, _context, options) => {
-				requestOptions = options;
-				const stream = createAssistantMessageEventStream();
-				stream.end(assistantBlocks([{ type: "text", text: "summary" }]));
-				return stream;
-			},
-		});
-		expect(requestOptions?.maxTokens).toBe(1024);
+		expect(requestOptions).not.toHaveProperty("maxTokens");
 	});
 
 	it.each([

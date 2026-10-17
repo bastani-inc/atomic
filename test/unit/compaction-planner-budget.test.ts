@@ -90,25 +90,7 @@ const branchEntries = [
 	},
 ];
 
-test("branch summarization caps output at 4096 tokens and inherits the session reasoning level", async () => {
-	const stream = scriptedStream({ default: [{ text: "a branch summary" }] });
-	// The model limit is deliberately *above* the cap. `testModel()`'s own `maxTokens` is
-	// 4096, so the bare fixture would satisfy the assertion below even if the runtime
-	// forwarded `model.maxTokens` verbatim — proving nothing about the cap it names.
-	const result = await generateBranchSummary(branchEntries as never, {
-		model: testModel({ maxTokens: 8192 }),
-		apiKey: "primary-key",
-		signal: new AbortController().signal,
-		streamFn: stream.streamFn,
-		thinkingLevel: "medium",
-	});
-	assert.equal(result.error, undefined);
-	assert.equal(stream.calls.length, 1);
-	assert.equal(stream.calls[0].options.maxTokens, 4096);
-	assert.equal(stream.calls[0].options.reasoning, "medium");
-});
-
-test("branch summarization clamps its output cap to a smaller model limit", async () => {
+test("branch summarization leaves output sizing to the provider and inherits the session reasoning level", async () => {
 	const stream = scriptedStream({ default: [{ text: "a branch summary" }] });
 	const result = await generateBranchSummary(branchEntries as never, {
 		model: testModel({ maxTokens: 1024 }),
@@ -119,5 +101,6 @@ test("branch summarization clamps its output cap to a smaller model limit", asyn
 	});
 	assert.equal(result.error, undefined);
 	assert.equal(stream.calls.length, 1);
-	assert.equal(stream.calls[0].options.maxTokens, 1024);
+	assert.equal(stream.calls[0].options.maxTokens, undefined);
+	assert.equal(stream.calls[0].options.reasoning, "medium");
 });

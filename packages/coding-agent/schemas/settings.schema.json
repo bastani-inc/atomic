@@ -192,7 +192,7 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 9007199254740991,
-          "description": "Tokens reserved for the next model response.",
+          "description": "Free context tokens below which automatic compaction starts.",
           "default": 16384
         },
         "compression_ratio": {
@@ -241,7 +241,7 @@
       "properties": {
         "reserveTokens": {
           "type": "number",
-          "description": "Tokens reserved for the prompt and LLM response.",
+          "description": "Tokens reserved when selecting branch history; the provider sizes summary output.",
           "default": 16384
         },
         "skipPrompt": {

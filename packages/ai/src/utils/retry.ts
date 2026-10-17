@@ -51,6 +51,10 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"provider.?returned.?(?:an.?)?error",
 	"exceeded request buffer limit while retrying upstream",
 	"unable to forward upstream",
+	"upstream.?request.?failed",
+	"upstream_stream_read_error",
+	"stream was interrupted",
+	"http/?2 stream failed",
 
 	// Network, proxy, and fetch transport failures. This includes OpenAI Codex
 	// raw-fetch failures such as "upstream connect", "connection refused", and
@@ -63,6 +67,7 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"connection.?reset",
 	"other side closed",
 	"fetch failed",
+	"request to \\S+ failed, reason:",
 	"getaddrinfo",
 	"ENOTFOUND",
 	"EAI_AGAIN",

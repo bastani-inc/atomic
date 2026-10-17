@@ -12,19 +12,19 @@ const usage: Usage = {
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
 
-function buildEmptyToolResult(toolCallId: string, timestamp: number): ToolResultMessage {
+function buildEmptyToolResult(toolCallId: string, timestamp: number, text = ""): ToolResultMessage {
 	return {
 		role: "toolResult",
 		toolCallId,
 		toolName: "bash",
-		content: [{ type: "text", text: "" }],
+		content: [{ type: "text", text }],
 		isError: false,
 		timestamp,
 	};
 }
 
 describe("OpenAI Responses convertResponsesMessages empty tool result", () => {
-	it("uses '(no tool output)' placeholder for empty tool results without images", () => {
+	it.each(["", "\r\n", " \n\t", " \nvalue\t"])("handles tool result text %j without images (#8720)", (text) => {
 		const model = getModel("openai", "gpt-4o-mini");
 		const now = Date.now();
 		const assistant: AssistantMessage = {
@@ -42,7 +42,7 @@ describe("OpenAI Responses convertResponsesMessages empty tool result", () => {
 			messages: [
 				{ role: "user", content: "Run the command", timestamp: now - 1 },
 				assistant,
-				buildEmptyToolResult("tool-1", now + 1),
+				buildEmptyToolResult("tool-1", now + 1, text),
 			],
 		});
 
@@ -52,7 +52,7 @@ describe("OpenAI Responses convertResponsesMessages empty tool result", () => {
 			| undefined;
 
 		expect(functionCallOutput).toBeTruthy();
-		expect(functionCallOutput?.output).toBe("(no tool output)");
+		expect(functionCallOutput?.output).toBe(text.trim() ? text : "(no tool output)");
 		expect(functionCallOutput?.output).not.toContain("see attached image");
 	});
 });

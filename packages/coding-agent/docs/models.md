@@ -19,7 +19,7 @@ For editor completion and validation of providers, models, and `compat` fields, 
 
 ## Where to go next
 
-This page shows minimal and full `models.json` examples you can copy. Every field, override, derived variant, and API compatibility contract lives in the [Model configuration reference](/models/reference).
+This page shows minimal and full `models.json` examples you can copy. [Models Configuration](/models-configuration) lists every provider, model, override, and compatibility field directly from the schema. For extended examples, derived variants, and API behavior, see the [Model configuration guide](/models/reference).
 
 For choosing which model to use rather than how to declare one, see [Model selection](/models/model-selection).
 
@@ -70,6 +70,16 @@ For local models (Ollama, LM Studio, vLLM), only `id` is required per model:
 ```
 
 The `apiKey` is required but Ollama ignores it, so any value works.
+
+To route a built-in provider through a proxy, set only its `baseUrl`. Its models and authentication stay unchanged:
+
+```json
+{
+  "providers": {
+    "anthropic": { "baseUrl": "https://proxy.example.com/v1" }
+  }
+}
+```
 
 Some OpenAI-compatible servers do not understand the `developer` role used for reasoning-capable models. For those providers, set `compat.supportsDeveloperRole` to `false` so Atomic sends the system prompt as a `system` message instead. If the server also does not support `reasoning_effort`, set `compat.supportsReasoningEffort` to `false` too.
 

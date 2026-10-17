@@ -86,6 +86,22 @@ describe("provider retry classification", () => {
 		expect(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage }))).toBe(true);
 	});
 
+	it.each([
+		"request to https://oauth2.googleapis.com/token failed, reason:",
+		"request to https://oauth2.googleapis.com/token failed, reason: connect ECONNREFUSED 127.0.0.1:9",
+	])("matches node-fetch request failure wording (#10996): %s", (errorMessage) => {
+		assert.equal(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage })), true);
+	});
+
+	it.each([
+		"unknown: Unable to forward upstream stream",
+		"upstream_error: Upstream request failed",
+		"upstream_stream_read_error: Upstream response stream was interrupted",
+		"Upstream HTTP/2 stream failed",
+	])("matches gateway upstream failure wording (#10920): %s", (errorMessage) => {
+		assert.equal(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage })), true);
+	});
+
 	it("matches OpenAI Responses streams that end before terminal events", () => {
 		expect(
 			isRetryableAssistantError(

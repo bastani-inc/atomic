@@ -52,6 +52,8 @@ The `apiKey` and `headers` fields support three formats:
   "apiKey": "sk-..."
   ```
 
+In non-command values, `$$` produces a literal `$` and `$!` produces a literal `!`.
+
 Legacy uppercase env-var-like values in existing `models.json` provider config, such as `MY_API_KEY`, are migrated to `$MY_API_KEY` on startup only when that environment variable is present during migration; otherwise the value is preserved as a literal. New configs should use explicit `$ENV_VAR`/`${ENV_VAR}` syntax for environment variables.
 
 For `models.json`, shell commands are resolved at request time. Atomic intentionally does not apply built-in TTL, stale reuse, or recovery logic for arbitrary commands. Different commands need different caching and failure strategies, and Atomic cannot infer the right one.

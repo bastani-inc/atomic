@@ -147,7 +147,7 @@ Threshold decisions and recovery use the canonical session projection. When Atom
 
 ## Planning rungs and failure behavior
 
-Atomic uses the session's reasoning level unless a fallback entry specifies its own level. The provider controls the planner's output limit.
+Atomic uses the session's reasoning level unless a fallback entry specifies its own level. The provider controls output limits for both planning and policy-refusal summary requests, using the model's output limit reduced as needed to fit the request within its context window. `compaction.reserveTokens` controls only when automatic compaction starts.
 
 `settings.retry` controls recoverable-error retries within one chat model, including a policy-refusal summary fallback. Policy refusals are not retried. If compaction fails, Atomic tries configured `settings.fallbackModels` in order, using each model's own credentials and skipping the selected compaction model if listed again. Unavailable credentials do not prevent trying later models. Borrowing does not change the chat model, thinking level, or model-selection events.
 
@@ -220,7 +220,7 @@ Branch summarization is a separate mechanism from context compaction. It generat
 
 ### How It Works
 
-Atomic summarizes the branch you leave, prioritizing newer messages within its token budget, and saves the summary at the navigation point. It rejects incomplete summaries rather than saving partial prose.
+Atomic summarizes the branch you leave, prioritizing newer messages within its token budget, and saves the summary at the navigation point. The provider sizes summary output from the model's output limit and the available context; `branchSummary.reserveTokens` only controls how much history is selected. Atomic rejects incomplete summaries rather than saving partial prose.
 
 ```text
 Tree before navigation:

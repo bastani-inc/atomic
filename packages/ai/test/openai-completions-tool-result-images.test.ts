@@ -59,12 +59,12 @@ function buildToolResult(toolCallId: string, timestamp: number): ToolResultMessa
 	};
 }
 
-function buildEmptyToolResult(toolCallId: string, timestamp: number): ToolResultMessage {
+function buildEmptyToolResult(toolCallId: string, timestamp: number, text = ""): ToolResultMessage {
 	return {
 		role: "toolResult",
 		toolCallId,
 		toolName: "bash",
-		content: [{ type: "text", text: "" }],
+		content: [{ type: "text", text }],
 		isError: false,
 		timestamp,
 	};
@@ -146,7 +146,7 @@ describe("openai-completions convertMessages", () => {
 		expect(imageParts.length).toBe(2);
 	});
 
-	it("uses '(no tool output)' placeholder for empty tool results without images", () => {
+	it.each(["", "\r\n", " \n\t", " \nvalue\t"])("handles tool result text %j without images (#8720)", (text) => {
 		const { compat: _compat, ...baseModel } = getModel("openai", "gpt-4o-mini");
 		const model: Model<"openai-completions"> = {
 			...baseModel,
@@ -170,14 +170,14 @@ describe("openai-completions convertMessages", () => {
 			messages: [
 				{ role: "user", content: "Run the command", timestamp: now - 1 },
 				assistantMessage,
-				buildEmptyToolResult("tool-1", now + 1),
+				buildEmptyToolResult("tool-1", now + 1, text),
 			],
 		});
 
 		const messages = convertMessages(model, context, compat);
 		const toolMessage = messages.find((m) => m.role === "tool") as { role: "tool"; content: string } | undefined;
 		expect(toolMessage).toBeTruthy();
-		expect(toolMessage?.content).toBe("(no tool output)");
+		expect(toolMessage?.content).toBe(text.trim() ? text : "(no tool output)");
 		expect(toolMessage?.content).not.toContain("see attached image");
 	});
 });

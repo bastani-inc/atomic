@@ -334,10 +334,6 @@ export async function runPiSummaryFallback(
 			systemPrompt: SUMMARIZATION_SYSTEM_PROMPT,
 			messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }],
 		});
-		const requestMaxTokens = Math.min(
-			Math.floor((prefix ? 0.5 : 0.8) * settings.reserveTokens),
-			model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
-		);
 		const sessionId = uuidv7();
 		let refusal: AssistantMessage | undefined;
 		const response = await retryAssistantCall(
@@ -351,7 +347,6 @@ export async function runPiSummaryFallback(
 							signal: options.signal,
 							cacheRetention: "none",
 							sessionId,
-							maxTokens: requestMaxTokens,
 							...(model.reasoning && planner.budget.reasoning && planner.budget.reasoning !== "off"
 								? { reasoning: planner.budget.reasoning }
 								: {}),
@@ -380,7 +375,7 @@ export async function runPiSummaryFallback(
 			const diagnosticPath = writeDiagnosticSidecar({
 				sessionFilePath: options.sessionFilePath,
 				model,
-				requestMaxTokens,
+				requestMaxTokens: undefined,
 				response: failedResponse,
 				rawResponseText: failedResponse.content
 					.filter((block) => block.type === "text")

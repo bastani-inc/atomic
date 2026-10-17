@@ -389,10 +389,10 @@ The providers below have additional setup, need additional settings, or can use 
 
 ### NVIDIA NIM
 
-NVIDIA's built-in default is `nvidia/nemotron-3-ultra-550b-a55b`. Saved and explicit model choices still take precedence. To select this model explicitly:
+NVIDIA's built-in default is `nvidia/nemotron-3.5-super-vl-120b-a12b`. Saved and explicit model choices still take precedence. To select this model explicitly:
 
 ```bash
-atomic --provider nvidia --model nvidia/nemotron-3-ultra-550b-a55b
+atomic --provider nvidia --model nvidia/nemotron-3.5-super-vl-120b-a12b
 ```
 
 Use `--list-models` or `/model` to check the current catalog and replace a missing saved model. A catalog listing does not verify account access or serving availability.

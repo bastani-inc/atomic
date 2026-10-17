@@ -99,10 +99,10 @@ describe("default model selection", () => {
 		expect(defaultModelPerProvider.baseten).toBe("zai-org/GLM-5.3");
 		expect(defaultModelPerProvider["qwen-token-plan-individual"]).toBe("qwen3.8-max");
 	});
-	test("NVIDIA automatic selection prefers listed Nemotron 3 Ultra over the first catalog model", () => {
+	test("NVIDIA automatic selection prefers listed Nemotron 3.5 Super VL over the first catalog model (#10910)", () => {
 		const chatModels = getBuiltinModels("nvidia");
-		const preferred = chatModels.find((model) => model.id === "nvidia/nemotron-3-ultra-550b-a55b");
-		const other = chatModels.find((model) => model.id !== "nvidia/nemotron-3-ultra-550b-a55b");
+		const preferred = chatModels.find((model) => model.id === "nvidia/nemotron-3.5-super-vl-120b-a12b");
+		const other = chatModels.find((model) => model.id !== "nvidia/nemotron-3.5-super-vl-120b-a12b");
 		assert.ok(preferred);
 		assert.ok(other);
 		assert.equal(findPreferredAvailableModel([other, preferred]), preferred);
