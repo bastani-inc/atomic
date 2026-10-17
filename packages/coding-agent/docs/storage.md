@@ -1,6 +1,6 @@
 # SQLite storage API
 
-The SDK exposes an async SQLite API from `@bastani/atomic` and `@bastani/atomic/storage`. Workflow journals can use this API through a caller-owned database or a user-installed adapter module. Session settings selection is unchanged.
+The SDK exposes an async SQLite API from `@bastani/atomic` and `@bastani/atomic/storage`. Sessions and workflow runs default to one local file, `~/.atomic/workflows/journal.sqlite`, with `session_` and `wf_` table prefixes. Use [storage settings](/settings#sessions) to choose a different file, explicit JSONL sessions, explicit memory, or an adapter module. A failed persistent store never falls back to memory.
 
 ```ts
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
@@ -58,7 +58,7 @@ try {
 }
 ```
 
-Pass the returned facade as SDK `journal: { database, prefix: "project_" }`; Atomic leaves that database open. To select it from settings, expose `openLibsqlDatabase` through an adapter module as described below.
+Pass the returned facade as SDK `sessionStore: { kind: "database", database, prefix: "project_" }` or workflow `journal: { database, prefix: "project_" }`. Both can use the same facade without closing your database. To select it from settings, expose `openLibsqlDatabase` through an adapter module as described below.
 
 <details>
 <summary>Complete wrapper</summary>
@@ -302,19 +302,55 @@ export default {
 } satisfies StorageAdapterModule;
 ```
 
-Select it with `workflows.journal: { "adapter": "@example/atomic-sqlite" }` or shared top-level `storage` in [settings](/settings#workflow-storage). SDK runs accept `journal: { adapter, options, secrets, prefix }`. Module specifiers resolve from the agent directory, normally `~/.atomic/agent`; absolute module paths also work. Project settings follow the same trust boundary as project extensions. A module executes with Atomic's privileges.
+Select it with `sessions.storage: { "adapter": "@example/atomic-sqlite" }`, `workflows.journal`, or shared top-level `storage` in [settings](/settings#workflow-storage). SDK sessions accept `sessionStore: { kind: "adapter", module, options, secrets, prefix }`; workflow runs accept `journal: { adapter, options, secrets, prefix }`. Module specifiers resolve from the agent directory, normally `~/.atomic/agent`; absolute module paths also work. Project settings follow the same trust boundary as project extensions. A module executes with Atomic's privileges.
 
 `options` is an object of SQLite scalar values or booleans. In JSON settings use strings, numbers, booleans, or null. `secrets` maps option names to `{ env }` or `{ file }`; resolved values override same-named options without trimming file contents. Keep credentials out of `options` and database descriptors. `context` contains `agentDir`, `domain: "sessions" | "journal"`, and an optional `signal`.
 
 A SQLite adapter implements `openDatabase(options, context): Promise<SqliteDatabase>`. Atomic applies its domain schema and optional table prefix. A full adapter can instead implement `openSessionStore(options, context, storage)` or `openRunJournal(options, context, storage)`; the domain hook takes priority over `openDatabase`. The typed third argument is `{ readonly prefix?: string }`. Domain adapters must honor this prefix to isolate selected stores. A missing domain/database hook raises `StorageConfigError` with reason `"adapter-domain-unsupported"`. Load failures and invalid module contracts raise `StorageAdapterLoadError`; driver opening failures raise `StorageUnavailableError`. None selects memory as a fallback.
 
-The exported `StorageProvider` can open either domain explicitly. Construct it with `{ memory: (descriptor) => new MemoryRunJournal(descriptor), sql: SqlRunJournal.open }` from `@bastani/atomic/workflows`, then call `openSessionStore(selection, context)` or `openRunJournal(selection, context)`. `StorageSelection` uses `kind: "memory"`, `"jsonl"` with `dir` for sessions only, `"sqlite"` with `path`, `"database"` with a caller-owned facade, or `"adapter"` with `module`, optional options/secrets/prefix. This does not change session settings or SDK session selection.
+The exported `StorageProvider` can open either domain explicitly. Construct it with `{ memory: (descriptor) => new MemoryRunJournal(descriptor), sql: SqlRunJournal.open }` from `@bastani/atomic/workflows`, then call `openSessionStore(selection, context)` or `openRunJournal(selection, context)`. For sessions alone, `new StorageProvider()` needs no journal factories. `StorageSelection` uses `kind: "memory"`, `"jsonl"` with `dir` for sessions only, `"sqlite"` with `path`, `"database"` with a caller-owned facade, or `"adapter"` with `module`, optional options/secrets/prefix.
 
 One provider shares a database for matching owned SQLite or adapter selections. Close every returned store; the last store closes the owned database. Closing a store is idempotent. A caller-owned `database` is never closed by the provider. A full domain adapter owns its returned store's lifecycle. Invalid configuration stops selection, and a configured persistent store that cannot open never becomes an in-memory store.
 
 If opening storage fails and closing its owned database also fails, the original typed opening error is thrown with a `cleanupCause` field containing the cleanup failure. Inspect both errors when diagnosing the failed open.
 
 Factory-created journal headers record a credential-free `storage` descriptor for diagnostics. Full domain adapters are responsible for recording their own safe descriptor. Directly supplied journals and their caller-provided headers are not rewritten.
+
+## Storage errors
+
+Use error classes and their fields, not message matching. Configuration and facade errors are exported from `@bastani/atomic/storage`. `@bastani/atomic/workflows` exports the journal contract's error classes.
+
+| Error | Fields and response |
+|---|---|
+| `StorageConfigError` | `source`, `field`, `reason` identify an invalid selected option. Correct that selection; Atomic does not try a lower-precedence store. |
+| `StorageAdapterLoadError` | `module`, `cause`. Check installation and the module's default export. |
+| `StorageUnavailableError` | `adapter`, `location`, `cause`. Restore access to the selected store before retrying. |
+| `StoragePrefixError` | `prefix`, `reason`. Use a valid non-reserved prefix. |
+| `StorageSchemaVersionError` | `domain`, `found`, `supported`. Use a supported database; Atomic does not migrate an unknown schema. |
+| `StoreClosedError` / `StorageTransactionClosedError` | The store is closing/closed, or the transaction callback has ended. Open a new store or use the live callback handle. |
+| `StorageRollbackError` | `cause`, `rollbackCause`. Do not assume the transaction rolled back. |
+| `StorageOutcomeUnknownError` | `domain`, `id`, `key`. A driver cannot confirm the write outcome; inspect the keyed record before retrying. |
+| `StoragePayloadTooLargeError` | `limitBytes`, `actualBytes`. Reduce the payload for that backend. |
+| `StorageInvalidTextError` | `parameterIndex`, `reason`. Remove NUL from scalar text bindings or encode the value as JSON/binary. |
+
+Session operations can raise `SessionNotFoundError` or `SessionExistsError` with `sessionId`; `SessionIdMismatchError` with `requested` and `found`; and `SessionConflictError` with `sessionId`, `expectedSeq`, and `actualSeq`. Keep one writer per session. After a conflict, reopen the session rather than writing from stale state.
+
+`SessionFormatVersionError` identifies `path`, `found`, and `supported`; `SessionInvalidTextError` identifies `field` and `reason`, and `SessionInvalidTimestampError` adds `value`. A JSONL append whose rollback also fails raises `JsonlStoragePoisonedError` with `location`, `cause`, and `rollbackCause`; stop using that store and inspect the file before reopening. These failures never silently select another store.
+
+Journal errors include:
+
+| Error | Fields and response |
+|---|---|
+| `StaleLeaseError` | `runId`, `heldEpoch`, `currentEpoch`. Stop writing under stale ownership. |
+| `JournalCasConflictError` | `runId`, `expectedSeq`, `actualSeq`. Reload the run before retrying a conflicting operation. |
+| `RunNotFoundError` | `runId`. Check the selected journal and ID. |
+| `JournalSchemaVersionError` | `domain`, `found`, `supported`. No automatic schema migration. |
+| `JournalInvalidTextError` | `field`, `reason`. Identifiers must be well-formed Unicode without NUL. JSON payload text is not restricted this way. |
+| `JournalCounterRangeError` | `runId`, `field`, `value`, `reason`. Sequence and epoch counters must remain non-negative safe integers. |
+| `JournalMetaCorruptError` | `path`, `rowCount`. Inspect or restore the affected database. |
+| `JournalClosedError` | Open another journal before issuing new operations. |
+
+Workflow execution can also fail with `JournalOwnershipError` with `runId` and `holderId`, `JournalBackendClosedError`, `JournalOperationAbortedError` with `runId` and optional `cause`, or `JournalExecutionRetiredError` with `runId`. Stop work after losing ownership or cancellation; do not keep using a closed or retired execution. A local database failure does not justify deleting the shared file, which may hold both session and workflow history.
 
 ## Adapter conformance
 

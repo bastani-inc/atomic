@@ -27,7 +27,9 @@ The renderer also owns `PI_HYPERLINKS`, `PI_IMAGE_PROTOCOL`, and `PI_TRUE_COLOR`
 
 ## Workflow journal
 
-The default workflow journal is `~/.atomic/workflows/journal.sqlite`. `ATOMIC_WORKFLOW_JOURNAL_PATH` selects another file; an empty value leaves settings in effect. In `settings.json`, use `workflows.journal.path` or explicitly select process-local memory with `workflows.journal.memory: true`. Relative settings paths resolve against the Atomic home directory. Memory cannot recover runs after process exit and is never selected after a storage failure. See [Workflow storage](/settings#workflow-storage).
+Sessions and workflow runs default to the same local SQLite file, `~/.atomic/workflows/journal.sqlite`, with `session_` and `wf_` table prefixes. With a custom `ATOMIC_CODING_AGENT_DIR`, the file is `workflows/journal.sqlite` under the agent directory's parent. `ATOMIC_WORKFLOW_JOURNAL_PATH` changes the workflow journal only; `ATOMIC_CODING_AGENT_SESSION_DIR` selects JSONL for sessions only. Relative environment paths resolve against the working directory, and empty values leave settings in effect.
+
+In `settings.json`, shared `storage` selects a database for both domains; `sessions.storage` and `workflows.journal` override their respective domains. Relative settings paths resolve against Atomic home. To select process-local memory explicitly, use `{ "memory": true }` in the appropriate selection. Memory cannot recover data after process exit and is never selected after a storage failure. See [Workflow storage](/settings#workflow-storage).
 
 ## Prompt-cache retention
 
@@ -65,5 +67,7 @@ Every built-in, factory-created, direct, workflow-stage, and isolated bash or Po
 | `ATOMIC_REASONING_LEVEL` | `PI_REASONING_LEVEL` | Active reasoning level |
 
 Atomic clears these ten reserved names before overlaying the current snapshot, preventing stale metadata from another session or workflow stage. Unrelated inherited/caller variables remain intact. The snapshot is taken when execution begins, so a resumed session or later model change is reflected. SDK `createBashTool()` and `createPowerShellTool()` expose it by default; set `exposeSessionEnvironment: false` to opt out.
+
+`ATOMIC_SESSION_FILE` and `PI_SESSION_FILE` are no longer supplied. Session IDs identify records within the selected store; a database location or JSONL path is only display metadata.
 
 See [Using Atomic](/reference/cli#environment-variables) and [RPC direct bash](/rpc/protocol#bash) for execution and streaming behavior.

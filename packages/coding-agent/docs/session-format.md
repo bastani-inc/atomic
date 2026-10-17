@@ -5,10 +5,10 @@ This page describes format-4 JSONL files used by explicit JSONL stores and expor
 ## File Location
 
 ```
-~/.atomic/agent/sessions/--<path>--/<timestamp>_<session-id-hash>.jsonl
+<selected-jsonl-directory>/<timestamp>_<session-id-hash>.jsonl
 ```
 
-Where `<path>` is the working directory with `/` replaced by `-`.
+`sessions.storage.dir` and `--session-dir` select the directory containing the JSONL files. Session IDs, not these paths, are used for resume and fork selection. Local artifacts and tool-result files remain on the filesystem even with a database-backed session.
 
 ## Deleting Sessions
 
@@ -18,7 +18,7 @@ Delete individual sessions from `/resume`: select a session, press `CTRL+D`, the
 
 ## Session Version
 
-SessionManager writes version 4 headers. Sessions in formats 1, 2, and 3 are upgraded automatically when opened, resumed, imported, or forked. Opening an older session atomically rewrites only that file in format 4 so new entries can be saved. Listing sessions and looking up their headers upgrade metadata in memory without changing files. Future versions, unrecognized version values, and structurally invalid entries remain rejected; unloadable sessions are omitted from resume listings. A complete final record without a newline is accepted; a torn final record is rejected.
+SessionManager writes version 4 headers. Sessions in formats 1, 2, and 3 are upgraded automatically when opened, resumed, imported, or forked. Reading converts older records in memory; listing sessions and looking up headers leave files unchanged. Opening an older JSONL session persists its upgrade atomically under the file lock before new entries are saved. Future versions, unrecognized version values, and structurally invalid entries remain rejected; unloadable sessions are omitted from resume listings. A complete final record without a newline is accepted; a torn final record is rejected.
 
 ## Source Files
 
@@ -212,7 +212,7 @@ Workflow-owned sessions carry both `internal: true` and complete `workflow` link
 {"type":"session","version":4,"id":"uuid","createdAt":"2024-12-03T14:00:00.000Z","cwd":"/path/to/project","internal":true,"workflow":{"runId":"run-1","stageId":"stage-build","stageName":"build"}}
 ```
 
-Malformed, incomplete, workflow-only, or truthy non-boolean legacy markers remain visible in normal history. Atomic does not infer workflow ownership from `parentSession`, so ordinary user-created forks are unaffected. Valid workflow classification is inherited when an internal workflow transcript is branched or forked.
+Malformed or incomplete workflow markers remain visible in normal history. Atomic does not infer workflow ownership from `parentSessionId`, so ordinary user-created forks are unaffected. Valid workflow classification is inherited when an internal workflow transcript is branched or forked.
 
 ### SessionMessageEntry
 
@@ -429,23 +429,26 @@ Await `create`, `open`, `continueRecent`, `forkFrom`, and all session mutations.
 
 ### Static Creation Methods
 
-- `SessionManager.create(cwd, sessionDir?, options?)` - New session. Workflow-owned sessions require the pair `internal: true` and `workflow: { runId, stageId, stageName }`.
-- `SessionManager.open(path, sessionDir?)` - Open a specific session file directly, including an internal session.
-- `SessionManager.continueRecent(cwd, sessionDir?, options?)` - Continue the most recent regular session or create a new one. Pass `{ includeInternal: true }` only for workflow-specific recovery or diagnostics.
-- `SessionManager.inMemory(cwd?, options?)` - No file persistence
-- `SessionManager.forkFrom(sourcePath, targetCwd, sessionDir?, options?)` - Fork a session from another project. Relevant `NewSessionOptions`, including valid workflow classification, are written in the initial header.
+- `SessionManager.create(cwd, sessionDir?, options?)` - New session in configured storage, or explicit JSONL when a directory is supplied.
+- `SessionManager.create(store, cwd, options?)` - New session in a supplied `SessionStore`. Workflow-owned sessions require the pair `internal: true` and `workflow: { runId, stageId, stageName }`.
+- `SessionManager.open(store, sessionId, cwdOverride?)` - Open an existing session by exact ID in that store. A missing ID raises `SessionNotFoundError`; it does not create a session.
+- `SessionManager.open(path, sessionDir?, cwdOverride?)` - Open a JSONL file directly, creating it if missing. This is a file API, not the CLI session selector.
+- `SessionManager.continueRecent(cwd, sessionDir?, options?)` or `continueRecent(store, cwd, options?)` - Continue the most recent regular session or create one. Pass `{ includeInternal: true }` only to include workflow sessions.
+- `SessionManager.inMemory(cwd?, options?, entries?)` - Explicit memory storage.
+- `SessionManager.forkFrom(sourcePath, targetCwd, sessionDir?, options?)` - Fork a JSONL file into the configured or explicit destination. To fork a database session, open it by ID and await `manager.forkTo(targetCwd, targetStore?, options?)`.
+- `SessionManager.importFromJsonl(inputPath, cwd, targetStoreOrDir?)` - Import a JSONL export without changing its ID, upgrading older supported formats. An existing ID raises `SessionExistsError`.
 
 ### Static Listing Methods
 
-- `SessionManager.list(cwd, sessionDir?, onProgress?, options?)` - List project sessions. Internal workflow sessions are excluded by default; pass `{ includeInternal: true }` to include them and expose their `SessionInfo.workflow` linkage.
-- `SessionManager.listAll(sessionDir?, onProgress?, options?)` - List sessions across projects, or from a custom session directory. The same `includeInternal` default and opt-in apply.
+- `SessionManager.list(cwd, storeOrDir?, onProgress?, options?)` - List project sessions. Internal workflow sessions are excluded by default.
+- `SessionManager.listAll(storeOrDir?, onProgress?, options?)` - List sessions across projects in the selected store. Both methods accept `{ includeInternal: true, signal }` to include workflow sessions or cancel listing.
 
-Normal `/resume`, `atomic -r`, and `--continue` callers use the default filtering. Workflow-specific code can opt in without changing user-facing history:
+Use the returned `SessionInfo.id` to select a session. Its `path` contains a JSONL location when available and otherwise the ID; do not treat it as a filesystem path. To list workflow sessions in the active store:
 
 ```typescript
-const stages = await SessionManager.list(cwd, sessionDir, undefined, { includeInternal: true });
+const stages = await SessionManager.list(cwd, manager.getSessionStore(), undefined, { includeInternal: true });
 for (const stage of stages.filter((session) => session.internal)) {
-  console.log(stage.workflow?.runId, stage.workflow?.stageId, stage.path);
+  console.log(stage.workflow?.runId, stage.workflow?.stageId, stage.id);
 }
 ```
 
@@ -453,10 +456,11 @@ for (const stage of stages.filter((session) => session.internal)) {
 
 - `newSession(options?)` - Start a new session. Options include `parentSession`, `internal`, and workflow run/stage linkage; classification requires a complete marker pair.
 - `markSessionInternal(workflow?)` - Apply valid workflow ownership to the current session, repairing malformed markers while preserving an existing valid marker.
-- `setSessionFile(path)` - Switch to a different session file
-- `createBranchedSession(leafId)` - Extract branch to new session file
+- `setSessionFile(path)` - Switch to a JSONL file directly. For ID-based loading, use `SessionManager.open(store, sessionId)` to obtain a new manager.
+- `createBranchedSession(leafId)` - Extract a branch into a new session in the same store
+- `forkTo(cwd, targetStoreOrDir?, options?)` - Copy the conversation into a new session at the destination
 
-### Instance Methods - Appending (all return entry ID)
+### Instance Methods - Appending (all return a promise of the entry ID)
 - `appendMessage(message)` - Add message
 - `appendThinkingLevelChange(level)` - Record thinking change
 - `appendContextWindowChange(contextWindow)` - Record context-window selection in tokens
@@ -490,7 +494,8 @@ for (const stage of stages.filter((session) => session.internal)) {
 - `getSessionName()` - Get display name from latest session_info entry (`undefined` when cleared or never named)
 - `getSessionNameState()` - Get the name state: `{ hasName: false }` when never named, `{ hasName: true }` when the latest entry cleared it, `{ hasName: true, name }` when currently named
 - `getCwd()` - Working directory
-- `getSessionDir()` - Session storage directory
-- `getSessionId()` - Session UUID
-- `getSessionFile()` - Session file path (undefined for in-memory)
-- `isPersisted()` - Whether session is saved to disk
+- `getSessionDir()` - Local JSONL directory, or an empty string for non-JSONL storage
+- `getSessionId()` - Exact session ID, not necessarily a UUID
+- `getSessionStore()` - Active `SessionStore`
+- `getSessionFile()` - Optional JSONL file location for display
+- `isPersisted()` - Whether the store is not a `MemorySessionStore`

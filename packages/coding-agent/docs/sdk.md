@@ -160,6 +160,43 @@ const { session } = await createAgentSession({
 });
 ```
 
+### Session storage
+
+`createAgentSession()` persists sessions in `~/.atomic/workflows/journal.sqlite` by default, sharing the file with workflow runs under separate `session_` and `wf_` table prefixes. Pass `sessionStore` to choose storage explicitly:
+
+```typescript
+const { session } = await createAgentSession({
+  sessionStore: { kind: "sqlite", path: "./sessions.sqlite", prefix: "project_" },
+});
+```
+
+Other selections are `{ kind: "jsonl", dir }`, `{ kind: "memory" }`, `{ kind: "database", database, prefix? }`, and `{ kind: "adapter", module, options?, secrets?, prefix? }`. `database` must implement the async `SqliteDatabase` facade. Install your own driver and expose an adapter module for a remote database; Atomic bundles only its local `node:sqlite` adapter. See [Storage adapters](/storage).
+
+`sessionStore` also accepts a `SessionStore` instance. A supplied `sessionManager` takes precedence and remains caller-owned. Otherwise, explicit SDK storage wins over the session-directory environment variable, `sessions.storage`, shared `storage`, and the persistent default. Memory is never a default or an opening-failure fallback. The `sessionDir` factory option has been removed; use a JSONL `sessionStore` selection instead. See [Session storage settings](/settings#sessions) for scope and path rules.
+
+Atomic closes stores it opens from a selection when the session is disposed, after pending writes finish. Supplied `SessionStore` instances and stores belonging to supplied managers remain caller-owned. With `{ kind: "database", database }`, Atomic closes its store but leaves your database open. Always await `session.dispose()` and close caller-owned stores when no session still uses them.
+
+Resume by opening the ID in the chosen store, then pass that manager to the factory:
+
+```typescript
+import { createAgentSession, resolveSessionStore, SessionManager } from "@bastani/atomic";
+
+const store = await resolveSessionStore(process.cwd());
+try {
+  const manager = await SessionManager.open(store, savedSessionId);
+  const { session } = await createAgentSession({ sessionManager: manager });
+  try {
+    await session.prompt("Continue the task");
+  } finally {
+    await session.dispose();
+  }
+} finally {
+  await store.close();
+}
+```
+
+Await every `SessionManager` mutation before reading dependent state. Writes resolve after commit; a failure rejects with a typed error without publishing the failed entry. There is no `flush()` step. Extension `pi.appendEntry`, `pi.setSessionName`, `pi.setLabel`, and `pi.setThinkingLevel` also return promises. `ExtensionContext.sessionSignal` aborts when reload or shutdown starts, before admitted work is drained. Use it to stop waiting on long-running command resources, but keep awaiting any session write already started. See [SessionManager API](/session-format#sessionmanager-api) and [Storage errors](/storage#storage-errors).
+
 ### Human input without a terminal
 
 Pass `extensionBindings.humanInput` to answer extension dialogs and `ask_user_question` in a Node host. `HostInput` requires all five methods: `confirm`, `select`, `input`, `editor` and `questionnaire`. `QuestionParams` and `QuestionnaireResult` are exported from `@bastani/atomic`; questionnaire answers retain their question indices, answer kinds, selections, previews and notes.
