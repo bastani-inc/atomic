@@ -131,7 +131,7 @@ jobs:
           -- npm run test:unit
       - name: Upload test diagnostics
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           # Artifact names must be unique across every job in the run:
           # actions/upload-artifact@v4+ fails the whole run on a duplicate.
@@ -211,7 +211,7 @@ jobs:
           ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE: "1"
       - name: Upload test diagnostics
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-diagnostics-integration-tests-${{ matrix.binary_platform }}
           path: .ci-diagnostics/
@@ -293,7 +293,7 @@ jobs:
           ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE: "1"
       - name: Upload test diagnostics
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-diagnostics-agent-suite-${{ matrix.binary_platform }}
           path: .ci-diagnostics/

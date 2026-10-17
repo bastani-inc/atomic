@@ -431,7 +431,7 @@ jobs:
       - name: Load Intel native binding under Rosetta
         if: matrix.slug == 'darwin-x64'
         run: node -e "require('node:assert/strict').equal(process.arch, 'x64'); require('./packages/natives/native/atomic_natives.darwin-x64.node'); console.log('Intel native binding loaded under Rosetta')"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: atomic-natives-${{ matrix.slug }}
           path: packages/natives/native/*.node
@@ -722,7 +722,7 @@ jobs:
           retention-days: 14
           compression-level: 0
       - name: Upload npm packages
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: npm-packages-${{ env.RELEASE_TAG }}
           path: npm-packages
