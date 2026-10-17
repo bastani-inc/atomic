@@ -23,6 +23,7 @@ import {
 	mkdtempSync as nodeMkdtempSync,
 	readdirSync as nodeReaddirSync,
 	readFileSync as nodeReadFileSync,
+	realpathSync as nodeRealpathSync,
 	rmSync as nodeRmSync,
 	symlinkSync as nodeSymlinkSync,
 	writeFileSync as nodeWriteFileSync,
@@ -33,9 +34,9 @@ import { delimiter, dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-/** Create a temporary directory for a test and return its path. */
+/** Create a temporary directory using the same canonical path reported by SQLite and child processes. */
 export function makeTempDirectory(prefix: string): string {
-	return nodeMkdtempSync(join(tmpdir(), prefix));
+	return nodeRealpathSync(nodeMkdtempSync(join(tmpdir(), prefix)));
 }
 
 /** Remove a temporary test directory and everything it contains. */

@@ -2,6 +2,9 @@ import type { SessionEntry, SessionWorkflowMetadata } from "../../session-manage
 
 export const SESSION_FORMAT_VERSION = 4;
 
+/** @internal Platform-owned stores inject filesystem identity without coupling portable adapters to it. */
+export type SessionCwdMatcher = (cwd: string) => (candidate: string | undefined) => boolean;
+
 export interface StorageDescriptor {
 	readonly adapter: string;
 	readonly location: string;

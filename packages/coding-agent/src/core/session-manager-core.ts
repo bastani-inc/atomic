@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { getCurrentSystemMessage } from "@bastani/pi-ai";
 import type { ImageContent, Message, TextContent, Usage } from "@bastani/pi-ai/compat";
 import { getAgentDir } from "../config.js";
-import { normalizePath, resolvePath } from "../utils/paths.ts";
+import { createSessionCwdMatcher, normalizePath, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { createBranchedSessionState } from "./session-manager-archive.ts";
@@ -855,7 +855,7 @@ export class SessionManager {
 	}
 
 	static inMemory(cwd: string = process.cwd(), options?: NewSessionOptions, entries?: FileEntry[]): SessionManager {
-		const manager = new SessionManager(new MemorySessionStore(), cwd, "", options);
+		const manager = new SessionManager(new MemorySessionStore(createSessionCwdMatcher), cwd, "", options);
 		if (entries?.length) {
 			manager.fileEntries = entries[0].type === "session" ? entries : [...manager.fileEntries, ...entries];
 			manager.sessionId = manager.getHeader()!.id;
@@ -904,7 +904,11 @@ export class SessionManager {
 				: await JsonlSessionStore.open(sessionDir, { exactDirectory: true, scanExisting: false });
 		try {
 			const header = await store.readHeader(id);
-			if (!header || classifiedWorkflowMetadata(header) || resolvePath(header.cwd) !== resolvePath(cwd))
+			if (
+				!header ||
+				classifiedWorkflowMetadata(header) ||
+				!createSessionCwdMatcher(resolvePath(cwd))(resolvePath(header.cwd))
+			)
 				return undefined;
 			return store instanceof JsonlSessionStore ? await store.findFile(id) : id;
 		} catch (error) {

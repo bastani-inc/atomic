@@ -16,7 +16,7 @@ import type { SessionStore } from "./core/storage/session/types.js";
 import { ExtensionSelectorComponent } from "./modes/interactive/components/extension-selector.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
 import { resolveSessionIdTargetAcrossScopes } from "./session-id-target.js";
-import { resolvePath } from "./utils/paths.ts";
+import { createSessionCwdMatcher, resolvePath } from "./utils/paths.ts";
 
 type ResolvedSession =
 	| { type: "local" | "global"; id: string; cwd: string }
@@ -25,7 +25,9 @@ type ResolvedSession =
 
 async function findLocalSessionByExactId(sessionId: string, cwd: string, store: SessionStore) {
 	const header = await store.readHeader(sessionId);
-	return header && !classifiedWorkflowMetadata(header) && resolvePath(header.cwd) === resolvePath(cwd)
+	return header &&
+		!classifiedWorkflowMetadata(header) &&
+		createSessionCwdMatcher(resolvePath(cwd))(resolvePath(header.cwd))
 		? { id: header.id }
 		: undefined;
 }

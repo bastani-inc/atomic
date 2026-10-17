@@ -1,5 +1,6 @@
 import type { SessionEntry } from "../../session-manager-types.ts";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow } from "../database.js";
+import { StorageInvalidTextError } from "../errors.js";
 import { renderStorageIdentifiers } from "../prefix.js";
 import { assertStorageSchemaVersion } from "../schema.js";
 import {
@@ -17,6 +18,7 @@ import {
 	type SessionSummaryText,
 } from "./session-summary.js";
 import type {
+	SessionCwdMatcher,
 	SessionListQuery,
 	SessionRecordHeader,
 	SessionSnapshot,
@@ -54,14 +56,19 @@ export class SqlSessionStore implements SessionStore {
 	private readonly tables: Tables;
 	private readonly prefix: string;
 	private closed = false;
+	private readonly cwdMatcher?: SessionCwdMatcher;
 
-	private constructor(database: SqliteDatabase, tables: Tables, prefix = "") {
+	private constructor(database: SqliteDatabase, tables: Tables, prefix = "", cwdMatcher?: SessionCwdMatcher) {
 		this.database = database;
 		this.tables = tables;
 		this.prefix = prefix;
+		this.cwdMatcher = cwdMatcher;
 	}
 
-	static async open(database: SqliteDatabase, options: { readonly prefix?: string } = {}): Promise<SqlSessionStore> {
+	static async open(
+		database: SqliteDatabase,
+		options: { readonly prefix?: string; readonly cwdMatcher?: SessionCwdMatcher } = {},
+	): Promise<SqlSessionStore> {
 		const tables = renderStorageIdentifiers("sessions", SESSION_TABLES, options.prefix);
 		await database.transaction(async (tx) => {
 			await tx.exec(`CREATE TABLE IF NOT EXISTS ${tables.meta} (schema_version INTEGER NOT NULL) STRICT`);
@@ -92,7 +99,7 @@ export class SqlSessionStore implements SessionStore {
 				) STRICT;
 			`);
 		});
-		return new SqlSessionStore(database, tables, options.prefix);
+		return new SqlSessionStore(database, tables, options.prefix, options.cwdMatcher);
 	}
 
 	get descriptor(): StorageDescriptor {
@@ -184,22 +191,36 @@ export class SqlSessionStore implements SessionStore {
 
 	async *list(query: SessionListQuery): AsyncIterable<SessionSummary> {
 		this.assertListing(query);
-		const cwd = query.cwd;
+		// Validate the original query before binding only matching stored spellings below.
+		if (query.cwd?.includes("\0")) throw new StorageInvalidTextError(0);
+		const matchesCwd =
+			query.cwd === undefined
+				? undefined
+				: (this.cwdMatcher?.(query.cwd) ?? ((candidate: string | undefined) => candidate === query.cwd));
+		let projectCwds: string[] | undefined;
+		if (matchesCwd) {
+			const projects = await this.database.all<SqliteRow & { cwd: string }>(
+				`SELECT DISTINCT cwd FROM ${this.tables.sessions}`,
+			);
+			projectCwds = projects.map((project) => project.cwd).filter(matchesCwd);
+			this.assertListing(query);
+			if (projectCwds.length === 0) return;
+		}
+		const projectFilter = projectCwds ? ` AND cwd IN (${projectCwds.map(() => "?").join(", ")})` : "";
 		// Combine encoded strings only at read time, preserving NUL and lone surrogates verbatim.
 		const rows = await this.database.all<SummaryRow>(
 			`SELECT s.*, (
 				SELECT COALESCE('[' || group_concat(text_json, ',') || ']', '[]')
 				FROM (SELECT text_json FROM ${this.tables.searchTexts} WHERE session_id = s.id ORDER BY seq)
 			) AS search_texts_json
-			FROM ${this.tables.sessions} AS s WHERE (? IS NULL OR cwd = ?) AND (? = 1 OR internal = 0)`,
-			cwd ?? null,
-			cwd ?? null,
+			FROM ${this.tables.sessions} AS s WHERE (? = 1 OR internal = 0)${projectFilter}`,
 			query.includeInternal ? 1 : 0,
+			...(projectCwds ?? []),
 		);
 		for (const row of rows) {
 			this.assertListing(query);
 			const header = JSON.parse(row.header_json) as SessionRecordHeader;
-			if (cwd !== undefined && header.cwd !== cwd) continue;
+			if (matchesCwd && !matchesCwd(header.cwd)) continue;
 			yield {
 				id: header.id,
 				cwd: header.cwd,
