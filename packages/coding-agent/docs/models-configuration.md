@@ -1,6 +1,12 @@
+---
+title: Models Configuration
+sidebarTitle: "models.json fields"
+description: Every provider, model, override, and compatibility field accepted in models.json, generated from the schema.
+---
+
 # Models Configuration
 
-<!-- This file is generated from TypeScript source. Do not edit it manually; run npm run generate:references --workspace=@bastani/atomic. -->
+{/* This file is generated from TypeScript source. Do not edit it manually; run npm run generate:references --workspace=@bastani/atomic. */}
 
 This reference lists the fields of `models.json`. See [Custom Models](/models) for examples and the file location (normally `~/.atomic/agent/models.json`).
 

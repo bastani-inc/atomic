@@ -36,6 +36,8 @@ interface ReferenceSection {
 interface ReferenceArtifact {
 	path: `docs/${string}.md`;
 	title: string;
+	sidebarTitle: string;
+	description: string;
 	intro: string;
 	sections: readonly ReferenceSection[];
 }
@@ -52,6 +54,8 @@ const referenceArtifacts: readonly ReferenceArtifact[] = [
 	{
 		path: "docs/models-configuration.md",
 		title: "Models Configuration",
+		sidebarTitle: "models.json fields",
+		description: "Every provider, model, override, and compatibility field accepted in models.json, generated from the schema.",
 		intro: [
 			"This reference lists the fields of `models.json`. See [Custom Models](/models) for examples and the file location (normally `~/.atomic/agent/models.json`).",
 			'Add `"$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/models.schema.json"` to `models.json` for editor validation and completion.',
@@ -149,7 +153,14 @@ function referenceRows(schema: ReferenceSchema, section: ReferenceSection, prefi
 }
 
 function renderReference(artifact: ReferenceArtifact): string {
-	const blocks = [`# ${artifact.title}`, `<!-- ${generatedComment} -->`, artifact.intro];
+	const frontmatter = [
+		"---",
+		`title: ${artifact.title}`,
+		`sidebarTitle: "${artifact.sidebarTitle}"`,
+		`description: ${artifact.description}`,
+		"---",
+	].join("\n");
+	const blocks = [frontmatter, `# ${artifact.title}`, `{/* ${generatedComment} */}`, artifact.intro];
 	for (const section of artifact.sections) {
 		blocks.push(section.heading.startsWith("#") ? section.heading : `## ${section.heading}`);
 		if (section.intro) blocks.push(section.intro);
