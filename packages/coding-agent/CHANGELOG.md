@@ -23,6 +23,7 @@
 - Fixed stopping a codemode script or reaching its deadline waiting for a non-interruptible built-in to return in the standalone binary ([#10748](https://github.com/earendil-works/pi/issues/10748)).
 - Fixed repeated codemode timeouts or aborts accumulating surviving workers. At most two codemode workers may be alive across all sessions, and a cancelled worker counts against that limit until it actually exits ([#10748](https://github.com/earendil-works/pi/issues/10748)).
 - Fixed sessions in symlinked project directories, including macOS temporary directories, being omitted from session lookup or mistaken for sessions from another project.
+- Fixed compaction fallback and branch summaries failing with "generation hit the token cap" when reasoning used most of a fixed output budget. The provider now sizes summary output, and `compaction.reserveTokens` only controls when automatic compaction starts ([#9512](https://github.com/earendil-works/pi/issues/9512), [#9075](https://github.com/earendil-works/pi/issues/9075)).
 
 ## [0.9.38-alpha.6] - 2026-10-16
 

@@ -284,7 +284,7 @@ test("pi summary retries thrown transport failures but never thrown policy refus
 	assert.match(result.summary, /history summary[\s\S]*prefix summary/);
 });
 
-test("pi summary preserves upstream budgets and cache routing across recoverable retries (#3470)", async () => {
+test("pi summary leaves output sizing to the provider across recoverable retries (#11036)", async () => {
 	const { streamFn } = createFauxStreamFn([{ error: "503 Service Unavailable" }, "history", "prefix"]);
 	const routing: (string | undefined)[] = [];
 	const budgets: (number | undefined)[] = [];
@@ -297,7 +297,7 @@ test("pi summary preserves upstream budgets and cache routing across recoverable
 		},
 		retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 },
 	});
-	assert.deepEqual(budgets, [800, 800, 500]);
+	assert.deepEqual(budgets, [undefined, undefined, undefined]);
 	assert.ok(routing[0]);
 	assert.equal(routing[0], routing[1]);
 });
@@ -330,7 +330,7 @@ test("pi cut point keeps a trailing tool result with its assistant call and adja
 	assert.deepEqual(prepared?.turnPrefixMessages, [entries[1].type === "message" ? entries[1].message : undefined]);
 });
 
-test("pi summary serializes the conversation as text and caps both request budgets at model maxTokens (#3470)", async () => {
+test("pi summary serializes the conversation and leaves both output budgets to the provider (#11036)", async () => {
 	const { streamFn, state } = createFauxStreamFn(["history", "prefix"]);
 	const budgets: (number | undefined)[] = [];
 	await runPiSummaryFallback(
@@ -344,7 +344,7 @@ test("pi summary serializes the conversation as text and caps both request budge
 			},
 		},
 	);
-	assert.deepEqual(budgets, [300, 300]);
+	assert.deepEqual(budgets, [undefined, undefined]);
 	const prompt = JSON.stringify(state.contexts[1]);
 	assert.match(prompt, /\[User\]: request/);
 	assert.match(prompt, /\[Assistant tool calls\]: read\(path=\\"auth.ts\\"\)/);

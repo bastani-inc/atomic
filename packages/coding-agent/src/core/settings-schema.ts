@@ -26,7 +26,7 @@ const CompactionSettingsSchema = Type.Object({
 	enabled: Type.Optional(Type.Boolean({ default: SETTINGS_DEFAULTS.compaction.enabled })),
 	reserveTokens: Type.Optional(
 		nonNegativeSafeInteger({
-			description: "Tokens reserved for the next model response.",
+			description: "Free context tokens below which automatic compaction starts.",
 			default: SETTINGS_DEFAULTS.compaction.reserveTokens,
 		}),
 	),
@@ -60,7 +60,7 @@ const CompactionSettingsSchema = Type.Object({
 const BranchSummarySettingsSchema = Type.Object({
 	reserveTokens: Type.Optional(
 		Type.Number({
-			description: "Tokens reserved for the prompt and LLM response.",
+			description: "Tokens reserved when selecting branch history; the provider sizes summary output.",
 			default: SETTINGS_DEFAULTS.branchSummary.reserveTokens,
 		}),
 	),

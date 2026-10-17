@@ -280,7 +280,7 @@ On a genuine first run, Atomic previews available themes and asks whether to opt
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `compaction.enabled` | boolean | `true` | Enable automatic verbatim line compaction |
-| `compaction.reserveTokens` | number | `16384` | Tokens reserved for the next model response; automatic threshold compaction begins before this reserve is consumed |
+| `compaction.reserveTokens` | number | `16384` | Free context tokens below which automatic compaction starts; does not limit summary output |
 | `compaction.compression_ratio` | number | `0.5` | Fraction of compactable transcript **lines to keep** (`0 < value < 1`) |
 | `compaction.preserve_recent` | number | `2` | Exact number of newest context-visible messages kept outside the compactable region; `0` keeps none |
 | `compaction.query` | string | last user message | Optional relevance focus for selecting older lines to retain |
@@ -323,7 +323,7 @@ Both fields must be non-negative safe integers, including ordinary settings. Inv
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `branchSummary.reserveTokens` | number | `16384` | Tokens reserved when selecting branch history; output is capped at 4096 tokens |
+| `branchSummary.reserveTokens` | number | `16384` | Tokens reserved when selecting branch history; the provider sizes summary output |
 | `branchSummary.skipPrompt` | boolean | `false` | Skip "Summarize branch?" prompt on `/tree` navigation (defaults to no summary) |
 
 ### Session Summary
