@@ -6,7 +6,6 @@ import {
 	type SqliteRow,
 } from "@bastani/atomic/storage";
 import { JOURNAL_COLUMNS as c, JOURNAL_SCHEMA_VERSION, JOURNAL_TABLES } from "./journal/types.js";
-import type { DurableStageCheckpoint } from "./types.js";
 
 const HEADER_READ_LIMIT_BYTES = 64 * 1024;
 const LEGACY_JOURNAL_MIGRATION = "unprefixed-journal-tables";
@@ -110,7 +109,9 @@ function readSessionHeaderId(sessionFile: string): string | undefined {
  * ID the session keeps after it is imported into the default session store. The
  * transcript file name is not used: its UUID can differ from the header ID.
  */
-export function migrateStageSessionCheckpoint(checkpoint: DurableStageCheckpoint): DurableStageCheckpoint {
+export function migrateStageSessionCheckpoint<T extends { readonly sessionId?: string; readonly sessionFile?: string }>(
+	checkpoint: T,
+): T {
 	if (checkpoint.sessionId !== undefined || checkpoint.sessionFile === undefined) return checkpoint;
 	const sessionId = readSessionHeaderId(checkpoint.sessionFile);
 	return sessionId === undefined ? checkpoint : { ...checkpoint, sessionId };
