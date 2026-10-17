@@ -1,15 +1,24 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { APP_NAME } from "../src/config.ts";
 import type { SessionManager } from "../src/core/session-manager.ts";
+import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
 import { formatResumeCommand } from "../src/modes/interactive/interactive-mode.ts";
 
 const tempDirs: string[] = [];
 const originalStdoutIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+let sessionStore: JsonlSessionStore;
 
-afterEach(() => {
+beforeEach(async () => {
+	const dir = mkdtempSync(join(tmpdir(), "atomic-format-resume-store-"));
+	tempDirs.push(dir);
+	sessionStore = await JsonlSessionStore.open(dir, { exactDirectory: true });
+});
+
+afterEach(async () => {
+	await sessionStore.close();
 	if (originalStdoutIsTTY) {
 		Object.defineProperty(process.stdout, "isTTY", originalStdoutIsTTY);
 	} else {
@@ -41,21 +50,24 @@ function createSessionManager(options: {
 	usesDefaultSessionDir?: boolean;
 }): SessionManager {
 	return {
-		isPersisted: () => options.persisted ?? true,
+		isPersisted: () => options.persisted ?? options.sessionFile !== undefined,
 		getSessionFile: () => options.sessionFile,
 		getSessionId: () => options.sessionId ?? "0197f6e4-4cf9-7f44-a2d8-f8f7f49ee9d3",
 		getSessionDir: () => options.sessionDir ?? "/tmp/atomic-sessions",
 		usesDefaultSessionDir: () => options.usesDefaultSessionDir ?? true,
+		getSessionStore: (): ReturnType<SessionManager["getSessionStore"]> => sessionStore,
 	} as unknown as SessionManager;
 }
 
 describe("formatResumeCommand", () => {
-	it("returns a session resume command for default session dirs", () => {
+	it("includes the JSONL directory even when it is the default", () => {
 		setStdoutIsTTY(true);
 		const sessionFile = createTempFile();
 		const sessionManager = createSessionManager({ sessionFile, sessionId: "test-session" });
 
-		expect(formatResumeCommand(sessionManager)).toBe(`${APP_NAME} --session test-session`);
+		expect(formatResumeCommand(sessionManager)).toBe(
+			`${APP_NAME} --session-dir /tmp/atomic-sessions --session test-session`,
+		);
 	});
 
 	it.each([
@@ -65,7 +77,9 @@ describe("formatResumeCommand", () => {
 	])("preserves stored session ID %j in the shell resume command", (sessionId, argument) => {
 		setStdoutIsTTY(true);
 		const sessionManager = createSessionManager({ sessionFile: createTempFile(), sessionId });
-		expect(formatResumeCommand(sessionManager)).toBe(`${APP_NAME} --session ${argument}`);
+		expect(formatResumeCommand(sessionManager)).toBe(
+			`${APP_NAME} --session-dir /tmp/atomic-sessions --session ${argument}`,
+		);
 	});
 
 	it("includes unquoted safe session dirs for non-default session dirs", () => {

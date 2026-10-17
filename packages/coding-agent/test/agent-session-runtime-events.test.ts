@@ -112,10 +112,11 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 				diagnostics: services.diagnostics,
 			};
 		};
+		const initialManager = await SessionManager.create(tempDir);
 		const runtimeHost = await createAgentSessionRuntime(createRuntime, {
 			cwd: tempDir,
 			agentDir: tempDir,
-			sessionManager: await SessionManager.create(tempDir),
+			sessionManager: initialManager,
 		});
 		await runtimeHost.session.bindExtensions({});
 
@@ -123,6 +124,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			if (options.shutdownFails)
 				await expect(runtimeHost.dispose()).rejects.toMatchObject({ code: "ShutdownFailed" });
 			else await runtimeHost.dispose();
+			await initialManager.getSessionStore().close();
 			faux.unregister();
 			if (existsSync(tempDir)) {
 				rmSync(tempDir, { recursive: true, force: true });
@@ -141,12 +143,19 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			const projectA = runtimeHost.session.sessionManager.getCwd();
 			const projectB = join(projectA, "zzz-project-b");
 			mkdirSync(projectB);
-			const local = await SessionManager.create(projectA, undefined, { id: "shared-conversation" });
-			const foreign = await SessionManager.create(projectB, undefined, { id: "shared-conversation" });
-			const entry = await SessionManager.create(projectB, undefined, { id: "enter-project-b" });
+			const local = await SessionManager.create(projectA, join(projectA, "sessions"), {
+				id: "shared-conversation",
+			});
+			const foreign = await SessionManager.create(projectB, join(projectB, "sessions"), {
+				id: "shared-conversation",
+			});
+			const entry = await SessionManager.create(projectB, foreign.getSessionDir(), { id: "enter-project-b" });
 			await local.appendMessage({ role: "user", content: "project A transcript", timestamp: 1 });
 			await foreign.appendMessage({ role: "user", content: "project B transcript", timestamp: 1 });
-			assert.deepEqual(await runtimeHost.switchSession(entry.getSessionId()), { cancelled: false });
+			assert.deepEqual(
+				await runtimeHost.switchSession(entry.getSessionId(), { sessionDirectory: foreign.getSessionDir() }),
+				{ cancelled: false },
+			);
 			assert.equal(runtimeHost.session.sessionManager.getSessionDir(), entry.getSessionDir());
 			assert.deepEqual(await runtimeHost.switchSession(foreign.getSessionId()), { cancelled: false });
 			assert.deepEqual(runtimeHost.session.messages, foreign.buildSessionContext().messages);

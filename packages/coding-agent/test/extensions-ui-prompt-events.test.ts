@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { test } from "vitest";
+import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
 import { ExtensionRunner } from "../src/core/extensions/runner.ts";
@@ -506,7 +507,9 @@ function createIsolatedTrustRuntime(runner: ExtensionRunner) {
 	let generation = 1;
 	let transportFailed = false;
 	const runtime = new IsolatedInteractiveRuntime(
-		{ session: {}, services: {}, diagnostics: [] } as never,
+		new AgentSessionRuntime({} as never, {} as never, async () => {
+			throw new Error("unused local runtime factory");
+		}),
 		async () => {
 			throw new Error("unused runtime factory");
 		},
@@ -571,7 +574,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 	});
 	client.onGenerationEnded(() => service.dispose());
 	const runtime = new IsolatedInteractiveRuntime(
-		{ session: {}, services: {}, diagnostics: [] } as never,
+		new AgentSessionRuntime({} as never, {} as never, async () => {
+			throw new Error("unused local runtime factory");
+		}),
 		async () => {
 			throw new Error("unused runtime factory");
 		},

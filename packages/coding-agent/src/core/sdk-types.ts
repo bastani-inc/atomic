@@ -14,6 +14,8 @@ import type { ModelRuntime } from "./model-runtime.js";
 import type { ResourceLoader } from "./resource-loader.ts";
 import type { SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
+import type { StorageSelection } from "./storage/provider.js";
+import type { SessionStore } from "./storage/session/types.js";
 
 export type AtomicBuiltin = "workflows" | "subagents" | "mcp" | "web-access" | "intercom";
 
@@ -84,6 +86,8 @@ export interface CreateAgentSessionOptions {
 
 	/** Session manager. Default: SessionManager.create(cwd) */
 	sessionManager?: SessionManager;
+	/** Session storage. Defaults to the resolved settings or the shared local SQLite database. */
+	sessionStore?: SessionStore | StorageSelection;
 
 	/** Settings manager. Default: SettingsManager.create(cwd, agentDir) */
 	settingsManager?: SettingsManager;

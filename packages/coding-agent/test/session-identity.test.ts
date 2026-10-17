@@ -10,6 +10,7 @@ import { ENV_AGENT_DIR } from "../src/config.js";
 import type { AgentSession } from "../src/core/agent-session.js";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { getDefaultSessionDirPath } from "../src/core/session-manager-paths.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { SessionExistsError, SessionNotFoundError } from "../src/core/storage/session/errors.js";
 import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
@@ -210,10 +211,19 @@ test.each(["shared-id", "active-id"])(
 	async (activeId) => {
 		const { cwd } = fixture();
 		vi.stubEnv(ENV_AGENT_DIR, join(cwd, "agent"));
-		const active = await SessionManager.create(cwd, undefined, { id: activeId });
+		const active = await SessionManager.create(cwd, getDefaultSessionDirPath(cwd), { id: activeId });
 		const foreignCwd = join(cwd, "foreign");
-		const foreign = await SessionManager.create(foreignCwd, undefined, { id: "shared-id" });
+		const foreign = await SessionManager.create(foreignCwd, getDefaultSessionDirPath(foreignCwd), {
+			id: "shared-id",
+		});
 		await foreign.appendSessionInfo("foreign target");
+		const allStores = await JsonlSessionStore.open(join(cwd, "agent", "sessions"));
+		const listAll = SessionManager.listAll.bind(SessionManager);
+		const listAllStores = vi
+			.spyOn(SessionManager, "listAll")
+			.mockImplementation(async (_store, onProgress) =>
+				listAll(allStores, typeof onProgress === "function" ? onProgress : undefined),
+			);
 		const harness = await createHarness({ sessionManager: active });
 		const keybindings = new KeybindingsManager();
 		setKeybindings(keybindings);
@@ -232,7 +242,8 @@ test.each(["shared-id", "active-id"])(
 		show.call(host);
 		try {
 			await vi.waitFor(() => assert.equal(selector.getSessionList().getSelectedSessionId(), activeId));
-			if (activeId !== "shared-id") await SessionManager.create(cwd, undefined, { id: "shared-id" });
+			if (activeId !== "shared-id")
+				await SessionManager.create(cwd, getDefaultSessionDirPath(cwd), { id: "shared-id" });
 			selector.handleInput("\t");
 			await vi.waitFor(() => assert.match(selector.render(120).join("\n"), /foreign target/));
 			selector.handleInput("foreign target");
@@ -247,6 +258,8 @@ test.each(["shared-id", "active-id"])(
 			await active.appendSessionInfo("active writer still current");
 			assert.equal((await active.openSessionById(activeId)).getSessionName(), "active writer still current");
 		} finally {
+			listAllStores.mockRestore();
+			await allStores.close();
 			selector.dispose();
 			await harness.cleanup();
 			vi.unstubAllEnvs();
@@ -467,10 +480,14 @@ test("an explicit selected store never falls back to a duplicate ID in another s
 	vi.stubEnv(ENV_AGENT_DIR, join(cwd, "agent"));
 	try {
 		const active = await SessionManager.create(cwd, undefined, { id: "not-in-selected-store" });
-		await assert.rejects(
-			active.openSessionById(active.getSessionId(), undefined, join(cwd, "selected-empty-store")),
-			SessionNotFoundError,
-		);
+		try {
+			await assert.rejects(
+				active.openSessionById(active.getSessionId(), undefined, join(cwd, "selected-empty-store")),
+				SessionNotFoundError,
+			);
+		} finally {
+			await active.getSessionStore().close();
+		}
 	} finally {
 		vi.unstubAllEnvs();
 	}

@@ -170,6 +170,7 @@ test("forked stage conversations copy history without sharing the source session
 	try {
 		const cwd = join(root, "target");
 		const sourceCwd = join(root, "source");
+		vi.stubEnv("ATOMIC_CODING_AGENT_SESSION_DIR", getDefaultSessionDirPath(sourceCwd));
 		const sourcePath = join(getDefaultSessionDirPath(sourceCwd), "source.jsonl");
 		const history = `${[
 			{

@@ -64,7 +64,6 @@ serialTest(
 		const apiKey = "sk-fixture-engine-api-key";
 		const driver = new DefaultMainDriver(
 			[
-				"--no-session",
 				"--no-extensions",
 				"--extension",
 				join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts"),

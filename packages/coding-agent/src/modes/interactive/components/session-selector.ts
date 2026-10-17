@@ -4,7 +4,7 @@ import type { SessionInfo } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyText } from "./keybinding-hints.js";
-import { deleteSessionFile } from "./session-selector-delete.ts";
+import { type DeleteSessionFileResult, deleteSessionFile } from "./session-selector-delete.ts";
 import { SessionSelectorHeader } from "./session-selector-header.ts";
 import { SessionList } from "./session-selector-list.ts";
 import type { NameFilter, SortMode } from "./session-selector-search.ts";
@@ -88,6 +88,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		requestRender: () => void,
 		options?: {
 			renameSession?: (session: SessionInfo, currentName: string | undefined) => Promise<void>;
+			deleteSession?: (sessionId: string) => Promise<void>;
 			showRenameHint?: boolean;
 			keybindings?: KeybindingsManager;
 			/**
@@ -122,7 +123,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			this.sortMode,
 			this.nameFilter,
 			this.keybindings,
-			currentSession,
+			options?.deleteSession && currentSession ? { id: currentSession.id } : currentSession,
 		);
 		if (initialSessions !== undefined) {
 			this.currentSessions = initialSessions;
@@ -173,15 +174,27 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		};
 
 		// Handle session deletion
-		this.sessionList.onDeleteSession = async (sessionPath: string) => {
-			const result = await deleteSessionFile(sessionPath);
+		this.sessionList.onDeleteSession = async (sessionPath, session) => {
+			let result: DeleteSessionFileResult;
+			try {
+				if (options?.deleteSession) {
+					await options.deleteSession(session.id);
+					result = { ok: true, method: "store" };
+				} else result = await deleteSessionFile(sessionPath);
+			} catch (error) {
+				result = { ok: false, method: "store", error: error instanceof Error ? error.message : String(error) };
+			}
 
 			if (result.ok) {
 				if (this.currentSessions) {
-					this.currentSessions = this.currentSessions.filter((s) => s.path !== sessionPath);
+					this.currentSessions = this.currentSessions.filter((s) =>
+						options?.deleteSession ? s.id !== session.id : s.path !== sessionPath,
+					);
 				}
 				if (this.allSessions) {
-					this.allSessions = this.allSessions.filter((s) => s.path !== sessionPath);
+					this.allSessions = this.allSessions.filter((s) =>
+						options?.deleteSession ? s.id !== session.id : s.path !== sessionPath,
+					);
 				}
 
 				const sessions = this.scope === "all" ? (this.allSessions ?? []) : (this.currentSessions ?? []);

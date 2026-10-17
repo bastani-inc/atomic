@@ -154,7 +154,6 @@ serialTest(
 		const extension = join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts");
 		const driver = new Driver(
 			[
-				"--no-session",
 				"--no-extensions",
 				"--extension",
 				extension,
@@ -213,10 +212,11 @@ serialTest(
 				onboardedVersion: "0.0.0",
 			}),
 		);
-		const driver = new Driver(
-			["--no-session", "--no-skills", "--no-prompt-templates", "--no-themes", "--offline", "--approve"],
-			{ ATOMIC_CODING_AGENT_DIR: agentDir, ATOMIC_SKIP_VERSION_CHECK: "1", NO_COLOR: "1" },
-		);
+		const driver = new Driver(["--no-skills", "--no-prompt-templates", "--no-themes", "--offline", "--approve"], {
+			ATOMIC_CODING_AGENT_DIR: agentDir,
+			ATOMIC_SKIP_VERSION_CHECK: "1",
+			NO_COLOR: "1",
+		});
 		try {
 			const settled = await waitForInputLoopState(driver);
 			assert.equal(settled.modelProvider, "isolation-fixture");

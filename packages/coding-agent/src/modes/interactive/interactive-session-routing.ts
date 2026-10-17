@@ -258,15 +258,16 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 	this.showSelector((done) => {
 		const selector = new SessionSelectorComponent(
 			(onProgress) =>
-				SessionManager.list(this.sessionManager.getCwd(), this.sessionManager.getSessionDir(), onProgress),
-			(onProgress) =>
-				this.sessionManager.usesDefaultSessionDir()
-					? SessionManager.listAll(onProgress)
-					: SessionManager.listAll(this.sessionManager.getSessionDir(), onProgress),
+				SessionManager.list(this.sessionManager.getCwd(), this.sessionManager.getSessionStore(), onProgress),
+			(onProgress) => SessionManager.listAll(this.sessionManager.getSessionStore(), onProgress),
 			async (selected) => {
 				selector.dispose();
 				done();
-				await this.handleResumeSession(selected.id, undefined, dirname(selected.path));
+				const directory =
+					this.sessionManager.getSessionStore().descriptor.adapter === "jsonl"
+						? dirname(selected.path)
+						: undefined;
+				await this.handleResumeSession(selected.id, undefined, directory);
 			},
 			() => {
 				selector.dispose();
@@ -279,18 +280,28 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 			},
 			() => this.ui.requestRender(),
 			{
+				deleteSession:
+					this.sessionManager.getSessionStore().descriptor.adapter === "jsonl"
+						? undefined
+						: (id) => this.sessionManager.getSessionStore().delete(id),
 				renameSession: async (selected, nextName) => {
 					const next = (nextName ?? "").trim();
 					if (!next) return;
-					const directory = dirname(selected.path);
+					const store = this.sessionManager.getSessionStore();
+					const directory = store.descriptor.adapter === "jsonl" ? dirname(selected.path) : undefined;
 					if (
 						selected.id === this.sessionManager.getSessionId() &&
-						canonicalizePath(directory) === canonicalizePath(this.sessionManager.getSessionDir())
+						(directory === undefined ||
+							canonicalizePath(directory) === canonicalizePath(this.sessionManager.getSessionDir()))
 					) {
 						await this.session.setSessionName(next);
 					} else {
 						const mgr = await this.sessionManager.openSessionById(selected.id, undefined, directory);
-						await mgr.appendSessionInfo(next);
+						try {
+							await mgr.appendSessionInfo(next);
+						} finally {
+							if (mgr.getSessionStore() !== store) await mgr.getSessionStore().close();
+						}
 					}
 				},
 				showRenameHint: true,

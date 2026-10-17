@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import lockfile from "proper-lockfile";
 import { describe, test } from "vitest";
+import { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { AuthStorage, type AuthStorageData } from "../../packages/coding-agent/src/core/auth-storage.ts";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
@@ -388,13 +389,11 @@ describe("logout credential invalidation (#1919)", () => {
 				scopedModels: [],
 			}),
 		};
-		const runtime = new IsolatedInteractiveRuntime(
-			{ session, services: {}, diagnostics: [] } as never,
-			async () => {
-				throw new Error("not used");
-			},
-			client as never,
-		);
+		const createRuntime = async () => {
+			throw new Error("not used");
+		};
+		const localRuntime = new AgentSessionRuntime(session as never, {} as never, createRuntime);
+		const runtime = new IsolatedInteractiveRuntime(localRuntime, createRuntime, client as never);
 
 		await runtime.initializeFromEngine();
 		assert.deepEqual(runtime.session.modelRuntime.getAvailableSnapshot(), [model]);

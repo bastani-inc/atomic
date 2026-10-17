@@ -106,10 +106,10 @@ export function formatResumeCommand(sessionManager: SessionManager): string | un
 	if (!sessionManager.isPersisted()) return undefined;
 
 	const sessionFile = sessionManager.getSessionFile();
-	if (!sessionFile || !fs.existsSync(sessionFile)) return undefined;
+	if (sessionFile && !fs.existsSync(sessionFile)) return undefined;
 
 	const args = [APP_NAME];
-	if (!sessionManager.usesDefaultSessionDir()) {
+	if (sessionManager.getSessionStore().descriptor.adapter === "jsonl") {
 		args.push("--session-dir", quoteIfNeeded(sessionManager.getSessionDir()));
 	}
 	args.push("--session", quoteIfNeeded(sessionManager.getSessionId()));

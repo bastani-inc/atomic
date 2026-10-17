@@ -452,7 +452,7 @@ interface AgentSession {
 
 Always `await session.dispose()` in `finally`. Disposal immediately refuses new work, cancels and drains owned operations, settles questions, shuts down extensions and releases session leases. Repeated calls await the same outcome.
 
-A `ShutdownFailed` error contains component failures in `errors`; cleanup still attempts the remaining components. Caller-supplied managers and model runtimes remain borrowed, and other sessions remain usable. Use `abort()` to cancel current work without destroying the session.
+A `ShutdownFailed` error contains component failures in `errors`; cleanup still attempts the remaining components. Stores opened by the SDK, including stores created from a `sessionStore` selection, are released after session work and shutdown handlers finish. A failed session initialization releases its acquired store too. Caller-supplied `SessionStore` instances, session managers, databases, and model runtimes retain their caller-managed lifetimes. Close a supplied store or database only after its other users are done. Disposing one session does not close another session's store or a shared journal. Use `abort()` to cancel current work without destroying the session.
 
 Captured extension APIs also refuse new execution, mutations and registrations as soon as close or reload begins. Already-admitted `pi.exec()` calls remain part of the awaited drain; provide `signal` or `timeout` when invoking subprocesses that might not finish on their own. `abort()` alone does not retire the API. A rejected transactional reload restores the surviving generation's action admission.
 

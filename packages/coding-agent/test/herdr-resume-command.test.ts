@@ -7,6 +7,7 @@ import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/ex
 import { ExtensionRunner } from "../src/core/extensions/runner.js";
 import { noOpUIContext } from "../src/core/extensions/runner-ui.js";
 import { SessionManager } from "../src/core/session-manager.js";
+import { getDefaultSessionDirPath } from "../src/core/session-manager-paths.ts";
 import { createHerdrExtension } from "../src/extensions/herdr/index.js";
 import { claimPaneReporting, releasePaneReporting, reportPaneActivity } from "../src/extensions/herdr/pane-owner.js";
 import type { HerdrDiagnostic } from "../src/extensions/herdr/transport.js";
@@ -88,16 +89,22 @@ test("first Herdr report carries the exact session's resume argv after -- (#3492
 	}
 });
 
-test("resume argv omits --session-dir for the default session directory (#3492)", async () => {
+test("resume argv selects JSONL even for the default session directory (#3492)", async () => {
 	const fake = await fakeHerdr();
 	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", fake.dir);
-	const session = await SessionManager.create(fake.dir);
+	const session = await SessionManager.create(fake.dir, getDefaultSessionDirPath(fake.dir));
 	assert.equal(session.usesDefaultSessionDir(), true);
 	const runner = await startReporter(fake, session);
 	try {
 		await runner.emit({ type: "session_start" });
 		const [first] = await fake.waitFor(1);
-		assert.deepEqual(resumeOf(first.args), [APP_NAME, "--session", session.getSessionId()]);
+		assert.deepEqual(resumeOf(first.args), [
+			APP_NAME,
+			"--session-dir",
+			session.getSessionDir(),
+			"--session",
+			session.getSessionId(),
+		]);
 	} finally {
 		await runner.emit({ type: "session_shutdown", reason: "quit" });
 		runner.invalidate();

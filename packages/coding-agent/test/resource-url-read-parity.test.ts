@@ -1,8 +1,11 @@
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { SessionManager } from "../src/core/session-manager.ts";
+import { getDefaultSessionDirPath } from "../src/core/session-manager-paths.ts";
+import { resolveSessionStore } from "../src/core/session-storage.js";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
 
 function textOutput(result: { content?: Array<{ type: string; text?: string }> }): string {
@@ -128,6 +131,42 @@ describe("resource URL read parity", () => {
 			).toContain("Requested line 99 is beyond end of resource");
 		} finally {
 			server.close();
+		}
+	});
+	it("SQLite sessions retain full URL artifacts and truncated recovery links", async () => {
+		const previous = process.env.ATOMIC_CODING_AGENT_DIR;
+		const agentDir = join(testDir, "agent");
+		process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
+		const store = await resolveSessionStore(testDir, { agentDir, settings: {} });
+		const manager = await SessionManager.create(store, testDir);
+		const fullText = Array.from({ length: 5000 }, (_, index) => `line ${index}`).join("\n");
+		const server = createServer((_req, res) => {
+			res.setHeader("content-type", "text/plain");
+			res.end(fullText);
+		});
+		const port = await listen(server);
+		try {
+			const result = await createReadToolDefinition(testDir).execute(
+				"url-artifact",
+				{ path: `http://127.0.0.1:${port}/large.txt` },
+				undefined,
+				undefined,
+				{ sessionManager: manager } as never,
+			);
+			expect(textOutput(result)).toContain("artifact://");
+			const artifactId = result.details?.meta?.artifactId;
+			expect(artifactId).toBeDefined();
+			expect(
+				readFileSync(
+					join(getDefaultSessionDirPath(testDir, agentDir), "artifacts", `${artifactId}.read.log`),
+					"utf8",
+				),
+			).toContain(fullText);
+		} finally {
+			server.close();
+			await store.close();
+			if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+			else process.env.ATOMIC_CODING_AGENT_DIR = previous;
 		}
 	});
 });

@@ -3,6 +3,7 @@ import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
+import { ENGINE_SESSION_STORAGE_FLAG } from "../../core/session-storage.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { flushPersistentCompileCache } from "../../utils/compile-cache.ts";
 import {
@@ -166,7 +167,8 @@ export function restartCliArgs(
 			value === "--session-id" ||
 			value === "--fork" ||
 			value === "--import" ||
-			(value === "--session-dir" && sessionDirectory !== undefined)
+			(value === "--session-dir" && sessionDirectory !== undefined) ||
+			(value === ENGINE_SESSION_STORAGE_FLAG && (sessionDirectory !== undefined || sessionId === undefined))
 		) {
 			index += 1;
 			continue;

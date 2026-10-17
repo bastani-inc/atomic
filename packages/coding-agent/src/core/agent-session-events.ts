@@ -40,6 +40,7 @@ import {
 	drainSessionReload,
 	drainSessionWork,
 	hasCallingSessionWork,
+	ownedSessionStores,
 } from "./session-lifecycle-work.ts";
 import { assertSettingsWrites, ownedSettingsManagers } from "./settings-write-ownership.ts";
 import { drainTerminalWorkflowSummaries } from "./workflow-summary-lifecycle.ts";
@@ -643,6 +644,11 @@ export function closeAgentSession(
 		await attempt("storage", () => {
 			session._tempStorageLease?.release();
 			session._tempStorageLease = undefined;
+		});
+		await attempt("session store", async () => {
+			const store = ownedSessionStores.get(session);
+			ownedSessionStores.delete(session);
+			await store?.close();
 		});
 		if (errors.length)
 			throw Object.assign(new AggregateError(errors, "Session shutdown failed"), { code: "ShutdownFailed" });

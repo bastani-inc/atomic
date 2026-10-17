@@ -1205,6 +1205,15 @@ async function executeRun(
 					unregisterToolAdmission();
 				} finally {
 					terminalEvents.dispose();
+					// Standalone completed runs have no host to own retained SDK sessions.
+					// Supplied registries keep their direct chat handles until their owner clears them.
+					if (
+						opts.stageControlRegistry === undefined &&
+						opts.executionMode !== "interactive" &&
+						runSnapshot.status === "completed"
+					) {
+						await stageRegistry.clear(runId);
+					}
 				}
 			}
 		}

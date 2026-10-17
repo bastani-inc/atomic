@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { type Model, normalizeProviderId } from "@bastani/pi-ai";
-import { normalizePath } from "../utils/paths.ts";
 import { parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 import { SettingsManager } from "./settings-manager-core.ts";
@@ -68,7 +67,6 @@ interface SettingsManagerBasicAccessors {
 	setFirstRunOnboardingStartedVersion(version: string): void;
 	getOnboardedVersion(): string | undefined;
 	setOnboardedVersion(version: string): void;
-	getSessionDir(): string | undefined;
 	getDefaultProvider(): string | undefined;
 	getDefaultModel(): string | undefined;
 	getRouterModel(): string;
@@ -192,11 +190,6 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		state.globalSettings.onboardedVersion = version;
 		state.markModified("onboardedVersion");
 		state.save();
-	},
-
-	getSessionDir() {
-		const sessionDir = settingsInternals(this).settings.sessionDir;
-		return sessionDir ? normalizePath(sessionDir) : sessionDir;
 	},
 
 	getDefaultProvider() {

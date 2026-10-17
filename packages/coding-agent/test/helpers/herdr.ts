@@ -117,6 +117,7 @@ export function arg(args: string[], flag: string): string | undefined {
 
 /** The resume argv Herdr is given for a session, after the `--` separator of a report. */
 export function resumeArgs(session: SessionManager): string[] {
-	const sessionDir = session.usesDefaultSessionDir() ? [] : ["--session-dir", session.getSessionDir()];
+	const sessionDir =
+		session.getSessionStore().descriptor.adapter === "jsonl" ? ["--session-dir", session.getSessionDir()] : [];
 	return ["--", APP_NAME, ...sessionDir, "--session", session.getSessionId()];
 }

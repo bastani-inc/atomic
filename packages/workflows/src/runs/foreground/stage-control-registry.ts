@@ -199,11 +199,10 @@ export interface StageControlRegistry {
 	/** Build a run-level control aggregate. Cheap; not memoised. */
 	run(runId: string): WorkflowRunControlHandle;
 	/**
-	 * Drop every registration and invoke each handle's optional dispose hook.
-	 * Used on session boundaries to release retained direct chat handles and
-	 * their subscriptions when the host store is cleared.
+	 * Drop registrations and invoke each handle's optional dispose hook. With a
+	 * run ID, release only that run; otherwise clear the host session boundary.
 	 */
-	clear(): Promise<void>;
+	clear(runId?: string): Promise<void>;
 	/**
 	 * Drop only handles detached from run-level control (`controlsDependencies`
 	 * false), disposing them through the background-dispose path. Live executor
@@ -472,11 +471,20 @@ export function createStageControlRegistry(): StageControlRegistry {
 		run(runId: string): WorkflowRunControlHandle {
 			return makeRunHandle(runId);
 		},
-		async clear(): Promise<void> {
-			generation += 1;
-			const entries = [..._byRun.values()].flatMap((runMap) => [...runMap.values()]);
-			_byRun.clear();
-			sessionStores.clear();
+		async clear(runId?: string): Promise<void> {
+			if (runId === undefined) generation += 1;
+			const entries =
+				runId === undefined
+					? [..._byRun.values()].flatMap((runMap) => [...runMap.values()])
+					: [...(_byRun.get(runId)?.values() ?? [])];
+			if (runId === undefined) {
+				_byRun.clear();
+				sessionStores.clear();
+			} else {
+				_byRun.get(runId)?.clear();
+				_byRun.delete(runId);
+				sessionStores.delete(runId);
+			}
 			await disposeEntries(entries);
 		},
 		async clearDetached(): Promise<void> {

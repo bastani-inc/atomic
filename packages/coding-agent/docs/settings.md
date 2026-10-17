@@ -500,13 +500,18 @@ Plain names establish a replacement list before its modifiers apply. A project l
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `sessionDir` | string | - | Directory where session files are stored. Accepts absolute or relative paths, plus `~`. |
+| `sessions.storage` | object | Local SQLite | Session-only storage selection: `{ "path": "..." }`, `{ "dir": "..." }`, `{ "memory": true }`, or `{ "adapter": "...", "options": {}, "secrets": {}, "prefix": "..." }`. |
+| `storage` | object | Local SQLite | Shared selection for sessions and workflow runs. Accepts the same forms except `dir`. |
 
 ```json
-{ "sessionDir": ".atomic/sessions" }
+{ "sessions": { "storage": { "path": "sessions.sqlite" } } }
 ```
 
-When multiple sources specify a session directory, precedence is `--session-dir`, `ATOMIC_CODING_AGENT_SESSION_DIR`, then `sessionDir` in settings.json.
+Without configuration, sessions and workflow runs share `~/.atomic/workflows/journal.sqlite`, with separate tables. JSONL is opt-in through `dir`, `--session-dir`, or `ATOMIC_CODING_AGENT_SESSION_DIR`. The `sessionDir` setting has been removed; use `sessions.storage.dir` instead.
+
+Session precedence is SDK `sessionStore`, `--no-session`, `--session-dir`, non-empty `ATOMIC_CODING_AGENT_SESSION_DIR`, `sessions.storage`, shared `storage`, then the default SQLite file. Empty environment values are ignored. Project `sessions.storage` replaces the entire global selection, including options, secrets and prefix; selections are never merged. Relative settings paths resolve against Atomic home, normally `~/.atomic`. CLI and environment directories resolve against the working directory.
+
+Memory must be selected explicitly and is lost on exit. Invalid selected configuration raises `StorageConfigError`. If a selected store cannot open, Atomic raises a typed storage error rather than falling back to memory. See [Sessions](/sessions#session-storage).
 
 ### Models
 
@@ -585,7 +590,7 @@ To use your own database driver, install an adapter module and select it by modu
 }
 ```
 
-The shared `storage` setting currently supplies a journal default; session selection is unchanged. Use `workflows.journal` with the same shape for a journal-only override. A shared empty selection uses `~/.atomic/storage.sqlite`. Atomic bundles no remote driver. Adapter modules execute code, so review them before trusting project settings. Secret references accept `{ "env": "VARIABLE" }` or `{ "file": "token.txt" }`; relative secret files resolve against Atomic home and their contents are passed verbatim. See [Storage adapters](/storage#selecting-an-adapter).
+The shared `storage` setting supplies defaults for both sessions and the journal. Use `sessions.storage` or `workflows.journal` for a domain-only override. A shared empty selection uses `~/.atomic/storage.sqlite`. Atomic bundles no remote driver. Adapter modules execute code, so review them before trusting project settings. Secret references accept `{ "env": "VARIABLE" }` or `{ "file": "token.txt" }`; relative secret files resolve against Atomic home and their contents are passed verbatim. See [Storage adapters](/storage#selecting-an-adapter).
 
 Changing the journal selects a different run history. Preserve the original file to inspect or resume its runs. Storage needs no separate server. If the selected journal cannot be opened or written, the action fails with a typed storage error rather than selecting memory. Restore filesystem access and inspect the retained run before retrying. See [Durable workflows](/workflows/operations#durable-workflows-and-cross-session-resume).
 

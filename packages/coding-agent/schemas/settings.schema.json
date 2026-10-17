@@ -11,6 +11,30 @@
     "storage": {
       "$ref": "#/$defs/StorageSelection"
     },
+    "sessions": {
+      "type": "object",
+      "properties": {
+        "storage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StorageSelection"
+            },
+            {
+              "type": "object",
+              "required": [
+                "dir"
+              ],
+              "properties": {
+                "dir": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        }
+      }
+    },
     "lastChangelogVersion": {
       "type": "string"
     },
@@ -827,10 +851,6 @@
           "default": true
         }
       }
-    },
-    "sessionDir": {
-      "type": "string",
-      "description": "Custom session storage directory, in the same format as the --session-dir CLI flag."
     },
     "httpProxy": {
       "type": "string",

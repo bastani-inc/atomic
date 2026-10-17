@@ -32,13 +32,13 @@ import {
 	ENV_SESSION_DIR,
 	ENV_SKIP_VERSION_CHECK,
 	ENV_STARTUP_BENCHMARK,
-	expandTildePath,
 	getAgentDir,
 	getEnvValue,
 	getPackageDir,
 	setEnvValue,
 	VERSION,
 } from "./config.js";
+import type { AgentSession } from "./core/agent-session.js";
 import type { CreateAgentSessionRuntimeFactory } from "./core/agent-session-runtime.ts";
 import {
 	type AgentSessionRuntimeDiagnostic,
@@ -60,6 +60,8 @@ import { ModelRuntime } from "./core/model-runtime.js";
 import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { formatBorrowedExtensionSourceTrustPrompt, resolveProjectTrusted } from "./core/project-trust.ts";
 import { getMissingSessionCwdIssue, MissingSessionCwdError } from "./core/session-cwd.ts";
+import { ownedSessionManagerStores, ownedSessionStores } from "./core/session-lifecycle-work.ts";
+import { canIsolateSessionStore, takeEngineSessionStorageArg } from "./core/session-storage.js";
 import { deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { endTimingSpan, printTimings, resetTimings, startTimingSpan, time } from "./core/timings.ts";
@@ -89,6 +91,7 @@ import {
 	applyInheritedWorkflowSessionClassification,
 	createSessionManager,
 	promptForMissingSessionCwd,
+	refreshSessionStorage,
 	SessionSelectorConflictError,
 	validateForkFlags,
 	validateImportFlags,
@@ -115,7 +118,6 @@ import {
 	takeInteractiveEngineBootstrapArg,
 } from "./utils/interactive-engine-bootstrap.ts";
 import { captureInteractiveEngineStartupEnv, isInteractiveEngineChild } from "./utils/interactive-engine-env.ts";
-import { normalizePath } from "./utils/paths.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 
 export type { AppMode } from "./main-app-mode.ts";
@@ -284,7 +286,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	// child's environment, so no descendant of the engine can inherit it — which
 	// deleting variables from `process.env` cannot achieve under Bun.
 	const bootstrap = takeInteractiveEngineBootstrapArg(argv);
-	const args = bootstrap.args;
+	const { args, sessionStorage } = takeEngineSessionStorageArg(bootstrap.args);
 	const engineEnv = captureInteractiveEngineStartupEnv(
 		bootstrap.path === undefined ? undefined : readInteractiveEngineBootstrap(bootstrap.path),
 	);
@@ -358,7 +360,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	let appMode = options?.internalInteractiveHarness?.forceInteractive
 		? "interactive"
 		: resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY);
-	const isolateInteractiveHost =
+	let isolateInteractiveHost =
 		appMode === "interactive" && !isPlainRuntimeMetadataCommand(parsed) && engineEnv.child !== "1";
 	const shouldTakeOverStdout = appMode !== "interactive";
 	const shouldRestoreStdoutForMetadata = isPlainRuntimeMetadataCommand(parsed);
@@ -478,15 +480,8 @@ export async function main(argv: string[], options?: MainOptions) {
 	// --session and --resume may select a session from another project, so project-local
 	// settings, resources, provider registrations, and models must be resolved only after
 	// the target session cwd is known. The startup-cwd settings manager is used only for
-	// sessionDir lookup during session selection.
-	const envSessionDir = getEnvValue(ENV_SESSION_DIR);
-	const sessionDir =
-		(parsed.sessionDir ? normalizePath(parsed.sessionDir) : undefined) ??
-		(envSessionDir ? expandTildePath(envSessionDir) : undefined) ??
-		startupSettingsManager.getSessionDir();
-	let sessionManager = await applyInheritedWorkflowSessionClassification(
-		await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager),
-	);
+	// storage selection before loading the selected session's resources.
+	let sessionManager = await createSessionManager(parsed, cwd, undefined, startupSettingsManager, sessionStorage);
 	const missingSessionCwdIssue = getMissingSessionCwdIssue(sessionManager, cwd);
 	if (missingSessionCwdIssue) {
 		startupEarlyInputCapture?.consume();
@@ -509,11 +504,23 @@ export async function main(argv: string[], options?: MainOptions) {
 			startupEarlyInputCapture?.consume();
 			process.exit(1);
 		}
-		await sessionManager.appendSessionInfo(name);
 	}
 	time("createSessionManager");
+	isolateInteractiveHost &&= canIsolateSessionStore(sessionManager.getSessionStore());
 
 	const sessionCwd = sessionManager.getCwd();
+	// A store selected only by settings can change after trust approval. Explicit
+	// CLI/environment selections are already final and retain engine isolation.
+	const storagePinned =
+		sessionStorage !== undefined ||
+		parsed.noSession ||
+		parsed.sessionDir !== undefined ||
+		!!getEnvValue(ENV_SESSION_DIR);
+	const selectedProjectTrusted =
+		parsed.projectTrustOverride ??
+		(hasProjectTrustInputs(sessionCwd) ? projectTrustStore.get(sessionCwd) : true) ??
+		startupDefaultProjectTrust === "always";
+	isolateInteractiveHost &&= storagePinned || selectedProjectTrusted;
 	startupEarlyInputCapture ??= beginStartupInputCapture(sessionCwd, true, deprecationWarnings.length);
 	const autoTrustOnReloadCwd =
 		parsed.projectTrustOverride === undefined && !hasProjectTrustInputs(sessionCwd) ? sessionCwd : undefined;
@@ -599,6 +606,19 @@ export async function main(argv: string[], options?: MainOptions) {
 				hasUI: sessionStartEvent === undefined && trustPromptMode === "interactive",
 			});
 		let migrateAfterTrust = false;
+		let startupSession: AgentSession | undefined;
+		let storageFinalized = false;
+		const finalizeStartupStorage = async () => {
+			if (sessionStartEvent !== undefined || storageFinalized) return;
+			const store = await refreshSessionStorage(sessionManager, parsed, runtimeSettingsManager, sessionStorage);
+			if (store && startupSession) {
+				ownedSessionManagerStores.delete(sessionManager);
+				ownedSessionStores.set(startupSession, store);
+			}
+			await applyInheritedWorkflowSessionClassification(sessionManager);
+			if (parsed.name !== undefined) await sessionManager.appendSessionInfo(parsed.name.trim());
+			storageFinalized = true;
+		};
 		const completeServices = await prepareAgentSessionServices({
 			cwd,
 			agentDir,
@@ -613,7 +633,10 @@ export async function main(argv: string[], options?: MainOptions) {
 										completeStartupReload = complete;
 									}
 								: undefined,
-							onProjectTrustResolved: engineLiveness ? () => engineLiveness.projectTrustResolved() : undefined,
+							onProjectTrustResolved: async () => {
+								await finalizeStartupStorage();
+								engineLiveness?.projectTrustResolved();
+							},
 							resolveProjectTrust: shouldResolveProjectTrust
 								? async ({ extensionsResult }) => {
 										const trusted = await resolveProjectTrusted({
@@ -671,6 +694,7 @@ export async function main(argv: string[], options?: MainOptions) {
 		return async () => {
 			if (migrateAfterTrust) runMigrations(cwd, { projectTrusted: true });
 			const services = await completeServices();
+			if (!deferStartupTrust) await finalizeStartupStorage();
 			if (isolateInteractiveHost) limitMandatoryIntercomToTool(services.resourceLoader);
 			const { settingsManager, modelRuntime, resourceLoader } = services;
 			const diagnostics: AgentSessionRuntimeDiagnostic[] = [
@@ -724,19 +748,23 @@ export async function main(argv: string[], options?: MainOptions) {
 				}
 			}
 
-			const created = await createUnstartedAgentSessionFromServices({
-				services,
-				sessionManager,
-				sessionStartEvent,
-				model: sessionOptions.model,
-				thinkingLevel: sessionOptions.thinkingLevel,
-				scopedModels: sessionOptions.scopedModels,
-				tools: sessionOptions.tools,
-				builtins: parsed.noMcp ? { mcp: false } : undefined,
-				excludedTools: resolveExcludedToolsForAppMode(appMode, sessionOptions.excludedTools),
-				noTools: sessionOptions.noTools,
-				customTools: sessionOptions.customTools,
-			});
+			const created = await createUnstartedAgentSessionFromServices(
+				{
+					services,
+					sessionManager,
+					sessionStartEvent,
+					model: sessionOptions.model,
+					thinkingLevel: sessionOptions.thinkingLevel,
+					scopedModels: sessionOptions.scopedModels,
+					tools: sessionOptions.tools,
+					builtins: parsed.noMcp ? { mcp: false } : undefined,
+					excludedTools: resolveExcludedToolsForAppMode(appMode, sessionOptions.excludedTools),
+					noTools: sessionOptions.noTools,
+					customTools: sessionOptions.customTools,
+				},
+				!isolateInteractiveHost && !deferStartupTrust,
+			);
+			startupSession = created.session;
 			if (completeStartupReload) {
 				const completeReload = completeStartupReload;
 				let completion: Promise<void> | undefined;
@@ -814,12 +842,17 @@ export async function main(argv: string[], options?: MainOptions) {
 				!services.completeStartup &&
 				(!created.session.model || isUnknownModel(created.session.model))
 			) {
+				const store = ownedSessionStores.get(created.session);
+				if (store) {
+					ownedSessionStores.delete(created.session);
+					ownedSessionManagerStores.set(sessionManager, store);
+				}
 				await created.session.dispose();
 				forceEagerInteractiveEngineResources = true;
 				return createRuntime({ cwd, agentDir, sessionManager, sessionStartEvent, projectTrustContext });
 			}
 			const cliThinkingOverride = parsed.thinking !== undefined || cliThinkingFromModel;
-			if (created.session.model && cliThinkingOverride) {
+			if (!isolateInteractiveHost && created.session.model && cliThinkingOverride) {
 				await created.session.setThinkingLevel(created.session.thinkingLevel);
 			}
 			return {

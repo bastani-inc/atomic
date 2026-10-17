@@ -1,4 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { SessionStore } from "./storage/session/types.js";
+
+export const ownedSessionStores = new WeakMap<object, SessionStore>();
+export const ownedSessionManagerStores = new WeakMap<object, SessionStore>();
 
 const currentWork = new AsyncLocalStorage<ReadonlySet<Promise<void>>>();
 const reloads = new WeakMap<object, Promise<void>>();

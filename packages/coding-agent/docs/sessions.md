@@ -8,9 +8,11 @@ This page covers working with sessions: storage, commands, resuming, naming, and
 
 ## Session Storage
 
-Sessions auto-save to `~/.atomic/agent/sessions/`, organized by working directory. Each session is a JSONL file with a tree structure.
+Sessions auto-save to the local SQLite database at `~/.atomic/workflows/journal.sqlite`. Workflow runs use the same file, with separate tables. Session history remains a tree regardless of the selected store.
 
-The session picker also scans linked project directories inside this default store, so project aliases or relocated session folders remain discoverable through `/resume` and `atomic -r`.
+To choose another store, set `sessions.storage` in settings. Use shared `storage` to select one database for both sessions and workflow runs. JSONL is available only when explicitly selected. Memory is available through `--no-session`, `{ "memory": true }` in settings, or an explicit SDK option; it is never a fallback for a failed persistent store.
+
+Project-local storage settings apply after you approve project trust, including on the first launch. Generated resume commands for JSONL sessions include `--session-dir`; keep that option when reopening the conversation, even if the directory was previously the default.
 
 ```bash
 atomic -c                  # Continue most recent session
@@ -22,7 +24,7 @@ atomic --import <file>       # Import a JSONL export into session storage
 atomic --fork <id|prefix>    # Fork an exact ID or unique 8-hex UUID prefix
 ```
 
-Use `/session` in interactive mode to see the current session file, session ID, message count, tokens, and cost. You can use it while a run is active; its totals update after each completed message, not each streaming text chunk. Detailed cost and cache-waste breakdowns are shown after the run finishes only when the available session history matches those totals; otherwise, only the total cost is shown.
+Use `/session` in interactive mode to see the current session ID, message count, tokens, and cost. A JSONL session also has a file location. You can use it while a run is active; its totals update after each completed message, not each streaming text chunk. Detailed cost and cache-waste breakdowns are shown after the run finishes only when the available session history matches those totals; otherwise, only the total cost is shown.
 
 For UUID-backed sessions, `--session` and `--fork` accept either the full UUID or exactly eight hexadecimal prefix characters. A prefix must be unique within the current project (or, if no local session matches, across the global session store); collisions list the matching UUIDs and require the full value. Exact custom session IDs keep their existing priority. `--session-id` remains an exact project-local ID used to open or create a session, not a prefix selector.
 
@@ -32,13 +34,29 @@ Use `atomic --no-session --import <file>` to work with an imported conversation 
 
 Imported IDs are kept verbatim, including an empty ID. Resume an imported empty ID with `atomic --session ""` or choose its row in the session picker. Picker actions stay bound to the selected project's store even when another project uses the same ID.
 
-### Custom session directories
+### Choosing a store
 
-Use `--session-dir <dir>`, `ATOMIC_CODING_AGENT_SESSION_DIR`, or the matching settings override to save the active chat outside `~/.atomic/agent/sessions/`.
+```json
+{ "sessions": { "storage": { "dir": "sessions" } } }
+```
+
+This selects JSONL under `~/.atomic/sessions`. Use `{ "path": "sessions.sqlite" }` for another local SQLite file, `{ "memory": true }` for ephemeral sessions, or an adapter selection for a user-installed database driver. The `sessionDir` setting has been removed without an alias.
+
+Precedence is SDK `sessionStore`, `--no-session`, `--session-dir <dir>`, non-empty `ATOMIC_CODING_AGENT_SESSION_DIR`, `sessions.storage`, shared `storage`, then the default SQLite file. Each selection wins as a whole; project selections replace global ones rather than merging fields. Relative settings paths resolve against Atomic home. CLI and environment directories resolve against the working directory. Changing stores selects a different history and does not migrate existing sessions. Keep the original store to return to that history. Invalid configuration raises `StorageConfigError`; unavailable storage raises a typed storage error. Restore access rather than expecting an in-memory fallback.
+
+From the SDK, pass a `SessionStore` or `StorageSelection`:
+
+```ts
+const { session } = await createAgentSession({
+  sessionStore: { kind: "sqlite", path: "/data/sessions.sqlite" },
+});
+```
+
+Use `{ kind: "memory" }` for an explicit ephemeral SDK session or `{ kind: "jsonl", dir: "/data/sessions" }` for JSONL. An existing `sessionManager` remains caller-owned and bypasses store selection.
 
 Workflows launched from a non-default session directory also save their stage transcripts there. A headless command such as `atomic --mode json --session-dir <dir> -p '/workflow <name> ...'` therefore captures the main and stage transcripts together. An explicit per-stage `sessionDir` overrides the inherited directory.
 
-When the host uses the default session store, stages keep the previous behavior: they write to the global store unless a stage explicitly sets `sessionDir`.
+When the host uses the default store, stages also use the default SQLite database unless they explicitly choose a directory.
 
 For the JSONL file format and SessionManager API, see [Session Format](/session-format).
 
@@ -173,7 +191,7 @@ Selecting the root user message resets the leaf to an empty conversation and pla
 | Typical use | Explore alternatives in place | Start a new session from an earlier prompt | Duplicate current work before continuing |
 | Summary | Optional branch summary | None | None |
 
-Use `/tree` when you want to keep alternatives together. Use `/fork` or `/clone` when you want a separate session file.
+Use `/tree` when you want to keep alternatives together. Use `/fork` or `/clone` when you want a separate session.
 
 ## Branch Summaries
 
@@ -183,6 +201,6 @@ Moved to [Compaction & Branch Summarization](/compaction#branch-summaries).
 
 ## Session Format
 
-Session files are JSONL and contain message entries, model changes, thinking-level changes, context-window changes, labels, active verbatim `compaction` boundaries, branch summaries, and extension entries. Retired `context_compaction` and non-verbatim `compaction` records remain parseable but inert.
+Sessions contain message entries, model changes, thinking-level changes, context-window changes, labels, active verbatim `compaction` boundaries, branch summaries, and extension entries. Explicit JSONL stores and exports serialize those entries as JSONL. Retired `context_compaction` and non-verbatim `compaction` records remain parseable but inert.
 
 For parsers, extensions, SDK usage, and the full SessionManager API, see [Session Format](/session-format).

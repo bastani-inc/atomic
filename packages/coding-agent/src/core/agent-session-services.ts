@@ -272,8 +272,11 @@ export async function createAgentSessionFromServices(
 /** Internal CLI assembly only; the UI starts the session after mounting. */
 export function createUnstartedAgentSessionFromServices(
 	options: CreateAgentSessionFromServicesOptions,
+	persistInitialState = true,
 ): Promise<CreateAgentSessionResult> {
-	return createSessionFromServices(options, createUnstartedAgentSession);
+	return createSessionFromServices(options, (sessionOptions) =>
+		createUnstartedAgentSession(sessionOptions, persistInitialState),
+	);
 }
 
 function createSessionFromServices(

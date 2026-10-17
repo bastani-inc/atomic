@@ -1,10 +1,12 @@
+import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setKeybindings } from "@earendil-works/pi-tui";
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
-import type { SessionInfo } from "../src/core/session-manager.ts";
+import { type SessionInfo, SessionManager } from "../src/core/session-manager.ts";
+import { resolveSessionStore } from "../src/core/session-storage.js";
 import { SessionSelectorComponent } from "../src/modes/interactive/components/session-selector.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
@@ -104,6 +106,33 @@ describe("session selector path/delete interactions", () => {
 	beforeAll(() => {
 		// session selector uses the global theme instance
 		initTheme("dark");
+	});
+	it("deletes a SQLite session through its selected store after confirmation", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "session-selector-sqlite-"));
+		tempDirs.push(directory);
+		const store = await resolveSessionStore(directory, {
+			sessionStore: { kind: "sqlite", path: join(directory, "sessions.sqlite") },
+		});
+		const manager = await SessionManager.create(store, directory);
+		const selector = new SessionSelectorComponent(
+			() => SessionManager.list(directory, store),
+			() => SessionManager.listAll(store),
+			() => {},
+			() => {},
+			() => {},
+			() => {},
+			{ keybindings, deleteSession: (id) => store.delete(id) },
+		);
+		try {
+			await vi.waitFor(() => assert.equal(selector.getSessionList().getSelectedSessionId(), manager.getSessionId()));
+			selector.handleInput(CTRL_D);
+			assert.ok(await store.readHeader(manager.getSessionId()));
+			selector.handleInput("\r");
+			await vi.waitFor(async () => assert.equal(await store.readHeader(manager.getSessionId()), undefined));
+		} finally {
+			selector.dispose();
+			await store.close();
+		}
 	});
 	it("does not treat Ctrl+Backspace as delete when search query is non-empty", async () => {
 		const sessions = [makeSession({ id: "a" }), makeSession({ id: "b" })];

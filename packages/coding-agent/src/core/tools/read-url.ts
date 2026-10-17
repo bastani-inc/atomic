@@ -5,6 +5,8 @@
  */
 import { resolve as resolvePath } from "node:path";
 import type { TextContent } from "@bastani/pi-ai/compat";
+import { getAgentDir } from "../../config.js";
+import { sessionScratchDir } from "../storage/session/scratch-directory.js";
 import { executeReadUrl, loadPage } from "./fetch-url.ts";
 import type { ReadToolDetails } from "./read.ts";
 import { applyReadLineSelection, decodeReadableUrl } from "./read-document-extract.ts";
@@ -52,10 +54,21 @@ export async function readUrlBranch(args: ReadUrlBranchArgs): Promise<ReadUrlBra
 	} = args;
 	const session = (
 		ctx as
-			| { sessionManager?: { getSessionDir?: () => string | undefined; getSessionId?: () => string | undefined } }
+			| {
+					sessionManager?: {
+						getSessionDir?: () => string | undefined;
+						getSessionId?: () => string | undefined;
+						isPersisted?: () => boolean;
+						getCwd?: () => string;
+					};
+			  }
 			| undefined
 	)?.sessionManager;
-	const sessionDir = session?.getSessionDir?.();
+	const sessionDir =
+		session?.getSessionDir?.() ||
+		(session?.isPersisted?.()
+			? sessionScratchDir(getAgentDir(), session.getCwd?.() ?? cwd, session.getSessionId?.() ?? "")
+			: undefined);
 	const scope = session?.getSessionId?.() ?? cwd;
 	const artifactsDir = sessionDir ? resolvePath(sessionDir, "artifacts") : undefined;
 	if (!effectiveRanges && !effectiveOffset && effectiveLimit === undefined) {

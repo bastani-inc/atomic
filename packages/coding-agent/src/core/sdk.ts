@@ -37,13 +37,20 @@ import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
 import { canCloneDefaultResourceDiscovery, DefaultResourceLoader } from "./resource-loader.ts";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-types.ts";
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
-import { sessionGenerationClosing, sessionLifetime, trackSessionWork } from "./session-lifecycle-work.ts";
+import {
+	ownedSessionManagerStores,
+	ownedSessionStores,
+	sessionGenerationClosing,
+	sessionLifetime,
+	trackSessionWork,
+} from "./session-lifecycle-work.ts";
 import { SessionManager } from "./session-manager.ts";
-import { getDefaultSessionDirPath } from "./session-manager-paths.ts";
 import { registerStartupRollback, rollbackStartup } from "./session-startup-rollback.ts";
+import { resolveSessionStore } from "./session-storage.js";
 import { SettingsManager } from "./settings-manager.ts";
 import { applyToolModifiers, getToolListError, isToolModifier } from "./settings-merge.js";
 import { ownedSettingsManagers } from "./settings-write-ownership.ts";
+import type { SessionStore } from "./storage/session/types.js";
 import { createChildCommandTaskOwner } from "./tasks/child-command-owner.js";
 import { time } from "./timings.ts";
 import { createToolNameMatcher } from "./tool-selection.ts";
@@ -122,13 +129,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 }
 
 /** Internal CLI assembly seam. Not exported from the package entrypoint. */
-export function createUnstartedAgentSession(options: CreateAgentSessionOptions): Promise<CreateAgentSessionResult> {
-	return createScopedSession(options, true);
+export function createUnstartedAgentSession(
+	options: CreateAgentSessionOptions,
+	persistInitialState = true,
+): Promise<CreateAgentSessionResult> {
+	return createScopedSession(options, true, persistInitialState);
 }
 
 function createScopedSession(
 	options: CreateAgentSessionOptions,
 	deferStart: boolean,
+	persistInitialState = true,
 ): Promise<CreateAgentSessionResult> {
 	const inherited = sessionLifecycleCreation.getStore();
 	const context = inherited && !inherited.claimed ? inherited : { scope: {} };
@@ -136,13 +147,27 @@ function createScopedSession(
 		const result = await factoryAcquisitions.run(
 			{ pending: new Map(), replacement: context.replacement },
 			async () => {
+				const acquisition: { store?: SessionStore } = {
+					store: options.sessionManager ? ownedSessionManagerStores.get(options.sessionManager) : undefined,
+				};
+				if (options.sessionManager) ownedSessionManagerStores.delete(options.sessionManager);
 				try {
 					return await constructAgentSession(
 						{ ...options, extensionBindings: options.extensionBindings ?? context.bindings },
 						deferStart,
+						persistInitialState,
+						acquisition,
 					);
 				} catch (error) {
-					throw factoryRollbackError(error, await rollbackFactoryAcquisitions());
+					const failures = await rollbackFactoryAcquisitions();
+					if (acquisition.store) {
+						try {
+							await acquisition.store.close();
+						} catch (cause) {
+							failures.push(cause);
+						}
+					}
+					throw factoryRollbackError(error, failures);
 				}
 			},
 		);
@@ -154,6 +179,8 @@ function createScopedSession(
 async function constructAgentSession(
 	options: CreateAgentSessionOptions,
 	deferStart: boolean,
+	persistInitialState: boolean,
+	acquisition: { store?: SessionStore },
 ): Promise<CreateAgentSessionResult> {
 	const cwd = resolvePath(options.cwd ?? options.sessionManager?.getCwd() ?? process.cwd());
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
@@ -172,8 +199,16 @@ async function constructAgentSession(
 	await modelRuntime.refresh({ allowNetwork: false });
 
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
-	const sessionManager =
-		options.sessionManager ?? (await SessionManager.create(cwd, getDefaultSessionDirPath(cwd, agentDir)));
+	let sessionManager = options.sessionManager;
+	if (!sessionManager) {
+		const store = await resolveSessionStore(cwd, {
+			agentDir,
+			settings: settingsManager.getSettings(),
+			sessionStore: options.sessionStore,
+		});
+		if (store !== options.sessionStore) acquisition.store = store;
+		sessionManager = await SessionManager.create(store, cwd);
+	}
 
 	// Mark workflow-created sessions as internal so they are excluded from the
 	// standard `/resume` history while remaining resumable via `/workflow resume`.
@@ -600,17 +635,18 @@ async function constructAgentSession(
 		maxRetryDelayMs: settingsManager.getProviderRetrySettings().maxRetryDelayMs,
 	});
 
-	// Restore missing settings metadata for older sessions.
-	if (hasExistingSession) {
-		if (!hasThinkingEntry) {
+	// The isolated host mirrors child-owned storage without writing startup metadata.
+	if (persistInitialState) {
+		if (hasExistingSession) {
+			if (!hasThinkingEntry) {
+				await sessionManager.appendThinkingLevelChange(thinkingLevel);
+			}
+		} else {
+			if (model) {
+				await sessionManager.appendModelChange(model.provider, model.id);
+			}
 			await sessionManager.appendThinkingLevelChange(thinkingLevel);
 		}
-	} else {
-		// Save initial model and thinking level for new sessions so they can be restored on resume
-		if (model) {
-			await sessionManager.appendModelChange(model.provider, model.id);
-		}
-		await sessionManager.appendThinkingLevelChange(thinkingLevel);
 	}
 
 	const providerRollback = modelRuntime.createExtensionProviderTransaction();
@@ -691,6 +727,10 @@ async function constructAgentSession(
 			throw new AggregateError([error, ...cleanupErrors], "Extension startup failed and rollback reported errors");
 		throw error;
 	});
+	if (acquisition.store) {
+		ownedSessionStores.set(session, acquisition.store);
+		acquisition.store = undefined;
+	}
 	try {
 		// Omitted factories may share the selected runtime: release their acquisitions,
 		// but leave that runtime and its selected subscriptions owned by the runner.

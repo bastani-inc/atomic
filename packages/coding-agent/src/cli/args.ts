@@ -16,6 +16,7 @@ import {
 } from "../config.js";
 import type { ExtensionFlag } from "../core/extensions/types.ts";
 import { getToolListError } from "../core/settings-merge.js";
+import { StorageConfigError } from "../core/storage/errors.js";
 
 export type Mode = "text" | "json" | "rpc";
 
@@ -152,7 +153,8 @@ export function parseArgs(args: string[]): Args {
 			result.sessionId = args[++i];
 		} else if (arg === "--fork" && i + 1 < args.length) {
 			result.fork = args[++i];
-		} else if (arg === "--session-dir" && i + 1 < args.length) {
+		} else if (arg === "--session-dir") {
+			if (i + 1 === args.length) throw new StorageConfigError("cli", "--session-dir", "directory-required");
 			result.sessionDir = args[++i];
 		} else if (arg === "--models" && i + 1 < args.length) {
 			result.models = args[++i]
@@ -309,7 +311,7 @@ ${chalk.bold("Options:")}
   --import <file>                Import a format-4 JSONL export into session storage
   --session-id <id>              Use exact project session ID, creating it if missing
   --fork <id|prefix>             Fork exact ID or unique 8-hex UUID prefix into a new session
-  --session-dir <dir>            Directory for session storage and lookup
+  --session-dir <dir>            Select JSONL session storage and lookup directory
   --no-session                   Don't save session (ephemeral)
   --name, -n <name>              Set session display name
   --models <patterns>            Comma-separated model patterns for ctrl+p cycling
@@ -455,7 +457,7 @@ ${chalk.bold("Environment Variables:")}
   AWS_BEARER_TOKEN_BEDROCK         - Bedrock API key (bearer token)
   AWS_REGION                       - AWS region for Amazon Bedrock (e.g., us-east-1)
   ${ENV_AGENT_DIR.padEnd(32)} - Config directory (default: ~/${CONFIG_DIR_NAME}/agent)
-  ${ENV_SESSION_DIR.padEnd(32)} - Session storage directory (overridden by --session-dir)
+  ${ENV_SESSION_DIR.padEnd(32)} - Select JSONL session directory (overridden by --session-dir)
   ${ENV_PACKAGE_DIR.padEnd(32)} - Override package directory (for Nix/Guix store paths)
   ${ENV_OFFLINE.padEnd(32)} - Disable startup network operations when set to 1/true/yes
   ${ENV_TELEMETRY.padEnd(32)} - Override install telemetry when set to 1/true/yes or 0/false/no

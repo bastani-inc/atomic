@@ -1,10 +1,12 @@
 import { join } from "node:path";
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { getAgentDir } from "../../config.js";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { SkillCatalog } from "../skill-catalog.ts";
+import { sessionScratchDir } from "../storage/session/scratch-directory.js";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import { createArtifactRouter, registerArtifactDir } from "../tools/artifact-protocol.ts";
 import type {
@@ -277,7 +279,12 @@ export function createExtensionContext(source: ExtensionContextSource, owner: ob
 		},
 		get internalResourceRouter() {
 			source.assertActive();
-			const sessionDir = source.getSessionManager().getSessionDir();
+			const manager = source.getSessionManager();
+			const sessionDir =
+				manager.getSessionDir() ||
+				(manager.isPersisted()
+					? sessionScratchDir(getAgentDir(), manager.getCwd(), manager.getSessionId())
+					: undefined);
 			if (!sessionDir) return undefined;
 			const artifactsDir = join(sessionDir, "artifacts");
 			registerArtifactDir(artifactsDir);
