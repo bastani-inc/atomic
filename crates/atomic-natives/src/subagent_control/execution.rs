@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use super::{AdmissionRefusal, EXECUTION_CAPACITY};
+use super::{AdmissionRefusal, DEFAULT_EXECUTION_CAPACITY};
 
 #[derive(Clone)]
 pub struct ExecutionLimiter {
@@ -16,7 +16,11 @@ impl Default for ExecutionLimiter {
 
 impl ExecutionLimiter {
 	pub fn new() -> Self {
-		Self { active: Arc::new(Mutex::new(0)), capacity: EXECUTION_CAPACITY }
+		Self::with_capacity(DEFAULT_EXECUTION_CAPACITY)
+	}
+
+	pub fn with_capacity(capacity: usize) -> Self {
+		Self { active: Arc::new(Mutex::new(0)), capacity }
 	}
 
 	pub fn capacity(&self) -> usize {

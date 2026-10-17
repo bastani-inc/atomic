@@ -31,7 +31,7 @@ export declare class StdinLease {}
  * weak reference to it.
  */
 export declare class SubagentControl {
-  constructor(parentPath: string)
+  constructor(parentPath: string, executionCapacity?: number | undefined | null)
   get parentPath(): string
   registerAgent(name: string): void
   admitChildSession(spec: NativeChildSpec, parent: NativeParentContext): NativeAdmissionResult
