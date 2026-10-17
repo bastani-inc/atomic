@@ -25,7 +25,9 @@ type ResolvedSession =
 
 async function findLocalSessionByExactId(sessionId: string, cwd: string, store: SessionStore) {
 	const header = await store.readHeader(sessionId);
-	return header && !classifiedWorkflowMetadata(header) && createSessionCwdMatcher(cwd)(header.cwd)
+	return header &&
+		!classifiedWorkflowMetadata(header) &&
+		createSessionCwdMatcher(resolvePath(cwd))(resolvePath(header.cwd))
 		? { id: header.id }
 		: undefined;
 }

@@ -904,7 +904,11 @@ export class SessionManager {
 				: await JsonlSessionStore.open(sessionDir, { exactDirectory: true, scanExisting: false });
 		try {
 			const header = await store.readHeader(id);
-			if (!header || classifiedWorkflowMetadata(header) || !createSessionCwdMatcher(cwd)(header.cwd))
+			if (
+				!header ||
+				classifiedWorkflowMetadata(header) ||
+				!createSessionCwdMatcher(resolvePath(cwd))(resolvePath(header.cwd))
+			)
 				return undefined;
 			return store instanceof JsonlSessionStore ? await store.findFile(id) : id;
 		} catch (error) {

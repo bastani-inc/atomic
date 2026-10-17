@@ -5,7 +5,7 @@ import { readdir, readFile, stat } from "fs/promises";
 import { basename, join } from "path";
 import { getSessionsDir } from "../config.js";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
-import { createSessionCwdMatcher, normalizePath } from "../utils/paths.ts";
+import { createSessionCwdMatcher, normalizePath, resolvePath } from "../utils/paths.ts";
 import { classifiedWorkflowMetadata } from "./session-manager-classification.ts";
 import { getLatestSessionSummary } from "./session-manager-entries.ts";
 import { getDefaultSessionDir, getDefaultSessionDirPath } from "./session-manager-paths.ts";
@@ -301,8 +301,8 @@ export async function listProjectSessions(
 ): Promise<SessionInfo[]> {
 	const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
 	const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
-	const matchesCwd = createSessionCwdMatcher(cwd);
-	const include = (session: SessionInfo) => !filterCwd || matchesCwd(session.cwd);
+	const matchesCwd = createSessionCwdMatcher(resolvePath(cwd));
+	const include = (session: SessionInfo) => !filterCwd || matchesCwd(resolvePath(session.cwd));
 	const progress: SessionListProgress | undefined = onProgress
 		? (loaded, total, partial) => onProgress(loaded, total, partial?.filter(include))
 		: undefined;
