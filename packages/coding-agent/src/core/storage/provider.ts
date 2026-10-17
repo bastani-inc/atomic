@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createJiti } from "jiti";
+import { createSessionCwdMatcher } from "../../utils/canonical-path.ts";
 import type { SqliteDatabase, SqliteValue, StorageDescriptor } from "./database.js";
 import {
 	StorageAdapterLoadError,
@@ -176,12 +177,16 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 
 	async openSessionStore(selection: StorageSelection, context: StorageOpenContext): Promise<SessionStore> {
 		return this.open<SessionStore>(selection, context, {
-			memory: async () => new (await import("./session/memory-session-store.js")).MemorySessionStore(),
+			memory: async () =>
+				new (await import("./session/memory-session-store.js")).MemorySessionStore(createSessionCwdMatcher),
 			jsonl: async (dir) =>
 				(await import("./session/jsonl-session-store.js")).JsonlSessionStore.open(dir, { exactDirectory: true }),
 			direct: (adapter, options, storage) => adapter.openSessionStore?.(options, context, storage),
 			sql: async (database, options) =>
-				(await import("./session/sql-session-store.js")).SqlSessionStore.open(database, options),
+				(await import("./session/sql-session-store.js")).SqlSessionStore.open(database, {
+					...options,
+					cwdMatcher: createSessionCwdMatcher,
+				}),
 		});
 	}
 

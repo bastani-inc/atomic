@@ -9,6 +9,7 @@ import {
 } from "./errors.js";
 import { summarizeSession } from "./session-summary.js";
 import type {
+	SessionCwdMatcher,
 	SessionListQuery,
 	SessionRecordHeader,
 	SessionSnapshot,
@@ -22,6 +23,12 @@ import { validateSessionEntries, validateSessionHeader, validateSessionText } fr
 export class MemorySessionStore implements SessionStore {
 	private records = new Map<string, string>();
 	private closed = false;
+
+	private readonly cwdMatcher?: SessionCwdMatcher;
+
+	constructor(cwdMatcher?: SessionCwdMatcher) {
+		this.cwdMatcher = cwdMatcher;
+	}
 
 	get descriptor(): StorageDescriptor {
 		return { adapter: "memory", location: ":memory:" };
@@ -84,11 +91,15 @@ export class MemorySessionStore implements SessionStore {
 	async *list(query: SessionListQuery): AsyncIterable<SessionSummary> {
 		this.assertOpen();
 		if (query.signal?.aborted) throw new DOMException("Session listing aborted", "AbortError");
+		const matchesCwd =
+			query.cwd === undefined
+				? undefined
+				: (this.cwdMatcher?.(query.cwd) ?? ((candidate: string | undefined) => candidate === query.cwd));
 		for (const record of this.records.values()) {
 			this.assertOpen();
 			if (query.signal?.aborted) throw new DOMException("Session listing aborted", "AbortError");
 			const snapshot = JSON.parse(record) as SessionSnapshot;
-			if (query.cwd !== undefined && query.cwd !== snapshot.header.cwd) continue;
+			if (matchesCwd && !matchesCwd(snapshot.header.cwd)) continue;
 			if (!query.includeInternal && snapshot.header.internal) continue;
 			yield summarizeSession(snapshot);
 		}
@@ -113,7 +124,7 @@ export class MemorySessionStore implements SessionStore {
 	}
 
 	async reopen(): Promise<MemorySessionStore> {
-		const store = new MemorySessionStore();
+		const store = new MemorySessionStore(this.cwdMatcher);
 		store.records = this.records;
 		return store;
 	}

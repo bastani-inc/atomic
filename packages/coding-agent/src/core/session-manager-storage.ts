@@ -1,7 +1,7 @@
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readSync, statSync } from "fs";
 import { join } from "path";
 import { StringDecoder } from "string_decoder";
-import { normalizePath, resolvePath } from "../utils/paths.ts";
+import { createSessionCwdMatcher, normalizePath } from "../utils/paths.ts";
 import { isClassifiedWorkflowSession } from "./session-manager-classification.ts";
 import {
 	CURRENT_SESSION_VERSION,
@@ -161,14 +161,10 @@ export function getSessionHeaderCwd(header: SessionHeader): string | undefined {
 	return typeof cwd === "string" ? cwd : undefined;
 }
 
-export function sessionCwdMatches(cwd: string | undefined, resolvedCwd: string): boolean {
-	return cwd !== undefined && cwd !== "" && resolvePath(cwd) === resolvedCwd;
-}
-
 /** Exported for testing */
 export function findMostRecentSession(sessionDir: string, cwd?: string, includeInternal = false): string | null {
 	const resolvedSessionDir = normalizePath(sessionDir);
-	const resolvedCwd = cwd ? resolvePath(cwd) : undefined;
+	const matchesCwd = cwd ? createSessionCwdMatcher(cwd) : undefined;
 	try {
 		const files = readdirSync(resolvedSessionDir)
 			.filter((f) => f.endsWith(".jsonl"))
@@ -181,7 +177,7 @@ export function findMostRecentSession(sessionDir: string, cwd?: string, includeI
 				const header = readSessionHeader(path);
 				if (
 					!header ||
-					(resolvedCwd && !sessionCwdMatches(getSessionHeaderCwd(header), resolvedCwd)) ||
+					(matchesCwd && !matchesCwd(getSessionHeaderCwd(header))) ||
 					(!includeInternal && isInternalHeader(header))
 				)
 					continue;
