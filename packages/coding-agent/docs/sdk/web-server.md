@@ -300,7 +300,7 @@ export async function POST(request: Request): Promise<Response> {
 
 ### Choose workflow storage
 
-By default, `run()` persists workflow state in the local SQLite journal at `~/.atomic/workflows/journal.sqlite`. Keep it on durable local storage when your service needs restart recovery.
+By default, `run()` persists workflow state in the local SQLite journal at `~/.atomic/workflows/journal.sqlite`. Keep it on durable local storage when your service needs restart recovery. If several replicas must inspect or resume each other's runs, have them share a remote SQLite-compatible database through an adapter. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts).
 
 Use `journal: { path: "/var/lib/my-service/workflows.sqlite" }` to select a file for a run, or `journal: { memory: true }` for process-local state that cannot survive a restart. Supply a caller-owned async SQLite facade as `{ database, prefix? }`; Atomic does not close it. You can also supply a `RunJournal` instance or `{ adapter, options?, secrets?, prefix? }` for a user-installed driver module.
 

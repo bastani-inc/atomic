@@ -458,7 +458,7 @@ The readiness prompt can be answered in the attached stage UI or with `workflow(
 
 ## Durable Workflows and Cross-Session Resume
 
-Atomic workflows use a **local SQLite journal as their only persistent store**. It opens on the first workflow action and commits registrations, checkpoints, and control transitions before reporting them as durable. The default file is `~/.atomic/workflows/journal.sqlite`; set `ATOMIC_WORKFLOW_JOURNAL_PATH` before starting Atomic to select another file. Keep it on durable local storage. Storage failures stop the action rather than selecting another store.
+Atomic workflows persist runs in a SQLite journal. It opens on the first workflow action and commits registrations, checkpoints, and control transitions before reporting them as durable. The default file is `~/.atomic/workflows/journal.sqlite`; set `ATOMIC_WORKFLOW_JOURNAL_PATH` before starting Atomic to select another file. Keep a journal file on durable local storage. To share runs across machines, select a remote SQLite-compatible database through a [storage adapter](/storage#sharing-storage-across-hosts) rather than placing the file on a network filesystem. Storage failures stop the action rather than selecting another store.
 
 Select process-local memory explicitly with `workflows.journal.memory: true` or SDK `RunOpts.journal: { memory: true }`. It supports checkpoint replay within the process but not recovery after exit. See [Choosing the durable backend](/workflows/api-reference#choosing-the-durable-backend).
 
@@ -470,7 +470,7 @@ If recovery reports `Workflow definition not found`, restore the matching defini
 
 ### Multiple sessions
 
-A run with a live journal lease cannot be claimed by another executor, even when a long-running tool has not updated its progress. After a process crashes and its lease expires (about two minutes without renewal), inspection reports `crashed`. Concurrent resume attempts admit one executor.
+A run with a live journal lease cannot be claimed by another executor, even when a long-running tool has not updated its progress. After a process crashes and its lease expires (about two minutes without renewal), inspection reports `crashed`. Concurrent resume attempts admit one executor. The same rules apply across machines that share a journal database; see [Sharing storage across hosts](/storage#sharing-storage-across-hosts).
 
 SDK recovery requires the original working directory and journal. `session.workflows.getRun(runId)` and `getStages(runId)` inspect saved state without taking ownership; `resume(runId)` explicitly claims eligible work. Save the full UUID. An owning session can also release checkpointed paused runs through `await session.dispose()` or a session switch, allowing another authorized session to adopt them. See [SDK run control](/sdk#workflow-run-control).
 
@@ -653,7 +653,7 @@ That history does not authorize any live release action.
 
 ### Configuring journal storage
 
-Set `workflows.journal.path` in `settings.json` or set `ATOMIC_WORKFLOW_JOURNAL_PATH` before starting Atomic to select a local SQLite file. The non-empty environment value overrides settings; SDK `RunOpts.journal` overrides both. Relative settings paths resolve against the Atomic home directory, normally `~/.atomic`. With no override, Atomic uses `~/.atomic/workflows/journal.sqlite`.
+Set `workflows.journal.path` in `settings.json` or set `ATOMIC_WORKFLOW_JOURNAL_PATH` before starting Atomic to select a local SQLite file. The non-empty environment value overrides settings; SDK `RunOpts.journal` overrides both. Relative settings paths resolve against the Atomic home directory, normally `~/.atomic`. With no override, Atomic uses `~/.atomic/workflows/journal.sqlite`. To use a remote database, select an [adapter module](/storage#selecting-an-adapter) in `workflows.journal` or shared `storage`.
 
 For process-local storage, use `workflows.journal.memory: true` without a non-empty settings path, or pass `journal: { memory: true }` to SDK `run()`. Memory is never selected after a storage failure. Preserve a SQLite journal and its sidecar files; use the same journal and working directory to resume an existing run. See [Workflow storage settings](/settings#workflow-storage).
 
