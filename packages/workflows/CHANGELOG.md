@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.38-alpha.8] - 2026-10-17
+
 ### Fixed
 
 - Fixed `/workflow resume` no longer listing or resuming runs recorded before 0.9.38-alpha.6. The default journal now lists runs from its earlier tables and converts a run only when you resume or inspect it, so opening the journal does no extra work. The earlier tables are left in place, and deleted runs stay deleted. Stage checkpoints that identified their session only by transcript path now resume by that transcript's session ID, so their conversations reopen after sessions are imported into the default store.
