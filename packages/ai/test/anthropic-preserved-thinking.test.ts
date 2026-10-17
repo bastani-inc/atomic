@@ -206,11 +206,7 @@ describe("preserved thinking across mid-conversation model switches", () => {
 		const result = transformMessages(history, target);
 
 		expect(thinkingBlocks(result)).toHaveLength(0);
-		// Degrades to the pre-existing behavior rather than losing the content entirely.
-		expect(textBlocks(result).map((block) => block.text)).toEqual([
-			"The user wants 21 doubled.",
-			"Let me compute that.",
-		]);
+		expect(textBlocks(result).map((block) => block.text)).toEqual(["Let me compute that."]);
 	});
 
 	it("does not replay thinking across providers", () => {

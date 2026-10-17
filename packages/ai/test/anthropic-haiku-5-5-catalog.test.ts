@@ -17,10 +17,10 @@ describe("Claude Haiku 5.5 catalog", () => {
 		});
 	});
 
-	it("supports adaptive effort and mid-conversation changes without temperature", () => {
+	it("supports off, adaptive effort, and mid-conversation changes without temperature (#10753)", () => {
 		const model = getModel("anthropic", "claude-haiku-5-5");
 		assert.equal(model.reasoning, true);
-		assert.deepEqual(getSupportedThinkingLevels(model), ["low", "medium", "high", "xhigh", "max"]);
+		assert.deepEqual(getSupportedThinkingLevels(model), ["off", "low", "medium", "high", "xhigh", "max"]);
 		assert.equal(model.compat?.forceAdaptiveThinking, true);
 		assert.equal(model.compat?.supportsTemperature, false);
 		assert.equal(model.compat?.supportsMidConvoEffort, true);

@@ -123,16 +123,20 @@ describe("Anthropic empty thinking signature compat", () => {
 		]);
 	});
 
-	// Regression for #9323: opting into unsigned replay must not change cross-model conversion.
-	it("still converts cross-model Fireworks thinking to text", async () => {
+	it("does not replay cross-model Fireworks thinking when opted into unsigned replay (#9323, #10995)", async () => {
 		const model = getModel("fireworks", "accounts/fireworks/models/deepseek-v4p1-flash");
 		const payload = await capturePayload(
 			model,
 			makeContext("", "internal reasoning", "fireworks", "accounts/fireworks/models/nemotron-3-ultra-nvfp4"),
 		);
-		expect(payload.messages?.find((message) => message.role === "assistant")?.content).toEqual([
-			{ type: "text", text: "internal reasoning" },
-		]);
+		const assistantBlocks = (payload.messages ?? [])
+			.filter((message) => message.role === "assistant")
+			.flatMap((message) => message.content);
+		expect(
+			assistantBlocks.some(
+				(block) => block.thinking === "internal reasoning" || block.text === "internal reasoning",
+			),
+		).toBe(false);
 	});
 
 	it.each(["opencode", "opencode-go"] as const)(

@@ -235,5 +235,7 @@ Extensions call classifiers and image models through `ctx.modelRegistry.classify
 ## Limits
 
 - A script's VM has 256 MB of memory. Running out throws `InternalError: out of memory`; filter or aggregate large data instead of accumulating it.
+- Stopping a script or reaching its deadline ends the call promptly. In the standalone `atomic` binary (Bun), a built-in that does not check for interruption, such as a long string search, can keep computing in its worker until it returns.
+- At most two codemode workers may be alive across all sessions in one Atomic process. A cancelled worker occupies its slot until it exits. At capacity, new scripts fail immediately with `Codemode worker limit reached` without starting another worker; retry after an existing worker exits.
 - A script that waits on a promise that can never settle (no tool call pending) fails immediately, since there are no timers.
 - Scripts cannot start other `codemode` scripts.

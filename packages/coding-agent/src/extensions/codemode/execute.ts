@@ -39,6 +39,22 @@ import {
 	toCodemodeDeclaration,
 } from "./tool.js";
 
+// Shared across calls and sessions. Allow one replacement while a cancelled worker is still exiting.
+const MAX_CONCURRENT_CODEMODE_WORKERS = 2;
+let activeCodemodeWorkers = 0;
+
+function acquireCodemodeWorker(): () => void {
+	if (activeCodemodeWorkers >= MAX_CONCURRENT_CODEMODE_WORKERS) {
+		throw new Error(
+			`Codemode worker limit reached (${MAX_CONCURRENT_CODEMODE_WORKERS} workers are still running or shutting down). Retry after they exit.`,
+		);
+	}
+	activeCodemodeWorkers++;
+	return () => {
+		activeCodemodeWorkers--;
+	};
+}
+
 const IMAGE_EXTENSIONS: Record<string, string> = {
 	"image/png": ".png",
 	"image/jpeg": ".jpg",
@@ -553,6 +569,7 @@ export async function executeCodemode(
 		memoryLimitBytes: 256 * 1024 * 1024,
 		wasm: loadQuickJSWasm(getQuickJSWasmPath()),
 		workerUrl: getCodemodeWorkerUrl(),
+		acquireWorker: acquireCodemodeWorker,
 	});
 	let result: CodemodeResult;
 	try {
