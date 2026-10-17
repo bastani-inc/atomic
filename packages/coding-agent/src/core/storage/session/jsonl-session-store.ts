@@ -317,7 +317,7 @@ export class JsonlSessionStore implements SessionStore {
 	}
 
 	async *scanFiles(): AsyncIterable<JsonlSessionFile> {
-		for (const location of await this.run(() => this.paths(), false)) {
+		for (const location of await this.run(() => this.paths({ skipUnreadableDirectories: true }), false)) {
 			let header: SessionRecordHeader;
 			try {
 				header = await this.run(
@@ -413,13 +413,14 @@ export class JsonlSessionStore implements SessionStore {
 		if (signal?.aborted) throw new DOMException("Session listing aborted", "AbortError");
 	}
 
-	private async paths(): Promise<string[]> {
+	private async paths(options: { readonly skipUnreadableDirectories?: boolean } = {}): Promise<string[]> {
 		const paths: string[] = [];
 		for (const entry of await readdir(this.directory, { withFileTypes: true })) {
 			const path = join(this.directory, entry.name);
 			if ((entry.isDirectory() || entry.isSymbolicLink()) && !this.exactDirectory) {
 				const children = await readdir(path, { withFileTypes: true }).catch((cause: NodeJS.ErrnoException) => {
 					if (cause.code === "ENOENT" || cause.code === "ENOTDIR") return [];
+					if (options.skipUnreadableDirectories && (cause.code === "EACCES" || cause.code === "EPERM")) return [];
 					throw cause;
 				});
 				for (const child of children) {
