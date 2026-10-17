@@ -63,6 +63,7 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"connection.?reset",
 	"other side closed",
 	"fetch failed",
+	"request to \\S+ failed, reason:",
 	"getaddrinfo",
 	"ENOTFOUND",
 	"EAI_AGAIN",

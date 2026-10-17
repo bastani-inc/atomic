@@ -12,6 +12,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - Fixed Claude Haiku 5.5 and Claude Opus 5 not offering the `off` thinking level on Anthropic. `off` now sends `thinking: {type: "disabled"}` without effort settings ([#10753](https://github.com/earendil-works/pi/issues/10753)).
 - Fixed images in error tool results being replaced with a note on Anthropic, and Claude on Amazon Bedrock rejecting error tool results that contain images. The images are now sent after the tool results of the turn, so the model still sees them ([#10794](https://github.com/earendil-works/pi/issues/10794)).
 - Fixed model switching exposing another model's thinking as visible reply text. Foreign thinking blocks are now dropped; Anthropic models that adjudicate thinking-block model binding still receive compatible blocks from the same provider ([#10995](https://github.com/earendil-works/pi/issues/10995)).
+- Fixed automatic retry not triggering for node-fetch request failures during Google Vertex authentication token refresh ([#10996](https://github.com/earendil-works/pi/issues/10996)).
 
 ## [0.9.38-alpha.6] - 2026-10-16
 
