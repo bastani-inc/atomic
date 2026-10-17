@@ -33,7 +33,8 @@ export class LegacySessionStore implements SessionStore {
 	private readonly legacyDirectory: string;
 	private readonly databasePath: string;
 	private legacy?: Promise<JsonlSessionStore | undefined>;
-	private index?: Promise<ReadonlyMap<string, JsonlSessionFile>>;
+	private index?: Promise<ReadonlyMap<string, readonly JsonlSessionFile[]>>;
+	private readonly summaries = new Map<string, SessionSummary | null>();
 	private deletions?: Promise<SqliteDatabase>;
 
 	constructor(inner: SessionStore, options: { readonly legacyDirectory: string; readonly databasePath: string }) {
@@ -98,7 +99,7 @@ export class LegacySessionStore implements SessionStore {
 		}
 		for await (const file of this.legacyFiles(query)) {
 			if (listed.has(file.header.id) || (await this.inner.readHeader(file.header.id)) !== undefined) continue;
-			const summary = await this.summarize(file);
+			const summary = await this.summarize(file.header.id);
 			if (summary === undefined) continue;
 			listed.add(summary.id);
 			yield summary;
@@ -112,7 +113,7 @@ export class LegacySessionStore implements SessionStore {
 		let latest = await this.inner.findMostRecent(query);
 		for await (const file of this.legacyFiles(query)) {
 			if ((await this.inner.readHeader(file.header.id)) !== undefined) continue;
-			const summary = await this.summarize(file);
+			const summary = await this.summarize(file.header.id);
 			if (summary !== undefined && (!latest || Date.parse(summary.modifiedAt) > Date.parse(latest.modifiedAt))) {
 				latest = summary;
 			}
@@ -126,6 +127,7 @@ export class LegacySessionStore implements SessionStore {
 		this.legacy = undefined;
 		this.deletions = undefined;
 		this.index = undefined;
+		this.summaries.clear();
 		await Promise.all([
 			legacy?.then((store) => store?.close()).catch(() => {}),
 			deletions?.then((database) => database.close()).catch(() => {}),
@@ -136,18 +138,33 @@ export class LegacySessionStore implements SessionStore {
 	/** Convert one legacy session into the database the first time it is needed. */
 	private async convert(sessionId: string): Promise<void> {
 		if ((await this.inner.readHeader(sessionId)) !== undefined) return;
-		const file = await this.findLegacy(sessionId);
-		if (file === undefined) return;
-		const snapshot = await file.read();
+		const snapshot = await this.readLegacy(sessionId);
+		if (snapshot === undefined) return;
 		try {
 			await this.inner.create(snapshot.header, snapshot.entries);
 		} catch (error) {
 			if (!(error instanceof SessionExistsError)) throw error;
 		}
+		if (await this.isDeleted(sessionId)) await this.inner.delete(sessionId).catch(() => {});
+	}
+
+	/** The first readable copy of a legacy session; a damaged duplicate does not hide a readable one. */
+	private async readLegacy(sessionId: string): Promise<SessionSnapshot | undefined> {
+		if (await this.isDeleted(sessionId)) return undefined;
+		for (const file of (await this.legacyIndex()).get(sessionId) ?? []) {
+			try {
+				const snapshot = await file.read();
+				summarizeSession(snapshot);
+				return snapshot;
+			} catch {
+				// Try the next copy.
+			}
+		}
+		return undefined;
 	}
 
 	private async findLegacy(sessionId: string): Promise<JsonlSessionFile | undefined> {
-		const file = (await this.legacyIndex()).get(sessionId);
+		const file = (await this.legacyIndex()).get(sessionId)?.[0];
 		if (file === undefined || (await this.isDeleted(sessionId))) return undefined;
 		return file;
 	}
@@ -157,7 +174,8 @@ export class LegacySessionStore implements SessionStore {
 		readonly includeInternal?: boolean;
 	}): AsyncIterable<JsonlSessionFile> {
 		const matchesCwd = query.cwd === undefined ? undefined : createSessionCwdMatcher(query.cwd);
-		for (const file of (await this.legacyIndex()).values()) {
+		for (const [file] of (await this.legacyIndex()).values()) {
+			if (file === undefined) continue;
 			if (matchesCwd && !matchesCwd(file.header.cwd)) continue;
 			if (!query.includeInternal && file.header.internal) continue;
 			if (await this.isDeleted(file.header.id)) continue;
@@ -166,14 +184,16 @@ export class LegacySessionStore implements SessionStore {
 	}
 
 	/** Header-only index of the legacy directory, read once; nothing writes legacy sessions any more. */
-	private legacyIndex(): Promise<ReadonlyMap<string, JsonlSessionFile>> {
+	private legacyIndex(): Promise<ReadonlyMap<string, readonly JsonlSessionFile[]>> {
 		this.index ??= (async () => {
-			const files = new Map<string, JsonlSessionFile>();
+			const files = new Map<string, JsonlSessionFile[]>();
 			const legacy = await this.legacyStore();
 			if (legacy === undefined) return files;
 			try {
 				for await (const file of legacy.scanFiles()) {
-					if (!files.has(file.header.id)) files.set(file.header.id, file);
+					const copies = files.get(file.header.id);
+					if (copies) copies.push(file);
+					else files.set(file.header.id, [file]);
 				}
 			} catch {
 				// An unreadable legacy directory leaves only the sessions already in the database.
@@ -183,12 +203,14 @@ export class LegacySessionStore implements SessionStore {
 		return this.index;
 	}
 
-	private async summarize(file: JsonlSessionFile): Promise<SessionSummary | undefined> {
-		try {
-			return summarizeSession(await file.read());
-		} catch {
-			return undefined;
-		}
+	/** Summaries are cached per store; the legacy files no longer change. */
+	private async summarize(sessionId: string): Promise<SessionSummary | undefined> {
+		const cached = this.summaries.get(sessionId);
+		if (cached !== undefined) return cached ?? undefined;
+		const snapshot = await this.readLegacy(sessionId);
+		const summary = snapshot === undefined ? null : summarizeSession(snapshot);
+		this.summaries.set(sessionId, summary);
+		return summary ?? undefined;
 	}
 
 	private legacyStore(): Promise<JsonlSessionStore | undefined> {

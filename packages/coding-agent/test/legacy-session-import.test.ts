@@ -508,6 +508,33 @@ describe("legacy JSONL sessions in the default store", () => {
 		});
 	});
 
+	it("uses a readable copy when an earlier copy of the same session is damaged", async () => {
+		const damagedCopy = join(agentDir, "sessions", "--a-damaged-copy--");
+		mkdirSync(damagedCopy, { recursive: true });
+		writeFileSync(
+			join(damagedCopy, `copy_${ids.v3}.jsonl`),
+			encode([
+				{ type: "session", version: 3, id: ids.v3, timestamp: fixtures.v3.createdAt, cwd },
+				{
+					type: "message",
+					id: "e0000001",
+					parentId: null,
+					timestamp: fixtures.v3.createdAt,
+					message: { role: "user", content: [null], timestamp: Date.parse(fixtures.v3.createdAt) },
+				},
+			]),
+		);
+		writeLegacy(fixtures.v3);
+
+		await withDefaultStore(async (store) => {
+			assert.deepEqual(
+				(await SessionManager.list(cwd, store)).map((session) => session.name),
+				["Legacy auth refactor"],
+			);
+			assert.equal((await SessionManager.open(store, ids.v3)).getSessionName(), "Legacy auth refactor");
+		});
+	});
+
 	it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
 		"lists readable projects when another legacy project directory cannot be read",
 		async () => {
