@@ -12,7 +12,6 @@
 
 - Added user-installed journal adapter modules, environment/file secret references, shared `storage` defaults, and `StorageProvider` for explicit session/journal opens with shared database lifetime. `RunOpts.journal.database` accepts an async SQLite facade; invalid selections raise `StorageConfigError` without falling back to memory.
 - Added `sessions.storage` and SDK `sessionStore` to select SQLite, explicit JSONL or memory, a caller-owned database, or a user-installed adapter. Shared `storage` settings now configure sessions too; SDK, CLI and environment overrides take precedence without merging selections. Store-open failures raise typed errors rather than falling back to memory.
-- Expanded the session storage guides with SDK store selection, ownership, error handling, and automatic upgrades of older JSONL sessions.
 
 ### Fixed
 

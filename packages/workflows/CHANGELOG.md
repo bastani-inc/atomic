@@ -16,7 +16,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Added journal adapter module selection with environment/file secret references and shared `storage` settings. SDK options override environment, journal settings, shared storage, and persistent defaults; nearer settings replace complete selections. Caller-owned database selections accept the async SQLite facade and remain open after journal close.
-- Expanded the workflow storage reference with shared session/journal storage, adapter selection, asynchronous writes, and storage error handling.
 
 ### Fixed
 
