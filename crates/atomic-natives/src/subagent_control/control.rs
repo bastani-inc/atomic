@@ -10,9 +10,9 @@ use std::{
 use napi::threadsafe_function::ThreadsafeFunctionCallMode;
 
 use super::{
-	AdmissionRefusal, AdmittedChild, AgentStatus, ChildPath, EXECUTION_CAPACITY, ExecutionGuard,
-	ExecutionLimiter, GRACEFUL_INTERRUPTION_TIMEOUT_MS, Residency, ResidencyError, StatusCallback,
-	StatusUpdateCallback, TerminationCause,
+	AdmissionRefusal, AdmittedChild, AgentStatus, ChildPath, DEFAULT_EXECUTION_CAPACITY,
+	ExecutionGuard, ExecutionLimiter, GRACEFUL_INTERRUPTION_TIMEOUT_MS, Residency, ResidencyError,
+	StatusCallback, StatusUpdateCallback, TerminationCause,
 };
 /// Explicit termination causes. Timer/idle/wall-clock causes are intentionally
 /// absent, making timer-driven termination unrepresentable.
@@ -149,7 +149,7 @@ pub struct SubagentControl {
 
 impl SubagentControl {
 	pub fn new(parent_path: impl AsRef<str>) -> Result<Self, String> {
-		Self::with_execution_capacity(parent_path, EXECUTION_CAPACITY)
+		Self::with_execution_capacity(parent_path, DEFAULT_EXECUTION_CAPACITY)
 	}
 
 	pub fn with_execution_capacity(

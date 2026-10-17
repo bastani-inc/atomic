@@ -3,7 +3,7 @@ use std::{
 	sync::{Arc, Mutex},
 };
 
-use super::{ChildPath, EXECUTION_CAPACITY};
+use super::{ChildPath, DEFAULT_EXECUTION_CAPACITY};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ResidencyError {
@@ -49,7 +49,7 @@ pub struct Residency {
 
 impl Default for Residency {
 	fn default() -> Self {
-		Self::new(EXECUTION_CAPACITY)
+		Self::new(DEFAULT_EXECUTION_CAPACITY)
 	}
 }
 

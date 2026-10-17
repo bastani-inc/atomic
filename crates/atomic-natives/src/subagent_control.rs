@@ -99,7 +99,7 @@ fn native_refusal(refusal: AdmissionRefusal) -> NativeAdmissionRefusal {
 	}
 }
 fn resolve_execution_capacity(capacity: Option<u32>) -> usize {
-	capacity.filter(|value| *value > 0).map_or(EXECUTION_CAPACITY, |value| value as usize)
+	capacity.filter(|value| *value > 0).map_or(DEFAULT_EXECUTION_CAPACITY, |value| value as usize)
 }
 
 /// N-API wrapper around the root-scoped Rust control plane. The host marker is
@@ -271,7 +271,7 @@ impl NapiSubagentControl {
 /// Not configurable.
 pub const MAX_DEPTH: u8 = 1;
 /// Default maximum number of active child turns for one root control plane.
-pub const EXECUTION_CAPACITY: usize = 4;
+pub const DEFAULT_EXECUTION_CAPACITY: usize = 4;
 /// Codex's literal cooperative-interruption grace period.
 pub const GRACEFUL_INTERRUPTION_TIMEOUT_MS: u64 = 100;
 
