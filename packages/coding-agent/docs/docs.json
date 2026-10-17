@@ -60,8 +60,7 @@
             "group": "Models and providers",
             "pages": [
               "providers",
-              "llama-cpp",
-              "nvidia-rtx-llama-cpp"
+              "llama-cpp"
             ]
           },
           {
@@ -259,6 +258,10 @@
     {
       "source": "/tree",
       "destination": "/sessions"
+    },
+    {
+      "source": "/nvidia-rtx-llama-cpp",
+      "destination": "/llama-cpp#nvidia-rtx-recipes"
     },
     {
       "source": "/tools/edit",
