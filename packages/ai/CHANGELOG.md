@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.38-alpha.7] - 2026-10-17
+
 ### Fixed
 
 - Fixed `closeOpenAICodexWebSocketSessions("")` closing other sessions' cached sockets. Empty keys now do nothing; omitting the key still closes all cached sockets.

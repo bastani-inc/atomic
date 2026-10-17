@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.38-alpha.7] - 2026-10-17
+
 ### Breaking Changes
 
 - Forked context now uses the parent's session ID and selected session store, including stored empty IDs. Embedded runners pass a `sessionManager` instead of a `sessionFile` input. Token readers take a store and session ID and return a promise; filesystem paths no longer select a transcript.
