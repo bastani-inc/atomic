@@ -2,6 +2,7 @@
 
 import type { PendingStageMessage, PendingStageMessageDelivery } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
+import { migrateStageSessionCheckpoint } from "./legacy-migrations.js";
 import type { PromptReservationToken } from "./prompt-reservation-state.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import type {
@@ -433,7 +434,8 @@ class JournalProjection {
 		});
 	}
 
-	recordCheckpoint(checkpoint: DurableCheckpoint): void {
+	recordCheckpoint(recorded: DurableCheckpoint): void {
+		const checkpoint = recorded.kind === "stage" ? migrateStageSessionCheckpoint(recorded) : recorded;
 		const currentCheckpoint =
 			checkpoint.kind === "stage" && checkpoint.topology === undefined
 				? {
