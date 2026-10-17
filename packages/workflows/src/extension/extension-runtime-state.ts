@@ -1,4 +1,5 @@
 import { registerExtensionContextRetirementEffect } from "@bastani/atomic";
+import { outsideWorkflowExecutions } from "../durable/execution-context-boundary.js";
 import { requireStoreDurableBackend } from "../durable/store-backend.js";
 import {
 	InvalidWorkflowHeartbeatAnchorError,
@@ -219,7 +220,9 @@ export function createWorkflowExtensionRuntimeState(
 	registerHilAnswerNoticeRenderer({ rendererHost: pi, registerMessageRenderer });
 	registerWorkflowHeartbeatRenderer({ rendererHost: pi, registerMessageRenderer });
 	const sendWorkflowNotificationMessage: ExtensionAPI["sendMessage"] | undefined =
-		typeof pi.sendMessage === "function" ? (message, options) => pi.sendMessage!(message, options) : undefined;
+		typeof pi.sendMessage === "function"
+			? (message, options) => outsideWorkflowExecutions(() => pi.sendMessage!(message, options))
+			: undefined;
 	const reinstallLifecycleNotifications = (): void => {
 		lifecycleNotificationsUnsubscribe?.();
 		lifecycleNotificationsUnsubscribe = null;
