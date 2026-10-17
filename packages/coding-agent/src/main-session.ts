@@ -6,11 +6,12 @@ import { selectSession } from "./cli/session-picker.ts";
 import { getAgentDir } from "./config.js";
 import { KeybindingsManager } from "./core/keybindings.ts";
 import { formatMissingSessionCwdPrompt, type SessionCwdIssue } from "./core/session-cwd.ts";
+import { ownedSessionManagerStores } from "./core/session-lifecycle-work.ts";
 import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
 import { classifiedWorkflowMetadata, workflowSessionMetadataFromEnv } from "./core/session-manager-classification.ts";
-import { resolveSessionStore } from "./core/session-storage.js";
+import { resolveSessionStore, selectSessionStorage } from "./core/session-storage.js";
 import type { SettingsManager } from "./core/settings-manager.ts";
-import type { StorageSelection } from "./core/storage/provider.js";
+import { type StorageSelection, storageSelectionKey } from "./core/storage/provider.js";
 import type { SessionStore } from "./core/storage/session/types.js";
 import { ExtensionSelectorComponent } from "./modes/interactive/components/extension-selector.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
@@ -159,6 +160,48 @@ export async function applyInheritedWorkflowSessionClassification(
 	return sessionManager;
 }
 
+const initialStorageKeys = new WeakMap<SessionManager, string>();
+
+/** Finalize a CLI-owned provisional store after trusted settings become available. */
+export async function refreshSessionStorage(
+	manager: SessionManager,
+	parsed: Args,
+	settingsManager: SettingsManager,
+	sessionStore?: SessionStore | StorageSelection,
+): Promise<SessionStore | undefined> {
+	const options = {
+		sessionStore,
+		settings: settingsManager.getSettings(),
+		noSession: parsed.noSession,
+		sessionDir: parsed.sessionDir,
+	};
+	const selection = selectSessionStorage(manager.getCwd(), options);
+	if ("load" in selection) return undefined;
+	const key = storageSelectionKey(selection, getAgentDir());
+	const initialKey = initialStorageKeys.get(manager);
+	if (initialKey === undefined || key === initialKey) return undefined;
+	const previous = manager.getSessionStore();
+	const next = await resolveSessionStore(manager.getCwd(), options);
+	try {
+		await manager.rebindStore(
+			next,
+			parsed.session === undefined &&
+				!parsed.resume &&
+				!parsed.continue &&
+				parsed.fork === undefined &&
+				parsed.import === undefined &&
+				parsed.sessionId === undefined,
+		);
+	} catch (error) {
+		await next.close();
+		throw error;
+	}
+	initialStorageKeys.set(manager, key);
+	ownedSessionManagerStores.set(manager, next);
+	await previous.close();
+	return next;
+}
+
 export async function createSessionManager(
 	parsed: Args,
 	cwd: string,
@@ -173,6 +216,29 @@ export async function createSessionManager(
 		noSession: parsed.noSession,
 		sessionDir: parsed.sessionDir ?? sessionDir,
 	});
+	try {
+		const manager = await createSessionManagerWithStore(parsed, cwd, settingsManager, store);
+		if (store !== sessionStore) ownedSessionManagerStores.set(manager, store);
+		const selection = selectSessionStorage(cwd, {
+			sessionStore,
+			settings: settingsManager.getSettings(),
+			noSession: parsed.noSession,
+			sessionDir: parsed.sessionDir ?? sessionDir,
+		});
+		if (!("load" in selection)) initialStorageKeys.set(manager, storageSelectionKey(selection, getAgentDir()));
+		return manager;
+	} catch (error) {
+		if (store !== sessionStore) await store.close();
+		throw error;
+	}
+}
+
+async function createSessionManagerWithStore(
+	parsed: Args,
+	cwd: string,
+	settingsManager: SettingsManager,
+	store: SessionStore,
+): Promise<SessionManager> {
 	if (parsed.import !== undefined) return SessionManager.importFromJsonl(resolvePath(parsed.import, cwd), cwd, store);
 	if (parsed.noSession) return SessionManager.create(store, cwd, { id: parsed.sessionId });
 

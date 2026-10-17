@@ -244,11 +244,19 @@ describe("internal workflow sessions across resume surfaces", () => {
 		process.env.ATOMIC_CODING_AGENT_DIR = join(dir, "agent");
 		try {
 			const original = await SessionManager.create(cwd);
-			selectSessionImplementation = async (current) => (await current())[0]!;
-			const { createSessionManager } = await import("../src/main-session.ts");
-			const resumed = await createSessionManager(parseArgs(["--resume"]), cwd, undefined, settingsManager);
-			assert.equal(resumed.getSessionId(), original.getSessionId());
-			assert.equal(resumed.getSessionFile(), original.getSessionFile());
+			try {
+				selectSessionImplementation = async (current) => (await current())[0]!;
+				const { createSessionManager } = await import("../src/main-session.ts");
+				const resumed = await createSessionManager(parseArgs(["--resume"]), cwd, undefined, settingsManager);
+				try {
+					assert.equal(resumed.getSessionId(), original.getSessionId());
+					assert.equal(resumed.getSessionFile(), original.getSessionFile());
+				} finally {
+					await resumed.getSessionStore().close();
+				}
+			} finally {
+				await original.getSessionStore().close();
+			}
 		} finally {
 			if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 			else process.env.ATOMIC_CODING_AGENT_DIR = previous;

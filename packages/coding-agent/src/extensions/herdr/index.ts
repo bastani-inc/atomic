@@ -26,7 +26,7 @@ function resumeArgv(sessionManager: ExtensionContext["sessionManager"]): string[
 	if (sessionManager.getSessionStore().descriptor.adapter === "memory") return undefined;
 	const sessionId = sessionManager.getSessionId();
 	const sessionDir =
-		sessionManager.getSessionDir() && !sessionManager.usesDefaultSessionDir()
+		sessionManager.getSessionStore().descriptor.adapter === "jsonl"
 			? ["--session-dir", sessionManager.getSessionDir()]
 			: [];
 	return [APP_NAME, ...sessionDir, "--session", sessionId];

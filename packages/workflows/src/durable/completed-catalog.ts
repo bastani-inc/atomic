@@ -125,40 +125,44 @@ export async function completedWorkflowRunSnapshots(
 	const checkpoints = backend.listCheckpoints(entry.workflowId);
 	if (checkpoints.length === 0) return [];
 	const selectedStore = sessionStore ?? (await stageSessionStore({ cwd: handle.workflowCwd ?? handle.invocationCwd }));
-	const runs = await Promise.all(
-		runSnapshotsFromCheckpoints(
-			checkpoints,
-			handle.workflowId,
-			handle.name,
-			handle.updatedAt,
-			COMPLETED_RECONSTRUCTION,
-		).map(async (run) => ({
-			...run,
-			stages: await Promise.all(run.stages.map((stage) => validatedStageTranscript(stage, selectedStore))),
-		})),
-	);
-	const rootIndex = runs.findIndex((run) => run.id === handle.workflowId);
-	if (rootIndex < 0) return [];
-	const rootDuration =
-		priorRunElapsedMs(backend, handle.workflowId) ?? Math.max(0, handle.updatedAt - handle.createdAt);
-	const root: RunSnapshot = {
-		...runs[rootIndex]!,
-		inputs: { ...handle.inputs } as WorkflowInputValues,
-		status: handle.status,
-		startedAt: handle.createdAt,
-		endedAt: handle.updatedAt,
-		durationMs: rootDuration,
-		...(handle.error !== undefined ? { error: handle.error } : {}),
-		...(handle.exited !== undefined ? { exited: handle.exited } : {}),
-		...(handle.exitReason !== undefined ? { exitReason: handle.exitReason } : {}),
-		...(handle.failureKind !== undefined ? { failureKind: handle.failureKind } : {}),
-		...(handle.failureCode !== undefined ? { failureCode: handle.failureCode } : {}),
-		...(handle.failureRecoverability !== undefined ? { failureRecoverability: handle.failureRecoverability } : {}),
-		...(handle.failureDisposition !== undefined ? { failureDisposition: handle.failureDisposition } : {}),
-		...(handle.failedToolNodeId !== undefined ? { failedToolNodeId: handle.failedToolNodeId } : {}),
-		resumable: handle.resumable ?? false,
-	};
-	return [root, ...runs.filter((_, index) => index !== rootIndex)];
+	try {
+		const runs = await Promise.all(
+			runSnapshotsFromCheckpoints(
+				checkpoints,
+				handle.workflowId,
+				handle.name,
+				handle.updatedAt,
+				COMPLETED_RECONSTRUCTION,
+			).map(async (run) => ({
+				...run,
+				stages: await Promise.all(run.stages.map((stage) => validatedStageTranscript(stage, selectedStore))),
+			})),
+		);
+		const rootIndex = runs.findIndex((run) => run.id === handle.workflowId);
+		if (rootIndex < 0) return [];
+		const rootDuration =
+			priorRunElapsedMs(backend, handle.workflowId) ?? Math.max(0, handle.updatedAt - handle.createdAt);
+		const root: RunSnapshot = {
+			...runs[rootIndex]!,
+			inputs: { ...handle.inputs } as WorkflowInputValues,
+			status: handle.status,
+			startedAt: handle.createdAt,
+			endedAt: handle.updatedAt,
+			durationMs: rootDuration,
+			...(handle.error !== undefined ? { error: handle.error } : {}),
+			...(handle.exited !== undefined ? { exited: handle.exited } : {}),
+			...(handle.exitReason !== undefined ? { exitReason: handle.exitReason } : {}),
+			...(handle.failureKind !== undefined ? { failureKind: handle.failureKind } : {}),
+			...(handle.failureCode !== undefined ? { failureCode: handle.failureCode } : {}),
+			...(handle.failureRecoverability !== undefined ? { failureRecoverability: handle.failureRecoverability } : {}),
+			...(handle.failureDisposition !== undefined ? { failureDisposition: handle.failureDisposition } : {}),
+			...(handle.failedToolNodeId !== undefined ? { failedToolNodeId: handle.failedToolNodeId } : {}),
+			resumable: handle.resumable ?? false,
+		};
+		return [root, ...runs.filter((_, index) => index !== rootIndex)];
+	} finally {
+		if (sessionStore === undefined) await selectedStore.close();
+	}
 }
 
 /** Rebuild one retained root, including in-progress nested runs, without relaxing topology validation. */

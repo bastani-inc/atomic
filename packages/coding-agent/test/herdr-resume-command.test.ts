@@ -89,7 +89,7 @@ test("first Herdr report carries the exact session's resume argv after -- (#3492
 	}
 });
 
-test("resume argv omits --session-dir for the default session directory (#3492)", async () => {
+test("resume argv selects JSONL even for the default session directory (#3492)", async () => {
 	const fake = await fakeHerdr();
 	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", fake.dir);
 	const session = await SessionManager.create(fake.dir, getDefaultSessionDirPath(fake.dir));
@@ -98,7 +98,13 @@ test("resume argv omits --session-dir for the default session directory (#3492)"
 	try {
 		await runner.emit({ type: "session_start" });
 		const [first] = await fake.waitFor(1);
-		assert.deepEqual(resumeOf(first.args), [APP_NAME, "--session", session.getSessionId()]);
+		assert.deepEqual(resumeOf(first.args), [
+			APP_NAME,
+			"--session-dir",
+			session.getSessionDir(),
+			"--session",
+			session.getSessionId(),
+		]);
 	} finally {
 		await runner.emit({ type: "session_shutdown", reason: "quit" });
 		runner.invalidate();

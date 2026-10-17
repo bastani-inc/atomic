@@ -12,6 +12,8 @@ Sessions auto-save to the local SQLite database at `~/.atomic/workflows/journal.
 
 To choose another store, set `sessions.storage` in settings. Use shared `storage` to select one database for both sessions and workflow runs. JSONL is available only when explicitly selected. Memory is available through `--no-session`, `{ "memory": true }` in settings, or an explicit SDK option; it is never a fallback for a failed persistent store.
 
+Project-local storage settings apply after you approve project trust, including on the first launch. Generated resume commands for JSONL sessions include `--session-dir`; keep that option when reopening the conversation, even if the directory was previously the default.
+
 ```bash
 atomic -c                  # Continue most recent session
 atomic -r                  # Browse and select from past sessions

@@ -480,10 +480,14 @@ test("an explicit selected store never falls back to a duplicate ID in another s
 	vi.stubEnv(ENV_AGENT_DIR, join(cwd, "agent"));
 	try {
 		const active = await SessionManager.create(cwd, undefined, { id: "not-in-selected-store" });
-		await assert.rejects(
-			active.openSessionById(active.getSessionId(), undefined, join(cwd, "selected-empty-store")),
-			SessionNotFoundError,
-		);
+		try {
+			await assert.rejects(
+				active.openSessionById(active.getSessionId(), undefined, join(cwd, "selected-empty-store")),
+				SessionNotFoundError,
+			);
+		} finally {
+			await active.getSessionStore().close();
+		}
 	} finally {
 		vi.unstubAllEnvs();
 	}

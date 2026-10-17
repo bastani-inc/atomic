@@ -112,10 +112,11 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 				diagnostics: services.diagnostics,
 			};
 		};
+		const initialManager = await SessionManager.create(tempDir);
 		const runtimeHost = await createAgentSessionRuntime(createRuntime, {
 			cwd: tempDir,
 			agentDir: tempDir,
-			sessionManager: await SessionManager.create(tempDir),
+			sessionManager: initialManager,
 		});
 		await runtimeHost.session.bindExtensions({});
 
@@ -123,6 +124,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			if (options.shutdownFails)
 				await expect(runtimeHost.dispose()).rejects.toMatchObject({ code: "ShutdownFailed" });
 			else await runtimeHost.dispose();
+			await initialManager.getSessionStore().close();
 			faux.unregister();
 			if (existsSync(tempDir)) {
 				rmSync(tempDir, { recursive: true, force: true });

@@ -53,7 +53,11 @@ export async function createIsolatedInteractiveRuntime(options: {
 	try {
 		await client.start();
 	} catch (error) {
-		await client.stop();
+		try {
+			await client.stop();
+		} finally {
+			await options.localRuntime.dispose();
+		}
 		throw error;
 	}
 	isolatedRuntime = new IsolatedInteractiveRuntime(options.localRuntime, options.createRuntime, client);

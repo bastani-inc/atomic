@@ -1,16 +1,19 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fauxAssistantMessage, registerFauxProvider } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { InMemoryCodingAgentModelsStore } from "../../packages/coding-agent/src/core/models-store.js";
 import { resolveSessionStore } from "../../packages/coding-agent/src/core/session-storage.js";
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
+import { StorageProvider } from "../../packages/coding-agent/src/core/storage/provider.js";
 import { AuthStorage, ModelRuntime, SessionManager, SettingsManager } from "../../packages/coding-agent/src/index.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { requireStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import type { RunOpts, RunResult } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import { createWorkflowPendingStageDelivery } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
+import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createAgentSessionAdapter, run, workflow } from "../../packages/workflows/src/sdk-surface.js";
 import { adoptStore, currentWorkflowStore, store } from "../../packages/workflows/src/shared/store-factory.js";
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
@@ -114,6 +117,50 @@ test("run() executes a ctx.task stage without RunOpts.adapters (#3472)", async (
 			await sessionStore.close();
 		}
 	} finally {
+		removeTempDirectory(cwd);
+	}
+});
+
+test("standalone run releases its default stage session store before returning", async () => {
+	const cwd = makeTempDirectory("atomic-sdk-run-store-release-");
+	const acquisitions = vi.spyOn(StorageProvider.prototype, "openSessionStore");
+	const databaseClose = vi.spyOn(DatabaseSync.prototype, "close");
+	try {
+		const outcome = await runOneTaskStage(cwd, (dir) => ({ cwd: dir }));
+		assert.equal(outcome.status, "completed", outcome.error);
+		assert.ok(outcome.sessionId);
+		assert.ok(acquisitions.mock.results.length > 0);
+		for (const acquisition of acquisitions.mock.results) {
+			const selected = await acquisition.value;
+			await assert.rejects(selected.load(outcome.sessionId), { name: "StoreClosedError" });
+		}
+		assert.equal(databaseClose.mock.calls.length, 1);
+	} finally {
+		for (const acquisition of acquisitions.mock.results) await (await acquisition.value).close();
+		databaseClose.mockRestore();
+		acquisitions.mockRestore();
+		removeTempDirectory(cwd);
+	}
+});
+
+test("a supplied registry owns retained stage sessions until explicitly cleared", async () => {
+	const cwd = makeTempDirectory("atomic-sdk-retained-store-");
+	const registry = createStageControlRegistry();
+	const acquisitions = vi.spyOn(StorageProvider.prototype, "openSessionStore");
+	try {
+		const outcome = await runOneTaskStage(cwd, (dir) => ({ cwd: dir, stageControlRegistry: registry }));
+		assert.equal(outcome.status, "completed", outcome.error);
+		assert.ok(outcome.sessionId);
+		assert.ok(acquisitions.mock.results.length > 0);
+		for (const acquisition of acquisitions.mock.results)
+			assert.equal((await (await acquisition.value).load(outcome.sessionId)).header.cwd, cwd);
+		await registry.clear();
+		for (const acquisition of acquisitions.mock.results)
+			await assert.rejects((await acquisition.value).load(outcome.sessionId), { name: "StoreClosedError" });
+	} finally {
+		await registry.clear();
+		for (const acquisition of acquisitions.mock.results) await (await acquisition.value).close();
+		acquisitions.mockRestore();
 		removeTempDirectory(cwd);
 	}
 });

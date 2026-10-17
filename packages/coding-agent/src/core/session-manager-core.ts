@@ -258,6 +258,20 @@ export class SessionManager {
 		return this.store;
 	}
 
+	/** @internal Finalize provisional startup storage after project trust resolves. */
+	rebindStore(store: SessionStore, removeProvisionalRecord: boolean): Promise<void> {
+		return this.runMutation(async () => {
+			if (store === this.store) return;
+			const header = this.recordHeader();
+			const entries = this.getEntries();
+			const result = await store.create(header, entries);
+			if (removeProvisionalRecord) await this.store.delete(this.sessionId);
+			this.store = store;
+			this.sessionDir = store instanceof JsonlSessionStore ? store.descriptor.location : "";
+			this.restore({ header, entries, lastSeq: result.lastSeq });
+		});
+	}
+
 	async openSessionById(sessionId: string, cwdOverride?: string, sessionDirectory?: string): Promise<SessionManager> {
 		let store =
 			sessionDirectory === undefined

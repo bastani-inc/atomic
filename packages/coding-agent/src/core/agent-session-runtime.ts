@@ -24,11 +24,15 @@ import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-life
 import {
 	drainSessionWork,
 	hasCallingSessionWork,
+	ownedSessionManagerStores,
+	ownedSessionStores,
 	registerSessionRetirement,
 	trackSessionWork,
 } from "./session-lifecycle-work.ts";
 import { SessionEntryError, SessionManager } from "./session-manager.ts";
+import { type StorageFailureCause, StorageRollbackError } from "./storage/errors.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
+import type { SessionStore } from "./storage/session/types.js";
 
 /**
  * Result returned by runtime creation.
@@ -110,6 +114,7 @@ export class AgentSessionRuntime {
 	private closed = false;
 	private endedBySignal = false;
 	private closing?: Promise<void>;
+	private readonly ownedStores = new Set<SessionStore>();
 	private cleanupFailures: unknown[] = [];
 	private candidates = new Set<AgentSession>();
 	private replacements = 0;
@@ -224,6 +229,7 @@ export class AgentSessionRuntime {
 		_modelFallbackReason?: ModelFallbackReason,
 	) {
 		this._session = _session;
+		this.retainSessionStore(_session);
 		this._services = _services;
 		const scope = sessionLifecycleScopes.get(_session) ?? {};
 		const context = () => {
@@ -255,6 +261,20 @@ export class AgentSessionRuntime {
 		this._modelFallbackReason = _modelFallbackReason;
 	}
 
+	/** A wrapping runtime replaces, rather than borrows, the local lifetime owner. */
+	protected adoptSessionStores(owner: AgentSessionRuntime): void {
+		for (const store of owner.ownedStores) this.ownedStores.add(store);
+		owner.ownedStores.clear();
+	}
+
+	private retainSessionStore(session: AgentSession): void {
+		const store = ownedSessionStores.get(session);
+		if (store) {
+			ownedSessionStores.delete(session);
+			this.ownedStores.add(store);
+		}
+	}
+
 	private retainCleanupFailures(error: unknown): void {
 		if (error instanceof Error && "code" in error && error.code === "ShutdownFailed") {
 			this.cleanupFailures.push(error);
@@ -269,6 +289,7 @@ export class AgentSessionRuntime {
 		try {
 			this.assertOpen();
 			const candidate = await create();
+			this.retainSessionStore(candidate.session);
 			this.candidates.add(candidate.session);
 			if (this.closed) {
 				try {
@@ -429,6 +450,7 @@ export class AgentSessionRuntime {
 
 	private disposeCurrentSession(event: SessionShutdownEvent): Promise<void> {
 		const session = this.session;
+		this.retainSessionStore(session);
 		if (event.reason !== "quit") this.retained.add(session);
 		const receipt = (session as unknown as AgentSessionInternalSurface)._close(event, this.beforeSessionInvalidate);
 		if (event.reason !== "quit" && hasCallingSessionWork(session)) this.retainRetirementCleanup(session.dispose());
@@ -717,6 +739,14 @@ export class AgentSessionRuntime {
 			} catch (error) {
 				this.cleanupFailures.push(error);
 			}
+			for (const store of this.ownedStores) {
+				try {
+					await store.close();
+				} catch (error) {
+					this.cleanupFailures.push(error);
+				}
+			}
+			this.ownedStores.clear();
 			if (this.cleanupFailures.length)
 				throw Object.assign(new AggregateError(this.cleanupFailures, "Runtime shutdown failed"), {
 					code: "ShutdownFailed",
@@ -741,16 +771,27 @@ export async function createAgentSessionRuntime(
 		sessionStartEvent?: SessionStartEvent;
 	},
 ): Promise<AgentSessionRuntime> {
-	assertSessionCwdExists(options.sessionManager, options.cwd);
-	const result = await sessionLifecycleCreation.run({ scope: {} }, () => createRuntime(options));
-	return new AgentSessionRuntime(
-		result.session,
-		result.services,
-		createRuntime,
-		result.diagnostics,
-		result.modelFallbackMessage,
-		result.modelFallbackReason,
-	);
+	try {
+		assertSessionCwdExists(options.sessionManager, options.cwd);
+		const result = await sessionLifecycleCreation.run({ scope: {} }, () => createRuntime(options));
+		return new AgentSessionRuntime(
+			result.session,
+			result.services,
+			createRuntime,
+			result.diagnostics,
+			result.modelFallbackMessage,
+			result.modelFallbackReason,
+		);
+	} catch (error) {
+		const store = ownedSessionManagerStores.get(options.sessionManager);
+		ownedSessionManagerStores.delete(options.sessionManager);
+		try {
+			await store?.close();
+		} catch (cause) {
+			throw new StorageRollbackError(error as StorageFailureCause, cause as StorageFailureCause);
+		}
+		throw error;
+	}
 }
 
 export {

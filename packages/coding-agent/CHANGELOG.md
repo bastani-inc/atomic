@@ -18,6 +18,7 @@
 - Session shutdown and replacement now wait for already-admitted extension session entries to finish saving before releasing their resources.
 - Storage providers now preserve domain-adapter prefixes, make returned stores safe to close repeatedly, and retain typed opening errors when cleanup also fails.
 - Fixed sessions written before format 4 disappearing from `/resume` and failing to open with `--continue`, `--session`, or `--fork`. Older supported sessions now upgrade automatically when opened; listing leaves their files unchanged.
+- Fixed session stores closing during conversation replacement or remaining open after CLI shutdown and failed startup. Project storage settings now take effect on first trust approval, JSONL resume commands retain their directory, and SQLite sessions keep full URL-read artifacts.
 
 ## [0.9.38-alpha.6] - 2026-10-16
 

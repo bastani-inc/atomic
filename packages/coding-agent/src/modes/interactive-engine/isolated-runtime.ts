@@ -135,6 +135,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			localRuntime.modelFallbackMessage,
 			localRuntime.modelFallbackReason,
 		);
+		this.adoptSessionStores(localRuntime);
 		this.client = client;
 		this.remoteCommands = new RemoteCommandCatalog(client);
 		this.remoteModelCatalog = new RemoteModelCatalog(client);

@@ -60,12 +60,14 @@ function createSessionManager(options: {
 }
 
 describe("formatResumeCommand", () => {
-	it("returns a session resume command for default session dirs", () => {
+	it("includes the JSONL directory even when it is the default", () => {
 		setStdoutIsTTY(true);
 		const sessionFile = createTempFile();
 		const sessionManager = createSessionManager({ sessionFile, sessionId: "test-session" });
 
-		expect(formatResumeCommand(sessionManager)).toBe(`${APP_NAME} --session test-session`);
+		expect(formatResumeCommand(sessionManager)).toBe(
+			`${APP_NAME} --session-dir /tmp/atomic-sessions --session test-session`,
+		);
 	});
 
 	it.each([
@@ -75,7 +77,9 @@ describe("formatResumeCommand", () => {
 	])("preserves stored session ID %j in the shell resume command", (sessionId, argument) => {
 		setStdoutIsTTY(true);
 		const sessionManager = createSessionManager({ sessionFile: createTempFile(), sessionId });
-		expect(formatResumeCommand(sessionManager)).toBe(`${APP_NAME} --session ${argument}`);
+		expect(formatResumeCommand(sessionManager)).toBe(
+			`${APP_NAME} --session-dir /tmp/atomic-sessions --session ${argument}`,
+		);
 	});
 
 	it("includes unquoted safe session dirs for non-default session dirs", () => {

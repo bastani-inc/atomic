@@ -38,6 +38,7 @@ import { canCloneDefaultResourceDiscovery, DefaultResourceLoader } from "./resou
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-types.ts";
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
 import {
+	ownedSessionManagerStores,
 	ownedSessionStores,
 	sessionGenerationClosing,
 	sessionLifetime,
@@ -146,7 +147,10 @@ function createScopedSession(
 		const result = await factoryAcquisitions.run(
 			{ pending: new Map(), replacement: context.replacement },
 			async () => {
-				const acquisition: { store?: SessionStore } = {};
+				const acquisition: { store?: SessionStore } = {
+					store: options.sessionManager ? ownedSessionManagerStores.get(options.sessionManager) : undefined,
+				};
+				if (options.sessionManager) ownedSessionManagerStores.delete(options.sessionManager);
 				try {
 					return await constructAgentSession(
 						{ ...options, extensionBindings: options.extensionBindings ?? context.bindings },
