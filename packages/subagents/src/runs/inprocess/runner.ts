@@ -767,10 +767,10 @@ export class SubagentControlRuntime {
 	private readonly killedChildren = new Set<string>();
 	private nextAttemptId = 1;
 
-	constructor(parent: ParentContext, sessionRoot?: string) {
+	constructor(parent: ParentContext, sessionRoot?: string, runningCapacity?: number) {
 		this.parent = { ...parent };
 		this.sessionRoot = trustedSessionRoot(this.parent, sessionRoot);
-		this.native = new SubagentControl(this.parent.path);
+		this.native = new SubagentControl(this.parent.path, runningCapacity);
 	}
 
 	registerAgents(agents: readonly AgentConfig[]): void {
@@ -1459,8 +1459,12 @@ export class SubagentControlRuntime {
 	}
 }
 
-export function createSubagentControl(parent: ParentContext, sessionRoot?: string): SubagentControlRuntime {
-	return new SubagentControlRuntime(parent, sessionRoot);
+export function createSubagentControl(
+	parent: ParentContext,
+	sessionRoot?: string,
+	runningCapacity?: number,
+): SubagentControlRuntime {
+	return new SubagentControlRuntime(parent, sessionRoot, runningCapacity);
 }
 
 export function admit_child_session(

@@ -93,6 +93,7 @@ export interface ParentAskHandoffRequest {
 // ============================================================================
 
 export interface RunSyncOptions {
+	runningCapacity?: number;
 	getChildSessionOptions?: import("@bastani/atomic").ExtensionContext["getChildSessionOptions"];
 	resourceLoaderInheritanceSnapshot?: import("@bastani/atomic").DefaultResourceLoaderInheritanceSnapshot;
 	cwd?: string;
@@ -207,6 +208,7 @@ export interface IntercomBridgeConfig {
 interface TopLevelParallelConfig {
 	maxTasks?: number;
 	concurrency?: number;
+	runningCapacity?: number;
 }
 
 export interface ExtensionConfig {

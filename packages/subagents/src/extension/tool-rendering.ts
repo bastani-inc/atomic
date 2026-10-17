@@ -93,7 +93,7 @@ export function renderSubagentToolResult(
 				? [
 						...(request.agent ? [{ agent: request.agent, task: request.task ?? "" }] : []),
 						...(request.tasks ?? []).flatMap((task) =>
-							Array.from({ length: Math.min(50, Math.max(1, task.count ?? 1)) }, () => task),
+							Array.from({ length: Math.max(1, task.count ?? 1) }, () => task),
 						),
 					]
 				: [];
