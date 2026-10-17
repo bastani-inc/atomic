@@ -8,6 +8,7 @@ import {
 	readFileSync,
 	rmSync,
 	statSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,6 +20,7 @@ import { SessionManager } from "../src/core/session-manager.js";
 import { getDefaultSessionDirPath } from "../src/core/session-manager-paths.js";
 import { resolveSessionStore, type SessionStorageOptions } from "../src/core/session-storage.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import type { SessionStore } from "../src/core/storage/session/types.js";
 import { createSessionManager } from "../src/main-session.js";
@@ -195,6 +197,58 @@ function snapshotFiles(directory: string): Record<string, { content: string; mti
 	return files;
 }
 
+const LARGE_FILLER_MESSAGES = 600;
+const LARGE_FIRST_TEXT = "Plan the large migration";
+
+interface LargeSessionOptions {
+	readonly id: string;
+	readonly cwd: string;
+	readonly lastAt: string;
+	readonly firstText?: string;
+	readonly name?: string;
+	readonly damagedMiddle?: boolean;
+	readonly tornTail?: boolean;
+}
+
+/** A well over 32 KiB session whose summary lives in its first user message and its last entries. */
+function largeLegacyContent(options: LargeSessionOptions): string {
+	const createdAt = "2026-10-01T00:00:00.000Z";
+	let previous: string | null = null;
+	let sequence = 0;
+	const link = (): { id: string; parentId: string | null } => {
+		const id = `e${String(sequence++).padStart(7, "0")}`;
+		const linked = { id, parentId: previous };
+		previous = id;
+		return linked;
+	};
+	const lines = [
+		JSON.stringify({ type: "session", version: 4, id: options.id, createdAt, cwd: options.cwd }),
+		JSON.stringify(userRecord(options.firstText ?? LARGE_FIRST_TEXT, createdAt, 1, link())),
+	];
+	for (let index = 0; index < LARGE_FILLER_MESSAGES; index++) {
+		lines.push(
+			JSON.stringify(assistantRecord(`middle-only ${index} ${"x".repeat(1_000)}`, createdAt, 10 + index, link())),
+		);
+		if (options.damagedMiddle && index === LARGE_FILLER_MESSAGES / 2) lines.push("this middle line is not json");
+	}
+	if (options.name !== undefined) {
+		lines.push(JSON.stringify({ type: "session_info", ...link(), timestamp: options.lastAt, name: options.name }));
+	}
+	lines.push(JSON.stringify(userRecord("Final question", options.lastAt, 0, link())));
+	const answer = link();
+	lines.push(JSON.stringify(assistantRecord("Final answer", options.lastAt, 1, answer)));
+	lines.push(
+		JSON.stringify({
+			type: "session_summary",
+			...link(),
+			timestamp: options.lastAt,
+			summary: "Large migration plan",
+			summarizedThroughId: answer.id,
+		}),
+	);
+	return `${lines.join("\n")}\n${options.tornTail ? '{"type":"message","id":"x' : ""}`;
+}
+
 describe("legacy JSONL sessions in the default store", () => {
 	let root: string;
 	let agentDir: string;
@@ -214,6 +268,7 @@ describe("legacy JSONL sessions in the default store", () => {
 	});
 
 	afterEach(() => {
+		vi.restoreAllMocks();
 		vi.unstubAllEnvs();
 		rmSync(root, { recursive: true, force: true });
 	});
@@ -272,6 +327,7 @@ describe("legacy JSONL sessions in the default store", () => {
 			assert.equal(byId.get(ids.early4)?.firstMessage, "Continue the alpha.4 session");
 			assert.equal(byId.get(ids.early4)?.created.toISOString(), fixtures.early4.createdAt);
 			assert.equal(byId.get(ids.v4)?.created.toISOString(), fixtures.v4.createdAt);
+			assert.equal(byId.get(ids.v4)?.messageCount, 2);
 			for (const session of listed) assert.equal(session.internal, undefined);
 		});
 	});
@@ -553,6 +609,167 @@ describe("legacy JSONL sessions in the default store", () => {
 				["Legacy auth refactor"],
 			);
 			assert.equal((await SessionManager.open(store, ids.v3)).getSessionName(), "Legacy auth refactor");
+		});
+	});
+
+	describe("sessions too large to read in full for a listing", () => {
+		const lastAt = "2026-10-20T09:00:00.000Z";
+
+		function writeLarge(options: Omit<LargeSessionOptions, "cwd">, directory = legacyDirectory): string {
+			mkdirSync(directory, { recursive: true });
+			const path = join(directory, `2026-10-01T00-00-00-000Z_${options.id}.jsonl`);
+			writeFileSync(path, largeLegacyContent({ ...options, cwd }));
+			return path;
+		}
+
+		function watchBodyReads(): string[] {
+			const reads: string[] = [];
+			const scanFiles = JsonlSessionStore.prototype.scanFiles;
+			vi.spyOn(JsonlSessionStore.prototype, "scanFiles").mockImplementation(function (this: JsonlSessionStore) {
+				const files = scanFiles.call(this);
+				return (async function* () {
+					for await (const file of files) {
+						yield {
+							...file,
+							read: () => {
+								reads.push(file.location);
+								return file.read();
+							},
+						};
+					}
+				})();
+			});
+			return reads;
+		}
+
+		it("lists one from its first message and its last entries without reading the whole file", async () => {
+			writeAllFormats();
+			const path = writeLarge({ id: "large-1", lastAt, name: "Late rename", damagedMiddle: true });
+			const before = readFileSync(path, "utf8");
+			const reads = watchBodyReads();
+
+			await withDefaultStore(async (store) => {
+				const listed = await SessionManager.list(cwd, store);
+				const large = listed.find((session) => session.id === "large-1");
+				assert.ok(large);
+				assert.equal(large.firstMessage, LARGE_FIRST_TEXT);
+				assert.equal(large.name, "Late rename");
+				assert.equal(large.summary, "Large migration plan");
+				assert.equal(large.created.toISOString(), "2026-10-01T00:00:00.000Z");
+				assert.equal(large.modified.toISOString(), "2026-10-20T09:00:01.000Z");
+				assert.match(large.allMessagesText, /Plan the large migration/);
+				assert.match(large.allMessagesText, /Final answer/);
+				assert.doesNotMatch(large.allMessagesText, /middle-only 300 /);
+				assert.ok(large.messageCount >= 1 && large.messageCount < LARGE_FILLER_MESSAGES);
+				assert.equal(listed[0]?.id, "large-1");
+				assert.equal((await store.findMostRecent({ cwd }))?.id, "large-1");
+			});
+
+			assert.ok(!reads.includes(path));
+			assert.equal(readFileSync(path, "utf8"), before);
+			assert.deepEqual(convertedIds(), []);
+		});
+
+		it("lists one saved in the oldest format from its two ends and still upgrades it when opened", async () => {
+			const createdAt = "2025-03-01T10:00:00.000Z";
+			const lines = [
+				{ type: "session", id: "large-v1", timestamp: createdAt, cwd },
+				userRecord("Explain the v1 parser", createdAt, 1),
+				...Array.from({ length: LARGE_FILLER_MESSAGES }, (_, index) =>
+					assistantRecord(`middle-only ${index} ${"x".repeat(1_000)}`, createdAt, 2 + index),
+				),
+				assistantRecord("Closing remarks", createdAt, 1_000),
+			];
+			mkdirSync(legacyDirectory, { recursive: true });
+			const path = join(legacyDirectory, `${createdAt.replace(/[:.]/g, "-")}_large-v1.jsonl`);
+			writeFileSync(path, encode(lines));
+			const reads = watchBodyReads();
+
+			await withDefaultStore(async (store) => {
+				const listed = (await SessionManager.list(cwd, store)).find((session) => session.id === "large-v1");
+				assert.equal(listed?.firstMessage, "Explain the v1 parser");
+				assert.equal(listed?.created.toISOString(), createdAt);
+				assert.equal(listed?.modified.toISOString(), "2025-03-01T10:16:40.000Z");
+				assert.match(listed?.allMessagesText ?? "", /Closing remarks/);
+			});
+			assert.ok(!reads.includes(path));
+
+			await withDefaultStore(async (store) => {
+				const entries = (await SessionManager.open(store, "large-v1")).getEntries();
+				assert.equal(entries.length, LARGE_FILLER_MESSAGES + 2);
+				assert.equal(entries[1]?.parentId, entries[0]?.id);
+			});
+		});
+
+		it("orders them by their last message rather than file modification time", async () => {
+			const older = writeLarge({ id: "large-older", lastAt: "2026-10-12T09:00:00.000Z" });
+			const newer = writeLarge({ id: "large-newer", lastAt: "2026-10-14T09:00:00.000Z" });
+			utimesSync(older, new Date("2026-12-01T00:00:00Z"), new Date("2026-12-01T00:00:00Z"));
+			utimesSync(newer, new Date("2026-01-01T00:00:00Z"), new Date("2026-01-01T00:00:00Z"));
+
+			await withDefaultStore(async (store) => {
+				assert.deepEqual(
+					(await SessionManager.list(cwd, store)).map((session) => session.id),
+					["large-newer", "large-older"],
+				);
+				assert.equal((await store.findMostRecent({ cwd }))?.id, "large-newer");
+			});
+		});
+
+		it("converts the whole session when it is opened, then lists its full message count from the database", async () => {
+			writeLarge({ id: "large-open", lastAt });
+
+			await withDefaultStore(async (store) => {
+				const listed = (await SessionManager.list(cwd, store)).find((session) => session.id === "large-open");
+				assert.ok(listed && listed.messageCount < LARGE_FILLER_MESSAGES);
+				assert.deepEqual(convertedIds(), []);
+				await SessionManager.open(store, "large-open");
+			});
+
+			assert.deepEqual(convertedIds(), ["large-open"]);
+			await withDefaultStore(async (store) => {
+				const converted = (await SessionManager.list(cwd, store)).find((session) => session.id === "large-open");
+				assert.equal(converted?.messageCount, LARGE_FILLER_MESSAGES + 3);
+				assert.equal(converted?.summary, "Large migration plan");
+			});
+		});
+
+		it("uses a readable copy when an earlier large copy has a torn tail", async () => {
+			writeLarge(
+				{ id: "large-copy", lastAt, name: "Damaged", tornTail: true },
+				join(agentDir, "sessions", "--a-damaged-copy--"),
+			);
+			writeLarge({ id: "large-copy", lastAt, name: "Readable" });
+
+			await withDefaultStore(async (store) => {
+				assert.deepEqual(
+					(await SessionManager.list(cwd, store)).map((session) => session.name),
+					["Readable"],
+				);
+				assert.equal((await store.findMostRecent({ cwd }))?.name, "Readable");
+				assert.equal((await SessionManager.open(store, "large-copy")).getSessionName(), "Readable");
+			});
+		});
+
+		it("does not list one whose tail is torn, because it cannot be opened either", async () => {
+			writeAllFormats();
+			writeLarge({ id: "large-torn", lastAt, tornTail: true });
+
+			await withDefaultStore(async (store) => {
+				assert.ok(!(await SessionManager.listAll(store)).some((session) => session.id === "large-torn"));
+				assert.equal((await store.findMostRecent({ cwd }))?.id, ids.v4);
+				await assert.rejects(SessionManager.open(store, "large-torn"));
+			});
+		});
+
+		it("lists one whose first message is larger than the head window with that message", async () => {
+			const firstText = `${"z".repeat(300_000)} end`;
+			writeLarge({ id: "large-first", lastAt, firstText });
+
+			await withDefaultStore(async (store) => {
+				const listed = (await SessionManager.list(cwd, store)).find((session) => session.id === "large-first");
+				assert.equal(listed?.firstMessage, firstText);
+			});
 		});
 	});
 

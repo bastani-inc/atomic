@@ -28,11 +28,13 @@ async function findLocalSessionByExactId(sessionId: string, cwd: string, store: 
 	return header &&
 		!classifiedWorkflowMetadata(header) &&
 		createSessionCwdMatcher(resolvePath(cwd))(resolvePath(header.cwd))
-		? { id: header.id }
+		? { id: header.id, cwd: header.cwd }
 		: undefined;
 }
 
 async function resolveSessionId(sessionArg: string, cwd: string, store: SessionStore): Promise<ResolvedSession> {
+	const exact = await findLocalSessionByExactId(sessionArg, cwd, store).catch(() => undefined);
+	if (exact) return { type: "local", id: exact.id, cwd: exact.cwd };
 	const localSessions = await SessionManager.list(cwd, store, undefined, { includeInternal: true });
 	const resolution = await resolveSessionIdTargetAcrossScopes(sessionArg, localSessions, () =>
 		SessionManager.listAll(store, undefined, { includeInternal: true }),
