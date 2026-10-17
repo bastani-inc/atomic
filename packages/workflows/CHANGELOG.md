@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.38-alpha.7] - 2026-10-17
+
 ### Breaking Changes
 
 - Construct `JournalDurableBackend` with asynchronous `open()`; direct construction and internal synchronous journal methods have been removed.
