@@ -7,6 +7,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 ### Fixed
 
 - Fixed `closeOpenAICodexWebSocketSessions("")` closing other sessions' cached sockets. Empty keys now do nothing; omitting the key still closes all cached sockets.
+- Fixed the root `AssistantMessageEventStream` export being visible only as a type to TypeScript consumers. It can now be imported and constructed as a value, matching the runtime API.
 
 ## [0.9.38-alpha.6] - 2026-10-16
 

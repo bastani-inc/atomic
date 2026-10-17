@@ -9,7 +9,7 @@ Pull request / selected branch push
 └─ test.yml (five concurrent work jobs + one result gate)
    ├─ unit-tests (Linux, Windows): build package -> unit
    ├─ integration-tests (Linux, Windows): build package -> integration
-   ├─ agent-suite (Linux, Windows): native bindings -> coding-agent vitest (Node)
+   ├─ agent-suite (Linux, Windows): native bindings -> pi-ai + coding-agent vitest (Node)
    ├─ release-archive (Linux, Windows): build package -> binaries -> smoke
    ├─ static-checks (Linux): typecheck, docs, installer container smoke, contracts
    └─ test (3 legs): result gate carrying the required contexts
@@ -50,6 +50,10 @@ Push or manual dispatch on `main`
 This release graph follows pi's draft-first publication shape. Public GitHub Release publication remains last so users never see a release whose npm publication failed.
 
 The release build downloads checksum-pinned PostgreSQL artifacts while preparing packages, never during package installation or first use. All eight native npm leaves receive a `postgres-runtime` payload. Pack verification extracts each tarball and validates target provenance, executable architecture/libc, required libraries/catalog/licenses, and the payload file checksums; missing or wrong payloads fail packaging. Every standalone archive independently stages its target under the archive-local `@bastani/atomic-natives` package rather than relying on host-installed optional leaves. Existing native Linux glibc and macOS runners exercise scriptless pack/install and SQL persistence across restart; Linux and Windows x64 archive jobs do the same against extracted runtime paths. The Alpine smoke legs execute initdb, protocol queries, restart, and persisted-row checks on both native runner architectures. Windows ARM64 remains content- and architecture-validated only because the available Windows runner is x64; it cannot authoritatively exercise Windows 11 ARM64 x64 emulation.
+
+### Static checks
+
+The `static-checks` job runs `npm run check`: Biome, the root TypeScript check, package typechecks, and the published-shrinkwrap check. The typecheck path first builds `@bastani/pi-ai` to generate its model catalog, then runs its existing `tsconfig.json` check over both `src/` and `test/`. It also checks the coding-agent build and `test/types/` configurations. No pre-existing coding-agent `dist/` is required.
 
 ### Release artifact storage
 
