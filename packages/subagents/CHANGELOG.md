@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.38-alpha.8] - 2026-10-17
+
 ### Changed
 
 - Subagent parallel task limits can now be raised above 50 with `parallel.maxTasks`. Configure `parallel.concurrency` and the new `parallel.runningCapacity` together to run more than four child turns per parent; defaults remain 50 tasks, concurrency 3, and running capacity 4.
