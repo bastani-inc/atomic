@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "vitest";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { migrateStageSessionCheckpoint } from "../../packages/workflows/src/durable/backend.js";
+import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { type JournalEntry, RUN_EVENT_TYPES } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
@@ -146,18 +147,70 @@ test("converts a legacy run when it is resumed, leaving the legacy tables unchan
 	}
 });
 
-test("converts a legacy run when its events are read", async () => {
+test("reads a legacy run's events in place without converting it", async () => {
 	const path = join(tempDirectory(), "journal.sqlite");
 	writeLegacyJournal(path);
 
 	const journal = await openSqlRunJournal(path);
 	try {
-		assert.equal((await readAll(journal.read(legacyRun.runId))).length, 1);
+		assert.deepEqual(
+			(await readAll(journal.read(legacyRun.runId))).map((entry) => [entry.seq, entry.event.type]),
+			[[1, RUN_EVENT_TYPES.runStarted]],
+		);
+		assert.equal(await journal.readKey(legacyRun.runId, "missing"), undefined);
+		assert.equal(await journal.leaseState(legacyRun.runId), undefined);
 	} finally {
 		await journal.close();
 	}
 
-	assert.deepEqual(convertedRunIds(path), [legacyRun.runId]);
+	assert.deepEqual(convertedRunIds(path), []);
+});
+
+test("opening the durable backend lists legacy runs without converting any of them", async () => {
+	const path = join(tempDirectory(), "journal.sqlite");
+	writeLegacyJournal(path);
+
+	const backend = await JournalDurableBackend.open(await openSqlRunJournal(path));
+	await backend.close();
+
+	assert.deepEqual(convertedRunIds(path), []);
+});
+
+test("does not create a new run over an unconverted legacy run with the same ID", async () => {
+	const path = join(tempDirectory(), "journal.sqlite");
+	writeLegacyJournal(path);
+
+	const journal = await openSqlRunJournal(path);
+	try {
+		assert.equal(await journal.createRun({ ...legacyRun, name: "replacement", status: "running" }), "exists");
+		assert.equal((await journal.getRun(legacyRun.runId))?.name, legacyRun.name);
+		assert.equal((await readAll(journal.read(legacyRun.runId))).length, 1);
+	} finally {
+		await journal.close();
+	}
+});
+
+test("keeps legacy reads off after the earlier version copied every run, so its deletions stay deleted", async () => {
+	const path = join(tempDirectory(), "journal.sqlite");
+	writeLegacyJournal(path);
+	const database = new DatabaseSync(path);
+	try {
+		database.exec(`
+			CREATE TABLE wf_migrations(name TEXT PRIMARY KEY, completed_at INTEGER NOT NULL);
+			INSERT INTO wf_migrations VALUES ('unprefixed-journal-tables', 0);
+		`);
+	} finally {
+		database.close();
+	}
+
+	const journal = await openSqlRunJournal(path);
+	try {
+		assert.deepEqual(await journal.listRuns(), []);
+		assert.equal(await journal.getRun(legacyRun.runId), undefined);
+		assert.deepEqual(await readAll(journal.read(legacyRun.runId)), []);
+	} finally {
+		await journal.close();
+	}
 });
 
 for (const converted of [false, true]) {
@@ -166,7 +219,7 @@ for (const converted of [false, true]) {
 		writeLegacyJournal(path);
 
 		const first = await openSqlRunJournal(path);
-		if (converted) await readAll(first.read(legacyRun.runId));
+		if (converted) await first.acquire(legacyRun.runId, "resuming-session");
 		await first.deleteRun(legacyRun.runId);
 		await first.close();
 

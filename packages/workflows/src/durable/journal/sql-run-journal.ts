@@ -65,7 +65,6 @@ export class SqlRunJournal implements RunJournal {
 	private readonly database: SqliteDatabase;
 	private readonly tables: Tables;
 	private readonly legacy: LegacyJournalRuns | undefined;
-	private readonly settledRunIds = new Set<string>();
 
 	private constructor(database: SqliteDatabase, tables: Tables, legacy: LegacyJournalRuns | undefined) {
 		this.database = database;
@@ -150,6 +149,7 @@ export class SqlRunJournal implements RunJournal {
 		if (json instanceof StorageUnavailableError) throw json;
 		const { runs } = this.tables;
 		return this.operation(async () => {
+			if (await this.legacy?.find(this.database, header.runId)) return "exists";
 			const result = await this.database.run(
 				`INSERT INTO ${runs} VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(${c.runId}) DO NOTHING`,
 				header.runId,
@@ -194,14 +194,14 @@ export class SqlRunJournal implements RunJournal {
 	private async requireRun(tx: SqliteExecutor, runId: string): Promise<void> {
 		if (await tx.get(`SELECT ${c.runId} FROM ${this.tables.runs} WHERE ${c.runId} = ?`, runId)) return;
 		if (!(await this.legacy?.convert(tx, runId))) throw new RunNotFoundError(runId);
-		this.settledRunIds.add(runId);
 	}
 
-	/** Convert a legacy run before reading it; checked once per run for this journal. */
-	private async convertLegacyRun(runId: string): Promise<void> {
-		if (this.legacy === undefined || this.settledRunIds.has(runId)) return;
-		await this.legacy.ensureConverted(runId);
-		this.settledRunIds.add(runId);
+	/** Whether this run exists only in the legacy tables, whose events are then read in place. */
+	private async isUnconvertedLegacyRun(runId: string): Promise<boolean> {
+		if (this.legacy === undefined) return false;
+		if (await this.database.get(`SELECT ${c.runId} FROM ${this.tables.runs} WHERE ${c.runId} = ?`, runId))
+			return false;
+		return (await this.legacy.find(this.database, runId)) !== undefined;
 	}
 
 	private async leaseRow(tx: SqliteExecutor, runId: string): Promise<LeaseRow | undefined> {
@@ -268,7 +268,6 @@ export class SqlRunJournal implements RunJournal {
 		this.assertOpen();
 		validateText("runId", runId);
 		return this.operation(async () => {
-			await this.convertLegacyRun(runId);
 			const row = await this.database.get<LeaseRow & { age_ms: number }>(
 				`SELECT *, MIN(${Number.MAX_SAFE_INTEGER}, MAX(0, ${STORE_NOW} - ${c.renewedAt})) AS age_ms FROM ${this.tables.leases} WHERE ${c.runId} = ?`,
 				runId,
@@ -410,15 +409,18 @@ export class SqlRunJournal implements RunJournal {
 		this.assertOpen();
 		validateText("runId", runId);
 		let nextSeq = fromSeq;
-		await this.operation(() => this.convertLegacyRun(runId));
+		const legacy = this.legacy;
+		const readsLegacy = legacy !== undefined && (await this.operation(() => this.isUnconvertedLegacyRun(runId)));
 		for (;;) {
 			const page = await this.operation(async () => {
-				const rows = await this.database.all<EventRow>(
-					`SELECT * FROM ${this.tables.events} WHERE ${c.runId} = ? AND ${c.seq} >= ? ORDER BY ${c.seq} LIMIT ?`,
-					runId,
-					nextSeq,
-					JOURNAL_READ_PAGE_SIZE,
-				);
+				const rows = readsLegacy
+					? ((await legacy.events(this.database, runId, nextSeq, JOURNAL_READ_PAGE_SIZE)) as EventRow[])
+					: await this.database.all<EventRow>(
+							`SELECT * FROM ${this.tables.events} WHERE ${c.runId} = ? AND ${c.seq} >= ? ORDER BY ${c.seq} LIMIT ?`,
+							runId,
+							nextSeq,
+							JOURNAL_READ_PAGE_SIZE,
+						);
 				return rows.map(entryFromRow);
 			});
 			for (const entry of page) {
@@ -437,12 +439,14 @@ export class SqlRunJournal implements RunJournal {
 		validateText("runId", runId);
 		validateText("key", key);
 		return this.operation(async () => {
-			await this.convertLegacyRun(runId);
-			const row = await this.database.get<EventRow>(
-				`SELECT * FROM ${this.tables.events} WHERE ${c.runId} = ? AND ${c.key} = ?`,
-				runId,
-				key,
-			);
+			const row =
+				this.legacy !== undefined && (await this.isUnconvertedLegacyRun(runId))
+					? ((await this.legacy.eventByKey(this.database, runId, key)) as EventRow | undefined)
+					: await this.database.get<EventRow>(
+							`SELECT * FROM ${this.tables.events} WHERE ${c.runId} = ? AND ${c.key} = ?`,
+							runId,
+							key,
+						);
 			return row ? entryFromRow(row) : undefined;
 		});
 	}

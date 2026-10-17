@@ -6,7 +6,13 @@ import {
 } from "@bastani/atomic/storage";
 import { JOURNAL_COLUMNS as c, JOURNAL_SCHEMA_VERSION, JOURNAL_TABLES } from "./types.js";
 
-const CURRENT = renderStorageIdentifiers("journal", { ...JOURNAL_TABLES, legacyDeleted: "legacy_deleted" });
+const CURRENT = renderStorageIdentifiers("journal", {
+	...JOURNAL_TABLES,
+	legacyDeleted: "legacy_deleted",
+	migrations: "migrations",
+});
+/** Recorded by the earlier version that copied every legacy run at once; those runs are already in `wf_*`. */
+const COPIED_ALL_MARKER = "unprefixed-journal-tables";
 
 const LEGACY_COLUMNS: Readonly<Record<keyof typeof JOURNAL_TABLES, readonly string[]>> = {
 	meta: [c.schemaVersion],
@@ -21,6 +27,15 @@ const PENDING_LEGACY_RUNS = `SELECT ${c.runId}, ${c.headerJson}, ${c.status} FRO
 	AND ${c.runId} NOT IN (SELECT ${c.runId} FROM ${CURRENT.legacyDeleted})`;
 
 type LegacyRunRow = SqliteRow & { [c.runId]: string; [c.headerJson]: string; [c.status]: string };
+type LegacyEventRow = SqliteRow & {
+	[c.runId]: string;
+	[c.seq]: number;
+	[c.epoch]: number;
+	[c.key]: string | null;
+	[c.type]: string;
+	[c.payload]: string;
+	[c.at]: number;
+};
 
 async function hasLegacyTable(tx: SqliteExecutor, table: keyof typeof JOURNAL_TABLES): Promise<boolean> {
 	const columns = await tx.all<SqliteRow & { name: string }>(
@@ -37,17 +52,12 @@ async function hasLegacyTable(tx: SqliteExecutor, table: keyof typeof JOURNAL_TA
  * #3682 renamed the journal tables to `wf_*` without reading the old ones, so
  * `/workflow resume` lost every run recorded before 0.9.38-alpha.6. Those runs are
  * listed from the old tables as they are, and a run is converted into `wf_*` only
- * when it is used, following pi's migrate-on-load pattern. The schema version and
+ * when it is resumed (its lease is claimed), following pi's migrate-on-load pattern.
+ * Until then its events are read from the old tables as they are. The schema version and
  * columns are unchanged, so its rows copy verbatim. The old tables are never
  * modified; deleting a legacy run records its ID so it is not listed again.
  */
 export class LegacyJournalRuns {
-	private readonly database: SqliteDatabase;
-
-	private constructor(database: SqliteDatabase) {
-		this.database = database;
-	}
-
 	/** Present only for the unprefixed journal in a database that still has version-1 legacy tables. */
 	static async open(database: SqliteDatabase): Promise<LegacyJournalRuns | undefined> {
 		try {
@@ -60,10 +70,17 @@ export class LegacyJournalRuns {
 				);
 				if (versions.length !== 1 || Number(versions[0]![c.schemaVersion]) !== JOURNAL_SCHEMA_VERSION)
 					return undefined;
+				const copiedAll =
+					(await tx.get(
+						`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`,
+						CURRENT.migrations,
+					)) !== undefined &&
+					(await tx.get(`SELECT name FROM ${CURRENT.migrations} WHERE name = ?`, COPIED_ALL_MARKER)) !== undefined;
+				if (copiedAll) return undefined;
 				await tx.exec(
 					`CREATE TABLE IF NOT EXISTS ${CURRENT.legacyDeleted}(${c.runId} TEXT PRIMARY KEY, deleted_at INTEGER NOT NULL)`,
 				);
-				return new LegacyJournalRuns(database);
+				return new LegacyJournalRuns();
 			});
 		} catch {
 			return undefined;
@@ -79,6 +96,24 @@ export class LegacyJournalRuns {
 
 	async find(executor: SqliteExecutor, runId: string): Promise<LegacyRunRow | undefined> {
 		return executor.get<LegacyRunRow>(`${PENDING_LEGACY_RUNS} AND ${c.runId} = ?`, runId);
+	}
+
+	/** Events of an unconverted legacy run, read in place. */
+	async events(executor: SqliteExecutor, runId: string, fromSeq: number, limit: number): Promise<LegacyEventRow[]> {
+		return executor.all<LegacyEventRow>(
+			`SELECT ${LEGACY_COLUMNS.events.join(", ")} FROM ${JOURNAL_TABLES.events} WHERE ${c.runId} = ? AND ${c.seq} >= ? ORDER BY ${c.seq} LIMIT ?`,
+			runId,
+			fromSeq,
+			limit,
+		);
+	}
+
+	async eventByKey(executor: SqliteExecutor, runId: string, key: string): Promise<LegacyEventRow | undefined> {
+		return executor.get<LegacyEventRow>(
+			`SELECT ${LEGACY_COLUMNS.events.join(", ")} FROM ${JOURNAL_TABLES.events} WHERE ${c.runId} = ? AND ${c.key} = ?`,
+			runId,
+			key,
+		);
 	}
 
 	/** Convert one legacy run into `wf_*` inside the caller's transaction; returns whether it did. */
@@ -107,9 +142,5 @@ export class LegacyJournalRuns {
 		if ((await tx.get(`SELECT ${c.runId} FROM ${JOURNAL_TABLES.runs} WHERE ${c.runId} = ?`, runId)) === undefined)
 			return;
 		await tx.run(`INSERT OR IGNORE INTO ${CURRENT.legacyDeleted} VALUES (?, ?)`, runId, Date.now());
-	}
-
-	ensureConverted(runId: string): Promise<boolean> {
-		return this.database.transaction((tx) => this.convert(tx, runId));
 	}
 }
