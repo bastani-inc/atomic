@@ -6,6 +6,7 @@ import type { SqliteDatabase } from "../database.js";
 import { openNodeSqliteDatabase } from "../node-sqlite.js";
 import { SessionExistsError, SessionNotFoundError } from "./errors.js";
 import { type JsonlSessionFile, JsonlSessionStore } from "./jsonl-session-store.js";
+import { summarizeLegacySession } from "./legacy-session-summary.js";
 import { summarizeSession } from "./session-summary.js";
 import type {
 	SessionListQuery,
@@ -27,7 +28,8 @@ const DELETED_TABLE = "session_legacy_deleted";
  * work. A legacy session is converted into the database only when it is opened,
  * following pi's migrate-on-load pattern; afterwards it is read from the database
  * like any other session. The JSONL files are never modified. Deleting a session
- * records its ID so a legacy copy of it is not listed again.
+ * records its ID so a legacy copy of it is not listed again. Listing reads a large legacy
+ * session only from its two ends, so its cost does not grow with the size of the history.
  */
 export class LegacySessionStore implements SessionStore {
 	private readonly inner: SessionStore;
@@ -204,25 +206,34 @@ export class LegacySessionStore implements SessionStore {
 		return this.index;
 	}
 
-	/** Summaries are cached per store until a copy of the session changes on disk. */
+	/**
+	 * Listing rows are cached per store until a copy of the session changes on disk. A row is built
+	 * from bounded reads, not a full parse, so listing does not cost the size of the history.
+	 */
 	private async summarize(sessionId: string): Promise<SessionSummary | undefined> {
-		const stamp = await this.fileStamp(sessionId);
+		const copies = await Promise.all(
+			((await this.legacyIndex()).get(sessionId) ?? []).map(async (file) => ({
+				file,
+				stats: await stat(file.location).catch(() => undefined),
+			})),
+		);
+		const stamp = copies
+			.map(({ stats }) => (stats === undefined ? "missing" : `${stats.size}:${stats.mtimeMs}`))
+			.join("|");
 		const cached = this.summaries.get(sessionId);
 		if (cached !== undefined && cached.stamp === stamp) return cached.summary ?? undefined;
-		const snapshot = await this.readLegacy(sessionId);
-		const summary = snapshot === undefined ? null : summarizeSession(snapshot);
+		let summary: SessionSummary | null = null;
+		for (const { file, stats } of copies) {
+			if (stats === undefined) continue;
+			try {
+				summary = await summarizeLegacySession(file, stats.size, stats.mtimeMs);
+				break;
+			} catch {
+				// Try the next copy.
+			}
+		}
 		this.summaries.set(sessionId, { stamp, summary });
 		return summary ?? undefined;
-	}
-
-	private async fileStamp(sessionId: string): Promise<string> {
-		const stamps = await Promise.all(
-			((await this.legacyIndex()).get(sessionId) ?? []).map(async (file) => {
-				const stats = await stat(file.location).catch(() => undefined);
-				return stats === undefined ? "missing" : `${stats.size}:${stats.mtimeMs}`;
-			}),
-		);
-		return stamps.join("|");
 	}
 
 	private legacyStore(): Promise<JsonlSessionStore | undefined> {
