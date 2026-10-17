@@ -3,11 +3,12 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { join } from "node:path";
 import { test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { outsideWorkflowExecutions } from "../../packages/workflows/src/durable/execution-context-boundary.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
-import { installWorkflowLifecycleNotifications } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
+import { currentWorkflowSessionRunState } from "../../packages/workflows/src/extension/adopt-session-run-state.js";
+import { createWorkflowExtensionRuntimeState } from "../../packages/workflows/src/extension/extension-runtime-state.js";
+import type { WorkflowLifecycleNoticeDetails } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { runDetached } from "../../packages/workflows/src/runs/background/runner.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
@@ -36,14 +37,13 @@ test("a turn triggered by a terminal notice can launch a new run after the notif
 	});
 	const followUpSettled = Promise.withResolvers<string>();
 	let launched = false;
-	const unsubscribe = installWorkflowLifecycleNotifications({
-		store,
-		config: { enabled: true, notifyOn: ["completed"] },
-		sendMessage: () =>
-			outsideWorkflowExecutions(() => {
-				hostScopeAtDelivery = hostScope.getStore();
-				if (launched) return;
+	const state = createWorkflowExtensionRuntimeState(
+		{
+			sendMessage(message) {
+				const details = message.details as WorkflowLifecycleNoticeDetails | undefined;
+				if (details?.kind !== "completed" || details.runId !== firstRunId || launched) return;
 				launched = true;
+				hostScopeAtDelivery = hostScope.getStore();
 				setTimeout(async () => {
 					await jobs.get(firstRunId)?.promise;
 					runDetached(
@@ -60,8 +60,12 @@ test("a turn triggered by a terminal notice can launch a new run after the notif
 						},
 					);
 				}, 0);
-			}),
-	});
+			},
+		},
+		{},
+		{ runState: { ...currentWorkflowSessionRunState(), store, jobs, toolControlRegistry } },
+	);
+	state.setNotificationsActive(true);
 	try {
 		hostScope.run("host turn", () =>
 			runDetached(
@@ -75,7 +79,7 @@ test("a turn triggered by a terminal notice can launch a new run after the notif
 		assert.equal(backend.getWorkflow(firstRunId)?.status, "completed");
 		assert.equal(backend.getWorkflow(followUpRunId)?.status, "completed");
 	} finally {
-		unsubscribe();
+		state.setNotificationsActive(false);
 		await backend.close();
 		removeTempDirectory(directory);
 	}
