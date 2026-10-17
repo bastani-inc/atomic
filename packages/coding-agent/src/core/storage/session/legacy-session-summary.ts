@@ -1,5 +1,5 @@
 import { type FileHandle, open } from "node:fs/promises";
-import type { SessionEntry } from "../../session-manager-types.js";
+import type { SessionEntry } from "../../session-manager-types.ts";
 import type { JsonlSessionFile } from "./jsonl-session-store.js";
 import {
 	applySessionSummaryEntries,
