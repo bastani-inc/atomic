@@ -13,7 +13,7 @@ import {
 	unlink,
 	writeFile,
 } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { StringDecoder } from "node:string_decoder";
 import { setTimeout as delay } from "node:timers/promises";
@@ -231,12 +231,20 @@ export class JsonlSessionStore implements SessionStore {
 		return this.run(async () => {
 			const located = await this.locate(sessionId);
 			if (!located) throw new SessionNotFoundError(sessionId);
-			return this.readSnapshot(located.path, located.stored, true);
+			return this.readPersisted(located.path, located.stored);
 		});
 	}
 
 	loadFile(path: string): Promise<SessionSnapshot> {
-		return this.run(() => this.readSnapshot(resolve(path), undefined, true));
+		return this.run(() => this.readPersisted(resolve(path)));
+	}
+
+	private async readPersisted(path: string, stored?: StoredSessionHeader): Promise<SessionSnapshot> {
+		stored ??= await this.readFirstLine(path);
+		const directory = dirname(path);
+		if (stored.version === SESSION_FORMAT_VERSION || directory === this.directory)
+			return this.readSnapshot(path, stored, true);
+		return this.exclusive(() => this.readSnapshot(path, undefined, true), undefined, directory);
 	}
 
 	findFile(sessionId: string): Promise<string | undefined> {
@@ -342,13 +350,17 @@ export class JsonlSessionStore implements SessionStore {
 		return result;
 	}
 
-	private async exclusive<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+	private async exclusive<T>(
+		operation: () => Promise<T>,
+		signal?: AbortSignal,
+		directory = this.directory,
+	): Promise<T> {
 		let release: () => Promise<void>;
 		for (;;) {
 			this.checkAbort(signal);
 			try {
-				release = await lockfile.lock(this.directory, {
-					lockfilePath: join(this.directory, ".session.lock"),
+				release = await lockfile.lock(directory, {
+					lockfilePath: join(directory, ".session.lock"),
 					onCompromised: (cause) => {
 						this.poisoned = new StorageUnavailableError(this.descriptor, cause);
 					},

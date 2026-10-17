@@ -33,7 +33,7 @@ export function upgradeLegacySessionHeader(stored: StoredSessionHeader, path: st
 		id: stored.id,
 		createdAt: stored.timestamp,
 		cwd: stored.cwd,
-		...(stored.parentSession === undefined ? {} : { parentSessionId: stored.parentSession }),
+		...(stored.parentSession === undefined ? {} : { parentSessionId: legacyParentSessionId(stored.parentSession) }),
 		...(stored.internal === undefined ? {} : { internal: stored.internal as true }),
 		...(stored.workflow === undefined ? {} : { workflow: stored.workflow as SessionHeader["workflow"] }),
 	};
@@ -45,11 +45,21 @@ export function upgradeLegacySessionEntries(
 	path: string,
 ): { header: SessionHeader; entries: SessionEntry[] } {
 	const header = upgradeLegacySessionHeader(stored, path);
-	const treeEntries = stored.version === undefined || stored.version === 1 ? addTreeIds(entries) : entries;
+	const treeEntries =
+		stored.version === undefined || stored.version === 1 ? addTreeIds(entries, stored, path) : entries;
 	return { header, entries: stored.version === 3 ? [...treeEntries] : treeEntries.map(renameHookMessage) };
 }
 
-function addTreeIds(entries: readonly SessionEntry[]): SessionEntry[] {
+const LEGACY_SESSION_FILE_NAME =
+	/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z_([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)\.jsonl$/;
+
+function legacyParentSessionId(parentSession: string): string {
+	const name = parentSession.split(/[\\/]/).at(-1) ?? parentSession;
+	if (name === parentSession) return parentSession;
+	return LEGACY_SESSION_FILE_NAME.exec(name)?.[1] ?? parentSession;
+}
+
+function addTreeIds(entries: readonly SessionEntry[], stored: StoredSessionHeader, path: string): SessionEntry[] {
 	const ids = new Set<string>();
 	let parentId: string | null = null;
 	const upgraded = entries.map((entry) => {
@@ -59,11 +69,14 @@ function addTreeIds(entries: readonly SessionEntry[]): SessionEntry[] {
 		parentId = id;
 		return next;
 	});
-	return upgraded.map((entry) => {
+	return upgraded.map((entry, position) => {
 		if (entry.type !== "compaction") return entry;
 		const { firstKeptEntryIndex, ...compaction } = entry as LegacyCompactionEntry;
 		if (typeof firstKeptEntryIndex !== "number") return entry;
-		const kept = firstKeptEntryIndex >= 1 ? upgraded[firstKeptEntryIndex - 1] : undefined;
+		if (!Number.isInteger(firstKeptEntryIndex) || firstKeptEntryIndex < 0 || firstKeptEntryIndex > position + 1)
+			throw new SessionFormatVersionError(path, stored.version);
+		const kept =
+			firstKeptEntryIndex >= 1 && firstKeptEntryIndex <= position ? upgraded[firstKeptEntryIndex - 1] : undefined;
 		return { ...compaction, firstKeptEntryId: kept?.id ?? null };
 	});
 }
