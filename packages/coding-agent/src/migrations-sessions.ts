@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import lockfile from "proper-lockfile";
 import { getAgentDir } from "./config.js";
 import {
 	isDefaultSessionStorage,
@@ -8,32 +9,43 @@ import {
 	selectSessionStorage,
 } from "./core/session-storage.js";
 import {
-	SessionConflictError,
-	SessionExistsError,
-	SessionFormatVersionError,
-	SessionIdMismatchError,
-	SessionInvalidTextError,
-	SessionInvalidTimestampError,
-} from "./core/storage/session/errors.js";
+	StorageUnavailableError as SharedStorageUnavailableError,
+	StoreClosedError as SharedStoreClosedError,
+	StorageError,
+	StorageInvalidTextError,
+	StoragePayloadTooLargeError,
+} from "./core/storage/errors.js";
+import { StorageUnavailableError, StoreClosedError } from "./core/storage/session/errors.js";
 import { JsonlSessionStore } from "./core/storage/session/jsonl-session-store.js";
 import type { SessionStore } from "./core/storage/session/types.js";
 
 const MARKER_VERSION = 1;
 const MARKER_SUFFIX = ".legacy-session-import.json";
+const IMPORT_LOCK_OPTIONS = {
+	realpath: false,
+	retries: { retries: 10, factor: 2, minTimeout: 100, maxTimeout: 10000, randomize: true },
+	stale: 30000,
+} as const;
 
 interface ImportMarker {
 	readonly version: number;
 	readonly completedAt: string;
 }
 
-function isRejectedSession(error: Error): boolean {
+/**
+ * A failure of the target store itself, which stops the import so the next startup retries.
+ * Anything else rejects only the session being copied, so one damaged transcript cannot
+ * block every later one.
+ */
+function isStoreFailure(error: unknown): boolean {
 	return (
-		error instanceof SessionExistsError ||
-		error instanceof SessionConflictError ||
-		error instanceof SessionFormatVersionError ||
-		error instanceof SessionIdMismatchError ||
-		error instanceof SessionInvalidTextError ||
-		error instanceof SessionInvalidTimestampError
+		error instanceof StorageUnavailableError ||
+		error instanceof StoreClosedError ||
+		error instanceof SharedStorageUnavailableError ||
+		error instanceof SharedStoreClosedError ||
+		(error instanceof StorageError &&
+			!(error instanceof StorageInvalidTextError) &&
+			!(error instanceof StoragePayloadTooLargeError))
 	);
 }
 
@@ -67,11 +79,15 @@ export async function migrateLegacySessionsToDefaultStore(
 	const storage = { ...options, agentDir };
 	let source: JsonlSessionStore | undefined;
 	let target: SessionStore | undefined;
+	let release: (() => Promise<void>) | undefined;
 	try {
 		if (!existsSync(legacyDirectory)) return;
 		const selection = selectSessionStorage(cwd, storage);
 		if (!isDefaultSessionStorage(selection) || !("kind" in selection) || selection.kind !== "sqlite") return;
 		const markerPath = `${selection.path}${MARKER_SUFFIX}`;
+		if (hasCompletionMarker(markerPath)) return;
+		mkdirSync(dirname(markerPath), { recursive: true });
+		release = await lockfile.lock(markerPath, IMPORT_LOCK_OPTIONS);
 		if (hasCompletionMarker(markerPath)) return;
 		source = await JsonlSessionStore.open(legacyDirectory, { scanExisting: false });
 		for await (const file of source.scanFiles()) {
@@ -82,7 +98,7 @@ export async function migrateLegacySessionsToDefaultStore(
 			try {
 				await target.create(snapshot.header, snapshot.entries);
 			} catch (error) {
-				if (!(error instanceof Error) || !isRejectedSession(error)) throw error;
+				if (isStoreFailure(error)) throw error;
 			}
 		}
 		writeCompletionMarker(markerPath);
@@ -90,5 +106,6 @@ export async function migrateLegacySessionsToDefaultStore(
 	} finally {
 		await source?.close().catch(() => {});
 		await target?.close().catch(() => {});
+		await release?.().catch(() => {});
 	}
 }

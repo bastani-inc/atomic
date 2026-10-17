@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -11,18 +12,19 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
+import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
-import { parseArgs } from "../src/cli/args.ts";
-import { ENV_AGENT_DIR, ENV_SESSION_DIR } from "../src/config.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { getDefaultSessionDirPath } from "../src/core/session-manager-paths.ts";
-import { resolveSessionStore, type SessionStorageOptions } from "../src/core/session-storage.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
-import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.ts";
-import type { SessionStore } from "../src/core/storage/session/types.ts";
-import { createSessionManager } from "../src/main-session.ts";
-import { migrateLegacySessionsToDefaultStore } from "../src/migrations-sessions.ts";
-import { runCliProcess } from "./cli-test-helpers.ts";
+import { parseArgs } from "../src/cli/args.js";
+import { ENV_AGENT_DIR, ENV_SESSION_DIR } from "../src/config.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { getDefaultSessionDirPath } from "../src/core/session-manager-paths.js";
+import { resolveSessionStore, type SessionStorageOptions } from "../src/core/session-storage.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
+import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
+import type { SessionStore } from "../src/core/storage/session/types.js";
+import { createSessionManager } from "../src/main-session.js";
+import { migrateLegacySessionsToDefaultStore } from "../src/migrations-sessions.js";
+import { runCliProcess } from "./cli-test-helpers.js";
 
 type JsonRecord = Record<string, string | number | boolean | null | object>;
 
@@ -551,6 +553,69 @@ describe("legacy JSONL session import into the default store", () => {
 			);
 		});
 		assert.deepEqual(snapshotFiles(join(agentDir, "sessions")), before);
+	});
+
+	it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+		"imports readable projects when another legacy project directory cannot be read",
+		async () => {
+			writeAllFormats();
+			const locked = join(agentDir, "sessions", "--locked-project--");
+			mkdirSync(locked, { recursive: true });
+			chmodSync(locked, 0o000);
+			try {
+				await migrate();
+			} finally {
+				chmodSync(locked, 0o755);
+			}
+
+			await withDefaultStore(async (store) => {
+				assert.equal((await SessionManager.listAll(store)).length, 5);
+			});
+			assert.equal(existsSync(importMarker), true);
+		},
+	);
+
+	it("skips a transcript with a damaged content block and imports the sessions after it", async () => {
+		writeAllFormats();
+		const damagedId = "0191f0a1-0000-7000-8000-0000000000aa";
+		const createdAt = "2024-01-01T00:00:00.000Z";
+		writeLegacy({
+			id: damagedId,
+			createdAt,
+			lines: (projectCwd) => [
+				{ type: "session", version: 3, id: damagedId, timestamp: createdAt, cwd: projectCwd },
+				{
+					type: "message",
+					id: "d0000001",
+					parentId: null,
+					timestamp: createdAt,
+					message: { role: "user", content: [null], timestamp: Date.parse(createdAt) },
+				},
+			],
+		});
+
+		await migrate();
+
+		await withDefaultStore(async (store) => {
+			assert.equal(await store.readHeader(damagedId), undefined);
+			assert.equal((await SessionManager.listAll(store)).length, 5);
+		});
+		assert.equal(existsSync(importMarker), true);
+	});
+
+	it("waits for a concurrent import and does not repeat it once that import has finished", async () => {
+		writeAllFormats();
+		mkdirSync(dirname(importMarker), { recursive: true });
+		const release = await lockfile.lock(importMarker, { realpath: false });
+
+		const waiting = migrate();
+		writeFileSync(importMarker, `${JSON.stringify({ version: 1, completedAt: new Date().toISOString() })}\n`);
+		await release();
+		await waiting;
+
+		await withDefaultStore(async (store) => {
+			assert.deepEqual(await SessionManager.listAll(store), []);
+		});
 	});
 
 	it("imports sessions from other projects and a repeated id without aborting the batch", async () => {
