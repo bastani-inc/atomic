@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { createSessionCwdMatcher } from "../../../utils/canonical-path.ts";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import type { SqliteDatabase } from "../database.js";
@@ -34,7 +35,7 @@ export class LegacySessionStore implements SessionStore {
 	private readonly databasePath: string;
 	private legacy?: Promise<JsonlSessionStore | undefined>;
 	private index?: Promise<ReadonlyMap<string, readonly JsonlSessionFile[]>>;
-	private readonly summaries = new Map<string, SessionSummary | null>();
+	private readonly summaries = new Map<string, { readonly stamp: string; readonly summary: SessionSummary | null }>();
 	private deletions?: Promise<SqliteDatabase>;
 
 	constructor(inner: SessionStore, options: { readonly legacyDirectory: string; readonly databasePath: string }) {
@@ -203,14 +204,25 @@ export class LegacySessionStore implements SessionStore {
 		return this.index;
 	}
 
-	/** Summaries are cached per store; the legacy files no longer change. */
+	/** Summaries are cached per store until a copy of the session changes on disk. */
 	private async summarize(sessionId: string): Promise<SessionSummary | undefined> {
+		const stamp = await this.fileStamp(sessionId);
 		const cached = this.summaries.get(sessionId);
-		if (cached !== undefined) return cached ?? undefined;
+		if (cached !== undefined && cached.stamp === stamp) return cached.summary ?? undefined;
 		const snapshot = await this.readLegacy(sessionId);
 		const summary = snapshot === undefined ? null : summarizeSession(snapshot);
-		this.summaries.set(sessionId, summary);
+		this.summaries.set(sessionId, { stamp, summary });
 		return summary ?? undefined;
+	}
+
+	private async fileStamp(sessionId: string): Promise<string> {
+		const stamps = await Promise.all(
+			((await this.legacyIndex()).get(sessionId) ?? []).map(async (file) => {
+				const stats = await stat(file.location).catch(() => undefined);
+				return stats === undefined ? "missing" : `${stats.size}:${stats.mtimeMs}`;
+			}),
+		);
+		return stamps.join("|");
 	}
 
 	private legacyStore(): Promise<JsonlSessionStore | undefined> {

@@ -353,6 +353,27 @@ describe("legacy JSONL sessions in the default store", () => {
 		});
 	});
 
+	it("refreshes a listed legacy session when its file changes on disk", async () => {
+		const { paths } = writeAllFormats();
+		await withDefaultStore(async (store) => {
+			const before = await SessionManager.list(cwd, store);
+			assert.equal(before.find((session) => session.id === ids.v3)?.name, "Legacy auth refactor");
+
+			const lines = fixtures.v3.lines(cwd, paths.v2);
+			lines.push({
+				type: "session_info",
+				id: "b0000003",
+				parentId: "b0000002",
+				timestamp: "2025-08-01T10:00:03.000Z",
+				name: "Renamed elsewhere",
+			});
+			writeFileSync(paths.v3, encode(lines));
+
+			const after = await SessionManager.list(cwd, store);
+			assert.equal(after.find((session) => session.id === ids.v3)?.name, "Renamed elsewhere");
+		});
+	});
+
 	it("converts a legacy session once and reads it from the database afterwards", async () => {
 		writeAllFormats();
 		const first = await withDefaultStore(async (store) => (await store.load(ids.v1)).entries);
