@@ -50,9 +50,12 @@ test(
 			runtimeExecutable: process.execPath,
 			args: buildInteractiveEngineArgs(parsed, manager, {}),
 			env: { ATOMIC_CODING_AGENT_DIR: agentDir, ANTHROPIC_API_KEY: "test-only-no-requests" },
+			interactiveEngine: { onDiagnostic: () => {} },
 		});
 		try {
 			await client.start();
+			// Startup includes builtin loading; the short get_state deadline is not a startup budget.
+			await client.waitForInteractiveEngineResources();
 			const state = await client.getState();
 			assert.equal(state.sessionId, manager.getSessionId());
 			assert.equal(state.sessionName, "selected conversation");

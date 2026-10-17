@@ -511,3 +511,55 @@ test("a provisional conversation stops being movable after its first write", asy
 		removeTempDirectory(root);
 	}
 });
+
+test("selected JSONL stores upgrade older conversations in place without rebinding them", async () => {
+	const root = makeTempDirectory("selected-jsonl-upgrade-");
+	const directory = join(root, "selected");
+	const path = join(directory, "older.jsonl");
+	const id = "selected-older-conversation";
+	const content = `${[
+		{ type: "session", version: 3, id, cwd: root, timestamp: "2025-08-01T10:00:00.000Z" },
+		{
+			type: "message",
+			id: "first",
+			parentId: null,
+			timestamp: "2025-08-01T10:00:01.000Z",
+			message: { role: "user", content: "keep this history", timestamp: 1754042401000 },
+		},
+	]
+		.map((line) => JSON.stringify(line))
+		.join("\n")}\n`;
+	await writeFileEnsuringDir(path, content);
+	const originalSettings = SettingsManager.inMemory({ sessions: { storage: { dir: directory } } });
+	const projectSettings = SettingsManager.inMemory({ sessions: { storage: { path: join(root, "project.sqlite") } } });
+	const source = await resolveSessionStore(root, { settings: originalSettings.getSettings() });
+	const destination = await resolveSessionStore(root, { settings: projectSettings.getSettings() });
+	try {
+		assert.equal((await source.readHeader(id))?.id, id);
+		assert.equal((await SessionManager.list(root, source)).length, 1);
+		assert.equal(await readText(path), content, "header lookup and listing must not persist the upgrade");
+		const parsed = parseArgs(["--session-id", id]);
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const manager = await createSessionManager(parsed, root, undefined, originalSettings);
+			try {
+				assert.equal(manager.getHeader()?.version, 4);
+				const header: { version: number } = JSON.parse((await readText(path)).split("\n")[0]!);
+				assert.equal(header.version, 4, "opening must persist the upgraded header");
+				assert.equal(await refreshSessionStorage(manager, parsed, projectSettings), undefined);
+				await manager.appendSessionInfo(`continued ${attempt}`);
+				assert.equal(await destination.readHeader(id), undefined);
+				const snapshot = await source.load(id);
+				assert.equal(snapshot.entries[0]?.type, "message");
+				const last = snapshot.entries.at(-1);
+				assert.equal(last?.type, "session_info");
+				if (last?.type === "session_info") assert.equal(last.name, `continued ${attempt}`);
+			} finally {
+				await manager.getSessionStore().close();
+			}
+		}
+	} finally {
+		await source.close();
+		await destination.close();
+		removeTempDirectory(root);
+	}
+});
