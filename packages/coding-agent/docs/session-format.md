@@ -18,7 +18,7 @@ Atomic also supports deleting sessions interactively from `/resume` (select a se
 
 ## Session Version
 
-SessionManager writes version 4 headers. Other versions and structurally invalid entries are rejected before loading or forking; unloadable sessions are omitted from resume listings. Session-format migrations have been removed. Start a new session instead of relying on automatic conversion. Reading a file leaves its bytes unchanged. A complete final record without a newline is accepted; a torn final record is rejected.
+SessionManager writes version 4 headers. Sessions in formats 1, 2, and 3 are upgraded automatically when opened, resumed, imported, or forked. Opening an older session atomically rewrites only that file in format 4 so new entries can be saved. Listing sessions and looking up their headers upgrade metadata in memory without changing files. Future versions, unrecognized version values, and structurally invalid entries remain rejected; unloadable sessions are omitted from resume listings. A complete final record without a newline is accepted; a torn final record is rejected.
 
 ## Source Files
 

@@ -3,10 +3,16 @@ import { join } from "path";
 import { StringDecoder } from "string_decoder";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { isClassifiedWorkflowSession } from "./session-manager-classification.ts";
-import type { FileEntry, SessionEntry, SessionHeader } from "./session-manager-types.ts";
+import {
+	CURRENT_SESSION_VERSION,
+	type FileEntry,
+	type SessionEntry,
+	type SessionHeader,
+} from "./session-manager-types.ts";
 import { validateSessionFileEntries } from "./session-manager-validation.ts";
 
 import { StorageUnavailableError } from "./storage/session/errors.js";
+import { type StoredSessionHeader, upgradeLegacySessionEntries } from "./storage/session/legacy-format.js";
 
 const SESSION_READ_BUFFER_SIZE = 1024 * 1024;
 /**
@@ -17,7 +23,7 @@ const SESSION_READ_BUFFER_SIZE = 1024 * 1024;
  */
 const HEADER_READ_BUFFER_SIZE = 64 * 1024;
 
-function parseSessionEntryLine(line: string, path: string): FileEntry | undefined {
+function parseSessionEntryLine(line: string, path: string, validateHeader = true): FileEntry | undefined {
 	if (!line.trim()) return undefined;
 	let entry: FileEntry;
 	try {
@@ -25,10 +31,30 @@ function parseSessionEntryLine(line: string, path: string): FileEntry | undefine
 	} catch (cause) {
 		throw new StorageUnavailableError({ adapter: "jsonl", location: path }, cause as Error);
 	}
-	if (entry?.type === "session") {
+	if (validateHeader && entry?.type === "session") {
 		validateSessionFileEntries([entry], path);
 	}
 	return entry;
+}
+
+export function parseStoredSessionEntries(content: string): FileEntry[] {
+	const entries: FileEntry[] = [];
+	for (const line of content.trim().split("\n")) {
+		const entry = parseSessionEntryLine(line, "session content", false);
+		if (entry !== undefined) entries.push(entry);
+	}
+	return entries;
+}
+
+export function upgradeStoredSessionEntries(entries: FileEntry[], path: string): FileEntry[] {
+	const header = entries[0];
+	if (header?.type !== "session" || header.version === CURRENT_SESSION_VERSION) return entries;
+	const upgraded = upgradeLegacySessionEntries(
+		header as StoredSessionHeader,
+		entries.slice(1) as SessionEntry[],
+		path,
+	);
+	return [upgraded.header, ...upgraded.entries];
 }
 
 /** Exported for testing */
@@ -116,7 +142,7 @@ export function readSessionHeader(filePath: string): SessionHeader | null {
 			const firstLine = pending.split("\n")[0];
 			if (!firstLine) return null;
 			const header = JSON.parse(firstLine) as SessionHeader;
-			return validateSessionFileEntries([header], filePath);
+			return validateSessionFileEntries(upgradeStoredSessionEntries([header], filePath), filePath);
 		} finally {
 			closeSync(fd);
 		}

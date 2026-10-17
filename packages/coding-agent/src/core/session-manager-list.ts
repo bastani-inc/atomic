@@ -11,9 +11,10 @@ import { getLatestSessionSummary } from "./session-manager-entries.ts";
 import { getDefaultSessionDir, getDefaultSessionDirPath } from "./session-manager-paths.ts";
 import {
 	isInternalHeader,
-	parseSessionEntries,
+	parseStoredSessionEntries,
 	readSessionHeader,
 	sessionCwdMatches,
+	upgradeStoredSessionEntries,
 } from "./session-manager-storage.ts";
 import type {
 	FileEntry,
@@ -125,7 +126,7 @@ async function parseSessionEntriesCooperatively(content: string, signal?: AbortS
 	for (let index = 0; index < lines.length; index += 1) {
 		const line = lines[index]!;
 		if (line.trim()) {
-			entries.push(...parseSessionEntries(line));
+			entries.push(...parseStoredSessionEntries(line));
 		}
 		if ((index + 1) % PARSE_YIELD_EVERY_LINES === 0) {
 			signal?.throwIfAborted();
@@ -171,10 +172,12 @@ async function buildSessionInfo(
 ): Promise<SessionInfo | null> {
 	try {
 		const content = await readFile(filePath, { encoding: "utf8", signal });
-		const entries =
+		const entries = upgradeStoredSessionEntries(
 			content.length > COOPERATIVE_PARSE_CONTENT_BYTES
 				? await parseSessionEntriesCooperatively(content, signal)
-				: parseSessionEntries(content);
+				: parseStoredSessionEntries(content),
+			filePath,
+		);
 
 		const header = validateSessionFileEntries(entries, filePath);
 

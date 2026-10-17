@@ -18,7 +18,7 @@ atomic -r                  # Browse and select from past sessions
 atomic --no-session        # Ephemeral mode; do not save
 atomic --name "my task"    # Set session display name at startup
 atomic --session <id|prefix> # Use an exact ID or unique 8-hex UUID prefix
-atomic --import <file>       # Import a format-4 JSONL export into session storage
+atomic --import <file>       # Import a JSONL export into session storage
 atomic --fork <id|prefix>    # Fork an exact ID or unique 8-hex UUID prefix
 ```
 
@@ -26,7 +26,7 @@ Use `/session` in interactive mode to see the current session file, session ID, 
 
 For UUID-backed sessions, `--session` and `--fork` accept either the full UUID or exactly eight hexadecimal prefix characters. A prefix must be unique within the current project (or, if no local session matches, across the global session store); collisions list the matching UUIDs and require the full value. Exact custom session IDs keep their existing priority. `--session-id` remains an exact project-local ID used to open or create a session, not a prefix selector.
 
-Session locations are for display, not selection. Use `--import <file>` or `/import <file>` to copy a format-4 JSONL export into the selected store. The session ID and entries are preserved. An ID already present in that store raises `SessionExistsError`; importing never replaces an existing session. Older session formats are not accepted.
+Session locations are for display, not selection. Use `--import <file>` or `/import <file>` to copy a JSONL export into the selected store. The session ID and entries are preserved. An ID already present in that store raises `SessionExistsError`; importing never replaces an existing session. Older supported formats are upgraded automatically when opened for import.
 
 Use `atomic --no-session --import <file>` to work with an imported conversation without saving it. `--import` cannot be combined with `--session`, `--fork`, `--session-id`, `--continue`, or `--resume`; choose one way to select the conversation. `--session-dir` remains available when importing into a persistent store.
 
@@ -60,6 +60,8 @@ For the JSONL file format and SessionManager API, see [Session Format](/session-
 ## Resuming and Deleting Sessions
 
 `/resume` opens an interactive session picker for the current project. `atomic -r` opens the same picker at startup.
+
+Sessions written in formats 1, 2, and 3 appear in the picker and upgrade automatically to format 4 when opened, including with `--continue`, `--session`, or `--fork`. Browsing the picker does not change session files. Opening an older session rewrites only that file; no flag or confirmation is needed.
 
 Resuming restores saved verbatim compaction without another planning request. Older sessions with retired logical-deletion compaction can bring previously hidden content back into context.
 
