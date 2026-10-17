@@ -515,6 +515,7 @@ export async function main(argv: string[], options?: MainOptions) {
 		sessionStorage !== undefined ||
 		parsed.noSession ||
 		parsed.sessionDir !== undefined ||
+		parsed.sessionStorePath !== undefined ||
 		!!getEnvValue(ENV_SESSION_DIR);
 	const selectedProjectTrusted =
 		parsed.projectTrustOverride ??

@@ -1,9 +1,10 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { APP_NAME } from "../src/config.ts";
-import type { SessionManager } from "../src/core/session-manager.ts";
+import { SessionManager } from "../src/core/session-manager.ts";
+import { resolveSessionStore } from "../src/core/session-storage.js";
 import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
 import { formatResumeCommand } from "../src/modes/interactive/interactive-mode.ts";
 
@@ -155,5 +156,30 @@ describe("formatResumeCommand", () => {
 		const sessionManager = createSessionManager({ sessionFile: undefined });
 
 		expect(formatResumeCommand(sessionManager)).toBeUndefined();
+	});
+
+	it.each([
+		["same path and prefix", "same_", "same_", false],
+		["different prefix", "same_", "other_", true],
+		["default prefix", "", "other_", true],
+	] as const)("SQLite hints preserve %s without redundant flags", async (_label, prefix, selectedPrefix, pinned) => {
+		setStdoutIsTTY(true);
+		const dir = mkdtempSync(join(tmpdir(), "sqlite-resume-selection-"));
+		tempDirs.push(dir);
+		const path = join(dir, "sessions.sqlite");
+		writeFileSync(
+			join(dir, "settings.json"),
+			JSON.stringify({ sessions: { storage: { path, prefix: selectedPrefix } } }),
+		);
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", dir);
+		const store = await resolveSessionStore(dir, { sessionStore: { kind: "sqlite", path, prefix } });
+		try {
+			const manager = await SessionManager.create(store, dir, { id: "selected-session" });
+			const selection = pinned ? ` --session-store ${path}${prefix ? ` --session-prefix ${prefix}` : ""}` : "";
+			expect(formatResumeCommand(manager)).toBe(`${APP_NAME}${selection} --session selected-session`);
+		} finally {
+			await store.close();
+			vi.unstubAllEnvs();
+		}
 	});
 });

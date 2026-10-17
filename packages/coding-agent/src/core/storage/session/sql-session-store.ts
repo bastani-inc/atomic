@@ -52,11 +52,13 @@ type SummaryRow = HeaderRow & {
 export class SqlSessionStore implements SessionStore {
 	private readonly database: SqliteDatabase;
 	private readonly tables: Tables;
+	private readonly prefix: string;
 	private closed = false;
 
-	private constructor(database: SqliteDatabase, tables: Tables) {
+	private constructor(database: SqliteDatabase, tables: Tables, prefix = "") {
 		this.database = database;
 		this.tables = tables;
+		this.prefix = prefix;
 	}
 
 	static async open(database: SqliteDatabase, options: { readonly prefix?: string } = {}): Promise<SqlSessionStore> {
@@ -90,11 +92,11 @@ export class SqlSessionStore implements SessionStore {
 				) STRICT;
 			`);
 		});
-		return new SqlSessionStore(database, tables);
+		return new SqlSessionStore(database, tables, options.prefix);
 	}
 
 	get descriptor(): StorageDescriptor {
-		return { ...this.database.descriptor };
+		return { ...this.database.descriptor, ...(this.prefix === "" ? {} : { prefix: this.prefix }) };
 	}
 
 	async create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<{ readonly lastSeq: number }> {

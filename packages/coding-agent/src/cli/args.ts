@@ -17,6 +17,7 @@ import {
 import type { ExtensionFlag } from "../core/extensions/types.ts";
 import { getToolListError } from "../core/settings-merge.js";
 import { StorageConfigError } from "../core/storage/errors.js";
+import { validateStoragePrefix } from "../core/storage/prefix.js";
 
 export type Mode = "text" | "json" | "rpc";
 
@@ -39,6 +40,8 @@ export interface Args {
 	sessionId?: string;
 	fork?: string;
 	sessionDir?: string;
+	sessionStorePath?: string;
+	sessionPrefix?: string;
 	models?: string[];
 	tools?: string[];
 	excludeTools?: string[];
@@ -156,6 +159,12 @@ export function parseArgs(args: string[]): Args {
 		} else if (arg === "--session-dir") {
 			if (i + 1 === args.length) throw new StorageConfigError("cli", "--session-dir", "directory-required");
 			result.sessionDir = args[++i];
+		} else if (arg === "--session-store") {
+			if (i + 1 === args.length) throw new StorageConfigError("cli", arg, "path-required");
+			result.sessionStorePath = args[++i];
+		} else if (arg === "--session-prefix") {
+			if (i + 1 === args.length) throw new StorageConfigError("cli", arg, "prefix-required");
+			result.sessionPrefix = args[++i];
 		} else if (arg === "--models" && i + 1 < args.length) {
 			result.models = args[++i]
 				.split(",")
@@ -267,6 +276,15 @@ export function parseArgs(args: string[]): Args {
 		}
 	}
 
+	if (result.sessionStorePath !== undefined) {
+		const conflict =
+			result.sessionDir !== undefined ? "--session-dir" : result.noSession ? "--no-session" : undefined;
+		if (conflict) throw new StorageConfigError("cli", `--session-store, ${conflict}`, "conflicting-flags");
+	} else if (result.sessionPrefix !== undefined) {
+		throw new StorageConfigError("cli", "--session-prefix", "requires --session-store");
+	}
+
+	if (result.sessionPrefix !== undefined) validateStoragePrefix(result.sessionPrefix);
 	return result;
 }
 
@@ -312,6 +330,8 @@ ${chalk.bold("Options:")}
   --session-id <id>              Use exact project session ID, creating it if missing
   --fork <id|prefix>             Fork exact ID or unique 8-hex UUID prefix into a new session
   --session-dir <dir>            Select JSONL session storage and lookup directory
+  --session-store <path>         Select a SQLite session database
+  --session-prefix <prefix>      Table prefix for --session-store (default: empty)
   --no-session                   Don't save session (ephemeral)
   --name, -n <name>              Set session display name
   --models <patterns>            Comma-separated model patterns for ctrl+p cycling

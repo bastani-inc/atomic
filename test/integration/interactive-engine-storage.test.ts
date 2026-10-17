@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { parseArgs } from "../../packages/coding-agent/src/cli/args.js";
 import {
 	createAgentSessionServices,
@@ -14,8 +14,11 @@ import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { resolveSessionStore } from "../../packages/coding-agent/src/core/session-storage.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
+import { quoteIfNeeded } from "../../packages/coding-agent/src/modes/interactive/chat-input-actions.js";
+import { formatResumeCommand } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-helpers.js";
 import { buildInteractiveEngineArgs } from "../../packages/coding-agent/src/modes/interactive-engine/engine-args.js";
 import { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.js";
+import { getShellConfig } from "../../packages/coding-agent/src/utils/shell.js";
 
 // A real built CLI child loads all startup resources and serves RPC over pipes.
 const BUILT_ENGINE_RPC_TIMEOUT_MS = 90_000;
@@ -95,6 +98,70 @@ test(
 		} finally {
 			await client.stop();
 			await store.close();
+			rmSync(root, { recursive: true, force: true });
+		}
+	},
+	BUILT_ENGINE_RPC_TIMEOUT_MS,
+);
+
+test(
+	"the printed SQLite resume hint reopens project B from project A's store through the real CLI",
+	async () => {
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "sqlite-resume-hint-")));
+		const projectA = join(root, "project A's store");
+		const projectB = join(root, "project-b");
+		const agentDir = join(root, "agent");
+		for (const directory of [projectA, projectB, agentDir]) mkdirSync(directory, { recursive: true });
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({ sessions: { storage: { path: "project-b.sqlite" } } }),
+		);
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
+		const path = join(projectA, "selected.sqlite");
+		const store = await resolveSessionStore(projectA, { sessionStore: { kind: "sqlite", path, prefix: "kept_" } });
+		try {
+			for (const id of ["", "session's ID"]) {
+				await store.create({ id, version: 4, cwd: projectB, createdAt: new Date().toISOString() }, []);
+				const manager = await SessionManager.open(store, id);
+				await manager.appendSessionInfo("conversation from A");
+				const tty = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+				let hint: string | undefined;
+				try {
+					Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
+					hint = formatResumeCommand(manager);
+				} finally {
+					if (tty) Object.defineProperty(process.stdout, "isTTY", tty);
+					else Reflect.deleteProperty(process.stdout, "isTTY");
+				}
+				assert.ok(hint);
+				const shell = getShellConfig();
+				const cli = fileURLToPath(new URL("../../packages/coding-agent/dist/cli.js", import.meta.url));
+				const client = new RpcClient({
+					cliPath: "",
+					cwd: projectB,
+					runtimeExecutable: shell.shell,
+					runtimeArgs: [
+						...shell.args,
+						`atomic() { exec ${quoteIfNeeded(process.execPath)} ${quoteIfNeeded(cli)} --mode rpc --offline --no-extensions --no-mcp --no-skills --no-prompt-templates --no-context-files --approve "$@"; }; ${hint}`,
+					],
+					env: { ATOMIC_CODING_AGENT_DIR: agentDir, ANTHROPIC_API_KEY: "test-only-no-requests" },
+				});
+				try {
+					await client.start();
+					const state = await client.getState();
+					assert.equal(state.sessionId, id);
+					assert.equal(state.sessionName, "conversation from A");
+					assert.equal(
+						hint,
+						`atomic --session-store ${quoteIfNeeded(path)} --session-prefix kept_ --session ${quoteIfNeeded(id)}`,
+					);
+				} finally {
+					await client.stop();
+				}
+			}
+		} finally {
+			await store.close();
+			vi.unstubAllEnvs();
 			rmSync(root, { recursive: true, force: true });
 		}
 	},

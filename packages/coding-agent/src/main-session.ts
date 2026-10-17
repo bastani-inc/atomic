@@ -184,6 +184,8 @@ export async function refreshSessionStorage(
 		settings: settingsManager.getSettings(),
 		noSession: parsed.noSession,
 		sessionDir: parsed.sessionDir,
+		sessionStorePath: parsed.sessionStorePath,
+		sessionPrefix: parsed.sessionPrefix,
 	};
 	const selection = selectSessionStorage(manager.getCwd(), options);
 	if ("load" in selection) return undefined;
@@ -217,6 +219,8 @@ export async function createSessionManager(
 		settings: settingsManager.getSettings(),
 		noSession: parsed.noSession,
 		sessionDir: parsed.sessionDir ?? sessionDir,
+		sessionStorePath: parsed.sessionStorePath,
+		sessionPrefix: parsed.sessionPrefix,
 	});
 	try {
 		const manager = await createSessionManagerWithStore(parsed, cwd, settingsManager, store);
@@ -226,6 +230,8 @@ export async function createSessionManager(
 			settings: settingsManager.getSettings(),
 			noSession: parsed.noSession,
 			sessionDir: parsed.sessionDir ?? sessionDir,
+			sessionStorePath: parsed.sessionStorePath,
+			sessionPrefix: parsed.sessionPrefix,
 		});
 		if (!("load" in selection)) initialStorageKeys.set(manager, storageSelectionKey(selection, getAgentDir()));
 		return manager;

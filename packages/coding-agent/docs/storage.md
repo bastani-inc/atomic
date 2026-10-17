@@ -2,6 +2,8 @@
 
 The SDK exposes an async SQLite API from `@bastani/atomic` and `@bastani/atomic/storage`. Sessions and workflow runs default to one local file, `~/.atomic/workflows/journal.sqlite`, with `session_` and `wf_` table prefixes. Use [storage settings](/settings#sessions) to choose a different file, explicit JSONL sessions, explicit memory, or an adapter module. A failed persistent store never falls back to memory.
 
+To select a local SQLite session database from the CLI, use `atomic --session-store ./sessions.sqlite --session-prefix project_`. Omit the prefix option for the default tables. This overrides environment and settings selections; it cannot be combined with `--session-dir` or `--no-session`. See [Session storage](/sessions#session-storage) for precedence and resume behavior.
+
 ```ts
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
 

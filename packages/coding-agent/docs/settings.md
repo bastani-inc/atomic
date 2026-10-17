@@ -511,6 +511,8 @@ Without configuration, sessions and workflow runs share `~/.atomic/workflows/jou
 
 Session precedence is SDK `sessionStore`, `--no-session`, `--session-dir`, non-empty `ATOMIC_CODING_AGENT_SESSION_DIR`, `sessions.storage`, shared `storage`, then the default SQLite file. Empty environment values are ignored. Project selections replace global selections as whole objects, including options, secrets and prefix; fields are never merged. A present empty `sessions.storage` selects the default session database rather than inheriting `storage`. Relative settings paths resolve against Atomic home, normally `~/.atomic`. CLI and environment directories resolve against the working directory.
 
+For a CLI-level SQLite selection instead, `--session-store <path>` overrides environment and settings just like `--session-dir`. Add `--session-prefix <prefix>` only for a non-default table prefix. The SQLite selector cannot be combined with `--session-dir` or `--no-session`, and a prefix without `--session-store` is an error.
+
 Only the selected source is validated; invalid lower-precedence selections do not block an explicit override. Memory must be selected explicitly and is lost on exit. Invalid selected configuration raises `StorageConfigError`, whose `source`, `field`, and `reason` identify the problem. If a selected store cannot open, Atomic raises a typed storage error rather than falling back to memory. See [Sessions](/sessions#session-storage) and [Storage errors](/storage#storage-errors).
 
 ### Models

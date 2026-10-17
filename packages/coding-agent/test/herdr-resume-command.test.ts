@@ -8,6 +8,7 @@ import { ExtensionRunner } from "../src/core/extensions/runner.js";
 import { noOpUIContext } from "../src/core/extensions/runner-ui.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { getDefaultSessionDirPath } from "../src/core/session-manager-paths.ts";
+import { resolveSessionStore } from "../src/core/session-storage.js";
 import { createHerdrExtension } from "../src/extensions/herdr/index.js";
 import { claimPaneReporting, releasePaneReporting, reportPaneActivity } from "../src/extensions/herdr/pane-owner.js";
 import type { HerdrDiagnostic } from "../src/extensions/herdr/transport.js";
@@ -85,6 +86,35 @@ test("first Herdr report carries the exact session's resume argv after -- (#3492
 	} finally {
 		await runner.emit({ type: "session_shutdown", reason: "quit" });
 		runner.invalidate();
+		await fake.dispose();
+	}
+});
+
+test("Herdr resume argv carries the selected SQLite store and prefix across projects", async () => {
+	const fake = await fakeHerdr();
+	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", join(fake.dir, "agent"));
+	const path = join(fake.dir, "project A store.sqlite");
+	const store = await resolveSessionStore(fake.dir, { sessionStore: { kind: "sqlite", path, prefix: "kept_" } });
+	await store.create({ id: "", version: 4, cwd: fake.dir, createdAt: new Date().toISOString() }, []);
+	const session = await SessionManager.open(store, "");
+	const runner = await startReporter(fake, session);
+	try {
+		await runner.emit({ type: "session_start" });
+		const [first] = await fake.waitFor(1);
+		assert.deepEqual(resumeOf(first.args), [
+			APP_NAME,
+			"--session-store",
+			path,
+			"--session-prefix",
+			"kept_",
+			"--session",
+			"",
+		]);
+	} finally {
+		await runner.emit({ type: "session_shutdown", reason: "quit" });
+		runner.invalidate();
+		await store.close();
+		vi.unstubAllEnvs();
 		await fake.dispose();
 	}
 });
