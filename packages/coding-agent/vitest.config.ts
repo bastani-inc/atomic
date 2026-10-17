@@ -47,7 +47,11 @@ const project = (name: string, include: string[], exclude: string[]) => ({
 		name,
 		globals: true,
 		environment: "node" as const,
-		globalSetup: ["../../test/global-setup-herdr-isolation.ts"],
+		globalSetup: [
+			"../../test/global-setup-herdr-isolation.ts",
+			"../../test/global-setup-workflow-artifacts.ts",
+			"../../test/global-setup-workflow-journal.ts",
+		],
 		testTimeout: defaultTestTimeoutMs,
 		include,
 		exclude: ["**/node_modules/**", ...exclude],
