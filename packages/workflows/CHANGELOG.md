@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Added journal adapter module selection with environment/file secret references and shared `storage` settings. SDK options override environment, journal settings, shared storage, and persistent defaults; nearer settings replace complete selections. Caller-owned database selections accept the async SQLite facade and remain open after journal close.
+- Expanded the workflow storage reference with shared session/journal storage, adapter selection, asynchronous writes, and storage error handling.
 
 ### Fixed
 
@@ -29,7 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Removed the SDK `durability` option, `WorkflowDurability`, and `WorkflowDurabilityRequiredError`. Use `RunOpts.journal` to select storage or isolate runs, and handle typed journal errors when storage is unavailable.
 - Removed `InMemoryDurableBackend` and `createInMemoryTestBackend`. Use `JournalDurableBackend` over `MemoryRunJournal` for an explicitly in-memory backend. Removed the `legacyRecovery` workflow-tool argument and remaining `workflows.durability` settings.
 - Removed the `@bastani/workflows` import alias; use `@bastani/atomic/workflows`.
-- Custom `RunJournal` implementations must provide `getRun`, `takeoverExpired`, `leaseState`, lazy paged `read`, and `deleteOwnedRun(lease)` for atomic lease-fenced deletion.
+- Custom `RunJournal` implementations must provide `getRun`, `takeoverExpired`, `leaseState`, lazy paged `read`, and `deleteOwnedRun(lease)` for atomic lease-fenced deletion. Synchronous fast paths are internal.
 - Invocation records require `invocationFingerprint`.
 - SDK workflow stages now use persistent session storage by default, including stages without `sessionDir`. Ephemeral stages must explicitly supply an in-memory session manager through an adapter. Storage failures do not fall back to memory.
 - Replaced `SqliteRunJournal` with async `SqlRunJournal.open(database, { prefix })` and `openSqlRunJournal(pathOrDatabase?)`; await `resolveRunJournal`. Journal tables now use the `wf_` namespace with no migration of earlier unreleased tables. Journal storage errors use the shared `StorageUnavailableError` fields `adapter`, `location`, and `cause` instead of `path`.

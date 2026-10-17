@@ -5,10 +5,10 @@ This page describes format-4 JSONL files used by explicit JSONL stores and expor
 ## File Location
 
 ```
-<selected-jsonl-directory>/--<path>--/<timestamp>_<session-id-hash>.jsonl
+<selected-jsonl-directory>/<timestamp>_<session-id-hash>.jsonl
 ```
 
-Where `<path>` represents the working directory with path separators replaced by `-`; long directory names use a hash. `sessions.storage.dir` and `--session-dir` select the JSONL root; files are created in its project-specific subdirectory. The direct `SessionManager.create(cwd, sessionDir)` overload uses the supplied directory exactly. Session IDs, not these paths, are used for resume and fork selection. Local artifacts and tool-result files remain on the filesystem even with a database-backed session.
+`sessions.storage.dir` and `--session-dir` select the directory containing the JSONL files. Session IDs, not these paths, are used for resume and fork selection. Local artifacts and tool-result files remain on the filesystem even with a database-backed session.
 
 ## Deleting Sessions
 
@@ -436,7 +436,7 @@ Await `create`, `open`, `continueRecent`, `forkFrom`, and all session mutations.
 - `SessionManager.continueRecent(cwd, sessionDir?, options?)` or `continueRecent(store, cwd, options?)` - Continue the most recent regular session or create one. Pass `{ includeInternal: true }` only to include workflow sessions.
 - `SessionManager.inMemory(cwd?, options?, entries?)` - Explicit memory storage.
 - `SessionManager.forkFrom(sourcePath, targetCwd, sessionDir?, options?)` - Fork a JSONL file into the configured or explicit destination. To fork a database session, open it by ID and await `manager.forkTo(targetCwd, targetStore?, options?)`.
-- `SessionManager.importFromJsonl(inputPath, cwd, targetStoreOrDir?)` - Import a format-4 export without changing its ID. An existing ID raises `SessionExistsError`.
+- `SessionManager.importFromJsonl(inputPath, cwd, targetStoreOrDir?)` - Import a JSONL export without changing its ID, upgrading older supported formats. An existing ID raises `SessionExistsError`.
 
 ### Static Listing Methods
 

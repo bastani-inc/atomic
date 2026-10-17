@@ -1440,6 +1440,8 @@ await run(helloWorld, { name: "Atomic" }, { journal: { memory: true } });
 
 Await asynchronous workflow operations before using their results. Atomic commits a successful write before publishing its new state, and shutdown drains accepted journal writes before releasing ownership. A write failure rejects with a typed storage error, not an in-memory fallback.
 
+For direct durable-backend use, open `JournalDurableBackend` with `await JournalDurableBackend.open(journal, { ownsJournal: false })`, not a constructor. Omit `ownsJournal: false` to let the backend close the journal. Await `commitWorkflowRegistration`, `commitWorkflowStatus`, `commitWorkflowStatusTransition`, `commitPendingPromptAdjustment`, `commitReset`, and `commitCheckpoint`; use `commitAdditiveCheckpointBestEffort` for additive writes.
+
 `ctx.stage()` remains synchronous. For a cached stage, Atomic commits its replay metadata before the next async execution boundary; callers do not need an extra checkpoint or flush. See [Storage errors](/storage#storage-errors) for configuration, driver, and ownership failures.
 
 ### `resolveInputs(schema, provided)`

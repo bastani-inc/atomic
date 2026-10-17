@@ -174,14 +174,16 @@ Other selections are `{ kind: "jsonl", dir }`, `{ kind: "memory" }`, `{ kind: "d
 
 `sessionStore` also accepts a `SessionStore` instance. A supplied `sessionManager` takes precedence and remains caller-owned. Otherwise, explicit SDK storage wins over the session-directory environment variable, `sessions.storage`, shared `storage`, and the persistent default. Memory is never a default or an opening-failure fallback. The `sessionDir` factory option has been removed; use a JSONL `sessionStore` selection instead. See [Session storage settings](/settings#sessions) for scope and path rules.
 
+Atomic closes stores it opens from a selection when the session is disposed, after pending writes finish. Supplied `SessionStore` instances and stores belonging to supplied managers remain caller-owned. With `{ kind: "database", database }`, Atomic closes its store but leaves your database open. Always await `session.dispose()` and close caller-owned stores when no session still uses them.
+
 Resume by opening the ID in the chosen store, then pass that manager to the factory:
 
 ```typescript
 import { createAgentSession, resolveSessionStore, SessionManager } from "@bastani/atomic";
 
 const store = await resolveSessionStore(process.cwd());
-const manager = await SessionManager.open(store, savedSessionId);
 try {
+  const manager = await SessionManager.open(store, savedSessionId);
   const { session } = await createAgentSession({ sessionManager: manager });
   try {
     await session.prompt("Continue the task");
