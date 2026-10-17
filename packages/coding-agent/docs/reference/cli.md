@@ -143,7 +143,7 @@ When a print-mode turn correctly finishes by calling an opt-in terminating struc
 | `--name <name>`, `-n <name>` | Set the session display name |
 | `--no-session` | Ephemeral mode; do not save |
 
-`--session-store` overrides environment and settings selections and cannot be combined with `--session-dir` or `--no-session`. `--session-prefix` requires `--session-store`; its default is empty, and non-empty prefixes must start with a letter or underscore and contain only letters, digits, and underscores. Invalid combinations and unavailable stores raise typed errors rather than falling back to another store.
+See [Choosing a store](/sessions#choosing-a-store) for precedence, prefix rules, and conflicts.
 
 ## Tool Options
 

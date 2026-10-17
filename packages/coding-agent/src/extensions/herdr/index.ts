@@ -29,7 +29,7 @@ function resumeArgv(sessionManager: ExtensionContext["sessionManager"]): string[
 	const sessionDir =
 		sessionManager.getSessionStore().descriptor.adapter === "jsonl"
 			? ["--session-dir", sessionManager.getSessionDir()]
-			: sqliteSessionResumeArgs(sessionManager.getSessionStore(), sessionManager.getCwd());
+			: sqliteSessionResumeArgs(sessionManager.getSessionStore());
 	return [APP_NAME, ...sessionDir, "--session", sessionId];
 }
 

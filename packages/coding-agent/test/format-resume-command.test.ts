@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +7,8 @@ import { APP_NAME } from "../src/config.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { resolveSessionStore } from "../src/core/session-storage.js";
 import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
+import { ProjectTrustStore } from "../src/core/trust-manager.ts";
+import { quoteIfNeeded } from "../src/modes/interactive/chat-input-actions.ts";
 import { formatResumeCommand } from "../src/modes/interactive/interactive-mode.ts";
 
 const tempDirs: string[] = [];
@@ -159,10 +162,10 @@ describe("formatResumeCommand", () => {
 	});
 
 	it.each([
-		["same path and prefix", "same_", "same_", false],
-		["different prefix", "same_", "other_", true],
-		["default prefix", "", "other_", true],
-	] as const)("SQLite hints preserve %s without redundant flags", async (_label, prefix, selectedPrefix, pinned) => {
+		["same path and prefix", "same_", "same_"],
+		["different prefix", "same_", "other_"],
+		["default prefix", "", "other_"],
+	] as const)("SQLite hints pin the store with %s", async (_label, prefix, selectedPrefix) => {
 		setStdoutIsTTY(true);
 		const dir = mkdtempSync(join(tmpdir(), "sqlite-resume-selection-"));
 		tempDirs.push(dir);
@@ -175,8 +178,54 @@ describe("formatResumeCommand", () => {
 		const store = await resolveSessionStore(dir, { sessionStore: { kind: "sqlite", path, prefix } });
 		try {
 			const manager = await SessionManager.create(store, dir, { id: "selected-session" });
-			const selection = pinned ? ` --session-store ${path}${prefix ? ` --session-prefix ${prefix}` : ""}` : "";
-			expect(formatResumeCommand(manager)).toBe(`${APP_NAME}${selection} --session selected-session`);
+			const selection = ` --session-store ${quoteIfNeeded(path)}${prefix ? ` --session-prefix ${prefix}` : ""}`;
+			assert.equal(formatResumeCommand(manager), `${APP_NAME}${selection} --session selected-session`);
+		} finally {
+			await store.close();
+			vi.unstubAllEnvs();
+		}
+	});
+
+	it("SQLite hints retain an explicit store despite invalid overridden settings (#3709)", async () => {
+		setStdoutIsTTY(true);
+		const dir = mkdtempSync(join(tmpdir(), "sqlite-resume-invalid-settings-"));
+		tempDirs.push(dir);
+		const path = join(dir, "sessions.sqlite");
+		writeFileSync(join(dir, "settings.json"), JSON.stringify({ sessions: { storage: { memory: "invalid" } } }));
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", dir);
+		const store = await resolveSessionStore(dir, { sessionStorePath: path, sessionPrefix: "kept_" });
+		try {
+			const manager = await SessionManager.create(store, dir, { id: "selected-session" });
+			assert.equal(
+				formatResumeCommand(manager),
+				`${APP_NAME} --session-store ${quoteIfNeeded(path)} --session-prefix kept_ --session selected-session`,
+			);
+		} finally {
+			await store.close();
+			vi.unstubAllEnvs();
+		}
+	});
+
+	it("SQLite hints retain explicit flags for matching untrusted project settings (#3709)", async () => {
+		setStdoutIsTTY(true);
+		const dir = mkdtempSync(join(tmpdir(), "sqlite-resume-untrusted-"));
+		tempDirs.push(dir);
+		const cwd = join(dir, "project");
+		mkdirSync(join(cwd, ".atomic"), { recursive: true });
+		const path = join(dir, "sessions.sqlite");
+		writeFileSync(
+			join(cwd, ".atomic", "settings.json"),
+			JSON.stringify({ sessions: { storage: { path, prefix: "kept_" } } }),
+		);
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", dir);
+		new ProjectTrustStore(dir).set(cwd, false);
+		const store = await resolveSessionStore(cwd, { sessionStorePath: path, sessionPrefix: "kept_" });
+		try {
+			const manager = await SessionManager.create(store, cwd, { id: "selected-session" });
+			assert.equal(
+				formatResumeCommand(manager),
+				`${APP_NAME} --session-store ${quoteIfNeeded(path)} --session-prefix kept_ --session selected-session`,
+			);
 		} finally {
 			await store.close();
 			vi.unstubAllEnvs();

@@ -113,9 +113,7 @@ export function formatResumeCommand(sessionManager: SessionManager): string | un
 	if (sessionManager.getSessionStore().descriptor.adapter === "jsonl") {
 		args.push("--session-dir", quoteIfNeeded(sessionManager.getSessionDir()));
 	} else {
-		args.push(
-			...sqliteSessionResumeArgs(sessionManager.getSessionStore(), sessionManager.getCwd()).map(quoteIfNeeded),
-		);
+		args.push(...sqliteSessionResumeArgs(sessionManager.getSessionStore()).map(quoteIfNeeded));
 	}
 	args.push("--session", quoteIfNeeded(sessionManager.getSessionId()));
 	return args.join(" ");
