@@ -1,13 +1,11 @@
-import { closeSync, openSync, readSync } from "node:fs";
 import {
 	renderStorageIdentifiers,
 	type SqliteDatabase,
 	type SqliteExecutor,
 	type SqliteRow,
 } from "@bastani/atomic/storage";
-import { JOURNAL_COLUMNS as c, JOURNAL_SCHEMA_VERSION, JOURNAL_TABLES } from "./journal/types.js";
+import { JOURNAL_COLUMNS as c, JOURNAL_SCHEMA_VERSION, JOURNAL_TABLES } from "./types.js";
 
-const HEADER_READ_LIMIT_BYTES = 64 * 1024;
 const LEGACY_JOURNAL_MIGRATION = "unprefixed-journal-tables";
 const CURRENT_TABLES = renderStorageIdentifiers("journal", { ...JOURNAL_TABLES, migrations: "migrations" });
 
@@ -75,44 +73,4 @@ export async function migrateLegacyJournalTables(database: SqliteDatabase): Prom
 	} catch {
 		// A legacy journal that cannot be read must not block opening the current one.
 	}
-}
-
-function readSessionHeaderId(sessionFile: string): string | undefined {
-	let fd: number;
-	try {
-		fd = openSync(sessionFile, "r");
-	} catch {
-		return undefined;
-	}
-	try {
-		const buffer = Buffer.alloc(HEADER_READ_LIMIT_BYTES);
-		const bytesRead = readSync(fd, buffer, 0, buffer.length, 0);
-		const firstLine = buffer
-			.subarray(0, bytesRead)
-			.toString("utf8")
-			.replace(/^\uFEFF/, "")
-			.split("\n")[0];
-		const header: { type?: string; id?: string } = JSON.parse(firstLine ?? "");
-		return header.type === "session" && typeof header.id === "string" ? header.id : undefined;
-	} catch {
-		return undefined;
-	} finally {
-		closeSync(fd);
-	}
-}
-
-/**
- * Give a stage checkpoint recorded before #3700 the session ID it now resumes by.
- *
- * Before #3700 a stage checkpoint could identify its session only by transcript
- * path. The session ID is the header `id` of that transcript, which is also the
- * ID the session keeps after it is imported into the default session store. The
- * transcript file name is not used: its UUID can differ from the header ID.
- */
-export function migrateStageSessionCheckpoint<T extends { readonly sessionId?: string; readonly sessionFile?: string }>(
-	checkpoint: T,
-): T {
-	if (checkpoint.sessionId !== undefined || checkpoint.sessionFile === undefined) return checkpoint;
-	const sessionId = readSessionHeaderId(checkpoint.sessionFile);
-	return sessionId === undefined ? checkpoint : { ...checkpoint, sessionId };
 }

@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "vitest";
+import { migrateStageSessionCheckpoint } from "../../packages/workflows/src/durable/backend.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { type JournalEntry, RUN_EVENT_TYPES } from "../../packages/workflows/src/durable/journal/types.js";
-import { migrateStageSessionCheckpoint } from "../../packages/workflows/src/durable/legacy-migrations.js";
 import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { makeTempDirectory, removeTempDirectory, writeTextSync } from "../helpers/runtime.js";
 

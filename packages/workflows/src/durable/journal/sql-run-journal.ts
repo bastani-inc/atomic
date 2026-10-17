@@ -9,9 +9,9 @@ import {
 	StorageSchemaVersionError,
 	StorageUnavailableError,
 } from "@bastani/atomic/storage";
-import { migrateLegacyJournalTables } from "../legacy-migrations.js";
 import { JOURNAL_READ_PAGE_SIZE } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
+import { migrateLegacyJournalTables } from "./legacy-journal-tables.js";
 import {
 	type AppendOutcome,
 	JOURNAL_COLUMNS as c,

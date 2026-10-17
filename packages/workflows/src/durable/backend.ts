@@ -1,8 +1,8 @@
 /** Durable workflow contract and private journal projection. */
+import { closeSync, openSync, readSync } from "node:fs";
 
 import type { PendingStageMessage, PendingStageMessageDelivery } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
-import { migrateStageSessionCheckpoint } from "./legacy-migrations.js";
 import type { PromptReservationToken } from "./prompt-reservation-state.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import type {
@@ -17,6 +17,49 @@ import type {
 	ResumableWorkflowEntry,
 } from "./types.js";
 import { DURABLE_STAGE_TOPOLOGY_VERSION } from "./types.js";
+
+const SESSION_HEADER_READ_LIMIT_BYTES = 64 * 1024;
+
+function readSessionHeaderId(sessionFile: string): string | undefined {
+	let fd: number;
+	try {
+		fd = openSync(sessionFile, "r");
+	} catch {
+		return undefined;
+	}
+	try {
+		const buffer = Buffer.alloc(SESSION_HEADER_READ_LIMIT_BYTES);
+		const bytesRead = readSync(fd, buffer, 0, buffer.length, 0);
+		const firstLine = buffer
+			.subarray(0, bytesRead)
+			.toString("utf8")
+			.replace(/^\uFEFF/, "")
+			.split("\n")[0];
+		const header: { type?: string; id?: string } = JSON.parse(firstLine ?? "");
+		return header.type === "session" && typeof header.id === "string" ? header.id : undefined;
+	} catch {
+		return undefined;
+	} finally {
+		closeSync(fd);
+	}
+}
+
+/**
+ * Give a stage checkpoint recorded before #3700 the session ID it now resumes by.
+ *
+ * Before #3700 a stage checkpoint could identify its session only by transcript
+ * path. The session ID is the header `id` of that transcript, which is also the
+ * ID the session keeps after it is imported into the default session store. The
+ * transcript file name is not used: its UUID can differ from the header ID.
+ */
+export function migrateStageSessionCheckpoint<T extends { readonly sessionId?: string; readonly sessionFile?: string }>(
+	checkpoint: T,
+): T {
+	if (checkpoint.sessionId !== undefined || checkpoint.sessionFile === undefined) return checkpoint;
+	const sessionId = readSessionHeaderId(checkpoint.sessionFile);
+	return sessionId === undefined ? checkpoint : { ...checkpoint, sessionId };
+}
+
 export interface DurableWorkflowCatalogEntries {
 	readonly inspectableIds?: readonly string[];
 	readonly resumable: readonly ResumableWorkflowEntry[];
