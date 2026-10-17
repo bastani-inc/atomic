@@ -1,5 +1,5 @@
 import { type FileHandle, open } from "node:fs/promises";
-import type { SessionEntry } from "../../session-manager-types.ts";
+import type { SessionEntry } from "../../session-manager-types.js";
 import type { JsonlSessionFile } from "./jsonl-session-store.js";
 import {
 	applySessionSummaryEntries,
@@ -56,10 +56,15 @@ async function scanHead(handle: FileHandle, scan: Scan): Promise<{ end: number; 
 	return { end, complete: false };
 }
 
-/** Reads the last window of the file, from the first whole line in it, never re-reading the head. */
-async function scanTail(handle: FileHandle, size: number, headEnd: number, scan: Scan): Promise<void> {
+/**
+ * Reads the last window of the file, from the first whole line in it, never re-reading the head.
+ * Returns false when the window skips part of the file and holds no complete message, so the
+ * latest message time is unknown and the caller must read the session whole.
+ */
+async function scanTail(handle: FileHandle, size: number, headEnd: number, scan: Scan): Promise<boolean> {
 	const start = Math.max(size - SUMMARY_WINDOW_BYTES, headEnd);
-	if (start >= size) return;
+	if (start >= size) return true;
+	const skipsMiddle = start > headEnd;
 	const bytes = Buffer.alloc(size - start + 1);
 	let filled = 0;
 	while (filled < bytes.length) {
@@ -70,11 +75,12 @@ async function scanTail(handle: FileHandle, size: number, headEnd: number, scan:
 	let from = 1;
 	if (bytes[0] !== NEWLINE) {
 		const newline = bytes.subarray(0, filled).indexOf(NEWLINE, 1);
-		if (newline === -1) return;
+		if (newline === -1) return !skipsMiddle;
 		from = newline + 1;
 	}
-	scan.state = { ...scan.state, latestMessageTime: null };
+	if (skipsMiddle) scan.state = { ...scan.state, latestMessageTime: null };
 	for (const line of bytes.subarray(from, filled).toString("utf8").split("\n")) applyLine(scan, line);
+	return !skipsMiddle || scan.state.latestMessageTime !== null;
 }
 
 /**
@@ -95,7 +101,7 @@ export async function summarizeLegacySession(
 	try {
 		const head = await scanHead(handle, scan);
 		if (!head.complete) return summarizeSession(await file.read());
-		await scanTail(handle, size, head.end, scan);
+		if (!(await scanTail(handle, size, head.end, scan))) return summarizeSession(await file.read());
 	} finally {
 		await handle.close();
 	}

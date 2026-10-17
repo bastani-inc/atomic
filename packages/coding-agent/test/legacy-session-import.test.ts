@@ -208,6 +208,7 @@ interface LargeSessionOptions {
 	readonly name?: string;
 	readonly damagedMiddle?: boolean;
 	readonly tornTail?: boolean;
+	readonly finalAnswerBytes?: number;
 }
 
 /** A well over 32 KiB session whose summary lives in its first user message and its last entries. */
@@ -236,7 +237,8 @@ function largeLegacyContent(options: LargeSessionOptions): string {
 	}
 	lines.push(JSON.stringify(userRecord("Final question", options.lastAt, 0, link())));
 	const answer = link();
-	lines.push(JSON.stringify(assistantRecord("Final answer", options.lastAt, 1, answer)));
+	const finalAnswer = `Final answer${options.finalAnswerBytes ? ` ${"y".repeat(options.finalAnswerBytes)}` : ""}`;
+	lines.push(JSON.stringify(assistantRecord(finalAnswer, options.lastAt, 1, answer)));
 	lines.push(
 		JSON.stringify({
 			type: "session_summary",
@@ -713,6 +715,27 @@ describe("legacy JSONL sessions in the default store", () => {
 					["large-newer", "large-older"],
 				);
 				assert.equal((await store.findMostRecent({ cwd }))?.id, "large-newer");
+			});
+		});
+
+		it("orders one whose final message is larger than the tail window by that message, not file modification time", async () => {
+			const older = writeLarge({
+				id: "large-huge-final",
+				lastAt: "2026-10-12T09:00:00.000Z",
+				finalAnswerBytes: 40_000,
+			});
+			const newer = writeLarge({ id: "large-normal", lastAt: "2026-10-14T09:00:00.000Z" });
+			utimesSync(older, new Date("2026-12-01T00:00:00Z"), new Date("2026-12-01T00:00:00Z"));
+			utimesSync(newer, new Date("2026-01-01T00:00:00Z"), new Date("2026-01-01T00:00:00Z"));
+
+			await withDefaultStore(async (store) => {
+				const listed = await SessionManager.list(cwd, store);
+				assert.deepEqual(
+					listed.map((session) => session.id),
+					["large-normal", "large-huge-final"],
+				);
+				assert.equal(listed[1]?.modified.toISOString(), "2026-10-12T09:00:01.000Z");
+				assert.equal((await store.findMostRecent({ cwd }))?.id, "large-normal");
 			});
 		});
 
