@@ -175,6 +175,12 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 	const submission = resumeHeld ? takeNextCompactionMessage(state) : undefined;
 	const submitText = submission?.text ?? text;
 	const submitMode = submission?.mode ?? mode;
+	let submissionStarted = false;
+	if (submission) {
+		state.compactionPromptStarted = () => {
+			submissionStarted = true;
+		};
+	}
 	const isStreaming = isChatSessionStreaming(state);
 	// The session publishes the expanded skill block; a raw optimistic signature cannot reconcile with it.
 	const shouldAppendOptimisticUser =
@@ -235,10 +241,15 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 		if (optimisticSignature !== undefined) {
 			decrementOptimisticUserSignature(state, optimisticSignature);
 		}
+		if (submission && !submissionStarted) {
+			state.compactionQueuedMessages = [submission, ...state.compactionQueuedMessages];
+		}
 		settleSubmittedPromptLifecycle(state, submittedPromptLifecycleGeneration);
 		state.statusMessage = errorMessage(err);
 		syncChatSessionAnimationTick(state);
 		state.requestRender?.();
+	} finally {
+		if (submission) state.compactionPromptStarted = undefined;
 	}
 }
 

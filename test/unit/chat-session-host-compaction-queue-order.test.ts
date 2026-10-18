@@ -113,6 +113,7 @@ async function hostWithHeldBatch() {
 	const bashCommands: string[] = [];
 	const resumed: (string | undefined)[] = [];
 	let paused = false;
+	let resumeError: Error | undefined;
 	const host = new ChatSessionHost({
 		style: plainStyle,
 		editorTheme,
@@ -132,6 +133,7 @@ async function hostWithHeldBatch() {
 			},
 			resume: async (message) => {
 				resumed.push(message);
+				if (resumeError) throw resumeError;
 			},
 		},
 	});
@@ -148,7 +150,10 @@ async function hostWithHeldBatch() {
 	const pause = () => {
 		paused = true;
 	};
-	return { host, firstPrompt, prompts, steers, bashCommands, resumed, pause, typedDuringHandOff };
+	const failResume = (error: Error) => {
+		resumeError = error;
+	};
+	return { host, firstPrompt, prompts, steers, bashCommands, resumed, pause, failResume, typedDuringHandOff };
 }
 
 async function hostAfterFailedBatch() {
@@ -215,6 +220,20 @@ test("ChatSessionHost resumes a paused session with the oldest held message, kee
 		await host.submit("auto", "next");
 		assert.deepEqual(resumed, ["A"]);
 		assert.deepEqual(restoredOrder(host), ["B", "C", "D", "next"]);
+	} finally {
+		host.dispose();
+	}
+});
+
+test("ChatSessionHost keeps the oldest held message when resuming with it fails before its run starts (#3664)", async () => {
+	const { host, resumed, pause, failResume } = await hostAfterFailedBatch();
+	try {
+		pause();
+		failResume(new Error("resume failed"));
+		await host.submit("auto", "next");
+		assert.deepEqual(resumed, ["A"]);
+		assert.match(host.statusText(), /resume failed/);
+		assert.deepEqual(restoredOrder(host), ["A", "B", "C", "D", "next"]);
 	} finally {
 		host.dispose();
 	}
