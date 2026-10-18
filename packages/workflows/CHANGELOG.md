@@ -6,6 +6,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.38] - 2026-10-18
+
+### Breaking Changes
+
+- Workflow discovery now reads only `.atomic` default roots. Discovered workflow modules use `@bastani/atomic/workflows` and `typebox` imports. Removed deprecated imperative API stubs, separate `thinkingLevel` and `fallbackThinkingLevels` authoring fields, old stage-target syntax, and replay without current topology, replay keys, or child exit tags. Put reasoning effort in each model string, such as `provider/model:high`.
+- Execution results always include `toolNodes`, inspection details and status summaries always include `tools`, and custom UI adapters must implement every UI method. Queued stage delivery requires persisted admission order.
+- Heartbeat records require their original launch cadence; incomplete records no longer inherit the current workflow definition. Configuration load results always include `globalConfig` and `projectConfig`, using `null` when a source is absent or invalid.
+- Public run snapshots require `toolNodes`. Inline forms require injected keybindings and no longer include unused submit-choice state. Removed the ignored `preserveAnsi` truncation argument; text truncation remains ANSI-aware.
+- Workflow runs now persist only in the local SQLite journal. Journal initialization failures throw `StorageUnavailableError` instead of continuing without durable storage. Postgres connection settings (`workflows.durability.systemDatabaseUrl` and `workflows.durability.poolSize`) and `DBOS_SYSTEM_DATABASE_URL`, `ATOMIC_POSTGRES_*`, and `PG*` environment variables no longer configure workflow storage.
+- Removed the SDK `durability` option, `WorkflowDurability`, and `WorkflowDurabilityRequiredError`. Use `RunOpts.journal` to select storage or isolate runs, and handle typed journal errors when storage is unavailable.
+- Removed `InMemoryDurableBackend` and `createInMemoryTestBackend`. Use `JournalDurableBackend` over `MemoryRunJournal` for an explicitly in-memory backend. Removed the `legacyRecovery` workflow-tool argument and remaining `workflows.durability` settings.
+- Removed the `@bastani/workflows` import alias; use `@bastani/atomic/workflows`.
+- Custom `RunJournal` implementations must provide `getRun`, `takeoverExpired`, `leaseState`, lazy paged `read`, and `deleteOwnedRun(lease)` for atomic lease-fenced deletion. Synchronous fast paths are internal.
+- Invocation records require `invocationFingerprint`.
+- SDK workflow stages now use persistent session storage by default, including stages without `sessionDir`. Ephemeral stages must explicitly supply an in-memory session manager through an adapter. Storage failures do not fall back to memory.
+- Replaced `SqliteRunJournal` with async `SqlRunJournal.open(database, { prefix })` and `openSqlRunJournal(pathOrDatabase?)`; await `resolveRunJournal`. Journal tables now use the `wf_` namespace with no migration of earlier unreleased tables. Journal storage errors use the shared `StorageUnavailableError` fields `adapter`, `location`, and `cause` instead of `path`.
+- Custom journals must return `LeaseState.ageMs`, a non-negative safe-integer renewal age measured by the journal clock in the same read as the lease state. Ownership probes use this age rather than the process clock.
+- Construct `JournalDurableBackend` with asynchronous `open()`; direct construction and internal synchronous journal methods have been removed.
+- `RunOpts.journal.database` requires the async SQLite facade; wrap an existing native connection with `wrapNodeSqliteDatabase`. Journal selection errors now use `StorageConfigError` and its `source`, `field`, and `reason` fields instead of `JournalConfigurationError`.
+- Replaced `forkFromSessionFile` with `forkFromSessionId`. Use the prior task's `sessionId` in the selected session store. `recordStageSession` now accepts `{ sessionId }` only. Retained chat validation and completed inspection are asynchronous, and transcript paths are display metadata, not resume or fork identities.
+- Durable backend registration, status, reset, and checkpoint writes now use awaited `commit*` methods. Replace `registerWorkflow` with `commitWorkflowRegistration`, `setWorkflowStatus` with `commitWorkflowStatus`, `transitionWorkflowStatus` with `commitWorkflowStatusTransition`, `adjustPendingPrompts` with `commitPendingPromptAdjustment`, and `reset` with `commitReset`. Use `commitCheckpoint` instead of either checkpoint writer and `commitAdditiveCheckpointBestEffort` for additive writes. Cached `ctx.stage()` declarations remain synchronous; their replay metadata is committed before the next async execution boundary.
+
+### Added
+
+- Added `MemoryRunJournal`, public SQLite journal and error exports, and `registerRunJournalConformance` for shared journal contract checks.
+- Added `RunOpts.journal` and `resolveRunJournal` for explicit journals, caller-owned SQLite connections, memory journals, and configurable files. TUI, CLI, background, and SDK runs use the selected journal. Resolution prioritizes the explicit option, a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, then journal settings and the default path. Relative settings paths resolve against the Atomic home directory.
+- Extended shared journal conformance checks to cover detached values, closed-journal rejection, failure atomicity, and deletion tombstones.
+- Added stale-only async journal takeover and read-only ownership inspection. Keyed append retries return the original entry before checking sequence expectations. Shared journal conformance covers stale-only takeover and early read termination.
+- Added facade-backed SQL journals for user-supplied SQLite-compatible drivers, optional table prefixes, shared session/journal databases, database-clock lease expiry, and sequence-checked `deleteOwnedRun(lease, expectSeq?)`.
+- Added journal adapter module selection with environment/file secret references and shared `storage` settings. SDK options override environment, journal settings, shared storage, and persistent defaults; nearer settings replace complete selections. Caller-owned database selections accept the async SQLite facade and remain open after journal close.
+
+### Fixed
+
+- Fixed second and later durable SDK `run()` calls in the same process failing with `atomicWorkflowHandle is not a registered DBOS workflow function`. Each standalone run now recreates its durable backend after the previous run shuts it down ([#3614](https://github.com/bastani-inc/atomic/issues/3614)).
+- Fixed workflow fallback leaking the original stage session when an intervening candidate fails to initialize. The original session is now disposed exactly once after it becomes idle when a successor is adopted, or during final cleanup if no successor is created ([#3655](https://github.com/bastani-inc/atomic/issues/3655)).
+- Fixed retained stage history load failures appearing as empty archives. Missing, unreadable, malformed, empty, or deleted session files now show an actionable session-unavailable warning without creating a blank session or discarding displayed messages ([#3658](https://github.com/bastani-inc/atomic/issues/3658)).
+- Fixed standalone SDK `run()` resolving string stage models, including thinking suffixes and fallback models, instead of crashing during session creation ([#3629](https://github.com/bastani-inc/atomic/issues/3629)).
+- Fixed queued Intercom instructions preventing stage model fallback. Delivery failures now block resumably and preserve sticky instructions for resumed runs and later stages ([#3628](https://github.com/bastani-inc/atomic/issues/3628)).
+- Fixed workflow recovery reporting a foreign run as available at the exact lease-expiry boundary before takeover is permitted ([#3681](https://github.com/bastani-inc/atomic/pull/3681)).
+- SQL journals snapshot append payloads at invocation, including keyed retries, preserving status/event consistency during queued writes. User-supplied facades may return readonly rows. Header and append serialization failures now retain typed storage errors and their original causes without changing fencing, replay, or sequence-check precedence.
+- Journal run summaries and status validation now use the serialized `StatusChanged` payload, including transformations by `toJSON`, so recorded events and summaries agree. Ownership inspection now honors the journal clock even when the process clock is skewed.
+- Fixed workflow error cards hiding text-only failures as `no result`. Errors without structured details now show their text and an error indication in collapsed and expanded cards ([#3669](https://github.com/bastani-inc/atomic/issues/3669)).
+- Fixed failed workflow resumes reporting partial progress solely because a sibling was already running. Requests with no acknowledged effect now report no change and retain their failure code ([#3670](https://github.com/bastani-inc/atomic/issues/3670)).
+- Fixed workflow pause reporting `noop` after a stage pause took effect but durable capture failed, including whole-run and bulk requests. The result now reports `partial`, explains that the pause remains in effect, and preserves the failure code and message ([#3671](https://github.com/bastani-inc/atomic/issues/3671)).
+- Workflow journal shutdown waits for queued writes before releasing ownership. Status claims and checkpoints on the same run remain ordered with asynchronous journals.
+- Completed standalone SDK runs now release their stage sessions when no caller registry owns them. Workflow forks and completed-history inspection release temporary session-store connections while preserving caller-owned stores.
+- Starting a workflow after a workflow's completed, failed, or blocked notice no longer fails with `Workflow execution for <runId> is retired`. Notices and late stage messages now reach the chat outside the finished run's execution context.
+- Fixed `/workflow resume` no longer listing or resuming runs recorded before 0.9.38-alpha.6. The default journal now lists runs from its earlier tables and converts a run only when you resume or inspect it, so opening the journal does no extra work. The earlier tables are left in place, and deleted runs stay deleted. Stage checkpoints that identified their session only by transcript path now resume by that transcript's session ID, so their conversations reopen after sessions are imported into the default store.
+- Fixed the `Workflow discovery diagnostics` warning appearing twice at startup when deferred startup, such as project trust, refreshes workflow discovery. An unchanged report is shown once; a refresh that changes it still shows the new one ([#3703](https://github.com/bastani-inc/atomic/issues/3703)).
+
+### Removed
+
+- Removed DBOS, embedded Postgres, their bundled runtimes and native process ownership, and the non-durable storage fallback. Server-specific admission, recovery, outage handling, and deferred persistence queues are gone; workflow pause, resume, quit, answer, and checkpoint replay remain supported.
+
 ## [0.9.38-alpha.11] - 2026-10-17
 
 ### Fixed

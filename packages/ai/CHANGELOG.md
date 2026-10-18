@@ -4,6 +4,43 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.38] - 2026-10-18
+
+### Breaking Changes
+
+- Removed `AssistantMessageFrame`, `AssistantMessageFrameEncoder`, and `reduceAssistantMessageFrames()`. Use `AssistantMessageEventStream` events for streaming progress and `result()` for the final message instead.
+
+### Added
+
+- Added cache-preserving thinking-level changes for GPT-6 models on `openai` and `openai-api` with API-key authentication, controlled by `compat.supportsMidConvoEffort` ([#10853](https://github.com/earendil-works/pi/issues/10853)).
+
+### Changed
+
+- Changed `kimi-coding` to OpenAI Chat Completions at `https://api.kimi.com/coding/v1`, matching the official Kimi Code client. K3, K3-256K, and Kimi For Coding support tools added mid-conversation without invalidating the prompt cache. Custom `models.json` base URLs for this provider must include `/v1` ([#10720](https://github.com/earendil-works/pi/issues/10720)).
+
+### Fixed
+
+- Fixed OpenCode Go Gemini models failing with a 404, and builds failing when the OpenCode Go catalog lists Gemini models, by moving OpenCode Zen and OpenCode Go to the `opencode.ai/inference` endpoints and registering the Google Generative AI API on the `opencode-go` provider, matching OpenCode Zen.
+- Fixed OpenCode Go MiniMax M2.7 failing with "Model does not support this protocol" by using the Anthropic Messages API.
+- Fixed tool-call argument parsing dropping fields when a string contains an invalid `\u` escape such as `\usepackage` ([#10868](https://github.com/earendil-works/pi/issues/10868)).
+- Fixed Anthropic requests failing with a 400 when an error tool result contains images; images are now replaced with a text note ([#10794](https://github.com/earendil-works/pi/issues/10794)).
+- Fixed automatic retry not triggering for gateway `Unable to forward upstream stream` errors ([#10920](https://github.com/earendil-works/pi/issues/10920)).
+- Fixed OpenAI-compatible responses showing thinking after the answer when a proxy such as LiteLLM sends reasoning and content in the same stream chunk ([#10926](https://github.com/earendil-works/pi/issues/10926)).
+- Fixed Gemini 4 Argon requests on Google Vertex failing with "Thinking budget is not supported", and its thinking level being ignored on the Gemini API, by sending `thinkingLevel` for Gemini 4 and later models ([#10890](https://github.com/earendil-works/pi/issues/10890)).
+- Fixed Xiaomi MiMo models failing with a 400 at the `minimal` thinking level by sending only the documented thinking on/off toggle and exposing only the `off` and `high` levels ([#10818](https://github.com/earendil-works/pi/issues/10818)).
+- Fixed tool calls with malformed final JSON arguments silently running with only a parsed prefix. These calls now fail validation with the original arguments so the model can correct them ([#10897](https://github.com/earendil-works/pi/issues/10897)).
+- Fixed `retryAssistantCall()` ignoring server retry hints. A failed response's `Retry-After-Ms`, `Retry-After` (seconds or HTTP date) or Cloudflare body `retry_after` is reported as `AssistantMessage.retryAfterMs` by the OpenAI Responses, OpenAI Completions and ChatGPT (Codex) providers, and replaces the exponential backoff for that retry, capped by the new `RetryPolicy.maxRetryDelayMs` (60 seconds by default). Cloudflare 521-523 responses and connection resets are now retryable ([#3623](https://github.com/bastani-inc/atomic/issues/3623))
+- Fixed streaming tool arguments losing `__proto__` fields and changing object prototypes when JSON is incomplete, including nested objects and arrays ([#3679](https://github.com/bastani-inc/atomic/issues/3679)).
+- Fixed `closeOpenAICodexWebSocketSessions("")` closing other sessions' cached sockets. Empty keys now do nothing; omitting the key still closes all cached sockets.
+- Fixed the root `AssistantMessageEventStream` export being visible only as a type to TypeScript consumers. It can now be imported and constructed as a value, matching the runtime API.
+- Fixed automatic retry not triggering for `The service is temporarily unavailable` errors, which also made compaction fail on the first attempt ([#10965](https://github.com/earendil-works/pi/issues/10965)).
+- Fixed Claude Haiku 5.5 and Claude Opus 5 not offering the `off` thinking level on Anthropic. `off` now sends `thinking: {type: "disabled"}` without effort settings ([#10753](https://github.com/earendil-works/pi/issues/10753)).
+- Fixed images in error tool results being replaced with a note on Anthropic, and Claude on Amazon Bedrock rejecting error tool results that contain images. The images are now sent after the tool results of the turn, so the model still sees them ([#10794](https://github.com/earendil-works/pi/issues/10794)).
+- Fixed model switching exposing another model's thinking as visible reply text. Foreign thinking blocks are now dropped; Anthropic models that adjudicate thinking-block model binding still receive compatible blocks from the same provider ([#10995](https://github.com/earendil-works/pi/issues/10995)).
+- Fixed automatic retry not triggering for node-fetch request failures during Google Vertex authentication token refresh ([#10996](https://github.com/earendil-works/pi/issues/10996)).
+- Fixed whitespace-only tool output (for example a bare `\r\n` from bash) causing OpenAI Completions, OpenAI Responses, and Google providers to reject requests. It now uses the same placeholder as empty output ([#8720](https://github.com/earendil-works/pi/issues/8720)).
+- Fixed automatic retry not triggering for gateway upstream failures such as `upstream_error: Upstream request failed`, `upstream_stream_read_error`, and `Upstream HTTP/2 stream failed` ([#10920](https://github.com/earendil-works/pi/issues/10920)).
+
 ## [0.9.38-alpha.7] - 2026-10-17
 
 ### Fixed

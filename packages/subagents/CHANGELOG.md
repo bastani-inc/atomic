@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.9.38] - 2026-10-18
+
+### Breaking Changes
+
+- Forked context now uses the parent's session ID and selected session store, including stored empty IDs. Embedded runners pass a `sessionManager` instead of a `sessionFile` input. Token readers take a store and session ID and return a promise; filesystem paths no longer select a transcript.
+
+### Changed
+
+- Subagent parallel task limits can now be raised above 50 with `parallel.maxTasks`. Configure `parallel.concurrency` and the new `parallel.runningCapacity` together to run more than four child turns per parent; defaults remain 50 tasks, concurrency 3, and running capacity 4.
+
 ## [0.9.38-alpha.8] - 2026-10-17
 
 ### Changed
