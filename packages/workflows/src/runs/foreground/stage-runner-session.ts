@@ -86,6 +86,21 @@ export function asAgentSession(activeSession: StageSessionRuntime | undefined): 
 	return undefined;
 }
 
+/** True when the session has no turn, queue, compaction, retry, shell, or pause hold in flight. */
+export function isStageSessionQuiescent(session: StageSessionRuntime): boolean {
+	const sdk = session as StageSessionRuntime &
+		Partial<Pick<AgentSession, "isCompacting" | "isRetrying" | "isBashRunning" | "hasPendingBashMessages">>;
+	return (
+		!session.isStreaming &&
+		(session.pendingMessageCount ?? 0) === 0 &&
+		session.queuedMessagesPaused !== true &&
+		sdk.isCompacting !== true &&
+		sdk.isRetrying !== true &&
+		sdk.isBashRunning !== true &&
+		sdk.hasPendingBashMessages !== true
+	);
+}
+
 export function normalizeSessionCreateResult(
 	created: StageSessionRuntime | StageSessionCreateResult,
 ): StageSessionCreateResult {

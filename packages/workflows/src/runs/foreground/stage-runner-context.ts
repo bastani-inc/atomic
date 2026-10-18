@@ -397,6 +397,14 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 			return controller.pendingMessageCount();
 		},
 
+		__persistedSessionStore() {
+			return controller.persistedSessionStore();
+		},
+
+		__idleForRelease() {
+			return controller.isIdleForRelease();
+		},
+
 		__modelFallbackMeta() {
 			return controller.currentModelFallbackMeta();
 		},

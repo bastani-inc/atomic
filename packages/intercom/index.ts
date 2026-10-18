@@ -60,6 +60,7 @@ interface SupervisorAuthorizationRequest {
 const WORKFLOW_STAGE_LATE_MESSAGE_EVENT = "atomic:workflow-stage-late-message";
 const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
 const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
+const RELEASED_STAGE_EVENT = "atomic:workflow-released-stage";
 
 interface PendingStageUndeliverableRelay {
 	handled?: boolean;
@@ -681,6 +682,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		SUBAGENT_CONTROL_INTERCOM_EVENT,
 		SUBAGENT_RESULT_INTERCOM_EVENT,
 		PENDING_STAGE_ROUTE_EVENT,
+		RELEASED_STAGE_EVENT,
 	] as const) {
 		pi.events.on(eventName, (payload) => {
 			const ctx = latestLifecycleContext();

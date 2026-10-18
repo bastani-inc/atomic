@@ -532,6 +532,18 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 	} as unknown as AgentSession;
 }
 
+type TranscriptSource = Parameters<NonNullable<TaskExecutionHooks["bindTranscript"]>>[0];
+
+/**
+ * What a settled child keeps for task inspection: its entries, with no reference back to the
+ * disposed session. The task owner holds the last bound source for as long as the task exists.
+ */
+function settledTranscript(manager: SessionManager): TranscriptSource {
+	const sessionId = manager.getSessionId();
+	const entries = manager.getEntries();
+	return { getSessionId: () => sessionId, getEntries: () => [...entries] };
+}
+
 function nativeStatus(value: ChildStatus): NativeAgentStatus {
 	return value === "killed" ? "interrupted" : value;
 }
@@ -832,6 +844,7 @@ export class SubagentControlRuntime {
 		const configuredThinking = candidate.thinkingLevel ?? admitted.policy.thinkingLevel;
 		let effectiveModelId = candidateModelId;
 		let effectiveThinking = initialThinkingForAttempt(candidateModelId, configuredThinking);
+		let transcriptManager: SessionManager | undefined;
 		let attemptedModels: string[] = candidateModelId ? [candidateModelId] : [];
 		// Background receipts can precede capacity acquisition and session loading. Publish
 		// only the concrete selection handed to createAgentSession, not a requested ID
@@ -959,6 +972,7 @@ export class SubagentControlRuntime {
 						admitted.sessionDir,
 						workflow ? { internal: true, workflow } : { internal: true },
 					);
+			transcriptManager = sessionManager;
 			taskHooks?.bindTranscript?.(sessionManager);
 			if (workflow) await sessionManager.markSessionInternal(workflow);
 			let created: { session: AgentSession };
@@ -1262,6 +1276,9 @@ export class SubagentControlRuntime {
 			} catch {
 				// Listener teardown must not replace the attempt result.
 			}
+			const settleTranscript = (): void => {
+				if (transcriptManager !== undefined) taskHooks?.bindTranscript?.(settledTranscript(transcriptManager));
+			};
 			if (onCleanup) {
 				onCleanup(
 					(async (): Promise<Cleanup> => {
@@ -1279,6 +1296,8 @@ export class SubagentControlRuntime {
 									},
 								],
 							};
+						} finally {
+							settleTranscript();
 						}
 					})(),
 				);
@@ -1287,6 +1306,8 @@ export class SubagentControlRuntime {
 					await session?.dispose();
 				} catch {
 					// Session teardown must not replace the attempt result.
+				} finally {
+					settleTranscript();
 				}
 			}
 			if (this.attemptTokens.get(admitted.identity.path) === token)

@@ -33,6 +33,8 @@ export interface LiveStageMutableState {
 	liveHandleReleased: boolean;
 	stageClosedByWorkflowExit: boolean;
 	stageFinalized: boolean;
+	/** True once the stage's final session checkpoint and terminal record were saved without error. */
+	sessionCheckpointed: boolean;
 	skippedForParallelFailFast: boolean;
 	stageControlDropped: boolean;
 }

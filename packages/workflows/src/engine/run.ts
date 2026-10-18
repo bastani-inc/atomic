@@ -1254,6 +1254,13 @@ async function executeRun(
 						runSnapshot.resumable !== true
 					) {
 						await stageRegistry.clear(runId);
+					} else if (isTerminalRunStatus(runSnapshot.status)) {
+						// The workflow body has returned, so no author code can reuse a stage
+						// context. Saved, idle stage sessions leave RAM; chat reopens them.
+						// A failed run is resumable too, but resume replays its completed
+						// stages from the snapshot and never reuses their live sessions.
+						// Paused and still-running runs are not terminal and keep theirs.
+						await stageRegistry.releaseIdle(runId);
 					}
 				}
 			}

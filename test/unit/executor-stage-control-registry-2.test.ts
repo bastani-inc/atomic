@@ -12,6 +12,7 @@ import {
 } from "./executor-shared.js";
 
 describe("executor — stage-control registry integration", () => {
+	// This adapter keeps no saved transcript, so its session cannot be reopened later and stays live (#3622).
 	test("completed idle stage handle stays resumable after settle", async () => {
 		const registry = createStageControlRegistry();
 		const store = createStore();
@@ -71,6 +72,8 @@ describe("executor — stage-control registry integration", () => {
 		await retained.prompt("post-completion follow-up");
 		assert.deepEqual(promptCalls, ["workflow prompt", "post-completion follow-up"]);
 		assert.equal(store.runs()[0]?.stages[0]?.status, "completed");
+		await registry.clear();
+		assert.equal(disposeCalls, 1, "only an explicit clear releases a session that cannot be reopened");
 	});
 
 	test("attached completed idle stage handle stays resumable after settle", async () => {

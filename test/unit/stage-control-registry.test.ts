@@ -12,8 +12,8 @@
  */
 
 import assert from "node:assert/strict";
-import type { AgentSession } from "@bastani/atomic";
-import { describe, test } from "vitest";
+import type { AgentSession, SessionStore } from "@bastani/atomic";
+import { describe, test, vi } from "vitest";
 import {
 	createStageControlRegistry,
 	type StageControlHandle,
@@ -473,5 +473,130 @@ describe("stageControlRegistry — provisional detached leases", () => {
 
 		assert.equal(r.peek("run-1", "a"), handle);
 		assert.equal(disposes, 0);
+	});
+});
+
+describe("stageControlRegistry — releaseIdle", () => {
+	function gatedHandle(
+		stageId: string,
+		gate: { saved?: boolean; idle?: boolean; store?: SessionStore },
+		counters: { disposals: number } = { disposals: 0 },
+	): StageControlHandle {
+		return {
+			...makeHandle("run-1", stageId, { status: "completed" }),
+			async dispose() {
+				counters.disposals += 1;
+			},
+			releaseGate: {
+				async savedForReopen() {
+					return gate.saved === false ? undefined : (gate.store ?? ({} as SessionStore));
+				},
+				idle() {
+					return gate.idle ?? true;
+				},
+			},
+		};
+	}
+
+	test("releases a gated handle that is saved and idle, and nothing else (#3622)", async () => {
+		const r = createStageControlRegistry();
+		const releasedCounters = { disposals: 0 };
+		const ungated = { disposals: 0 };
+		const unsaved = { disposals: 0 };
+		const busy = { disposals: 0 };
+		r.register(gatedHandle("saved", {}, releasedCounters));
+		r.register({
+			...makeHandle("run-1", "ungated", { status: "completed" }),
+			dispose() {
+				ungated.disposals += 1;
+			},
+		});
+		r.register(gatedHandle("unsaved", { saved: false }, unsaved));
+		r.register(gatedHandle("busy", { idle: false }, busy));
+
+		await r.releaseIdle("run-1");
+
+		assert.equal(r.get("run-1", "saved"), undefined);
+		assert.deepEqual(
+			r.forRun("run-1").map((handle) => handle.stageId),
+			["ungated", "unsaved", "busy"],
+		);
+		assert.deepEqual(
+			[releasedCounters, ungated, unsaved, busy].map((c) => c.disposals),
+			[1, 0, 0, 0],
+		);
+	});
+
+	test("a lease held on the handle keeps it registered (#3622)", async () => {
+		const r = createStageControlRegistry();
+		const counters = { disposals: 0 };
+		const handle = gatedHandle("a", {}, counters);
+		const lease = r.acquireDetached("run-1", "a", () => handle);
+
+		await r.releaseIdle("run-1");
+		assert.equal(r.get("run-1", "a"), handle);
+		assert.equal(counters.disposals, 0);
+
+		lease.commit();
+		await r.releaseIdle("run-1");
+		assert.equal(r.get("run-1", "a"), undefined);
+		assert.equal(counters.disposals, 1);
+	});
+
+	test("keeps the owning session store so the stage can be reopened (#3622)", async () => {
+		const r = createStageControlRegistry();
+		const store = {} as SessionStore;
+		r.register(gatedHandle("a", { store }));
+
+		await r.releaseIdle("run-1");
+
+		assert.equal(r.get("run-1", "a"), undefined);
+		assert.equal(r.getSessionStore("run-1", "a"), store);
+	});
+
+	test("a failed release is reported and does not stop the sweep (#3622)", async () => {
+		const r = createStageControlRegistry();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const counters = { disposals: 0 };
+			r.register({
+				...gatedHandle("broken", {}),
+				async dispose() {
+					throw new Error("dispose failed");
+				},
+			});
+			r.register(gatedHandle("fine", {}, counters));
+
+			await r.releaseIdle("run-1");
+
+			assert.equal(counters.disposals, 1);
+			assert.equal(warn.mock.calls.length, 1);
+			assert.match(String(warn.mock.calls[0]?.[0]), /completed stage session release failed/);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("a clear that races a release waits for the disposal (#3622)", async () => {
+		const r = createStageControlRegistry();
+		const disposing = Promise.withResolvers<void>();
+		let finished = false;
+		r.register({
+			...gatedHandle("a", {}),
+			async dispose() {
+				await disposing.promise;
+				finished = true;
+			},
+		});
+
+		const releasing = r.releaseIdle("run-1");
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		const clearing = r.clear();
+		disposing.resolve();
+		await Promise.all([releasing, clearing]);
+
+		assert.equal(finished, true);
 	});
 });

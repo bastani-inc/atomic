@@ -250,6 +250,7 @@ export function createWorkflowStageFactory(input: {
 			liveHandleReleased: false,
 			stageClosedByWorkflowExit: false,
 			stageFinalized: false,
+			sessionCheckpointed: false,
 			skippedForParallelFailFast: false,
 			stageControlDropped: false,
 		};

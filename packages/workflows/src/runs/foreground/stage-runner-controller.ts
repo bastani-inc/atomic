@@ -8,6 +8,8 @@ import {
 	type ModelRoute,
 	type PromptOptions,
 	parseModelConstraints,
+	type SessionManager,
+	type SessionStore,
 	type StructuredOutputCapture,
 	setsProviders,
 } from "@bastani/atomic";
@@ -58,6 +60,7 @@ import {
 	attachCreatedStageSession,
 	cleanupFailedStageSessionBinding,
 	disposeStageSession,
+	isStageSessionQuiescent,
 	normalizeSessionCreateResult,
 	StageSessionBindingCleanupFailure,
 	shutdownStageSession,
@@ -289,6 +292,8 @@ export class StageSessionController {
 	private readonly messageAdmission = new StageMessageAdmission();
 	private readonly deliveryActivity = new StageDeliveryActivity();
 	private readonly artifactCapture = new StageArtifactCapture();
+	/** Set only when the caller supplied the session manager, so disposing the session never closes its store. */
+	private callerSessionManager: SessionManager | undefined;
 
 	beginOutputGeneration(): void {
 		this.artifactCapture.reset();
@@ -887,6 +892,24 @@ export class StageSessionController {
 	}
 	pendingMessageCount(): number {
 		return typeof this.session?.pendingMessageCount === "number" ? this.session.pendingMessageCount : 0;
+	}
+
+	/** Store holding this session's saved conversation, when it outlives the session itself. */
+	persistedSessionStore(): SessionStore | undefined {
+		return this.session === undefined ? undefined : this.callerSessionManager?.getSessionStore();
+	}
+
+	/** True when no message, turn, creation, retry, pause, or queue work still needs the live session. */
+	isIdleForRelease(): boolean {
+		const session = this.session;
+		if (session === undefined || this.disposed || this.pendingDisposal || this.disposalPromise !== undefined)
+			return false;
+		if (this.activeCreation !== undefined || this.ownedCreationPromise !== undefined) return false;
+		if (this.sessionShutdownPromise !== undefined || this.replacement.retiringSession !== undefined) return false;
+		if (this.pauseControl.isPaused()) return false;
+		if (this.thrownErrorRetryStates.size > 0) return false;
+		if (this.messageAdmission.isBusy()) return false;
+		return isStageSessionQuiescent(session);
 	}
 
 	private bindAbortSignal(): void {
@@ -1613,28 +1636,26 @@ export class StageSessionController {
 					!this.modelRoute.allowsModel(candidate.value, candidate.reasoningLevel))
 			)
 				throw new Error("Workflow stage execution candidate is no longer eligible.");
-			created = this.opts.adapters.agentSession
-				? await this.opts.adapters.agentSession.create(
-						(await stripWorkflowOnlyOptions(
-							stageOptions,
-							this.opts.defaultSessionDir,
-							this.meta,
-							this.opts.pendingStageDelivery,
-						)) as StageSessionCreateOptions,
-						{
-							...this.meta,
-							startupSignal: this.startupWait.signal,
-							isFallbackAttempt: candidate !== undefined && candidate !== (await this.modelCandidates())[0],
-							onStartupPhase: (phase) => {
-								if (this.abortGeneration === startGeneration) this.reportStartupPhase(phase);
-							},
-							stageOptions,
-							...(this.sharedOrchestrationContext !== undefined
-								? { orchestrationContext: this.sharedOrchestrationContext }
-								: {}),
-						},
-					)
-				: missingAdapter(consumer);
+			const adapter = this.opts.adapters.agentSession ?? missingAdapter(consumer);
+			const createOptions = (await stripWorkflowOnlyOptions(
+				stageOptions,
+				this.opts.defaultSessionDir,
+				this.meta,
+				this.opts.pendingStageDelivery,
+			)) as StageSessionCreateOptions;
+			this.callerSessionManager = createOptions.sessionManager;
+			created = await adapter.create(createOptions, {
+				...this.meta,
+				startupSignal: this.startupWait.signal,
+				isFallbackAttempt: candidate !== undefined && candidate !== (await this.modelCandidates())[0],
+				onStartupPhase: (phase) => {
+					if (this.abortGeneration === startGeneration) this.reportStartupPhase(phase);
+				},
+				stageOptions,
+				...(this.sharedOrchestrationContext !== undefined
+					? { orchestrationContext: this.sharedOrchestrationContext }
+					: {}),
+			});
 		} catch (error) {
 			if (error instanceof StageSessionBindingCleanupFailure) {
 				this.bindingCleanupFailure = error;
