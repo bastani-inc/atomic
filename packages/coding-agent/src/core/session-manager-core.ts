@@ -262,7 +262,11 @@ export class SessionManager {
 		if (sessionId === this.sessionId) {
 			throw new Error(`Cannot delete the session that is currently open: ${sessionId}`);
 		}
-		await this.store.delete(sessionId);
+		try {
+			await this.store.delete(sessionId);
+		} catch (error) {
+			if (!(error instanceof SessionNotFoundError)) throw error;
+		}
 	}
 
 	/** @internal Finalize provisional startup storage after project trust resolves. */

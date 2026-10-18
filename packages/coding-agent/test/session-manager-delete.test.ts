@@ -101,4 +101,19 @@ describe("SessionManager.deleteSession", () => {
 		await current.getSessionStore().close();
 		await other.getSessionStore().close();
 	});
+
+	it("succeeds when another process already deleted a JSONL session this one has read (#3740)", async () => {
+		const sessionDir = join(root, "sessions");
+		const other = await SessionManager.create(root, sessionDir);
+		await other.appendMessage(message("old"));
+		const current = await SessionManager.create(root, sessionDir);
+		await current.appendMessage(message("new"));
+		for await (const listed of current.getSessionStore().list({ cwd: root })) assert.ok(listed.id);
+		rmSync(other.getSessionFile()!);
+
+		await current.deleteSession(other.getSessionId());
+
+		await current.getSessionStore().close();
+		await other.getSessionStore().close();
+	});
 });
