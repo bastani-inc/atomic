@@ -289,6 +289,35 @@ describe("StreamableHttpTransport", () => {
 		await client.close();
 	});
 
+	it("bounds reconnects of completed GET streams that never advance an event ID (#3729)", async () => {
+		let gets = 0;
+		const { url } = await startServer(async (request, response, requests) => {
+			if (request.method !== "GET") return protocolHandler(request, response, requests);
+			gets++;
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			response.end(`retry: 0\ndata: ${JSON.stringify({ jsonrpc: "2.0", method: "notifications/test" })}\n\n`);
+		});
+		const client = new McpClient({ name: "http-test", version: "1.0.0" });
+		let delivered = 0;
+		client.onNotification("notifications/test", () => {
+			delivered++;
+		});
+		const exhausted = new Promise<Error>((resolve) => client.onError(resolve));
+		// The server's `retry: 0` sets every delay; maxDelayMs only sets how long a stream must stay
+		// open to count as healthy, so keep it far above any scheduling pause on a loaded runner.
+		const healthyStreamMs = 60_000;
+		await client.connect(
+			new StreamableHttpTransport({
+				url,
+				reconnect: { maxRetries: 3, initialDelayMs: 1, maxDelayMs: healthyStreamMs },
+			}),
+		);
+		assert.match((await exhausted).message, /could not be reopened/);
+		assert.equal(gets, 4);
+		assert.equal(delivered, 4);
+		await client.close();
+	});
+
 	it("rejects a request the server accepts without a response", async () => {
 		const { url } = await startServer(async (request, response, requests) => {
 			if (request.method !== "POST") return protocolHandler(request, response, requests);
