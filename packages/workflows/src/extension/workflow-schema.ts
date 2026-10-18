@@ -66,7 +66,7 @@ export const WorkflowParametersSchema = Type.Object(
 				],
 				{
 					description:
-						"Workflow action: run/list/get/inputs/models/status, inspect stage metadata, answer pending prompts, pause/resume/quit runs, inspect the configured model catalog, or reload workflow resources. 'status' without runId lists every workflow run in the current session with concise per-run summaries (status, timing, active stages, awaiting-input prompts); filter the listing with statusFilter. 'status' with runId returns one run's full detail. For transcript inspection, prefer status/stages/stage first to get sessionFile/transcriptPath, quote the exact path without rewriting separators (Windows backslashes are valid), then search it with rg/grep and read small ranges; transcript is path-only by default when sessionFile/transcriptPath exists, explicit tail/limit returns bounded previews, and missing transcript paths fall back to a small preview.",
+						"Workflow action: run/list/get/inputs/models/status, inspect stage metadata, answer pending prompts, pause/resume/quit runs, inspect the configured model catalog, or reload workflow resources. 'status' without runId lists every workflow run in the current session with concise per-run summaries (status, timing, active stages, awaiting-input prompts); filter the listing with statusFilter. 'status' with runId returns one run's full detail, including its final outputs (result); add summary:true for a compact form without the stage history. For transcript inspection, prefer status/stages/stage first to get sessionFile/transcriptPath, quote the exact path without rewriting separators (Windows backslashes are valid), then search it with rg/grep and read small ranges; transcript is path-only by default when sessionFile/transcriptPath exists, explicit tail/limit returns bounded previews, and missing transcript paths fall back to a small preview.",
 				},
 			),
 		),
@@ -113,6 +113,12 @@ export const WorkflowParametersSchema = Type.Object(
 						"Filter stages (stages action) or listed runs (status action without runId) by status; 'all' (default) includes everything. For the status listing, run statuses match directly, 'awaiting_input' selects runs with at least one stage awaiting input or pending human prompt, and in-flight runs are listed first.",
 				},
 			),
+		),
+		summary: Type.Optional(
+			Type.Boolean({
+				description:
+					"Status with runId only: return the run's status, final outputs (result), error and blockers (failed, blocked or awaiting-input stages and tools) without the full stage and tool history. Use it to read what a finished run produced, including a run started by another session.",
+			}),
 		),
 		format: Type.Optional(
 			Type.Union([Type.Literal("text"), Type.Literal("json")], {

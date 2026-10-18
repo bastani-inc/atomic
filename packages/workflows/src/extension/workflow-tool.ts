@@ -22,6 +22,7 @@ import { workflowPolicyFromContext } from "./workflow-policy.js";
 import type { WorkflowReloadReport } from "./workflow-reload-report.js";
 import { raceWorkflowRequestAbort } from "./workflow-request-abort.js";
 import { injectWorkflowResumeSummary } from "./workflow-resume-summary.js";
+import { buildWorkflowRunStatusDigest } from "./workflow-status-digest.js";
 import { buildWorkflowStatusListing, setWorkflowStatusRenderRuns } from "./workflow-status-summary.js";
 import {
 	isResolvedRunId,
@@ -241,9 +242,15 @@ export function makeExecuteWorkflowTool(
 					if (resolved.kind === "not_found") {
 						const durable = await awaitRequest(getRuntime().inspectDurableWorkflow(target));
 						if (durable.kind === "found") await authorize(durable.detail.runId);
-						return durable.kind === "found"
-							? { action: "statusDetail", runId: durable.detail.runId, detail: durable.detail }
-							: { action: "statusDetail", runId: target, error: durable.message };
+						if (durable.kind !== "found")
+							return { action: "statusDetail", runId: target, error: durable.message };
+						return args.summary === true
+							? {
+									action: "statusSummary",
+									runId: durable.detail.runId,
+									summary: buildWorkflowRunStatusDigest(durable.detail),
+								}
+							: { action: "statusDetail", runId: durable.detail.runId, detail: durable.detail };
 					}
 					if (!isResolvedRunId(resolved)) {
 						return { action: "statusDetail", runId: target, error: `run not found: ${target}` };
@@ -252,6 +259,13 @@ export function makeExecuteWorkflowTool(
 					const inspected = inspectRun(resolved.runId, owner);
 					if (!inspected.ok) {
 						return { action: "statusDetail", runId: target, error: `run not found: ${target}` };
+					}
+					if (args.summary === true) {
+						return {
+							action: "statusSummary",
+							runId: inspected.runId,
+							summary: buildWorkflowRunStatusDigest(inspected.detail),
+						};
 					}
 					const detailResult = {
 						action: "statusDetail" as const,

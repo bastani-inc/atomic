@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `workflow({ action: "status", runId, summary: true })` returns a compact status of one run: status, timing, final outputs (`result`), error and blockers (failed or blocked stages and tools, and stages awaiting input), without the stage and tool history ([#3744](https://github.com/bastani-inc/atomic/issues/3744)).
+
+### Fixed
+
+- `workflow({ action: "status", runId })` for a run another session started now includes the run's final outputs in `detail.result`, because the journal now records them when the run finishes; runs finished by an earlier version have no recorded outputs ([#3744](https://github.com/bastani-inc/atomic/issues/3744)).
+
 ## [0.9.38] - 2026-10-18
 
 ### Breaking Changes
