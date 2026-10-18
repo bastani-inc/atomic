@@ -178,7 +178,7 @@ Delete a stored session and its entries from the active session store (SQLite or
 {"id": "req-2", "type": "delete_session", "sessionId": "019fdf86-cf98-7327-8a73-21365028f6ae"}
 ```
 
-`id` is the request ID that every command carries, so the session to delete goes in `sessionId`.
+`sessionId` names the session to delete. `id` is the request ID that every command carries and is echoed in the response. When `sessionId` is omitted, `id` is also used as the session ID, so `{"type": "delete_session", "id": "019fdf86-cf98-7327-8a73-21365028f6ae"}` deletes that session and the response echoes the same `id`. When both are present, `sessionId` wins. Omitting both returns an error response (`delete_session requires sessionId`) and changes nothing.
 
 Response:
 ```json
