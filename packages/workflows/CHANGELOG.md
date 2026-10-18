@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - `workflow({ action: "status", runId })` for a run another session started now includes the run's final outputs in `detail.result`, because the journal now records them when the run finishes; runs finished by an earlier version have no recorded outputs ([#3744](https://github.com/bastani-inc/atomic/issues/3744)).
+- A workflow run that finishes after receiving a sticky Intercom message (for example a send to `workflow:<rootRunId>/**`) no longer prints `pending stage delivery sweep failed: Workflow execution for <runId> is retired`, and its leftover sticky messages are settled instead of staying queued ([#3745](https://github.com/bastani-inc/atomic/issues/3745)).
 
 ## [0.9.38] - 2026-10-18
 
