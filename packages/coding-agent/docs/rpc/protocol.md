@@ -170,6 +170,29 @@ If an extension cancelled:
 {"type": "response", "command": "new_session", "success": true, "data": {"cancelled": true}}
 ```
 
+#### delete_session
+
+Delete a stored session and its entries from the active session store (SQLite or JSONL). Use `list_sessions` to find IDs.
+
+```json
+{"id": "req-2", "type": "delete_session", "sessionId": "019fdf86-cf98-7327-8a73-21365028f6ae"}
+```
+
+`id` is the request ID that every command carries, so the session to delete goes in `sessionId`.
+
+Response:
+```json
+{"id": "req-2", "type": "response", "command": "delete_session", "success": true}
+```
+
+The session currently open in this process cannot be deleted. The command returns an error response and the session stays intact; start or switch to another session first. Deleting an ID that is not in the store succeeds without changing anything.
+
+```json
+{"id": "req-2", "type": "response", "command": "delete_session", "success": false, "error": "Cannot delete the session that is currently open: 019fdf86-cf98-7327-8a73-21365028f6ae"}
+```
+
+TypeScript `RpcClient` method: `deleteSession(sessionId)`, which rejects on an error response.
+
 ### State
 
 #### get_state

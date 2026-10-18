@@ -153,6 +153,10 @@ export function createRpcCommandHandler({
 				}
 				return createRpcSuccessResponse(id, "new_session", result);
 			}
+			case "delete_session": {
+				await session.sessionManager.deleteSession(command.sessionId);
+				return createRpcSuccessResponse(id, "delete_session");
+			}
 
 			case "get_session_summary":
 				return createRpcSuccessResponse(id, command.type, { summary: session.sessionSummary ?? null });
