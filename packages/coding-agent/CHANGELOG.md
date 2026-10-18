@@ -9,6 +9,7 @@
 ### Fixed
 
 - `/export` and the RPC `export_html` command now export sessions stored in the default SQLite session store instead of refusing them, reading entries through the session store rather than a session file ([#3741](https://github.com/bastani-inc/atomic/issues/3741))
+- When the earlier JSONL sessions folder holds several copies of one session, such as conflict copies left by a file-sync tool, the default store now lists and imports the copy with the newest message instead of the alphabetically first file.
 
 ## [0.9.38] - 2026-10-18
 

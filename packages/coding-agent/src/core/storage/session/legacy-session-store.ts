@@ -6,7 +6,7 @@ import type { SqliteDatabase } from "../database.js";
 import { openNodeSqliteDatabase } from "../node-sqlite.js";
 import { SessionExistsError, SessionNotFoundError } from "./errors.js";
 import { type JsonlSessionFile, JsonlSessionStore } from "./jsonl-session-store.js";
-import { summarizeLegacySession } from "./legacy-session-summary.js";
+import { latestLegacyMessageTime, summarizeLegacySession } from "./legacy-session-summary.js";
 import { summarizeSession } from "./session-summary.js";
 import type {
 	SessionListQuery,
@@ -186,7 +186,10 @@ export class LegacySessionStore implements SessionStore {
 		}
 	}
 
-	/** Header-only index of the legacy directory, read once; nothing writes legacy sessions any more. */
+	/**
+	 * Header-only index of the legacy directory, read once; nothing writes legacy sessions any more.
+	 * Copies of one session, such as conflict copies left by a sync tool, are ordered newest first.
+	 */
 	private legacyIndex(): Promise<ReadonlyMap<string, readonly JsonlSessionFile[]>> {
 		this.index ??= (async () => {
 			const files = new Map<string, JsonlSessionFile[]>();
@@ -200,6 +203,9 @@ export class LegacySessionStore implements SessionStore {
 				}
 			} catch {
 				// An unreadable legacy directory leaves only the sessions already in the database.
+			}
+			for (const [sessionId, copies] of files) {
+				if (copies.length > 1) files.set(sessionId, await newestCopiesFirst(copies));
 			}
 			return files;
 		})();
@@ -262,4 +268,37 @@ export class LegacySessionStore implements SessionStore {
 		const database = await this.deletionDatabase();
 		await database.run(`INSERT OR IGNORE INTO ${DELETED_TABLE} VALUES (?, ?)`, sessionId, Date.now());
 	}
+}
+
+/**
+ * Orders copies of one session by their latest message, newest first. Each copy is dated from its
+ * end backwards, one copy at a time, so a large set of conflict copies is never parsed whole or held
+ * in memory together. File modification time never stands in for a message time, because a sync
+ * tool can rewrite it; it only breaks ties, then directory order. A copy without messages sorts
+ * after every copy with one, and a damaged or unreadable copy sorts last.
+ */
+async function newestCopiesFirst(copies: readonly JsonlSessionFile[]): Promise<JsonlSessionFile[]> {
+	const ranked: { file: JsonlSessionFile; order: number; damaged: number; latest: number; modified: number }[] = [];
+	for (const [order, file] of copies.entries()) {
+		const stats = await stat(file.location).catch(() => undefined);
+		let damaged = stats === undefined;
+		let latest: number | undefined;
+		if (stats !== undefined) {
+			try {
+				latest = await latestLegacyMessageTime(file.location, stats.size);
+			} catch {
+				damaged = true;
+			}
+		}
+		ranked.push({
+			file,
+			order,
+			damaged: damaged ? 1 : 0,
+			latest: latest ?? Number.NEGATIVE_INFINITY,
+			modified: stats?.mtimeMs ?? Number.NEGATIVE_INFINITY,
+		});
+	}
+	return ranked
+		.sort((a, b) => a.damaged - b.damaged || b.latest - a.latest || b.modified - a.modified || a.order - b.order)
+		.map(({ file }) => file);
 }

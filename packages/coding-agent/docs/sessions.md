@@ -89,6 +89,8 @@ For the JSONL file format and SessionManager API, see [Session Format](/session-
 
 Sessions written in formats 1, 2, and 3, and early 0.9.38 alpha sessions whose header uses `timestamp`, appear in the picker and upgrade automatically to format 4. In the default store this happens when you first open one. In an explicit JSONL store it happens when you open them, including with `--continue`, `--session`, or `--fork`; browsing the picker does not change session files, and opening an older session rewrites only that file. No flag or confirmation is needed.
 
+If the default store's earlier sessions folder holds several copies of one session, such as conflict copies left by a file-sync tool, the picker lists the copy with the newest message and opening the session imports that copy. Other copies stay on disk unchanged.
+
 Resuming restores saved verbatim compaction without another planning request. Older sessions with retired logical-deletion compaction can bring previously hidden content back into context.
 
 When you resume at startup with the default tool selection, Atomic restores the tools recorded in the session, including tools activated during the conversation. `--tools +name,-name` modifies that restored selection. Explicit `--tools name,...`, `--no-tools`, and `--no-builtin-tools` keep their requested tool restrictions, and excluded tools stay excluded. Sessions with no recorded tool selection use the current defaults.
