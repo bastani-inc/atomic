@@ -658,6 +658,7 @@ async function constructAgentSession(
 			sessionManager,
 			settingsManager,
 			cwd,
+			workflowJournal: options.journal,
 			childSessionOptions: (child) =>
 				inheritChildSessionOptions(
 					{

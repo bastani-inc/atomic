@@ -8,6 +8,7 @@ import type {
 	WorkflowRunControlRegistration,
 } from "@bastani/atomic";
 import type { Api, Model } from "@bastani/pi-ai/compat";
+import type { RunJournalSettings } from "../durable/journal/resolution.js";
 import type { StageSessionRuntime } from "../runs/foreground/stage-runner.js";
 import type { SessionManager as PersistenceSessionManager } from "../shared/persistence-restore.js";
 import type { RunStatus, StageStatus } from "../shared/store-types.js";
@@ -191,6 +192,8 @@ export interface ExtensionAPI {
 	refreshWorkflowResources?: () => Promise<readonly WorkflowResourceInfo[]>;
 	getResourceLoaderInheritanceSnapshot?: () => DefaultResourceLoaderInheritanceSnapshot | undefined;
 	getChildSessionOptions?: (options: CreateAgentSessionOptions) => CreateAgentSessionOptions;
+	getWorkflowJournal?: () => CreateAgentSessionOptions["journal"];
+	getSettings?: () => RunJournalSettings;
 	registerShortcut?: (
 		key: string,
 		opts: {

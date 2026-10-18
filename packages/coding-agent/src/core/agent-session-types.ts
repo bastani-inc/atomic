@@ -160,6 +160,7 @@ export interface AgentSessionConfig {
 	modelRuntime: ModelRuntime;
 	cacheWarmer?: import("./cache-warmer.ts").CacheWarmer;
 	childSessionOptions?: import("./child-session-options.ts").ChildSessionOptionsResolver;
+	workflowJournal?: import("./storage/provider.js").RunJournalOption;
 	initialActiveToolNames?: string[];
 	usesDefaultTools?: boolean;
 	defaultToolModifiers?: string[];

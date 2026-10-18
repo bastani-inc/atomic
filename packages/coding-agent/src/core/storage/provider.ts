@@ -19,6 +19,12 @@ import type { SessionStore } from "./session/types.js";
 
 export type SecretRef = { readonly env: string } | { readonly file: string };
 export type AdapterOptions = Readonly<Record<string, SqliteValue | boolean>>;
+export type RunJournalOption =
+	| { path: string; prefix?: string }
+	| { database: SqliteDatabase; prefix?: string }
+	| { memory: true }
+	| { adapter: string; options?: AdapterOptions; secrets?: Readonly<Record<string, SecretRef>>; prefix?: string }
+	| RunJournal;
 export type StorageSelection =
 	| { readonly kind: "memory" }
 	| { readonly kind: "jsonl"; readonly dir: string }

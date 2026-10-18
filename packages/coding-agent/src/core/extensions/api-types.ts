@@ -252,6 +252,8 @@ export interface ExtensionAPI {
 	getResourceLoaderInheritanceSnapshot?: () => DefaultResourceLoaderInheritanceSnapshot;
 	/** Internal owner-bound defaults and capability ceiling for builtin child adapters. */
 	getChildSessionOptions?: import("../child-session-options.ts").ChildSessionOptionsResolver;
+	/** Internal: the workflow journal the owning SDK session was created with, if any. */
+	getWorkflowJournal?: () => import("../storage/provider.js").RunJournalOption | undefined;
 
 	// =========================================================================
 	// Message Rendering

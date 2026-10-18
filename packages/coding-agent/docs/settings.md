@@ -573,7 +573,7 @@ Workflow runs use a SQLite journal, by default the local file `~/.atomic/workflo
 }
 ```
 
-Relative settings paths resolve against the Atomic home directory, normally `~/.atomic`, not the project directory. Precedence is SDK `RunOpts.journal`, non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, `workflows.journal`, shared top-level `storage`, then the default journal file. An empty environment variable is ignored. A present empty journal block selects the journal default rather than inheriting shared storage.
+Relative settings paths resolve against the Atomic home directory, normally `~/.atomic`, not the project directory. Precedence is SDK `RunOpts.journal` (or `createAgentSession({ journal })` for a session's `workflow` tool), non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, `workflows.journal`, shared top-level `storage`, then the default journal file. An empty environment variable is ignored. SDK sessions read `workflows.journal` from the settings they were given, so `SettingsManager.inMemory(...)` selects a journal per session. A present empty journal block selects the journal default rather than inheriting shared storage.
 
 To keep workflow records only in memory, set `"journal": { "memory": true }`. Do not combine `memory: true` with a non-empty `path`. Memory must be selected explicitly and cannot recover runs after the process exits; an environment path still takes precedence over this setting.
 

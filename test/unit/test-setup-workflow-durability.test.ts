@@ -14,7 +14,9 @@ import {
 const owner = getDurableBackendProcessOwner();
 const original = { ...owner };
 const initialized = await createMemoryTestBackend();
-const selected = new Map([["memory", { ready: Promise.resolve(initialized) }]]);
+const selected = new Map([
+	["memory", { ready: Promise.resolve(initialized), holders: new Set<object>(), pinned: true }],
+]);
 let previousInjected: DurableWorkflowBackend | undefined;
 let previousOverride: InMemoryDurableBackend | undefined;
 let completed = 0;

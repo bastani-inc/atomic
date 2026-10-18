@@ -13,7 +13,7 @@ import { ensureWorkflowSummaryService, type WorkflowSummaryContext } from "./wor
 
 import { type DurableWorkflowBackend, resumableEntryFromHandle } from "../durable/backend.js";
 import { initializeDurableBackend } from "../durable/factory.js";
-import type { RunJournalOption } from "../durable/journal/resolution.js";
+import type { RunJournalOption, RunJournalSettings } from "../durable/journal/resolution.js";
 import { resumeDurableWorkflow } from "../durable/resume-runtime.js";
 import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
 import { availableStoreDurableBackendOverride, bindStoreDurableBackend } from "../durable/store-backend.js";
@@ -52,6 +52,10 @@ import { raceWorkflowRequestAbort } from "./workflow-request-abort.js";
 export interface ExtensionRuntimeOpts {
 	/** Journal selection retained for this runtime's execution and recovery. */
 	journal?: RunJournalOption;
+	/** Read when the journal first opens; used when `journal` is absent. */
+	resolveJournal?: () => RunJournalOption | undefined;
+	/** Read when the journal first opens; used when no journal option applies. Defaults to the on-disk settings. */
+	resolveJournalSettings?: () => RunJournalSettings | undefined;
 	isProjectTrusted?: () => boolean;
 	/**
 	 * Pre-populated registry — takes precedence over `definitions`.
@@ -198,8 +202,10 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			presetBackend === undefined
 				? initializeDurableBackend({
 						cwd: runtimeCwd,
-						journal: opts.journal,
+						journal: opts.journal ?? opts.resolveJournal?.(),
+						settings: opts.resolveJournalSettings?.(),
 						projectTrusted: opts.isProjectTrusted?.(),
+						holder: activeStore,
 					})
 				: Promise.resolve(presetBackend)
 		)

@@ -97,6 +97,7 @@ export type SetLabelHandler = (entryId: string, label: string | undefined) => Pr
 export interface ExtensionRuntimeState {
 	getSettings?: () => import("../settings-types.ts").Settings;
 	getChildSessionOptions?: import("../child-session-options.ts").ChildSessionOptionsResolver;
+	workflowJournal?: import("../storage/provider.js").RunJournalOption;
 	/** Shared by extension loading and its runner generation. */
 	workflowActivityHub: WorkflowActivityHub;
 	/** Holds the session-scoped run-control implementation registered by the workflows extension. */
