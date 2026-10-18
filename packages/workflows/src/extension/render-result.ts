@@ -33,6 +33,7 @@ import { truncateToWidth } from "../tui/text-helpers.js";
 import { renderWorkflowList } from "../tui/workflow-list.js";
 import type { WorkflowControlFailedRun, WorkflowControlFailureCode } from "./workflow-control-failure.js";
 import type { WorkflowReloadReport } from "./workflow-reload-report.js";
+import type { WorkflowRunStatusDigest } from "./workflow-status-digest.js";
 import type { WorkflowRunStatusFilter, WorkflowRunStatusSummary } from "./workflow-status-summary.js";
 import { getWorkflowStatusRenderRuns } from "./workflow-status-summary.js";
 
@@ -92,6 +93,11 @@ type StatusDetailResult =
 			runId: string;
 			error: string;
 	  };
+type StatusSummaryResult = {
+	action: "statusSummary";
+	runId: string;
+	summary: WorkflowRunStatusDigest;
+};
 type InputsResult = { action: "inputs"; name: string; inputs: WorkflowInputEntry[]; error?: string };
 type GetResult = {
 	action: "get";
@@ -226,6 +232,7 @@ export type WorkflowToolResult =
 	| ListResult
 	| StatusResult
 	| StatusDetailResult
+	| StatusSummaryResult
 	| InputsResult
 	| GetResult
 	| RunResult
@@ -308,6 +315,16 @@ function renderNotice(title: string, message: string, opts: RenderResultOpts | u
 	});
 }
 
+function statusDigestNoticeText(digest: WorkflowRunStatusDigest): string {
+	const lines = [`${digest.name} ${digest.runId}: ${digest.status}`];
+	if (digest.error !== undefined) lines.push(`error: ${digest.error}`);
+	if (digest.result !== undefined) lines.push(`result: ${JSON.stringify(digest.result)}`);
+	for (const blocker of digest.blockers) {
+		lines.push(`${blocker.kind}: ${blocker.name}${blocker.message === undefined ? "" : ` — ${blocker.message}`}`);
+	}
+	return lines.join("\n");
+}
+
 const TRANSCRIPT_NOTICE_ENTRY_LIMIT = 5;
 const TRANSCRIPT_NOTICE_CHAR_LIMIT = 240;
 
@@ -379,6 +396,11 @@ function renderResultBody(result: WorkflowRegisteredToolResult | null | undefine
 				owningRunStatus: (runId) => statusByRunId.get(runId),
 				resolveBoundarySegments: (runId) => workflowBoundarySegments(allRuns, runId),
 			});
+		}
+
+		case "statusSummary": {
+			const { summary } = result as StatusSummaryResult;
+			return renderNotice("WORKFLOW STATUS", statusDigestNoticeText(summary), opts, themed);
 		}
 
 		case "statusDetail": {

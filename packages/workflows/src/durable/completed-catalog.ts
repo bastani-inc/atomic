@@ -25,6 +25,7 @@ import {
 } from "./completed-catalog-stage-groups.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import { resolveDurableEntry } from "./resume-runtime.js";
+import { durableRunResult, RUN_RESULT_CHECKPOINT_NAME } from "./run-result.js";
 import { priorRunElapsedMs, RUN_TIMING_CHECKPOINT_NAME, RUN_USAGE_CHECKPOINT_NAME } from "./run-timing.js";
 import { WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME } from "./workflow-heartbeat-anchor.js";
 
@@ -35,7 +36,7 @@ import { WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME } from "./workflow-heartbeat-
  */
 function isReservedRunCheckpointHash(argsHash: string): boolean {
 	return (
-		[RUN_TIMING_CHECKPOINT_NAME, RUN_USAGE_CHECKPOINT_NAME].includes(argsHash) ||
+		[RUN_TIMING_CHECKPOINT_NAME, RUN_USAGE_CHECKPOINT_NAME, RUN_RESULT_CHECKPOINT_NAME].includes(argsHash) ||
 		argsHash === WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME
 	);
 }
@@ -157,6 +158,7 @@ export async function completedWorkflowRunSnapshots(
 			...(handle.failureRecoverability !== undefined ? { failureRecoverability: handle.failureRecoverability } : {}),
 			...(handle.failureDisposition !== undefined ? { failureDisposition: handle.failureDisposition } : {}),
 			...(handle.failedToolNodeId !== undefined ? { failedToolNodeId: handle.failedToolNodeId } : {}),
+			...runResultFields(backend, handle),
 			resumable: handle.resumable ?? false,
 		};
 		return [root, ...runs.filter((_, index) => index !== rootIndex)];
@@ -217,8 +219,18 @@ function rootSnapshot(
 		...(handle.failureRecoverability !== undefined ? { failureRecoverability: handle.failureRecoverability } : {}),
 		...(handle.failureDisposition !== undefined ? { failureDisposition: handle.failureDisposition } : {}),
 		...(handle.failedToolNodeId !== undefined ? { failedToolNodeId: handle.failedToolNodeId } : {}),
+		...runResultFields(backend, handle),
 		resumable: isDurableWorkflowResumable(handle),
 	};
+}
+
+function runResultFields(
+	backend: DurableWorkflowBackend,
+	handle: import("./types.js").DurableWorkflowHandle,
+): Pick<RunSnapshot, "result"> {
+	if (handle.status === "running" || handle.status === "paused") return {};
+	const result = durableRunResult(backend, handle.workflowId);
+	return result === undefined ? {} : { result };
 }
 
 /** Rebuild completed nested runs while a paused root is replaying cached boundaries. */
