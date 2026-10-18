@@ -6,7 +6,7 @@ import type { SqliteDatabase } from "../database.js";
 import { openNodeSqliteDatabase } from "../node-sqlite.js";
 import { SessionExistsError, SessionNotFoundError } from "./errors.js";
 import { type JsonlSessionFile, JsonlSessionStore } from "./jsonl-session-store.js";
-import { summarizeLegacySession } from "./legacy-session-summary.js";
+import { latestLegacyMessageTime, summarizeLegacySession } from "./legacy-session-summary.js";
 import { summarizeSession } from "./session-summary.js";
 import type {
 	SessionListQuery,
@@ -271,25 +271,30 @@ export class LegacySessionStore implements SessionStore {
 }
 
 /**
- * Orders copies of one session by their latest message, newest first, using the same bounded reads
- * as a listing. File modification time breaks ties, then directory order. A damaged copy sorts last.
+ * Orders copies of one session by their latest message, newest first. Each copy is ranked from its
+ * last window only, one copy at a time, so a large set of conflict copies is never parsed whole or
+ * held in memory together. A copy whose last window holds no complete message ranks by its file
+ * modification time; file modification time also breaks ties, then directory order. A damaged copy
+ * sorts last.
  */
 async function newestCopiesFirst(copies: readonly JsonlSessionFile[]): Promise<JsonlSessionFile[]> {
-	const ranked = await Promise.all(
-		copies.map(async (file, order) => {
-			const stats = await stat(file.location).catch(() => undefined);
-			const summary =
-				stats === undefined
-					? undefined
-					: await summarizeLegacySession(file, stats.size, stats.mtimeMs).catch(() => undefined);
-			return {
-				file,
-				order,
-				latest: summary === undefined ? Number.NEGATIVE_INFINITY : Date.parse(summary.modifiedAt),
-				modified: stats?.mtimeMs ?? Number.NEGATIVE_INFINITY,
-			};
-		}),
-	);
+	const ranked: { file: JsonlSessionFile; order: number; latest: number; modified: number }[] = [];
+	for (const [order, file] of copies.entries()) {
+		const stats = await stat(file.location).catch(() => undefined);
+		const latest =
+			stats === undefined
+				? undefined
+				: await latestLegacyMessageTime(file.location, stats.size).then(
+						(time) => time ?? stats.mtimeMs,
+						() => undefined,
+					);
+		ranked.push({
+			file,
+			order,
+			latest: latest ?? Number.NEGATIVE_INFINITY,
+			modified: stats?.mtimeMs ?? Number.NEGATIVE_INFINITY,
+		});
+	}
 	return ranked
 		.sort((a, b) => b.latest - a.latest || b.modified - a.modified || a.order - b.order)
 		.map(({ file }) => file);

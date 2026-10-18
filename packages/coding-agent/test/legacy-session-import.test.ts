@@ -837,6 +837,32 @@ describe("legacy JSONL sessions in the default store", () => {
 				assert.equal(listed?.firstMessage, firstText);
 			});
 		});
+
+		it("ranks many large conflict copies from their tails without reading each one whole", async () => {
+			const firstText = `${"z".repeat(300_000)} end`;
+			const live = writeLarge({ id: "large-conflicted", lastAt, firstText, name: "Live" });
+			const conflictCopies = 6;
+			for (let copy = 1; copy <= conflictCopies; copy++) {
+				writeFileSync(
+					live.replace(/\.jsonl$/, `.conflict${copy}.jsonl`),
+					largeLegacyContent({
+						id: "large-conflicted",
+						cwd,
+						lastAt: new Date(Date.parse(lastAt) - copy * 60_000).toISOString(),
+						firstText,
+						name: "Conflict",
+					}),
+				);
+			}
+			const reads = watchBodyReads();
+
+			await withDefaultStore(async (store) => {
+				const listed = (await SessionManager.list(cwd, store)).find((session) => session.id === "large-conflicted");
+				assert.equal(listed?.modified.getTime(), Date.parse(lastAt) + 1_000);
+				assert.deepEqual(reads, [live]);
+				assert.equal((await SessionManager.open(store, "large-conflicted")).getSessionName(), "Live");
+			});
+		});
 	});
 
 	it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(

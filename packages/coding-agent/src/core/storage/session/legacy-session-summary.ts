@@ -108,3 +108,34 @@ export async function summarizeLegacySession(
 	const state = { ...scan.state, latestMessageTime: scan.state.latestMessageTime ?? modifiedMs };
 	return { ...materializeSessionSummaryMetadata(file.header, state), searchText: scan.texts.join(" ") };
 }
+
+/** Offset just past the header line, or undefined when no newline appears within the head scan limit. */
+async function headerLineEnd(handle: FileHandle): Promise<number | undefined> {
+	const chunk = Buffer.alloc(HEAD_CHUNK_BYTES);
+	for (let offset = 0; offset < HEAD_SCAN_LIMIT_BYTES; ) {
+		const { bytesRead } = await handle.read(chunk, 0, chunk.length, offset);
+		if (bytesRead === 0) return undefined;
+		const newline = chunk.subarray(0, bytesRead).indexOf(NEWLINE);
+		if (newline !== -1) return offset + newline + 1;
+		offset += bytesRead;
+	}
+	return undefined;
+}
+
+/**
+ * The time of the latest message in a legacy session, read from its last window only, so ranking
+ * copies never parses a whole history. Undefined when that window holds no complete message. A
+ * line in the window that cannot be parsed rejects, as it would for a listing.
+ */
+export async function latestLegacyMessageTime(location: string, size: number): Promise<number | undefined> {
+	const handle = await open(location, "r");
+	try {
+		const headerEnd = await headerLineEnd(handle);
+		if (headerEnd === undefined) return undefined;
+		const scan: Scan = { state: applySessionSummaryEntries(undefined, []).state, texts: [] };
+		if (!(await scanTail(handle, size, headerEnd, scan))) return undefined;
+		return scan.state.latestMessageTime ?? undefined;
+	} finally {
+		await handle.close();
+	}
+}
