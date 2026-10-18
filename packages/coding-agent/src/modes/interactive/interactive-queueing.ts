@@ -205,16 +205,19 @@ async function startCompactionQueuePrompt(mode: InteractiveModeBase): Promise<bo
 	if (!ranCommands) return false;
 	const first = takeNextCompactionMessage(mode);
 	if (!first) return false;
-	const accepted = Promise.withResolvers<boolean>();
+	let accept!: (accepted: boolean) => void;
+	const accepted = new Promise<boolean>((resolve) => {
+		accept = resolve;
+	});
 	const prompt = mode.session.prompt(first.text, {
 		streamingBehavior: first.mode,
-		preflightResult: (success) => accepted.resolve(success),
+		preflightResult: (success) => accept(success),
 	});
 	prompt.then(
-		() => accepted.resolve(true),
-		() => accepted.resolve(false),
+		() => accept(true),
+		() => accept(false),
 	);
-	if (await accepted.promise) {
+	if (await accepted) {
 		prompt.catch((error) => showCompactionQueueError(mode, error));
 		return true;
 	}

@@ -331,15 +331,18 @@ async function startChatSessionCompactionPrompt<TExtraEntry extends ChatTranscri
 ): Promise<boolean> {
 	const first = takeNextCompactionMessage(state);
 	if (!first) return false;
-	const accepted = Promise.withResolvers<boolean>();
-	state.compactionPromptStarted = () => accepted.resolve(true);
+	let accept!: (accepted: boolean) => void;
+	const accepted = new Promise<boolean>((resolve) => {
+		accept = resolve;
+	});
+	state.compactionPromptStarted = () => accept(true);
 	const prompt = requiredChatSessionPromptCommand(state)(first.text, first.mode);
 	prompt.then(
-		() => accepted.resolve(true),
-		() => accepted.resolve(false),
+		() => accept(true),
+		() => accept(false),
 	);
 	try {
-		if (await accepted.promise) {
+		if (await accepted) {
 			prompt.catch((err) => notifyChatSessionWarning(state, errorMessage(err)));
 			return true;
 		}
