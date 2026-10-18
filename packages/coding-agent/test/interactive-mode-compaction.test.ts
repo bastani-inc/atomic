@@ -724,12 +724,12 @@ describe("InteractiveMode compaction events", () => {
 		) => Promise<void>;
 		await flushCompactionQueue.call(fakeThis, { willRetry: false });
 
-		expect(fakeThis.session.prompt).toHaveBeenCalledWith(
-			"change direction",
-			expect.objectContaining({ streamingBehavior: "steer" }),
-		);
-		expect(fakeThis.compactionQueuedMessages).toEqual([]);
-		expect(fakeThis.showError).not.toHaveBeenCalled();
+		const [promptText, promptOptions] = fakeThis.session.prompt.mock.calls[0] ?? [];
+		assert.equal(fakeThis.session.prompt.mock.calls.length, 1);
+		assert.equal(promptText, "change direction");
+		assert.equal(promptOptions?.streamingBehavior, "steer");
+		assert.deepEqual(fakeThis.compactionQueuedMessages, []);
+		assert.deepEqual(fakeThis.showError.mock.calls, []);
 	});
 
 	function failingFlushHarness(batch: readonly { text: string; mode: "steer" | "followUp" }[]) {
