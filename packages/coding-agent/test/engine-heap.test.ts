@@ -7,6 +7,7 @@ const GIB = 1024 * 1024 * 1024;
 const largeMachine: EngineHeapInputs = {
 	runsOnNode: true,
 	totalMemoryBytes: 64 * GIB,
+	constrainedMemoryBytes: undefined,
 	currentHeapLimitBytes: 4 * GIB,
 	nodeOptions: undefined,
 	execArgv: [],
@@ -20,6 +21,21 @@ describe("interactive engine heap sizing", () => {
 
 	it("keeps the default limit when half of system memory would not raise it", () => {
 		assert.deepEqual(engineHeapRuntimeArgs({ ...largeMachine, totalMemoryBytes: 8 * GIB }), []);
+	});
+
+	it("sizes from a container memory limit smaller than physical RAM", () => {
+		assert.deepEqual(engineHeapRuntimeArgs({ ...largeMachine, constrainedMemoryBytes: 2 * GIB }), []);
+		assert.deepEqual(engineHeapRuntimeArgs({ ...largeMachine, constrainedMemoryBytes: 16 * GIB }), [
+			"--max-old-space-size=8192",
+		]);
+	});
+
+	it("ignores an absent or larger-than-RAM container limit", () => {
+		for (const constrainedMemoryBytes of [0, 2 ** 63]) {
+			assert.deepEqual(engineHeapRuntimeArgs({ ...largeMachine, constrainedMemoryBytes }), [
+				"--max-old-space-size=32768",
+			]);
+		}
 	});
 
 	it("passes no V8 flags when the engine does not run on Node", () => {

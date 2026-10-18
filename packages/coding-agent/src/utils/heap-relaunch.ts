@@ -29,6 +29,7 @@ export function headlessHeapRelaunchArgs(args: readonly string[]): string[] {
 	return engineHeapRuntimeArgs({
 		runsOnNode: !("bun" in process.versions),
 		totalMemoryBytes: totalmem(),
+		constrainedMemoryBytes: process.constrainedMemory(),
 		currentHeapLimitBytes: getHeapStatistics().heap_size_limit,
 		nodeOptions: process.env.NODE_OPTIONS,
 		execArgv: [],
