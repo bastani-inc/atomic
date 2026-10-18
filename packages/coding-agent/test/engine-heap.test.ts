@@ -42,14 +42,14 @@ describe("interactive engine heap sizing", () => {
 		]);
 	});
 
-	it("uses ATOMIC_ENGINE_HEAP_MB as the size, or 0 to turn automatic sizing off", () => {
+	it("uses ATOMIC_HEAP_MB as the size, or 0 to turn automatic sizing off", () => {
 		assert.deepEqual(engineHeapRuntimeArgs({ ...largeMachine, configuredHeapMb: "16384" }), [
 			"--max-old-space-size=16384",
 		]);
 		assert.deepEqual(engineHeapRuntimeArgs({ ...largeMachine, configuredHeapMb: "0" }), []);
 	});
 
-	it("ignores an invalid ATOMIC_ENGINE_HEAP_MB and sizes automatically", () => {
+	it("ignores an invalid ATOMIC_HEAP_MB and sizes automatically", () => {
 		for (const configuredHeapMb of ["lots", "-1", "1.5"]) {
 			assert.deepEqual(engineHeapRuntimeArgs({ ...largeMachine, configuredHeapMb }), ["--max-old-space-size=32768"]);
 		}

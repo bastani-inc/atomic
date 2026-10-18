@@ -13,6 +13,7 @@ import { APP_NAME, VERSION } from "./config.js";
 import { markLifecycleTiming } from "./core/lifecycle-timings.ts";
 import { ATOMIC_AI_AGENT } from "./utils/agent-attribution.ts";
 import { enablePersistentCompileCache } from "./utils/compile-cache.ts";
+import { headlessHeapRelaunchArgs, relaunchWithHeap } from "./utils/heap-relaunch.ts";
 
 markLifecycleTiming("process-entry");
 
@@ -30,11 +31,16 @@ if (args[0] === "--version" || args[0] === "-v") {
 	process.exit(0);
 }
 
-// No top-level await: the compiled binary is built with --bytecode (CJS),
-// which forbids TLA anywhere in the bundled graph.
-void Promise.all([import("./core/http-dispatcher.ts"), import("./main.ts")]).then(
-	([{ configureHttpDispatcher }, { main }]) => {
-		configureHttpDispatcher();
-		main(args);
-	},
-);
+const heapArgs = headlessHeapRelaunchArgs(args);
+if (heapArgs.length > 0) {
+	relaunchWithHeap(heapArgs, args);
+} else {
+	// No top-level await: the compiled binary is built with --bytecode (CJS),
+	// which forbids TLA anywhere in the bundled graph.
+	void Promise.all([import("./core/http-dispatcher.ts"), import("./main.ts")]).then(
+		([{ configureHttpDispatcher }, { main }]) => {
+			configureHttpDispatcher();
+			main(args);
+		},
+	);
+}

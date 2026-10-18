@@ -1,6 +1,6 @@
 import { totalmem } from "node:os";
 import { getHeapStatistics } from "node:v8";
-import { ENV_ENGINE_HEAP_MB, getEnvValue } from "../../config.js";
+import { ENV_HEAP_MB, getEnvValue } from "../../config.js";
 
 const MIB = 1024 * 1024;
 const ENGINE_HEAP_SHARE_OF_SYSTEM_MEMORY = 0.5;
@@ -27,7 +27,7 @@ function hostHeapFlag(execArgv: readonly string[]): string[] | undefined {
  * Node flags that size the interactive engine's V8 heap. The engine hosts every in-process subagent and workflow
  * stage, so V8's default limit (about 4 GiB) caps the whole fleet regardless of machine size. Under Node the engine
  * gets half of system memory when that exceeds the current limit. An explicit `--max-old-space-size` in
- * `NODE_OPTIONS` (inherited by the engine) or on the host's own command line wins, and `ATOMIC_ENGINE_HEAP_MB` sets
+ * `NODE_OPTIONS` (inherited by the engine) or on the host's own command line wins, and `ATOMIC_HEAP_MB` sets
  * the size in MiB or, as `0`, turns automatic sizing off. Other runtimes do not use V8 and get no flags.
  */
 export function engineHeapRuntimeArgs(inputs: EngineHeapInputs): string[] {
@@ -51,6 +51,6 @@ export function engineHeapRuntimeArgsForHost(runsOnNode: boolean): string[] {
 		currentHeapLimitBytes: getHeapStatistics().heap_size_limit,
 		nodeOptions: process.env.NODE_OPTIONS,
 		execArgv: process.execArgv,
-		configuredHeapMb: getEnvValue(ENV_ENGINE_HEAP_MB),
+		configuredHeapMb: getEnvValue(ENV_HEAP_MB),
 	});
 }
