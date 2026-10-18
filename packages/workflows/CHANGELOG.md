@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the `Workflow discovery diagnostics` warning appearing twice at startup when deferred startup, such as project trust, refreshes workflow discovery. An unchanged report is shown once; a refresh that changes it still shows the new one ([#3703](https://github.com/bastani-inc/atomic/issues/3703)).
+
 ## [0.9.38-alpha.8] - 2026-10-17
 
 ### Fixed
