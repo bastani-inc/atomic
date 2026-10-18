@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import type { EditorTheme } from "@earendil-works/pi-tui";
-import { beforeAll, test } from "vitest";
+import { beforeAll, test, vi } from "vitest";
 import {
 	type AgentSession,
 	ChatSessionHost,
@@ -492,7 +492,7 @@ test("ChatSessionHost queues prompts during compaction and flushes after success
 	await Promise.resolve();
 
 	assert.deepEqual(prompts, ["first"]);
-	assert.deepEqual(steers, ["second"]);
+	await vi.waitFor(() => assert.deepEqual(steers, ["second"]));
 	host.dispose();
 });
 
@@ -576,7 +576,7 @@ test("ChatSessionHost preserves queued prompt order through manual compaction ca
 		await Promise.resolve();
 
 		assert.deepEqual(prompts, ["first"]);
-		assert.deepEqual(steers, ["second"]);
+		await vi.waitFor(() => assert.deepEqual(steers, ["second"]));
 	} finally {
 		host.dispose();
 	}
@@ -622,7 +622,7 @@ test("ChatSessionHost preserves queued prompt order through automatic compaction
 		await Promise.resolve();
 
 		assert.deepEqual(prompts, ["first"]);
-		assert.deepEqual(steers, ["second"]);
+		await vi.waitFor(() => assert.deepEqual(steers, ["second"]));
 	} finally {
 		host.dispose();
 	}

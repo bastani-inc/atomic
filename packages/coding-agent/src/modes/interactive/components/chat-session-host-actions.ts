@@ -140,10 +140,15 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 			return;
 		}
 	}
-	if (state.compacting) {
+	if (state.compacting || state.compactionFlushPending || state.compactionQueuedMessages.length > 0) {
 		setChatSessionEditorText(state, "");
 		state.compactionQueuedMessages = [...state.compactionQueuedMessages, { text, mode }];
-		notifyChatSessionStatus(state, "Queued message until compaction completes");
+		if (state.compacting) {
+			notifyChatSessionStatus(state, "Queued message until compaction completes");
+			return;
+		}
+		state.requestRender?.();
+		if (!state.compactionFlushPending) await flushChatSessionCompactionQueue(state);
 		return;
 	}
 	const bash = parseBashInput(text);
@@ -266,32 +271,90 @@ export async function abortChatSessionBash<TExtraEntry extends ChatTranscriptEnt
 	}
 }
 
+type CompactionQueuedMessage = ChatSessionHostState<never>["compactionQueuedMessages"][number];
+
+/**
+ * Send compaction-queued messages one at a time from the front of the queue. Input submitted
+ * meanwhile joins the back, so a failed message returns to the front ahead of everything after it.
+ */
 export async function flushChatSessionCompactionQueue<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 ): Promise<void> {
-	const queued = [...state.compactionQueuedMessages];
-	state.compactionQueuedMessages = [];
-	if (queued.length === 0) return;
-	const agentSession = state.getAgentSession?.();
-	const queueOnly = isChatSessionStreaming(state) || state.isPaused?.() === true || agentSession?.queuedMessagesPaused;
-	const deliveries = queued.map((message, index) => {
-		const delivery =
-			!queueOnly && index === 0
-				? requiredChatSessionPromptCommand(state)(message.text, message.mode)
-				: message.mode === "followUp"
-					? queueChatSessionFollowUp(state, message.text)
-					: queueChatSessionSteer(state, message.text);
-		return delivery.catch((err) => {
-			const pending = [...state.compactionQueuedMessages, message];
-			state.compactionQueuedMessages = [
-				...queued.filter((item) => pending.includes(item)),
-				...pending.filter((item) => !queued.includes(item)),
-			];
-			notifyChatSessionWarning(state, errorMessage(err));
-			state.requestRender?.();
-		});
-	});
-	await Promise.all(deliveries);
+	if (state.compactionFlushPending || state.compactionQueuedMessages.length === 0) return;
+	state.compactionFlushPending = true;
+	try {
+		const agentSession = state.getAgentSession?.();
+		const queueOnly =
+			isChatSessionStreaming(state) || state.isPaused?.() === true || agentSession?.queuedMessagesPaused;
+		if (!queueOnly && !(await startChatSessionCompactionPrompt(state))) return;
+		for (let message = takeNextCompactionMessage(state); message; message = takeNextCompactionMessage(state)) {
+			try {
+				if (message.mode === "followUp") await queueChatSessionFollowUp(state, message.text);
+				else await queueChatSessionSteer(state, message.text);
+			} catch (err) {
+				returnCompactionMessage(state, message, err);
+				return;
+			}
+		}
+	} finally {
+		state.compactionFlushPending = false;
+		state.requestRender?.();
+	}
+}
+
+function takeNextCompactionMessage<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): CompactionQueuedMessage | undefined {
+	const [next, ...rest] = state.compactionQueuedMessages;
+	state.compactionQueuedMessages = rest;
+	state.requestRender?.();
+	return next;
+}
+
+function returnCompactionMessage<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	message: CompactionQueuedMessage,
+	err: unknown,
+): void {
+	state.compactionQueuedMessages = [message, ...state.compactionQueuedMessages];
+	notifyChatSessionWarning(state, errorMessage(err));
+	state.requestRender?.();
+}
+
+/**
+ * Start the first queued prompt. The rest of the batch stays queued until the prompt is accepted,
+ * which the host observes as its run starting or the command settling, so a rejected prompt is
+ * restored ahead of it.
+ */
+async function startChatSessionCompactionPrompt<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): Promise<boolean> {
+	const first = takeNextCompactionMessage(state);
+	if (!first) return false;
+	const accepted = Promise.withResolvers<boolean>();
+	state.compactionPromptStarted = () => accepted.resolve(true);
+	const prompt = requiredChatSessionPromptCommand(state)(first.text, first.mode);
+	prompt.then(
+		() => accepted.resolve(true),
+		() => accepted.resolve(false),
+	);
+	try {
+		if (await accepted.promise) {
+			prompt.catch((err) => notifyChatSessionWarning(state, errorMessage(err)));
+			return true;
+		}
+		returnCompactionMessage(
+			state,
+			first,
+			await prompt.then(
+				() => undefined,
+				(err: unknown) => err,
+			),
+		);
+		return false;
+	} finally {
+		state.compactionPromptStarted = undefined;
+	}
 }
 
 export function restoreQueuedMessagesToEditor<TExtraEntry extends ChatTranscriptEntryLike>(

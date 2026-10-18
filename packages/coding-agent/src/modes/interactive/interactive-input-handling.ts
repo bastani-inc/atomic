@@ -424,8 +424,8 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				}
 			}
 
-			// Queue input during compaction (extension commands execute immediately)
-			if (this.compactionActive) {
+			// Queue input behind compaction-queued messages (extension commands execute immediately)
+			if (this.compactionActive || this.compactionFlushPending || this.compactionSendFailed) {
 				if (this.isExtensionCommand(text)) {
 					this.editor.addToHistory?.(text);
 					this.editor.setText("");

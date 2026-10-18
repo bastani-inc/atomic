@@ -174,6 +174,7 @@ InteractiveModeBase.prototype.renderCurrentSessionState = function (this: Intera
 	this.chatContainer.clear();
 	this.pendingMessagesContainer.clear();
 	this.compactionQueuedMessages = [];
+	this.compactionSendFailed = false;
 	this.streamingComponent = undefined;
 	this.streamingMessage = undefined;
 	this.pendingTools.clear();

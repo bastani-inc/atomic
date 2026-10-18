@@ -69,6 +69,10 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	pendingSteeringMessages: readonly string[] = [];
 	pendingFollowUpMessages: readonly string[] = [];
 	compactionQueuedMessages: readonly { text: string; mode: ChatSessionSubmitMode }[] = [];
+	/** True while compaction-queued messages are being sent one at a time. */
+	compactionFlushPending = false;
+	/** Resolves the pending compaction-queue prompt when its run starts. */
+	compactionPromptStarted: (() => void) | undefined;
 	compacting = false;
 	/** Keeps input queued while automatic compaction hands off to a manual request. */
 	manualCompactionTakeoverPending = false;

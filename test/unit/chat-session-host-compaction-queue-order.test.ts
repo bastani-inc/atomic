@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
-import { beforeAll, test } from "vitest";
+import { beforeAll, test, vi } from "vitest";
 import { ChatSessionHost } from "../../packages/coding-agent/src/index.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { createHarness, getUserTexts } from "../../packages/coding-agent/test/suite/harness.ts";
@@ -82,8 +82,14 @@ for (const mode of ["auto", "followUp"] as const) {
 					});
 					if (!midTurn) await started.promise;
 					await host.submit(mode, "B");
-					const queued = mode === "followUp" ? session.getFollowUpMessages() : session.getSteeringMessages();
-					assert.deepEqual([...getUserTexts(harness), ...queued], [...(midTurn ? ["start"] : []), "A", "A2", "B"]);
+					const queued = () =>
+						mode === "followUp" ? session.getFollowUpMessages() : session.getSteeringMessages();
+					await vi.waitFor(() =>
+						assert.deepEqual(
+							[...getUserTexts(harness), ...queued()],
+							[...(midTurn ? ["start"] : []), "A", "A2", "B"],
+						),
+					);
 					release.resolve();
 					await running;
 					await session.agent.waitForIdle();
@@ -99,3 +105,71 @@ for (const mode of ["auto", "followUp"] as const) {
 		}
 	}
 }
+
+async function hostWithHeldBatch() {
+	const firstPrompt = Promise.withResolvers<void>();
+	const prompts: string[] = [];
+	const steers: string[] = [];
+	const host = new ChatSessionHost({
+		style: plainStyle,
+		editorTheme,
+		isStreaming: () => false,
+		commands: {
+			prompt: (text) => {
+				prompts.push(text);
+				return firstPrompt.promise;
+			},
+			steer: async (text) => {
+				steers.push(text);
+			},
+		},
+	});
+	host.applyAgentEvent({ type: "compaction_start", reason: "manual" });
+	for (const text of ["A", "B", "C"]) await host.submit("auto", text);
+	host.applyAgentEvent({
+		type: "compaction_end",
+		reason: "manual",
+		result: undefined,
+		aborted: false,
+		willRetry: false,
+	});
+	const typedDuringHandOff = host.submit("auto", "D");
+	return { host, firstPrompt, prompts, steers, typedDuringHandOff };
+}
+
+function restoredOrder(host: ChatSessionHost): string[] {
+	assert.equal(host.restoreQueuedMessagesToEditor(), true);
+	return host
+		.inputText()
+		.split(/\s+/)
+		.filter((text) => text.length > 0);
+}
+
+test("ChatSessionHost restores a failed post-compaction batch in typed order ahead of later input (#3664)", async () => {
+	const { host, firstPrompt, prompts, steers, typedDuringHandOff } = await hostWithHeldBatch();
+	try {
+		await typedDuringHandOff;
+		assert.deepEqual(steers, [], "the batch waits until its first prompt is accepted");
+		firstPrompt.reject(new Error("send failed"));
+		await vi.waitFor(() => assert.match(host.renderPendingMessages(80).join("\n"), /A/));
+		assert.deepEqual(prompts, ["A"]);
+		assert.deepEqual(steers, []);
+		assert.deepEqual(restoredOrder(host), ["A", "B", "C", "D"]);
+	} finally {
+		host.dispose();
+	}
+});
+
+test("ChatSessionHost queues the rest of the batch and later input in order once its first prompt starts (#3664)", async () => {
+	const { host, firstPrompt, steers, typedDuringHandOff } = await hostWithHeldBatch();
+	try {
+		await typedDuringHandOff;
+		host.applyAgentEvent({ type: "agent_start" });
+		await vi.waitFor(() => assert.deepEqual(steers, ["B", "C", "D"]));
+		firstPrompt.reject(new Error("run failed"));
+		await vi.waitFor(() => assert.match(host.statusText(), /run failed/));
+		assert.equal(host.restoreQueuedMessagesToEditor(), false, "an accepted prompt is not restored");
+	} finally {
+		host.dispose();
+	}
+});

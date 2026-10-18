@@ -338,7 +338,7 @@ for (const queueMode of ["steer", "followUp"] as const) {
 					assert.equal(commandRan, true, "extension commands execute without waiting for the active turn");
 					await submit("B");
 					const expected = [...(midTurn ? ["start"] : []), "A", "A2", "A3", "B"];
-					assert.deepEqual([...getUserTexts(harness), ...pending()], expected);
+					await vi.waitFor(() => assert.deepEqual([...getUserTexts(harness), ...pending()], expected));
 					releaseTool();
 					await running;
 					await vi.waitFor(() => assert.deepEqual(getUserTexts(harness), expected));
@@ -724,103 +724,122 @@ describe("InteractiveMode compaction events", () => {
 		) => Promise<void>;
 		await flushCompactionQueue.call(fakeThis, { willRetry: false });
 
-		expect(fakeThis.session.prompt).toHaveBeenCalledWith("change direction", { streamingBehavior: "steer" });
+		expect(fakeThis.session.prompt).toHaveBeenCalledWith(
+			"change direction",
+			expect.objectContaining({ streamingBehavior: "steer" }),
+		);
 		expect(fakeThis.compactionQueuedMessages).toEqual([]);
 		expect(fakeThis.showError).not.toHaveBeenCalled();
 	});
 
-	for (const batchSize of [1, 3]) {
-		it(`preserves later messages after a failed ${batchSize}-message compaction batch without duplicates (#3654)`, async () => {
-			const harness = await createHarness({ settings: { compaction: { enabled: false } } });
-			let rejectPrompt = (_error: Error) => {};
-			const pendingPrompt = new Promise<void>((_resolve, reject) => {
-				rejectPrompt = reject;
+	function failingFlushHarness(batch: readonly { text: string; mode: "steer" | "followUp" }[]) {
+		return createHarness({ settings: { compaction: { enabled: false } } }).then((harness) => {
+			const firstPrompt = Promise.withResolvers<void>();
+			let preflightResult: ((success: boolean) => void) | undefined;
+			const prompt = vi.spyOn(harness.session, "prompt").mockImplementation((_text, options) => {
+				preflightResult = options?.preflightResult;
+				return firstPrompt.promise;
 			});
-			const prompt = vi.spyOn(harness.session, "prompt").mockReturnValue(pendingPrompt);
 			const { mode: base } = makeMode([]);
-			const first = { text: "first", mode: "steer" as const };
 			const mode = {
 				...base,
 				session: harness.session,
-				compactionQueuedMessages: [
-					first,
-					...(
-						[
-							{ text: "original steer", mode: "steer" },
-							{ text: "original follow-up", mode: "followUp" },
-						] as const
-					).slice(0, batchSize - 1),
-				],
+				compactionQueuedMessages: [...batch],
+				compactionFlushPending: false,
+				compactionSendFailed: false,
 				isExtensionCommand: () => false,
 				updatePendingMessagesDisplay: vi.fn(),
 			};
 			const flush = Reflect.get(InteractiveMode.prototype, "flushCompactionQueue") as (
 				this: typeof mode,
 			) => Promise<void>;
-			try {
-				await flush.call(mode);
-				await harness.session.steer("later steer");
-				await harness.session.followUp("later follow-up");
-				const later = [
-					{ text: "later compaction steer", mode: "steer" as const },
-					{ text: "later compaction follow-up", mode: "followUp" as const },
-				];
-				mode.compactionQueuedMessages.push(...later);
-
-				rejectPrompt(new Error("send failed"));
-				await pendingPrompt.catch(() => {});
-
-				assert.deepEqual(harness.session.getSteeringMessages(), [
-					...(batchSize > 1 ? ["original steer"] : []),
-					"later steer",
-				]);
-				assert.deepEqual(harness.session.getFollowUpMessages(), [
-					...(batchSize > 1 ? ["original follow-up"] : []),
-					"later follow-up",
-				]);
-				assert.deepEqual(mode.compactionQueuedMessages, [first, ...later]);
-				assert.equal(prompt.mock.calls.length, 1);
-				assert.deepEqual(prompt.mock.calls[0], ["first", { streamingBehavior: "steer" }]);
-				assert.deepEqual(mode.showError.mock.calls, [["Failed to send queued message: send failed"]]);
-			} finally {
-				prompt.mockRestore();
-				harness.cleanup();
-			}
+			const clearAllQueues = Reflect.get(InteractiveMode.prototype, "clearAllQueues") as (this: typeof mode) => {
+				steering: string[];
+				followUp: string[];
+			};
+			return {
+				harness,
+				mode,
+				prompt,
+				firstPrompt,
+				accept: () => preflightResult?.(true),
+				flush: () => flush.call(mode),
+				clearAllQueues: () => clearAllQueues.call(mode),
+			};
 		});
 	}
 
-	it("restores a failed first prompt only once when a later batch submission also fails (#3654)", async () => {
-		const harness = await createHarness({ settings: { compaction: { enabled: false } } });
-		let rejectPrompt = (_error: Error) => {};
-		const pendingPrompt = new Promise<void>((_resolve, reject) => {
-			rejectPrompt = reject;
-		});
-		const prompt = vi.spyOn(harness.session, "prompt").mockReturnValue(pendingPrompt);
-		const steer = vi.spyOn(harness.session, "steer").mockRejectedValueOnce(new Error("queue failed"));
-		const { mode: base } = makeMode([]);
-		const batch = [
-			{ text: "first", mode: "steer" as const },
-			{ text: "second", mode: "steer" as const },
-		];
-		const mode = {
-			...base,
-			session: harness.session,
-			compactionQueuedMessages: [...batch],
-			isExtensionCommand: () => false,
-			updatePendingMessagesDisplay: vi.fn(),
-		};
-		const flush = Reflect.get(InteractiveMode.prototype, "flushCompactionQueue") as (
-			this: typeof mode,
-		) => Promise<void>;
+	const steerBatch = (...texts: string[]) => texts.map((text) => ({ text, mode: "steer" as const }));
+
+	it("restores a failed post-compaction batch in typed order ahead of later input (#3664)", async () => {
+		const { harness, mode, prompt, firstPrompt, flush, clearAllQueues } = await failingFlushHarness(
+			steerBatch("A", "B", "C"),
+		);
 		try {
-			await flush.call(mode);
-			const later = { text: "later compaction steer", mode: "steer" as const };
-			mode.compactionQueuedMessages.push(later);
+			const flushing = flush();
+			await Promise.resolve();
+			assert.equal(mode.compactionFlushPending, true, "input typed during the hand-off joins the compaction queue");
+			mode.compactionQueuedMessages.push(...steerBatch("D"));
+			assert.deepEqual(
+				harness.session.getSteeringMessages(),
+				[],
+				"the batch waits until its first prompt is accepted",
+			);
 
-			rejectPrompt(new Error("send failed"));
-			await pendingPrompt.catch(() => {});
+			firstPrompt.reject(new Error("send failed"));
+			await flushing;
 
-			assert.deepEqual(mode.compactionQueuedMessages, [...batch, later]);
+			assert.deepEqual(mode.compactionQueuedMessages, steerBatch("A", "B", "C", "D"));
+			assert.deepEqual(harness.session.getSteeringMessages(), []);
+			assert.equal(prompt.mock.calls.length, 1);
+			assert.deepEqual(mode.showError.mock.calls, [["Failed to send queued message: send failed"]]);
+			assert.equal(mode.compactionSendFailed, true, "later input queues behind the restored batch");
+			assert.deepEqual(clearAllQueues().steering, ["A", "B", "C", "D"]);
+			assert.equal(mode.compactionSendFailed, false);
+		} finally {
+			prompt.mockRestore();
+			harness.cleanup();
+		}
+	});
+
+	it("queues the rest of the batch and input typed meanwhile in order once the first prompt is accepted (#3664)", async () => {
+		const { harness, mode, prompt, firstPrompt, accept, flush } = await failingFlushHarness(
+			steerBatch("A", "B", "C"),
+		);
+		try {
+			const flushing = flush();
+			await Promise.resolve();
+			mode.compactionQueuedMessages.push(...steerBatch("D"));
+			accept();
+			await flushing;
+
+			assert.deepEqual(harness.session.getSteeringMessages(), ["B", "C", "D"]);
+			assert.deepEqual(mode.compactionQueuedMessages, []);
+			assert.equal(mode.compactionFlushPending, false);
+
+			firstPrompt.reject(new Error("run failed"));
+			await vi.waitFor(() =>
+				assert.deepEqual(mode.showError.mock.calls, [["Failed to send queued message: run failed"]]),
+			);
+			assert.deepEqual(mode.compactionQueuedMessages, [], "an accepted prompt is not restored");
+		} finally {
+			prompt.mockRestore();
+			harness.cleanup();
+		}
+	});
+
+	it("returns a message that fails to queue to the front, ahead of everything after it (#3664)", async () => {
+		const { harness, mode, prompt, accept, flush } = await failingFlushHarness(steerBatch("A", "B", "C"));
+		const steer = vi.spyOn(harness.session, "steer").mockRejectedValueOnce(new Error("queue failed"));
+		try {
+			const flushing = flush();
+			await Promise.resolve();
+			accept();
+			await flushing;
+
+			assert.deepEqual(mode.compactionQueuedMessages, steerBatch("B", "C"));
+			assert.deepEqual(harness.session.getSteeringMessages(), []);
+			assert.deepEqual(mode.showError.mock.calls, [["Failed to send queued message: queue failed"]]);
 		} finally {
 			prompt.mockRestore();
 			steer.mockRestore();

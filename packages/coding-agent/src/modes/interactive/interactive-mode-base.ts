@@ -429,6 +429,12 @@ export class InteractiveModeBase {
 	// Messages queued while compaction is running
 	compactionQueuedMessages: CompactionQueuedMessage[] = [];
 
+	/** True while queued compaction messages are being sent one at a time. */
+	compactionFlushPending = false;
+
+	/** A queued message failed to send and waits at the front of the queue; later input queues behind it. */
+	compactionSendFailed = false;
+
 	/** Keeps input queued while automatic compaction hands off to a manual request. */
 	manualCompactionTakeoverPending = false;
 

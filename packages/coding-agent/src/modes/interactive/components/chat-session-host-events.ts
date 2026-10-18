@@ -172,6 +172,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			state.liveChat.clearPendingTools();
 			state.statusMessage = "";
 			changed = true;
+			state.compactionPromptStarted?.();
 			break;
 		case "agent_end": {
 			const manualTakeoverPending = state.manualCompactionTakeoverPending;
