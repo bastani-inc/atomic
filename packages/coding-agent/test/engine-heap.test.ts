@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { type EngineHeapInputs, engineHeapRuntimeArgs } from "../src/modes/interactive-engine/engine-heap.js";
+import {
+	type EngineHeapInputs,
+	engineHeapRuntimeArgs,
+	splitNodeOptions,
+} from "../src/modes/interactive-engine/engine-heap.js";
 
 const GIB = 1024 * 1024 * 1024;
 
@@ -46,6 +50,26 @@ describe("interactive engine heap sizing", () => {
 		for (const nodeOptions of ["--max-old-space-size=6144", "--trace-warnings --max_old_space_size=6144"]) {
 			assert.deepEqual(engineHeapRuntimeArgs({ ...largeMachine, nodeOptions }), []);
 		}
+	});
+
+	it("recognizes a quoted heap size in NODE_OPTIONS", () => {
+		assert.deepEqual(splitNodeOptions('--trace-warnings "--max-old-space-size=2048" "--title=a \\"b\\""'), [
+			"--trace-warnings",
+			"--max-old-space-size=2048",
+			'--title=a "b"',
+		]);
+		assert.deepEqual(engineHeapRuntimeArgs({ ...largeMachine, nodeOptions: '"--max-old-space-size=2048"' }), []);
+	});
+
+	it("forwards the host's last command-line heap size, which Node applies over NODE_OPTIONS", () => {
+		assert.deepEqual(
+			engineHeapRuntimeArgs({
+				...largeMachine,
+				nodeOptions: "--max-old-space-size=2048",
+				execArgv: ["--max-old-space-size=3000", "--max-old-space-size=9000"],
+			}),
+			["--max-old-space-size=9000"],
+		);
 	});
 
 	it("forwards a heap size given on the host's own command line", () => {
