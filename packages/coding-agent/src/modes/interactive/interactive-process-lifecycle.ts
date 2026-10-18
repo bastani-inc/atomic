@@ -259,7 +259,10 @@ InteractiveModeBase.prototype.handleFollowUp = async function (this: Interactive
 	};
 
 	// Queue input behind compaction-queued messages (extension commands execute immediately)
-	if (this.compactionActive || this.compactionFlushPending || this.compactionSendFailed) {
+	if (
+		this.compactionActive ||
+		(!this.session.queuedMessagesPaused && (this.compactionFlushPending || this.compactionSendFailed))
+	) {
 		if (this.isExtensionCommand(text)) {
 			this.editor.addToHistory?.(text);
 			this.editor.setText("");

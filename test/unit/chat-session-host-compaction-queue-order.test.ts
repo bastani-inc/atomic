@@ -110,10 +110,14 @@ async function hostWithHeldBatch() {
 	const firstPrompt = Promise.withResolvers<void>();
 	const prompts: string[] = [];
 	const steers: string[] = [];
+	const bashCommands: string[] = [];
+	const resumed: (string | undefined)[] = [];
+	let paused = false;
 	const host = new ChatSessionHost({
 		style: plainStyle,
 		editorTheme,
 		isStreaming: () => false,
+		isPaused: () => paused,
 		commands: {
 			prompt: (text) => {
 				prompts.push(text);
@@ -121,6 +125,13 @@ async function hostWithHeldBatch() {
 			},
 			steer: async (text) => {
 				steers.push(text);
+			},
+			runBash: async ({ command }) => {
+				bashCommands.push(command);
+				return { output: "", exitCode: 0, cancelled: false, truncated: false };
+			},
+			resume: async (message) => {
+				resumed.push(message);
 			},
 		},
 	});
@@ -134,7 +145,18 @@ async function hostWithHeldBatch() {
 		willRetry: false,
 	});
 	const typedDuringHandOff = host.submit("auto", "D");
-	return { host, firstPrompt, prompts, steers, typedDuringHandOff };
+	const pause = () => {
+		paused = true;
+	};
+	return { host, firstPrompt, prompts, steers, bashCommands, resumed, pause, typedDuringHandOff };
+}
+
+async function hostAfterFailedBatch() {
+	const held = await hostWithHeldBatch();
+	await held.typedDuringHandOff;
+	held.firstPrompt.reject(new Error("send failed"));
+	await vi.waitFor(() => assert.match(held.host.statusText(), /send failed/));
+	return held;
 }
 
 function restoredOrder(host: ChatSessionHost): string[] {
@@ -169,6 +191,29 @@ test("ChatSessionHost queues the rest of the batch and later input in order once
 		firstPrompt.reject(new Error("run failed"));
 		await vi.waitFor(() => assert.match(host.statusText(), /run failed/));
 		assert.equal(host.restoreQueuedMessagesToEditor(), false, "an accepted prompt is not restored");
+	} finally {
+		host.dispose();
+	}
+});
+
+test("ChatSessionHost still runs shell input while a failed post-compaction batch is held (#3664)", async () => {
+	const { host, bashCommands, steers } = await hostAfterFailedBatch();
+	try {
+		await host.submit("auto", "!git status");
+		assert.deepEqual(bashCommands, ["git status"]);
+		assert.deepEqual(steers, []);
+		assert.deepEqual(restoredOrder(host), ["A", "B", "C", "D"]);
+	} finally {
+		host.dispose();
+	}
+});
+
+test("ChatSessionHost resumes a paused session instead of holding the next submission (#3664)", async () => {
+	const { host, resumed, pause } = await hostAfterFailedBatch();
+	try {
+		pause();
+		await host.submit("auto", "next");
+		assert.deepEqual(resumed, ["next"]);
 	} finally {
 		host.dispose();
 	}

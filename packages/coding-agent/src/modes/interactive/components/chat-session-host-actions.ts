@@ -140,15 +140,10 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 			return;
 		}
 	}
-	if (state.compacting || state.compactionFlushPending || state.compactionQueuedMessages.length > 0) {
+	if (state.compacting) {
 		setChatSessionEditorText(state, "");
 		state.compactionQueuedMessages = [...state.compactionQueuedMessages, { text, mode }];
-		if (state.compacting) {
-			notifyChatSessionStatus(state, "Queued message until compaction completes");
-			return;
-		}
-		state.requestRender?.();
-		if (!state.compactionFlushPending) await flushChatSessionCompactionQueue(state);
+		notifyChatSessionStatus(state, "Queued message until compaction completes");
 		return;
 	}
 	const bash = parseBashInput(text);
@@ -166,6 +161,13 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 	const isPaused = state.isPaused?.() === true;
 	const agentSession = state.getAgentSession?.();
 	const nativeQueuePaused = supportsQueuedMessagePause(agentSession) && agentSession.queuedMessagesPaused;
+	const heldBehindCompactionQueue = state.compactionFlushPending || state.compactionQueuedMessages.length > 0;
+	if (heldBehindCompactionQueue && !isPaused && !nativeQueuePaused) {
+		state.compactionQueuedMessages = [...state.compactionQueuedMessages, { text, mode }];
+		state.requestRender?.();
+		if (!state.compactionFlushPending) await flushChatSessionCompactionQueue(state);
+		return;
+	}
 	const isStreaming = isChatSessionStreaming(state);
 	// The session publishes the expanded skill block; a raw optimistic signature cannot reconcile with it.
 	const shouldAppendOptimisticUser = mode === "auto" && !isStreaming && classifyChatCommand(text) !== "skill";
