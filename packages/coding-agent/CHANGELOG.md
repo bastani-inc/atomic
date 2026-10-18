@@ -6,6 +6,10 @@
 
 - Added RPC `delete_session` (`{"type":"delete_session","sessionId":"<id>"}`, or `{"type":"delete_session","id":"<id>"}` when `sessionId` is omitted), `RpcClient.deleteSession(sessionId)`, and `SessionManager.deleteSession(sessionId)` to delete a stored session and its entries from SQLite or JSONL storage. The session currently open in the process cannot be deleted and returns an error ([#3740](https://github.com/bastani-inc/atomic/issues/3740)).
 
+### Fixed
+
+- `/export` and the RPC `export_html` command now export sessions stored in the default SQLite session store instead of refusing them, reading entries through the session store rather than a session file ([#3741](https://github.com/bastani-inc/atomic/issues/3741))
+
 ## [0.9.38] - 2026-10-18
 
 ### Breaking Changes
