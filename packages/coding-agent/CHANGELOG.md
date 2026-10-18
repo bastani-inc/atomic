@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.38-alpha.10] - 2026-10-17
+
 ### Fixed
 
 - Fixed `/resume` and `--resume` filling up with "(no messages)" sessions. The picker now hides sessions that have no messages, name, or summary, including ones already saved by earlier versions. Opening such a session by ID still works.
