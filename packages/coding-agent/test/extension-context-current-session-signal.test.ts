@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { createHarness } from "./suite/harness.ts";
-import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
+import { createHarness } from "./suite/harness.js";
+import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.js";
 
 async function createReloadHarness(prepareReload: () => Promise<never>) {
 	const loader = createTestResourceLoader({ extensionsResult: await createTestExtensionsResult([]) });
