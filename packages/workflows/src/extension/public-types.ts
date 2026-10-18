@@ -270,6 +270,8 @@ export interface WorkflowToolArgs {
 	stageId?: string;
 	message?: string;
 	statusFilter?: StageStatus | RunStatus | "all";
+	/** Status with a runId only: return status, final outputs and blockers without the stage history. */
+	summary?: boolean;
 	format?: "text" | "json";
 	limit?: number;
 	tail?: number;

@@ -258,6 +258,17 @@ export class SessionManager {
 		return this.store;
 	}
 
+	async deleteSession(sessionId: string): Promise<void> {
+		if (sessionId === this.sessionId) {
+			throw new Error(`Cannot delete the session that is currently open: ${sessionId}`);
+		}
+		try {
+			await this.store.delete(sessionId);
+		} catch (error) {
+			if (!(error instanceof SessionNotFoundError)) throw error;
+		}
+	}
+
 	/** @internal Finalize provisional startup storage after project trust resolves. */
 	rebindStore(store: SessionStore, removeProvisionalRecord: boolean): Promise<void> {
 		return this.runMutation(async () => {

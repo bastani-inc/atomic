@@ -72,6 +72,9 @@ export abstract class RpcClientApi {
 	async newSession(parentSession?: string): Promise<{ cancelled: boolean }> {
 		return this.data(await this.request({ type: "new_session", parentSession }));
 	}
+	async deleteSession(sessionId: string): Promise<void> {
+		this.data<void>(await this.request({ type: "delete_session", sessionId }));
+	}
 	async getState(): Promise<RpcSessionState> {
 		return this.data(await this.request({ type: "get_state" }));
 	}

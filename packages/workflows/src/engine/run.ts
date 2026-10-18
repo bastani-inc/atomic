@@ -4,6 +4,7 @@ import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.
 import { initializeDurableBackend } from "../durable/factory.js";
 import { JournalDurableBackend } from "../durable/journal/journal-backend.js";
 import { availableRunDurableBackend, bindRunDurableBackend } from "../durable/run-owner-backend.js";
+import { recordRunResultCheckpointAsync } from "../durable/run-result.js";
 import { inheritedRunElapsedMs, priorRunAccounting, recordRunTimingCheckpointAsync } from "../durable/run-timing.js";
 import { ScopedDurableBackend } from "../durable/scoped-backend.js";
 import {
@@ -1038,7 +1039,10 @@ async function executeRun(
 		if (returned.status === "completed") assertFrontierConsumed();
 		const recorded = activeStore.recordRunEnd(runId, returned.status, result, returned.error, returned.metadata);
 		// Durable identity must reach its terminal state even if the session journal fails.
-		if (opts.parentRun === undefined) await recordRunTimingCheckpointAsync(durableBackend, runSnapshot);
+		if (opts.parentRun === undefined) {
+			await recordRunTimingCheckpointAsync(durableBackend, runSnapshot);
+			await recordRunResultCheckpointAsync(durableBackend, runSnapshot);
+		}
 		await durableBackend.commitWorkflowStatus(runId, returned.status, undefined, returned.metadata?.resumable);
 		await appendRunEndWhenRecorded(opts.persistence, recorded, {
 			runId,

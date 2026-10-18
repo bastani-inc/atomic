@@ -259,6 +259,7 @@ export function renderWorkflowToolContent(result: WorkflowRegisteredToolResult, 
 			return renderStatusToolContent(result);
 		case "list":
 		case "statusDetail":
+		case "statusSummary":
 		case "inputs":
 		case "get":
 		case "run":

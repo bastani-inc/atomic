@@ -7,6 +7,7 @@ import { normalizePath, resolvePath } from "../../utils/paths.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import type { SessionEntry } from "../session-manager.ts";
 import { SessionManager } from "../session-manager.ts";
+import { SessionNotFoundError } from "../storage/session/errors.js";
 import { readExportHtmlTemplateScript } from "./template-script.ts";
 
 /**
@@ -241,15 +242,15 @@ export async function exportSessionToHtml(
 ): Promise<string> {
 	const opts: ExportOptions = typeof options === "string" ? { outputPath: options } : options || {};
 
-	const sessionFile = sm.getSessionFile();
-	if (!sessionFile) {
-		throw new Error("Cannot export in-memory session to HTML");
-	}
-	if (!existsSync(sessionFile)) {
-		throw new Error("Nothing to export yet - start a conversation first");
-	}
-
-	const entries = sm.getEntries();
+	const snapshot = await sm
+		.getSessionStore()
+		.load(sm.getSessionId())
+		.catch((error: Error) => {
+			if (error instanceof SessionNotFoundError)
+				throw new Error("Nothing to export yet - start a conversation first");
+			throw error;
+		});
+	const entries = [...snapshot.entries];
 
 	// Pre-render custom tools if a tool renderer is provided
 	let renderedTools: Record<string, RenderedToolHtml> | undefined;
@@ -262,7 +263,7 @@ export async function exportSessionToHtml(
 	}
 
 	const sessionData: SessionData = {
-		header: sm.getHeader(),
+		header: { type: "session", ...snapshot.header },
 		entries,
 		leafId: sm.getLeafId(),
 		systemPrompt: state?.systemPrompt,
@@ -274,7 +275,8 @@ export async function exportSessionToHtml(
 
 	let outputPath = opts.outputPath ? normalizePath(opts.outputPath) : undefined;
 	if (!outputPath) {
-		const sessionBasename = basename(sessionFile, ".jsonl");
+		const sessionFile = sm.getSessionFile();
+		const sessionBasename = sessionFile ? basename(sessionFile, ".jsonl") : sm.getSessionId();
 		outputPath = `${APP_NAME}-session-${sessionBasename}.html`;
 	}
 
