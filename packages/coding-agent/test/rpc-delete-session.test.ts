@@ -139,7 +139,12 @@ async function sendRawCommands(
 			for (const command of commands) child.stdin.write(serializeJsonLine(command));
 		});
 	} finally {
+		const exited =
+			child.exitCode !== null || child.signalCode !== null
+				? Promise.resolve()
+				: new Promise<void>((resolve) => child.once("exit", () => resolve()));
 		child.kill("SIGKILL");
+		await exited;
 	}
 	return responses;
 }

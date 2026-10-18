@@ -23,7 +23,8 @@ describe("HTML export from any session store", () => {
 	it("exports a session stored in the SQLite session store to HTML (#3741)", async () => {
 		initTheme("dark");
 		const dir = mkdtempSync(join(tmpdir(), "atomic-3741-sqlite-"));
-		const store = await SqlSessionStore.open(await openNodeSqliteDatabase(join(dir, "sessions.sqlite")));
+		const database = await openNodeSqliteDatabase(join(dir, "sessions.sqlite"));
+		const store = await SqlSessionStore.open(database);
 		const sessionManager = await SessionManager.create(store, dir);
 		const harness = await createHarness({ sessionManager });
 		try {
@@ -36,6 +37,7 @@ describe("HTML export from any session store", () => {
 		} finally {
 			await harness.cleanup();
 			await store.close();
+			await database.close();
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
