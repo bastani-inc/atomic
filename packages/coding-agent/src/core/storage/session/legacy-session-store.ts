@@ -186,7 +186,10 @@ export class LegacySessionStore implements SessionStore {
 		}
 	}
 
-	/** Header-only index of the legacy directory, read once; nothing writes legacy sessions any more. */
+	/**
+	 * Header-only index of the legacy directory, read once; nothing writes legacy sessions any more.
+	 * Copies of one session, such as conflict copies left by a sync tool, are ordered newest first.
+	 */
 	private legacyIndex(): Promise<ReadonlyMap<string, readonly JsonlSessionFile[]>> {
 		this.index ??= (async () => {
 			const files = new Map<string, JsonlSessionFile[]>();
@@ -200,6 +203,9 @@ export class LegacySessionStore implements SessionStore {
 				}
 			} catch {
 				// An unreadable legacy directory leaves only the sessions already in the database.
+			}
+			for (const [sessionId, copies] of files) {
+				if (copies.length > 1) files.set(sessionId, await newestCopiesFirst(copies));
 			}
 			return files;
 		})();
@@ -262,4 +268,29 @@ export class LegacySessionStore implements SessionStore {
 		const database = await this.deletionDatabase();
 		await database.run(`INSERT OR IGNORE INTO ${DELETED_TABLE} VALUES (?, ?)`, sessionId, Date.now());
 	}
+}
+
+/**
+ * Orders copies of one session by their latest message, newest first, using the same bounded reads
+ * as a listing. File modification time breaks ties, then directory order. A damaged copy sorts last.
+ */
+async function newestCopiesFirst(copies: readonly JsonlSessionFile[]): Promise<JsonlSessionFile[]> {
+	const ranked = await Promise.all(
+		copies.map(async (file, order) => {
+			const stats = await stat(file.location).catch(() => undefined);
+			const summary =
+				stats === undefined
+					? undefined
+					: await summarizeLegacySession(file, stats.size, stats.mtimeMs).catch(() => undefined);
+			return {
+				file,
+				order,
+				latest: summary === undefined ? Number.NEGATIVE_INFINITY : Date.parse(summary.modifiedAt),
+				modified: stats?.mtimeMs ?? Number.NEGATIVE_INFINITY,
+			};
+		}),
+	);
+	return ranked
+		.sort((a, b) => b.latest - a.latest || b.modified - a.modified || a.order - b.order)
+		.map(({ file }) => file);
 }
