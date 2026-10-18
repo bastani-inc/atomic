@@ -187,8 +187,8 @@ function describeHttpFailure(status: number, body: string): string {
 interface StreamCursor {
 	lastEventId: string | undefined;
 	retryMs: number | undefined;
-	/** Whether the stream delivered any event since it was (re)opened. */
-	received: boolean;
+	/** Whether the stream delivered a new resumable event ID since it was (re)opened. */
+	advanced: boolean;
 }
 
 export class StreamableHttpTransport extends TransportEvents implements McpTransport {
@@ -348,13 +348,13 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		await consumeSseStream(stream, {
 			maxEventBytes: this.options.maxMessageBytes ?? DEFAULT_MAX_MESSAGE_BYTES,
 			onId: (id) => {
+				if (id !== cursor.lastEventId) cursor.advanced = true;
 				cursor.lastEventId = id;
 			},
 			onRetry: (delayMs) => {
 				cursor.retryMs = delayMs;
 			},
 			onEvent: (event) => {
-				cursor.received = true;
 				// Events without data prime resumption; other event types are not JSON-RPC.
 				if (!event.data.trim() || (event.event !== undefined && event.event !== "message")) return;
 				let message: JsonRpcMessage;
@@ -376,7 +376,7 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 	 * server may close response streams at will. Otherwise only this request fails.
 	 */
 	private async consumeResponseStream(body: ReadableStream<Uint8Array>, requestId: JsonRpcId): Promise<void> {
-		const cursor: StreamCursor = { lastEventId: undefined, retryMs: undefined, received: false };
+		const cursor: StreamCursor = { lastEventId: undefined, retryMs: undefined, advanced: false };
 		let answered = false;
 		const onMessage = (message: JsonRpcMessage) => {
 			if (isJsonRpcResponse(message) && message.id === requestId) answered = true;
@@ -395,8 +395,8 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 			if (answered || this.closed) return;
 			if (failure !== undefined && !this.isRetryable(failure)) break;
 			if (cursor.lastEventId === undefined || attempt >= this.maxRetries()) break;
-			if (cursor.received) attempt = 0;
-			cursor.received = false;
+			if (cursor.advanced) attempt = 0;
+			cursor.advanced = false;
 			if (!(await this.sleep(this.reconnectDelay(attempt++, cursor.retryMs)))) return;
 			try {
 				stream = await this.openSseStream(cursor.lastEventId);
@@ -423,7 +423,7 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 
 	/** Keep the server-to-client stream open, reconnecting with backoff when it drops. */
 	private async runGetStream(): Promise<void> {
-		const cursor: StreamCursor = { lastEventId: undefined, retryMs: undefined, received: false };
+		const cursor: StreamCursor = { lastEventId: undefined, retryMs: undefined, advanced: false };
 		for (let attempt = 0; !this.closed; ) {
 			try {
 				const stream = await this.openSseStream(cursor.lastEventId);
@@ -431,8 +431,8 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 				if (!stream) return;
 				const openedAt = Date.now();
 				await this.consumeSse(stream, cursor);
-				// A stream that stayed up for a while counts as healthy, even if it was idle.
-				if (cursor.received || Date.now() - openedAt > this.maxDelay()) attempt = 0;
+				// Resumable progress, or a stream that stayed up for a while, counts as healthy.
+				if (cursor.advanced || Date.now() - openedAt > this.maxDelay()) attempt = 0;
 			} catch (error) {
 				if (this.closed) return;
 				if (!this.isRetryable(error)) {
@@ -440,7 +440,7 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 					return;
 				}
 			}
-			cursor.received = false;
+			cursor.advanced = false;
 			if (attempt >= this.maxRetries()) {
 				this.emitError(new Error("MCP server-to-client stream dropped and could not be reopened"));
 				return;
