@@ -341,6 +341,7 @@ export function _applyExtensionBindings(this: AgentSession, runner: ExtensionRun
 	runner.setUIContext(this._extensionUIContext, this._extensionMode, presentationOnlyBindings.get(this) ?? false);
 	runner.bindCommandContext(this._extensionCommandContextActions);
 	runner.bindChildSessionOptions(this._childSessionOptions);
+	runner.bindWorkflowJournal(this._workflowJournal);
 
 	this._extensionErrorUnsubscriber?.();
 	this._extensionErrorUnsubscriber = this._extensionErrorListener
@@ -940,6 +941,7 @@ async function reloadOwnedGeneration(
 		);
 		candidateRunner.bindCommandContext(this._extensionCommandContextActions);
 		candidateRunner.bindChildSessionOptions(this._childSessionOptions);
+		candidateRunner.bindWorkflowJournal(this._workflowJournal);
 		if (options?.failOnExtensionErrors && errors.length > 0)
 			throw new Error(
 				`Failed to load extensions: ${errors.map(({ path, error }) => `${path}: ${error}`).join("; ")}`,

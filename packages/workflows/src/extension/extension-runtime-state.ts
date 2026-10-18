@@ -153,6 +153,8 @@ export function createWorkflowExtensionRuntimeState(
 		toolControlRegistry,
 		stageUiBroker,
 		isProjectTrusted: () => projectTrusted ?? pi.getResourceLoaderInheritanceSnapshot?.()?.projectTrusted ?? true,
+		resolveJournal: () => pi.getWorkflowJournal?.(),
+		resolveJournalSettings: () => pi.getSettings?.(),
 	};
 	// #3105: discovery follows the SDK session, never the process working directory.
 	let contextCwd: string | undefined;

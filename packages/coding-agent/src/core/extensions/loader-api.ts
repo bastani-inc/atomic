@@ -409,6 +409,10 @@ export function createExtensionAPI(
 			assertActive();
 			return runtime.getChildSessionOptions?.(options) ?? options;
 		},
+		getWorkflowJournal() {
+			assertActive(true);
+			return runtime.workflowJournal;
+		},
 
 		sendMessage(message, options): void | Promise<void> {
 			assertActive();

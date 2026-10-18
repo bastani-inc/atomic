@@ -14,7 +14,7 @@ import type { ModelRuntime } from "./model-runtime.js";
 import type { ResourceLoader } from "./resource-loader.ts";
 import type { SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
-import type { StorageSelection } from "./storage/provider.js";
+import type { RunJournalOption, StorageSelection } from "./storage/provider.js";
 import type { SessionStore } from "./storage/session/types.js";
 
 export type AtomicBuiltin = "workflows" | "subagents" | "mcp" | "web-access" | "intercom";
@@ -26,6 +26,12 @@ export interface CreateAgentSessionOptions {
 	cwd?: string;
 	/** Global config directory. Default: ~/.atomic/agent */
 	agentDir?: string;
+	/**
+	 * Workflow journal for this session's `workflow` tool: a file path, a caller-owned database, process-local
+	 * memory, a storage adapter, or a supplied journal. Overrides the session's `workflows.journal` settings,
+	 * `ATOMIC_WORKFLOW_JOURNAL_PATH`, and the default journal file. The caller closes a database or journal it supplies.
+	 */
+	journal?: RunJournalOption;
 
 	/** Canonical model/auth runtime. Defaults to agentDir/auth.json and models.json. */
 	modelRuntime?: ModelRuntime;

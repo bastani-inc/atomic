@@ -284,7 +284,16 @@ Use `{ database, prefix? }` for an async `SqliteDatabase` facade; Atomic never c
 
 Custom journals implement the full `RunJournal` interface, including `deleteOwnedRun(lease, expectSeq?)` for atomic lease-fenced deletion with an optional sequence check. A stale lease rejects with `StaleLeaseError` without deleting the successor's data. Open a facade-backed journal with `await SqlRunJournal.open(database, { prefix })`, or use `await openSqlRunJournal(pathOrDatabase?)` for the node adapter. Validate custom journals with `registerRunJournalConformance`; see [Choosing the durable backend](/workflows/api-reference#choosing-the-durable-backend).
 
-Without a per-run option, a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH` overrides `workflows.journal`, which overrides shared top-level `storage`. Nearer-scope settings replace whole selections. Relative settings paths resolve against Atomic home. The default journal is `~/.atomic/workflows/journal.sqlite`; an empty shared selection uses `~/.atomic/storage.sqlite`. Keep the original journal and working directory to resume saved runs. Invalid configuration and storage failures reject rather than switching to memory. See [Workflow storage settings](/settings#workflow-storage).
+To choose the journal for the model-facing `workflow` tool of one SDK session, pass the same selection to `createAgentSession`. Each session in a process can use its own journal without setting `ATOMIC_WORKFLOW_JOURNAL_PATH`:
+
+```typescript
+const first = await createAgentSession({ journal: { path: "./first-runs.sqlite" } });
+const second = await createAgentSession({ journal: { memory: true } });
+```
+
+Without a `journal` option, the session's own `workflows.journal` setting applies, including settings passed through `SettingsManager.inMemory({ workflows: { journal: { path: "./runs.sqlite" } } })`. A `memory: true` journal selected this way belongs to that session alone. Disposing a session closes the journals Atomic opened for it once no other session is using them, so runs kept in a memory journal end with the session. Atomic never closes a database or journal you supply.
+
+Without a per-run or per-session option, a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH` overrides `workflows.journal`, which overrides shared top-level `storage`. Nearer-scope settings replace whole selections. Relative settings paths resolve against Atomic home. The default journal is `~/.atomic/workflows/journal.sqlite`; an empty shared selection uses `~/.atomic/storage.sqlite`. Keep the original journal and working directory to resume saved runs. Invalid configuration and storage failures reject rather than switching to memory. See [Workflow storage settings](/settings#workflow-storage).
 
 ### Workflow run control
 

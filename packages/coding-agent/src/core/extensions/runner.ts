@@ -219,6 +219,9 @@ export class ExtensionRunner {
 	): void {
 		this.runtime.getChildSessionOptions = resolver;
 	}
+	bindWorkflowJournal(journal: import("../storage/provider.js").RunJournalOption | undefined): void {
+		this.runtime.workflowJournal = journal;
+	}
 	/** The run-control implementation registered by the current extension generation, if any. */
 	getWorkflowRunControl(): WorkflowRunControl | undefined {
 		return this.runtime.workflowRunControlHub.current();

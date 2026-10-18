@@ -42,6 +42,21 @@ import {
 } from "./types.js";
 
 const PROCESS_HOLDER_ID = randomUUID();
+const processExitCleanups = new Set<() => void>();
+
+function runProcessExitCleanups(): void {
+	for (const cleanup of processExitCleanups) cleanup();
+}
+
+function addProcessExitCleanup(cleanup: () => void): void {
+	if (processExitCleanups.size === 0) process.once("exit", runProcessExitCleanups);
+	processExitCleanups.add(cleanup);
+}
+
+function removeProcessExitCleanup(cleanup: () => void): void {
+	if (processExitCleanups.delete(cleanup) && processExitCleanups.size === 0)
+		process.off("exit", runProcessExitCleanups);
+}
 type Operation<T> = Generator<Promise<void>, T, void>;
 type BackendState = "open" | "closing" | "closed";
 type SnapshotPayload = { readonly handle: DurableWorkflowHandle; readonly prompts?: PromptReservationSnapshot };
@@ -835,7 +850,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 				process.exitCode = 1;
 			});
 		};
-		process.once("exit", this.processExitCleanup);
+		addProcessExitCleanup(this.processExitCleanup);
 	}
 	async withWorkflowLease<T>(runId: string, action: () => Promise<T>): Promise<T> {
 		this.ensureOpen();
@@ -893,7 +908,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		if (this.closing !== undefined) return this.closing;
 		this.state = "closing";
 		if (this.processExitCleanup !== undefined) {
-			process.off("exit", this.processExitCleanup);
+			removeProcessExitCleanup(this.processExitCleanup);
 			this.processExitCleanup = undefined;
 		}
 		if (this.timer !== undefined) clearInterval(this.timer);

@@ -1,4 +1,5 @@
 import { registerExtensionContextRetirementEffect, sessionScopedExtensionState } from "@bastani/atomic";
+import { releaseDurableBackendsHeldBy } from "../durable/backend-process-owner.js";
 import { reclaimReleasedRunsOwnedBy, releasePausedRunsOwnedBy } from "../durable/sdk-owner-release.js";
 import { canonicalDirectory, isSdkReleasedRunAdoptable } from "../durable/sdk-recovery-scope.js";
 import { availableStoreDurableBackend, requireStoreDurableBackend } from "../durable/store-backend.js";
@@ -401,6 +402,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 				closeGeneration,
 				...lifetime.generations,
 				() => releasePausedRunsOfSession(sessionCaller, store),
+				() => releaseDurableBackendsHeldBy(store),
 				() => {
 					lifetime.generations.clear();
 				},

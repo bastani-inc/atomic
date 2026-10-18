@@ -1,9 +1,7 @@
 import { dirname, isAbsolute, join } from "node:path";
 import { getAgentDir } from "@bastani/atomic";
 import {
-	type AdapterOptions,
-	type SecretRef,
-	type SqliteDatabase,
+	type RunJournalOption,
 	StorageConfigError,
 	StorageProvider,
 	type StorageSelection,
@@ -14,12 +12,7 @@ import { MemoryRunJournal } from "./memory-run-journal.js";
 import { SqlRunJournal } from "./sql-run-journal.js";
 import type { RunJournal } from "./types.js";
 
-export type RunJournalOption =
-	| { path: string; prefix?: string }
-	| { database: SqliteDatabase; prefix?: string }
-	| { memory: true }
-	| { adapter: string; options?: AdapterOptions; secrets?: Readonly<Record<string, SecretRef>>; prefix?: string }
-	| RunJournal;
+export type { RunJournalOption };
 export interface RunJournalSettings {
 	workflows?: string[] | { journal?: StorageSettingsSelection };
 	storage?: StorageSettingsSelection;

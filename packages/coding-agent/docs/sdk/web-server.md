@@ -304,7 +304,7 @@ By default, `run()` persists workflow state in the local SQLite journal at `~/.a
 
 Use `journal: { path: "/var/lib/my-service/workflows.sqlite" }` to select a file for a run, or `journal: { memory: true }` for process-local state that cannot survive a restart. Supply a caller-owned async SQLite facade as `{ database, prefix? }`; Atomic does not close it. You can also supply a `RunJournal` instance or `{ adapter, options?, secrets?, prefix? }` for a user-installed driver module.
 
-`RunOpts.journal` overrides a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, then `workflows.journal`, then shared top-level `storage`, then the default file. Nearer settings replace whole selections. Relative settings paths resolve against Atomic home. Configuration or storage failures stop the run instead of switching to memory. See [Choosing the durable backend](/workflows/api-reference#choosing-the-durable-backend).
+`RunOpts.journal` (or `createAgentSession({ journal })` for sessions) overrides a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, then `workflows.journal`, then shared top-level `storage`, then the default file. Nearer settings replace whole selections. Relative settings paths resolve against Atomic home. Configuration or storage failures stop the run instead of switching to memory. See [Choosing the durable backend](/workflows/api-reference#choosing-the-durable-backend).
 
 ## Secure the endpoint
 

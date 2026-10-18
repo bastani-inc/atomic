@@ -597,6 +597,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_allowedTools?: (name: string) => boolean;
 	_excludedTools?: (name: string) => boolean;
 	_childSessionOptions?: import("./child-session-options.ts").ChildSessionOptionsResolver;
+	_workflowJournal?: import("./storage/provider.js").RunJournalOption;
 	_baseToolsOverride?: Record<string, AgentTool>;
 	_sessionStartEvent: SessionStartEvent;
 	_orchestrationContext?: OrchestrationContext;
