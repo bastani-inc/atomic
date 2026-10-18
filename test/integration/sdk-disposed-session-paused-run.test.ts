@@ -37,6 +37,20 @@ interface Project {
 
 const projects: string[] = [];
 
+type JsonValue = string | number | boolean | null | readonly JsonValue[] | { readonly [key: string]: JsonValue };
+
+const UNSAFE_IN_JS_SOURCE: Readonly<Record<string, string>> = {
+	"<": "\\u003C",
+	">": "\\u003E",
+	"/": "\\u002F",
+	"\u2028": "\\u2028",
+	"\u2029": "\\u2029",
+};
+
+function toJsLiteral(value: JsonValue): string {
+	return JSON.stringify(value).replace(/[<>/\u2028\u2029]/g, (character) => UNSAFE_IN_JS_SOURCE[character]!);
+}
+
 type RejectedReload = "an extension factory that throws" | "a resource commit that throws";
 const REJECTED_RELOADS: readonly RejectedReload[] = [
 	"an extension factory that throws",
@@ -67,9 +81,9 @@ export default function (pi) {
         role: "assistant", api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), content: [], stopReason: "stop",
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
       };
-      if (!existsSync(${JSON.stringify(files.held)})) {
-        writeFileSync(${JSON.stringify(files.held)}, "held");
-        writeFileSync(${JSON.stringify(files.request)}, "in flight");
+      if (!existsSync(${toJsLiteral(files.held)})) {
+        writeFileSync(${toJsLiteral(files.held)}, "held");
+        writeFileSync(${toJsLiteral(files.request)}, "in flight");
         const abort = () => {
           output.stopReason = "aborted";
           stream.push({ type: "error", reason: "aborted", error: output });
@@ -115,7 +129,7 @@ async function createProject(
 		join(cwd, ".atomic", "extensions", "questionnaire-model.ts"),
 		await readText(fileURLToPath(new URL("./fixtures/sdk-host-questionnaire-provider.ts", import.meta.url))),
 	);
-	const stageOptions = JSON.stringify({
+	const stageOptions = toJsLiteral({
 		sessionDir: join(cwd, "stage-sessions"),
 		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
 		model: HOLDING_MODEL,
@@ -128,8 +142,8 @@ async function createProject(
 		`import { workflow } from "@bastani/atomic/workflows";
 import { appendFile } from "node:fs/promises";
 ${moduleScope(stageOptions)}
-export default workflow({ name: ${JSON.stringify(workflowName)}, description: "Run owned by a session that is disposed", inputs: {}, outputs: {}, run: async (ctx) => {
-  await ctx.tool("completed-effect", {}, async () => { await appendFile(${JSON.stringify(project.effectFile)}, "effect\\n"); return "checkpointed"; });
+export default workflow({ name: ${toJsLiteral(workflowName)}, description: "Run owned by a session that is disposed", inputs: {}, outputs: {}, run: async (ctx) => {
+  await ctx.tool("completed-effect", {}, async () => { await appendFile(${toJsLiteral(project.effectFile)}, "effect\\n"); return "checkpointed"; });
   ${step(stageOptions)}
   return {};
 } });
@@ -295,7 +309,7 @@ test(
 		const project = await createProject(
 			"stage-question",
 			(stageOptions) =>
-				`await ctx.stage("asker", { ...${stageOptions}, model: ${JSON.stringify(QUESTIONNAIRE_MODEL)}, tools: ["ask_user_question"] }).prompt(${JSON.stringify(`questionnaire ${JSON.stringify(question)}`)});`,
+				`await ctx.stage("asker", { ...${stageOptions}, model: ${toJsLiteral(QUESTIONNAIRE_MODEL)}, tools: ["ask_user_question"] }).prompt(${toJsLiteral(`questionnaire ${JSON.stringify(question)}`)});`,
 		);
 		const asked = Promise.withResolvers<void>();
 		const unanswered = Promise.withResolvers<QuestionnaireResult>();
