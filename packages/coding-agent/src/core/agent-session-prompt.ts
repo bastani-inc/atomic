@@ -15,6 +15,12 @@ import { runCallback } from "./callback-activity.ts";
 import type { CustomMessage } from "./messages.ts";
 import { expandPromptTemplate } from "./prompt-templates.ts";
 import {
+	type QueuedInputAdmission,
+	reserveQueuedInputAdmission,
+	runInputHook,
+	UNORDERED_ADMISSION,
+} from "./queued-input-admission.ts";
+import {
 	assertSessionOpen,
 	sessionGenerationClosing,
 	sessionLifetime,
@@ -119,6 +125,25 @@ async function admittedPrompt(this: AgentSession, text: string, options?: Prompt
 	}
 }
 
+function isExtensionCommand(session: AgentSession, text: string): boolean {
+	if (!text.startsWith("/")) return false;
+	const spaceIndex = text.indexOf(" ");
+	const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
+	return session._extensionRunner?.getCommand(commandName) !== undefined;
+}
+
+/** Extension commands and extension-delivered messages run immediately rather than in submission order. */
+function reserveAdmissionForQueuedPrompt(
+	session: AgentSession,
+	text: string,
+	options: PromptOptions | undefined,
+): QueuedInputAdmission {
+	const lane = options?.streamingBehavior;
+	if (lane === undefined || options?.source === "extension") return UNORDERED_ADMISSION;
+	if ((options?.expandPromptTemplates ?? true) && isExtensionCommand(session, text)) return UNORDERED_ADMISSION;
+	return reserveQueuedInputAdmission(session, lane);
+}
+
 async function promptInternal(this: AgentSession, text: string, options?: PromptOptions): Promise<void> {
 	const lifetime = sessionLifetime(this);
 	const assertCurrent = () => {
@@ -132,6 +157,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 	const workflowDelivery = (options as PromptOptionsWithWorkflowDelivery | undefined)?.__workflowDelivery;
 	let messages: AgentMessage[] | undefined;
 	let preparingRun = false;
+	const admission = reserveAdmissionForQueuedPrompt(this, text, options);
 
 	try {
 		// Authorize workflow delivery before commands or input extensions can perform side effects.
@@ -155,6 +181,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		// compaction, or a provider turn; explicit resume makes it eligible again.
 		if (this._queuedMessagesPaused) {
 			const delivery = options?.streamingBehavior === "followUp" ? "followUp" : "steer";
+			await admission.turn;
 			if (delivery === "followUp") await this._queueFollowUp(text, options?.images);
 			else await this._queueSteer(text, options?.images);
 			workflowDelivery?.delivered?.(delivery);
@@ -166,11 +193,13 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		let currentText = text;
 		let currentImages = options?.images;
 		if (this._extensionRunner.hasHandlers("input")) {
-			const inputResult = await this._extensionRunner.emitInput(
-				currentText,
-				currentImages,
-				options?.source ?? "interactive",
-				this.isStreaming ? options?.streamingBehavior : undefined,
+			const inputResult = await runInputHook(() =>
+				this._extensionRunner.emitInput(
+					currentText,
+					currentImages,
+					options?.source ?? "interactive",
+					this.isStreaming ? options?.streamingBehavior : undefined,
+				),
 			);
 			assertCurrent();
 			if (inputResult.action === "handled") {
@@ -191,6 +220,9 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 		}
 
+		await admission.turn;
+		assertCurrent();
+
 		// If streaming, queue via steer() or followUp() based on option. The run is still
 		// open while agent_before_settle handlers decide on its continuation, so input sent
 		// from that boundary queues for the continuation instead of starting a second run.
@@ -209,6 +241,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			preflightResult?.(true, "queued");
 			return;
 		}
+		admission.release();
 
 		// Close the completed fallback lifecycle before validating credentials for
 		// the next idle prompt. The selected fallback remains the session model.
@@ -317,6 +350,8 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		if (preparingRun) this._isPreparingRun = false;
 		preflightResult?.(false);
 		throw error;
+	} finally {
+		admission.release();
 	}
 
 	assertCurrent();
@@ -758,25 +793,29 @@ async function admittedQueueUserInput(
 ): Promise<QueuedInputDisposition> {
 	const lifetime = sessionLifetime(session);
 	if (text.startsWith("/")) session._throwIfExtensionCommand(text);
-	if (session._extensionRunner?.hasHandlers("input")) {
-		const result = await session._extensionRunner.emitInput(
-			text,
-			images,
-			source,
-			session.isStreaming ? behavior : undefined,
-		);
-		assertSessionOpen(session);
-		if (lifetime.aborted) throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
-		if (result.action === "handled") return "handled";
-		if (result.action === "transform") {
-			text = result.text;
-			images = result.images ?? images;
+	const admission = source === "extension" ? UNORDERED_ADMISSION : reserveQueuedInputAdmission(session, behavior);
+	try {
+		if (session._extensionRunner?.hasHandlers("input")) {
+			const result = await runInputHook(() =>
+				session._extensionRunner.emitInput(text, images, source, session.isStreaming ? behavior : undefined),
+			);
+			assertSessionOpen(session);
+			if (lifetime.aborted) throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
+			if (result.action === "handled") return "handled";
+			if (result.action === "transform") {
+				text = result.text;
+				images = result.images ?? images;
+			}
 		}
+		const expandedText = expandPromptTemplate(session._expandSkillCommand(text), [...session.promptTemplates]);
+		await admission.turn;
+		assertSessionOpen(session);
+		if (behavior === "steer") await session._queueSteer(expandedText, images);
+		else await session._queueFollowUp(expandedText, images);
+		return "queued";
+	} finally {
+		admission.release();
 	}
-	const expandedText = expandPromptTemplate(session._expandSkillCommand(text), [...session.promptTemplates]);
-	if (behavior === "steer") await session._queueSteer(expandedText, images);
-	else await session._queueFollowUp(expandedText, images);
-	return "queued";
 }
 
 /**

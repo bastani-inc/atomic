@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed queued steering and follow-up messages being reordered when an extension's async `input` hook takes longer for an earlier message than a later one. Each queue now keeps submission order. Extension commands, extension-sent messages, and messages sent from inside an `input` hook are still delivered immediately ([#3590](https://github.com/bastani-inc/atomic/issues/3590)).
+
 ## [0.9.38-alpha.10] - 2026-10-17
 
 ### Fixed
