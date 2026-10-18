@@ -125,6 +125,22 @@ afterEach(() => {
 	}
 });
 
+/**
+ * Resolve once the peer has read `count` frames.
+ *
+ * Loopback delivery takes a platform- and load-dependent number of event-loop
+ * turns, like the RST above, so a frame the broker did write can still be in
+ * flight after `settle()`. Positive delivery assertions wait on `'data'`; the
+ * reader installed by `connectedPair` runs first, so `received` is already
+ * updated when each event resolves.
+ */
+async function awaitReceived(pair: Pair, count: number): Promise<BrokerMessage[]> {
+	while (pair.received.length < count) {
+		await new Promise<void>((resolve) => pair.client.once("data", () => resolve()));
+	}
+	return pair.received;
+}
+
 const frame = (text: string): BrokerMessage => ({ type: "session_left", sessionId: text });
 
 describe("writeMessageIfOpen", () => {
@@ -135,6 +151,7 @@ describe("writeMessageIfOpen", () => {
 		assert.equal(writeMessageIfOpen(pair.server, frame("delivered-to-peer")), true);
 		await settle();
 
+		await awaitReceived(pair, 1);
 		assert.deepEqual(pair.received, [frame("delivered-to-peer")]);
 		assert.deepEqual(pair.serverErrors, []);
 	});
@@ -155,6 +172,7 @@ describe("writeMessageIfOpen", () => {
 		assert.equal(pair.server.destroyed, false);
 		await settle();
 
+		await awaitReceived(pair, 1);
 		assert.deepEqual(pair.received, [frame("before-end")]);
 		assert.deepEqual(pair.serverErrors, []);
 		assert.equal(pair.server.destroyed, false);
@@ -264,6 +282,7 @@ describe("handleBrokerSend against a target socket that stopped accepting frames
 		runSend(harness, message);
 		await settle();
 
+		await awaitReceived(harness.sender, 1);
 		assert.deepEqual(harness.sender.received, [
 			{ type: "delivery_failed", messageId: "race-message", reason: "Session not found" },
 		]);
@@ -280,6 +299,7 @@ describe("handleBrokerSend against a target socket that stopped accepting frames
 		// is not answered `delivered` from a cache entry the failed send never earned.
 		runSend(harness, message);
 		await settle();
+		await awaitReceived(harness.sender, 2);
 		assert.deepEqual(harness.sender.received, [
 			{ type: "delivery_failed", messageId: "race-message", reason: "Session not found" },
 			{ type: "delivery_failed", messageId: "race-message", reason: "Session not found" },
@@ -289,6 +309,7 @@ describe("handleBrokerSend against a target socket that stopped accepting frames
 		// was never burned by the delivery that did not happen.
 		runSend(harness, question("race-message", "hello again"));
 		await settle();
+		await awaitReceived(harness.sender, 3);
 		const reasonCodes = harness.sender.received.map((received) =>
 			received.type === "delivery_failed" ? received.reasonCode : "not-a-failure",
 		);
@@ -311,6 +332,7 @@ describe("handleBrokerSend against a target socket that stopped accepting frames
 		runSend(harness, message);
 		await settle();
 
+		await awaitReceived(harness.sender, 1);
 		assert.deepEqual(harness.sender.received, [
 			{ type: "delivery_failed", messageId: "reset-race-message", reason: "Session not found" },
 		]);
@@ -338,6 +360,8 @@ describe("handleBrokerSend against a target socket that stopped accepting frames
 		runSend(harness, message);
 		await settle();
 
+		await awaitReceived(harness.sender, 1);
+		await awaitReceived(harness.target, 1);
 		assert.deepEqual(harness.sender.received, [{ type: "delivered", messageId: "healthy-message" }]);
 		assert.deepEqual(harness.target.received, [
 			{ type: "message", from: harness.sessions.get("sender-id")?.info, message },
