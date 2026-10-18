@@ -3,15 +3,25 @@ import { AsyncLocalStorage } from "node:async_hooks";
 export type QueuedInputLane = "steer" | "followUp";
 
 export interface QueuedInputAdmission {
-	/** Resolves once every earlier admission in the same lane has queued, been handled, or failed. */
-	readonly turn: Promise<void>;
+	/**
+	 * Resolves once every earlier admission in the same lane has queued, been handled, or failed.
+	 * Returns undefined when none is pending, so an uncontended submission queues without yielding.
+	 */
+	waitForTurn(): Promise<void> | undefined;
 	release(): void;
 }
 
-const laneTails = new WeakMap<object, Map<QueuedInputLane, Promise<void>>>();
+interface Reservation {
+	readonly released: PromiseWithResolvers<void>;
+}
+
+const lanes = new WeakMap<object, Map<QueuedInputLane, Reservation[]>>();
 const insideInputHook = new AsyncLocalStorage<true>();
 
-export const UNORDERED_ADMISSION: QueuedInputAdmission = { turn: Promise.resolve(), release: () => undefined };
+export const UNORDERED_ADMISSION: QueuedInputAdmission = {
+	waitForTurn: () => undefined,
+	release: () => undefined,
+};
 
 /**
  * Reserve a place in a session's steer or follow-up lane at submission time, so asynchronous
@@ -20,16 +30,25 @@ export const UNORDERED_ADMISSION: QueuedInputAdmission = { turn: Promise.resolve
  */
 export function reserveQueuedInputAdmission(session: object, lane: QueuedInputLane): QueuedInputAdmission {
 	if (insideInputHook.getStore()) return UNORDERED_ADMISSION;
-	const tails = laneTails.get(session) ?? new Map<QueuedInputLane, Promise<void>>();
-	laneTails.set(session, tails);
-	const turn = tails.get(lane) ?? Promise.resolve();
-	const released = Promise.withResolvers<void>();
-	const tail = turn.then(() => released.promise);
-	tails.set(lane, tail);
-	void tail.then(() => {
-		if (tails.get(lane) === tail) tails.delete(lane);
-	});
-	return { turn, release: () => released.resolve() };
+	const sessionLanes = lanes.get(session) ?? new Map<QueuedInputLane, Reservation[]>();
+	lanes.set(session, sessionLanes);
+	const reservations = sessionLanes.get(lane) ?? [];
+	sessionLanes.set(lane, reservations);
+	const reservation: Reservation = { released: Promise.withResolvers<void>() };
+	reservations.push(reservation);
+	return {
+		waitForTurn() {
+			const earlier = reservations.slice(0, reservations.indexOf(reservation));
+			if (earlier.length === 0) return undefined;
+			return Promise.all(earlier.map((entry) => entry.released.promise)).then(() => undefined);
+		},
+		release() {
+			const index = reservations.indexOf(reservation);
+			if (index === -1) return;
+			reservations.splice(index, 1);
+			reservation.released.resolve();
+		},
+	};
 }
 
 export function runInputHook<T>(hook: () => Promise<T>): Promise<T> {

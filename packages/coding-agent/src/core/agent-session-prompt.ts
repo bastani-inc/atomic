@@ -181,7 +181,8 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		// compaction, or a provider turn; explicit resume makes it eligible again.
 		if (this._queuedMessagesPaused) {
 			const delivery = options?.streamingBehavior === "followUp" ? "followUp" : "steer";
-			await admission.turn;
+			const earlierAdmissions = admission.waitForTurn();
+			if (earlierAdmissions) await earlierAdmissions;
 			if (delivery === "followUp") await this._queueFollowUp(text, options?.images);
 			else await this._queueSteer(text, options?.images);
 			workflowDelivery?.delivered?.(delivery);
@@ -220,7 +221,8 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 		}
 
-		await admission.turn;
+		const earlierAdmissions = admission.waitForTurn();
+		if (earlierAdmissions) await earlierAdmissions;
 		assertCurrent();
 
 		// If streaming, queue via steer() or followUp() based on option. The run is still
@@ -808,7 +810,8 @@ async function admittedQueueUserInput(
 			}
 		}
 		const expandedText = expandPromptTemplate(session._expandSkillCommand(text), [...session.promptTemplates]);
-		await admission.turn;
+		const earlierAdmissions = admission.waitForTurn();
+		if (earlierAdmissions) await earlierAdmissions;
 		assertSessionOpen(session);
 		if (behavior === "steer") await session._queueSteer(expandedText, images);
 		else await session._queueFollowUp(expandedText, images);
