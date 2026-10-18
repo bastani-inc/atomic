@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.38] - 2026-10-18
+
+### Fixed
+
+- Search and fetched-content results now wait for their session commits before becoming available or notifying the agent. Failed commits reach the existing error handling instead of reporting uncommitted results.
+- An open `/websearch` curator now closes when reload or shutdown begins, without blocking teardown or abandoning an already-started session save.
+
 ## [0.9.38-alpha.6] - 2026-10-16
 
 ### Fixed
