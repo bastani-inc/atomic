@@ -180,3 +180,26 @@ test("releasing a holder never closes a journal the caller supplied (#3743)", as
 	assert.deepEqual(await journal.listRuns(), []);
 	assert.notEqual(await initializeDurableBackend({ journal, holder }), backend);
 });
+
+test("a failed open after its holder released does not drop a newer session's backend (#3743)", async () => {
+	setDurableBackend(undefined);
+	const directory = mkdtempSync(join(tmpdir(), "journal-failed-open-"));
+	directories.push(directory);
+	process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = join(directory, "journal.sqlite");
+	const open = JournalDurableBackend.open.bind(JournalDurableBackend);
+	const firstOpen = Promise.withResolvers<JournalDurableBackend>();
+	const spy = vi.spyOn(JournalDurableBackend, "open").mockImplementationOnce(() => firstOpen.promise);
+	spy.mockImplementation(open);
+	const released = {};
+	const current = {};
+
+	const failing = initializeDurableBackend({ holder: released });
+	const releasing = releaseDurableBackendsHeldBy(released);
+	const replacement = await initializeDurableBackend({ holder: current });
+	firstOpen.reject(new Error("open failed"));
+	await assert.rejects(failing, /open failed/);
+	await releasing;
+
+	assert.equal(await initializeDurableBackend({ holder: current }), replacement);
+	spy.mockRestore();
+});

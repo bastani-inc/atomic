@@ -73,7 +73,7 @@ export async function initializeDurableBackend(options: DurableBackendOptions = 
 				return opened;
 			})
 			.catch((error: Error) => {
-				selected.delete(key);
+				if (selected.get(key) === entry) selected.delete(key);
 				throw error;
 			}),
 		holders: new Set(),
