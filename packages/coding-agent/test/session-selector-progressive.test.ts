@@ -70,6 +70,29 @@ describe("session selector progressive loading", () => {
 		expect(afterFrame).toContain("first-loaded");
 	});
 
+	it("hides sessions that were closed without a message, name or summary", async () => {
+		const keybindings = new KeybindingsManager();
+		const selector = new SessionSelectorComponent(
+			async () => [
+				makeSession({ id: "chat" }),
+				makeSession({ id: "empty", messageCount: 0, firstMessage: "(no messages)" }),
+				{ ...makeSession({ id: "named", messageCount: 0, name: "planning" }), hasName: true },
+			],
+			async () => [],
+			() => {},
+			() => {},
+			() => {},
+			() => {},
+			{ showRenameHint: false, keybindings },
+		);
+		await flushPromises();
+
+		const frame = selector.render(120).join("\n");
+		expect(frame).toContain("first-chat");
+		expect(frame).toContain("planning");
+		expect(frame).not.toContain("(no messages)");
+	});
+
 	it("seeds initialSessions on the first frame while the loader is blocked", async () => {
 		const gate = deferred<SessionInfo[]>();
 		const keybindings = new KeybindingsManager();
