@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- When the earlier JSONL sessions folder holds several copies of one session, such as conflict copies left by a file-sync tool, the default store now lists and imports the copy with the newest message instead of the alphabetically first file.
+
 ## [0.9.38] - 2026-10-18
 
 ### Breaking Changes
