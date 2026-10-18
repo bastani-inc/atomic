@@ -1,4 +1,5 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
+import { outsideWorkflowExecutions } from "../durable/execution-context-boundary.js";
 import { durableBackendForRun, durableRootRunIdForRun } from "../durable/run-owner-backend.js";
 import { availableStoreDurableBackend, requireStoreDurableBackend } from "../durable/store-backend.js";
 import { workflowInvocationIntercomGroup, workflowInvocationOwnsGroup } from "../shared/intercom-group.js";
@@ -257,7 +258,9 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 			if (!ownedRunIds.has(runId)) routeCompletions.delete(runId);
 		}
 		sweepPromise = sweepPromise
-			.then(() => settleUndeliverablePendingStageMessages(activeStore, notifyUndeliverable))
+			.then(() =>
+				outsideWorkflowExecutions(() => settleUndeliverablePendingStageMessages(activeStore, notifyUndeliverable)),
+			)
 			.then(() => undefined)
 			.catch((error: Error) =>
 				reportWarning(`atomic-workflows: pending stage delivery sweep failed: ${error.message}`),

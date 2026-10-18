@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- A workflow run that finishes after receiving a sticky Intercom message (for example a send to `workflow:<rootRunId>/**`) no longer prints `pending stage delivery sweep failed: Workflow execution for <runId> is retired`, and its leftover sticky messages are settled instead of staying queued ([#3745](https://github.com/bastani-inc/atomic/issues/3745)).
+
 ## [0.9.38] - 2026-10-18
 
 ### Breaking Changes
