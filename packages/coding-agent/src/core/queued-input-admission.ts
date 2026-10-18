@@ -12,7 +12,16 @@ export interface QueuedInputAdmission {
 }
 
 interface Reservation {
-	readonly released: PromiseWithResolvers<void>;
+	readonly released: Promise<void>;
+	readonly release: () => void;
+}
+
+function createReservation(): Reservation {
+	let release!: () => void;
+	const released = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	return { released, release };
 }
 
 const lanes = new WeakMap<object, Map<QueuedInputLane, Reservation[]>>();
@@ -34,19 +43,19 @@ export function reserveQueuedInputAdmission(session: object, lane: QueuedInputLa
 	lanes.set(session, sessionLanes);
 	const reservations = sessionLanes.get(lane) ?? [];
 	sessionLanes.set(lane, reservations);
-	const reservation: Reservation = { released: Promise.withResolvers<void>() };
+	const reservation = createReservation();
 	reservations.push(reservation);
 	return {
 		waitForTurn() {
 			const earlier = reservations.slice(0, reservations.indexOf(reservation));
 			if (earlier.length === 0) return undefined;
-			return Promise.all(earlier.map((entry) => entry.released.promise)).then(() => undefined);
+			return Promise.all(earlier.map((entry) => entry.released)).then(() => undefined);
 		},
 		release() {
 			const index = reservations.indexOf(reservation);
 			if (index === -1) return;
 			reservations.splice(index, 1);
-			reservation.released.resolve();
+			reservation.release();
 		},
 	};
 }
