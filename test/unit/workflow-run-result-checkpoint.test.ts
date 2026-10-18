@@ -1,8 +1,52 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { durableRunResult, recordRunResultCheckpointAsync } from "../../packages/workflows/src/durable/run-result.js";
+import { finalizeDurableTerminalStatus } from "../../packages/workflows/src/engine/run-durable-finalize.js";
+import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { testRunId } from "../helpers/run-id.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
+
+async function registeredRunWithProgress(name: string) {
+	const backend = await createMemoryTestBackend();
+	const runId = testRunId(name);
+	await backend.commitWorkflowRegistration({
+		workflowId: runId,
+		name: "flow",
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+	});
+	await backend.commitCheckpoint({
+		kind: "tool",
+		workflowId: runId,
+		checkpointId: "effect",
+		name: "effect",
+		argsHash: "effect",
+		output: "done",
+		completedAt: 2,
+	});
+	return { backend, runId };
+}
+
+test("a resumed run that fails without outputs clears the earlier attempt's outputs (#3744)", async () => {
+	const { backend, runId } = await registeredRunWithProgress("run-result-cleared");
+	await recordRunResultCheckpointAsync(backend, { id: runId, result: { answer: "needs human" } });
+	const failedAttempt: RunSnapshot = {
+		id: runId,
+		name: "flow",
+		inputs: {},
+		status: "failed",
+		toolNodes: [],
+		stages: [],
+		startedAt: 3,
+		endedAt: 4,
+	};
+
+	await finalizeDurableTerminalStatus({ runId, runSnapshot: failedAttempt, isRoot: true, durableBackend: backend });
+
+	assert.equal(backend.getWorkflow(runId)?.status, "failed");
+	assert.equal(durableRunResult(backend, runId), undefined);
+});
 
 test("a resumed run that returns to earlier outputs records them as its latest result (#3744)", async () => {
 	const backend = await createMemoryTestBackend();

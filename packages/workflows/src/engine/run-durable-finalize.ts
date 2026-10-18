@@ -33,9 +33,7 @@ export async function finalizeDurableTerminalStatus(input: DurableTerminalFinali
 
 	const durableStatus = toDurableStatus(status);
 	if (durableStatus !== undefined) {
-		if (input.runSnapshot.result !== undefined) {
-			await recordRunResultCheckpointAsync(input.durableBackend, input.runSnapshot);
-		}
+		await recordRunResultCheckpointAsync(input.durableBackend, input.runSnapshot);
 		// Failed/blocked runs may be resumed cross-session by workflow id; persist
 		// the exact accumulated elapsed so the resumed dashboard total continues
 		// from the prior sessions instead of restarting at zero.
