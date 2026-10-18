@@ -3,6 +3,7 @@ import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
 import { initializeDurableBackend } from "../durable/factory.js";
 import { JournalDurableBackend } from "../durable/journal/journal-backend.js";
+import { isDurableWorkflowResumable } from "../durable/resume-eligibility.js";
 import { availableRunDurableBackend, bindRunDurableBackend } from "../durable/run-owner-backend.js";
 import { recordRunResultCheckpointAsync } from "../durable/run-result.js";
 import { inheritedRunElapsedMs, priorRunAccounting, recordRunTimingCheckpointAsync } from "../durable/run-timing.js";
@@ -100,6 +101,7 @@ import { createToolAdmissionBoundary } from "./run-tool-admission-boundary.js";
 import { toolControlRegistry as defaultToolControlRegistry } from "./run-tool-control-registry.js";
 import { createTrackedToolPrimitive, unconsumedToolFrontier } from "./run-tool-node-lifecycle.js";
 import { EngineRuntime } from "./runtime.js";
+import { isSessionClosedError } from "./session-closed-error.js";
 import { nextEventLoopTurn, runWorkflowDefinitionCallback } from "./workflow-activity.js";
 import {
 	findWorkflowGracefulQuit,
@@ -639,6 +641,33 @@ async function executeRun(
 			toolNodes: [...runSnapshot.toolNodes],
 		};
 	};
+	/**
+	 * Suspend a run whose owning host session is closing (#3742). Like a graceful
+	 * quit this is a resumable pause, never a failure: the owner is going away, so
+	 * the run waits to be released and adopted. A pause that quit or the session
+	 * shutdown already recorded durably is left untouched so its release survives.
+	 */
+	const suspendForClosedSession = async (reason: Error): Promise<RunResult> => {
+		abandonInFlightAsCancelled(reason);
+		const durable = durableBackend.getWorkflow(runId);
+		let resumable: boolean | undefined;
+		if (durable?.status === "running") {
+			resumable = isDurableWorkflowResumable({ ...durable, status: "paused", resumable: true });
+			await transitionDurableWorkflowStatus(durableBackend, runId, ["running"], "paused", undefined, resumable);
+			await recordRunTimingCheckpointAsync(durableBackend, runSnapshot);
+		}
+		activeStore.recordRunPaused(runId, undefined, {
+			exitReason: WORKFLOW_GRACEFUL_QUIT_EXIT_REASON,
+			...(resumable === undefined ? {} : { resumable }),
+		});
+		return {
+			runId,
+			status: "paused",
+			exitReason: WORKFLOW_GRACEFUL_QUIT_EXIT_REASON,
+			stages: [...runSnapshot.stages],
+			toolNodes: [...runSnapshot.toolNodes],
+		};
+	};
 	// Prompt-node mode re-materializes metadata before returning a durable ctx.ui cache hit.
 	const resolvePromptNodeTopology = createDurableStageTopologyResolver(durableBackend, runId);
 	const priorPromptStageCheckpoints = durableBackend
@@ -1090,7 +1119,13 @@ async function executeRun(
 			observedTaskTailQuit ??
 			findWorkflowGracefulQuit(err) ??
 			findWorkflowGracefulQuit(ownController.signal.reason);
-		if (gracefulQuit !== undefined) return suspendForGracefulQuit(gracefulQuit);
+		const ownerClosing = opts.adapters?.ownerSessionClosing?.() === true;
+		if (gracefulQuit !== undefined) {
+			// A nested run that suspended because the owner closed leaves no quit to publish this run's pause.
+			if (ownerClosing && gracefulQuit.runId !== runId) return await suspendForClosedSession(gracefulQuit);
+			return suspendForGracefulQuit(gracefulQuit);
+		}
+		if (ownerClosing && err instanceof Error && isSessionClosedError(err)) return await suspendForClosedSession(err);
 		await admittedTools.closeAndDrain();
 		// Racing the author body must not race past admitted child teardown and
 		// its boundary checkpoint publication on cancellation.

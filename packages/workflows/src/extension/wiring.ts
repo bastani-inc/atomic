@@ -150,6 +150,8 @@ export interface RuntimeAdapterBuildOptions {
 	 * the adapter keeps executing (#3201).
 	 */
 	resolveSurface?: () => RuntimeWiringSurface;
+	/** Reports that the host session owning the run is closing; see `StageAdapters.ownerSessionClosing`. */
+	ownerSessionClosing?: () => boolean;
 }
 
 type BindableStageSession = StageSessionRuntime & {
@@ -590,6 +592,7 @@ export function buildRuntimeAdapters(
 					));
 	const broker = options.stageUiBroker ?? currentStageUiBroker();
 	const adapters: StageAdapters = {
+		...(options.ownerSessionClosing === undefined ? {} : { ownerSessionClosing: options.ownerSessionClosing }),
 		agentSession: {
 			async create(
 				stageOptions: CreateAgentSessionOptions & Pick<StageOptions, "mcp" | "fallbackModels">,

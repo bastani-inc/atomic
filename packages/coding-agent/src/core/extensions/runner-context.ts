@@ -210,6 +210,7 @@ export function retireExtensionContextEffects(owner: object): void {
 export function createExtensionContext(source: ExtensionContextSource, owner: object = source): ExtensionContext {
 	const context: ExtensionContext = {
 		sessionSignal: source.getSessionSignal(),
+		getCurrentSessionSignal: () => source.getSessionSignal(),
 		getChildSessionOptions: (options) => {
 			source.assertActive();
 			source.assertAction?.();
