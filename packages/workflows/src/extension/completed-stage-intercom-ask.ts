@@ -145,16 +145,33 @@ async function reopenCompletedStage(
 	return handle;
 }
 
-/** Final text of the assistant turn that follows `afterIndex`, or undefined when that turn said nothing. */
-function assistantTextAfter(messages: StageControlHandle["messages"], afterIndex: number): string | undefined {
-	for (let index = messages.length - 1; index >= afterIndex; index -= 1) {
-		const message = messages[index];
-		if (message === undefined || message.role !== "assistant") continue;
-		let text = "";
-		for (const block of message.content) if (block.type === "text") text += block.text;
-		if (text.trim().length > 0) return text.trim();
+function assistantMessageText(message: StageControlHandle["messages"][number]): string | undefined {
+	if (message.role !== "assistant") return undefined;
+	let text = "";
+	for (const block of message.content) if (block.type === "text") text += block.text;
+	return text.trim().length > 0 ? text.trim() : undefined;
+}
+
+/**
+ * Runs one turn and returns its final assistant text, or undefined when the turn said nothing. The reply is taken
+ * from the turn's `message_end` events rather than from positions in `messages`, because the SDK may compact the
+ * conversation during the turn and move the reply below the length recorded before it.
+ */
+export async function collectTurnReply(
+	handle: Pick<StageControlHandle, "subscribe" | "prompt">,
+	content: string,
+): Promise<string | undefined> {
+	let reply: string | undefined;
+	const unsubscribe = handle.subscribe((event) => {
+		if (event.type !== "message_end") return;
+		reply = assistantMessageText(event.message) ?? reply;
+	});
+	try {
+		await handle.prompt(content);
+	} finally {
+		unsubscribe();
 	}
-	return undefined;
+	return reply;
 }
 
 /**
@@ -178,13 +195,9 @@ export function createCompletedStageAnswerer(
 					`Completed workflow stage ${runId}/${stageId} is busy with another turn; ask again when it is idle.`,
 				);
 			}
-			const before = handle.messages.length;
-			await handle.prompt(content);
+			const reply = await collectTurnReply(handle, content);
 			assertActive();
-			return (
-				assistantTextAfter(handle.messages, before) ??
-				`Completed workflow stage ${runId}/${stageId} reopened but produced no text answer.`
-			);
+			return reply ?? `Completed workflow stage ${runId}/${stageId} reopened but produced no text answer.`;
 		});
 }
 

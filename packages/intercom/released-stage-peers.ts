@@ -134,11 +134,12 @@ export class ReleasedStagePeers {
 
 	private connect(peer: ReleasedStagePeer): Promise<void> {
 		if (peer.connecting !== null) return peer.connecting;
-		const attempt = this.connectOnce(peer).then(
+		const attempt: Promise<void> = this.connectOnce(peer).then(
 			() => {
 				peer.reconnectAttempt = 0;
 			},
 			(error) => {
+				if (peer.connecting === attempt) peer.connecting = null;
 				this.scheduleReconnect(peer);
 				throw toError(error);
 			},

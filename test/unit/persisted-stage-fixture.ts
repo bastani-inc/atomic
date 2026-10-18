@@ -96,9 +96,14 @@ export function createPersistedStageFixture(options: PersistedStageFixtureOption
 					async prompt(text: string) {
 						prompts.push(text);
 						await options.onPrompt?.(text, record);
-						await manager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
+						const user: AgentSession["messages"][number] = { role: "user", content: text, timestamp: Date.now() };
+						await manager.appendMessage(user);
+						for (const listener of [...listeners]) listener({ type: "message_end", message: user });
 						const reply = options.reply?.(text);
-						if (reply !== undefined) await manager.appendMessage(assistantMessage(reply));
+						if (reply === undefined) return;
+						const answer = assistantMessage(reply);
+						await manager.appendMessage(answer);
+						for (const listener of [...listeners]) listener({ type: "message_end", message: answer });
 					},
 					async steer(text: string) {
 						await options.onSteer?.(text, record);
