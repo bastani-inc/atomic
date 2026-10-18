@@ -208,12 +208,13 @@ test("ChatSessionHost still runs shell input while a failed post-compaction batc
 	}
 });
 
-test("ChatSessionHost resumes a paused session instead of holding the next submission (#3664)", async () => {
+test("ChatSessionHost resumes a paused session with the oldest held message, keeping later ones in order (#3664)", async () => {
 	const { host, resumed, pause } = await hostAfterFailedBatch();
 	try {
 		pause();
 		await host.submit("auto", "next");
-		assert.deepEqual(resumed, ["next"]);
+		assert.deepEqual(resumed, ["A"]);
+		assert.deepEqual(restoredOrder(host), ["B", "C", "D", "next"]);
 	} finally {
 		host.dispose();
 	}

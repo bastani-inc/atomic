@@ -168,12 +168,20 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 		if (!state.compactionFlushPending) await flushChatSessionCompactionQueue(state);
 		return;
 	}
+	// Resuming a pause sends one message. Send the oldest held one; the rest, then this
+	// submission, follow in order when that turn ends.
+	const resumeHeld = heldBehindCompactionQueue && !state.compactionFlushPending;
+	if (resumeHeld) state.compactionQueuedMessages = [...state.compactionQueuedMessages, { text, mode }];
+	const submission = resumeHeld ? takeNextCompactionMessage(state) : undefined;
+	const submitText = submission?.text ?? text;
+	const submitMode = submission?.mode ?? mode;
 	const isStreaming = isChatSessionStreaming(state);
 	// The session publishes the expanded skill block; a raw optimistic signature cannot reconcile with it.
-	const shouldAppendOptimisticUser = mode === "auto" && !isStreaming && classifyChatCommand(text) !== "skill";
-	const optimisticSignature = shouldAppendOptimisticUser ? userMessageSignature(text) : undefined;
+	const shouldAppendOptimisticUser =
+		submitMode === "auto" && !isStreaming && classifyChatCommand(submitText) !== "skill";
+	const optimisticSignature = shouldAppendOptimisticUser ? userMessageSignature(submitText) : undefined;
 	if (optimisticSignature !== undefined) {
-		state.liveChat.appendUserText(text);
+		state.liveChat.appendUserText(submitText);
 		state.bodyViewport.scrollToBottom();
 		incrementOptimisticUserSignature(state, optimisticSignature);
 	}
@@ -185,7 +193,7 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 			state.statusMessage = "resuming…";
 			syncChatSessionAnimationTick(state);
 			state.requestRender?.();
-			await requiredChatSessionCommand(state, "resume")(text, mode);
+			await requiredChatSessionCommand(state, "resume")(submitText, submitMode);
 			state.sdkBusy = false;
 			if (state.statusMessage === "resuming…") state.statusMessage = "";
 			syncChatSessionAnimationTick(state);
@@ -198,18 +206,18 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 			state.requestRender?.();
 			await agentSession.resumeQueuedMessages();
 			await state.commands.ensureAttached?.();
-			await requiredChatSessionPromptCommand(state)(text, mode);
+			await requiredChatSessionPromptCommand(state)(submitText, submitMode);
 			state.sdkBusy = false;
 			if (state.statusMessage === "resuming…") state.statusMessage = "";
 			syncChatSessionAnimationTick(state);
 			return;
 		}
-		if (mode === "followUp" && isStreaming) {
-			await queueChatSessionFollowUp(state, text);
+		if (submitMode === "followUp" && isStreaming) {
+			await queueChatSessionFollowUp(state, submitText);
 			return;
 		}
 		if (isStreaming) {
-			await queueChatSessionSteer(state, text);
+			await queueChatSessionSteer(state, submitText);
 		} else {
 			state.statusMessage = "";
 			state.sdkBusy = true;
@@ -218,7 +226,7 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 			syncChatSessionAnimationTick(state);
 			state.requestRender?.();
 			await state.commands.ensureAttached?.();
-			await requiredChatSessionPromptCommand(state)(text, mode);
+			await requiredChatSessionPromptCommand(state)(submitText, submitMode);
 			settleSubmittedPromptLifecycle(state, submittedPromptLifecycleGeneration);
 			syncChatSessionAnimationTick(state);
 			state.requestRender?.();

@@ -439,6 +439,12 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				return;
 			}
 
+			// A paused submission releases the session queue before its own turn, so move held
+			// messages there first to keep them ahead of this one.
+			if (this.session.queuedMessagesPaused && this.compactionSendFailed && !this.compactionFlushPending) {
+				await this.flushCompactionQueue({ willRetry: false });
+			}
+
 			// If streaming, use prompt() with steer behavior
 			// This handles extension commands (execute immediately), prompt template expansion, and queueing
 			if (this.session.isStreaming && !this.session.queuedMessagesPaused) {

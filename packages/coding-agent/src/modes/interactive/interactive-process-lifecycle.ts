@@ -273,6 +273,12 @@ InteractiveModeBase.prototype.handleFollowUp = async function (this: Interactive
 		return;
 	}
 
+	// A paused submission releases the session queue before its own turn, so move held
+	// messages there first to keep them ahead of this one.
+	if (this.session.queuedMessagesPaused && this.compactionSendFailed && !this.compactionFlushPending) {
+		await this.flushCompactionQueue({ willRetry: false });
+	}
+
 	// Alt+Enter queues a follow-up message (waits until agent finishes)
 	// This handles extension commands (execute immediately), prompt template expansion, and queueing
 	if (this.session.isStreaming) {

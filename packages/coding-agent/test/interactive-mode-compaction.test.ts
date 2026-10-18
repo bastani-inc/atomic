@@ -847,6 +847,27 @@ describe("InteractiveMode compaction events", () => {
 		}
 	});
 
+	it("moves a failed batch into a paused session queue in typed order before the next submission (#3664)", async () => {
+		const { harness, mode, prompt, firstPrompt, flush } = await failingFlushHarness(steerBatch("A", "B", "C"));
+		try {
+			const flushing = flush();
+			await Promise.resolve();
+			firstPrompt.reject(new Error("send failed"));
+			await flushing;
+			prompt.mockRestore();
+			harness.session.pauseQueuedMessages();
+
+			await flush();
+
+			assert.deepEqual(harness.session.getSteeringMessages(), ["A", "B", "C"]);
+			assert.deepEqual(mode.compactionQueuedMessages, []);
+			assert.equal(mode.compactionSendFailed, false);
+		} finally {
+			prompt.mockRestore();
+			harness.cleanup();
+		}
+	});
+
 	it("keeps the original whimsical verb throughout tool execution", async () => {
 		const random = vi.spyOn(Math, "random").mockReturnValue(0);
 		try {
