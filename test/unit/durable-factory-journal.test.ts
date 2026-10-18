@@ -188,7 +188,12 @@ test("a failed open after its holder released does not drop a newer session's ba
 	process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = join(directory, "journal.sqlite");
 	const open = JournalDurableBackend.open.bind(JournalDurableBackend);
 	const firstOpen = Promise.withResolvers<JournalDurableBackend>();
-	const spy = vi.spyOn(JournalDurableBackend, "open").mockImplementationOnce(() => firstOpen.promise);
+	const spy = vi.spyOn(JournalDurableBackend, "open").mockImplementationOnce((journal) =>
+		firstOpen.promise.catch(async (error: Error) => {
+			await journal.close();
+			throw error;
+		}),
+	);
 	spy.mockImplementation(open);
 	const released = {};
 	const current = {};
