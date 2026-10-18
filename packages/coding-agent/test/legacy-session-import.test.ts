@@ -657,6 +657,41 @@ describe("legacy JSONL sessions in the default store", () => {
 		assert.deepEqual(convertedIds(), [id]);
 	});
 
+	it("finds the newest message of a conflict copy whose final message overflows the tail window", async () => {
+		const id = "0191f0a1-0000-7000-8000-0000000000c2";
+		const createdAt = "2026-10-01T09:00:00.000Z";
+		const at = (minutes: number) => new Date(Date.parse(createdAt) + minutes * 60_000).toISOString();
+		const largeAnswer = "y".repeat(41_201);
+		const copy = (texts: readonly string[]) =>
+			encode([
+				{ type: "session", version: 3, id, timestamp: createdAt, cwd },
+				...texts.map((text, index) => ({
+					type: "message",
+					id: `m${index}`,
+					parentId: index === 0 ? null : `m${index - 1}`,
+					timestamp: at(index),
+					message: { role: "user", content: text, timestamp: Date.parse(at(index)) },
+				})),
+			]);
+		mkdirSync(legacyDirectory, { recursive: true });
+		const base = join(legacyDirectory, `2026-10-01T09-00-00-000Z_${id}`);
+		writeFileSync(`${base}.jsonl`, copy(["start", largeAnswer, "latest answer"]));
+		writeFileSync(`${base}.conflict1.jsonl`, copy(["start", largeAnswer]));
+		const syncedAt = new Date("2026-12-01T00:00:00Z");
+		utimesSync(`${base}.conflict1.jsonl`, syncedAt, syncedAt);
+
+		await withDefaultStore(async (store) => {
+			const listed = (await SessionManager.list(cwd, store)).find((session) => session.id === id);
+			assert.equal(listed?.modified.toISOString(), at(2));
+			const texts = (await SessionManager.open(store, id))
+				.getEntries()
+				.flatMap((entry) =>
+					entry.type === "message" && entry.message.role === "user" ? [entry.message.content] : [],
+				);
+			assert.deepEqual(texts, ["start", largeAnswer, "latest answer"]);
+		});
+	});
+
 	describe("sessions too large to read in full for a listing", () => {
 		const lastAt = "2026-10-20T09:00:00.000Z";
 

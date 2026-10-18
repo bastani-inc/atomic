@@ -271,31 +271,34 @@ export class LegacySessionStore implements SessionStore {
 }
 
 /**
- * Orders copies of one session by their latest message, newest first. Each copy is ranked from its
- * last window only, one copy at a time, so a large set of conflict copies is never parsed whole or
- * held in memory together. A copy whose last window holds no complete message ranks by its file
- * modification time; file modification time also breaks ties, then directory order. A damaged copy
- * sorts last.
+ * Orders copies of one session by their latest message, newest first. Each copy is dated from its
+ * end backwards, one copy at a time, so a large set of conflict copies is never parsed whole or held
+ * in memory together. File modification time never stands in for a message time, because a sync
+ * tool can rewrite it; it only breaks ties, then directory order. A copy without messages sorts
+ * after every copy with one, and a damaged or unreadable copy sorts last.
  */
 async function newestCopiesFirst(copies: readonly JsonlSessionFile[]): Promise<JsonlSessionFile[]> {
-	const ranked: { file: JsonlSessionFile; order: number; latest: number; modified: number }[] = [];
+	const ranked: { file: JsonlSessionFile; order: number; damaged: number; latest: number; modified: number }[] = [];
 	for (const [order, file] of copies.entries()) {
 		const stats = await stat(file.location).catch(() => undefined);
-		const latest =
-			stats === undefined
-				? undefined
-				: await latestLegacyMessageTime(file.location, stats.size).then(
-						(time) => time ?? stats.mtimeMs,
-						() => undefined,
-					);
+		let damaged = stats === undefined;
+		let latest: number | undefined;
+		if (stats !== undefined) {
+			try {
+				latest = await latestLegacyMessageTime(file.location, stats.size);
+			} catch {
+				damaged = true;
+			}
+		}
 		ranked.push({
 			file,
 			order,
+			damaged: damaged ? 1 : 0,
 			latest: latest ?? Number.NEGATIVE_INFINITY,
 			modified: stats?.mtimeMs ?? Number.NEGATIVE_INFINITY,
 		});
 	}
 	return ranked
-		.sort((a, b) => b.latest - a.latest || b.modified - a.modified || a.order - b.order)
+		.sort((a, b) => a.damaged - b.damaged || b.latest - a.latest || b.modified - a.modified || a.order - b.order)
 		.map(({ file }) => file);
 }

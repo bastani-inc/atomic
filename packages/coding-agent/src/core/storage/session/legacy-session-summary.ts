@@ -61,8 +61,14 @@ async function scanHead(handle: FileHandle, scan: Scan): Promise<{ end: number; 
  * Returns false when the window skips part of the file and holds no complete message, so the
  * latest message time is unknown and the caller must read the session whole.
  */
-async function scanTail(handle: FileHandle, size: number, headEnd: number, scan: Scan): Promise<boolean> {
-	const start = Math.max(size - SUMMARY_WINDOW_BYTES, headEnd);
+async function scanTail(
+	handle: FileHandle,
+	size: number,
+	headEnd: number,
+	scan: Scan,
+	windowBytes = SUMMARY_WINDOW_BYTES,
+): Promise<boolean> {
+	const start = Math.max(size - windowBytes, headEnd);
 	if (start >= size) return true;
 	const skipsMiddle = start > headEnd;
 	const bytes = Buffer.alloc(size - start + 1);
@@ -123,18 +129,23 @@ async function headerLineEnd(handle: FileHandle): Promise<number | undefined> {
 }
 
 /**
- * The time of the latest message in a legacy session, read from its last window only, so ranking
- * copies never parses a whole history. Undefined when that window holds no complete message. A
- * line in the window that cannot be parsed rejects, as it would for a listing.
+ * The time of the latest message in a legacy session, read backwards from its end without parsing
+ * the rest. The window starts at the listing's tail window and doubles until it holds a complete
+ * message or reaches the header, so a final message larger than the window is still dated by its
+ * own timestamp. Undefined only when the session holds no message. A line in the window that cannot
+ * be parsed rejects, as it would for a listing.
  */
 export async function latestLegacyMessageTime(location: string, size: number): Promise<number | undefined> {
 	const handle = await open(location, "r");
 	try {
 		const headerEnd = await headerLineEnd(handle);
 		if (headerEnd === undefined) return undefined;
-		const scan: Scan = { state: applySessionSummaryEntries(undefined, []).state, texts: [] };
-		if (!(await scanTail(handle, size, headerEnd, scan))) return undefined;
-		return scan.state.latestMessageTime ?? undefined;
+		for (let windowBytes = SUMMARY_WINDOW_BYTES; ; windowBytes *= 2) {
+			const scan: Scan = { state: applySessionSummaryEntries(undefined, []).state, texts: [] };
+			const found = await scanTail(handle, size, headerEnd, scan, windowBytes);
+			if (found && scan.state.latestMessageTime !== null) return scan.state.latestMessageTime;
+			if (size - windowBytes <= headerEnd) return undefined;
+		}
 	} finally {
 		await handle.close();
 	}
