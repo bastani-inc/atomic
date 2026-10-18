@@ -459,6 +459,7 @@ for (const stage of stages.filter((session) => session.internal)) {
 - `setSessionFile(path)` - Switch to a JSONL file directly. For ID-based loading, use `SessionManager.open(store, sessionId)` to obtain a new manager.
 - `createBranchedSession(leafId)` - Extract a branch into a new session in the same store
 - `forkTo(cwd, targetStoreOrDir?, options?)` - Copy the conversation into a new session at the destination
+- `deleteSession(sessionId)` - Delete another session and its entries from the active store. Rejects for the session this manager has open; deleting an ID that is not in the store does nothing. `SessionStore.delete(sessionId)` is the unguarded store-level operation behind it.
 
 ### Instance Methods - Appending (all return a promise of the entry ID)
 - `appendMessage(message)` - Add message
