@@ -303,8 +303,14 @@ describe("StreamableHttpTransport", () => {
 			delivered++;
 		});
 		const exhausted = new Promise<Error>((resolve) => client.onError(resolve));
+		// The server's `retry: 0` sets every delay; maxDelayMs only sets how long a stream must stay
+		// open to count as healthy, so keep it far above any scheduling pause on a loaded runner.
+		const healthyStreamMs = 60_000;
 		await client.connect(
-			new StreamableHttpTransport({ url, reconnect: { maxRetries: 3, initialDelayMs: 1, maxDelayMs: 8 } }),
+			new StreamableHttpTransport({
+				url,
+				reconnect: { maxRetries: 3, initialDelayMs: 1, maxDelayMs: healthyStreamMs },
+			}),
 		);
 		assert.match((await exhausted).message, /could not be reopened/);
 		assert.equal(gets, 4);
