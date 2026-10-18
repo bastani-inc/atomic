@@ -130,6 +130,11 @@ export interface CompleteAdapter {
 
 export interface StageAdapters {
 	sessionStore?: import("@bastani/atomic").SessionStore;
+	/**
+	 * True once the host session that owns the run is closing. A closed-session
+	 * error raised then is a resumable suspension, not a failure of the run (#3742).
+	 */
+	ownerSessionClosing?: () => boolean;
 	agentSession?: AgentSessionAdapter;
 	prompt?: PromptAdapter;
 	complete?: CompleteAdapter;

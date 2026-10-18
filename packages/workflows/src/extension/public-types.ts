@@ -89,6 +89,10 @@ export interface PiRuntimeModelRegistry
 }
 
 export interface PiModelContext {
+	/** Aborts as soon as the host session begins closing or replacing this extension generation; never revives. */
+	readonly sessionSignal?: AbortSignal;
+	/** The owning session's lifetime signal as it is now, which a rolled-back reload replaces. */
+	getCurrentSessionSignal?(): AbortSignal;
 	generateWorkflowSummary?(text: string, signal: AbortSignal): Promise<string | undefined>;
 	isSessionSummaryEnabled?(): boolean;
 	isProjectTrusted?(): boolean;

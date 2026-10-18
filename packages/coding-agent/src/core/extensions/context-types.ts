@@ -237,6 +237,11 @@ export interface ExtensionContext {
 	signal: AbortSignal | undefined;
 	/** Ends on reload or shutdown, before admitted work is drained. Independent of agent streaming. */
 	readonly sessionSignal: AbortSignal;
+	/**
+	 * @internal The owning session's lifetime signal as it is now. `sessionSignal` is fixed when this context is
+	 * created, so it stays aborted for good once a reload that the host rolls back has begun.
+	 */
+	getCurrentSessionSignal?(): AbortSignal;
 	/** Abort the current agent operation */
 	abort(): void;
 	/** Whether there are queued messages waiting */

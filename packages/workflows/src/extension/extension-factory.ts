@@ -122,9 +122,19 @@ function factory(pi: ExtensionAPI): void {
 	}
 
 	const liveGeneration = trackLiveHostGeneration(pi);
+	let hostSessionContext: PiEventContext | undefined;
+	pi.on?.("session_start", (_event, ctx) => {
+		hostSessionContext = ctx;
+	});
+	// Disposal and session switches abort the host session's lifetime right after sealing this extension, before any
+	// shutdown handler runs, so it is set before a run can observe a closed-session error. The lifetime is read when
+	// asked: a reload the host rolls back leaves this generation's session_start signal aborted but the session alive.
+	const ownerSessionClosing = (): boolean =>
+		(hostSessionContext?.getCurrentSessionSignal?.() ?? hostSessionContext?.sessionSignal)?.aborted === true;
 	const adapters = buildRuntimeAdapters(pi, {
 		resolveSurface: () => liveGeneration()?.pi ?? pi,
 		stageUiBroker: runState.stageUiBroker,
+		ownerSessionClosing,
 	});
 	const runtimeState = createWorkflowExtensionRuntimeState(pi, adapters, {
 		resolveLiveModelContext: () => liveGeneration()?.modelContext,

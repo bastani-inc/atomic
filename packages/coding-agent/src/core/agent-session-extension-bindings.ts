@@ -732,7 +732,7 @@ async function reloadAdmitted(this: AgentSession, options?: AgentSessionReloadOp
 		if (this.isStreaming || this._activePromptCount > 0) await this.abort();
 		await this.closeSessionTasks();
 		await drainSessionWork(this, true);
-		renewSessionWork(this);
+		if (!this._disposed) renewSessionWork(this);
 		replaceSessionTaskOwner(this);
 		if (this._disposed) throw hostInputError("SessionClosed");
 		await reloadGeneration.call(this, options);
