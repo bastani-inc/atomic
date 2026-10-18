@@ -11,6 +11,7 @@ import { canIsolateSessionStore } from "../../core/session-storage.js";
 import { RpcClient } from "../rpc/rpc-client.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import { buildInteractiveEngineArgs, type InteractiveEngineResourcePaths } from "./engine-args.ts";
+import { engineHeapRuntimeArgsForHost } from "./engine-heap.ts";
 import { IsolatedInteractiveRuntime } from "./isolated-runtime.js";
 
 export async function createIsolatedInteractiveRuntime(options: {
@@ -33,6 +34,7 @@ export async function createIsolatedInteractiveRuntime(options: {
 		cliPath,
 		cwd: options.sessionManager.getCwd(),
 		runtimeExecutable: process.execPath,
+		runtimeArgs: engineHeapRuntimeArgsForHost(["node", "node.exe"].includes(executableName)),
 		args: buildInteractiveEngineArgs(options.parsed, options.sessionManager, options.resources),
 		env: {
 			...(explicitAgentDir !== undefined ? { [ENV_AGENT_DIR]: explicitAgentDir } : {}),

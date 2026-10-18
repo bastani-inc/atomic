@@ -307,6 +307,7 @@ export const ENV_CLEAR_ON_SHRINK = `${ENV_PREFIX}_CLEAR_ON_SHRINK`;
 export const ENV_HARDWARE_CURSOR = `${ENV_PREFIX}_HARDWARE_CURSOR`;
 export const ENV_CLIPBOARD_OSC52 = `${ENV_PREFIX}_CLIPBOARD_OSC52`;
 export const ENV_TIMING = `${ENV_PREFIX}_TIMING`;
+export const ENV_HEAP_MB = `${ENV_PREFIX}_HEAP_MB`;
 export const WORKFLOW_STAGE_SUBAGENT_GUARD_ENV = `${ENV_PREFIX}_WORKFLOW_STAGE_SUBAGENT_GUARD`;
 export function getEnvNames(name: string): string[] {
 	if (ENV_PREFIX === LEGACY_ENV_PREFIX || !name.startsWith(`${ENV_PREFIX}_`)) return [name];
