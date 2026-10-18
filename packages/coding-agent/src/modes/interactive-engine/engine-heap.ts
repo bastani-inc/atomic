@@ -18,11 +18,13 @@ export interface EngineHeapInputs {
 }
 
 function lastHostHeapFlag(execArgv: readonly string[]): string[] | undefined {
-	const index = execArgv.findLastIndex((arg) => MAX_OLD_SPACE_FLAG.test(arg));
-	if (index === -1) return undefined;
-	const flag = execArgv[index]!;
-	const value = execArgv[index + 1];
-	return flag.includes("=") || value === undefined ? [flag] : [flag, value];
+	for (let index = execArgv.length - 1; index >= 0; index--) {
+		const flag = execArgv[index]!;
+		if (!MAX_OLD_SPACE_FLAG.test(flag)) continue;
+		const value = execArgv[index + 1];
+		return flag.includes("=") || value === undefined ? [flag] : [flag, value];
+	}
+	return undefined;
 }
 
 /** Splits `NODE_OPTIONS` the way Node does: whitespace separates options, double quotes group, `\` escapes. */
