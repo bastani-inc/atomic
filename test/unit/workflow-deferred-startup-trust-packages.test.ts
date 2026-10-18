@@ -189,3 +189,71 @@ test("keeps previously discovered workflows when the post-trust refresh fails (#
 		await handlers.get("session_shutdown")?.({ reason: "quit" });
 	}
 });
+
+test("shows unchanged discovery diagnostics once across the deferred startup refresh (#3703)", async () => {
+	const { project } = await projectWithWorkflowPackage();
+	const brokenWorkflow = async (name: string, specifier: string): Promise<string> => {
+		const path = join(project, "..", "pkg", "workflows", `${name}.ts`);
+		await writeFile(path, `import { workflow } from "${specifier}";\nexport default workflow;\n`);
+		return path;
+	};
+	const legacy = await brokenWorkflow("legacy", "@bastani/workflows-legacy-3703");
+	const workflowPaths = [legacy];
+	const handlers = new Map<string, LifecycleHandler>();
+	let refreshCalls = 0;
+	let tool: PiToolOpts<WorkflowToolArgs, WorkflowToolResult> | undefined;
+	workflowExtension({
+		registerTool: (options) => {
+			tool = options as unknown as PiToolOpts<WorkflowToolArgs, WorkflowToolResult>;
+		},
+		registerCommand: () => undefined,
+		registerMessageRenderer: () => undefined,
+		registerFlag: () => undefined,
+		registerShortcut: () => undefined,
+		sendMessage: () => undefined,
+		on: (event, handler) => {
+			handlers.set(event, handler);
+		},
+		refreshWorkflowResources: async () => {
+			refreshCalls += 1;
+			return workflowPaths.map((path) => ({ path, enabled: true }));
+		},
+	});
+	const warnings: string[] = [];
+	const ctx = {
+		hasUI: true,
+		ui: {
+			notify: (message: string) => {
+				if (message.includes("Workflow discovery diagnostics")) warnings.push(message);
+			},
+		},
+	};
+	const refreshed = async (): Promise<void> => {
+		const before = refreshCalls;
+		await handlers.get("resources_discover")?.({ reason: "startup" }, ctx as never);
+		await vi.waitFor(() => assert.ok(refreshCalls > before));
+		await tool!.execute("list-workflows", { action: "list" }, undefined, undefined, {
+			hasUI: false,
+			sessionId: "discovery-diagnostics-dedupe",
+		} as PiExecuteContext);
+		await new Promise((resolve) => setImmediate(resolve));
+	};
+	const cwd = process.cwd();
+	process.chdir(project);
+	try {
+		await handlers.get("session_start")?.({ reason: "startup" }, ctx as never);
+		await handlers.get("resources_discover")?.({ reason: "startup" }, ctx as never);
+		await vi.waitFor(() => assert.equal(warnings.length, 1));
+
+		await refreshed();
+		assert.equal(warnings.length, 1, "an unchanged report is not shown again");
+
+		workflowPaths.push(await brokenWorkflow("other", "@bastani/other-missing-3703"));
+		await refreshed();
+		await vi.waitFor(() => assert.equal(warnings.length, 2));
+		assert.match(warnings[1]!, /other-missing-3703/);
+	} finally {
+		process.chdir(cwd);
+		await handlers.get("session_shutdown")?.({ reason: "quit" });
+	}
+});
