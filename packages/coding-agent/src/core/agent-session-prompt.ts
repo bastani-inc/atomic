@@ -141,7 +141,7 @@ function reserveAdmissionForQueuedPrompt(
 	const lane = options?.streamingBehavior;
 	if (lane === undefined || options?.source === "extension") return UNORDERED_ADMISSION;
 	if ((options?.expandPromptTemplates ?? true) && isExtensionCommand(session, text)) return UNORDERED_ADMISSION;
-	return reserveQueuedInputAdmission(session, lane);
+	return reserveQueuedInputAdmission(session, lane, sessionLifetime(session));
 }
 
 async function promptInternal(this: AgentSession, text: string, options?: PromptOptions): Promise<void> {
@@ -183,6 +183,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			const delivery = options?.streamingBehavior === "followUp" ? "followUp" : "steer";
 			const earlierAdmissions = admission.waitForTurn();
 			if (earlierAdmissions) await earlierAdmissions;
+			assertCurrent();
 			if (delivery === "followUp") await this._queueFollowUp(text, options?.images);
 			else await this._queueSteer(text, options?.images);
 			workflowDelivery?.delivered?.(delivery);
@@ -795,7 +796,8 @@ async function admittedQueueUserInput(
 ): Promise<QueuedInputDisposition> {
 	const lifetime = sessionLifetime(session);
 	if (text.startsWith("/")) session._throwIfExtensionCommand(text);
-	const admission = source === "extension" ? UNORDERED_ADMISSION : reserveQueuedInputAdmission(session, behavior);
+	const admission =
+		source === "extension" ? UNORDERED_ADMISSION : reserveQueuedInputAdmission(session, behavior, lifetime);
 	try {
 		if (session._extensionRunner?.hasHandlers("input")) {
 			const result = await runInputHook(() =>
@@ -813,6 +815,7 @@ async function admittedQueueUserInput(
 		const earlierAdmissions = admission.waitForTurn();
 		if (earlierAdmissions) await earlierAdmissions;
 		assertSessionOpen(session);
+		if (lifetime.aborted) throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
 		if (behavior === "steer") await session._queueSteer(expandedText, images);
 		else await session._queueFollowUp(expandedText, images);
 		return "queued";

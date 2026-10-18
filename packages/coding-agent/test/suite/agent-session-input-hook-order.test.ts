@@ -138,3 +138,57 @@ it("does not hold input that an input hook submits and awaits behind the hook's 
 	toolRelease.resolve();
 	await run;
 });
+
+it("lets a reload awaited by an input hook finish while later input waits behind that hook (#3590)", async () => {
+	const toolRelease = Promise.withResolvers<void>();
+	const laterInputWaiting = Promise.withResolvers<void>();
+	const waitTool: AgentTool = {
+		name: "wait",
+		label: "Wait",
+		description: "Wait for release",
+		parameters: Type.Object({}),
+		execute: async () => {
+			await toolRelease.promise;
+			return { content: [{ type: "text", text: "released" }], details: {} };
+		},
+	};
+	let session: Harness["session"] | undefined;
+	const reloaded = Promise.withResolvers<void>();
+	const harness = await createHarness({
+		tools: [waitTool],
+		extensionFactories: [
+			(pi) => {
+				pi.on("input", async (event) => {
+					if (event.text !== "A") return;
+					await laterInputWaiting.promise;
+					await session?.reload();
+					reloaded.resolve();
+				});
+			},
+		],
+	});
+	harnesses.push(harness);
+	session = harness.session;
+	harness.setResponses([
+		fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+		fauxAssistantMessage("done"),
+	]);
+	const toolStarted = Promise.withResolvers<void>();
+	const unsubscribe = harness.session.subscribe((event) => {
+		if (event.type === "tool_execution_start") {
+			unsubscribe();
+			toolStarted.resolve();
+		}
+	});
+	const run = harness.session.prompt("start").catch(() => undefined);
+	await toolStarted.promise;
+
+	const first = harness.session.prompt("A", { streamingBehavior: "steer" }).catch(() => undefined);
+	const second = harness.session.prompt("B", { streamingBehavior: "steer" }).catch(() => undefined);
+	await new Promise((resolve) => setImmediate(resolve));
+	laterInputWaiting.resolve();
+	toolRelease.resolve();
+
+	await reloaded.promise;
+	await Promise.all([first, second, run]);
+});
