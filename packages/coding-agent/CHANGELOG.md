@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed MCP Streamable HTTP servers that keep closing their GET event stream without sending event IDs causing endless reconnects. Only a new event ID or a stream that stays open resets the reconnect budget, so `reconnect.maxRetries` now bounds these reconnects ([#3729](https://github.com/bastani-inc/atomic/issues/3729)).
+
 ## [0.9.38-alpha.10] - 2026-10-17
 
 ### Fixed
