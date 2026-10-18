@@ -208,15 +208,15 @@ test("ChatSessionHost preserves compaction queued messages when flush fails", as
 	);
 	host.dispose();
 });
-test("ChatSessionHost restores only failed held messages without waiting for the active prompt", async () => {
+test("ChatSessionHost keeps held messages behind the first one that fails, without waiting for the active prompt (#3664)", async () => {
 	const prompt = Promise.withResolvers<void>();
-	const firstFailure = Promise.withResolvers<void>();
+	const followUps: string[] = [];
 	const host = makeHost({
 		commands: {
 			prompt: () => prompt.promise,
 			followUp: async (text) => {
-				if (text === "first failure") await firstFailure.promise;
-				throw new Error(`failed: ${text}`);
+				followUps.push(text);
+				if (text === "first failure") throw new Error(`failed: ${text}`);
 			},
 			steer: async () => {},
 		},
@@ -228,16 +228,13 @@ test("ChatSessionHost restores only failed held messages without waiting for the
 		await host.submit("followUp", "second failure");
 		await host.submit("auto", "accepted steer");
 		host.applyAgentEvent({ type: "compaction_end", reason: "manual", aborted: false, willRetry: false } as never);
-		firstFailure.reject(new Error("first failure"));
-		await vi.waitFor(() => {
-			assert.match(host.renderPendingMessages(80).join("\n"), /first failure/);
-			assert.match(host.renderPendingMessages(80).join("\n"), /second failure/);
-		});
+		host.applyAgentEvent({ type: "agent_start" } as never);
+		await vi.waitFor(() => assert.match(host.statusText(), /failed: first failure/));
+		assert.deepEqual(followUps, ["first failure"], "nothing after the failure is sent ahead of it");
 		assert.equal(host.restoreQueuedMessagesToEditor(), true);
-		assert.equal(host.inputText(), "first failure\n\nsecond failure");
+		assert.equal(host.inputText(), "first failure\n\nsecond failure\n\naccepted steer");
 	} finally {
 		prompt.resolve();
-		firstFailure.resolve();
 		host.dispose();
 	}
 });

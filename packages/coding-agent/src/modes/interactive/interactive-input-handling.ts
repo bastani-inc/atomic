@@ -424,8 +424,11 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				}
 			}
 
-			// Queue input during compaction (extension commands execute immediately)
-			if (this.compactionActive) {
+			// Queue input behind compaction-queued messages (extension commands execute immediately)
+			if (
+				this.compactionActive ||
+				(!this.session.queuedMessagesPaused && (this.compactionFlushPending || this.compactionSendFailed))
+			) {
 				if (this.isExtensionCommand(text)) {
 					this.editor.addToHistory?.(text);
 					this.editor.setText("");
@@ -434,6 +437,12 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 					this.queueCompactionMessage(text, "steer");
 				}
 				return;
+			}
+
+			// A paused submission releases the session queue before its own turn, so move held
+			// messages there first to keep them ahead of this one.
+			if (this.session.queuedMessagesPaused && this.compactionSendFailed && !this.compactionFlushPending) {
+				await this.flushCompactionQueue({ willRetry: false });
 			}
 
 			// If streaming, use prompt() with steer behavior

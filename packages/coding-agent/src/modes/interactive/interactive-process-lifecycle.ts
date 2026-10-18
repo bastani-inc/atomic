@@ -258,8 +258,11 @@ InteractiveModeBase.prototype.handleFollowUp = async function (this: Interactive
 		}
 	};
 
-	// Queue input during compaction (extension commands execute immediately)
-	if (this.compactionActive) {
+	// Queue input behind compaction-queued messages (extension commands execute immediately)
+	if (
+		this.compactionActive ||
+		(!this.session.queuedMessagesPaused && (this.compactionFlushPending || this.compactionSendFailed))
+	) {
 		if (this.isExtensionCommand(text)) {
 			this.editor.addToHistory?.(text);
 			this.editor.setText("");
@@ -268,6 +271,12 @@ InteractiveModeBase.prototype.handleFollowUp = async function (this: Interactive
 			this.queueCompactionMessage(text, "followUp");
 		}
 		return;
+	}
+
+	// A paused submission releases the session queue before its own turn, so move held
+	// messages there first to keep them ahead of this one.
+	if (this.session.queuedMessagesPaused && this.compactionSendFailed && !this.compactionFlushPending) {
+		await this.flushCompactionQueue({ willRetry: false });
 	}
 
 	// Alt+Enter queues a follow-up message (waits until agent finishes)

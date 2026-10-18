@@ -6,6 +6,7 @@
 
 - Fixed MCP Streamable HTTP servers that keep closing their GET event stream without sending event IDs causing endless reconnects. Only a new event ID or a stream that stays open resets the reconnect budget, so `reconnect.maxRetries` now bounds these reconnects ([#3729](https://github.com/bastani-inc/atomic/issues/3729)).
 - Fixed queued steering and follow-up messages being reordered when an extension's async `input` hook takes longer for an earlier message than a later one. Each queue now keeps submission order. Extension commands, extension-sent messages, and messages sent from inside an `input` hook are still delivered immediately ([#3590](https://github.com/bastani-inc/atomic/issues/3590)).
+- Fixed messages queued during compaction coming back out of order when the first one fails to send. The failed message stays at the front of the queue, followed by the rest of its batch and then anything you typed afterwards, both for **ALT+Up** retrieval and when they are sent again. This also applies to workflow stage chats ([#3664](https://github.com/bastani-inc/atomic/issues/3664)).
 
 ## [0.9.38-alpha.10] - 2026-10-17
 
