@@ -114,6 +114,7 @@ describe("session selector path/delete interactions", () => {
 			sessionStore: { kind: "sqlite", path: join(directory, "sessions.sqlite") },
 		});
 		const manager = await SessionManager.create(store, directory);
+		await manager.appendMessage({ role: "user", content: "delete me", timestamp: Date.now() });
 		const selector = new SessionSelectorComponent(
 			() => SessionManager.list(directory, store),
 			() => SessionManager.listAll(store),

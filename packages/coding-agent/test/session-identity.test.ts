@@ -212,6 +212,7 @@ test.each(["shared-id", "active-id"])(
 		const { cwd } = fixture();
 		vi.stubEnv(ENV_AGENT_DIR, join(cwd, "agent"));
 		const active = await SessionManager.create(cwd, getDefaultSessionDirPath(cwd), { id: activeId });
+		await active.appendMessage({ role: "user", content: "active chat", timestamp: Date.now() });
 		const foreignCwd = join(cwd, "foreign");
 		const foreign = await SessionManager.create(foreignCwd, getDefaultSessionDirPath(foreignCwd), {
 			id: "shared-id",

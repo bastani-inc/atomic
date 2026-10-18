@@ -300,9 +300,9 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		};
 
 		try {
-			const sessions = await (scope === "current"
-				? this.currentSessionsLoader(onProgress)
-				: this.allSessionsLoader(onProgress));
+			const sessions = (
+				await (scope === "current" ? this.currentSessionsLoader(onProgress) : this.allSessionsLoader(onProgress))
+			).filter(isResumableSession);
 
 			if (scope === "current") {
 				this.currentSessions = sessions;
@@ -411,4 +411,8 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		this.allLoadSeq += 1;
 		this.header.setStatusMessage(null);
 	}
+}
+
+function isResumableSession(session: SessionInfo): boolean {
+	return session.messageCount > 0 || session.hasName === true || session.summary !== undefined;
 }
