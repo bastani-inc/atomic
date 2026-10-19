@@ -328,6 +328,39 @@ test("an expanded launch card shows the child's own saved transcript (#3760)", a
 	await store.close();
 });
 
+test("an expanded card of a running child shows messages it saves after the card first read its transcript (#3760 run control)", async () => {
+	initTheme("dark");
+	const store = new MemorySessionStore();
+	const manager = await SessionManager.create(store, process.cwd());
+	const childSession = await SessionManager.create(store, process.cwd());
+	await childSession.appendMessage({ role: "user", content: "Audit the lexer", timestamp: Date.now() });
+	const t = new TranscriptBuilder(manager, process.cwd());
+	await t.launch("hyrun", "task-hyrun");
+	await t.record({
+		childId: "hyrun:0",
+		runId: "hyrun",
+		state: "running",
+		taskId: "task-hyrun",
+		childSessionId: childSession.getSessionId(),
+	});
+
+	bindSubagentChildCards({ sessionManager: manager });
+	await eventually(() => rebuildCards(manager, true)[0]!, /Audit the lexer/);
+	await childSession.appendMessage({
+		role: "assistant",
+		content: [{ type: "text", text: "Lexer audit found two bugs" }],
+		api: "test-api",
+		provider: "test-provider",
+		model: "test-model",
+		usage,
+		stopReason: "stop",
+		timestamp: Date.now(),
+	});
+	const expanded = await eventually(() => rebuildCards(manager, true)[0]!, /Lexer audit found two bugs/);
+	assert.match(expanded, /│ › Audit the lexer │ Lexer audit found two bugs/);
+	await store.close();
+});
+
 test("a workflow stage transcript hydrates its launch cards from the stage session's records (#3760)", async () => {
 	initTheme("dark");
 	const store = new MemorySessionStore();

@@ -21,6 +21,8 @@ export function isSubagentChildRecord(value: SessionEntry): value is CustomEntry
 
 const TRANSCRIPT_LINES = 12;
 const TRANSCRIPT_LINE_CHARS = 200;
+/** How often an expanded card of a running child, which keeps saving messages, reads its transcript again. */
+const RUNNING_TRANSCRIPT_REFRESH_MS = 1_000;
 
 const latest = new Map<string, SubagentChildRecord>();
 const childIdsByTaskId = new Map<string, string>();
@@ -114,10 +116,19 @@ function transcriptLines(messages: readonly TranscriptMessage[]): string[] {
 	return lines.slice(-TRANSCRIPT_LINES);
 }
 
-/** The tail of a child's own saved transcript, loaded once per record state; undefined until it is read. */
+function sameLines(left: readonly string[] | undefined, right: readonly string[]): boolean {
+	return left?.length === right.length && left.every((line, index) => line === right[index]);
+}
+
+/**
+ * The tail of a child's own saved transcript, undefined until it is read. A settled child's is loaded once per record
+ * state; a running child keeps saving messages, so its card reads it again at most once per refresh interval.
+ */
 export function subagentChildTranscript(record: SubagentChildRecord): readonly string[] | undefined {
 	if (record.childSessionId === undefined && record.childSessionFile === undefined) return undefined;
-	const key = `${record.taskId}:${record.state}:${record.terminalStatus}`;
+	const running = record.state === "running";
+	const refresh = running ? `:${Math.floor(Date.now() / RUNNING_TRANSCRIPT_REFRESH_MS)}` : "";
+	const key = `${record.taskId}:${record.state}:${record.terminalStatus}${refresh}`;
 	const cached = transcripts.get(record.childId);
 	if (cached?.key === key) return cached.lines;
 	const from = source;
@@ -130,10 +141,14 @@ export function subagentChildTranscript(record: SubagentChildRecord): readonly s
 	void (async () => {
 		const reopened = await reopenChildSession(from, record);
 		if ("reason" in reopened) return;
-		entry.lines = transcriptLines(
+		const lines = transcriptLines(
 			reopened.sessionManager.buildSessionContext().messages as readonly TranscriptMessage[],
 		);
-		notify(record.childId);
+		const changed = !sameLines(entry.lines, lines);
+		entry.lines = lines;
+		if (changed) notify(record.childId);
+		// Redraw once the next refresh is due; that draw reads the transcript again while the child still runs.
+		if (running) setTimeout(() => notify(record.childId), RUNNING_TRANSCRIPT_REFRESH_MS).unref?.();
 	})().catch(() => undefined);
 	return entry.lines;
 }

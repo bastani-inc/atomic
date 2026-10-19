@@ -1,10 +1,11 @@
+import assert from "node:assert/strict";
 import { Container, Text } from "@earendil-works/pi-tui";
-import { expect, test } from "vitest";
-import type { SessionEntry } from "../src/core/session-manager.ts";
-import type { ChatMessageEntry } from "../src/modes/interactive/components/chat-message-renderer.ts";
-import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
-import { stripAnsi } from "../src/utils/ansi.ts";
+import { test } from "vitest";
+import type { SessionEntry } from "../src/core/session-manager.js";
+import type { ChatMessageEntry } from "../src/modes/interactive/components/chat-message-renderer.js";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
+import { stripAnsi } from "../src/utils/ansi.js";
 
 const usage = {
 	input: 0,
@@ -81,9 +82,9 @@ test("a rebuilt tool call keeps its result when unrendered records were saved be
 	]);
 
 	const tools = rendered.filter((chatEntry) => chatEntry.kind === "tool");
-	expect(tools).toHaveLength(1);
-	expect(tools[0]?.kind === "tool" && tools[0].isPartial).toBe(false);
-	expect(tools[0]?.kind === "tool" && tools[0].args).toEqual({ agent: "worker" });
-	expect(stripAnsi(chatContainer.render(80).join("\n"))).toContain("visible-note");
-	expect(mode.pendingTools.size).toBe(0);
+	assert.equal(tools.length, 1);
+	assert.equal(tools[0]?.kind === "tool" && tools[0].isPartial, false);
+	assert.deepEqual(tools[0]?.kind === "tool" && tools[0].args, { agent: "worker" });
+	assert.match(stripAnsi(chatContainer.render(80).join("\n")), /visible-note/);
+	assert.equal(mode.pendingTools.size, 0);
 });

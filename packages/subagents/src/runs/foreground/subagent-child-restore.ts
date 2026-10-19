@@ -29,6 +29,7 @@ import {
 } from "../../shared/types.js";
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.js";
+import { recoverRunWorktree, resumeRunWorktree } from "./detached-cleanup-barrier.js";
 import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHold } from "./subagent-child-hold.js";
 import {
 	createSubagentChildRecordSink,
@@ -44,7 +45,12 @@ import {
 import { readPreviousIntercomId, reopenChildSession } from "./subagent-child-session.js";
 import { resolveSubagentExecutorRuntimeDeps } from "./subagent-executor-runtime.js";
 import type { ExecutorDeps } from "./subagent-executor-types.js";
-import { type QueuedSubagentChildStart, runAgentTask, takeStoppedQueuedSubagentChild } from "./task-execution.js";
+import {
+	type QueuedSubagentChildStart,
+	runAgentTask,
+	subagentChildSchedule,
+	takeStoppedQueuedSubagentChild,
+} from "./task-execution.js";
 
 /** Prompt a restored child receives after its own interrupted session is reopened (#3760). */
 export const SUBAGENT_RESUME_CONTINUATION_PROMPT =
@@ -277,6 +283,8 @@ async function relaunchChild(
 	};
 	ctx.orchestrationContext?.messageAdmission?.boundary.registerOwnedSubagentRun(record.runId);
 	const recordChild = createSubagentChildRecordSink(deps.pi, ctx);
+	// It waits for a slot in its run, as its original launch did.
+	const schedule = subagentChildSchedule(record.runId, record.index);
 	const response = await runAgentTask({
 		host: ctx.getAgentTaskHost(),
 		cwd: ctx.cwd,
@@ -288,7 +296,9 @@ async function relaunchChild(
 		wait: { kind: "background" },
 		runtime: resolveSubagentExecutorRuntimeDeps(deps.runtime),
 		recordChild,
+		...(schedule ? { schedule } : {}),
 		onTerminal: () => {
+			recoverRunWorktree(record.runId, record.index);
 			release();
 			// Normally the child consumed the hold when it registered; one that never did must not keep it.
 			void hold?.release();
@@ -318,6 +328,7 @@ async function startQueuedChild(
 		...(resume?.message ? { message: resume.message } : {}),
 		...(supervisorAuthorization ? { supervisorAuthorization } : {}),
 		onTerminal: () => {
+			recoverRunWorktree(record.runId, record.index);
 			release();
 			void hold?.release();
 		},
@@ -407,6 +418,8 @@ export async function restoreSubagentChild(
 		// Every sender, not only this session, is told the child is gone, for as long as this session is connected.
 		await hold?.gone(reason);
 	};
+	// The child rejoins its run's worktree lifetime, so they are never removed under it while it is live again.
+	resumeRunWorktree(record.runId, record.index);
 	const restoration: Promise<SubagentChildRestoreOutcome> = (async () => {
 		// Hold sends to the child before anything can fail, so no sender is told `Session not found` meanwhile.
 		// When the session already holds them since it started, that hold carries on under the same capability:
@@ -427,12 +440,14 @@ export async function restoreSubagentChild(
 				registered.settled = outcome;
 				registered.knownPreviousIntercomId = knownPreviousIntercomId;
 			}
+			if (outcome.kind !== "restored") recoverRunWorktree(record.runId, record.index);
 			if (outcome.kind === "unrestorable") await markGone(outcome.reason);
 			else if (outcome.kind !== "restored") release();
 			return outcome;
 		},
 		async (error: Error) => {
 			previousIntercomId.resolve(undefined);
+			recoverRunWorktree(record.runId, record.index);
 			await markGone(error.message);
 			return { kind: "unrestorable", childId: record.childId, record, reason: error.message };
 		},

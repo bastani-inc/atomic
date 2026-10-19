@@ -194,11 +194,14 @@ export async function runParallelPath(
 		deps.config.worktreeSetupHookTimeoutMs,
 	);
 	let worktreeCleanupDeferred = false;
-	const detachedCleanup = createDetachedCleanupBarrier(() => {
-		if (!worktreeSetup) return;
-		buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, tasks as TaskParam[]);
-		cleanupWorktrees(worktreeSetup);
-	});
+	const detachedCleanup = createDetachedCleanupBarrier(
+		() => {
+			if (!worktreeSetup) return;
+			buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, tasks as TaskParam[]);
+			cleanupWorktrees(worktreeSetup);
+		},
+		worktreeSetup ? runId : undefined,
+	);
 	if (errorResult) return errorResult;
 
 	try {
@@ -400,6 +403,9 @@ export async function runParallelPath(
 			details,
 		};
 	} finally {
-		if (worktreeSetup && !worktreeCleanupDeferred) cleanupWorktrees(worktreeSetup);
+		if (worktreeSetup && !worktreeCleanupDeferred) {
+			detachedCleanup.close();
+			cleanupWorktrees(worktreeSetup);
+		}
 	}
 }

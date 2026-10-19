@@ -15,6 +15,7 @@ import type {
 import type { AgentConfig } from "../../agents/agents.js";
 import type { RunSyncOptions, SingleResult, SubagentToolResult } from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
+import { parkRunWorktree, unparkRunWorktree } from "./detached-cleanup-barrier.js";
 import {
 	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
 	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
@@ -232,6 +233,22 @@ export function takeStoppedQueuedSubagentChild(taskId: string): QueuedSubagentCh
 	return queued.start;
 }
 
+type ExecutionSchedule = (dispatch: () => Promise<void>) => void;
+
+/** The scheduler each child's run dispatched it on, by child id, so a resumed child waits for a slot in that run. */
+const childSchedules = new Map<string, ExecutionSchedule>();
+
+/** The scheduler the child's run dispatched it on, while this process has it and the child can still resume. */
+export function subagentChildSchedule(runId: string, index: number): ExecutionSchedule | undefined {
+	return childSchedules.get(`${runId}:${index}`);
+}
+
+/** The child ended for good: nothing resumes it into its run's scheduler or worktrees any more. */
+function forgetRunMembership(runId: string, index: number): void {
+	childSchedules.delete(`${runId}:${index}`);
+	unparkRunWorktree(runId, index);
+}
+
 /** Bind the real foreground runner once; only its registered observation may yield. */
 export async function runAgentTask(input: {
 	host: AgentTaskHost;
@@ -276,15 +293,21 @@ export async function runAgentTask(input: {
 		});
 	let dispatched = false;
 	let admittedTaskId: TaskId | undefined;
+	const runId = input.options.runId;
+	const index = input.options.index ?? 0;
+	if (input.schedule) childSchedules.set(`${runId}:${index}`, input.schedule);
 	// The host skips a queued dispatch once its task was cancelled: record how a child that never started ended.
 	const settleSkipped = async (taskId: TaskId) => {
 		const queued = queuedChildren.get(taskId);
 		if (queued?.stopped !== false) return;
 		if (input.recordChild?.ownerEndedForGood?.()) {
 			queuedChildren.delete(taskId);
+			forgetRunMembership(runId, index);
 			recordChildTask(taskId, "terminal", SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
 			return;
 		}
+		// Keep its worktree before its run's cleanup barrier counts it as ended; a cancellation for good releases it.
+		parkRunWorktree(runId, index);
 		const observed = await input.host.waitForTask(taskId);
 		if (
 			observed.ok &&
@@ -293,6 +316,7 @@ export async function runAgentTask(input: {
 			observed.value.result.cause === "user"
 		) {
 			queuedChildren.delete(taskId);
+			forgetRunMembership(runId, index);
 			recordChildTask(taskId, "terminal", "killed");
 			return;
 		}
@@ -333,6 +357,8 @@ export async function runAgentTask(input: {
 				wait: { kind: "background" },
 				runtime: input.runtime,
 				onTerminal: launch.onTerminal,
+				// It waits for a slot in its run, as its original launch did.
+				...(input.schedule ? { schedule: input.schedule } : {}),
 				...(input.outputText ? { outputText: input.outputText } : {}),
 				recordChild: launch.recordChild,
 				operation: `${input.options.runId}:${input.options.index ?? 0}:resume:${randomUUID()}`,
@@ -428,6 +454,12 @@ export async function runAgentTask(input: {
 						child.status === "interrupted" &&
 						context.signal.aborted &&
 						context.signal.reason === "parent-handoff";
+					const endedForGood = ownerClosed() && input.recordChild?.ownerEndedForGood?.() === true;
+					// Run control parked its worktree before it stopped it; a child that ended otherwise releases it.
+					if (stopped !== undefined && !stoppedByControl) unparkRunWorktree(runId, index);
+					// A child that stays restorable keeps its worktree before its run's cleanup barrier counts it ended.
+					if (stoppedByStagePause || (ownerClosed() && !endedForGood)) parkRunWorktree(runId, index);
+					if (endedForGood || child.status === "killed") forgetRunMembership(runId, index);
 					if (!ownerClosed())
 						recordChild(
 							"terminal",
@@ -437,8 +469,7 @@ export async function runAgentTask(input: {
 									? SUBAGENT_CHILD_STAGE_PAUSED_STATUS
 									: child.status,
 						);
-					else if (input.recordChild?.ownerEndedForGood?.())
-						recordChild("terminal", SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
+					else if (endedForGood) recordChild("terminal", SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
 					input.onTerminal?.(child);
 					const text = input.outputText?.(child) ?? getSingleResultOutput(child);
 					retainTaskOutput(child, text, context.ref);
@@ -473,10 +504,12 @@ export async function runAgentTask(input: {
 								output,
 							};
 				} catch (error) {
-					takeSubagentChildStop(context.ref.taskId);
+					if (takeSubagentChildStop(context.ref.taskId) !== undefined) unparkRunWorktree(runId, index);
 					if (!ownerClosed()) recordChild("terminal", "error");
-					else if (input.recordChild?.ownerEndedForGood?.())
+					else if (input.recordChild?.ownerEndedForGood?.()) {
+						forgetRunMembership(runId, index);
 						recordChild("terminal", SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
+					}
 					throw error;
 				} finally {
 					// A refusal before session admission has no session resources to reap.

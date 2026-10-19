@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@bastani/atomic";
+import { unparkRunWorktree } from "./detached-cleanup-barrier.js";
 import {
 	isSubagentChildRecord,
 	observeSubagentChildRecord,
@@ -170,6 +171,8 @@ export function watchWorkflowStageSubagentChildren(
 		const latest = subagentChildCardRecord(childId, "") ?? persisted;
 		if (!endedForGood() || latest?.owner?.sessionId !== owner.sessionId || !endsWithStage(latest)) return;
 		void appendInOrder(pi, { ...latest, terminalStatus: SUBAGENT_CHILD_STAGE_CLOSED_STATUS });
+		// It can no longer resume, so its run's worktrees no longer wait for it.
+		unparkRunWorktree(latest.runId, latest.index);
 	};
 	const watched: StageChildren = { closeSignal, childIds: new Set(), endedForGood, end };
 	stageChildren.set(closeSignal, watched);

@@ -6,6 +6,7 @@ import type {
 	SubagentToolResult,
 } from "../../shared/types.js";
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
+import { parkRunWorktree, unparkRunWorktree } from "./detached-cleanup-barrier.js";
 import { childHoldKey, holdChildTargets, parkPausedChildHold, releasePausedChildHold } from "./subagent-child-hold.js";
 import {
 	findSubagentChildRecord,
@@ -146,8 +147,13 @@ async function stopLiveChild(
 ): Promise<string | undefined> {
 	const taskId = record.taskId as TaskId;
 	requestSubagentChildStop(taskId, status);
+	// It stays resumable: its run's worktrees are kept before its run's cleanup barrier sees it end.
+	parkRunWorktree(record.runId, record.index);
 	const cancelled = await host.cancelTask(taskId, "parent-handoff");
-	if (!cancelled.ok) return cancelled.error.message;
+	if (!cancelled.ok) {
+		unparkRunWorktree(record.runId, record.index);
+		return cancelled.error.message;
+	}
 	// A child cancelled while still queued never starts, so nothing else records how it stopped.
 	const queued = stopQueuedSubagentChild(taskId);
 	await waitForSettlement(host, taskId);

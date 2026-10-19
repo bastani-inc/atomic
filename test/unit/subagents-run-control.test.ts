@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentSession, ExtensionContext } from "@bastani/atomic";
 import { afterEach, test } from "vitest";
@@ -81,6 +82,8 @@ interface Harness {
 	settleAs: "ok" | "error";
 	/** Whether resumed runs also wait until stopped, instead of settling once their prompt runs. */
 	resumedRunsWait: boolean;
+	/** Runs whose prompt contains a key wait until its gate resolves, then complete; checked before the rules above. */
+	readonly finishOn: Map<string, PromiseWithResolvers<void>>;
 	call(params: Parameters<ReturnType<typeof createSubagentExecutor>["execute"]>[1]): Promise<SubagentToolResult>;
 	launch(runId: string): Promise<{ record: SubagentChildRecord; taskId: TaskId }>;
 	/** Admit a child through `schedule`, as a parallel launch does, without waiting for it to start. */
@@ -191,6 +194,7 @@ function harness(options: { stage?: boolean } = {}): Harness {
 		holds,
 		settleAs: "ok",
 		resumedRunsWait: false,
+		finishOn: new Map(),
 		call: (params) => executor.execute("run-control", params, new AbortController().signal, undefined, state.ctx),
 		async launch(runId) {
 			const taskId = await state.admit(runId);
@@ -239,10 +243,12 @@ function harness(options: { stage?: boolean } = {}): Harness {
 		const [parentCwd, agents, agentName, task, options] = args;
 		runs.push({ task, options });
 		const original = task === ORIGINAL_TASK;
+		const gate = [...state.finishOn].find(([marker]) => task.includes(marker))?.[1];
 		const result = await runSync(parentCwd, agents, agentName, task, {
 			...options,
-			testSession:
-				original || state.resumedRunsWait
+			testSession: gate
+				? { output: "finished", promptGate: gate.promise, abortResolvesPrompt: true }
+				: original || state.resumedRunsWait
 					? { output: "partial", promptGate: neverReleased.promise, abortResolvesPrompt: true }
 					: { output: "resumed" },
 		});
@@ -1057,3 +1063,128 @@ for (const [status, reason] of [
 		assert.equal(h.runs.length, 0);
 	});
 }
+
+test("a resumed queued child waits for its run's concurrency slot, as its original launch did (#3760 run control)", async () => {
+	const h = harness();
+	const schedule = createExecutionScheduler(1);
+	const runningTask = await h.admit("slot-a", schedule);
+	await h.admit("slot-b", schedule);
+	await h.waitForLatest("slot-a:0", (candidate) => candidate.launchLeafId !== undefined);
+	const startsOfB = () => h.runs.filter((run) => run.options.runId === "slot-b");
+
+	const paused = await h.call({ action: "pause", id: "slot-b:0" });
+	assert.notEqual(paused.isError, true, text(paused));
+	const resumed = await h.call({ action: "resume", id: "slot-b:0" });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	await sleep(100);
+	assert.deepEqual(startsOfB(), [], "the resumed child waits while its sibling holds the only slot");
+
+	await h.call({ action: "quit", id: "slot-a:0" });
+	await settled(h, runningTask);
+	const resumedTask = resumedTaskId(resumed);
+	await h.waitForLatest("slot-b:0", (candidate) => candidate.taskId === resumedTask && !!candidate.childSessionId);
+	assert.equal(startsOfB().length, 1, "it starts once its sibling releases the slot");
+});
+
+function initGitRepository(root: string): void {
+	const git = (args: string[]) => {
+		const result = spawnSync("git", args, { cwd: root, encoding: "utf8" });
+		assert.equal(result.status, 0, result.stderr);
+	};
+	git(["init", "--quiet"]);
+	git(["config", "user.name", "Atomic Fixture"]);
+	git(["config", "user.email", "fixture@example.invalid"]);
+	git(["config", "commit.gpgSign", "false"]);
+	writeFileSync(join(root, "seed.txt"), "seed\n");
+	git(["add", "seed.txt"]);
+	git(["commit", "--quiet", "-m", "initial"]);
+}
+
+test("a resumed worktree child keeps its worktree while a sibling finishes, and it is removed once the child finishes (#3760 run control)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	const siblingDone = Promise.withResolvers<void>();
+	const resumedDone = Promise.withResolvers<void>();
+	h.finishOn.set("task-a-marker", Promise.withResolvers<void>());
+	h.finishOn.set("task-b-marker", siblingDone);
+	h.finishOn.set(SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT, resumedDone);
+	const launched = await h.call({
+		tasks: [
+			{ agent: "worker", task: "task-a-marker" },
+			{ agent: "worker", task: "task-b-marker" },
+		],
+		worktree: true,
+		wait: { kind: "background" },
+	});
+	assert.notEqual(launched.isError, true, text(launched));
+	const runs = () => [...readSubagentChildRecords(h.sessionManager.getEntries()).values()];
+	const deadline = Date.now() + RECORD_WAIT_MS;
+	while (runs().filter((record) => record.childSessionId).length < 2 && Date.now() < deadline) await sleep(10);
+	const [childA, childB] = runs().sort((left, right) => left.index - right.index);
+	assert.ok(childA && childB);
+	assert.notEqual(childA.cwd, h.cwd, "child A runs in its own worktree");
+	const trackedEdit = join(childA.cwd, "seed.txt");
+	const untrackedDraft = join(childA.cwd, "draft.md");
+	writeFileSync(trackedEdit, "edited by A\n");
+	writeFileSync(untrackedDraft, "draft by A\n");
+
+	const paused = await h.call({ action: "pause", id: childA.childId });
+	assert.notEqual(paused.isError, true, text(paused));
+	await h.waitForLatest(childA.childId, (candidate) => candidate.terminalStatus === "paused");
+	const resumed = await h.call({ action: "resume", id: childA.childId });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	const resumedTask = resumedTaskId(resumed);
+	await h.waitForLatest(childA.childId, (candidate) => candidate.taskId === resumedTask && !!candidate.childSessionId);
+
+	siblingDone.resolve();
+	await settled(h, childB.taskId as string);
+	await h.waitForLatest(childB.childId, (candidate) => candidate.state === "terminal");
+	await sleep(100);
+	assert.equal(readFileSync(trackedEdit, "utf8"), "edited by A\n", "the resumed child's tracked edit survives");
+	assert.equal(readFileSync(untrackedDraft, "utf8"), "draft by A\n", "the resumed child's untracked draft survives");
+	writeFileSync(join(childA.cwd, "after.md"), "A keeps writing\n");
+
+	resumedDone.resolve();
+	await settled(h, resumedTask);
+	const removedBy = Date.now() + RECORD_WAIT_MS;
+	while (existsSync(childA.cwd) && Date.now() < removedBy) await sleep(10);
+	assert.equal(existsSync(childA.cwd), false, "the worktree is removed once its last live child finished");
+});
+
+test("a paused worktree child keeps its uncommitted work after every sibling finished, and resume continues in it (#3760 run control)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	const siblingDone = Promise.withResolvers<void>();
+	h.finishOn.set("task-a-marker", Promise.withResolvers<void>());
+	h.finishOn.set("task-b-marker", siblingDone);
+	const launched = await h.call({
+		tasks: [
+			{ agent: "worker", task: "task-a-marker" },
+			{ agent: "worker", task: "task-b-marker" },
+		],
+		worktree: true,
+		wait: { kind: "background" },
+	});
+	assert.notEqual(launched.isError, true, text(launched));
+	const runs = () => [...readSubagentChildRecords(h.sessionManager.getEntries()).values()];
+	const deadline = Date.now() + RECORD_WAIT_MS;
+	while (runs().filter((record) => record.childSessionId).length < 2 && Date.now() < deadline) await sleep(10);
+	const [childA, childB] = runs().sort((left, right) => left.index - right.index);
+	assert.ok(childA && childB);
+	const untrackedDraft = join(childA.cwd, "draft.md");
+	writeFileSync(untrackedDraft, "draft by A\n");
+
+	await h.call({ action: "pause", id: childA.childId });
+	await h.waitForLatest(childA.childId, (candidate) => candidate.terminalStatus === "paused");
+	siblingDone.resolve();
+	await settled(h, childB.taskId as string);
+	await sleep(100);
+	assert.equal(readFileSync(untrackedDraft, "utf8"), "draft by A\n", "the paused child's draft survives");
+
+	const resumed = await h.call({ action: "resume", id: childA.childId });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	await settled(h, resumedTaskId(resumed));
+	const removedBy = Date.now() + RECORD_WAIT_MS;
+	while (existsSync(childA.cwd) && Date.now() < removedBy) await sleep(10);
+	assert.equal(existsSync(childA.cwd), false, "the worktree is removed once the resumed child finished");
+});
