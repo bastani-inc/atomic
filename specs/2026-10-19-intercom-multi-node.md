@@ -413,33 +413,51 @@ The S0 files are frozen: `specs/2026-10-19-intercom-multi-node.md`,
 
 ## 13. S0 verification
 
-The contract suite registers 35 cases:
+The contract suite registers 36 cases:
 
 - leases: 7;
-- outbox: 10;
+- outbox: 11;
 - held sends: 2;
 - pending asks: 3;
 - sent messages: 3;
 - wake-up bus: 6;
 - cross-node round trip: 4.
 
-The command `npx vitest --run --project unit test/unit/intercom-multinode-state-contract.test.ts` passes 35/35
+The command `npx vitest --run --project unit test/unit/intercom-multinode-state-contract.test.ts` passes 36/36
 against the memory reference.
 
-**Mutation check.** Each mutant was a one-line `perl -0pi` substitution applied to a scratch copy of the memory
-reference (`test/helpers/zz-mutant-reference.ts`). Each was run through the same registrations with
-`npx vitest --run --project unit test/unit/zz-mutant.test.ts`, one mutant at a time. The scratch files were deleted
-afterwards and are not committed. Every mutant was killed:
+Every ordering case inserts message ids whose lexical order differs from their insertion order (for example `z-9`,
+`a-1`, `m-5`), so a store that sorts by message id instead of insertion order fails. This covers outbox claim and
+`listUndelivered`, the cross-node round trip, held-send `list` and `take`, and pending-ask `takeForTarget`.
+Production message ids are random UUIDs, so lexically increasing fixtures would not catch that fault.
 
-| Mutant | Fault | Failed cases |
+**Mutation check.** Each mutant is a single text substitution applied to a scratch copy of the memory reference
+outside the checkout. The suite runs against it under `bun test` with the same registrations, one mutant at a time.
+No scratch files are committed. Each mutant was run against the suite as first committed (35 cases) and against
+the current suite (36 cases).
+
+These five mutants survived the first suite. Review found them, and the current suite kills each one:
+
+| Mutant | Fault | First suite | Current suite |
+|---|---|---|---|
+| `outbox-by-message-id` | outbox claim and `listUndelivered` sorted by message id | 35/35 pass | 5 failed |
+| `held-sends-by-message-id` | held-send `list`/`take` sorted by message id | 35/35 pass | 1 failed |
+| `asks-by-message-id` | `takeForTarget` sorted by message id | 35/35 pass | 1 failed |
+| `sequence-max-plus-one` | sequence = max(existing) + 1, reused after the newest row is pruned | 35/35 pass | 1 failed |
+| `claimant-only-fencing` | claim writes check the claimant but not the token | 35/35 pass | 1 failed |
+
+These fourteen mutants were killed by the first suite and are still killed. The current-suite column is from
+re-creating each substitution:
+
+| Mutant | Fault | Failed cases (current suite) |
 |---|---|---|
 | `no-dedupe` | duplicate message id inserts a second row | 2 |
 | `no-claim-fencing` | superseded claim token accepted | 2 |
-| `lease-token-reuse` | takeover reuses the old fencing token | 3 |
+| `lease-token-reuse` | takeover reuses the old fencing token | 2 |
 | `takeover-while-live` | live lease taken over | 2 |
 | `claim-reverse-order` | rows claimed newest first | 6 |
 | `trim-text` | message text trimmed on enqueue | 3 |
-| `delivered-on-claim` | row marked delivered when claimed, before the ack | 9 |
+| `delivered-on-claim` | row marked delivered when claimed, before the ack | 10 |
 | `no-recipient-exclusivity` | second claimant admitted while another claim is live | 2 |
 | `empty-target-accepted` | empty recipient identity accepted | 1 |
 | `no-subscribe-resync` | no resync on subscribe | 7 |

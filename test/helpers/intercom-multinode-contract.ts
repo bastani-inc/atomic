@@ -355,12 +355,13 @@ export function registerOutboxStoreConformance(
 
 	check("claims a recipient's rows in insertion order and keeps recipients apart", async (connect) => {
 		const [a, b] = [await connect(), await connect()];
-		const first = await insert(a, frameFor("m1", "one"));
+		const first = await insert(a, frameFor("z-9", "one"));
 		await insert(b, frameFor("x1", "other"), { targetIdentity: OTHER_RECIPIENT });
-		await insert(a, frameFor("m2", "two"));
-		await insert(b, frameFor("m3", "three"), { originBrokerId: "broker-c" });
+		await insert(a, frameFor("a-1", "two"));
+		await insert(b, frameFor("m-5", "three"), { originBrokerId: "broker-c" });
+		assert.deepEqual(ids(expectStatus(await a.listUndelivered(RECIPIENT), "listed").rows), ["z-9", "a-1", "m-5"]);
 		const claimed = await claimAll(b, "broker-b");
-		assert.deepEqual(ids(claimed), ["m1", "m2", "m3"]);
+		assert.deepEqual(ids(claimed), ["z-9", "a-1", "m-5"]);
 		assert.ok(claimed.every((entry, index) => index === 0 || entry.row.sequence > claimed[index - 1]!.row.sequence));
 		assert.ok(claimed[0]!.row.sequence >= first.sequence);
 		for (const entry of claimed) {
@@ -373,7 +374,7 @@ export function registerOutboxStoreConformance(
 		}
 		assert.equal(new Set(claimed.map((entry) => entry.claim.token)).size, 3);
 		assert.deepEqual(ids(expectStatus(await a.listUndelivered(OTHER_RECIPIENT), "listed").rows), ["x1"]);
-		assert.deepEqual(ids(expectStatus(await a.listUndelivered(RECIPIENT), "listed").rows), ["m1", "m2", "m3"]);
+		assert.deepEqual(ids(expectStatus(await a.listUndelivered(RECIPIENT), "listed").rows), ["z-9", "a-1", "m-5"]);
 	});
 
 	check("keeps one claimant per recipient while its claims are live", async (connect) => {
@@ -416,6 +417,25 @@ export function registerOutboxStoreConformance(
 		assert.deepEqual(delivered, { ...fresh.row, state: "delivered" });
 	});
 
+	check("fences a claimant's own superseded token after it re-claims an expired row", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		await insert(a, frameFor("m1", "one"));
+		const [old] = await claimAll(a, "broker-a");
+		const [renewed] = await claimAll(a, "broker-a", EXPIRED_MS);
+		assert.ok(old && renewed);
+		assert.notEqual(renewed.claim.token, old.claim.token);
+		assert.equal(renewed.claim.attempt, 2);
+		assert.equal(renewed.claim.claimantId, "broker-a");
+		assert.deepEqual(await a.markDelivered(old.claim), { status: "stale" });
+		assert.deepEqual(await a.markFailed(old.claim, "late"), { status: "stale" });
+		assert.deepEqual(await a.renewClaim(old.claim), { status: "stale" });
+		assert.deepEqual(await a.releaseClaim(old.claim), { status: "stale" });
+		assert.equal(expectStatus(await b.read("m1"), "found").row.state, "claimed");
+		assert.deepEqual(await a.renewClaim(renewed.claim), { status: "renewed" });
+		const delivered = expectStatus(await a.markDelivered(renewed.claim), "delivered").row;
+		assert.deepEqual(delivered, { ...renewed.row, state: "delivered" });
+	});
+
 	check("reports delivered only after the recipient's acknowledgement, then settles later writes", async (connect) => {
 		const [a, b] = [await connect(), await connect()];
 		await insert(a, frameFor("m1", "one"));
@@ -439,12 +459,13 @@ export function registerOutboxStoreConformance(
 
 	check("returns a released claim to the queue and redelivers it in order", async (connect) => {
 		const [a, b] = [await connect(), await connect()];
-		await insert(a, frameFor("m1", "one"));
-		await insert(a, frameFor("m2", "two"));
+		await insert(a, frameFor("z-first", "one"));
+		await insert(a, frameFor("a-second", "two"));
 		const [first, second] = await claimAll(a, "broker-a");
 		assert.ok(first && second);
+		assert.equal(first.row.messageId, "z-first");
 		assert.deepEqual(await a.releaseClaim(first.claim), { status: "released" });
-		assert.equal(expectStatus(await b.read("m1"), "found").row.state, "queued");
+		assert.equal(expectStatus(await b.read("z-first"), "found").row.state, "queued");
 		assert.deepEqual(await b.markDelivered(first.claim), { status: "stale" });
 		assert.deepEqual(await b.claim({ claimantId: "broker-b", targetIdentity: RECIPIENT, staleAfterMs: LIVE_MS }), {
 			status: "held",
@@ -452,9 +473,9 @@ export function registerOutboxStoreConformance(
 		});
 		const [again] = await claimAll(a, "broker-a");
 		assert.ok(again);
-		assert.equal(again.row.messageId, "m1");
+		assert.equal(again.row.messageId, "z-first");
 		assert.equal(again.claim.attempt, 2);
-		assert.deepEqual(ids(await claimAll(b, "broker-b", EXPIRED_MS)), ["m1", "m2"]);
+		assert.deepEqual(ids(await claimAll(b, "broker-b", EXPIRED_MS)), ["z-first", "a-second"]);
 	});
 
 	check("settles a refused row as failed with its reason verbatim", async (connect) => {
@@ -501,20 +522,24 @@ export function registerOutboxStoreConformance(
 
 	check("prunes only settled rows, after which a message id is new again", async (connect) => {
 		const [a, b] = [await connect(), await connect()];
+		const queued = await insert(a, frameFor("m3", "three"), { targetIdentity: OTHER_RECIPIENT });
 		await insert(a, frameFor("m1", "one"));
 		await insert(a, frameFor("m2", "two"));
 		const [first, second] = await claimAll(b, "broker-b");
 		assert.ok(first && second);
 		await b.markDelivered(first.claim);
 		await b.markFailed(second.claim, "refused");
-		const queued = await insert(a, frameFor("m3", "three"));
+		assert.ok(second.row.sequence > queued.sequence);
 		assert.equal(await a.prune(LIVE_MS), 0);
 		assert.equal(await a.prune(EXPIRED_MS), 2);
 		assert.deepEqual(await b.read("m1"), { status: "missing" });
 		assert.deepEqual(await b.read("m2"), { status: "missing" });
 		assert.equal(expectStatus(await b.read("m3"), "found").row.state, "queued");
 		const reinserted = await insert(b, frameFor("m1", "one"));
-		assert.ok(reinserted.sequence > queued.sequence);
+		assert.ok(
+			reinserted.sequence > second.row.sequence,
+			`sequence ${reinserted.sequence} reused after pruning the newest row ${second.row.sequence}`,
+		);
 	});
 }
 
@@ -539,23 +564,23 @@ export function registerHeldSendStoreConformance(
 
 	check("holds sends per reservation in insertion order and hands each over once", async (connect) => {
 		const [a, b] = [await connect(), await connect()];
-		const first = held("h1", "capability-1", "  first \u0000 ünï ");
+		const first = held("z-held", "capability-1", "  first \u0000 ünï ");
 		const snapshot = structuredClone(first);
 		assert.deepEqual(await a.hold(first), { status: "held" });
 		Reflect.set(first.request, "to", "mutated after hold");
-		assert.deepEqual(await b.hold(held("h2", "capability-2")), { status: "held" });
-		assert.deepEqual(await a.hold(held("h3")), { status: "held" });
-		assert.deepEqual(await b.hold(held("h1", "capability-2")), { status: "duplicate" });
-		assert.deepEqual(await b.list("capability-1"), { status: "listed", sends: [snapshot, held("h3")] });
+		assert.deepEqual(await b.hold(held("m-held", "capability-2")), { status: "held" });
+		assert.deepEqual(await a.hold(held("a-held")), { status: "held" });
+		assert.deepEqual(await b.hold(held("z-held", "capability-2")), { status: "duplicate" });
+		assert.deepEqual(await b.list("capability-1"), { status: "listed", sends: [snapshot, held("a-held")] });
 		const racing = await Promise.all([a.take("capability-1"), b.take("capability-1")]);
 		const taken = racing.flatMap((result) => expectStatus(result, "taken").sends);
-		assert.deepEqual(taken, [snapshot, held("h3")]);
+		assert.deepEqual(taken, [snapshot, held("a-held")]);
 		assert.deepEqual(await a.take("capability-1"), { status: "taken", sends: [] });
-		assert.deepEqual(await a.list("capability-2"), { status: "listed", sends: [held("h2", "capability-2")] });
-		assert.deepEqual(await a.drop("h2"), { status: "dropped" });
-		assert.deepEqual(await b.drop("h2"), { status: "missing" });
+		assert.deepEqual(await a.list("capability-2"), { status: "listed", sends: [held("m-held", "capability-2")] });
+		assert.deepEqual(await a.drop("m-held"), { status: "dropped" });
+		assert.deepEqual(await b.drop("m-held"), { status: "missing" });
 		assert.deepEqual(await b.list("capability-2"), { status: "listed", sends: [] });
-		assert.deepEqual(await b.hold(held("h1")), { status: "held" });
+		assert.deepEqual(await b.hold(held("z-held")), { status: "held" });
 	});
 
 	check("rejects empty identifiers", async (connect) => {
@@ -605,14 +630,14 @@ export function registerPendingAskStoreConformance(
 	check("prunes a sender's asks and hands a target's asks over in insertion order", async (connect) => {
 		const [a, b] = [await connect(), await connect()];
 		await a.record(ask("sender", "target", "q1"));
-		await b.record(ask("sender-2", "target", "q2"));
+		await b.record(ask("sender-2", "target", "q-z"));
 		await a.record(ask("sender", "target-2", "q3"));
-		await b.record(ask("sender-2", "target", "q4"));
+		await b.record(ask("sender-2", "target", "q-a"));
 		assert.deepEqual(await b.pruneSender("sender"), { status: "pruned", removed: 2 });
 		assert.deepEqual(await b.pruneSender("unknown"), { status: "pruned", removed: 0 });
 		assert.deepEqual(await a.takeForTarget("target"), {
 			status: "taken",
-			asks: [ask("sender-2", "target", "q2"), ask("sender-2", "target", "q4")],
+			asks: [ask("sender-2", "target", "q-z"), ask("sender-2", "target", "q-a")],
 		});
 		assert.deepEqual(await b.takeForTarget("target"), { status: "taken", asks: [] });
 		assert.deepEqual(await b.matchesReply(reply("target-2", "sender", "q3")), { status: "no-match" });
@@ -909,7 +934,7 @@ export function registerCrossNodeRoundTripConformance(
 	};
 
 	check("delivers the local frame across nodes and reports delivered only after the acknowledgement", async (a, b) => {
-		const localFrames = [richFrame("cross-1"), frameFor("cross-2", "  plain peer message  ")];
+		const localFrames = [richFrame("z-cross"), frameFor("a-cross", "  plain peer message  ")];
 		const mark = b.recorder.mark();
 		for (const frame of localFrames) await send(a, b, RECIPIENT, frame);
 		await b.recorder.next(isHintFor("broker-b", "outbox"), mark);
@@ -974,13 +999,13 @@ export function registerCrossNodeRoundTripConformance(
 	});
 
 	check("recovers lost wake-ups from the outbox alone, including after a reconnect", async (a, b, bus) => {
-		for (const id of ["lost-1", "lost-2", "lost-3"]) {
+		for (const id of ["lost-z", "lost-a", "lost-m"]) {
 			expectStatus(await a.outbox.enqueue(request(frameFor(id, id))), "inserted");
 		}
 		assert.deepEqual(b.recorder.hints(), []);
 		assert.deepEqual(
 			(await claimFor(b, RECIPIENT)).map((entry) => entry.row.messageId),
-			["lost-1", "lost-2", "lost-3"],
+			["lost-z", "lost-a", "lost-m"],
 		);
 		const mark = b.recorder.mark();
 		await bus.interrupt(b.bus);
@@ -994,12 +1019,12 @@ export function registerCrossNodeRoundTripConformance(
 
 	check("collapses coalesced and duplicate wake-ups into one outbox read", async (a, b) => {
 		const mark = b.recorder.mark();
-		for (const id of ["burst-1", "burst-2", "burst-3"]) await send(a, b, RECIPIENT, frameFor(id, id));
+		for (const id of ["burst-z", "burst-a", "burst-m"]) await send(a, b, RECIPIENT, frameFor(id, id));
 		await b.recorder.next(isHintFor("broker-b", "outbox"), mark);
 		const reads = [await claimFor(b, RECIPIENT), await claimFor(b, RECIPIENT), await claimFor(b, RECIPIENT)];
 		assert.deepEqual(
 			reads.map((rows) => rows.map((entry) => entry.row.messageId)),
-			[["burst-1", "burst-2", "burst-3"], [], []],
+			[["burst-z", "burst-a", "burst-m"], [], []],
 		);
 		await a.bus.publish({ brokerId: "broker-b", reason: "outbox", version: 0 });
 		assert.deepEqual(await claimFor(b, OTHER_RECIPIENT), []);
