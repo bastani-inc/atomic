@@ -27,6 +27,21 @@ export interface InboundMessageEntry {
   channel?: "supervisor";
   replyCommand?: string;
   bodyText: string;
+  /**
+   * #3761: a card written only as history, such as a replayed message from a sender that is gone. It may neither start
+   * a turn nor supply reply context, whichever path writes it and whatever is written around it.
+   */
+  historyOnly?: true;
+}
+
+/** Whether writing this entry may start a turn. */
+export function mayStartTurn(entry: InboundMessageEntry): boolean {
+  return entry.historyOnly !== true;
+}
+
+/** Whether this entry may become the reply target of the turn its batch starts. */
+export function maySupplyReplyContext(entry: InboundMessageEntry): boolean {
+  return entry.historyOnly !== true;
 }
 
 export type ContactSupervisorReason = "need_decision" | "progress_update" | "interview_request";

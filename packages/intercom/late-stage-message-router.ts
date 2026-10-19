@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@bastani/atomic";
-import type { InboundMessageEntry } from "./intercom-utils.js";
+import { type InboundMessageEntry, mayStartTurn, maySupplyReplyContext } from "./intercom-utils.js";
 import type { InboundMessageAdmission, InboundMessageReservation } from "./inbound-message-admission.js";
 import type { IntercomContext, ReplyTracker } from "./reply-tracker.js";
 import { DEFAULT_GROUP, normalizeGroup } from "./group.js";
@@ -49,6 +49,8 @@ export function registerLateStageMessageRouter(
       if (message.customType !== "intercom_message") { accepted.push(message); continue; }
       const entry = message.details as InboundMessageEntry | undefined;
       if (!entry?.from || !entry.message) continue;
+      // #3761: a history-only card is written in its place, never admitted as a new message or made a reply target.
+      if (!maySupplyReplyContext(entry)) { accepted.push(message); continue; }
       if (entry.channel !== "supervisor"
         && !isSubagentRelayHandoff(entry)
         && normalizeGroup(entry.from.group) !== normalizeGroup(getOwnerGroup())) continue;
@@ -64,12 +66,22 @@ export function registerLateStageMessageRouter(
       accepted.push(message);
     }
     event.handled = true;
+    // #3761: a batch of history-only cards alone starts no turn.
+    const delivery = accepted.some((message) => !isHistoryCard(message)) || event.options?.triggerTurn !== true
+      ? event
+      : { ...event, options: { ...event.options, triggerTurn: false } };
     const ownedCompletion = event.batch && typeof pi.sendMessages === "function"
-      ? deliverAtomicBatch(pi, accepted, event, reservations, admission, tracker)
-      : deliverSequentially(pi, accepted, event, reservations, admission, tracker);
+      ? deliverAtomicBatch(pi, accepted, delivery, reservations, admission, tracker)
+      : deliverSequentially(pi, accepted, delivery, reservations, admission, tracker);
     event.completion = Promise.all([ownedCompletion, ...joined]).then(() => {});
     return event.completion;
   });
+}
+
+function isHistoryCard(message: LateStageMessage): boolean {
+  if (message.customType !== "intercom_message") return false;
+  const entry = message.details as InboundMessageEntry | undefined;
+  return entry !== undefined && !mayStartTurn(entry);
 }
 
 function isCompletedStageAskRoute(event: Partial<LateStageMessageEvent>): boolean {
@@ -115,12 +127,19 @@ async function deliverSequentially(
   tracker: ReplyTracker,
 ): Promise<void> {
   const pending = new Map(reservations.map((owned) => [owned.message, owned]));
+  // #3761: history before the first message that may start a turn is written without one; the rest follow that turn.
+  const starter = accepted.findIndex((message) => !isHistoryCard(message));
   for (let index = 0; index < accepted.length; index += 1) {
     const message = accepted[index]!;
     const owned = pending.get(message);
     if (owned) admission.beginDelivery(owned.reservation);
     try {
-      await pi.sendMessage(message, index === 0 ? event.options : { deliverAs: "followUp" });
+      await pi.sendMessage(
+        message,
+        index === starter ? event.options
+          : starter < 0 || index < starter ? { ...event.options, triggerTurn: false }
+          : { deliverAs: "followUp" },
+      );
     } catch (error) {
       if (owned) admission.endDelivery(owned.reservation);
       const failure = error instanceof Error ? error : new Error(String(error));

@@ -1,9 +1,33 @@
-import type { InboundMessageEntry } from "./intercom-utils.js";
+import { type InboundMessageEntry, mayStartTurn, maySupplyReplyContext } from "./intercom-utils.js";
 
 export interface InboundIdleClaim {
   entries: InboundMessageEntry[];
   isCurrent(): boolean;
   rollbackFrom(index: number): void;
+}
+
+/** How one idle batch is written: a host with batch send uses `triggerTurn`, others send entry by entry with `sendOptions`. */
+export interface IdleBatchPlan {
+  /** True only when the batch holds an entry allowed to start a turn. */
+  triggerTurn: boolean;
+  /** The first entry allowed to supply reply context; never a history-only card. */
+  replyContext?: InboundMessageEntry;
+  /** In queue order: history before the first turn-starting entry is written without a turn, later entries follow it. */
+  sendOptions: Array<{ triggerTurn: boolean } | { deliverAs: "followUp" }>;
+}
+
+/**
+ * #3761: plan an idle batch from what each entry may do, not from its position, so a history-only card never starts a
+ * turn or becomes the reply target however the entries around it left the queue.
+ */
+export function planIdleBatch(entries: readonly InboundMessageEntry[]): IdleBatchPlan {
+  const starter = entries.findIndex(mayStartTurn);
+  return {
+    triggerTurn: starter >= 0,
+    replyContext: starter >= 0 ? entries.find(maySupplyReplyContext) : undefined,
+    sendOptions: entries.map((_, index) =>
+      starter < 0 || index < starter ? { triggerTurn: false } : index === starter ? { triggerTurn: true } : { deliverAs: "followUp" }),
+  };
 }
 
 /**

@@ -49,7 +49,7 @@ import {
   frameHistoricalSupervisorUpdate,
   framePreStartPendingStageMessage,
 } from "./incoming-message-delivery.js";
-import { InboundIdleQueue } from "./inbound-idle-queue.js";
+import { InboundIdleQueue, planIdleBatch } from "./inbound-idle-queue.js";
 import {
   consumedIntercomMessageIds,
   DurableInbox,
@@ -393,11 +393,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     }
 
     const entries = pendingIdleMessages.drain();
-    const first = entries[0];
-    if (first) replyTracker.queueTurnContext({ from: first.from, message: first.message, receivedAt: Date.now() });
+    const batch = planIdleBatch(entries);
+    if (batch.replyContext) replyTracker.queueTurnContext({ from: batch.replyContext.from, message: batch.replyContext.message, receivedAt: Date.now() });
     const messages = entries.map(buildIncomingCustomMessage);
     void retryStableDelivery({
-      deliver: () => typeof pi.sendMessages === "function" ? Promise.resolve(pi.sendMessages(messages, { triggerTurn: true })) : Promise.all(messages.map((message, index) => pi.sendMessage(message, index === 0 ? { triggerTurn: true } : { deliverAs: "followUp" }))).then(() => {}),
+      deliver: () => typeof pi.sendMessages === "function" ? Promise.resolve(pi.sendMessages(messages, { triggerTurn: batch.triggerTurn })) : Promise.all(messages.map((message, index) => pi.sendMessage(message, batch.sendOptions[index]))).then(() => {}),
       isCurrent: () => Boolean(getLiveContext(ctx, generation)),
     }).catch(() => {});
   }
@@ -429,7 +429,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
    * before or after the write never loses it or shows it twice; `defer` (Intercom unreachable, or a relaunched sender
    * that has not reconnected) leaves it unshown for the next resume. One pass in arrival order keeps visible history in
    * that order: a gone sender's card that arrived after a queued message joins the same queue behind it, so it is
-   * written in the batch that message starts rather than ahead of it.
+   * written in the batch that message starts rather than ahead of it. The card is marked `historyOnly`, so it never
+   * starts that batch's turn or supplies its reply context, even when the message ahead of it leaves the queue first.
    */
   async function replayDurableInbox(request: IntercomInboxReplayRequest): Promise<readonly string[]> {
     const liveContext = getLiveContext();
@@ -457,7 +458,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       const action = actions.get(record.message.id) ?? "replay";
       if (action === "defer") continue;
       if (action === "drop") {
-        const historyEntry = { ...entry, replyCommand: undefined };
+        const historyEntry: InboundMessageEntry = { ...entry, replyCommand: undefined, historyOnly: true };
         if (queued > 0) {
           pendingIdleMessages.enqueue(historyEntry);
           continue;
