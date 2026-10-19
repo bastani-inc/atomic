@@ -6,6 +6,7 @@ import type {
 	InvalidStateInput,
 	Lease,
 	LeaseKey,
+	LeaseStaleResult,
 	LeaseState,
 	LeaseSubject,
 	OutboxClaim,
@@ -16,6 +17,10 @@ import type {
 	PendingAsk,
 	PendingAskStore,
 	ReplyRoute,
+	RestoringReservation,
+	RestoringReservationEnd,
+	RestoringReservationLease,
+	RestoringReservationStore,
 	SentMessageAuthority,
 	SentMessageState,
 	SentQuestionRoute,
@@ -351,6 +356,196 @@ function heldSendStore(held: Map<string, HeldSend>): HeldSendStore {
 	};
 }
 
+interface ReservationRecord {
+	readonly reservationKey: string;
+	order: number;
+	ownerSessionId: string;
+	ownerBrokerId: string;
+	childName: string;
+	childTarget: string;
+	targets: string[];
+	group: string;
+	dormant: boolean;
+	fencingToken: number;
+	gone?: string;
+	renewedAt: number;
+	end?: RestoringReservationEnd;
+	endedAt?: number;
+}
+
+interface ReservationState {
+	readonly records: Map<string, ReservationRecord>;
+	nextOrder: number;
+	nextToken: number;
+}
+
+function restoringReservationStore(shared: ReservationState): RestoringReservationStore {
+	const reservation = (record: ReservationRecord): RestoringReservation => ({
+		reservationKey: record.reservationKey,
+		ownerSessionId: record.ownerSessionId,
+		ownerBrokerId: record.ownerBrokerId,
+		childName: record.childName,
+		childTarget: record.childTarget,
+		targets: [...record.targets],
+		group: record.group,
+		dormant: record.dormant,
+		fencingToken: record.fencingToken,
+		...(record.gone === undefined ? {} : { gone: record.gone }),
+	});
+	const active = (): ReservationRecord[] =>
+		[...shared.records.values()].filter((record) => record.end === undefined).sort((l, r) => l.order - r.order);
+	const addTargets = (record: ReservationRecord, targets: readonly string[]): void => {
+		for (const target of targets) if (!record.targets.includes(target)) record.targets.push(target);
+	};
+	const end = (record: ReservationRecord, outcome: RestoringReservationEnd): void => {
+		record.end = structuredClone(outcome);
+		record.endedAt = Date.now();
+	};
+	const owned = (lease: RestoringReservationLease): ReservationRecord | InvalidStateInput | LeaseStaleResult => {
+		if (lease.reservationKey.length === 0) return invalid("empty-reservation-key");
+		if (lease.ownerSessionId.length === 0) return invalid("empty-session-id");
+		const record = shared.records.get(lease.reservationKey);
+		if (record === undefined || record.end !== undefined) return { status: "stale" };
+		if (record.ownerSessionId !== lease.ownerSessionId || record.fencingToken !== lease.fencingToken) {
+			return { status: "stale", currentFencingToken: record.fencingToken };
+		}
+		return record;
+	};
+	return {
+		async reserve(request) {
+			if (request.reservationKey.length === 0) return invalid("empty-reservation-key");
+			if (request.ownerSessionId.length === 0) return invalid("empty-session-id");
+			if (request.ownerBrokerId.length === 0) return invalid("empty-broker-id");
+			if (request.childName.length === 0) return invalid("empty-child-name");
+			if (request.childTarget.length === 0 || request.aliases.some((alias) => alias.length === 0)) {
+				return invalid("empty-target");
+			}
+			if (request.group.length === 0) return invalid("empty-group");
+			const existing = shared.records.get(request.reservationKey);
+			const superseded: string[] = [];
+			let record: ReservationRecord;
+			if (existing !== undefined && existing.end === undefined) {
+				record = existing;
+				if (record.ownerSessionId !== request.ownerSessionId) {
+					record.ownerSessionId = request.ownerSessionId;
+					record.fencingToken = shared.nextToken++;
+				}
+			} else {
+				record = {
+					reservationKey: request.reservationKey,
+					order: shared.nextOrder++,
+					ownerSessionId: request.ownerSessionId,
+					ownerBrokerId: request.ownerBrokerId,
+					childName: request.childName,
+					childTarget: request.childTarget,
+					targets: [request.childTarget],
+					group: request.group,
+					dormant: request.dormant,
+					fencingToken: shared.nextToken++,
+					renewedAt: Date.now(),
+				};
+				for (const previous of active()) {
+					if (previous.childTarget !== request.childTarget) continue;
+					if (
+						previous.ownerSessionId !== request.ownerSessionId &&
+						!(previous.dormant && previous.group === request.group)
+					) {
+						continue;
+					}
+					end(previous, { outcome: "superseded", by: request.reservationKey });
+					addTargets(record, previous.targets);
+					superseded.push(previous.reservationKey);
+				}
+				shared.records.set(request.reservationKey, record);
+			}
+			record.ownerBrokerId = request.ownerBrokerId;
+			record.group = request.group;
+			record.dormant = request.dormant;
+			record.renewedAt = Date.now();
+			addTargets(record, request.aliases);
+			return {
+				status: "reserved",
+				lease: {
+					reservationKey: record.reservationKey,
+					ownerSessionId: record.ownerSessionId,
+					fencingToken: record.fencingToken,
+				},
+				superseded,
+			};
+		},
+		async lookup(target, sender, staleAfterMs) {
+			if (target.length === 0) return invalid("empty-target");
+			if (sender.sessionId.length === 0) return invalid("empty-session-id");
+			const found = active().find(
+				(record) =>
+					isLive(record.renewedAt, staleAfterMs) &&
+					record.targets.includes(target) &&
+					(record.ownerSessionId === sender.sessionId || sender.groups.includes(record.group)),
+			);
+			if (found === undefined) return { status: "none" };
+			return { status: found.gone === undefined ? "reserved" : "gone", reservation: reservation(found) };
+		},
+		async renew(lease) {
+			const record = owned(lease);
+			if ("status" in record) return record;
+			record.renewedAt = Date.now();
+			return { status: "renewed" };
+		},
+		async release(lease, outcome) {
+			const record = owned(lease);
+			if ("status" in record) return record;
+			if (outcome?.gone !== undefined) {
+				record.gone = outcome.gone;
+				return { status: "gone" };
+			}
+			end(
+				record,
+				outcome?.refusal === undefined
+					? { outcome: "released" }
+					: { outcome: "released", refusal: outcome.refusal },
+			);
+			return { status: "released" };
+		},
+		async consume(reservationKey, registered) {
+			if (reservationKey.length === 0) return invalid("empty-reservation-key");
+			if (registered !== undefined && registered.childTarget.length === 0) return invalid("empty-target");
+			const ended: string[] = [];
+			const own = shared.records.get(reservationKey);
+			const candidates = active().filter(
+				(record) =>
+					record.gone === undefined &&
+					(record === own ||
+						(registered !== undefined &&
+							record.dormant &&
+							record.childTarget === registered.childTarget &&
+							registered.groups.includes(record.group))),
+			);
+			for (const record of candidates) {
+				end(record, { outcome: "consumed" });
+				ended.push(record.reservationKey);
+			}
+			return { status: "consumed", reservationKeys: ended };
+		},
+		async read(reservationKey) {
+			if (reservationKey.length === 0) return invalid("empty-reservation-key");
+			const record = shared.records.get(reservationKey);
+			if (record === undefined) return { status: "missing" };
+			if (record.end !== undefined) return { status: "ended", end: structuredClone(record.end) };
+			return { status: "active", reservation: reservation(record), ageMs: ageOf(record.renewedAt) };
+		},
+		async prune(olderThanMs) {
+			let removed = 0;
+			for (const [key, record] of shared.records) {
+				if (ageOf(record.endedAt ?? record.renewedAt) > olderThanMs) {
+					shared.records.delete(key);
+					removed++;
+				}
+			}
+			return removed;
+		},
+	};
+}
+
 function pendingAskStore(asks: PendingAsk[]): PendingAskStore {
 	const invalidRoute = (route: ReplyRoute): InvalidStateInput | undefined => {
 		if (route.replySenderSessionId.length === 0 || route.replyTargetSessionId.length === 0) {
@@ -493,6 +688,11 @@ export function openMemoryOutboxFixture(): Promise<SharedStoreFixture<OutboxStor
 export function openMemoryHeldSendFixture(): Promise<SharedStoreFixture<HeldSendStore>> {
 	const held = new Map<string, HeldSend>();
 	return sharedFixture(() => heldSendStore(held));
+}
+
+export function openMemoryRestoringReservationFixture(): Promise<SharedStoreFixture<RestoringReservationStore>> {
+	const shared: ReservationState = { records: new Map(), nextOrder: 1, nextToken: 1 };
+	return sharedFixture(() => restoringReservationStore(shared));
 }
 
 export function openMemoryPendingAskFixture(): Promise<SharedStoreFixture<PendingAskStore>> {

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { SqliteDatabase } from "@bastani/atomic/storage";
 import type { BrokerMessage, ClientMessage, SessionInfo } from "../types.js";
 
@@ -38,6 +39,9 @@ export type StateStoreInvalidReason =
 	| "empty-message-id"
 	| "empty-reservation-key"
 	| "empty-session-id"
+	| "empty-child-name"
+	| "empty-target"
+	| "empty-group"
 	| "subject-key-mismatch";
 
 export interface InvalidStateInput {
@@ -224,9 +228,18 @@ export interface OutboxStore {
 	prune(settledOlderThanMs: number): Promise<number>;
 }
 
+/**
+ * The shared key of a restoring-recipient reservation: the lowercase hex SHA-256 of the supervisor capability.
+ * The capability is a bearer secret with a random nonce, so the shared database stores only this digest.
+ */
+export function reservationKeyFor(capability: string): string {
+	return createHash("sha256").update(capability, "utf8").digest("hex");
+}
+
 export interface HeldSend {
-	/** Restoring-recipient reservation the send waits on (the supervisor capability for that child). */
+	/** `reservationKeyFor(capability)` of the restoring-recipient reservation the send waits on; never the capability. */
 	readonly reservationKey: string;
+	/** The broker holding the sender's socket and wait; it dispatches or refuses the send when the hold ends. */
 	readonly originBrokerId: string;
 	readonly senderSessionId: string;
 	/** Its `message.id` identifies the held send. */
@@ -245,7 +258,143 @@ export interface HeldSendStore {
 	list(reservationKey: string): Promise<HeldSendListResult>;
 	/** Atomically remove and return the reservation's held sends in insertion order, so each is handed over once. */
 	take(reservationKey: string): Promise<HeldSendTakeResult>;
+	/** Remove only this send; `dropped` tells exactly one caller that it now owns the send's dispatch. */
 	drop(messageId: string): Promise<HeldSendDropResult>;
+}
+
+export interface RestoringReservationRequest {
+	/** `reservationKeyFor(capability)`. */
+	readonly reservationKey: string;
+	readonly ownerSessionId: string;
+	/** The broker holding the owner's socket. */
+	readonly ownerBrokerId: string;
+	/** Verbatim, for refusal texts. */
+	readonly childName: string;
+	/** The normalized child name: a lookup target, and the identity a newer restoration or a registration matches. */
+	readonly childTarget: string;
+	/** Further normalized targets, such as the child's Atomic session id and pre-restart Intercom id. */
+	readonly aliases: readonly string[];
+	/** The child's normalized group; senders in it are admitted. */
+	readonly group: string;
+	/** Kept only until the supervisor that restores the child reserves it or the child registers. */
+	readonly dormant: boolean;
+}
+
+export interface RestoringReservation {
+	readonly reservationKey: string;
+	readonly ownerSessionId: string;
+	readonly ownerBrokerId: string;
+	readonly childName: string;
+	readonly childTarget: string;
+	/** `childTarget` first, then every other target once, in the order it was added. */
+	readonly targets: string[];
+	readonly group: string;
+	readonly dormant: boolean;
+	readonly fencingToken: number;
+	/** Set once the owner reports the child gone; verbatim. */
+	readonly gone?: string;
+}
+
+export interface RestoringReservationLease {
+	readonly reservationKey: string;
+	readonly ownerSessionId: string;
+	/** Positive safe integer, greater than every token issued earlier for the key, including ended or pruned ones. */
+	readonly fencingToken: number;
+}
+
+/** How a reservation ended; brokers holding sends for it read this to dispatch or refuse them. */
+export type RestoringReservationEnd =
+	/** The child registered: held sends are routed again. */
+	| { readonly outcome: "consumed" }
+	/** The owner ended it: held sends are refused with `refusal` when given, otherwise routed again. */
+	| { readonly outcome: "released"; readonly refusal?: string }
+	/** A newer restoration of the same child took it over: held sends keep waiting on `by`. */
+	| { readonly outcome: "superseded"; readonly by: string };
+
+export interface RestoringReservationSender {
+	readonly sessionId: string;
+	/** The sender's normalized groups. */
+	readonly groups: readonly string[];
+}
+
+export interface RestoringReservationRegistration {
+	/** The registered child's normalized name. */
+	readonly childTarget: string;
+	/** The registered child's normalized groups. */
+	readonly groups: readonly string[];
+}
+
+export interface RestoringReservationReleaseOutcome {
+	/** Keep the reservation as a gone marker that refuses held and later sends with this text. */
+	readonly gone?: string;
+	/** End the reservation and refuse only the sends held now with this text. Ignored when `gone` is given. */
+	readonly refusal?: string;
+}
+
+export type RestoringReservationReserveResult =
+	/** `superseded` lists the reservations this one took over, in insertion order. */
+	| { readonly status: "reserved"; readonly lease: RestoringReservationLease; readonly superseded: string[] }
+	| InvalidStateInput;
+export type RestoringReservationLookupResult =
+	| { readonly status: "none" }
+	| { readonly status: "reserved"; readonly reservation: RestoringReservation }
+	| { readonly status: "gone"; readonly reservation: RestoringReservation }
+	| InvalidStateInput;
+export type RestoringReservationRenewResult = { readonly status: "renewed" } | LeaseStaleResult | InvalidStateInput;
+export type RestoringReservationReleaseResult =
+	| { readonly status: "released" }
+	| { readonly status: "gone" }
+	| LeaseStaleResult
+	| InvalidStateInput;
+export type RestoringReservationConsumeResult =
+	/** The reservations this registration ended, in insertion order; empty when none. */
+	| { readonly status: "consumed"; readonly reservationKeys: string[] }
+	| InvalidStateInput;
+export type RestoringReservationReadResult =
+	| { readonly status: "active"; readonly reservation: RestoringReservation; readonly ageMs: number }
+	| { readonly status: "ended"; readonly end: RestoringReservationEnd }
+	| { readonly status: "missing" }
+	| InvalidStateInput;
+
+/**
+ * S3: #3760 restoring-recipient reservations shared by every broker, so a sender on any host sees a child being
+ * restored and holds its send. Targets and groups are matched exactly; callers pass normalized values.
+ */
+export interface RestoringReservationStore {
+	/**
+	 * Reserve the key, or add targets to it. The same owner keeps its token; another owner takes the reservation
+	 * over with a greater token, because holding the capability is the authority. A new or ended key supersedes
+	 * other active reservations of the same `childTarget` made by the same owner, or dormant in the same group,
+	 * merging their targets.
+	 */
+	reserve(request: RestoringReservationRequest): Promise<RestoringReservationReserveResult>;
+	/**
+	 * The first live reservation (`ageMs <= staleAfterMs`), in insertion order, with the target and owned by the
+	 * sender or in one of the sender's groups. A gone marker is reported as `gone`.
+	 */
+	lookup(
+		target: string,
+		sender: RestoringReservationSender,
+		staleAfterMs: number,
+	): Promise<RestoringReservationLookupResult>;
+	/** Reset the age, also of a gone marker. A superseded token or an ended reservation is `stale`. */
+	renew(lease: RestoringReservationLease): Promise<RestoringReservationRenewResult>;
+	/** Owner only: mark the reservation gone, or end it as `released`. */
+	release(
+		lease: RestoringReservationLease,
+		outcome?: RestoringReservationReleaseOutcome,
+	): Promise<RestoringReservationReleaseResult>;
+	/**
+	 * The child registered with this key through any broker: end its reservation unless it is a gone marker, and
+	 * with `registered`, every other dormant, non-gone reservation of that child in one of its groups. Age is ignored.
+	 */
+	consume(
+		reservationKey: string,
+		registered?: RestoringReservationRegistration,
+	): Promise<RestoringReservationConsumeResult>;
+	read(reservationKey: string): Promise<RestoringReservationReadResult>;
+	/** Delete ended records ended, and reservations last renewed, more than `olderThanMs` ago; returns the count. */
+	prune(olderThanMs: number): Promise<number>;
 }
 
 /** A delivered ask whose reply route stays open until the reply or either peer leaves. */
@@ -346,6 +495,7 @@ export interface IntercomBrokerStateStore {
 	readonly leases: BrokerLeaseStore;
 	readonly outbox: OutboxStore;
 	readonly heldSends: HeldSendStore;
+	readonly reservations: RestoringReservationStore;
 	readonly pendingAsks: PendingAskStore;
 	readonly sentMessages: SentMessageAuthority;
 	close(): Promise<void>;

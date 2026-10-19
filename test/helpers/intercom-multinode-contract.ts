@@ -13,8 +13,12 @@ import type {
 	OutboxStore,
 	PendingAskStore,
 	RecipientPresenceSubject,
+	RestoringReservation,
+	RestoringReservationRequest,
+	RestoringReservationStore,
 	SentMessageAuthority,
 } from "../../packages/intercom/broker/multinode-state-store.js";
+import { reservationKeyFor } from "../../packages/intercom/broker/multinode-state-store.js";
 import type {
 	WakeUpBus,
 	WakeUpEvent,
@@ -54,6 +58,13 @@ export type OpenWakeUpBusFixture = () => Promise<WakeUpBusFixture>;
 export interface CrossNodeFixtures {
 	readonly openOutbox: OpenSharedStoreFixture<OutboxStore>;
 	readonly openPendingAsks: OpenSharedStoreFixture<PendingAskStore>;
+	readonly openBus: OpenWakeUpBusFixture;
+}
+
+export interface CrossNodeHeldFixtures {
+	readonly openReservations: OpenSharedStoreFixture<RestoringReservationStore>;
+	readonly openHeldSends: OpenSharedStoreFixture<HeldSendStore>;
+	readonly openOutbox: OpenSharedStoreFixture<OutboxStore>;
 	readonly openBus: OpenWakeUpBusFixture;
 }
 
@@ -658,9 +669,10 @@ export function registerHeldSendStoreConformance(
 		assert.deepEqual(taken, [snapshot, held("a-held")]);
 		assert.deepEqual(await a.take("capability-1"), { status: "taken", sends: [] });
 		assert.deepEqual(await a.list("capability-2"), { status: "listed", sends: [held("m-held", "capability-2")] });
+		assert.deepEqual(await a.hold(held("b-held", "capability-2")), { status: "held" });
 		assert.deepEqual(await a.drop("m-held"), { status: "dropped" });
 		assert.deepEqual(await b.drop("m-held"), { status: "missing" });
-		assert.deepEqual(await b.list("capability-2"), { status: "listed", sends: [] });
+		assert.deepEqual(await b.list("capability-2"), { status: "listed", sends: [held("b-held", "capability-2")] });
 		assert.deepEqual(await b.hold(held("z-held")), { status: "held" });
 	});
 
@@ -675,6 +687,313 @@ export function registerHeldSendStoreConformance(
 		assert.deepEqual(await a.take(""), empty("empty-reservation-key"));
 		assert.deepEqual(await a.drop(""), empty("empty-message-id"));
 		assert.deepEqual(await a.list("capability-1"), { status: "listed", sends: [] });
+	});
+}
+
+const RESERVATION_KEY = reservationKeyFor("capability-worker");
+const TEAMMATE = { sessionId: "teammate-session", groups: ["Review Crew", "team"] };
+const OUTSIDER = { sessionId: "outsider-session", groups: ["other"] };
+
+function reservationRequest(overrides: Partial<RestoringReservationRequest> = {}): RestoringReservationRequest {
+	return {
+		reservationKey: RESERVATION_KEY,
+		ownerSessionId: "supervisor-session",
+		ownerBrokerId: "broker-b",
+		childName: " Worker ",
+		childTarget: "worker",
+		aliases: ["atomic-session-7", "intercom-old-7"],
+		group: "team",
+		dormant: false,
+		...overrides,
+	};
+}
+
+export function registerRestoringReservationStoreConformance(
+	runner: MultiNodeConformanceRunner,
+	name: string,
+	open: OpenSharedStoreFixture<RestoringReservationStore>,
+): void {
+	const check = withShared(runner, `${name} restoring reservations`, open);
+	const reserve = async (store: RestoringReservationStore, overrides: Partial<RestoringReservationRequest> = {}) =>
+		expectStatus(await store.reserve(reservationRequest(overrides)), "reserved");
+	const expected = (fencingToken: number, overrides: Partial<RestoringReservation> = {}): RestoringReservation => ({
+		reservationKey: RESERVATION_KEY,
+		ownerSessionId: "supervisor-session",
+		ownerBrokerId: "broker-b",
+		childName: " Worker ",
+		childTarget: "worker",
+		targets: ["worker", "atomic-session-7", "intercom-old-7"],
+		group: "team",
+		dormant: false,
+		fencingToken,
+		...overrides,
+	});
+
+	check(
+		"finds a reservation by every target for its owner and its group only, as detached copies",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			const aliases = ["atomic-session-7", "intercom-old-7"];
+			const reserved = await reserve(b, { aliases });
+			aliases.push("late-alias");
+			aliases[0] = "mutated-alias";
+			assertPositiveSafeInteger(reserved.lease.fencingToken, "fencingToken");
+			assert.deepEqual(reserved, {
+				status: "reserved",
+				lease: {
+					reservationKey: RESERVATION_KEY,
+					ownerSessionId: "supervisor-session",
+					fencingToken: reserved.lease.fencingToken,
+				},
+				superseded: [],
+			});
+			const reservation = expected(reserved.lease.fencingToken);
+			for (const target of reservation.targets) {
+				assert.deepEqual(await a.lookup(target, TEAMMATE, LIVE_MS), { status: "reserved", reservation });
+			}
+			assert.deepEqual(await a.lookup("worker", { sessionId: "supervisor-session", groups: [] }, LIVE_MS), {
+				status: "reserved",
+				reservation,
+			});
+			assert.deepEqual(await a.lookup("worker", OUTSIDER, LIVE_MS), { status: "none" });
+			for (const target of [" Worker ", "Worker", "late-alias", "mutated-alias", "unknown"]) {
+				assert.deepEqual(await a.lookup(target, TEAMMATE, LIVE_MS), { status: "none" });
+			}
+			const found = expectStatus(await a.lookup("worker", TEAMMATE, LIVE_MS), "reserved").reservation;
+			found.targets.push("mutated-target");
+			Reflect.set(found, "group", "other");
+			const read = expectStatus(await b.read(RESERVATION_KEY), "active");
+			assert.deepEqual(read.reservation, reservation);
+			assert.ok(Number.isSafeInteger(read.ageMs) && read.ageMs >= 0, `ageMs ${read.ageMs}`);
+			read.reservation.targets.length = 0;
+			assert.deepEqual(await a.lookup("intercom-old-7", TEAMMATE, LIVE_MS), { status: "reserved", reservation });
+		},
+	);
+
+	check("refuses as gone while marked gone and ends on release, with an optional refusal", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		const { lease } = await reserve(b);
+		const gone = "  Subagent `Worker` is gone:\t ünï \u0000 ";
+		assert.deepEqual(await b.release(lease, { gone }), { status: "gone" });
+		assert.deepEqual(await a.lookup("atomic-session-7", TEAMMATE, LIVE_MS), {
+			status: "gone",
+			reservation: expected(lease.fencingToken, { gone }),
+		});
+		assert.deepEqual(await b.renew(lease), { status: "renewed" });
+		assert.deepEqual(await b.release(lease), { status: "released" });
+		assert.deepEqual(await a.read(RESERVATION_KEY), { status: "ended", end: { outcome: "released" } });
+		assert.deepEqual(await a.lookup("worker", TEAMMATE, LIVE_MS), { status: "none" });
+		assert.deepEqual(await b.renew(lease), { status: "stale" });
+		assert.deepEqual(await b.release(lease), { status: "stale" });
+		const refusingKey = reservationKeyFor("capability-refusing");
+		const refusing = await reserve(b, { reservationKey: refusingKey });
+		const refusal = " restored on another host \n";
+		assert.deepEqual(await b.release(refusing.lease, { refusal }), { status: "released" });
+		assert.deepEqual(await a.read(refusingKey), { status: "ended", end: { outcome: "released", refusal } });
+		const bothKey = reservationKeyFor("capability-both");
+		const both = await reserve(b, { reservationKey: bothKey });
+		assert.deepEqual(await b.release(both.lease, { gone: "gone wins", refusal }), { status: "gone" });
+		assert.equal(expectStatus(await a.lookup("worker", TEAMMATE, LIVE_MS), "gone").reservation.gone, "gone wins");
+	});
+
+	check("stops holding new sends once its owner stops renewing, until renewed", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		const { lease } = await reserve(b);
+		assert.deepEqual(await a.lookup("worker", TEAMMATE, EXPIRED_MS), { status: "none" });
+		assert.equal((await a.lookup("worker", TEAMMATE, LIVE_MS)).status, "reserved");
+		await sleep(RENEWAL_GAP_MS);
+		const before = expectStatus(await a.read(RESERVATION_KEY), "active").ageMs;
+		assert.ok(before >= RENEWAL_GAP_MS - CLOCK_TOLERANCE_MS, `age ${before} before renewing`);
+		const renewStarted = Date.now();
+		assert.deepEqual(await b.renew(lease), { status: "renewed" });
+		const after = expectStatus(await a.read(RESERVATION_KEY), "active").ageMs;
+		assert.ok(after <= Date.now() - renewStarted + CLOCK_TOLERANCE_MS, `age ${after} after renewing`);
+		const window = Date.now() - renewStarted + RENEWAL_GAP_MS / 2;
+		assert.equal((await a.lookup("worker", TEAMMATE, window)).status, "reserved");
+	});
+
+	check("fences renew and release to the current owner, and lets the capability holder take over", async (connect) => {
+		const [a, b, c] = [await connect(), await connect(), await connect()];
+		const first = await reserve(b);
+		const again = await reserve(b, { aliases: ["extra-alias"] });
+		assert.deepEqual(again, first);
+		const current = { status: "stale", currentFencingToken: first.lease.fencingToken };
+		const intruder = { ...first.lease, ownerSessionId: "intruder-session" };
+		const superseded = { ...first.lease, fencingToken: first.lease.fencingToken + 1_000 };
+		for (const lease of [intruder, superseded]) {
+			assert.deepEqual(await a.renew(lease), current);
+			assert.deepEqual(await a.release(lease), current);
+			assert.deepEqual(await a.release(lease, { gone: "not the owner" }), current);
+		}
+		const takeover = await reserve(c, {
+			ownerSessionId: "restarted-supervisor",
+			ownerBrokerId: "broker-c",
+			aliases: [],
+		});
+		assert.deepEqual(takeover.superseded, []);
+		assert.equal(takeover.lease.ownerSessionId, "restarted-supervisor");
+		assert.ok(takeover.lease.fencingToken > first.lease.fencingToken);
+		const fenced = { status: "stale", currentFencingToken: takeover.lease.fencingToken };
+		assert.deepEqual(await b.renew(first.lease), fenced);
+		assert.deepEqual(await b.release(first.lease), fenced);
+		assert.deepEqual(expectStatus(await a.read(RESERVATION_KEY), "active").reservation, {
+			...expected(takeover.lease.fencingToken),
+			ownerSessionId: "restarted-supervisor",
+			ownerBrokerId: "broker-c",
+			targets: ["worker", "atomic-session-7", "intercom-old-7", "extra-alias"],
+		});
+		assert.deepEqual(await c.renew(takeover.lease), { status: "renewed" });
+		assert.deepEqual(await c.release(takeover.lease), { status: "released" });
+		assert.deepEqual(await c.renew(takeover.lease), { status: "stale" });
+		const reopened = await reserve(b);
+		assert.ok(reopened.lease.fencingToken > takeover.lease.fencingToken);
+	});
+
+	check("replaces its owner's earlier reservation of the same child, gone marker included", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		const earlierKey = reservationKeyFor("capability-earlier");
+		const earlier = await reserve(b, { reservationKey: earlierKey });
+		assert.deepEqual(await b.release(earlier.lease, { gone: "gone before the restart" }), { status: "gone" });
+		const fresh = await reserve(b, { aliases: ["fresh-alias"] });
+		assert.deepEqual(fresh.superseded, [earlierKey]);
+		assert.deepEqual(await a.read(earlierKey), {
+			status: "ended",
+			end: { outcome: "superseded", by: RESERVATION_KEY },
+		});
+		assert.deepEqual(await a.lookup("worker", TEAMMATE, LIVE_MS), {
+			status: "reserved",
+			reservation: expected(fresh.lease.fencingToken, {
+				targets: ["worker", "atomic-session-7", "intercom-old-7", "fresh-alias"],
+			}),
+		});
+		assert.deepEqual(await b.renew(earlier.lease), { status: "stale" });
+		const peerKey = reservationKeyFor("capability-peer");
+		const peer = await reserve(a, { reservationKey: peerKey, ownerSessionId: "peer-supervisor", aliases: [] });
+		assert.deepEqual(peer.superseded, []);
+		assert.equal((await a.read(RESERVATION_KEY)).status, "active");
+	});
+
+	check(
+		"consumes a registered child's reservation and its dormant reservations in the child's groups",
+		async (connect) => {
+			const [a, b, c] = [await connect(), await connect(), await connect()];
+			const dormantKey = reservationKeyFor("capability-dormant");
+			const otherGroupKey = reservationKeyFor("capability-other-group");
+			const lateKey = reservationKeyFor("capability-late");
+			const goneKey = reservationKeyFor("capability-gone");
+			const launcher = await reserve(a, {
+				reservationKey: dormantKey,
+				ownerSessionId: "launcher-session",
+				ownerBrokerId: "broker-a",
+				aliases: ["atomic-session-7"],
+				dormant: true,
+			});
+			await reserve(a, {
+				reservationKey: otherGroupKey,
+				ownerSessionId: "other-launcher",
+				aliases: [],
+				group: "other",
+				dormant: true,
+			});
+			const restoring = await reserve(b, { aliases: ["intercom-old-7"] });
+			assert.deepEqual(restoring.superseded, [dormantKey]);
+			assert.deepEqual(await c.read(dormantKey), {
+				status: "ended",
+				end: { outcome: "superseded", by: RESERVATION_KEY },
+			});
+			assert.deepEqual(await c.lookup("atomic-session-7", TEAMMATE, LIVE_MS), {
+				status: "reserved",
+				reservation: expected(restoring.lease.fencingToken),
+			});
+			assert.deepEqual(await a.renew(launcher.lease), { status: "stale" });
+			const peerKey = reservationKeyFor("capability-peer-restorer");
+			const peer = await reserve(b, { reservationKey: peerKey, ownerSessionId: "peer-supervisor", aliases: [] });
+			assert.deepEqual(peer.superseded, []);
+			const late = await reserve(a, {
+				reservationKey: lateKey,
+				ownerSessionId: "late-launcher",
+				aliases: [],
+				dormant: true,
+			});
+			assert.deepEqual(late.superseded, []);
+			assert.deepEqual(
+				await c.consume(RESERVATION_KEY, { childTarget: "worker", groups: ["team", "Review Crew"] }),
+				{
+					status: "consumed",
+					reservationKeys: [RESERVATION_KEY, lateKey],
+				},
+			);
+			for (const key of [RESERVATION_KEY, lateKey]) {
+				assert.deepEqual(await a.read(key), { status: "ended", end: { outcome: "consumed" } });
+			}
+			assert.equal(
+				expectStatus(await a.lookup("worker", TEAMMATE, LIVE_MS), "reserved").reservation.reservationKey,
+				peerKey,
+			);
+			const otherGroup = expectStatus(
+				await a.lookup("worker", { sessionId: "other-launcher", groups: [] }, LIVE_MS),
+				"reserved",
+			);
+			assert.equal(otherGroup.reservation.reservationKey, otherGroupKey);
+			assert.deepEqual(await b.consume(RESERVATION_KEY, { childTarget: "worker", groups: ["team"] }), {
+				status: "consumed",
+				reservationKeys: [],
+			});
+			const gone = await reserve(b, { reservationKey: goneKey, ownerSessionId: "gone-owner", aliases: [] });
+			assert.deepEqual(await b.release(gone.lease, { gone: "gone" }), { status: "gone" });
+			assert.deepEqual(await c.consume(goneKey), { status: "consumed", reservationKeys: [] });
+			assert.equal((await a.lookup("worker", { sessionId: "gone-owner", groups: [] }, LIVE_MS)).status, "gone");
+		},
+	);
+
+	check("prunes ended and unrenewed reservations, and keeps later tokens greater", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		const first = await reserve(b);
+		const endedKey = reservationKeyFor("capability-reviewer");
+		const ended = await reserve(b, {
+			reservationKey: endedKey,
+			childName: "reviewer",
+			childTarget: "reviewer",
+			aliases: [],
+		});
+		assert.deepEqual(await b.release(ended.lease), { status: "released" });
+		assert.equal(await a.prune(LIVE_MS), 0);
+		assert.equal((await a.read(RESERVATION_KEY)).status, "active");
+		assert.equal(await a.prune(EXPIRED_MS), 2);
+		assert.deepEqual(await a.read(RESERVATION_KEY), { status: "missing" });
+		assert.deepEqual(await a.read(endedKey), { status: "missing" });
+		const reopened = await reserve(b);
+		assert.ok(reopened.lease.fencingToken > first.lease.fencingToken);
+		assert.deepEqual(await b.renew(first.lease), {
+			status: "stale",
+			currentFencingToken: reopened.lease.fencingToken,
+		});
+	});
+
+	check("rejects empty identifiers", async (connect) => {
+		const a = await connect();
+		const empty = (reason: string) => ({ status: "invalid", reason });
+		const lease = { reservationKey: RESERVATION_KEY, ownerSessionId: "supervisor-session", fencingToken: 1 };
+		assert.deepEqual(await a.reserve(reservationRequest({ reservationKey: "" })), empty("empty-reservation-key"));
+		assert.deepEqual(await a.reserve(reservationRequest({ ownerSessionId: "" })), empty("empty-session-id"));
+		assert.deepEqual(await a.reserve(reservationRequest({ ownerBrokerId: "" })), empty("empty-broker-id"));
+		assert.deepEqual(await a.reserve(reservationRequest({ childName: "" })), empty("empty-child-name"));
+		assert.deepEqual(await a.reserve(reservationRequest({ childTarget: "" })), empty("empty-target"));
+		assert.deepEqual(await a.reserve(reservationRequest({ aliases: ["alias", ""] })), empty("empty-target"));
+		assert.deepEqual(await a.reserve(reservationRequest({ group: "" })), empty("empty-group"));
+		assert.deepEqual(await a.lookup("", TEAMMATE, LIVE_MS), empty("empty-target"));
+		assert.deepEqual(
+			await a.lookup("worker", { sessionId: "", groups: ["team"] }, LIVE_MS),
+			empty("empty-session-id"),
+		);
+		assert.deepEqual(await a.renew({ ...lease, reservationKey: "" }), empty("empty-reservation-key"));
+		assert.deepEqual(await a.renew({ ...lease, ownerSessionId: "" }), empty("empty-session-id"));
+		assert.deepEqual(await a.release({ ...lease, reservationKey: "" }), empty("empty-reservation-key"));
+		assert.deepEqual(await a.release({ ...lease, ownerSessionId: "" }, { gone: "gone" }), empty("empty-session-id"));
+		assert.deepEqual(await a.consume(""), empty("empty-reservation-key"));
+		assert.deepEqual(await a.consume(RESERVATION_KEY, { childTarget: "", groups: ["team"] }), empty("empty-target"));
+		assert.deepEqual(await a.read(""), empty("empty-reservation-key"));
+		assert.deepEqual(await a.read(RESERVATION_KEY), { status: "missing" });
 	});
 }
 
@@ -721,6 +1040,8 @@ export function registerPendingAskStoreConformance(
 		await b.record(ask("sender-2", "target", "q-z"));
 		await a.record(ask("sender", "target-2", "q3"));
 		await b.record(ask("sender-2", "target", "q-a"));
+		await a.record(ask("both", "target-3", "q-both-sent"));
+		await b.record(ask("sender-3", "both", "q-both-asked"));
 		assert.deepEqual(await b.pruneSender("sender"), { status: "pruned", removed: 2 });
 		assert.deepEqual(await b.pruneSender("unknown"), { status: "pruned", removed: 0 });
 		assert.deepEqual(await a.takeForTarget("target"), {
@@ -729,6 +1050,17 @@ export function registerPendingAskStoreConformance(
 		});
 		assert.deepEqual(await b.takeForTarget("target"), { status: "taken", asks: [] });
 		assert.deepEqual(await b.matchesReply(reply("target-2", "sender", "q3")), { status: "no-match" });
+		assert.deepEqual(await a.takeForTarget("both"), {
+			status: "taken",
+			asks: [ask("sender-3", "both", "q-both-asked")],
+		});
+		assert.deepEqual(await b.matchesReply(reply("target-3", "both", "q-both-sent")), { status: "match" });
+		await b.record(ask("sender-4", "both", "q-both-later"));
+		assert.deepEqual(await a.pruneSender("both"), { status: "pruned", removed: 1 });
+		assert.deepEqual(await b.takeForTarget("both"), {
+			status: "taken",
+			asks: [ask("sender-4", "both", "q-both-later")],
+		});
 	});
 
 	check("rejects empty identifiers", async (connect) => {
@@ -1131,5 +1463,154 @@ export function registerCrossNodeRoundTripConformance(
 		);
 		await a.bus.publish({ brokerId: "broker-b", reason: "outbox", version: 0 });
 		assert.deepEqual(await claimFor(b, OTHER_RECIPIENT), []);
+	});
+}
+
+interface SimulatedHeldBroker {
+	readonly brokerId: string;
+	readonly reservations: RestoringReservationStore;
+	readonly heldSends: HeldSendStore;
+	readonly outbox: OutboxStore;
+	readonly bus: WakeUpBus;
+	readonly recorder: WakeUpRecorder;
+}
+
+const CHILD_IDENTITY = JSON.stringify(["session", "restored-worker"]);
+const SENDER_IN_GROUP = { sessionId: SENDER.id, groups: ["team", "Review Crew"] };
+
+/**
+ * The held path of the spec's round trip: the sender's broker A sees a child its supervisor restores on broker B,
+ * holds the send and owns its dispatch; the broker that ends the hold only records the end and wakes A.
+ */
+export function registerCrossNodeHeldRoundTripConformance(
+	runner: MultiNodeConformanceRunner,
+	name: string,
+	fixtures: CrossNodeHeldFixtures,
+): void {
+	const check = (label: string, body: (a: SimulatedHeldBroker, b: SimulatedHeldBroker) => Promise<void>) => {
+		runner(`${name} cross-node held round trip: ${label}`, async () => {
+			const reservationFixture = await fixtures.openReservations();
+			const heldFixture = await fixtures.openHeldSends();
+			const outboxFixture = await fixtures.openOutbox();
+			const busFixture = await fixtures.openBus();
+			try {
+				const broker = async (brokerId: string): Promise<SimulatedHeldBroker> => {
+					const bus = await busFixture.connect();
+					const { recorder } = await subscribe(bus, brokerId);
+					await recorder.next((event) => event.kind === "resync");
+					return {
+						brokerId,
+						reservations: await reservationFixture.connect(),
+						heldSends: await heldFixture.connect(),
+						outbox: await outboxFixture.connect(),
+						bus,
+						recorder,
+					};
+				};
+				await body(await broker("broker-a"), await broker("broker-b"));
+			} finally {
+				await busFixture.close();
+				await outboxFixture.close();
+				await heldFixture.close();
+				await reservationFixture.close();
+			}
+		});
+	};
+	const heldRequest = (id: string, text: string): HeldSend["request"] => ({
+		type: "send",
+		to: "worker",
+		awaitRestoringRecipient: true,
+		attemptId: `attempt-${id}`,
+		message: { id, timestamp: 1_700_000_005_000, content: { text } },
+	});
+	const holdThroughOrigin = async (origin: SimulatedHeldBroker, request: HeldSend["request"]) => {
+		const found = expectStatus(await origin.reservations.lookup("worker", SENDER_IN_GROUP, LIVE_MS), "reserved");
+		const send: HeldSend = {
+			reservationKey: found.reservation.reservationKey,
+			originBrokerId: origin.brokerId,
+			senderSessionId: SENDER.id,
+			request,
+		};
+		assert.deepEqual(await origin.heldSends.hold(send), { status: "held" });
+		return send;
+	};
+	const wakeOrigins = async (ending: SimulatedHeldBroker, reservationKey: string) => {
+		const sends = expectStatus(await ending.heldSends.list(reservationKey), "listed").sends;
+		for (const brokerId of new Set(sends.map((send) => send.originBrokerId))) {
+			await ending.bus.publish({ brokerId, reason: "outcome", version: 0 });
+		}
+		return sends;
+	};
+
+	check(
+		"holds a send for a child restored on another node and delivers it once the child registers there",
+		async (a, b) => {
+			const reserved = expectStatus(await b.reservations.reserve(reservationRequest()), "reserved");
+			assert.deepEqual(await a.reservations.lookup("worker", OUTSIDER, LIVE_MS), { status: "none" });
+			const request = heldRequest("held-z", "  held across nodes \u0000 ünï ");
+			const send = await holdThroughOrigin(a, request);
+			assert.equal(send.reservationKey, RESERVATION_KEY);
+			assert.ok(!send.reservationKey.includes("capability-worker"));
+
+			const heldMark = a.recorder.mark();
+			assert.deepEqual(
+				await b.reservations.consume(reserved.lease.reservationKey, { childTarget: "worker", groups: ["team"] }),
+				{
+					status: "consumed",
+					reservationKeys: [RESERVATION_KEY],
+				},
+			);
+			assert.deepEqual(await wakeOrigins(b, RESERVATION_KEY), [send]);
+			await a.recorder.next(isHintFor("broker-a", "outcome"), heldMark);
+			assert.deepEqual(await a.reservations.read(RESERVATION_KEY), {
+				status: "ended",
+				end: { outcome: "consumed" },
+			});
+			assert.deepEqual(await a.heldSends.drop(request.message.id), { status: "dropped" });
+			assert.deepEqual(await b.heldSends.drop(request.message.id), { status: "missing" });
+			assert.deepEqual(await a.reservations.lookup("worker", SENDER_IN_GROUP, LIVE_MS), { status: "none" });
+
+			const frame: IntercomDeliveryFrame = { type: "message", from: SENDER, message: request.message };
+			const outboxMark = b.recorder.mark();
+			const row = expectStatus(
+				await a.outbox.enqueue({
+					targetIdentity: CHILD_IDENTITY,
+					originBrokerId: a.brokerId,
+					digest: "digest:held-z",
+					frame,
+				}),
+				"inserted",
+			).row;
+			await a.bus.publish({ brokerId: b.brokerId, reason: "outbox", version: row.sequence });
+			await b.recorder.next(isHintFor("broker-b", "outbox"), outboxMark);
+			const [claimed] = expectStatus(
+				await b.outbox.claim({ claimantId: b.brokerId, targetIdentity: CHILD_IDENTITY, staleAfterMs: LIVE_MS }),
+				"claimed",
+			).rows;
+			assert.ok(claimed);
+			assert.deepEqual(claimed.row.frame, frame);
+			const outcomeMark = a.recorder.mark();
+			expectStatus(await b.outbox.markDelivered(claimed.claim), "delivered");
+			await b.bus.publish({ brokerId: a.brokerId, reason: "outcome", version: row.sequence });
+			await a.recorder.next(isHintFor("broker-a", "outcome"), outcomeMark);
+			assert.equal(expectStatus(await a.outbox.read("held-z"), "found").row.state, "delivered");
+			assert.deepEqual(await a.heldSends.list(RESERVATION_KEY), { status: "listed", sends: [] });
+		},
+	);
+
+	check("refuses a held send with the gone reason its supervisor reports on another node", async (a, b) => {
+		const { lease } = expectStatus(await b.reservations.reserve(reservationRequest()), "reserved");
+		const request = heldRequest("held-gone", "are you there?");
+		const send = await holdThroughOrigin(a, request);
+		const gone = "Subagent `Worker` did not survive the restart and is gone.";
+		const mark = a.recorder.mark();
+		assert.deepEqual(await b.reservations.release(lease, { gone }), { status: "gone" });
+		assert.deepEqual(await wakeOrigins(b, RESERVATION_KEY), [send]);
+		await a.recorder.next(isHintFor("broker-a", "outcome"), mark);
+		assert.equal(expectStatus(await a.reservations.read(RESERVATION_KEY), "active").reservation.gone, gone);
+		assert.deepEqual(await a.heldSends.drop(request.message.id), { status: "dropped" });
+		const later = expectStatus(await a.reservations.lookup("atomic-session-7", SENDER_IN_GROUP, LIVE_MS), "gone");
+		assert.equal(later.reservation.gone, gone);
+		assert.deepEqual(await a.outbox.read("held-gone"), { status: "missing" });
 	});
 }
