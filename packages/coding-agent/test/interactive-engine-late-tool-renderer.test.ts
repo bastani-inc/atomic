@@ -14,6 +14,7 @@ import {
 	parseInteractiveEngineMessage,
 	serializeInteractiveEngineFrame,
 } from "../src/modes/interactive-engine/protocol.js";
+import { RemoteToolExecutionComponent } from "../src/modes/interactive-engine/remote-renderer.js";
 import type { RpcResourceExtension } from "../src/modes/rpc/rpc-types.js";
 import { stripAnsi } from "../src/utils/ansi.js";
 
@@ -120,6 +121,64 @@ test("atomic --session hydrates restored tool cards with extension renderers loa
 		const hydrated = await renderedText(chatContainer, /extension card result/);
 		assert.match(hydrated, /extension card call/);
 		assert.match(hydrated, /extension card result: \{"state":"paused"\}/);
+	} finally {
+		service.dispose();
+	}
+});
+
+test("atomic --session redraws a restored tool card when its engine renderer invalidates it (#3760)", async () => {
+	let invalidateCard = () => {};
+	let state = "paused";
+	const renderers: ToolRenderers = {
+		renderCall: () => new Text("live card call", 0, 0),
+		renderResult: (_result, _options, _theme, context) => {
+			invalidateCard = context.invalidate;
+			return new Text(`live card ${state}`, 0, 0);
+		},
+	};
+	const session = {
+		extensionRunner: { resolveToolRenderers: () => renderers },
+		getToolDefinition: () => undefined,
+		sessionManager: { getCwd: () => "/" },
+	};
+	const listeners: Array<(message: InteractiveEngineMessage) => void> = [];
+	const service = new EngineRenderService((line) => {
+		const message = parseInteractiveEngineMessage(line.trim());
+		if (message) for (const listener of [...listeners]) listener(message);
+	});
+	service.bindSession(session as unknown as AgentSession);
+	const runtime = Object.assign(Object.create(IsolatedInteractiveRuntime.prototype), {
+		onEngineMessage: (listener: (message: InteractiveEngineMessage) => void) => {
+			listeners.push(listener);
+			return () => listeners.splice(listeners.indexOf(listener), 1);
+		},
+		sendEngineCommand: (command: InteractiveEngineCommand) =>
+			service.handleLine(serializeInteractiveEngineFrame(command).trim()),
+	}) as IsolatedInteractiveRuntime;
+	let painted = "";
+	const card: RemoteToolExecutionComponent = new RemoteToolExecutionComponent(
+		"live_tool",
+		"restored_call",
+		{},
+		{},
+		runtime,
+		() =>
+			setTimeout(() => {
+				painted = stripAnsi(card.render(80).join("\n"));
+			}, 0),
+	);
+	const paintedEventually = async (expected: string) => {
+		const deadline = Date.now() + 5000;
+		while (!painted.includes(expected) && Date.now() < deadline)
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		assert.match(painted, new RegExp(expected));
+	};
+	try {
+		card.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false);
+		await paintedEventually("live card paused");
+		state = "running";
+		invalidateCard();
+		await paintedEventually("live card running");
 	} finally {
 		service.dispose();
 	}

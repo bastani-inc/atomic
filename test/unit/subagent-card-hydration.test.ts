@@ -31,6 +31,7 @@ import {
 } from "../../packages/subagents/src/extension/tool-rendering.js";
 import { bindSubagentChildCards } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
 import {
+	createSubagentChildRecordSink,
 	SUBAGENT_CHILD_RECORD_TYPE,
 	type SubagentChildRecord,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
@@ -393,12 +394,162 @@ test("atomic --session hydrates launch cards once the isolated engine loads the 
 	});
 	bindSubagentChildCards({ sessionManager: manager });
 
+	const host = isolatedEngineHost(manager, undefined);
+	const body = () => stripVTControlCharacters(host.chat.render(140).join("\n")).replace(/\s+/g, " ");
+	try {
+		await eventually(body, /"agent": "hyiso"/);
+		host.loadSubagentRenderer();
+		const text = await eventually(body, /‖ Paused \(resumable\)/);
+		assert.doesNotMatch(text, /Launched in background|"agent": "hyiso"/);
+	} finally {
+		host.dispose();
+		await store.close();
+	}
+});
+
+test("atomic --session shows the child's saved transcript in an expanded launch card without another redraw (#3760)", async () => {
+	initTheme("dark");
+	const store = new MemorySessionStore();
+	const manager = await SessionManager.create(store, process.cwd());
+	const childSession = await SessionManager.create(store, process.cwd());
+	await childSession.appendMessage({ role: "user", content: "Index the changelog", timestamp: Date.now() });
+	await childSession.appendMessage({
+		role: "assistant",
+		content: [{ type: "text", text: "Changelog index is partway done" }],
+		api: "test-api",
+		provider: "test-provider",
+		model: "test-model",
+		usage,
+		stopReason: "aborted",
+		timestamp: Date.now(),
+	});
+	const t = new TranscriptBuilder(manager, process.cwd());
+	await t.launch("hyisotx", "task-hyisotx");
+	await t.record({
+		childId: "hyisotx:0",
+		runId: "hyisotx",
+		state: "terminal",
+		terminalStatus: "paused",
+		taskId: "task-hyisotx",
+		childSessionId: childSession.getSessionId(),
+	});
+	bindSubagentChildCards({ sessionManager: manager });
+
+	const host = isolatedEngineHost(manager, definition as ToolRenderers);
+	try {
+		await eventually(host.painted, /‖ Paused \(resumable\)/);
+		for (const card of host.cards) card.setExpanded(true);
+		const expanded = await eventually(host.painted, /Changelog index is partway done/);
+		assert.match(expanded, /‖ Paused \(resumable\)[\s\S]*│ › Index the changelog │ Changelog index is partway done/);
+	} finally {
+		host.dispose();
+		await store.close();
+	}
+});
+
+test("atomic --session redraws a resumed child's original card in place when its record changes (#3760)", async () => {
+	initTheme("dark");
+	const store = new MemorySessionStore();
+	const manager = await SessionManager.create(store, process.cwd());
+	const t = new TranscriptBuilder(manager, process.cwd());
+	await t.launch("hyisores", "task-hyisores-1");
+	await t.record({
+		childId: "hyisores:0",
+		runId: "hyisores",
+		state: "terminal",
+		terminalStatus: "paused",
+		taskId: "task-hyisores-1",
+	});
+	bindSubagentChildCards({ sessionManager: manager });
+
+	const host = isolatedEngineHost(manager, definition as ToolRenderers);
+	try {
+		await eventually(host.painted, /‖ Paused \(resumable\)/);
+		createSubagentChildRecordSink(
+			{
+				appendEntry: async (type, data) => {
+					await manager.appendCustomEntry(type, data);
+				},
+			},
+			{ sessionManager: manager },
+		).record({
+			runId: "hyisores",
+			index: 0,
+			agent: "hyisores",
+			cwd: process.cwd(),
+			state: "running",
+			taskId: "task-hyisores-2",
+		});
+		const resumed = await eventually(host.painted, /∀ Running in background · resumed/);
+		assert.doesNotMatch(resumed, /Paused/);
+		assert.equal(host.cards.length, 1);
+	} finally {
+		host.dispose();
+		await store.close();
+	}
+});
+
+test("/resume redraws a resumed child's original card in place when its record changes (#3760)", async () => {
+	initTheme("dark");
+	const store = new MemorySessionStore();
+	const manager = await SessionManager.create(store, process.cwd());
+	const t = new TranscriptBuilder(manager, process.cwd());
+	await t.launch("hyresume", "task-hyresume-1");
+	await t.record({
+		childId: "hyresume:0",
+		runId: "hyresume",
+		state: "terminal",
+		terminalStatus: "paused",
+		taskId: "task-hyresume-1",
+	});
+	bindSubagentChildCards({ sessionManager: manager });
+
+	let painted = "";
+	const [entry] = chatEntriesFromAgentMessages(manager.buildSessionContext().messages as AgentMessage[]).filter(
+		(entry) => entry.kind === "tool",
+	);
+	const card = renderChatMessageEntry(entry!, {
+		ui: {
+			requestRender() {
+				painted = stripVTControlCharacters(card.render(140).join("\n")).replace(/\s+/g, " ");
+			},
+		},
+		cwd: process.cwd(),
+		toolOutputExpanded: false,
+		getToolDefinition: (name) => (name === "subagent" ? definition : undefined),
+	});
+	assert.match(stripVTControlCharacters(card.render(140).join("\n")), /‖ Paused \(resumable\)/);
+	createSubagentChildRecordSink(
+		{
+			appendEntry: async (type, data) => {
+				await manager.appendCustomEntry(type, data);
+			},
+		},
+		{ sessionManager: manager },
+	).record({
+		runId: "hyresume",
+		index: 0,
+		agent: "hyresume",
+		cwd: process.cwd(),
+		state: "running",
+		taskId: "task-hyresume-2",
+	});
+	assert.match(painted, /∀ Running in background · resumed/);
+	await store.close();
+});
+
+/**
+ * A host transcript of remote subagent cards drawn by a real engine render service, the way `atomic --session`
+ * shows a restored session. `painted` is the last frame the host drew, and the host draws only when a card
+ * requests it, as the terminal UI does.
+ */
+function isolatedEngineHost(manager: SessionManager, subagentRenderer: ToolRenderers | undefined) {
 	const runner = (subagent: ToolRenderers | undefined) => ({
 		resolveToolRenderers: (name: string, base: () => ToolRenderers | undefined) =>
 			name === "subagent" ? subagent : base(),
 	});
 	const engineSession = {
-		extensionRunner: runner(undefined),
+		extensionRunner: runner(subagentRenderer),
 		getToolDefinition: () => undefined,
 		sessionManager: manager,
 	};
@@ -422,12 +573,23 @@ test("atomic --session hydrates launch cards once the isolated engine loads the 
 		},
 	}) as IsolatedInteractiveRuntime;
 	const chat = new Container();
+	let painted = "";
+	let paintQueued = false;
+	const requestRender = () => {
+		if (paintQueued) return;
+		paintQueued = true;
+		setTimeout(() => {
+			paintQueued = false;
+			painted = stripVTControlCharacters(chat.render(140).join("\n")).replace(/\s+/g, " ");
+		}, 0);
+	};
 	attachInteractiveEngineResourceExtensionRefresh({
 		runtimeHost: runtime,
 		chatContainer: chat,
 		resourceDisclosureContainer: new Container(),
-		ui: { requestRender() {} } as unknown as TUI,
+		ui: { requestRender } as unknown as TUI,
 	} as unknown as Parameters<typeof attachInteractiveEngineResourceExtensionRefresh>[0]);
+	const cards: RemoteToolExecutionComponent[] = [];
 	for (const entry of chatEntriesFromAgentMessages(manager.buildSessionContext().messages as AgentMessage[])) {
 		if (entry.kind !== "tool") continue;
 		const card = new RemoteToolExecutionComponent(
@@ -436,20 +598,20 @@ test("atomic --session hydrates launch cards once the isolated engine loads the 
 			entry.args,
 			{},
 			runtime,
-			() => {},
+			requestRender,
 		);
 		if (entry.result) card.updateResult(entry.result, entry.isPartial ?? false);
 		chat.addChild(card);
+		cards.push(card);
 	}
-	const body = () => stripVTControlCharacters(chat.render(140).join("\n")).replace(/\s+/g, " ");
-	try {
-		await eventually(body, /"agent": "hyiso"/);
-		engineSession.extensionRunner = runner(definition as ToolRenderers);
-		resourcesLoaded();
-		const text = await eventually(body, /‖ Paused \(resumable\)/);
-		assert.doesNotMatch(text, /Launched in background|"agent": "hyiso"/);
-	} finally {
-		service.dispose();
-		await store.close();
-	}
-});
+	return {
+		chat,
+		cards,
+		painted: () => painted,
+		loadSubagentRenderer() {
+			engineSession.extensionRunner = runner(definition as ToolRenderers);
+			resourcesLoaded();
+		},
+		dispose: () => service.dispose(),
+	};
+}

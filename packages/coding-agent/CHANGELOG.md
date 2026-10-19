@@ -24,6 +24,7 @@
 - JSONL sessions no longer stall when many sessions share a directory. Each append now rereads only its own session header instead of every session header in the directory ([#3780](https://github.com/bastani-inc/atomic/pull/3780) by [@darionco](https://github.com/darionco)).
 - Opening or loading a session in a directory with many JSONL sessions no longer reads every session header, including the first lookup in a process and sessions created by another process.
 - A resumed session no longer splits an extension tool call into an arguments-only card and a separate result card when the extension saved its own entries between them, and tool cards in an attached workflow stage chat now redraw when their renderer updates them ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
+- Extension tool cards, including subagent cards, now use their extension renderers and current state when a session is opened with `atomic --session <id>`, instead of showing raw arguments. They also redraw as soon as their state changes, so an expanded subagent card shows the child's saved transcript and a resumed child updates in its original card without waiting for another screen redraw ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
 
 ## [0.9.39] - 2026-10-19
 

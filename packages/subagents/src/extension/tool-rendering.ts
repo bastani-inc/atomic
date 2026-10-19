@@ -176,13 +176,13 @@ export function renderSubagentToolResult(
 			const observation = outcome.observation;
 			const task = result.details?.taskRecords?.find((task) => task.ref.taskId === observation.taskId);
 			const childId = task?.launchOperationId;
+			const record = subagentChildCardRecord(childId, observation.taskId);
 			watchSubagentChildCard(
 				context.state,
 				context.invalidate,
-				childId ?? observation.taskId,
+				record?.childId ?? childId ?? observation.taskId,
 				result.details?.ownerSessionId,
 			);
-			const record = subagentChildCardRecord(childId, observation.taskId);
 			if (record) {
 				const view = childStateView(record);
 				const resumed = record.taskId !== undefined && record.taskId !== observation.taskId ? " · resumed" : "";

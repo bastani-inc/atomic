@@ -40,7 +40,7 @@ abstract class RemoteRenderer implements Component {
 				this.lines = message.lines;
 				this.requestRender();
 			} else if (message.type === "engine_custom_invalidate") {
-				this.markDirty();
+				this.changed();
 			}
 		});
 	}
