@@ -1524,9 +1524,13 @@ class IntercomBroker {
           this.shutdownTimer = null;
         }
 
-        writeMessageIfOpen(socket, supervisorId
-          ? { type: "registered", sessionId: id, supervisorSessionId: supervisorId }
-          : { type: "registered", sessionId: id });
+        // #3761: echoing the capability tells the client this broker understands `received`; an old broker never does.
+        writeMessageIfOpen(socket, {
+          type: "registered",
+          sessionId: id,
+          ...(supervisorId ? { supervisorSessionId: supervisorId } : {}),
+          ...(clientMessage.acknowledgesReceipt === true ? { acknowledgesReceipt: true as const } : {}),
+        });
         if (isAgentRecipient(info)) this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
         // #3761: messages written to this recipient's previous connection that it never confirmed saving go out again.
         const rejoined = this.sessions.get(id);

@@ -205,7 +205,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     }
   }
   // #3761: a message counts as shown once its `intercom_message` card is on the session branch.
-  const pendingIdleMessages = new InboundIdleQueue((messageId) => consumedIntercomMessageIds(sessionBranch()).has(messageId));
+  const pendingIdleMessages = new InboundIdleQueue(() => consumedIntercomMessageIds(sessionBranch()));
   const durableInbox = new DurableInbox({
     durable: () => {
       try {

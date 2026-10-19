@@ -143,7 +143,7 @@ test("a message the recipient could not save is not confirmed, and an unsaved se
 
 test("a message is shown once by id whichever of the idle flush, foreground detach or terminal barrier takes it (#3761)", () => {
 	const consumed = new Set<string>();
-	const queue = new InboundIdleQueue((id) => consumed.has(id));
+	const queue = new InboundIdleQueue(() => consumed);
 	const first = queued("a", 1);
 	assert.equal(queue.enqueue(first), true);
 	assert.equal(queue.enqueue(queued("a", 1)), false, "a redelivered copy is not queued twice");

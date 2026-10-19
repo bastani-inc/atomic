@@ -12,17 +12,21 @@ export interface InboundIdleClaim {
  * target; unrelated children retain their original queue positions.
  *
  * #3761: each message id is queued once, and a message already shown in the
- * session (`isConsumed`) is never handed out again, whichever of the idle flush,
- * foreground-detach or terminal-barrier paths takes it.
+ * session (in `consumedIds`) is never handed out again, whichever of the idle
+ * flush, foreground-detach or terminal-barrier paths takes it. `consumedIds` is
+ * read once per operation, not once per queued entry.
  */
+const NONE_CONSUMED: ReadonlySet<string> = new Set();
+
 export class InboundIdleQueue {
   private entries: InboundMessageEntry[] = [];
   private generation = 0;
 
-  constructor(private readonly isConsumed: (messageId: string) => boolean = () => false) {}
+  constructor(private readonly consumedIds: () => ReadonlySet<string> = () => NONE_CONSUMED) {}
 
   private dropConsumed(): void {
-    this.entries = this.entries.filter((entry) => !this.isConsumed(entry.message.id));
+    const consumed = this.consumedIds();
+    this.entries = this.entries.filter((entry) => !consumed.has(entry.message.id));
   }
 
   get size(): number {
@@ -30,7 +34,7 @@ export class InboundIdleQueue {
   }
 
   enqueue(entry: InboundMessageEntry): boolean {
-    if (this.isConsumed(entry.message.id) || this.entries.some((queued) => queued.message.id === entry.message.id)) return false;
+    if (this.consumedIds().has(entry.message.id) || this.entries.some((queued) => queued.message.id === entry.message.id)) return false;
     this.entries.push(entry);
     return true;
   }
@@ -43,7 +47,7 @@ export class InboundIdleQueue {
     const index = this.entries.indexOf(entry);
     if (index < 0) return false;
     this.entries.splice(index, 1);
-    return !this.isConsumed(entry.message.id);
+    return !this.consumedIds().has(entry.message.id);
   }
 
   drain(): InboundMessageEntry[] {

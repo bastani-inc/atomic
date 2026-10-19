@@ -164,6 +164,8 @@ export class IntercomClient extends EventEmitter {
 	private readonly returnAddress: string;
 	private readonly preferredSessionId: string | undefined;
 	private readonly acknowledgesReceipt: boolean;
+	/** #3761: the broker of the current registration echoed `acknowledgesReceipt`, so it understands `received`. */
+	private brokerAcknowledgesReceipt = false;
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
   private _supervisorSessionId: string | null = null;
@@ -315,6 +317,7 @@ export class IntercomClient extends EventEmitter {
         }
         this._sessionId = null;
         this._supervisorSessionId = null;
+        this.brokerAcknowledgesReceipt = false;
         this._messageSource = undefined;
         this.disconnectError = null;
         if (connectionEstablished && !wasDisconnecting) {
@@ -421,7 +424,8 @@ export class IntercomClient extends EventEmitter {
     switch (brokerMessage.type) {
       case "registered": {
         if (typeof brokerMessage.sessionId !== "string"
-          || (brokerMessage.supervisorSessionId !== undefined && typeof brokerMessage.supervisorSessionId !== "string")) {
+          || (brokerMessage.supervisorSessionId !== undefined && typeof brokerMessage.supervisorSessionId !== "string")
+          || (brokerMessage.acknowledgesReceipt !== undefined && brokerMessage.acknowledgesReceipt !== true)) {
           throw new Error("Invalid registered message");
         }
 
@@ -432,6 +436,8 @@ export class IntercomClient extends EventEmitter {
         this._supervisorSessionId = typeof brokerMessage.supervisorSessionId === "string"
           ? brokerMessage.supervisorSessionId
           : null;
+        // #3761: a broker from before receipts never echoes the capability and drops a client that sends `received`.
+        this.brokerAcknowledgesReceipt = this.acknowledgesReceipt && brokerMessage.acknowledgesReceipt === true;
         this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
         break;
       }
@@ -1083,8 +1089,12 @@ export class IntercomClient extends EventEmitter {
     return this.sendFrame("send", to, options);
   }
 
-	/** #3761: tell the broker this message is saved, so it reports `delivered` to its sender. */
+	/**
+	 * #3761: tell the broker this message is saved, so it reports `delivered` to its sender. A no-op unless the
+	 * current registration's broker echoed the capability: that broker already reported `delivered` on the socket write.
+	 */
 	acknowledgeReceived(messageId: string): void {
+		if (!this.brokerAcknowledgesReceipt) return;
 		writeMessage(this.requireActiveSocket(), { type: "received", messageId });
 	}
 

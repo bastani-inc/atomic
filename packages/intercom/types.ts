@@ -224,7 +224,13 @@ export type ClientMessage =
     };
 
 export type BrokerMessage =
-  | { type: "registered"; sessionId: string; supervisorSessionId?: string }
+	| {
+			type: "registered";
+			sessionId: string;
+			supervisorSessionId?: string;
+			/** #3761: echoed only to a client that advertised it; that client may now send `received`. */
+			acknowledgesReceipt?: true;
+	  }
   | { type: "registration_failed"; reason: string; code?: LiveWorkflowStageRouteRefusalCode }
   | { type: "question_target"; messageId: string; attemptId: string; sessionId: string }
  | { type: "sessions"; requestId: string; sessions: SessionInfo[]; workflowStages?: WorkflowStageRosterEntry[]; workflowFutureStages?: WorkflowFutureStageRosterEntry[] }
