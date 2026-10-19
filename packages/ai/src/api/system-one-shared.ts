@@ -9,10 +9,19 @@ import type {
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { isRecord, parseClassifierUsage, postClassifierRequest, requiredNumber } from "./classifier-shared.ts";
 
+/** Base64 image in the System One request's top-level `assets` map. */
+export interface SystemOneImageAsset {
+	type: "image";
+	format: "png" | "jpg";
+	data_base64: string;
+}
+
 /** TypeSafe System One request body without the transport-specific envelope. */
 export interface SystemOneWireRequest {
 	state: ClassifierContext["state"];
 	questions: Record<string, unknown>;
+	/** Images keyed by the references listed in `state.images`. */
+	assets?: Record<string, SystemOneImageAsset>;
 }
 
 /** Differences between services that serve System One models. */
@@ -27,6 +36,35 @@ export interface SystemOneTransport {
 	payload(model: ClassifierModel<ClassifierApi>, request: SystemOneWireRequest): unknown;
 	/** Extracts the System One output, including answers and usage. */
 	output(body: unknown): Record<string, unknown>;
+	/** Whether the service accepts `context.images` as `assets` for this model. Images are rejected when omitted. */
+	acceptsImages?(model: ClassifierModel<ClassifierApi>): boolean;
+}
+
+const IMAGES_STATE_FIELD = "images";
+const IMAGE_FORMATS = new Map<string, SystemOneImageAsset["format"]>([
+	["image/png", "png"],
+	["image/jpeg", "jpg"],
+	["image/jpg", "jpg"],
+]);
+
+/** Lists each image once in `assets` under a fresh UUID and writes the UUIDs into `state.images`, in order. */
+function imageAssets(label: string, context: ClassifierContext): Pick<SystemOneWireRequest, "state" | "assets"> {
+	const images = context.images ?? [];
+	if (images.length === 0) return { state: context.state };
+	if (Object.hasOwn(context.state, IMAGES_STATE_FIELD)) {
+		throw new Error(`${label} lists images in state.${IMAGES_STATE_FIELD}; rename that state field to send images`);
+	}
+	const assets: Record<string, SystemOneImageAsset> = {};
+	for (const image of images) {
+		const format = IMAGE_FORMATS.get(image.mimeType.toLowerCase());
+		if (!format) throw new Error(`${label} accepts only PNG or JPEG images, got ${image.mimeType}`);
+		assets[crypto.randomUUID()] = {
+			type: "image",
+			format,
+			data_base64: image.data.replace(/^data:[^,]*,/u, ""),
+		};
+	}
+	return { state: { ...context.state, [IMAGES_STATE_FIELD]: Object.keys(assets) }, assets };
 }
 
 
@@ -103,15 +141,17 @@ function parseAnswers(label: string, value: unknown, context: ClassifierContext)
 
 
 /** Maps public `bool` questions to TypeSafe's wire-level `noul` type. */
-function wireRequest(context: ClassifierContext): SystemOneWireRequest {
+function wireRequest(label: string, context: ClassifierContext): SystemOneWireRequest {
+	const { state, assets } = imageAssets(label, context);
 	return {
-		state: context.state,
+		state,
 		questions: Object.fromEntries(
 			Object.entries(context.questions).map(([id, question]) => [
 				id,
 				question.type === "bool" ? { ...question, type: "noul" } : question,
 			]),
 		),
+		...(assets ? { assets } : {}),
 	};
 }
 
@@ -134,12 +174,14 @@ export async function classifySystemOne(
 
 	try {
 		if (model.api !== transport.api) throw new Error(`Unsupported classifier API: ${model.api}`);
-		if (context.images?.length) throw new Error(`${transport.label} does not support image input`);
+		if (context.images?.length && !transport.acceptsImages?.(model)) {
+			throw new Error(`${transport.label} does not support image input`);
+		}
 		const body = await postClassifierRequest(
 			transport.label,
 			transport.url(model),
 			model,
-			transport.payload(model, wireRequest(context)),
+			transport.payload(model, wireRequest(transport.label, context)),
 			options,
 		);
 		const result = transport.output(body);

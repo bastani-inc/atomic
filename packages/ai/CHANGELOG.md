@@ -7,6 +7,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 ### Added
 
 - Added `MiniMax-M3.1-Flash` to the `minimax` and `minimax-cn` providers, with thinking levels low through max sent as `output_config.effort`. Thinking cannot be turned off for this model. New MiniMax models from models.dev now appear without a manual allowlist entry; only the older M2, M2.1, M2.5, and M2.5-highspeed models stay hidden ([#11121](https://github.com/earendil-works/pi/issues/11121))
+- Added the `typesafe/jev-1.14.0` classifier for Jev 1.14 alongside `typesafe/jev-latest`.
+- Direct TypeSafe Jev classifiers (`typesafe/jev-latest`, `typesafe/jev-1.14.0`) now send TypeSafe's long-context and image preview headers on every request, accept up to 262K tokens, and accept PNG or JPEG `images`. Images are sent as referenced assets and listed in order under the state's `images` field; other image types, or a state that already has an `images` field, return an error result. Jev on Vercel AI Gateway, OpenCode Zen, OpenRouter, and Cloudflare Workers AI still rejects images.
 
 ## [0.9.38] - 2026-10-18
 

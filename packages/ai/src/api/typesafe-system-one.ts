@@ -4,7 +4,8 @@ import { classifySystemOne, type SystemOneTransport } from "./system-one-shared.
 
 /**
  * TypeSafe's native System One protocol. OpenRouter serves the same protocol,
- * so both providers use this API with different base URLs.
+ * so both providers use this API with different base URLs. Only direct TypeSafe
+ * models with image input send images, as referenced `assets`.
  */
 const transport: SystemOneTransport = {
 	api: "typesafe-system-one",
@@ -15,6 +16,7 @@ const transport: SystemOneTransport = {
 		if (!isRecord(body)) throw new Error("System One API returned an unexpected response");
 		return body;
 	},
+	acceptsImages: (model) => model.provider === "typesafe" && model.input.includes("image"),
 };
 
 /** TypeSafe System One classification with public `bool` values mapped to wire-level `noul`. */
