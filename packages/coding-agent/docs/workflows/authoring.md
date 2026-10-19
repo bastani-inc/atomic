@@ -529,7 +529,7 @@ Prerequisites and setup, each as one bounded attempt:
 
 - `node` (preferred) or `bun` on the host. If neither is present, install one in a bounded attempt (Node via [fnm](https://github.com/Schniz/fnm) with `fnm install --lts` or the host's package manager, Bun via `curl -fsSL https://bun.sh/install | bash`) and report what the installer did; if the install is refused or fails, report that as the limitation rather than retrying.
 - The `cua-driver` executable (`cua-driver --version`), installed with upstream's one-line installer if missing, followed by `cua-driver telemetry disable` once.
-- The SDK installed at the exact driver version into a scratch directory outside the user's repository, for example `npm install @trycua/cua-driver@0.34.0 --prefix ~/.cache/atomic-cua`. The package ships per-platform native optional dependencies. Daemon-backed clients verify contract, tool-schema, capability, and protocol versions before each action and refuse on mismatch, so the pin must match `cua-driver --version`.
+- The SDK installed at the exact driver version into a scratch directory outside the user's repository, for example `npm install @trycua/cua-driver@0.36.0 --prefix ~/.cache/atomic-cua`. The package ships per-platform native optional dependencies. Daemon-backed clients verify contract, tool-schema, capability, and protocol versions before each action and refuse on mismatch, so the pin must match `cua-driver --version`.
 
 The executable installer does not install an agent skill. Atomic bundles the skill, so skip upstream's optional `cua-driver skills install`, `cua-driver skills update`, and `clawhub install @cua/driver` steps; leave existing user-level skills alone.
 
