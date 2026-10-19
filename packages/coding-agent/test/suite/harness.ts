@@ -64,6 +64,7 @@ export function getAssistantTexts(harness: Harness): string[] {
 
 export interface HarnessOptions {
 	models?: FauxModelDefinition[];
+	provider?: string;
 	fauxProvider?: Omit<RegisterFauxProviderOptions, "models">;
 	sessionManager?: SessionManager;
 	settings?: Partial<Settings>;
@@ -109,6 +110,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 	const fauxProvider: FauxProviderRegistration = registerFauxProvider({
 		...options.fauxProvider,
 		models: options.models,
+		provider: options.provider ?? options.fauxProvider?.provider,
 	});
 	fauxProvider.setResponses([]);
 	const model = fauxProvider.getModel();
