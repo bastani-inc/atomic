@@ -10,6 +10,11 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - Added the `typesafe/jev-1.14.0` classifier for Jev 1.14 alongside `typesafe/jev-latest`.
 - Direct TypeSafe Jev classifiers (`typesafe/jev-latest`, `typesafe/jev-1.14.0`) now send TypeSafe's long-context and image preview headers on every request, accept up to 262K tokens, and accept PNG or JPEG `images`. Images are sent as referenced assets and listed in order under the state's `images` field; other image types, or a state that already has an `images` field, return an error result. Jev on Vercel AI Gateway, OpenCode Zen, OpenRouter, and Cloudflare Workers AI still rejects images.
 
+### Fixed
+
+- Treat any HTTP 413 from a provider as request-size overflow, so a GitHub Copilot request over its byte-size limit (`413 ... failed to parse request`) now compacts and retries instead of surfacing a raw API error ([pi 73f8de80](https://github.com/earendil-works/pi/commit/73f8de80bc87021375f8b525292ac07492253002))
+
+
 ## [0.9.38] - 2026-10-18
 
 ### Breaking Changes

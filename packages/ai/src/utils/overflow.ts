@@ -4,7 +4,7 @@ import type { AssistantMessage } from "../types.ts";
  * Regex patterns to detect context overflow errors from different providers.
  *
  * These patterns match error messages returned when the input exceeds
- * the model's context window.
+ * the model's context window or the provider's request byte-size limit.
  *
  * Provider-specific patterns (with example error messages):
  *
@@ -22,6 +22,7 @@ import type { AssistantMessage } from "../types.ts";
  * - llama.cpp: "the request exceeds the available context size, try increasing it"
  * - LM Studio: "tokens to keep from the initial prompt is greater than the context length"
  * - GitHub Copilot: "prompt token count of X exceeds the limit of Y"
+ * - GitHub Copilot: 'github-copilot API error (413): {"message":"failed to parse request","code":""}'
  * - MiniMax: "invalid params, context window exceeds limit"
  * - Kimi For Coding: "Your request exceeded model token limit: X (requested: Y)"
  * - DS4: "Prompt has X tokens, but the configured context size is Y tokens"
@@ -60,6 +61,9 @@ const OVERFLOW_PATTERNS = [
 	/context[_ ]length[_ ]exceeded/i, // Generic fallback
 	/too many tokens/i, // Generic fallback
 	/token limit exceeded/i, // Generic fallback
+	// HTTP 413 means request-size overflow regardless of provider or body text.
+	// Match raw SDK errors and formatProviderError's prefix, not a status mentioned in the body.
+	/^(?:[\w .-]+ API error \(413\):|413(?:\s|:|$))/i,
 ];
 
 function isCerebrasBodylessOverflow(errorMessage: string): boolean {
