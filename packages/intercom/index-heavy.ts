@@ -425,8 +425,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   /**
    * #3761: decide about the saved messages a resumed session never showed with #3760's interrupted-card decision.
    * `replay` (a connected sender, or a local relay) queues it in arrival order for the next idle turn; `drop` (a sender
-   * that is gone) records it handled, so it appears only once, as history in the returned notice; `defer` (Intercom
-   * unreachable, or a relaunched sender that has not reconnected) leaves it unshown for the next resume.
+   * that is gone) writes its full card as history that starts no turn, and that card alone marks it handled, so a crash
+   * before or after the write never loses it or shows it twice; `defer` (Intercom unreachable, or a relaunched sender
+   * that has not reconnected) leaves it unshown for the next resume.
    */
   async function replayDurableInbox(request: IntercomInboxReplayRequest): Promise<readonly string[]> {
     const liveContext = getLiveContext();
@@ -454,7 +455,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       const action = actions.get(record.message.id) ?? "replay";
       if (action === "defer") continue;
       if (action === "drop") {
-        await durableInbox.handledWithoutCard(record.message.id);
+        try {
+          await pi.sendMessage(buildIncomingCustomMessage({ ...entry, replyCommand: undefined }), { triggerTurn: false });
+        } catch {
+          // Unwritten, the message stays unshown and the next resume decides about it again.
+        }
         continue;
       }
       const admission = inboundDeliveries.admit(record.from, record.message);

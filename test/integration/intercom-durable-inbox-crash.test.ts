@@ -95,10 +95,23 @@ function readJournal(journal: string): SessionEntry[] {
 function resumedRecipient(branch: SessionEntry[]) {
 	const handlers = new Map<string, Handler[]>();
 	const eventHandlers = new Map<string, EventHandler[]>();
+	/** Messages shown as turns. */
 	const shown: string[] = [];
-	const record = (message: ShownMessage) => {
+	/** Messages written as history cards that start no turn. */
+	const history: string[] = [];
+	const record = (message: ShownMessage & { content?: string }, options?: { triggerTurn?: boolean }) => {
 		const id = message.details?.message?.id;
-		if (typeof id === "string") shown.push(id);
+		if (typeof id === "string") (options?.triggerTurn === false ? history : shown).push(id);
+		branch.push({
+			type: "custom_message",
+			id: `resumed-${branch.length}`,
+			parentId: null,
+			timestamp: new Date().toISOString(),
+			customType: "intercom_message",
+			content: message.content ?? "",
+			display: true,
+			details: message.details,
+		});
 	};
 	const context = {
 		hasUI: false,
@@ -130,11 +143,11 @@ function resumedRecipient(branch: SessionEntry[]) {
 				data,
 			});
 		},
-		async sendMessage(message: ShownMessage) {
-			record(message);
+		async sendMessage(message: ShownMessage, options?: { triggerTurn?: boolean }) {
+			record(message, options);
 		},
-		async sendMessages(messages: ShownMessage[]) {
-			for (const message of messages) record(message);
+		async sendMessages(messages: ShownMessage[], options?: { triggerTurn?: boolean }) {
+			for (const message of messages) record(message, options);
 		},
 		getSessionName: () => RECIPIENT,
 		setSessionName() {},
@@ -155,14 +168,14 @@ function resumedRecipient(branch: SessionEntry[]) {
 		for (const handler of handlers.get(eventName) ?? []) results.push(await handler(event, context));
 		return results;
 	};
-	return { pi, fire, shown };
+	return { pi, fire, shown, history, branch };
 }
 
 /** Longer than Intercom's idle flush delay, so a message queued on resume would have been shown by now. */
 const IDLE_FLUSH_SETTLE_MS = 1_000;
 
 test(
-	"resume does not start a turn for an unshown message whose sender is gone, and reports it once in the recovery notice (#3761)",
+	"resume does not start a turn for an unshown message whose sender is gone, and shows it once as history (#3761)",
 	async () => {
 		const journal = join(agentDir, "busy-parent-gone-sender.jsonl");
 		const recipient = await startBusyRecipient(journal);
@@ -200,12 +213,14 @@ test(
 			assert.match(notices[0] ?? "", /last words/);
 			await new Promise((resolveFlush) => setTimeout(resolveFlush, IDLE_FLUSH_SETTLE_MS));
 			assert.deepEqual(branch.shown, [], "a message from a gone sender starts no turn");
+			assert.deepEqual(branch.history, ["from-departed"], "it is written once as a history card");
 
 			const [again] = await branch.fire("session_recovery_restore", {
 				type: "session_recovery_restore",
 				reason: "resume",
 			});
 			assert.equal(again, undefined, "the message is reported once, not on every resume");
+			assert.deepEqual(branch.history, ["from-departed"], "and its card is not written again");
 		} finally {
 			await sender.disconnect().catch(() => undefined);
 			await resumed?.fire("session_shutdown", { type: "session_shutdown", reason: "quit" });

@@ -323,12 +323,27 @@ interface ResumeDelivery {
 	readonly triggerTurn: boolean;
 }
 
-/** A real Intercom runtime resumed from `branch`, idle, whose shown messages become `intercom_message` cards. */
-async function resumedRuntime(branch: SessionEntry[]) {
+/**
+ * A real Intercom runtime resumed from `branch`, idle, whose shown messages become `intercom_message` cards.
+ * With `crashAfterWrites`, the process dies after that many durable writes: later writes never reach `branch`.
+ */
+async function resumedRuntime(branch: SessionEntry[], crashAfterWrites = Number.POSITIVE_INFINITY) {
 	const deliveries: ResumeDelivery[] = [];
 	const handlers = new Map<string, Array<(event: object, ctx: ExtensionContext) => void | Promise<void>>>();
 	const events = createEventBus();
-	const show = (shownMessages: Array<ShownMessage & { details?: object }>, options?: { triggerTurn?: boolean }) => {
+	let writes = 0;
+	/** Count one durable write; false once the process has died, so the write never lands. */
+	const write = (): boolean => {
+		if (writes >= crashAfterWrites) return false;
+		writes += 1;
+		return true;
+	};
+	const dead = new Promise<void>(() => {});
+	const show = (
+		shownMessages: Array<ShownMessage & { content?: string; details?: object }>,
+		options?: { triggerTurn?: boolean },
+	) => {
+		if (!write()) return dead;
 		deliveries.push({
 			ids: shownMessages.map((shownMessage) => shownMessage.details?.message?.id ?? "?"),
 			triggerTurn: options?.triggerTurn === true,
@@ -340,11 +355,12 @@ async function resumedRuntime(branch: SessionEntry[]) {
 				parentId: null,
 				timestamp: new Date(0).toISOString(),
 				customType: "intercom_message",
-				content: "",
+				content: shownMessage.content ?? "",
 				display: true,
 				details: shownMessage.details,
 			});
 		}
+		return undefined;
 	};
 	const pi = {
 		on(name: string, handler: (event: object, ctx: ExtensionContext) => void | Promise<void>) {
@@ -354,7 +370,8 @@ async function resumedRuntime(branch: SessionEntry[]) {
 		registerCommand() {},
 		registerShortcut() {},
 		registerMessageRenderer() {},
-		async appendEntry(customType: string, data?: object) {
+		appendEntry(customType: string, data?: object) {
+			if (!write()) return dead;
 			branch.push({
 				type: "custom",
 				id: `entry-${branch.length}`,
@@ -363,6 +380,7 @@ async function resumedRuntime(branch: SessionEntry[]) {
 				customType,
 				data,
 			});
+			return Promise.resolve();
 		},
 		getSessionName: () => undefined,
 		sendMessage: (shownMessage: ShownMessage, options?: { triggerTurn?: boolean }) => show([shownMessage], options),
@@ -393,8 +411,24 @@ async function resumedRuntime(branch: SessionEntry[]) {
 			await new Promise((resolveFlush) => setTimeout(resolveFlush, INBOUND_FLUSH_SETTLE_MS));
 			return notices;
 		},
+		/** Start the replay and let the process die mid-way: its completion is never awaited. */
+		async replayUntilCrash(peers: readonly SessionInfo[]) {
+			events.emit(INTERCOM_INBOX_REPLAY_EVENT, { peers, restored: [] } satisfies IntercomInboxReplayRequest);
+			await new Promise((resolveFlush) => setTimeout(resolveFlush, INBOUND_FLUSH_SETTLE_MS));
+		},
 		close: () => fire("session_shutdown"),
 	};
+}
+
+/** The content of each visible `intercom_message` card on the branch for one message id. */
+function cardsFor(branch: readonly SessionEntry[], id: string): string[] {
+	return branch.flatMap((entry) =>
+		entry.type === "custom_message" &&
+		entry.customType === "intercom_message" &&
+		(entry.details as { message?: { id?: string } } | undefined)?.message?.id === id
+			? [typeof entry.content === "string" ? entry.content : ""]
+			: [],
+	);
 }
 
 const INBOUND_FLUSH_SETTLE_MS = 400;
@@ -418,7 +452,7 @@ test("resume delivers an unshown saved message from a live sender, once, as a no
 	}
 });
 
-test("resume does not start a turn for an unshown saved message from a gone sender; one notice shows it once (#3761)", async () => {
+test("resume does not start a turn for an unshown saved message from a gone sender; it is shown once as history (#3761)", async () => {
 	const branch: SessionEntry[] = [
 		inboxEntry({ message: message("from-gone"), from: gone, receivedAt: 1 }),
 		inboxEntry({ message: message("from-live"), from: peer, receivedAt: 2 }),
@@ -429,7 +463,10 @@ test("resume does not start a turn for an unshown saved message from a gone send
 		assert.equal(notices.length, 1);
 		assert.match(notices[0] ?? "", /`gone-peer` is gone/);
 		assert.match(notices[0] ?? "", /body from-gone/);
-		assert.deepEqual(first.deliveries, [{ ids: ["from-live"], triggerTurn: true }]);
+		assert.deepEqual(first.deliveries, [
+			{ ids: ["from-gone"], triggerTurn: false },
+			{ ids: ["from-live"], triggerTurn: true },
+		]);
 	} finally {
 		await first.close();
 	}
@@ -441,6 +478,55 @@ test("resume does not start a turn for an unshown saved message from a gone send
 	} finally {
 		await second.close();
 	}
+	assert.equal(cardsFor(branch, "from-gone").length, 1, "no duplicate card on a second resume");
+});
+
+test("a crash right after the first write for a gone sender's saved message still shows it in full, once, on the next resume (#3761)", async () => {
+	const branch: SessionEntry[] = [inboxEntry({ message: message("last-words"), from: gone, receivedAt: 1 })];
+	const crashed = await resumedRuntime(branch, 1);
+	try {
+		await crashed.replayUntilCrash([peer]);
+	} finally {
+		await crashed.close();
+	}
+	const resumed = await resumedRuntime(branch);
+	try {
+		await resumed.replay([peer]);
+	} finally {
+		await resumed.close();
+	}
+	const again = await resumedRuntime(branch);
+	try {
+		await again.replay([peer]);
+		assert.deepEqual(again.deliveries, []);
+	} finally {
+		await again.close();
+	}
+	const cards = cardsFor(branch, "last-words");
+	assert.equal(cards.length, 1, "the message is in visible history exactly once");
+	assert.match(cards[0] ?? "", /body last-words/);
+});
+
+test("a gone sender's saved message longer than 2,000 characters reaches visible history in full (#3761)", async () => {
+	const longText = `${"x".repeat(2_500)} end-of-long-message`;
+	const attachment = {
+		type: "snippet" as const,
+		name: "notes.txt",
+		content: `${"y".repeat(1_000)} end-of-attachment`,
+	};
+	const long: Message = { id: "long", timestamp: 1, content: { text: longText, attachments: [attachment] } };
+	const branch: SessionEntry[] = [inboxEntry({ message: long, from: gone, receivedAt: 1 })];
+	const runtime = await resumedRuntime(branch);
+	try {
+		await runtime.replay([peer]);
+		assert.deepEqual(runtime.deliveries, [{ ids: ["long"], triggerTurn: false }], "history only; no turn starts");
+	} finally {
+		await runtime.close();
+	}
+	const cards = cardsFor(branch, "long");
+	assert.equal(cards.length, 1);
+	assert.ok(cards[0]?.includes(longText), "the full message text is in the card");
+	assert.match(cards[0] ?? "", /end-of-attachment/);
 });
 
 test("resume with Intercom unreachable defers unshown saved messages without a turn, and the next resume delivers them (#3761)", async () => {
