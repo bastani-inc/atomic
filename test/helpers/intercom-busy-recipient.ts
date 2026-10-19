@@ -5,8 +5,8 @@
  * Usage: <jiti> intercom-busy-recipient.ts <journal> <session-name> <session-id>
  */
 import { closeSync, fsyncSync, openSync, writeSync } from "node:fs";
-import intercomHeavy from "../../packages/intercom/index-heavy.ts";
-import { INTERCOM_RECOVERY_PEERS_EVENT } from "../../packages/intercom/session-recovery.ts";
+import intercomHeavy from "../../packages/intercom/index-heavy.js";
+import { INTERCOM_RECOVERY_PEERS_EVENT } from "../../packages/intercom/session-recovery.js";
 
 type Handler = (event: object, ctx: object) => unknown;
 type EventHandler = (payload: object) => void;

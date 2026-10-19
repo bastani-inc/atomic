@@ -6,7 +6,9 @@ import type { ExtensionContext } from "../../packages/coding-agent/src/core/exte
 import {
 	DurableInbox,
 	INTERCOM_INBOX_ENTRY,
+	INTERCOM_INBOX_REPLAY_EVENT,
 	type IntercomInboxRecord,
+	type IntercomInboxReplayRequest,
 	unconsumedIntercomInbox,
 } from "../../packages/intercom/durable-inbox.js";
 import { InboundIdleQueue } from "../../packages/intercom/inbound-idle-queue.js";
@@ -311,6 +313,169 @@ test("resume does not replay retired child traffic a closed workflow stage dropp
 		await runtime.handle();
 		await vi.waitFor(() => assert.deepEqual(unconsumedIntercomInbox(runtime.branch), []));
 		assert.deepEqual(runtime.shown, []);
+	} finally {
+		await runtime.close();
+	}
+});
+
+interface ResumeDelivery {
+	readonly ids: string[];
+	readonly triggerTurn: boolean;
+}
+
+/** A real Intercom runtime resumed from `branch`, idle, whose shown messages become `intercom_message` cards. */
+async function resumedRuntime(branch: SessionEntry[]) {
+	const deliveries: ResumeDelivery[] = [];
+	const handlers = new Map<string, Array<(event: object, ctx: ExtensionContext) => void | Promise<void>>>();
+	const events = createEventBus();
+	const show = (shownMessages: Array<ShownMessage & { details?: object }>, options?: { triggerTurn?: boolean }) => {
+		deliveries.push({
+			ids: shownMessages.map((shownMessage) => shownMessage.details?.message?.id ?? "?"),
+			triggerTurn: options?.triggerTurn === true,
+		});
+		for (const shownMessage of shownMessages) {
+			branch.push({
+				type: "custom_message",
+				id: `card-${branch.length}`,
+				parentId: null,
+				timestamp: new Date(0).toISOString(),
+				customType: "intercom_message",
+				content: "",
+				display: true,
+				details: shownMessage.details,
+			});
+		}
+	};
+	const pi = {
+		on(name: string, handler: (event: object, ctx: ExtensionContext) => void | Promise<void>) {
+			handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+		},
+		registerTool() {},
+		registerCommand() {},
+		registerShortcut() {},
+		registerMessageRenderer() {},
+		async appendEntry(customType: string, data?: object) {
+			branch.push({
+				type: "custom",
+				id: `entry-${branch.length}`,
+				parentId: null,
+				timestamp: new Date(0).toISOString(),
+				customType,
+				data,
+			});
+		},
+		getSessionName: () => undefined,
+		sendMessage: (shownMessage: ShownMessage, options?: { triggerTurn?: boolean }) => show([shownMessage], options),
+		sendMessages: show,
+		events,
+	};
+	intercomHeavy(pi as never);
+	const ctx = {
+		hasUI: true,
+		cwd: "/repo",
+		isIdle: () => true,
+		ui: { notify() {} },
+		sessionManager: { getSessionId: () => "resumed-recipient", getBranch: () => branch, getEntries: () => branch },
+	} as unknown as ExtensionContext;
+	const fire = async (name: string) => {
+		for (const handler of handlers.get(name) ?? []) await handler({ type: name, reason: "resume" }, ctx);
+	};
+	await fire("session_start");
+	return {
+		deliveries,
+		/** Run the replay the lightweight extension requests on resume, with what #3760's decision needs. */
+		async replay(peers: readonly SessionInfo[] | undefined, restored: IntercomInboxReplayRequest["restored"] = []) {
+			const request: IntercomInboxReplayRequest = { peers, restored };
+			events.emit(INTERCOM_INBOX_REPLAY_EVENT, request);
+			assert.ok(request.completion, "the loaded runtime answers the replay request");
+			const notices = await request.completion;
+			// Longer than the idle flush delay, so a queued message has been shown by now.
+			await new Promise((resolveFlush) => setTimeout(resolveFlush, INBOUND_FLUSH_SETTLE_MS));
+			return notices;
+		},
+		close: () => fire("session_shutdown"),
+	};
+}
+
+const INBOUND_FLUSH_SETTLE_MS = 400;
+const gone: SessionInfo = { ...peer, id: "gone-peer", name: "gone-peer" };
+
+test("resume delivers an unshown saved message from a live sender, once, as a normal turn (#3761)", async () => {
+	const branch: SessionEntry[] = [inboxEntry({ message: message("from-live"), from: peer, receivedAt: 1 })];
+	const first = await resumedRuntime(branch);
+	try {
+		assert.deepEqual(await first.replay([peer]), []);
+		assert.deepEqual(first.deliveries, [{ ids: ["from-live"], triggerTurn: true }]);
+	} finally {
+		await first.close();
+	}
+	const second = await resumedRuntime(branch);
+	try {
+		assert.deepEqual(await second.replay([peer]), []);
+		assert.deepEqual(second.deliveries, [], "a message shown on one resume is not shown again on the next");
+	} finally {
+		await second.close();
+	}
+});
+
+test("resume does not start a turn for an unshown saved message from a gone sender; one notice shows it once (#3761)", async () => {
+	const branch: SessionEntry[] = [
+		inboxEntry({ message: message("from-gone"), from: gone, receivedAt: 1 }),
+		inboxEntry({ message: message("from-live"), from: peer, receivedAt: 2 }),
+	];
+	const first = await resumedRuntime(branch);
+	try {
+		const notices = await first.replay([peer]);
+		assert.equal(notices.length, 1);
+		assert.match(notices[0] ?? "", /`gone-peer` is gone/);
+		assert.match(notices[0] ?? "", /body from-gone/);
+		assert.deepEqual(first.deliveries, [{ ids: ["from-live"], triggerTurn: true }]);
+	} finally {
+		await first.close();
+	}
+	assert.deepEqual(unconsumedIntercomInbox(branch), []);
+	const second = await resumedRuntime(branch);
+	try {
+		assert.deepEqual(await second.replay([peer]), [], "the gone sender's message is not reported twice");
+		assert.deepEqual(second.deliveries, []);
+	} finally {
+		await second.close();
+	}
+});
+
+test("resume with Intercom unreachable defers unshown saved messages without a turn, and the next resume delivers them (#3761)", async () => {
+	const branch: SessionEntry[] = [inboxEntry({ message: message("deferred"), from: peer, receivedAt: 1 })];
+	const unreachable = await resumedRuntime(branch);
+	try {
+		const notices = await unreachable.replay(undefined);
+		assert.equal(notices.length, 1);
+		assert.match(notices[0] ?? "", /could not be reached after the restart/);
+		assert.deepEqual(unreachable.deliveries, [], "no message is shown and no turn starts");
+	} finally {
+		await unreachable.close();
+	}
+	assert.deepEqual(
+		unconsumedIntercomInbox(branch).map((record) => record.message.id),
+		["deferred"],
+	);
+	const reachable = await resumedRuntime(branch);
+	try {
+		assert.deepEqual(await reachable.replay([peer]), []);
+		assert.deepEqual(reachable.deliveries, [{ ids: ["deferred"], triggerTurn: true }]);
+	} finally {
+		await reachable.close();
+	}
+});
+
+test("resume defers an unshown saved message from a relaunched subagent that has not reconnected yet (#3761)", async () => {
+	const branch: SessionEntry[] = [inboxEntry({ message: message("from-child"), from: gone, receivedAt: 1 })];
+	const runtime = await resumedRuntime(branch);
+	try {
+		const notices = await runtime.replay([], [{ name: "gone-peer", ids: [] }]);
+		assert.equal(notices.length, 1);
+		assert.match(notices[0] ?? "", /relaunched after the restart but has not reconnected/);
+		assert.deepEqual(runtime.deliveries, []);
+		assert.equal(unconsumedIntercomInbox(branch).length, 1);
 	} finally {
 		await runtime.close();
 	}

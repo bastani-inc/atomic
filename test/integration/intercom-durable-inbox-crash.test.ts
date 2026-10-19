@@ -150,11 +150,69 @@ function resumedRecipient(branch: SessionEntry[]) {
 			},
 		},
 	};
-	const fire = async (eventName: string, event: object): Promise<void> => {
-		for (const handler of handlers.get(eventName) ?? []) await handler(event, context);
+	const fire = async (eventName: string, event: object): Promise<unknown[]> => {
+		const results: unknown[] = [];
+		for (const handler of handlers.get(eventName) ?? []) results.push(await handler(event, context));
+		return results;
 	};
 	return { pi, fire, shown };
 }
+
+/** Longer than Intercom's idle flush delay, so a message queued on resume would have been shown by now. */
+const IDLE_FLUSH_SETTLE_MS = 1_000;
+
+test(
+	"resume does not start a turn for an unshown message whose sender is gone, and reports it once in the recovery notice (#3761)",
+	async () => {
+		const journal = join(agentDir, "busy-parent-gone-sender.jsonl");
+		const recipient = await startBusyRecipient(journal);
+		const sender = new IntercomClient("departed-sender");
+		let resumed: ReturnType<typeof resumedRecipient> | undefined;
+		try {
+			await sender.connect({
+				name: "departed-sender",
+				model: "test-model",
+				cwd: repoRoot,
+				pid: process.pid,
+				status: "idle",
+				startedAt: Date.now(),
+				lastActivity: Date.now(),
+				group: "default",
+				groups: ["default"],
+			});
+			const result = await sender.send(RECIPIENT, { messageId: "from-departed", text: "last words" });
+			assert.equal(result.delivered, true, result.reason ?? "");
+			await sender.disconnect();
+			recipient.kill("SIGKILL");
+			await new Promise((resolveExit) => recipient.once("exit", resolveExit));
+
+			const branch = resumedRecipient(readJournal(journal));
+			resumed = branch;
+			intercomLightweight(branch.pi as never);
+			await branch.fire("session_start", { type: "session_start", reason: "resume" });
+			const [restored] = await branch.fire("session_recovery_restore", {
+				type: "session_recovery_restore",
+				reason: "resume",
+			});
+			const notices = (restored as { notices?: string[] } | undefined)?.notices ?? [];
+			assert.equal(notices.length, 1, JSON.stringify(notices));
+			assert.match(notices[0] ?? "", /`departed-sender` is gone/);
+			assert.match(notices[0] ?? "", /last words/);
+			await new Promise((resolveFlush) => setTimeout(resolveFlush, IDLE_FLUSH_SETTLE_MS));
+			assert.deepEqual(branch.shown, [], "a message from a gone sender starts no turn");
+
+			const [again] = await branch.fire("session_recovery_restore", {
+				type: "session_recovery_restore",
+				reason: "resume",
+			});
+			assert.equal(again, undefined, "the message is reported once, not on every resume");
+		} finally {
+			await sender.disconnect().catch(() => undefined);
+			await resumed?.fire("session_shutdown", { type: "session_shutdown", reason: "quit" });
+		}
+	},
+	CRASH_RESUME_TEST_TIMEOUT_MS,
+);
 
 test(
 	"every update the sender saw delivered to a busy parent killed before idle is replayed exactly once on resume (#3761)",

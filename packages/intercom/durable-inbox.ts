@@ -1,5 +1,6 @@
 import type { SessionEntry } from "@bastani/atomic";
 import { isMessage, isSessionInfo } from "./broker/client-message-validation.js";
+import type { RestoredIntercomPeer } from "./session-recovery.js";
 import type { Message, SessionInfo } from "./types.js";
 
 /** #3761: custom session entry saving an Intercom message when it arrives, before the broker reports it delivered. */
@@ -11,11 +12,19 @@ export const INTERCOM_INBOX_ENTRY = "intercom_inbox";
  */
 export const INTERCOM_INBOX_HANDLED_ENTRY = "intercom_inbox_handled";
 
-/** #3761: the lightweight extension asks the loaded runtime to queue a resumed session's unshown saved messages. */
+/**
+ * #3761: the lightweight extension asks the loaded runtime to replay a resumed session's unshown saved messages.
+ * They pass the same sender-liveness decision as #3760's interrupted Intercom cards, so the request carries what
+ * that decision needs; `completion` resolves the notices for the one session recovery notice.
+ */
 export const INTERCOM_INBOX_REPLAY_EVENT = "intercom:inbox-replay";
 
 export interface IntercomInboxReplayRequest {
-	completion?: Promise<number>;
+	/** The peers connected after the restart; undefined when Intercom could not be reached. */
+	readonly peers: readonly SessionInfo[] | undefined;
+	/** Children relaunched in this recovery that have not registered with Intercom yet. */
+	readonly restored: readonly RestoredIntercomPeer[];
+	completion?: Promise<readonly string[]>;
 }
 
 export interface IntercomInboxRecord {

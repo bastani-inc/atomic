@@ -10,6 +10,7 @@ import {
   isAwaitIntercomPeerRequest,
   isReleaseRestoringChildRequest,
   isReserveRestoringChildRequest,
+  planIntercomRecoveryReplay,
   SUBAGENT_AWAIT_INTERCOM_PEER_EVENT,
   SUBAGENT_RELEASE_RESTORING_CHILD_EVENT,
   SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
@@ -421,21 +422,49 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       if (liveContext) void handleIncomingMessage(liveContext, from, message, channel);
     });
   }
-  /** #3761: queue the saved messages a resumed session never showed, in the order they arrived, for the next idle turn. */
-  function replayDurableInbox(): number {
+  /**
+   * #3761: decide about the saved messages a resumed session never showed with #3760's interrupted-card decision.
+   * `replay` (a connected sender, or a local relay) queues it in arrival order for the next idle turn; `drop` (a sender
+   * that is gone) records it handled, so it appears only once, as history in the returned notice; `defer` (Intercom
+   * unreachable, or a relaunched sender that has not reconnected) leaves it unshown for the next resume.
+   */
+  async function replayDurableInbox(request: IntercomInboxReplayRequest): Promise<readonly string[]> {
     const liveContext = getLiveContext();
-    if (!liveContext) return 0;
+    if (!liveContext) return [];
     replyTracker = bindWorkflowReplyTracker(liveContext, replyTracker);
+    const records = unconsumedIntercomInbox(sessionBranch()).map((record) => ({
+      record,
+      entry: buildInboundEntry(record.from, record.message, record.channel),
+    }));
+    const plan = planIntercomRecoveryReplay(
+      records.map(({ record, entry }) => ({
+        entryId: record.message.id,
+        customType: "intercom_message",
+        content: entry.bodyText,
+        details: entry,
+        timestamp: new Date(record.receivedAt).toISOString(),
+        delivery: "followUp",
+      })),
+      request.peers,
+      request.restored,
+    );
+    const actions = new Map((plan.decisions ?? []).map((decision) => [decision.entryId, decision.action]));
     let queued = 0;
-    for (const record of unconsumedIntercomInbox(sessionBranch())) {
+    for (const { record, entry } of records) {
+      const action = actions.get(record.message.id) ?? "replay";
+      if (action === "defer") continue;
+      if (action === "drop") {
+        await durableInbox.handledWithoutCard(record.message.id);
+        continue;
+      }
       const admission = inboundDeliveries.admit(record.from, record.message);
       if (admission.kind !== "reserved") continue;
       replyTracker.recordIncomingMessage(record.from, record.message);
-      if (pendingIdleMessages.enqueue(buildInboundEntry(record.from, record.message, record.channel))) queued += 1;
+      if (pendingIdleMessages.enqueue(entry)) queued += 1;
       inboundDeliveries.commit(admission.reservation);
     }
     if (queued > 0) scheduleInboundFlush();
-    return queued;
+    return plan.notices ?? [];
   }
   function handleIncomingMessage(
     ctx: ExtensionContext,
@@ -1226,8 +1255,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   pi.events.on(INTERCOM_INBOX_REPLAY_EVENT, (payload) => {
     if (!payload || typeof payload !== "object") return;
     const request = payload as IntercomInboxReplayRequest;
-    if (request.completion) return;
-    request.completion = Promise.resolve(replayDurableInbox());
+    if (request.completion || !Array.isArray(request.restored)) return;
+    request.completion = replayDurableInbox(request);
   });
   pi.events.on(INTERCOM_RECOVERY_PEERS_EVENT, (payload) => {
     if (!payload || typeof payload !== "object") return;
