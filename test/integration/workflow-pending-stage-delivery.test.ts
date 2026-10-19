@@ -52,6 +52,10 @@ const { createWorkflowPendingStageDelivery } = await import(
 	"../../packages/workflows/src/runs/foreground/pending-stage-delivery.js"
 );
 const { createStore } = await import("../../packages/workflows/src/shared/store.js");
+const { registerDormantRunIntercomRoutes } = await import(
+	"../../packages/workflows/src/extension/dormant-run-intercom.js"
+);
+const { bindStoreDurableBackend } = await import("../../packages/workflows/src/durable/store-backend.js");
 
 interface TestContext {
 	hasUI: boolean;
@@ -4540,5 +4544,172 @@ test("retired real startup context cannot acknowledge a dropped sticky message (
 		await sender.shutdown();
 		await owner.shutdown();
 		setDurableBackend(undefined);
+	}
+});
+
+test("an interrupted run stays addressable before resume and yields to the process that resumes it (#3760)", async () => {
+	const runId = "37603760-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+	const group = `workflow:${runId}`;
+	const writer = await JournalTestBackend.create();
+	await writer.commitWorkflowRegistration({
+		workflowId: runId,
+		name: "dormant-e2e",
+		inputs: {},
+		createdAt: 1,
+		status: "running",
+		invocationCwd: repoRoot,
+		resumable: true,
+	});
+	await writer.commitCheckpoint({
+		kind: "tool",
+		workflowId: runId,
+		checkpointId: "tool:prep",
+		name: "prep",
+		argsHash: "prep",
+		output: true,
+		completedAt: 1,
+		topology: {
+			version: 1,
+			nodeId: "tool:prep",
+			ordinal: 1,
+			order: 1,
+			parentIds: [],
+			run: { runId, runName: "dormant-e2e" },
+		},
+	});
+	await writer.commitCheckpoint({
+		kind: "stage",
+		workflowId: runId,
+		checkpointId: "stage-session:lane",
+		name: "lane",
+		replayKey: "stage:lane:1",
+		sessionId: "lane-session-before-crash",
+		startedAt: 1,
+		durationMs: 1,
+		completedAt: 1,
+		topology: {
+			version: 1,
+			stageId: "lane-id",
+			parentIds: ["tool:prep"],
+			sourceOrder: 1,
+			status: "running",
+			run: { runId, runName: "dormant-e2e" },
+		},
+	});
+	// The crashed process's lease is gone; the restarted owner session reopens the journal.
+	const backend = await writer.reopen();
+	const store = createStore();
+	const owner = extensionFixture("dormant-owner-session", "dormant-owner", undefined, "default");
+	Object.assign(owner.context.sessionManager, {
+		getCwd: () => repoRoot,
+		getEntries: () => [
+			{
+				id: "run-start",
+				type: "custom",
+				customType: "workflow.run.start",
+				data: { runId, name: "dormant-e2e", inputs: {}, ts: 1 },
+			},
+		],
+	});
+	const revocations: unknown[] = [];
+	owner.pi.events.on("atomic:workflow-pending-stage-route-revoked", (payload) => {
+		revocations.push(payload);
+	});
+	intercom(owner.pi as never);
+	const disposeBridge = registerPendingStageIntercomBridge(owner.pi as never, store);
+	const dormant = registerDormantRunIntercomRoutes(owner.pi as never, store, {
+		prepareBackend: async () => {
+			await backend.hydrateResumableWorkflows();
+			bindStoreDurableBackend(store, backend);
+			return backend;
+		},
+	});
+	const sender = extensionFixture("dormant-sender-session", "dormant-sender", undefined, group);
+	intercom(sender.pi as never);
+	const resumingProcess = new RawBrokerClient();
+	rawClients.add(resumingProcess);
+	try {
+		await owner.start();
+		await dormant.settled();
+		await owner.waitForEventCompletion("atomic:workflow-pending-stage-route");
+		await sender.start();
+
+		const listed = await executeIntercom(sender, { action: "list" });
+		const listing = listed.content.map(({ text }) => text).join("\n");
+		assert.ok(listing.includes(`${group}/lane-id`), listing);
+		assert.ok(listing.includes(`${group}/**`), listing);
+
+		const exact = await executeIntercom(sender, {
+			action: "send",
+			to: `${group}/lane`,
+			message: "Queued while the run is down.",
+		});
+		assert.doesNotMatch(exact.content[0]?.text ?? "", /Session not found/);
+		assert.equal(exact.details.queued, true, exact.content[0]?.text);
+		const broadcast = await executeIntercom(sender, {
+			action: "send",
+			to: `${group}/**`,
+			message: "For every stage of the interrupted run.",
+		});
+		assert.equal(broadcast.details.queued, true, broadcast.content[0]?.text);
+		assert.deepEqual(
+			(backend.getWorkflow(runId)?.pendingStageMessages ?? []).map((entry) => [
+				entry.message.content.text,
+				entry.sticky === true,
+			]),
+			[
+				["Queued while the run is down.", false],
+				["For every stage of the interrupted run.", true],
+			],
+		);
+		assert.equal(await backend.workflowOwnership(runId), "available");
+
+		// Another process resumes the run and registers its own route: the dormant owner yields to it.
+		await resumingProcess.register("resuming-process", group);
+		resumingProcess.send({
+			type: "register_pending_stage_route",
+			runId,
+			group,
+			capability: "resuming-process-capability",
+			stages: [
+				{
+					stageId: "lane-id",
+					stageName: "lane",
+					target: `${group}/lane-id`,
+					lifecycle: "pending",
+					routeEligible: true,
+					group,
+				},
+			],
+		});
+		const deadline = Date.now() + BROKER_FRAME_TIMEOUT_MS;
+		while (revocations.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.equal(revocations.length, 1, "the dormant owner is told the run was resumed elsewhere");
+		assert.equal((revocations[0] as { runId?: string }).runId, runId);
+
+		const afterResume = executeIntercom(sender, {
+			action: "send",
+			to: `${group}/lane`,
+			message: "For the resumed run.",
+		});
+		const routed = await resumingProcess.next("pending_stage_message");
+		assert.equal(routed.message.content.text, "For the resumed run.");
+		resumingProcess.send({
+			type: "pending_stage_message_result",
+			requestId: routed.requestId,
+			outcome: "queued",
+			position: 2,
+		});
+		assert.equal((await afterResume).details.queued, true);
+		assert.equal(
+			(backend.getWorkflow(runId)?.pendingStageMessages ?? []).length,
+			2,
+			"the dormant owner no longer answers once another process resumed the run",
+		);
+	} finally {
+		await sender.shutdown();
+		await owner.shutdown();
+		disposeBridge();
+		dormant.dispose();
 	}
 });

@@ -115,6 +115,8 @@ export interface ChildSpec {
 	/** Typed identity/capability resolved by the parent before admission. */
 	readonly intercom?: SubagentIntercomIdentity;
 	readonly sessionManager?: SessionManager;
+	/** The child reopens its own interrupted session, so its unreconciled deliveries are recovered before the task. */
+	readonly resumeSession?: boolean;
 	readonly testSession?: boolean | TestSessionOptions;
 	readonly artifactJsonlPath?: string;
 	/**
@@ -528,6 +530,7 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 			tokens: zeroTokens,
 			cost: 0,
 		}),
+		startPendingRecovery: async () => ({ replayed: 0, dropped: 0, completions: 0, notices: [] }),
 		dispose: testOptions.dispose ?? (() => {}),
 	} as unknown as AgentSession;
 }
@@ -837,7 +840,7 @@ export class SubagentControlRuntime {
 		candidate: ModelCandidate,
 		signals: AttemptSignals,
 		onModelChange: ((model: string | undefined, thinking?: string) => void) | undefined,
-		taskHooks?: Pick<TaskExecutionHooks, "reportActivity" | "bindTranscript">,
+		taskHooks?: Pick<TaskExecutionHooks, "reportActivity" | "bindTranscript" | "bindChildSession">,
 		onCleanup?: (cleanup: Promise<Cleanup>) => void,
 	): Promise<AttemptOutcome> {
 		const candidateModelId = modelIdForCandidate(candidate, admitted.policy.model);
@@ -974,6 +977,10 @@ export class SubagentControlRuntime {
 					);
 			transcriptManager = sessionManager;
 			taskHooks?.bindTranscript?.(sessionManager);
+			taskHooks?.bindChildSession?.({
+				sessionId: sessionManager.getSessionId(),
+				sessionFile: sessionManager.getSessionFile(),
+			});
 			if (workflow) await sessionManager.markSessionInternal(workflow);
 			let created: { session: AgentSession };
 			if (admitted.spec.testSession) {
@@ -1168,6 +1175,7 @@ export class SubagentControlRuntime {
 			});
 			if (signals.abort.aborted) await terminate("abort");
 			if (signals.interrupt.aborted) await terminate("interrupt");
+			if (!termination && admitted.spec.resumeSession) await session.startPendingRecovery("resume");
 			if (!termination) await session.prompt(admitted.spec.task);
 			await terminating;
 			const stats = statsFor(session, admitted.identity.path);

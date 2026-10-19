@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Background subagents that were still running when Atomic exited are now relaunched from their own sessions when you resume the session (`atomic --session <id>` or `/resume`) or resume a workflow stage that launched them. They keep their original Intercom name and group and get fresh supervisor authorization. If a child cannot be restored, the resumed agent is told explicitly that it is gone, once: the child is then recorded as gone, so later resumes neither retry it nor repeat the notice ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
+
 ## [0.9.39] - 2026-10-19
 
 ### Fixed

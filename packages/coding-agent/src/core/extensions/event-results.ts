@@ -50,6 +50,24 @@ export interface BeforeAgentStartEventResult {
 	systemPrompt?: string;
 }
 
+export interface SessionRecoveryRestoreResult {
+	/** Shown to the user and the agent in one message that never starts a turn. */
+	notices?: string[];
+}
+
+export interface SessionRecoveryReplayDecision {
+	/** Entry id of the pending card, from `PendingRecoveryDelivery.entryId`. */
+	entryId: string;
+	action: "replay" | "drop";
+}
+
+export interface SessionRecoveryReplayResult {
+	/** A `drop` from any handler wins. Pending cards without a decision are replayed. */
+	decisions?: SessionRecoveryReplayDecision[];
+	/** Shown to the user and the agent in one message that never starts a turn. */
+	notices?: string[];
+}
+
 export interface SessionBeforeSwitchResult {
 	cancel?: boolean;
 }

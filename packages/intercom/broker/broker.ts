@@ -42,6 +42,7 @@ import {
 	senderGroupIdentity,
 } from "./send-handler.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
+import { SessionIdReclaim } from "./session-id-reclaim.js";
 import { hasGroup, normalizeGroup, normalizeGroups } from "../group.js";
 import { handleBrokerPresence } from "./presence-handler.js";
 import {
@@ -79,6 +80,8 @@ interface PendingStageRouteRegistration {
   readonly sessionId: string;
   readonly group: string;
   readonly capability: string;
+  /** Registered by a restarted owner for an interrupted run; yields to the process that resumes it (#3760). */
+  readonly dormant?: true;
 }
 
 interface WorkflowRosterRegistration {
@@ -269,6 +272,7 @@ class IntercomBroker {
 	getBrokerDeliveredMessagesPath(),
   );
   private supervisorChannel = new SupervisorChannelCache();
+  private sessionIdReclaim = new SessionIdReclaim();
   private pendingQuestions = new PendingQuestionIndex();
   private pendingStageRoutes = new Map<string, PendingStageRouteRegistration>();
   private pendingStageAcknowledgments = new Map<string, PendingStageAcknowledgment>();
@@ -1405,6 +1409,9 @@ class IntercomBroker {
 			&& (typeof clientMessage.supervisorOwnerToken !== "string" || !clientMessage.supervisorOwnerToken)) {
 			throw new Error("Invalid supervisor owner token");
 		}
+		if (clientMessage.preferredSessionId !== undefined && typeof clientMessage.preferredSessionId !== "string") {
+			throw new Error("Invalid preferred session id");
+		}
 
         if (currentId) {
           throw new Error("Received duplicate register message");
@@ -1424,7 +1431,12 @@ class IntercomBroker {
           supervisorId = claimedSupervisorId;
         }
 
-        const id = randomUUID();
+        // #3760: a restored or reconnected session keeps the id peers know when it is free; never a live one.
+        const id = this.sessionIdReclaim.grant(
+          clientMessage.preferredSessionId,
+          clientMessage.returnAddress,
+          (sessionId) => this.sessions.has(sessionId),
+        ) ?? randomUUID();
         setId(id);
         const initialGroups = normalizeGroups(clientMessage.session.groups, clientMessage.session.group);
         const legacyGroup = normalizeGroup(clientMessage.session.group ?? initialGroups.values().next().value);
@@ -1544,7 +1556,21 @@ class IntercomBroker {
         const owner = this.sessions.get(currentId);
         const existing = this.pendingStageRoutes.get(clientMessage.runId);
         const ownerGroup = normalizeGroup(owner?.registrationGroup);
-        const activeExisting = existing !== undefined && this.sessions.has(existing.sessionId) ? existing : undefined;
+        const dormant = clientMessage.dormant === true;
+        const liveExisting = existing !== undefined && this.sessions.has(existing.sessionId) ? existing : undefined;
+        // #3760: a restarted owner queues for its interrupted run under a dormant route. The process that
+        // resumes the run holds the run's lease and a capability of its own, so it takes the route over and
+        // the dormant owner is told to stop answering for it; a dormant route never takes over another.
+        const yieldedDormant =
+          liveExisting?.dormant === true &&
+          !dormant &&
+          liveExisting.sessionId !== currentId &&
+          liveExisting.capability !== clientMessage.capability &&
+          normalizeGroup(clientMessage.group) === ownerGroup &&
+          liveExisting.group === ownerGroup
+            ? liveExisting
+            : undefined;
+        const activeExisting = yieldedDormant === undefined ? liveExisting : undefined;
         if (
           owner === undefined ||
           normalizeGroup(clientMessage.group) !== ownerGroup ||
@@ -1611,7 +1637,13 @@ class IntercomBroker {
           sessionId: currentId,
           group: ownerGroup,
           capability: clientMessage.capability,
+          ...(dormant ? { dormant: true as const } : {}),
         });
+        if (yieldedDormant !== undefined) {
+          const revoked = this.sessions.get(yieldedDormant.sessionId);
+          if (revoked !== undefined)
+            writeMessageIfOpen(revoked.socket, { type: "pending_stage_route_revoked", runId: clientMessage.runId });
+        }
         if (clientMessage.stages !== undefined || possibleStages !== undefined) {
           this.workflowRosters.set(clientMessage.runId, {
             ownerSessionId: currentId,
@@ -1832,6 +1864,7 @@ class IntercomBroker {
 		if (activation.sessionId === sessionId) this.liveWorkflowStageRouteActivations.delete(requestId);
 	}
 	this.sessions.delete(sessionId);
+	this.sessionIdReclaim.retire(sessionId, departed.registrationReturnAddress);
 	if (isAgentRecipient(departed.info)) this.broadcastToMemberships({ type: "session_left", sessionId }, sessionGroups(departed.info), sessionId);
 	}
   /** Deliver a broadcast once to each session represented in any given group. */

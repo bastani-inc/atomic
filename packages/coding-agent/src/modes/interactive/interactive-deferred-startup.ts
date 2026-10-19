@@ -45,6 +45,7 @@ InteractiveModeBase.prototype.ensureDeferredStartupComplete = async function (
  * the same post-load UI wiring as /reload and discloses loaded resources.
  */
 InteractiveModeBase.prototype.completeDeferredStartup = async function (this: InteractiveModeBase): Promise<void> {
+	let loaded = false;
 	try {
 		await this.bindCurrentSessionExtensions();
 		if (!(await this.runtimeHost?.completeStartup?.())) await this.session.reload({ reason: "startup" });
@@ -87,6 +88,7 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 		this.updateEditorBorderColor();
 		this.ui.requestRender();
 		void loadAllHighlightLanguages().then(() => this.ui.requestRender());
+		loaded = true;
 	} catch (error) {
 		// Same ownership rule as the success path: this catch swallows the error,
 		// so prompt preflight continues and must keep its indicator.
@@ -102,6 +104,7 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 		// failed, so startup ordering is resolved before any prompt can run.
 		releaseStartupChatOutput(this);
 	}
+	if (loaded) this.startSessionRecovery("startup");
 };
 
 export async function applyDeferredModelScope(mode: InteractiveModeBase): Promise<void> {

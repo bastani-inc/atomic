@@ -1,4 +1,16 @@
 import { registerSubagentReplyCapability } from "./subagent-reply-capability.js";
+import {
+  INTERCOM_SESSION_IDENTITY_ENTRY,
+  type IntercomSessionIdentity,
+  readIntercomSessionIdentity,
+} from "./session-identity.js";
+import {
+  INTERCOM_RECOVERY_PEERS_EVENT,
+  type IntercomRecoveryPeersRequest,
+  isAwaitIntercomPeerRequest,
+  SUBAGENT_AWAIT_INTERCOM_PEER_EVENT,
+  waitForIntercomPeer,
+} from "./session-recovery.js";
 import { APP_NAME, type ExtensionAPI, type ExtensionContext, sessionScopedExtensionState } from "@bastani/atomic";
 import { appendFileSync } from "node:fs";
 import {
@@ -61,6 +73,8 @@ const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
 const PENDING_STAGE_MESSAGE_EVENT = "atomic:workflow-pending-stage-message";
 const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
 const STICKY_LIVE_DELIVERED_EVENT = "atomic:workflow-sticky-live-delivered";
+/** Intercom → workflows: another process resumed a dormant route's interrupted run (#3760). */
+const PENDING_STAGE_ROUTE_REVOKED_EVENT = "atomic:workflow-pending-stage-route-revoked";
 
 interface PendingStageRouteRegistrationEvent {
 	readonly runId: string;
@@ -69,12 +83,14 @@ interface PendingStageRouteRegistrationEvent {
 	readonly stages?: WorkflowStageRosterAnnouncement[];
 	readonly possibleStages?: WorkflowPossibleStageAnnouncement[];
 	readonly parent?: WorkflowRunParentAnnouncement;
+	/** An interrupted run's restarted owner queues for it before resume; the resuming process takes it over. */
+	readonly dormant?: true;
 	completion?: Promise<void>;
 }
 
 type PendingStageRouteRegistration = Pick<
 	PendingStageRouteRegistrationEvent,
-	"group" | "capability" | "stages" | "possibleStages" | "parent"
+	"group" | "capability" | "stages" | "possibleStages" | "parent" | "dormant"
 >;
 
 interface PendingStageRouteClientState {
@@ -761,6 +777,17 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     nextClient.on("sticky_live_delivered", (notice: StickyLiveDeliveredNotice) => {
       if (state.client === nextClient) relayStickyLiveDelivered(notice);
     });
+    // #3760: the process that resumed this dormant route's interrupted run owns its routes now.
+    nextClient.on("pending_stage_route_revoked", (notice: { runId: string }) => {
+      if (notice.runId !== runId || state.client !== nextClient) return;
+      state.client = null;
+      if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
+      state.reconnectTimer = null;
+      if (pendingStageRouteClients.get(runId) === state) pendingStageRouteClients.delete(runId);
+      if (samePendingStageRoute(pendingStageRoutes.get(runId), state.route)) pendingStageRoutes.delete(runId);
+      void nextClient.disconnect().catch(() => {});
+      pi.events.emit(PENDING_STAGE_ROUTE_REVOKED_EVENT, { runId, capability: state.route.capability });
+    });
   }
   async function ensurePendingStageRouteClient(
     runId: string,
@@ -797,6 +824,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 			route.stages,
 			route.possibleStages,
 			route.parent,
+			route.dormant === true,
 		);
 		// Route completion must observe broker processing, not merely enqueue a write.
 		// A list on another session's socket can overtake this roster update.
@@ -830,6 +858,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         route.stages,
         route.possibleStages,
         route.parent,
+        route.dormant === true,
       );
       await nextClient.listSessions();
       if (!pendingStageRouteClientIsCurrent(runId, state, contextAtStart, generationAtStart)) {
@@ -871,7 +900,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     route: PendingStageRouteRegistration,
   ): Promise<void> {
     const routeGroup = normalizeGroup(route.group);
-    if (clientRegistrationGroup === routeGroup) {
+    // A dormant route always gets its own connection so a revocation can close it alone (#3760).
+    if (clientRegistrationGroup === routeGroup && route.dormant !== true) {
       activeClient.registerPendingStageRoute(
         runId,
         routeGroup,
@@ -884,6 +914,24 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       return;
     }
     await ensurePendingStageRouteClient(runId, { ...route, group: routeGroup });
+  }
+  function persistedIntercomSessionId(ctx: ExtensionContext, sessionId: string): string | undefined {
+    try {
+      return readIntercomSessionIdentity(ctx.sessionManager.getEntries(), sessionId);
+    } catch {
+      return undefined;
+    }
+  }
+  /** Remember the Intercom id this session registered under, so a resume or restore can ask for it back (#3760). */
+  async function recordIntercomSessionIdentity(sessionId: string, intercomSessionId: string): Promise<void> {
+    try {
+      await pi.appendEntry(INTERCOM_SESSION_IDENTITY_ENTRY, {
+        sessionId,
+        intercomSessionId,
+      } satisfies IntercomSessionIdentity);
+    } catch {
+      // Best effort: without the record a later restart registers under a fresh id, as before.
+    }
   }
   async function ensureConnected(reason: "startup" | "background" | "tool" | "overlay"): Promise<IntercomClient> {
     if (disposed || shuttingDown) {
@@ -908,10 +956,13 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     // and every later `ensureConnected` hands the same stale rejection back instead of
     // attempting a connection.
     const ownershipRecorded = Promise.withResolvers<void>();
+    const sessionIdAtStart = currentSessionId;
+    // #3760: a resumed session or restored subagent registers under the Intercom id its peers already know.
+    const preferredSessionId = persistedIntercomSessionId(contextAtStart, sessionIdAtStart);
     const nextReconnectPromise = (async () => {
       let connectFailed = false;
       await ownershipRecorded.promise;
-		const nextClient = new IntercomClient(currentSessionId);
+		const nextClient = new IntercomClient(sessionIdAtStart, { preferredSessionId });
       client = nextClient;
       attachClientHandlers(nextClient);
       try {
@@ -960,6 +1011,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
           process.env[INTERCOM_SESSION_ID_ENV] = nextClient.sessionId;
         }
         reconnectAttempt = 0;
+        if (nextClient.sessionId && nextClient.sessionId !== preferredSessionId) {
+          await recordIntercomSessionIdentity(sessionIdAtStart, nextClient.sessionId);
+        }
         return nextClient;
       } catch (error) {
         if (client === nextClient) {
@@ -1010,6 +1064,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 		...(payload.stages === undefined ? {} : { stages: payload.stages }),
 		...(payload.possibleStages === undefined ? {} : { possibleStages: payload.possibleStages }),
 		...(payload.parent === undefined ? {} : { parent: payload.parent }),
+		...(payload.dormant === true ? { dormant: true as const } : {}),
 	});
     const completion = ensureConnected("background").then((activeClient) =>
       registerPendingStageRoute(activeClient, payload.runId, payload),
@@ -1095,6 +1150,18 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     authorizeSupervisorChild: (childName) => supervisorAuthorizations.authorize(childName, () => ensureConnected("background")),
     resolveSessionTarget: resolveSessionTargetId,
     homeGroup: currentIntercomGroup,
+  });
+
+  pi.events.on(SUBAGENT_AWAIT_INTERCOM_PEER_EVENT, (payload) => {
+    if (!payload || typeof payload !== "object" || !isAwaitIntercomPeerRequest(payload) || payload.completion) return;
+    const request = payload;
+    request.completion = ensureConnected("background").then((activeClient) => waitForIntercomPeer(activeClient, request));
+  });
+  pi.events.on(INTERCOM_RECOVERY_PEERS_EVENT, (payload) => {
+    if (!payload || typeof payload !== "object") return;
+    const request = payload as IntercomRecoveryPeersRequest;
+    if (request.completion) return;
+    request.completion = ensureConnected("background").then((activeClient) => activeClient.listSessions());
   });
 
   pi.on("session_shutdown", (event) => {

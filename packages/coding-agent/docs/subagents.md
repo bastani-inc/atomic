@@ -102,6 +102,8 @@ To update a working child, use ordinary Intercom `send` or `ask` with its exact 
 
 Targeted `kill` stops only the selected child and cannot be resumed. Explicit batch cancellation and session/workflow-stage lifetime closure still stop the intended owned children, including pending reply waits. A late or duplicate reply cannot revive a terminal child. Ordinary Intercom group restrictions and the authorized cross-group `contact_supervisor` route are unchanged.
 
+If Atomic exits while background subagents are still running, resuming the session, or the workflow whose stage launched them, relaunches each unfinished child from its own saved session with a continuation prompt. A restored child keeps its Intercom name and group and gets a fresh supervisor authorization, so you can keep messaging it. A child that finished or that you killed is never relaunched. If a child cannot be restored, for example because its session file or agent definition is gone, the resumed agent gets a notice that it is gone. That notice is given once: the child is then recorded as gone in the session, so later resumes neither retry the restoration nor repeat the notice.
+
 Completed, failed, interrupted, and cancelled noninteractive children cannot answer new Intercom asks, even when their retained registration still says `idle`. Such asks fail immediately with an explicit terminal-child error; an admitted ask also fails if its child terminates before replying. Launch a fresh child with the required context for follow-up work. This does not restrict live interactive idle sessions or workflow-stage post-mortem conversations, and does not change `send` delivery semantics.
 
 ### Peer coordination

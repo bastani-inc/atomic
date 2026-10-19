@@ -542,6 +542,14 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "reload");
 			}
 
+			case "start_pending_recovery": {
+				return createRpcSuccessResponse(
+					id,
+					"start_pending_recovery",
+					await session.startPendingRecovery(command.reason),
+				);
+			}
+
 			case "get_shortcuts": {
 				const effectiveBindings = getShortcutBindings();
 				const shortcuts = session.extensionRunner.getShortcuts(effectiveBindings);

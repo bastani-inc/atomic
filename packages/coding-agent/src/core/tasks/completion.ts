@@ -81,32 +81,31 @@ export function formatTaskCompletion(
 	return lines.join("\n");
 }
 
-/** Session history retains intent even when model admission or its acknowledgement fails. */
+/**
+ * Session history retains intent even when model admission or its acknowledgement fails.
+ * Intents restored from an earlier process wait for `flushRestored()`; they never ride a live flush.
+ */
 export class TaskCompletionOutbox {
 	private readonly entries = new Map<string, TaskCompletionEnvelope>();
+	private readonly restored = new Set<string>();
 	private delivery: Promise<void> | undefined;
+	private restoredDelivery: Promise<void> | undefined;
 	private readonly session: SessionManager;
 	private readonly isOpen: () => boolean;
-	private readonly admit: (envelope: TaskCompletionEnvelope) => Promise<void>;
+	private readonly admit: (envelope: TaskCompletionEnvelope, restored: boolean) => Promise<void>;
 
 	constructor(
 		session: SessionManager,
 		isOpen: () => boolean,
-		admit: (envelope: TaskCompletionEnvelope) => Promise<void>,
+		admit: (envelope: TaskCompletionEnvelope, restored: boolean) => Promise<void>,
 	) {
 		this.session = session;
 		this.isOpen = isOpen;
 		this.admit = admit;
-		for (const entry of session.getEntries()) {
-			if (entry.type !== "custom") continue;
-			if (entry.customType === "task-completion-intent") {
-				const envelope = entry.data as TaskCompletionEnvelope;
-				this.entries.set(envelope.completionId, envelope);
-			} else if (entry.customType === "task-completion-ack") {
-				this.entries.delete((entry.data as { completionId: string }).completionId);
-			}
+		for (const envelope of pendingTaskCompletionIntents(session)) {
+			this.entries.set(envelope.completionId, envelope);
+			this.restored.add(envelope.completionId);
 		}
-		if (this.entries.size > 0) void this.flush();
 	}
 	get pending(): TaskCompletionEnvelope[] {
 		return [...this.entries.values()];
@@ -126,14 +125,25 @@ export class TaskCompletionOutbox {
 	}
 
 	flush(): Promise<void> {
-		this.delivery ??= this.deliver().finally(() => {
+		this.delivery ??= this.deliver(false).finally(() => {
 			this.delivery = undefined;
 		});
 		return this.delivery;
 	}
 
-	private async deliver(): Promise<void> {
+	/** Deliver intents an earlier process left unacknowledged; returns how many were delivered. */
+	async flushRestored(): Promise<number> {
+		const before = this.restored.size;
+		this.restoredDelivery ??= this.deliver(true).finally(() => {
+			this.restoredDelivery = undefined;
+		});
+		await this.restoredDelivery;
+		return before - this.restored.size;
+	}
+
+	private async deliver(restored: boolean): Promise<void> {
 		for (const envelope of this.entries.values()) {
+			if (this.restored.has(envelope.completionId) !== restored) continue;
 			if (!this.isOpen()) return;
 			try {
 				const persisted = this.session
@@ -146,12 +156,28 @@ export class TaskCompletionOutbox {
 					);
 				if (!persisted) await this.session.appendCustomEntry("task-completion-intent", envelope);
 				if (!this.isOpen()) return;
-				await this.admit(envelope);
+				await this.admit(envelope, restored);
 				await this.session.appendCustomEntry("task-completion-ack", { completionId: envelope.completionId });
 				this.entries.delete(envelope.completionId);
+				this.restored.delete(envelope.completionId);
 			} catch {
 				// Execution stays terminal. Explicit retry uses this same envelope and identity.
 			}
 		}
 	}
+}
+
+/** Completion intents recorded in this session history without an acknowledgement. */
+export function pendingTaskCompletionIntents(session: Pick<SessionManager, "getEntries">): TaskCompletionEnvelope[] {
+	const pending = new Map<string, TaskCompletionEnvelope>();
+	for (const entry of session.getEntries()) {
+		if (entry.type !== "custom") continue;
+		if (entry.customType === "task-completion-intent") {
+			const envelope = entry.data as TaskCompletionEnvelope;
+			pending.set(envelope.completionId, envelope);
+		} else if (entry.customType === "task-completion-ack") {
+			pending.delete((entry.data as { completionId: string }).completionId);
+		}
+	}
+	return [...pending.values()];
 }

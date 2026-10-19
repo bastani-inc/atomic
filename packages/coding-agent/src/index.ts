@@ -117,6 +117,7 @@ export {
 	type PromptOptions,
 	parseSkillBlock,
 	type SessionCompactOptions,
+	type SessionRecoveryReport,
 	type SessionStats,
 } from "./core/agent-session.js";
 // Auth and model runtime

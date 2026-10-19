@@ -8,7 +8,11 @@ import {
 } from "../workflow-stage-target.js";
 import { normalizeGroup } from "../group.js";
 import { isMessage } from "./client-message-validation.js";
-import { resolveSessionTarget, sessionTargetFailureReason } from "../session-target.js";
+import {
+	resolveSessionTarget,
+	resolveSessionTargetByHostSessionId,
+	sessionTargetFailureReason,
+} from "../session-target.js";
 import { DeliveredMessageCache } from "./delivered-message-cache.js";
 import { buildMessageSendSignature } from "./send-signature.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
@@ -286,9 +290,18 @@ export function handleBrokerSend(
       return;
     }
   }
-  const resolution = exactIdTarget
+  const nameOrIdResolution = exactIdTarget
     ? ({ kind: "resolved", session: exactIdTarget.info } as const)
     : resolveSessionTarget(candidates, trimmedTo);
+  // #3760: a host session id (a resumed session's or a restored subagent's own session id) reaches the one
+  // visible session it registered, under the same group visibility as names.
+  const resolution = nameOrIdResolution.kind === "not_found"
+    ? resolveSessionTargetByHostSessionId(
+        candidates,
+        trimmedTo,
+        (info) => sessions.get(info.id)?.registrationReturnAddress,
+      )
+    : nameOrIdResolution;
   if (expectedRecipientId !== undefined && (resolution.kind !== "resolved" || resolution.session.id !== expectedRecipientId)) {
     write(socket, { type: "delivery_failed", messageId, attemptId,
       reason: resolution.kind === "resolved" ? "Reply target does not match the expected recipient" : sessionTargetFailureReason(clientMessage.to, resolution),

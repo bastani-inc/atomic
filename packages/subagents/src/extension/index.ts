@@ -7,6 +7,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 	keyHintIfBound,
+	type SessionEntry,
 	type ToolDefinition,
 } from "@bastani/atomic";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -22,6 +23,14 @@ import {
 } from "@earendil-works/pi-tui";
 import { discoverAgents } from "../agents/agents.js";
 import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/foreground/notify.js";
+import {
+	awaitSubagentChildRestoration,
+	recordReportedGoneSubagentChildren,
+	restoreSubagentChildren,
+	SUBAGENT_AWAIT_CHILD_RESTORATION_EVENT,
+	type SubagentAwaitChildRestorationRequest,
+	subagentChildRestoreNotices,
+} from "../runs/foreground/subagent-child-restore.js";
 import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.js";
 import { getArtifactsDir } from "../shared/artifacts.js";
 import { formatDuration, shortenPath } from "../shared/formatters.js";
@@ -50,6 +59,27 @@ import { SUBAGENT_TOOL_DESCRIPTION } from "./tool-description.js";
 import { renderSubagentToolCall, renderSubagentToolResult } from "./tool-rendering.js";
 
 export {
+	findSubagentChildRecord,
+	readSubagentChildRecords,
+	SUBAGENT_CHILD_RECORD_TYPE,
+	type SubagentChildOwner,
+	type SubagentChildRecord,
+} from "../runs/foreground/subagent-child-records.js";
+export {
+	awaitSubagentChildRestoration,
+	recordReportedGoneSubagentChildren,
+	restoreSubagentChild,
+	restoreSubagentChildren,
+	SUBAGENT_AWAIT_CHILD_RESTORATION_EVENT,
+	SUBAGENT_AWAIT_INTERCOM_PEER_EVENT,
+	SUBAGENT_RESUME_CONTINUATION_PROMPT,
+	type SubagentAwaitChildRestorationRequest,
+	type SubagentAwaitIntercomPeerRequest,
+	type SubagentChildRestoreDeps,
+	type SubagentChildRestoreOutcome,
+	subagentChildRestoreNotices,
+} from "../runs/foreground/subagent-child-restore.js";
+export {
 	PROMPT_TEMPLATE_SUBAGENT_CANCEL_EVENT,
 	PROMPT_TEMPLATE_SUBAGENT_REQUEST_EVENT,
 	PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT,
@@ -62,6 +92,7 @@ export { SUBAGENT_TOOL_DESCRIPTION } from "./tool-description.js";
 import {
 	DEFAULT_ARTIFACT_CONFIG,
 	type Details,
+	isSubagentChildSession,
 	SLASH_RESULT_TYPE,
 	SUBAGENT_CONTROL_EVENT,
 	type SubagentState,
@@ -410,6 +441,32 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		pi.on("session_start", (_event, ctx) => {
 			if (lifecycle.isCurrent()) resetSessionState(ctx);
 		});
+		pi.on("session_recovery_restore", async (_event, ctx) => {
+			// Subagent children never own children; workflow stages carry a policy but do (#3760).
+			if (!lifecycle.isCurrent() || isSubagentChildSession(ctx)) return undefined;
+			const outcomes = await restoreSubagentChildren(executorDeps, ctx);
+			const notices = subagentChildRestoreNotices(outcomes);
+			// Report once: record the children the notices call gone, so later resumes neither retry nor repeat them.
+			await recordReportedGoneSubagentChildren(pi, outcomes);
+			return { notices };
+		});
+		const unsubscribeChildRestoration = pi.events.on(SUBAGENT_AWAIT_CHILD_RESTORATION_EVENT, (payload) => {
+			const request = payload as Partial<SubagentAwaitChildRestorationRequest> | null;
+			if (!lifecycle.isCurrent() || !request || request.completion) return;
+			if (typeof request.ownerSessionId !== "string" || typeof request.target !== "string") return;
+			const { ownerSessionId, target } = request;
+			const timeoutMs = typeof request.timeoutMs === "number" ? request.timeoutMs : 0;
+			const entries = (): SessionEntry[] => {
+				try {
+					const ctx = state.lastUiContext;
+					return ctx?.sessionManager.getSessionId() === ownerSessionId ? ctx.sessionManager.getEntries() : [];
+				} catch {
+					return [];
+				}
+			};
+			request.completion = awaitSubagentChildRestoration(ownerSessionId, entries(), target, timeoutMs);
+		});
+		eventUnsubscribes.push(unsubscribeChildRestoration);
 		pi.on("session_shutdown", () => {
 			lifecycle.dispose();
 		});

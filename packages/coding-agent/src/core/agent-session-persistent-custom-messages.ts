@@ -2,6 +2,7 @@ import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-for
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { DrainedAgentQueues } from "./agent-session-types.js";
 import { customMessageExcludesContext } from "./agent-session-types.js";
+import type { PendingRecoveryDelivery } from "./extensions/index.js";
 import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
 
 type ProtectedDelivery = "steer" | "followUp";
@@ -11,6 +12,8 @@ export const PROTECTED_RECONCILIATION_CUSTOM_TYPE = "atomic:protected-streaming-
 
 interface ProtectedReconciliationDetails {
 	protectedReconciliationOf: string;
+	/** Set when resume recovery declined to replay the card to the model. */
+	recovery?: "dropped";
 }
 
 export interface ProtectedStreamingCustomMessage {
@@ -97,8 +100,8 @@ function protectedDelivery(marker: unknown): ProtectedDelivery | undefined {
 	return delivery === "steer" || delivery === "followUp" ? delivery : undefined;
 }
 
-/** Requeue each durable card intent that has no persisted hidden completion. */
-export function recoverProtectedStreamingCustomMessages(session: AgentSession): number {
+/** Durable card intents with neither a persisted hidden completion nor a scheduled one. */
+export function pendingProtectedStreamingCustomMessages(session: AgentSession): PendingRecoveryDelivery[] {
 	const branch = session.sessionManager.getBranch();
 	const completed = new Set(
 		branch.flatMap((entry) =>
@@ -113,26 +116,57 @@ export function recoverProtectedStreamingCustomMessages(session: AgentSession): 
 			return intent === undefined ? [] : [intent];
 		}),
 	);
-	let recovered = 0;
+	const pending: PendingRecoveryDelivery[] = [];
 	for (const entry of branch) {
 		if (entry.type !== "custom_message") continue;
 		const delivery = protectedDelivery(entry.protectedReconciliation);
 		if (delivery === undefined || completed.has(entry.id) || scheduled.has(entry.id)) continue;
-		const parsedTimestamp = Date.parse(entry.timestamp);
-		const card: CustomMessage = {
-			role: "custom",
+		pending.push({
+			entryId: entry.id,
 			customType: entry.customType,
 			content: entry.content,
-			display: entry.display,
 			details: entry.details,
+			timestamp: entry.timestamp,
+			...(entry.stageAdmissionKey === undefined ? {} : { stageAdmissionKey: entry.stageAdmissionKey }),
+			delivery,
+		});
+	}
+	return pending;
+}
+
+/** Requeue the hidden model-facing turn of each recovered durable card. */
+export function recoverProtectedStreamingCustomMessages(
+	session: AgentSession,
+	pending: readonly PendingRecoveryDelivery[],
+): number {
+	for (const entry of pending) {
+		const parsedTimestamp = Date.parse(entry.timestamp);
+		const reconciliation: CustomMessage = {
+			role: "custom",
+			customType: PROTECTED_RECONCILIATION_CUSTOM_TYPE,
+			content: entry.content,
+			display: false,
+			details: { protectedReconciliationOf: entry.entryId } satisfies ProtectedReconciliationDetails,
 			timestamp: Number.isFinite(parsedTimestamp) ? parsedTimestamp : Date.now(),
 		};
-		const reconciliation = createProtectedReconciliation(card, entry.id);
-		protectedMessages(session).push({ message: reconciliation, delivery, phase: "queued" });
-		session._queueAgentMessage(reconciliation, delivery);
-		recovered += 1;
+		protectedMessages(session).push({ message: reconciliation, delivery: entry.delivery, phase: "queued" });
+		session._queueAgentMessage(reconciliation, entry.delivery);
 	}
-	return recovered;
+	return pending.length;
+}
+
+/** Close a recovered card without a model turn, so later resumes never offer it again. */
+export async function dismissProtectedStreamingCustomMessage(
+	session: AgentSession,
+	pending: PendingRecoveryDelivery,
+): Promise<void> {
+	await session.sessionManager.appendCustomMessageEntry(
+		PROTECTED_RECONCILIATION_CUSTOM_TYPE,
+		pending.content,
+		false,
+		{ protectedReconciliationOf: pending.entryId, recovery: "dropped" } satisfies ProtectedReconciliationDetails,
+		true,
+	);
 }
 
 interface ProtectedAdmission {

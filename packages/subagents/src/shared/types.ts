@@ -22,6 +22,7 @@ export interface TaskExecutionHooks {
 	signal: AbortSignal;
 	reportActivity(report: ActivityReport): void;
 	bindTranscript?(source: TaskTranscriptSource): void;
+	bindChildSession?(session: { sessionId: string; sessionFile: string | undefined }): void;
 	onExecution(execution: { result: Promise<AttemptOutcome>; cleanup: Promise<Cleanup> }): void;
 	yieldTaskWait(reason: "intercom-coordination"): void;
 	/** True only while the launching tool call still blocks on this task and can return a handoff as its result. */

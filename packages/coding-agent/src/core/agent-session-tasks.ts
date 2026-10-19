@@ -51,7 +51,7 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 	const outbox = new TaskCompletionOutbox(
 		this.sessionManager,
 		() => !this._disposed && admission.isOpen(),
-		async (envelope) => {
+		async (envelope, restored) => {
 			// Settlement can precede the UI projection's next drain. Read the owner
 			// snapshot, not the display store, when attaching completion context.
 			const host = this._agentTaskHost;
@@ -127,11 +127,12 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 				);
 			}
 			const deliver = () =>
-				this.sendCustomMessage(message, {
-					triggerTurn: true,
-					persistWhenStreaming: true,
-					stageAdmissionKey: envelope.completionId,
-				});
+				this.sendCustomMessage(
+					message,
+					restored
+						? { triggerTurn: false, stageAdmissionKey: envelope.completionId }
+						: { triggerTurn: true, persistWhenStreaming: true, stageAdmissionKey: envelope.completionId },
+				);
 			if (stageAdmission) await deliver();
 			else {
 				await admission.admit(envelope.completionId, deliver, () => {

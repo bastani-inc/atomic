@@ -531,8 +531,8 @@ describe("workflow heartbeat context invalidation", () => {
 			undefined,
 		);
 
-		// Binding again drives `recoverProtectedStreamingCustomMessages`.
-		await harness.session.bindExtensions({ shutdownHandler: () => {} });
+		// Resume recovery requeues the recovered cards once the transcript is visible.
+		await harness.session.startPendingRecovery("resume");
 		await harness.session.prompt("drive the recovered queue");
 
 		assert.ok(contexts.length > 1, "the recovered queue drove a second turn");

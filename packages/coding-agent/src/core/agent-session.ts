@@ -24,6 +24,7 @@ import { agentSessionModelsMethods } from "./agent-session-models.ts";
 import type { PendingPostToolCompactionGuard } from "./agent-session-post-tool-compaction.ts";
 import { agentSessionPostToolCompactionMethods } from "./agent-session-post-tool-compaction.ts";
 import { agentSessionPromptMethods } from "./agent-session-prompt.ts";
+import { agentSessionRecoveryMethods } from "./agent-session-recovery.ts";
 import { agentSessionRetryMethods } from "./agent-session-retry.ts";
 import { agentSessionStateMethods } from "./agent-session-state.ts";
 import { agentSessionSummaryMethods, type SessionSummaryRun } from "./agent-session-summary.ts";
@@ -79,6 +80,7 @@ export type {
 	PromptDisposition,
 	PromptOptions,
 	QueuedInputDisposition,
+	SessionRecoveryReport,
 	SessionStats,
 } from "./agent-session-types.js";
 
@@ -423,6 +425,7 @@ Object.assign(
 	agentSessionAutoCompactionMethods,
 	agentSessionPostToolCompactionMethods,
 	agentSessionExtensionBindingsMethods,
+	agentSessionRecoveryMethods,
 	agentSessionToolRegistryMethods,
 	agentSessionRetryMethods,
 	agentSessionBashMethods,

@@ -41,8 +41,13 @@ export interface SendOptions {
   requirePendingReply?: true;
   /** An explicit reply selector must resolve to this frozen recipient, never a namesake. */
   expectedRecipientId?: string;
-  /** Broker-authorized identity for a canonical-path ask, delivered before its recipient can reply. */
+  /** Broker-authorized recipient identity for an ask, delivered before its recipient can reply. */
   onReplyTarget?: (sessionId: string) => void;
+}
+
+export interface IntercomClientOptions {
+	/** Intercom session id held before a restart or reconnect; the broker grants it only when it is free (#3760). */
+	readonly preferredSessionId?: string;
 }
 
 export interface SendResult {
@@ -152,6 +157,7 @@ function isWorkflowStageRosterEntries(value: unknown): value is WorkflowStageRos
 
 export class IntercomClient extends EventEmitter {
 	private readonly returnAddress: string;
+	private readonly preferredSessionId: string | undefined;
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
   private _supervisorSessionId: string | null = null;
@@ -177,10 +183,11 @@ export class IntercomClient extends EventEmitter {
   private disconnecting = false;
   private disconnectError: Error | null = null;
 
-	constructor(returnAddress: string = randomUUID()) {
+	constructor(returnAddress: string = randomUUID(), options: IntercomClientOptions = {}) {
 		super();
 		if (returnAddress.length === 0) throw new Error("Intercom return address must not be empty");
 		this.returnAddress = returnAddress;
+		this.preferredSessionId = options.preferredSessionId;
 	}
 
   private failPending(error: Error): void {
@@ -371,6 +378,7 @@ export class IntercomClient extends EventEmitter {
           session,
           ...(registrationGroup !== undefined ? { registrationGroup } : {}),
 			returnAddress: this.returnAddress,
+			...(this.preferredSessionId === undefined ? {} : { preferredSessionId: this.preferredSessionId }),
           ...(supervisor ? { supervisor } : {}),
           ...(supervisorOwnerToken ? { supervisorOwnerToken } : {}),
         });
@@ -571,6 +579,12 @@ export class IntercomClient extends EventEmitter {
 				target,
 				deliveredTargets,
 			} satisfies StickyLiveDeliveredNotice);
+			break;
+		}
+		case "pending_stage_route_revoked": {
+			const { runId } = brokerMessage;
+			if (typeof runId !== "string") throw new Error("Invalid pending-stage route revocation");
+			this.emit("pending_stage_route_revoked", { runId });
 			break;
 		}
       case "live_workflow_stage_route_registered": {
@@ -897,6 +911,7 @@ export class IntercomClient extends EventEmitter {
 	stages?: WorkflowStageRosterAnnouncement[],
 	possibleStages?: WorkflowPossibleStageAnnouncement[],
 	parent?: WorkflowRunParentAnnouncement,
+	dormant?: boolean,
   ): void {
 	writeMessage(this.requireActiveSocket(), {
 		type: "register_pending_stage_route",
@@ -906,6 +921,7 @@ export class IntercomClient extends EventEmitter {
 		stages,
 		possibleStages,
 		...(parent === undefined ? {} : { parent }),
+		...(dormant === true ? { dormant: true as const } : {}),
 	});
   }
 

@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Resuming a workflow restores the background subagents its stages launched and delivers the stages' interrupted messages before the stage continues. Both happen visibly in the stage, and stages stay addressable at the same `workflow:<rootRunId>/...` targets ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
+- An interrupted workflow run stays addressable after the session that launched it restarts, before you run `/workflow resume`. Sends to `workflow:<rootRunId>/<stage>` and `workflow:<rootRunId>/**` are queued in the run's own journal instead of failing with `Session not found`, and `intercom list` shows the run's stages as pending. Each queued message is delivered exactly once when its stage is live again, including messages sent while resume is starting. A queued message no longer makes a resume that started at the same time fail as stale. If another Atomic session resumes the run instead, that session takes over the run's Intercom targets ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
+
 ## [0.9.39] - 2026-10-19
 
 ### Added

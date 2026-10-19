@@ -3,7 +3,7 @@ import type {
 	VerbatimCompactionPreparation,
 	VerbatimCompactionResult,
 } from "../compaction/index.ts";
-import type { BranchSummaryEntry, CompactionEntry, SessionEntry } from "../session-manager.ts";
+import type { BranchSummaryEntry, CompactionEntry, CustomMessageEntry, SessionEntry } from "../session-manager.ts";
 
 // ============================================================================
 // Resource Events
@@ -34,6 +34,38 @@ export interface SessionStartEvent {
 	reason: "startup" | "reload" | "new" | "resume" | "fork";
 	/** Previously active session ID. Present for "new", "resume", and "fork". */
 	previousSessionId?: string;
+}
+
+/** Why a session's interrupted-work recovery is running. */
+export type SessionRecoveryReason = "startup" | "resume" | "workflow_stage_resume";
+
+/**
+ * Fired once per session, after the host has shown the transcript and before interrupted
+ * deliveries are replayed. Restore background work, such as child agents, here.
+ */
+export interface SessionRecoveryRestoreEvent {
+	type: "session_recovery_restore";
+	reason: SessionRecoveryReason;
+}
+
+/** A durable delivery card that was shown before the process exited but never reached the model. */
+export interface PendingRecoveryDelivery {
+	/** Entry id of the original visible card. */
+	entryId: string;
+	customType: string;
+	content: CustomMessageEntry["content"];
+	details: CustomMessageEntry["details"];
+	/** ISO timestamp of the original card. */
+	timestamp: string;
+	stageAdmissionKey?: string;
+	delivery: "steer" | "followUp";
+}
+
+/** Fired after `session_recovery_restore` when interrupted deliveries are waiting to be replayed. */
+export interface SessionRecoveryReplayEvent {
+	type: "session_recovery_replay";
+	reason: SessionRecoveryReason;
+	pending: readonly PendingRecoveryDelivery[];
 }
 
 /** Fired when the current session metadata changes. */
@@ -130,6 +162,8 @@ export interface SessionTreeEvent {
 
 export type SessionEvent =
 	| SessionStartEvent
+	| SessionRecoveryRestoreEvent
+	| SessionRecoveryReplayEvent
 	| SessionInfoChangedEvent
 	| SessionBeforeSwitchEvent
 	| SessionBeforeForkEvent

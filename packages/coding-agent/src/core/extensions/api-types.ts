@@ -52,6 +52,8 @@ import type {
 	SessionBeforeForkResult,
 	SessionBeforeSwitchResult,
 	SessionBeforeTreeResult,
+	SessionRecoveryReplayResult,
+	SessionRecoveryRestoreResult,
 	ToolCallEventResult,
 	ToolResultEventResult,
 	TurnEndEventResult,
@@ -75,6 +77,8 @@ import type {
 	SessionCompactEvent,
 	SessionCompactFailedEvent,
 	SessionInfoChangedEvent,
+	SessionRecoveryReplayEvent,
+	SessionRecoveryRestoreEvent,
 	SessionShutdownEvent,
 	SessionStartEvent,
 	SessionTreeEvent,
@@ -123,6 +127,14 @@ export interface ExtensionAPI {
 	): () => void;
 	on(event: "session_info_changed", handler: ExtensionHandler<SessionInfoChangedEvent>): () => void;
 	on(event: "session_start", handler: ExtensionHandler<SessionStartEvent>): () => void;
+	on(
+		event: "session_recovery_restore",
+		handler: ExtensionHandler<SessionRecoveryRestoreEvent, SessionRecoveryRestoreResult>,
+	): () => void;
+	on(
+		event: "session_recovery_replay",
+		handler: ExtensionHandler<SessionRecoveryReplayEvent, SessionRecoveryReplayResult>,
+	): () => void;
 	on(
 		event: "session_before_switch",
 		handler: ExtensionHandler<SessionBeforeSwitchEvent, SessionBeforeSwitchResult>,

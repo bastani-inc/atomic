@@ -604,8 +604,14 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 		};
 		assert.equal(
 			restoredInternals._protectedStreamingCustomMessages.length,
+			0,
+			"startup binding must not queue recovered intents before the transcript is shown (#3760)",
+		);
+		await Promise.all([restored.session.startPendingRecovery(), restored.session.startPendingRecovery()]);
+		assert.equal(
+			restoredInternals._protectedStreamingCustomMessages.length,
 			1,
-			"repeated startup binding must not queue the same durable intent twice",
+			"repeated recovery must not queue the same durable intent twice",
 		);
 		assert.equal(await restored.session.resumeQueuedMessages(), true);
 		await restoredInternals._continueQueuedAgentMessages();
@@ -643,6 +649,7 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 		harnesses.push(later);
 		later.setResponses([() => fauxAssistantMessage("unexpected duplicate correction")]);
 		await later.session.bindExtensions({});
+		await later.session.startPendingRecovery();
 		await sleep(0);
 		assert.equal(later.faux.state.callCount, 0, "a later restore must not repeat the resolved correction");
 	});

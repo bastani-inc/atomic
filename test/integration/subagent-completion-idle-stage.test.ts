@@ -6,7 +6,7 @@ import type { OperationId, TaskResult } from "../../packages/coding-agent/src/co
 import { createHarness } from "../../packages/coding-agent/test/suite/harness.js";
 
 for (const restored of [false, true]) {
-	test(`${restored ? "restored" : "live"} idle stage completions trigger parent turns without blocking subsequent notices (#3427)`, async () => {
+	test(`${restored ? "restored idle stage completions are shown after resume recovery without a parent turn or blocking subsequent notices (#3427, #3760)" : "live idle stage completions trigger parent turns without blocking subsequent notices (#3427)"}`, async () => {
 		const manager = SessionManager.inMemory();
 		let completionId = "idle-restored-completion";
 		if (restored) {
@@ -32,7 +32,10 @@ for (const restored of [false, true]) {
 		harness.setResponses(Array.from({ length: 5 }, () => fauxAssistantMessage("IDLE-PARENT-REPLY")));
 		try {
 			const host = harness.session.getAgentTaskHost();
-			if (!restored) {
+			if (restored) {
+				const report = await harness.session.startPendingRecovery("workflow_stage_resume");
+				assert.equal(report.completions, 1);
+			} else {
 				const gate = Promise.withResolvers<TaskResult>();
 				const started = await host.startAgentTask(
 					{ kind: "agent", agent: "worker", task: "idle background" },
@@ -68,7 +71,7 @@ for (const restored of [false, true]) {
 				assert.ok(intent >= 0 && card > intent && ack > card);
 				const cardEntry = entries[card]!;
 				assert.ok(cardEntry.type === "custom_message" && cardEntry.display);
-				assert.ok(
+				assert.equal(
 					entries.some(
 						(entry) =>
 							entry.type === "custom_message" &&
@@ -76,8 +79,9 @@ for (const restored of [false, true]) {
 							(entry.details as { protectedReconciliationOf: string }).protectedReconciliationOf ===
 								cardEntry.id,
 					),
+					!restored,
 				);
-				assert.ok(
+				assert.equal(
 					harness
 						.eventsOfType("message_end")
 						.some(
@@ -87,6 +91,7 @@ for (const restored of [false, true]) {
 									(block) => block.type === "text" && block.text === "IDLE-PARENT-REPLY",
 								),
 						),
+					!restored,
 				);
 			});
 			await harness.session.sendCustomMessage(

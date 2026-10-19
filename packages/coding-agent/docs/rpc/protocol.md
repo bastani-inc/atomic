@@ -789,6 +789,25 @@ If an extension cancelled the switch:
 {"type": "response", "command": "switch_session", "success": true, "data": {"cancelled": true}}
 ```
 
+#### start_pending_recovery
+
+Recover work an earlier process left unfinished in the current session. Send it after you have shown the transcript, at startup or after `switch_session`.
+
+Loading or switching a session never recovers anything by itself. Until a client sends this command, interrupted deliveries stay pending in the session. The command runs once per loaded session; repeating it returns the same report. It does not block other commands, so prompts and `abort` keep working while it runs.
+
+```json
+{"type": "start_pending_recovery", "reason": "resume"}
+```
+
+`reason` is optional and accepts `"startup"`, `"resume"`, or `"workflow_stage_resume"`.
+
+Extensions first restore their background work. Interrupted deliveries that are still wanted are then replayed in a turn, which streams like any other turn. Notices and undelivered background task results are appended without starting a turn.
+
+The response arrives when recovery has finished:
+```json
+{"type": "response", "command": "start_pending_recovery", "success": true, "data": {"replayed": 1, "dropped": 1, "completions": 0, "notices": ["Worker reviewer is gone."]}}
+```
+
 #### fork
 
 Create a new fork from a previous user message on the active branch. Can be cancelled by a `session_before_fork` extension event handler. Returns the text of the message being forked from.

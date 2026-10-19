@@ -35,6 +35,10 @@ import type {
 	SessionBeforeSwitchResult,
 	SessionBeforeTreeResult,
 	SessionBoundaryDraft,
+	SessionRecoveryReplayEvent,
+	SessionRecoveryReplayResult,
+	SessionRecoveryRestoreEvent,
+	SessionRecoveryRestoreResult,
 	ToolCallEvent,
 	ToolCallEventResult,
 	ToolResultEvent,
@@ -69,10 +73,17 @@ export type RunnerEmitEvent = Exclude<
 	| BeforeAgentStartEvent
 	| MessageEndEvent
 	| ResourcesDiscoverEvent
+	| SessionRecoveryRestoreEvent
+	| SessionRecoveryReplayEvent
 	| InputEvent
 	| TurnEndEvent
 	| AgentBeforeSettleEvent
 >;
+
+export interface SessionRecoveryCombinedResult {
+	notices: string[];
+	dropped: Set<string>;
+}
 
 export type BoundaryBaseEvent =
 	| Omit<TurnEndEvent, "entries" | "continue" | "context">
@@ -607,6 +618,32 @@ export async function runResourcesDiscoverHandlers(
 	}
 
 	return { skillPaths, promptPaths, themePaths };
+}
+
+export async function runSessionRecoveryHandlers(
+	extensions: Extension[],
+	ctx: ExtensionContext,
+	event: SessionRecoveryRestoreEvent | SessionRecoveryReplayEvent,
+	emitError: EmitExtensionError,
+): Promise<SessionRecoveryCombinedResult> {
+	const notices: string[] = [];
+	const dropped = new Set<string>();
+	for (const { ext, handlers } of snapshotEventHandlers(extensions, event.type)) {
+		for (const handler of handlers) {
+			try {
+				const result = (await runCallback({ kind: "extension.hook", name: event.type, sourcePath: ext.path }, () =>
+					handler(event, ctx),
+				)) as (SessionRecoveryRestoreResult & SessionRecoveryReplayResult) | undefined;
+				for (const notice of result?.notices ?? []) if (notice.trim()) notices.push(notice);
+				if (event.type !== "session_recovery_replay") continue;
+				for (const decision of result?.decisions ?? [])
+					if (decision.action === "drop") dropped.add(decision.entryId);
+			} catch (error) {
+				emitCaughtError(emitError, ext.path, event.type, error);
+			}
+		}
+	}
+	return { notices, dropped };
 }
 
 export async function runInputHandlers(

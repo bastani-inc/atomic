@@ -20,6 +20,7 @@ Start with the state you can observe. The existing sections below explain the co
 | Broker restart or concurrent startup | Sessions disappear briefly, or several sessions invoke Intercom at the same time. | Usually no action is needed. Clients reconnect, and the spawn lock prevents duplicate brokers. See [How it works](#how-it-works). |
 | Broker does not start | The startup or readiness error quotes the broker log path and includes a bounded tail. | Read `~/.atomic/agent/intercom/broker.log`, or the equivalent path below `ATOMIC_CODING_AGENT_DIR`. See [How it works](#how-it-works). |
 | Half-closed peer or undeliverable send | The send returns `Session not found`; its message id remains retryable. | Refresh the session list and retry after the target reconnects. See [How it works](#how-it-works). |
+| Subagent restoring after resume | A send or ask to a background subagent that a resume is restoring (by its name, Atomic session ID, or pre-restart Intercom session ID) waits up to 20 seconds, then delivers. If the subagent did not survive the restart, the sender gets an explicit "gone" error instead of `Session not found`. | Wait for the restoration, or launch a new subagent if the old one is gone. See [How it works](#how-it-works). |
 
 ## How Connection Works
 
@@ -134,3 +135,4 @@ Queued messages from a child arrive before its completion notice. Delivery retri
 - **No attachments UI** — `file`, `snippet`, and `context` attachments are supported in the protocol, but not in the compose overlay
 - **Only connected sessions appear** — The list shows sessions that have connected to the broker, not every open Atomic process
 - **Broker lifecycle** — The broker auto-spawns on first use and exits when idle; sessions reconnect automatically if it restarts
+- **Busy parent after a restart** — A message delivered to a busy parent that is not waiting on a task is held in memory until the parent goes idle, and it is lost if the process is killed first

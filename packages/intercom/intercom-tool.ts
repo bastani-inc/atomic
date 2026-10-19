@@ -15,6 +15,7 @@ import {
   toError,
 } from "./intercom-utils.js";
 import type { ReplyTracker } from "./reply-tracker.js";
+import { awaitSubagentChildRestoration } from "./session-recovery.js";
 import { resolveSessionTarget, resolveSessionTargetId, sessionTargetFailureReason } from "./session-target.js";
 import { normalizeGroup, normalizeGroups, validateRuntimeGroup } from "./group.js";
 import { parseWorkflowStageTarget, withWorkflowStageTargetFinalSegment } from "./workflow-stage-target.js";
@@ -546,6 +547,16 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               replyTo,
               expectsReply: false,
             }, retryToken);
+            const goneChild = await awaitSubagentChildRestoration(pi.events, toolSessionId, to);
+            if (goneChild !== undefined) {
+              retryIdentities.release(retryIdentity);
+              retryIdentity = undefined;
+              return {
+                content: [{ type: "text", text: goneChild }],
+                isError: true,
+                details: { error: true, delivered: false, reason: goneChild },
+              };
+            }
             const sendTo = await resolveTarget(connectedClient, to) ?? to;
             if (_signal?.aborted) {
               const retained = retainInconclusiveRetry(retryIdentities, retryIdentity);
@@ -734,7 +745,18 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               };
             }
 
-            const sendTo = await resolveTarget(connectedClient, to) ?? to;
+            const goneChild = await awaitSubagentChildRestoration(pi.events, toolSessionId, to);
+            if (goneChild !== undefined) {
+              retryIdentities.release(retryIdentity);
+              retryIdentity = undefined;
+              return {
+                content: [{ type: "text", text: goneChild }],
+                isError: true,
+                details: { error: true, delivered: false, reason: goneChild },
+              };
+            }
+            const listedTarget = await resolveTarget(connectedClient, to);
+            const sendTo = listedTarget ?? to;
             if (_signal?.aborted) {
               const retained = retryIdentity === undefined
                 ? undefined
@@ -835,7 +857,11 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               attachments,
               replyTo,
               expectsReply: true,
-              ...(parseWorkflowStageTarget(to)?.kind === "path" ? { onReplyTarget: wait.bindSender } : {}),
+              // The broker names the recipient of a canonical path, or of a target the listing could not
+              // resolve (such as a peer's own session id, #3760), so its reply is matched to this ask.
+              ...(parseWorkflowStageTarget(to)?.kind === "path" || listedTarget === null
+                ? { onReplyTarget: wait.bindSender }
+                : {}),
             });
 
             if (sendResult.queued === true) {

@@ -128,6 +128,8 @@ export interface RunSyncOptions {
 	index?: number;
 	sessionDir?: string;
 	sessionManager?: SessionManager;
+	/** Reopen `sessionManager` as this child's own interrupted session rather than a fork. */
+	resumeSession?: boolean;
 	share?: boolean;
 	outputPath?: string;
 	outputMode?: OutputMode;

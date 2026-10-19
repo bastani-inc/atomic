@@ -19,11 +19,13 @@ import type {
 	CompactionReason,
 	PromptDisposition,
 	QueuedInputDisposition,
+	SessionRecoveryReport,
 	SessionStats,
 } from "../../core/agent-session.js";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
+import type { SessionRecoveryReason } from "../../core/extensions/index.js";
 import type {
 	WorkflowRunDetail,
 	WorkflowRunFilterStatus,
@@ -156,6 +158,7 @@ export type RpcCommand =
 	  }
 	| { id?: string; type: "set_label"; entryId: string; label?: string }
 	| { id?: string; type: "reload" }
+	| { id?: string; type: "start_pending_recovery"; reason?: SessionRecoveryReason }
 	| { id?: string; type: "get_shortcuts" }
 	| { id?: string; type: "invoke_shortcut"; key: string }
 
@@ -422,6 +425,7 @@ export type RpcResponse =
 	  }
 	| { id?: string; type: "response"; command: "set_label"; success: true; data: { entryId: string } }
 	| { id?: string; type: "response"; command: "reload"; success: true }
+	| { id?: string; type: "response"; command: "start_pending_recovery"; success: true; data: SessionRecoveryReport }
 	| {
 			id?: string;
 			type: "response";

@@ -3,7 +3,6 @@ import { getCurrentSystemMessage, type Provider } from "@bastani/pi-ai";
 import { clampThinkingLevel, resetApiProviders } from "@bastani/pi-ai/compat";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { executeNestedToolCall, getCallableTools } from "./agent-session-nested-tools.js";
-import { recoverProtectedStreamingCustomMessages } from "./agent-session-persistent-custom-messages.ts";
 import { preservesInitialToolLoadout } from "./agent-session-state.ts";
 import { replaceSessionTaskOwner } from "./agent-session-tasks.js";
 import type { AgentSessionReloadOptions, ExtensionBindings } from "./agent-session-types.js";
@@ -285,11 +284,12 @@ export async function bindExtensions(this: AgentSession, bindings: ExtensionBind
 	await startExtensions(this, this._extensionRunner, this._resourceLoader, this._sessionStartEvent, async () => {
 		if (this._disposed) throw hostInputError("SessionClosed");
 		this._rebuildSystemPrompt(this.getActiveToolNames());
-		if (recoverProtectedStreamingCustomMessages(this) > 0) {
-			await this._continueQueuedAgentMessages();
-		}
 	});
 	scheduleOpeningSummary(this);
+}
+
+export async function _waitForExtensionStart(this: AgentSession): Promise<void> {
+	await extensionStarts.get(this._extensionRunner);
 }
 
 function scheduleOpeningSummary(session: AgentSession): void {
@@ -1076,6 +1076,7 @@ export async function completeStartupResources(this: AgentSession, resourceLoade
 
 export const agentSessionExtensionBindingsMethods = {
 	bindExtensions,
+	_waitForExtensionStart,
 	completeStartupResources,
 	extendResourcesFromExtensions,
 	buildExtensionResourcePaths,

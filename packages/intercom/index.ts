@@ -11,6 +11,16 @@ import { isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
 import { IntercomWarmUpExhaustedError } from "./warm-up-exhaustion.js";
 import { reconnectDelayMs } from "./reconnect-backoff.js";
 import {
+	type AwaitIntercomPeerRequest,
+	hasIntercomHistory,
+	INTERCOM_RECOVERY_PEERS_EVENT,
+	type IntercomRecoveryPeersRequest,
+	isAwaitIntercomPeerRequest,
+	planIntercomRecoveryReplay,
+	SUBAGENT_AWAIT_INTERCOM_PEER_EVENT,
+} from "./session-recovery.js";
+import type { SessionInfo } from "./types.js";
+import {
 	createForwardedHandlerMap,
 	createHeavyProxy,
 	dispatchEventHandlers,
@@ -657,6 +667,40 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 				if (isRecoverableIntercomDisconnect(error)) return undefined;
 				throw error;
 			});
+	});
+	pi.events.on(SUBAGENT_AWAIT_INTERCOM_PEER_EVENT, (payload) => {
+		if (!payload || typeof payload !== "object" || !isAwaitIntercomPeerRequest(payload) || payload.completion) return;
+		const forwarded: AwaitIntercomPeerRequest = {
+			name: payload.name,
+			timeoutMs: payload.timeoutMs,
+			...(payload.group === undefined ? {} : { group: payload.group }),
+		};
+		payload.completion = loadHeavy(latestLifecycleContext())
+			.then(async (handle) => {
+				handle.assertCurrent();
+				await dispatchEventHandlers(handle.heavy, SUBAGENT_AWAIT_INTERCOM_PEER_EVENT, forwarded);
+				return forwarded.completion ? await forwarded.completion : false;
+			})
+			.catch(() => false);
+	});
+	async function recoveryPeers(ctx: ExtensionContext): Promise<SessionInfo[] | undefined> {
+		try {
+			const handle = await loadHeavy(ctx);
+			handle.assertCurrent();
+			const forwarded: IntercomRecoveryPeersRequest = {};
+			await dispatchEventHandlers(handle.heavy, INTERCOM_RECOVERY_PEERS_EVENT, forwarded);
+			return forwarded.completion ? await forwarded.completion : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+	pi.on("session_recovery_restore", async (_event, ctx) => {
+		if (hasIntercomHistory(ctx.sessionManager.getEntries())) await recoveryPeers(ctx);
+		return undefined;
+	});
+	pi.on("session_recovery_replay", async (event, ctx) => {
+		if (!event.pending.some((delivery) => delivery.customType === "intercom_message")) return undefined;
+		return planIntercomRecoveryReplay(event.pending, await recoveryPeers(ctx));
 	});
 	pi.events.on(PENDING_STAGE_UNDELIVERABLE_EVENT, (payload) => {
 		if (!isPendingStageUndeliverableRelay(payload) || payload.handled === true) return;

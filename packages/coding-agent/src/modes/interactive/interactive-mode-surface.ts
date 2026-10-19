@@ -2,7 +2,7 @@ import type { AssistantMessage, Usage } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 /** Method surface installed onto InteractiveModeBase by sibling modules. */
 
-import type { MarkdownTransformer, ToolRenderers } from "../../core/extensions/types.ts";
+import type { MarkdownTransformer, SessionRecoveryReason, ToolRenderers } from "../../core/extensions/types.ts";
 import type { CustomEntry, SessionEntry } from "../../core/session-manager.ts";
 import type { FullscreenExitOutput } from "../../core/settings-manager.ts";
 import type { ToolStatus } from "../../utils/tools-manager.ts";
@@ -152,6 +152,7 @@ declare module "./interactive-mode-base.ts" {
 		rebindCurrentSession(): Promise<void>;
 		handleFatalRuntimeError(prefix: string, error: unknown): Promise<never>;
 		renderCurrentSessionState(): void;
+		startSessionRecovery(reason: SessionRecoveryReason): void;
 		getRegisteredToolDefinition(toolName: string): ToolRenderers | undefined;
 		setupExtensionShortcuts(extensionRunner: ExtensionRunner): void;
 		setExtensionStatus(key: string, text: string | undefined): void;

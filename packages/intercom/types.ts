@@ -128,6 +128,11 @@ export type ClientMessage =
 			session: Omit<SessionInfo, "id">;
 			/** Internal host-owned identity retained across broker reconnects. */
 			returnAddress?: string;
+			/**
+			 * The Intercom session id this session held before a restart or reconnect (#3760). The broker grants it
+			 * only when no live session holds it and it was not last held under another return address.
+			 */
+			preferredSessionId?: string;
 			/** Immutable session origin; separate from mutable group memberships. Legacy clients use session.group. */
 			registrationGroup?: string;
 			supervisor?: SupervisorRegistration;
@@ -151,7 +156,17 @@ export type ClientMessage =
 			attemptId?: string;
 	  }
 	| { type: "pending_stage_notification_result"; requestId: string; delivered: boolean }
- | { type: "register_pending_stage_route"; runId: string; group: string; capability: string; stages?: WorkflowStageRosterAnnouncement[]; possibleStages?: WorkflowPossibleStageAnnouncement[]; parent?: WorkflowRunParentAnnouncement }
+ | {
+		type: "register_pending_stage_route";
+		runId: string;
+		group: string;
+		capability: string;
+		stages?: WorkflowStageRosterAnnouncement[];
+		possibleStages?: WorkflowPossibleStageAnnouncement[];
+		parent?: WorkflowRunParentAnnouncement;
+		/** Interrupted run queued by its restarted owner before resume; yields to the process that resumes it (#3760). */
+		dormant?: true;
+	}
   | {
       type: "register_live_workflow_stage_route";
       requestId: string;
@@ -202,6 +217,8 @@ export type BrokerMessage =
 			live?: boolean;
 	  }
   | { type: "live_workflow_stage_route_registered"; requestId: string }
+	/** A dormant route's run was resumed by another process, which now owns the run's routes (#3760). */
+	| { type: "pending_stage_route_revoked"; runId: string }
   | { type: "presence_update"; session: SessionInfo }
   | { type: "session_joined"; session: SessionInfo }
   | { type: "session_left"; sessionId: string }

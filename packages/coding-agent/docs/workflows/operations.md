@@ -20,7 +20,7 @@ Stage selectors preserve exact stage IDs and names, composite `runId:stageId` ID
 
 ### Intercom delivery to pending workflow stages
 
-A workflow stage uses the root-anchored `workflow:<rootRunId>/<segment>[/<segment>...]` path shown by `intercom list` and workflow status surfaces. A segment may be a stage name, a materialized run id, or a glob: `*` matches one segment and may be embedded, while `**` matches any depth. Model-facing `workflow status` and interactive status list/detail surfaces enumerate materialized pending stages by display name and canonical stage ID, printing the path only when `pendingStageDeliveryAvailable` is true and the owning run is nonterminal. An ended root or nested child never advertises a retained pending target. Duplicate names remain independently identifiable. The workflow SDK `sessionId` is **not** an Intercom target.
+A workflow stage uses the root-anchored `workflow:<rootRunId>/<segment>[/<segment>...]` path shown by `intercom list` and workflow status surfaces. A segment may be a stage name, a materialized run id, or a glob: `*` matches one segment and may be embedded, while `**` matches any depth. Model-facing `workflow status` and interactive status list/detail surfaces enumerate materialized pending stages by display name and canonical stage ID, printing the path only when `pendingStageDeliveryAvailable` is true and the owning run is nonterminal. An ended root or nested child never advertises a retained pending target. Duplicate names remain independently identifiable. The workflow SDK `sessionId` is the stage's Atomic session ID, not a workflow path: it reaches the stage only while the stage is connected and visible to you, and it never queues for a pending stage.
 
 Join `workflow:<rootRunId>` and run `intercom({ action: "list" })` to see live sessions, materialized `PENDING`/`RUNNING` stages, and possible future literal, glob, and nested-child targets with queued counts. Then use ordinary Intercom delivery:
 
@@ -349,6 +349,10 @@ When a paused stage interrupted an active model turn, Atomic preserves that turn
 The same continuation applies to user messages queued into a live streaming stage. Steering a turn (Enter in an attached stage chat) or queueing a follow-up (Ctrl+F) arms the identical continuation prompt, which Atomic injects once when the interrupted turn ends — even if several messages were queued during that turn — so a steered stage returns to its original (or user-redefined) objective instead of stopping after answering the queued message.
 
 Messages delivered to an idle stage start a fresh user turn immediately and receive no continuation nudge; abort, kill, workflow exit, and finalized/fail-fast stage boundaries suppress late prompt creation and continuation injection.
+
+Resuming a stage that was interrupted mid-session also restores the background subagents that stage launched. It replays the stage's interrupted Intercom messages before the stage continues, and both are visible in the stage transcript. Stages keep the same `workflow:<rootRunId>/...` Intercom targets after resume, and messages queued for them while they were down are delivered once. Opening a post-mortem chat on a completed stage does not restart its stopped subagents.
+
+Before you run `/workflow resume`, an interrupted run's stages stay reachable through Intercom: messages sent to them are queued and delivered once after resume. See [deferred delivery to pending stages](/intercom/reference#deferred-delivery-to-pending-stages).
 
 Resuming several stages can make partial progress. Inspect status after an acknowledgement or persistence error: stages already running are not retried, and genuinely paused stages remain available for another resume. A later resume can retry a failed durable-state update. Terminal runs cannot be revived.
 

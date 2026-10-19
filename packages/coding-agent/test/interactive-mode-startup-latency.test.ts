@@ -283,6 +283,7 @@ describe("InteractiveMode startup latency hooks", () => {
 			ensureManagedToolsReady: vi.fn(async () => {}),
 			attachStartupNoticesContainer: vi.fn(),
 			renderInitialMessages: vi.fn(),
+			startSessionRecovery: vi.fn(),
 		} as unknown as InteractiveMode;
 		const controller = new AbortController();
 		const confirmation = context.showExtensionConfirm("Resume interrupted workflows?", "Resume now?", {
@@ -357,6 +358,7 @@ describe("InteractiveMode startup latency hooks", () => {
 			ensureManagedToolsReady: vi.fn(async () => {}),
 			attachStartupNoticesContainer: vi.fn(),
 			renderInitialMessages: vi.fn(),
+			startSessionRecovery: vi.fn(),
 		} as unknown as InitContext;
 
 		const init = interactiveModePrototype.init.call(context);
@@ -377,6 +379,64 @@ describe("InteractiveMode startup latency hooks", () => {
 		expect(catalogStartupMock.updateProviderCount).toHaveBeenCalledTimes(1);
 		expect(context.isInitialized).toBe(true);
 	});
+
+	it.each([
+		{ deferred: false, expected: ["bind", "render", "recover:startup"] },
+		{ deferred: true, expected: ["render"] },
+	])(
+		"renders the transcript before resume recovery starts (deferred: $deferred) (#3760)",
+		async ({ deferred, expected }) => {
+			const order: string[] = [];
+			startupBindingMock.bind.mockImplementationOnce(async () => {
+				order.push("bind");
+			});
+			const context = {
+				programStatus: { report: vi.fn() },
+				runtimeHost: {},
+				isInitialized: false,
+				registerSignalHandlers: vi.fn(),
+				ui: { addChild: vi.fn(), setFocus: vi.fn(), start: vi.fn(), requestRender: vi.fn() },
+				headerContainer: { addChild: vi.fn() },
+				documentContainer: {},
+				chatContainer: {},
+				pendingMessagesContainer: {},
+				statusContainer: {},
+				widgetContainerAbove: {},
+				usageMeter: {},
+				editorContainer: {},
+				footerContainer: {},
+				widgetContainerBelow: {},
+				editor: {},
+				renderWidgets: vi.fn(),
+				mountInteractiveTui: vi.fn(),
+				setupKeyHandlers: vi.fn(),
+				setupEditorSubmitHandler: vi.fn(),
+				pendingUserInputs: [],
+				defaultEditor: {},
+				options: {},
+				startupReplayInputs: [],
+				footerDataProvider: { onBranchChange: vi.fn() },
+				themeController: { applyFromSettings: vi.fn(async () => {}) },
+				settingsManager: { getFullscreenScrollbar: () => "auto", getQuietStartup: () => false },
+				getStartupIdentityText: () => "Atomic v0.0.0",
+				shouldShowStartupHeader: () => true,
+				isShuttingDown: false,
+				deferredStartupPending: deferred,
+				ensureManagedToolsReady: vi.fn(async () => {}),
+				applyRuntimeSettings: vi.fn(),
+				subscribeToAgent: vi.fn(),
+				updateEditorBorderColor: vi.fn(),
+				updateTerminalTitle: vi.fn(),
+				attachStartupNoticesContainer: vi.fn(),
+				renderInitialMessages: () => order.push("render"),
+				startSessionRecovery: (reason: string) => order.push(`recover:${reason}`),
+			} as unknown as InitContext;
+
+			await interactiveModePrototype.init.call(context);
+
+			expect(order).toEqual(expected);
+		},
+	);
 
 	it("does not start footer git watching during the inline init path", async () => {
 		const themeReady = new Promise<void>(() => {});

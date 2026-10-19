@@ -14,6 +14,7 @@ import type {
 import type { AgentConfig } from "../../agents/agents.js";
 import type { RunSyncOptions, SingleResult, SubagentToolResult } from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
+import type { SubagentChildRecordInput, SubagentChildRecordSink } from "./subagent-child-records.js";
 import type { SubagentExecutorRuntimeDeps } from "./subagent-executor-types.js";
 import { INLINE_TASK_OUTPUT_MAX_BYTES, retainedTaskOutput, retainTaskOutput } from "./task-output-retention.js";
 
@@ -197,6 +198,7 @@ export async function runAgentTask(input: {
 	onTerminal?: (result: SingleResult) => void;
 	schedule?: (dispatch: () => Promise<void>) => void;
 	outputText?: (result: SingleResult) => string;
+	recordChild?: SubagentChildRecordSink;
 }): Promise<ModelSingleResponse> {
 	let yieldWait: ((reason: YieldReason) => Result<WaitOutcome, YieldError>) | undefined;
 	let pendingYield = false;
@@ -215,6 +217,26 @@ export async function runAgentTask(input: {
 		(context) => {
 			const cleaned = Promise.withResolvers<Cleanup>();
 			let executionBound = false;
+			const childCwd = input.options.cwd ?? input.cwd;
+			const ownerClosed = () =>
+				context.signal.aborted && (context.signal.reason === "owner-close" || context.signal.reason === "shutdown");
+			let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile"> = {};
+			const recordChild = (state: SubagentChildRecordInput["state"], terminalStatus?: string) =>
+				input.recordChild?.record({
+					runId: input.options.runId,
+					index: input.options.index ?? 0,
+					agent: input.agent,
+					state,
+					cwd: childCwd,
+					taskId: context.ref.taskId,
+					...childSession,
+					...(input.options.intercomSessionName ? { intercomTarget: input.options.intercomSessionName } : {}),
+					...(input.options.intercomGroup ? { intercomGroup: input.options.intercomGroup } : {}),
+					...(input.options.orchestratorIntercomTarget
+						? { orchestratorTarget: input.options.orchestratorIntercomTarget }
+						: {}),
+					...(terminalStatus ? { terminalStatus } : {}),
+				});
 			const result = registered.promise.then(async (): Promise<TaskResult> => {
 				try {
 					input.options.modelRoute?.assertCurrent();
@@ -241,6 +263,13 @@ export async function runAgentTask(input: {
 											}
 										: {}),
 								}),
+							bindChildSession: (session) => {
+								childSession = {
+									childSessionId: session.sessionId,
+									...(session.sessionFile ? { childSessionFile: session.sessionFile } : {}),
+								};
+								recordChild("running");
+							},
 							onExecution: (execution) => {
 								executionBound = true;
 								void execution.cleanup.then(cleaned.resolve, (error) =>
@@ -263,6 +292,7 @@ export async function runAgentTask(input: {
 							reportId: "terminal-model",
 							change: { kind: "model", model: child.model, thinking: child.thinking },
 						});
+					if (!ownerClosed()) recordChild("terminal", child.status);
 					input.onTerminal?.(child);
 					const text = input.outputText?.(child) ?? getSingleResultOutput(child);
 					retainTaskOutput(child, text, context.ref);
@@ -293,6 +323,9 @@ export async function runAgentTask(input: {
 								message: child.error ?? child.envelope ?? "Agent failed",
 								output,
 							};
+				} catch (error) {
+					if (!ownerClosed()) recordChild("terminal", "error");
+					throw error;
 				} finally {
 					// A refusal before session admission has no session resources to reap.
 					if (!executionBound) cleaned.resolve({ kind: "reaped" });

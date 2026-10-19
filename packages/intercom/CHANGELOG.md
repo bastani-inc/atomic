@@ -4,6 +4,12 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- On resume, Intercom messages interrupted by an exit are replayed only if their sender is connected again. Messages from a peer that is gone no longer start a hidden turn: they appear once as history in a visible notice that tells the agent the peer is gone. A resumed session that used Intercom re-registers right away. A resumed session or restored background subagent also keeps the Intercom session ID it had before the restart (unless a live session holds it), so peers can reach it by its name, by that ID, or by its Atomic session ID instead of getting `Session not found` ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
+- Intercom now keeps an interrupted workflow run's targets with the restarted session that launched the run, so messages sent before `/workflow resume` are queued instead of failing with `Session not found`. If another session resumes the run, it takes over those targets, and the restarted session stops answering for the run ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
+- An `intercom` `send` or `ask` to a background subagent that a resume is still restoring, addressed by its name, its Atomic session ID, or the Intercom session ID it had before the restart, now waits (up to 20 seconds) for the restoration, then delivers once if the subagent is live again. If the subagent did not survive the restart, the sender gets an explicit "did not survive the restart and is gone" error instead of `Session not found` ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
+
 ## [0.9.39] - 2026-10-19
 
 ### Added

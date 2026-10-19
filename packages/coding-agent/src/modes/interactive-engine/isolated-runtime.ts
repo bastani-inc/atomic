@@ -4,8 +4,9 @@ import type { AuthInteraction } from "@bastani/pi-ai";
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { AgentSession, CompactionReason } from "../../core/agent-session.js";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.ts";
-import type { ModelMutationOptions, PromptOptions } from "../../core/agent-session-types.js";
+import type { ModelMutationOptions, PromptOptions, SessionRecoveryReport } from "../../core/agent-session-types.js";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
+import type { SessionRecoveryReason } from "../../core/extensions/session-events.ts";
 import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
 import { SessionManager } from "../../core/session-manager.ts";
 import { serializeSessionMutation } from "../../core/session-mutation-queue.ts";
@@ -759,6 +760,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					await this.client.requestInternal<void>({ type: "reload" });
 					await this.initializeFromEngine();
 				},
+			},
+			startPendingRecovery: {
+				configurable: true,
+				value: (reason?: SessionRecoveryReason) =>
+					this.client.requestInternal<SessionRecoveryReport>({ type: "start_pending_recovery", reason }),
 			},
 			setSessionName: {
 				configurable: true,

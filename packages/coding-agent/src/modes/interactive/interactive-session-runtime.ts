@@ -1,5 +1,6 @@
 import { setCapabilityOverrides } from "@earendil-works/pi-tui";
-import type { ToolRenderers } from "../../core/extensions/types.ts";
+import type { SessionRecoveryReport } from "../../core/agent-session-types.js";
+import type { SessionRecoveryReason, ToolRenderers } from "../../core/extensions/types.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
@@ -179,6 +180,41 @@ InteractiveModeBase.prototype.renderCurrentSessionState = function (this: Intera
 	this.streamingMessage = undefined;
 	this.pendingTools.clear();
 	this.renderInitialMessages();
+};
+
+function recoveryCount(count: number, singular: string, plural: string): string {
+	return `${count} ${count === 1 ? singular : plural}`;
+}
+
+export function formatSessionRecoveryStatus(report: SessionRecoveryReport): string | undefined {
+	const parts = [
+		report.replayed > 0
+			? `replayed ${recoveryCount(report.replayed, "interrupted delivery", "interrupted deliveries")}`
+			: "",
+		report.dropped > 0 ? `skipped ${recoveryCount(report.dropped, "stale delivery", "stale deliveries")}` : "",
+		report.completions > 0
+			? `showed ${recoveryCount(report.completions, "background result", "background results")}`
+			: "",
+	].filter(Boolean);
+	return parts.length > 0 ? `Recovered interrupted work: ${parts.join(", ")}` : undefined;
+}
+
+InteractiveModeBase.prototype.startSessionRecovery = function (
+	this: InteractiveModeBase,
+	reason: SessionRecoveryReason,
+): void {
+	const session = this.session;
+	void session.startPendingRecovery(reason).then(
+		(report) => {
+			if (this.session !== session || this.isShuttingDown) return;
+			const status = formatSessionRecoveryStatus(report);
+			if (status) this.showStatus(status);
+		},
+		(error: unknown) => {
+			if (this.session !== session || this.isShuttingDown) return;
+			this.showError(`Session recovery failed: ${error instanceof Error ? error.message : String(error)}`);
+		},
+	);
 };
 
 InteractiveModeBase.prototype.getRegisteredToolDefinition = function (
