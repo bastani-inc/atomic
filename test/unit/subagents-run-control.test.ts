@@ -1188,3 +1188,140 @@ test("a paused worktree child keeps its uncommitted work after every sibling fin
 	while (existsSync(childA.cwd) && Date.now() < removedBy) await sleep(10);
 	assert.equal(existsSync(childA.cwd), false, "the worktree is removed once the resumed child finished");
 });
+
+function gitOutput(cwd: string, args: string[]): string {
+	const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+	assert.equal(result.status, 0, result.stderr);
+	return result.stdout.trim();
+}
+
+async function launchWorktreeRun(
+	h: Harness,
+	markers: readonly string[],
+	extra: { concurrency?: number } = {},
+): Promise<SubagentChildRecord[]> {
+	const launched = await h.call({
+		tasks: markers.map((marker) => ({ agent: "worker", task: marker })),
+		worktree: true,
+		wait: { kind: "background" },
+		...extra,
+	});
+	assert.notEqual(launched.isError, true, text(launched));
+	const runs = () =>
+		[...readSubagentChildRecords(h.sessionManager.getEntries()).values()].sort(
+			(left, right) => left.index - right.index,
+		);
+	const deadline = Date.now() + RECORD_WAIT_MS;
+	while (runs().length < markers.length && Date.now() < deadline) await sleep(10);
+	assert.equal(runs().length, markers.length);
+	return runs();
+}
+
+async function waitUntilRemoved(path: string): Promise<void> {
+	const removedBy = Date.now() + RECORD_WAIT_MS;
+	while (existsSync(path) && Date.now() < removedBy) await sleep(10);
+}
+
+test("a queued worktree child resumed behind its cancelled dispatch starts in its worktree after the sibling finishes (#3760 run control)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	const siblingDone = Promise.withResolvers<void>();
+	const queuedDone = Promise.withResolvers<void>();
+	h.finishOn.set("task-b-marker", siblingDone);
+	h.finishOn.set("task-a-marker", queuedDone);
+	const [childB, childA] = await launchWorktreeRun(h, ["task-b-marker", "task-a-marker"], { concurrency: 1 });
+	assert.ok(childA && childB);
+	await h.waitForLatest(childB.childId, (candidate) => !!candidate.childSessionId);
+
+	const paused = await h.call({ action: "pause", id: childA.childId });
+	assert.notEqual(paused.isError, true, text(paused));
+	await h.waitForLatest(childA.childId, (candidate) => candidate.terminalStatus === "paused");
+	const resumed = await h.call({ action: "resume", id: childA.childId });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	const resumedTask = resumedTaskId(resumed);
+
+	siblingDone.resolve();
+	await settled(h, childB.taskId as string);
+	const started = await h.waitForLatest(
+		childA.childId,
+		(candidate) => candidate.taskId === resumedTask && (!!candidate.childSessionId || candidate.state === "terminal"),
+	);
+	assert.equal(started.state, "running", `the resumed child started: ${JSON.stringify(started)}`);
+	assert.equal(existsSync(childA.cwd), true, "its worktree still exists while it runs");
+
+	queuedDone.resolve();
+	await settled(h, resumedTask);
+	assert.equal(
+		(await h.waitForLatest(childA.childId, (candidate) => candidate.state === "terminal")).terminalStatus,
+		"ok",
+	);
+	await waitUntilRemoved(childA.cwd);
+	assert.equal(existsSync(childA.cwd), false, "the worktree is removed once the resumed child finished");
+});
+
+test("a clean paused worktree child's worktree is removed when its session closes, and resume recreates it from the run's base (#3760 run control)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	const base = gitOutput(h.cwd, ["rev-parse", "HEAD"]);
+	const resumedDone = Promise.withResolvers<void>();
+	h.finishOn.set("task-a-marker", Promise.withResolvers<void>());
+	h.finishOn.set("task-b-marker", Promise.withResolvers<void>());
+	h.finishOn.set(SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT, resumedDone);
+	const [childA, childB] = await launchWorktreeRun(h, ["task-a-marker", "task-b-marker"]);
+	assert.ok(childA && childB);
+	await h.waitForLatest(childA.childId, (candidate) => !!candidate.childSessionId);
+	await h.waitForLatest(childB.childId, (candidate) => !!candidate.childSessionId);
+
+	await h.call({ action: "pause", id: childA.childId });
+	await h.waitForLatest(childA.childId, (candidate) => candidate.terminalStatus === "paused");
+	await h.closeOwnerAndReopen("session-close");
+	await waitUntilRemoved(childA.cwd);
+	await waitUntilRemoved(childB.cwd);
+	assert.equal(existsSync(childA.cwd), false, "the clean paused child's worktree is removed");
+	assert.equal(existsSync(childB.cwd), false, "the clean interrupted sibling's worktree is removed");
+
+	const resumed = await h.call({ action: "resume", id: childA.childId });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	const resumedTask = resumedTaskId(resumed);
+	await h.waitForLatest(childA.childId, (candidate) => candidate.taskId === resumedTask && !!candidate.childSessionId);
+	assert.equal(existsSync(childA.cwd), true, "resume recreated the worktree");
+	assert.equal(gitOutput(childA.cwd, ["rev-parse", "HEAD"]), base, "it is recreated at the run's base");
+
+	resumedDone.resolve();
+	await settled(h, resumedTask);
+	await waitUntilRemoved(childA.cwd);
+	assert.equal(existsSync(childA.cwd), false, "the recreated worktree is removed once the resumed child finished");
+});
+
+test("a dirty paused worktree child's worktree is kept when its session closes, and resume continues in it (#3760 run control)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	const resumedDone = Promise.withResolvers<void>();
+	h.finishOn.set("task-a-marker", Promise.withResolvers<void>());
+	h.finishOn.set("task-b-marker", Promise.withResolvers<void>());
+	h.finishOn.set(SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT, resumedDone);
+	const [childA, childB] = await launchWorktreeRun(h, ["task-a-marker", "task-b-marker"]);
+	assert.ok(childA && childB);
+	await h.waitForLatest(childA.childId, (candidate) => !!candidate.childSessionId);
+	await h.waitForLatest(childB.childId, (candidate) => !!candidate.childSessionId);
+	const draft = join(childA.cwd, "draft.md");
+	writeFileSync(draft, "draft by A\n");
+
+	await h.call({ action: "pause", id: childA.childId });
+	await h.waitForLatest(childA.childId, (candidate) => candidate.terminalStatus === "paused");
+	await h.closeOwnerAndReopen("session-close");
+	await waitUntilRemoved(childB.cwd);
+	assert.equal(existsSync(childB.cwd), false, "the clean sibling's worktree is removed");
+	assert.equal(readFileSync(draft, "utf8"), "draft by A\n", "the paused child's uncommitted work is kept");
+
+	const resumed = await h.call({ action: "resume", id: childA.childId });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	const resumedTask = resumedTaskId(resumed);
+	await h.waitForLatest(childA.childId, (candidate) => candidate.taskId === resumedTask && !!candidate.childSessionId);
+	assert.equal(readFileSync(draft, "utf8"), "draft by A\n", "the resumed child continues in its worktree");
+
+	resumedDone.resolve();
+	await settled(h, resumedTask);
+	await waitUntilRemoved(childA.cwd);
+	assert.equal(existsSync(childA.cwd), false, "the worktree is removed once the resumed child finished");
+});

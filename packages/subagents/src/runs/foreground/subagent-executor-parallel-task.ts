@@ -24,6 +24,7 @@ import { currentModelFullId } from "../shared/model-fallback.js";
 import { createExecutionScheduler } from "../shared/parallel-utils.js";
 import { injectSingleOutputInstruction, resolveSingleOutputPath } from "../shared/single-output.js";
 import type { WorktreeSetup } from "../shared/worktree.js";
+import { holdRunWorktree } from "./run-worktrees.js";
 import type { SubagentChildRecordSink } from "./subagent-child-records.js";
 import { markLiveResultIndices } from "./subagent-executor-live-update.js";
 import type { SubagentExecutorRuntimeDeps, TaskParam } from "./subagent-executor-types.js";
@@ -71,7 +72,6 @@ interface ForegroundParallelRunInput {
 	liveProgress: (AgentProgress | undefined)[];
 	onUpdate?: (r: SubagentToolResult) => void;
 	onDetachedExit?: (index: number, result: SingleResult) => void;
-	onTaskTerminal?: (index: number) => void;
 	wait?: import("@bastani/atomic").WaitPolicy;
 	onExecution?: (index: number, runtimeCwd: string, options: RunSyncOptions) => void;
 	worktreeSetup?: WorktreeSetup;
@@ -299,11 +299,10 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 				task: taskText,
 				intentTask: task.task,
 				options: runOptions,
-				wait: input.wait,
 				runtime: input.runtime,
+				wait: input.wait,
 				// Dispatch also settles when native cancellation skips a queued runner.
-				// Recover only after dispatch drains, never when its observation yields.
-				schedule: (dispatch) => schedule(() => dispatch().finally(() => input.onTaskTerminal?.(index))),
+				schedule,
 				onTerminal: (child) => {
 					terminalChild = child;
 				},
@@ -319,7 +318,12 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 				taskResponse: response,
 			};
 		}
-		return runUnboundParallelTask(runOptions, task.agent, taskText, schedule, (options) =>
+		// Each legacy execution holds the run's worktrees until it exits, detached or not.
+		const holdingSchedule = (dispatch: () => Promise<void>) => {
+			const release = holdRunWorktree(input.runId, index);
+			schedule(() => dispatch().finally(release));
+		};
+		return runUnboundParallelTask(runOptions, task.agent, taskText, holdingSchedule, (options) =>
 			input.runtime.runSync(input.ctx.cwd, taskAgents, task.agent, taskText, options),
 		).finally(() => {
 			if (input.foregroundControl?.currentIndex === index) {

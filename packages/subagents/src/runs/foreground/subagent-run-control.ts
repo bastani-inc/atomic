@@ -6,7 +6,7 @@ import type {
 	SubagentToolResult,
 } from "../../shared/types.js";
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
-import { parkRunWorktree, unparkRunWorktree } from "./detached-cleanup-barrier.js";
+import { parkRunWorktree, unparkRunWorktree } from "./run-worktrees.js";
 import { childHoldKey, holdChildTargets, parkPausedChildHold, releasePausedChildHold } from "./subagent-child-hold.js";
 import {
 	findSubagentChildRecord,
@@ -147,7 +147,7 @@ async function stopLiveChild(
 ): Promise<string | undefined> {
 	const taskId = record.taskId as TaskId;
 	requestSubagentChildStop(taskId, status);
-	// It stays resumable: its run's worktrees are kept before its run's cleanup barrier sees it end.
+	// It stays resumable: its worktree is kept if it has unsaved work when its run's worktrees are removed.
 	parkRunWorktree(record.runId, record.index);
 	const cancelled = await host.cancelTask(taskId, "parent-handoff");
 	if (!cancelled.ok) {

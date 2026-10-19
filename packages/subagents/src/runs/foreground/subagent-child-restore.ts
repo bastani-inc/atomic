@@ -29,7 +29,7 @@ import {
 } from "../../shared/types.js";
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.js";
-import { recoverRunWorktree, resumeRunWorktree } from "./detached-cleanup-barrier.js";
+import { resumeRunWorktree } from "./run-worktrees.js";
 import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHold } from "./subagent-child-hold.js";
 import {
 	createSubagentChildRecordSink,
@@ -298,7 +298,6 @@ async function relaunchChild(
 		recordChild,
 		...(schedule ? { schedule } : {}),
 		onTerminal: () => {
-			recoverRunWorktree(record.runId, record.index);
 			release();
 			// Normally the child consumed the hold when it registered; one that never did must not keep it.
 			void hold?.release();
@@ -328,7 +327,6 @@ async function startQueuedChild(
 		...(resume?.message ? { message: resume.message } : {}),
 		...(supervisorAuthorization ? { supervisorAuthorization } : {}),
 		onTerminal: () => {
-			recoverRunWorktree(record.runId, record.index);
 			release();
 			void hold?.release();
 		},
@@ -418,8 +416,13 @@ export async function restoreSubagentChild(
 		// Every sender, not only this session, is told the child is gone, for as long as this session is connected.
 		await hold?.gone(reason);
 	};
-	// The child rejoins its run's worktree lifetime, so they are never removed under it while it is live again.
-	resumeRunWorktree(record.runId, record.index);
+	// Hold the child's worktree until its new execution holds it, recreating it from the run's base if it was removed.
+	const releaseWorktree = resumeRunWorktree(
+		record,
+		deps.config.worktreeSetupHook
+			? { hookPath: deps.config.worktreeSetupHook, timeoutMs: deps.config.worktreeSetupHookTimeoutMs }
+			: undefined,
+	);
 	const restoration: Promise<SubagentChildRestoreOutcome> = (async () => {
 		// Hold sends to the child before anything can fail, so no sender is told `Session not found` meanwhile.
 		// When the session already holds them since it started, that hold carries on under the same capability:
@@ -440,14 +443,14 @@ export async function restoreSubagentChild(
 				registered.settled = outcome;
 				registered.knownPreviousIntercomId = knownPreviousIntercomId;
 			}
-			if (outcome.kind !== "restored") recoverRunWorktree(record.runId, record.index);
+			releaseWorktree();
 			if (outcome.kind === "unrestorable") await markGone(outcome.reason);
 			else if (outcome.kind !== "restored") release();
 			return outcome;
 		},
 		async (error: Error) => {
 			previousIntercomId.resolve(undefined);
-			recoverRunWorktree(record.runId, record.index);
+			releaseWorktree();
 			await markGone(error.message);
 			return { kind: "unrestorable", childId: record.childId, record, reason: error.message };
 		},

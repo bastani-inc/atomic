@@ -15,7 +15,7 @@ import type {
 import type { AgentConfig } from "../../agents/agents.js";
 import type { RunSyncOptions, SingleResult, SubagentToolResult } from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
-import { parkRunWorktree, unparkRunWorktree } from "./detached-cleanup-barrier.js";
+import { holdRunWorktree, parkRunWorktree, runWorktreeRecord, unparkRunWorktree } from "./run-worktrees.js";
 import {
 	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
 	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
@@ -274,7 +274,8 @@ export async function runAgentTask(input: {
 	const childCwd = input.options.cwd ?? input.cwd;
 	let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile"> = {};
 	let childLaunch: Pick<SubagentChildRecordInput, "launchModel" | "launchThinkingLevel" | "launchLeafId"> = {};
-	const recordChildTask = (taskId: TaskId, state: SubagentChildRecordInput["state"], terminalStatus?: string) =>
+	const recordChildTask = (taskId: TaskId, state: SubagentChildRecordInput["state"], terminalStatus?: string) => {
+		const worktree = runWorktreeRecord(input.options.runId, input.options.index ?? 0);
 		input.recordChild?.record({
 			runId: input.options.runId,
 			index: input.options.index ?? 0,
@@ -289,8 +290,10 @@ export async function runAgentTask(input: {
 			...(input.options.orchestratorIntercomTarget
 				? { orchestratorTarget: input.options.orchestratorIntercomTarget }
 				: {}),
+			...(worktree ? { worktree } : {}),
 			...(terminalStatus ? { terminalStatus } : {}),
 		});
+	};
 	let dispatched = false;
 	let admittedTaskId: TaskId | undefined;
 	const runId = input.options.runId;
@@ -306,7 +309,7 @@ export async function runAgentTask(input: {
 			recordChildTask(taskId, "terminal", SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
 			return;
 		}
-		// Keep its worktree before its run's cleanup barrier counts it as ended; a cancellation for good releases it.
+		// Mark it stopped before its dispatch's hold is released, so its worktree is kept if it has unsaved work.
 		parkRunWorktree(runId, index);
 		const observed = await input.host.waitForTask(taskId);
 		if (
@@ -324,16 +327,22 @@ export async function runAgentTask(input: {
 		queued.stopped = true;
 	};
 	let scheduled = false;
-	const schedule = input.schedule
-		? (dispatch: () => Promise<void>) => {
-				scheduled = true;
-				input.schedule?.(() =>
-					dispatch().finally(() => {
-						if (!dispatched && admittedTaskId !== undefined) void settleSkipped(admittedTaskId);
-					}),
-				);
-			}
-		: undefined;
+	// Every dispatch holds the run's worktrees with a hold of its own, released once that dispatch drains: a cancelled
+	// dispatch the host skips never releases the hold of a later execution of the same child.
+	const schedule = (dispatch: () => Promise<void>) => {
+		const release = holdRunWorktree(runId, index);
+		if (!input.schedule) {
+			void dispatch().finally(release);
+			return;
+		}
+		scheduled = true;
+		input.schedule(() =>
+			dispatch().finally(() => {
+				if (!dispatched && admittedTaskId !== undefined) void settleSkipped(admittedTaskId);
+				release();
+			}),
+		);
+	};
 	const queuedStart = (): QueuedSubagentChildStart => ({
 		usesIntercom: input.options.supervisorAuthorization !== undefined,
 		start: (launch) =>
@@ -455,9 +464,9 @@ export async function runAgentTask(input: {
 						context.signal.aborted &&
 						context.signal.reason === "parent-handoff";
 					const endedForGood = ownerClosed() && input.recordChild?.ownerEndedForGood?.() === true;
-					// Run control parked its worktree before it stopped it; a child that ended otherwise releases it.
+					// Run control marked it stopped before it stopped it; a child that ended otherwise is not stopped.
 					if (stopped !== undefined && !stoppedByControl) unparkRunWorktree(runId, index);
-					// A child that stays restorable keeps its worktree before its run's cleanup barrier counts it ended.
+					// A child that stays restorable is marked stopped before its dispatch's hold is released.
 					if (stoppedByStagePause || (ownerClosed() && !endedForGood)) parkRunWorktree(runId, index);
 					if (endedForGood || child.status === "killed") forgetRunMembership(runId, index);
 					if (!ownerClosed())

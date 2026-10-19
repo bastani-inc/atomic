@@ -10,7 +10,7 @@ export interface WorktreeSetup {
 	worktrees: WorktreeInfo[];
 	baseCommit: string;
 }
-interface WorktreeInfo {
+export interface WorktreeInfo {
 	path: string;
 	agentCwd: string;
 	branch: string;
@@ -33,7 +33,7 @@ interface WorktreeTaskCwdConflict {
 	agent: string;
 	cwd: string;
 }
-interface WorktreeSetupHookConfig {
+export interface WorktreeSetupHookConfig {
 	hookPath: string;
 	timeoutMs?: number;
 }
@@ -323,6 +323,36 @@ function cleanupSingleWorktree(repoCwd: string, worktree: Pick<WorktreeInfo, "pa
 		/* idempotent */
 	}
 }
+/** Synthetic paths the setup created in a new worktree: copied settings, the `node_modules` link, and hook output. */
+function prepareWorktree(
+	mainRoot: string,
+	worktreePath: string,
+	agentCwd: string,
+	branch: string,
+	runId: string,
+	index: number,
+	baseCommit: string,
+	setupHook: ResolvedWorktreeSetupHook | undefined,
+	agent: string | undefined,
+): string[] {
+	const syntheticPaths = performPostCreationSetup(runGit, mainRoot, worktreePath);
+	if (setupHook) {
+		syntheticPaths.push(
+			...runWorktreeSetupHook(setupHook, {
+				version: 1,
+				repoRoot: mainRoot,
+				worktreePath,
+				agentCwd,
+				branch,
+				index,
+				runId,
+				baseCommit,
+				agent,
+			}),
+		);
+	}
+	return syntheticPaths;
+}
 function createSingleWorktree(
 	mainRoot: string,
 	cwdRelative: string,
@@ -343,22 +373,17 @@ function createSingleWorktree(
 	}
 	const agentCwd = cwdRelative ? path.join(worktreePath, cwdRelative) : worktreePath;
 	try {
-		const syntheticPaths = performPostCreationSetup(runGit, mainRoot, worktreePath);
-		if (setupHook) {
-			syntheticPaths.push(
-				...runWorktreeSetupHook(setupHook, {
-					version: 1,
-					repoRoot: mainRoot,
-					worktreePath,
-					agentCwd,
-					branch,
-					index,
-					runId,
-					baseCommit,
-					agent,
-				}),
-			);
-		}
+		const syntheticPaths = prepareWorktree(
+			mainRoot,
+			worktreePath,
+			agentCwd,
+			branch,
+			runId,
+			index,
+			baseCommit,
+			setupHook,
+			agent,
+		);
 		return {
 			path: worktreePath,
 			agentCwd,
@@ -371,6 +396,68 @@ function createSingleWorktree(
 		cleanupSingleWorktree(mainRoot, { path: worktreePath, branch });
 		throw error;
 	}
+}
+
+/**
+ * Recreate a removed child worktree at its path: on its branch when that still exists, else on a new branch from the
+ * run's base commit. Returns the worktree as recreated; an existing worktree is returned unchanged.
+ */
+export function recreateWorktree(
+	setup: WorktreeSetup,
+	worktree: WorktreeInfo,
+	runId: string,
+	options?: { setupHook?: WorktreeSetupHookConfig; agent?: string },
+): WorktreeInfo {
+	if (fs.existsSync(worktree.path)) return worktree;
+	runGit(setup.cwd, ["worktree", "prune"]);
+	const branchExists =
+		runGit(setup.cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${worktree.branch}`]).status === 0;
+	runGitChecked(
+		setup.cwd,
+		branchExists
+			? ["worktree", "add", worktree.path, worktree.branch]
+			: ["worktree", "add", "-b", worktree.branch, worktree.path, setup.baseCommit],
+	);
+	try {
+		const syntheticPaths = prepareWorktree(
+			setup.cwd,
+			worktree.path,
+			worktree.agentCwd,
+			worktree.branch,
+			runId,
+			worktree.index,
+			setup.baseCommit,
+			resolveWorktreeSetupHook(setup.cwd, options?.setupHook),
+			options?.agent,
+		);
+		return { ...worktree, nodeModulesLinked: syntheticPaths.includes("node_modules"), syntheticPaths };
+	} catch (error) {
+		// A branch that already existed may hold commits: remove only the worktree.
+		if (branchExists) runGit(setup.cwd, ["worktree", "remove", "--force", worktree.path]);
+		else cleanupSingleWorktree(setup.cwd, worktree);
+		throw error;
+	}
+}
+
+/**
+ * Whether removing this worktree would lose work: uncommitted or untracked changes other than its synthetic paths, or
+ * commits not in the run's base. When git cannot tell, the work is treated as unsaved.
+ */
+export function worktreeHasUnsavedWork(setup: WorktreeSetup, worktree: WorktreeInfo): boolean {
+	if (!fs.existsSync(worktree.path)) return false;
+	const status = runGit(worktree.path, ["status", "--porcelain", "--untracked-files=all"]);
+	if (status.status !== 0) return true;
+	const synthetic = worktree.syntheticPaths.map((syntheticPath) => syntheticPath.split(path.sep).join("/"));
+	const changed = status.stdout
+		.split("\n")
+		.filter((line) => line.trim().length > 0)
+		.map((line) => line.slice(3))
+		.filter(
+			(changedPath) => !synthetic.some((entry) => changedPath === entry || changedPath.startsWith(`${entry}/`)),
+		);
+	if (changed.length > 0) return true;
+	const ahead = runGit(worktree.path, ["rev-list", "--count", `${setup.baseCommit}..HEAD`]);
+	return ahead.status !== 0 || ahead.stdout.trim() !== "0";
 }
 function removeSyntheticPath(worktree: WorktreeInfo, syntheticPath: string): void {
 	const resolved = path.resolve(worktree.path, syntheticPath);
@@ -515,8 +602,8 @@ export function diffWorktrees(setup: WorktreeSetup, agents: string[], diffsDir: 
 		return [];
 	}
 	const diffs: WorktreeDiff[] = [];
-	for (let index = 0; index < setup.worktrees.length; index++) {
-		const worktree = setup.worktrees[index]!;
+	for (const worktree of setup.worktrees) {
+		const index = worktree.index;
 		const agent = agents[index] ?? `task-${index + 1}`;
 		const patchPath = path.join(diffsDir, `task-${index}-${safePatchAgentName(agent)}.patch`);
 		try {
