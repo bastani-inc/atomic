@@ -174,11 +174,6 @@ export class ProgramStatusReporter {
 		this.report();
 	}
 
-	resend(): void {
-		this.lastReport = undefined;
-		this.report();
-	}
-
 	report(): void {
 		const status: ProgramStatus = { ...this.currentStatus(), app: APP_NAME };
 		const key = JSON.stringify(status);

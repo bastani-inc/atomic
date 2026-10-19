@@ -9,7 +9,7 @@ import {
 	TuiMainScreen,
 	type WheelScrollLines,
 } from "@earendil-works/pi-tui";
-import { stripOverlayActiveRowMarker } from "../../core/extensions/ui-types.js";
+import { stripOsc133Marks, stripOverlayActiveRowMarker } from "../../core/extensions/ui-types.js";
 import { isLifecycleTimingEnabled, markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { copyToClipboard } from "../../utils/clipboard.js";
 import { openBrowser } from "../../utils/open-browser.ts";
@@ -120,7 +120,6 @@ export interface InteractiveTuiOptions {
 	wheelScrollLines?: WheelScrollLines;
 	onRightClickPaste?: () => void;
 	onOverlayInternalUiAction?: (url: string) => InternalUiActionResult;
-	onOverlayRender?: () => void;
 	onInternalUiAction?: (url: string) => InternalUiActionResult;
 	/**
 	 * Return false to let a focused overlay receive viewport input first.
@@ -336,8 +335,6 @@ function replayMouseInput(viewportListener: TuiInputListener, data: string): voi
  * route last so application listeners still receive deferred viewport keys.
  */
 class AtomicTuiAltScreen extends TuiAltScreen {
-	private readonly onOverlayRender: (() => void) | undefined;
-
 	constructor(
 		terminal: Terminal,
 		showHardwareCursor: boolean,
@@ -346,10 +343,8 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		viewportInputGate?: ViewportInputGate,
 		onOverlayUnhandledInput?: (data: string) => boolean,
 		copySelection: NonNullable<InteractiveTuiOptions["copySelection"]> = copySelectionToHostClipboard,
-		onOverlayRender?: () => void,
 	) {
 		super(terminal, showHardwareCursor, logDirectory, options);
-		this.onOverlayRender = onOverlayRender;
 		if (viewportInputGate) viewportInputGates.set(this, viewportInputGate);
 		if (onOverlayUnhandledInput) overlayUnhandledInputHandlers.set(this, onOverlayUnhandledInput);
 		// Adapt the private route rather than returning a truthy error string to
@@ -386,22 +381,19 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		(this as unknown as TuiOverlayCompositingInternals).compositeLineAt = compositeOverlayLine;
 	}
 
-	protected override doRender(): void {
-		super.doRender();
-		if (!this.stopped && this.hasOverlay()) this.onOverlayRender?.();
-	}
-
 	/**
 	 * Last stop before pi-tui turns the composited screen into bytes, and where
 	 * it already removes its own `CURSOR_MARKER`. Every component tree that this
 	 * renderer paints converges here, so one strip covers the overlay, inline,
 	 * widget, and workflows stage-chat mounts at once — including hosts that
-	 * never call `ReservedBottomOverlay.takeActiveRow`. The mark is zero-width,
-	 * so removing it after cursor extraction cannot move a column.
+	 * never call `ReservedBottomOverlay.takeActiveRow`. It also removes OSC 133
+	 * marks, which pi-tui strips only from base lines at column 0, so overlay
+	 * transcripts cannot make the terminal drop the OSC 7501 status. Both marks
+	 * are zero-width, so removing them after cursor extraction cannot move a column.
 	 */
 	protected override applyLineResets(lines: string[]): string[] {
 		if (overlayOwnedSelections.has(this) && !this.isFocusedOverlay()) this.clearOverlayOwnedSelection();
-		return stripOverlayActiveRowMarker(super.applyLineResets(lines));
+		return stripOsc133Marks(stripOverlayActiveRowMarker(super.applyLineResets(lines)));
 	}
 
 	private clearOverlayOwnedSelection(): void {
@@ -652,7 +644,6 @@ export function createFullscreenTui(options: InteractiveTuiOptions): TuiAltScree
 		options.shouldHandleViewportInput,
 		options.onOverlayUnhandledInput,
 		options.copySelection,
-		options.onOverlayRender,
 	);
 }
 
