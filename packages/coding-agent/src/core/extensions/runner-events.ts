@@ -83,6 +83,8 @@ export type RunnerEmitEvent = Exclude<
 export interface SessionRecoveryCombinedResult {
 	notices: string[];
 	dropped: Set<string>;
+	/** Cards left pending without a turn; a later recovery is offered them again. */
+	deferred: Set<string>;
 }
 
 export type BoundaryBaseEvent =
@@ -628,6 +630,7 @@ export async function runSessionRecoveryHandlers(
 ): Promise<SessionRecoveryCombinedResult> {
 	const notices: string[] = [];
 	const dropped = new Set<string>();
+	const deferred = new Set<string>();
 	for (const { ext, handlers } of snapshotEventHandlers(extensions, event.type)) {
 		for (const handler of handlers) {
 			try {
@@ -636,14 +639,17 @@ export async function runSessionRecoveryHandlers(
 				)) as (SessionRecoveryRestoreResult & SessionRecoveryReplayResult) | undefined;
 				for (const notice of result?.notices ?? []) if (notice.trim()) notices.push(notice);
 				if (event.type !== "session_recovery_replay") continue;
-				for (const decision of result?.decisions ?? [])
+				for (const decision of result?.decisions ?? []) {
 					if (decision.action === "drop") dropped.add(decision.entryId);
+					else if (decision.action === "defer") deferred.add(decision.entryId);
+				}
 			} catch (error) {
 				emitCaughtError(emitError, ext.path, event.type, error);
 			}
 		}
 	}
-	return { notices, dropped };
+	for (const entryId of dropped) deferred.delete(entryId);
+	return { notices, dropped, deferred };
 }
 
 export async function runInputHandlers(

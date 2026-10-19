@@ -8,7 +8,7 @@
 
 ### Added
 
-- Added `AgentSession.startPendingRecovery()`, the RPC `start_pending_recovery` command, and the `session_recovery_restore` and `session_recovery_replay` extension events. Extensions can now restore background work after a restart and decline to replay deliveries whose peer is gone ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
+- Added `AgentSession.startPendingRecovery()`, the RPC `start_pending_recovery` command, and the `session_recovery_restore` and `session_recovery_replay` extension events. Extensions can now restore background work after a restart, decline to replay deliveries whose peer is gone, and defer deliveries they cannot decide on yet to the next resume without starting a turn ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
 
 ### Fixed
 

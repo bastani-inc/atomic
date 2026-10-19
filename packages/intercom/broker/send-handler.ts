@@ -84,10 +84,20 @@ export type LegacyWorkflowStageTargetResolver = (runId: string, stageKey: string
 export const PENDING_STAGE_ASK_REFUSAL =
   "Cannot ask a workflow stage whose session has not initialized. Use send; Atomic will queue the message until the stage session initializes.";
 
+/**
+ * #3760: offered every send or ask that found no live recipient, before it fails with `Session not found`.
+ * Returns true when it answered or held the send (a subagent that its owner is restoring).
+ */
+export type RestoringRecipientHold = (send: {
+  readonly socket: net.Socket;
+  readonly from: BrokerConnectedSession;
+  readonly clientMessage: SendClientMessage & { readonly to: string };
+  readonly target: string;
+  readonly messageId: string;
+  readonly attemptId?: string;
+}) => boolean;
 
-
-
-interface SendClientMessage extends Record<string, unknown> {
+export interface SendClientMessage extends Record<string, unknown> {
   type: string;
 }
 function wireMessageId(value: unknown): string {
@@ -119,6 +129,7 @@ export function handleBrokerSend(
 	resolveLegacyWorkflowStageTarget?: LegacyWorkflowStageTargetResolver,
 	writeConfirmed?: ConfirmedMessageWriter,
 	isNonAgentWorkflowTarget?: (target: string) => boolean,
+	holdForRestoringRecipient?: RestoringRecipientHold,
 ): void {
   const message = clientMessage.message;
   const messageId = wireMessageId(message);
@@ -591,6 +602,22 @@ export function handleBrokerSend(
   }
 	if (resolution.kind === "not_found" && visibleCandidates.some((info) => !isAgentRecipient(info) && info.name?.toLowerCase() === trimmedTo.toLowerCase())) {
 		write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: NON_AGENT_RECIPIENT_REFUSAL });
+		return;
+	}
+	if (
+		resolution.kind === "not_found" &&
+		!supervisorSend &&
+		!requirePendingReply &&
+		workflowTarget === undefined &&
+		holdForRestoringRecipient?.({
+			socket,
+			from: fromSession,
+			clientMessage: clientMessage as SendClientMessage & { readonly to: string },
+			target: trimmedTo,
+			messageId: message.id,
+			...(attemptId ? { attemptId } : {}),
+		})
+	) {
 		return;
 	}
 	if (

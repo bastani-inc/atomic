@@ -16,8 +16,14 @@ import {
 	INTERCOM_RECOVERY_PEERS_EVENT,
 	type IntercomRecoveryPeersRequest,
 	isAwaitIntercomPeerRequest,
+	isReleaseRestoringChildRequest,
+	isReserveRestoringChildRequest,
 	planIntercomRecoveryReplay,
+	type ReleaseRestoringChildRequest,
+	type ReserveRestoringChildRequest,
 	SUBAGENT_AWAIT_INTERCOM_PEER_EVENT,
+	SUBAGENT_RELEASE_RESTORING_CHILD_EVENT,
+	SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
 } from "./session-recovery.js";
 import type { SessionInfo } from "./types.js";
 import {
@@ -682,6 +688,33 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 				return forwarded.completion ? await forwarded.completion : false;
 			})
 			.catch(() => false);
+	});
+	// #3760: a resume restoring a child asks the broker, through this session's connection, to hold its sends.
+	pi.events.on(SUBAGENT_RESERVE_RESTORING_CHILD_EVENT, (payload) => {
+		if (!isReserveRestoringChildRequest(payload) || payload.completion) return;
+		const forwarded: ReserveRestoringChildRequest = {
+			capability: payload.capability,
+			aliases: [...payload.aliases],
+			...(payload.group === undefined ? {} : { group: payload.group }),
+		};
+		payload.completion = loadHeavy(latestLifecycleContext()).then(async (handle) => {
+			handle.assertCurrent();
+			await dispatchEventHandlers(handle.heavy, SUBAGENT_RESERVE_RESTORING_CHILD_EVENT, forwarded);
+			if (!forwarded.completion) throw new Error("Intercom cannot hold sends for a restoring subagent");
+			await forwarded.completion;
+		});
+	});
+	pi.events.on(SUBAGENT_RELEASE_RESTORING_CHILD_EVENT, (payload) => {
+		if (!isReleaseRestoringChildRequest(payload) || payload.completion) return;
+		const forwarded: ReleaseRestoringChildRequest = {
+			capability: payload.capability,
+			...(payload.gone === undefined ? {} : { gone: payload.gone }),
+		};
+		payload.completion = loadHeavy(latestLifecycleContext()).then(async (handle) => {
+			handle.assertCurrent();
+			await dispatchEventHandlers(handle.heavy, SUBAGENT_RELEASE_RESTORING_CHILD_EVENT, forwarded);
+			await forwarded.completion;
+		});
 	});
 	async function recoveryPeers(ctx: ExtensionContext): Promise<SessionInfo[] | undefined> {
 		try {

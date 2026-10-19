@@ -57,7 +57,8 @@ async function recover(session: AgentSession, reason: SessionRecoveryReason): Pr
 		});
 		report.notices.push(...decided.notices);
 		if (isClosing(session)) return report;
-		replay = pending.filter((entry) => !decided.dropped.has(entry.entryId));
+		// Deferred cards stay pending without a turn, so the next recovery decides about them again.
+		replay = pending.filter((entry) => !decided.dropped.has(entry.entryId) && !decided.deferred.has(entry.entryId));
 		for (const entry of pending.filter((candidate) => decided.dropped.has(candidate.entryId))) {
 			await dismissProtectedStreamingCustomMessage(session, entry);
 			report.dropped += 1;

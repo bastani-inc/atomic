@@ -32,6 +32,14 @@ export interface SubagentChildRecord {
 	readonly childSessionId?: string;
 	/** Present only for file-backed (JSONL) child sessions; database-backed sessions have no session file. */
 	readonly childSessionFile?: string;
+	/** The model (`provider/id`) and thinking level the child actually started on, once its session was created. */
+	readonly launchModel?: string;
+	readonly launchThinkingLevel?: string;
+	/**
+	 * The leaf entry of the child's own session when its launch model and thinking level were recorded (`null`
+	 * for an empty session). Model and thinking changes the child's session records after it are the child's own.
+	 */
+	readonly launchLeafId?: string | null;
 	readonly intercomTarget?: string;
 	readonly intercomGroup?: string;
 	readonly orchestratorTarget?: string;
@@ -114,12 +122,20 @@ function isSubagentChildRecord(value: SessionEntry): value is CustomEntry<Subage
 	);
 }
 
-/** Fold a session's child records into the latest observation per child, in first-launch order. */
-export function readSubagentChildRecords(entries: readonly SessionEntry[]): Map<string, SubagentChildRecord> {
+/**
+ * Fold a session's child records into the latest observation per child, in first-launch order.
+ * With `ownerSessionId`, only children that session launched are read: `/fork`, `atomic --fork` and
+ * branched sessions copy the original's records, but those children belong to the original session.
+ */
+export function readSubagentChildRecords(
+	entries: readonly SessionEntry[],
+	ownerSessionId?: string,
+): Map<string, SubagentChildRecord> {
 	const records = new Map<string, SubagentChildRecord>();
 	for (const entry of entries) {
 		if (!isSubagentChildRecord(entry)) continue;
 		const data = entry.data as SubagentChildRecord;
+		if (ownerSessionId !== undefined && data.owner?.sessionId !== ownerSessionId) continue;
 		const previous = records.get(data.childId);
 		records.set(data.childId, previous ? { ...previous, ...data } : data);
 	}

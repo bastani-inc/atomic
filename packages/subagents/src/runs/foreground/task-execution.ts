@@ -221,6 +221,7 @@ export async function runAgentTask(input: {
 			const ownerClosed = () =>
 				context.signal.aborted && (context.signal.reason === "owner-close" || context.signal.reason === "shutdown");
 			let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile"> = {};
+			let childLaunch: Pick<SubagentChildRecordInput, "launchModel" | "launchThinkingLevel" | "launchLeafId"> = {};
 			const recordChild = (state: SubagentChildRecordInput["state"], terminalStatus?: string) =>
 				input.recordChild?.record({
 					runId: input.options.runId,
@@ -230,6 +231,7 @@ export async function runAgentTask(input: {
 					cwd: childCwd,
 					taskId: context.ref.taskId,
 					...childSession,
+					...childLaunch,
 					...(input.options.intercomSessionName ? { intercomTarget: input.options.intercomSessionName } : {}),
 					...(input.options.intercomGroup ? { intercomGroup: input.options.intercomGroup } : {}),
 					...(input.options.orchestratorIntercomTarget
@@ -267,6 +269,14 @@ export async function runAgentTask(input: {
 								childSession = {
 									childSessionId: session.sessionId,
 									...(session.sessionFile ? { childSessionFile: session.sessionFile } : {}),
+								};
+								recordChild("running");
+							},
+							bindChildLaunch: (launch) => {
+								childLaunch = {
+									...(launch.model ? { launchModel: launch.model } : {}),
+									...(launch.thinking ? { launchThinkingLevel: launch.thinking } : {}),
+									launchLeafId: launch.leafId,
 								};
 								recordChild("running");
 							},

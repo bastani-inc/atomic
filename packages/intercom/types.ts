@@ -144,7 +144,25 @@ export type ClientMessage =
 	| { type: "join_group"; requestId: string; group: string }
 	| { type: "leave_group"; requestId: string; group?: string }
   | { type: "authorize_supervisor"; requestId: string; childName: string; capability?: string }
-  | { type: "send" | "supervisor_send"; to: string; logicalTarget?: string; requirePendingReply?: true; expectedRecipientId?: string; resolveReplyTarget?: true; message: Message; attemptId?: string }
+  /**
+   * #3760: the supervisor that holds `capability` for a child it is restoring holds sends to that child's name and
+   * `aliases` (its Atomic session id and pre-restart Intercom id) until the child registers with the capability.
+   */
+  | { type: "reserve_restoring_recipient"; requestId: string; capability: string; group?: string; aliases?: string[] }
+  /** #3760: end that hold; with `gone` (the reason), held and later senders are told the child is gone. */
+  | { type: "release_restoring_recipient"; requestId: string; capability: string; gone?: string }
+  | {
+      type: "send" | "supervisor_send";
+      to: string;
+      logicalTarget?: string;
+      requirePendingReply?: true;
+      expectedRecipientId?: string;
+      resolveReplyTarget?: true;
+      /** The sender understands `send_held` and may wait past its usual acknowledgement timeout (#3760). */
+      awaitRestoringRecipient?: true;
+      message: Message;
+      attemptId?: string;
+    }
 	| {
 			type: "send_pending_stage_notification";
 			runId: string;
@@ -228,4 +246,7 @@ export type BrokerMessage =
   | { type: "error"; error: string }
   | { type: "delivered"; messageId: string; attemptId?: string }
 	| { type: "queued"; messageId: string; attemptId?: string; target: string; position: number }
+	/** #3760: the send is held for a subagent that is being restored; wait up to `timeoutMs` for its outcome. */
+	| { type: "send_held"; messageId: string; attemptId?: string; timeoutMs: number }
+	| { type: "restoring_recipient_ack"; requestId: string; error?: string }
 	| { type: "delivery_failed"; messageId: string; reason: string; reasonCode?: "message_id_conflict" | "session_not_found"; attemptId?: string };

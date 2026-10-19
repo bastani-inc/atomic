@@ -24,12 +24,17 @@ import {
 	restoreSubagentChild,
 	restoreSubagentChildren,
 	SUBAGENT_AWAIT_INTERCOM_PEER_EVENT,
+	SUBAGENT_RELEASE_RESTORING_CHILD_EVENT,
+	SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
 	SUBAGENT_RESUME_CONTINUATION_PROMPT,
 	type SubagentChildRestoreDeps,
+	type SubagentReleaseRestoringChildRequest,
+	type SubagentReserveRestoringChildRequest,
 	subagentChildRestoreNotices,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-restore.js";
 import { runAgentTask } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
+import { createCandidateModelResolver } from "../../packages/subagents/src/shared/model-resolution.js";
 import type { RunSyncOptions } from "../../packages/subagents/src/shared/types.js";
 import {
 	type PiCodingAgentSdk,
@@ -67,6 +72,10 @@ interface Parent {
 	readonly authorizations: string[];
 	readonly awaitedPeers: Array<{ name: string; group?: string }>;
 	readonly ownedRuns: string[];
+	/** What the parent asked Intercom's broker to hold for its restoring children, in order. */
+	readonly holds: Array<
+		{ reserve: string; aliases: readonly string[]; group?: string } | { release: string; gone?: string }
+	>;
 }
 
 function parentSession(
@@ -77,6 +86,7 @@ function parentSession(
 	const authorizations: string[] = [];
 	const awaitedPeers: Array<{ name: string; group?: string }> = [];
 	const ownedRuns: string[] = [];
+	const holds: Parent["holds"] = [];
 	const events = {
 		on: () => () => {},
 		emit(channel: string, data: object) {
@@ -93,6 +103,20 @@ function parentSession(
 				const request = data as { name: string; group?: string; completion?: Promise<boolean> };
 				awaitedPeers.push({ name: request.name, ...(request.group ? { group: request.group } : {}) });
 				request.completion = Promise.resolve(true);
+			}
+			if (channel === SUBAGENT_RESERVE_RESTORING_CHILD_EVENT) {
+				const request = data as SubagentReserveRestoringChildRequest;
+				holds.push({
+					reserve: request.capability,
+					aliases: request.aliases,
+					...(request.group ? { group: request.group } : {}),
+				});
+				request.completion = Promise.resolve();
+			}
+			if (channel === SUBAGENT_RELEASE_RESTORING_CHILD_EVENT) {
+				const request = data as SubagentReleaseRestoringChildRequest;
+				holds.push({ release: request.capability, ...(request.gone === undefined ? {} : { gone: request.gone }) });
+				request.completion = Promise.resolve();
 			}
 		},
 	};
@@ -123,7 +147,7 @@ function parentSession(
 			thinkingLevel: undefined,
 			...(boundary ? { orchestrationContext: boundary } : {}),
 		}) as unknown as ExtensionContext;
-	return { sessionManager, ctx, pi, authorizations, awaitedPeers, ownedRuns };
+	return { sessionManager, ctx, pi, authorizations, awaitedPeers, ownedRuns, holds };
 }
 
 function records(parent: Parent): SubagentChildRecord[] {
@@ -136,10 +160,14 @@ function records(parent: Parent): SubagentChildRecord[] {
 		);
 }
 
-async function waitForRecord(parent: Parent, state: SubagentChildRecord["state"]): Promise<SubagentChildRecord> {
+async function waitForRecord(
+	parent: Parent,
+	state: SubagentChildRecord["state"],
+	accept: (record: SubagentChildRecord) => boolean = () => true,
+): Promise<SubagentChildRecord> {
 	const deadline = Date.now() + RECORD_WAIT_MS;
 	while (Date.now() < deadline) {
-		const record = records(parent).find((candidate) => candidate.state === state);
+		const record = records(parent).find((candidate) => candidate.state === state && accept(candidate));
 		if (record) return record;
 		await sleep(RECORD_POLL_MS);
 	}
@@ -152,6 +180,7 @@ async function launchInterruptedChild(
 	runId: string,
 	group = "lane-group",
 	childSessionManager?: SessionManager,
+	launchOptions: Partial<RunSyncOptions> = {},
 ) {
 	const host = taskHost("parent-before-restart");
 	const neverReleased = Promise.withResolvers<void>();
@@ -161,6 +190,7 @@ async function launchInterruptedChild(
 		index: 0,
 		sessionDir: join(cwd, "children", runId),
 		...(childSessionManager ? { sessionManager: childSessionManager } : {}),
+		...launchOptions,
 		intercomSessionName: `subagent-worker-${runId}-1`,
 		intercomGroup: group,
 		orchestratorIntercomTarget: "parent-session",
@@ -183,7 +213,8 @@ async function launchInterruptedChild(
 		},
 	});
 	assert.equal(response.kind, "admitted");
-	const running = await waitForRecord(parent, "running");
+	// The launch model and thinking level follow the first record once the child's session exists.
+	const running = await waitForRecord(parent, "running", (record) => record.launchLeafId !== undefined);
 	await host.close("session-close");
 	return running;
 }
@@ -288,6 +319,14 @@ test("restoring a child reopens its own session under its original Intercom name
 
 		const settled = await resumedHost.waitForTask(outcome.taskId as TaskId);
 		assert.ok(settled.ok);
+		assert.deepEqual(
+			parent.holds,
+			[
+				{ reserve: "fresh-capability-1", aliases: [original.childSessionId], group: "lane-group" },
+				{ release: "fresh-capability-1" },
+			],
+			"sends to the child are held under its fresh capability until it settles, and it is never called gone",
+		);
 		const transcript = readFileSync(original.childSessionFile, "utf8");
 		assert.match(transcript, /original task/);
 		assert.ok(transcript.includes(SUBAGENT_RESUME_CONTINUATION_PROMPT));
@@ -370,10 +409,59 @@ test("a child whose session is gone is reported gone to the resumed agent instea
 		assert.equal(outcomes.length, 1);
 		assert.equal(outcomes[0]?.kind, "unrestorable");
 		assert.equal(launched.length, 0);
-		assert.deepEqual(parent.authorizations, []);
+		// The parent authorizes itself only to hold, then mark gone, the child's targets for every sender (#3760).
+		assert.deepEqual(parent.authorizations, ["subagent-worker-gone1-1"]);
+		assert.deepEqual(parent.holds, [
+			{ reserve: "fresh-capability-1", aliases: [original.childSessionId], group: "lane-group" },
+			{ release: "fresh-capability-1", gone: "its session no longer exists in the session store" },
+		]);
 		const [notice] = subagentChildRestoreNotices(outcomes);
 		assert.match(notice!, /`subagent-worker-gone1-1` \(worker\) did not survive the restart/);
 		assert.match(notice!, /It is gone: do not send it Intercom messages/);
+	} finally {
+		await resumedHost.close("session-close");
+		removeTempDirectory(cwd);
+	}
+});
+
+test("a forked session never restores or reports the background children of the session it was forked from (#3760)", async () => {
+	const cwd = makeTempDirectory("subagent-child-fork-");
+	const resumedHost = taskHost("after-restart");
+	try {
+		const original = await SessionManager.create(cwd, join(cwd, "sessions"));
+		await original.appendMessage({ role: "user", content: "parent request", timestamp: Date.now() });
+		const parent = parentSession(cwd, undefined, original);
+		await launchInterruptedChild(cwd, parent, "fork1");
+		const sessionFile = original.getSessionFile();
+		assert.ok(sessionFile, "the original session is file-backed");
+
+		// `/fork` and `atomic --fork` copy every entry, the child records included, into a new session.
+		const forkedFrom = await SessionManager.forkFrom(sessionFile, cwd, join(cwd, "forks"));
+		const branched = await SessionManager.open(sessionFile, undefined, cwd);
+		await branched.createBranchedSession(branched.getLeafId()!);
+		for (const fork of [forkedFrom, branched]) {
+			assert.notEqual(fork.getSessionId(), original.getSessionId());
+			assert.equal(
+				fork
+					.getEntries()
+					.filter((entry) => entry.type === "custom" && entry.customType === SUBAGENT_CHILD_RECORD_TYPE).length,
+				records(parent).length,
+				"the fork carries a copy of the original's child records",
+			);
+			const forked = parentSession(cwd, undefined, fork);
+			const launched: RunSyncOptions[] = [];
+			assert.deepEqual(await restoreSubagentChildren(restoreDeps(forked, launched), forked.ctx(resumedHost)), []);
+			const byId = await restoreSubagentChild(restoreDeps(forked, launched), forked.ctx(resumedHost), "fork1:0");
+			assert.equal(byId.kind, "unrestorable");
+			assert.equal(launched.length, 0, "a fork must not relaunch the original's child");
+			assert.deepEqual(forked.authorizations, [], "a fork must not claim the original child's Intercom name");
+		}
+
+		const launched: RunSyncOptions[] = [];
+		const [outcome] = await restoreSubagentChildren(restoreDeps(parent, launched), parent.ctx(resumedHost));
+		assert.equal(outcome?.kind, "restored", "the session that launched the child still restores it");
+		assert.equal(launched.length, 1);
+		if (outcome?.kind === "restored") await resumedHost.waitForTask(outcome.taskId as TaskId);
 	} finally {
 		await resumedHost.close("session-close");
 		removeTempDirectory(cwd);
@@ -605,15 +693,27 @@ async function openDefaultStore(cwd: string): Promise<SessionStore> {
 	});
 }
 
-async function launchForkedSqliteChild(cwd: string, runId: string) {
+async function launchForkedSqliteChild(
+	cwd: string,
+	runId: string,
+	setup?: {
+		parentModel: { provider: string; id: string };
+		parentThinking: string;
+		launchOptions: Partial<RunSyncOptions>;
+	},
+) {
 	const store = await openDefaultStore(cwd);
 	const parentManager = await SessionManager.create(store, cwd);
 	await parentManager.appendMessage({ role: "user", content: "parent request", timestamp: Date.now() });
+	if (setup) {
+		await parentManager.appendModelChange(setup.parentModel.provider, setup.parentModel.id);
+		await parentManager.appendThinkingLevelChange(setup.parentThinking);
+	}
 	const parent = parentSession(cwd, undefined, parentManager);
 	const forked = await createForkContextResolver(parentManager, "fork").sessionManagerForIndex(0);
 	assert.ok(forked);
 	assert.equal(forked.getSessionFile(), undefined, "a SQLite child session has no session file");
-	const running = await launchInterruptedChild(cwd, parent, runId, "lane-group", forked);
+	const running = await launchInterruptedChild(cwd, parent, runId, "lane-group", forked, setup?.launchOptions);
 	await store.close();
 	return { parentId: parentManager.getSessionId(), running };
 }
@@ -676,8 +776,73 @@ test("a SQLite child whose session was deleted from its store is reported gone (
 		);
 		assert.equal(outcomes[0]?.kind, "unrestorable");
 		assert.equal(launched.length, 0);
-		assert.deepEqual(resumed.parent.authorizations, []);
+		assert.deepEqual(resumed.parent.authorizations, ["subagent-worker-sql2-1"]);
+		assert.deepEqual(resumed.parent.holds.at(-1), {
+			release: "fresh-capability-1",
+			gone: "its session no longer exists in the session store",
+		});
 		assert.match(subagentChildRestoreNotices(outcomes)[0]!, /It is gone/);
+	} finally {
+		await resumedHost.close("session-close");
+		await resumedStore?.close();
+		removeTempDirectory(cwd);
+	}
+});
+
+test("a forked child launched with a model thinking suffix is restored on that thinking level, not the copied parent's (#3760)", async () => {
+	const cwd = makeTempDirectory("subagent-child-fork-thinking-");
+	const resumedHost = taskHost("parent-after-restart");
+	let resumedStore: SessionStore | undefined;
+	try {
+		const sonnet = { provider: "anthropic", id: "claude-sonnet-4-6", reasoning: true };
+		const models = [sonnet];
+		const modelRegistry = {
+			getAvailable: () => models,
+			getAll: () => models,
+			find: (provider: string, id: string) => models.find((model) => model.provider === provider && model.id === id),
+			hasConfiguredAuth: () => true,
+		};
+		// The forked child's own session holds only the thinking level and model copied from its parent;
+		// `:low` is applied at launch without writing an entry of its own.
+		const { parentId, running } = await launchForkedSqliteChild(cwd, "think1", {
+			parentModel: sonnet,
+			parentThinking: "medium",
+			launchOptions: {
+				modelOverride: `${sonnet.provider}/${sonnet.id}:low`,
+				resolveCandidateModel: createCandidateModelResolver(modelRegistry as never, sonnet.provider),
+			},
+		});
+
+		const resumed = await resumeSqliteParent(cwd, parentId);
+		resumedStore = resumed.store;
+		const resumedCtx = {
+			...resumed.parent.ctx(resumedHost),
+			model: sonnet,
+			thinkingLevel: "medium",
+			modelRegistry,
+		} as unknown as ExtensionContext;
+		const results: Array<{ model?: string; thinking?: string }> = [];
+		const deps: SubagentChildRestoreDeps = {
+			...restoreDeps(resumed.parent, []),
+			runtime: {
+				runSync: async (...args) => {
+					const result = await runSync(args[0], args[1], args[2], args[3], {
+						...args[4],
+						testSession: { output: "resumed" },
+					});
+					results.push({ model: result.model, thinking: result.thinking });
+					return result;
+				},
+			},
+		};
+
+		const outcome = await restoreSubagentChild(deps, resumedCtx, "think1:0");
+		assert.equal(outcome.kind, "restored");
+		assert.ok((await resumedHost.waitForTask(outcome.taskId as TaskId)).ok);
+		assert.equal(results.length, 1);
+		assert.match(results[0]!.model ?? "", /^anthropic\/claude-sonnet-4-6\b/);
+		assert.equal(results[0]!.thinking, "low");
+		assert.ok(running.childSessionId);
 	} finally {
 		await resumedHost.close("session-close");
 		await resumedStore?.close();

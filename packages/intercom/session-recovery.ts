@@ -12,6 +12,13 @@ export const SUBAGENT_AWAIT_INTERCOM_PEER_EVENT = "subagent:await-intercom-peer"
 export const SUBAGENT_AWAIT_CHILD_RESTORATION_EVENT = "subagent:await-child-restoration";
 /** Longest a send waits for a child that a resume is restoring: its relaunch plus the 15s re-registration wait. */
 export const CHILD_RESTORATION_WAIT_MS = 20_000;
+/**
+ * Subagents asks Intercom, as the child's supervisor, to have the broker hold sends from any sender to a child
+ * it is restoring, by the capability it was just issued for that child (#3760).
+ */
+export const SUBAGENT_RESERVE_RESTORING_CHILD_EVENT = "subagent:reserve-restoring-child";
+/** Subagents ends that hold; with `gone` (the reason) senders are told the child did not survive the restart. */
+export const SUBAGENT_RELEASE_RESTORING_CHILD_EVENT = "subagent:release-restoring-child";
 /** Lazy-runtime request for the peers this session can reach after it reconnects on resume. */
 export const INTERCOM_RECOVERY_PEERS_EVENT = "intercom:recovery-peers";
 
@@ -32,6 +39,42 @@ export interface AwaitChildRestorationRequest {
 	readonly timeoutMs: number;
 	/** Resolves a refusal message when the send must not go out, or `undefined` when it may proceed. */
 	completion?: Promise<string | undefined>;
+}
+
+export interface ReserveRestoringChildRequest {
+	readonly capability: string;
+	readonly group?: string;
+	/** The child's Atomic session id and the Intercom id it had before the restart. */
+	readonly aliases: readonly string[];
+	completion?: Promise<void>;
+}
+
+export interface ReleaseRestoringChildRequest {
+	readonly capability: string;
+	readonly gone?: string;
+	completion?: Promise<void>;
+}
+
+export function isReserveRestoringChildRequest(value: unknown): value is ReserveRestoringChildRequest {
+	if (!value || typeof value !== "object") return false;
+	const request = value as Partial<ReserveRestoringChildRequest>;
+	return (
+		typeof request.capability === "string" &&
+		request.capability.length > 0 &&
+		(request.group === undefined || typeof request.group === "string") &&
+		Array.isArray(request.aliases) &&
+		request.aliases.every((alias) => typeof alias === "string")
+	);
+}
+
+export function isReleaseRestoringChildRequest(value: unknown): value is ReleaseRestoringChildRequest {
+	if (!value || typeof value !== "object") return false;
+	const request = value as Partial<ReleaseRestoringChildRequest>;
+	return (
+		typeof request.capability === "string" &&
+		request.capability.length > 0 &&
+		(request.gone === undefined || typeof request.gone === "string")
+	);
 }
 
 /**
@@ -121,7 +164,8 @@ function boundedBody(text: string): string {
  * A card replays only when its sender is connected again (restored subagents included).
  * A card from a peer that is gone is dropped instead: its text is surfaced once as
  * history in a non-triggering notice that tells the agent the peer is gone.
- * `peers` is undefined when Intercom could not be reached, so no sender can be confirmed live.
+ * `peers` is undefined when Intercom could not be reached. Then no sender's liveness is known, so every
+ * card is deferred: it stays pending, starts no turn, and the next resume decides about it again.
  */
 export function planIntercomRecoveryReplay(
 	pending: readonly PendingRecoveryDelivery[],
@@ -129,28 +173,37 @@ export function planIntercomRecoveryReplay(
 ): SessionRecoveryReplayResult {
 	const decisions: NonNullable<SessionRecoveryReplayResult["decisions"]> = [];
 	const gone = new Map<string, { from: SessionInfo; entries: InboundMessageEntry[] }>();
+	const deferred = new Map<string, SessionInfo>();
 	for (const delivery of pending) {
 		const entry = inboundEntry(delivery);
 		if (!entry || LOCAL_RELAY_SENDERS.has(entry.from.id)) continue;
-		if (peers !== undefined && isLivePeer(entry.from, peers)) {
+		const key = entry.from.name?.trim().toLowerCase() ?? entry.from.id;
+		if (peers === undefined) {
+			decisions.push({ entryId: delivery.entryId, action: "defer" });
+			if (!deferred.has(key)) deferred.set(key, entry.from);
+			continue;
+		}
+		if (isLivePeer(entry.from, peers)) {
 			decisions.push({ entryId: delivery.entryId, action: "replay" });
 			continue;
 		}
 		decisions.push({ entryId: delivery.entryId, action: "drop" });
-		const key = entry.from.name?.trim().toLowerCase() ?? entry.from.id;
 		const group = gone.get(key) ?? { from: entry.from, entries: [] };
 		group.entries.push(entry);
 		gone.set(key, group);
 	}
 	const notices = [...gone.values()].map(({ from, entries }) => {
-		const reason =
-			peers === undefined
-				? "Intercom could not be reached after the restart, so it could not be confirmed live"
-				: "it is no longer connected after the restart";
 		const history = entries
 			.map((entry) => `- Sent ${new Date(entry.message.timestamp).toISOString()}: ${boundedBody(entry.bodyText)}`)
 			.join("\n");
-		return `Intercom peer ${peerLabel(from)} is gone: ${reason}. ${entries.length} message(s) it sent before the restart were not replayed as new turns; they are shown here as history only. Do not reply to it or send it new messages; launch a fresh subagent if its work is still needed.\n${history}`;
+		return `Intercom peer ${peerLabel(from)} is gone: it is no longer connected after the restart. ${entries.length} message(s) it sent before the restart were not replayed as new turns; they are shown here as history only. Do not reply to it or send it new messages; launch a fresh subagent if its work is still needed.\n${history}`;
 	});
+	if (deferred.size > 0) {
+		const count = decisions.filter((decision) => decision.action === "defer").length;
+		const senders = [...deferred.values()].map(peerLabel).join(", ");
+		notices.push(
+			`Intercom could not be reached after the restart, so ${count === 1 ? "1 interrupted Intercom delivery" : `${count} interrupted Intercom deliveries`} from ${senders} ${count === 1 ? "was" : "were"} deferred: not replayed now and not discarded. Whether their senders are still connected is unknown. The next resume of this session tries them again.`,
+		);
+	}
 	return { decisions, ...(notices.length > 0 ? { notices } : {}) };
 }

@@ -218,6 +218,70 @@ describe("resume recovery (#3760)", () => {
 		assert.equal(dropped.display, false);
 	});
 
+	it("a deferred delivery is neither replayed nor closed, starts no turn, and is offered again on the next resume (#3760)", async () => {
+		const sessionManager = await interruptedSession([
+			{ text: "UNCONFIRMED-PEER-NOTE", key: "intercom:6", from: "peer" },
+		]);
+		const harness = await track(
+			createHarness({
+				sessionManager,
+				extensionFactories: [
+					(pi) => {
+						pi.on("session_recovery_replay", (event) => ({
+							decisions: event.pending.map((entry) => ({ entryId: entry.entryId, action: "defer" as const })),
+							notices: ["Intercom could not be reached; 1 interrupted delivery was deferred."],
+						}));
+					},
+				],
+			}),
+		);
+		harness.setResponses([fauxAssistantMessage("unexpected turn")]);
+		await harness.session.bindExtensions({});
+
+		const report = await harness.session.startPendingRecovery("resume");
+
+		assert.deepEqual(report, {
+			replayed: 0,
+			dropped: 0,
+			completions: 0,
+			notices: ["Intercom could not be reached; 1 interrupted delivery was deferred."],
+		});
+		assert.equal(harness.faux.state.callCount, 0);
+		assert.equal(harness.eventsOfType("agent_start").length, 0);
+		assert.equal(harness.session.agent.hasQueuedMessages(), false);
+		const branch = sessionManager.getBranch();
+		assert.equal(
+			branch.some(
+				(entry) =>
+					entry.type === "custom_message" &&
+					(entry.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE ||
+						entry.customType === SESSION_RECOVERY_REPLAY_TYPE),
+			),
+			false,
+			"a deferred card is neither closed nor announced as replayed",
+		);
+
+		const offered: Array<string | undefined> = [];
+		const reopened = await track(
+			createHarness({
+				sessionManager,
+				extensionFactories: [
+					(pi) => {
+						pi.on("session_recovery_replay", (event) => {
+							offered.push(...event.pending.map((entry) => entry.stageAdmissionKey));
+							return undefined;
+						});
+					},
+				],
+			}),
+		);
+		reopened.setResponses([fauxAssistantMessage("answered the peer")]);
+		await reopened.session.bindExtensions({});
+		const later = await reopened.session.startPendingRecovery("resume");
+		assert.deepEqual(offered, ["intercom:6"], "the next resume decides about the deferred card again");
+		assert.equal(later.replayed, 1);
+	});
+
 	it("a completion intent left by an earlier process is shown without starting a turn (#3760)", async () => {
 		const sessionManager = SessionManager.inMemory();
 		await sessionManager.appendMessage({ role: "user", content: [{ type: "text", text: "launch" }], timestamp: 1 });

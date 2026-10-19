@@ -156,7 +156,7 @@ Fired once per session when the host recovers work an earlier process left unfin
 
 `session_recovery_restore` comes first. Restore background work here, such as child agents.
 
-`session_recovery_replay` follows, but only when delivery cards that were shown before the exit never reached the model. Return a `drop` decision for each card whose sender or target no longer exists. Cards with no decision are replayed in a visible turn.
+`session_recovery_replay` follows, but only when delivery cards that were shown before the exit never reached the model. Return a `drop` decision for each card whose sender or target no longer exists; the card is closed and never offered again. Return `defer` when you cannot tell yet, for example because the peer's service is unreachable: the card stays pending without a turn, and the next recovery of the session offers it again. If handlers disagree, `drop` wins over `defer`. Cards with no decision are replayed in a visible turn.
 
 Notices from either event go into one message for the user and the agent. That message never starts a turn.
 

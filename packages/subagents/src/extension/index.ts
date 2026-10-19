@@ -72,11 +72,15 @@ export {
 	restoreSubagentChildren,
 	SUBAGENT_AWAIT_CHILD_RESTORATION_EVENT,
 	SUBAGENT_AWAIT_INTERCOM_PEER_EVENT,
+	SUBAGENT_RELEASE_RESTORING_CHILD_EVENT,
+	SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
 	SUBAGENT_RESUME_CONTINUATION_PROMPT,
 	type SubagentAwaitChildRestorationRequest,
 	type SubagentAwaitIntercomPeerRequest,
 	type SubagentChildRestoreDeps,
 	type SubagentChildRestoreOutcome,
+	type SubagentReleaseRestoringChildRequest,
+	type SubagentReserveRestoringChildRequest,
 	subagentChildRestoreNotices,
 } from "../runs/foreground/subagent-child-restore.js";
 export {

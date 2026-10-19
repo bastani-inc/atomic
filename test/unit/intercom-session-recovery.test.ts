@@ -50,10 +50,29 @@ test("interrupted Intercom cards replay only for senders that are live again aft
 	assert.match(notice, /second stale note/);
 });
 
-test("without a reachable broker no interrupted Intercom card can start a turn on resume (#3760)", () => {
-	const plan = planIntercomRecoveryReplay([card("unknown", peer("worker"), "status")], undefined);
-	assert.deepEqual(plan.decisions, [{ entryId: "unknown", action: "drop" }]);
-	assert.match(plan.notices![0]!, /could not be confirmed live/);
+test("when Intercom is unreachable on resume, interrupted cards are deferred, not dropped, and their senders are not called gone (#3760)", () => {
+	const plan = planIntercomRecoveryReplay(
+		[
+			card("unknown", peer("worker"), "status"),
+			card("unknown-2", peer("worker"), "second status"),
+			card("other", peer("reviewer"), "review notes"),
+		],
+		undefined,
+	);
+	assert.deepEqual(plan.decisions, [
+		{ entryId: "unknown", action: "defer" },
+		{ entryId: "unknown-2", action: "defer" },
+		{ entryId: "other", action: "defer" },
+	]);
+	assert.equal(plan.notices?.length, 1, "one notice covers every deferred delivery");
+	const notice = plan.notices![0]!;
+	assert.match(notice, /Intercom could not be reached/);
+	assert.match(notice, /3 interrupted Intercom deliveries/);
+	assert.match(notice, /deferred/);
+	assert.match(notice, /`worker`/);
+	assert.match(notice, /`reviewer`/);
+	assert.doesNotMatch(notice, /\bgone\b/);
+	assert.doesNotMatch(notice, /Do not reply/);
 });
 
 test("Intercom leaves other recovery deliveries and local subagent relays to their owners (#3760)", () => {

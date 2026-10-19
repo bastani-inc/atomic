@@ -89,6 +89,16 @@ export class SupervisorChannelCache {
     return authorization.supervisorId;
   }
 
+  /**
+   * The exact child name this capability authorizes `supervisorId` to supervise, or undefined. Only that
+   * supervisor may act for the child (#3760); dynamic (`*`) slots name no child yet and never qualify.
+   */
+  supervisedChildName(capability: string, supervisorId: string): string | undefined {
+    const authorization = this.authorizations.get(capability);
+    if (!authorization || authorization.supervisorId !== supervisorId || authorization.childName === "*") return undefined;
+    return authorization.childName;
+  }
+
   /** Record a supervisor-channel crossing keyed by the outbound message id. */
   record(messageId: string, fromId: string, toId: string, now = Date.now()): void {
     this.prune(now);

@@ -8,7 +8,11 @@ import {
   INTERCOM_RECOVERY_PEERS_EVENT,
   type IntercomRecoveryPeersRequest,
   isAwaitIntercomPeerRequest,
+  isReleaseRestoringChildRequest,
+  isReserveRestoringChildRequest,
   SUBAGENT_AWAIT_INTERCOM_PEER_EVENT,
+  SUBAGENT_RELEASE_RESTORING_CHILD_EVENT,
+  SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
   waitForIntercomPeer,
 } from "./session-recovery.js";
 import { APP_NAME, type ExtensionAPI, type ExtensionContext, sessionScopedExtensionState } from "@bastani/atomic";
@@ -1162,6 +1166,26 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const request = payload as IntercomRecoveryPeersRequest;
     if (request.completion) return;
     request.completion = ensureConnected("background").then((activeClient) => activeClient.listSessions());
+  });
+  // #3760: the capability was issued to this session's own broker connection, so that connection reserves.
+  pi.events.on(SUBAGENT_RESERVE_RESTORING_CHILD_EVENT, (payload) => {
+    if (!isReserveRestoringChildRequest(payload) || payload.completion) return;
+    const request = payload;
+    request.completion = ensureConnected("background").then((activeClient) =>
+      activeClient.reserveRestoringRecipient(request.capability, {
+        ...(request.group === undefined ? {} : { group: request.group }),
+        aliases: request.aliases,
+      }),
+    );
+  });
+  pi.events.on(SUBAGENT_RELEASE_RESTORING_CHILD_EVENT, (payload) => {
+    if (!isReleaseRestoringChildRequest(payload) || payload.completion) return;
+    const request = payload;
+    // A reservation ends with the connection that made it, so a disconnected client has nothing to release.
+    const activeClient = client;
+    request.completion = activeClient?.isConnected()
+      ? activeClient.releaseRestoringRecipient(request.capability, request.gone)
+      : Promise.resolve();
   });
 
   pi.on("session_shutdown", (event) => {

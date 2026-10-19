@@ -101,9 +101,10 @@ Workflow stages and subagents that fork the conversation keep their own configur
 
 If Atomic exits while work is in flight, for example while background subagents are still sending Intercom messages, resuming the session with `--session`, `--continue`, `-r`, or `/resume` shows the transcript first. Recovery starts only after that, and everything it does appears in the transcript:
 
-- Background subagents the session launched are restored and reconnected to Intercom.
+- Background subagents the session launched are restored and reconnected to Intercom. A session forked from it does not restore them.
 - Messages that were shown before the exit but never reached the agent are replayed in a visible turn. A "Replaying N interrupted deliveries" line appears before it.
 - Messages from a peer that no longer exists are not replayed. One notice tells you and the agent which peers are gone, and it does not start a turn.
+- If Intercom cannot be reached, its interrupted messages are neither replayed nor discarded. A notice says they were deferred, and the next resume decides about them again.
 - Background task results that were never delivered are shown as cards without starting a turn.
 - A status line summarizes what was recovered.
 

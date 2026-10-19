@@ -37,7 +37,7 @@ import {
 import { childAllowsIntercom } from "../../intercom/supervisor-authorization.js";
 import { ensureArtifactsDir, writeArtifact, writeMetadata } from "../../shared/artifacts.js";
 import { DEFAULT_MAX_JSONL_BYTES } from "../../shared/jsonl-writer.js";
-import { resolveEffectiveThinking } from "../../shared/model-info.js";
+import { resolveEffectiveThinking, splitKnownThinkingSuffix } from "../../shared/model-info.js";
 import {
 	type AgentProgress,
 	type ArtifactPaths,
@@ -840,7 +840,10 @@ export class SubagentControlRuntime {
 		candidate: ModelCandidate,
 		signals: AttemptSignals,
 		onModelChange: ((model: string | undefined, thinking?: string) => void) | undefined,
-		taskHooks?: Pick<TaskExecutionHooks, "reportActivity" | "bindTranscript" | "bindChildSession">,
+		taskHooks?: Pick<
+			TaskExecutionHooks,
+			"reportActivity" | "bindTranscript" | "bindChildSession" | "bindChildLaunch"
+		>,
 		onCleanup?: (cleanup: Promise<Cleanup>) => void,
 	): Promise<AttemptOutcome> {
 		const candidateModelId = modelIdForCandidate(candidate, admitted.policy.model);
@@ -1071,6 +1074,11 @@ export class SubagentControlRuntime {
 				thinkingLevelForSession(session) ?? initialThinkingForAttempt(candidateModelId, configuredThinking);
 			attemptedModels = initialModelId ? [initialModelId] : [];
 			onModelChange?.(effectiveModelId, effectiveThinking);
+			taskHooks?.bindChildLaunch?.({
+				model: effectiveModelId === undefined ? undefined : splitKnownThinkingSuffix(effectiveModelId).baseModel,
+				thinking: effectiveThinking,
+				leafId: sessionManager.getLeafId(),
+			});
 			const progressState: AgentProgress = {
 				index: 0,
 				agent: admitted.spec.agent.name,

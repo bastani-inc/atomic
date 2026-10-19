@@ -14,7 +14,11 @@ import {
 	resolveIntercomBridge,
 	resolveIntercomSessionTarget,
 } from "../../intercom/intercom-bridge.js";
-import { requestSupervisorAuthorization } from "../../intercom/supervisor-authorization.js";
+import {
+	childAllowsIntercom,
+	requestSupervisorAuthorization,
+	type SupervisorAuthorization,
+} from "../../intercom/supervisor-authorization.js";
 import { collectKnownModelProviders, toModelInfo } from "../../shared/model-info.js";
 import { createCandidateModelResolver } from "../../shared/model-resolution.js";
 import {
@@ -71,6 +75,29 @@ export interface SubagentAwaitIntercomPeerRequest {
 	readonly group?: string;
 	readonly timeoutMs: number;
 	completion?: Promise<boolean>;
+}
+
+/**
+ * Asks Intercom to have the broker hold sends from any sender to a child this session is restoring, by the
+ * supervisor capability just issued for that child (#3760). The broker holds them until the child registers
+ * with that capability, the owner releases the hold, or the owner disconnects.
+ */
+export const SUBAGENT_RESERVE_RESTORING_CHILD_EVENT = "subagent:reserve-restoring-child";
+/** Ends that hold; with `gone` (the reason) held and later senders are told the child did not survive the restart. */
+export const SUBAGENT_RELEASE_RESTORING_CHILD_EVENT = "subagent:release-restoring-child";
+
+export interface SubagentReserveRestoringChildRequest {
+	readonly capability: string;
+	readonly group?: string;
+	/** The child's Atomic session id and the Intercom id it had before the restart. */
+	readonly aliases: readonly string[];
+	completion?: Promise<void>;
+}
+
+export interface SubagentReleaseRestoringChildRequest {
+	readonly capability: string;
+	readonly gone?: string;
+	completion?: Promise<void>;
 }
 
 export type SubagentChildRestoreDeps = Pick<ExecutorDeps, "pi" | "config" | "discoverAgents" | "runtime">;
@@ -145,6 +172,65 @@ async function awaitIntercomPeer(
 }
 
 /**
+ * The broker's hold on a child's Intercom targets while its owner restores it (#3760): sends from any sender to
+ * its name, Atomic session id or pre-restart Intercom id wait for the child instead of failing with `Session not found`.
+ */
+interface ChildTargetHold {
+	/** The fresh supervisor capability the hold was made under; the relaunched child registers with it. */
+	readonly authorization: SupervisorAuthorization;
+	/** Also hold sends addressed to `alias`. */
+	add(alias: string): Promise<void>;
+	/** End the hold; held sends go through ordinary routing. */
+	release(): Promise<void>;
+	/** End the hold as gone; held and later senders are told the child did not survive the restart. */
+	gone(reason: string): Promise<void>;
+}
+
+/** Holding is best effort: without it senders get `Session not found`, as they did before the hold existed. */
+function emitIntercomRequest(events: IntercomEventBus, eventName: string, request: { completion?: Promise<void> }) {
+	try {
+		events.emit(eventName, request);
+	} catch {
+		return Promise.resolve();
+	}
+	return (request.completion ?? Promise.resolve()).catch(() => undefined);
+}
+
+/**
+ * Authorize this session as the child's supervisor again and, under that capability, have the broker hold
+ * sends to the child's name and Atomic session id. Undefined when the child has no Intercom name or no
+ * Intercom extension answers.
+ */
+async function holdChildTargets(
+	events: IntercomEventBus,
+	record: SubagentChildRecord,
+	group: string | undefined,
+): Promise<ChildTargetHold | undefined> {
+	if (!record.intercomTarget) return undefined;
+	const authorization = await requestSupervisorAuthorization(events, record.intercomTarget);
+	if (!authorization) return undefined;
+	const { capability } = authorization;
+	const reserve = (aliases: readonly string[]) => {
+		const request: SubagentReserveRestoringChildRequest = { capability, aliases, ...(group ? { group } : {}) };
+		return emitIntercomRequest(events, SUBAGENT_RESERVE_RESTORING_CHILD_EVENT, request);
+	};
+	let ended = false;
+	const end = (gone?: string) => {
+		if (ended) return Promise.resolve();
+		ended = true;
+		const request: SubagentReleaseRestoringChildRequest = { capability, ...(gone === undefined ? {} : { gone }) };
+		return emitIntercomRequest(events, SUBAGENT_RELEASE_RESTORING_CHILD_EVENT, request);
+	};
+	await reserve(record.childSessionId ? [record.childSessionId] : []);
+	return {
+		authorization,
+		add: (alias) => (ended ? Promise.resolve() : reserve([alias])),
+		release: () => end(),
+		gone: (reason) => end(reason),
+	};
+}
+
+/**
  * Reopen a child's own session from wherever it was created: its JSONL session file when
  * one was recorded, otherwise by session id from the owner's session store (forked children
  * live in the store of the session that launched them, which is a database by default and
@@ -178,16 +264,39 @@ async function reopenChildSession(
 
 /**
  * The model and thinking level a reopened child session was last running on, as a `provider/model:thinking`
- * candidate, or `undefined` when the session recorded no model or that model is no longer usable here (#3760).
+ * candidate, or `undefined` when no model is known or that model is no longer usable here (#3760).
  * A restored child continues on these rather than the resumed parent's current model and thinking level.
+ *
+ * A forked child's session starts with the parent's copied model and thinking entries, and its launch model and
+ * thinking level (an agent or per-call `model:level`) are applied without writing entries of their own. So the
+ * latest change the child's own session recorded after launch wins, then what the launch record says it started
+ * on, and only then whatever the session's entries say.
  */
 function ownSessionModelCandidate(
 	sessionManager: SessionManager,
+	record: SubagentChildRecord,
 	resolveCandidateModel: ReturnType<typeof createCandidateModelResolver>,
 ): string | undefined {
-	const { model, thinkingLevel } = sessionManager.buildSessionContext();
+	const branch = sessionManager.getBranch();
+	const launchIndex =
+		record.launchLeafId === undefined
+			? branch.length
+			: record.launchLeafId === null
+				? 0
+				: branch.findIndex((entry) => entry.id === record.launchLeafId) + 1 || branch.length;
+	let changedModel: string | undefined;
+	let changedThinking: string | undefined;
+	for (const entry of branch.slice(launchIndex)) {
+		if (entry.type === "model_change") changedModel = `${entry.provider}/${entry.modelId}`;
+		else if (entry.type === "thinking_level_change") changedThinking = entry.thinkingLevel;
+	}
+	const context = sessionManager.buildSessionContext();
+	const model =
+		changedModel ??
+		record.launchModel ??
+		(context.model ? `${context.model.provider}/${context.model.modelId}` : undefined);
 	if (!model) return undefined;
-	const candidate = `${model.provider}/${model.modelId}:${thinkingLevel}`;
+	const candidate = `${model}:${changedThinking ?? record.launchThinkingLevel ?? context.thinkingLevel}`;
 	return resolveCandidateModel(candidate)?.model ? candidate : undefined;
 }
 
@@ -195,6 +304,7 @@ async function relaunchChild(
 	deps: SubagentChildRestoreDeps,
 	ctx: ExtensionContext,
 	record: SubagentChildRecord,
+	hold: ChildTargetHold | undefined,
 	release: () => void,
 	onReopened: (previousIntercomId: string | undefined) => void,
 ): Promise<SubagentChildRestoreOutcome> {
@@ -225,16 +335,17 @@ async function relaunchChild(
 	const reopened = await reopenChildSession(ctx, record);
 	if ("reason" in reopened) return unrestorable(reopened.reason);
 	const { sessionManager } = reopened;
-	onReopened(readPreviousIntercomId(sessionManager));
-	const supervisorAuthorization = await requestSupervisorAuthorization(
-		deps.pi.events,
-		record.intercomTarget,
-		ctx.getChildSessionOptions?.({ tools: agent.tools }),
-	);
+	const previousIntercomId = readPreviousIntercomId(sessionManager);
+	onReopened(previousIntercomId);
+	if (previousIntercomId) await hold?.add(previousIntercomId);
+	const childOptions = ctx.getChildSessionOptions?.({ tools: agent.tools });
+	const supervisorAuthorization = childOptions && !childAllowsIntercom(childOptions) ? undefined : hold?.authorization;
+	// A child that will not use Intercom never registers, so nothing it could be sent should wait for it.
+	if (!supervisorAuthorization) await hold?.release();
 	const intercomGroup = record.intercomGroup ?? inheritedIntercomGroup(ctx);
 	const currentProvider = ctx.model?.provider;
 	const resolveCandidateModel = createCandidateModelResolver(ctx.modelRegistry, currentProvider);
-	const ownModel = ownSessionModelCandidate(sessionManager, resolveCandidateModel);
+	const ownModel = ownSessionModelCandidate(sessionManager, record, resolveCandidateModel);
 	const options: RunSyncOptions = {
 		runningCapacity: deps.config.parallel?.runningCapacity,
 		getChildSessionOptions: ctx.getChildSessionOptions,
@@ -272,7 +383,11 @@ async function relaunchChild(
 		wait: { kind: "background" },
 		runtime: resolveSubagentExecutorRuntimeDeps(deps.runtime),
 		recordChild: createSubagentChildRecordSink(deps.pi, ctx),
-		onTerminal: release,
+		onTerminal: () => {
+			release();
+			// Normally the child consumed the hold when it registered; one that never did must not keep it.
+			void hold?.release();
+		},
 	});
 	if (response.kind === "unstarted") {
 		release();
@@ -290,16 +405,21 @@ async function relaunchChild(
  * relaunch it in the background with a continuation prompt, and re-register it with
  * Intercom under its original name and group with a fresh supervisor capability (#3760).
  * Accepts the child id (`<runId>:<index>`), its launch task id, or its Intercom name.
+ * Records that a fork copied from another session name that session as their owner, so they are never restored here.
  */
 export async function restoreSubagentChild(
 	deps: SubagentChildRestoreDeps,
 	ctx: ExtensionContext,
 	id: string,
 ): Promise<SubagentChildRestoreOutcome> {
-	const record = findSubagentChildRecord(readSubagentChildRecords(ctx.sessionManager.getEntries()), id);
+	const ownerSessionId = subagentChildOwner(ctx).sessionId;
+	const record = findSubagentChildRecord(
+		readSubagentChildRecords(ctx.sessionManager.getEntries(), ownerSessionId),
+		id,
+	);
 	if (!record) return { kind: "unrestorable", childId: id, reason: "this session has no record of that subagent" };
 	if (record.state === "terminal") return { kind: "terminal", record };
-	const key = `${subagentChildOwner(ctx).sessionId}\u0000${record.childId}`;
+	const key = `${ownerSessionId}\u0000${record.childId}`;
 	const active = activeRestorations.get(key);
 	if (active) return active.outcome;
 	goneChildren.delete(key);
@@ -312,30 +432,37 @@ export async function restoreSubagentChild(
 	const release = () => {
 		if (activeRestorations.get(key)?.outcome === restoration) activeRestorations.delete(key);
 	};
-	const markGone = (reason: string) => {
+	let hold: ChildTargetHold | undefined;
+	const markGone = async (reason: string) => {
 		goneChildren.set(key, {
-			ownerSessionId: subagentChildOwner(ctx).sessionId,
+			ownerSessionId,
 			record,
 			reason,
 			previousIntercomId: knownPreviousIntercomId,
 		});
 		release();
+		// Every sender, not only this session, is told the child is gone, for as long as this session is connected.
+		await hold?.gone(reason);
 	};
-	const restoration: Promise<SubagentChildRestoreOutcome> = relaunchChild(deps, ctx, record, release, onReopened).then(
-		(outcome) => {
+	const restoration: Promise<SubagentChildRestoreOutcome> = (async () => {
+		// Hold sends to the child before anything can fail, so no sender is told `Session not found` meanwhile.
+		hold = await holdChildTargets(deps.pi.events, record, record.intercomGroup ?? inheritedIntercomGroup(ctx));
+		return relaunchChild(deps, ctx, record, hold, release, onReopened);
+	})().then(
+		async (outcome) => {
 			previousIntercomId.resolve(undefined);
-			if (outcome.kind === "unrestorable") markGone(outcome.reason);
+			if (outcome.kind === "unrestorable") await markGone(outcome.reason);
 			else if (outcome.kind !== "restored") release();
 			return outcome;
 		},
-		(error: Error) => {
+		async (error: Error) => {
 			previousIntercomId.resolve(undefined);
-			markGone(error.message);
+			await markGone(error.message);
 			return { kind: "unrestorable", childId: record.childId, record, reason: error.message };
 		},
 	);
 	activeRestorations.set(key, {
-		ownerSessionId: subagentChildOwner(ctx).sessionId,
+		ownerSessionId,
 		record,
 		outcome: restoration,
 		previousIntercomId: previousIntercomId.promise,
@@ -348,9 +475,9 @@ export async function restoreSubagentChildren(
 	deps: SubagentChildRestoreDeps,
 	ctx: ExtensionContext,
 ): Promise<SubagentChildRestoreOutcome[]> {
-	const records = [...readSubagentChildRecords(ctx.sessionManager.getEntries()).values()];
+	const owned = readSubagentChildRecords(ctx.sessionManager.getEntries(), subagentChildOwner(ctx).sessionId);
 	return Promise.all(
-		records
+		[...owned.values()]
 			.filter((record) => record.state === "running")
 			.map((record) => restoreSubagentChild(deps, ctx, record.childId)),
 	);
@@ -431,7 +558,7 @@ export async function awaitSubagentChildRestoration(
 		)
 			return goneChildRefusal(reported.record.intercomTarget ?? targetName.trim(), reported.reason);
 	}
-	const gone = [...readSubagentChildRecords(entries).values()].find(
+	const gone = [...readSubagentChildRecords(entries, ownerSessionId).values()].find(
 		(record) =>
 			addressesChild(record, target) &&
 			record.state === "terminal" &&
