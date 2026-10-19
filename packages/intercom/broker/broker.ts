@@ -1494,7 +1494,11 @@ class IntercomBroker {
         // #3760: a restored subagent is back under the capability its owner reserved it with; the sends held
         // for it while it was being restored go out now, once each and in the order they arrived.
         if (supervisorId && isSupervisorRegistration(clientMessage.supervisor)) {
-          for (const send of this.restoringRecipients.consume(clientMessage.supervisor.capability))
+          const registered = info.name?.trim();
+          for (const send of this.restoringRecipients.consume(
+            clientMessage.supervisor.capability,
+            registered ? { childName: registered, groups: sessionGroups(info) } : undefined,
+          ))
             this.dispatchSend(send.socket, send.clientMessage, send.senderId);
         }
         break;
@@ -1575,6 +1579,7 @@ class IntercomBroker {
           owner === undefined || typeof clientMessage.requestId !== "string" ||
           typeof clientMessage.capability !== "string" || !clientMessage.capability ||
           (clientMessage.group !== undefined && typeof clientMessage.group !== "string") ||
+          (clientMessage.dormant !== undefined && typeof clientMessage.dormant !== "boolean") ||
           (clientMessage.aliases !== undefined && !isRestoringRecipientAliasList(clientMessage.aliases))
         ) {
           throw new Error("Invalid reserve_restoring_recipient message");
@@ -1598,6 +1603,7 @@ class IntercomBroker {
           childName,
           normalizeGroup(typeof clientMessage.group === "string" ? clientMessage.group : owner.registrationGroup),
           aliases,
+          { dormant: clientMessage.dormant === true },
         );
         writeMessageIfOpen(socket, { type: "restoring_recipient_ack", requestId: clientMessage.requestId });
         break;
@@ -1606,7 +1612,8 @@ class IntercomBroker {
       case "release_restoring_recipient": {
         if (
           typeof clientMessage.requestId !== "string" || typeof clientMessage.capability !== "string" ||
-          (clientMessage.gone !== undefined && typeof clientMessage.gone !== "string")
+          (clientMessage.gone !== undefined && typeof clientMessage.gone !== "string") ||
+          (clientMessage.refusal !== undefined && typeof clientMessage.refusal !== "string")
         ) {
           throw new Error("Invalid release_restoring_recipient message");
         }
@@ -1614,10 +1621,14 @@ class IntercomBroker {
           clientMessage.capability,
           currentId,
           typeof clientMessage.gone === "string" ? clientMessage.gone.slice(0, RESTORING_RECIPIENT_GONE_REASON_MAX) : undefined,
+          typeof clientMessage.refusal === "string" && clientMessage.refusal.trim()
+            ? clientMessage.refusal.slice(0, RESTORING_RECIPIENT_GONE_REASON_MAX)
+            : undefined,
         );
         writeMessageIfOpen(socket, { type: "restoring_recipient_ack", requestId: clientMessage.requestId });
         for (const send of released?.held ?? []) {
           if (released?.gone !== undefined) this.failHeldSend(send, released.gone);
+          else if (released?.refusal !== undefined) this.failHeldSend(send, released.refusal);
           else this.dispatchSend(send.socket, send.clientMessage, send.senderId);
         }
         break;

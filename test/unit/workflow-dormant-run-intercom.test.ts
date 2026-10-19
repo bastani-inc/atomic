@@ -23,6 +23,7 @@ const GROUP = `workflow:${ROOT_RUN_ID}`;
 const ROUTE_EVENT = "atomic:workflow-pending-stage-route";
 const MESSAGE_EVENT = "atomic:workflow-pending-stage-message";
 const REVOKED_EVENT = "atomic:workflow-pending-stage-route-revoked";
+const SUBAGENT_HOLD_EVENT = "atomic:workflow-dormant-run-subagent-hold";
 const SENDER = { id: "parent-after-restart", name: "parent", group: GROUP, groups: [GROUP], cwd: "/repo" };
 
 const cleanups: Array<() => void | Promise<void>> = [];
@@ -87,6 +88,13 @@ function restartedHost(cwd: string) {
 	const lifecycle = new Map<string, Array<(event: object, ctx: object) => unknown>>();
 	const listeners = new Map<string, Array<(payload: unknown) => void>>();
 	const routes: RouteAnnouncement[] = [];
+	/** What the subagents extension is asked to hold for the run, and what the run did with each hold. */
+	const subagentHolds: Array<{
+		readonly runId: string;
+		readonly group: string;
+		readonly stageSessionIds: readonly string[];
+		readonly releases: Array<{ readonly refusal: string | undefined }>;
+	}> = [];
 	const entries = [
 		{
 			id: "run-start",
@@ -113,6 +121,22 @@ function restartedHost(cwd: string) {
 					routes.push(structuredClone(payload) as unknown as RouteAnnouncement);
 					payload.completion = Promise.resolve();
 				}
+				if (name === SUBAGENT_HOLD_EVENT) {
+					const request = payload as { runId: string; group: string; stageSessionIds: string[] };
+					const hold = {
+						runId: request.runId,
+						group: request.group,
+						stageSessionIds: [...request.stageSessionIds],
+						releases: [] as Array<{ refusal: string | undefined }>,
+					};
+					subagentHolds.push(hold);
+					payload.completion = Promise.resolve({
+						ready: Promise.resolve(),
+						release: async (refusal?: string) => {
+							hold.releases.push({ refusal });
+						},
+					});
+				}
 				for (const listener of listeners.get(name) ?? []) listener(payload);
 			},
 		},
@@ -126,6 +150,7 @@ function restartedHost(cwd: string) {
 	return {
 		pi,
 		routes,
+		subagentHolds,
 		async start() {
 			for (const handler of lifecycle.get("session_start") ?? []) await handler({ reason: "startup" }, ctx);
 		},
@@ -398,3 +423,73 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
 }
+
+test("an interrupted run's stage subagents are held while it waits for resume, kept across its resume and released when it ends (#3760)", async () => {
+	const { cwd, sessionStore, backend, store, host } = await restartedSession();
+	assert.equal(host.subagentHolds.length, 1, "the run's subagents are held once, when the run becomes addressable");
+	const [hold] = host.subagentHolds;
+	assert.equal(hold?.runId, ROOT_RUN_ID);
+	assert.equal(hold?.group, GROUP);
+	const laneSession = backend
+		.listCheckpoints(ROOT_RUN_ID)
+		.find((checkpoint) => checkpoint.kind === "stage" && checkpoint.name === "lane");
+	assert.ok(laneSession?.kind === "stage" && laneSession.sessionId, "the lane stage has a session in the journal");
+	assert.deepEqual(hold?.stageSessionIds, [laneSession.sessionId]);
+	await host.send(`${GROUP}/lane`, "queued-while-dormant", "still one hold");
+	assert.equal(host.subagentHolds.length, 1, "queueing a message never asks for the holds again");
+	assert.equal(hold?.releases.length, 0);
+
+	const delivered: string[] = [];
+	const { runtime, jobs } = resumeRuntime(store, cwd, backend, sessionStore, delivered);
+	const laneMayStart = Promise.withResolvers<void>();
+	hooks.beforeLane = () => laneMayStart.promise;
+	cleanups.push(() => {
+		hooks.beforeLane = undefined;
+	});
+	const resumed = await runtime.resumeDurableWorkflow(ROOT_RUN_ID);
+	assert.equal(resumed.ok, true, resumed.ok ? undefined : resumed.message);
+	assert.equal(
+		hold?.releases.length,
+		0,
+		"the holds stay until the resumed stage restores its subagents and takes them over: ending them now would open a gap",
+	);
+	laneMayStart.resolve();
+	await jobs.get(ROOT_RUN_ID)?.promise;
+	assert.equal(store.runs().find((candidate) => candidate.id === ROOT_RUN_ID)?.status, "completed");
+	await waitFor(() => hold?.releases.length === 1);
+	assert.deepEqual(hold?.releases, [{ refusal: undefined }], "a finished run restores nothing more, so its holds end");
+});
+
+test("a revoked dormant route releases its subagent holds with the explicit resumed-elsewhere reason (#3760)", async () => {
+	const { host } = await restartedSession();
+	const announced = host.routes.find((route) => route.runId === ROOT_RUN_ID);
+	assert.ok(announced);
+	const [hold] = host.subagentHolds;
+	host.pi.events.emit(REVOKED_EVENT, { runId: ROOT_RUN_ID, capability: "another-process-capability" });
+	assert.equal(hold?.releases.length, 0, "a notice for another capability is not ours");
+	host.pi.events.emit(REVOKED_EVENT, { runId: ROOT_RUN_ID, capability: announced.capability });
+	await waitFor(() => hold?.releases.length === 1);
+	assert.match(hold?.releases[0]?.refusal ?? "", /was resumed in another Atomic session; send to it again there/);
+	assert.match(hold?.releases[0]?.refusal ?? "", new RegExp(ROOT_RUN_ID));
+});
+
+test("a dormant owner that finds another process holds the run's lease releases its subagent holds explicitly (#3760)", async () => {
+	const { backend, host } = await restartedSession();
+	await host.send(`${GROUP}/lane`, "before-takeover", "queued");
+	const [hold] = host.subagentHolds;
+	assert.equal(hold?.releases.length, 0);
+	const otherProcess = await JournalTestBackend.create(backend.databasePath);
+	await otherProcess.hydrateWorkflow(ROOT_RUN_ID);
+	await otherProcess.commitWorkflowStatus(ROOT_RUN_ID, "running");
+	await host.send(`${GROUP}/lane`, "after-takeover", "too late");
+	await waitFor(() => hold?.releases.length === 1);
+	assert.match(hold?.releases[0]?.refusal ?? "", /was resumed in another Atomic session/);
+});
+
+test("disposing the dormant routes releases their subagent holds without refusing anyone (#3760)", async () => {
+	const { host } = await restartedSession();
+	const [hold] = host.subagentHolds;
+	host.dormant.dispose();
+	await waitFor(() => hold?.releases.length === 1);
+	assert.deepEqual(hold?.releases, [{ refusal: undefined }]);
+});

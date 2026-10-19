@@ -8,6 +8,7 @@ import { queueStageMessage, queueStickyStageMessage } from "../shared/pending-st
 import { workflowPendingStageRouteCapability } from "../shared/pending-stage-route-capability.js";
 import { type SessionEntry, scanInFlightRuns } from "../shared/persistence-restore.js";
 import type { Store } from "../shared/store.js";
+import { isTerminalRunStatus } from "../shared/store-internal.js";
 import type {
 	PendingStageMessage,
 	PendingStageMessageInput,
@@ -24,6 +25,11 @@ const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
 const PENDING_STAGE_MESSAGE_EVENT = "atomic:workflow-pending-stage-message";
 /** Intercom → workflows: the process that resumed a dormant run took its routes over. */
 const PENDING_STAGE_ROUTE_REVOKED_EVENT = "atomic:workflow-pending-stage-route-revoked";
+/**
+ * Workflows → subagents: keep the background subagents of an interrupted run's stages addressable until `/workflow
+ * resume` restores them. The answer is the hold to end when the run is taken over by another process or ends.
+ */
+const DORMANT_RUN_SUBAGENT_HOLD_EVENT = "atomic:workflow-dormant-run-subagent-hold";
 /** How often a run whose crashed owner's lease has not expired yet is checked again. */
 const DORMANT_RUN_RECHECK_MS = 15_000;
 const ADDRESSABLE_STAGE_STATUSES: ReadonlySet<string> = new Set([
@@ -35,6 +41,12 @@ const ADDRESSABLE_STAGE_STATUSES: ReadonlySet<string> = new Set([
 ]);
 const DORMANT_ASK_REFUSAL =
 	"Cannot ask a stage of an interrupted workflow run. Use send; Atomic will queue the message until the run is resumed.";
+
+/** What the subagents extension hands back for an interrupted run: the holds on its stages' subagents. */
+interface DormantRunSubagentHold {
+	/** End every hold. With `refusal` the senders held now are told that reason, otherwise they are routed normally. */
+	release(refusal?: string): Promise<void>;
+}
 
 interface DormantRun {
 	readonly runId: string;
@@ -94,6 +106,12 @@ export interface DormantRunIntercom {
  * run's own journal. Resume seeds those entries into the run, and each stage drains
  * them exactly once when it goes live. The process that resumes the run takes the
  * route over; a dormant owner whose route was revoked stops answering for it.
+ *
+ * The background subagents that the run's stages launched are addressable too: sends to them are
+ * held by the broker until the resumed stage restores them. This session asks its subagents
+ * extension to hold them, from the `subagent-child` records in the stages' own sessions. When the
+ * run resumes here, each stage's restoration takes its holds over. A hold ends when another
+ * process takes the run over (its senders are told so), when the run ends, or with this session.
  */
 export function registerDormantRunIntercomRoutes(
 	pi: DormantRunSurface,
@@ -102,11 +120,50 @@ export function registerDormantRunIntercomRoutes(
 ): DormantRunIntercom {
 	const reportWarning = createWorkflowBackgroundWarningReporter(pi);
 	const dormant = new Map<string, DormantRun>();
+	/** The subagent holds of runs this session made addressable, for as long as the run can still restore them here. */
+	const subagentHolds = new Map<string, Promise<DormantRunSubagentHold | undefined>>();
 	let generation = 0;
 	let disposed = false;
 	let examined: Promise<void> = Promise.resolve();
 	let recheck: ReturnType<typeof setTimeout> | undefined;
 	const isLive = (runId: string): boolean => activeStore.runs().some((run) => run.id === runId);
+	const holdSubagents = (run: DormantRun, ctx: PiEventContext | undefined): void => {
+		const stageSessionIds = run.stages.flatMap((stage) => {
+			const sessionId =
+				stage.sessionId ??
+				(stage.replayKey === undefined
+					? undefined
+					: run.backend.getStageSession(run.runId, stage.replayKey)?.sessionId);
+			return sessionId === undefined ? [] : [sessionId];
+		});
+		if (stageSessionIds.length === 0) return;
+		const request: Record<string, unknown> & { completion?: Promise<DormantRunSubagentHold> } = {
+			runId: run.runId,
+			group: run.group,
+			stageSessionIds,
+			// The session whose store holds the stages' sessions; the subagents extension may not have seen its start yet.
+			...(ctx === undefined ? {} : { context: ctx }),
+		};
+		pi.events?.emit?.(DORMANT_RUN_SUBAGENT_HOLD_EVENT, request);
+		if (request.completion === undefined) return;
+		// A run is held once; a hold left from an earlier registration of it ends first.
+		releaseSubagents(run.runId);
+		subagentHolds.set(
+			run.runId,
+			request.completion.catch(() => undefined),
+		);
+	};
+	const releaseSubagents = (runId: string, refusal?: string): void => {
+		const pending = subagentHolds.get(runId);
+		if (pending === undefined) return;
+		subagentHolds.delete(runId);
+		void pending.then((hold) => hold?.release(refusal)).catch(() => undefined);
+	};
+	const releaseAllSubagents = (): void => {
+		for (const runId of [...subagentHolds.keys()]) releaseSubagents(runId);
+	};
+	const resumedElsewhereReason = (runId: string): string =>
+		`Workflow run ${runId} was resumed in another Atomic session; send to it again there`;
 	const clearRecheck = (): void => {
 		if (recheck !== undefined) clearTimeout(recheck);
 		recheck = undefined;
@@ -184,6 +241,7 @@ export function registerDormantRunIntercomRoutes(
 			};
 			dormant.set(runId, run);
 			announce(run);
+			holdSubagents(run, ctx);
 		}
 		if (held.length === 0 || Date.now() >= heldUntil || current !== generation || disposed) return;
 		recheck = setTimeout(() => {
@@ -200,6 +258,7 @@ export function registerDormantRunIntercomRoutes(
 		generation += 1;
 		clearRecheck();
 		dormant.clear();
+		releaseAllSubagents();
 		if (disposed || ctx?.isPresentationOnly === true) return;
 		const entries = (ctx?.sessionManager?.getEntries?.() ?? []) as readonly SessionEntry[];
 		const runIds = scanInFlightRuns(entries)
@@ -211,11 +270,20 @@ export function registerDormantRunIntercomRoutes(
 	const unsubscribeStore = activeStore.subscribeInvalidation(() => {
 		// A resumed run's live owner re-announces the same route; it is no longer dormant here.
 		for (const runId of dormant.keys()) if (isLive(runId)) dormant.delete(runId);
+		// A run resumed here keeps its subagent holds until each resumed stage restores its subagents and takes its hold
+		// over. A run that ended, or left the store, restores nothing more.
+		for (const runId of [...subagentHolds.keys()]) {
+			if (dormant.has(runId)) continue;
+			const resumed = activeStore.runs().find((run) => run.id === runId);
+			if (resumed === undefined || isTerminalRunStatus(resumed.status)) releaseSubagents(runId);
+		}
 	});
 	const revoked = pi.events?.on?.(PENDING_STAGE_ROUTE_REVOKED_EVENT, (payload) => {
 		const notice = payload as { readonly runId?: unknown; readonly capability?: unknown } | undefined;
 		if (typeof notice?.runId !== "string") return;
-		if (dormant.get(notice.runId)?.capability === notice.capability) dormant.delete(notice.runId);
+		if (dormant.get(notice.runId)?.capability !== notice.capability) return;
+		dormant.delete(notice.runId);
+		releaseSubagents(notice.runId, resumedElsewhereReason(notice.runId));
 	});
 
 	const redispatch = async (event: DormantMessageEvent): Promise<DormantMessageResult | unknown> => {
@@ -260,12 +328,13 @@ export function registerDormantRunIntercomRoutes(
 		payload.completion = queue(run, payload).catch((error: Error) => {
 			// Another process took the run's lease: it resumed the run and owns its routes now.
 			const resumedElsewhere = error instanceof JournalOwnershipError;
-			if (resumedElsewhere) dormant.delete(run.runId);
+			if (resumedElsewhere) {
+				dormant.delete(run.runId);
+				releaseSubagents(run.runId, resumedElsewhereReason(run.runId));
+			}
 			return {
 				outcome: "refused",
-				reason: resumedElsewhere
-					? `Workflow run ${run.runId} was resumed in another Atomic session; send to it again there`
-					: error.message,
+				reason: resumedElsewhere ? resumedElsewhereReason(run.runId) : error.message,
 			} satisfies DormantMessageResult;
 		});
 	});
@@ -274,6 +343,7 @@ export function registerDormantRunIntercomRoutes(
 		disposed = true;
 		clearRecheck();
 		dormant.clear();
+		releaseAllSubagents();
 		unsubscribeStore();
 		if (typeof revoked === "function") revoked();
 		if (typeof messages === "function") messages();
@@ -282,6 +352,7 @@ export function registerDormantRunIntercomRoutes(
 		generation += 1;
 		clearRecheck();
 		dormant.clear();
+		releaseAllSubagents();
 	});
 	return { settled: () => examined, dispose };
 }

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { resolveSessionStore } from "../../packages/coding-agent/src/core/session-storage.js";
 import type { SessionStore } from "../../packages/coding-agent/src/core/storage/session/types.js";
@@ -14,6 +14,10 @@ import registerSubagentExtension from "../../packages/subagents/src/extension/in
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import {
+	EARLY_CHILD_HOLD_MAX_MS,
+	holdRunningSubagentChildren,
+} from "../../packages/subagents/src/runs/foreground/subagent-child-hold.js";
+import {
 	createSubagentChildRecordSink,
 	readSubagentChildRecords,
 	SUBAGENT_CHILD_RECORD_TYPE,
@@ -21,15 +25,19 @@ import {
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import {
 	recordReportedGoneSubagentChildren,
+	restoredChildrenAwaitingIntercom,
 	restoreSubagentChild,
 	restoreSubagentChildren,
 	SUBAGENT_AWAIT_INTERCOM_PEER_EVENT,
 	SUBAGENT_RELEASE_RESTORING_CHILD_EVENT,
 	SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
+	SUBAGENT_RESTORED_INTERCOM_PEERS_EVENT,
 	SUBAGENT_RESUME_CONTINUATION_PROMPT,
 	type SubagentChildRestoreDeps,
 	type SubagentReleaseRestoringChildRequest,
 	type SubagentReserveRestoringChildRequest,
+	type SubagentRestoredIntercomPeer,
+	type SubagentRestoredIntercomPeersRequest,
 	subagentChildRestoreNotices,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-restore.js";
 import { runAgentTask } from "../../packages/subagents/src/runs/foreground/task-execution.js";
@@ -337,6 +345,257 @@ test("restoring a child reopens its own session under its original Intercom name
 
 		const [notice] = subagentChildRestoreNotices([outcome]);
 		assert.match(notice!, /`subagent-worker-lane1-1`.*relaunched from its own session.*live on Intercom/);
+	} finally {
+		await resumedHost.close("session-close");
+		removeTempDirectory(cwd);
+	}
+});
+
+test("a relaunched child that has not re-registered with Intercom is reported as still coming back until it settles (#3760)", async () => {
+	const cwd = makeTempDirectory("subagent-child-pending-peer-");
+	const resumedHost = taskHost("parent-after-restart");
+	try {
+		const parent = parentSession(cwd);
+		const original = await launchInterruptedChild(cwd, parent, "pend1");
+		const previousIntercomId = randomUUID();
+		const childSession = await SessionManager.open(original.childSessionFile!, undefined, cwd);
+		await childSession.appendCustomEntry("intercom_session_identity", {
+			sessionId: original.childSessionId,
+			intercomSessionId: previousIntercomId,
+		});
+		// Intercom never sees the relaunched child register.
+		const emitted = parent.pi.events.emit.bind(parent.pi.events);
+		parent.pi.events.emit = (channel: string, data: unknown) => {
+			if (channel === SUBAGENT_AWAIT_INTERCOM_PEER_EVENT) {
+				(data as { completion?: Promise<boolean> }).completion = Promise.resolve(false);
+				return;
+			}
+			emitted(channel, data);
+		};
+		const settle = Promise.withResolvers<void>();
+		const deps: SubagentChildRestoreDeps = {
+			pi: parent.pi,
+			config: {},
+			discoverAgents: () => ({ agents: [agent] }),
+			runtime: {
+				runSync: (...args) =>
+					runSync(args[0], args[1], args[2], args[3], {
+						...args[4],
+						testSession: { output: "resumed", promptGate: settle.promise },
+					}),
+			},
+		};
+		const ctx = parent.ctx(resumedHost);
+		const ownerSessionId = parent.sessionManager.getSessionId();
+		assert.deepEqual(restoredChildrenAwaitingIntercom(ownerSessionId), [], "nothing is relaunched yet");
+
+		const outcome = await restoreSubagentChild(deps, ctx, "pend1:0");
+		assert.equal(outcome.kind, "restored");
+		assert.equal(outcome.kind === "restored" && outcome.intercomLive, false);
+		const awaiting: SubagentRestoredIntercomPeer[] = [
+			{ name: "subagent-worker-pend1-1", ids: [original.childSessionId!, previousIntercomId] },
+		];
+		assert.deepEqual(restoredChildrenAwaitingIntercom(ownerSessionId), awaiting);
+		assert.deepEqual(
+			restoredChildrenAwaitingIntercom("another-session"),
+			[],
+			"another session's children are not reported",
+		);
+
+		// Intercom reaches the same answer through the subagents extension.
+		const listeners = new Map<string, Array<(payload: unknown) => void>>();
+		registerSubagentExtension({
+			registerTool: () => {},
+			registerCommand: () => {},
+			registerMessageRenderer: () => {},
+			sendMessage: () => {},
+			on: () => {},
+			events: {
+				on: (channel: string, listener: (payload: unknown) => void) => {
+					listeners.set(channel, [...(listeners.get(channel) ?? []), listener]);
+					return () => {};
+				},
+				emit: () => {},
+			},
+			getSessionName: () => "parent-session",
+		} as unknown as ExtensionAPI);
+		const request: SubagentRestoredIntercomPeersRequest = { ownerSessionId };
+		for (const listener of listeners.get(SUBAGENT_RESTORED_INTERCOM_PEERS_EVENT) ?? []) listener(request);
+		assert.deepEqual(await request.completion, awaiting);
+
+		settle.resolve();
+		await resumedHost.waitForTask(outcome.kind === "restored" ? (outcome.taskId as TaskId) : ("" as TaskId));
+		await vi.waitFor(() => assert.deepEqual(restoredChildrenAwaitingIntercom(ownerSessionId), []), {
+			timeout: RECORD_WAIT_MS,
+			interval: RECORD_POLL_MS,
+		});
+	} finally {
+		await resumedHost.close("session-close");
+		removeTempDirectory(cwd);
+	}
+});
+
+test("a resumed session holds its interrupted children's targets as soon as it starts, and its recovery takes the hold over under the same capability (#3760)", async () => {
+	const cwd = makeTempDirectory("subagent-child-early-hold-");
+	const resumedHost = taskHost("parent-after-restart");
+	try {
+		const parent = parentSession(cwd);
+		const original = await launchInterruptedChild(cwd, parent, "early1");
+		// A sibling finished before the restart; only early1 was interrupted.
+		await parent.pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, {
+			...original,
+			childId: "early2:0",
+			runId: "early2",
+			intercomTarget: "subagent-worker-early2-1",
+			state: "terminal",
+			terminalStatus: "completed",
+		});
+		parent.holds.length = 0;
+		parent.authorizations.length = 0;
+
+		const ctx = parent.ctx(resumedHost);
+		await holdRunningSubagentChildren(parent.pi.events as never, ctx);
+		assert.deepEqual(parent.authorizations, ["subagent-worker-early1-1"], "only the interrupted child is held");
+		assert.deepEqual(parent.holds, [
+			{ reserve: "fresh-capability-1", aliases: [original.childSessionId], group: "lane-group" },
+		]);
+		await holdRunningSubagentChildren(parent.pi.events as never, ctx);
+		assert.equal(parent.authorizations.length, 1, "holding again never authorizes the child twice");
+
+		const launched: RunSyncOptions[] = [];
+		const outcome = await restoreSubagentChild(restoreDeps(parent, launched), ctx, "early1:0");
+		assert.equal(outcome.kind, "restored");
+		assert.deepEqual(parent.authorizations, ["subagent-worker-early1-1"], "the restoration reuses the hold it found");
+		assert.equal(launched[0]?.supervisorAuthorization?.capability, "fresh-capability-1");
+		await resumedHost.waitForTask((outcome as { taskId: string }).taskId as TaskId);
+		assert.deepEqual(
+			parent.holds,
+			[
+				{ reserve: "fresh-capability-1", aliases: [original.childSessionId], group: "lane-group" },
+				{ reserve: "fresh-capability-1", aliases: [original.childSessionId], group: "lane-group" },
+				{ release: "fresh-capability-1" },
+			],
+			"the hold never lapses between session start and the child's end: the restoration refreshes it, it does not start over",
+		);
+	} finally {
+		await resumedHost.close("session-close");
+		removeTempDirectory(cwd);
+	}
+});
+
+test("a child that cannot be restored is told gone under the capability its hold was taken with at session start (#3760)", async () => {
+	const cwd = makeTempDirectory("subagent-child-early-gone-");
+	const resumedHost = taskHost("parent-after-restart");
+	try {
+		const parent = parentSession(cwd);
+		const original = await launchInterruptedChild(cwd, parent, "early3");
+		rmSync(original.childSessionFile!, { force: true });
+		parent.holds.length = 0;
+		parent.authorizations.length = 0;
+		const ctx = parent.ctx(resumedHost);
+		await holdRunningSubagentChildren(parent.pi.events as never, ctx);
+		const outcome = await restoreSubagentChild(restoreDeps(parent, []), ctx, "early3:0");
+		assert.equal(outcome.kind, "unrestorable");
+		assert.deepEqual(parent.authorizations, ["subagent-worker-early3-1"]);
+		assert.deepEqual(parent.holds.at(-1), {
+			release: "fresh-capability-1",
+			gone: "its session no longer exists in the session store",
+		});
+	} finally {
+		await resumedHost.close("session-close");
+		removeTempDirectory(cwd);
+	}
+});
+
+test("the subagents extension holds interrupted children when a session is opened and ends the holds with the session, but not after a reload or in a child (#3760)", async () => {
+	const cwd = makeTempDirectory("subagent-child-early-extension-");
+	const resumedHost = taskHost("parent-after-restart");
+	try {
+		const parent = parentSession(cwd);
+		const original = await launchInterruptedChild(cwd, parent, "early5");
+		parent.holds.length = 0;
+		parent.authorizations.length = 0;
+		const handlers = new Map<string, Array<(event: object, ctx: ExtensionContext) => unknown>>();
+		registerSubagentExtension({
+			registerTool: () => {},
+			registerCommand: () => {},
+			registerMessageRenderer: () => {},
+			sendMessage: () => {},
+			on: (event: string, handler: (event: object, ctx: ExtensionContext) => unknown) => {
+				handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+			},
+			events: parent.pi.events,
+			getSessionName: () => "parent-session",
+		} as unknown as ExtensionAPI);
+		const fire = async (event: string, payload: object, ctx: ExtensionContext) => {
+			for (const handler of handlers.get(event) ?? []) await handler(payload, ctx);
+		};
+		const ctx = parent.ctx(resumedHost);
+
+		await fire("session_start", { type: "session_start", reason: "reload" }, ctx);
+		await sleep(200);
+		assert.deepEqual(parent.authorizations, [], "after a reload the running children are alive: nothing is held");
+		const child = { ...ctx, subagentPolicy: { depth: 1 } } as ExtensionContext;
+		await fire("session_start", { type: "session_start", reason: "resume" }, child);
+		await sleep(200);
+		assert.deepEqual(parent.authorizations, [], "a subagent child never owns children");
+
+		await fire("session_start", { type: "session_start", reason: "resume" }, ctx);
+		await vi.waitFor(() => assert.deepEqual(parent.authorizations, ["subagent-worker-early5-1"]), {
+			timeout: RECORD_WAIT_MS,
+			interval: RECORD_POLL_MS,
+		});
+		await vi.waitFor(
+			() =>
+				assert.deepEqual(parent.holds[0], {
+					reserve: "fresh-capability-1",
+					aliases: [original.childSessionId],
+					group: "lane-group",
+				}),
+			{ timeout: RECORD_WAIT_MS, interval: RECORD_POLL_MS },
+		);
+
+		await fire("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
+		await vi.waitFor(() => assert.deepEqual(parent.holds.at(-1), { release: "fresh-capability-1" }), {
+			timeout: RECORD_WAIT_MS,
+			interval: RECORD_POLL_MS,
+		});
+	} finally {
+		await resumedHost.close("session-close");
+		removeTempDirectory(cwd);
+	}
+});
+
+test("a hold taken at session start that no recovery takes over ends instead of outliving the session or its host (#3760)", async () => {
+	const cwd = makeTempDirectory("subagent-child-early-expiry-");
+	const resumedHost = taskHost("parent-after-restart");
+	try {
+		const parent = parentSession(cwd);
+		await launchInterruptedChild(cwd, parent, "early4");
+		parent.holds.length = 0;
+		parent.authorizations.length = 0;
+		const ctx = parent.ctx(resumedHost);
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			const held = holdRunningSubagentChildren(parent.pi.events as never, ctx);
+			await vi.advanceTimersByTimeAsync(10);
+			await held;
+			assert.equal(parent.holds.length >= 1, true, "the child is held");
+			assert.equal(
+				parent.holds.some((hold) => "release" in hold),
+				false,
+			);
+			await vi.advanceTimersByTimeAsync(EARLY_CHILD_HOLD_MAX_MS - 1_000);
+			assert.equal(
+				parent.holds.some((hold) => "release" in hold),
+				false,
+				"still held while recovery may yet restore the child",
+			);
+			await vi.advanceTimersByTimeAsync(1_000);
+			assert.deepEqual(parent.holds.at(-1), { release: "fresh-capability-1" });
+		} finally {
+			vi.useRealTimers();
+		}
 	} finally {
 		await resumedHost.close("session-close");
 		removeTempDirectory(cwd);

@@ -940,22 +940,33 @@ export class IntercomClient extends EventEmitter {
   /**
    * #3760: hold sends to the child that `capability` (issued to this session by `authorizeSupervisorChild`)
    * names, and to its `aliases`, until the child registers with that capability. Calling again adds aliases.
+   * A `dormant` hold keeps the child addressable until the supervisor that restores it takes the hold over.
    */
-  reserveRestoringRecipient(capability: string, options: { group?: string; aliases?: readonly string[] } = {}): Promise<void> {
+  reserveRestoringRecipient(
+    capability: string,
+    options: { group?: string; aliases?: readonly string[]; dormant?: boolean } = {},
+  ): Promise<void> {
     return this.restoringRecipientRequest({
       type: "reserve_restoring_recipient",
       capability,
       ...(options.group === undefined ? {} : { group: options.group }),
       ...(options.aliases === undefined ? {} : { aliases: [...options.aliases] }),
+      ...(options.dormant === true ? { dormant: true } : {}),
     });
   }
 
-  /** #3760: end that hold. With `gone` (the reason), held and later senders are told the child is gone. */
-  releaseRestoringRecipient(capability: string, gone?: string): Promise<void> {
+  /**
+   * #3760: end that hold. With `gone` (the reason), held and later senders are told the child is gone. With
+   * `refusal`, the senders held now are told that reason and later sends are routed normally. With neither,
+   * held sends are routed normally.
+   */
+  releaseRestoringRecipient(capability: string, outcome?: string | { gone?: string; refusal?: string }): Promise<void> {
+    const { gone, refusal } = typeof outcome === "string" ? { gone: outcome, refusal: undefined } : (outcome ?? {});
     return this.restoringRecipientRequest({
       type: "release_restoring_recipient",
       capability,
       ...(gone === undefined ? {} : { gone }),
+      ...(refusal === undefined ? {} : { refusal }),
     });
   }
 

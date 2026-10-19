@@ -57,3 +57,113 @@ test("only senders that could reach the restored subagent, or its owner, are hel
 		"held sends are handed back in the order they arrived",
 	);
 });
+
+test("a dormant owner's reservation is handed to the supervisor that restores the child, keeping every held send once and in order (#3760)", () => {
+	const recipients = new RestoringRecipients(() => {});
+	recipients.reserve("dormant-capability", "launching-session", CHILD, "workflow:run", ["stage-session-id"], {
+		dormant: true,
+	});
+	assert.equal(
+		recipients.admit(CHILD, sender("third", ["workflow:run"]), send("before-1", "third"), true).kind,
+		"held",
+	);
+	assert.equal(
+		recipients.admit(
+			"stage-session-id",
+			sender("third", ["workflow:run"]),
+			send("before-2", "third", "stage-session-id"),
+			true,
+		).kind,
+		"held",
+	);
+
+	// The resumed stage's own connection reserves the same child under its own capability.
+	recipients.reserve("stage-capability", "stage-session", CHILD, "workflow:run", ["previous-intercom-id"]);
+	assert.equal(
+		recipients.admit(CHILD, sender("third", ["workflow:run"]), send("after-1", "third"), true).kind,
+		"held",
+	);
+	assert.deepEqual(
+		recipients.release("dormant-capability", "launching-session", undefined),
+		undefined,
+		"the dormant owner no longer holds anything for this child once the stage took it over",
+	);
+	assert.equal(
+		recipients.admit(
+			"previous-intercom-id",
+			sender("third", ["workflow:run"]),
+			send("after-2", "third", "previous-intercom-id"),
+			true,
+		).kind,
+		"held",
+		"the stage's reservation covers the dormant owner's targets and its own",
+	);
+	assert.deepEqual(
+		recipients.consume("stage-capability").map((held) => held.messageId),
+		["before-1", "before-2", "after-1", "after-2"],
+		"nothing held before, during or after the handover is lost or repeated",
+	);
+	assert.deepEqual(recipients.consume("dormant-capability"), []);
+});
+
+test("only a dormant reservation can be taken over by another supervisor of the same child and group (#3760)", () => {
+	const recipients = new RestoringRecipients(() => {});
+	recipients.reserve("live-capability", "restoring-owner", CHILD, "workflow:run", []);
+	assert.equal(recipients.admit(CHILD, sender("third", ["workflow:run"]), send("held-1", "third"), true).kind, "held");
+	recipients.reserve("rival-capability", "rival-owner", CHILD, "workflow:run", []);
+	assert.deepEqual(
+		recipients.consume("rival-capability"),
+		[],
+		"a live reservation keeps its held sends when another session reserves the same name",
+	);
+	assert.deepEqual(
+		recipients.consume("live-capability").map((held) => held.messageId),
+		["held-1"],
+	);
+
+	recipients.reserve("dormant-capability", "launching-session", CHILD, "workflow:run", [], { dormant: true });
+	assert.equal(recipients.admit(CHILD, sender("third", ["workflow:run"]), send("held-2", "third"), true).kind, "held");
+	recipients.reserve("elsewhere-capability", "other-owner", CHILD, "another-group", []);
+	assert.deepEqual(
+		recipients.consume("elsewhere-capability"),
+		[],
+		"a reservation for the same name in another group does not take over a dormant one",
+	);
+	assert.deepEqual(
+		recipients.release("dormant-capability", "launching-session", undefined)?.held.map((held) => held.messageId),
+		["held-2"],
+	);
+});
+
+test("an owner that ends a hold with a refusal gives its held senders that reason and leaves no gone marker (#3760)", () => {
+	const recipients = new RestoringRecipients(() => {});
+	recipients.reserve("capability", "owner", CHILD, "default", [], { dormant: true });
+	assert.equal(recipients.admit(CHILD, sender("third"), send("held-1", "third"), true).kind, "held");
+	const released = recipients.release("capability", "owner", undefined, "resumed in another Atomic session");
+	assert.deepEqual(
+		released?.held.map((held) => held.messageId),
+		["held-1"],
+	);
+	assert.equal(released?.refusal, "resumed in another Atomic session");
+	assert.equal(released?.gone, undefined);
+	assert.deepEqual(
+		recipients.admit(CHILD, sender("third"), send("later-1", "third"), true),
+		{ kind: "none" },
+		"later sends are routed normally instead of being told the child is gone",
+	);
+});
+
+test("a dormant reservation the restoring stage never replaced ends with the child's registration, delivering what it held once (#3760)", () => {
+	const recipients = new RestoringRecipients(() => {});
+	recipients.reserve("dormant-capability", "launching-session", CHILD, "workflow:run", [], { dormant: true });
+	assert.equal(recipients.admit(CHILD, sender("third", ["workflow:run"]), send("held-1", "third"), true).kind, "held");
+	assert.deepEqual(
+		recipients
+			.consume("stage-capability-never-reserved", { childName: CHILD, groups: new Set(["workflow:run"]) })
+			.map((held) => held.messageId),
+		["held-1"],
+	);
+	assert.deepEqual(recipients.admit(CHILD, sender("third", ["workflow:run"]), send("later", "third"), true), {
+		kind: "none",
+	});
+});

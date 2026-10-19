@@ -75,6 +75,52 @@ test("when Intercom is unreachable on resume, interrupted cards are deferred, no
 	assert.doesNotMatch(notice, /Do not reply/);
 });
 
+test("cards from a subagent that was relaunched but has not re-registered yet are deferred, not dropped, and it is not called gone (#3760)", () => {
+	const relaunched = [{ name: "subagent-worker-run1-1", ids: ["child-atomic-session-id", "old-broker-id"] }];
+	const byName = card("by-name", peer("Subagent-Worker-Run1-1", "some-other-id"), "lane 1 progress");
+	const byPreviousId = card("by-id", peer("renamed-since", "old-broker-id"), "lane 1 finished");
+	const gone = card("gone", peer("subagent-worker-run1-2"), "stale instruction");
+	const live = card("live", peer("subagent-worker-run1-3", "live-broker-id"), "all good");
+	const plan = planIntercomRecoveryReplay(
+		[byName, byPreviousId, gone, live],
+		[peer("subagent-worker-run1-3", "live-broker-id")],
+		relaunched,
+	);
+	assert.deepEqual(plan.decisions, [
+		{ entryId: "by-name", action: "defer" },
+		{ entryId: "by-id", action: "defer" },
+		{ entryId: "gone", action: "drop" },
+		{ entryId: "live", action: "replay" },
+	]);
+	const notices = plan.notices ?? [];
+	assert.equal(notices.length, 3, "one notice per kind of outcome: gone, and the two senders still reconnecting");
+	assert.equal(notices.filter((notice) => /is gone/.test(notice)).length, 1);
+	assert.match(notices.find((notice) => /is gone/.test(notice)) ?? "", /`subagent-worker-run1-2`/);
+	const reconnecting = notices.filter((notice) => /has not reconnected to Intercom yet/.test(notice));
+	assert.equal(reconnecting.length, 2);
+	for (const notice of reconnecting) {
+		assert.match(notice, /was relaunched after the restart/);
+		assert.match(notice, /deferred: not replayed now and not discarded/);
+		assert.match(notice, /It is not gone/);
+		assert.doesNotMatch(notice, /launch a fresh subagent/);
+	}
+});
+
+test("a relaunched subagent that registered in time replays and one that is neither live nor relaunched is gone (#3760)", () => {
+	const plan = planIntercomRecoveryReplay(
+		[
+			card("registered", peer("subagent-worker-run1-1", "reclaimed-id"), "done"),
+			card("other", peer("subagent-worker-run1-2"), "stale"),
+		],
+		[peer("subagent-worker-run1-1", "reclaimed-id")],
+		[],
+	);
+	assert.deepEqual(plan.decisions, [
+		{ entryId: "registered", action: "replay" },
+		{ entryId: "other", action: "drop" },
+	]);
+});
+
 test("Intercom leaves other recovery deliveries and local subagent relays to their owners (#3760)", () => {
 	const relay = card("relay", { ...peer("subagent-result"), id: "subagent-result" }, "result text");
 	const other: PendingRecoveryDelivery = { ...card("heartbeat", peer("x"), "beat"), customType: "workflow-heartbeat" };

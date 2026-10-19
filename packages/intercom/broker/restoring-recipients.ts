@@ -28,6 +28,12 @@ interface Reservation {
 	readonly ownerSessionId: string;
 	readonly childName: string;
 	group: string;
+	/**
+	 * Made by a session that is only keeping the child addressable until the session that will really restore it
+	 * is back, such as the launching session of an interrupted workflow run. The restoring supervisor of the
+	 * same child and group takes it over with its held sends.
+	 */
+	dormant: boolean;
 	readonly targets: Set<string>;
 	/** Set once the owner reports the child gone; held and later senders get this refusal. */
 	gone?: string;
@@ -54,27 +60,45 @@ export function goneRecipientReason(childName: string, reason: string): string {
  * child registers with that capability and every held send is dispatched again, once and in order; the owner
  * reports the child gone and held and later senders get the gone refusal; or the hold times out and the sender
  * is told to try again. Reservations end when their owner disconnects.
+ *
+ * A reservation can start before the restore does: a resumed session reserves its recorded children at session
+ * start, and the launching session of an interrupted workflow run reserves the children of the run's stages while
+ * the run waits for `/workflow resume`. The restoring supervisor's own reservation of the same child then takes
+ * the earlier one over, so a send is held from the first moment until the child is back, without a gap.
  */
 export class RestoringRecipients {
 	private readonly reservations = new Map<string, Reservation>();
 
 	constructor(private readonly onExpired: (held: HeldSend, reason: string) => void) {}
 
-	/** Reserve, or add targets to, the reservation for the child this capability authorizes. */
+	/**
+	 * Reserve, or add targets to, the reservation for the child this capability authorizes. `group` is normalized.
+	 * A `dormant` reservation may be taken over by the supervisor that restores the child.
+	 */
 	reserve(
 		capability: string,
 		ownerSessionId: string,
 		childName: string,
 		group: string,
 		aliases: readonly string[],
+		options: { readonly dormant?: boolean } = {},
 	): void {
+		const dormant = options.dormant === true;
 		let reservation = this.reservations.get(capability);
 		if (reservation === undefined) {
-			reservation = { ownerSessionId, childName, group, targets: new Set([normalizeTarget(childName)]), held: new Map() };
-			// A newer restoration of the same child replaces the owner's earlier reservation, gone marker included.
+			reservation = {
+				ownerSessionId,
+				childName,
+				group,
+				dormant,
+				targets: new Set([normalizeTarget(childName)]),
+				held: new Map(),
+			};
+			// A newer restoration of the same child replaces its owner's earlier reservation, gone marker included,
+			// and a dormant owner's reservation of that child and group, whoever restores it.
 			for (const [other, previous] of this.reservations) {
-				if (previous.ownerSessionId !== ownerSessionId || normalizeTarget(previous.childName) !== normalizeTarget(childName))
-					continue;
+				if (normalizeTarget(previous.childName) !== normalizeTarget(childName)) continue;
+				if (previous.ownerSessionId !== ownerSessionId && !(previous.dormant && previous.group === group)) continue;
 				this.reservations.delete(other);
 				for (const target of previous.targets) reservation.targets.add(target);
 				for (const [held, timer] of previous.held) reservation.held.set(held, timer);
@@ -82,6 +106,7 @@ export class RestoringRecipients {
 			this.reservations.set(capability, reservation);
 		}
 		reservation.group = group;
+		reservation.dormant = dormant;
 		for (const alias of aliases) {
 			const target = normalizeTarget(alias);
 			if (target && reservation.targets.size < MAX_RESERVED_TARGETS) reservation.targets.add(target);
@@ -124,30 +149,49 @@ export class RestoringRecipients {
 	 * The child registered under this capability: end its reservation and return the sends held for it, in the
 	 * order they arrived. Each is routed again as it was addressed, so it reaches the child only through a name or
 	 * id the child really registered with, never merely because the owner listed it as an alias.
+	 *
+	 * `registered` names the child that registered. A dormant reservation of that child and group that no
+	 * restoring supervisor took over (it restored the child without reserving first) ends with it too.
 	 */
-	consume(capability: string): HeldSend[] {
+	consume(
+		capability: string,
+		registered?: { readonly childName: string; readonly groups: ReadonlySet<string> },
+	): HeldSend[] {
+		const held: HeldSend[] = [];
 		const reservation = this.reservations.get(capability);
-		if (reservation === undefined || reservation.gone !== undefined) return [];
-		this.reservations.delete(capability);
-		return this.take(reservation);
+		if (reservation !== undefined && reservation.gone === undefined) {
+			this.reservations.delete(capability);
+			held.push(...this.take(reservation));
+		}
+		if (registered === undefined) return held;
+		const name = normalizeTarget(registered.childName);
+		for (const [other, orphan] of this.reservations) {
+			if (!orphan.dormant || orphan.gone !== undefined || normalizeTarget(orphan.childName) !== name) continue;
+			if (!hasGroup(registered.groups, orphan.group)) continue;
+			this.reservations.delete(other);
+			held.push(...this.take(orphan));
+		}
+		return held;
 	}
 
 	/**
 	 * The owner ended its reservation. With `goneReason` the reservation stays as a gone marker and the held
-	 * sends are returned with the gone refusal; without it the reservation ends and the held sends are returned
-	 * for ordinary routing. Undefined when this owner holds no such reservation.
+	 * sends are returned with the gone refusal. Without it the reservation ends: the held sends are returned with
+	 * the owner's `refusal` when it gave one (the child is coming back elsewhere), otherwise for ordinary routing.
+	 * Undefined when this owner holds no such reservation.
 	 */
 	release(
 		capability: string,
 		ownerSessionId: string,
 		goneReason: string | undefined,
-	): { readonly held: HeldSend[]; readonly gone?: string } | undefined {
+		refusal?: string,
+	): { readonly held: HeldSend[]; readonly gone?: string; readonly refusal?: string } | undefined {
 		const reservation = this.reservations.get(capability);
 		if (reservation === undefined || reservation.ownerSessionId !== ownerSessionId) return undefined;
 		const held = this.take(reservation);
 		if (goneReason === undefined) {
 			this.reservations.delete(capability);
-			return { held };
+			return refusal === undefined ? { held } : { held, refusal };
 		}
 		reservation.gone = goneRecipientReason(reservation.childName, goneReason);
 		return { held, gone: reservation.gone };

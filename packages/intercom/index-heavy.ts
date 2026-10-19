@@ -1175,6 +1175,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       activeClient.reserveRestoringRecipient(request.capability, {
         ...(request.group === undefined ? {} : { group: request.group }),
         aliases: request.aliases,
+        ...(request.dormant === true ? { dormant: true } : {}),
       }),
     );
   });
@@ -1184,7 +1185,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     // A reservation ends with the connection that made it, so a disconnected client has nothing to release.
     const activeClient = client;
     request.completion = activeClient?.isConnected()
-      ? activeClient.releaseRestoringRecipient(request.capability, request.gone)
+      ? activeClient.releaseRestoringRecipient(request.capability, {
+          ...(request.gone === undefined ? {} : { gone: request.gone }),
+          ...(request.refusal === undefined ? {} : { refusal: request.refusal }),
+        })
       : Promise.resolve();
   });
 

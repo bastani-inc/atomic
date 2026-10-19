@@ -145,12 +145,18 @@ export type ClientMessage =
 	| { type: "leave_group"; requestId: string; group?: string }
   | { type: "authorize_supervisor"; requestId: string; childName: string; capability?: string }
   /**
-   * #3760: the supervisor that holds `capability` for a child it is restoring holds sends to that child's name and
-   * `aliases` (its Atomic session id and pre-restart Intercom id) until the child registers with the capability.
+   * #3760: the supervisor that holds `capability` for a child it is restoring, or is about to restore, holds sends to
+   * that child's name and `aliases` (its Atomic session id and pre-restart Intercom id) until the child registers
+   * with the capability. A `dormant` hold only keeps the child addressable until the supervisor that restores it
+   * reserves the same child and group, which takes the hold over together with the sends held so far.
    */
-  | { type: "reserve_restoring_recipient"; requestId: string; capability: string; group?: string; aliases?: string[] }
-  /** #3760: end that hold; with `gone` (the reason), held and later senders are told the child is gone. */
-  | { type: "release_restoring_recipient"; requestId: string; capability: string; gone?: string }
+  | { type: "reserve_restoring_recipient"; requestId: string; capability: string; group?: string; aliases?: string[]; dormant?: boolean }
+  /**
+   * #3760: end that hold. With `gone` (the reason), held and later senders are told the child is gone. With `refusal`,
+   * the senders held now are told that reason instead and later ones are routed normally. Otherwise held sends are
+   * routed normally.
+   */
+  | { type: "release_restoring_recipient"; requestId: string; capability: string; gone?: string; refusal?: string }
   | {
       type: "send" | "supervisor_send";
       to: string;
