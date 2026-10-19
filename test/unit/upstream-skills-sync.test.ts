@@ -68,7 +68,7 @@ const cuaDriverTree = ["SKILL.md", ...cuaDriverCompanionTree.map(([path]) => pat
 const cuaDriverUpstreamSkillBodySha256 = "184cd87dfe39c322c411ef4ad88e12a3da6f689344b3d0046d77bf1748bca5a0";
 
 // pbakaus/impeccable authoritative `.pi/skills/impeccable` distribution:
-// skill-v4.5.2 at d631a8827f99414d2b6daba4ef08b7f8701751d7 (engine 0.1.14)
+// skill-v4.7.0 at aeeb3d8c30b5f95aeeb3e893b0f1a308af8fdb8f (engine 0.1.16)
 // prior skill-v4.1.1 `.agents` distribution at 5a149f3fdb1b5793f10567233b1dcab98fc305fd
 //
 // `scripts/bin/<os>-<arch>/` is deliberately absent: the engine binary is
@@ -135,7 +135,7 @@ scripts/modern-screenshot.umd.js
 	.trim()
 	.split("\n");
 const impeccableExecutables = new Set(["scripts/impeccable"]);
-const IMPECCABLE_ENGINE_VERSION = "0.1.14";
+const IMPECCABLE_ENGINE_VERSION = "0.1.16";
 
 function sha256(contents: string | Buffer): string {
 	return createHash("sha256").update(contents).digest("hex");
@@ -307,7 +307,7 @@ describe("synced upstream skill trees", () => {
 			"scripts/live-browser-ignores.js",
 			"scripts/modern-screenshot.umd.js",
 		]);
-		assert.match(readFileSync(join(workflowSkills, "impeccable/SKILL.md"), "utf8"), /^version: 4\.5\.2\r?$/m);
+		assert.match(readFileSync(join(workflowSkills, "impeccable/SKILL.md"), "utf8"), /^version: 4\.7\.0\r?$/m);
 		assert.equal(
 			readFileSync(join(workflowSkills, "impeccable/scripts/VERSION"), "utf8").trim(),
 			IMPECCABLE_ENGINE_VERSION,
@@ -343,7 +343,7 @@ describe("synced upstream skill trees", () => {
 		]);
 	});
 
-	test("ships the exact Impeccable 4.5.2 tree with the pi distribution's launcher paths and modes", () => {
+	test("ships the exact Impeccable 4.7.0 tree with the pi distribution's launcher paths and modes", () => {
 		const skillRoot = join(workflowSkills, "impeccable");
 		assert.deepEqual(collectFiles(skillRoot, [], skillRoot).sort(), [...impeccableTree]);
 		// The `.pi` distribution names the launcher by its pi-native skill path and
@@ -354,8 +354,8 @@ describe("synced upstream skill trees", () => {
 		for (const [key, value] of [
 			["github-repo", "https://github.com/pbakaus/impeccable"],
 			["github-path", ".pi/skills/impeccable"],
-			["github-ref", "refs/tags/skill-v4.5.2"],
-			["github-tree-sha", "b8337bb1f0256bf3ed6231552d4e2cb5e8eb0223"],
+			["github-ref", "refs/tags/skill-v4.7.0"],
+			["github-tree-sha", "f90e37ea2e9987475f4bdc263cf9d60499dba0ec"],
 		] as const) {
 			assert.ok(frontmatter.split("\n").includes(`    ${key}: ${value}`));
 		}
@@ -567,13 +567,16 @@ describe("synced upstream skill trees", () => {
 	test("keeps synced live-preview session ids on the CSPRNG outside secure contexts", () => {
 		const dom = readFileSync(join(workflowSkills, "impeccable/scripts/live-browser-dom.js"), "utf8");
 		const session = readFileSync(join(workflowSkills, "impeccable/scripts/live-browser-session.js"), "utf8");
-		// Upstream's insecure-context fallback (plain-http LAN preview) draws these
-		// ids from Math.random; they name live-edit sessions, so Atomic keeps the
-		// CodeQL js/insecure-randomness fix from the 4.1.1 sync on both helpers.
+		// Upstream's last-resort fallback (no usable crypto) still draws these ids
+		// from Math.random, including the randomUUID helper 4.7.0 added to the
+		// session script; they name live-edit sessions, so Atomic keeps the CodeQL
+		// js/insecure-randomness fix from the 4.1.1 sync on id8, makeId, and
+		// randomUUID. Any Math.random call in either script fails the check.
 		assert.match(dom, /crypto\.getRandomValues\(new Uint8Array\(4\)\)/u, "id8 lost its CSPRNG fallback");
-		assert.doesNotMatch(dom, /Math\.random\(\)\.toString\(16\)/u, "id8 fell back to Math.random");
+		assert.doesNotMatch(dom, /Math\.random\(/u, "id8 fell back to Math.random");
 		assert.match(session, /\(root\.crypto \|\| crypto\)\.getRandomValues\(new Uint8Array\(4\)\)/u);
-		assert.doesNotMatch(session, /Math\.random\(\)\.toString\(16\)\.slice\(2, 10\)/u);
+		assert.match(session, /\(c \|\| crypto\)\.getRandomValues\(bytes\)/u, "randomUUID lost its CSPRNG fill");
+		assert.doesNotMatch(session, /Math\.random\(/u, "a session id helper fell back to Math.random");
 	});
 
 	test("keeps the vendored Impeccable launchers offline by default", () => {

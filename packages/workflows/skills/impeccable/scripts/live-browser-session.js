@@ -8,6 +8,30 @@
 (function (root) {
   'use strict';
 
+  // crypto.randomUUID() exists only in secure contexts (HTTPS, localhost), so a
+  // dev site on a LAN IP, a Tailscale address, or a custom hostname over plain
+  // HTTP has no randomUUID at all (issue #1055). getRandomValues() is available
+  // in every context, so the fallback still draws from the CSPRNG: the upstream
+  // Math.random last resort is the insecure-randomness class CodeQL flagged in
+  // the id8 helper, and these ids name live-edit sessions.
+  function randomUUID(cryptoImpl) {
+    const c = cryptoImpl === undefined ? root.crypto : cryptoImpl;
+    try {
+      if (c && typeof c.randomUUID === 'function') return c.randomUUID();
+    } catch { /* fall through to getRandomValues */ }
+    const bytes = new Uint8Array(16);
+    (c || crypto).getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC 4122 variant
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+    return hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16)
+      + '-' + hex.slice(16, 20) + '-' + hex.slice(20);
+  }
+
+  function randomId8(cryptoImpl) {
+    return randomUUID(cryptoImpl).replace(/-/g, '').slice(0, 8);
+  }
+
   function createLiveBrowserSessionState({ prefix, storage, idFactory }) {
     if (!prefix) throw new Error('prefix required');
     const store = storage || root.localStorage;
@@ -150,5 +174,5 @@
     };
   }
 
-  root.__IMPECCABLE_LIVE_SESSION__ = { createLiveBrowserSessionState };
+  root.__IMPECCABLE_LIVE_SESSION__ = { createLiveBrowserSessionState, randomUUID, randomId8 };
 })(typeof window !== 'undefined' ? window : globalThis);

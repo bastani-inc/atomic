@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Updated the bundled Impeccable skill to 4.7.0 with engine 0.1.16. Critique and audit can scan a running Electron, NW.js, CEF, or WebView2 app window through its debugging port (`impeccable detect --cdp 9222`), and critique runs its design review on iOS, Android, and adaptive projects instead of reporting an empty web scan as clean. New `straggler` and `unbalanced-heading` typography checks flag a paragraph ending on one word and a heading whose last line is a stub, and the detector raises fewer false alarms on hidden, screen-reader-only, and layered content. Decision and review pages follow the OS dark mode, `context` offers only workspaces that render a UI as targets, and the Claude Code design hook can be installed in your user settings instead of the project's. Live Mode now starts on LAN and Tailscale addresses over plain HTTP, copying works there when the clipboard API is unavailable, and an interrupted engine download cleans up after itself. Atomic's launcher still turns off the engine's choice reports and update check by default.
+
 ### Fixed
 
 - Resuming a workflow restores the background subagents its stages launched and delivers the stages' interrupted messages before the stage continues. Both happen visibly in the stage, and stages stay addressable at the same `workflow:<rootRunId>/...` targets ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
