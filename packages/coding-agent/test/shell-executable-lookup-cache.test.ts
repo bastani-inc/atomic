@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const spawnSync = vi.hoisted(() => vi.fn());
@@ -23,6 +24,7 @@ describe("PowerShell executable lookup", () => {
 		Object.defineProperty(process, "platform", platform);
 		process.env.PATH = originalPath;
 		vi.useRealTimers();
+		vi.unstubAllEnvs();
 	});
 
 	it("resolves PowerShell with one synchronous PATH lookup per PATH value", () => {
@@ -44,14 +46,17 @@ describe("PowerShell executable lookup", () => {
 	it("finds PowerShell installed after a missed lookup without a PATH change", () => {
 		vi.useFakeTimers();
 		process.env.PATH = "C:\\install-later-path";
+		// Hide the installation-directory fallbacks so a host with PowerShell installed still misses.
+		vi.stubEnv("ProgramFiles", undefined);
+		vi.stubEnv("SystemRoot", undefined);
 		spawnSync.mockReturnValue({ status: 1, stdout: "" });
-		expect(() => getPowerShellConfig()).toThrow(/No PowerShell executable found/);
+		assert.throws(() => getPowerShellConfig(), /No PowerShell executable found/);
 		const missedLookups = spawnSync.mock.calls.length;
-		expect(() => getPowerShellConfig()).toThrow(/No PowerShell executable found/);
-		expect(spawnSync).toHaveBeenCalledTimes(missedLookups);
+		assert.throws(() => getPowerShellConfig(), /No PowerShell executable found/);
+		assert.equal(spawnSync.mock.calls.length, missedLookups);
 
 		spawnSync.mockReturnValue({ status: 0, stdout: `${process.execPath}\r\n` });
 		vi.advanceTimersByTime(30_000);
-		expect(getPowerShellConfig().shell).toBe(process.execPath);
+		assert.equal(getPowerShellConfig().shell, process.execPath);
 	});
 });

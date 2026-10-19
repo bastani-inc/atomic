@@ -1,4 +1,6 @@
+import assert from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
+import { classify } from "../src/api/cloudflare-workers-ai-system-one.js";
 import { createModels } from "../src/models.ts";
 import { getBuiltinClassifierModel } from "../src/providers/all.ts";
 import { cloudflareWorkersAIProvider } from "../src/providers/cloudflare-workers-ai.ts";
@@ -100,6 +102,29 @@ describe("Cloudflare Workers AI System One", () => {
 		expect(result.stopReason).toBe("stop");
 		expect(result.answers.is_urgent).toEqual({ type: "bool", probability: 0.95 });
 		expect(result.answers.department).toMatchObject({ type: "choice", choice: "billing", confidence: 0.8 });
+	});
+
+	it("rejects images and sends no TypeSafe Danger-Zone headers", async () => {
+		const { models, jev } = setup();
+		const headers: Headers[] = [];
+		const fetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+			headers.push(new Headers(init?.headers));
+			return Response.json(restResponse("Completed"));
+		});
+
+		const textOnly = await models.classify(jev, context, { ...auth, fetch });
+		const withImage = await classify(
+			{ ...jev, input: ["text", "image"] },
+			{ ...context, images: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] },
+			{ ...auth, fetch },
+		);
+
+		assert.equal(textOnly.stopReason, "stop");
+		assert.equal(headers.length, 1);
+		assert.equal(headers[0]?.has("typesafe-danger-zone-long-context"), false);
+		assert.equal(headers[0]?.has("typesafe-danger-zone-images"), false);
+		assert.equal(withImage.stopReason, "error");
+		assert.equal(withImage.errorMessage, "Cloudflare Workers AI does not support image input");
 	});
 
 	it.each([
