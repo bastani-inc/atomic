@@ -269,6 +269,7 @@ async function relaunchChild(
 		currentThinkingLevel: ctx.thinkingLevel,
 	};
 	ctx.orchestrationContext?.messageAdmission?.boundary.registerOwnedSubagentRun(record.runId);
+	const recordChild = createSubagentChildRecordSink(deps.pi, ctx);
 	const response = await runAgentTask({
 		host: ctx.getAgentTaskHost(),
 		cwd: ctx.cwd,
@@ -279,7 +280,8 @@ async function relaunchChild(
 		options,
 		wait: { kind: "background" },
 		runtime: resolveSubagentExecutorRuntimeDeps(deps.runtime),
-		recordChild: createSubagentChildRecordSink(deps.pi, ctx),
+		recordChild,
+		recordAdmission: true,
 		onTerminal: () => {
 			release();
 			// Normally the child consumed the hold when it registered; one that never did must not keep it.
@@ -290,6 +292,8 @@ async function relaunchChild(
 		release();
 		return unrestorable(`relaunch was refused: ${response.reason.error.message}`);
 	}
+	// Pause or quit right after this returns must find the child under its new task id.
+	await recordChild.flushed?.();
 	const intercomLive =
 		record.intercomTarget && supervisorAuthorization
 			? await awaitIntercomPeer(deps.pi.events, record.intercomTarget, intercomGroup)

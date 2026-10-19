@@ -205,6 +205,11 @@ export async function runAgentTask(input: {
 	schedule?: (dispatch: () => Promise<void>) => void;
 	outputText?: (result: SingleResult) => string;
 	recordChild?: SubagentChildRecordSink;
+	/**
+	 * Record the child running under its new task id once the host admits it. A restored child already has a record,
+	 * and run control must not read its previous task id as the child's.
+	 */
+	recordAdmission?: boolean;
 	/** Launch operation id; a resumed child needs a fresh one, since the host replays a repeated operation. */
 	operation?: string;
 }): Promise<ModelSingleResponse> {
@@ -212,6 +217,26 @@ export async function runAgentTask(input: {
 	let pendingYield = false;
 	let parentObserving = input.wait?.kind === "foreground";
 	const registered = Promise.withResolvers<void>();
+	const childCwd = input.options.cwd ?? input.cwd;
+	let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile"> = {};
+	let childLaunch: Pick<SubagentChildRecordInput, "launchModel" | "launchThinkingLevel" | "launchLeafId"> = {};
+	const recordChildTask = (taskId: TaskId, state: SubagentChildRecordInput["state"], terminalStatus?: string) =>
+		input.recordChild?.record({
+			runId: input.options.runId,
+			index: input.options.index ?? 0,
+			agent: input.agent,
+			state,
+			cwd: childCwd,
+			taskId,
+			...childSession,
+			...childLaunch,
+			...(input.options.intercomSessionName ? { intercomTarget: input.options.intercomSessionName } : {}),
+			...(input.options.intercomGroup ? { intercomGroup: input.options.intercomGroup } : {}),
+			...(input.options.orchestratorIntercomTarget
+				? { orchestratorTarget: input.options.orchestratorIntercomTarget }
+				: {}),
+			...(terminalStatus ? { terminalStatus } : {}),
+		});
 	input.options.modelRoute?.assertCurrent();
 	const started = await input.host.startAgentTask(
 		{
@@ -225,28 +250,10 @@ export async function runAgentTask(input: {
 		(context) => {
 			const cleaned = Promise.withResolvers<Cleanup>();
 			let executionBound = false;
-			const childCwd = input.options.cwd ?? input.cwd;
 			const ownerClosed = () =>
 				context.signal.aborted && (context.signal.reason === "owner-close" || context.signal.reason === "shutdown");
-			let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile"> = {};
-			let childLaunch: Pick<SubagentChildRecordInput, "launchModel" | "launchThinkingLevel" | "launchLeafId"> = {};
 			const recordChild = (state: SubagentChildRecordInput["state"], terminalStatus?: string) =>
-				input.recordChild?.record({
-					runId: input.options.runId,
-					index: input.options.index ?? 0,
-					agent: input.agent,
-					state,
-					cwd: childCwd,
-					taskId: context.ref.taskId,
-					...childSession,
-					...childLaunch,
-					...(input.options.intercomSessionName ? { intercomTarget: input.options.intercomSessionName } : {}),
-					...(input.options.intercomGroup ? { intercomGroup: input.options.intercomGroup } : {}),
-					...(input.options.orchestratorIntercomTarget
-						? { orchestratorTarget: input.options.orchestratorIntercomTarget }
-						: {}),
-					...(terminalStatus ? { terminalStatus } : {}),
-				});
+				recordChildTask(context.ref.taskId, state, terminalStatus);
 			const result = registered.promise.then(async (): Promise<TaskResult> => {
 				try {
 					input.options.modelRoute?.assertCurrent();
@@ -378,6 +385,8 @@ export async function runAgentTask(input: {
 		input.schedule,
 	);
 	if (!started.ok) return { kind: "unstarted", reason: { kind: "rejected", error: started.error } };
+	// Its execution waits for `registered`, so nothing it records can precede this.
+	if (input.recordAdmission) recordChildTask(started.value.taskId, "running");
 	// A queued execution has no runSync listener yet. Release its observation too,
 	// without spending a concurrency slot or cancelling its owner-bound execution.
 	const yieldForIntercom = () => {

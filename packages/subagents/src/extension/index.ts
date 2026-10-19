@@ -24,7 +24,7 @@ import {
 import { discoverAgents } from "../agents/agents.js";
 import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/foreground/notify.js";
 import { bindSubagentChildCards } from "../runs/foreground/subagent-child-card-state.js";
-import { subagentChildOwner } from "../runs/foreground/subagent-child-records.js";
+import { subagentChildOwner, watchWorkflowStageSubagentChildren } from "../runs/foreground/subagent-child-records.js";
 import {
 	awaitSubagentChildRestoration,
 	holdDormantRunSubagentChildren,
@@ -475,8 +475,11 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			// recovery has restored them (#3760). Recovery takes these holds over; this never blocks session start. Only
 			// a session that was just opened has interrupted children: after a reload its running children are alive.
 			const opened = event.reason === "startup" || event.reason === "resume";
-			if (opened && !isSubagentChildSession(ctx) && ctx.isPresentationOnly !== true)
-				void holdRunningSubagentChildren(pi.events, ctx).catch(() => undefined);
+			if (!isSubagentChildSession(ctx) && ctx.isPresentationOnly !== true) {
+				// Children a workflow stage launched in earlier generations end with it too when it closes for good.
+				watchWorkflowStageSubagentChildren(pi, ctx);
+				if (opened) void holdRunningSubagentChildren(pi.events, ctx).catch(() => undefined);
+			}
 		});
 		pi.on("session_recovery_restore", async (_event, ctx) => {
 			// Subagent children never own children; workflow stages carry a policy but do (#3760).

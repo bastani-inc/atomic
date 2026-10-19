@@ -120,10 +120,12 @@ function resolveRecord(
 	return undefined;
 }
 
-function isPausedOrQuit(record: SubagentChildRecord): record is SubagentChildRecord & {
-	terminalStatus: SubagentChildStopStatus;
-} {
-	return record.state === "terminal" && (record.terminalStatus === "paused" || record.terminalStatus === "quit");
+/** How a settled child already stands for pause and quit: a child its workflow stage's pause stopped counts as paused. */
+function stoppedAs(record: SubagentChildRecord): SubagentChildStopStatus | undefined {
+	if (record.state !== "terminal") return undefined;
+	if (record.terminalStatus === "paused" || record.terminalStatus === SUBAGENT_CHILD_STAGE_PAUSED_STATUS)
+		return "paused";
+	return record.terminalStatus === "quit" ? "quit" : undefined;
 }
 
 async function waitForSettlement(host: AgentTaskHost, taskId: TaskId): Promise<void> {
@@ -170,8 +172,7 @@ async function stopChildren(
 	let targets: SubagentChildRecord[];
 	if (request.all) {
 		targets = [...records.values()].filter(
-			(record) =>
-				isLive(record) || (action === "quit" && record.terminalStatus === "paused" && isPausedOrQuit(record)),
+			(record) => isLive(record) || (action === "quit" && stoppedAs(record) === "paused"),
 		);
 		if (targets.length === 0)
 			return controlResult(`No running subagent children to ${action}.`, { action, children: [] });
@@ -201,16 +202,17 @@ async function stopChildren(
 			);
 			continue;
 		}
-		if (isPausedOrQuit(record)) {
-			if (action === "quit" && record.terminalStatus === "paused") {
+		const stopped = stoppedAs(record);
+		if (stopped) {
+			if (action === "quit" && stopped === "paused") {
 				releasePausedChildHold(key);
 				await recordSubagentChildStatus(deps.pi, record, "quit");
 				children.push(childDetails(record, "quit"));
 				lines.push(`Quit paused ${label(record)}. It stays resumable.`);
 				continue;
 			}
-			children.push(childDetails(record, record.terminalStatus === "paused" ? "paused" : "quit"));
-			lines.push(`${label(record)} is already ${record.terminalStatus === "paused" ? "paused" : "quit"}.`);
+			children.push(childDetails(record, stopped));
+			lines.push(`${label(record)} is already ${stopped}.`);
 			continue;
 		}
 		failures.push(

@@ -60,6 +60,8 @@ export interface SubagentChildRecordSink {
 	record(input: SubagentChildRecordInput): void;
 	/** Whether the owner is a workflow stage whose generation is closing for good, not merely interrupted. */
 	ownerEndedForGood?(): boolean;
+	/** Settles once every record this sink was given has been appended. */
+	flushed?(): Promise<void>;
 }
 
 /** `terminalStatus` of a child whose workflow stage finished, or whose run ended or was cancelled; never resumable. */
@@ -85,6 +87,27 @@ export function isRestorableSubagentChild(record: SubagentChildRecord): boolean 
  */
 export const WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE = "atomic:workflow-stage-closed-for-good";
 
+/** `terminalStatus` of a child that could not be restored after a restart and was reported gone to its owner. */
+export const SUBAGENT_CHILD_GONE_STATUS = "gone";
+
+const ENDED_STATUSES: ReadonlySet<string> = new Set([
+	"killed",
+	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
+	SUBAGENT_CHILD_GONE_STATUS,
+]);
+
+/**
+ * Whether a workflow stage closing for good ends this settled child: every one does, completed, failed, interrupted or
+ * paused, except a child the parent quit, which stays resumable. Running children end when their task settles.
+ */
+function endsWithStage(record: SubagentChildRecord): boolean {
+	return (
+		record.state === "terminal" &&
+		record.terminalStatus !== "quit" &&
+		!ENDED_STATUSES.has(record.terminalStatus ?? "")
+	);
+}
+
 export function subagentChildId(runId: string, index: number): string {
 	return `${runId}:${index}`;
 }
@@ -105,32 +128,76 @@ export function subagentChildOwner(
 		: { kind: "session", sessionId };
 }
 
+const appendChains = new Map<string, Promise<void>>();
+
+/** Append records of one owner in order, across every sink of that owner. */
+function appendInOrder(pi: Pick<ExtensionAPI, "appendEntry">, record: SubagentChildRecord): Promise<void> {
+	observeSubagentChildRecord(record);
+	const key = record.owner.sessionId;
+	const appended = (appendChains.get(key) ?? Promise.resolve())
+		.then(() => pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record))
+		.catch(() => undefined);
+	appendChains.set(key, appended);
+	void appended.then(() => {
+		if (appendChains.get(key) === appended) appendChains.delete(key);
+	});
+	return appended;
+}
+
+interface StageChildren {
+	readonly closeSignal: AbortSignal;
+	readonly childIds: Set<string>;
+	readonly endedForGood: () => boolean;
+	readonly end: (childId: string) => void;
+}
+
+const stageChildren = new WeakMap<AbortSignal, StageChildren>();
+
 /**
- * Append child records to the owning session in launch order. A child its workflow stage's pause stopped, and that
- * nothing resumed since, ends with the stage when that stage generation closes for good (#3760).
+ * Watch the children a workflow stage owns, so that when the stage generation closes for good every settled child that
+ * the parent did not quit is recorded `stage-closed`: resume then names why it cannot continue (#3760).
+ */
+export function watchWorkflowStageSubagentChildren(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	ctx: Pick<ExtensionContext, "sessionManager" | "orchestrationContext">,
+): StageChildren | undefined {
+	const orchestration = ctx.orchestrationContext;
+	const admission = orchestration?.kind === "workflow-stage" ? orchestration.messageAdmission : undefined;
+	const closeSignal = admission?.boundary.closeSignal;
+	if (!admission || !closeSignal) return undefined;
+	const existing = stageChildren.get(closeSignal);
+	if (existing) return existing;
+	const owner = subagentChildOwner(ctx);
+	const sessionManager = ctx.sessionManager;
+	const endedForGood = () => admission.extensionState.has(WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE);
+	const end = (childId: string, persisted?: SubagentChildRecord) => {
+		const latest = subagentChildCardRecord(childId, "") ?? persisted;
+		if (!endedForGood() || latest?.owner?.sessionId !== owner.sessionId || !endsWithStage(latest)) return;
+		void appendInOrder(pi, { ...latest, terminalStatus: SUBAGENT_CHILD_STAGE_CLOSED_STATUS });
+	};
+	const watched: StageChildren = { closeSignal, childIds: new Set(), endedForGood, end };
+	stageChildren.set(closeSignal, watched);
+	const endAll = () => {
+		if (!endedForGood()) return;
+		const persisted = readSubagentChildRecords(sessionManager.getEntries(), owner.sessionId);
+		for (const childId of new Set([...persisted.keys(), ...watched.childIds])) end(childId, persisted.get(childId));
+	};
+	if (closeSignal.aborted) endAll();
+	else closeSignal.addEventListener("abort", endAll, { once: true });
+	return watched;
+}
+
+/**
+ * Append child records to the owning session in launch order. When the owner's workflow stage generation closes for
+ * good, its children end with it (see {@link watchWorkflowStageSubagentChildren}).
  */
 export function createSubagentChildRecordSink(
 	pi: Pick<ExtensionAPI, "appendEntry">,
 	ctx: Pick<ExtensionContext, "sessionManager" | "orchestrationContext">,
 ): SubagentChildRecordSink {
 	const owner = subagentChildOwner(ctx);
-	const orchestration = ctx.orchestrationContext;
-	const admission = orchestration?.kind === "workflow-stage" ? orchestration.messageAdmission : undefined;
-	const ownerEndedForGood = () => admission?.extensionState.has(WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE) === true;
-	let chain: Promise<void> = Promise.resolve();
-	const append = (record: SubagentChildRecord) => {
-		observeSubagentChildRecord(record);
-		chain = chain.then(() => pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record)).catch(() => undefined);
-	};
-	const endWithStage = (childId: string) => {
-		const latest = subagentChildCardRecord(childId, "");
-		if (
-			ownerEndedForGood() &&
-			latest?.state === "terminal" &&
-			latest.terminalStatus === SUBAGENT_CHILD_STAGE_PAUSED_STATUS
-		)
-			append({ ...latest, terminalStatus: SUBAGENT_CHILD_STAGE_CLOSED_STATUS });
-	};
+	const stage = watchWorkflowStageSubagentChildren(pi, ctx);
+	let appended: Promise<void> = Promise.resolve();
 	return {
 		record(input) {
 			const record: SubagentChildRecord = {
@@ -139,18 +206,15 @@ export function createSubagentChildRecordSink(
 				owner,
 				...input,
 			};
-			append(record);
-			const stageClose = admission?.boundary.closeSignal;
-			if (record.terminalStatus !== SUBAGENT_CHILD_STAGE_PAUSED_STATUS || !stageClose) return;
-			if (stageClose.aborted) endWithStage(record.childId);
-			else stageClose.addEventListener("abort", () => endWithStage(record.childId), { once: true });
+			appended = appendInOrder(pi, record);
+			stage?.childIds.add(record.childId);
+			// A child that settles after its stage already closed for good ends with it at once.
+			if (stage?.closeSignal.aborted) stage.end(record.childId);
 		},
-		ownerEndedForGood,
+		ownerEndedForGood: () => stage?.endedForGood() === true,
+		flushed: () => appended,
 	};
 }
-
-/** `terminalStatus` of a child that could not be restored after a restart and was reported gone to its owner. */
-export const SUBAGENT_CHILD_GONE_STATUS = "gone";
 
 /** `terminalStatus` of a child stopped by `pause` or `quit`; both stay resumable. */
 export type SubagentChildStopStatus = "paused" | "quit";
