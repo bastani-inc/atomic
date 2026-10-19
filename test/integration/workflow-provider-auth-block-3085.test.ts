@@ -50,7 +50,7 @@ const RESUME_CHILD_TIMEOUT_MS = 120_000;
  * deadline can fire, which exhausted the former 10s bound on a loaded Windows runner.
  */
 const SESSION_IO_SETTLE_TIMEOUT_MS = 60_000;
-const ISOLATED_PROCESS_RESTART_TIMEOUT_MS = SESSION_IO_SETTLE_TIMEOUT_MS + RESUME_CHILD_TIMEOUT_MS + 30_000;
+const RESTART_TEARDOWN_MARGIN_MS = 30_000;
 
 const repositoryRoot = join(moduleDir(import.meta.url), "../..");
 const resumeFixture = join(moduleDir(import.meta.url), "fixtures", "issue-3085-provider-auth-block.ts");
@@ -195,5 +195,5 @@ test(
 			}
 		}
 	},
-	ISOLATED_PROCESS_RESTART_TIMEOUT_MS,
+	SESSION_IO_SETTLE_TIMEOUT_MS + RESUME_CHILD_TIMEOUT_MS + RESTART_TEARDOWN_MARGIN_MS,
 );
