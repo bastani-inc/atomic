@@ -10,12 +10,13 @@ import {
   isAwaitIntercomPeerRequest,
   isReleaseRestoringChildRequest,
   isReserveRestoringChildRequest,
+  planIntercomRecoveryReplay,
   SUBAGENT_AWAIT_INTERCOM_PEER_EVENT,
   SUBAGENT_RELEASE_RESTORING_CHILD_EVENT,
   SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
   waitForIntercomPeer,
 } from "./session-recovery.js";
-import { APP_NAME, type ExtensionAPI, type ExtensionContext, sessionScopedExtensionState } from "@bastani/atomic";
+import { APP_NAME, type ExtensionAPI, type ExtensionContext, type SessionEntry, sessionScopedExtensionState } from "@bastani/atomic";
 import { appendFileSync } from "node:fs";
 import {
 	IntercomClient,
@@ -38,7 +39,7 @@ import { registerSubagentRelay } from "./subagent-relay.js";
 import { ForegroundDetachHandoff, handleForegroundInboundDelivery } from "./foreground-detach-handoff.js";
 import { routeIncomingReply } from "./reply-routing.js";
 import { routePeerDisconnect, type PeerDisconnectNotice } from "./peer-disconnect-routing.js";
-import { INBOUND_FLUSH_DELAY_MS, INBOUND_IDLE_RETRY_MS, buildPresenceIdentity, formatAttachments, readChildOrchestratorMetadata, toError } from "./intercom-utils.js";
+import { INBOUND_FLUSH_DELAY_MS, INBOUND_IDLE_RETRY_MS, type InboundMessageEntry, buildPresenceIdentity, formatAttachments, readChildOrchestratorMetadata, toError } from "./intercom-utils.js";
 import { readSubagentMessageSource } from "./source-ownership.js";
 import {
   buildIncomingCustomMessage,
@@ -48,7 +49,16 @@ import {
   frameHistoricalSupervisorUpdate,
   framePreStartPendingStageMessage,
 } from "./incoming-message-delivery.js";
-import { InboundIdleQueue } from "./inbound-idle-queue.js";
+import { InboundIdleQueue, planIdleBatch } from "./inbound-idle-queue.js";
+import {
+  consumedIntercomMessageIds,
+  DurableInbox,
+  INTERCOM_INBOX_ENTRY,
+  INTERCOM_INBOX_HANDLED_ENTRY,
+  INTERCOM_INBOX_REPLAY_EVENT,
+  type IntercomInboxReplayRequest,
+  unconsumedIntercomInbox,
+} from "./durable-inbox.js";
 import { registerTerminalOrderingBarrier } from "./terminal-ordering-barrier.js";
 import { resolveSessionTargetId } from "./session-target.js";
 import { InboundMessageAdmission } from "./inbound-message-admission.js";
@@ -188,7 +198,27 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   let replyTracker = new ReplyTracker();
   const replyWaiters = new ReplyWaiterRegistry(DEFAULT_REPLY_TIMEOUT_MS, config.maxPendingAsks);
   const foregroundDetachHandoff = new ForegroundDetachHandoff(pi);
-  const pendingIdleMessages = new InboundIdleQueue();
+  function sessionBranch(): SessionEntry[] {
+    try {
+      return runtimeContext?.sessionManager.getBranch() ?? [];
+    } catch {
+      return [];
+    }
+  }
+  // #3761: a message counts as shown once its `intercom_message` card is on the session branch.
+  const pendingIdleMessages = new InboundIdleQueue(() => consumedIntercomMessageIds(sessionBranch()));
+  const durableInbox = new DurableInbox({
+    durable: () => {
+      try {
+        return runtimeContext?.sessionManager.getSessionStore?.().descriptor.adapter !== "memory";
+      } catch {
+        return true;
+      }
+    },
+    entries: sessionBranch,
+    append: (record) => pi.appendEntry(INTERCOM_INBOX_ENTRY, record),
+    appendHandled: (messageId) => pi.appendEntry(INTERCOM_INBOX_HANDLED_ENTRY, { messageId }),
+  });
   const inboundDeliveries = new InboundMessageAdmission();
   const pendingStageRoutes = new Map<string, PendingStageRouteRegistration>();
   const pendingStageRouteClients = new Map<string, PendingStageRouteClientState>();
@@ -363,15 +393,92 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     }
 
     const entries = pendingIdleMessages.drain();
-    const first = entries[0];
-    if (first) replyTracker.queueTurnContext({ from: first.from, message: first.message, receivedAt: Date.now() });
+    const batch = planIdleBatch(entries);
+    if (batch.replyContext) replyTracker.queueTurnContext({ from: batch.replyContext.from, message: batch.replyContext.message, receivedAt: Date.now() });
     const messages = entries.map(buildIncomingCustomMessage);
     void retryStableDelivery({
-      deliver: () => typeof pi.sendMessages === "function" ? Promise.resolve(pi.sendMessages(messages, { triggerTurn: true })) : Promise.all(messages.map((message, index) => pi.sendMessage(message, index === 0 ? { triggerTurn: true } : { deliverAs: "followUp" }))).then(() => {}),
+      deliver: () => typeof pi.sendMessages === "function" ? Promise.resolve(pi.sendMessages(messages, { triggerTurn: batch.triggerTurn })) : Promise.all(messages.map((message, index) => pi.sendMessage(message, batch.sendOptions[index]))).then(() => {}),
       isCurrent: () => Boolean(getLiveContext(ctx, generation)),
     }).catch(() => {});
   }
   testOverrides.captureInboundHandler?.(handleIncomingMessage);
+  function buildInboundEntry(from: SessionInfo, message: Message, channel?: "supervisor"): InboundMessageEntry {
+    const attachmentText = message.content.attachments?.length
+      ? formatAttachments(message.content.attachments)
+      : "";
+    const bodyText = `${message.content.text}${attachmentText}`;
+    const replyCommand = config.replyHint && message.expectsReply
+      ? `intercom({ action: "reply", message: "..." })`
+      : undefined;
+    const rawEntry = { from, message, replyCommand, bodyText, ...(channel ? { channel } : {}) };
+    return isDeliveryFeedback(message) ? frameDeliveryFeedback(rawEntry) : frameHistoricalSupervisorUpdate(rawEntry);
+  }
+  /** #3761: save an arriving message, confirm it to the broker, then handle it; a copy already saved is only confirmed. */
+  function receiveIncomingMessage(receiver: IntercomClient, from: SessionInfo, message: Message, channel?: "supervisor"): void {
+    const generation = runtimeGeneration;
+    void durableInbox.receive(from, message, channel, () => receiver.acknowledgeReceived(message.id)).then((arrival) => {
+      if (arrival !== "fresh") return;
+      const liveContext = getLiveContext(runtimeContext, generation);
+      if (liveContext) void handleIncomingMessage(liveContext, from, message, channel);
+    });
+  }
+  /**
+   * #3761: decide about the saved messages a resumed session never showed with #3760's interrupted-card decision.
+   * `replay` (a connected sender, or a local relay) queues it in arrival order for the next idle turn; `drop` (a sender
+   * that is gone) writes its full card as history that starts no turn, and that card alone marks it handled, so a crash
+   * before or after the write never loses it or shows it twice; `defer` (Intercom unreachable, or a relaunched sender
+   * that has not reconnected) leaves it unshown for the next resume. One pass in arrival order keeps visible history in
+   * that order: a gone sender's card that arrived after a queued message joins the same queue behind it, so it is
+   * written in the batch that message starts rather than ahead of it. The card is marked `historyOnly`, so it never
+   * starts that batch's turn or supplies its reply context, even when the message ahead of it leaves the queue first.
+   */
+  async function replayDurableInbox(request: IntercomInboxReplayRequest): Promise<readonly string[]> {
+    const liveContext = getLiveContext();
+    if (!liveContext) return [];
+    replyTracker = bindWorkflowReplyTracker(liveContext, replyTracker);
+    const records = unconsumedIntercomInbox(sessionBranch()).map((record) => ({
+      record,
+      entry: buildInboundEntry(record.from, record.message, record.channel),
+    }));
+    const plan = planIntercomRecoveryReplay(
+      records.map(({ record, entry }) => ({
+        entryId: record.message.id,
+        customType: "intercom_message",
+        content: entry.bodyText,
+        details: entry,
+        timestamp: new Date(record.receivedAt).toISOString(),
+        delivery: "followUp",
+      })),
+      request.peers,
+      request.restored,
+    );
+    const actions = new Map((plan.decisions ?? []).map((decision) => [decision.entryId, decision.action]));
+    let queued = 0;
+    for (const { record, entry } of records) {
+      const action = actions.get(record.message.id) ?? "replay";
+      if (action === "defer") continue;
+      if (action === "drop") {
+        const historyEntry: InboundMessageEntry = { ...entry, replyCommand: undefined, historyOnly: true };
+        if (queued > 0) {
+          pendingIdleMessages.enqueue(historyEntry);
+          continue;
+        }
+        try {
+          await pi.sendMessage(buildIncomingCustomMessage(historyEntry), { triggerTurn: false });
+        } catch {
+          // Unwritten, the message stays unshown and the next resume decides about it again.
+        }
+        continue;
+      }
+      const admission = inboundDeliveries.admit(record.from, record.message);
+      if (admission.kind !== "reserved") continue;
+      replyTracker.recordIncomingMessage(record.from, record.message);
+      if (pendingIdleMessages.enqueue(entry)) queued += 1;
+      inboundDeliveries.commit(admission.reservation);
+    }
+    if (queued > 0) scheduleInboundFlush();
+    return plan.notices ?? [];
+  }
   function handleIncomingMessage(
     ctx: ExtensionContext,
     from: SessionInfo,
@@ -386,15 +493,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       return;
     }
     replyTracker = bindWorkflowReplyTracker(liveContext, replyTracker);
-    const attachmentText = message.content.attachments?.length
-      ? formatAttachments(message.content.attachments)
-      : "";
-    const bodyText = `${message.content.text}${attachmentText}`;
-    const replyCommand = config.replyHint && message.expectsReply
-      ? `intercom({ action: "reply", message: "..." })`
-      : undefined;
-    const rawEntry = { from, message, replyCommand, bodyText, ...(channel ? { channel } : {}) };
-    const framedEntry = isDeliveryFeedback(message) ? frameDeliveryFeedback(rawEntry) : frameHistoricalSupervisorUpdate(rawEntry);
+    const framedEntry = buildInboundEntry(from, message, channel);
     const entry = receivedBeforeStageStart ? framePreStartPendingStageMessage(framedEntry) : framedEntry;
     if (receivedBeforeStageStart) {
       return sendIncomingMessage(entry, "prelude", messageGeneration, false);
@@ -415,6 +514,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         () => client,
         () => Boolean(getLiveContext(liveContext, messageGeneration)),
         (runId) => stageAdmission.boundary.ownsSubagentRun(runId),
+        () => durableInbox.handledWithoutCard(message.id),
       );
       return;
     }
@@ -445,7 +545,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       tracker: replyTracker,
       replyContext,
       currentClient: () => client,
-      commit,
+      // Only a failure reply to the sender commits here; the message itself is never shown.
+      commit: () => {
+        void durableInbox.handledWithoutCard(message.id);
+        commit();
+      },
       failurePrefix: liveContext.subagentPolicy?.executionEnded === undefined ? undefined : "Subagent could not admit intercom ask",
     });
     const activeDelivery = admitActiveSessionInbound(
@@ -496,6 +600,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
                 // Best-effort reply; keep the busy non-interactive session running either way.
               }
             }
+            await durableInbox.handledWithoutCard(message.id);
             commit();
             return;
           }
@@ -675,11 +780,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 	}
   function attachClientHandlers(nextClient: IntercomClient): void {
     nextClient.on("message", (from: SessionInfo, message: Message, channel?: "supervisor") => {
-      const liveContext = getLiveContext();
-      if (client !== nextClient || !liveContext) {
+      if (client !== nextClient || !getLiveContext()) {
         return;
       }
-      handleIncomingMessage(liveContext, from, message, channel);
+      receiveIncomingMessage(nextClient, from, message, channel);
     });
     nextClient.on("pending_stage_message", (request: PendingStageMessageRequest) => {
       handlePendingStageMessage(nextClient, request, () => client === nextClient);
@@ -966,7 +1070,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const nextReconnectPromise = (async () => {
       let connectFailed = false;
       await ownershipRecorded.promise;
-		const nextClient = new IntercomClient(sessionIdAtStart, { preferredSessionId });
+		const nextClient = new IntercomClient(sessionIdAtStart, { preferredSessionId, acknowledgesReceipt: true });
       client = nextClient;
       attachClientHandlers(nextClient);
       try {
@@ -1160,6 +1264,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     if (!payload || typeof payload !== "object" || !isAwaitIntercomPeerRequest(payload) || payload.completion) return;
     const request = payload;
     request.completion = ensureConnected("background").then((activeClient) => waitForIntercomPeer(activeClient, request));
+  });
+  pi.events.on(INTERCOM_INBOX_REPLAY_EVENT, (payload) => {
+    if (!payload || typeof payload !== "object") return;
+    const request = payload as IntercomInboxReplayRequest;
+    if (request.completion || !Array.isArray(request.restored)) return;
+    request.completion = replayDurableInbox(request);
   });
   pi.events.on(INTERCOM_RECOVERY_PEERS_EVENT, (payload) => {
     if (!payload || typeof payload !== "object") return;

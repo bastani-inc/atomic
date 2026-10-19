@@ -1,4 +1,4 @@
-import type { InboundMessageEntry } from "./intercom-utils.js";
+import { type InboundMessageEntry, mayStartTurn, maySupplyReplyContext } from "./intercom-utils.js";
 
 export interface InboundIdleClaim {
   entries: InboundMessageEntry[];
@@ -6,21 +6,61 @@ export interface InboundIdleClaim {
   rollbackFrom(index: number): void;
 }
 
+/** How one idle batch is written: a host with batch send uses `triggerTurn`, others send entry by entry with `sendOptions`. */
+export interface IdleBatchPlan {
+  /** True only when the batch holds an entry allowed to start a turn. */
+  triggerTurn: boolean;
+  /** The first entry allowed to supply reply context; never a history-only card. */
+  replyContext?: InboundMessageEntry;
+  /** In queue order: history before the first turn-starting entry is written without a turn, later entries follow it. */
+  sendOptions: Array<{ triggerTurn: boolean } | { deliverAs: "followUp" }>;
+}
+
+/**
+ * #3761: plan an idle batch from what each entry may do, not from its position, so a history-only card never starts a
+ * turn or becomes the reply target however the entries around it left the queue.
+ */
+export function planIdleBatch(entries: readonly InboundMessageEntry[]): IdleBatchPlan {
+  const starter = entries.findIndex(mayStartTurn);
+  return {
+    triggerTurn: starter >= 0,
+    replyContext: starter >= 0 ? entries.find(maySupplyReplyContext) : undefined,
+    sendOptions: entries.map((_, index) =>
+      starter < 0 || index < starter ? { triggerTurn: false } : index === starter ? { triggerTurn: true } : { deliverAs: "followUp" }),
+  };
+}
+
 /**
  * FIFO ownership for ordinary inbound messages accepted while the parent is
  * busy. A terminal barrier may claim only entries from its exact child session
  * target; unrelated children retain their original queue positions.
+ *
+ * #3761: each message id is queued once, and a message already shown in the
+ * session (in `consumedIds`) is never handed out again, whichever of the idle
+ * flush, foreground-detach or terminal-barrier paths takes it. `consumedIds` is
+ * read once per operation, not once per queued entry.
  */
+const NONE_CONSUMED: ReadonlySet<string> = new Set();
+
 export class InboundIdleQueue {
   private entries: InboundMessageEntry[] = [];
   private generation = 0;
+
+  constructor(private readonly consumedIds: () => ReadonlySet<string> = () => NONE_CONSUMED) {}
+
+  private dropConsumed(): void {
+    const consumed = this.consumedIds();
+    this.entries = this.entries.filter((entry) => !consumed.has(entry.message.id));
+  }
 
   get size(): number {
     return this.entries.length;
   }
 
-  enqueue(entry: InboundMessageEntry): void {
+  enqueue(entry: InboundMessageEntry): boolean {
+    if (this.consumedIds().has(entry.message.id) || this.entries.some((queued) => queued.message.id === entry.message.id)) return false;
     this.entries.push(entry);
+    return true;
   }
 
   has(entry: InboundMessageEntry): boolean {
@@ -31,16 +71,18 @@ export class InboundIdleQueue {
     const index = this.entries.indexOf(entry);
     if (index < 0) return false;
     this.entries.splice(index, 1);
-    return true;
+    return !this.consumedIds().has(entry.message.id);
   }
 
   drain(): InboundMessageEntry[] {
+    this.dropConsumed();
     const entries = this.entries;
     this.entries = [];
     return entries;
   }
 
   claimOrdinarySourceTargets(runId: string, sourceSessionTargets: readonly string[], terminalAt = Number.POSITIVE_INFINITY): InboundIdleClaim {
+    this.dropConsumed();
     const targets = new Set(sourceSessionTargets);
     const generation = this.generation;
     const original = this.entries;

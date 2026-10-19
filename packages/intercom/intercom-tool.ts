@@ -857,11 +857,10 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               attachments,
               replyTo,
               expectsReply: true,
-              // The broker names the recipient of a canonical path, or of a target the listing could not
-              // resolve (such as a peer's own session id, #3760), so its reply is matched to this ask.
-              ...(parseWorkflowStageTarget(to)?.kind === "path" || listedTarget === null
-                ? { onReplyTarget: wait.bindSender }
-                : {}),
+              // The broker names the recipient it authorized to answer, so its reply is matched to this ask: the
+              // session behind a canonical path, a target the listing could not resolve (such as a peer's own
+              // session id, #3760), or a recipient that reconnected under a new session id before confirming (#3761).
+              onReplyTarget: wait.bindSender,
             });
 
             if (sendResult.queued === true) {

@@ -137,8 +137,12 @@ export type ClientMessage =
 			registrationGroup?: string;
 			supervisor?: SupervisorRegistration;
 			supervisorOwnerToken?: string;
+			/** #3761: this recipient sends `received` once it has saved each message; `delivered` waits for it. */
+			acknowledgesReceipt?: true;
 	  }
 	| { type: "unregister" }
+	/** #3761: the recipient saved this message; it ignores a copy of it sent again. */
+	| { type: "received"; messageId: string }
   | { type: "list"; requestId: string; group?: string }
 	| { type: "list_groups"; requestId: string }
 	| { type: "join_group"; requestId: string; group: string }
@@ -220,7 +224,13 @@ export type ClientMessage =
     };
 
 export type BrokerMessage =
-  | { type: "registered"; sessionId: string; supervisorSessionId?: string }
+	| {
+			type: "registered";
+			sessionId: string;
+			supervisorSessionId?: string;
+			/** #3761: echoed only to a client that advertised it; that client may now send `received`. */
+			acknowledgesReceipt?: true;
+	  }
   | { type: "registration_failed"; reason: string; code?: LiveWorkflowStageRouteRefusalCode }
   | { type: "question_target"; messageId: string; attemptId: string; sessionId: string }
  | { type: "sessions"; requestId: string; sessions: SessionInfo[]; workflowStages?: WorkflowStageRosterEntry[]; workflowFutureStages?: WorkflowFutureStageRosterEntry[] }

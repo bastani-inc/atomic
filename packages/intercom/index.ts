@@ -27,6 +27,7 @@ import {
 	SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
 } from "./session-recovery.js";
 import type { SessionInfo } from "./types.js";
+import { INTERCOM_INBOX_REPLAY_EVENT, type IntercomInboxReplayRequest, unconsumedIntercomInbox } from "./durable-inbox.js";
 import {
 	createForwardedHandlerMap,
 	createHeavyProxy,
@@ -739,9 +740,33 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			return undefined;
 		}
 	}
+	/**
+	 * #3761: replay the messages this session saved on arrival but never showed, after the transcript is visible.
+	 * They pass #3760's interrupted-card decision: from a connected or restored sender they are shown and may start a
+	 * turn; from a sender that is gone they appear once as history in the recovery notice; while Intercom cannot be
+	 * reached, or a relaunched sender has not reconnected, they are deferred to the next resume.
+	 */
+	async function replayIntercomInbox(
+		ctx: ExtensionContext,
+		peers: readonly SessionInfo[] | undefined,
+	): Promise<readonly string[]> {
+		try {
+			const restored = await awaitRestoredIntercomPeers(pi.events, ctx.sessionManager.getSessionId());
+			const handle = await loadHeavy(ctx);
+			handle.assertCurrent();
+			const forwarded: IntercomInboxReplayRequest = { peers, restored };
+			await dispatchEventHandlers(handle.heavy, INTERCOM_INBOX_REPLAY_EVENT, forwarded);
+			return (await forwarded.completion) ?? [];
+		} catch {
+			// The saved messages stay unshown and the next resume decides about them again.
+			return [];
+		}
+	}
 	pi.on("session_recovery_restore", async (_event, ctx) => {
-		if (hasIntercomHistory(ctx.sessionManager.getEntries())) await recoveryPeers(ctx);
-		return undefined;
+		const peers = hasIntercomHistory(ctx.sessionManager.getEntries()) ? await recoveryPeers(ctx) : undefined;
+		if (unconsumedIntercomInbox(ctx.sessionManager.getBranch()).length === 0) return undefined;
+		const notices = await replayIntercomInbox(ctx, peers);
+		return notices.length > 0 ? { notices: [...notices] } : undefined;
 	});
 	pi.on("session_recovery_replay", async (event, ctx) => {
 		if (!event.pending.some((delivery) => delivery.customType === "intercom_message")) return undefined;

@@ -14,6 +14,7 @@ import { sendWorkflowStageDeliveryFailure } from "./workflow-stage-delivery-fail
  * matching child traffic is dropped instead of escaping to the parent route.
  * Blocking asks from other sessions are handed to workflow post-mortem routing
  * once; ordinary non-owned notifications retain the stable parent-route retry.
+ * `handledWithoutCard` runs when a message is dropped or answered with a failure reply instead of being shown.
  */
 export function routeClosedWorkflowStageMessage(
   entry: InboundMessageEntry,
@@ -24,9 +25,13 @@ export function routeClosedWorkflowStageMessage(
   currentClient: () => IntercomClient | null,
   isCurrent: () => boolean,
   ownsSubagentRun: (runId: string) => boolean,
+  handledWithoutCard: () => void = () => {},
 ): void {
   const sourceRunId = entry.message.source?.subagentRunId;
-  if (sourceRunId !== undefined && ownsSubagentRun(sourceRunId)) return;
+  if (sourceRunId !== undefined && ownsSubagentRun(sourceRunId)) {
+    handledWithoutCard();
+    return;
+  }
 
   if (entry.message.expectsReply !== true && !isDeliveryFeedback(entry.message)) {
     void retryStableDelivery({ deliver, isCurrent }).catch(() => {});
@@ -62,6 +67,7 @@ export function routeClosedWorkflowStageMessage(
           isCurrent,
           "Completed workflow stage could not process intercom ask",
         )) {
+        handledWithoutCard();
         admission.commit(admitted.reservation);
         return;
       }

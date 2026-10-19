@@ -550,6 +550,62 @@ test("a name-addressed tool retry keeps one identity and delivery after the reci
 	assert.equal(received.length, 1, "recipient churn must not produce a second logical delivery");
 });
 
+test("an ask resolves with the answer when its recipient reconnects under a new session id before confirming the save (#3761)", async () => {
+	const recipient = new IntercomClient("ask-recipient-home", { acknowledgesReceipt: true });
+	recipient.on("error", () => {});
+	liveClients.push(recipient);
+	await connect(recipient, "recipient");
+	const firstRecipientId = recipient.sessionId;
+	assert.ok(firstRecipientId);
+	const tracker = new ReplyTracker();
+	const arrivals: Array<{ from: SessionInfo; message: Message }> = [];
+	// The first connection dies before it confirms; the reconnected one saves, confirms, and answers.
+	recipient.on("message", (from: SessionInfo, message: Message) => arrivals.push({ from, message }));
+	const recipientTool = registerTool(recipient, { replyTracker: tracker });
+	const asker = await createClient("questioner");
+	const askerTool = registerTool(asker);
+	const cancellation = new AbortController();
+	let answer: ToolResult | undefined;
+	const asking = askerTool
+		.execute(
+			"question",
+			{ action: "ask", to: firstRecipientId, message: "answer me after your restart" },
+			cancellation.signal,
+			undefined,
+			context,
+		)
+		.then((result) => {
+			answer = result;
+			return result;
+		});
+	try {
+		await waitUntil(() => arrivals.length === 1, "the first recipient connection receives the ask");
+		await recipient.disconnect();
+		await connect(recipient, "recipient");
+		assert.notEqual(recipient.sessionId, firstRecipientId);
+		await waitUntil(() => arrivals.length === 2, "the broker sends the unconfirmed ask to the reconnected recipient");
+		const redelivered = arrivals[1]!;
+		assert.equal(redelivered.message.id, arrivals[0]!.message.id);
+		recipient.acknowledgeReceived(redelivered.message.id);
+		tracker.queueTurnContext(tracker.recordIncomingMessage(redelivered.from, redelivered.message));
+		tracker.beginTurn();
+		const reply = await recipientTool.execute(
+			"answer",
+			{ action: "reply", message: "answered after restart" },
+			undefined,
+			undefined,
+			context,
+		);
+		assert.equal(reply.isError, false, JSON.stringify(reply));
+		await waitUntil(() => answer !== undefined, "the ask resolves with the answer");
+		assert.equal(answer!.isError, false, JSON.stringify(answer));
+		assert.match(answer!.content[0]!.text, /answered after restart/);
+	} finally {
+		cancellation.abort();
+		await asking;
+	}
+});
+
 test("one send invocation keeps its ID through intermediate Session not found and broker dedupe", async () => {
 	const received: Message[] = [];
 	const recipient = await createClient("recipient");

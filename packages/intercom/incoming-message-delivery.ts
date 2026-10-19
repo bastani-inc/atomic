@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@bastani/atomic";
-import type { InboundMessageEntry } from "./intercom-utils.js";
+import { type InboundMessageEntry, mayStartTurn, maySupplyReplyContext } from "./intercom-utils.js";
 import type { IntercomContext } from "./reply-tracker.js";
 import type { Message } from "./types.js";
 
@@ -20,11 +20,13 @@ export function createIncomingMessageSender(input: {
   canDeliver: (generation: number) => boolean;
   queueTurnContext: (context: IntercomContext) => void;
 }): IncomingMessageSender {
-  return (entry, delivery, generation = input.currentGeneration(), trackReplyContext = true, turnContext, stageAdmissionBarrier) => {
+  return (entry, requested, generation = input.currentGeneration(), trackReplyContext = true, turnContext, stageAdmissionBarrier) => {
     if (!input.canDeliver(generation)) {
       return Promise.reject(new Error("Intercom session retired before inbound delivery"));
     }
-    if ((delivery === "trigger" || delivery === "interrupt") && trackReplyContext) {
+    // #3761: a history-only card is written without a turn and never becomes a reply target, whatever was requested.
+    const delivery = (requested === "trigger" || requested === "interrupt") && !mayStartTurn(entry) ? "prelude" : requested;
+    if ((delivery === "trigger" || delivery === "interrupt") && trackReplyContext && maySupplyReplyContext(entry)) {
       input.queueTurnContext(turnContext ?? { from: entry.from, message: entry.message, receivedAt: Date.now() });
     }
     const baseOptions = {

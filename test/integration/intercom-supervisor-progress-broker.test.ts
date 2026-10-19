@@ -254,6 +254,7 @@ for (const busy of ["model", "tool"] as const) {
 			]);
 			execution = parent.session.prompt("finite parent work");
 			await started.promise;
+			let lateReceipt: ReturnType<typeof child.sendToSupervisor> | undefined;
 			for (const [suffix, text] of [
 				["U1", "Hypothesis: transport bug"],
 				["U2", "Correction: historical transport cause is not proved"],
@@ -261,13 +262,18 @@ for (const busy of ["model", "tool"] as const) {
 			]) {
 				const id = `${busy}-${suffix}`;
 				record("send-invocation", id);
-				const receipt = await child.sendToSupervisor(parentBrokerId, {
+				const receipt = child.sendToSupervisor(parentBrokerId, {
 					messageId: id,
 					text: text!,
 					expectsReply: false,
 				});
-				assert.equal(receipt.delivered, true);
-				record("broker-forward-confirmed-receipt", id, { receipt });
+				// #3761: `delivered` waits until the parent saved the message, which the withheld one has not.
+				if (id === lateId) {
+					lateReceipt = receipt;
+					continue;
+				}
+				assert.equal((await receipt).delivered, true);
+				record("broker-forward-confirmed-receipt", id, { receipt: await receipt });
 			}
 			await vi.waitFor(() => assert.ok(forwardLate));
 			assert.equal(visible.length, 0, "busy parent queues rather than interrupting");
@@ -286,6 +292,7 @@ for (const busy of ["model", "tool"] as const) {
 			// Completion has already published while this accepted transport message is unavailable to the handler.
 			forwardLate!();
 			forwardLate!(); // Replay the same original message through real inbound admission.
+			assert.equal((await lateReceipt!).delivered, true);
 			const duplicate = await child.sendToSupervisor(parentBrokerId, {
 				messageId: lateId,
 				text: "Earlier snapshot: still investigating",

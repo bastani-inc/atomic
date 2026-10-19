@@ -22,6 +22,7 @@ import { isMessage, isSessionInfo } from "./client-message-validation.js";
 import { normalizeGroups } from "../group.js";
 import { IntercomClientDisconnectedError } from "../recoverable-disconnect.js";
 import { IntercomLiveRouteRefusedError, isLiveWorkflowStageRouteRefusalCode } from "../live-route-refusal.js";
+import { SEND_RESPONSE_TIMEOUT_MS } from "../retry-policy.js";
 
 const BROKER_SOCKET = getBrokerSocketPath();
 const GROUP_REQUEST_TIMEOUT_MS = 5000;
@@ -50,6 +51,8 @@ export interface SendOptions {
 export interface IntercomClientOptions {
 	/** Intercom session id held before a restart or reconnect; the broker grants it only when it is free (#3760). */
 	readonly preferredSessionId?: string;
+	/** #3761: this client confirms each received message with `acknowledgeReceived` once it has saved it. */
+	readonly acknowledgesReceipt?: true;
 }
 
 export interface SendResult {
@@ -160,6 +163,9 @@ function isWorkflowStageRosterEntries(value: unknown): value is WorkflowStageRos
 export class IntercomClient extends EventEmitter {
 	private readonly returnAddress: string;
 	private readonly preferredSessionId: string | undefined;
+	private readonly acknowledgesReceipt: boolean;
+	/** #3761: the broker of the current registration echoed `acknowledgesReceipt`, so it understands `received`. */
+	private brokerAcknowledgesReceipt = false;
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
   private _supervisorSessionId: string | null = null;
@@ -191,6 +197,7 @@ export class IntercomClient extends EventEmitter {
 		if (returnAddress.length === 0) throw new Error("Intercom return address must not be empty");
 		this.returnAddress = returnAddress;
 		this.preferredSessionId = options.preferredSessionId;
+		this.acknowledgesReceipt = options.acknowledgesReceipt === true;
 	}
 
   private failPending(error: Error): void {
@@ -310,6 +317,7 @@ export class IntercomClient extends EventEmitter {
         }
         this._sessionId = null;
         this._supervisorSessionId = null;
+        this.brokerAcknowledgesReceipt = false;
         this._messageSource = undefined;
         this.disconnectError = null;
         if (connectionEstablished && !wasDisconnecting) {
@@ -384,6 +392,7 @@ export class IntercomClient extends EventEmitter {
           ...(registrationGroup !== undefined ? { registrationGroup } : {}),
 			returnAddress: this.returnAddress,
 			...(this.preferredSessionId === undefined ? {} : { preferredSessionId: this.preferredSessionId }),
+			...(this.acknowledgesReceipt ? { acknowledgesReceipt: true as const } : {}),
           ...(supervisor ? { supervisor } : {}),
           ...(supervisorOwnerToken ? { supervisorOwnerToken } : {}),
         });
@@ -415,7 +424,8 @@ export class IntercomClient extends EventEmitter {
     switch (brokerMessage.type) {
       case "registered": {
         if (typeof brokerMessage.sessionId !== "string"
-          || (brokerMessage.supervisorSessionId !== undefined && typeof brokerMessage.supervisorSessionId !== "string")) {
+          || (brokerMessage.supervisorSessionId !== undefined && typeof brokerMessage.supervisorSessionId !== "string")
+          || (brokerMessage.acknowledgesReceipt !== undefined && brokerMessage.acknowledgesReceipt !== true)) {
           throw new Error("Invalid registered message");
         }
 
@@ -426,6 +436,8 @@ export class IntercomClient extends EventEmitter {
         this._supervisorSessionId = typeof brokerMessage.supervisorSessionId === "string"
           ? brokerMessage.supervisorSessionId
           : null;
+        // #3761: a broker from before receipts never echoes the capability and drops a client that sends `received`.
+        this.brokerAcknowledgesReceipt = this.acknowledgesReceipt && brokerMessage.acknowledgesReceipt === true;
         this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
         break;
       }
@@ -1077,6 +1089,15 @@ export class IntercomClient extends EventEmitter {
     return this.sendFrame("send", to, options);
   }
 
+	/**
+	 * #3761: tell the broker this message is saved, so it reports `delivered` to its sender. A no-op unless the
+	 * current registration's broker echoed the capability: that broker already reported `delivered` on the socket write.
+	 */
+	acknowledgeReceived(messageId: string): void {
+		if (!this.brokerAcknowledgesReceipt) return;
+		writeMessage(this.requireActiveSocket(), { type: "received", messageId });
+	}
+
 	sendPendingStageNotification(
 		runId: string,
 		capability: string,
@@ -1123,7 +1144,7 @@ export class IntercomClient extends EventEmitter {
 			requirePendingReply: options.requirePendingReply ?? false,
 			...(options.expectedRecipientId === undefined ? {} : { expectedRecipientId: options.expectedRecipientId }),
 		});
-		acquired = this.pendingSends.acquire(messageId, pendingSignature, 10000);
+		acquired = this.pendingSends.acquire(messageId, pendingSignature, SEND_RESPONSE_TIMEOUT_MS);
     } catch (error) {
       return Promise.reject(toError(error));
     }
