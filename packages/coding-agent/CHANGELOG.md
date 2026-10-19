@@ -5,11 +5,14 @@
 ### Breaking Changes
 
 - Binding or switching a session no longer replays deliveries that a previous process left unfinished. SDK hosts call `session.startPendingRecovery()` and RPC clients send `start_pending_recovery` once they show the session. Until then, interrupted work stays pending ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
+- Removed the bundled `subagent` tool's `kill` action. Replace `subagent({ action: "kill", id })` with `subagent({ action: "quit", id })`, which stops the child gracefully and keeps it resumable. Calls with `action: "kill"` or the earlier `action: "interrupt"` are rejected with an error that names `quit` as the replacement ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
 
 ### Added
 
 - Added `AgentSession.startPendingRecovery()`, the RPC `start_pending_recovery` command, and the `session_recovery_restore` and `session_recovery_replay` extension events. Extensions can now restore background work after a restart, decline to replay deliveries whose peer is gone, and defer deliveries they cannot decide on yet to the next resume without starting a turn ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
 - Added the `typesafe/jev-1.14.0` classifier. Both direct TypeSafe classifiers, `typesafe/jev-latest` and `typesafe/jev-1.14.0`, now accept up to 262K tokens and PNG or JPEG images, for example through `models.classify()` in codemode. See [TypeSafe Jev](docs/providers.md#typesafe-jev).
+- The bundled `subagent` tool now has workflow-style run control: `pause`, `resume` (with an optional `message`), and `quit`, with `all: true` for `pause` and `quit`. Paused, quit, interrupted, completed, and failed children resume from their own saved session under the same id and Intercom name, including children of a session you closed or switched away from (exit or crash, `/new`, `/resume` to another session, `/fork`). Children cancelled for good (owner or batch cancellation, `/tasks` stop, a workflow stage that finished or whose run ended or was cancelled) and children reported gone are terminal, and `resume` on them returns an error that names why ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
+- Reopening a session (`/resume`, `atomic --session`, or a workflow stage resume) shows each subagent tool card with the child's current state and transcript. A resumed child continues in its original card, and replayed `pause`, `resume`, and `quit` calls render as their results ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
 
 ### Fixed
 

@@ -380,7 +380,7 @@ The target sees the original ask, and its normal `intercom.reply` remains correl
 
 This reopens only the conversation. The workflow DAG and terminal stage snapshot remain completed and are never resumed or re-dispatched. If the target run or stage was deleted, lacks a valid retained conversation, is non-resumable, or fails to reopen, the caller receives a bounded actionable `intercom.ask` tool error instead of waiting indefinitely.
 
-Workflow stages and their subagent transcripts are excluded from ordinary `/resume`, `atomic -r`, `--continue`, and global history. Use workflow inspection and resume commands for stages; terminal subagents remain transcript artifacts, not resumable children. An explicit `--session` file path can still open a stage transcript. Older unmarked workflow sessions may remain in ordinary history.
+Workflow stages and their subagent transcripts are excluded from ordinary `/resume`, `atomic -r`, `--continue`, and global history. Use workflow inspection and resume commands for stages. A stage's subagents continue through `subagent({ action: "resume", id })` from the stage that launched them; once that stage has finished, or its run has ended or been cancelled, they are terminal and `resume` refuses them (see [Run control](/subagents#run-control)). An explicit `--session` file path can still open a stage transcript. Older unmarked workflow sessions may remain in ordinary history.
 
 Embedding hosts can run the same pause, quit, and resume actions programmatically with `session.workflows`; see [Workflow run control](/sdk#workflow-run-control).
 

@@ -2,9 +2,20 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed the `kill` action from the `subagent` tool. Replace `subagent({ action: "kill", id })` with `subagent({ action: "quit", id })`, which stops the child gracefully and keeps it resumable. Calls with `action: "kill"` or the earlier `action: "interrupt"` are rejected with an error that names `quit` as the replacement ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
+
+### Added
+
+- Added workflow-style run control to the `subagent` tool: `pause` stops a child and holds its queued messages until resume, `quit` stops it gracefully, and `resume` continues it from its own saved session under the same child id, Intercom name, and group. `pause` and `quit` accept `all: true`, and `resume` accepts an optional `message`: a child stopped mid-turn receives it once and then continues where it left off, and a completed or failed child starts one fresh prompt with it. `id` accepts the child id, task id, Intercom name, or a single-child run id ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
+- Paused, quit, interrupted, completed, and failed children can be resumed, including children of a session you closed or switched away from (Atomic exit or crash, `/new`, `/resume` to another session, `/fork`). Children cancelled for good (owner or batch cancellation, `/tasks` stop, the removed `kill` action) or reported gone are terminal, and `resume` on them returns an error that names why ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
+- Reopening a session (`/resume`, `atomic --session`, or a workflow stage resume) now shows each subagent tool card with the child's current state and transcript. A resumed child continues in its original card, and replayed `pause`, `resume`, and `quit` calls render as their results ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
+
 ### Changed
 
 - Updated the bundled Cua Driver skill to upstream `cua-driver-rs-v0.36.0`. It now starts with an efficient loop: targeted `get_window_state` reads with `query`, acting by `element_token`, batching actions with `run_steps` or `run_script`, re-reading only changes with `since:"latest"`, and verifying at checkpoints instead of after every action. It also covers opening local files with `launch_app`, browser fallbacks when browser tools refuse in the background, and macOS editor recipes.
+- When a workflow stage closes for good (the stage finished, or its run ended or was cancelled), the children it cancels are recorded terminal, and `resume` on them returns an error that names the closed stage ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
 
 ### Fixed
 

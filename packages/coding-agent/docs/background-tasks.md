@@ -107,6 +107,8 @@ subagent({ action: "wait", id: taskId })
 subagent({ action: "status", id: taskId })
 ```
 
+To stop, hold, or continue a child, use `pause`, `quit`, and `resume`; see [Run control](/subagents#run-control).
+
 Do not launch a duplicate just to retrieve its result. Use the task ID returned at launch. IDs are scoped to the session or workflow stage that owns them.
 
 Foreground subagent launches and explicit `action: "wait"` calls also yield when user steering or an Intercom ask/send is admitted to the waiting parent, in main chat or a live workflow stage. The message stays in the normal delivery queue so the parent can handle it and reply. This releases only observation: children keep running under the same task IDs, and other owners' waits are unaffected.
@@ -125,7 +127,7 @@ The parent model also receives the result context. Delivery retries do not relau
 
 Supervisor progress messages are labelled **Historical supervisor update** with their original `Sent:` timestamp. They describe the child's state when sent, not its current status, and can arrive after completion. Prefer a later correction or final result over an earlier progress hypothesis; use `/tasks` for the current task state.
 
-Stopping a subagent through `/tasks` (`x`, then `y`) delivers a **stopped** card and stop context to the parent model. The notice arrives only after termination is confirmed, not while the task is **Stopping**. It requires no final response from the child. Cancelling queued work sends the notice without starting it.
+Stopping a subagent through `/tasks` (`x`, then `y`) delivers a **stopped** card and stop context to the parent model. The notice arrives only after termination is confirmed, not while the task is **Stopping**. It requires no final response from the child. Cancelling queued work sends the notice without starting it. A subagent stopped this way cannot be resumed; to stop one and keep it resumable, use `subagent({ action: "quit", id })` (see [Run control](/subagents#run-control)).
 
 Repeated stop requests or late child results do not duplicate the notice or overwrite the recorded outcome. A task that finished before cancellation keeps its actual result. Closing the owning session or workflow stage still suppresses late notices.
 
