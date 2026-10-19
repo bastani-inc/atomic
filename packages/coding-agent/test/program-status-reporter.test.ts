@@ -114,61 +114,31 @@ test("deduplicates reports and follows session rename and replacement (#10607)",
 	assert.equal(last()?.state, "idle");
 });
 
-test("re-sends the current status while ordinary reports still deduplicate (#3615)", () => {
-	const { reporter, reports, send } = setup();
-	send({ type: "agent_start" });
-	const expected = { state: "working", message: "Session", app: APP_NAME };
-	assert.deepEqual(reports, [expected]);
-	reporter.report();
-	assert.equal(reports.length, 1);
-	reporter.resend();
-	assert.deepEqual(reports, [expected, expected]);
-	reporter.report();
-	assert.equal(reports.length, 2);
-	reporter.resend();
-	assert.deepEqual(reports, [expected, expected, expected]);
-});
-
-test("re-sends status after overlay transcript paints but not ordinary paints (#3615)", () => {
+test("never writes OSC 133 marks from fullscreen overlay transcripts to the terminal (#3739)", () => {
 	initTheme("dark");
-	const terminal: Terminal = new RecordingTerminal();
-	const output: string[] = [];
-	terminal.write = (data) => output.push(data);
-	terminal.setProgramStatus = (status) => output.push(JSON.stringify(status));
-	const reporter = new ProgramStatusReporter(
-		() => terminal,
-		() => "Session",
-	);
-	const expected = JSON.stringify({ state: "working", message: "Session", app: APP_NAME });
-	const reportCount = () => output.filter((data) => data === expected).length;
-	reporter.handleEvent({ type: "agent_start" });
-	const tui = createFullscreenTui({
-		terminal,
-		showHardwareCursor: false,
-		logDirectory: tmpdir(),
-		onOverlayRender: () => reporter.resend(),
-	});
+	const terminal = new RecordingTerminal();
+	terminal.columns = 60;
+	terminal.rows = 12;
+	const transcript = [
+		"\x1b]133;A\x07full-width bel",
+		"\x1b]133;B\x1b\\full-width st",
+		"stage \x1b]133;C\x07mid-line bel",
+		"stage \x1b]133;A;cl=m\x1b\\mid-line st\x1b]133;C;exit=0\x1b\\",
+	];
+	const overlay = { render: () => transcript, invalidate() {} };
+	const tui = createFullscreenTui({ terminal, showHardwareCursor: false, logDirectory: tmpdir() });
 	try {
 		tui.start();
-		tui.renderNow();
-		assert.equal(reportCount(), 1);
-		let transcript = "stage transcript";
-		const overlay = tui.showOverlay({ render: () => [`\x1b]133;A\x07${transcript}`], invalidate() {} });
-		tui.renderNow();
-		assert.equal(reportCount(), 2);
-		assert.ok(output.at(-2)?.includes(transcript));
-		assert.equal(output.at(-1), expected);
-		transcript = "stage transcript updated";
-		tui.renderNow();
-		assert.equal(reportCount(), 3);
-		assert.ok(output.at(-2)?.includes(transcript));
-		assert.equal(output.at(-1), expected);
-		overlay.setHidden(true);
-		tui.renderNow();
-		assert.equal(reportCount(), 3);
-		overlay.hide();
-		tui.renderNow();
-		assert.equal(reportCount(), 3);
+		const fullWidth = tui.showOverlay(overlay, { anchor: "top-left", width: "100%" });
+		const centered = tui.showOverlay(overlay, { anchor: "bottom-center", width: "50%" });
+		tui.renderNow(true);
+		const written = terminal.writes.join("");
+		assert.equal(written.includes("\x1b]133;"), false, "an OSC 133 mark reached the terminal");
+		for (const text of ["full-width bel", "full-width st", "mid-line bel", "mid-line st"]) {
+			assert.equal(written.includes(text), true, `${text} must still be painted`);
+		}
+		centered.hide();
+		fullWidth.hide();
 	} finally {
 		tui.stop();
 	}

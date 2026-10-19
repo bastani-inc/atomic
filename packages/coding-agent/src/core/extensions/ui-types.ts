@@ -103,6 +103,20 @@ export function stripOverlayActiveRowMarker(lines: readonly string[]): string[] 
 	);
 }
 
+const OSC133_PROMPT_MARK = "\u001B]133;";
+const OSC133_PROMPT_MARK_PATTERN = /\u001B\]133;[ABC][^\u0007\u001B]*(?:\u0007|\u001B\\)/g;
+
+/**
+ * Remove every OSC 133 `A`/`B`/`C` shell-integration mark from `lines`, wherever it sits in the line.
+ * Terminals treat `A` as a new shell prompt and drop the program's OSC 7501 status record, so a
+ * fullscreen frame must never carry one. The marks are zero-width, so no column moves.
+ */
+export function stripOsc133Marks(lines: readonly string[]): string[] {
+	return lines.map((line) =>
+		line.includes(OSC133_PROMPT_MARK) ? line.replace(OSC133_PROMPT_MARK_PATTERN, "") : line,
+	);
+}
+
 export interface ChatRenderSettings {
 	hideThinkingBlock: boolean;
 	hiddenThinkingLabel: string;

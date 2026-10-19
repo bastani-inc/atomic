@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { type Component, visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, test } from "vitest";
-import { OVERLAY_ACTIVE_ROW_MARKER } from "../src/core/extensions/ui-types.ts";
+import { OVERLAY_ACTIVE_ROW_MARKER, stripOsc133Marks } from "../src/core/extensions/ui-types.ts";
 import { createFullscreenTui, createInteractiveTui } from "../src/modes/interactive/interactive-tui.ts";
 import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.ts";
 
@@ -97,4 +97,33 @@ test("the main-screen fallback renderer never writes the active-row mark either"
 	} finally {
 		tui.stop();
 	}
+});
+
+test("strips OSC 133 A/B/C marks anywhere in a line, with BEL or ST terminators (#3739)", () => {
+	const cases: Array<[string, string]> = [
+		["\x1b]133;A\x07prompt", "prompt"],
+		["\x1b]133;B\x1b\\prompt", "prompt"],
+		["mid \x1b]133;C\x07line", "mid line"],
+		["mid \x1b]133;A;cl=m\x1b\\line", "mid line"],
+		["end\x1b]133;C;exit=0\x1b\\", "end"],
+		["\x1b]133;A\x07a\x1b]133;B\x1b\\b\x1b]133;C\x07c", "abc"],
+	];
+	for (const [input, expected] of cases) {
+		const [stripped] = stripOsc133Marks([input]);
+		assert.equal(stripped, expected, JSON.stringify(input));
+		assert.equal(visibleWidth(stripped), visibleWidth(input), "stripping must not move a column");
+	}
+});
+
+test("keeps OSC 133 D, other OSC sequences, unmarked lines, and line order (#3739)", () => {
+	const lines = [
+		"plain",
+		"\x1b]133;D;0\x07done",
+		'\x1b]7501;{"state":"working"}\x07status',
+		"\x1b]8;;https://example.com\x07link\x1b]8;;\x07",
+		"",
+		"\x1b[31mred\x1b[0m",
+	];
+	assert.deepEqual(stripOsc133Marks(lines), lines);
+	assert.deepEqual(stripOsc133Marks(["one\x1b]133;A\x07", "two", "\x1b]133;B\x07three"]), ["one", "two", "three"]);
 });
