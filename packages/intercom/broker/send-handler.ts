@@ -588,6 +588,9 @@ export function handleBrokerSend(
       // A sender whose wait already ended was told the outcome is uncertain; its retry opens the reply route.
       if (message.expectsReply === true && sender !== undefined) {
         pendingQuestions.record(fromSession.info.id, recipient.info.id, message.id);
+        // #3761: a recipient that reconnected before confirming answers under its new session id.
+        if (recipient.info.id !== target.info.id && clientMessage.resolveReplyTarget === true && senderAttemptId !== undefined)
+          notify({ type: "question_target", messageId: message.id, attemptId: senderAttemptId, sessionId: recipient.info.id });
 	  }
       if (message.replyTo !== undefined && pendingQuestions.clearReply(fromSession.info.id, recipient.info.id, message.replyTo)) {
         deliveredMessages.settleQuestion(message.replyTo);

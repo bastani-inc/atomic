@@ -481,6 +481,45 @@ test("resume does not start a turn for an unshown saved message from a gone send
 	assert.equal(cardsFor(branch, "from-gone").length, 1, "no duplicate card on a second resume");
 });
 
+test("resume keeps arrival order in visible history across gone-sender cards and live-sender messages (#3761)", async () => {
+	const branch: SessionEntry[] = [
+		inboxEntry({ message: message("live-first"), from: peer, receivedAt: 1 }),
+		inboxEntry({ message: message("gone-second"), from: gone, receivedAt: 2 }),
+		inboxEntry({ message: message("live-third"), from: peer, receivedAt: 3 }),
+		inboxEntry({ message: message("gone-fourth"), from: gone, receivedAt: 4 }),
+	];
+	const runtime = await resumedRuntime(branch);
+	try {
+		await runtime.replay([peer]);
+		const shownOrder = branch.flatMap((entry) =>
+			entry.type === "custom_message" && entry.customType === "intercom_message"
+				? [(entry.details as { message: { id: string } }).message.id]
+				: [],
+		);
+		assert.deepEqual(shownOrder, ["live-first", "gone-second", "live-third", "gone-fourth"]);
+		assert.equal(
+			runtime.deliveries.filter((delivery) => delivery.triggerTurn).length,
+			1,
+			"the live senders start one turn",
+		);
+	} finally {
+		await runtime.close();
+	}
+	const goneOnly = await resumedRuntime([
+		inboxEntry({ message: message("gone-a"), from: gone, receivedAt: 1 }),
+		inboxEntry({ message: message("gone-b"), from: gone, receivedAt: 2 }),
+	]);
+	try {
+		await goneOnly.replay([peer]);
+		assert.ok(
+			goneOnly.deliveries.every((delivery) => !delivery.triggerTurn),
+			"gone senders alone start no turn",
+		);
+	} finally {
+		await goneOnly.close();
+	}
+});
+
 test("a crash right after the first write for a gone sender's saved message still shows it in full, once, on the next resume (#3761)", async () => {
 	const branch: SessionEntry[] = [inboxEntry({ message: message("last-words"), from: gone, receivedAt: 1 })];
 	const crashed = await resumedRuntime(branch, 1);

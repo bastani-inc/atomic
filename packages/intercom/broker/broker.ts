@@ -1117,6 +1117,9 @@ class IntercomBroker {
 			}
 			if (pending.message.expectsReply === true && sender !== undefined) {
 				this.pendingQuestions.record(from.info.id, recipient.info.id, pending.messageId);
+				// #3761: a recipient that reconnected before confirming answers under its new session id.
+				if (recipient.info.id !== target.info.id && pending.resolveReplyTarget === true && sender.attemptId !== undefined)
+					notify({ type: "question_target", messageId: pending.messageId, attemptId: sender.attemptId, sessionId: recipient.info.id });
 			}
 			if (pending.message.replyTo !== undefined && this.pendingQuestions.clearReply(from.info.id, recipient.info.id, pending.message.replyTo)) {
 				this.deliveredMessages.settleQuestion(pending.message.replyTo);

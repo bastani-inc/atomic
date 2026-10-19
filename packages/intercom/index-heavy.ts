@@ -427,7 +427,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
    * `replay` (a connected sender, or a local relay) queues it in arrival order for the next idle turn; `drop` (a sender
    * that is gone) writes its full card as history that starts no turn, and that card alone marks it handled, so a crash
    * before or after the write never loses it or shows it twice; `defer` (Intercom unreachable, or a relaunched sender
-   * that has not reconnected) leaves it unshown for the next resume.
+   * that has not reconnected) leaves it unshown for the next resume. One pass in arrival order keeps visible history in
+   * that order: a gone sender's card that arrived after a queued message joins the same queue behind it, so it is
+   * written in the batch that message starts rather than ahead of it.
    */
   async function replayDurableInbox(request: IntercomInboxReplayRequest): Promise<readonly string[]> {
     const liveContext = getLiveContext();
@@ -455,8 +457,13 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       const action = actions.get(record.message.id) ?? "replay";
       if (action === "defer") continue;
       if (action === "drop") {
+        const historyEntry = { ...entry, replyCommand: undefined };
+        if (queued > 0) {
+          pendingIdleMessages.enqueue(historyEntry);
+          continue;
+        }
         try {
-          await pi.sendMessage(buildIncomingCustomMessage({ ...entry, replyCommand: undefined }), { triggerTurn: false });
+          await pi.sendMessage(buildIncomingCustomMessage(historyEntry), { triggerTurn: false });
         } catch {
           // Unwritten, the message stays unshown and the next resume decides about it again.
         }
