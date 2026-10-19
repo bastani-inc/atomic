@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import type * as ChildProcess from "node:child_process";
 import { EventEmitter } from "node:events";
 import { join } from "node:path";
@@ -46,12 +47,15 @@ describe("issue #6596 taskkill spawn failures", () => {
 		// the options are matched on the fields this regression is about rather than
 		// exactly. `windowsHide` is asserted because `detached` otherwise gives the
 		// child its own console window on Windows.
-		expect(spawnMock).toHaveBeenCalledWith(
-			join(expectedRoot, "System32", "taskkill.exe"),
-			["/F", "/T", "/PID", "1234"],
-			expect.objectContaining({ detached: true, stdio: "ignore", windowsHide: true }),
+		assert.equal(spawnMock.mock.calls.length, 1);
+		const [command, args, options] = spawnMock.mock.calls[0];
+		assert.equal(command, join(expectedRoot, "System32", "taskkill.exe"));
+		assert.deepEqual(args, ["/F", "/T", "/PID", "1234"]);
+		assert.deepEqual(
+			{ detached: options.detached, stdio: options.stdio, windowsHide: options.windowsHide },
+			{ detached: true, stdio: "ignore", windowsHide: true },
 		);
-		expect(() => child.emit("error", new Error("spawn taskkill ENOENT"))).not.toThrow();
+		assert.doesNotThrow(() => child.emit("error", new Error("spawn taskkill ENOENT")));
 	});
 
 	/**

@@ -1,8 +1,9 @@
+import assert from "node:assert/strict";
 import type * as ChildProcess from "node:child_process";
 import type * as Fs from "node:fs";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, vi } from "vitest";
 
-type ShellModule = typeof import("../src/utils/shell.ts");
+type ShellModule = typeof import("../src/utils/shell.js");
 
 const { accessSyncMock, spawnSyncMock } = vi.hoisted(() => ({
 	accessSyncMock: vi.fn(),
@@ -36,7 +37,7 @@ beforeEach(async () => {
 	spawnSyncMock.mockReset().mockReturnValue({ status: 1, stdout: "" });
 	// Atomic memoizes PATH lookups per module instance; start each test without them.
 	vi.resetModules();
-	shellModule = await import("../src/utils/shell.ts");
+	shellModule = await import("../src/utils/shell.js");
 });
 
 afterEach(() => {
@@ -51,7 +52,7 @@ describe("getPowerShellConfig", () => {
 		spawnSyncMock.mockReturnValue({ status: 0, stdout: `${shell}\r\n` });
 		accessSyncMock.mockReturnValue(undefined);
 
-		expect(shellModule.getPowerShellConfig()).toEqual({ shell, args: [...shellModule.POWERSHELL_ARGS] });
+		assert.deepEqual(shellModule.getPowerShellConfig(), { shell, args: [...shellModule.POWERSHELL_ARGS] });
 	});
 
 	it("finds PowerShell 7 under ProgramFiles before Windows PowerShell on PATH (#9490)", () => {
@@ -63,7 +64,7 @@ describe("getPowerShellConfig", () => {
 			if (![pwsh7, windowsPowerShell].includes(path)) notFound();
 		});
 
-		expect(shellModule.getPowerShellConfig()).toEqual({ shell: pwsh7, args: [...shellModule.POWERSHELL_ARGS] });
+		assert.deepEqual(shellModule.getPowerShellConfig(), { shell: pwsh7, args: [...shellModule.POWERSHELL_ARGS] });
 	});
 
 	it("prefers Windows PowerShell on PATH over its system installation (#9490)", () => {
@@ -73,7 +74,7 @@ describe("getPowerShellConfig", () => {
 			if (![shell, windowsPowerShell].includes(path)) notFound();
 		});
 
-		expect(shellModule.getPowerShellConfig()).toEqual({ shell, args: [...shellModule.POWERSHELL_ARGS] });
+		assert.deepEqual(shellModule.getPowerShellConfig(), { shell, args: [...shellModule.POWERSHELL_ARGS] });
 	});
 
 	it("finds Windows PowerShell under SystemRoot when PATH lookup is unavailable (#9490)", () => {
@@ -82,13 +83,13 @@ describe("getPowerShellConfig", () => {
 			if (path !== windowsPowerShell) notFound();
 		});
 
-		expect(shellModule.getPowerShellConfig()).toEqual({
+		assert.deepEqual(shellModule.getPowerShellConfig(), {
 			shell: windowsPowerShell,
 			args: [...shellModule.POWERSHELL_ARGS],
 		});
 	});
 
 	it("reports an error when no PowerShell installation exists (#9490)", () => {
-		expect(() => shellModule.getPowerShellConfig()).toThrow("No PowerShell executable found");
+		assert.throws(() => shellModule.getPowerShellConfig(), /No PowerShell executable found/);
 	});
 });

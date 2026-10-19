@@ -1,8 +1,9 @@
+import assert from "node:assert/strict";
 import type * as ChildProcess from "node:child_process";
 import type * as Fs from "node:fs";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, vi } from "vitest";
 
-type ShellModule = typeof import("../src/utils/shell.ts");
+type ShellModule = typeof import("../src/utils/shell.js");
 
 const { accessSyncMock, spawnSyncMock } = vi.hoisted(() => ({
 	accessSyncMock: vi.fn(),
@@ -34,7 +35,7 @@ beforeEach(async () => {
 	spawnSyncMock.mockReset();
 	// Atomic memoizes PATH lookups per module instance; start each test without them.
 	vi.resetModules();
-	shell = await import("../src/utils/shell.ts");
+	shell = await import("../src/utils/shell.js");
 });
 
 afterEach(() => {
@@ -55,13 +56,13 @@ describe("Windows Store shell aliases", () => {
 
 		const config = executable === "pwsh.exe" ? shell.getPowerShellConfig() : shell.getShellConfig();
 
-		expect(config.shell).toBe(alias);
+		assert.equal(config.shell, alias);
 	});
 
 	it("accepts an explicitly configured shell alias", () => {
 		const alias = `${aliasesDir}\\bash.exe`;
 
-		expect(shell.getShellConfig(alias).shell).toBe(alias);
+		assert.equal(shell.getShellConfig(alias).shell, alias);
 	});
 
 	it("still rejects PATH results that fail the existence check", () => {
@@ -73,7 +74,7 @@ describe("Windows Store shell aliases", () => {
 			throw Object.assign(new Error("not found"), { code: "ENOENT" });
 		});
 
-		expect(shell.getPowerShellConfig().shell).toBe(windowsPowerShell);
+		assert.equal(shell.getPowerShellConfig().shell, windowsPowerShell);
 	});
 });
 
@@ -85,7 +86,7 @@ describe("Unix shell existence checks", () => {
 	});
 
 	it("accepts /bin/bash when access(F_OK) succeeds", () => {
-		expect(shell.getShellConfig().shell).toBe("/bin/bash");
+		assert.equal(shell.getShellConfig().shell, "/bin/bash");
 	});
 
 	it("falls back to bash on PATH when /bin/bash fails access(F_OK)", () => {
@@ -94,7 +95,7 @@ describe("Unix shell existence checks", () => {
 		});
 		spawnSyncMock.mockReturnValue({ status: 0, stdout: "/usr/local/bin/bash\n" });
 
-		expect(shell.getShellConfig().shell).toBe("/usr/local/bin/bash");
+		assert.equal(shell.getShellConfig().shell, "/usr/local/bin/bash");
 	});
 
 	it("rejects an explicitly configured shell path that fails access(F_OK)", () => {
@@ -102,6 +103,8 @@ describe("Unix shell existence checks", () => {
 			throw Object.assign(new Error("not found"), { code: "ENOENT" });
 		});
 
-		expect(() => shell.getShellConfig("/missing/bash")).toThrow("Custom shell path not found: /missing/bash");
+		assert.throws(() => shell.getShellConfig("/missing/bash"), {
+			message: "Custom shell path not found: /missing/bash",
+		});
 	});
 });

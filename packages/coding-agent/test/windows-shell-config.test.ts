@@ -1,6 +1,7 @@
+import assert from "node:assert/strict";
 import type * as Fs from "node:fs";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getShellConfig } from "../src/utils/shell.ts";
+import { afterEach, beforeEach, describe, it, vi } from "vitest";
+import { getShellConfig } from "../src/utils/shell.js";
 
 vi.mock("node:fs", async (importOriginal) => ({
 	...(await importOriginal<typeof Fs>()),
@@ -30,7 +31,8 @@ describe("legacy WSL bash detection (#9490)", () => {
 	] as const)("resolves %j / %j to stdin=%j", (systemRoot, shell, stdin) => {
 		vi.stubEnv("SystemRoot", systemRoot);
 
-		expect(getShellConfig(shell)).toEqual(
+		assert.deepEqual(
+			getShellConfig(shell),
 			stdin ? { shell, args: ["-s"], commandTransport: "stdin" } : { shell, args: ["-c"] },
 		);
 	});
