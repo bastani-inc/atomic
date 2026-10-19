@@ -149,7 +149,7 @@ async function awaitIntercomPeer(
 /**
  * The model and thinking level a reopened child session was last running on, as a `provider/model:thinking`
  * candidate, or `undefined` when no model is known or that model is no longer usable here (#3760).
- * A restored child continues on these rather than the resumed parent's current model and thinking level.
+ * A restored child continues on these rather than the reopened parent's current model and thinking level.
  *
  * A forked child's session starts with the parent's copied model and thinking entries, and its launch model and
  * thinking level (an agent or per-call `model:level`) are applied without writing entries of their own. So the
@@ -368,7 +368,7 @@ export async function restoreSubagentChild(
 }
 
 /**
- * Intercom asks, when it decides what to do with the interrupted deliveries of a resumed session, which of its children
+ * Intercom asks, when it decides what to do with the interrupted deliveries of a reopened session, which of its children
  * were relaunched but have not registered with Intercom yet (#3760). They may still reconnect, so deliveries they sent
  * are neither replayed as if they were live nor discarded as if they were gone.
  */
@@ -446,7 +446,7 @@ function settleWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<T | un
 }
 
 /**
- * Gate a message to a child of this session that a resume is restoring (#3760). The target may be the child's
+ * Gate a message to a child of this session that a restart is restoring (#3760). The target may be the child's
  * Intercom name, its Atomic session id, or its pre-restart Intercom id. Waits (bounded) while its restoration is
  * in progress, then resolves `undefined` when the child is live again and the send may go out, or a refusal
  * explaining that the child is gone so the sender is not told `Session not found`.
@@ -529,7 +529,7 @@ export function subagentChildRestoreNotices(outcomes: readonly SubagentChildRest
  * Record unrestorable children as gone once the agent has been told so (#3760). Without this a child
  * that can never be restored keeps its `running` record, so every later resume would retry it and post
  * the same notice again. Children that were restored are never marked: they keep recording their own
- * progress. A failed write only means a later resume reports the child again.
+ * progress. A failed write only means a later restart reports the child again.
  */
 export async function recordReportedGoneSubagentChildren(
 	pi: Pick<ExtensionAPI, "appendEntry">,

@@ -236,16 +236,8 @@ async function restartBroker(): Promise<void> {
 		killed.kill("SIGKILL");
 		await closed;
 	}
-	// The fixture owns the first broker; this suite owns the restarted one.
-	const restarted = spawnBroker();
-	const restartedClosed = new Promise<void>((resolveClosed) => restarted.once("close", () => resolveClosed()));
-	brokerFixture.onCleanup(async () => {
-		if (restarted.exitCode === null && restarted.signalCode === null) restarted.kill("SIGTERM");
-		await restartedClosed;
-	});
-	await waitForBroker(() =>
-		assert.ok(restarted.exitCode === null && restarted.signalCode === null, "the restarted broker exited"),
-	);
+	brokerFixture.trackBroker(spawnBroker());
+	await waitForBroker(() => brokerFixture.assertRunning());
 }
 
 beforeAll(async () => {

@@ -51,7 +51,7 @@ export interface WorkflowDormantRunSubagentHoldRequest {
 	readonly runId: string;
 	/** The run's invocation group, for children whose record names none. */
 	readonly group: string;
-	/** Sessions of the run's stages that will be resumed; their `subagent-child` records name the children. */
+	/** Sessions of the run's stages that will run again; their `subagent-child` records name the children. */
 	readonly stageSessionIds: readonly string[];
 	/** The launching session, whose store holds the stage sessions; defaults to the one the extension last saw start. */
 	readonly context?: Pick<ExtensionContext, "sessionManager">;
@@ -259,9 +259,9 @@ export function releaseEarlyChildHolds(ownerSessionId: string): void {
 /**
  * Keep the background subagents of an interrupted workflow run's stages addressable until `/workflow resume`
  * restores them (#3760). The launching session is the only one running while the run is down. For each stage that
- * will be resumed it reads the `subagent-child` records its session holds, read-only from this session's store, and
+ * will run again it reads the `subagent-child` records its session holds, read-only from this session's store, and
  * holds the targets of every child that had not settled. A stage whose records cannot be read is skipped. The
- * hold is dormant: the resumed stage's own restoration reserves the same child with its fresh capability and takes
+ * hold is dormant: the restarted stage's own restoration reserves the same child with its fresh capability and takes
  * it over, with the sends held so far.
  */
 export function holdDormantRunSubagentChildren(

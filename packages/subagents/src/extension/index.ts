@@ -475,7 +475,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			if (!lifecycle.isCurrent() || isSubagentChildSession(ctx)) return undefined;
 			const outcomes = await restoreSubagentChildren(executorDeps, ctx);
 			const notices = subagentChildRestoreNotices(outcomes);
-			// Report once: record the children the notices call gone, so later resumes neither retry nor repeat them.
+			// Report once: record the children the notices call gone, so later restarts neither retry nor repeat them.
 			await recordReportedGoneSubagentChildren(pi, outcomes);
 			return { notices };
 		});
