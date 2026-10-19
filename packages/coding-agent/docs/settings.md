@@ -515,7 +515,7 @@ To select storage for one process without editing settings, pass the same JSON s
 
 See [Choosing a store](/sessions#choosing-a-store) for CLI selection, prefix rules, and conflicts.
 
-Only the selected source is validated; invalid lower-precedence selections do not block an explicit override. Memory must be selected explicitly and is lost on exit. Invalid selected configuration raises `StorageConfigError`, whose `source`, `field`, and `reason` identify the problem. If a selected store cannot open, Atomic raises a typed storage error rather than falling back to memory. See [Sessions](/sessions#session-storage) and [Storage errors](/storage#storage-errors).
+Only the selected setting is validated; invalid lower-precedence settings do not block an explicit override. Every set `ATOMIC_STORAGE`, `ATOMIC_SESSIONS_STORAGE`, and `ATOMIC_WORKFLOWS_JOURNAL` is validated even when outranked. Memory must be selected explicitly and is lost on exit. Invalid selected configuration raises `StorageConfigError`, whose `source`, `field`, and `reason` identify the problem. If a selected store cannot open, Atomic raises a typed storage error rather than falling back to memory. See [Sessions](/sessions#session-storage) and [Storage errors](/storage#storage-errors).
 
 ### Models
 

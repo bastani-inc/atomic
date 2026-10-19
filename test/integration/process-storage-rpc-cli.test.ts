@@ -21,7 +21,7 @@ import {
 
 /**
  * Structural: two real source CLI children each load every builtin extension and then run a project
- * workflow, followed by two more children that must fail during startup.
+ * workflow, followed by four more children that must fail during startup.
  */
 const REAL_RPC_CHILDREN_TIMEOUT_MS = 240_000;
 /** Per-step deadline once a child answers. */
@@ -173,7 +173,7 @@ test(
 );
 
 test(
-	"an RPC child with an invalid ATOMIC_STORAGE or unreadable --storage-file fails at startup naming it (#3783)",
+	"an RPC child with an invalid ATOMIC_STORAGE, even one outranked by --storage or --no-session, or an unreadable --storage-file fails at startup naming it (#3783)",
 	async () => {
 		const root = makeTempDirectory("process-storage-rpc-invalid-");
 		const agentDir = join(root, "agent");
@@ -187,6 +187,18 @@ test(
 					"ATOMIC_STORAGE (invalid-json)",
 				],
 				["file", ["--storage-file", "missing-selection.json"], {}, "--storage-file (unreadable-file)"],
+				[
+					"env outranked by --storage",
+					["--storage", '{"memory":true}'],
+					{ ATOMIC_STORAGE: `{"adapter":"x","options":{"token":"${SECRET}"` },
+					"ATOMIC_STORAGE (invalid-json)",
+				],
+				[
+					"session env outranked by --no-session",
+					["--no-session"],
+					{ ATOMIC_SESSIONS_STORAGE: `{"adapter":"x","options":{"token":"${SECRET}"` },
+					"ATOMIC_SESSIONS_STORAGE (invalid-json)",
+				],
 			] as const) {
 				const result = spawnSyncCollect([bunExecutable(), cliPath, "--mode", "rpc", "--offline", ...args], {
 					cwd: root,

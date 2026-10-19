@@ -10,6 +10,7 @@ import {
 	hasProcessStorageSelection,
 	SESSIONS_STORAGE_ENV,
 	STORAGE_ENV,
+	selectProcessStorage,
 	setCliStorageSelection,
 	WORKFLOW_JOURNAL_PATH_ENV,
 	WORKFLOWS_JOURNAL_ENV,
@@ -234,6 +235,49 @@ test("invalid JSON and invalid selections name their variable or flag without ec
 			"--storage-file",
 			reason,
 		);
+	}
+});
+
+test("a set storage variable outranked by another selection still fails when invalid (#3783)", () => {
+	const secret = "s3cr3t-3783-shadowed";
+	const malformed = `{"adapter":"x","options":{"token":"${secret}"`;
+	const misspelled = JSON.stringify({ adpater: "x", options: { token: secret } });
+	const selections: Array<[string, () => object]> = [
+		["sessions", () => selectProcessStorage("sessions", agentDir, project) ?? {}],
+		["journal", () => selectProcessStorage("journal", agentDir, project) ?? {}],
+		["SDK sessions", () => selectSessionStorage(project, { agentDir })],
+		["workflow journal", () => selectRunJournal()],
+	];
+	const scenarios: Array<[string, Record<string, string>, boolean]> = [
+		[STORAGE_ENV, {}, true],
+		[
+			STORAGE_ENV,
+			{ [SESSIONS_STORAGE_ENV]: JSON.stringify({ memory: true }), [WORKFLOWS_JOURNAL_ENV]: JSON.stringify({}) },
+			false,
+		],
+		[SESSIONS_STORAGE_ENV, {}, true],
+		[WORKFLOWS_JOURNAL_ENV, {}, true],
+	];
+	for (const [name, others, withFlag] of scenarios) {
+		for (const [text, reason] of [
+			[malformed, "invalid-json"],
+			[misspelled, "invalid-selection"],
+			[JSON.stringify({ path: "file:///%E0.sqlite" }), "invalid-path"],
+		] as const) {
+			for (const [other, value] of Object.entries(others)) vi.stubEnv(other, value);
+			if (withFlag) storageFlag({ memory: true });
+			vi.stubEnv(name, text);
+			for (const [label, select] of selections) {
+				assert.throws(select, (error: Error) => {
+					assert.ok(error instanceof StorageConfigError, label);
+					assert.deepEqual([error.source, error.field, error.reason], ["env", name, reason], label);
+					assert.equal(error.message.includes(secret), false, label);
+					return true;
+				});
+			}
+			setCliStorageSelection(undefined);
+			for (const other of [name, ...Object.keys(others)]) vi.stubEnv(other, "");
+		}
 	}
 });
 

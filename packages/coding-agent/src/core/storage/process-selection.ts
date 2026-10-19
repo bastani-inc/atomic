@@ -100,9 +100,29 @@ export function setCliStorageSelection(argument: StorageFlagArgument | undefined
 	};
 }
 
+/** Every set storage variable, parsed and checked even when another selection outranks it. */
+function environmentChoices(agentDir: string) {
+	const domainDefault = join(dirname(agentDir), "workflows", "journal.sqlite");
+	const read = (
+		field: string,
+		schema: typeof SessionStorageSelectionSchema | typeof StorageSelectionSchema,
+		defaultPath: string,
+	): ProcessStorageChoice | undefined => {
+		const text = environmentValue(field);
+		if (text === undefined) return undefined;
+		return choose(parseSelection(text, schema, "env", field), "env", field, agentDir, defaultPath);
+	};
+	return {
+		sessions: read(SESSIONS_STORAGE_ENV, SessionStorageSelectionSchema, domainDefault),
+		journal: read(WORKFLOWS_JOURNAL_ENV, StorageSelectionSchema, domainDefault),
+		shared: read(STORAGE_ENV, StorageSelectionSchema, join(dirname(agentDir), "storage.sqlite")),
+	};
+}
+
 /**
  * The process-level storage selection for one domain: `--storage`/`--storage-file`, then the domain
  * variable or its legacy path variable, then `ATOMIC_STORAGE`. `undefined` leaves the choice to settings.
+ * Every set storage variable is validated, whichever one applies.
  */
 export function selectProcessStorage(
 	domain: StorageDomain,
@@ -111,23 +131,21 @@ export function selectProcessStorage(
 ): ProcessStorageChoice | undefined {
 	const legacyField = domain === "sessions" ? ENV_SESSION_DIR : WORKFLOW_JOURNAL_PATH_ENV;
 	const legacy = environmentValue(legacyField);
-	const sharedDefault = join(dirname(agentDir), "storage.sqlite");
+	const environment = environmentChoices(agentDir);
 	const cli = registry[CLI_SELECTION];
 	if (cli !== undefined) {
 		if (legacy !== undefined) {
 			throw new StorageConfigError("cli", `${cli.field}, ${legacyField}`, "conflicting-overrides");
 		}
-		return choose(cli.value, "cli", cli.field, agentDir, sharedDefault);
+		return choose(cli.value, "cli", cli.field, agentDir, join(dirname(agentDir), "storage.sqlite"));
 	}
 	const domainField = domain === "sessions" ? SESSIONS_STORAGE_ENV : WORKFLOWS_JOURNAL_ENV;
-	const domainText = environmentValue(domainField);
-	if (domainText !== undefined) {
+	const domainChoice = domain === "sessions" ? environment.sessions : environment.journal;
+	if (domainChoice !== undefined) {
 		if (legacy !== undefined) {
 			throw new StorageConfigError("env", `${domainField}, ${legacyField}`, "conflicting-overrides");
 		}
-		const schema = domain === "sessions" ? SessionStorageSelectionSchema : StorageSelectionSchema;
-		const value = parseSelection(domainText, schema, "env", domainField);
-		return choose(value, "env", domainField, agentDir, join(dirname(agentDir), "workflows", "journal.sqlite"));
+		return domainChoice;
 	}
 	if (legacy !== undefined) {
 		if (domain === "journal")
@@ -138,10 +156,7 @@ export function selectProcessStorage(
 			throw new StorageConfigError("env", legacyField, "invalid-path");
 		}
 	}
-	const sharedText = environmentValue(STORAGE_ENV);
-	if (sharedText === undefined) return undefined;
-	const value = parseSelection(sharedText, StorageSelectionSchema, "env", STORAGE_ENV);
-	return choose(value, "env", STORAGE_ENV, agentDir, sharedDefault);
+	return environment.shared;
 }
 
 /** Whether the launching process selected this domain's storage, without validating the selection. */
