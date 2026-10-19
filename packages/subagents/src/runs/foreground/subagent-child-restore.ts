@@ -92,6 +92,8 @@ export type SubagentChildRestoreDeps = Pick<ExecutorDeps, "pi" | "config" | "dis
 export interface SubagentChildResumeRequest {
 	/** The prompt the reopened child runs next. */
 	readonly prompt: string;
+	/** Run after `prompt` when it steers a turn the child had not finished. */
+	readonly continuation?: string;
 }
 
 export type SubagentChildRestoreOutcome =
@@ -248,6 +250,7 @@ async function relaunchChild(
 		sessionDir: sessionManager.getSessionDir() || mkdtempSync(join(tmpdir(), "atomic-subagent-restore-")),
 		sessionManager,
 		resumeSession: true,
+		...(resume?.continuation ? { resumeContinuation: resume.continuation } : {}),
 		intercomEvents: deps.pi.events,
 		parentDepth: getCurrentSubagentDepth(ctx),
 		workflowStageSubagentGuard: isWorkflowStageOrchestrationContext(ctx),

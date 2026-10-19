@@ -130,6 +130,8 @@ export interface RunSyncOptions {
 	sessionManager?: SessionManager;
 	/** Reopen `sessionManager` as this child's own interrupted session rather than a fork. */
 	resumeSession?: boolean;
+	/** Queued as a follow-up to the task, when a resumed child's interrupted turn must continue past its steer. */
+	resumeContinuation?: string;
 	share?: boolean;
 	outputPath?: string;
 	outputMode?: OutputMode;

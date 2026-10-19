@@ -1,6 +1,9 @@
 import { WORKFLOW_SERIALIZABLE_DESCRIPTION, workflowSerializableTypeName } from "../../shared/serializable.js";
 import type { WorkflowExitOptions, WorkflowExitStatus } from "../../shared/types.js";
 
+/** Abort reason of a run killed by `/workflow kill` or the workflow tool; the run never resumes. */
+export const WORKFLOW_KILLED_ABORT_REASON = "workflow killed";
+
 const WORKFLOW_EXIT_SIGNAL = Symbol("atomic-workflows.workflow-exit-signal");
 const WORKFLOW_EXIT_STATUSES: ReadonlySet<WorkflowExitStatus> = new Set([
 	"completed",

@@ -1,7 +1,11 @@
-import type { CustomEntry, ExtensionAPI, ExtensionContext, SessionEntry } from "@bastani/atomic";
+import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@bastani/atomic";
+import {
+	isSubagentChildRecord,
+	observeSubagentChildRecord,
+	SUBAGENT_CHILD_RECORD_TYPE,
+} from "./subagent-child-card-state.js";
 
-/** Session entry type that durably records each background child a session launched (#3760). */
-export const SUBAGENT_CHILD_RECORD_TYPE = "subagent-child";
+export { isSubagentChildRecord, SUBAGENT_CHILD_RECORD_TYPE };
 
 export type SubagentChildOwner =
 	| { readonly kind: "session"; readonly sessionId: string }
@@ -52,7 +56,18 @@ export type SubagentChildRecordInput = Omit<SubagentChildRecord, "version" | "ch
 
 export interface SubagentChildRecordSink {
 	record(input: SubagentChildRecordInput): void;
+	/** Whether the owner is a workflow stage whose generation is closing for good, not merely interrupted. */
+	ownerEndedForGood?(): boolean;
 }
+
+/** `terminalStatus` of a child whose workflow stage finished, or whose run ended or was cancelled; never resumable. */
+export const SUBAGENT_CHILD_STAGE_CLOSED_STATUS = "stage-closed";
+
+/**
+ * Workflow-stage extension state the workflows extension sets before it closes a stage generation for good. Without
+ * it a closing stage was interrupted (Atomic exited, or the run was paused), and its children stay restorable (#3760).
+ */
+export const WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE = "atomic:workflow-stage-closed-for-good";
 
 export function subagentChildId(runId: string, index: number): string {
 	return `${runId}:${index}`;
@@ -80,6 +95,9 @@ export function createSubagentChildRecordSink(
 	ctx: Pick<ExtensionContext, "sessionManager" | "orchestrationContext">,
 ): SubagentChildRecordSink {
 	const owner = subagentChildOwner(ctx);
+	const orchestration = ctx.orchestrationContext;
+	const stageState =
+		orchestration?.kind === "workflow-stage" ? orchestration.messageAdmission?.extensionState : undefined;
 	let chain: Promise<void> = Promise.resolve();
 	return {
 		record(input) {
@@ -89,8 +107,10 @@ export function createSubagentChildRecordSink(
 				owner,
 				...input,
 			};
+			observeSubagentChildRecord(record);
 			chain = chain.then(() => pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record)).catch(() => undefined);
 		},
+		ownerEndedForGood: () => stageState?.has(WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE) === true,
 	};
 }
 
@@ -119,7 +139,9 @@ export async function recordSubagentChildStatus(
 	record: SubagentChildRecord,
 	terminalStatus: string,
 ): Promise<void> {
-	await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, { ...record, state: "terminal", terminalStatus });
+	const next: SubagentChildRecord = { ...record, state: "terminal", terminalStatus };
+	observeSubagentChildRecord(next);
+	await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, next);
 }
 
 /**
@@ -132,21 +154,8 @@ export async function recordSubagentChildGone(
 	record: SubagentChildRecord,
 ): Promise<void> {
 	const gone: SubagentChildRecord = { ...record, state: "terminal", terminalStatus: SUBAGENT_CHILD_GONE_STATUS };
+	observeSubagentChildRecord(gone);
 	await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, gone);
-}
-
-function isSubagentChildRecord(value: SessionEntry): value is CustomEntry<SubagentChildRecord> {
-	if (value.type !== "custom" || value.customType !== SUBAGENT_CHILD_RECORD_TYPE) return false;
-	const data = value.data as Partial<SubagentChildRecord> | undefined;
-	return (
-		data?.version === 1 &&
-		typeof data.childId === "string" &&
-		typeof data.runId === "string" &&
-		typeof data.index === "number" &&
-		typeof data.agent === "string" &&
-		typeof data.cwd === "string" &&
-		(data.state === "running" || data.state === "terminal")
-	);
 }
 
 /**

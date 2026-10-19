@@ -117,6 +117,8 @@ export interface ChildSpec {
 	readonly sessionManager?: SessionManager;
 	/** The child reopens its own interrupted session, so its unreconciled deliveries are recovered before the task. */
 	readonly resumeSession?: boolean;
+	/** Follow-up queued with the task prompt, so a steered child picks its interrupted turn back up afterwards. */
+	readonly resumeContinuation?: string;
 	readonly testSession?: boolean | TestSessionOptions;
 	readonly artifactJsonlPath?: string;
 	/**
@@ -429,7 +431,8 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 		messages.push({ role: "assistant", content, stopReason });
 		assistantMessages += 1;
 	};
-	return {
+	const followUps: string[] = [];
+	const session = {
 		sessionFile: sessionManager.getSessionFile(),
 		model: sessionModel,
 		thinkingLevel: testOptions.sessionThinkingLevel,
@@ -504,7 +507,12 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 			if (!testOptions.fallbackBeforeGate) emitFallback();
 			lastAssistantText = testOptions.output ?? "done";
 			await appendAssistant([{ type: "text", text: lastAssistantText }], "stop");
-			return lastAssistantText;
+			const followUp = followUps.shift();
+			return followUp === undefined ? lastAssistantText : session.prompt(followUp);
+		},
+		followUp: async (text: string) => {
+			followUps.push(text);
+			return "queued";
 		},
 		getLastAssistantText: () => {
 			const lastAssistant = [...messages].reverse().find((message) => {
@@ -533,6 +541,7 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 		startPendingRecovery: async () => ({ replayed: 0, dropped: 0, completions: 0, notices: [] }),
 		dispose: testOptions.dispose ?? (() => {}),
 	} as unknown as AgentSession;
+	return session;
 }
 
 type TranscriptSource = Parameters<NonNullable<TaskExecutionHooks["bindTranscript"]>>[0];
@@ -1184,6 +1193,7 @@ export class SubagentControlRuntime {
 			if (signals.abort.aborted) await terminate("abort");
 			if (signals.interrupt.aborted) await terminate("interrupt");
 			if (!termination && admitted.spec.resumeSession) await session.startPendingRecovery("resume");
+			if (!termination && admitted.spec.resumeContinuation) await session.followUp(admitted.spec.resumeContinuation);
 			if (!termination) await session.prompt(admitted.spec.task);
 			await terminating;
 			const stats = statsFor(session, admitted.identity.path);

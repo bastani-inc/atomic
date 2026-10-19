@@ -13,6 +13,7 @@ import {
 	recordSubagentChildStatus,
 	requestSubagentChildStop,
 	SUBAGENT_CHILD_GONE_STATUS,
+	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
 	type SubagentChildRecord,
 	type SubagentChildStopStatus,
 	subagentChildOwner,
@@ -23,11 +24,18 @@ import { restoreSubagentChild, type SubagentChildRestoreDeps } from "./subagent-
 export const SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT =
 	"Continue where you left off. If you believe you are finished with your original task (or a redefined task if the user told you), stop.";
 
-/** Settled children that can never be resumed: stopped by owner or batch cancellation, or reported gone (#3760). */
+/** Settled children that can never be resumed: cancelled for good, ended with their workflow stage, or reported gone (#3760). */
 const NON_RESUMABLE_STATUSES: ReadonlyMap<string, string> = new Map([
 	["killed", "it was cancelled for good (an owner or batch cancellation, or the removed kill action)"],
+	[
+		SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
+		"its workflow stage ended (the stage finished, or its run ended or was cancelled)",
+	],
 	[SUBAGENT_CHILD_GONE_STATUS, "it did not survive a restart and was reported gone"],
 ]);
+
+/** Children stopped part-way through a turn: resume continues that turn, after any steer message. */
+const INTERRUPTED_STATUSES: ReadonlySet<string> = new Set(["paused", "quit", "interrupted"]);
 
 export interface SubagentRunControlRequest {
 	readonly action: SubagentRunControlAction;
@@ -234,9 +242,15 @@ async function resumeChild(
 			`${label(record)} is already running as task ${record.taskId}; pause or quit it first.`,
 		);
 	const message = request.message?.trim() ? request.message : undefined;
-	const outcome = await restoreSubagentChild(deps, ctx, record.childId, {
-		prompt: message ?? SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT,
-	});
+	const interrupted = record.state === "running" || INTERRUPTED_STATUSES.has(record.terminalStatus ?? "");
+	const outcome = await restoreSubagentChild(
+		deps,
+		ctx,
+		record.childId,
+		message && interrupted
+			? { prompt: message, continuation: SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT }
+			: { prompt: message ?? SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT },
+	);
 	if (outcome.kind === "terminal") return errorResult(action, `${label(record)} is terminal and cannot be resumed.`);
 	if (outcome.kind === "unrestorable")
 		return errorResult(action, `${label(record)} could not be resumed: ${outcome.reason}.`);
@@ -247,7 +261,7 @@ async function resumeChild(
 				? " It has not reconnected to Intercom yet; its result still arrives as a task completion."
 				: "";
 	return controlResult(
-		`Resumed ${label(record)} from its own session as task ${outcome.taskId}${message ? ", with your message as its next prompt" : ""}.${intercom}`,
+		`Resumed ${label(record)} from its own session as task ${outcome.taskId}${message ? (interrupted ? ", with your message delivered before it continues its interrupted turn" : ", with your message as its new prompt") : ""}.${intercom}`,
 		{
 			action,
 			children: [childDetails(record, "running", outcome.taskId)],

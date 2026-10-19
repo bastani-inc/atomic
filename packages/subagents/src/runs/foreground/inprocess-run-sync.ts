@@ -284,6 +284,7 @@ export async function runSingleInProcess(
 		testSession: testSession,
 		sessionManager: options.sessionManager,
 		...(options.resumeSession ? { resumeSession: true } : {}),
+		...(options.resumeContinuation ? { resumeContinuation: options.resumeContinuation } : {}),
 		...(options.progressPath ? { progressPath: options.progressPath } : {}),
 		...(options.progressArtifactPath
 			? { progressArtifactPath: options.progressArtifactPath }

@@ -256,6 +256,8 @@ export interface Details {
 		| import("../../../coding-agent/src/core/tasks/contracts.js").ModelSingleResponse
 		| import("../../../coding-agent/src/core/tasks/contracts.js").ModelParallelResponse;
 	taskRecords?: import("../../../coding-agent/src/core/tasks/contracts.js").TaskRecord[];
+	/** The session that launched these children and holds their records, so a replayed card can find them. */
+	ownerSessionId?: string;
 	taskError?: string;
 	statusGroups?: SubagentStatusGroup[];
 	mode: SubagentRunMode | "management";

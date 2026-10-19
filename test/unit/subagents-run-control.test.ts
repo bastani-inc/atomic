@@ -14,9 +14,12 @@ import {
 	createSubagentChildRecordSink,
 	readSubagentChildRecords,
 	SUBAGENT_CHILD_RECORD_TYPE,
+	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
 	type SubagentChildRecord,
+	WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import {
+	restoreSubagentChildren,
 	SUBAGENT_AWAIT_INTERCOM_PEER_EVENT,
 	SUBAGENT_RELEASE_RESTORING_CHILD_EVENT,
 	SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
@@ -28,6 +31,7 @@ import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/
 import { SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT } from "../../packages/subagents/src/runs/foreground/subagent-run-control.js";
 import { runAgentTask } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import type { RunSyncOptions, SingleResult, SubagentToolResult } from "../../packages/subagents/src/shared/types.js";
+import { WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE as WORKFLOWS_STAGE_CLOSED_FOR_GOOD_STATE } from "../../packages/workflows/src/runs/foreground/stage-runner-controller.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
 const ORIGINAL_TASK = "original task";
@@ -46,7 +50,12 @@ const agent: AgentConfig = {
 
 interface Harness {
 	readonly cwd: string;
-	readonly host: AgentTaskHost;
+	host: AgentTaskHost;
+	readonly deps: ExecutorDeps;
+	/** The owner's workflow-stage extension state, for a harness whose owner is a workflow stage. */
+	readonly stageState?: Map<string, object>;
+	/** Close the owner's tasks as Atomic exiting, switching sessions, or a stage generation closing does, then reopen it. */
+	closeOwnerAndReopen(cause: "session-close" | "stage-close"): Promise<void>;
 	readonly sessionManager: SessionManager;
 	readonly ctx: ExtensionContext;
 	/** Every child run: the prompt it received and its options. */
@@ -67,12 +76,17 @@ afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-function harness(): Harness {
-	const cwd = makeTempDirectory("subagent-run-control-");
-	const host = new AgentTaskHost({
+function newHost(): AgentTaskHost {
+	return new AgentTaskHost({
 		scope: { kind: "session", sessionId: `run-control-${randomUUID()}` },
 		authorizeLaunch() {},
 	});
+}
+
+function harness(options: { stage?: boolean } = {}): Harness {
+	const cwd = makeTempDirectory("subagent-run-control-");
+	let host = newHost();
+	const stageState = options.stage ? new Map<string, object>() : undefined;
 	const sessionManager = SessionManager.inMemory(cwd);
 	const runs: Harness["runs"] = [];
 	const authorizations: string[] = [];
@@ -114,6 +128,15 @@ function harness(): Harness {
 	const state: Harness = {
 		cwd,
 		host,
+		get deps() {
+			return deps;
+		},
+		...(stageState ? { stageState } : {}),
+		async closeOwnerAndReopen(cause) {
+			await host.close(cause);
+			host = newHost();
+			state.host = host;
+		},
 		sessionManager,
 		ctx: {
 			cwd,
@@ -122,6 +145,21 @@ function harness(): Harness {
 			ui: {},
 			sessionManager,
 			getAgentTaskHost: () => host,
+			...(stageState
+				? {
+						orchestrationContext: {
+							kind: "workflow-stage",
+							workflowRunId: "wf-run",
+							workflowStageId: "stage-1",
+							workflowStageName: "build",
+							constraints: { disableWorkflowTool: true },
+							messageAdmission: {
+								extensionState: stageState,
+								boundary: { registerOwnedSubagentRun() {} },
+							},
+						},
+					}
+				: {}),
 			modelRegistry: { getAvailable: () => [], getAll: () => [], find: () => undefined },
 			model: undefined,
 			thinkingLevel: undefined,
@@ -181,7 +219,7 @@ function harness(): Harness {
 		});
 		return !original && state.settleAs === "error" ? { ...result, status: "error", error: "boom" } : result;
 	};
-	const executor = createSubagentExecutor({
+	const deps: ExecutorDeps = {
 		pi,
 		state: {
 			baseCwd: cwd,
@@ -198,7 +236,8 @@ function harness(): Harness {
 		expandTilde: (value) => value,
 		discoverAgents: () => ({ agents: [agent] }),
 		runtime: { runSync: runtime },
-	});
+	};
+	const executor = createSubagentExecutor(deps);
 	cleanups.push(async () => {
 		neverReleased.resolve();
 		await host.close("session-close");
@@ -307,10 +346,19 @@ test("resume with a message continues a paused child in the same run identity an
 	);
 	assert.equal(final.terminalStatus, "ok");
 	assert.equal(final.childSessionId, record.childSessionId);
+	assert.equal(
+		relaunch.options.resumeContinuation,
+		SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT,
+		"the paused turn continues after the steer",
+	);
 	const childTranscript = transcript(final);
 	assert.equal(occurrences(childTranscript, message), 1);
-	assert.equal(occurrences(childTranscript, ORIGINAL_TASK), 1);
-	assert.equal(occurrences(childTranscript, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT), 0);
+	assert.equal(occurrences(childTranscript, JSON.stringify(ORIGINAL_TASK)), 1);
+	assert.equal(occurrences(childTranscript, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT), 1);
+	assert.ok(
+		childTranscript.indexOf(message) < childTranscript.indexOf(SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT),
+		"the steer is delivered before the continuation",
+	);
 });
 
 test("quit stops a running child gracefully and resume without a message continues where it left off", async () => {
@@ -393,6 +441,8 @@ test("resume continues completed and failed children in the same run identity", 
 	await settled(h, resumedTaskId(first));
 	const completed = await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "ok");
 
+	assert.equal(h.runs.at(-1)?.options.resumeContinuation, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT);
+
 	h.settleAs = "error";
 	const second = await h.call({ action: "resume", id: record.childId, message: "try the edge case" });
 	assert.notEqual(second.isError, true, text(second));
@@ -413,10 +463,76 @@ test("resume continues completed and failed children in the same run identity", 
 		assert.equal(run.options.index, 0);
 		assert.equal(run.options.sessionManager?.getSessionId(), completed.childSessionId);
 	}
+	for (const run of h.runs.slice(2)) assert.equal(run.options.resumeContinuation, undefined, run.task);
 	const childTranscript = transcript(completed);
 	for (const message of ["finish up", "try the edge case", "once more"])
 		assert.equal(occurrences(childTranscript, message), 1);
+	assert.equal(
+		occurrences(childTranscript, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT),
+		1,
+		"only the interrupted turn is continued; a settled child gets exactly one fresh prompt per message",
+	);
 });
+
+test("resume without a message continues a finished child with the continuation prompt", async () => {
+	const h = harness();
+	const { record, taskId } = await h.launch("idle1");
+	await h.call({ action: "quit", id: record.childId });
+	await settled(h, taskId);
+	await settled(h, resumedTaskId(await h.call({ action: "resume", id: record.childId, message: "wrap up" })));
+	await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "ok");
+
+	const result = await h.call({ action: "resume", id: record.childId });
+	assert.notEqual(result.isError, true, text(result));
+	await settled(h, resumedTaskId(result));
+	assert.equal(h.runs.at(-1)?.task, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT);
+	assert.equal(h.runs.at(-1)?.options.resumeContinuation, undefined);
+	assert.equal(h.runs.at(-1)?.options.sessionManager?.getSessionId(), record.childSessionId);
+});
+
+test("a workflow stage generation closing for good ends its children, and resume names why (#3760)", async () => {
+	assert.equal(
+		WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE,
+		WORKFLOWS_STAGE_CLOSED_FOR_GOOD_STATE,
+		"subagents reads the state the workflows extension sets",
+	);
+	const h = harness({ stage: true });
+	const { record, taskId } = await h.launch("stage1");
+	assert.equal(record.owner.kind, "workflow-stage");
+	h.stageState?.set(WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE, { closedForGood: true });
+	const closing = h.host;
+	await h.closeOwnerAndReopen("stage-close");
+	const observed = await closing.waitForTask(taskId);
+	assert.ok(!observed.ok || observed.value.kind === "settled");
+	const ended = await h.waitForLatest(record.childId, (candidate) => candidate.state === "terminal");
+	assert.equal(ended.terminalStatus, SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
+
+	const result = await h.call({ action: "resume", id: record.childId });
+	assert.equal(result.isError, true);
+	assert.match(text(result), /is terminal and cannot be resumed: its workflow stage ended/);
+	assert.deepEqual(await restoreSubagentChildren(h.deps, h.ctx), [], "stage resume never restores it either");
+	assert.equal(h.runs.length, 1);
+});
+
+for (const [owner, cause] of [
+	["an interrupted workflow stage", "stage-close"],
+	["a session Atomic exited or switched away from", "session-close"],
+] as const) {
+	test(`children of ${owner} stay running and are restored when it is reopened (#3760)`, async () => {
+		const h = harness({ stage: cause === "stage-close" });
+		const { record } = await h.launch(`keep-${cause}`);
+		await h.closeOwnerAndReopen(cause);
+		await sleep(50);
+		assert.equal(h.latest(record.childId)?.state, "running", "closing the owner records nothing terminal");
+
+		const [outcome] = await restoreSubagentChildren(h.deps, h.ctx);
+		assert.equal(outcome?.kind, "restored", JSON.stringify(outcome));
+		assert.ok(outcome?.kind === "restored");
+		await settled(h, outcome.taskId);
+		assert.equal(h.runs.at(-1)?.options.runId, `keep-${cause}`);
+		assert.equal(h.runs.at(-1)?.options.sessionManager?.getSessionId(), record.childSessionId);
+	});
+}
 
 test("resume refuses a child that is still running", async () => {
 	const h = harness();

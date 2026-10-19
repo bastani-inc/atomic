@@ -23,6 +23,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { discoverAgents } from "../agents/agents.js";
 import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/foreground/notify.js";
+import { bindSubagentChildCards } from "../runs/foreground/subagent-child-card-state.js";
 import { subagentChildOwner } from "../runs/foreground/subagent-child-records.js";
 import {
 	awaitSubagentChildRestoration,
@@ -343,7 +344,12 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				state.lastUiContext = ctx;
 				ctx.ui.setToolsExpanded(false);
 			}
-			return executorForContext(ctx).execute(id, params, signal, onUpdate, ctx);
+			const ownerSessionId = subagentChildOwner(ctx).sessionId;
+			return executorForContext(ctx)
+				.execute(id, params, signal, onUpdate, ctx)
+				.then((result) =>
+					result.details?.taskResponse ? { ...result, details: { ...result.details, ownerSessionId } } : result,
+				);
 		};
 		const slashBridge = registerSlashSubagentBridge({
 			events: pi.events,
@@ -460,6 +466,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			cleanupSessionArtifacts(ctx);
 			clearPendingForegroundControlNotices(state);
 			restoreSlashFinalSnapshots(ctx.sessionManager.getEntries(), pi);
+			bindSubagentChildCards(ctx);
 		};
 		pi.on("session_start", (event, ctx) => {
 			if (!lifecycle.isCurrent()) return;

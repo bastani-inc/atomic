@@ -7,7 +7,7 @@ import type {
 	WorkflowSerializableValue,
 } from "../../shared/types.js";
 import type { ConcurrencyLimiter } from "../shared/concurrency.js";
-import { raceAbort } from "./executor-abort.js";
+import { raceAbort, WORKFLOW_KILLED_ABORT_REASON } from "./executor-abort.js";
 import {
 	askReadinessViaStageBroker,
 	RESUME_CONTINUATION_PROMPT,
@@ -328,7 +328,7 @@ export function createTrackedStageCaller(input: {
 			if (afterBudget.kind === "wrap_up") await runtime.budget.deliverWrapUp(runtime.name);
 			if (afterBudget.kind === "exhausted" && runtime.budget.enabled)
 				await runtime.budget.stopAtBoundaryAsync(runtime.name);
-			const finalizedArtifact = await runtime.innerCtx.__closeGeneration();
+			const finalizedArtifact = await runtime.innerCtx.__closeGeneration(true);
 			if (typeof result === "string" && finalizedArtifact !== undefined) result = finalizedArtifact as T;
 			await runtime.captureStageSessionMeta({ awaitDurable: true });
 			if (
@@ -421,7 +421,13 @@ export function createTrackedStageCaller(input: {
 				durableCheckpointError = { thrown: true, error: err };
 			}
 			try {
-				await runtime.innerCtx.__closeGeneration();
+				await runtime.innerCtx.__closeGeneration(
+					applyTerminalStageState !== undefined ||
+						runtime.state.stageClosedByWorkflowExit ||
+						runtime.state.skippedForParallelFailFast ||
+						runtime.exit.currentWorkflowExitAbortReason() !== undefined ||
+						runtime.signal.reason === WORKFLOW_KILLED_ABORT_REASON,
+				);
 				await runtime.captureStageSessionMeta({ awaitDurable: true });
 			} catch (err) {
 				durableCheckpointError ??= { thrown: true, error: err };

@@ -82,6 +82,8 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	transcriptComponent: ChatTranscriptComponent<ChatSessionHostEntry<TExtraEntry>>;
 	transcriptRenderSettingsKey = "";
 	renderIdentityIds = new WeakMap<object, number>();
+	/** Bumped when a rendered entry redraws itself (a tool renderer's `invalidate`), so its cached rows are rebuilt. */
+	entryRevisions = new WeakMap<object, number>();
 	nextRenderIdentityId = 1;
 	liveChat: LiveChatEntriesController;
 	editor: EditorComponent | undefined;

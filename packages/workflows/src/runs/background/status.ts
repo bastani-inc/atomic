@@ -1,5 +1,6 @@
 import { requireStoreDurableBackend } from "../../durable/store-backend.js";
 import { workflowObservationRuntime } from "../../shared/store-factory.js";
+import { WORKFLOW_KILLED_ABORT_REASON } from "../foreground/executor-abort.js";
 /**
  * Status, internal cancellation, and resume helpers for retained workflow runs.
  *
@@ -145,7 +146,7 @@ export async function killRun(
 	const previousStatus = run.status;
 
 	// Abort active executor (no-op if not registered)
-	const errorMessage = "workflow killed";
+	const errorMessage = WORKFLOW_KILLED_ABORT_REASON;
 	opts?.cancellation?.abort(runId, errorMessage);
 	if (selectedRunTerminalEvent(runId)?.kind === "failure") {
 		return { ok: true, runId, previousStatus };

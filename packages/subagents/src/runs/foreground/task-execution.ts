@@ -15,6 +15,7 @@ import type { AgentConfig } from "../../agents/agents.js";
 import type { RunSyncOptions, SingleResult, SubagentToolResult } from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
 import {
+	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
 	type SubagentChildRecordInput,
 	type SubagentChildRecordSink,
 	takeSubagentChildStop,
@@ -311,6 +312,8 @@ export async function runAgentTask(input: {
 					const stopped = takeSubagentChildStop(context.ref.taskId);
 					const stoppedByControl = stopped !== undefined && child.status === "interrupted";
 					if (!ownerClosed()) recordChild("terminal", stoppedByControl ? stopped : child.status);
+					else if (input.recordChild?.ownerEndedForGood?.())
+						recordChild("terminal", SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
 					input.onTerminal?.(child);
 					const text = input.outputText?.(child) ?? getSingleResultOutput(child);
 					retainTaskOutput(child, text, context.ref);
@@ -345,6 +348,8 @@ export async function runAgentTask(input: {
 				} catch (error) {
 					takeSubagentChildStop(context.ref.taskId);
 					if (!ownerClosed()) recordChild("terminal", "error");
+					else if (input.recordChild?.ownerEndedForGood?.())
+						recordChild("terminal", SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
 					throw error;
 				} finally {
 					// A refusal before session admission has no session resources to reap.

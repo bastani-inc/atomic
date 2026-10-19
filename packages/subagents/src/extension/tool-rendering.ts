@@ -1,6 +1,16 @@
 import { keyHintIfBound } from "@bastani/atomic";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { type Component, Container, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import {
+	subagentChildCardRecord,
+	subagentChildTranscript,
+	watchSubagentChildCard,
+} from "../runs/foreground/subagent-child-card-state.js";
+import {
+	SUBAGENT_CHILD_GONE_STATUS,
+	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
+	type SubagentChildRecord,
+} from "../runs/foreground/subagent-child-records.js";
 import { getBurstDisplay } from "../runs/foreground/subagent-executor-burst-display.js";
 import type { SubagentParamsLike } from "../runs/foreground/subagent-executor-types.js";
 import { subagentTaskResultLabel } from "../runs/foreground/task-execution.js";
@@ -9,7 +19,12 @@ import type { Details } from "../shared/types.js";
 import { renderLiveSubagentResult } from "../tui/render.js";
 
 type Theme = Parameters<typeof renderLiveSubagentResult>[2];
-type RenderContext = Parameters<typeof renderLiveSubagentResult>[3] & { toolCallId: string };
+type RenderContext = Parameters<typeof renderLiveSubagentResult>[3] & {
+	toolCallId: string;
+	invalidate: () => void;
+	isError?: boolean;
+};
+type ThemeColor = Parameters<Theme["fg"]>[0];
 
 const renderRequests = new WeakMap<object, SubagentParamsLike>();
 const displayText = (text: string) =>
@@ -21,6 +36,29 @@ function effectiveParallelTaskCount(tasks: Array<{ count?: unknown }> | undefine
 		const count = typeof task.count === "number" && Number.isInteger(task.count) && task.count >= 1 ? task.count : 1;
 		return total + count;
 	}, 0);
+}
+
+const SETTLED_VIEWS: Readonly<Record<string, { icon: string; label: string; color: ThemeColor }>> = {
+	ok: { icon: "✓", label: "Completed", color: "success" },
+	error: { icon: "✗", label: "Failed", color: "error" },
+	paused: { icon: "‖", label: "Paused (resumable)", color: "warning" },
+	quit: { icon: "■", label: "Quit (resumable)", color: "warning" },
+	interrupted: { icon: "○", label: "Interrupted (resumable)", color: "warning" },
+	killed: { icon: "✗", label: "Terminal · killed", color: "error" },
+	[SUBAGENT_CHILD_GONE_STATUS]: { icon: "✗", label: "Terminal · gone after a restart", color: "error" },
+	[SUBAGENT_CHILD_STAGE_CLOSED_STATUS]: { icon: "✗", label: "Terminal · its workflow stage ended", color: "error" },
+};
+
+/** What a launch card shows for its child's latest record, rather than the snapshot taken at launch. */
+function childStateView(record: SubagentChildRecord): { icon: string; label: string; color: ThemeColor } {
+	if (record.state === "running") return { icon: "∀", label: "Running in background", color: "accent" };
+	return (
+		SETTLED_VIEWS[record.terminalStatus ?? ""] ?? {
+			icon: "○",
+			label: `Stopped (${record.terminalStatus ?? "settled"})`,
+			color: "warning",
+		}
+	);
 }
 
 export function renderSubagentToolCall(args: SubagentParamsLike, theme: Theme, context: RenderContext): Component {
@@ -64,7 +102,7 @@ export function renderSubagentToolResult(
 	const runControl = result.details?.runControl;
 	if (runControl) {
 		const text = result.content.find((part) => part.type === "text");
-		const failed = (result as { isError?: boolean }).isError === true;
+		const failed = context.isError === true || (result as { isError?: boolean }).isError === true;
 		if (failed || runControl.children.length === 0)
 			return new Text(
 				theme.fg(
@@ -86,7 +124,7 @@ export function renderSubagentToolResult(
 				"dim",
 				`\n   ${displayText(child.childId)}${child.intercomTarget ? ` · ${displayText(child.intercomTarget)}` : ""}${options.expanded && child.taskId ? ` · ${displayText(child.taskId)}` : ""}`,
 			);
-			return state + identity;
+			return `${state}${identity}${child.state === "running" ? theme.fg("dim", "\n   continues in its original launch card") : ""}`;
 		});
 		if (runControl.message && options.expanded) lines.push(theme.fg("muted", displayText(runControl.message)));
 		return new Text(lines.join("\n"), 0, 0);
@@ -136,6 +174,39 @@ export function renderSubagentToolResult(
 						: `○ ${index + 1}. Skipped`,
 				);
 			const observation = outcome.observation;
+			const task = result.details?.taskRecords?.find((task) => task.ref.taskId === observation.taskId);
+			const childId = task?.launchOperationId;
+			watchSubagentChildCard(
+				context.state,
+				context.invalidate,
+				childId ?? observation.taskId,
+				result.details?.ownerSessionId,
+			);
+			const record = subagentChildCardRecord(childId, observation.taskId);
+			if (record) {
+				const view = childStateView(record);
+				const resumed = record.taskId !== undefined && record.taskId !== observation.taskId ? " · resumed" : "";
+				const identity = labels[index];
+				const name =
+					outcomes.length > 1 ? `${index + 1}. ${identity ? displayText(identity.agent) : "Agent"} · ` : "";
+				const transcript = options.expanded ? subagentChildTranscript(record) : undefined;
+				return [
+					theme.fg(view.color, `${view.icon} ${name}${view.label}${resumed}`),
+					theme.fg(
+						"dim",
+						`\n   ${displayText(formatModelThinking(task?.model, task?.thinking) || "model / thinking unavailable")}`,
+					),
+					options.expanded
+						? theme.fg(
+								"dim",
+								`\n   ${record.taskId ?? observation.taskId}${identity?.task ? ` · ${displayText(identity.task)}` : ""}`,
+							)
+						: "",
+					transcript?.length
+						? transcript.map((line) => `\n   ${theme.fg("muted", `│ ${displayText(line)}`)}`).join("")
+						: "",
+				].join("");
+			}
 			const state =
 				observation.kind === "yielded"
 					? request?.action === "wait"
@@ -167,7 +238,6 @@ export function renderSubagentToolResult(
 			const identity = labels[index];
 			const name = outcomes.length > 1 ? `${index + 1}. ${identity ? displayText(identity.agent) : "Agent"} · ` : "";
 			const summary = theme.fg(color, `${icon} ${name}${state}`);
-			const task = result.details?.taskRecords?.find((task) => task.ref.taskId === observation.taskId);
 			const model = theme.fg(
 				"dim",
 				`\n   ${displayText(formatModelThinking(task?.model, task?.thinking) || "model / thinking unavailable")}`,
@@ -211,5 +281,12 @@ export function renderSubagentToolResult(
 			0,
 		);
 	}
+	if (
+		context.isError &&
+		text?.type === "text" &&
+		!result.details?.results?.length &&
+		!result.details?.progress?.length
+	)
+		return new Text(theme.fg("error", `✗ ${displayText(text.text)}`), 0, 0);
 	return renderLiveSubagentResult(burst?.result ?? result, options, theme, context);
 }
