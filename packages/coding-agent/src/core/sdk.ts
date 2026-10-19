@@ -50,6 +50,7 @@ import { resolveSessionStore } from "./session-storage.js";
 import { SettingsManager } from "./settings-manager.ts";
 import { applyToolModifiers, getToolListError, isToolModifier } from "./settings-merge.js";
 import { ownedSettingsManagers } from "./settings-write-ownership.ts";
+import { validateProcessStorage } from "./storage/process-selection.js";
 import type { SessionStore } from "./storage/session/types.js";
 import { createChildCommandTaskOwner } from "./tasks/child-command-owner.js";
 import { time } from "./timings.ts";
@@ -184,6 +185,7 @@ async function constructAgentSession(
 ): Promise<CreateAgentSessionResult> {
 	const cwd = resolvePath(options.cwd ?? options.sessionManager?.getCwd() ?? process.cwd());
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
+	validateProcessStorage(agentDir);
 	let resourceLoader = options.resourceLoader;
 	// The concrete default can rediscover into private storage (including deferred
 	// CLI configuration). Custom discovery stays delegated; composition instantiates

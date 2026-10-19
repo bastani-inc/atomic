@@ -119,6 +119,11 @@ function environmentChoices(agentDir: string) {
 	};
 }
 
+/** Check every set storage variable, whether or not any selection uses it. */
+export function validateProcessStorage(agentDir: string): void {
+	environmentChoices(agentDir);
+}
+
 /**
  * The process-level storage selection for one domain: `--storage`/`--storage-file`, then the domain
  * variable or its legacy path variable, then `ATOMIC_STORAGE`. `undefined` leaves the choice to settings.
