@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.39-alpha.1] - 2026-10-19
+
 ### Added
 
 - Added RPC `delete_session` (`{"type":"delete_session","sessionId":"<id>"}`, or `{"type":"delete_session","id":"<id>"}` when `sessionId` is omitted), `RpcClient.deleteSession(sessionId)`, and `SessionManager.deleteSession(sessionId)` to delete a stored session and its entries from SQLite or JSONL storage. The session currently open in the process cannot be deleted and returns an error ([#3740](https://github.com/bastani-inc/atomic/issues/3740)).
