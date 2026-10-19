@@ -204,24 +204,26 @@ describe("strict model generation", () => {
 
 	it("sources both TypeSafe Jev classifiers from models.dev with the Danger-Zone context, images and headers", () => {
 		const result = runOpenRouterRetryFixture("classifier-429");
-		expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+		assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
 		const typesafeCatalog = JSON.parse(
 			readFileSync(join(result.outputPath, "providers/typesafe.all.json"), "utf8"),
-		) as Array<{ input?: string[] }>;
+		) as Array<{ id: string; name: string; contextWindow: number; headers?: Record<string, string>; input?: string[] }>;
 		const headers = { "TypeSafe-Danger-Zone-Long-Context": "true", "TypeSafe-Danger-Zone-Images": "true" };
-		expect(typesafeCatalog).toEqual([
-			expect.objectContaining({ id: "jev-1.14.0", name: "Jev 1.14", contextWindow: 262000, headers }),
-			expect.objectContaining({ id: "jev-latest", name: "Jev", contextWindow: 262000, headers }),
-		]);
+		assert.deepEqual(
+			typesafeCatalog.map(({ id, name, contextWindow, headers }) => ({ id, name, contextWindow, headers })),
+			[
+				{ id: "jev-1.14.0", name: "Jev 1.14", contextWindow: 262000, headers },
+				{ id: "jev-latest", name: "Jev", contextWindow: 262000, headers },
+			],
+		);
 		for (const model of typesafeCatalog) assert.deepEqual(model.input, ["text", "image"]);
 	});
 
 	it("fails strict generation when models.dev omits Jev 1.14", () => {
 		const result = runOpenRouterRetryFixture("classifier-missing-jev-1.14");
-		expect(result.status).toBe(1);
-		expect(`${result.stdout}\n${result.stderr}`).toContain(
-			"models.dev did not return decision model typesafe/jev-1.14.0",
-		);
+		const output = `${result.stdout}\n${result.stderr}`;
+		assert.equal(result.status, 1, output);
+		assert.ok(output.includes("models.dev did not return decision model typesafe/jev-1.14.0"), output);
 	});
 
 	it("does not retry a deterministic model-catalog response", () => {

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
 import { classify } from "../src/api/typesafe-system-one.ts";
-import { builtinModels, getBuiltinClassifierModels } from "../src/providers/all.ts";
-import type { ClassifierContext, ClassifierModel, ImageContent } from "../src/types.ts";
+import { builtinModels, getBuiltinClassifierModels } from "../src/providers/all.js";
+import type { ClassifierContext, ClassifierModel, ImageContent } from "../src/types.js";
 
 const DANGER_ZONE_HEADERS = ["typesafe-danger-zone-long-context", "typesafe-danger-zone-images"];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -136,9 +136,14 @@ describe("TypeSafe System One", () => {
 
 	it("lists jev-latest and jev-1.14.0 with long context and image input", () => {
 		const jev = getBuiltinClassifierModels("typesafe");
-		expect(jev.map((entry) => entry.id)).toEqual(["jev-1.14.0", "jev-latest"]);
+		assert.deepEqual(
+			jev.map((entry) => entry.id),
+			["jev-1.14.0", "jev-latest"],
+		);
 		for (const entry of jev) {
-			expect(entry).toMatchObject({ api: "typesafe-system-one", contextWindow: 262000, input: ["text", "image"] });
+			assert.equal(entry.api, "typesafe-system-one");
+			assert.equal(entry.contextWindow, 262000);
+			assert.deepEqual(entry.input, ["text", "image"]);
 		}
 	});
 

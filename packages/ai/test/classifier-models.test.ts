@@ -119,18 +119,18 @@ describe("Models with classifier models", () => {
 		const ids = ["jev-1.14.0", "jev-latest"] as const;
 		const jev = ids.map((id) => getBuiltinClassifierModel("typesafe", id));
 		for (const [index, id] of ids.entries()) {
-			expect(jev[index]).toMatchObject({
-				type: "classifier",
-				id,
-				api: "typesafe-system-one",
-				provider: "typesafe",
-				contextWindow: 262000,
-			});
-			expect(models.getModel("typesafe", id)).toBeUndefined();
-			expect(models.getModelOfType("classifier", "typesafe", id)).toEqual(jev[index]);
+			const model = jev[index];
+			assert(model, `missing typesafe/${id}`);
+			assert.equal(model.type, "classifier");
+			assert.equal(model.id, id);
+			assert.equal(model.api, "typesafe-system-one");
+			assert.equal(model.provider, "typesafe");
+			assert.equal(model.contextWindow, 262000);
+			assert.equal(models.getModel("typesafe", id), undefined);
+			assert.deepEqual(models.getModelOfType("classifier", "typesafe", id), model);
 		}
-		expect(getBuiltinClassifierModels("typesafe")).toEqual(jev);
-		expect(getAllBuiltinModels("typesafe")).toEqual(jev);
+		assert.deepEqual(getBuiltinClassifierModels("typesafe"), jev);
+		assert.deepEqual(getAllBuiltinModels("typesafe"), jev);
 	});
 
 	it("rejects images for classifier models without image input before calling the provider", async () => {

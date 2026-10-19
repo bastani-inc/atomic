@@ -1,5 +1,6 @@
+import assert from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
-import { classify } from "../src/api/cloudflare-workers-ai-system-one.ts";
+import { classify } from "../src/api/cloudflare-workers-ai-system-one.js";
 import { createModels } from "../src/models.ts";
 import { getBuiltinClassifierModel } from "../src/providers/all.ts";
 import { cloudflareWorkersAIProvider } from "../src/providers/cloudflare-workers-ai.ts";
@@ -118,12 +119,12 @@ describe("Cloudflare Workers AI System One", () => {
 			{ ...auth, fetch },
 		);
 
-		expect(textOnly.stopReason).toBe("stop");
-		expect(headers).toHaveLength(1);
-		expect(headers[0]?.has("typesafe-danger-zone-long-context")).toBe(false);
-		expect(headers[0]?.has("typesafe-danger-zone-images")).toBe(false);
-		expect(withImage.stopReason).toBe("error");
-		expect(withImage.errorMessage).toBe("Cloudflare Workers AI does not support image input");
+		assert.equal(textOnly.stopReason, "stop");
+		assert.equal(headers.length, 1);
+		assert.equal(headers[0]?.has("typesafe-danger-zone-long-context"), false);
+		assert.equal(headers[0]?.has("typesafe-danger-zone-images"), false);
+		assert.equal(withImage.stopReason, "error");
+		assert.equal(withImage.errorMessage, "Cloudflare Workers AI does not support image input");
 	});
 
 	it.each([
