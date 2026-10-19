@@ -7,6 +7,7 @@ import { afterEach, test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
@@ -34,8 +35,9 @@ import { runAgentTask } from "../../packages/subagents/src/runs/foreground/task-
 import type { RunSyncOptions, SingleResult, SubagentToolResult } from "../../packages/subagents/src/shared/types.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
-import { resumeRun } from "../../packages/workflows/src/runs/background/status.js";
+import { killRun, pauseRun, resumeRun } from "../../packages/workflows/src/runs/background/status.js";
 import { run as runWorkflow } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
@@ -64,6 +66,8 @@ interface Harness {
 	readonly deps: ExecutorDeps;
 	/** The owner's workflow-stage extension state, for a harness whose owner is a workflow stage. */
 	readonly stageState?: Map<string, object>;
+	/** The owner's workflow-stage generation boundary; a stage session closes it when its generation ends. */
+	readonly stageBoundary?: WorkflowStageAdmissionBoundary;
 	/** Close the owner's tasks as Atomic exiting, switching sessions, or a stage generation closing does, then reopen it. */
 	closeOwnerAndReopen(cause: "session-close" | "stage-close"): Promise<void>;
 	readonly sessionManager: SessionManager;
@@ -97,6 +101,7 @@ function harness(options: { stage?: boolean } = {}): Harness {
 	const cwd = makeTempDirectory("subagent-run-control-");
 	let host = newHost();
 	const stageState = options.stage ? new Map<string, object>() : undefined;
+	const stageBoundary = options.stage ? new WorkflowStageAdmissionBoundary() : undefined;
 	const sessionManager = SessionManager.inMemory(cwd);
 	const runs: Harness["runs"] = [];
 	const authorizations: string[] = [];
@@ -142,6 +147,7 @@ function harness(options: { stage?: boolean } = {}): Harness {
 			return deps;
 		},
 		...(stageState ? { stageState } : {}),
+		...(stageBoundary ? { stageBoundary } : {}),
 		async closeOwnerAndReopen(cause) {
 			await host.close(cause);
 			host = newHost();
@@ -165,7 +171,8 @@ function harness(options: { stage?: boolean } = {}): Harness {
 							constraints: { disableWorkflowTool: true },
 							messageAdmission: {
 								extensionState: stageState,
-								boundary: { registerOwnedSubagentRun() {}, seal() {} },
+								boundary: stageBoundary,
+								isOpen: () => stageBoundary?.isOpen() === true,
 							},
 						},
 					}
@@ -564,30 +571,45 @@ test("children of a workflow stage paused by a quit, Atomic exit or session swit
 	assert.equal(h.runs.at(-1)?.options.sessionManager?.getSessionId(), record.childSessionId);
 });
 
-test("a workflow quit pauses the stage, keeps its subagent resumable, and a finished stage then closes it for good (#3760)", async () => {
+interface StageRun {
+	readonly runId: string;
+	readonly store: ReturnType<typeof createWorkflowStore>;
+	readonly registry: ReturnType<typeof createStageControlRegistry>;
+	readonly cancellation: ReturnType<typeof createCancellationRegistry>;
+	readonly execution: ReturnType<typeof runWorkflow>;
+	/** Let the stage's current prompt finish, so the stage completes. */
+	finish(): void;
+}
+
+/** Run a one-stage workflow whose stage session is the harness owner: same orchestration context, boundary and task host. */
+async function startStageRun(h: Harness, runId: string): Promise<StageRun> {
 	const backend = await createMemoryTestBackend();
 	setDurableBackend(backend);
 	cleanups.push(async () => setDurableBackend(undefined));
-	const h = harness({ stage: true });
-	const { record, taskId } = await h.launch("wfquit1");
+	const boundary = h.stageBoundary;
+	assert.ok(boundary);
 	const promptStarted = Promise.withResolvers<void>();
 	const finishStage = Promise.withResolvers<void>();
 	let rejectPrompt: ((reason: Error) => void) | undefined;
-	let prompts = 0;
+	let streaming = false;
 	const session: StageSessionRuntime = {
 		async prompt() {
-			prompts += 1;
+			streaming = true;
 			promptStarted.resolve();
-			await new Promise<void>((resolve, reject) => {
-				rejectPrompt = reject;
-				if (prompts > 1) void finishStage.promise.then(resolve);
-			});
+			try {
+				await new Promise<void>((resolve, reject) => {
+					rejectPrompt = reject;
+					void finishStage.promise.then(resolve);
+				});
+			} finally {
+				streaming = false;
+			}
 		},
 		async steer() {},
 		async followUp() {},
 		subscribe: () => () => {},
 		sessionFile: undefined,
-		sessionId: "wf-stage-session",
+		sessionId: `${runId}-stage-session`,
 		async setModel() {},
 		setThinkingLevel() {},
 		cycleModel: async () => undefined,
@@ -596,7 +618,9 @@ test("a workflow quit pauses the stage, keeps its subagent resumable, and a fini
 		model: undefined,
 		thinkingLevel: "medium",
 		messages: [] as AgentSession["messages"],
-		isStreaming: false,
+		get isStreaming() {
+			return streaming;
+		},
 		navigateTree: async () => ({ cancelled: false }),
 		compact: (async () => ({})) as unknown as StageSessionRuntime["compact"],
 		abortCompaction() {},
@@ -607,6 +631,9 @@ test("a workflow quit pauses the stage, keeps its subagent resumable, and a fini
 		getLastAssistantText: () => "done",
 		pauseTasks: () => h.host.pauseTasks(),
 		resumeTasks: () => h.host.resumeTasks(),
+		// As AgentSession does: the stage generation's admission boundary seals, then closes.
+		sealWorkflowStageGeneration: () => boundary.seal(),
+		closeWorkflowStageGeneration: () => boundary.close(),
 	};
 	// The stage's subagents extension shares this stage session's orchestration context and task host.
 	const stageSession = Object.assign(session, {
@@ -618,10 +645,10 @@ test("a workflow quit pauses the stage, keeps its subagent resumable, and a fini
 	});
 	const store = createWorkflowStore();
 	const registry = createStageControlRegistry();
-	const runId = "wfquit-run";
+	const cancellation = createCancellationRegistry();
 	const execution = runWorkflow(
 		workflow({
-			name: "stage-subagent-quit",
+			name: "stage-subagents",
 			description: "",
 			inputs: {},
 			outputs: {},
@@ -635,13 +662,22 @@ test("a workflow quit pauses the stage, keeps its subagent resumable, and a fini
 			runId,
 			store,
 			stageControlRegistry: registry,
+			cancellation,
 			durableBackend: backend,
 			adapters: { agentSession: { create: async () => stageSession } },
 		},
 	);
 	await promptStarted.promise;
+	return { runId, store, registry, cancellation, execution, finish: () => finishStage.resolve() };
+}
 
-	assert.equal((await quitRun(runId, { store, stageControlRegistry: registry })).ok, true);
+test("a workflow quit pauses the stage, keeps its subagent resumable, and a finished stage then closes it for good (#3760)", async () => {
+	const h = harness({ stage: true });
+	const { record, taskId } = await h.launch("wfquit1");
+	const stage = await startStageRun(h, "wfquit-run");
+	const controls = { store: stage.store, stageControlRegistry: stage.registry };
+
+	assert.equal((await quitRun(stage.runId, controls)).ok, true);
 	const observed = await h.host.waitForTask(taskId);
 	assert.ok(observed.ok && observed.value.kind === "settled");
 	assert.equal("cause" in observed.value.result ? observed.value.result.cause : "", "parent-handoff");
@@ -649,13 +685,97 @@ test("a workflow quit pauses the stage, keeps its subagent resumable, and a fini
 	assert.equal(quit.terminalStatus, SUBAGENT_CHILD_STAGE_PAUSED_STATUS, "a quit stage subagent is never killed");
 	assert.equal(h.stageState?.has(WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE), false);
 
-	assert.equal((await resumeRun(runId, { store, stageControlRegistry: registry })).ok, true);
+	assert.equal((await resumeRun(stage.runId, { ...controls, message: "continue" })).ok, true);
 	const resumed = await h.call({ action: "resume", id: record.childId });
 	assert.notEqual(resumed.isError, true, text(resumed));
 	await settled(h, resumedTaskId(resumed));
-	finishStage.resolve();
-	assert.equal((await execution).status, "completed");
+	stage.finish();
+	assert.equal((await stage.execution).status, "completed");
 	assert.equal(h.stageState?.has(WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE), true, "the finished stage closed for good");
+	assert.equal(
+		h.latest(record.childId)?.terminalStatus,
+		"ok",
+		"a child resumed before the stage ended keeps its result",
+	);
+});
+
+test("a stage-paused subagent ends with its workflow stage when the resumed stage finishes, and resume names why (#3760)", async () => {
+	const h = harness({ stage: true });
+	const { record } = await h.launch("stagedone1");
+	const stage = await startStageRun(h, "stagedone-run");
+	const controls = { store: stage.store, stageControlRegistry: stage.registry };
+
+	assert.equal((await pauseRun(stage.runId, controls)).ok, true);
+	const paused = await h.waitForLatest(record.childId, (candidate) => candidate.state === "terminal");
+	assert.equal(paused.terminalStatus, SUBAGENT_CHILD_STAGE_PAUSED_STATUS);
+	assert.equal((await resumeRun(stage.runId, { ...controls, message: "continue" })).ok, true);
+	await sleep(50);
+	assert.equal(h.stageState?.has(WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE), false, "the resumed stage is still running");
+	assert.equal(h.latest(record.childId)?.terminalStatus, SUBAGENT_CHILD_STAGE_PAUSED_STATUS);
+	stage.finish();
+	assert.equal((await stage.execution).status, "completed");
+
+	const ended = await h.waitForLatest(
+		record.childId,
+		(candidate) => candidate.terminalStatus !== paused.terminalStatus,
+	);
+	assert.equal(ended.state, "terminal");
+	assert.equal(ended.terminalStatus, SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
+	const result = await h.call({ action: "resume", id: record.childId });
+	assert.equal(result.isError, true);
+	assert.match(text(result), /is terminal and cannot be resumed: its workflow stage ended/);
+	assert.deepEqual(await restoreSubagentChildren(h.deps, h.ctx), [], "stage resume never restores it either");
+	assert.equal(h.runs.length, 1);
+});
+
+test("a stage-paused subagent of a quit workflow ends with its stage when the run is then killed (#3760)", async () => {
+	const h = harness({ stage: true });
+	const { record } = await h.launch("stagekill1");
+	const stage = await startStageRun(h, "stagekill-run");
+
+	assert.equal((await quitRun(stage.runId, { store: stage.store, stageControlRegistry: stage.registry })).ok, true);
+	const quit = await h.waitForLatest(record.childId, (candidate) => candidate.state === "terminal");
+	assert.equal(quit.terminalStatus, SUBAGENT_CHILD_STAGE_PAUSED_STATUS);
+	assert.equal((await killRun(stage.runId, { store: stage.store, cancellation: stage.cancellation })).ok, true);
+	assert.equal((await stage.execution).status, "killed");
+
+	const ended = await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus !== quit.terminalStatus);
+	assert.equal(ended.terminalStatus, SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
+	const result = await h.call({ action: "resume", id: record.childId });
+	assert.equal(result.isError, true);
+	assert.match(text(result), /is terminal and cannot be resumed: its workflow stage ended/);
+});
+
+test("subagents the parent paused or quit stay resumable when their workflow stage closes for good (#3760)", async () => {
+	const h = harness({ stage: true });
+	const pausedChild = (await h.launch("stageown-paused")).record;
+	const quitChild = (await h.launch("stageown-quit")).record;
+	const stagePausedChild = (await h.launch("stageown-stage")).record;
+	assert.notEqual((await h.call({ action: "pause", id: pausedChild.childId })).isError, true);
+	assert.notEqual((await h.call({ action: "quit", id: quitChild.childId })).isError, true);
+	await h.waitForLatest(pausedChild.childId, (candidate) => candidate.terminalStatus === "paused");
+	await h.waitForLatest(quitChild.childId, (candidate) => candidate.terminalStatus === "quit");
+	const stage = await startStageRun(h, "stageown-run");
+	const controls = { store: stage.store, stageControlRegistry: stage.registry };
+
+	assert.equal((await pauseRun(stage.runId, controls)).ok, true);
+	await h.waitForLatest(stagePausedChild.childId, (candidate) => candidate.state === "terminal");
+	assert.equal((await resumeRun(stage.runId, { ...controls, message: "continue" })).ok, true);
+	stage.finish();
+	assert.equal((await stage.execution).status, "completed");
+	await h.waitForLatest(
+		stagePausedChild.childId,
+		(candidate) => candidate.terminalStatus === SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
+	);
+
+	assert.equal(h.latest(pausedChild.childId)?.terminalStatus, "paused");
+	assert.equal(h.latest(quitChild.childId)?.terminalStatus, "quit");
+	for (const child of [pausedChild, quitChild]) {
+		const result = await h.call({ action: "resume", id: child.childId });
+		assert.notEqual(result.isError, true, text(result));
+		assert.match(text(result), new RegExp(`Resumed worker \\(${child.childId}`));
+		await settled(h, resumedTaskId(result));
+	}
 });
 
 for (const [owner, cause] of [

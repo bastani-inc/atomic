@@ -3,6 +3,7 @@ import {
 	isSubagentChildRecord,
 	observeSubagentChildRecord,
 	SUBAGENT_CHILD_RECORD_TYPE,
+	subagentChildCardRecord,
 } from "./subagent-child-card-state.js";
 
 export { isSubagentChildRecord, SUBAGENT_CHILD_RECORD_TYPE };
@@ -104,16 +105,32 @@ export function subagentChildOwner(
 		: { kind: "session", sessionId };
 }
 
-/** Append child records to the owning session in launch order. */
+/**
+ * Append child records to the owning session in launch order. A child its workflow stage's pause stopped, and that
+ * nothing resumed since, ends with the stage when that stage generation closes for good (#3760).
+ */
 export function createSubagentChildRecordSink(
 	pi: Pick<ExtensionAPI, "appendEntry">,
 	ctx: Pick<ExtensionContext, "sessionManager" | "orchestrationContext">,
 ): SubagentChildRecordSink {
 	const owner = subagentChildOwner(ctx);
 	const orchestration = ctx.orchestrationContext;
-	const stageState =
-		orchestration?.kind === "workflow-stage" ? orchestration.messageAdmission?.extensionState : undefined;
+	const admission = orchestration?.kind === "workflow-stage" ? orchestration.messageAdmission : undefined;
+	const ownerEndedForGood = () => admission?.extensionState.has(WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE) === true;
 	let chain: Promise<void> = Promise.resolve();
+	const append = (record: SubagentChildRecord) => {
+		observeSubagentChildRecord(record);
+		chain = chain.then(() => pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record)).catch(() => undefined);
+	};
+	const endWithStage = (childId: string) => {
+		const latest = subagentChildCardRecord(childId, "");
+		if (
+			ownerEndedForGood() &&
+			latest?.state === "terminal" &&
+			latest.terminalStatus === SUBAGENT_CHILD_STAGE_PAUSED_STATUS
+		)
+			append({ ...latest, terminalStatus: SUBAGENT_CHILD_STAGE_CLOSED_STATUS });
+	};
 	return {
 		record(input) {
 			const record: SubagentChildRecord = {
@@ -122,10 +139,13 @@ export function createSubagentChildRecordSink(
 				owner,
 				...input,
 			};
-			observeSubagentChildRecord(record);
-			chain = chain.then(() => pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record)).catch(() => undefined);
+			append(record);
+			const stageClose = admission?.boundary.closeSignal;
+			if (record.terminalStatus !== SUBAGENT_CHILD_STAGE_PAUSED_STATUS || !stageClose) return;
+			if (stageClose.aborted) endWithStage(record.childId);
+			else stageClose.addEventListener("abort", () => endWithStage(record.childId), { once: true });
 		},
-		ownerEndedForGood: () => stageState?.has(WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE) === true,
+		ownerEndedForGood,
 	};
 }
 
