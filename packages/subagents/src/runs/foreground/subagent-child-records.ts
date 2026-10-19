@@ -97,15 +97,11 @@ const ENDED_STATUSES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Whether a workflow stage closing for good ends this settled child: every one does, completed, failed, interrupted or
- * paused, except a child the parent quit, which stays resumable. Running children end when their task settles.
+ * Whether a workflow stage closing for good ends this settled child: every one does, completed, failed, interrupted,
+ * paused or quit. Running children end when their task settles.
  */
 function endsWithStage(record: SubagentChildRecord): boolean {
-	return (
-		record.state === "terminal" &&
-		record.terminalStatus !== "quit" &&
-		!ENDED_STATUSES.has(record.terminalStatus ?? "")
-	);
+	return record.state === "terminal" && !ENDED_STATUSES.has(record.terminalStatus ?? "");
 }
 
 export function subagentChildId(runId: string, index: number): string {
@@ -154,8 +150,8 @@ interface StageChildren {
 const stageChildren = new WeakMap<AbortSignal, StageChildren>();
 
 /**
- * Watch the children a workflow stage owns, so that when the stage generation closes for good every settled child that
- * the parent did not quit is recorded `stage-closed`: resume then names why it cannot continue (#3760).
+ * Watch the children a workflow stage owns, so that when the stage generation closes for good every settled child,
+ * quit ones included, is recorded `stage-closed`: resume then names why it cannot continue (#3760).
  */
 export function watchWorkflowStageSubagentChildren(
 	pi: Pick<ExtensionAPI, "appendEntry">,

@@ -32,6 +32,7 @@ import { createSubagentExecutor } from "../../packages/subagents/src/runs/foregr
 import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import { SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT } from "../../packages/subagents/src/runs/foreground/subagent-run-control.js";
 import { runAgentTask } from "../../packages/subagents/src/runs/foreground/task-execution.js";
+import { createExecutionScheduler } from "../../packages/subagents/src/runs/shared/parallel-utils.js";
 import type { RunSyncOptions, SingleResult, SubagentToolResult } from "../../packages/subagents/src/shared/types.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
@@ -82,6 +83,8 @@ interface Harness {
 	resumedRunsWait: boolean;
 	call(params: Parameters<ReturnType<typeof createSubagentExecutor>["execute"]>[1]): Promise<SubagentToolResult>;
 	launch(runId: string): Promise<{ record: SubagentChildRecord; taskId: TaskId }>;
+	/** Admit a child through `schedule`, as a parallel launch does, without waiting for it to start. */
+	admit(runId: string, schedule?: (dispatch: () => Promise<void>) => void): Promise<TaskId>;
 	latest(childId: string): SubagentChildRecord | undefined;
 	waitForLatest(childId: string, accept: (record: SubagentChildRecord) => boolean): Promise<SubagentChildRecord>;
 }
@@ -190,6 +193,11 @@ function harness(options: { stage?: boolean } = {}): Harness {
 		resumedRunsWait: false,
 		call: (params) => executor.execute("run-control", params, new AbortController().signal, undefined, state.ctx),
 		async launch(runId) {
+			const taskId = await state.admit(runId);
+			const record = await state.waitForLatest(`${runId}:0`, (candidate) => candidate.launchLeafId !== undefined);
+			return { record, taskId };
+		},
+		async admit(runId, schedule) {
 			const response = await runAgentTask({
 				host,
 				cwd,
@@ -208,11 +216,11 @@ function harness(options: { stage?: boolean } = {}): Harness {
 				wait: { kind: "background" },
 				recordChild: createSubagentChildRecordSink(pi, state.ctx),
 				runtime: { runSync: runtime },
+				...(schedule ? { schedule } : {}),
 			});
 			assert.equal(response.kind, "admitted");
 			assert.ok(response.kind === "admitted");
-			const record = await state.waitForLatest(`${runId}:0`, (candidate) => candidate.launchLeafId !== undefined);
-			return { record, taskId: response.observation.taskId as TaskId };
+			return response.observation.taskId as TaskId;
 		},
 		latest: (childId) => readSubagentChildRecords(sessionManager.getEntries()).get(childId),
 		async waitForLatest(childId, accept) {
@@ -753,7 +761,7 @@ test("a stage-paused subagent of a quit workflow ends with its stage when the ru
 	assert.match(text(result), /is terminal and cannot be resumed: its workflow stage ended/);
 });
 
-test("a workflow stage closing for good ends its completed, failed and parent-paused subagents, but not quit ones (#3760)", async () => {
+test("a workflow stage closing for good ends every subagent it launched, quit ones included, and resume names why (#3760)", async () => {
 	const h = harness({ stage: true });
 	const settledAs = async (runId: string, status: "ok" | "error") => {
 		const { record, taskId } = await h.launch(runId);
@@ -778,7 +786,7 @@ test("a workflow stage closing for good ends its completed, failed and parent-pa
 	assert.equal((await stage.execution).status, "completed");
 	const runsBefore = h.runs.length;
 
-	for (const child of [completed, failed, paused]) {
+	for (const child of [completed, failed, paused, quit]) {
 		const ended = await h.waitForLatest(
 			child.childId,
 			(candidate) => candidate.terminalStatus === SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
@@ -792,13 +800,28 @@ test("a workflow stage closing for good ends its completed, failed and parent-pa
 		);
 	}
 	assert.equal(h.runs.length, runsBefore, "no refused child was relaunched");
-
-	assert.equal(h.latest(quit.childId)?.terminalStatus, "quit", "nothing quit-ed becomes terminal");
-	const resumed = await h.call({ action: "resume", id: quit.childId });
-	assert.notEqual(resumed.isError, true, text(resumed));
-	assert.match(text(resumed), /Resumed worker \(stageend-quit:0/);
-	await settled(h, resumedTaskId(resumed));
 });
+
+for (const [owner, cause] of [
+	["an interrupted workflow stage", "stage-close"],
+	["a session Atomic exited or switched away from", "session-close"],
+] as const) {
+	test(`a quit child of ${owner} stays quit and resumable when it is reopened (#3760)`, async () => {
+		const h = harness({ stage: cause === "stage-close" });
+		const { record, taskId } = await h.launch(`quitkeep-${cause}`);
+		await h.call({ action: "quit", id: record.childId });
+		await settled(h, taskId);
+		await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "quit");
+		await h.closeOwnerAndReopen(cause);
+		await sleep(50);
+		assert.equal(h.latest(record.childId)?.terminalStatus, "quit");
+
+		const resumed = await h.call({ action: "resume", id: record.childId });
+		assert.notEqual(resumed.isError, true, text(resumed));
+		await settled(h, resumedTaskId(resumed));
+		assert.equal(h.runs.at(-1)?.options.sessionManager?.getSessionId(), record.childSessionId);
+	});
+}
 
 test("pause and quit right after resume stop the resumed child, not its previous record (#3760)", async () => {
 	for (const [action, target] of [
@@ -833,8 +856,80 @@ test("pause and quit right after resume stop the resumed child, not its previous
 		assert.equal(latest.terminalStatus, action === "pause" ? "paused" : "quit");
 	}
 });
+test("a child still queued when its workflow stage closes for good ends with the stage, and resume names why (#3760)", async () => {
+	const h = harness({ stage: true });
+	const schedule = createExecutionScheduler(1);
+	await h.admit("closedq-sibling", schedule);
+	await h.admit("closedq", schedule);
+	await h.waitForLatest("closedq-sibling:0", (candidate) => candidate.launchLeafId !== undefined);
+	h.stageState?.set(WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE, { closedForGood: true });
+	await h.closeOwnerAndReopen("stage-close");
 
-test("quit and pause treat a child its resumed workflow stage paused as already paused, and quit keeps it resumable (#3760)", async () => {
+	const ended = await h.waitForLatest("closedq:0", (candidate) => candidate.state === "terminal");
+	assert.equal(ended.terminalStatus, SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
+	const result = await h.call({ action: "resume", id: "closedq:0" });
+	assert.equal(result.isError, true);
+	assert.match(text(result), /is terminal and cannot be resumed: its workflow stage ended/);
+	assert.deepEqual(
+		h.runs.filter((run) => run.options.runId === "closedq"),
+		[],
+		"the queued child never started",
+	);
+});
+
+test("pause and quit reach a parallel child still queued behind its concurrency limit; it never starts until resume starts it (#3760)", async () => {
+	for (const [action, target] of [
+		["pause", "all"],
+		["quit", "all"],
+		["pause", "id"],
+	] as const) {
+		const h = harness();
+		const schedule = createExecutionScheduler(1);
+		const runId = `queued-${action}-${target}`;
+		const childId = `${runId}:0`;
+		const runningTask = await h.admit(`${runId}-sibling`, schedule);
+		const queuedTask = await h.admit(runId, schedule);
+		await h.waitForLatest(`${runId}-sibling:0`, (candidate) => candidate.launchLeafId !== undefined);
+		const startsOf = () => h.runs.filter((run) => run.options.runId === runId);
+		assert.equal(startsOf().length, 0, "the child waits behind its sibling");
+		const status = action === "pause" ? "paused" : "quit";
+
+		const stopped = await h.call(target === "id" ? { action, id: childId } : { action, all: true });
+		assert.notEqual(stopped.isError, true, `${action} ${target}: ${text(stopped)}`);
+		assert.deepEqual(
+			stopped.details.runControl?.children
+				.filter((child) => child.childId === childId)
+				.map((child) => [child.taskId, child.state]),
+			[[queuedTask, status]],
+			`${action} ${target} reaches the queued child`,
+		);
+		assert.equal(h.latest(childId)?.state, "terminal");
+		assert.equal(h.latest(childId)?.terminalStatus, status);
+
+		if (target === "id") await h.call({ action: "quit", id: `${runId}-sibling:0` });
+		await settled(h, runningTask);
+		await sleep(50);
+		assert.equal(startsOf().length, 0, `${action} ${target}: the child did not start once its slot freed`);
+		assert.equal(h.latest(childId)?.terminalStatus, status);
+
+		const resumed = await h.call({ action: "resume", id: childId });
+		assert.notEqual(resumed.isError, true, `${action} ${target}: ${text(resumed)}`);
+		const resumedTask = resumedTaskId(resumed);
+		assert.notEqual(resumedTask, queuedTask);
+		const started = await h.waitForLatest(
+			childId,
+			(candidate) => candidate.taskId === resumedTask && candidate.childSessionId !== undefined,
+		);
+		assert.equal(started.state, "running");
+		assert.deepEqual(
+			startsOf().map((run) => run.task),
+			[ORIGINAL_TASK],
+			"resume starts the child on its original task",
+		);
+	}
+});
+
+test("quit and pause treat a child its resumed workflow stage paused as already paused; quit keeps it resumable until the stage closes for good (#3760)", async () => {
 	const h = harness({ stage: true });
 	const byId = (await h.launch("stagequitid")).record;
 	const byAll = (await h.launch("stagequitall")).record;
@@ -865,15 +960,24 @@ test("quit and pause treat a child its resumed workflow stage paused as already 
 	);
 	for (const child of [byId, byAll]) assert.equal(h.latest(child.childId)?.terminalStatus, "quit");
 
+	assert.equal((await quitRun(stage.runId, controls)).ok, true);
+	assert.equal((await resumeRun(stage.runId, { ...controls, message: "continue" })).ok, true);
+	for (const child of [byId, byAll])
+		assert.equal(h.latest(child.childId)?.terminalStatus, "quit", "a /workflow quit and resume keep quit children");
+
 	stage.finish();
 	assert.equal((await stage.execution).status, "completed");
-	await sleep(50);
+	const runsBefore = h.runs.length;
 	for (const child of [byId, byAll]) {
-		assert.equal(h.latest(child.childId)?.terminalStatus, "quit", "a quit child outlives its closed stage");
-		const resumed = await h.call({ action: "resume", id: child.childId });
-		assert.notEqual(resumed.isError, true, text(resumed));
-		await settled(h, resumedTaskId(resumed));
+		await h.waitForLatest(
+			child.childId,
+			(candidate) => candidate.terminalStatus === SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
+		);
+		const refused = await h.call({ action: "resume", id: child.childId });
+		assert.equal(refused.isError, true, text(refused));
+		assert.match(text(refused), /is terminal and cannot be resumed: its workflow stage ended/);
 	}
+	assert.equal(h.runs.length, runsBefore, "no quit child of the closed stage was relaunched");
 });
 
 for (const [owner, cause] of [

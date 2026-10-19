@@ -18,8 +18,10 @@ import {
 	type SubagentChildRecord,
 	type SubagentChildStopStatus,
 	subagentChildOwner,
+	takeSubagentChildStop,
 } from "./subagent-child-records.js";
 import { restoreSubagentChild, type SubagentChildRestoreDeps } from "./subagent-child-restore.js";
+import { isQueuedSubagentChild, stopQueuedSubagentChild } from "./task-execution.js";
 
 /** The prompt a resumed child runs when `resume` carries no message, as a resumed workflow stage receives. */
 export const SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT =
@@ -146,7 +148,13 @@ async function stopLiveChild(
 	requestSubagentChildStop(taskId, status);
 	const cancelled = await host.cancelTask(taskId, "parent-handoff");
 	if (!cancelled.ok) return cancelled.error.message;
+	// A child cancelled while still queued never starts, so nothing else records how it stopped.
+	const queued = stopQueuedSubagentChild(taskId);
 	await waitForSettlement(host, taskId);
+	if (queued) {
+		takeSubagentChildStop(taskId);
+		await recordSubagentChildStatus(deps.pi, record, status);
+	}
 	if (status === "paused") {
 		const hold = await holdChildTargets(
 			deps.pi.events,
@@ -169,11 +177,14 @@ async function stopChildren(
 	const live = liveTaskIds(host);
 	const records = ownedRecords(ctx);
 	const isLive = (record: SubagentChildRecord) => record.taskId !== undefined && live.has(record.taskId);
+	const isQueued = (record: SubagentChildRecord) =>
+		record.taskId !== undefined && isQueuedSubagentChild(record.taskId);
 	let targets: SubagentChildRecord[];
 	if (request.all) {
-		targets = [...records.values()].filter(
-			(record) => isLive(record) || (action === "quit" && stoppedAs(record) === "paused"),
-		);
+		// Queued children are stopped first, so stopping a running sibling cannot free a slot that starts them.
+		targets = [...records.values()]
+			.filter((record) => isLive(record) || (action === "quit" && stoppedAs(record) === "paused"))
+			.sort((a, b) => Number(isQueued(b)) - Number(isQueued(a)));
 		if (targets.length === 0)
 			return controlResult(`No running subagent children to ${action}.`, { action, children: [] });
 	} else {
@@ -256,8 +267,8 @@ async function resumeChild(
 		ctx,
 		record.childId,
 		message && interrupted
-			? { prompt: message, continuation: SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT }
-			: { prompt: message ?? SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT },
+			? { prompt: message, continuation: SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT, message }
+			: { prompt: message ?? SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT, ...(message ? { message } : {}) },
 	);
 	if (outcome.kind === "terminal") return errorResult(action, `${label(record)} is terminal and cannot be resumed.`);
 	if (outcome.kind === "unrestorable")

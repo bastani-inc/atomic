@@ -118,6 +118,7 @@ async function interruptedRun(cwd: string): Promise<InterruptedRun> {
 		() => {
 			running = readSubagentChildRecords(stageSession.getEntries()).get("lane-run:0");
 			assert.equal(running?.state, "running");
+			assert.ok(running?.childSessionFile, "its own session is recorded once it starts");
 		},
 		{ timeout: RECORD_WAIT_MS, interval: 10 },
 	);

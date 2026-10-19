@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { AgentTaskHost, OperationId, WaitPolicy } from "@bastani/atomic";
 import type {
 	Cleanup,
@@ -190,6 +191,47 @@ export function taskResponseRecords(
 	}
 }
 
+/** How a child that pause or quit stopped before the host dispatched it is started later, on its original launch. */
+export interface QueuedSubagentChildStart {
+	/** Whether its original launch had Intercom supervisor authorization. */
+	readonly usesIntercom: boolean;
+	start(launch: {
+		readonly host: AgentTaskHost;
+		readonly recordChild: SubagentChildRecordSink;
+		/** Delivered after its original task, which it never started. */
+		readonly message?: string;
+		readonly supervisorAuthorization?: RunSyncOptions["supervisorAuthorization"];
+		readonly onTerminal: () => void;
+	}): Promise<ModelSingleResponse>;
+}
+
+/** Children the host admitted but has not dispatched yet, by task id; `stopped` once they never will be. */
+const queuedChildren = new Map<string, { readonly start: QueuedSubagentChildStart; stopped: boolean }>();
+
+/** Whether the host admitted this task but has not dispatched it yet. */
+export function isQueuedSubagentChild(taskId: string): boolean {
+	return queuedChildren.get(taskId)?.stopped === false;
+}
+
+/**
+ * Call after cancelling a task: whether it was still queued. A cancelled task is never dispatched, so nothing records
+ * how it stopped; the caller records it, and {@link takeStoppedQueuedSubagentChild} later starts it.
+ */
+export function stopQueuedSubagentChild(taskId: string): boolean {
+	const queued = queuedChildren.get(taskId);
+	if (queued?.stopped !== false) return false;
+	queued.stopped = true;
+	return true;
+}
+
+/** Take how to start a child that was stopped before it started, while this process still has it. */
+export function takeStoppedQueuedSubagentChild(taskId: string): QueuedSubagentChildStart | undefined {
+	const queued = queuedChildren.get(taskId);
+	if (!queued?.stopped) return undefined;
+	queuedChildren.delete(taskId);
+	return queued.start;
+}
+
 /** Bind the real foreground runner once; only its registered observation may yield. */
 export async function runAgentTask(input: {
 	host: AgentTaskHost;
@@ -205,11 +247,6 @@ export async function runAgentTask(input: {
 	schedule?: (dispatch: () => Promise<void>) => void;
 	outputText?: (result: SingleResult) => string;
 	recordChild?: SubagentChildRecordSink;
-	/**
-	 * Record the child running under its new task id once the host admits it. A restored child already has a record,
-	 * and run control must not read its previous task id as the child's.
-	 */
-	recordAdmission?: boolean;
 	/** Launch operation id; a resumed child needs a fresh one, since the host replays a repeated operation. */
 	operation?: string;
 }): Promise<ModelSingleResponse> {
@@ -237,6 +274,70 @@ export async function runAgentTask(input: {
 				: {}),
 			...(terminalStatus ? { terminalStatus } : {}),
 		});
+	let dispatched = false;
+	let admittedTaskId: TaskId | undefined;
+	// The host skips a queued dispatch once its task was cancelled: record how a child that never started ended.
+	const settleSkipped = async (taskId: TaskId) => {
+		const queued = queuedChildren.get(taskId);
+		if (queued?.stopped !== false) return;
+		if (input.recordChild?.ownerEndedForGood?.()) {
+			queuedChildren.delete(taskId);
+			recordChildTask(taskId, "terminal", SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
+			return;
+		}
+		const observed = await input.host.waitForTask(taskId);
+		if (
+			observed.ok &&
+			observed.value.kind === "settled" &&
+			observed.value.result.kind === "cancelled" &&
+			observed.value.result.cause === "user"
+		) {
+			queuedChildren.delete(taskId);
+			recordChildTask(taskId, "terminal", "killed");
+			return;
+		}
+		// Its owner closed or paused: it stays restorable, and restoring it in this process starts it.
+		queued.stopped = true;
+	};
+	let scheduled = false;
+	const schedule = input.schedule
+		? (dispatch: () => Promise<void>) => {
+				scheduled = true;
+				input.schedule?.(() =>
+					dispatch().finally(() => {
+						if (!dispatched && admittedTaskId !== undefined) void settleSkipped(admittedTaskId);
+					}),
+				);
+			}
+		: undefined;
+	const queuedStart = (): QueuedSubagentChildStart => ({
+		usesIntercom: input.options.supervisorAuthorization !== undefined,
+		start: (launch) =>
+			runAgentTask({
+				host: launch.host,
+				cwd: input.cwd,
+				agents: input.agents,
+				agent: input.agent,
+				task: launch.message ? `${input.task}\n\n${launch.message}` : input.task,
+				...(input.intentTask === undefined ? {} : { intentTask: input.intentTask }),
+				options: {
+					...input.options,
+					signal: undefined,
+					interruptSignal: undefined,
+					intercomDetachSignal: undefined,
+					onIntercomDetachCommit: undefined,
+					onUpdate: undefined,
+					onDetachedExit: undefined,
+					supervisorAuthorization: launch.supervisorAuthorization,
+				},
+				wait: { kind: "background" },
+				runtime: input.runtime,
+				onTerminal: launch.onTerminal,
+				...(input.outputText ? { outputText: input.outputText } : {}),
+				recordChild: launch.recordChild,
+				operation: `${input.options.runId}:${input.options.index ?? 0}:resume:${randomUUID()}`,
+			}),
+	});
 	input.options.modelRoute?.assertCurrent();
 	const started = await input.host.startAgentTask(
 		{
@@ -248,6 +349,8 @@ export async function runAgentTask(input: {
 		},
 		(input.operation ?? `${input.options.runId}:${input.options.index ?? 0}`) as OperationId,
 		(context) => {
+			dispatched = true;
+			queuedChildren.delete(context.ref.taskId);
 			const cleaned = Promise.withResolvers<Cleanup>();
 			let executionBound = false;
 			const ownerClosed = () =>
@@ -382,11 +485,14 @@ export async function runAgentTask(input: {
 			});
 			return { result, cleanup: cleaned.promise };
 		},
-		input.schedule,
+		schedule,
 	);
 	if (!started.ok) return { kind: "unstarted", reason: { kind: "rejected", error: started.error } };
-	// Its execution waits for `registered`, so nothing it records can precede this.
-	if (input.recordAdmission) recordChildTask(started.value.taskId, "running");
+	admittedTaskId = started.value.taskId;
+	// Its execution waits for `registered`, so nothing it records can precede this. Pause and quit then find a child
+	// still queued behind its concurrency limit, and run control never reads a resumed child's previous task id.
+	recordChildTask(started.value.taskId, "running");
+	if (scheduled && !dispatched) queuedChildren.set(started.value.taskId, { start: queuedStart(), stopped: false });
 	// A queued execution has no runSync listener yet. Release its observation too,
 	// without spending a concurrency slot or cancelling its owner-bound execution.
 	const yieldForIntercom = () => {

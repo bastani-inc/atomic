@@ -216,7 +216,7 @@ async function launchInterruptedChild(cwd: string, sessionManager: SessionManage
 	let running: SubagentChildRecord | undefined;
 	while (!running && Date.now() < deadline) {
 		running = readSubagentChildRecords(sessionManager.getEntries()).get(`${runId}:0`);
-		if (running?.state !== "running") {
+		if (running?.state !== "running" || !running.childSessionFile) {
 			running = undefined;
 			await sleep(10);
 		}
