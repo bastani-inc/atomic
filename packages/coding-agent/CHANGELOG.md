@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.39-alpha.2] - 2026-10-19
+
 ### Fixed
 
 - Fullscreen overlays that show chat messages (the workflow graph, stage chat, and the `/tasks` transcript) no longer write OSC 133 shell-integration marks to the terminal, so terminals keep the program status without Atomic re-sending an identical OSC 7501 report on every overlay frame ([#3739](https://github.com/bastani-inc/atomic/issues/3739))
