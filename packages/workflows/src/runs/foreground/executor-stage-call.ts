@@ -158,6 +158,7 @@ export function createTrackedStageCaller(input: {
 		}
 
 		const trackStageLifecycle = !runtime.state.stageFinalized;
+		runtime.state.sessionCheckpointed = false;
 		let applyTerminalStageState: (() => void) | undefined;
 		// Set only alongside the successful "completed" terminal state, so a failed
 		// final durable checkpoint can replace it without touching a real
@@ -468,6 +469,7 @@ export function createTrackedStageCaller(input: {
 			) {
 				await runtime.releaseLiveHandle().catch(() => {});
 			}
+			runtime.state.sessionCheckpointed = finalizationError === undefined;
 			input.limiter.release();
 			if (finalizationError !== undefined) throwFinalizationError(finalizationError.error);
 			delete runtime.state.readinessController;

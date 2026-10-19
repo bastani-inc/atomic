@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import v8 from "node:v8";
+import vm from "node:vm";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
@@ -25,6 +27,20 @@ import { defaultTheme, makeTestTui, visibleText } from "./overlay-graph-helpers.
 
 let tempDir = "";
 let sessionStore: JsonlSessionStore;
+
+function collectGarbage(): void {
+	const existing = (globalThis as { gc?: () => void }).gc;
+	if (typeof existing === "function") {
+		existing();
+		return;
+	}
+	v8.setFlagsFromString("--expose-gc");
+	try {
+		(vm.runInNewContext("gc") as () => void)();
+	} finally {
+		v8.setFlagsFromString("--no-expose-gc");
+	}
+}
 
 beforeEach(async () => {
 	tempDir = mkdtempSync(join(tmpdir(), "atomic-completed-inspection-"));
@@ -428,6 +444,52 @@ describe("completed workflow inspection", () => {
 		assert.equal(invalidatedHandle.isDisposed, true);
 		assert.equal(registry.get(testRunId("invalidate-chat"), "first-source"), undefined);
 		assert.equal(registry.get(testRunId("invalidate-chat"), "second-source")?.sessionFile, retainedSessionFile);
+	});
+
+	test("does not keep a chat handle alive after the registry drops it (#3622)", async () => {
+		const backend = await createMemoryTestBackend();
+		const store = createStore();
+		const registry = createStageControlRegistry();
+		await backend.commitWorkflowRegistration({
+			workflowId: testRunId("dropped-chat"),
+			name: "completed-flow",
+			inputs: {},
+			createdAt: 1,
+			status: "completed",
+		});
+		await backend.commitCheckpoint({
+			kind: "stage",
+			workflowId: testRunId("dropped-chat"),
+			checkpointId: "stage:1",
+			name: "final",
+			replayKey: "stage:final:1",
+			sessionFile: retainedSession("dropped-chat-stage"),
+			sessionId: "dropped-chat-stage-session",
+			completedAt: 2,
+			topology: completedTopology("final-source"),
+		});
+		const deps = {
+			durableBackend: backend,
+			store,
+			stageControlRegistry: registry,
+			adapters: {
+				agentSession: {
+					async create() {
+						return mockSession();
+					},
+				},
+			},
+		};
+		assert.equal((await openCompletedDurableWorkflow(testRunId("dropped-chat"), deps)).ok, true);
+		const handle = new WeakRef(registry.get(testRunId("dropped-chat"), "final-source")!);
+
+		await registry.clearDetached();
+		// A WeakRef target stays alive until the job that created the ref ends.
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		collectGarbage();
+
+		assert.equal(registry.get(testRunId("dropped-chat"), "final-source"), undefined);
+		assert.equal(handle.deref(), undefined, "inspection still owns the handle the registry dropped");
 	});
 
 	test("opens a retained internal stage transcript without exposing it in ordinary history", async () => {

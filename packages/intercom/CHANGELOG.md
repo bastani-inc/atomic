@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Added
+
+- A workflow stage whose session was released from memory when its run ended stays in the session list under its previous name, as `closed · reply: post-mortem only`, while the session that ran the workflow is open. An ask to it reopens the stage's saved conversation, runs one turn with the question, and returns that turn's answer, or a failure if the conversation cannot be reopened; a plain send reaches the session that ran the workflow ([#3622](https://github.com/bastani-inc/atomic/issues/3622) by [@vishnu363728](https://github.com/vishnu363728)).
+
 ## [0.9.38] - 2026-10-18
 
 ### Fixed

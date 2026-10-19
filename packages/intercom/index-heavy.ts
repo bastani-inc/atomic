@@ -47,6 +47,7 @@ import { createWorkflowStageDeliveryFailureHandler } from "./workflow-stage-deli
 import { normalizeGroup, normalizeGroups, resolveHomeGroup } from "./group.js";
 import { clearRuntimeIntercomGroup, setRuntimeIntercomGroup } from "./runtime-group.js";
 import { reconnectDelayMs } from "./reconnect-backoff.js";
+import { isReleasedStageAnnouncement, RELEASED_STAGE_EVENT, ReleasedStagePeers } from "./released-stage-peers.js";
 import { SupervisorAuthorizationRegistry } from "./supervisor-authorization-registry.js";
 if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL === "1") {
   process.env.ATOMIC_INTERCOM_HEAVY_IMPORTED = "1";
@@ -172,6 +173,15 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   const pendingStageRoutes = new Map<string, PendingStageRouteRegistration>();
   const pendingStageRouteClients = new Map<string, PendingStageRouteClientState>();
   const supervisorAuthorizations = new SupervisorAuthorizationRegistry();
+  const releasedStagePeers = new ReleasedStagePeers({
+    prepare: () => spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs),
+    createClient: (returnAddress) => new IntercomClient(returnAddress),
+    cwd: () => getLiveContext()?.cwd ?? process.cwd(),
+    relay: (from, message, channel) => {
+      const liveContext = getLiveContext();
+      if (liveContext) handleIncomingMessage(liveContext, from, message, channel);
+    },
+  });
   let inboundFlushTimer: NodeJS.Timeout | null = null;
   function rejectReplyWaiter(error: Error): void { replyWaiters.rejectAll(error); }
   function clearReconnectTimer(): void { if (reconnectTimer) clearTimeout(reconnectTimer); reconnectTimer = null; }
@@ -1007,6 +1017,14 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     payload.completion = completion;
     void completion.catch(() => {});
   });
+  pi.events.on(RELEASED_STAGE_EVENT, (payload) => {
+    // A released stage keeps a peer only while the host session that ran it is live.
+    if (typeof payload !== "object" || payload === null || !isReleasedStageAnnouncement(payload)) return;
+    if (!getLiveContext()) return;
+    void releasedStagePeers.adopt(payload).catch(() => {
+      // The peer retries its own connection; an ask meanwhile fails as an unknown session.
+    });
+  });
   async function pendingStageNotificationClient(runId: string): Promise<IntercomClient> {
     const route = pendingStageRoutes.get(runId);
     if (route === undefined) throw new Error("Pending workflow route is unavailable");
@@ -1085,7 +1103,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   registerIntercomLifecycle(pi, {
     config,
     client: () => client,
-    disconnectAuxiliaryClients: disconnectPendingStageRouteClients,
+    disconnectAuxiliaryClients: async () => {
+      await disconnectPendingStageRouteClients();
+      await releasedStagePeers.disconnectAll();
+    },
     setClient: (value) => {
       client = value;
       if (value === null) clientRegistrationGroup = null;

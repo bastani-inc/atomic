@@ -35,6 +35,16 @@ export class StageMessageAdmission {
 		return admission.then((release) => this.runAdmitted(operation, release));
 	}
 
+	/** True while a message is queued for, or running in, the admission queue or owns a turn. */
+	isBusy(): boolean {
+		return (
+			this.tail !== undefined ||
+			this.starting !== undefined ||
+			this.owned !== undefined ||
+			this.startedGenerations.length > 0
+		);
+	}
+
 	isOwned(session: StageSessionRuntime): boolean {
 		return this.session === session && this.owned?.state === "owned";
 	}

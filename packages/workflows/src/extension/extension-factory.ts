@@ -17,6 +17,7 @@ import { trackLiveHostGeneration } from "./live-host-generation.js";
 import { registerPendingStageIntercomBridge } from "./pending-stage-intercom.js";
 import { createPostMortemHandleResolver } from "./postmortem-deps.js";
 import type { ExtensionAPI, PiCommandContext, PiEventContext } from "./public-types.js";
+import { registerReleasedStageIntercomRoutes } from "./released-stage-intercom-route.js";
 import { dynamicTextRenderComponent } from "./render-component.js";
 import { type RunEndPayload, type RunStartPayload, renderRunBanner, renderRunSummary } from "./renderers.js";
 import { buildRuntimeAdapters } from "./wiring.js";
@@ -149,10 +150,17 @@ function factory(pi: ExtensionAPI): void {
 	const postMortemHandleResolver = createPostMortemHandleResolver(postMortemResolverDeps);
 	const disposeCompletedRoutes = registerCompletedStageIntercomAskRouter(pi, postMortemHandleResolver);
 	const disposePendingRoutes = registerPendingStageIntercomBridge(pi, store);
+	const disposeReleasedRoutes = registerReleasedStageIntercomRoutes(
+		pi,
+		runState.stageControlRegistry,
+		store,
+		postMortemHandleResolver,
+	);
 	pi.on?.("session_start", (_event, ctx) => {
 		if (!ctx) return;
 		registerExtensionContextRetirementEffect(ctx, disposeCompletedRoutes);
 		registerExtensionContextRetirementEffect(ctx, disposePendingRoutes);
+		registerExtensionContextRetirementEffect(ctx, disposeReleasedRoutes);
 	});
 	const overlay = buildWorkflowOverlay(pi, owner, postMortemHandleResolver, () => adapters.sessionStore);
 	const workflowCommands = new Map<string, WorkflowCommandHandler>();

@@ -1,4 +1,10 @@
-import type { AgentSession, CreateAgentSessionOptions, PromptOptions, SettingsManager } from "@bastani/atomic";
+import type {
+	AgentSession,
+	CreateAgentSessionOptions,
+	PromptOptions,
+	SessionStore,
+	SettingsManager,
+} from "@bastani/atomic";
 import type { WorkflowPendingStageRouteReadiness } from "../../shared/pending-stage-route-readiness.js";
 import type {
 	CompleteStageOpts,
@@ -216,6 +222,10 @@ export interface InternalStageContext extends StageContext {
 	__agentSession(): AgentSession | undefined;
 	/** Internal: SDK queued steering/follow-up message count, when available. */
 	__pendingMessageCount(): number;
+	/** Internal: store of a caller-supplied session manager, which outlives the live session. */
+	__persistedSessionStore(): SessionStore | undefined;
+	/** Internal: synchronous; true when no message, turn, retry, pause, or queue work needs the live session. */
+	__idleForRelease(): boolean;
 	/** Internal: selected/effective model and fallback attempt metadata. */
 	__modelFallbackMeta(): StageModelFallbackMeta;
 	/** Internal: register a controlled-pause request. */

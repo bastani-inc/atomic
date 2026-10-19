@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A finished in-process subagent child no longer keeps its disposed agent session reachable for as long as its task exists. The task keeps the child's transcript entries for inspection but releases the session itself, so a long-lived parent session that launches many children stops accumulating their memory ([#3622](https://github.com/bastani-inc/atomic/issues/3622) by [@vishnu363728](https://github.com/vishnu363728)).
+
 ## [0.9.38] - 2026-10-18
 
 ### Breaking Changes

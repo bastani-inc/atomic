@@ -1,7 +1,8 @@
+import { isReopenableSession } from "../../shared/session-transcript.js";
 import { isTerminalStage } from "./executor-scheduler.js";
 import type { LiveStageRuntime } from "./executor-stage-types.js";
 import type { AgentSessionEventListener, StageControlHandle } from "./stage-control-registry.js";
-import { StageQueuedUserMessageBuffer } from "./stage-queued-user-messages.js";
+import { StageQueuedUserMessageBuffer, stageQueuedUserMessageCount } from "./stage-queued-user-messages.js";
 import type { StageUserMessageDeliveryAction, StageUserMessagePreparation } from "./stage-runner-types.js";
 import { StageToolExecutionBuffer } from "./stage-tool-execution-buffer.js";
 
@@ -38,8 +39,36 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 		toolExecutions.record(event);
 		queuedUserMessages.record(event);
 	});
+	// Mounted chats subscribe through this handle for as long as they exist, hidden or not.
+	let externalSubscribers = 0;
+	const countSubscription = (unsubscribe: () => void): (() => void) => {
+		externalSubscribers += 1;
+		let active = true;
+		return () => {
+			if (!active) return;
+			active = false;
+			externalSubscribers -= 1;
+			unsubscribe();
+		};
+	};
+	// Release must not interleave with an operation that already holds this handle.
+	let activeOperations = 0;
+	const tracked = async <T>(operation: () => Promise<T>): Promise<T> => {
+		activeOperations += 1;
+		try {
+			return await operation();
+		} finally {
+			activeOperations -= 1;
+		}
+	};
+	const sessionSaved = (): boolean =>
+		runtime.stageSnapshot.status === "completed" &&
+		runtime.state.stageFinalized &&
+		runtime.state.sessionCheckpointed &&
+		!runtime.state.liveHandleReleased &&
+		!runtime.state.stageClosedByWorkflowExit;
 
-	return {
+	const handle = {
 		runId: runtime.runId,
 		stageId: runtime.stageId,
 		stageName: runtime.name,
@@ -236,10 +265,10 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 			}
 		},
 		subscribe(listener: AgentSessionEventListener) {
-			return runtime.innerCtx.subscribe(listener);
+			return countSubscription(runtime.innerCtx.subscribe(listener));
 		},
 		subscribeDeliveryActivity(listener) {
-			return runtime.innerCtx.__subscribeDeliveryActivity(listener);
+			return countSubscription(runtime.innerCtx.__subscribeDeliveryActivity(listener));
 		},
 		async dispose() {
 			unsubscribeStageEvents();
@@ -247,5 +276,38 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 			queuedUserMessages.clear();
 			await runtime.releaseLiveHandle();
 		},
-	};
+		releaseGate: {
+			async savedForReopen() {
+				if (!sessionSaved()) return undefined;
+				const store = runtime.innerCtx.__persistedSessionStore();
+				const sessionId = runtime.innerCtx.__sessionMeta().sessionId ?? runtime.stageSnapshot.sessionId;
+				if (store === undefined || sessionId === undefined) return undefined;
+				return (await isReopenableSession(store, sessionId)) ? store : undefined;
+			},
+			idle() {
+				return (
+					sessionSaved() &&
+					externalSubscribers === 0 &&
+					activeOperations === 0 &&
+					stageQueuedUserMessageCount(queuedUserMessages.snapshot()) === 0 &&
+					!runtime.state.waitingForStageChatTurn &&
+					runtime.state.wakeWaitingForStageChatTurn === undefined &&
+					runtime.state.readinessController === undefined &&
+					runtime.state.resumeContinuationPending === false &&
+					runtime.innerCtx.__idleForRelease()
+				);
+			},
+		},
+	} satisfies StageControlHandle;
+
+	const { ensureAttached, sendUserMessage, prompt, steer, followUp, pause, resume } = handle;
+	handle.ensureAttached = () => tracked(ensureAttached);
+	handle.sendUserMessage = (text, options, beforeDelivery) =>
+		tracked(() => sendUserMessage(text, options, beforeDelivery));
+	handle.prompt = (text) => tracked(() => prompt(text));
+	handle.steer = (text) => tracked(() => steer(text));
+	handle.followUp = (text) => tracked(() => followUp(text));
+	handle.pause = () => tracked(pause);
+	handle.resume = (message, beforeResume) => tracked(() => resume(message, beforeResume));
+	return handle;
 }

@@ -35,12 +35,13 @@ export interface OpenCompletedDurableDeps {
 	readonly beforeRestore?: (snapshots: readonly RunSnapshot[]) => void;
 }
 
-interface CompletedChatRegistration {
-	readonly handle: StageControlHandle;
-	readonly unregister: () => void;
-}
-
-const completedChatRegistrations = new WeakMap<StageControlRegistry, Map<string, CompletedChatRegistration>>();
+/**
+ * Inspection never owns a chat handle: the registry does. Holding either the handle or its
+ * unregister closure here would keep a handle the registry already dropped (host session
+ * switch, shutdown, release) reachable, along with any session it reopened.
+ */
+const completedChatRegistrations = new WeakMap<StageControlRegistry, Map<string, WeakRef<StageControlHandle>>>();
+const completedChatUnregisters = new WeakMap<StageControlHandle, () => void>();
 
 /**
  * Open a completed durable workflow as an immutable run snapshot. The only
@@ -114,19 +115,19 @@ function registerCompletedChatHandles(
 			.filter((stage) => stage.sessionId !== undefined)
 			.map((stage) => completedChatKey(snapshot.id, stage.id)),
 	);
-	for (const [key, registration] of registrations) {
+	for (const key of [...registrations.keys()]) {
 		if (!key.startsWith(`${snapshot.id}:`) || desiredKeys.has(key)) continue;
-		removeCompletedChatRegistration(registrations, key, registration);
+		removeCompletedChatRegistration(registrations, key);
 	}
 	for (const stage of snapshot.stages) {
 		if (stage.sessionId === undefined) continue;
 		const key = completedChatKey(snapshot.id, stage.id);
-		const registration = registrations.get(key);
+		const registration = registrations.get(key)?.deref();
 		const existing = registry.claim(snapshot.id, stage.id);
 		if (existing?.sessionId === stage.sessionId && existing.sessionStore === sessionStore && !existing.isDisposed)
 			continue;
 		if (registration !== undefined) {
-			removeCompletedChatRegistration(registrations, key, registration);
+			removeCompletedChatRegistration(registrations, key);
 		} else if (existing !== undefined) {
 			disposeCompletedChatHandle(existing);
 		}
@@ -139,8 +140,8 @@ function registerCompletedChatHandles(
 			deps.defaultSessionDir,
 			sessionStore,
 		);
-		const unregister = registry.register(handle);
-		registrations.set(key, { handle, unregister });
+		completedChatUnregisters.set(handle, registry.register(handle));
+		registrations.set(key, new WeakRef(handle));
 		registry.detachControl(snapshot.id, stage.id, handle);
 	}
 }
@@ -149,14 +150,12 @@ function completedChatKey(runId: string, stageId: string): string {
 	return `${runId}:${stageId}`;
 }
 
-function removeCompletedChatRegistration(
-	registrations: Map<string, CompletedChatRegistration>,
-	key: string,
-	registration: CompletedChatRegistration,
-): void {
-	registration.unregister();
+function removeCompletedChatRegistration(registrations: Map<string, WeakRef<StageControlHandle>>, key: string): void {
+	const handle = registrations.get(key)?.deref();
 	registrations.delete(key);
-	disposeCompletedChatHandle(registration.handle);
+	if (handle === undefined) return;
+	completedChatUnregisters.get(handle)?.();
+	disposeCompletedChatHandle(handle);
 }
 
 function disposeCompletedChatHandle(handle: StageControlHandle): void {

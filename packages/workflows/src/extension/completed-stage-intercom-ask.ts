@@ -93,11 +93,7 @@ function isCompletedStageAskEvent(payload: unknown): payload is CompletedStageAs
 	);
 }
 
-function enqueueTargetTurn(
-	queues: Map<string, Promise<void>>,
-	key: string,
-	deliver: () => Promise<void>,
-): Promise<void> {
+function enqueueTargetTurn<T>(queues: Map<string, Promise<T>>, key: string, deliver: () => Promise<T>): Promise<T> {
 	const previous = queues.get(key) ?? Promise.resolve();
 	const current = previous.catch(() => {}).then(deliver);
 	queues.set(key, current);
@@ -114,29 +110,95 @@ async function deliverAsPostMortemTurn(
 	resolveHandle: CompletedStageHandleResolver,
 	assertActive: () => void,
 ): Promise<void> {
-	assertActive();
-	const resolution = await resolveHandle(event.workflowRunId, event.workflowStageId);
-	assertActive();
-	if (resolution === undefined) {
-		throw new Error(
-			`Intercom ask target is unavailable: completed workflow stage ${event.workflowRunId}/${event.workflowStageId} was deleted or is no longer retained.`,
-		);
-	}
-	if (!resolution.ok) {
-		throw new Error(unavailableReason(event.workflowRunId, event.workflowStageId, resolution.reason));
-	}
-	const handle = resolution.handle;
-	if (handle.status !== "completed" || handle.isDisposed === true) {
-		throw new Error(
-			`Intercom ask target is not resumable: workflow stage ${event.workflowRunId}/${event.workflowStageId} has no retained completed conversation.`,
-		);
-	}
-	await attachWithTimeout(handle);
+	const handle = await reopenCompletedStage(event.workflowRunId, event.workflowStageId, resolveHandle, assertActive);
 	for (const message of event.messages) {
 		assertActive();
 		if (handle.isStreaming) await handle.followUp(message.content);
 		else await handle.prompt(message.content);
 	}
+}
+
+async function reopenCompletedStage(
+	runId: string,
+	stageId: string,
+	resolveHandle: CompletedStageHandleResolver,
+	assertActive: () => void,
+): Promise<StageControlHandle> {
+	assertActive();
+	const resolution = await resolveHandle(runId, stageId);
+	assertActive();
+	if (resolution === undefined) {
+		throw new Error(
+			`Intercom ask target is unavailable: completed workflow stage ${runId}/${stageId} was deleted or is no longer retained.`,
+		);
+	}
+	if (!resolution.ok) {
+		throw new Error(unavailableReason(runId, stageId, resolution.reason));
+	}
+	const handle = resolution.handle;
+	if (handle.status !== "completed" || handle.isDisposed === true) {
+		throw new Error(
+			`Intercom ask target is not resumable: workflow stage ${runId}/${stageId} has no retained completed conversation.`,
+		);
+	}
+	await attachWithTimeout(handle);
+	return handle;
+}
+
+function assistantMessageText(message: StageControlHandle["messages"][number]): string | undefined {
+	if (message.role !== "assistant") return undefined;
+	let text = "";
+	for (const block of message.content) if (block.type === "text") text += block.text;
+	return text.trim().length > 0 ? text.trim() : undefined;
+}
+
+/**
+ * Runs one turn and returns its final assistant text, or undefined when the turn said nothing. The reply is taken
+ * from the turn's `message_end` events rather than from positions in `messages`, because the SDK may compact the
+ * conversation during the turn and move the reply below the length recorded before it.
+ */
+export async function collectTurnReply(
+	handle: Pick<StageControlHandle, "subscribe" | "prompt">,
+	content: string,
+): Promise<string | undefined> {
+	let reply: string | undefined;
+	const unsubscribe = handle.subscribe((event) => {
+		if (event.type !== "message_end") return;
+		reply = assistantMessageText(event.message) ?? reply;
+	});
+	try {
+		await handle.prompt(content);
+	} finally {
+		unsubscribe();
+	}
+	return reply;
+}
+
+/**
+ * Answers one question in a completed stage's saved conversation: reopens it
+ * through the post-mortem loader (never rerunning the workflow), runs one turn
+ * with `content`, and returns the final assistant text. Turns for one stage run
+ * in arrival order.
+ */
+export type CompletedStageAnswerer = (runId: string, stageId: string, content: string) => Promise<string>;
+
+export function createCompletedStageAnswerer(
+	resolveHandle: CompletedStageHandleResolver,
+	assertActive: () => void = () => {},
+): CompletedStageAnswerer {
+	const queues = new Map<string, Promise<string>>();
+	return (runId, stageId, content) =>
+		enqueueTargetTurn(queues, `${runId}:${stageId}`, async () => {
+			const handle = await reopenCompletedStage(runId, stageId, resolveHandle, assertActive);
+			if (handle.isStreaming) {
+				throw new Error(
+					`Completed workflow stage ${runId}/${stageId} is busy with another turn; ask again when it is idle.`,
+				);
+			}
+			const reply = await collectTurnReply(handle, content);
+			assertActive();
+			return reply ?? `Completed workflow stage ${runId}/${stageId} reopened but produced no text answer.`;
+		});
 }
 
 async function attachWithTimeout(handle: StageControlHandle): Promise<void> {
