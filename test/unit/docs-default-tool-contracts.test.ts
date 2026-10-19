@@ -171,7 +171,7 @@ test("computer-use guides route desktop CUA to Cua Driver and never to PyAutoGUI
 			`${name} promises a resume the engine never does`,
 		);
 	}
-	assert.match(skills, /cua-driver-rs-v0\.34\.0/);
+	assert.match(skills, /cua-driver-rs-v0\.36\.0/);
 	assert.match(skills, /MIT licensed, © 2025 Cua AI, Inc\./);
 });
 

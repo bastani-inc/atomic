@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Updated the bundled Cua Driver skill to upstream `cua-driver-rs-v0.36.0`. It now starts with an efficient loop: targeted `get_window_state` reads with `query`, acting by `element_token`, batching actions with `run_steps` or `run_script`, re-reading only changes with `since:"latest"`, and verifying at checkpoints instead of after every action. It also covers opening local files with `launch_app`, browser fallbacks when browser tools refuse in the background, and macOS editor recipes.
+
 ### Fixed
 
 - Background subagents that were still running when Atomic exited are now relaunched from their own sessions when you resume the session (`atomic --session <id>` or `/resume`) or resume a workflow stage that launched them. They keep their original Intercom name and group and get fresh supervisor authorization, and Intercom messages sent to it by any session in its group wait for it from the moment the resumed session starts (or, for a stage's subagent, from the moment the interrupted run becomes addressable) until it has been restored. Only the session that launched a child restores it: a fork of that session (`/fork`, `atomic --fork`, or a branched session) copies the child's record but never relaunches, waits for, or reports the child. If a child cannot be restored, the resumed agent is told explicitly that it is gone, once: the child is then recorded as gone, so later resumes neither retry it nor repeat the notice ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).

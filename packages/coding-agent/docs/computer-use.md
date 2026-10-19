@@ -212,7 +212,7 @@ Report what the installer did. On macOS it places `CuaDriver.app` in `/Applicati
 
 Never loop on the installer. In a workflow stage, a refused or failed install is reported as `blocked`/`needs_human` together with the exact installer command above, not worked around with an alternative tool.
 
-The bundled skill's `version` (`0.34.0`) identifies its source release, not the running daemon. Check the installed driver's advertised schema before using unfamiliar parameters; do not upgrade software or change permissions merely to make a recipe work. If an upgrade is authorized, run `cua-driver update --apply` once and restart the daemon with the platform's startup command below. `cua-driver check-update` only checks; it changes nothing.
+The bundled skill's `version` (`0.36.0`) identifies its source release, not the running daemon. Check the installed driver's advertised schema before using unfamiliar parameters; do not upgrade software or change permissions merely to make a recipe work. If an upgrade is authorized, run `cua-driver update --apply` once and restart the daemon with the platform's startup command below. `cua-driver check-update` only checks; it changes nothing.
 
 ### Turn telemetry off
 
@@ -485,7 +485,7 @@ See [workflow authoring](/workflows/authoring) for stages and human-input gates.
 | `cua-driver`, uv, or another command is missing | Install it when permitted with one bounded attempt, refresh PATH, and check its version in the same shell that will launch automation. |
 | `cua-driver call` fails or `permissions status` reports `unknown` | The daemon is not running. Start it with `open -n -g -a CuaDriver --args serve` on macOS, an interactive-session `cua-driver serve` on Windows, or a foreground `cua-driver serve` inside the graphical session on Linux, then rerun `cua-driver status`. |
 | Grants look correct but actions or captures are refused | Stale TCC grants. Toggle CuaDriver off and on under Accessibility and Screen & System Audio Recording, or click **+** and re-add `/Applications/CuaDriver.app`, then fully relaunch the daemon. An in-process SDK runtime needs the node host relaunched instead. |
-| Contract, schema, or protocol mismatch | Version skew between the `@trycua/cua-driver` SDK pin and the running driver. Check `cua-driver --version` and reinstall the SDK at that exact version. The bundled skill (`0.34.0`) identifies its source release, not the daemon's protocol. If a driver upgrade is authorized, run `cua-driver update --apply` once and restart the daemon. |
+| Contract, schema, or protocol mismatch | Version skew between the `@trycua/cua-driver` SDK pin and the running driver. Check `cua-driver --version` and reinstall the SDK at that exact version. The bundled skill (`0.36.0`) identifies its source release, not the daemon's protocol. If a driver upgrade is authorized, run `cua-driver update --apply` once and restart the daemon. |
 | Snapshot reports `degraded` or `truncated` | Do not act on it. Re-observe, narrow the query, or fall back to a pixel action from the same snapshot only where the skill allows it. |
 | Black screenshot or no desktop | Check screen permissions, display/session ownership, X11 versus Wayland, and remote-session state. |
 | Input reaches the wrong app | Stop. Confirm focus, window identity, scaling, and that no other controller shares the desktop. |
