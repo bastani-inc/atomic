@@ -26,11 +26,14 @@ type MessageRenderCommand = Extract<InteractiveEngineCommand, { type: "engine_me
  * ping-pong that presented as full-screen TUI flicker (quit/pause while a
  * workflow stage streams). Reuse plus idempotent seeding setters lets the
  * loop converge after at most one round trip while still forwarding
- * legitimate async invalidations (e.g. image conversion).
+ * legitimate async invalidations (e.g. image conversion). A record is rebuilt
+ * once the session's extension runner changes, so rows rendered before
+ * deferred resources loaded pick up the extensions' renderers.
  */
-type RenderRecord =
-	| { kind: "message"; component: CustomMessageComponent; terminal: RenderTerminal; tui: TUI }
-	| { kind: "tool"; component: ToolExecutionComponent; terminal: RenderTerminal; tui: TUI };
+type RenderRecord = { runner: AgentSession["extensionRunner"]; terminal: RenderTerminal; tui: TUI } & (
+	| { kind: "message"; component: CustomMessageComponent }
+	| { kind: "tool"; component: ToolExecutionComponent }
+);
 
 class RenderTerminal implements Terminal {
 	columns = 80;
@@ -121,7 +124,7 @@ export class EngineRenderService {
 
 	private renderTool(command: ToolRenderCommand): string[] {
 		let record = this.records.get(command.componentId);
-		if (record?.kind !== "tool") {
+		if (record?.kind !== "tool" || record.runner !== this.session?.extensionRunner) {
 			const session = this.boundSession();
 			this.disposeRecord(command.componentId);
 			const terminal = this.createTerminal(command.componentId);
@@ -143,7 +146,7 @@ export class EngineRenderService {
 				session.sessionManager.getCwd(),
 			);
 			tui.addChild(component);
-			record = { kind: "tool", component, terminal, tui };
+			record = { kind: "tool", component, terminal, tui, runner: session.extensionRunner };
 			this.records.set(command.componentId, record);
 		} else {
 			record.terminal.columns = Math.max(1, command.width);
@@ -167,7 +170,7 @@ export class EngineRenderService {
 
 	private renderMessage(command: MessageRenderCommand): string[] {
 		let record = this.records.get(command.componentId);
-		if (record?.kind !== "message") {
+		if (record?.kind !== "message" || record.runner !== this.session?.extensionRunner) {
 			const session = this.boundSession();
 			this.disposeRecord(command.componentId);
 			const terminal = this.createTerminal(command.componentId);
@@ -185,7 +188,7 @@ export class EngineRenderService {
 				command.outputPad,
 			);
 			tui.addChild(component);
-			record = { kind: "message", component, terminal, tui };
+			record = { kind: "message", component, terminal, tui, runner: session.extensionRunner };
 			this.records.set(command.componentId, record);
 		} else {
 			record.terminal.columns = Math.max(1, command.width);

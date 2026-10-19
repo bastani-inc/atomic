@@ -501,6 +501,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 		]);
 		const fakeThis = createShowLoadedResourcesThis({ quietStartup: false, runtimeHost: runtime });
 		fakeThis.resourceDisclosureContainer = new Container();
+		fakeThis.ui = { requestRender: () => {} };
 		let renderCount = 0;
 		fakeThis.showLoadedResources = () => {
 			renderCount += 1;

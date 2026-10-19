@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { Container, type TUI } from "@earendil-works/pi-tui";
 import { test } from "vitest";
-import type { ToolDefinition } from "../../packages/coding-agent/src/core/extensions/types.js";
+import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
+import type { ToolDefinition, ToolRenderers } from "../../packages/coding-agent/src/core/extensions/types.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import type { ModelSingleResponse, TaskId, WaitId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
@@ -11,7 +13,17 @@ import {
 	chatEntriesFromAgentMessages,
 	renderChatMessageEntry,
 } from "../../packages/coding-agent/src/modes/interactive/components/index.js";
+import { attachInteractiveEngineResourceExtensionRefresh } from "../../packages/coding-agent/src/modes/interactive/interactive-startup.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { EngineRenderService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-render-service.js";
+import { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.js";
+import {
+	type InteractiveEngineCommand,
+	type InteractiveEngineMessage,
+	parseInteractiveEngineMessage,
+	serializeInteractiveEngineFrame,
+} from "../../packages/coding-agent/src/modes/interactive-engine/protocol.js";
+import { RemoteToolExecutionComponent } from "../../packages/coding-agent/src/modes/interactive-engine/remote-renderer.js";
 import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
 import {
 	renderSubagentToolCall,
@@ -361,6 +373,83 @@ test("a workflow stage transcript hydrates its launch cards from the stage sessi
 		assert.doesNotMatch(text, /Launched in background/);
 	} finally {
 		host.dispose();
+		await store.close();
+	}
+});
+
+test("atomic --session hydrates launch cards once the isolated engine loads the subagent renderer (#3760)", async () => {
+	initTheme("dark");
+	const store = new MemorySessionStore();
+	const manager = await SessionManager.create(store, process.cwd());
+	const t = new TranscriptBuilder(manager, process.cwd());
+	await t.launch("hyiso", "task-hyiso");
+	await t.record({ childId: "hyiso:0", runId: "hyiso", state: "running", taskId: "task-hyiso" });
+	await t.record({
+		childId: "hyiso:0",
+		runId: "hyiso",
+		state: "terminal",
+		terminalStatus: "paused",
+		taskId: "task-hyiso",
+	});
+	bindSubagentChildCards({ sessionManager: manager });
+
+	const runner = (subagent: ToolRenderers | undefined) => ({
+		resolveToolRenderers: (name: string, base: () => ToolRenderers | undefined) =>
+			name === "subagent" ? subagent : base(),
+	});
+	const engineSession = {
+		extensionRunner: runner(undefined),
+		getToolDefinition: () => undefined,
+		sessionManager: manager,
+	};
+	const listeners: Array<(message: InteractiveEngineMessage) => void> = [];
+	const service = new EngineRenderService((line) => {
+		const message = parseInteractiveEngineMessage(line.trim());
+		if (message) for (const listener of [...listeners]) listener(message);
+	});
+	service.bindSession(engineSession as unknown as AgentSession);
+	let resourcesLoaded = () => {};
+	const runtime = Object.assign(Object.create(IsolatedInteractiveRuntime.prototype), {
+		onEngineMessage: (listener: (message: InteractiveEngineMessage) => void) => {
+			listeners.push(listener);
+			return () => listeners.splice(listeners.indexOf(listener), 1);
+		},
+		sendEngineCommand: (command: InteractiveEngineCommand) =>
+			service.handleLine(serializeInteractiveEngineFrame(command).trim()),
+		onResourceExtensionsChanged: (listener: () => void) => {
+			resourcesLoaded = listener;
+			return () => {};
+		},
+	}) as IsolatedInteractiveRuntime;
+	const chat = new Container();
+	attachInteractiveEngineResourceExtensionRefresh({
+		runtimeHost: runtime,
+		chatContainer: chat,
+		resourceDisclosureContainer: new Container(),
+		ui: { requestRender() {} } as unknown as TUI,
+	} as unknown as Parameters<typeof attachInteractiveEngineResourceExtensionRefresh>[0]);
+	for (const entry of chatEntriesFromAgentMessages(manager.buildSessionContext().messages as AgentMessage[])) {
+		if (entry.kind !== "tool") continue;
+		const card = new RemoteToolExecutionComponent(
+			entry.toolName,
+			entry.toolCallId,
+			entry.args,
+			{},
+			runtime,
+			() => {},
+		);
+		if (entry.result) card.updateResult(entry.result, entry.isPartial ?? false);
+		chat.addChild(card);
+	}
+	const body = () => stripVTControlCharacters(chat.render(140).join("\n")).replace(/\s+/g, " ");
+	try {
+		await eventually(body, /"agent": "hyiso"/);
+		engineSession.extensionRunner = runner(definition as ToolRenderers);
+		resourcesLoaded();
+		const text = await eventually(body, /‖ Paused \(resumable\)/);
+		assert.doesNotMatch(text, /Launched in background|"agent": "hyiso"/);
+	} finally {
+		service.dispose();
 		await store.close();
 	}
 });
