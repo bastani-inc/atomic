@@ -400,7 +400,9 @@ function createSingleWorktree(
 
 /**
  * Recreate a removed child worktree at its path: on its branch when that still exists, else on a new branch from the
- * run's base commit. Returns the worktree as recreated; an existing worktree is returned unchanged.
+ * run's base commit. An existing worktree is kept, and the setup that is safe to repeat (copied settings, the
+ * `node_modules` link, included files) is re-applied where it is missing: capturing the worktree's diff removes it.
+ * Returns the worktree as it now is.
  */
 export function recreateWorktree(
 	setup: WorktreeSetup,
@@ -408,7 +410,18 @@ export function recreateWorktree(
 	runId: string,
 	options?: { setupHook?: WorktreeSetupHookConfig; agent?: string },
 ): WorktreeInfo {
-	if (fs.existsSync(worktree.path)) return worktree;
+	if (fs.existsSync(worktree.path)) {
+		let restored: string[];
+		try {
+			restored = performPostCreationSetup(runGit, setup.cwd, worktree.path);
+		} catch {
+			// The worktree itself is intact: the child resumes in it without the setup that could not be re-applied.
+			return worktree;
+		}
+		if (restored.length === 0) return worktree;
+		const syntheticPaths = [...new Set([...worktree.syntheticPaths, ...restored])];
+		return { ...worktree, nodeModulesLinked: syntheticPaths.includes("node_modules"), syntheticPaths };
+	}
 	runGit(setup.cwd, ["worktree", "prune"]);
 	const branchExists =
 		runGit(setup.cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${worktree.branch}`]).status === 0;
