@@ -184,7 +184,8 @@ export const EARLY_CHILD_HOLD_MAX_MS = 60_000;
 
 interface EarlyChildHold {
 	readonly hold: Promise<ChildTargetHold | undefined>;
-	readonly expire: ReturnType<typeof setTimeout>;
+	/** Absent for a paused child's hold, which lasts until its resume, its quit, or the end of its owner's session. */
+	readonly expire?: ReturnType<typeof setTimeout>;
 	wanted: boolean;
 }
 
@@ -229,7 +230,7 @@ export async function holdRunningSubagentChildren(events: IntercomEventBus, ctx:
 					() => early.wanted,
 				),
 			};
-			early.expire.unref?.();
+			early.expire?.unref?.();
 			earlyHolds.set(key, early);
 			const hold = await early.hold.catch(() => undefined);
 			if (hold === undefined) {
@@ -248,6 +249,22 @@ export function takeEarlyChildHold(key: string): Promise<ChildTargetHold | undef
 	earlyHolds.delete(key);
 	clearTimeout(early.expire);
 	return early.hold.catch(() => undefined);
+}
+
+/**
+ * Keep a paused child's targets held, so sends to it wait in the broker instead of failing, until `resume` takes
+ * the hold over under the same capability, `quit` ends it, or its owner's session ends.
+ */
+export function parkPausedChildHold(key: string, hold: ChildTargetHold): void {
+	const previous = earlyHolds.get(key);
+	if (previous) endEarlyHold(key, previous);
+	earlyHolds.set(key, { hold: Promise.resolve(hold), wanted: true });
+}
+
+/** End a paused child's hold; sends to it are routed normally again. */
+export function releasePausedChildHold(key: string): void {
+	const early = earlyHolds.get(key);
+	if (early) endEarlyHold(key, early);
 }
 
 /** End the holds of the session's children that nothing took over, because its session ended. */

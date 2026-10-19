@@ -199,7 +199,7 @@ export function formatControlNoticeMessage(event: ControlEvent, childIntercomTar
 			"Hint: Inspect status, then nudge if the work seems stuck.",
 			childIntercomTarget ? `Nudge: ${nudgeCommand}` : "Nudge: no child message route registered",
 			`Status: subagent({ action: "status", id: "${runTarget}" })`,
-			`Kill: subagent({ action: "kill", id: "${runTarget}" })`,
+			`Quit: subagent({ action: "quit", id: "${runTarget}" })`,
 		]
 			.filter((line): line is string => Boolean(line))
 			.join("\n");
@@ -213,7 +213,7 @@ export function formatControlNoticeMessage(event: ControlEvent, childIntercomTar
 		"Hint: Inspect status first unless the run is clearly blocked.",
 		childIntercomTarget ? `Nudge: ${nudgeCommand}` : "Nudge: no child message route registered",
 		`Status: subagent({ action: "status", id: "${runTarget}" })`,
-		`Kill: subagent({ action: "kill", id: "${runTarget}" })`,
+		`Quit: subagent({ action: "quit", id: "${runTarget}" })`,
 	]
 		.filter((line): line is string => Boolean(line))
 		.join("\n");

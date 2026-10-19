@@ -14,7 +14,11 @@ import type {
 import type { AgentConfig } from "../../agents/agents.js";
 import type { RunSyncOptions, SingleResult, SubagentToolResult } from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
-import type { SubagentChildRecordInput, SubagentChildRecordSink } from "./subagent-child-records.js";
+import {
+	type SubagentChildRecordInput,
+	type SubagentChildRecordSink,
+	takeSubagentChildStop,
+} from "./subagent-child-records.js";
 import type { SubagentExecutorRuntimeDeps } from "./subagent-executor-types.js";
 import { INLINE_TASK_OUTPUT_MAX_BYTES, retainedTaskOutput, retainTaskOutput } from "./task-output-retention.js";
 
@@ -199,6 +203,8 @@ export async function runAgentTask(input: {
 	schedule?: (dispatch: () => Promise<void>) => void;
 	outputText?: (result: SingleResult) => string;
 	recordChild?: SubagentChildRecordSink;
+	/** Launch operation id; a resumed child needs a fresh one, since the host replays a repeated operation. */
+	operation?: string;
 }): Promise<ModelSingleResponse> {
 	let yieldWait: ((reason: YieldReason) => Result<WaitOutcome, YieldError>) | undefined;
 	let pendingYield = false;
@@ -213,7 +219,7 @@ export async function runAgentTask(input: {
 			cwd: input.options.cwd ?? input.cwd,
 			...(input.options.modelRoute ? { routerSelection: input.options.modelRoute.routerSelection } : {}),
 		},
-		`${input.options.runId}:${input.options.index ?? 0}` as OperationId,
+		(input.operation ?? `${input.options.runId}:${input.options.index ?? 0}`) as OperationId,
 		(context) => {
 			const cleaned = Promise.withResolvers<Cleanup>();
 			let executionBound = false;
@@ -302,7 +308,9 @@ export async function runAgentTask(input: {
 							reportId: "terminal-model",
 							change: { kind: "model", model: child.model, thinking: child.thinking },
 						});
-					if (!ownerClosed()) recordChild("terminal", child.status);
+					const stopped = takeSubagentChildStop(context.ref.taskId);
+					const stoppedByControl = stopped !== undefined && child.status === "interrupted";
+					if (!ownerClosed()) recordChild("terminal", stoppedByControl ? stopped : child.status);
 					input.onTerminal?.(child);
 					const text = input.outputText?.(child) ?? getSingleResultOutput(child);
 					retainTaskOutput(child, text, context.ref);
@@ -322,7 +330,8 @@ export async function runAgentTask(input: {
 					if (child.interrupted)
 						return {
 							kind: "cancelled",
-							cause: input.options.interruptSignal?.aborted ? "parent-handoff" : "owner-close",
+							cause:
+								stoppedByControl || input.options.interruptSignal?.aborted ? "parent-handoff" : "owner-close",
 							output,
 						};
 					return child.status === "ok"
@@ -334,6 +343,7 @@ export async function runAgentTask(input: {
 								output,
 							};
 				} catch (error) {
+					takeSubagentChildStop(context.ref.taskId);
 					if (!ownerClosed()) recordChild("terminal", "error");
 					throw error;
 				} finally {

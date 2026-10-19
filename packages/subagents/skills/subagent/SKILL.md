@@ -22,7 +22,7 @@ Use this skill when bounded specialist delegation adds value and the parent shou
 - **Debug and fix**: use `debugger` for actual failures that need reproduction, root-cause diagnosis, and a validated patch; conceptual or exploratory debugging can stay inline.
 - **Refinement**: use `code-simplifier` to clean up recently changed code without altering behavior.
 - **Adversarial review**: compose read-only specialists (`codebase-analyzer`, `codebase-pattern-finder`, `debugger` in inspect-only mode, `codebase-online-researcher`) into a parallel review pass — there is no generic `reviewer` agent.
-- **Subagent control**: watch needs-attention signals and kill only when a delegated run is genuinely blocked.
+- **Subagent control**: watch needs-attention signals and pause or quit only when a delegated run is genuinely blocked; both stay resumable.
 - **Agent authoring**: create, update, or override agents for a project.
 
 ## Tool
@@ -213,11 +213,11 @@ Keep immediately blocking work local unless specialist expertise, context isolat
 
 Choose the observation mode for each authorized task. No extra user confirmation is needed merely to choose foreground or background. In owner-bound main and workflow-stage sessions, omitted `wait` or `wait: { kind: "background" }` returns after admission. Use `wait: { kind: "foreground", budgetMs: 30000 }` when the result is needed next. If the observation budget expires, the same child keeps running in the background; do not relaunch it. This applies to single and parallel calls.
 
-Use `subagent({ action: "wait", id: taskId })` to observe an existing task with the owner's budget, `status` to inspect its state, or `kill` to terminally stop it. Wait when the result becomes a dependency; otherwise rely on completion notices. Avoid repeated short waits or status polls; override the budget only for a concrete responsiveness need. A yielded receipt is not a terminal result. Background counts stay below the prompt; `/tasks` opens inspection only on command. A shaded completion notification reaches the owning chat without requiring a model reply. A later wait does not extend the owner's lifetime.
+Use `subagent({ action: "wait", id: taskId })` to observe an existing task with the owner's budget, `status` to inspect its state, or `pause`, `quit`, and `resume` to control it (see [Subagent control](#subagent-control)). Wait when the result becomes a dependency; otherwise rely on completion notices. Avoid repeated short waits or status polls; override the budget only for a concrete responsiveness need. A yielded receipt is not a terminal result. Background counts stay below the prompt; `/tasks` opens inspection only on command. A shaded completion notification reaches the owning chat without requiring a model reply. A later wait does not extend the owner's lifetime.
 
-Intercom `ask` cannot revive a completed, failed, interrupted, or cancelled noninteractive child, even if its retained registration says `idle`. New asks fail immediately, and termination fails an already-admitted ask that has not received a reply. Use a fresh child for follow-up work. Live interactive idle sessions and workflow post-mortem conversations remain separate reply-capable cases; `send` transport behavior is unchanged.
+Intercom `ask` cannot revive a completed, failed, interrupted, or cancelled noninteractive child, even if its retained registration says `idle`. New asks fail immediately, and termination fails an already-admitted ask that has not received a reply. Use `resume` on a resumable child, or a fresh child, for follow-up work. Live interactive idle sessions and workflow post-mortem conversations remain separate reply-capable cases; `send` transport behavior is unchanged.
 
-Completed, killed, interrupted, and parent-question children are terminal for continuation. Do not address a prior child or sibling set by run ID. Start follow-up work with the normal launch form and an explicit handoff:
+A completed, failed, interrupted, paused, or quit child can continue in the same run identity with `subagent({ action: "resume", id, message })`; see [Subagent control](#subagent-control). Children cancelled for good (by owner or batch cancellation, or the removed `kill` action), children reported gone after a restart, and parent-question handoffs are terminal. For those, start follow-up work with the normal launch form and an explicit handoff:
 
 ```typescript
 subagent({ agent: "worker", task: "[TASK_CONTEXT] Continue with this supervisor answer: ..." })
@@ -227,23 +227,21 @@ A parent-ask handoff supplies the original question, ordered attachments, previo
 
 ### Subagent control
 
-Subagent control is the runtime visibility and intervention layer for delegated runs. Lifecycle status distinguishes queued and running children from terminal completed, failed, killed, or cancelled results. Activity reporting is factual: it tracks the last observed activity time and the current tool when known. It does not pretend to know that a child is truly stuck.
+Subagent control is the runtime visibility and intervention layer for delegated runs. Lifecycle status distinguishes queued and running children from paused, quit, completed, failed, and cancelled results. Activity reporting is factual: it tracks the last observed activity time and the current tool when known. It does not pretend to know that a child is truly stuck.
 
-Default behavior is intentionally conservative. When no activity has been observed past the configured threshold, the run emits a `needs_attention` control event. Foreground runs push this as a `subagent:control-event` event, and notification-worthy control events are inserted into the visible transcript so both the user and the parent agent can see them, with a proactive hint plus concrete `nudge`, `status`, and `kill` options. Visible notifications fire once per child run and attention state.
+Default behavior is intentionally conservative. When no activity has been observed past the configured threshold, the run emits a `needs_attention` control event. Foreground runs push this as a `subagent:control-event` event, and notification-worthy control events are inserted into the visible transcript so both the user and the parent agent can see them, with a proactive hint plus concrete `nudge`, `status`, and `quit` options. Visible notifications fire once per child run and attention state.
 
-Use kill when a child is clearly blocked or drifting and the parent needs to terminally stop it:
-
-```typescript
-subagent({ action: "kill", id: taskId })
-```
-
-Pass `id` when targeting a specific controllable run:
+Run control mirrors the workflow tool's `pause`, `resume`, and `quit`. `id` accepts the child id (`<runId>:<index>`), its task id, its Intercom name, or the run id of a single-child run:
 
 ```typescript
-subagent({ action: "kill", id: "abc123" })
+subagent({ action: "pause", id: taskId })          // stop now, hold queued messages until resume
+subagent({ action: "quit", id: taskId })           // stop gracefully; stays resumable
+subagent({ action: "pause", all: true })           // every running child this session launched
+subagent({ action: "quit", all: true })            // also covers paused children; all stay resumable
+subagent({ action: "resume", id: taskId, message: "Focus on the failing test first." })
 ```
 
-Kill terminally stops the child and records it as killed. It cannot be resumed and does not mean the delegated task succeeded. Decide the next explicit action: launch a fresh child with the relevant task context, replace the task, ask the user, or stop the workflow.
+Pause stops a child's current turn and keeps its queued steering and Intercom messages held until resume. Quit stops it the same way without holding new messages. Both keep the child resumable. Resume reopens the child's own saved session under the same id, Intercom name, and group, with fresh supervisor authorization; `message` is delivered once as its next prompt, and without it the child continues where it left off. Resume also continues a completed, failed, or interrupted child. A child cancelled for good (owner or batch cancellation, or the removed `kill` action) or reported gone after a restart cannot be resumed: resume returns an error, so launch a fresh child with the relevant task context. `kill` and `interrupt` were removed; calls using them are rejected with an error that names `quit`.
 
 Per-run control thresholds can be overridden when a task legitimately runs without observable output for longer than usual:
 
@@ -428,8 +426,8 @@ If a prompt-template extension is installed, additional user prompt templates ca
 
 - **Forking requires a persisted parent session.** If the current session does not have a persisted session file, forked runs fail.
 - **Forked runs inherit parent history.** They are branched threads, not fresh filtered contexts. Use fresh context for adversarial review unless the user explicitly asks for forked context.
-- **Delegation is one level deep and not configurable.** A subagent cannot call `subagent`: every launch and `kill` from inside a child is refused. Only `list`, `get`, and `status` stay available to a child.
-- **Attention signals are not lifecycle state.** `needs_attention` means no activity has been observed past the configured threshold. `killed` means the child was terminally stopped by the kill command; it cannot be resumed and is not the same as `failed`.
+- **Delegation is one level deep and not configurable.** A subagent cannot call `subagent`: every launch and run control (`pause`, `resume`, `quit`) from inside a child is refused. Only `list`, `get`, `status`, and `wait` stay available to a child.
+- **Attention signals are not lifecycle state.** `needs_attention` means no activity has been observed past the configured threshold. `killed` means the child was cancelled for good by owner or batch cancellation (or, in older sessions, the removed kill action); it cannot be resumed and is not the same as `failed`. `paused` and `quit` children stay resumable.
 - **Builtin coordination respects caller restrictions.** Every builtin agent declares `intercom`, but a parent that disables it prevents live coordination. Resolve decisions up front when running without coordination tools.
 - **Intercom asks are blocking.** A session can only maintain one pending outbound ask wait state at a time.
 - **Keep conversational authority clear.** Advisory specialists should not silently become second decision-makers.
@@ -465,13 +463,13 @@ Give subagents specific tasks rather than vague mandates.
 
 ### Escalate decisions upward, coordinate sideways
 
-All builtin specialists can use Intercom when permitted by the parent. Use `contact_supervisor` for parent decisions when the active bridge supplies it. Resolve known scope, product, and architecture questions before launching any writer. If the parent realizes mid-run that the scope is wrong, steer a reachable child or kill it.
+All builtin specialists can use Intercom when permitted by the parent. Use `contact_supervisor` for parent decisions when the active bridge supplies it. Resolve known scope, product, and architecture questions before launching any writer. If the parent realizes mid-run that the scope is wrong, steer a reachable child, or `quit` it and `resume` it later with a corrected `message`.
 
 When several children work related angles, tell them to use ordinary `intercom` with each other for findings, ownership, and challenges so the parent is not the bottleneck for information that a sibling already holds. See [Peer coordination](#peer-coordination).
 
 ### Intervene only on clear control signals
 
-Use subagent control proactively when a delegated run emits `needs_attention`, or when a human asks you to regain control. Do not kill just because a child has briefly produced no output. Silence can be normal during long tool calls, test runs, or model reasoning.
+Use subagent control proactively when a delegated run emits `needs_attention`, or when a human asks you to regain control. Do not pause or quit a child just because it has briefly produced no output. Silence can be normal during long tool calls, test runs, or model reasoning.
 
 ### Name sessions meaningfully
 
@@ -510,7 +508,7 @@ For complex or risky changes, increase review and validation fanout when user in
 
 For very large work, split into serial milestones instead of launching a swarm of writers. Each milestone gets one writer, a validation contract, fresh-context review, a fix pass, and parent approval before the next milestone starts. Use parallel subagents inside a milestone for read-only context, research, and review only.
 
-Keep orchestration authority in the parent session. Child subagents cannot launch more subagents or run their own orchestration loops: delegation is one level deep and nothing configures it. This skill is parent-only and is stripped from every child prompt. A child may still have the `subagent` extension tool registered, because bundled extensions load through normal discovery; registration is not authority. Typed admission policy lets a child use only `list`, `get`, and `status`, and refuses delegation and `kill`. Spawned children also do not receive parent-only status/control/slash messages or prior parent `subagent` tool-call/tool-result artifacts, and child context filtering strips old hidden orchestration-instruction messages when they appear in inherited history. Every child also receives a boundary instruction that says the parent owns orchestration, that the `subagent` tool refuses every launch and `kill` from inside a subagent, and that writer children must call real edit/write tools instead of printing pseudo tool calls. Pass children concrete role-specific work instead.
+Keep orchestration authority in the parent session. Child subagents cannot launch more subagents or run their own orchestration loops: delegation is one level deep and nothing configures it. This skill is parent-only and is stripped from every child prompt. A child may still have the `subagent` extension tool registered, because bundled extensions load through normal discovery; registration is not authority. Typed admission policy lets a child use only `list`, `get`, `status`, and `wait`, and refuses delegation and run control (`pause`, `resume`, `quit`). Spawned children also do not receive parent-only status/control/slash messages or prior parent `subagent` tool-call/tool-result artifacts, and child context filtering strips old hidden orchestration-instruction messages when they appear in inherited history. Every child also receives a boundary instruction that says the parent owns orchestration, that the `subagent` tool refuses every launch and run control from inside a subagent, and that writer children must call real edit/write tools instead of printing pseudo tool calls. Pass children concrete role-specific work instead.
 
 1. Clarify only when needed. Use existing context first; gather missing code or research context selectively, then ask only unresolved questions that materially affect scope, completion criteria, constraints, or non-goals.
 2. Define the validation contract. State completion expectations before implementation: expected behavior, checks to run, user flows to exercise, and evidence required in the writer handoff. For UI, CLI, integration, or workflow changes, include at least one validator angle that uses the product the way a user would rather than only reading code.

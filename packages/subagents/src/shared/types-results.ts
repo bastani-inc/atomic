@@ -229,6 +229,28 @@ export interface SubagentStatusGroup {
 	>;
 }
 
+/** One child a `pause`, `resume`, or `quit` call acted on, identified by its stable child id (`<runId>:<index>`). */
+export interface SubagentRunControlChild {
+	readonly childId: string;
+	readonly runId: string;
+	readonly index: number;
+	readonly agent: string;
+	/** The child's state once the action returned. */
+	readonly state: "paused" | "quit" | "running";
+	/** The task now running the child (`resume`), or the task that was stopped (`pause`, `quit`). */
+	readonly taskId?: string;
+	readonly intercomTarget?: string;
+	readonly childSessionId?: string;
+	readonly childSessionFile?: string;
+}
+
+export interface SubagentRunControlDetails {
+	readonly action: "pause" | "resume" | "quit";
+	readonly children: readonly SubagentRunControlChild[];
+	/** The steer `resume` delivered to the child as its next prompt. */
+	readonly message?: string;
+}
+
 export interface Details {
 	taskResponse?:
 		| import("../../../coding-agent/src/core/tasks/contracts.js").ModelSingleResponse
@@ -241,6 +263,7 @@ export interface Details {
 	context?: "fresh" | "fork";
 	results: SingleResult[];
 	controlEvents?: ControlEvent[];
+	runControl?: SubagentRunControlDetails;
 	progress?: AgentProgress[];
 	totalSteps?: number;
 	/** Parent ask ended the current child and returned a fresh-subagent handoff. */

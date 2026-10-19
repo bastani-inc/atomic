@@ -3,8 +3,13 @@ import { ModelConstraintsSchema, TaskNeedsSchema } from "../shared/model-constra
  * TypeBox schemas for subagent tool parameters
  */
 
-import { Type } from "typebox";
-import { MAX_PARALLEL_TASKS, SUBAGENT_ACTIONS } from "../shared/types.js";
+import { type Static, Type } from "typebox";
+import {
+	MAX_PARALLEL_TASKS,
+	REMOVED_SUBAGENT_ACTIONS,
+	removedSubagentActionMessage,
+	SUBAGENT_ACTIONS,
+} from "../shared/types.js";
 
 const SkillOverride = Type.Unsafe({
 	anyOf: [{ type: "array", items: { type: "string" } }, { type: "boolean" }, { type: "string" }],
@@ -145,13 +150,31 @@ export const SubagentParams = Type.Object(
 		action: Type.Optional(
 			Type.String({
 				enum: [...SUBAGENT_ACTIONS],
-				description: "Management/control action. Omit for execution mode.",
+				description:
+					"Management/control action. Omit for execution mode. pause/resume/quit control a launched child; kill and interrupt were removed (use quit).",
 			}),
 		),
-		id: Type.Optional(Type.String({ description: "Run id or prefix for action='status' or action='kill'." })),
+		id: Type.Optional(
+			Type.String({
+				description:
+					"Target for action='status' (run id or prefix), 'wait' (task id), or 'pause'/'resume'/'quit' (child id <runId>:<index>, its task id, Intercom name, or a single-child run id).",
+			}),
+		),
 		runId: Type.Optional(
 			Type.String({
-				description: "Target run ID for action='kill'. Prefer id for new calls.",
+				description: "Legacy alias of id for status and pause/resume/quit. Prefer id for new calls.",
+			}),
+		),
+		message: Type.Optional(
+			Type.String({
+				description:
+					"Free-form steer for action='resume', delivered once as the child's next prompt. Without it the child continues where it left off.",
+			}),
+		),
+		all: Type.Optional(
+			Type.Boolean({
+				description:
+					"With action='pause' or 'quit', act on every running child this session launched (quit also covers paused children; every quit child stays resumable). Not valid with resume or id.",
 			}),
 		),
 		config: Type.Optional(
@@ -232,3 +255,14 @@ export const SubagentParams = Type.Object(
 	},
 	{ additionalProperties: false },
 );
+
+/**
+ * Reject removed control actions before schema validation, so the error names their replacement
+ * instead of reporting an unknown enum value.
+ */
+export function prepareSubagentArguments(args: unknown): Static<typeof SubagentParams> {
+	const action = typeof args === "object" && args !== null ? (args as { action?: string }).action : undefined;
+	if (action !== undefined && (REMOVED_SUBAGENT_ACTIONS as readonly string[]).includes(action))
+		throw new Error(removedSubagentActionMessage(action));
+	return args as Static<typeof SubagentParams>;
+}

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -86,6 +87,12 @@ export {
 } from "./subagent-child-hold.js";
 
 export type SubagentChildRestoreDeps = Pick<ExecutorDeps, "pi" | "config" | "discoverAgents" | "runtime">;
+
+/** How an explicit `subagent({ action: "resume" })` reopens a child, instead of session recovery after a restart. */
+export interface SubagentChildResumeRequest {
+	/** The prompt the reopened child runs next. */
+	readonly prompt: string;
+}
 
 export type SubagentChildRestoreOutcome =
 	| {
@@ -191,6 +198,7 @@ async function relaunchChild(
 	hold: ChildTargetHold | undefined,
 	release: () => void,
 	onReopened: (previousIntercomId: string | undefined) => void,
+	resume: SubagentChildResumeRequest | undefined,
 ): Promise<SubagentChildRestoreOutcome> {
 	const unrestorable = (reason: string): SubagentChildRestoreOutcome => ({
 		kind: "unrestorable",
@@ -262,7 +270,8 @@ async function relaunchChild(
 		cwd: ctx.cwd,
 		agents: [agent],
 		agent: agent.name,
-		task: SUBAGENT_RESUME_CONTINUATION_PROMPT,
+		task: resume?.prompt ?? SUBAGENT_RESUME_CONTINUATION_PROMPT,
+		...(resume ? { operation: `${record.runId}:${record.index}:resume:${randomUUID()}` } : {}),
 		options,
 		wait: { kind: "background" },
 		runtime: resolveSubagentExecutorRuntimeDeps(deps.runtime),
@@ -290,11 +299,14 @@ async function relaunchChild(
  * Intercom under its original name and group with a fresh supervisor capability (#3760).
  * Accepts the child id (`<runId>:<index>`), its launch task id, or its Intercom name.
  * Records that a fork copied from another session name that session as their owner, so they are never restored here.
+ * With `resume`, an explicit `subagent({ action: "resume" })` reopens a settled child the same way; the caller
+ * decides which settled children are resumable.
  */
 export async function restoreSubagentChild(
 	deps: SubagentChildRestoreDeps,
 	ctx: ExtensionContext,
 	id: string,
+	resume?: SubagentChildResumeRequest,
 ): Promise<SubagentChildRestoreOutcome> {
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
 	const record = findSubagentChildRecord(
@@ -302,7 +314,7 @@ export async function restoreSubagentChild(
 		id,
 	);
 	if (!record) return { kind: "unrestorable", childId: id, reason: "this session has no record of that subagent" };
-	if (record.state === "terminal") return { kind: "terminal", record };
+	if (record.state === "terminal" && !resume) return { kind: "terminal", record };
 	const key = childHoldKey(ownerSessionId, record.childId);
 	const active = activeRestorations.get(key);
 	if (active) return active.outcome;
@@ -339,7 +351,7 @@ export async function restoreSubagentChild(
 		} else {
 			hold = await holdChildTargets(deps.pi.events, record, record.intercomGroup ?? inheritedIntercomGroup(ctx));
 		}
-		return relaunchChild(deps, ctx, record, hold, release, onReopened);
+		return relaunchChild(deps, ctx, record, hold, release, onReopened, resume);
 	})().then(
 		async (outcome) => {
 			previousIntercomId.resolve(undefined);

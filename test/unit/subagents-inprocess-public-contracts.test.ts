@@ -9,7 +9,7 @@ import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-
 import type { OperationId, TaskResult } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
-import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
+import { prepareSubagentArguments, SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import type {
@@ -19,9 +19,7 @@ import type {
 import {
 	clearSubagentControls,
 	listSubagentControls,
-	registerSubagentControl,
 } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
-import { SubagentControlRuntime } from "../../packages/subagents/src/runs/inprocess/runner.js";
 import type { SingleResult, SubagentState } from "../../packages/subagents/src/shared/types.js";
 import { sleep, spawnSyncCollect } from "../helpers/runtime.js";
 
@@ -141,7 +139,7 @@ afterEach(() => {
 	for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-test("subagent schema accepts kill and rejects interrupt through provider validation", () => {
+test("subagent schema accepts run control and rejects the removed kill and interrupt actions", () => {
 	const tool = { name: "subagent", description: "test subagent", parameters: SubagentParams };
 	const call = (action: string) => ({
 		type: "toolCall" as const,
@@ -149,25 +147,33 @@ test("subagent schema accepts kill and rejects interrupt through provider valida
 		name: "subagent",
 		arguments: { action, id: "raw/child" },
 	});
-	assert.deepEqual(validateToolArguments(tool, call("kill")), { action: "kill", id: "raw/child" });
-	assert.throws(() => validateToolArguments(tool, call("interrupt")));
+	for (const action of ["pause", "resume", "quit"])
+		assert.deepEqual(validateToolArguments(tool, call(action)), { action, id: "raw/child" });
+	for (const action of ["kill", "interrupt"]) {
+		assert.throws(() => validateToolArguments(tool, call(action)));
+		assert.throws(
+			() => prepareSubagentArguments({ action, id: "raw/child" }),
+			new RegExp(`"${action}" was removed\\. Use \\{ action: "quit"`),
+		);
+	}
+	assert.deepEqual(prepareSubagentArguments({ action: "quit", id: "c" }), { action: "quit", id: "c" });
 });
 
-test("public kill replaces interrupt without retaining an alias", async () => {
+test("kill and interrupt are rejected with an error that names quit as the replacement", async () => {
 	const cwd = makeRoot();
 	const { execute } = executor(cwd, new TestEvents());
 	for (const action of ["kill", "interrupt"]) {
 		const result = await execute.execute(
 			"command-contract",
-			// @ts-expect-error Exercise invalid public action input at runtime.
-			{ action },
+			// @ts-expect-error Exercise removed public action input at runtime.
+			{ action, id: "child" },
 			new AbortController().signal,
 			undefined,
 			context(cwd),
 		);
 		assert.equal(result.isError, true);
-		if (action === "interrupt") assert.match(text(result), /Unknown action: interrupt/);
-		else assert.doesNotMatch(text(result), /Unknown action/);
+		assert.match(text(result), new RegExp(`"${action}" was removed\\. Use \\{ action: "quit", id \\}`));
+		assert.doesNotMatch(text(result), /Unknown action/);
 	}
 });
 
@@ -294,86 +300,7 @@ test("public parallel worktree mode gives each task an isolated checkout", async
 		.filter((line) => line.startsWith("worktree "));
 	assert.equal(remainingWorktrees.length, 1);
 });
-test("public kill accepts both bare run ids and canonical child paths", async () => {
-	for (const form of ["bare", "canonical"] as const) {
-		const cwd = makeRoot();
-		const gate = Promise.withResolvers<void>();
-		const promptLogPath = join(cwd, `prompt-${form}.log`);
-		const { execute } = executor(cwd, new TestEvents(), {
-			runSync: async (parentCwd, agents, agentName, task, options) =>
-				runSync(parentCwd, agents, agentName, task, {
-					...options,
-					testSession: {
-						output: "partial output",
-						promptGate: gate.promise,
-						promptLogPath,
-						abortResolvesPrompt: true,
-					},
-				}),
-		});
-		const ctx = context(cwd);
-		const running = execute.execute(
-			`foreground-${form}`,
-			{ agent: "qa-echo", task: `wait for ${form} management`, artifacts: false },
-			new AbortController().signal,
-			undefined,
-			ctx,
-		);
-
-		for (let attempt = 0; attempt < 200 && !existsSync(promptLogPath); attempt++) await sleep(5);
-		assert.equal(existsSync(promptLogPath), true, "foreground child prompt should start before management actions");
-
-		const status = await execute.execute(
-			`status-${form}`,
-			{ action: "status" },
-			new AbortController().signal,
-			undefined,
-			ctx,
-		);
-		const statusText = text(status);
-		const liveStatus = /^Parent: (\S+)\n(\S+\/\S+) — running \(loaded\)$/m.exec(statusText);
-		const runId = liveStatus?.[1];
-		const childPath = liveStatus?.[2];
-		assert.ok(runId, statusText);
-		assert.ok(childPath, statusText);
-		assert.match(childPath, new RegExp(`^${runId}/qa-echo_1$`));
-		const id = form === "bare" ? runId : childPath;
-
-		const killed = await execute.execute(
-			`kill-${form}`,
-			{ action: "kill", ...(form === "bare" ? { runId: id } : { id }) },
-			new AbortController().signal,
-			undefined,
-			ctx,
-		);
-		assert.equal(killed.isError, undefined, text(killed));
-		assert.match(text(killed), /Kill requested/);
-		const terminal = await running;
-		assert.equal(terminal.details.results[0].status, "killed");
-		assert.match(text(terminal), /Killed/);
-		assert.match(text(terminal), /cannot be resumed/);
-		const stopped = await execute.execute(
-			"stopped-status",
-			{ action: "status", id: childPath },
-			new AbortController().signal,
-			undefined,
-			ctx,
-		);
-		assert.match(text(stopped), /Status: killed/);
-		const repeated = await execute.execute(
-			"repeated-kill",
-			{ action: "kill", id: childPath },
-			new AbortController().signal,
-			undefined,
-			ctx,
-		);
-		assert.equal(repeated.isError, true);
-		assert.match(text(repeated), /No running in-process child/);
-		gate.resolve();
-	}
-});
-
-test("management status, wait and kill resolve the launch task ID without starting another child", async () => {
+test("management status and wait resolve the launch task ID and report an owner cancellation as non-resumable", async () => {
 	const cwd = makeRoot();
 	const { execute } = executor(cwd, new TestEvents());
 	const host = new AgentTaskHost({ scope: { kind: "session", sessionId: "management-owner" }, authorizeLaunch() {} });
@@ -393,7 +320,7 @@ test("management status, wait and kill resolve the launch task ID without starti
 		);
 		assert.ok(started.ok);
 		await host.observeAgentLaunch(started.value.taskId);
-		const call = (action: "status" | "wait" | "kill") =>
+		const call = (action: "status" | "wait") =>
 			execute.execute(
 				`management-${action}`,
 				{ action, id: started.value.taskId, budgetMs: 1 },
@@ -405,7 +332,7 @@ test("management status, wait and kill resolve the launch task ID without starti
 		assert.equal(status.details?.taskRecords?.[0].execution.kind, "running");
 		const waited = await call("wait");
 		assert.equal(waited.details?.taskResponse?.kind, "admitted");
-		await call("kill");
+		await host.cancelTask(started.value.taskId, "user");
 		await host.waitForTask(started.value.taskId);
 		const stopped = await call("status");
 		assert.equal(stopped.details?.taskRecords?.[0].execution.kind, "settled");
@@ -417,8 +344,9 @@ test("management status, wait and kill resolve the launch task ID without starti
 	}
 });
 
-test("owner task kill reaches a real child and wait preserves raw cancellation under a killed receipt", async () => {
-	for (const field of ["id", "runId"] as const) {
+test("owner task cancellation reaches a real child and wait preserves raw cancellation under a killed receipt", async () => {
+	{
+		const field = "owner";
 		const cwd = makeRoot();
 		const gate = Promise.withResolvers<void>();
 		const promptLogPath = join(cwd, "owner-prompt.log");
@@ -448,14 +376,8 @@ test("owner task kill reaches a real child and wait preserves raw cancellation u
 			const taskId = response.observation.taskId;
 			for (let attempt = 0; attempt < 200 && !existsSync(promptLogPath); attempt++) await sleep(5);
 			assert.ok(existsSync(promptLogPath));
-			const killed = await execute.execute(
-				"kill-owner",
-				{ action: "kill", [field]: taskId },
-				new AbortController().signal,
-				undefined,
-				ctx,
-			);
-			assert.notEqual(killed.isError, true, text(killed));
+			const killed = await host.cancelTask(taskId, "user");
+			assert.ok(killed.ok);
 			const stopped = await host.waitForTask(taskId);
 			assert.ok(stopped.ok && stopped.value.kind === "settled");
 			assert.equal(stopped.value.result.kind, "cancelled");
@@ -482,7 +404,7 @@ test("owner task kill reaches a real child and wait preserves raw cancellation u
 	}
 });
 
-test("owner foreground parallel kill preserves sibling execution and raw host records under a killed receipt", async () => {
+test("owner foreground parallel cancellation preserves sibling execution and raw host records under a killed receipt", async () => {
 	const cwd = makeRoot();
 	const gate = Promise.withResolvers<void>();
 	const { execute } = executor(cwd, new TestEvents(), {
@@ -512,9 +434,8 @@ test("owner foreground parallel kill preserves sibling execution and raw host re
 		const ids = watched.value.snapshot.tasks.map((task) => task.ref.taskId);
 		watched.value.dispose();
 		assert.equal(ids.length, 2);
-		// Owner lookup retains id precedence when both target fields are supplied.
-		const killed = await call({ action: "kill", id: ids[0], runId: ids[1] });
-		assert.notEqual(killed.isError, true, text(killed));
+		const killed = await host.cancelTask(ids[0]!, "user");
+		assert.ok(killed.ok);
 		const stopped = await host.waitForTask(ids[0]!);
 		assert.ok(stopped.ok && stopped.value.kind === "settled");
 		assert.equal(stopped.value.result.kind, "cancelled");
@@ -545,8 +466,9 @@ test("owner foreground parallel kill preserves sibling execution and raw host re
 	}
 });
 
-for (const field of ["id", "runId"] as const) {
-	test(`owner public kill via ${field} during native capacity wait is killed, cold and terminal`, async () => {
+{
+	const field = "owner";
+	test(`${field} cancellation during native capacity wait is killed, cold and terminal`, async () => {
 		const cwd = makeRoot();
 		const gate = Promise.withResolvers<void>();
 		const terminal: SingleResult[] = [];
@@ -593,8 +515,8 @@ for (const field of ["id", "runId"] as const) {
 			const path = children[4]!.path;
 			const watched: string[] = [];
 			control.subscribe(path, (status) => watched.push(status));
-			const killed = await call({ action: "kill", [field]: ids[4] });
-			assert.notEqual(killed.isError, true, text(killed));
+			const killed = await host.cancelTask(ids[4]!, "user");
+			assert.ok(killed.ok);
 			const stopped = await host.waitForTask(ids[4]!);
 			assert.ok(stopped.ok && stopped.value.kind === "settled");
 			assert.equal(stopped.value.result.kind, "cancelled");
@@ -615,7 +537,6 @@ for (const field of ["id", "runId"] as const) {
 					.slice(0, 4)
 					.every((child) => child.status === "running"),
 			);
-			assert.equal((await call({ action: "kill", id: path })).isError, true);
 			gate.resolve();
 			await Promise.all(ids.map((id) => host.waitForTask(id)));
 			assert.deepEqual(
@@ -630,236 +551,8 @@ for (const field of ["id", "runId"] as const) {
 	});
 }
 
-test("late public kill by runId preserves an already-published native interrupt before JS completion", async () => {
-	const cwd = makeRoot();
-	const gate = Promise.withResolvers<void>();
-	const interrupt = new AbortController();
-	const control = new SubagentControlRuntime({ path: "native-interrupt-won", depth: 0 }, join(cwd, "sessions"));
-	control.registerAgents([agent()]);
-	registerSubagentControl(control);
-	const admitted = control.admitChildSession({
-		taskName: "hold",
-		task: "wait for lower-level interruption",
-		agent: agent(),
-		cwd,
-		testSession: { promptGate: gate.promise, abortResolvesPrompt: true },
-	});
-	assert.ok(admitted.admitted);
-	const running = control.startAttempt(
-		admitted.admitted,
-		{},
-		{
-			abort: new AbortController().signal,
-			interrupt: interrupt.signal,
-		},
-	);
-	const path = running.child.identity.path;
-	const { execute } = executor(cwd, new TestEvents());
-	const call = (action: "kill" | "status") =>
-		execute.execute(
-			"native-interrupt-won",
-			{ action, runId: path },
-			new AbortController().signal,
-			undefined,
-			context(cwd),
-		);
-	try {
-		interrupt.abort();
-		// Yield only microtasks: the native worker can publish interruption while its JS completion stays queued.
-		const deadline = Date.now() + 2_000;
-		while (Date.now() < deadline && control.native.listChildren()[0]?.status !== "interrupted")
-			await Promise.resolve();
-		assert.equal(
-			control.native.listChildren()[0]?.status,
-			"interrupted",
-			"native interruption must already have won",
-		);
-		assert.equal(running.status, "running", "the JS attempt must still be pending when the late kill arrives");
-		assert.equal(control.findChild(path)?.status, "interrupted");
-
-		const requested = await call("kill");
-		assert.notEqual(requested.isError, true, text(requested));
-		const result = await running.promise;
-		assert.equal(result.status, "interrupted");
-		assert.equal(result.cause, undefined);
-		assert.equal(result.envelope, "Interrupted");
-		assert.doesNotMatch(result.envelope, /killed|cannot be resumed/i);
-		assert.equal(control.native.listChildren()[0]?.status, "interrupted");
-		assert.equal(control.findChild(path)?.status, "interrupted");
-		const status = await call("status");
-		assert.match(text(status), /Status: interrupted/);
-		assert.doesNotMatch(text(status), /killed|cannot be resumed/i);
-		assert.equal(status.details.statusGroups?.[0]?.children[0]?.status, "interrupted");
-	} finally {
-		gate.resolve();
-		await running.promise;
-	}
-});
-
-for (const field of ["id", "runId"] as const) {
-	for (const abortResolvesPrompt of [true, false]) {
-		test.each(["interrupt", "parent-default", "parent-user", "kill"] as const)(
-			`late public kill via ${field} after finalization preserves %s (prompt resolves: ${abortResolvesPrompt})`,
-			async (first) => {
-				const cwd = makeRoot();
-				const gate = Promise.withResolvers<void>();
-				const lateRequest = Promise.withResolvers<void>();
-				const abort = new AbortController();
-				const interrupt = new AbortController();
-				const expectedStatus = first === "kill" ? "killed" : "interrupted";
-				const parentCancelled = first === "parent-default" || first === "parent-user";
-				const control = new SubagentControlRuntime(
-					{ path: "finalized-interrupt", depth: 0 },
-					join(cwd, "sessions"),
-				);
-				control.registerAgents([agent()]);
-				registerSubagentControl(control);
-				const { execute } = executor(cwd, new TestEvents());
-				const call = (action: "kill" | "status") =>
-					execute.execute(
-						"finalized-interrupt",
-						{ action, [field]: path },
-						new AbortController().signal,
-						undefined,
-						context(cwd),
-					);
-				const admitted = control.admitChildSession({
-					taskName: "hold",
-					task: "wait for interruption",
-					agent: agent(),
-					cwd,
-					testSession: {
-						promptGate: gate.promise,
-						abortResolvesPrompt,
-						dispose() {
-							// The result is finalized, but its outer promise has not yet retired the attempt.
-							queueMicrotask(() => {
-								void (async () => {
-									assert.equal(running.status, "running");
-									assert.equal(control.native.listChildren()[0]?.status, "interrupted");
-									assert.equal(control.findChild(path)?.status, expectedStatus);
-									const requested = call("kill");
-									assert.equal(control.findChild(path)?.status, expectedStatus);
-									const receipt = await requested;
-									assert.notEqual(receipt.isError, true, text(receipt));
-								})().then(lateRequest.resolve, lateRequest.reject);
-							});
-						},
-					},
-				});
-				assert.ok(admitted.admitted);
-				const running = control.startAttempt(
-					admitted.admitted,
-					{},
-					{
-						abort: abort.signal,
-						interrupt: interrupt.signal,
-					},
-				);
-				const path = running.child.identity.path;
-				try {
-					const firstRequest = first === "kill" ? call("kill") : undefined;
-					if (first === "interrupt") interrupt.abort();
-					else if (first === "parent-user") abort.abort("user");
-					else if (first === "parent-default") abort.abort();
-					const result = await running.promise;
-					await firstRequest;
-					await lateRequest.promise;
-					assert.equal(result.status, expectedStatus);
-					assert.equal(result.cause, parentCancelled ? "abort" : undefined);
-					if (parentCancelled) assert.match(result.envelope, /Run cancelled by parent/);
-					else
-						assert.equal(
-							result.envelope,
-							first === "kill" ? "Killed. This child cannot be resumed." : "Interrupted",
-						);
-					assert.equal(control.native.listChildren()[0]?.status, "interrupted");
-					assert.equal(control.findChild(path)?.status, expectedStatus);
-					const status = await call("status");
-					assert.ok(text(status).includes(`Status: ${expectedStatus}`));
-					if (first !== "kill") assert.doesNotMatch(text(status), /killed|cannot be resumed/i);
-					assert.equal(status.details.statusGroups?.[0]?.children[0]?.status, expectedStatus);
-					assert.equal((await call("kill")).isError, true);
-					assert.equal(control.findChild(path)?.status, expectedStatus);
-				} finally {
-					gate.resolve();
-					await running.promise;
-					await lateRequest.promise;
-				}
-			},
-		);
-	}
-}
-
-// PR #2974: a kill accepted before parent abort must keep its terminal classification.
-test.each(["id", "runId"] as const)("capacity-wait kill via %s survives a later parent abort", async (field) => {
-	const cwd = makeRoot();
-	const gate = Promise.withResolvers<void>();
-	const abort = new AbortController();
-	const terminal: SingleResult[] = [];
-	const { execute } = executor(cwd, new TestEvents(), {
-		runSync: async (parentCwd, agents, agentName, task, options) => {
-			const result = await runSync(parentCwd, agents, agentName, task, {
-				...options,
-				testSession: { promptGate: gate.promise, abortResolvesPrompt: true },
-			});
-			terminal.push(result);
-			return result;
-		},
-	});
-	const ctx = context(cwd);
-	const launch = execute.execute(
-		"kill-before-parent",
-		{
-			tasks: Array.from({ length: 5 }, (_, index) => ({ agent: "qa-echo", task: `hold ${index}` })),
-			concurrency: 5,
-			artifacts: false,
-		},
-		abort.signal,
-		undefined,
-		ctx,
-	);
-	try {
-		await waitUntil(() => listSubagentControls().some((control) => control.listChildren().length === 5));
-		const control = listSubagentControls().find((control) => control.listChildren().length === 5)!;
-		const waiting = control.listChildren()[4]!;
-		assert.equal(waiting.status, "pending");
-		assert.equal(waiting.loaded, false);
-		const killed = execute.execute(
-			"kill-before-parent",
-			{ action: "kill", [field]: waiting.path },
-			new AbortController().signal,
-			undefined,
-			ctx,
-		);
-		abort.abort();
-		assert.notEqual((await killed).isError, true);
-		await launch;
-		await waitUntil(() => terminal.length === 5);
-		const result = terminal.find((child) => child.task === "hold 4")!;
-		assert.equal(result.status, "killed");
-		assert.equal(result.cause, undefined);
-		assert.equal(result.envelope, "Killed. This child cannot be resumed.");
-		assert.equal(control.findChild(waiting.path)?.status, "killed");
-		assert.equal(control.findChild(waiting.path)?.loaded, false);
-		assert.ok(terminal.filter((child) => child !== result).every((child) => child.cause === "abort"));
-		const repeated = await execute.execute(
-			"repeat-kill",
-			{ action: "kill", [field]: waiting.path },
-			new AbortController().signal,
-			undefined,
-			ctx,
-		);
-		assert.equal(repeated.isError, true);
-	} finally {
-		abort.abort();
-		gate.resolve();
-		await launch;
-	}
-});
-
 for (const cause of ["parent-default", "parent-user", "owner-close"] as const) {
-	test.each([false, true])(`${cause} at capacity preserves abort (late kill: %s)`, async (lateKill) => {
+	test(`${cause} at capacity preserves abort`, async () => {
 		const cwd = makeRoot();
 		const gate = Promise.withResolvers<void>();
 		const abort = new AbortController();
@@ -896,14 +589,6 @@ for (const cause of ["parent-default", "parent-user", "owner-close"] as const) {
 			const closing = cause === "owner-close" ? host.close("session-close") : undefined;
 			if (cause === "parent-user") abort.abort("user");
 			else if (cause === "parent-default") abort.abort();
-			if (lateKill)
-				await execute.execute(
-					"late-kill",
-					{ action: "kill", id: waiting.path },
-					new AbortController().signal,
-					undefined,
-					ctx,
-				);
 			await closing;
 			await launch;
 			await waitUntil(() => terminal.length === 5);

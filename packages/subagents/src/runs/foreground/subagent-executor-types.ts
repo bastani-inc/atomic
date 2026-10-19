@@ -44,6 +44,8 @@ export interface SubagentParamsLike {
 	wait?: import("@bastani/atomic").WaitPolicy;
 	budgetMs?: number;
 	runId?: string;
+	message?: string;
+	all?: boolean;
 	agent?: string;
 	task?: string;
 	config?: unknown;

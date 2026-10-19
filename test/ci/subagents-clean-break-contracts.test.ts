@@ -179,11 +179,9 @@ function activeSubagentContractSource(file: string): string {
 	return source;
 }
 
+// `subagent({ action: "resume" })` and its docs are the supported run-control contract: a paused, quit,
+// interrupted, completed, or failed child resumes from its own session. Only the pre-#2205 resume shapes stay stale.
 const staleSubagentContractPatterns = [
-	/\bsubagent\s*\(\s*\{[^\n]{0,80}\baction\s*:\s*["']resume["']/iu,
-	/\b(?:subagent|child(?:ren)?|sibling(?:s)?)\b[^\n]{0,120}\bresume(?:d|s|ing)?\b/iu,
-	/\bresume(?:d|s|ing)?\b[^\n]{0,120}\b(?:subagent|child(?:ren)?|sibling(?:s)?)\b/iu,
-	/\binterrupt(?:ed|ion)?\b[^\n]{0,120}\b(?:resumable|paused|pause for resume)\b/iu,
 	/\bparent[- ]ask\b[^\n]{0,120}\bpause(?:d|s|ing)?\b/iu,
 	/\b(?:run|child) paused after interrupt\b/iu,
 	/\bpause to ask the parent\b/iu,
@@ -239,7 +237,7 @@ test("the clean-break env bridge and CLI-child protocol stay absent", () => {
 	}
 });
 
-test("subagent child-resume code and active contracts stay absent", () => {
+test("the pre-#2205 child-resume code and stale resume contracts stay absent", () => {
 	const files = trackedFiles();
 	const implementationFiles = files.filter(
 		(file) =>

@@ -1458,19 +1458,6 @@ export class SubagentControlRuntime {
 		}));
 	}
 
-	async killChild(pathValue: string): Promise<boolean> {
-		const running = [...this.runningAttempts.values()].find(
-			(attempt) =>
-				attempt.child.identity.path === pathValue &&
-				(attempt.status === "running" || attempt.status === "continued"),
-		);
-		if (!running) return false;
-		// Native interruption can be final before the JS attempt is retired. Do not relabel it.
-		if (this.findChild(pathValue)?.status !== "interrupted") this.killedChildren.add(pathValue);
-		await this.terminateChildAttempt(running, "interrupt");
-		return true;
-	}
-
 	subscribe(pathValue: string, callback: (status: ChildStatus) => void): void {
 		this.native.subscribeChildStatus(pathValue, (status) =>
 			callback(status === "interrupted" && this.killedChildren.has(pathValue) ? "killed" : status),

@@ -28,7 +28,7 @@ export function renderSubagentToolCall(args: SubagentParamsLike, theme: Theme, c
 	const burst = getBurstDisplay(context.toolCallId);
 	if (burst && !burst.owner) return new Container();
 	if (args.action) {
-		const target = args.agent || args.id || args.runId || "";
+		const target = args.agent || args.id || args.runId || (args.all ? "all" : "");
 		return new Text(
 			`${theme.fg("toolTitle", theme.bold("subagent "))}${args.action}${target ? ` ${theme.fg(args.action === "status" ? "dim" : "accent", displayText(target))}` : ""}`,
 			0,
@@ -61,6 +61,36 @@ export function renderSubagentToolResult(
 	result = burst?.result ?? result;
 	if (result.details?.taskError)
 		return new Text(theme.fg("error", `✗ ${displayText(result.details.taskError)}`), 0, 0);
+	const runControl = result.details?.runControl;
+	if (runControl) {
+		const text = result.content.find((part) => part.type === "text");
+		const failed = (result as { isError?: boolean }).isError === true;
+		if (failed || runControl.children.length === 0)
+			return new Text(
+				theme.fg(
+					failed ? "error" : "dim",
+					`${failed ? "✗ " : ""}${displayText(text?.type === "text" ? text.text : "")}`,
+				),
+				0,
+				0,
+			);
+		const lines = runControl.children.map((child) => {
+			const state =
+				child.state === "running"
+					? theme.fg("success", `▶ Resumed · ${displayText(child.agent)}`)
+					: theme.fg(
+							"warning",
+							`${child.state === "paused" ? "‖ Paused" : "■ Quit (resumable)"} · ${displayText(child.agent)}`,
+						);
+			const identity = theme.fg(
+				"dim",
+				`\n   ${displayText(child.childId)}${child.intercomTarget ? ` · ${displayText(child.intercomTarget)}` : ""}${options.expanded && child.taskId ? ` · ${displayText(child.taskId)}` : ""}`,
+			);
+			return state + identity;
+		});
+		if (runControl.message && options.expanded) lines.push(theme.fg("muted", displayText(runControl.message)));
+		return new Text(lines.join("\n"), 0, 0);
+	}
 	if (result.details?.taskRecords && !result.details.taskResponse) {
 		const lines = result.details.taskRecords.flatMap((task) => {
 			const state =

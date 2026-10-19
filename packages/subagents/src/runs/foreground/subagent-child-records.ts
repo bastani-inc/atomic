@@ -16,7 +16,9 @@ export type SubagentChildOwner =
 /**
  * One durable observation of a launched child. The latest record for a child id
  * is authoritative: `running` means the child had not settled when it was written,
- * `terminal` means it completed, failed, or was stopped and must not be restored.
+ * `terminal` means it settled: completed, failed, was interrupted, paused or quit, or was stopped
+ * for good. Session recovery restores only `running` children; an explicit `resume` also reopens
+ * a settled child unless its `terminalStatus` is non-resumable (`killed`, `gone`).
  */
 export interface SubagentChildRecord {
 	readonly version: 1;
@@ -94,6 +96,31 @@ export function createSubagentChildRecordSink(
 
 /** `terminalStatus` of a child that could not be restored after a restart and was reported gone to its owner. */
 export const SUBAGENT_CHILD_GONE_STATUS = "gone";
+
+/** `terminalStatus` of a child stopped by `pause` or `quit`; both stay resumable. */
+export type SubagentChildStopStatus = "paused" | "quit";
+
+const stopRequests = new Map<string, SubagentChildStopStatus>();
+
+/** Mark the task about to be cancelled so its settlement is recorded as paused or quit, not interrupted. */
+export function requestSubagentChildStop(taskId: string, status: SubagentChildStopStatus): void {
+	stopRequests.set(taskId, status);
+}
+
+export function takeSubagentChildStop(taskId: string): SubagentChildStopStatus | undefined {
+	const status = stopRequests.get(taskId);
+	stopRequests.delete(taskId);
+	return status;
+}
+
+/** Append a new latest observation of a child that changes only its terminal status. */
+export async function recordSubagentChildStatus(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	record: SubagentChildRecord,
+	terminalStatus: string,
+): Promise<void> {
+	await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, { ...record, state: "terminal", terminalStatus });
+}
 
 /**
  * Append the terminal observation of a child that could not be restored and has been reported

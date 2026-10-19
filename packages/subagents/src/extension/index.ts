@@ -63,7 +63,7 @@ import {
 import { loadConfig } from "./config.js";
 import { parseSubagentNotifyContent } from "./notification-content.js";
 import { DEFAULT_PROMPT_GUIDANCE } from "./prompt-guidance.js";
-import { SubagentParams } from "./schemas.js";
+import { prepareSubagentArguments, SubagentParams } from "./schemas.js";
 import { SUBAGENT_TOOL_DESCRIPTION } from "./tool-description.js";
 import { renderSubagentToolCall, renderSubagentToolResult } from "./tool-rendering.js";
 
@@ -392,6 +392,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			label: "Subagent",
 			description: SUBAGENT_TOOL_DESCRIPTION,
 			parameters: SubagentParams,
+			prepareArguments: prepareSubagentArguments,
 			promptGuidelines: DEFAULT_PROMPT_GUIDANCE,
 			execute(id, params, signal, onUpdate, ctx) {
 				const executionSignal = signal ?? ctx.signal ?? new AbortController().signal;

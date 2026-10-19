@@ -66,28 +66,3 @@ export function inspectInProcessChildStatus(id?: string): SubagentToolResult | u
 		details: { mode: "management", results: [], statusGroups: controls.map((control) => statusGroup(control)) },
 	};
 }
-
-export async function killInProcessChild(id: string): Promise<SubagentToolResult | undefined> {
-	const control = findSubagentControl(id);
-	if (!control) return undefined;
-	const identities = canonicalChildren(control);
-	const candidates = id === control.parent.path ? identities : identities.filter((child) => child.path === id);
-	for (const child of candidates) {
-		if (await control.killChild(child.path)) {
-			return {
-				content: [
-					{
-						type: "text",
-						text: `Kill requested for in-process child ${child.path}. This child cannot be resumed.`,
-					},
-				],
-				details: { mode: "management", results: [] },
-			};
-		}
-	}
-	return {
-		content: [{ type: "text", text: `No running in-process child found for '${id}'.` }],
-		isError: true,
-		details: { mode: "management", results: [] },
-	};
-}
