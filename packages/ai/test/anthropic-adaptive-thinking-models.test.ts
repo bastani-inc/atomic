@@ -27,7 +27,7 @@ function getAllModels(): Model<Api>[] {
 }
 
 describe("Anthropic adaptive thinking model metadata", () => {
-	it("marks built-in Anthropic Messages models that use adaptive thinking", () => {
+	it("marks built-in Anthropic Messages models that use adaptive thinking, including MiniMax effort models (#11121)", () => {
 		const flaggedModels = getAllModels()
 			.filter((model): model is Model<"anthropic-messages"> => model.api === "anthropic-messages")
 			.filter((model) => model.compat?.forceAdaptiveThinking === true)
