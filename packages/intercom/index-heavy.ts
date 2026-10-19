@@ -53,6 +53,7 @@ import {
   consumedIntercomMessageIds,
   DurableInbox,
   INTERCOM_INBOX_ENTRY,
+  INTERCOM_INBOX_HANDLED_ENTRY,
   INTERCOM_INBOX_REPLAY_EVENT,
   type IntercomInboxReplayRequest,
   unconsumedIntercomInbox,
@@ -215,6 +216,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     },
     entries: sessionBranch,
     append: (record) => pi.appendEntry(INTERCOM_INBOX_ENTRY, record),
+    appendHandled: (messageId) => pi.appendEntry(INTERCOM_INBOX_HANDLED_ENTRY, { messageId }),
   });
   const inboundDeliveries = new InboundMessageAdmission();
   const pendingStageRoutes = new Map<string, PendingStageRouteRegistration>();
@@ -470,6 +472,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         () => client,
         () => Boolean(getLiveContext(liveContext, messageGeneration)),
         (runId) => stageAdmission.boundary.ownsSubagentRun(runId),
+        () => durableInbox.handledWithoutCard(message.id),
       );
       return;
     }
@@ -500,7 +503,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       tracker: replyTracker,
       replyContext,
       currentClient: () => client,
-      commit,
+      // Only a failure reply to the sender commits here; the message itself is never shown.
+      commit: () => {
+        void durableInbox.handledWithoutCard(message.id);
+        commit();
+      },
       failurePrefix: liveContext.subagentPolicy?.executionEnded === undefined ? undefined : "Subagent could not admit intercom ask",
     });
     const activeDelivery = admitActiveSessionInbound(
@@ -551,6 +558,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
                 // Best-effort reply; keep the busy non-interactive session running either way.
               }
             }
+            await durableInbox.handledWithoutCard(message.id);
             commit();
             return;
           }

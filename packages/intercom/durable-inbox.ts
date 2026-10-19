@@ -5,6 +5,12 @@ import type { Message, SessionInfo } from "./types.js";
 /** #3761: custom session entry saving an Intercom message when it arrives, before the broker reports it delivered. */
 export const INTERCOM_INBOX_ENTRY = "intercom_inbox";
 
+/**
+ * #3761: custom session entry recording that a saved message was handled without an `intercom_message` card
+ * (refused while busy, or dropped as a closed stage's retired child traffic), so resume does not show it.
+ */
+export const INTERCOM_INBOX_HANDLED_ENTRY = "intercom_inbox_handled";
+
 /** #3761: the lightweight extension asks the loaded runtime to queue a resumed session's unshown saved messages. */
 export const INTERCOM_INBOX_REPLAY_EVENT = "intercom:inbox-replay";
 
@@ -42,6 +48,18 @@ export function consumedIntercomMessageIds(entries: Iterable<SessionEntry>): Set
 	return ids;
 }
 
+/** Ids of saved messages handled without a card: a reply recorded by its waiting ask, or an explicit handled record. */
+function handledIntercomMessageIds(entries: Iterable<SessionEntry>): Set<string> {
+	const ids = new Set<string>();
+	for (const entry of entries) {
+		if (entry.type !== "custom") continue;
+		if (entry.customType !== "intercom_received" && entry.customType !== INTERCOM_INBOX_HANDLED_ENTRY) continue;
+		const id = (entry.data as { messageId?: unknown } | undefined)?.messageId;
+		if (typeof id === "string") ids.add(id);
+	}
+	return ids;
+}
+
 export function savedIntercomMessageIds(entries: Iterable<SessionEntry>): Set<string> {
 	const ids = new Set<string>();
 	for (const entry of entries) {
@@ -51,10 +69,14 @@ export function savedIntercomMessageIds(entries: Iterable<SessionEntry>): Set<st
 	return ids;
 }
 
-/** Saved messages that never became an `intercom_message` card, once each, in the order they arrived. */
+/**
+ * Saved messages that never became an `intercom_message` card and were not otherwise handled, once each, in the
+ * order they arrived.
+ */
 export function unconsumedIntercomInbox(entries: Iterable<SessionEntry>): IntercomInboxRecord[] {
 	const branch = [...entries];
 	const consumed = consumedIntercomMessageIds(branch);
+	for (const id of handledIntercomMessageIds(branch)) consumed.add(id);
 	const records = new Map<string, IntercomInboxRecord>();
 	for (const entry of branch) {
 		const record = inboxRecord(entry);
@@ -69,6 +91,7 @@ export interface DurableInboxOptions {
 	readonly durable: () => boolean;
 	readonly entries: () => Iterable<SessionEntry>;
 	readonly append: (record: IntercomInboxRecord) => Promise<void>;
+	readonly appendHandled: (messageId: string) => Promise<void>;
 	readonly now?: () => number;
 }
 
@@ -97,6 +120,17 @@ export class DurableInbox {
 			() => {},
 		);
 		return arrival;
+	}
+
+	/** Record that a saved message was handled without a card, so resume does not show it. */
+	async handledWithoutCard(messageId: string): Promise<void> {
+		if (!this.options.durable()) return;
+		if (!this.saved.has(messageId) && !savedIntercomMessageIds(this.options.entries()).has(messageId)) return;
+		try {
+			await this.options.appendHandled(messageId);
+		} catch {
+			// Unrecorded, the message is shown again on resume rather than lost.
+		}
 	}
 
 	private async save(
