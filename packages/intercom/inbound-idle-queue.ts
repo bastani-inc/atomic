@@ -10,17 +10,29 @@ export interface InboundIdleClaim {
  * FIFO ownership for ordinary inbound messages accepted while the parent is
  * busy. A terminal barrier may claim only entries from its exact child session
  * target; unrelated children retain their original queue positions.
+ *
+ * #3761: each message id is queued once, and a message already shown in the
+ * session (`isConsumed`) is never handed out again, whichever of the idle flush,
+ * foreground-detach or terminal-barrier paths takes it.
  */
 export class InboundIdleQueue {
   private entries: InboundMessageEntry[] = [];
   private generation = 0;
 
+  constructor(private readonly isConsumed: (messageId: string) => boolean = () => false) {}
+
+  private dropConsumed(): void {
+    this.entries = this.entries.filter((entry) => !this.isConsumed(entry.message.id));
+  }
+
   get size(): number {
     return this.entries.length;
   }
 
-  enqueue(entry: InboundMessageEntry): void {
+  enqueue(entry: InboundMessageEntry): boolean {
+    if (this.isConsumed(entry.message.id) || this.entries.some((queued) => queued.message.id === entry.message.id)) return false;
     this.entries.push(entry);
+    return true;
   }
 
   has(entry: InboundMessageEntry): boolean {
@@ -31,16 +43,18 @@ export class InboundIdleQueue {
     const index = this.entries.indexOf(entry);
     if (index < 0) return false;
     this.entries.splice(index, 1);
-    return true;
+    return !this.isConsumed(entry.message.id);
   }
 
   drain(): InboundMessageEntry[] {
+    this.dropConsumed();
     const entries = this.entries;
     this.entries = [];
     return entries;
   }
 
   claimOrdinarySourceTargets(runId: string, sourceSessionTargets: readonly string[], terminalAt = Number.POSITIVE_INFINITY): InboundIdleClaim {
+    this.dropConsumed();
     const targets = new Set(sourceSessionTargets);
     const generation = this.generation;
     const original = this.entries;

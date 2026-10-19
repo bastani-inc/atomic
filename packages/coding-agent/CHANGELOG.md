@@ -14,6 +14,7 @@
 
 - Resuming a session with `atomic --session <id>` or `/resume` now shows the transcript before any recovery work runs, instead of leaving the screen blank while hidden agent turns replay messages from before the restart. Recovery runs afterwards and is visible in the transcript. A "Replaying N interrupted deliveries" line precedes any replayed turn, and a status line summarizes the result ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
 - Resuming no longer starts agent turns on its own for stale queued messages or background task results. Results that an earlier process never delivered appear as cards without starting a turn. Messages from peers that no longer exist are not replayed; one notice tells you and the agent which peers are gone. Messages from a background subagent that was relaunched but has not reconnected yet are deferred instead, and the notice says it is not gone ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
+- Intercom messages sent to a busy session are no longer lost when that session is killed or crashes before it goes idle: the recipient saves each message when it arrives, the sender sees `delivered` only after that save, and resuming the session with `atomic --session <id>` or `/resume` shows each saved message once ([#3761](https://github.com/bastani-inc/atomic/issues/3761)).
 
 ## [0.9.39] - 2026-10-19
 

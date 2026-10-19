@@ -137,8 +137,12 @@ export type ClientMessage =
 			registrationGroup?: string;
 			supervisor?: SupervisorRegistration;
 			supervisorOwnerToken?: string;
+			/** #3761: this recipient sends `received` once it has saved each message; `delivered` waits for it. */
+			acknowledgesReceipt?: true;
 	  }
 	| { type: "unregister" }
+	/** #3761: the recipient saved this message; it ignores a copy of it sent again. */
+	| { type: "received"; messageId: string }
   | { type: "list"; requestId: string; group?: string }
 	| { type: "list_groups"; requestId: string }
 	| { type: "join_group"; requestId: string; group: string }

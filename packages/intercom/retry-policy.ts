@@ -8,3 +8,7 @@ export const RETRY_IDENTITY_TTL_MS = ASK_REPLY_TIMEOUT_MS + RETRY_IDENTITY_RETRY
 export const DELIVERED_MESSAGE_TTL_MS = RETRY_IDENTITY_TTL_MS + RETRY_IDENTITY_RETRY_OPPORTUNITY_MS;
 /** Three reconnect attempts, used independently before initialization and during delivery. */
 export const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000] as const;
+/** How long a sender waits for one send's outcome before its client gives up. */
+export const SEND_RESPONSE_TIMEOUT_MS = 10_000;
+/** The broker answers an unconfirmed save before the sender's own wait ends, so the sender learns the outcome is uncertain. */
+export const RECIPIENT_RECEIPT_TIMEOUT_MS = 8_000;

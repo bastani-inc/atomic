@@ -14,6 +14,7 @@ import {
 	sessionTargetFailureReason,
 } from "../session-target.js";
 import { DeliveredMessageCache } from "./delivered-message-cache.js";
+import { type ReceiptSender, type RecipientReceipts, UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
 import { buildMessageSendSignature } from "./send-signature.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
 import { isVerticalBypass, sameGroup } from "./group-isolation.js";
@@ -38,6 +39,8 @@ export interface BrokerConnectedSession {
   supervisorId?: string;
   /** Private issuer identity used to restore child capabilities after reconnects. */
   supervisorOwnerToken?: string;
+  /** #3761: the recipient confirms each message once it has saved it; `delivered` waits for that confirmation. */
+  readonly acknowledgesReceipt?: true;
 }
 
 /** Immutable registration authority plus normalized memberships used when an accepted ask is rebound. */
@@ -130,6 +133,7 @@ export function handleBrokerSend(
 	writeConfirmed?: ConfirmedMessageWriter,
 	isNonAgentWorkflowTarget?: (target: string) => boolean,
 	holdForRestoringRecipient?: RestoringRecipientHold,
+	receipts?: RecipientReceipts<BrokerConnectedSession>,
 ): void {
   const message = clientMessage.message;
   const messageId = wireMessageId(message);
@@ -341,6 +345,8 @@ export function handleBrokerSend(
     }
 	const targetIdentity = deliveryTargetIdentity(target);
 	const deliveredMatch = deliveredMessages.lookupForTarget(message.id, signature, targetIdentity);
+	// #3761: a recipient that confirms saves ignores a copy it already saved, so a reserved message is sent again.
+	const confirmsSaves = target.acknowledgesReceipt === true && receipts !== undefined;
 	if (requirePendingReply && deliveredMatch === "match") {
 		write(socket, { type: "delivered", messageId: message.id, attemptId });
 		return;
@@ -364,7 +370,7 @@ export function handleBrokerSend(
 		});
 		return;
 	}
-	if (requirePendingReply && deliveredMatch === "uncertain") {
+	if (requirePendingReply && deliveredMatch === "uncertain" && !confirmsSaves) {
 		write(socket, {
 			type: "delivery_failed",
 			messageId: message.id,
@@ -451,7 +457,7 @@ export function handleBrokerSend(
 		});
 		return;
 	}
-	if (deliveredMatch === "uncertain") {
+	if (deliveredMatch === "uncertain" && !confirmsSaves) {
 		write(socket, {
 			type: "delivery_failed",
 			messageId: message.id,
@@ -525,7 +531,7 @@ export function handleBrokerSend(
 		write(socket, { type: "delivered", messageId: message.id, attemptId });
 		return;
 	}
-	if (reservation !== "recorded") {
+	if (reservation !== "recorded" && !(reservation === "uncertain" && confirmsSaves)) {
 		write(socket, {
 			type: "delivery_failed",
 			messageId: message.id,
@@ -541,24 +547,28 @@ export function handleBrokerSend(
 	}
 	if (message.expectsReply === true && clientMessage.resolveReplyTarget === true && attemptId !== undefined)
 		write(socket, { type: "question_target", messageId: message.id, attemptId, sessionId: target.info.id });
-    const finishDelivery = (): void => {
+    const finishDelivery = (recipient: BrokerConnectedSession, sender: ReceiptSender | undefined): void => {
+	  const notify = (frame: BrokerMessage): void => {
+		if (sender !== undefined) write(sender.socket, frame);
+	  };
+	  const senderAttemptId = sender?.attemptId;
 	  let accepted: ReturnType<DeliveredMessageCache["accept"]>;
 	  try {
 		accepted = deliveredMessages.accept(message.id, signature, targetIdentity);
 	  } catch {
-		write(socket, {
+		notify({
 			type: "delivery_failed",
 			messageId: message.id,
-			attemptId,
+			attemptId: senderAttemptId,
 			reason: "Intercom could not durably confirm the forwarded operation; refusing a possibly unsafe retry",
 		});
 		return;
 	  }
 	  if (accepted !== "accepted") {
-		write(socket, {
+		notify({
 			type: "delivery_failed",
 			messageId: message.id,
-			attemptId,
+			attemptId: senderAttemptId,
 			reason: "Intercom could not durably confirm the forwarded operation; refusing a possibly unsafe retry",
 			...(accepted === "conflict" ? { reasonCode: "message_id_conflict" as const } : {}),
 		});
@@ -566,27 +576,55 @@ export function handleBrokerSend(
 	  }
       // A terminal presence frame can arrive while the socket write callback is pending.
       // Retain accepted-delivery authority, but never open a reply route after termination.
-      if (message.expectsReply === true && target.info.replyCapability === "terminal") {
-        write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: TERMINAL_CHILD_ASK_REFUSAL });
+      if (message.expectsReply === true && recipient.info.replyCapability === "terminal") {
+        notify({ type: "delivery_failed", messageId: message.id, attemptId: senderAttemptId, reason: TERMINAL_CHILD_ASK_REFUSAL });
         return;
       }
-      if (message.expectsReply === true && sessions.get(target.info.id) !== target) {
-        write(socket, { type: "delivery_failed", messageId: message.id, attemptId,
-          reason: `Session "${target.info.name ?? target.info.id}" disconnected before replying` });
+      if (message.expectsReply === true && sessions.get(recipient.info.id) !== recipient) {
+        notify({ type: "delivery_failed", messageId: message.id, attemptId: senderAttemptId,
+          reason: `Session "${recipient.info.name ?? recipient.info.id}" disconnected before replying` });
         return;
       }
-      if (message.expectsReply === true) {
-        pendingQuestions.record(fromSession.info.id, target.info.id, message.id);
+      // A sender whose wait already ended was told the outcome is uncertain; its retry opens the reply route.
+      if (message.expectsReply === true && sender !== undefined) {
+        pendingQuestions.record(fromSession.info.id, recipient.info.id, message.id);
 	  }
-      if (message.replyTo !== undefined && pendingQuestions.clearReply(fromSession.info.id, target.info.id, message.replyTo)) {
+      if (message.replyTo !== undefined && pendingQuestions.clearReply(fromSession.info.id, recipient.info.id, message.replyTo)) {
         deliveredMessages.settleQuestion(message.replyTo);
       }
-      if (supervisorSend) supervisorCache.record(message.id, fromSession.info.id, target.info.id);
-      write(socket, { type: "delivered", messageId: message.id, attemptId });
+      if (supervisorSend) supervisorCache.record(message.id, fromSession.info.id, recipient.info.id);
+      notify({ type: "delivered", messageId: message.id, attemptId: senderAttemptId });
     };
+    const senderWaiting: ReceiptSender = { socket, ...(attemptId === undefined ? {} : { attemptId }) };
+    if (confirmsSaves && receipts !== undefined) {
+      receipts.await(
+        {
+          messageId: message.id,
+          targetIdentity,
+          frame: outbound,
+          complete: finishDelivery,
+          expire: (waiting) => {
+            write(waiting.socket, { type: "delivery_failed", messageId: message.id, attemptId: waiting.attemptId, reason: UNCERTAIN_RECEIPT_REASON });
+          },
+        },
+        senderWaiting,
+      );
+      const unwritten = (): void => {
+        receipts.drop(message.id);
+        failDelivery();
+      };
+      if (writeConfirmed !== undefined) {
+        writeConfirmed(target.socket, outbound, (written) => {
+          if (!written) unwritten();
+        });
+        return;
+      }
+      if (!write(target.socket, outbound)) unwritten();
+      return;
+    }
     if (writeConfirmed !== undefined) {
       writeConfirmed(target.socket, outbound, (written) => {
-        if (written) finishDelivery();
+        if (written) finishDelivery(target, senderWaiting);
         else failDelivery();
       });
       return;
@@ -597,7 +635,7 @@ export function handleBrokerSend(
       failDelivery();
       return;
     }
-    finishDelivery();
+    finishDelivery(target, senderWaiting);
     return;
   }
 	if (resolution.kind === "not_found" && visibleCandidates.some((info) => !isAgentRecipient(info) && info.name?.toLowerCase() === trimmedTo.toLowerCase())) {

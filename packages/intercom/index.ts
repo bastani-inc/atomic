@@ -27,6 +27,7 @@ import {
 	SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
 } from "./session-recovery.js";
 import type { SessionInfo } from "./types.js";
+import { INTERCOM_INBOX_REPLAY_EVENT, type IntercomInboxReplayRequest, unconsumedIntercomInbox } from "./durable-inbox.js";
 import {
 	createForwardedHandlerMap,
 	createHeavyProxy,
@@ -739,8 +740,21 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			return undefined;
 		}
 	}
+	/** #3761: queue the messages this session saved on arrival but never showed, after the transcript is visible. */
+	async function replayIntercomInbox(ctx: ExtensionContext): Promise<void> {
+		try {
+			const handle = await loadHeavy(ctx);
+			handle.assertCurrent();
+			const forwarded: IntercomInboxReplayRequest = {};
+			await dispatchEventHandlers(handle.heavy, INTERCOM_INBOX_REPLAY_EVENT, forwarded);
+			await forwarded.completion;
+		} catch {
+			// The saved messages stay unshown and the next resume replays them.
+		}
+	}
 	pi.on("session_recovery_restore", async (_event, ctx) => {
 		if (hasIntercomHistory(ctx.sessionManager.getEntries())) await recoveryPeers(ctx);
+		if (unconsumedIntercomInbox(ctx.sessionManager.getBranch()).length > 0) await replayIntercomInbox(ctx);
 		return undefined;
 	});
 	pi.on("session_recovery_replay", async (event, ctx) => {

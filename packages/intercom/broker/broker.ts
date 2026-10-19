@@ -56,6 +56,7 @@ import {
 	setSessionGroups,
 } from "./group-membership.js";
 import { PendingQuestionIndex } from "./pending-question-index.js";
+import { type ReceiptSender, RecipientReceipts, UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
 import { matchStagePathSegments } from "../workflow-stage-path-matching.js";
 import { DELIVERED_MESSAGE_TTL_MS } from "../retry-policy.js";
 import { isAgentRecipient } from "../recipient-purpose.js";
@@ -293,6 +294,7 @@ class IntercomBroker {
   private supervisorChannel = new SupervisorChannelCache();
   private sessionIdReclaim = new SessionIdReclaim();
   private pendingQuestions = new PendingQuestionIndex();
+  private receipts = new RecipientReceipts<ConnectedSession>();
   private restoringRecipients = new RestoringRecipients((held, reason) => this.failHeldSend(held, reason));
   private pendingStageRoutes = new Map<string, PendingStageRouteRegistration>();
   private pendingStageAcknowledgments = new Map<string, PendingStageAcknowledgment>();
@@ -981,7 +983,9 @@ class IntercomBroker {
 			pending.signature,
 			targetIdentity,
 		);
-		if (deliveredMatch !== "miss") {
+		// #3761: a recipient that confirms saves ignores a copy it already saved, so a reserved message is sent again.
+		const confirmsSaves = target.acknowledgesReceipt === true;
+		if (deliveredMatch !== "miss" && !(deliveredMatch === "uncertain" && confirmsSaves)) {
 			if (deliveredMatch === "match") {
 				if (pending.message.expectsReply === true) {
 					const acceptedQuestionTarget = this.deliveredMessages.lookupQuestionTarget(
@@ -1065,7 +1069,7 @@ class IntercomBroker {
 			});
 			return;
 		}
-		if (reservation !== "recorded") {
+		if (reservation !== "recorded" && !(reservation === "uncertain" && confirmsSaves)) {
 			writeMessageIfOpen(pending.senderSocket, {
 				type: "delivery_failed",
 				messageId: pending.messageId,
@@ -1082,8 +1086,69 @@ class IntercomBroker {
 		}
 		if (pending.message.expectsReply === true && pending.resolveReplyTarget === true && pending.attemptId !== undefined)
 			writeMessageIfOpen(pending.senderSocket, { type: "question_target", messageId: pending.messageId, attemptId: pending.attemptId, sessionId: target.info.id });
-		if (!writeMessageIfOpen(target.socket, { type: "message", from: pending.sender, message: pending.message })) {
-			this.deliveredMessages.forget(pending.messageId, pending.signature);
+		const frame: BrokerMessage = { type: "message", from: pending.sender, message: pending.message };
+		const signature = pending.signature;
+		const finish = (recipient: ConnectedSession, sender: ReceiptSender | undefined): void => {
+			const notify = (message: BrokerMessage): void => {
+				if (sender !== undefined) writeMessageIfOpen(sender.socket, message);
+			};
+			const senderAttempt = sender?.attemptId === undefined ? {} : { attemptId: sender.attemptId };
+			let accepted: ReturnType<DeliveredMessageCache["accept"]>;
+			try {
+				accepted = this.deliveredMessages.accept(pending.messageId, signature, targetIdentity);
+			} catch {
+				notify({
+					type: "delivery_failed",
+					messageId: pending.messageId,
+					...senderAttempt,
+					reason: "Intercom could not durably confirm the forwarded operation; refusing a possibly unsafe retry",
+				});
+				return;
+			}
+			if (accepted !== "accepted") {
+				notify({
+					type: "delivery_failed",
+					messageId: pending.messageId,
+					...senderAttempt,
+					reason: "Intercom could not durably confirm the forwarded operation; refusing a possibly unsafe retry",
+					...(accepted === "conflict" ? { reasonCode: "message_id_conflict" as const } : {}),
+				});
+				return;
+			}
+			if (pending.message.expectsReply === true && sender !== undefined) {
+				this.pendingQuestions.record(from.info.id, recipient.info.id, pending.messageId);
+			}
+			if (pending.message.replyTo !== undefined && this.pendingQuestions.clearReply(from.info.id, recipient.info.id, pending.message.replyTo)) {
+				this.deliveredMessages.settleQuestion(pending.message.replyTo);
+			}
+			notify({ type: "delivered", messageId: pending.messageId, ...senderAttempt });
+		};
+		const sender: ReceiptSender = {
+			socket: pending.senderSocket,
+			...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
+		};
+		if (confirmsSaves) {
+			this.receipts.await(
+				{
+					messageId: pending.messageId,
+					targetIdentity,
+					frame,
+					complete: finish,
+					expire: (waiting) => {
+						writeMessageIfOpen(waiting.socket, {
+							type: "delivery_failed",
+							messageId: pending.messageId,
+							...(waiting.attemptId === undefined ? {} : { attemptId: waiting.attemptId }),
+							reason: UNCERTAIN_RECEIPT_REASON,
+						});
+					},
+				},
+				sender,
+			);
+		}
+		if (!writeMessageIfOpen(target.socket, frame)) {
+			if (confirmsSaves) this.receipts.drop(pending.messageId);
+			if (reservation === "recorded") this.deliveredMessages.forget(pending.messageId, pending.signature);
 			writeMessageIfOpen(pending.senderSocket, {
 				type: "delivery_failed",
 				messageId: pending.messageId,
@@ -1092,39 +1157,7 @@ class IntercomBroker {
 			});
 			return;
 		}
-		let accepted: ReturnType<DeliveredMessageCache["accept"]>;
-		try {
-			accepted = this.deliveredMessages.accept(pending.messageId, pending.signature, targetIdentity);
-		} catch {
-			writeMessageIfOpen(pending.senderSocket, {
-				type: "delivery_failed",
-				messageId: pending.messageId,
-				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-				reason: "Intercom could not durably confirm the forwarded operation; refusing a possibly unsafe retry",
-			});
-			return;
-		}
-		if (accepted !== "accepted") {
-			writeMessageIfOpen(pending.senderSocket, {
-				type: "delivery_failed",
-				messageId: pending.messageId,
-				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-				reason: "Intercom could not durably confirm the forwarded operation; refusing a possibly unsafe retry",
-				...(accepted === "conflict" ? { reasonCode: "message_id_conflict" as const } : {}),
-			});
-			return;
-		}
-		if (pending.message.expectsReply === true) {
-			this.pendingQuestions.record(from.info.id, target.info.id, pending.messageId);
-		}
-		if (pending.message.replyTo !== undefined && this.pendingQuestions.clearReply(from.info.id, target.info.id, pending.message.replyTo)) {
-			this.deliveredMessages.settleQuestion(pending.message.replyTo);
-		}
-		writeMessageIfOpen(pending.senderSocket, {
-			type: "delivered",
-			messageId: pending.messageId,
-			...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-		});
+		if (!confirmsSaves) finish(target, sender);
 	}
 
 
@@ -1432,6 +1465,9 @@ class IntercomBroker {
 		if (clientMessage.preferredSessionId !== undefined && typeof clientMessage.preferredSessionId !== "string") {
 			throw new Error("Invalid preferred session id");
 		}
+		if (clientMessage.acknowledgesReceipt !== undefined && clientMessage.acknowledgesReceipt !== true) {
+			throw new Error("Invalid receipt acknowledgement capability");
+		}
 
         if (currentId) {
           throw new Error("Received duplicate register message");
@@ -1480,6 +1516,7 @@ class IntercomBroker {
           ...(typeof clientMessage.supervisorOwnerToken === "string"
             ? { supervisorOwnerToken: clientMessage.supervisorOwnerToken }
             : {}),
+          ...(clientMessage.acknowledgesReceipt === true ? { acknowledgesReceipt: true as const } : {}),
         });
 
         if (this.shutdownTimer) {
@@ -1491,6 +1528,11 @@ class IntercomBroker {
           ? { type: "registered", sessionId: id, supervisorSessionId: supervisorId }
           : { type: "registered", sessionId: id });
         if (isAgentRecipient(info)) this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
+        // #3761: messages written to this recipient's previous connection that it never confirmed saving go out again.
+        const rejoined = this.sessions.get(id);
+        if (rejoined?.acknowledgesReceipt === true) {
+          for (const frame of this.receipts.framesFor(deliveryTargetIdentity(rejoined))) writeMessageIfOpen(socket, frame);
+        }
         // #3760: a restored subagent is back under the capability its owner reserved it with; the sends held
         // for it while it was being restored go out now, once each and in the order they arrived.
         if (supervisorId && isSupervisorRegistration(clientMessage.supervisor)) {
@@ -1855,6 +1897,15 @@ class IntercomBroker {
 			break;
 		}
 
+		case "received": {
+			if (typeof clientMessage.messageId !== "string") throw new Error("Invalid received message");
+			const recipient = this.sessions.get(currentId);
+			if (recipient?.acknowledgesReceipt === true) {
+				this.receipts.settle(clientMessage.messageId, deliveryTargetIdentity(recipient), recipient);
+			}
+			break;
+		}
+
 		case "send_pending_stage_notification": {
 			this.handlePendingStageNotificationSend(socket, clientMessage, currentId);
 			break;
@@ -1905,6 +1956,7 @@ class IntercomBroker {
       writeMessageWithOutcome,
       this.isNonAgentWorkflowTarget,
       this.holdForRestoringRecipient,
+      this.receipts,
     );
   }
 
@@ -2036,6 +2088,7 @@ class IntercomBroker {
     this.liveWorkflowStageRoutes.clear();
     this.liveWorkflowStageRouteActivations.clear();
     this.restoringRecipients.clear();
+    this.receipts.clear();
 	for (const pending of this.pendingStageNotificationAcknowledgments.values()) clearTimeout(pending.timeout);
 	this.pendingStageNotificationAcknowledgments.clear();
 	this.deliveredMessages.close();

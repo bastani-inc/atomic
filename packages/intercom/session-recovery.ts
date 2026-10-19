@@ -155,6 +155,7 @@ export function hasIntercomHistory(entries: readonly SessionEntry[]): boolean {
 	return entries.some(
 		(entry) =>
 			(entry.type === "custom_message" && entry.customType === "intercom_message") ||
+			(entry.type === "custom" && entry.customType === "intercom_inbox") ||
 			(entry.type === "custom" && entry.customType === "subagent-child") ||
 			(entry.type === "message" &&
 				entry.message.role === "toolResult" &&
