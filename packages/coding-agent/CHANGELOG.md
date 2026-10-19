@@ -14,6 +14,7 @@
 
 - Resuming a session with `atomic --session <id>` or `/resume` now shows the transcript before any recovery work runs, instead of leaving the screen blank while hidden agent turns replay messages from before the restart. Recovery runs afterwards and is visible in the transcript. A "Replaying N interrupted deliveries" line precedes any replayed turn, and a status line summarizes the result ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
 - Resuming no longer starts agent turns on its own for stale queued messages or background task results. Results that an earlier process never delivered appear as cards without starting a turn. Messages from peers that no longer exist are not replayed; one notice tells you and the agent which peers are gone. Messages from a background subagent that was relaunched but has not reconnected yet are deferred instead, and the notice says it is not gone ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
+- JSONL sessions no longer stall when many sessions share a directory. Each append now rereads only its own session header instead of every session header in the directory ([#3780](https://github.com/bastani-inc/atomic/pull/3780) by [@darionco](https://github.com/darionco)).
 
 ## [0.9.39] - 2026-10-19
 
