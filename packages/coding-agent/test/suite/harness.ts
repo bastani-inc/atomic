@@ -110,7 +110,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 	const fauxProvider: FauxProviderRegistration = registerFauxProvider({
 		...options.fauxProvider,
 		models: options.models,
-		provider: options.provider,
+		provider: options.provider ?? options.fauxProvider?.provider,
 	});
 	fauxProvider.setResponses([]);
 	const model = fauxProvider.getModel();

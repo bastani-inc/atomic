@@ -61,8 +61,8 @@ function seedImageHistory(harness: Harness, imageData: string): void {
 describe("Copilot request-size overflow recovery", () => {
 	const harnesses: Harness[] = [];
 
-	afterEach(() => {
-		while (harnesses.length > 0) harnesses.pop()?.cleanup();
+	afterEach(async () => {
+		while (harnesses.length > 0) await harnesses.pop()?.cleanup();
 	});
 
 	it("compacts an image-heavy history and retries after the real 413", async () => {

@@ -63,7 +63,7 @@ const OVERFLOW_PATTERNS = [
 	/token limit exceeded/i, // Generic fallback
 	// HTTP 413 means request-size overflow regardless of provider or body text.
 	// Match raw SDK errors and formatProviderError's prefix, not a status mentioned in the body.
-	/^(?:[\w -]+ API error \(413\):|413(?:\s|:|$))/i,
+	/^(?:[\w .-]+ API error \(413\):|413(?:\s|:|$))/i,
 ];
 
 function isCerebrasBodylessOverflow(errorMessage: string): boolean {

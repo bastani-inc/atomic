@@ -36,6 +36,7 @@ describe("isContextOverflow", () => {
 	it.each([
 		'github-copilot API error (413): {"message":"failed to parse request","code":""}', // formatProviderError prefix
 		"custom-provider API error (413): Payload Too Large", // any provider, not just Copilot
+		"my.proxy API error (413): Payload Too Large", // dotted custom provider names
 		'413 {"error":{"message":"failed to parse request","code":""}}', // raw SDK error
 		"413", // bare status at end of string
 	])("detects provider-independent request-size overflow: %s", (errorMessage) => {
