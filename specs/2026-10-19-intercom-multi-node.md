@@ -225,7 +225,11 @@ The origin broker owns every held send: it holds the sender's socket, wait, hold
 unique on all three. It mirrors `PendingQuestionIndex`:
 
 - the recipient's broker calls `record` when the ask's recipient acks it, so a reply route never opens for an
-  unsaved ask;
+  unsaved ask. It records the route *before* `outbox.markDelivered`. A settled row is never claimed again, so a route
+  written after it would be lost for good if the broker stopped between the two writes. In this order a stop leaves the
+  row `claimed`: once its claim expires the next claimant redelivers it (the recipient deduplicates by id and acks
+  again), repeats `record` (answered `duplicate`) and marks it delivered. The contract suite interrupts an ask between
+  the two writes and checks the route survives;
 - `matchesReply` and `clearReply` accept only the exact reverse route;
 - `pruneSender` runs when a sender leaves;
 - `takeForTarget` hands a departed target's asks over in insertion order.
@@ -253,6 +257,9 @@ The outbox's own unique `message_id` is the authority for rows already enqueued.
 - `close()` closes the connection and every subscription on it; it is idempotent. After `close`, `publish` and
   `subscribe` both return `unavailable`, and no subscription on that connection receives another event.
 - Hints may be delayed, coalesced, duplicated or lost. A hint carries no message data.
+- `version` is diagnostic only: the outbox `sequence` that prompted the hint, or 0 when no row did (a held-send
+  outcome). It is not a high-water mark. Rows settle out of insertion order (row 20 can be delivered before row 19),
+  so a receiver scans on every hint and never skips one because its version is not greater than one already seen.
 
 ### 5.7 Restoring reservations (`RestoringReservationStore`, S3)
 
@@ -320,7 +327,7 @@ bus.
 | 5 | Broker B wakes (or polls) and claims R's rows in order. | `outbox.claim` → `claimed` |
 | 6 | Broker B writes each row's frame verbatim to R's local socket and tracks it in `RecipientReceipts` as today. | — |
 | 7 | R appends `intercom_inbox` (#3761), then sends `received`. | — |
-| 8 | Broker B marks the row delivered. For an ask, it then records the pending ask. | `outbox.markDelivered` → `delivered`; `pendingAsks.record` |
+| 8 | Broker B records the pending ask when the row is an ask, then marks the row delivered (route first, §5.4). | `pendingAsks.record`; `outbox.markDelivered` → `delivered` |
 | 9 | Broker B publishes the outcome hint. | `publish({ brokerId: A, reason: "outcome", version })` |
 | 10 | Broker A wakes (or polls), reads the outcome for each `m` it is waiting on, accepts the sent-message record, and sends S `delivered` (or `delivery_failed` with the row's `failureReason`). After a `queued` status, `delivered` is sent only if S is still connected. | `outbox.read`, `sentMessages.accept` |
 
@@ -542,19 +549,20 @@ The S0 files are frozen: `specs/2026-10-19-intercom-multi-node.md`,
 
 ## 13. S0 verification
 
-After S0b the contract suite registers 49 cases, and the test file adds one `reservationKeyFor` test:
+After S0b and review round 4 the contract suite registers 51 cases, and the test file adds one `reservationKeyFor`
+test:
 
-- leases: 8;
+- leases: 9 (round 4 adds a renewal with a structurally equal key whose properties come in another order);
 - outbox: 13;
 - held sends: 2;
 - restoring reservations: 8;
 - pending asks: 3;
 - sent messages: 3;
 - wake-up bus: 6;
-- cross-node round trip: 4;
+- cross-node round trip: 5 (round 4 adds an ask interrupted between its route and `markDelivered`);
 - cross-node held round trip: 2.
 
-The command `npx vitest --run --project unit test/unit/intercom-multinode-state-contract.test.ts` passes 50/50
+The command `npx vitest --run --project unit test/unit/intercom-multinode-state-contract.test.ts` passes 52/52
 against the memory reference.
 
 Every ordering case inserts message ids whose lexical order differs from their insertion order (for example `z-9`,

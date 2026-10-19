@@ -217,7 +217,11 @@ export interface OutboxStore {
 	renewClaim(claim: OutboxClaim): Promise<OutboxRenewClaimResult>;
 	/** Return the row to `queued`, for example when its recipient disconnected before acknowledging. */
 	releaseClaim(claim: OutboxClaim): Promise<OutboxReleaseClaimResult>;
-	/** The recipient acknowledged `received`; only now may its sender be told `delivered`. */
+	/**
+	 * The recipient acknowledged `received`; only now may its sender be told `delivered`. For an ask, record its
+	 * route with `PendingAskStore.record` first: a settled row is never claimed again, so a route written after it
+	 * would be lost if the broker stopped between the two writes.
+	 */
 	markDelivered(claim: OutboxClaim): Promise<OutboxDeliveredResult>;
 	/** The recipient's broker refused the row; `reason` is reported to the sender verbatim. */
 	markFailed(claim: OutboxClaim, reason: string): Promise<OutboxFailedResult>;
@@ -423,7 +427,11 @@ export type PendingAskClearResult =
 export type PendingAskPruneResult = { readonly status: "pruned"; readonly removed: number } | InvalidStateInput;
 export type PendingAskTakeResult = { readonly status: "taken"; readonly asks: PendingAsk[] } | InvalidStateInput;
 
-/** S3: shared pending-ask routes, recorded by the recipient's broker when the recipient acknowledges the ask. */
+/**
+ * S3: shared pending-ask routes, recorded by the recipient's broker when the recipient acknowledges the ask and
+ * before its outbox row is marked delivered. A broker that stops between the two leaves the row claimed, so the next
+ * claimant redelivers it and records again; `record` answers that repeat with `duplicate`.
+ */
 export interface PendingAskStore {
 	record(ask: PendingAsk): Promise<PendingAskRecordResult>;
 	/** Only the exact reverse route of a recorded ask matches. */

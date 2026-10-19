@@ -324,6 +324,16 @@ export function registerBrokerLeaseStoreConformance(
 		assert.deepEqual(await a.read({ kind: "presence", targetIdentity: "never acquired" }), { status: "missing" });
 		assert.deepEqual(await a.renew(lease), { status: "renewed" });
 	});
+
+	check("renews with a structurally equal lease key whose properties come in another order", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		const presenceLease = await acquire(a, "broker-a");
+		const reorderedPresence = { ...presenceLease, key: { targetIdentity: RECIPIENT, kind: "presence" as const } };
+		assert.deepEqual(await b.renew(reorderedPresence, presence(RECIPIENT)), { status: "renewed" });
+		const memberLease = await acquire(a, "broker-a", membership("broker-a"));
+		const reorderedMember = { ...memberLease, key: { brokerId: "broker-a", kind: "broker" as const } };
+		assert.deepEqual(await b.renew(reorderedMember, membership("broker-a")), { status: "renewed" });
+	});
 }
 
 export function registerOutboxStoreConformance(
@@ -1402,11 +1412,11 @@ export function registerCrossNodeRoundTripConformance(
 		assert.ok(claimedAsk);
 		assert.deepEqual(claimedAsk.row.frame, askFrame);
 		assert.deepEqual(await b.asks.matchesReply(replyRoute), { status: "no-match" });
-		await acknowledge(b, claimedAsk);
 		assert.deepEqual(
 			await b.asks.record({ senderSessionId: SENDER.id, targetSessionId: RECIPIENT_SESSION.id, messageId: "ask-1" }),
 			{ status: "recorded" },
 		);
+		await acknowledge(b, claimedAsk);
 		const replyFrame: IntercomDeliveryFrame = {
 			type: "message",
 			from: RECIPIENT_SESSION,
@@ -1431,6 +1441,36 @@ export function registerCrossNodeRoundTripConformance(
 		assert.equal(expectStatus(await b.outbox.read("reply-1"), "found").row.state, "delivered");
 		assert.equal(expectStatus(await a.outbox.read("ask-1"), "found").row.state, "delivered");
 		assert.deepEqual(await b.asks.matchesReply(replyRoute), { status: "no-match" });
+	});
+
+	check("keeps an ask's reply route when its broker stops before marking it delivered", async (a, b) => {
+		const question = frameFor("ask-interrupted", "Which branch?");
+		const askFrame: IntercomDeliveryFrame = { ...question, message: { ...question.message, expectsReply: true } };
+		const ask = { senderSessionId: SENDER.id, targetSessionId: RECIPIENT_SESSION.id, messageId: "ask-interrupted" };
+		const replyRoute = {
+			replySenderSessionId: RECIPIENT_SESSION.id,
+			replyTargetSessionId: SENDER.id,
+			replyTo: "ask-interrupted",
+		};
+		await send(a, b, RECIPIENT, askFrame);
+		const [first] = await claimFor(b, RECIPIENT);
+		assert.ok(first);
+		// The recipient saved the ask: its route is recorded first, then broker B stops before `markDelivered`.
+		assert.deepEqual(await b.asks.record(ask), { status: "recorded" });
+		assert.deepEqual(await a.asks.matchesReply(replyRoute), { status: "match" });
+		assert.equal(expectStatus(await a.outbox.read("ask-interrupted"), "found").row.state, "claimed");
+		// The unsettled row is claimed again after the claim expires; repeating both writes is safe.
+		const reclaimed = expectStatus(
+			await a.outbox.claim({ claimantId: "broker-c", targetIdentity: RECIPIENT, staleAfterMs: EXPIRED_MS }),
+			"claimed",
+		).rows;
+		assert.deepEqual(
+			reclaimed.map((entry) => entry.row.messageId),
+			["ask-interrupted"],
+		);
+		assert.deepEqual(await a.asks.record(ask), { status: "duplicate" });
+		expectStatus(await a.outbox.markDelivered(reclaimed[0]!.claim), "delivered");
+		assert.deepEqual(await b.asks.matchesReply(replyRoute), { status: "match" });
 	});
 
 	check("recovers lost wake-ups from the outbox alone, including after a reconnect", async (a, b, bus) => {

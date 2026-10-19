@@ -129,7 +129,10 @@ function leaseStore(records: Map<string, LeaseRecord>, nextOrder: { value: numbe
 		async renew(candidate, subject) {
 			const record = current(candidate);
 			if (record !== undefined && "status" in record) return record;
-			if (subject !== undefined && JSON.stringify(keyOf(subject)) !== JSON.stringify(candidate.key)) {
+			if (
+				subject !== undefined &&
+				(subject.kind !== candidate.key.kind || subjectId(subject) !== keyId(candidate.key))
+			) {
 				return invalid("subject-key-mismatch");
 			}
 			if (!owns(record, candidate)) return stale(record);

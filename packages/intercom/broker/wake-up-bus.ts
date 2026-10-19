@@ -11,7 +11,11 @@ export interface WakeUpHint {
 	/** The broker that should read the store. */
 	readonly brokerId: string;
 	readonly reason: WakeUpReason;
-	/** The outbox `sequence` that prompted the hint. Receivers may use it to skip a scan, never to read a message. */
+	/**
+	 * The outbox `sequence` that prompted the hint (0 when no row did, as for a held-send outcome); diagnostic only.
+	 * It is not a high-water mark: rows settle out of insertion order, so a receiver scans on every hint and never
+	 * skips one because of its version.
+	 */
 	readonly version: number;
 }
 
