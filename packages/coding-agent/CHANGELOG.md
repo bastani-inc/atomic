@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Binding or switching a session no longer replays deliveries that a previous process left unfinished. SDK hosts call `session.startPendingRecovery()` and RPC clients send `start_pending_recovery` once they show the session. Until then, interrupted work stays pending ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
+
+### Added
+
+- Added `AgentSession.startPendingRecovery()`, the RPC `start_pending_recovery` command, and the `session_recovery_restore` and `session_recovery_replay` extension events. Extensions can now restore background work after a restart, decline to replay deliveries whose peer is gone, and defer deliveries they cannot decide on yet to the next resume without starting a turn ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
+
+### Fixed
+
+- Resuming a session with `atomic --session <id>` or `/resume` now shows the transcript before any recovery work runs, instead of leaving the screen blank while hidden agent turns replay messages from before the restart. Recovery runs afterwards and is visible in the transcript. A "Replaying N interrupted deliveries" line precedes any replayed turn, and a status line summarizes the result ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
+- Resuming no longer starts agent turns on its own for stale queued messages or background task results. Results that an earlier process never delivered appear as cards without starting a turn. Messages from peers that no longer exist are not replayed; one notice tells you and the agent which peers are gone. Messages from a background subagent that was relaunched but has not reconnected yet are deferred instead, and the notice says it is not gone ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
+
 ## [0.9.39] - 2026-10-19
 
 ### Added

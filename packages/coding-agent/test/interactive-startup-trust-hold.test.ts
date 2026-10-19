@@ -96,6 +96,7 @@ function createMode(options: { holdTuiForStartupTrust: boolean }): HeldMode {
 	const mode = {
 		init: InteractiveMode.prototype.init,
 		renderInitialMessages: InteractiveMode.prototype.renderInitialMessages,
+		startSessionRecovery: vi.fn(),
 		showExtensionSelector: InteractiveMode.prototype.showExtensionSelector,
 		showExtensionConfirm: InteractiveMode.prototype.showExtensionConfirm,
 		showExtensionInput: InteractiveMode.prototype.showExtensionInput,

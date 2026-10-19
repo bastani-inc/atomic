@@ -337,6 +337,7 @@ InteractiveModeBase.prototype.handleResumeSession = async function (
 			this.clearFirstRunOnboardingUi();
 		}
 		this.showStatus("Resumed session");
+		this.startSessionRecovery("resume");
 		return result;
 	} catch (error: unknown) {
 		if (error instanceof MissingSessionCwdError) {
@@ -359,6 +360,7 @@ InteractiveModeBase.prototype.handleResumeSession = async function (
 				this.clearFirstRunOnboardingUi();
 			}
 			this.showStatus("Resumed session in current cwd");
+			this.startSessionRecovery("resume");
 			return result;
 		}
 		return this.handleFatalRuntimeError("Failed to resume session", error);

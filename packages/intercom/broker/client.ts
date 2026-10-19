@@ -26,7 +26,9 @@ import { IntercomLiveRouteRefusedError, isLiveWorkflowStageRouteRefusalCode } fr
 const BROKER_SOCKET = getBrokerSocketPath();
 const GROUP_REQUEST_TIMEOUT_MS = 5000;
 const PRESENCE_ACK_TIMEOUT_MS = 5000;
-
+const RESTORING_RECIPIENT_REQUEST_TIMEOUT_MS = 5000;
+/** Extra wait past a broker hold, so the broker's own outcome for a held send always arrives first (#3760). */
+const HELD_SEND_GRACE_MS = 5000;
 
 export interface SendOptions {
   text: string;
@@ -41,8 +43,13 @@ export interface SendOptions {
   requirePendingReply?: true;
   /** An explicit reply selector must resolve to this frozen recipient, never a namesake. */
   expectedRecipientId?: string;
-  /** Broker-authorized identity for a canonical-path ask, delivered before its recipient can reply. */
+  /** Broker-authorized recipient identity for an ask, delivered before its recipient can reply. */
   onReplyTarget?: (sessionId: string) => void;
+}
+
+export interface IntercomClientOptions {
+	/** Intercom session id held before a restart or reconnect; the broker grants it only when it is free (#3760). */
+	readonly preferredSessionId?: string;
 }
 
 export interface SendResult {
@@ -152,6 +159,7 @@ function isWorkflowStageRosterEntries(value: unknown): value is WorkflowStageRos
 
 export class IntercomClient extends EventEmitter {
 	private readonly returnAddress: string;
+	private readonly preferredSessionId: string | undefined;
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
   private _supervisorSessionId: string | null = null;
@@ -174,13 +182,15 @@ export class IntercomClient extends EventEmitter {
     resolve: (authorization: SupervisorAuthorization) => void;
     reject: (error: Error) => void;
   }>();
+  private pendingRestoringRecipientRequests = new Map<string, { resolve(): void; reject(error: Error): void }>();
   private disconnecting = false;
   private disconnectError: Error | null = null;
 
-	constructor(returnAddress: string = randomUUID()) {
+	constructor(returnAddress: string = randomUUID(), options: IntercomClientOptions = {}) {
 		super();
 		if (returnAddress.length === 0) throw new Error("Intercom return address must not be empty");
 		this.returnAddress = returnAddress;
+		this.preferredSessionId = options.preferredSessionId;
 	}
 
   private failPending(error: Error): void {
@@ -188,12 +198,14 @@ export class IntercomClient extends EventEmitter {
     for (const pending of this.pendingGroupLists.values()) pending.reject(error);
     for (const pending of this.pendingLists.values()) pending.reject(error);
     for (const pending of this.pendingSupervisorAuthorizations.values()) pending.reject(error);
+    for (const pending of this.pendingRestoringRecipientRequests.values()) pending.reject(error);
     for (const pending of this.pendingPresence.values()) pending.reject(error);
     for (const pending of this.pendingMemberships.values()) pending.reject(error);
     for (const pending of this.pendingLiveWorkflowStageRoutes.values()) pending.reject(error);
     this.pendingLists.clear();
     this.pendingGroupLists.clear();
     this.pendingSupervisorAuthorizations.clear();
+    this.pendingRestoringRecipientRequests.clear();
     this.pendingPresence.clear();
     this.pendingMemberships.clear();
     this.pendingLiveWorkflowStageRoutes.clear();
@@ -371,6 +383,7 @@ export class IntercomClient extends EventEmitter {
           session,
           ...(registrationGroup !== undefined ? { registrationGroup } : {}),
 			returnAddress: this.returnAddress,
+			...(this.preferredSessionId === undefined ? {} : { preferredSessionId: this.preferredSessionId }),
           ...(supervisor ? { supervisor } : {}),
           ...(supervisorOwnerToken ? { supervisorOwnerToken } : {}),
         });
@@ -573,6 +586,12 @@ export class IntercomClient extends EventEmitter {
 			} satisfies StickyLiveDeliveredNotice);
 			break;
 		}
+		case "pending_stage_route_revoked": {
+			const { runId } = brokerMessage;
+			if (typeof runId !== "string") throw new Error("Invalid pending-stage route revocation");
+			this.emit("pending_stage_route_revoked", { runId });
+			break;
+		}
       case "live_workflow_stage_route_registered": {
         const { requestId } = brokerMessage;
         if (typeof requestId !== "string") throw new Error("Invalid live workflow-stage route registration");
@@ -604,6 +623,33 @@ export class IntercomClient extends EventEmitter {
 		} as const;
         if (attemptId === undefined) this.pendingSends.resolveLegacy(messageId, result);
         else this.pendingSends.resolve(messageId, attemptId, result);
+        break;
+      }
+      case "send_held": {
+        const { messageId, attemptId, timeoutMs } = brokerMessage;
+        if (
+          typeof messageId !== "string" ||
+          (attemptId !== undefined && typeof attemptId !== "string") ||
+          typeof timeoutMs !== "number" ||
+          !Number.isFinite(timeoutMs) ||
+          timeoutMs <= 0
+        ) {
+          throw new Error("Invalid send_held message");
+        }
+        // #3760: the recipient is a subagent being restored; the broker answers within `timeoutMs`.
+        this.pendingSends.extend(messageId, attemptId, timeoutMs + HELD_SEND_GRACE_MS);
+        break;
+      }
+      case "restoring_recipient_ack": {
+        const { requestId, error } = brokerMessage;
+        if (typeof requestId !== "string" || (error !== undefined && typeof error !== "string")) {
+          throw new Error("Invalid restoring_recipient_ack message");
+        }
+        const pending = this.pendingRestoringRecipientRequests.get(requestId);
+        if (!pending) return;
+        this.pendingRestoringRecipientRequests.delete(requestId);
+        if (error === undefined) pending.resolve();
+        else pending.reject(new Error(error));
         break;
       }
       case "delivered": {
@@ -890,6 +936,66 @@ export class IntercomClient extends EventEmitter {
       }
     });
   }
+
+  /**
+   * #3760: hold sends to the child that `capability` (issued to this session by `authorizeSupervisorChild`)
+   * names, and to its `aliases`, until the child registers with that capability. Calling again adds aliases.
+   * A `dormant` hold keeps the child addressable until the supervisor that restores it takes the hold over.
+   */
+  reserveRestoringRecipient(
+    capability: string,
+    options: { group?: string; aliases?: readonly string[]; dormant?: boolean } = {},
+  ): Promise<void> {
+    return this.restoringRecipientRequest({
+      type: "reserve_restoring_recipient",
+      capability,
+      ...(options.group === undefined ? {} : { group: options.group }),
+      ...(options.aliases === undefined ? {} : { aliases: [...options.aliases] }),
+      ...(options.dormant === true ? { dormant: true } : {}),
+    });
+  }
+
+  /**
+   * #3760: end that hold. With `gone` (the reason), held and later senders are told the child is gone. With
+   * `refusal`, the senders held now are told that reason and later sends are routed normally. With neither,
+   * held sends are routed normally.
+   */
+  releaseRestoringRecipient(capability: string, outcome?: string | { gone?: string; refusal?: string }): Promise<void> {
+    const { gone, refusal } = typeof outcome === "string" ? { gone: outcome, refusal: undefined } : (outcome ?? {});
+    return this.restoringRecipientRequest({
+      type: "release_restoring_recipient",
+      capability,
+      ...(gone === undefined ? {} : { gone }),
+      ...(refusal === undefined ? {} : { refusal }),
+    });
+  }
+
+  private restoringRecipientRequest(frame: Record<string, unknown>): Promise<void> {
+    let socket: net.Socket;
+    try {
+      socket = this.requireActiveSocket();
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
+    const requestId = randomUUID();
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (!this.pendingRestoringRecipientRequests.delete(requestId)) return;
+        reject(new Error("Restoring-recipient request timeout"));
+      }, RESTORING_RECIPIENT_REQUEST_TIMEOUT_MS);
+      this.pendingRestoringRecipientRequests.set(requestId, {
+        resolve: () => { clearTimeout(timeout); resolve(); },
+        reject: (error) => { clearTimeout(timeout); reject(error); },
+      });
+      try {
+        writeMessage(socket, { ...frame, requestId });
+      } catch (error) {
+        clearTimeout(timeout);
+        this.pendingRestoringRecipientRequests.delete(requestId);
+        reject(toError(error));
+      }
+    });
+  }
   registerPendingStageRoute(
 	runId: string,
 	group: string,
@@ -897,6 +1003,7 @@ export class IntercomClient extends EventEmitter {
 	stages?: WorkflowStageRosterAnnouncement[],
 	possibleStages?: WorkflowPossibleStageAnnouncement[],
 	parent?: WorkflowRunParentAnnouncement,
+	dormant?: boolean,
   ): void {
 	writeMessage(this.requireActiveSocket(), {
 		type: "register_pending_stage_route",
@@ -906,6 +1013,7 @@ export class IntercomClient extends EventEmitter {
 		stages,
 		possibleStages,
 		...(parent === undefined ? {} : { parent }),
+		...(dormant === true ? { dormant: true as const } : {}),
 	});
   }
 
@@ -1040,6 +1148,8 @@ export class IntercomClient extends EventEmitter {
 			...(options.requirePendingReply === undefined ? {} : { requirePendingReply: options.requirePendingReply }),
 			...(options.expectedRecipientId === undefined ? {} : { expectedRecipientId: options.expectedRecipientId }),
       ...(options.onReplyTarget === undefined ? {} : { resolveReplyTarget: true as const }),
+			// #3760: this client understands `send_held`, so the broker may hold the send for a subagent being restored.
+			...(type === "send" ? { awaitRestoringRecipient: true as const } : {}),
 			message,
 			attemptId: acquired.attempt.attemptId,
 			...extra,

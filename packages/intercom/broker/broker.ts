@@ -39,9 +39,13 @@ import {
 	handleBrokerSend,
 	type BrokerConnectedSession,
 	type PendingStageRoute,
+	type RestoringRecipientHold,
+	type SendClientMessage,
 	senderGroupIdentity,
 } from "./send-handler.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
+import { SessionIdReclaim } from "./session-id-reclaim.js";
+import { type HeldSend, RestoringRecipients } from "./restoring-recipients.js";
 import { hasGroup, normalizeGroup, normalizeGroups } from "../group.js";
 import { handleBrokerPresence } from "./presence-handler.js";
 import {
@@ -79,6 +83,8 @@ interface PendingStageRouteRegistration {
   readonly sessionId: string;
   readonly group: string;
   readonly capability: string;
+  /** Registered by a restarted owner for an interrupted run; yields to the process that resumes it (#3760). */
+  readonly dormant?: true;
 }
 
 interface WorkflowRosterRegistration {
@@ -171,6 +177,22 @@ function isSupervisorRegistration(value: unknown): value is SupervisorRegistrati
   const registration = value as Record<string, unknown>;
   return typeof registration.capability === "string"
     && typeof registration.supervisorSessionId === "string";
+}
+
+const RESTORING_RECIPIENT_ALIASES_MAX = 4;
+const RESTORING_RECIPIENT_GONE_REASON_MAX = 1_000;
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isRestoringRecipientAliasList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length <= RESTORING_RECIPIENT_ALIASES_MAX && value.every((alias) => typeof alias === "string");
+}
+
+/**
+ * A restoring subagent's extra targets are ids only: its Atomic session id and its pre-restart Intercom id (#3760).
+ * Its name comes from the supervisor capability, so no reservation can claim another child's name.
+ */
+function isRestoringRecipientAlias(alias: string): boolean {
+  return SESSION_ID_PATTERN.test(alias.trim());
 }
 
 function invocationOwnsGroup(invocationGroup: string, candidateGroup: string): boolean {
@@ -269,7 +291,9 @@ class IntercomBroker {
 	getBrokerDeliveredMessagesPath(),
   );
   private supervisorChannel = new SupervisorChannelCache();
+  private sessionIdReclaim = new SessionIdReclaim();
   private pendingQuestions = new PendingQuestionIndex();
+  private restoringRecipients = new RestoringRecipients((held, reason) => this.failHeldSend(held, reason));
   private pendingStageRoutes = new Map<string, PendingStageRouteRegistration>();
   private pendingStageAcknowledgments = new Map<string, PendingStageAcknowledgment>();
 	private pendingStageNotificationAcknowledgments = new Map<string, PendingStageNotificationAcknowledgment>();
@@ -1405,6 +1429,9 @@ class IntercomBroker {
 			&& (typeof clientMessage.supervisorOwnerToken !== "string" || !clientMessage.supervisorOwnerToken)) {
 			throw new Error("Invalid supervisor owner token");
 		}
+		if (clientMessage.preferredSessionId !== undefined && typeof clientMessage.preferredSessionId !== "string") {
+			throw new Error("Invalid preferred session id");
+		}
 
         if (currentId) {
           throw new Error("Received duplicate register message");
@@ -1424,7 +1451,12 @@ class IntercomBroker {
           supervisorId = claimedSupervisorId;
         }
 
-        const id = randomUUID();
+        // #3760: a restored or reconnected session keeps the id peers know when it is free; never a live one.
+        const id = this.sessionIdReclaim.grant(
+          clientMessage.preferredSessionId,
+          clientMessage.returnAddress,
+          (sessionId) => this.sessions.has(sessionId),
+        ) ?? randomUUID();
         setId(id);
         const initialGroups = normalizeGroups(clientMessage.session.groups, clientMessage.session.group);
         const legacyGroup = normalizeGroup(clientMessage.session.group ?? initialGroups.values().next().value);
@@ -1459,6 +1491,16 @@ class IntercomBroker {
           ? { type: "registered", sessionId: id, supervisorSessionId: supervisorId }
           : { type: "registered", sessionId: id });
         if (isAgentRecipient(info)) this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
+        // #3760: a restored subagent is back under the capability its owner reserved it with; the sends held
+        // for it while it was being restored go out now, once each and in the order they arrived.
+        if (supervisorId && isSupervisorRegistration(clientMessage.supervisor)) {
+          const registered = info.name?.trim();
+          for (const send of this.restoringRecipients.consume(
+            clientMessage.supervisor.capability,
+            registered ? { childName: registered, groups: sessionGroups(info) } : undefined,
+          ))
+            this.dispatchSend(send.socket, send.clientMessage, send.senderId);
+        }
         break;
       }
 
@@ -1531,6 +1573,67 @@ class IntercomBroker {
         break;
       }
 
+      case "reserve_restoring_recipient": {
+        const owner = this.sessions.get(currentId);
+        if (
+          owner === undefined || typeof clientMessage.requestId !== "string" ||
+          typeof clientMessage.capability !== "string" || !clientMessage.capability ||
+          (clientMessage.group !== undefined && typeof clientMessage.group !== "string") ||
+          (clientMessage.dormant !== undefined && typeof clientMessage.dormant !== "boolean") ||
+          (clientMessage.aliases !== undefined && !isRestoringRecipientAliasList(clientMessage.aliases))
+        ) {
+          throw new Error("Invalid reserve_restoring_recipient message");
+        }
+        // Only the supervisor the capability was issued to may hold sends for that child (#3760).
+        const childName = this.supervisorChannel.supervisedChildName(clientMessage.capability, currentId);
+        const aliases = (clientMessage.aliases ?? []) as string[];
+        if (childName === undefined || !aliases.every(isRestoringRecipientAlias)) {
+          writeMessageIfOpen(socket, {
+            type: "restoring_recipient_ack",
+            requestId: clientMessage.requestId,
+            error: childName === undefined
+              ? "Only the supervisor authorized for this subagent can reserve its Intercom targets"
+              : "A restoring subagent can be reserved only under its name and session ids",
+          });
+          break;
+        }
+        this.restoringRecipients.reserve(
+          clientMessage.capability,
+          currentId,
+          childName,
+          normalizeGroup(typeof clientMessage.group === "string" ? clientMessage.group : owner.registrationGroup),
+          aliases,
+          { dormant: clientMessage.dormant === true },
+        );
+        writeMessageIfOpen(socket, { type: "restoring_recipient_ack", requestId: clientMessage.requestId });
+        break;
+      }
+
+      case "release_restoring_recipient": {
+        if (
+          typeof clientMessage.requestId !== "string" || typeof clientMessage.capability !== "string" ||
+          (clientMessage.gone !== undefined && typeof clientMessage.gone !== "string") ||
+          (clientMessage.refusal !== undefined && typeof clientMessage.refusal !== "string")
+        ) {
+          throw new Error("Invalid release_restoring_recipient message");
+        }
+        const released = this.restoringRecipients.release(
+          clientMessage.capability,
+          currentId,
+          typeof clientMessage.gone === "string" ? clientMessage.gone.slice(0, RESTORING_RECIPIENT_GONE_REASON_MAX) : undefined,
+          typeof clientMessage.refusal === "string" && clientMessage.refusal.trim()
+            ? clientMessage.refusal.slice(0, RESTORING_RECIPIENT_GONE_REASON_MAX)
+            : undefined,
+        );
+        writeMessageIfOpen(socket, { type: "restoring_recipient_ack", requestId: clientMessage.requestId });
+        for (const send of released?.held ?? []) {
+          if (released?.gone !== undefined) this.failHeldSend(send, released.gone);
+          else if (released?.refusal !== undefined) this.failHeldSend(send, released.refusal);
+          else this.dispatchSend(send.socket, send.clientMessage, send.senderId);
+        }
+        break;
+      }
+
       case "register_pending_stage_route": {
         if (
           typeof clientMessage.runId !== "string" ||
@@ -1544,7 +1647,21 @@ class IntercomBroker {
         const owner = this.sessions.get(currentId);
         const existing = this.pendingStageRoutes.get(clientMessage.runId);
         const ownerGroup = normalizeGroup(owner?.registrationGroup);
-        const activeExisting = existing !== undefined && this.sessions.has(existing.sessionId) ? existing : undefined;
+        const dormant = clientMessage.dormant === true;
+        const liveExisting = existing !== undefined && this.sessions.has(existing.sessionId) ? existing : undefined;
+        // #3760: a restarted owner queues for its interrupted run under a dormant route. The process that
+        // resumes the run holds the run's lease and a capability of its own, so it takes the route over and
+        // the dormant owner is told to stop answering for it; a dormant route never takes over another.
+        const yieldedDormant =
+          liveExisting?.dormant === true &&
+          !dormant &&
+          liveExisting.sessionId !== currentId &&
+          liveExisting.capability !== clientMessage.capability &&
+          normalizeGroup(clientMessage.group) === ownerGroup &&
+          liveExisting.group === ownerGroup
+            ? liveExisting
+            : undefined;
+        const activeExisting = yieldedDormant === undefined ? liveExisting : undefined;
         if (
           owner === undefined ||
           normalizeGroup(clientMessage.group) !== ownerGroup ||
@@ -1611,7 +1728,13 @@ class IntercomBroker {
           sessionId: currentId,
           group: ownerGroup,
           capability: clientMessage.capability,
+          ...(dormant ? { dormant: true as const } : {}),
         });
+        if (yieldedDormant !== undefined) {
+          const revoked = this.sessions.get(yieldedDormant.sessionId);
+          if (revoked !== undefined)
+            writeMessageIfOpen(revoked.socket, { type: "pending_stage_route_revoked", runId: clientMessage.runId });
+        }
         if (clientMessage.stages !== undefined || possibleStages !== undefined) {
           this.workflowRosters.set(clientMessage.runId, {
             ownerSessionId: currentId,
@@ -1728,22 +1851,7 @@ class IntercomBroker {
 
 		case "send":
 		case "supervisor_send": {
-			handleBrokerSend(
-				socket,
-				clientMessage,
-				currentId,
-				this.sessions,
-				this.deliveredMessages,
-				writeMessageIfOpen,
-				this.supervisorChannel,
-				this.pendingQuestions,
-				this.routePendingStage,
-				this.resolveLiveWorkflowStage,
-				this.canControlLiveWorkflowStage,
-				this.resolveLegacyWorkflowStageTarget,
-				writeMessageWithOutcome,
-				this.isNonAgentWorkflowTarget,
-			);
+			this.dispatchSend(socket, clientMessage, currentId);
 			break;
 		}
 
@@ -1779,9 +1887,61 @@ class IntercomBroker {
     }
   }
 
+  /** Route one send or ask frame, as received or again after a restoring subagent's hold ends (#3760). */
+  private dispatchSend(socket: net.Socket, clientMessage: SendClientMessage, senderId: string | null): void {
+    handleBrokerSend(
+      socket,
+      clientMessage,
+      senderId,
+      this.sessions,
+      this.deliveredMessages,
+      writeMessageIfOpen,
+      this.supervisorChannel,
+      this.pendingQuestions,
+      this.routePendingStage,
+      this.resolveLiveWorkflowStage,
+      this.canControlLiveWorkflowStage,
+      this.resolveLegacyWorkflowStageTarget,
+      writeMessageWithOutcome,
+      this.isNonAgentWorkflowTarget,
+      this.holdForRestoringRecipient,
+    );
+  }
+
+  /**
+   * #3760: a send to a subagent its owner is restoring is held, by whichever sender, instead of failing with
+   * `Session not found`; a send to one its owner reported gone gets the gone refusal.
+   */
+  private readonly holdForRestoringRecipient: RestoringRecipientHold = ({ socket, from, clientMessage, target, messageId, attemptId }) => {
+    const held: HeldSend = { socket, senderId: from.info.id, messageId, clientMessage, ...(attemptId === undefined ? {} : { attemptId }) };
+    const admission = this.restoringRecipients.admit(
+      target,
+      { id: from.info.id, info: from.info },
+      held,
+      clientMessage.awaitRestoringRecipient === true,
+    );
+    if (admission.kind === "none") return false;
+    if (admission.kind === "refused") this.failHeldSend(held, admission.reason);
+    else writeMessageIfOpen(socket, { type: "send_held", messageId, ...(attemptId === undefined ? {} : { attemptId }), timeoutMs: admission.timeoutMs });
+    return true;
+  };
+
+  private failHeldSend(held: HeldSend, reason: string): void {
+    writeMessageIfOpen(held.socket, {
+      type: "delivery_failed",
+      messageId: held.messageId,
+      ...(held.attemptId === undefined ? {} : { attemptId: held.attemptId }),
+      reason,
+    });
+  }
+
   private disconnectSession(sessionId: string): void {
     const departed = this.sessions.get(sessionId);
     if (!departed) return;
+
+    this.restoringRecipients.dropSender(sessionId);
+    // #3760: a departed owner restores nothing more; what it held goes through ordinary routing once it is gone.
+    const unreserved = this.restoringRecipients.dropOwner(sessionId);
 
     this.pendingQuestions.pruneSender(sessionId);
     for (const question of this.pendingQuestions.takeForTarget(sessionId)) {
@@ -1832,7 +1992,9 @@ class IntercomBroker {
 		if (activation.sessionId === sessionId) this.liveWorkflowStageRouteActivations.delete(requestId);
 	}
 	this.sessions.delete(sessionId);
+	this.sessionIdReclaim.retire(sessionId, departed.registrationReturnAddress);
 	if (isAgentRecipient(departed.info)) this.broadcastToMemberships({ type: "session_left", sessionId }, sessionGroups(departed.info), sessionId);
+	for (const send of unreserved) this.dispatchSend(send.socket, send.clientMessage, send.senderId);
 	}
   /** Deliver a broadcast once to each session represented in any given group. */
   private broadcastToMemberships(msg: BrokerMessage, groups: ReadonlySet<string>, exclude?: string): void {
@@ -1873,6 +2035,7 @@ class IntercomBroker {
     this.pendingStageAcknowledgments.clear();
     this.liveWorkflowStageRoutes.clear();
     this.liveWorkflowStageRouteActivations.clear();
+    this.restoringRecipients.clear();
 	for (const pending of this.pendingStageNotificationAcknowledgments.values()) clearTimeout(pending.timeout);
 	this.pendingStageNotificationAcknowledgments.clear();
 	this.deliveredMessages.close();

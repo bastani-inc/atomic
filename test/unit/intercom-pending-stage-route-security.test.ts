@@ -2620,3 +2620,92 @@ test("an ambiguous stage name never aliases another stage's id route (#3163)", a
 		"the namesake stage never receives traffic addressed to the other stage's id",
 	);
 });
+
+test("an interrupted run's dormant route yields to the process that resumes it and is revoked (#3760)", async () => {
+	const runId = "37600000-bf6c-4e44-8ba8-bb298794a9c4";
+	const group = `workflow:${runId}`;
+	const lane = {
+		stageId: "lane-id",
+		stageName: "lane",
+		target: `${group}/lane-id`,
+		lifecycle: "pending" as const,
+		routeEligible: true,
+		group,
+	};
+	const dormantOwner = new WireClient();
+	const resumingOwner = new WireClient();
+	const sender = new WireClient();
+	await register(dormantOwner, undefined, group);
+	await register(resumingOwner, undefined, group);
+	await register(sender, "dormant-route-sender", group);
+	dormantOwner.send({
+		type: "register_pending_stage_route",
+		runId,
+		group,
+		capability: "interrupted-owner-capability",
+		stages: [lane],
+		dormant: true,
+	});
+	assert.equal(await registrationOutcome(dormantOwner, "dormant-route-registered"), "acknowledged");
+
+	sender.send({
+		type: "send",
+		to: `${group}/lane`,
+		message: { id: "sent-before-resume", timestamp: 1, content: { text: "queued while the run is down" } },
+	});
+	const queued = await dormantOwner.next(
+		"pending_stage_message",
+		(frame) => frame.message.id === "sent-before-resume",
+	);
+	dormantOwner.send({
+		type: "pending_stage_message_result",
+		requestId: queued.requestId,
+		outcome: "queued",
+		position: 1,
+	});
+	await sender.next("queued", (frame) => frame.messageId === "sent-before-resume");
+
+	resumingOwner.send({
+		type: "register_pending_stage_route",
+		runId,
+		group,
+		capability: "resuming-process-capability",
+		stages: [{ ...lane, lifecycle: "running" }],
+	});
+	assert.equal(await registrationOutcome(resumingOwner, "resumed-route-registered"), "acknowledged");
+	assert.deepEqual(await dormantOwner.next("pending_stage_route_revoked"), {
+		type: "pending_stage_route_revoked",
+		runId,
+	});
+
+	sender.send({
+		type: "send",
+		to: `${group}/lane`,
+		message: { id: "sent-after-resume", timestamp: 2, content: { text: "for the resumed run" } },
+	});
+	const routed = await resumingOwner.next(
+		"pending_stage_message",
+		(frame) => frame.message.id === "sent-after-resume",
+	);
+	assert.equal(routed.target, `${group}/lane`);
+	assert.equal(
+		dormantOwner.received.some(
+			(frame) => frame.type === "pending_stage_message" && frame.message.id === "sent-after-resume",
+		),
+		false,
+	);
+
+	const attacker = new WireClient();
+	await register(attacker, undefined, group);
+	attacker.send({
+		type: "register_pending_stage_route",
+		runId,
+		group,
+		capability: "attacker-capability",
+		dormant: true,
+	});
+	assert.deepEqual(await attacker.next("registration_failed"), {
+		type: "registration_failed",
+		reason: "Pending-stage route is not authorized",
+	});
+});

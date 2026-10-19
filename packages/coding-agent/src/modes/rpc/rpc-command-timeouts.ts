@@ -40,6 +40,7 @@ export const LONG_LIVED_COMMANDS: ReadonlySet<string> = new Set<string>([
 	"import_session",
 	"navigate_tree",
 	"invoke_shortcut",
+	"start_pending_recovery",
 ]);
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;

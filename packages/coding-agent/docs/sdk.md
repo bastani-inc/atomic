@@ -144,6 +144,8 @@ Use `builtins: { "web-access": false, intercom: false }` to disable specific shi
 
 Creation finishes extension startup before returning. Pass `extensionBindings` when startup hooks need your host bindings. Later `session.bindExtensions(...)` updates those bindings without replaying `session_start`; reload starts a new extension generation. Missing shipped assets reject with an error whose `code` is `BuiltinUnavailable` and whose message names the package. Reinstall the package rather than continuing with a partially available session.
 
+Opening or binding a session never recovers work an earlier process left unfinished. That work includes restoring background subagents, replaying interrupted deliveries, and showing undelivered background results. Call `await session.startPendingRecovery("resume")` once you are ready to show its output. It runs once per session and resolves with a report: `{ replayed, dropped, completions, notices }`.
+
 ```typescript
 import { createAgentSession, SessionManager } from "@bastani/atomic";
 
@@ -618,6 +620,7 @@ Important behavior:
 - `runtime.session` changes after those operations
 - event subscriptions are attached to a specific `AgentSession`, so re-subscribe after replacement
 - if you use extensions, call `runtime.session.bindExtensions(...)` again for the new session
+- after a `switchSession()`, call `runtime.session.startPendingRecovery("resume")` to recover interrupted work
 - creation returns diagnostics on `runtime.diagnostics`
 - if runtime creation or replacement fails, the method throws and the caller decides how to handle it
 

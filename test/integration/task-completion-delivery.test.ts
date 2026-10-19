@@ -79,7 +79,7 @@ test("completion intent precedes admission and retries a lost acknowledgement wi
 });
 
 // PR #2906: restored terminal intents must not wait for another task to settle.
-test("restored completion intents begin delivery without a new settlement", async () => {
+test("restored completion intents wait for resume recovery, then deliver without a new settlement (#3760)", async () => {
 	const session = SessionManager.inMemory();
 	const envelope = {
 		completionId: "restored-completion",
@@ -97,25 +97,30 @@ test("restored completion intents begin delivery without a new settlement", asyn
 	const outbox = new TaskCompletionOutbox(
 		session,
 		() => true,
-		async (restored) => {
+		async (restored, fromEarlierProcess) => {
 			admitted.push(restored.completionId);
 			assert.deepEqual(restored, envelope);
+			assert.equal(fromEarlierProcess, true);
 			await release.promise;
 		},
 	);
+	await outbox.flush();
+	assert.equal(admitted.length, 0, "a live flush never carries an intent restored from an earlier process");
+	const recovery = outbox.flushRestored();
 	await vi.waitFor(() => assert.deepEqual(admitted, [envelope.completionId]));
-	const concurrentFlush = outbox.flush();
+	const concurrentRecovery = outbox.flushRestored();
 	release.resolve();
-	await concurrentFlush;
+	assert.equal(await recovery, 1);
+	await concurrentRecovery;
 	assert.deepEqual(outbox.pending, []);
-	new TaskCompletionOutbox(
+	const later = new TaskCompletionOutbox(
 		session,
 		() => true,
 		async (restored) => {
 			admitted.push(restored.completionId);
 		},
 	);
-	await Promise.resolve();
+	assert.equal(await later.flushRestored(), 0);
 	assert.deepEqual(admitted, [envelope.completionId]);
 });
 
@@ -140,14 +145,14 @@ test("restored completion retry respects closed admission and retains failed del
 			if (fail) throw new Error("admission unavailable");
 		},
 	);
-	await outbox.flush();
+	await outbox.flushRestored();
 	assert.deepEqual(admitted, []);
 	assert.equal(outbox.pending.length, 1);
 	open = true;
-	await outbox.flush();
+	await outbox.flushRestored();
 	assert.equal(outbox.pending.length, 1);
 	fail = false;
-	await outbox.flush();
+	await outbox.flushRestored();
 	assert.deepEqual(admitted, ["retry-completion", "retry-completion"]);
 	assert.deepEqual(outbox.pending, []);
 	assert.equal(
@@ -195,6 +200,7 @@ test("session task initialization deduplicates persisted delivery after a crash 
 		} as unknown as ThisParameterType<typeof getAgentTaskHost>;
 		const host = getAgentTaskHost.call(session);
 		try {
+			await session._taskCompletionOutbox!.flushRestored();
 			await vi.waitFor(() =>
 				assert.equal(
 					restored
@@ -502,13 +508,15 @@ test("a persisted Intercom prelude cannot suppress a missing terminal notificati
 	const deliveries: string[] = [];
 	const session = {
 		sessionManager: manager,
-		async sendCustomMessage(_message: object, options: { stageAdmissionKey: string }) {
+		async sendCustomMessage(_message: object, options: { stageAdmissionKey: string; triggerTurn: boolean }) {
 			deliveries.push(options.stageAdmissionKey);
+			assert.equal(options.triggerTurn, false, "a restored notification never starts a turn (#3760)");
 		},
 	} as unknown as ThisParameterType<typeof getAgentTaskHost>;
 	const host = getAgentTaskHost.call(session);
 	try {
-		await vi.waitFor(() => assert.deepEqual(deliveries, [completionId]));
+		await session._taskCompletionOutbox!.flushRestored();
+		assert.deepEqual(deliveries, [completionId]);
 		await session._taskCompletionOutbox!.flush();
 		assert.equal(session._taskCompletionOutbox!.pending.length, 0);
 		assert.equal(

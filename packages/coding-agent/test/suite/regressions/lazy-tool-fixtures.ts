@@ -137,6 +137,11 @@ export function runIntercomFixture<T>(heavySource: string, scriptBody: string): 
 			readFileSync(resolve(repoRoot, "packages/intercom/warm-up-exhaustion.ts"), "utf-8"),
 		);
 		writeFileSync(
+			join(tempDir, "session-recovery.ts"),
+			readFileSync(resolve(repoRoot, "packages/intercom/session-recovery.ts"), "utf-8"),
+		);
+		writeFileSync(join(tempDir, "types.ts"), readFileSync(resolve(repoRoot, "packages/intercom/types.ts"), "utf-8"));
+		writeFileSync(
 			join(tempDir, "result-renderers.ts"),
 			"export function renderIntercomToolResult() { return undefined; }\n",
 		);

@@ -35,6 +35,7 @@ import {
 	validateFileOnlyOutputMode,
 } from "../shared/single-output.js";
 import { formatParentAskHandoffOutput } from "./parent-ask-output.js";
+import { createSubagentChildRecordSink } from "./subagent-child-records.js";
 import { runUnboundParallelTask } from "./subagent-executor-parallel-task.js";
 import {
 	createForegroundControlNotifier,
@@ -278,6 +279,7 @@ export async function runSinglePath(
 				wait: params.wait,
 				schedule: params[BURST_EXECUTION_SCHEDULE],
 				runtime: deps.runtime,
+				recordChild: createSubagentChildRecordSink(deps.pi, ctx),
 				onTerminal: (child) => {
 					settledChild = child;
 					cleanupTransientProgress(progressDir, artifactConfig.enabled);

@@ -1688,6 +1688,11 @@ export class StageSessionController {
 				this.requestedThinkingLevel = undefined;
 			}
 			await this.sharedOrchestrationContext?.pendingStageDelivery?.ready(attachedSession.sessionId);
+			if (
+				this.effectiveStageOptions?.durableReplayKey !== undefined &&
+				this.effectiveStageOptions.resumeFromSessionId !== undefined
+			)
+				await attachedSession.startPendingRecovery?.("workflow_stage_resume");
 			await this.opts.onSessionReady?.();
 			if (this.disposed || this.opts.signal?.aborted || this.abortGeneration !== startGeneration)
 				throw this.staleCreationReason(startGeneration);

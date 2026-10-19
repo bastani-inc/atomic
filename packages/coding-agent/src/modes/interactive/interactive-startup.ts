@@ -335,6 +335,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	this.attachStartupNoticesContainer();
 	// Render initial messages AFTER the initial session binding is in place.
 	this.renderInitialMessages();
+	if (!this.deferredStartupPending) this.startSessionRecovery("startup");
 	// Set up theme file watcher
 	onThemeChange(() => {
 		this.ui.invalidate();

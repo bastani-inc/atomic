@@ -128,6 +128,11 @@ export type ClientMessage =
 			session: Omit<SessionInfo, "id">;
 			/** Internal host-owned identity retained across broker reconnects. */
 			returnAddress?: string;
+			/**
+			 * The Intercom session id this session held before a restart or reconnect (#3760). The broker grants it
+			 * only when no live session holds it and it was not last held under another return address.
+			 */
+			preferredSessionId?: string;
 			/** Immutable session origin; separate from mutable group memberships. Legacy clients use session.group. */
 			registrationGroup?: string;
 			supervisor?: SupervisorRegistration;
@@ -139,7 +144,31 @@ export type ClientMessage =
 	| { type: "join_group"; requestId: string; group: string }
 	| { type: "leave_group"; requestId: string; group?: string }
   | { type: "authorize_supervisor"; requestId: string; childName: string; capability?: string }
-  | { type: "send" | "supervisor_send"; to: string; logicalTarget?: string; requirePendingReply?: true; expectedRecipientId?: string; resolveReplyTarget?: true; message: Message; attemptId?: string }
+  /**
+   * #3760: the supervisor that holds `capability` for a child it is restoring, or is about to restore, holds sends to
+   * that child's name and `aliases` (its Atomic session id and pre-restart Intercom id) until the child registers
+   * with the capability. A `dormant` hold only keeps the child addressable until the supervisor that restores it
+   * reserves the same child and group, which takes the hold over together with the sends held so far.
+   */
+  | { type: "reserve_restoring_recipient"; requestId: string; capability: string; group?: string; aliases?: string[]; dormant?: boolean }
+  /**
+   * #3760: end that hold. With `gone` (the reason), held and later senders are told the child is gone. With `refusal`,
+   * the senders held now are told that reason instead and later ones are routed normally. Otherwise held sends are
+   * routed normally.
+   */
+  | { type: "release_restoring_recipient"; requestId: string; capability: string; gone?: string; refusal?: string }
+  | {
+      type: "send" | "supervisor_send";
+      to: string;
+      logicalTarget?: string;
+      requirePendingReply?: true;
+      expectedRecipientId?: string;
+      resolveReplyTarget?: true;
+      /** The sender understands `send_held` and may wait past its usual acknowledgement timeout (#3760). */
+      awaitRestoringRecipient?: true;
+      message: Message;
+      attemptId?: string;
+    }
 	| {
 			type: "send_pending_stage_notification";
 			runId: string;
@@ -151,7 +180,17 @@ export type ClientMessage =
 			attemptId?: string;
 	  }
 	| { type: "pending_stage_notification_result"; requestId: string; delivered: boolean }
- | { type: "register_pending_stage_route"; runId: string; group: string; capability: string; stages?: WorkflowStageRosterAnnouncement[]; possibleStages?: WorkflowPossibleStageAnnouncement[]; parent?: WorkflowRunParentAnnouncement }
+ | {
+		type: "register_pending_stage_route";
+		runId: string;
+		group: string;
+		capability: string;
+		stages?: WorkflowStageRosterAnnouncement[];
+		possibleStages?: WorkflowPossibleStageAnnouncement[];
+		parent?: WorkflowRunParentAnnouncement;
+		/** Interrupted run queued by its restarted owner before resume; yields to the process that resumes it (#3760). */
+		dormant?: true;
+	}
   | {
       type: "register_live_workflow_stage_route";
       requestId: string;
@@ -202,6 +241,8 @@ export type BrokerMessage =
 			live?: boolean;
 	  }
   | { type: "live_workflow_stage_route_registered"; requestId: string }
+	/** A dormant route's run was resumed by another process, which now owns the run's routes (#3760). */
+	| { type: "pending_stage_route_revoked"; runId: string }
   | { type: "presence_update"; session: SessionInfo }
   | { type: "session_joined"; session: SessionInfo }
   | { type: "session_left"; sessionId: string }
@@ -211,4 +252,7 @@ export type BrokerMessage =
   | { type: "error"; error: string }
   | { type: "delivered"; messageId: string; attemptId?: string }
 	| { type: "queued"; messageId: string; attemptId?: string; target: string; position: number }
+	/** #3760: the send is held for a subagent that is being restored; wait up to `timeoutMs` for its outcome. */
+	| { type: "send_held"; messageId: string; attemptId?: string; timeoutMs: number }
+	| { type: "restoring_recipient_ack"; requestId: string; error?: string }
 	| { type: "delivery_failed"; messageId: string; reason: string; reasonCode?: "message_id_conflict" | "session_not_found"; attemptId?: string };

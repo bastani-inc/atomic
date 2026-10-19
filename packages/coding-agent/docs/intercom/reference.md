@@ -56,12 +56,15 @@ Live-session lookup accepts:
 - An exact full Intercom session ID.
 - An exact case-insensitive session name.
 - A unique 8-character hexadecimal prefix of a UUID-backed session ID.
+- A connected session's Atomic session ID (the ID `atomic --session` resumes), when exactly one session you can see registered it.
 
-Exact names and IDs take precedence. Ambiguous prefixes report only authorized candidates and require the full UUID; other truncations are rejected. An isolated child can select its authorized supervisor by a unique UUID prefix without gaining access to unrelated groups.
+Exact names and IDs take precedence, and an Atomic session ID is tried only after the other forms find nothing. Ambiguous prefixes report only authorized candidates and require the full UUID; other truncations are rejected. An isolated child can select its authorized supervisor by a unique UUID prefix without gaining access to unrelated groups.
+
+A reopened session or a restored background subagent registers under the Intercom session ID it had before the restart, so peers can keep using the ID they saw in `intercom list`. The session records that ID in its history as an `intercom_session_identity` entry. The broker never gives an ID to a new registration while a live session holds it; the restarted session then gets a fresh ID. While the broker remembers who last held an ID, only that same Atomic session can take it back.
 
 Workflow stages use the canonical `workflow:<rootRunId>/<segment>[/<segment>...]` path printed by `intercom list` and workflow status surfaces. An exact target works while the row is `PENDING` and after it becomes `RUNNING`. Each segment may be a stage name, run id, or glob: `*` matches one segment and may be embedded, while `**` matches any depth.
 
-Status surfaces label pending stages whose pre-start delivery capability is unavailable without presenting a usable target. They never advertise a retained pending stage after its run terminates. The `sessionId` shown by `workflow status` belongs to the workflow SDK and is **not** an Intercom target.
+Status surfaces label pending stages whose pre-start delivery capability is unavailable without presenting a usable target. They never advertise a retained pending stage after its run terminates. The `sessionId` shown by `workflow status` is the stage's Atomic session ID, not a workflow path: it reaches the stage only while the stage is connected and visible to you, and it never queues for a pending stage.
 
 Agent list rows put the copyable exact ID or canonical workflow path first, followed by status and working directory. Meaningful names remain secondary metadata; redundant generated aliases are hidden only in the list, not removed from lookup. Pending and future workflow rows retain lifecycle and queued counts. Copy the target rather than reconstructing it from a name.
 
@@ -98,6 +101,10 @@ The workflows extension persists up to **50 queued messages per target** with wo
 Only a workflow invocation member with eligible invocation-control authority can queue to its invocation-owned stages; this includes a main-chat session that explicitly joined `workflow:<rootRunId>`. Subgroup peers and another root run remain refused even if they add that membership. An explicit stage `group: "default"` is a shared-group escape, is not workflow-owned, and does not receive pending invocation delivery. An ineligible attempt is refused with `Target workflow run is in a different intercom group`. The 51st queued message is refused with `Pending stage message queue is full (limit 50)` rather than evicting an earlier entry.
 
 If the destination stage is skipped, the run terminates, or the stage becomes terminal before its session initializes, Atomic marks the queued message undeliverable and sends the correlated failure notification when acknowledgment was requested. Use `ask` only on a live, reply-capable exact target. Pending, future, and pattern asks return `pending_stage_ask_unsupported`; use ordinary `send`, because a stage may start much later or never start.
+
+A workflow run that was interrupted and can continue with `/workflow resume` stays addressable after the Atomic session that launched it restarts. Once the crashed session's lease expires (about 120 seconds), its stages show as pending in `intercom list`, and sends to `workflow:<rootRunId>/<stage>` or `workflow:<rootRunId>/**` are queued and delivered once after `/workflow resume`. Asks are refused while the run is dormant, and only the launching session answers for it.
+
+The background subagents that the run's stages launched stay addressable too. While the run waits, the launching session holds sends to them by name, Atomic session ID, or pre-restart Intercom session ID. When the stage runs again and restores them, it takes the hold over, so each held message is delivered once after the subagent reconnects. If another session takes over the run, it also takes over these targets, and senders still waiting for a subagent get an error that names the other session. A stage whose saved session cannot be read has no held subagents; the stage's own route is unaffected. See [Intercom operations](/intercom/operations#connection-states-and-recovery).
 
 ### Groups
 

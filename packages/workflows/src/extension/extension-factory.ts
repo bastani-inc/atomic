@@ -1,4 +1,5 @@
 import { registerExtensionContextRetirementEffect } from "@bastani/atomic";
+import { availableStoreDurableBackend } from "../durable/store-backend.js";
 import { buildIntercomCallbacks } from "../intercom/intercom-routing.js";
 import { subscribeIntercomControl } from "../intercom/result-intercom.js";
 import type { Store } from "../shared/store.js";
@@ -11,6 +12,7 @@ import { installStoreWidget, installToolExecutionHooks, scrollStoreWidget } from
 import type { PostMortemHandleResolution } from "../tui/workflow-attach-pane-types.js";
 import { adoptWorkflowSessionRunState } from "./adopt-session-run-state.js";
 import { registerCompletedStageIntercomAskRouter } from "./completed-stage-intercom-ask.js";
+import { registerDormantRunIntercomRoutes } from "./dormant-run-intercom.js";
 import { registerWorkflowLifecycleHandlers } from "./extension-lifecycle.js";
 import { createWorkflowExtensionRuntimeState } from "./extension-runtime-state.js";
 import { trackLiveHostGeneration } from "./live-host-generation.js";
@@ -150,6 +152,15 @@ function factory(pi: ExtensionAPI): void {
 	const postMortemHandleResolver = createPostMortemHandleResolver(postMortemResolverDeps);
 	const disposeCompletedRoutes = registerCompletedStageIntercomAskRouter(pi, postMortemHandleResolver);
 	const disposePendingRoutes = registerPendingStageIntercomBridge(pi, store);
+	// Registered after the live bridge so a run that is live here is always answered by its live owner.
+	const dormantRuns = registerDormantRunIntercomRoutes(pi, store, {
+		prepareBackend: async (ctx, runIds) => {
+			const runtime = runtimeState.runtimeForContext(ctx);
+			if (runtime.prepareDurableResumableForIds !== undefined) await runtime.prepareDurableResumableForIds(runIds);
+			else await runtime.prepareDurableResumable();
+			return availableStoreDurableBackend(store);
+		},
+	});
 	const disposeReleasedRoutes = registerReleasedStageIntercomRoutes(
 		pi,
 		runState.stageControlRegistry,
@@ -160,6 +171,7 @@ function factory(pi: ExtensionAPI): void {
 		if (!ctx) return;
 		registerExtensionContextRetirementEffect(ctx, disposeCompletedRoutes);
 		registerExtensionContextRetirementEffect(ctx, disposePendingRoutes);
+		registerExtensionContextRetirementEffect(ctx, dormantRuns.dispose);
 		registerExtensionContextRetirementEffect(ctx, disposeReleasedRoutes);
 	});
 	const overlay = buildWorkflowOverlay(pi, owner, postMortemHandleResolver, () => adapters.sessionStore);

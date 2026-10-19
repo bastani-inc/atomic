@@ -30,6 +30,7 @@ import type {
 	PromptDisposition,
 	PromptOptions,
 	QueuedInputDisposition,
+	SessionRecoveryReport,
 	SessionStats,
 	ToolDefinitionEntry,
 } from "./agent-session-types.js";
@@ -54,6 +55,7 @@ import type {
 	SendMessageOptions,
 	SendMessagesOptions,
 	SessionBoundaryDraft,
+	SessionRecoveryReason,
 	SessionStartEvent,
 	ToolDefinition,
 	ToolInfo,
@@ -340,6 +342,8 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	setAutoCompactionEnabled(enabled: boolean): void;
 
 	bindExtensions(bindings: ExtensionBindings): Promise<void>;
+	startPendingRecovery(reason?: SessionRecoveryReason): Promise<SessionRecoveryReport>;
+	_waitForExtensionStart(): Promise<void>;
 	extendResourcesFromExtensions(reason: "startup" | "reload"): Promise<void>;
 	buildExtensionResourcePaths(entries: ExtensionResourcePathEntry[]): ExtensionResourcePathResult[];
 	getExtensionSourceLabel(extensionPath: string): string;
@@ -482,6 +486,7 @@ export interface AgentSessionPublicSurface
 		| "abortBranchSummary"
 		| "setAutoCompactionEnabled"
 		| "bindExtensions"
+		| "startPendingRecovery"
 		| "refreshCurrentModelFromRegistry"
 		| "reload"
 		| "completeStartupResources"

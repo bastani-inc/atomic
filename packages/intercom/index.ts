@@ -11,6 +11,23 @@ import { isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
 import { IntercomWarmUpExhaustedError } from "./warm-up-exhaustion.js";
 import { reconnectDelayMs } from "./reconnect-backoff.js";
 import {
+	type AwaitIntercomPeerRequest,
+	hasIntercomHistory,
+	INTERCOM_RECOVERY_PEERS_EVENT,
+	type IntercomRecoveryPeersRequest,
+	awaitRestoredIntercomPeers,
+	isAwaitIntercomPeerRequest,
+	isReleaseRestoringChildRequest,
+	isReserveRestoringChildRequest,
+	planIntercomRecoveryReplay,
+	type ReleaseRestoringChildRequest,
+	type ReserveRestoringChildRequest,
+	SUBAGENT_AWAIT_INTERCOM_PEER_EVENT,
+	SUBAGENT_RELEASE_RESTORING_CHILD_EVENT,
+	SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
+} from "./session-recovery.js";
+import type { SessionInfo } from "./types.js";
+import {
 	createForwardedHandlerMap,
 	createHeavyProxy,
 	dispatchEventHandlers,
@@ -657,6 +674,80 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 				if (isRecoverableIntercomDisconnect(error)) return undefined;
 				throw error;
 			});
+	});
+	pi.events.on(SUBAGENT_AWAIT_INTERCOM_PEER_EVENT, (payload) => {
+		if (!payload || typeof payload !== "object" || !isAwaitIntercomPeerRequest(payload) || payload.completion) return;
+		const forwarded: AwaitIntercomPeerRequest = {
+			name: payload.name,
+			timeoutMs: payload.timeoutMs,
+			...(payload.group === undefined ? {} : { group: payload.group }),
+		};
+		payload.completion = loadHeavy(latestLifecycleContext())
+			.then(async (handle) => {
+				handle.assertCurrent();
+				await dispatchEventHandlers(handle.heavy, SUBAGENT_AWAIT_INTERCOM_PEER_EVENT, forwarded);
+				return forwarded.completion ? await forwarded.completion : false;
+			})
+			.catch(() => false);
+	});
+	// #3760: a resume restoring a child asks the broker, through this session's connection, to hold its sends.
+	pi.events.on(SUBAGENT_RESERVE_RESTORING_CHILD_EVENT, (payload) => {
+		if (!isReserveRestoringChildRequest(payload) || payload.completion) return;
+		const forwarded: ReserveRestoringChildRequest = {
+			capability: payload.capability,
+			aliases: [...payload.aliases],
+			...(payload.group === undefined ? {} : { group: payload.group }),
+			...(payload.dormant === true ? { dormant: true } : {}),
+		};
+		payload.completion = loadHeavy(latestLifecycleContext()).then(async (handle) => {
+			handle.assertCurrent();
+			await dispatchEventHandlers(handle.heavy, SUBAGENT_RESERVE_RESTORING_CHILD_EVENT, forwarded);
+			if (!forwarded.completion) throw new Error("Intercom cannot hold sends for a restoring subagent");
+			await forwarded.completion;
+		});
+	});
+	pi.events.on(SUBAGENT_RELEASE_RESTORING_CHILD_EVENT, (payload) => {
+		if (!isReleaseRestoringChildRequest(payload) || payload.completion) return;
+		const forwarded: ReleaseRestoringChildRequest = {
+			capability: payload.capability,
+			...(payload.gone === undefined ? {} : { gone: payload.gone }),
+			...(payload.refusal === undefined ? {} : { refusal: payload.refusal }),
+		};
+		// A hold lives on the connection that made it, so a session that never loaded Intercom, or whose Intercom has
+		// ended, holds nothing to release; loading it just to say so would only report a failure at shutdown.
+		const handle = loadedHeavy;
+		payload.completion = !handle
+			? Promise.resolve()
+			: (async () => {
+					try {
+						handle.assertCurrent();
+						await dispatchEventHandlers(handle.heavy, SUBAGENT_RELEASE_RESTORING_CHILD_EVENT, forwarded);
+						await forwarded.completion;
+					} catch {
+						// The connection is gone, and its holds with it.
+					}
+				})();
+	});
+	async function recoveryPeers(ctx: ExtensionContext): Promise<SessionInfo[] | undefined> {
+		try {
+			const handle = await loadHeavy(ctx);
+			handle.assertCurrent();
+			const forwarded: IntercomRecoveryPeersRequest = {};
+			await dispatchEventHandlers(handle.heavy, INTERCOM_RECOVERY_PEERS_EVENT, forwarded);
+			return forwarded.completion ? await forwarded.completion : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+	pi.on("session_recovery_restore", async (_event, ctx) => {
+		if (hasIntercomHistory(ctx.sessionManager.getEntries())) await recoveryPeers(ctx);
+		return undefined;
+	});
+	pi.on("session_recovery_replay", async (event, ctx) => {
+		if (!event.pending.some((delivery) => delivery.customType === "intercom_message")) return undefined;
+		const peers = await recoveryPeers(ctx);
+		const restored = await awaitRestoredIntercomPeers(pi.events, ctx.sessionManager.getSessionId());
+		return planIntercomRecoveryReplay(event.pending, peers, restored);
 	});
 	pi.events.on(PENDING_STAGE_UNDELIVERABLE_EVENT, (payload) => {
 		if (!isPendingStageUndeliverableRelay(payload) || payload.handled === true) return;

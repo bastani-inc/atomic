@@ -7,6 +7,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 	keyHintIfBound,
+	type SessionEntry,
 	type ToolDefinition,
 } from "@bastani/atomic";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -22,6 +23,23 @@ import {
 } from "@earendil-works/pi-tui";
 import { discoverAgents } from "../agents/agents.js";
 import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/foreground/notify.js";
+import { subagentChildOwner } from "../runs/foreground/subagent-child-records.js";
+import {
+	awaitSubagentChildRestoration,
+	holdDormantRunSubagentChildren,
+	holdRunningSubagentChildren,
+	recordReportedGoneSubagentChildren,
+	releaseEarlyChildHolds,
+	restoredChildrenAwaitingIntercom,
+	restoreSubagentChildren,
+	SUBAGENT_AWAIT_CHILD_RESTORATION_EVENT,
+	SUBAGENT_RESTORED_INTERCOM_PEERS_EVENT,
+	type SubagentAwaitChildRestorationRequest,
+	type SubagentRestoredIntercomPeersRequest,
+	subagentChildRestoreNotices,
+	WORKFLOW_DORMANT_RUN_SUBAGENT_HOLD_EVENT,
+	type WorkflowDormantRunSubagentHoldRequest,
+} from "../runs/foreground/subagent-child-restore.js";
 import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.js";
 import { getArtifactsDir } from "../shared/artifacts.js";
 import { formatDuration, shortenPath } from "../shared/formatters.js";
@@ -50,6 +68,40 @@ import { SUBAGENT_TOOL_DESCRIPTION } from "./tool-description.js";
 import { renderSubagentToolCall, renderSubagentToolResult } from "./tool-rendering.js";
 
 export {
+	findSubagentChildRecord,
+	readSubagentChildRecords,
+	SUBAGENT_CHILD_RECORD_TYPE,
+	type SubagentChildOwner,
+	type SubagentChildRecord,
+} from "../runs/foreground/subagent-child-records.js";
+export {
+	awaitSubagentChildRestoration,
+	holdDormantRunSubagentChildren,
+	holdRunningSubagentChildren,
+	recordReportedGoneSubagentChildren,
+	restoredChildrenAwaitingIntercom,
+	restoreSubagentChild,
+	restoreSubagentChildren,
+	SUBAGENT_AWAIT_CHILD_RESTORATION_EVENT,
+	SUBAGENT_AWAIT_INTERCOM_PEER_EVENT,
+	SUBAGENT_RELEASE_RESTORING_CHILD_EVENT,
+	SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
+	SUBAGENT_RESTORED_INTERCOM_PEERS_EVENT,
+	SUBAGENT_RESUME_CONTINUATION_PROMPT,
+	type SubagentAwaitChildRestorationRequest,
+	type SubagentAwaitIntercomPeerRequest,
+	type SubagentChildRestoreDeps,
+	type SubagentChildRestoreOutcome,
+	type SubagentReleaseRestoringChildRequest,
+	type SubagentReserveRestoringChildRequest,
+	type SubagentRestoredIntercomPeer,
+	type SubagentRestoredIntercomPeersRequest,
+	subagentChildRestoreNotices,
+	WORKFLOW_DORMANT_RUN_SUBAGENT_HOLD_EVENT,
+	type WorkflowDormantRunSubagentHold,
+	type WorkflowDormantRunSubagentHoldRequest,
+} from "../runs/foreground/subagent-child-restore.js";
+export {
 	PROMPT_TEMPLATE_SUBAGENT_CANCEL_EVENT,
 	PROMPT_TEMPLATE_SUBAGENT_REQUEST_EVENT,
 	PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT,
@@ -62,6 +114,7 @@ export { SUBAGENT_TOOL_DESCRIPTION } from "./tool-description.js";
 import {
 	DEFAULT_ARTIFACT_CONFIG,
 	type Details,
+	isSubagentChildSession,
 	SLASH_RESULT_TYPE,
 	SUBAGENT_CONTROL_EVENT,
 	type SubagentState,
@@ -407,10 +460,69 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			clearPendingForegroundControlNotices(state);
 			restoreSlashFinalSnapshots(ctx.sessionManager.getEntries(), pi);
 		};
-		pi.on("session_start", (_event, ctx) => {
-			if (lifecycle.isCurrent()) resetSessionState(ctx);
+		pi.on("session_start", (event, ctx) => {
+			if (!lifecycle.isCurrent()) return;
+			resetSessionState(ctx);
+			// The children this session launched and a restart interrupted are addressable at once, not only after its
+			// recovery has restored them (#3760). Recovery takes these holds over; this never blocks session start. Only
+			// a session that was just opened has interrupted children: after a reload its running children are alive.
+			const opened = event.reason === "startup" || event.reason === "resume";
+			if (opened && !isSubagentChildSession(ctx) && ctx.isPresentationOnly !== true)
+				void holdRunningSubagentChildren(pi.events, ctx).catch(() => undefined);
 		});
-		pi.on("session_shutdown", () => {
+		pi.on("session_recovery_restore", async (_event, ctx) => {
+			// Subagent children never own children; workflow stages carry a policy but do (#3760).
+			if (!lifecycle.isCurrent() || isSubagentChildSession(ctx)) return undefined;
+			const outcomes = await restoreSubagentChildren(executorDeps, ctx);
+			const notices = subagentChildRestoreNotices(outcomes);
+			// Report once: record the children the notices call gone, so later restarts neither retry nor repeat them.
+			await recordReportedGoneSubagentChildren(pi, outcomes);
+			return { notices };
+		});
+		const unsubscribeChildRestoration = pi.events.on(SUBAGENT_AWAIT_CHILD_RESTORATION_EVENT, (payload) => {
+			const request = payload as Partial<SubagentAwaitChildRestorationRequest> | null;
+			if (!lifecycle.isCurrent() || !request || request.completion) return;
+			if (typeof request.ownerSessionId !== "string" || typeof request.target !== "string") return;
+			const { ownerSessionId, target } = request;
+			const timeoutMs = typeof request.timeoutMs === "number" ? request.timeoutMs : 0;
+			const entries = (): SessionEntry[] => {
+				try {
+					const ctx = state.lastUiContext;
+					return ctx?.sessionManager.getSessionId() === ownerSessionId ? ctx.sessionManager.getEntries() : [];
+				} catch {
+					return [];
+				}
+			};
+			request.completion = awaitSubagentChildRestoration(ownerSessionId, entries(), target, timeoutMs);
+		});
+		eventUnsubscribes.push(unsubscribeChildRestoration);
+		// Intercom asks which relaunched children have not registered yet before it judges the peers of interrupted deliveries.
+		const unsubscribeRestoredPeers = pi.events.on(SUBAGENT_RESTORED_INTERCOM_PEERS_EVENT, (payload) => {
+			const request = payload as Partial<SubagentRestoredIntercomPeersRequest> | null;
+			if (!lifecycle.isCurrent() || !request || request.completion || typeof request.ownerSessionId !== "string")
+				return;
+			request.completion = Promise.resolve(restoredChildrenAwaitingIntercom(request.ownerSessionId));
+		});
+		eventUnsubscribes.push(unsubscribeRestoredPeers);
+		// The workflows extension of this session asks to keep an interrupted run's stage subagents addressable.
+		const unsubscribeDormantRunHold = pi.events.on(WORKFLOW_DORMANT_RUN_SUBAGENT_HOLD_EVENT, (payload) => {
+			const request = payload as Partial<WorkflowDormantRunSubagentHoldRequest> | null;
+			const ctx = request?.context ?? state.lastUiContext;
+			if (!lifecycle.isCurrent() || !request || request.completion || !ctx) return;
+			if (typeof request.group !== "string" || !Array.isArray(request.stageSessionIds)) return;
+			const stageSessionIds = request.stageSessionIds.filter((id): id is string => typeof id === "string");
+			request.completion = Promise.resolve(
+				holdDormantRunSubagentChildren(pi.events, ctx, { group: request.group, stageSessionIds }),
+			);
+		});
+		eventUnsubscribes.push(unsubscribeDormantRunHold);
+		pi.on("session_shutdown", (_event, ctx) => {
+			// Holds nothing took over end with the session; the broker also ends them when its connection closes.
+			try {
+				releaseEarlyChildHolds(subagentChildOwner(ctx).sessionId);
+			} catch {
+				// A context that is already retired has nothing to release.
+			}
 			lifecycle.dispose();
 		});
 	} catch (error) {

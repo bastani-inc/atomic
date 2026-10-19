@@ -987,6 +987,7 @@ describe("docs references and assets (#2847)", () => {
 				"Broker restart or concurrent startup",
 				"Broker does not start",
 				"Half-closed peer or undeliverable send",
+				"Subagent being restored after a restart",
 			],
 			"the runbook must cover every observable lifecycle state named by the Intercom contracts",
 		);

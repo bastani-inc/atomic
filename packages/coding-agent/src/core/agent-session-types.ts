@@ -202,6 +202,18 @@ export interface AgentSessionReloadOptions {
 	failOnExtensionErrors?: boolean;
 }
 
+/** What `AgentSession.startPendingRecovery()` did for interrupted work from an earlier process. */
+export interface SessionRecoveryReport {
+	/** Interrupted delivery cards replayed to the model. */
+	replayed: number;
+	/** Interrupted delivery cards an extension declined to replay. */
+	dropped: number;
+	/** Background task results delivered as visible cards without starting a turn. */
+	completions: number;
+	/** Notices shown to the user and the agent in one recovery message. */
+	notices: string[];
+}
+
 export type QueuedInputDisposition = "handled" | "queued";
 export type PromptDisposition = QueuedInputDisposition | "started";
 

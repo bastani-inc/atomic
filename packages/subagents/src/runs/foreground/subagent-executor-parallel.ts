@@ -29,6 +29,7 @@ import { recordRun } from "../shared/run-history.js";
 import { resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.js";
 import { cleanupWorktrees, type WorktreeSetup } from "../shared/worktree.js";
 import { createDetachedCleanupBarrier } from "./detached-cleanup-barrier.js";
+import { createSubagentChildRecordSink } from "./subagent-child-records.js";
 import { runForegroundParallelTasks } from "./subagent-executor-parallel-task.js";
 import {
 	createForegroundControlNotifier,
@@ -256,6 +257,7 @@ export async function runParallelPath(
 			ctx,
 			resourceLoaderInheritanceSnapshot: deps.pi.getResourceLoaderInheritanceSnapshot?.(),
 			intercomEvents: deps.pi.events,
+			recordChild: createSubagentChildRecordSink(deps.pi, ctx),
 			signal,
 			runId,
 			sessionDirForIndex,

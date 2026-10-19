@@ -2,6 +2,8 @@ import type {
 	AgentSession,
 	CreateAgentSessionOptions,
 	PromptOptions,
+	SessionRecoveryReason,
+	SessionRecoveryReport,
 	SessionStore,
 	SettingsManager,
 } from "@bastani/atomic";
@@ -66,6 +68,8 @@ export interface StageSessionRuntime {
 	resumeQueuedMessages?(beforeRelease?: () => void): boolean | Promise<boolean>;
 	/** Optional owned-execution hold: block launches synchronously, cancel and drain before resolving. */
 	pauseTasks?(): Promise<void>;
+	/** Restore interrupted children and replay pending deliveries of a reopened session, after binding (#3760). */
+	startPendingRecovery?(reason: SessionRecoveryReason): Promise<SessionRecoveryReport>;
 	/** Reopen launches only; cancelled executions must never restart. */
 	resumeTasks?(): void;
 	steer(text: string): Promise<void> | Promise<"handled" | "queued">;

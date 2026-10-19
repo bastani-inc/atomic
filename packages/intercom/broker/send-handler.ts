@@ -8,7 +8,11 @@ import {
 } from "../workflow-stage-target.js";
 import { normalizeGroup } from "../group.js";
 import { isMessage } from "./client-message-validation.js";
-import { resolveSessionTarget, sessionTargetFailureReason } from "../session-target.js";
+import {
+	resolveSessionTarget,
+	resolveSessionTargetByHostSessionId,
+	sessionTargetFailureReason,
+} from "../session-target.js";
 import { DeliveredMessageCache } from "./delivered-message-cache.js";
 import { buildMessageSendSignature } from "./send-signature.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
@@ -80,10 +84,20 @@ export type LegacyWorkflowStageTargetResolver = (runId: string, stageKey: string
 export const PENDING_STAGE_ASK_REFUSAL =
   "Cannot ask a workflow stage whose session has not initialized. Use send; Atomic will queue the message until the stage session initializes.";
 
+/**
+ * #3760: offered every send or ask that found no live recipient, before it fails with `Session not found`.
+ * Returns true when it answered or held the send (a subagent that its owner is restoring).
+ */
+export type RestoringRecipientHold = (send: {
+  readonly socket: net.Socket;
+  readonly from: BrokerConnectedSession;
+  readonly clientMessage: SendClientMessage & { readonly to: string };
+  readonly target: string;
+  readonly messageId: string;
+  readonly attemptId?: string;
+}) => boolean;
 
-
-
-interface SendClientMessage extends Record<string, unknown> {
+export interface SendClientMessage extends Record<string, unknown> {
   type: string;
 }
 function wireMessageId(value: unknown): string {
@@ -115,6 +129,7 @@ export function handleBrokerSend(
 	resolveLegacyWorkflowStageTarget?: LegacyWorkflowStageTargetResolver,
 	writeConfirmed?: ConfirmedMessageWriter,
 	isNonAgentWorkflowTarget?: (target: string) => boolean,
+	holdForRestoringRecipient?: RestoringRecipientHold,
 ): void {
   const message = clientMessage.message;
   const messageId = wireMessageId(message);
@@ -286,9 +301,18 @@ export function handleBrokerSend(
       return;
     }
   }
-  const resolution = exactIdTarget
+  const nameOrIdResolution = exactIdTarget
     ? ({ kind: "resolved", session: exactIdTarget.info } as const)
     : resolveSessionTarget(candidates, trimmedTo);
+  // #3760: a host session id (a resumed session's or a restored subagent's own session id) reaches the one
+  // visible session it registered, under the same group visibility as names.
+  const resolution = nameOrIdResolution.kind === "not_found"
+    ? resolveSessionTargetByHostSessionId(
+        candidates,
+        trimmedTo,
+        (info) => sessions.get(info.id)?.registrationReturnAddress,
+      )
+    : nameOrIdResolution;
   if (expectedRecipientId !== undefined && (resolution.kind !== "resolved" || resolution.session.id !== expectedRecipientId)) {
     write(socket, { type: "delivery_failed", messageId, attemptId,
       reason: resolution.kind === "resolved" ? "Reply target does not match the expected recipient" : sessionTargetFailureReason(clientMessage.to, resolution),
@@ -578,6 +602,22 @@ export function handleBrokerSend(
   }
 	if (resolution.kind === "not_found" && visibleCandidates.some((info) => !isAgentRecipient(info) && info.name?.toLowerCase() === trimmedTo.toLowerCase())) {
 		write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: NON_AGENT_RECIPIENT_REFUSAL });
+		return;
+	}
+	if (
+		resolution.kind === "not_found" &&
+		!supervisorSend &&
+		!requirePendingReply &&
+		workflowTarget === undefined &&
+		holdForRestoringRecipient?.({
+			socket,
+			from: fromSession,
+			clientMessage: clientMessage as SendClientMessage & { readonly to: string },
+			target: trimmedTo,
+			messageId: message.id,
+			...(attemptId ? { attemptId } : {}),
+		})
+	) {
 		return;
 	}
 	if (

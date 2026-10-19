@@ -24,6 +24,7 @@ import { currentModelFullId } from "../shared/model-fallback.js";
 import { createExecutionScheduler } from "../shared/parallel-utils.js";
 import { injectSingleOutputInstruction, resolveSingleOutputPath } from "../shared/single-output.js";
 import type { WorktreeSetup } from "../shared/worktree.js";
+import type { SubagentChildRecordSink } from "./subagent-child-records.js";
 import { markLiveResultIndices } from "./subagent-executor-live-update.js";
 import type { SubagentExecutorRuntimeDeps, TaskParam } from "./subagent-executor-types.js";
 import { resolveParallelTaskCwd } from "./subagent-executor-worktree.js";
@@ -37,6 +38,7 @@ interface ForegroundParallelRunInput {
 	ctx: ExtensionContext;
 	resourceLoaderInheritanceSnapshot?: import("@bastani/atomic").DefaultResourceLoaderInheritanceSnapshot;
 	intercomEvents: IntercomEventBus;
+	recordChild?: SubagentChildRecordSink;
 	signal: AbortSignal;
 	runId: string;
 	sessionDirForIndex: (idx?: number) => string | undefined;
@@ -305,6 +307,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 				onTerminal: (child) => {
 					terminalChild = child;
 				},
+				recordChild: input.recordChild,
 			});
 			if (terminalChild) return { ...terminalChild, taskResponse: response };
 			return {

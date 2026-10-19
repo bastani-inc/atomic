@@ -65,9 +65,11 @@ import {
 	runInputHandlers,
 	runMessageEndHandlers,
 	runResourcesDiscoverHandlers,
+	runSessionRecoveryHandlers,
 	runToolCallHandlers,
 	runToolResultHandlers,
 	runUserBashHandlers,
+	type SessionRecoveryCombinedResult,
 } from "./runner-events.ts";
 import type {
 	ExtensionErrorListener,
@@ -119,6 +121,8 @@ import type {
 	ResolvedCommand,
 	ResourcesDiscoverEvent,
 	SessionBoundaryDraft,
+	SessionRecoveryReplayEvent,
+	SessionRecoveryRestoreEvent,
 	SessionShutdownEvent,
 	SubagentChildPolicy,
 	ToolCallEvent,
@@ -1096,6 +1100,15 @@ export class ExtensionRunner {
 			runResourcesDiscoverHandlers(this.extensions, this.createContext(), cwd, reason, (error) =>
 				this.emitError(error),
 			),
+		);
+	}
+
+	/** Collect recovery notices and replay decisions from every handler, in registration order. */
+	emitSessionRecovery(
+		event: SessionRecoveryRestoreEvent | SessionRecoveryReplayEvent,
+	): Promise<SessionRecoveryCombinedResult> {
+		return runResourceRegistrationBatch(this.runtime, () =>
+			runSessionRecoveryHandlers(this.extensions, this.createContext(), event, (error) => this.emitError(error)),
 		);
 	}
 

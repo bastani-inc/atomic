@@ -2,9 +2,15 @@ import { randomUUID } from "node:crypto";
 import type { Credential } from "@bastani/pi-ai";
 import type { Api, ImageContent, Model } from "@bastani/pi-ai/compat";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { PromptDisposition, QueuedInputDisposition, SessionStats } from "../../core/agent-session.js";
+import type {
+	PromptDisposition,
+	QueuedInputDisposition,
+	SessionRecoveryReport,
+	SessionStats,
+} from "../../core/agent-session.js";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
+import type { SessionRecoveryReason } from "../../core/extensions/index.js";
 import type {
 	WorkflowRunDetail,
 	WorkflowRunFilterStatus,
@@ -220,6 +226,10 @@ export abstract class RpcClientApi {
 	}
 	async abortBash(requestId?: string): Promise<void> {
 		await this.request({ type: "abort_bash", requestId });
+	}
+	/** Recover work an earlier process left unfinished; call once the transcript is shown. */
+	async startPendingRecovery(reason?: SessionRecoveryReason): Promise<SessionRecoveryReport> {
+		return this.data(await this.request({ type: "start_pending_recovery", reason }));
 	}
 	async getSessionStats(): Promise<SessionStats> {
 		return this.data(await this.request({ type: "get_session_stats" }));

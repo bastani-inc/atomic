@@ -283,6 +283,7 @@ export async function runSingleInProcess(
 		cwd,
 		testSession: testSession,
 		sessionManager: options.sessionManager,
+		...(options.resumeSession ? { resumeSession: true } : {}),
 		...(options.progressPath ? { progressPath: options.progressPath } : {}),
 		...(options.progressArtifactPath
 			? { progressArtifactPath: options.progressArtifactPath }

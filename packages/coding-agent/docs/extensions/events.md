@@ -17,7 +17,8 @@ Atomic starts
   ├─► session_start / resources_discover (trust-safe interactive bootstrap, when needed)
   ├─► project_trust (user/global and CLI extensions only, before project resources load)
   ├─► session_start { reason: "startup" } (extensions not already started)
-  └─► resources_discover { reason: "startup" }
+  ├─► resources_discover { reason: "startup" }
+  └─► after the transcript renders: session_recovery_restore / session_recovery_replay
       │
       ▼
 user sends prompt ─────────────────────────────────────────┐
@@ -60,7 +61,10 @@ user sends another prompt ◄─────────────────
   ├─► session_before_switch (can cancel)
   ├─► session_shutdown
   ├─► session_start { reason: "new" | "resume", previousSessionId? }
-  └─► resources_discover { reason: "startup" }
+  ├─► resources_discover { reason: "startup" }
+  └─► after the transcript renders (resume only):
+      ├─► session_recovery_restore
+      └─► session_recovery_replay (only when interrupted deliveries are pending)
 
 /fork or /clone
   ├─► session_before_fork (can cancel)
@@ -143,6 +147,29 @@ pi.on("session_start", async (event, ctx) => {
   // event.reason - "startup" | "reload" | "new" | "resume" | "fork"
   // event.previousSessionId - present for "new", "resume", and "fork"
   ctx.ui.notify(`Session: ${ctx.sessionManager.getSessionId()}`, "info");
+});
+```
+
+#### session_recovery_restore / session_recovery_replay
+
+Fired once per session when the host recovers work an earlier process left unfinished. The interactive host does this after the transcript is visible. SDK and RPC hosts do it when they call `session.startPendingRecovery()` or send `start_pending_recovery`. Startup binding never fires them.
+
+`session_recovery_restore` comes first. Restore background work here, such as child agents.
+
+`session_recovery_replay` follows, but only when delivery cards that were shown before the exit never reached the model. Return a `drop` decision for each card whose sender or target no longer exists; the card is closed and never offered again. Return `defer` when you cannot tell yet, for example because the peer's service is unreachable: the card stays pending without a turn, and the next recovery of the session offers it again. If handlers disagree, `drop` wins over `defer`. Cards with no decision are replayed in a visible turn.
+
+Notices from either event go into one message for the user and the agent. That message never starts a turn.
+
+```typescript
+pi.on("session_recovery_restore", async (event, ctx) => {
+  // event.reason - "startup" | "resume" | "workflow_stage_resume"
+  return { notices: ["Worker reviewer could not be restored and is gone."] };
+});
+
+pi.on("session_recovery_replay", async (event, ctx) => {
+  // event.pending - [{ entryId, customType, content, details, timestamp, stageAdmissionKey?, delivery }]
+  const stale = event.pending.filter((entry) => entry.customType === "my-extension:worker-note");
+  return { decisions: stale.map((entry) => ({ entryId: entry.entryId, action: "drop" })) };
 });
 ```
 

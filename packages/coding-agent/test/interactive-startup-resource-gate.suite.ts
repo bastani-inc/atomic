@@ -45,6 +45,7 @@ function configureDeferredGateMode(mode: InteractiveMode): void {
 			configurable: true,
 			value: {
 				reload: async () => {},
+				startPendingRecovery: async () => ({ replayed: 0, dropped: 0, completions: 0, notices: [] }),
 				subscribe: () => () => {},
 				resourceLoader: { getThemes: () => ({ themes: [] }) },
 				extensionRunner: {},

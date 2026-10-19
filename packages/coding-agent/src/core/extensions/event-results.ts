@@ -50,6 +50,30 @@ export interface BeforeAgentStartEventResult {
 	systemPrompt?: string;
 }
 
+export interface SessionRecoveryRestoreResult {
+	/** Shown to the user and the agent in one message that never starts a turn. */
+	notices?: string[];
+}
+
+export interface SessionRecoveryReplayDecision {
+	/** Entry id of the pending card, from `PendingRecoveryDelivery.entryId`. */
+	entryId: string;
+	/**
+	 * `replay` starts a visible turn, `drop` closes the card for good, and `defer` leaves it
+	 * pending without a turn so the next recovery decides about it again.
+	 */
+	action: "replay" | "drop" | "defer";
+}
+
+export interface SessionRecoveryReplayResult {
+	/**
+	 * A `drop` from any handler wins, then a `defer`. Pending cards without a decision are replayed.
+	 */
+	decisions?: SessionRecoveryReplayDecision[];
+	/** Shown to the user and the agent in one message that never starts a turn. */
+	notices?: string[];
+}
+
 export interface SessionBeforeSwitchResult {
 	cancel?: boolean;
 }

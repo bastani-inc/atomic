@@ -122,6 +122,20 @@ export class PendingSendRegistry {
     return true;
   }
 
+  /**
+   * Wait up to `timeoutMs` more for this attempt's outcome: the broker is holding it for a recipient that is
+   * coming back (#3760). A pre-attemptId acknowledgement may extend only an ID's first active generation.
+   */
+  extend(messageId: string, attemptId: string | undefined, timeoutMs: number): boolean {
+    const attempt = this.attempts.get(messageId);
+    if (!attempt || (attemptId === undefined ? !attempt.legacyEligible : attempt.attemptId !== attemptId)) return false;
+    if (attempt.timer) clearTimeout(attempt.timer);
+    attempt.timer = setTimeout(() => {
+      this.reject(attempt, new Error("Send timeout"));
+    }, timeoutMs);
+    return true;
+  }
+
   /** Resolve a pre-attemptId response only for an ID's first active generation. */
   resolveLegacy(messageId: string, result: SendResultLike): boolean {
     const attempt = this.attempts.get(messageId);

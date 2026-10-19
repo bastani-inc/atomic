@@ -44,6 +44,8 @@ export class IntercomBrokerFixture {
 
 	trackBroker(broker: ChildProcess): void {
 		this.broker = broker;
+		this.hasClosed = false;
+		this.processError = undefined;
 		// Attach at spawn, not teardown: close/error may precede readiness or afterAll.
 		broker.on("error", (error: Error) => {
 			this.processError = error;
