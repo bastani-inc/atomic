@@ -12,6 +12,7 @@ import {
 	SettingsManager,
 } from "../../packages/coding-agent/src/index.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import type { DurableCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { initializeDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { bindWorkflowHumanInput } from "../../packages/workflows/src/extension/workflow-human-input.js";
@@ -112,7 +113,7 @@ for await (const line of lines) {
 		} else if (command === "resume") {
 			assert.equal(store.runs().length, 0, "new process has no live run");
 			await backend.hydrateWorkflow?.(sql);
-			const checkpoints = backend.listCheckpoints(sql);
+			const checkpoints: readonly DurableCheckpoint[] = backend.listCheckpoints(sql);
 			assert.ok(checkpoints.length > 0, "new backend reads disk checkpoints");
 			assert.equal(backend.getWorkflow(sql)?.pendingPrompts, 1);
 			const checkpoint = checkpoints.find(

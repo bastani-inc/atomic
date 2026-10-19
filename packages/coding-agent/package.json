@@ -70,7 +70,7 @@
   "scripts": {
     "clean": "shx rm -rf dist",
     "dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput",
-    "typecheck": "tsc -p tsconfig.build.json --noEmit && tsc -p tsconfig.typetests.json",
+    "typecheck": "node ../../scripts/bun-typecheck.mjs -p tsconfig.build.json && node ../../scripts/bun-typecheck.mjs -p tsconfig.typetests.json",
     "build": "tsc -p tsconfig.build.json && node scripts/build-codemode-worker.mjs && shx chmod +x dist/cli.js dist/rpc-entry.js && bun run copy-assets",
     "bundle:dev": "bun build src/bun/cli.ts --target=bun --minify --external mupdf --define process.env.ATOMIC_BUNDLED_BUILD=\"'1'\" --outfile dist-dev/cli.js && bun build src/extensions/codemode/worker.ts --target=bun --format=esm --outfile dist-dev/codemode-worker.js && shx cp ../../node_modules/quickjs-wasi/quickjs.wasm dist-dev/",
     "start:fast": "bun run bundle:dev && bun dist-dev/cli.js",

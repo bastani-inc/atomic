@@ -62,8 +62,8 @@
     "test:unit": "npm --prefix ../.. run test:unit --",
     "test:integration": "npm --prefix ../.. run test:integration --",
     "test:all": "npm --prefix ../.. run test:all --",
-    "typecheck": "tsc --noEmit -p ../../tsconfig.json",
-    "lint": "tsc --noEmit -p ../../tsconfig.json"
+    "typecheck": "node ../../scripts/bun-typecheck.mjs -p ../../tsconfig.json",
+    "lint": "node ../../scripts/bun-typecheck.mjs -p ../../tsconfig.json"
   },
   "pi": {
     "extensions": [
