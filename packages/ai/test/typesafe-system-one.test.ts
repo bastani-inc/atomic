@@ -1,7 +1,36 @@
 import assert from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
 import { classify } from "../src/api/typesafe-system-one.ts";
-import type { ClassifierContext, ClassifierModel } from "../src/types.ts";
+import { builtinModels, getBuiltinClassifierModels } from "../src/providers/all.js";
+import type { ClassifierContext, ClassifierModel, ImageContent } from "../src/types.js";
+
+const DANGER_ZONE_HEADERS = ["typesafe-danger-zone-long-context", "typesafe-danger-zone-images"];
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const png: ImageContent = { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" };
+const jpeg: ImageContent = { type: "image", data: "data:image/jpeg;base64,/9j/4AAQSkZJRg==", mimeType: "image/jpeg" };
+
+interface CapturedRequest {
+	url: string;
+	headers: Record<string, string>;
+	body: {
+		model: string;
+		state: Record<string, string | string[]>;
+		assets?: Record<string, { type: string; format: string; data_base64: string }>;
+	};
+}
+
+function capturingFetch(answers: object) {
+	const requests: CapturedRequest[] = [];
+	const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+		requests.push({
+			url: String(input),
+			headers: Object.fromEntries(new Headers(init?.headers)),
+			body: JSON.parse(String(init?.body)) as CapturedRequest["body"],
+		});
+		return Response.json({ answers });
+	});
+	return { fetch, requests };
+}
 
 const model: ClassifierModel<"typesafe-system-one"> = {
 	type: "classifier",
@@ -105,18 +134,111 @@ describe("TypeSafe System One", () => {
 		expect(result.errorMessage).toContain("Unsupported classifier API: cloudflare-workers-ai-system-one");
 	});
 
-	it("rejects image input before sending", async () => {
-		const fetch = vi.fn(async () => Response.json({ answers: wireAnswers }));
-		const result = await classify(
-			{ ...model, input: ["text", "image"] },
-			{ ...context, images: [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }] },
+	it("lists jev-latest and jev-1.14.0 with long context and image input", () => {
+		const jev = getBuiltinClassifierModels("typesafe");
+		assert.deepEqual(
+			jev.map((entry) => entry.id),
+			["jev-1.14.0", "jev-latest"],
+		);
+		for (const entry of jev) {
+			assert.equal(entry.api, "typesafe-system-one");
+			assert.equal(entry.contextWindow, 262000);
+			assert.deepEqual(entry.input, ["text", "image"]);
+		}
+	});
+
+	it.each(["jev-latest", "jev-1.14.0"])(
+		"sends both Danger-Zone headers on every direct %s request, with and without images",
+		async (id) => {
+			const models = builtinModels();
+			const jev = models.getModelOfType("classifier", "typesafe", id);
+			assert(jev);
+			const { fetch, requests } = capturingFetch(wireAnswers);
+
+			const textOnly = await models.classify(jev, context, { apiKey: "secret", fetch });
+			const withImage = await models.classify(jev, { ...context, images: [png] }, { apiKey: "secret", fetch });
+
+			assert.equal(textOnly.stopReason, "stop", textOnly.errorMessage);
+			assert.equal(withImage.stopReason, "stop", withImage.errorMessage);
+			assert.equal(requests.length, 2);
+			for (const request of requests) {
+				assert.equal(request.url, "https://api.typesafe.ai/v1/systemone");
+				assert.equal(request.body.model, id);
+				for (const header of DANGER_ZONE_HEADERS) assert.equal(request.headers[header], "true");
+			}
+			assert.equal(requests[0]?.body.assets, undefined);
+		},
+	);
+
+	it("sends images as base64 assets under fresh UUID references listed in state.images", async () => {
+		const jev = getBuiltinClassifierModels("typesafe").find((entry) => entry.id === "jev-1.14.0");
+		assert(jev);
+		const { fetch, requests } = capturingFetch(wireAnswers);
+
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const result = await classify(jev, { ...context, images: [png, jpeg] }, { apiKey: "secret", fetch });
+			assert.equal(result.stopReason, "stop", result.errorMessage);
+		}
+
+		const references = requests.map((request) => Object.keys(request.body.assets ?? {}));
+		for (const [index, request] of requests.entries()) {
+			const keys = references[index] ?? [];
+			assert.equal(keys.length, 2);
+			for (const key of keys) assert.match(key, UUID);
+			assert.deepEqual(request.body.state, { ...context.state, images: keys });
+			assert.deepEqual(Object.values(request.body.assets ?? {}), [
+				{ type: "image", format: "png", data_base64: "iVBORw0KGgo=" },
+				{ type: "image", format: "jpg", data_base64: "/9j/4AAQSkZJRg==" },
+			]);
+		}
+		assert.equal(new Set(references.flat()).size, 4);
+	});
+
+	it("rejects image formats TypeSafe cannot read, and a state field that would hide the image references", async () => {
+		const jev = getBuiltinClassifierModels("typesafe")[0];
+		assert(jev);
+		const { fetch } = capturingFetch(wireAnswers);
+
+		const webp = await classify(
+			jev,
+			{ ...context, images: [{ type: "image", data: "UklGRg==", mimeType: "image/webp" }] },
+			{ apiKey: "secret", fetch },
+		);
+		const collision = await classify(
+			jev,
+			{ ...context, state: { images: "user data" }, images: [png] },
 			{ apiKey: "secret", fetch },
 		);
 
 		assert.equal(fetch.mock.calls.length, 0);
-		assert.equal(result.stopReason, "error");
-		assert.equal(result.errorMessage, "System One API does not support image input");
+		assert.equal(webp.stopReason, "error");
+		assert.equal(webp.errorMessage, "System One API accepts only PNG or JPEG images, got image/webp");
+		assert.equal(collision.stopReason, "error");
+		assert.match(collision.errorMessage ?? "", /rename that state field to send images/u);
 	});
+
+	it.each(["openrouter", "vercel-ai-gateway", "opencode"] as const)(
+		"keeps rejecting images on %s System One models and sends them no Danger-Zone headers",
+		async (provider) => {
+			const models = builtinModels();
+			const gateway = getBuiltinClassifierModels(provider).find((entry) => entry.api === "typesafe-system-one");
+			assert(gateway, `missing ${provider} System One classifier`);
+			const { fetch, requests } = capturingFetch(wireAnswers);
+
+			const textOnly = await models.classify(gateway, context, { apiKey: "secret", fetch });
+			const withImage = await classify(
+				{ ...gateway, input: ["text", "image"] },
+				{ ...context, images: [png] },
+				{ apiKey: "secret", fetch },
+			);
+
+			assert.equal(textOnly.stopReason, "stop", textOnly.errorMessage);
+			assert.equal(requests.length, 1);
+			for (const header of DANGER_ZONE_HEADERS) assert.equal(requests[0]?.headers[header], undefined);
+			assert.equal(withImage.stopReason, "error");
+			assert.equal(withImage.errorMessage, "System One API does not support image input");
+		},
+	);
 
 	it("merges headers case-insensitively and supports null suppression", async () => {
 		const requests: Array<Record<string, string>> = [];

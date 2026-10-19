@@ -46,7 +46,7 @@ While the agent works, `∀` pulses beside a working message. Retry, fallback, c
 
 See [Keybindings](/keybindings) for all shortcuts and customization.
 
-On native Windows, `!` and `!!` execute PowerShell (preferring `pwsh.exe`, then `powershell.exe` on `PATH`). Linux, macOS, and WSL use Bash. Extension-provided execution operations still take precedence. `shellCommandPrefix` is still prepended, so use syntax matching the selected shell; `shellPath` configures Bash, not Windows interactive PowerShell. Escape or Ctrl+C cancels a running command. `!!` output remains excluded from model context.
+On native Windows, `!` and `!!` execute PowerShell (preferring PowerShell 7 `pwsh.exe`, then Windows PowerShell `powershell.exe`; see [Windows](/windows) for the locations checked). Linux, macOS, and WSL use Bash. Extension-provided execution operations still take precedence. `shellCommandPrefix` is still prepended, so use syntax matching the selected shell; `shellPath` configures Bash, not Windows interactive PowerShell. Escape or Ctrl+C cancels a running command. `!!` output remains excluded from model context.
 
 On Windows, ALT+Z lends the terminal to an interactive PowerShell subshell. Type `exit` to return to the same Atomic session; owned background tasks keep running. CTRL+Z remains editor undo. On POSIX systems, CTRL+Z suspends Atomic and `fg` resumes it.
 

@@ -37,10 +37,20 @@ Package-manager installation remains available but requires Node.js; see the [Qu
 Atomic uses a Bash shell for the `bash` tool. For that tool, Atomic checks these locations in order:
 
 1. Custom path from `~/.atomic/agent/settings.json` (legacy `~/.pi/agent/settings.json` also supported)
-2. Git Bash (`C:\Program Files\Git\bin\bash.exe`)
-3. `bash.exe` on PATH (Cygwin, MSYS2, WSL)
+2. Git Bash at `%ProgramFiles%\Git\bin\bash.exe`
+3. Git Bash at `%ProgramFiles(x86)%\Git\bin\bash.exe`
+4. `bash.exe` on PATH (Cygwin, MSYS2, WSL)
 
-For the Bash tool, [Git for Windows](https://git-scm.com/download/win) is sufficient. Native Windows `!`/`!!` shortcuts instead use PowerShell, preferring `pwsh.exe` and falling back to `powershell.exe` on `PATH`. They do not use `shellPath`; any `shellCommandPrefix` must use PowerShell syntax. WSL remains Bash-based.
+Windows Store app aliases, such as those in `%LOCALAPPDATA%\Microsoft\WindowsApps`, are accepted wherever Atomic looks for a shell. When Atomic uses the legacy WSL `bash.exe` launcher from `%SystemRoot%\System32`, it sends commands over stdin to avoid command-line quoting problems.
+
+For the Bash tool, [Git for Windows](https://git-scm.com/download/win) is sufficient. Native Windows `!`/`!!` shortcuts instead use PowerShell. They do not use `shellPath`; any `shellCommandPrefix` must use PowerShell syntax. WSL remains Bash-based.
+
+PowerShell discovery checks these locations in order:
+
+1. `pwsh.exe` on `PATH`
+2. `%ProgramFiles%\PowerShell\7\pwsh.exe`
+3. `powershell.exe` on `PATH`
+4. `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`
 
 ## Custom Shell Path
 
@@ -70,7 +80,7 @@ If Atomic cannot safely self-update the current installation, it exits with a cl
 
 ### PowerShell tool
 
-On native Windows, Atomic registers the `powershell` tool by default when PowerShell 7 (`pwsh.exe`) or Windows PowerShell (`powershell.exe`) is on `PATH`. If neither executable is available, the tool is omitted so the agent is not offered a command that cannot run. Add `powershell` to `defaultTools` to enable it explicitly when you want it active alongside a narrower built-in selection. The `bash` tool continues to use Bash; `!`/`!!` use PowerShell. Both `ATOMIC_*` and legacy `PI_*` session variables are available.
+On native Windows, Atomic registers the `powershell` tool by default when PowerShell 7 (`pwsh.exe`) or Windows PowerShell (`powershell.exe`) is found in one of the PowerShell discovery locations above. If neither executable is available, the tool is omitted so the agent is not offered a command that cannot run. Add `powershell` to `defaultTools` to enable it explicitly when you want it active alongside a narrower built-in selection. The `bash` tool continues to use Bash; `!`/`!!` use PowerShell. Both `ATOMIC_*` and legacy `PI_*` session variables are available.
 
 PowerShell calls are rendered in the transcript with a `PS>` prompt so they are never mistaken for Bash, and truncated PowerShell output is spilled to its own `atomic-powershell-*` temp file rather than the Bash one.
 

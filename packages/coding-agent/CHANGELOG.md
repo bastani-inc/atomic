@@ -9,11 +9,14 @@
 ### Added
 
 - Added `AgentSession.startPendingRecovery()`, the RPC `start_pending_recovery` command, and the `session_recovery_restore` and `session_recovery_replay` extension events. Extensions can now restore background work after a restart, decline to replay deliveries whose peer is gone, and defer deliveries they cannot decide on yet to the next resume without starting a turn ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
+- Added the `typesafe/jev-1.14.0` classifier. Both direct TypeSafe classifiers, `typesafe/jev-latest` and `typesafe/jev-1.14.0`, now accept up to 262K tokens and PNG or JPEG images, for example through `models.classify()` in codemode. See [TypeSafe Jev](docs/providers.md#typesafe-jev).
 
 ### Fixed
 
 - Resuming a session with `atomic --session <id>` or `/resume` now shows the transcript before any recovery work runs, instead of leaving the screen blank while hidden agent turns replay messages from before the restart. Recovery runs afterwards and is visible in the transcript. A "Replaying N interrupted deliveries" line precedes any replayed turn, and a status line summarizes the result ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
 - Resuming no longer starts agent turns on its own for stale queued messages or background task results. Results that an earlier process never delivered appear as cards without starting a turn. Messages from peers that no longer exist are not replayed; one notice tells you and the agent which peers are gone. Messages from a background subagent that was relaunched but has not reconnected yet are deferred instead, and the notice says it is not gone ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
+- Fixed Windows rejecting Bash and PowerShell executables installed as Windows Store app aliases, such as those in `%LOCALAPPDATA%\Microsoft\WindowsApps`, as missing. Shell discovery and a configured `shellPath` now accept them ([upstream commit](https://github.com/earendil-works/pi/commit/28bea006be4adb950dcb4f86f9ee5be857bf74ff)).
+- Fixed Windows PowerShell discovery when PowerShell is not on `PATH`: Atomic now also checks `%ProgramFiles%\PowerShell\7\pwsh.exe` and `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`. The legacy WSL `bash.exe` launcher is now recognized under the actual Windows directory, including installs on another drive or a renamed Windows directory ([#9490](https://github.com/earendil-works/pi/issues/9490)).
 - JSONL sessions no longer stall when many sessions share a directory. Each append now rereads only its own session header instead of every session header in the directory ([#3780](https://github.com/bastani-inc/atomic/pull/3780) by [@darionco](https://github.com/darionco)).
 
 ## [0.9.39] - 2026-10-19

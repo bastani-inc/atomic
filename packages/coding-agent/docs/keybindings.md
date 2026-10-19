@@ -278,7 +278,7 @@ Create `~/.atomic/agent/keybindings.json`:
 
 Each action can have a single key or an array of keys. User config overrides defaults.
 
-On native Windows, `app.suspend` opens an interactive PowerShell subshell with `alt+z`, leaving `ctrl+z` available for editor undo. Type `exit` to return to the same Atomic session. Atomic and its owned background tasks continue running; this is not process suspension. Ctrl+C in the subshell does not clear or exit Atomic. PowerShell 7 (`pwsh.exe`) is preferred, with Windows PowerShell (`powershell.exe`) as fallback on `PATH`. In WSL, the normal Linux `ctrl+z`/`fg` behavior still applies.
+On native Windows, `app.suspend` opens an interactive PowerShell subshell with `alt+z`, leaving `ctrl+z` available for editor undo. Type `exit` to return to the same Atomic session. Atomic and its owned background tasks continue running; this is not process suspension. Ctrl+C in the subshell does not clear or exit Atomic. PowerShell 7 (`pwsh.exe`) is preferred, with Windows PowerShell (`powershell.exe`) as fallback; see [Windows](/windows) for the locations checked. In WSL, the normal Linux `ctrl+z`/`fg` behavior still applies.
 
 ### Emacs Example
 

@@ -115,19 +115,22 @@ describe("Models with classifier models", () => {
 	});
 
 	it("exposes Jev only through classifier catalog accessors", () => {
-		const jev = getBuiltinClassifierModel("typesafe", "jev-latest");
-		expect(jev).toMatchObject({
-			type: "classifier",
-			api: "typesafe-system-one",
-			provider: "typesafe",
-			contextWindow: 64000,
-		});
-		expect(getBuiltinClassifierModels("typesafe")).toEqual([jev]);
-		expect(getAllBuiltinModels("typesafe")).toEqual([jev]);
-
 		const models = builtinModels();
-		expect(models.getModel("typesafe", "jev-latest")).toBeUndefined();
-		expect(models.getModelOfType("classifier", "typesafe", "jev-latest")).toEqual(jev);
+		const ids = ["jev-1.14.0", "jev-latest"] as const;
+		const jev = ids.map((id) => getBuiltinClassifierModel("typesafe", id));
+		for (const [index, id] of ids.entries()) {
+			const model = jev[index];
+			assert(model, `missing typesafe/${id}`);
+			assert.equal(model.type, "classifier");
+			assert.equal(model.id, id);
+			assert.equal(model.api, "typesafe-system-one");
+			assert.equal(model.provider, "typesafe");
+			assert.equal(model.contextWindow, 262000);
+			assert.equal(models.getModel("typesafe", id), undefined);
+			assert.deepEqual(models.getModelOfType("classifier", "typesafe", id), model);
+		}
+		assert.deepEqual(getBuiltinClassifierModels("typesafe"), jev);
+		assert.deepEqual(getAllBuiltinModels("typesafe"), jev);
 	});
 
 	it("rejects images for classifier models without image input before calling the provider", async () => {

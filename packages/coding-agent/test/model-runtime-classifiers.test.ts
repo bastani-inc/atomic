@@ -32,12 +32,17 @@ describe("ModelRuntime classifiers", () => {
 		assert.match(unconfigured.errorMessage ?? "", /not configured/);
 
 		await runtime.setRuntimeApiKey("typesafe", "sk-typesafe", {});
-		assert.deepEqual(await runtime.getAvailableOfType("classifier", "typesafe"), [jev]);
+		const jev14 = runtime.getModelOfType("classifier", "typesafe", "jev-1.14.0")!;
+		assert.deepEqual(await runtime.getAvailableOfType("classifier", "typesafe"), [jev14, jev]);
 		const fetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
-			assert.equal(new Headers(init?.headers).get("authorization"), "Bearer sk-typesafe");
+			const headers = new Headers(init?.headers);
+			assert.equal(headers.get("authorization"), "Bearer sk-typesafe");
+			assert.equal(headers.get("TypeSafe-Danger-Zone-Long-Context"), "true");
+			assert.equal(headers.get("TypeSafe-Danger-Zone-Images"), "true");
 			return Response.json({ answers: { approved: { type: "noul", noul: 0.8 } } });
 		});
 		const result = await runtime.classify(jev, context, { fetch });
 		assert.deepEqual(result.answers.approved, { type: "bool", probability: 0.8 });
+		assert.equal(fetch.mock.calls.length, 1);
 	});
 });
