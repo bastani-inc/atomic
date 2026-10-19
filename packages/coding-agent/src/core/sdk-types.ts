@@ -28,8 +28,9 @@ export interface CreateAgentSessionOptions {
 	agentDir?: string;
 	/**
 	 * Workflow journal for this session's `workflow` tool: a file path, a caller-owned database, process-local
-	 * memory, a storage adapter, or a supplied journal. Overrides the session's `workflows.journal` settings,
-	 * `ATOMIC_WORKFLOW_JOURNAL_PATH`, and the default journal file. The caller closes a database or journal it supplies.
+	 * memory, a storage adapter, or a supplied journal. Overrides process-level selections (`ATOMIC_WORKFLOWS_JOURNAL`,
+	 * `ATOMIC_WORKFLOW_JOURNAL_PATH`, `ATOMIC_STORAGE`), the session's `workflows.journal` settings, and the default
+	 * journal file. The caller closes a database or journal it supplies.
 	 */
 	journal?: RunJournalOption;
 

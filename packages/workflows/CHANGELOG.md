@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- The workflow journal can be selected for one process with `ATOMIC_WORKFLOWS_JOURNAL`, `ATOMIC_STORAGE`, or Atomic's `--storage` and `--storage-file` flags, using the same JSON as the `workflows.journal` and `storage` settings. Setting `ATOMIC_WORKFLOWS_JOURNAL` together with `ATOMIC_WORKFLOW_JOURNAL_PATH` is rejected as a conflict ([#3783](https://github.com/bastani-inc/atomic/issues/3783)).
+
 ### Changed
 
 - Updated the bundled Impeccable skill to 4.7.0 with engine 0.1.16. Critique and audit can scan a running Electron, NW.js, CEF, or WebView2 app window through its debugging port (`impeccable detect --cdp 9222`), and critique runs its design review on iOS, Android, and adaptive projects instead of reporting an empty web scan as clean. New `straggler` and `unbalanced-heading` typography checks flag a paragraph ending on one word and a heading whose last line is a stub, and the detector raises fewer false alarms on hidden, screen-reader-only, and layered content. Decision and review pages follow the OS dark mode, `context` offers only workspaces that render a UI as targets, and the Claude Code design hook can be installed in your user settings instead of the project's. Live Mode now starts on LAN and Tailscale addresses over plain HTTP, copying works there when the clipboard API is unavailable, and an interrupted engine download cleans up after itself. Atomic's launcher still turns off the engine's choice reports and update check by default.
