@@ -442,11 +442,21 @@ export class JsonlSessionStore implements SessionStore {
 		| undefined
 	> {
 		validateSessionText("sessionId", sessionId);
-		for (const path of await this.paths()) {
+		const known = await this.locateKnown(sessionId);
+		if (known) return known;
+		const suffix = `_${this.key(sessionId)}.jsonl`;
+		const paths = await this.paths();
+		const named = paths.filter((path) => basename(path).endsWith(suffix));
+		const others = paths.filter((path) => !named.includes(path));
+		return (await this.scan(sessionId, named)) ?? (await this.scan(sessionId, others));
+	}
+
+	private async scan(sessionId: string, paths: readonly string[]) {
+		for (const path of paths) {
 			const cached = this.fileStates.get(path);
 			let stored: StoredSessionHeader;
 			try {
-				stored = await this.readFirstLine(path);
+				stored = await this.readFirstLine(path, SCAN_FIRST_LINE_CHUNK_BYTES);
 			} catch (cause) {
 				// Preserve requested-file errors only while its cached inode still owns the path.
 				if (cached?.headerId === sessionId) {
@@ -467,6 +477,29 @@ export class JsonlSessionStore implements SessionStore {
 			// Keep same-ID baselines only as conflict evidence: forWrite checks the current inode
 			// and rejects structural changes until an explicit load establishes a new baseline.
 			return { path, header, stored, stats, state };
+		}
+		return undefined;
+	}
+
+	private async locateKnown(sessionId: string) {
+		for (const [path, cached] of this.fileStates) {
+			if (cached.headerId !== sessionId) continue;
+			const parent = dirname(path);
+			if (parent !== this.directory && (this.exactDirectory || dirname(parent) !== this.directory)) return undefined;
+			let stored: StoredSessionHeader;
+			try {
+				stored = await this.readFirstLine(path);
+			} catch (cause) {
+				if ((cause as NodeJS.ErrnoException).code === "ENOENT") this.fileStates.delete(path);
+				return undefined;
+			}
+			if (stored.id !== sessionId) {
+				this.fileStates.delete(path);
+				return undefined;
+			}
+			const header = await this.readHeaderAt(path, stored);
+			const stats = await stat(path, { bigint: true });
+			return { path, header, stored, stats, state: this.fileStates.get(path) };
 		}
 		return undefined;
 	}

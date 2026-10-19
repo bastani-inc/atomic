@@ -85,7 +85,10 @@
     }
 
     function id8() {
-      if (crypto?.randomUUID) return crypto.randomUUID().replace(/-/g, '').slice(0, 8);
+      // randomUUID is secure-context only (issue #1055); getRandomValues is not.
+      try {
+        if (typeof crypto?.randomUUID === 'function') return crypto.randomUUID().replace(/-/g, '').slice(0, 8);
+      } catch { /* fall through */ }
       // Insecure-context fallback (plain-http LAN preview): still draw from the
       // CSPRNG. Math.random here was flagged by CodeQL (js/insecure-randomness)
       // because these ids name live-edit sessions.
@@ -200,6 +203,35 @@
       return el;
     }
 
+    // Copy text through a selected textarea and execCommand, for origins where
+    // navigator.clipboard is missing or refused (plain HTTP, issue #1055).
+    // The textarea mounts like any page-level chrome, so while a modal
+    // <dialog> is open it sits in that dialog's top-layer host: on <body> it
+    // would be inert, and inert text cannot be selected or copied.
+    function copyTextViaSelection(text) {
+      let ta = null;
+      const previous = activeElementDeep();
+      try {
+        ta = doc.createElement('textarea');
+        ta.id = prefix + '-clipboard';
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.setAttribute('aria-hidden', 'true');
+        ta.tabIndex = -1;
+        ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;pointer-events:none;';
+        uiAppendToPage(ta);
+        ta.select();
+        return doc.execCommand('copy');
+      } catch {
+        return false;
+      } finally {
+        ta?.remove();
+        if (previous && previous !== activeElementDeep() && typeof previous.focus === 'function') {
+          try { previous.focus({ preventScroll: true }); } catch { /* best effort */ }
+        }
+      }
+    }
+
     function uiAppend(el) {
       const uiRoot = liveUiRoot();
       if (uiRoot === doc.body) return uiAppendToPage(el);
@@ -267,6 +299,7 @@
       liveUiRoot,
       uiAppend,
       uiAppendToPage,
+      copyTextViaSelection,
       topLayerHost,
       watchModalDialogs,
       cloneWithoutChrome,

@@ -130,6 +130,12 @@ if [ -n "$version" ] && [ "$os" != unknown ] && [ "$arch" != unknown ]; then
   [ "$os" = windows ] && asset="$asset.exe"
   url="$base/engine-v$version/$asset"
   tmp="$cache_root/bin/$version/.impeccable.part.$$"
+  # An interrupted download (Ctrl-C, a hook timeout) would otherwise leave the
+  # PID-named staging file behind for good. The handlers must exit explicitly.
+  cleanup() { rm -f "$tmp" "$tmp.sha256" 2>/dev/null || :; }
+  trap 'cleanup; exit 129' HUP
+  trap 'cleanup; exit 130' INT
+  trap 'cleanup; exit 143' TERM
   if ! mkdir -p "$cache_root/bin/$version" 2>/dev/null; then
     echo "impeccable: engine $version is not installed; cannot create cache directory: $cache_root/bin/$version" >&2
     setup_help
