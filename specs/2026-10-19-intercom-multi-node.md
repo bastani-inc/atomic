@@ -111,10 +111,17 @@ that infrastructure. Intercom is the second kind (§11).
 - **Claims make delivery exclusive.** The hosting broker claims a recipient's rows, writes their frames, and marks
   each row delivered only when the recipient sends #3761's `received`. Claim leases have random tokens and expire, so
   a crashed claimant's rows are redelivered. The recipient deduplicates by message id (#3761 `intercom_inbox`).
-- **Storage selection.** The stores are opened on the `SqliteDatabase` of the selected shared `storage` adapter,
-  with tables named `<validated prefix>intercom_<name>`, and use the database clock for every age. With the default
-  local file, every broker sits on one host and the outbox is never used for local recipients. Without a shared
-  adapter (memory or JSONL sessions), multi-node is unavailable and Intercom behaves exactly as today.
+- **Storage selection.** Intercom state follows the top-level shared `storage` setting only, with its usual rule
+  that a project selection replaces the global one as a whole. Domain-only selections do not move Intercom state:
+  `sessions.storage`, `--session-dir`, `--session-store`, `ATOMIC_CODING_AGENT_SESSION_DIR`, `workflows.journal` and
+  `ATOMIC_WORKFLOW_JOURNAL_PATH` leave it where the shared `storage` setting puts it. The stores are opened on the
+  `SqliteDatabase` of that selection (an adapter's `openDatabase`, or a `path` selection's file), with tables named
+  `<validated prefix>intercom_<name>`, and use the database clock for every age. A local file serves one host, so
+  every broker that opens it sits on that host and the outbox is never used for local recipients. Multi-node is
+  unavailable, and Intercom behaves exactly as today with its state in broker memory, when no top-level `storage` is
+  set, when it selects `memory`, or when it selects a domain-only adapter that implements `openSessionStore` or
+  `openRunJournal` but not `openDatabase`, because there is no `SqliteDatabase` to open. This is not an error and does
+  not change single-node behaviour. The choice is recorded for confirmation as open decision 7 (§10).
 
 ## 5. Data model
 
@@ -240,6 +247,8 @@ The outbox's own unique `message_id` is the authority for rows already enqueued.
   `unavailable` when the bus is down or closed.
 - `subscribe(brokerId, listener)` first emits `{ kind: "resync", cause: "subscribed" }`, and emits a `reconnected`
   resync after every transport reconnect.
+- `close()` closes the connection and every subscription on it; it is idempotent. After `close`, `publish` and
+  `subscribe` both return `unavailable`, and no subscription on that connection receives another event.
 - Hints may be delayed, coalesced, duplicated or lost. A hint carries no message data.
 
 ## 6. Round trip
@@ -369,7 +378,16 @@ versions. No new listening endpoint is added.
    - re-acquiring by the current holder keeps its token;
    - lease lists come in first-acquisition order;
    - a duplicate enqueue from another origin broker is still a `duplicate`;
-   - `prune` takes a caller-supplied age.
+   - `prune` takes a caller-supplied age;
+   - a same-id enqueue addressed to another target is a `duplicate` (same digest) or `conflict` (other digest), never
+     a second row, because the message id is unique across the outbox;
+   - the wake-up bus does not promise detached event objects; listeners must not mutate events.
+7. **Which storage selection Intercom follows (DECIDED for S0, open for user confirmation).** §4 picks the
+   top-level shared `storage` setting alone, the narrowest reading of "Intercom state uses the existing shared
+   `storage` adapter selection". Alternatives:
+   - (a) follow the session selection's precedence, because #3761's inbox entries live in the session store;
+   - (b) add an Intercom-specific selection.
+   Either changes only S5's `open-broker-state.ts` and its configuration reading; no seam changes.
 
 ## 11. Future options (documented, not built)
 
@@ -402,7 +420,7 @@ S0 files. An interface change goes through review as an S0 amendment.
 | **S2 outbox + claims** | `packages/intercom/broker/sql-outbox-store.ts`; `test/unit/intercom-multinode-sql-outbox-store.test.ts` | `OutboxStore`; table `<prefix>intercom_outbox`; exclusive claims in one transaction | `registerOutboxStoreConformance` passes on the same two fixtures, plus `registerCrossNodeRoundTripConformance` with S2's outbox, the memory pending-ask store and the memory bus |
 | **S3 held sends, pending asks, duplicate-send record** | `packages/intercom/broker/sql-held-send-store.ts`; `packages/intercom/broker/sql-pending-ask-store.ts`; `packages/intercom/broker/sql-sent-message-authority.ts`; `test/unit/intercom-multinode-sql-s3-stores.test.ts` | `HeldSendStore`, `PendingAskStore`, `SentMessageAuthority`; tables `<prefix>intercom_held_sends`, `_pending_asks`, `_sent_messages` | `registerHeldSendStoreConformance`, `registerPendingAskStoreConformance` and `registerSentMessageAuthorityConformance` pass on both fixtures |
 | **S4 wake-up bus** | `packages/intercom/broker/database-wake-up-bus.ts`; `test/unit/intercom-multinode-database-wake-up-bus.test.ts` | `WakeUpBus` as a database-polled hint log (`<prefix>intercom_wakeups`, default poll 500 ms, hints pruned after delivery), needing only the storage adapter | `registerWakeUpBusConformance` passes on two connections to one temp SQLite file; `interrupt` closes and reopens the poller's connection |
-| **S5 broker integration (cross-node parity in the send/ack path)** | modified: `packages/intercom/broker/broker.ts`, `packages/intercom/broker/send-handler.ts`, `packages/intercom/broker/spawn.ts`, `packages/intercom/config.ts`; new: `packages/intercom/broker/multinode-router.ts`, `packages/intercom/broker/open-broker-state.ts` (composes S1–S4 into `IntercomBrokerStateStore` from the selected storage adapter), `test/unit/intercom-multinode-broker-routing.test.ts` | Uses `IntercomBrokerStateStore` + `WakeUpBus`: presence acquire/renew/release on register/presence/leave; remote resolution; enqueue + hint; claim on hint, resync, presence acquire and backup poll; `markDelivered` on `received`; outcome reporting; shared ask and duplicate records | Unit: local-only behaviour unchanged (existing intercom suites green); a remote send writes the identical frame and reports `delivered` only after `received`; ask/reply reverse route; supervisor channel; group-isolation refusal; offline behaviour per decision 1; S6's cross-node scenarios green |
+| **S5 broker integration (cross-node parity in the send/ack path)** | modified: `packages/intercom/broker/broker.ts`, `packages/intercom/broker/send-handler.ts`, `packages/intercom/broker/spawn.ts`, `packages/intercom/config.ts`; new: `packages/intercom/broker/multinode-router.ts`, `packages/intercom/broker/open-broker-state.ts` (composes S1–S4 into `IntercomBrokerStateStore` from the top-level shared `storage` selection, §4), `test/unit/intercom-multinode-broker-routing.test.ts` | Uses `IntercomBrokerStateStore` + `WakeUpBus`: presence acquire/renew/release on register/presence/leave; remote resolution; enqueue + hint; claim on hint, resync, presence acquire and backup poll; `markDelivered` on `received`; outcome reporting; shared ask and duplicate records | Unit: local-only behaviour unchanged (existing intercom suites green); a remote send writes the identical frame and reports `delivered` only after `received`; ask/reply reverse route; supervisor channel; group-isolation refusal; offline behaviour per decision 1; no top-level `storage`, `memory`, or a domain-only adapter leaves single-node behaviour unchanged; S6's cross-node scenarios green |
 | **S6 two-broker E2E harness** | `test/helpers/intercom-two-broker-harness.ts`; `test/integration/intercom-multinode-two-broker.test.ts` | Starts two real broker processes with separate socket directories and one shared SQLite storage file (one adapter selection), and attaches real Intercom clients to each | Harness self-test now: both brokers start, each serves only its own clients, both open the shared file. Cross-node scenarios (send, ask/reply, supervisor send, broker kill and redelivery, lost-wake-up recovery via backup poll) are written in S6 and must pass as S5's acceptance |
 | **S7 user docs + changelog** | modified: `packages/coding-agent/docs/intercom.md`, `packages/coding-agent/docs/storage.md` ("Sharing storage across hosts"), `packages/intercom/CHANGELOG.md`, `packages/coding-agent/CHANGELOG.md` | — | Docs describe enabling multi-node through the shared storage adapter, latency, offline behaviour, and that message bodies are stored in the shared database; docs tests (`npm run test:unit`) green |
 
@@ -413,55 +431,175 @@ The S0 files are frozen: `specs/2026-10-19-intercom-multi-node.md`,
 
 ## 13. S0 verification
 
-The contract suite registers 36 cases:
+The contract suite registers 39 cases:
 
-- leases: 7;
-- outbox: 11;
+- leases: 8;
+- outbox: 13;
 - held sends: 2;
 - pending asks: 3;
 - sent messages: 3;
 - wake-up bus: 6;
 - cross-node round trip: 4.
 
-The command `npx vitest --run --project unit test/unit/intercom-multinode-state-contract.test.ts` passes 36/36
+The command `npx vitest --run --project unit test/unit/intercom-multinode-state-contract.test.ts` passes 39/39
 against the memory reference.
 
 Every ordering case inserts message ids whose lexical order differs from their insertion order (for example `z-9`,
-`a-1`, `m-5`), so a store that sorts by message id instead of insertion order fails. This covers outbox claim and
-`listUndelivered`, the cross-node round trip, held-send `list` and `take`, and pending-ask `takeForTarget`.
-Production message ids are random UUIDs, so lexically increasing fixtures would not catch that fault.
+`a-1`, `m-5`), so a store that sorts by message id instead of insertion order fails. Production message ids are
+random UUIDs.
 
-**Mutation check.** Each mutant is a single text substitution applied to a scratch copy of the memory reference
-outside the checkout. The suite runs against it under `bun test` with the same registrations, one mutant at a time.
-No scratch files are committed. Each mutant was run against the suite as first committed (35 cases) and against
-the current suite (36 cases).
+The two renewal cases measure ages without tight absolute windows, so machine load cannot fail a correct store:
 
-These five mutants survived the first suite. Review found them, and the current suite kills each one:
+- **Lease.** The age read after a renew or a holder re-acquire must not exceed the time the caller measured since it
+  started that reset, plus `CLOCK_TOLERANCE_MS` (25 ms). Before each reset, the age must have grown by at least
+  `RENEWAL_GAP_MS` (1 s).
+- **Claim.** After `RENEWAL_GAP_MS`, the claimant renews. Another broker then claims with a window of the time since
+  the renewal plus `RENEWAL_GAP_MS / 2`, and must get `held`. An unrenewed claim is older than that window by at least
+  `RENEWAL_GAP_MS / 2`. A correct store fails only if more than 500 ms pass between computing the window and the
+  store reading its clock.
 
-| Mutant | Fault | First suite | Current suite |
+**Mutation sweep.** Each mutant is one text substitution in a scratch copy of the memory reference outside the
+checkout. It breaks one rule taken from a seam doc comment, a result variant, or a §5 transition table. The suite
+runs against each mutant under `bun test` with the same registrations, once with the suite at the parent commit
+(36 cases) and once with the current suite (39 cases). The sweep includes every mutant from earlier rounds under the
+names below. For example, round 1's `outbox-by-message-id` is `O-order-by-message-id`, and `ask-forward-route-matches`
+is `P-forward-route-matches`. No scratch files are committed.
+
+Result: 129 of 132 mutants are killed. 15 of them survived the 36-case suite and are killed only
+by the current one. The three survivors break no observable documented rule; the table gives each reason.
+`L-negative-window-as-zero` is killed because the takeovers run in the same millisecond as the acquisition.
+
+| Mutant | Rule it breaks | 36-case suite | Current suite |
 |---|---|---|---|
-| `outbox-by-message-id` | outbox claim and `listUndelivered` sorted by message id | 35/35 pass | 5 failed |
-| `held-sends-by-message-id` | held-send `list`/`take` sorted by message id | 35/35 pass | 1 failed |
-| `asks-by-message-id` | `takeForTarget` sorted by message id | 35/35 pass | 1 failed |
-| `sequence-max-plus-one` | sequence = max(existing) + 1, reused after the newest row is pruned | 35/35 pass | 1 failed |
-| `claimant-only-fencing` | claim writes check the claimant but not the token | 35/35 pass | 1 failed |
-
-These fourteen mutants were killed by the first suite and are still killed. The current-suite column is from
-re-creating each substitution:
-
-| Mutant | Fault | Failed cases (current suite) |
-|---|---|---|
-| `no-dedupe` | duplicate message id inserts a second row | 2 |
-| `no-claim-fencing` | superseded claim token accepted | 2 |
-| `lease-token-reuse` | takeover reuses the old fencing token | 2 |
-| `takeover-while-live` | live lease taken over | 2 |
-| `claim-reverse-order` | rows claimed newest first | 6 |
-| `trim-text` | message text trimmed on enqueue | 3 |
-| `delivered-on-claim` | row marked delivered when claimed, before the ack | 10 |
-| `no-recipient-exclusivity` | second claimant admitted while another claim is live | 2 |
-| `empty-target-accepted` | empty recipient identity accepted | 1 |
-| `no-subscribe-resync` | no resync on subscribe | 7 |
-| `hints-to-every-broker` | hint delivered to every broker | 1 |
-| `no-reconnect-resync` | no resync after reconnect | 2 |
-| `ask-forward-route-matches` | any route matches a pending ask | 1 |
-| `take-not-removing` | held sends handed over twice | 1 |
+| `L-acquire-empty-holder` | lease acquire: empty holder is invalid | 1 failed | killed (1 failed) |
+| `L-acquire-empty-key` | lease acquire: empty broker id / target identity is invalid | 1 failed | killed (1 failed) |
+| `L-reacquire-no-age-reset` | lease acquire by holder resets the age | 36/36 pass | killed (1 failed) |
+| `L-reacquire-keeps-subject` | lease acquire by holder replaces the subject | 1 failed | killed (1 failed) |
+| `L-reacquire-new-token` | lease acquire by holder keeps its token (even when expired) | 1 failed | killed (1 failed) |
+| `L-takeover-while-live` | lease: live holder reported as held | 2 failed | killed (2 failed) |
+| `L-held-wrong-token` | lease held result carries the holder's token | 2 failed | killed (2 failed) |
+| `L-takeover-reuses-token` | takeover issues a greater token | 2 failed | killed (2 failed) |
+| `L-token-not-positive` | fencing token is a positive safe integer | 1 failed | killed (1 failed) |
+| `L-renew-no-age-reset` | lease renew resets the age (B2) | 36/36 pass | killed (1 failed) |
+| `L-renew-ignores-subject` | lease renew replaces the subject when given | 1 failed | killed (1 failed) |
+| `L-renew-subject-mismatch-allowed` | renew with a subject for another key is invalid | 1 failed | killed (1 failed) |
+| `L-owns-ignores-token` | a superseded token is stale (holder id alone is not enough) | 1 failed | killed (1 failed) |
+| `L-owns-ignores-holder` | a non-holder's renew/release is stale | 1 failed | killed (1 failed) |
+| `L-stale-without-current-token` | stale carries currentFencingToken while the key has a holder | 2 failed | killed (2 failed) |
+| `L-release-resets-token` | release keeps later tokens greater | 1 failed | killed (1 failed) |
+| `L-release-noop` | release gives the lease up | 2 failed | killed (2 failed) |
+| `L-renew-empty-holder` | renew/release: empty holder is invalid | 1 failed | killed (1 failed) |
+| `L-renew-empty-key` | renew/release: empty key is invalid | 1 failed | killed (1 failed) |
+| `L-read-empty-key` | lease read: empty key is invalid | 1 failed | killed (1 failed) |
+| `L-read-not-detached` | lease read returns a detached copy | 1 failed | killed (1 failed) |
+| `L-acquire-not-cloned` | lease acquire stores the subject verbatim (detached from the caller) | 1 failed | killed (1 failed) |
+| `L-list-ignores-kind` | listLive returns one kind | 1 failed | killed (1 failed) |
+| `L-list-ignores-liveness` | listLive returns only live leases | 1 failed | killed (1 failed) |
+| `L-list-reverse-order` | listLive in first-acquisition order | 1 failed | killed (1 failed) |
+| `L-live-strict-boundary` | live while ageMs <= staleAfterMs (boundary) | 36/36 pass | survived: Changes only the boundary age == `staleAfterMs`. Hitting that exact millisecond is not repeatable under load, so no load-robust case can observe it. |
+| `L-negative-window-as-zero` | a negative staleAfterMs treats a lease or claim as expired | 5 failed | killed (5 failed) |
+| `O-enqueue-empty-target` | enqueue: empty target is invalid | 1 failed | killed (1 failed) |
+| `O-enqueue-empty-origin` | enqueue: empty origin broker is invalid | 1 failed | killed (1 failed) |
+| `O-enqueue-empty-id` | enqueue: empty message id is invalid | 1 failed | killed (1 failed) |
+| `O-no-dedupe` | one row per message id | 2 failed | killed (2 failed) |
+| `O-dedupe-per-target` | dedupe by message id is global, not per target (B3) | 36/36 pass | killed (1 failed) |
+| `O-conflict-as-duplicate` | same id with another digest is a conflict | 1 failed | killed (1 failed) |
+| `O-duplicate-reports-original-state` | duplicate reports the existing row's current state | 1 failed | killed (1 failed) |
+| `O-sequence-max-plus-one` | sequence strictly increasing, never reused after prune | 1 failed | killed (1 failed) |
+| `O-sequence-per-recipient` | sequence strictly increasing across the outbox | 1 failed | killed (1 failed) |
+| `O-enqueue-frame-not-cloned` | frame stored verbatim, detached from the caller | 1 failed | killed (1 failed) |
+| `O-row-frame-not-cloned` | returned rows are detached copies | 1 failed | killed (1 failed) |
+| `O-trim-text` | text stored verbatim | 3 failed | killed (3 failed) |
+| `O-failure-reason-on-every-row` | failureReason present only on failed rows | 1 failed | killed (1 failed) |
+| `O-failure-reason-trimmed` | failure reason stored verbatim | 1 failed | killed (1 failed) |
+| `O-list-claims-rows` | listUndelivered does not claim | 36/36 pass | killed (1 failed) |
+| `O-list-queued-only` | listUndelivered returns queued and claimed rows | 1 failed | killed (1 failed) |
+| `O-order-by-message-id` | claim/listUndelivered in insertion order | 5 failed | killed (5 failed) |
+| `O-claim-reverse-order` | claim in insertion order | 6 failed | killed (6 failed) |
+| `O-global-claim-lock` | held only for a live claim on THIS recipient (B1) | 36/36 pass | killed (2 failed) |
+| `O-no-recipient-exclusivity` | one claimant per recipient | 2 failed | killed (4 failed) |
+| `O-held-ignores-expiry` | an expired claim of another claimant is reclaimable | 2 failed | killed (2 failed) |
+| `O-held-by-own-claims` | own live claims do not make a recipient held | 4 failed | killed (4 failed) |
+| `O-own-inflight-resent` | own live claims are not returned again | 3 failed | killed (3 failed) |
+| `O-own-expired-not-reclaimed` | own expired claims are re-claimed with a new token | 1 failed | killed (1 failed) |
+| `O-no-attempt-increment` | claim increments claimAttempts | 4 failed | killed (4 failed) |
+| `O-token-deterministic` | claim token differs for every claim | 1 failed | killed (1 failed) |
+| `O-attempt-mismatch` | claim attempt equals claimAttempts | 3 failed | killed (3 failed) |
+| `O-delivered-on-claim` | delivered only on markDelivered | 10 failed | killed (12 failed) |
+| `O-renew-claim-noop` | renewClaim resets the claim age (B2) | 36/36 pass | killed (1 failed) |
+| `O-no-claim-fencing` | a superseded claim token is stale | 2 failed | killed (2 failed) |
+| `O-claimant-only-fencing` | a superseded token is stale | 1 failed | killed (1 failed) |
+| `O-token-only-fencing` | claim write with another claimant id is stale | 1 failed | killed (1 failed) |
+| `O-settled-as-stale` | writes on a settled row return settled | 2 failed | killed (2 failed) |
+| `O-unknown-as-stale` | writes for an unknown id return unknown | 1 failed | killed (1 failed) |
+| `O-claim-write-empty-id` | claim write: empty message id is invalid | 1 failed | killed (1 failed) |
+| `O-claim-write-empty-claimant` | claim write: empty claimant is invalid | 1 failed | killed (1 failed) |
+| `O-claim-empty-claimant` | claim: empty claimant is invalid | 1 failed | killed (1 failed) |
+| `O-claim-empty-target` | claim: empty target is invalid | 1 failed | killed (1 failed) |
+| `O-release-keeps-claimed` | releaseClaim returns the row to queued | 1 failed | killed (1 failed) |
+| `O-release-keeps-claim` | releaseClaim drops the claim | 1 failed | killed (1 failed) |
+| `O-settle-keeps-state` | markDelivered/markFailed settle the row | 6 failed | killed (6 failed) |
+| `O-read-empty-id` | read: empty id is invalid | 1 failed | killed (1 failed) |
+| `O-list-empty-target` | listUndelivered: empty target is invalid | 1 failed | killed (1 failed) |
+| `O-prune-claimed` | prune keeps in-flight claimed rows (N1) | 36/36 pass | killed (1 failed) |
+| `O-prune-ignores-age` | prune only rows settled longer ago than the window | 1 failed | killed (1 failed) |
+| `O-prune-queued` | prune deletes only settled rows | 1 failed | killed (1 failed) |
+| `H-hold-empty-reservation` | hold: empty reservation is invalid | 1 failed | killed (1 failed) |
+| `H-hold-empty-origin` | hold: empty origin is invalid | 1 failed | killed (1 failed) |
+| `H-hold-empty-sender` | hold: empty sender session is invalid | 1 failed | killed (1 failed) |
+| `H-hold-empty-id` | hold: empty message id is invalid | 1 failed | killed (1 failed) |
+| `H-duplicate-per-reservation` | a message id held under any reservation is a duplicate | 1 failed | killed (1 failed) |
+| `H-hold-not-cloned` | held request stored detached from the caller | 1 failed | killed (1 failed) |
+| `H-list-not-detached` | list/take return detached copies | 36/36 pass | killed (1 failed) |
+| `H-list-every-reservation` | list/take are per reservation | 1 failed | killed (1 failed) |
+| `H-order-by-message-id` | held sends in insertion order | 1 failed | killed (1 failed) |
+| `H-take-not-removing` | take hands each send over once | 1 failed | killed (1 failed) |
+| `H-list-empty` | list: empty reservation is invalid | 1 failed | killed (1 failed) |
+| `H-take-empty` | take: empty reservation is invalid | 1 failed | killed (1 failed) |
+| `H-drop-always-dropped` | drop reports missing for an unknown id | 1 failed | killed (1 failed) |
+| `H-drop-empty` | drop: empty id is invalid | 1 failed | killed (1 failed) |
+| `P-record-empty-session` | record: empty session ids are invalid | 1 failed | killed (1 failed) |
+| `P-record-empty-id` | record: empty message id is invalid | 1 failed | killed (1 failed) |
+| `P-duplicate-by-pair` | duplicate only for the same sender, target and message | 1 failed | killed (2 failed) |
+| `P-record-not-copied` | recorded ask is detached from the caller | 36/36 pass | killed (1 failed) |
+| `P-forward-route-matches` | only the exact reverse route matches | 1 failed | killed (1 failed) |
+| `P-ignores-reply-to` | the reply must answer the recorded message id | 1 failed | killed (1 failed) |
+| `P-ignores-reply-target` | the reply must go back to the ask's sender | 36/36 pass | killed (1 failed) |
+| `P-ignores-reply-sender` | the reply must come from the ask's target | 1 failed | killed (1 failed) |
+| `P-clear-by-pair` | clearReply clears only the exact ask (N2) | 36/36 pass | killed (1 failed) |
+| `P-clear-noop` | clearReply removes the route | 2 failed | killed (2 failed) |
+| `P-route-empty-session` | reply route: empty session ids are invalid | 1 failed | killed (1 failed) |
+| `P-route-empty-reply-to` | reply route: empty replyTo is invalid | 1 failed | killed (1 failed) |
+| `P-prune-by-target` | pruneSender removes the sender's asks | 1 failed | killed (1 failed) |
+| `P-prune-count` | pruneSender reports the removed count | 1 failed | killed (1 failed) |
+| `P-prune-empty` | pruneSender: empty session is invalid | 1 failed | killed (1 failed) |
+| `P-take-not-removing` | takeForTarget removes the asks | 1 failed | killed (1 failed) |
+| `P-take-order-by-message-id` | takeForTarget in insertion order | 1 failed | killed (1 failed) |
+| `P-take-empty` | takeForTarget: empty session is invalid | 1 failed | killed (1 failed) |
+| `P-take-not-copied` | takeForTarget returns detached copies | 36/36 pass | survived: Equivalent: `takeForTarget` removes the asks it returns, so the store never reads the returned objects again. |
+| `S-reserve-empty-id` | reserve: empty id is invalid | 1 failed | killed (1 failed) |
+| `S-reserve-empty-target` | reserve: empty target is invalid | 1 failed | killed (1 failed) |
+| `S-reserve-conflict-as-match` | reserve: another digest is a conflict | 1 failed | killed (1 failed) |
+| `S-reserve-match-state-fixed` | reserve match reports the current state | 1 failed | killed (1 failed) |
+| `S-route-not-copied-in` | question route stored detached from the caller | 36/36 pass | killed (1 failed) |
+| `S-route-not-copied-out` | lookup returns a detached question route | 36/36 pass | killed (1 failed) |
+| `S-route-key-always-present` | questionRoute absent unless given | 1 failed | killed (1 failed) |
+| `S-accept-ignores-digest` | accept with another digest is a conflict | 1 failed | killed (1 failed) |
+| `S-accept-noop` | accept moves the record to accepted | 1 failed | killed (1 failed) |
+| `S-accept-empty` | accept: empty id is invalid | 1 failed | killed (1 failed) |
+| `S-lookup-empty` | lookup: empty id is invalid | 1 failed | killed (1 failed) |
+| `S-lookup-ignores-digest` | lookup with another digest is a conflict | 1 failed | killed (1 failed) |
+| `S-forget-empty` | forget: empty id is invalid | 1 failed | killed (1 failed) |
+| `S-forget-ignores-digest` | forget with another digest is a conflict | 1 failed | killed (1 failed) |
+| `S-forget-noop` | forget drops the reservation | 1 failed | killed (1 failed) |
+| `S-prune-ignores-age` | prune only records older than the window | 1 failed | killed (1 failed) |
+| `W-publish-empty` | publish: empty broker id is invalid | 1 failed | killed (1 failed) |
+| `W-closed-publishes` | publish after close is unavailable | 1 failed | killed (1 failed) |
+| `W-hints-to-every-broker` | a hint reaches only the addressed broker | 1 failed | killed (1 failed) |
+| `W-subscribe-empty` | subscribe: empty broker id is invalid | 1 failed | killed (1 failed) |
+| `W-closed-subscribes` | subscribe after close is unavailable (N4) | 36/36 pass | killed (1 failed) |
+| `W-no-subscribe-resync` | subscribe starts with a subscribed resync | 7 failed | killed (7 failed) |
+| `W-no-reconnect-resync` | a reconnect emits a reconnected resync | 2 failed | killed (2 failed) |
+| `W-subscription-close-noop` | closing a subscription stops its events | 1 failed | killed (1 failed) |
+| `W-connection-close-keeps-subscriptions` | closing a connection closes its subscriptions | 36/36 pass | killed (1 failed) |
+| `W-event-not-cloned` | (not documented for the bus) events are detached | 36/36 pass | survived: Not a documented bus rule: the detached-copy convention covers the state stores, and §10 item 6 records that bus events are not promised detached. |

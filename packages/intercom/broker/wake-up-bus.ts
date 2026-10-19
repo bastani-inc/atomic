@@ -41,13 +41,15 @@ export type WakeUpPublishResult =
 
 export type WakeUpSubscribeResult =
 	| { readonly status: "subscribed"; readonly subscription: WakeUpSubscription }
+	/** This connection is closed; nothing is subscribed. */
+	| { readonly status: "unavailable" }
 	| InvalidWakeUpInput;
 
 /** S4: one broker's connection to the wake-up bus shared by every broker using the same storage. */
 export interface WakeUpBus {
 	/** Best effort; never throws for a transport failure. With no subscriber it is a no-op; after `close` it reports `unavailable`. */
 	publish(hint: WakeUpHint): Promise<WakeUpPublishResult>;
-	/** Deliver hints addressed to `brokerId`, preceded by a `subscribed` resync. */
+	/** Deliver hints addressed to `brokerId`, preceded by a `subscribed` resync. After `close` it reports `unavailable`. */
 	subscribe(brokerId: string, listener: WakeUpListener): Promise<WakeUpSubscribeResult>;
 	/** Close this connection and its subscriptions; idempotent. */
 	close(): Promise<void>;

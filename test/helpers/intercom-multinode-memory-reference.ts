@@ -543,6 +543,7 @@ export function openMemoryWakeUpBusFixture(): Promise<WakeUpBusFixture> {
 			},
 			async subscribe(brokerId, listener) {
 				if (brokerId.length === 0) return { status: "invalid", reason: "empty-broker-id" };
+				if (!connection.open) return { status: "unavailable" };
 				const subscription: MemorySubscription = { brokerId, listener, connection, open: true };
 				subscriptions.add(subscription);
 				connection.subscriptions.add(subscription);
