@@ -21,8 +21,9 @@ export type SubagentChildOwner =
  * One durable observation of a launched child. The latest record for a child id
  * is authoritative: `running` means the child had not settled when it was written,
  * `terminal` means it settled: completed, failed, was interrupted, paused or quit, or was stopped
- * for good. Session recovery restores only `running` children; an explicit `resume` also reopens
- * a settled child unless its `terminalStatus` is non-resumable (`killed`, `gone`).
+ * for good. Session recovery restores `running` children and those its workflow stage's pause stopped
+ * (`stage-paused`); an explicit `resume` also reopens a settled child unless its `terminalStatus` is
+ * non-resumable (`killed`, `stage-closed`, `gone`).
  */
 export interface SubagentChildRecord {
 	readonly version: 1;
@@ -62,6 +63,20 @@ export interface SubagentChildRecordSink {
 
 /** `terminalStatus` of a child whose workflow stage finished, or whose run ended or was cancelled; never resumable. */
 export const SUBAGENT_CHILD_STAGE_CLOSED_STATUS = "stage-closed";
+
+/**
+ * `terminalStatus` of a child stopped because its workflow stage paused: the run was paused or quit, Atomic exited,
+ * or the session was switched. It stays resumable, and is restored when its stage resumes from its session (#3760).
+ */
+export const SUBAGENT_CHILD_STAGE_PAUSED_STATUS = "stage-paused";
+
+/** Whether session recovery restores this child: it had not settled, or its stage's pause stopped it (#3760). */
+export function isRestorableSubagentChild(record: SubagentChildRecord): boolean {
+	return (
+		record.state === "running" ||
+		(record.state === "terminal" && record.terminalStatus === SUBAGENT_CHILD_STAGE_PAUSED_STATUS)
+	);
+}
 
 /**
  * Workflow-stage extension state the workflows extension sets before it closes a stage generation for good. Without

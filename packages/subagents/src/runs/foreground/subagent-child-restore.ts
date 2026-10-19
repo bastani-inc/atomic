@@ -31,6 +31,7 @@ import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHol
 import {
 	createSubagentChildRecordSink,
 	findSubagentChildRecord,
+	isRestorableSubagentChild,
 	readSubagentChildRecords,
 	recordSubagentChildGone,
 	SUBAGENT_CHILD_GONE_STATUS,
@@ -317,7 +318,7 @@ export async function restoreSubagentChild(
 		id,
 	);
 	if (!record) return { kind: "unrestorable", childId: id, reason: "this session has no record of that subagent" };
-	if (record.state === "terminal" && !resume) return { kind: "terminal", record };
+	if (!isRestorableSubagentChild(record) && !resume) return { kind: "terminal", record };
 	const key = childHoldKey(ownerSessionId, record.childId);
 	const active = activeRestorations.get(key);
 	if (active) return active.outcome;
@@ -425,7 +426,7 @@ export async function restoreSubagentChildren(
 	const owned = readSubagentChildRecords(ctx.sessionManager.getEntries(), subagentChildOwner(ctx).sessionId);
 	return Promise.all(
 		[...owned.values()]
-			.filter((record) => record.state === "running")
+			.filter(isRestorableSubagentChild)
 			.map((record) => restoreSubagentChild(deps, ctx, record.childId)),
 	);
 }

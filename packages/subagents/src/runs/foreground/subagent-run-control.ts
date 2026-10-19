@@ -14,6 +14,7 @@ import {
 	requestSubagentChildStop,
 	SUBAGENT_CHILD_GONE_STATUS,
 	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
+	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 	type SubagentChildRecord,
 	type SubagentChildStopStatus,
 	subagentChildOwner,
@@ -35,7 +36,12 @@ const NON_RESUMABLE_STATUSES: ReadonlyMap<string, string> = new Map([
 ]);
 
 /** Children stopped part-way through a turn: resume continues that turn, after any steer message. */
-const INTERRUPTED_STATUSES: ReadonlySet<string> = new Set(["paused", "quit", "interrupted"]);
+const INTERRUPTED_STATUSES: ReadonlySet<string> = new Set([
+	"paused",
+	"quit",
+	"interrupted",
+	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
+]);
 
 export interface SubagentRunControlRequest {
 	readonly action: SubagentRunControlAction;

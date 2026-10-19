@@ -16,6 +16,7 @@ import type { RunSyncOptions, SingleResult, SubagentToolResult } from "../../sha
 import { getSingleResultOutput } from "../../shared/utils.js";
 import {
 	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
+	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 	type SubagentChildRecordInput,
 	type SubagentChildRecordSink,
 	takeSubagentChildStop,
@@ -311,7 +312,21 @@ export async function runAgentTask(input: {
 						});
 					const stopped = takeSubagentChildStop(context.ref.taskId);
 					const stoppedByControl = stopped !== undefined && child.status === "interrupted";
-					if (!ownerClosed()) recordChild("terminal", stoppedByControl ? stopped : child.status);
+					// The only handoff cancellation run control did not request is the owner's workflow stage pausing.
+					const stoppedByStagePause =
+						!stoppedByControl &&
+						child.status === "interrupted" &&
+						context.signal.aborted &&
+						context.signal.reason === "parent-handoff";
+					if (!ownerClosed())
+						recordChild(
+							"terminal",
+							stoppedByControl
+								? stopped
+								: stoppedByStagePause
+									? SUBAGENT_CHILD_STAGE_PAUSED_STATUS
+									: child.status,
+						);
 					else if (input.recordChild?.ownerEndedForGood?.())
 						recordChild("terminal", SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
 					input.onTerminal?.(child);
@@ -334,7 +349,9 @@ export async function runAgentTask(input: {
 						return {
 							kind: "cancelled",
 							cause:
-								stoppedByControl || input.options.interruptSignal?.aborted ? "parent-handoff" : "owner-close",
+								stoppedByControl || stoppedByStagePause || input.options.interruptSignal?.aborted
+									? "parent-handoff"
+									: "owner-close",
 							output,
 						};
 					return child.status === "ok"

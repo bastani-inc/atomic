@@ -5,7 +5,12 @@ import {
 } from "../../intercom/supervisor-authorization.js";
 import type { IntercomEventBus } from "../../shared/types.js";
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
-import { readSubagentChildRecords, type SubagentChildRecord, subagentChildOwner } from "./subagent-child-records.js";
+import {
+	isRestorableSubagentChild,
+	readSubagentChildRecords,
+	type SubagentChildRecord,
+	subagentChildOwner,
+} from "./subagent-child-records.js";
 import { readPreviousIntercomId, reopenChildSession } from "./subagent-child-session.js";
 
 /**
@@ -213,7 +218,7 @@ function endEarlyHold(key: string, early: EarlyChildHold): void {
 export async function holdRunningSubagentChildren(events: IntercomEventBus, ctx: ExtensionContext): Promise<void> {
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
 	const running = [...readSubagentChildRecords(ctx.sessionManager.getEntries(), ownerSessionId).values()].filter(
-		(record) => record.state === "running" && record.intercomTarget,
+		(record) => isRestorableSubagentChild(record) && record.intercomTarget,
 	);
 	await Promise.all(
 		running.map(async (record) => {
@@ -294,7 +299,7 @@ export function holdDormantRunSubagentChildren(
 		try {
 			const snapshot = await store.load(stageSessionId);
 			records = [...readSubagentChildRecords(snapshot.entries, stageSessionId).values()].filter(
-				(record) => record.state === "running" && record.intercomTarget,
+				(record) => isRestorableSubagentChild(record) && record.intercomTarget,
 			);
 		} catch {
 			return;

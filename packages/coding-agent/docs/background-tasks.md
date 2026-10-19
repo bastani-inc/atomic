@@ -231,9 +231,9 @@ Custom operations adapters receive `wait` but must implement it themselves. Exte
 
 Background means independent of the current observation, not independent of its owner. **Pausing main chat** aborts the foreground turn only; its background agents and shells keep running. Detaching a workflow pane, ending a model turn, or closing `/tasks` also leaves owned background work alone.
 
-**Pausing a workflow stage** blocks new launches and cancels its active and queued agents and shells. Pause completes only after confirming cleanup; failures are reported rather than treated as a successful pause. Main-chat tasks, sibling stages, and future stage generations are unaffected.
+**Pausing a workflow stage** blocks new launches, stops its active and queued agents, and cancels its shells. The stopped subagents stay resumable with `subagent({ action: "resume", id })`. Pause completes only after confirming cleanup; failures are reported rather than treated as a successful pause. Main-chat tasks, sibling stages, and future stage generations are unaffected.
 
-Pause does not close the stage's message generation: queued user and Intercom messages remain held for resume. Resume permits fresh launches but never resurrects cancelled executions; retained task results remain inspectable. Closing a session or stage generation still cancels its remaining owned work. Explicit `/tasks` stop and declared execution timeouts remain separate controls.
+Pause does not close the stage's message generation: queued user and Intercom messages remain held for resume. Resume permits fresh launches but never resurrects cancelled shells; retained task results remain inspectable. Closing a session or stage generation still cancels its remaining owned work. Explicit `/tasks` stop and declared execution timeouts remain separate controls.
 
 On native Windows, Suspend opens a PowerShell subshell rather than freezing Atomic. Exit the subshell to restore the same session; owned background tasks continue while it is open.
 

@@ -197,6 +197,11 @@ test("a rebuilt session hydrates every background launch card from its child rec
 		["hyrun", { state: "running" }, /∀ Running in background/],
 		["hypause", { state: "terminal", terminalStatus: "paused" }, /‖ Paused \(resumable\)/],
 		["hyquit", { state: "terminal", terminalStatus: "quit" }, /■ Quit \(resumable\)/],
+		[
+			"hystagepause",
+			{ state: "terminal", terminalStatus: "stage-paused" },
+			/‖ Paused with its workflow stage \(resumable\)/,
+		],
 		["hydone", { state: "terminal", terminalStatus: "ok" }, /✓ Completed/],
 		["hyfail", { state: "terminal", terminalStatus: "error" }, /✗ Failed/],
 		["hykill", { state: "terminal", terminalStatus: "killed" }, /✗ Terminal · killed/],

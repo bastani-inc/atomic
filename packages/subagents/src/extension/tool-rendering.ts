@@ -9,6 +9,7 @@ import {
 import {
 	SUBAGENT_CHILD_GONE_STATUS,
 	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
+	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 	type SubagentChildRecord,
 } from "../runs/foreground/subagent-child-records.js";
 import { getBurstDisplay } from "../runs/foreground/subagent-executor-burst-display.js";
@@ -44,6 +45,11 @@ const SETTLED_VIEWS: Readonly<Record<string, { icon: string; label: string; colo
 	paused: { icon: "‖", label: "Paused (resumable)", color: "warning" },
 	quit: { icon: "■", label: "Quit (resumable)", color: "warning" },
 	interrupted: { icon: "○", label: "Interrupted (resumable)", color: "warning" },
+	[SUBAGENT_CHILD_STAGE_PAUSED_STATUS]: {
+		icon: "‖",
+		label: "Paused with its workflow stage (resumable)",
+		color: "warning",
+	},
 	killed: { icon: "✗", label: "Terminal · killed", color: "error" },
 	[SUBAGENT_CHILD_GONE_STATUS]: { icon: "✗", label: "Terminal · gone after a restart", color: "error" },
 	[SUBAGENT_CHILD_STAGE_CLOSED_STATUS]: { icon: "✗", label: "Terminal · its workflow stage ended", color: "error" },
