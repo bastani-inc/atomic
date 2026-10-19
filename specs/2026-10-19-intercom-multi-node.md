@@ -212,9 +212,15 @@ supervisor capability the hold is for), `origin_broker_id`, `sender_session_id`,
 
 `hold` refuses a message id already held under any reservation with `duplicate`. `take` atomically removes and returns
 a reservation's sends in insertion order, so each is dispatched once, by whichever broker the restored child
-registers with. The hold timeout stays with the origin broker, which owns the sender's wait. #3760's reservations
-themselves (owner, child name, aliases, dormant) stay in the supervisor's broker; sharing them is S5 work if a child
-can be restored on another host (§10, open decision 5).
+registers with. The hold timeout stays with the origin broker, which owns the sender's wait.
+
+#3760's reservations themselves (owner, child name, aliases, group, dormant, gone marker) are **not** shared. They stay
+in the memory of the supervisor's broker, and the sender's broker is the one that decides whether to hold. So this
+store can hold a send only when the sender's broker also holds the reservation, which means the sender and the
+restoring supervisor share a broker. A sender on another host cannot hold a send for that child; that is a known
+parity gap (open decision 5). The shared reservation seam that closes it is follow-up F1 (§10), and it must land before
+S3 implements held sends and S5 wires them in (§12). `reservation_key` is today the capability itself; follow-up F2
+stores a digest instead (§9).
 
 ### 5.4 Pending asks (`PendingAskStore`, S3)
 
@@ -275,7 +281,8 @@ bus.
   (held by broker A), and enqueues the reply frame for S's identity. Steps 3–10 then run with the roles swapped.
 - Broker A clears the ask route with `clearReply` when S acks the reply.
 - Supervisor sends use `channel: "supervisor"` in the stored frame, so R sees the supervisor card and route.
-- `question_target` and `send_held` frames to the sender stay local to broker A.
+- `question_target` and `send_held` frames to the sender stay local to broker A. A send can be held only for a child
+  restored through the sender's own broker until follow-up F1 lands (open decision 5).
 
 **Expected added latency** compared with a local send:
 
@@ -304,6 +311,9 @@ bus.
    on the same inputs as locally. `SessionInfo` comes from the presence lease, and ask routes come from the shared
    ask store.
 4. **Same socket.** The recipient only ever talks to its local broker over its local socket. Nothing new is exposed.
+5. **Known exception: held sends across hosts.** A sender cannot hold a send for a child being restored by a
+   supervisor on another host, because #3760 reservations are not shared. Parity does not hold for that case until
+   follow-up F1 (open decision 5); the send fails as an unknown target instead of getting `send_held`.
 
 ## 8. Failure cases
 
@@ -332,9 +342,12 @@ bus.
   deduplicates by message id, so the message is shown once. The hosting broker re-checks R's current group membership
   before writing; if R left the sender's group in transit, it calls `markFailed` with the isolation reason.
 - **Recipient offline** (no live presence anywhere). Today a send to an unknown session fails with
-  `Session not found`. Multi-node keeps that for names that resolve to no presence at all. When a presence or
-  reservation exists but its broker is gone or R is mid-reconnect, the row waits in the outbox until a broker acquires
-  R's presence and catches up. What the sender sees meanwhile is open decision 1.
+  `Session not found`. Multi-node keeps that for names that resolve to no presence at all. When a presence exists but
+  its broker is gone or R is mid-reconnect, the row waits in the outbox until a broker acquires R's presence and
+  catches up. What the sender sees meanwhile is open decision 1. A child being restored by a supervisor on another
+  host has no presence, and its #3760 reservation is not shared, so the sender's broker cannot see it and cannot hold
+  the send. The send fails as above, where a sender on the supervisor's host gets `send_held` (known parity gap, open
+  decision 5, follow-up F1).
 - **Database unavailable.** The stores surface `StorageUnavailableError`. The broker keeps serving local delivery and
   refuses cross-node sends with an explicit `delivery_failed`. It never falls back to memory, matching the storage
   adapter's rule.
@@ -346,6 +359,12 @@ traffic, just as they can read the shared session transcripts there. The storage
 security protect it. The local `delivered-messages.sqlite` design (HMAC digests, no content) cannot be kept for
 cross-node rows by construction, and the user guide (S7) must say so. Wake-up hints carry only broker ids and
 versions. No new listening endpoint is added.
+
+Held sends store `reservation_key`, which is today the supervisor capability itself. That capability is a
+broker-minted bearer secret (`issueCapability` in `supervisor-channel.ts`) that authorizes a child to register as that
+supervisor's child, so anyone who can read the shared database could read it. Follow-up F2 (§10) stores its SHA-256
+digest instead; S3 must not ship held sends to a shared database before F2 lands. No other secret is stored: send
+digests are opaque strings (open decision 2), and the supervisor channel's owner tokens stay in broker memory.
 
 ## 10. Open decisions
 
@@ -371,8 +390,17 @@ versions. No new listening endpoint is added.
 4. **Outcome hints after an origin broker changes (OPEN).** Rows name their original `originBrokerId`. A sender that
    retries through another broker learns pending outcomes only by its backup poll. Re-pointing `originBrokerId` on a
    `duplicate` enqueue would need a new store operation.
-5. **Restoring-recipient reservations across hosts (OPEN).** S0 shares held sends, not #3760's reservation records.
-   That is enough when a child is restored on its supervisor's host, which is today's only case.
+5. **Restoring-recipient reservations across hosts (OPEN; known parity gap, follow-up F1).** S0 shares held sends but
+   not #3760's reservation records, which stay in the memory of the supervisor's broker. The sender's broker decides
+   whether to hold: `holdForRestoringRecipient` (`broker.ts`) calls `RestoringRecipients.admit` on that broker's own
+   reservations. Take a sender on host A and a child being restored by its supervisor on host B. Broker A finds no
+   presence lease for the child and cannot see B's reservation, so it never calls `heldSends.hold`, and the send fails
+   with `Session not found` (or the offline rule of decision 1). A sender on host B gets `send_held` for the same
+   send. Cross-node parity does not hold for this case until F1 lands. Open questions for F1:
+   - whether a released hold is dispatched by the broker that ends it, or handed back to each origin broker, which
+     owns the sender's socket, wait and timeout;
+   - what happens to sends held through an origin broker that crashed, whose sender retries the same id through
+     another broker.
 6. **Permissive choices made where the brief was silent** (recorded, reversible by review):
    - an expired but unsuperseded lease or claim stays renewable by its holder;
    - re-acquiring by the current holder keeps its token;
@@ -388,6 +416,34 @@ versions. No new listening endpoint is added.
    - (a) follow the session selection's precedence, because #3761's inbox entries live in the session store;
    - (b) add an Intercom-specific selection.
    Either changes only S5's `open-broker-state.ts` and its configuration reading; no seam changes.
+8. **Follow-ups recorded from review (not implemented in S0).** Review round 3 raised these P3 findings. The user
+   asked to fix only P1/P2 findings within S0 and to record P3s here, so S1–S4 and S6 can start:
+   - **F1: shared restoring-reservation seam.** Required before S3 implements held sends and S5 wires them in.
+     Add a `RestoringReservationStore` to the S0 seams as an S0 amendment (§12, S0b) with these operations:
+     - `reserve`, by the supervisor's broker. It carries the child's targets (name, Atomic session id, pre-restart
+       Intercom id), its group, the owner session and owner broker, and `dormant`.
+     - `lookup(target, sender session, sender groups)`, returning none, reserved or gone with today's `admit`
+       semantics: the owner session or a sender in the reservation's group is admitted; a gone marker refuses with
+       its reason; the `awaitRestoringRecipient` check and the 256-send limit stay with the origin.
+     - owner-only `renew` and `release`, with an optional gone reason, fenced by tokens like leases.
+     - `consume`, when the child registers through any broker, including the takeover of dormant reservations.
+     - expiry, so a crashed supervisor broker's reservation stops holding new sends.
+
+     It is keyed by F2's capability digest. It needs a contract registration, the memory reference, a cross-node held
+     round-trip case, and the held path in §6: the sender on A looks up the reservation, holds with `heldSends.hold`
+     and gets a local `send_held`; the child registers on B; the hold ends; the send is dispatched and its outcome
+     reaches A through the outbox.
+   - **F2: store a digest, not the capability (§9).** Replace `HeldSend.reservationKey` / `reservation_key`, today the
+     supervisor capability, with `reservationKeyFor(capability)`: the lowercase hex SHA-256 of the capability. The
+     capability carries a random nonce, so an unkeyed digest is enough and, unlike decision 2's send digests, needs no
+     shared key. F1 uses the same key. This changes the `HeldSend` doc comment and §5.3.
+   - **F3: pending asks for a session that is both asker and target.** No session in the contract suite both asks and
+     is asked. So a store whose `pruneSender(X)` also deletes asks addressed to X, or whose `takeForTarget(X)` also
+     deletes asks X sent, passes 39/39. The broker calls `pruneSender` and then `takeForTarget` when a session leaves,
+     so the first would drop the askers' `peer_disconnected` notices. Add such a session to the prune/take case.
+   - **F4: held-send `drop` beside a sibling send.** `drop` is tested only while the dropped send is alone in its
+     reservation, so a `drop` that deletes every send in the reservation passes. Hold a sibling send under the same
+     reservation and assert that it is still listed after the drop.
 
 ## 11. Future options (documented, not built)
 
@@ -414,11 +470,15 @@ Every slice depends only on the S0 seams and contract suite. File sets are disjo
 run in parallel. S5 integrates them and needs the user's answer to open decision 1. S7 follows S5. No slice edits the
 S0 files. An interface change goes through review as an S0 amendment.
 
+S0b (follow-ups F1–F4, §10) is such an amendment. It must land before S3 implements `HeldSendStore` and before S5.
+S1, S2, S4, S6, and S3's pending-ask and sent-message stores do not depend on it and can start now.
+
 | Slice | Files (new unless marked) | Interface implemented | Acceptance tests |
 |---|---|---|---|
 | **S1 presence leases** | `packages/intercom/broker/sql-lease-store.ts`; `test/unit/intercom-multinode-sql-lease-store.test.ts` | `BrokerLeaseStore` on `SqliteDatabase` + prefix; table `<prefix>intercom_leases`; database-clock ages | `registerBrokerLeaseStoreConformance` passes for: `openNodeSqliteDatabase` on a temp file with two connections as two brokers; and the module-selected adapter `test/fixtures/storage-adapter.ts` |
 | **S2 outbox + claims** | `packages/intercom/broker/sql-outbox-store.ts`; `test/unit/intercom-multinode-sql-outbox-store.test.ts` | `OutboxStore`; table `<prefix>intercom_outbox`; exclusive claims in one transaction | `registerOutboxStoreConformance` passes on the same two fixtures, plus `registerCrossNodeRoundTripConformance` with S2's outbox, the memory pending-ask store and the memory bus |
 | **S3 held sends, pending asks, duplicate-send record** | `packages/intercom/broker/sql-held-send-store.ts`; `packages/intercom/broker/sql-pending-ask-store.ts`; `packages/intercom/broker/sql-sent-message-authority.ts`; `test/unit/intercom-multinode-sql-s3-stores.test.ts` | `HeldSendStore`, `PendingAskStore`, `SentMessageAuthority`; tables `<prefix>intercom_held_sends`, `_pending_asks`, `_sent_messages` | `registerHeldSendStoreConformance`, `registerPendingAskStoreConformance` and `registerSentMessageAuthorityConformance` pass on both fixtures |
+| **S0b shared restoring reservations and S0 follow-ups (F1–F4, S0 amendment)** | modified S0 files: `packages/intercom/broker/multinode-state-store.ts`, `test/helpers/intercom-multinode-contract.ts`, `test/helpers/intercom-multinode-memory-reference.ts`, `test/unit/intercom-multinode-state-contract.test.ts` and this spec. S3 then adds `packages/intercom/broker/sql-restoring-reservation-store.ts` to its files and registers it in `test/unit/intercom-multinode-sql-s3-stores.test.ts` | `RestoringReservationStore` (F1) keyed by `reservationKeyFor` (F2); table `<prefix>intercom_restoring_reservations` | On the memory reference: a new reservation registration (lookup by every target, group isolation, gone, release, expiry, owner-only fencing, consume with dormant takeover, empty inputs invalid, detached copies), a cross-node held round-trip case, and the F3 and F4 cases. Later, the reservation registration passes on S3's SQL store on both fixtures |
 | **S4 wake-up bus** | `packages/intercom/broker/database-wake-up-bus.ts`; `test/unit/intercom-multinode-database-wake-up-bus.test.ts` | `WakeUpBus` as a database-polled hint log (`<prefix>intercom_wakeups`, default poll 500 ms, hints pruned after delivery), needing only the storage adapter | `registerWakeUpBusConformance` passes on two connections to one temp SQLite file; `interrupt` closes and reopens the poller's connection |
 | **S5 broker integration (cross-node parity in the send/ack path)** | modified: `packages/intercom/broker/broker.ts`, `packages/intercom/broker/send-handler.ts`, `packages/intercom/broker/spawn.ts`, `packages/intercom/config.ts`; new: `packages/intercom/broker/multinode-router.ts`, `packages/intercom/broker/open-broker-state.ts` (composes S1–S4 into `IntercomBrokerStateStore` from the top-level shared `storage` selection, §4), `test/unit/intercom-multinode-broker-routing.test.ts` | Uses `IntercomBrokerStateStore` + `WakeUpBus`: presence acquire/renew/release on register/presence/leave; remote resolution; enqueue + hint; claim on hint, resync, presence acquire and backup poll; `markDelivered` on `received`; outcome reporting; shared ask and duplicate records | Unit: local-only behaviour unchanged (existing intercom suites green); a remote send writes the identical frame and reports `delivered` only after `received`; ask/reply reverse route; supervisor channel; group-isolation refusal; offline behaviour per decision 1; no top-level `storage`, `memory`, or a domain-only adapter leaves single-node behaviour unchanged; S6's cross-node scenarios green |
 | **S6 two-broker E2E harness** | `test/helpers/intercom-two-broker-harness.ts`; `test/integration/intercom-multinode-two-broker.test.ts` | Starts two real broker processes with separate socket directories and one shared SQLite storage file (one adapter selection), and attaches real Intercom clients to each | Harness self-test now: both brokers start, each serves only its own clients, both open the shared file. Cross-node scenarios (send, ask/reply, supervisor send, broker kill and redelivery, lost-wake-up recovery via backup poll) are written in S6 and must pass as S5's acceptance |
@@ -465,9 +525,19 @@ runs against each mutant under `bun test` with the same registrations, once with
 names below. For example, round 1's `outbox-by-message-id` is `O-order-by-message-id`, and `ask-forward-route-matches`
 is `P-forward-route-matches`. No scratch files are committed.
 
-Result: 129 of 132 mutants are killed. 15 of them survived the 36-case suite and are killed only
-by the current one. The three survivors break no observable documented rule; the table gives each reason.
-`L-negative-window-as-zero` is killed because the takeovers run in the same millisecond as the acquisition.
+Result: 129 of 132 mutants are killed. 15 of them survived the 36-case suite and are killed only by the current one.
+The three sweep survivors in the table (`L-live-strict-boundary`, `P-take-not-copied`, `W-event-not-cloned`) break no
+rule that a load-robust case can observe; the table gives each reason. `L-negative-window-as-zero` is killed because
+the takeovers run in the same millisecond as the acquisition.
+
+The sweep did not cover every documented rule. Review round 3 found three more mutants, outside this table, that break
+documented rules and survive the current 39-case suite:
+
+- `pruneSender(X)` that also removes asks addressed to X;
+- `takeForTarget(X)` that also removes asks X sent;
+- `drop(messageId)` that removes every held send in that send's reservation.
+
+They are known gaps, recorded as follow-ups F3 and F4 (§10) for S0b (§12).
 
 | Mutant | Rule it breaks | 36-case suite | Current suite |
 |---|---|---|---|
