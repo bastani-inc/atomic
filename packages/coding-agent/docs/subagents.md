@@ -116,7 +116,7 @@ Peers do not coordinate spontaneously. When related work runs in parallel, name 
 
 A claimed parent-targeted blocking request ends a single child and returns its question, attachments, agent identity, and `[TASK_CONTEXT]` through the parent's `subagent` call. Start a fresh child with the answer and handoff. In parallel runs and collected sibling launches, the requesting child instead stays alive and continues its ongoing execution after receiving the supervisor's reply.
 
-The handoff explicitly tells the parent to start a fresh child with a normal launch such as `subagent({ agent: "worker", task: "[TASK_CONTEXT] ... Continue with this supervisor answer: ..." })`. The new child receives a new run identity. A parent-question child is terminal for continuation; `resume` cannot continue it.
+The handoff explicitly tells the parent to start a fresh child with a normal launch such as `subagent({ agent: "worker", task: "[TASK_CONTEXT] ... Continue with this supervisor answer: ..." })`. The new child receives a new run identity.
 
 ## Foreground supervisor coordination
 
@@ -218,20 +218,23 @@ subagent({ action: "resume", id: "<child-id>", message: "Focus on the failing te
 
 - **`pause`** stops the child's current turn and holds its queued steering and follow-ups in place. Intercom messages sent to a paused child wait until you resume it, as long as the same Atomic process keeps running.
 - **`quit`** stops the child gracefully, including a child that is already paused. Nothing you quit becomes terminal: every affected child stays resumable.
-- **`resume`** continues the child from its own saved session, under the same child id, Intercom name, and group, with fresh supervisor authorization. For a child stopped mid-turn (paused, quit, or interrupted, for example because Atomic exited), `message` is delivered once and the child then continues where it left off; without `message` it just continues. For a completed or failed child, `message` starts one fresh prompt in the same session. `all: true` is not accepted for `resume`.
+- **`resume`** continues the child from its own saved session, under the same child id, Intercom name, and group, with fresh supervisor authorization. For a paused, quit, or interrupted child, `message` is delivered once as its next prompt, and after replying the child continues where it left off. For a completed or failed child, `message` is one fresh prompt in the same session, with nothing queued after it. Without `message`, the child is asked to continue where it left off, or to stop if its task is finished; this works for completed and failed children too. `all: true` is not accepted for `resume`.
 
-Paused, quit, interrupted, completed, and failed children are resumable. So are children whose session you closed or switched away from, whether Atomic exited or crashed, or you used `/new`, `/resume` to another session, or `/fork`. These children are terminal, and `resume` returns an error that names why:
+Paused, quit, interrupted, completed, and failed children are resumable, including a paused child that you later quit. So are children whose session you closed or switched away from, whether Atomic exited or crashed, or you used `/new`, `/resume` to another session, or `/fork`; they are restored when that session reopens. These children are terminal, and `resume` returns an error that says why:
 
-- children cancelled for good by owner or batch cancellation, including stopping them from `/tasks`
-- children whose workflow stage closed for good (the stage finished, or its run ended or was cancelled)
-- children killed before run control existed, and children reported gone after a restart
-- single-child parent-question handoffs
+- **Killed**: cancelled for good by an owner or batch cancellation. This includes stopping the subagent from `/tasks`, pausing the workflow stage that launched it, and the removed `kill` action.
+- **Stage ended**: the workflow stage that launched it finished, or its run ended or was cancelled. The error reads `<agent> (<child-id>, <intercom-name>) is terminal and cannot be resumed: its workflow stage ended (the stage finished, or its run ended or was cancelled). Launch a fresh subagent if its work is still needed.`
+- **Gone**: it could not be restored after a restart.
 
 Resume also refuses a child that is still running (pause or quit it first) and an id this session did not launch. For a terminal child, launch a fresh child with an explicit context handoff.
 
-The `kill` action was removed, and `interrupt` before it. Calls with `action: "kill"` or `action: "interrupt"` are rejected with an error that names `quit` as the replacement. Replace them with `subagent({ action: "quit", id })`.
+The `kill` action was removed, and `interrupt` before it. Calls with either are rejected with an error that names `quit` as the replacement. For `kill` it reads:
 
-When you reopen a session (`/resume`, `atomic --session`, or resuming a workflow stage), each subagent tool card in the transcript shows the child's current state (running, paused, quit, completed, failed, or terminal) and its transcript. A resumed child continues in its original card instead of opening a new one, and earlier `pause`, `resume`, and `quit` calls render as their results.
+```text
+The subagent action "kill" was removed. Use { action: "quit", id } to stop a child gracefully; it stays resumable with { action: "resume", id, message? }.
+```
+
+Each background subagent launch card shows the child's latest state, including after you reopen the session with `/resume` or `atomic --session <id>`, and when you view a workflow stage's transcript: **Running in background**, **Paused (resumable)**, **Quit (resumable)**, **Interrupted (resumable)**, **Completed**, **Failed**, **Terminal · killed**, **Terminal · gone after a restart**, or **Terminal · its workflow stage ended**. A resumed child continues in its original launch card, marked **· resumed**, and the `resume` call's own card says the child continues in its original launch card. Expand a launch card to see the end of the child's saved transcript. Earlier `pause`, `resume`, and `quit` calls show their results, and rejected calls show their error.
 
 ## Task inspection
 
@@ -308,7 +311,7 @@ Use `group` on a call or task to select the child's [Intercom](/intercom) group.
 
 Pending Intercom asks belong to the addressed session. A workflow child cannot inspect or answer its parent stage's pending asks, and sibling children keep separate pending lists.
 
-Detached children remain owned by the workflow stage that launched them. When that stage completes, Atomic cancels every still-running owned child (single or parallel) with the existing parent-cancellation outcome (`status: "interrupted"`, `cause: "abort"`) and suppresses late findings and completion notifications instead of routing them to the parent/main chat. These children are terminal; `resume` refuses them with an error that names the closed stage. A detached child that finishes while its stage is still live notifies normally, and completing one stage does not affect children owned by other stages or sessions.
+Detached children remain owned by the workflow stage that launched them. When that stage completes, Atomic cancels every still-running owned child (single or parallel) with the existing parent-cancellation outcome (`status: "interrupted"`, `cause: "abort"`) and suppresses late findings and completion notifications instead of routing them to the parent/main chat. These children are terminal; `resume` refuses them with an error that says their workflow stage ended. A detached child that finishes while its stage is still live notifies normally, and completing one stage does not affect children owned by other stages or sessions.
 
 When a subagent call or parallel task uses a `cwd`, Atomic validates that working directory before starting the child runtime. Missing or non-directory paths are reported as `cwd` problems instead of lower-level runtime errors.
 
