@@ -43,9 +43,14 @@ import { createIssue3085StageSession } from "./fixtures/issue-3085-provider-auth
  * 2.7s warm locally, and a loaded Windows runner exceeded a 45s child budget
  * where an idle retry of the same job finished in 23.5s.
  */
-const ISOLATED_PROCESS_RESTART_TIMEOUT_MS = 150_000;
 const RESUME_CHILD_TIMEOUT_MS = 120_000;
-const SESSION_IO_SETTLE_TIMEOUT_MS = 10_000;
+/**
+ * Wall-clock bound on the parent's blocked-state settle loop, which exits as soon as the run blocks.
+ * Under full CPU saturation the loop needs about 12s of real session I/O before the fake auth
+ * deadline can fire, which exhausted the former 10s bound on a loaded Windows runner.
+ */
+const SESSION_IO_SETTLE_TIMEOUT_MS = 60_000;
+const RESTART_TEARDOWN_MARGIN_MS = 30_000;
 
 const repositoryRoot = join(moduleDir(import.meta.url), "../..");
 const resumeFixture = join(moduleDir(import.meta.url), "fixtures", "issue-3085-provider-auth-block.ts");
@@ -190,5 +195,5 @@ test(
 			}
 		}
 	},
-	ISOLATED_PROCESS_RESTART_TIMEOUT_MS,
+	SESSION_IO_SETTLE_TIMEOUT_MS + RESUME_CHILD_TIMEOUT_MS + RESTART_TEARDOWN_MARGIN_MS,
 );
