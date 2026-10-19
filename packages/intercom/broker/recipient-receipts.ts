@@ -4,7 +4,7 @@ import type { BrokerMessage } from "../types.js";
 
 /** #3761: the sender is told this when the recipient did not confirm a save within the sender's wait. */
 export const UNCERTAIN_RECEIPT_REASON =
-	"The recipient did not confirm that it saved the message in time, so whether it arrived is uncertain. Retrying with the same message ID is safe: the recipient ignores a copy it already saved.";
+	"The recipient did not confirm that it saved the message in time, so whether it arrived is uncertain: it may still save and show it. Check with the recipient before sending it again, because a new send is a new message.";
 
 export interface ReceiptSender {
 	readonly socket: net.Socket;
