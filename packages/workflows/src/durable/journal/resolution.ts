@@ -1,12 +1,11 @@
 import { dirname, isAbsolute, join } from "node:path";
-import { getAgentDir } from "@bastani/atomic";
+import { getAgentDir, selectProcessStorage } from "@bastani/atomic";
 import {
 	type RunJournalOption,
 	StorageConfigError,
 	StorageProvider,
 	type StorageSelection,
 	type StorageSettingsSelection,
-	selectProcessStorage,
 	selectStorage,
 } from "@bastani/atomic/storage";
 import { MemoryRunJournal } from "./memory-run-journal.js";

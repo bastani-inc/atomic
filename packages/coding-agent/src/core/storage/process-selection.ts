@@ -5,7 +5,8 @@ import { Value } from "typebox/value";
 import { ENV_SESSION_DIR } from "../../config.js";
 import { resolvePath } from "../../utils/paths.ts";
 import { SessionStorageSelectionSchema, StorageSelectionSchema } from "../settings-schema.ts";
-import { StorageConfigError } from "./errors.js";
+import { StorageConfigError, StoragePrefixError } from "./errors.js";
+import { validateStoragePrefix } from "./prefix.js";
 import type { StorageSelection } from "./provider.js";
 import { selectStorage } from "./selection.js";
 
@@ -68,6 +69,12 @@ function choose(
 		}
 	};
 	if ("dir" in value) return { selection: { kind: "jsonl", dir: resolve(value.dir) }, source, field };
+	try {
+		validateStoragePrefix(value.prefix);
+	} catch (error) {
+		if (error instanceof StoragePrefixError) throw new StorageConfigError(source, field, "invalid-prefix");
+		throw error;
+	}
 	const selection = selectStorage(value, source, field, defaultPath);
 	return {
 		selection:

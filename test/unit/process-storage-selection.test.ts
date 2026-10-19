@@ -281,6 +281,35 @@ test("a set storage variable outranked by another selection still fails when inv
 	}
 });
 
+test("an invalid storage prefix names its variable or flag, even when another selection outranks it (#3783)", () => {
+	const selections: Array<[string, () => object]> = [
+		["sessions", () => selectProcessStorage("sessions", agentDir, project) ?? {}],
+		["journal", () => selectProcessStorage("journal", agentDir, project) ?? {}],
+		["workflow journal", () => selectRunJournal()],
+	];
+	for (const prefix of ["bad-prefix", "sqlite_reserved"]) {
+		vi.stubEnv(STORAGE_ENV, JSON.stringify({ path: "store.sqlite", prefix }));
+		storageFlag({ memory: true });
+		for (const [label, select] of selections) {
+			assert.throws(select, (error: Error) => {
+				assert.ok(error instanceof StorageConfigError, label);
+				assert.deepEqual([error.source, error.field, error.reason], ["env", STORAGE_ENV, "invalid-prefix"], label);
+				return true;
+			});
+		}
+		vi.stubEnv(STORAGE_ENV, "");
+		storageFlag({ path: "store.sqlite", prefix });
+		for (const [label, select] of selections) {
+			assert.throws(select, (error: Error) => {
+				assert.ok(error instanceof StorageConfigError, label);
+				assert.deepEqual([error.source, error.field, error.reason], ["cli", "--storage", "invalid-prefix"], label);
+				return true;
+			});
+		}
+		setCliStorageSelection(undefined);
+	}
+});
+
 test("explicit overrides of one domain conflict instead of one silently winning (#3783)", () => {
 	vi.stubEnv(SESSIONS_STORAGE_ENV, JSON.stringify({ memory: true }));
 	vi.stubEnv(SESSION_DIR_ENV, "legacy-sessions");

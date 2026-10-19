@@ -34,6 +34,12 @@ export type { UsageEntry } from "./core/session-manager.ts";
 export { resolveSessionStore } from "./core/session-storage.js";
 export { CACHE_WARMING_MODES, type CacheWarmingMode } from "./core/settings-manager.ts";
 export * from "./core/storage/index.js";
+// Outside the storage barrel: workflow durability setup imports that barrel in every test worker.
+export {
+	type ProcessStorageChoice,
+	type StorageDomain,
+	selectProcessStorage,
+} from "./core/storage/process-selection.js";
 export { JsonlSessionStore } from "./core/storage/session/jsonl-session-store.js";
 // Internal trusted-host task integration (not model authority).
 export { AgentTaskHost, type AgentTaskHostBinding, type AgentTaskRunnerFactory } from "./core/tasks/agent-adapter.js";
