@@ -2899,30 +2899,39 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 	}
 }
 
+// Atomic sends TypeSafe's Danger-Zone beta headers on every direct Jev request. They raise the
+// context to 262K tokens and turn on image input; models.dev records the defaults without them.
+// https://docs.typesafe.ai/models.md and https://docs.typesafe.ai/images.md
+const TYPESAFE_CLASSIFIER_IDS = ["jev-latest", "jev-1.14.0"];
+const TYPESAFE_DANGER_ZONE_OVERRIDES = {
+	input: ["text", "image"],
+	contextWindow: 262000,
+	headers: { "TypeSafe-Danger-Zone-Long-Context": "true", "TypeSafe-Danger-Zone-Images": "true" },
+} satisfies Pick<ClassifierModel<"typesafe-system-one">, "input" | "contextWindow" | "headers">;
+
 async function loadModelsDevClassifierModels(): Promise<ClassifierModel<"typesafe-system-one">[]> {
 	try {
 		console.log("Fetching classifier models from models.dev API...");
 		const response = await fetchModelCatalog("https://models.dev/models.json?type=decision");
 		if (!response.ok) throw new Error(`models.dev classifier API returned ${response.status}`);
 		const data = (await response.json()) as Record<string, ModelsDevMetadata>;
-		const metadata = data["typesafe/jev-latest"];
-		if (!metadata || metadata.type !== "decision") {
-			throw new Error("models.dev did not return decision model typesafe/jev-latest");
-		}
-		return [
-			{
+		return TYPESAFE_CLASSIFIER_IDS.map((id): ClassifierModel<"typesafe-system-one"> => {
+			const metadata = data[`typesafe/${id}`];
+			if (!metadata || metadata.type !== "decision") {
+				throw new Error(`models.dev did not return decision model typesafe/${id}`);
+			}
+			return {
 				type: "classifier",
-				id: "jev-latest",
+				id,
 				name: metadata.name,
 				api: "typesafe-system-one",
 				provider: "typesafe",
 				baseUrl: "https://api.typesafe.ai/v1/",
-				input: metadata.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
 				// The canonical models.dev entry has no direct-provider pricing and System One reports no token usage.
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				contextWindow: metadata.limit?.context || 64000,
-			},
-		];
+				...TYPESAFE_DANGER_ZONE_OVERRIDES,
+			};
+		});
 	} catch (error) {
 		console.error("Failed to load models.dev classifier data:", error);
 		if (generatorOptions.strict) throw error;

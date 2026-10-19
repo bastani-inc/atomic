@@ -14,7 +14,15 @@ afterEach(() => {
 });
 
 function runOpenRouterRetryFixture(
-	mode: "transient-success" | "transient-failure" | "http-429" | "http-400" | "classifier-429" | "cyclic-self" | "cyclic-mutual",
+	mode:
+		| "transient-success"
+		| "transient-failure"
+		| "http-429"
+		| "http-400"
+		| "classifier-429"
+		| "classifier-missing-jev-1.14"
+		| "cyclic-self"
+		| "cyclic-mutual",
 ) {
 	const fixtureRoot = mkdtempSync(join(tmpdir(), "pi-generate-models-retry-"));
 	temporaryRoots.push(fixtureRoot);
@@ -78,7 +86,9 @@ function runOpenRouterRetryFixture(
 			`  if (url === "https://models.dev/models.json?type=decision") {\n` +
 			`    classifierAttempts += 1;\n` +
 			`    if (${JSON.stringify(mode)} === "classifier-429" && classifierAttempts === 1) return new Response("rate limited", { status: 429 });\n` +
-			`    return Response.json({ "typesafe/jev-latest": { type: "decision", name: "Jev" } });\n` +
+			`    const decisions = { "typesafe/jev-latest": { type: "decision", name: "Jev", modalities: { input: ["text"] }, limit: { context: 64000 } } };\n` +
+			`    if (${JSON.stringify(mode)} !== "classifier-missing-jev-1.14") decisions["typesafe/jev-1.14.0"] = { type: "decision", name: "Jev 1.14", modalities: { input: ["text"] }, limit: { context: 64000 } };\n` +
+			`    return Response.json(decisions);\n` +
 			`  }\n` +
 			`  if (url === "https://openrouter.ai/api/v1/models?output_modalities=image") return Response.json({ data: [{ id: "test/image", name: "Image", architecture: { output_modalities: ["image"] } }] });\n` +
 			`  if (url === "https://openrouter.ai/api/v1/models?output_modalities=decisions") return Response.json({ data: [] });\n` +
@@ -189,6 +199,28 @@ describe("strict model generation", () => {
 		expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
 		expect(`${result.stdout}\n${result.stderr}`).toContain(
 			"Model fetch from https://models.dev/models.json?type=decision returned 429; retrying (attempt 2/2)",
+		);
+	});
+
+	it("sources both TypeSafe Jev classifiers from models.dev with the Danger-Zone context, images and headers", () => {
+		const result = runOpenRouterRetryFixture("classifier-429");
+		expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+		const typesafeCatalog = JSON.parse(
+			readFileSync(join(result.outputPath, "providers/typesafe.all.json"), "utf8"),
+		) as Array<{ input?: string[] }>;
+		const headers = { "TypeSafe-Danger-Zone-Long-Context": "true", "TypeSafe-Danger-Zone-Images": "true" };
+		expect(typesafeCatalog).toEqual([
+			expect.objectContaining({ id: "jev-1.14.0", name: "Jev 1.14", contextWindow: 262000, headers }),
+			expect.objectContaining({ id: "jev-latest", name: "Jev", contextWindow: 262000, headers }),
+		]);
+		for (const model of typesafeCatalog) assert.deepEqual(model.input, ["text", "image"]);
+	});
+
+	it("fails strict generation when models.dev omits Jev 1.14", () => {
+		const result = runOpenRouterRetryFixture("classifier-missing-jev-1.14");
+		expect(result.status).toBe(1);
+		expect(`${result.stdout}\n${result.stderr}`).toContain(
+			"models.dev did not return decision model typesafe/jev-1.14.0",
 		);
 	});
 

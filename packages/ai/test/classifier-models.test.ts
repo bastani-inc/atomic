@@ -115,19 +115,22 @@ describe("Models with classifier models", () => {
 	});
 
 	it("exposes Jev only through classifier catalog accessors", () => {
-		const jev = getBuiltinClassifierModel("typesafe", "jev-latest");
-		expect(jev).toMatchObject({
-			type: "classifier",
-			api: "typesafe-system-one",
-			provider: "typesafe",
-			contextWindow: 64000,
-		});
-		expect(getBuiltinClassifierModels("typesafe")).toEqual([jev]);
-		expect(getAllBuiltinModels("typesafe")).toEqual([jev]);
-
 		const models = builtinModels();
-		expect(models.getModel("typesafe", "jev-latest")).toBeUndefined();
-		expect(models.getModelOfType("classifier", "typesafe", "jev-latest")).toEqual(jev);
+		const ids = ["jev-1.14.0", "jev-latest"] as const;
+		const jev = ids.map((id) => getBuiltinClassifierModel("typesafe", id));
+		for (const [index, id] of ids.entries()) {
+			expect(jev[index]).toMatchObject({
+				type: "classifier",
+				id,
+				api: "typesafe-system-one",
+				provider: "typesafe",
+				contextWindow: 262000,
+			});
+			expect(models.getModel("typesafe", id)).toBeUndefined();
+			expect(models.getModelOfType("classifier", "typesafe", id)).toEqual(jev[index]);
+		}
+		expect(getBuiltinClassifierModels("typesafe")).toEqual(jev);
+		expect(getAllBuiltinModels("typesafe")).toEqual(jev);
 	});
 
 	it("rejects images for classifier models without image input before calling the provider", async () => {

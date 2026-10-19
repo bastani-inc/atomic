@@ -9,6 +9,7 @@
 ### Added
 
 - Added `AgentSession.startPendingRecovery()`, the RPC `start_pending_recovery` command, and the `session_recovery_restore` and `session_recovery_replay` extension events. Extensions can now restore background work after a restart, decline to replay deliveries whose peer is gone, and defer deliveries they cannot decide on yet to the next resume without starting a turn ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
+- Added the `typesafe/jev-1.14.0` classifier. Both direct TypeSafe classifiers, `typesafe/jev-latest` and `typesafe/jev-1.14.0`, now accept up to 262K tokens and PNG or JPEG images, for example through `models.classify()` in codemode. See [TypeSafe Jev](docs/providers.md#typesafe-jev).
 
 ### Fixed
 

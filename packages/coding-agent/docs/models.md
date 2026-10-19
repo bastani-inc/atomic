@@ -31,7 +31,7 @@ OpenAI's GPT-6 Luna Decisions classifier is `openai-decisions/gpt-6-luna`. It us
 
 GPT-6 Luna accepts up to 128 image blocks through `images`, alongside the JSON state. Other classifiers reject images unless their catalog input and API support them. Refused answers produce an error result. The endpoint rejects inputs above 922K tokens; very large inputs, currently above roughly 600K tokens, can hit its gateway time limit. These 504 responses are not retried, so reduce the input before trying again.
 
-TypeSafe Jev and Cloudflare Clef classifiers are also available through their providers. [Local llama.cpp models](/llama-cpp#classification) support native decision models and a next-token-probability fallback for chat models.
+TypeSafe Jev and Cloudflare Clef classifiers are also available through their providers. The direct TypeSafe classifiers, `typesafe/jev-latest` and `typesafe/jev-1.14.0`, accept up to 262K tokens and PNG or JPEG images through `images`; see [TypeSafe Jev](/providers#typesafe-jev). [Local llama.cpp models](/llama-cpp#classification) support native decision models and a next-token-probability fallback for chat models.
 
 ## Table of Contents
 
