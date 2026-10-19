@@ -4,12 +4,14 @@ import { loadStorageAdapter, openNodeSqliteDatabase, type SqliteDatabase } from 
 import { test } from "vitest";
 import type { IntercomBrokerStateOptions } from "../../packages/intercom/broker/multinode-state-store.js";
 import { openSqlHeldSendStore } from "../../packages/intercom/broker/sql-held-send-store.js";
+import { openSqlOutboxStore } from "../../packages/intercom/broker/sql-outbox-store.js";
 import { openSqlPendingAskStore } from "../../packages/intercom/broker/sql-pending-ask-store.js";
 import { openSqlRestoringReservationStore } from "../../packages/intercom/broker/sql-restoring-reservation-store.js";
 import { openSqlSentMessageAuthority } from "../../packages/intercom/broker/sql-sent-message-authority.js";
 import {
 	type OpenSharedStoreFixture,
 	registerCrossNodeHeldRoundTripConformance,
+	registerCrossNodeRoundTripConformance,
 	registerHeldSendStoreConformance,
 	registerPendingAskStoreConformance,
 	registerRestoringReservationStoreConformance,
@@ -75,6 +77,11 @@ for (const [name, openConnection, prefix] of [
 		openReservations: sharedFileFixture(openConnection, openSqlRestoringReservationStore, prefix),
 		openHeldSends: sharedFileFixture(openConnection, openSqlHeldSendStore, prefix),
 		openOutbox: openMemoryOutboxFixture,
+		openBus: openMemoryWakeUpBusFixture,
+	});
+	registerCrossNodeRoundTripConformance(test, `${name} (SQL outbox and pending asks)`, {
+		openOutbox: sharedFileFixture(openConnection, openSqlOutboxStore, prefix),
+		openPendingAsks: sharedFileFixture(openConnection, openSqlPendingAskStore, prefix),
 		openBus: openMemoryWakeUpBusFixture,
 	});
 }

@@ -188,3 +188,42 @@ test("database wake-up bus interrupt closes the poller's connection and the next
 		await file.close();
 	}
 });
+
+/** More waiting hints than SQLite's default limit of 32,766 bound parameters in one statement. */
+const HINT_BACKLOG = 33_000;
+
+test("database wake-up bus drains a hint backlog larger than SQLite's parameter limit in bounded batches", async () => {
+	const file = openSqliteFile();
+	try {
+		const scheduler = manualScheduler();
+		const subscriber = await file.connect({ schedule: scheduler.schedule });
+		const observer = await openNodeSqliteDatabase(file.path);
+		try {
+			await observer.run(
+				`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ${HINT_BACKLOG})
+				INSERT INTO intercom_wakeups (broker_id, reason, version, created_at)
+				SELECT 'broker-b', 'outbox', i, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) FROM n`,
+			);
+			const received = recorder();
+			assert.equal((await subscriber.subscribe("broker-b", received.listener)).status, "subscribed");
+			await scheduler.poll();
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			const hints = received.events.filter((event) => event.kind === "hint");
+			assert.equal(hints.length, HINT_BACKLOG);
+			assert.deepEqual(hints.at(-1), {
+				kind: "hint",
+				hint: { brokerId: "broker-b", reason: "outbox", version: HINT_BACKLOG },
+			});
+			assert.equal(
+				received.events.some((event) => event.kind === "resync" && event.cause === "reconnected"),
+				false,
+				"the connection is never dropped",
+			);
+			assert.deepEqual(await observer.get("SELECT COUNT(*) AS count FROM intercom_wakeups"), { count: 0 });
+		} finally {
+			await observer.close();
+		}
+	} finally {
+		await file.close();
+	}
+});

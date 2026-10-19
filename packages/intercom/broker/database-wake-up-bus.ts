@@ -21,6 +21,11 @@ import type {
 export const WAKE_UP_POLL_INTERVAL_MS = 500;
 /** Hints nobody consumed (their broker exited) are deleted after this age; the backup poll has covered them. */
 export const WAKE_UP_HINT_RETENTION_MS = OUTBOX_BACKUP_POLL_INTERVAL_MS;
+/**
+ * Hints read and deleted per statement; a poll repeats until a batch comes back short. Each batch's delete binds one
+ * parameter per hint, so a backlog never exceeds SQLite's bound-parameter limit (999 on old builds).
+ */
+export const WAKE_UP_POLL_BATCH_SIZE = 500;
 
 /** Runs `callback` once after `delayMs` and returns a function that cancels it. */
 export type WakeUpPollScheduler = (callback: () => void, delayMs: number) => () => void;
@@ -181,31 +186,34 @@ class DatabaseWakeUpBus implements WakeUpBus {
 		const brokerIds = [...new Set([...this.subscriptions].map((subscription) => subscription.brokerId))];
 		if (database === undefined || brokerIds.length === 0) return;
 		const placeholders = brokerIds.map(() => "?").join(", ");
-		let rows: HintRow[];
-		try {
-			rows = await database.all<HintRow>(
-				`SELECT id, broker_id, reason, version FROM ${this.table} WHERE broker_id IN (${placeholders}) ORDER BY id`,
-				...brokerIds,
-			);
-			if (rows.length > 0) {
-				await database.run(
-					`DELETE FROM ${this.table} WHERE id IN (${rows.map(() => "?").join(", ")})`,
-					...rows.map((row) => row.id),
+		for (;;) {
+			let rows: HintRow[];
+			try {
+				rows = await database.all<HintRow>(
+					`SELECT id, broker_id, reason, version FROM ${this.table} WHERE broker_id IN (${placeholders}) ORDER BY id LIMIT ${WAKE_UP_POLL_BATCH_SIZE}`,
+					...brokerIds,
 				);
+				if (rows.length > 0) {
+					await database.run(
+						`DELETE FROM ${this.table} WHERE id IN (${rows.map(() => "?").join(", ")})`,
+						...rows.map((row) => row.id),
+					);
+				}
+			} catch {
+				this.drop(database);
+				return;
 			}
-		} catch {
-			this.drop(database);
-			return;
-		}
-		for (const row of rows) {
-			const hint: WakeUpHint = {
-				brokerId: row.broker_id,
-				reason: row.reason === "outcome" ? "outcome" : "outbox",
-				version: row.version,
-			};
-			for (const subscription of this.subscriptions) {
-				if (subscription.brokerId === hint.brokerId) this.deliver(subscription, { kind: "hint", hint });
+			for (const row of rows) {
+				const hint: WakeUpHint = {
+					brokerId: row.broker_id,
+					reason: row.reason === "outcome" ? "outcome" : "outbox",
+					version: row.version,
+				};
+				for (const subscription of this.subscriptions) {
+					if (subscription.brokerId === hint.brokerId) this.deliver(subscription, { kind: "hint", hint });
+				}
 			}
+			if (rows.length < WAKE_UP_POLL_BATCH_SIZE || this.closed) return;
 		}
 	}
 

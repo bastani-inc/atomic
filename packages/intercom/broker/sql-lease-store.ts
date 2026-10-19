@@ -143,7 +143,7 @@ export async function openSqlBrokerLeaseStore(options: IntercomBrokerStateOption
 		async renew(lease, subject) {
 			const bad = validLease(lease);
 			if (bad !== undefined) return bad;
-			if (subject !== undefined && JSON.stringify(keyOf(subject)) !== JSON.stringify(lease.key)) {
+			if (subject !== undefined && (subject.kind !== lease.key.kind || keyId(keyOf(subject)) !== keyId(lease.key))) {
 				return invalid("subject-key-mismatch");
 			}
 			return database.transaction(async (tx) => {
