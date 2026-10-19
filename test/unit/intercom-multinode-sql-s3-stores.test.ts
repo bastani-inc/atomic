@@ -3,14 +3,20 @@ import { join } from "node:path";
 import { loadStorageAdapter, openNodeSqliteDatabase, type SqliteDatabase } from "@bastani/atomic/storage";
 import { test } from "vitest";
 import type { IntercomBrokerStateOptions } from "../../packages/intercom/broker/multinode-state-store.js";
+import { openSqlHeldSendStore } from "../../packages/intercom/broker/sql-held-send-store.js";
 import { openSqlPendingAskStore } from "../../packages/intercom/broker/sql-pending-ask-store.js";
+import { openSqlRestoringReservationStore } from "../../packages/intercom/broker/sql-restoring-reservation-store.js";
 import { openSqlSentMessageAuthority } from "../../packages/intercom/broker/sql-sent-message-authority.js";
 import {
 	type OpenSharedStoreFixture,
+	registerCrossNodeHeldRoundTripConformance,
+	registerHeldSendStoreConformance,
 	registerPendingAskStoreConformance,
+	registerRestoringReservationStoreConformance,
 	registerSentMessageAuthorityConformance,
 	type SharedStoreFixture,
 } from "../helpers/intercom-multinode-contract.js";
+import { openMemoryOutboxFixture, openMemoryWakeUpBusFixture } from "../helpers/intercom-multinode-memory-reference.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
 
 type OpenStore<Store> = (options: IntercomBrokerStateOptions) => Promise<Store>;
@@ -59,4 +65,16 @@ for (const [name, openConnection, prefix] of [
 		name,
 		sharedFileFixture(openConnection, openSqlSentMessageAuthority, prefix),
 	);
+	registerHeldSendStoreConformance(test, name, sharedFileFixture(openConnection, openSqlHeldSendStore, prefix));
+	registerRestoringReservationStoreConformance(
+		test,
+		name,
+		sharedFileFixture(openConnection, openSqlRestoringReservationStore, prefix),
+	);
+	registerCrossNodeHeldRoundTripConformance(test, name, {
+		openReservations: sharedFileFixture(openConnection, openSqlRestoringReservationStore, prefix),
+		openHeldSends: sharedFileFixture(openConnection, openSqlHeldSendStore, prefix),
+		openOutbox: openMemoryOutboxFixture,
+		openBus: openMemoryWakeUpBusFixture,
+	});
 }
