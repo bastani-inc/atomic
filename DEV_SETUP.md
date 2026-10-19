@@ -7,7 +7,7 @@ This document covers setup, the local dev loop, testing patterns, and project la
 ## Prerequisites
 
 - **[Node.js](https://nodejs.org) ≥ 22.13** — runs installs, checks, and the vitest suites (`node:sqlite` is unflagged from 22.13)
-- **[Bun](https://bun.sh) ≥ 1.4.2** — compiles release binaries, runs `scripts/*.ts`, and hosts the Bun-based test fixtures
+- **[Bun](https://bun.sh) ≥ 1.4.3** — type-checks the workspace (`bun check`), compiles release binaries, runs `scripts/*.ts`, and hosts the Bun-based test fixtures
 - **[Rust](https://rustup.rs)** (stable, with `cargo`) — builds the `@bastani/atomic-natives` N-API module
 
 This repo runs a hybrid toolchain matching upstream `earendil-works/pi`: **npm** installs, builds, checks, and runs the vitest suites; **Bun** compiles the release binaries, runs `scripts/*.ts`, and hosts the test fixtures that need it. `AGENTS.md` carries the full table. The `@bastani/workflows` workspace package ships raw `.ts` files with no build step; Atomic bundles it into `@bastani/atomic` during the coding-agent build.
@@ -191,10 +191,10 @@ Run these from the workspace root:
 | `npm run hooks:install`     | Install `prek.toml` Git hooks using `default_install_hook_types` |
 | `npm run hooks:run`         | Run all `prek.toml` hooks across the repository                  |
 
-`check` runs `biome check --error-on-warnings`, then `tsc --noEmit`, then the coding-agent
-package's own typecheck (`tsc -p tsconfig.build.json --noEmit` — a second pass under a
-stricter config, including `erasableSyntaxOnly`, because the root
-tsconfig excludes `packages/coding-agent`), then verifies
+`check` runs `biome check --error-on-warnings`, then `bun check` on the root tsconfig, then the
+coding-agent package's own typecheck (`tsconfig.build.json` — a second pass under a stricter
+config, including `erasableSyntaxOnly`, because the root tsconfig excludes
+`packages/coding-agent` — plus its type tests), then verifies
 `packages/coding-agent/npm-shrinkwrap.json` is still derivable from `package-lock.json`; `lint`
 is an alias for `check`, and `npm run format` applies Biome's formatter. Biome is configured in
 [`biome.json`](./biome.json) with upstream pi's rule set.

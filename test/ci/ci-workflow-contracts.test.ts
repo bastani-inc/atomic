@@ -171,7 +171,7 @@ test("typecheck aliases the local pi-ai build before compiling dependents", asyn
 	const manifest = (await readJson(join(root, "package.json"))) as { scripts: Record<string, string> };
 	assert.equal(
 		manifest.scripts.typecheck,
-		"npm --workspace=@bastani/pi-ai run build && npm --workspace=@bastani/pi-ai run typecheck && node scripts/alias-pi-ai.mjs && tsc --noEmit && npm --workspace=@bastani/atomic run typecheck",
+		"npm --workspace=@bastani/pi-ai run build && npm --workspace=@bastani/pi-ai run typecheck && node scripts/alias-pi-ai.mjs && node scripts/bun-typecheck.mjs && npm --workspace=@bastani/atomic run typecheck",
 	);
 });
 

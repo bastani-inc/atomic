@@ -105,7 +105,7 @@ test("x64 release binaries target Bun's baseline CPU runtime", () => {
 });
 
 test("the pinned Windows bytecode probe covers the enabled x64 and ARM64 release policy", () => {
-	assert.equal(WINDOWS_BYTECODE_PROBE_BUN_VERSION, "1.4.2");
+	assert.equal(WINDOWS_BYTECODE_PROBE_BUN_VERSION, "1.4.3");
 	assert.deepEqual(
 		WINDOWS_BYTECODE_PROBE_TARGETS.map(({ platform, target, machine }) => ({ platform, target, machine })),
 		[

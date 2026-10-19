@@ -188,7 +188,7 @@ export function validateComparisonIdentity(
 		throw new Error("candidate launcherMode must be non-bytecode");
 	if (bytecode.metadata.runtime?.launcherMode !== "bytecode")
 		throw new Error("candidate-bytecode launcherMode must be bytecode");
-	if (bytecode.metadata.runtime?.bun !== "1.4.2") throw new Error("candidate-bytecode must use Bun 1.4.2");
+	if (bytecode.metadata.runtime?.bun !== "1.4.3") throw new Error("candidate-bytecode must use Bun 1.4.3");
 	const candidateApp = candidate.metadata.artifactHashes?.["app.js"];
 	const bytecodeApp = bytecode.metadata.artifactHashes?.["app.js"];
 	if (!candidateApp || candidateApp !== bytecodeApp) {

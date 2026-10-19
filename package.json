@@ -4,7 +4,7 @@
   "type": "module",
   "engines": {
     "node": ">=22.19.0",
-    "bun": ">=1.4.2"
+    "bun": ">=1.4.3"
   },
   "contributors": [
     "Norin Lavaee",
@@ -27,7 +27,7 @@
     "test:all": "npm run test:unit && npm run test:integration",
     "test:scripts": "node --test \"scripts/*.test.mjs\"",
     "test:mcp-conformance": "bun run packages/coding-agent/test/mcp-conformance/run.ts",
-    "typecheck": "npm --workspace=@bastani/pi-ai run build && npm --workspace=@bastani/pi-ai run typecheck && node scripts/alias-pi-ai.mjs && tsc --noEmit && npm --workspace=@bastani/atomic run typecheck",
+    "typecheck": "npm --workspace=@bastani/pi-ai run build && npm --workspace=@bastani/pi-ai run typecheck && node scripts/alias-pi-ai.mjs && node scripts/bun-typecheck.mjs && npm --workspace=@bastani/atomic run typecheck",
     "format": "biome format --write .",
     "check": "biome check --error-on-warnings . && npm run typecheck && npm run check:shrinkwrap",
     "lint": "npm run check",
@@ -39,7 +39,7 @@
     "@biomejs/biome": "2.5.8",
     "@j178/prek": "0.5.5",
     "@libsql/client": "0.18.0",
-    "@types/bun": "1.4.1",
+    "@types/bun": "1.4.3",
     "@types/tar-stream": "3.1.5",
     "@xterm/headless": "6.0.0",
     "acorn": "8.18.0",

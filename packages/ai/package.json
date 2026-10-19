@@ -68,7 +68,7 @@
 		"build": "npm run generate-models && npm run build:offline",
 		"build:offline": "npm run check:model-data && tsc -p tsconfig.build.json && shx rm -rf dist/providers/data && shx cp -r src/providers/data dist/providers/data",
 		"test": "vitest --run",
-		"typecheck": "tsc -p tsconfig.json --noEmit",
+		"typecheck": "node ../../scripts/bun-typecheck.mjs -p tsconfig.json",
 		"check": "biome check --error-on-warnings . && npm run typecheck",
 		"format": "biome check --write .",
 		"prepublishOnly": "npm run clean && npm run build",

@@ -43,7 +43,7 @@ Create one metadata JSON file per build. Hash the ZIP or package tarball, execut
   "runtime": {
     "productSha": "...",
     "atomic": "0.0.0",
-    "bun": "1.4.2",
+    "bun": "1.4.3",
     "node": "22.19.0",
     "vm": "cbx_..."
   }
@@ -77,7 +77,7 @@ bun run scripts/perf/windows-startup/benchmark.ts `
 
 Run the release `atomic-state-cold` profile with the same arguments except `--profile atomic-state-cold` and a separate output directory. Run the Node lane with `--lane node --profile warm` and the baseline/candidate installed `node_modules\.bin` directories; bytecode does not apply to Node. For a baseline-only checkpoint, omit all candidate arguments. `--repeats 30` means 30 samples per supplied build.
 
-Supplying the bytecode arm requires all three arms and both expected SHAs. The harness rejects a baseline whose metadata does not match `--baseline-sha`, optimized arms whose `productSha` values differ from `--candidate-sha`, a bytecode arm not marked as Bun 1.4.2 bytecode, or optimized arms whose computed `app.js` hashes differ. The campaign controller must compute those metadata values from the built artifacts rather than trusting hand-written labels.
+Supplying the bytecode arm requires all three arms and both expected SHAs. The harness rejects a baseline whose metadata does not match `--baseline-sha`, optimized arms whose `productSha` values differ from `--candidate-sha`, a bytecode arm not marked as Bun 1.4.3 bytecode, or optimized arms whose computed `app.js` hashes differ. The campaign controller must compute those metadata values from the built artifacts rather than trusting hand-written labels.
 
 Warm runs reuse one initialized agent directory for that lane/build/profile while every process receives a fresh session directory. Use the same explicit `--state-root` for untimed priming and the measured batch so priming reaches the measured warm-agent trees without mixing its JSONL records into headline evidence. Atomic-state-cold runs copy the same seeded agent template for each sample while leaving the OS filesystem cache warm. Filesystem-cold startup is not implied by either profile.
 
