@@ -61,11 +61,19 @@
   const IMPECCABLE_COMMAND = (window.__IMPECCABLE_COMMAND_PREFIX__ || '/') + 'impeccable';
   const PICK_CURSOR_STYLE_ID = PREFIX + '-pick-cursor-style';
   const MANUAL_APPLY_STATE_TTL_MS = 15 * 60 * 1000;
-  const sessionState = window.__IMPECCABLE_LIVE_SESSION__?.createLiveBrowserSessionState({
-    prefix: PREFIX,
-    storage: localStorage,
-    idFactory: () => crypto.randomUUID().replace(/-/g, '').slice(0, 8),
-  });
+  // No idFactory: the session helper's default works on plain-HTTP origins,
+  // where the secure-context-only randomUUID does not exist (issue #1055).
+  let sessionState = null;
+  try {
+    sessionState = window.__IMPECCABLE_LIVE_SESSION__?.createLiveBrowserSessionState({
+      prefix: PREFIX,
+      storage: localStorage,
+    });
+  } catch (err) {
+    console.error('[impeccable] Live mode could not create its session state.', err);
+    window.__IMPECCABLE_LIVE_INIT__ = false; // let a later injection retry
+    return;
+  }
   if (!sessionState) {
     console.error('[impeccable] live-browser-session.js was not loaded. Live mode cannot start safely.');
     window.__IMPECCABLE_LIVE_INIT__ = false;
@@ -293,6 +301,7 @@
     liveUiRoot,
     uiAppend,
     uiAppendToPage,
+    copyTextViaSelection,
     topLayerHost,
     watchModalDialogs,
     cloneWithoutChrome,
@@ -7120,6 +7129,10 @@
   //
 
   function startScrollTracking() {
+    // Idempotent: callers overlap (showBar starts tracking, then the agent
+    // pick path starts it again), and a second loop would never be cancelled
+    // because scrollRaf only remembers the latest one (#1002).
+    stopScrollTracking();
     function tick() {
       if (state === 'CONFIGURING' || state === 'GENERATING' || state === 'CYCLING') {
         if (isInsertGeneratingSession()) ensureInsertPlaceholder();
@@ -13461,12 +13474,24 @@ void main() {
       .replace(/'/g, '&#39;');
   }
 
+  // navigator.clipboard exists only in secure contexts, and writeText can
+  // reject even where it exists (no focus, permission). Fall back
+  // to the DOM helpers' selection copy (execCommand), which plain-HTTP origins
+  // still allow and which stays usable under an open modal dialog.
   function copyToClipboard(text) {
     if (!text) return;
+    const report = (ok) => showToast(ok ? 'Copied: ' + text : 'Could not copy: ' + text);
+    let pending = null;
     try {
-      navigator.clipboard.writeText(text);
-      showToast('Copied: ' + text);
-    } catch { /* ignore */ }
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        pending = navigator.clipboard.writeText(text);
+      }
+    } catch { pending = null; }
+    if (pending && typeof pending.then === 'function') {
+      pending.then(() => report(true), () => report(copyTextViaSelection(text)));
+      return;
+    }
+    report(copyTextViaSelection(text));
   }
 
   //

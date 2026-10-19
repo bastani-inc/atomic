@@ -23,7 +23,7 @@ Analyze what makes the design feel complex or cluttered:
 
 If any of these are unclear from the codebase, do not guess. Ask the user directly to clarify what you cannot infer.
 
-**CRITICAL**: Simplicity is not about removing features. It's about removing obstacles between users and their goals. Every element should justify its existence.
+Simplicity is not about removing features. It's about removing obstacles between users and their goals. Every element should justify its existence.
 
 ## Plan Simplification
 
@@ -34,7 +34,7 @@ Create a ruthless editing strategy:
 - **Progressive disclosure**: What can be hidden until needed?
 - **Consolidation opportunities**: What can be combined or integrated?
 
-**IMPORTANT**: Simplification is hard. It requires saying no to good ideas to make room for great execution. Be ruthless.
+Expect to say no to good ideas to make room for great execution.
 
 ## Simplify the Design
 
@@ -83,7 +83,7 @@ Systematically remove complexity across these dimensions:
 - **Consolidate styles**: Merge similar styles, use utilities consistently
 - **Reduce variants**: Does that component need 12 variations, or can 3 cover 90% of cases?
 
-**NEVER**:
+**Avoid**:
 - Remove necessary functionality (simplicity ≠ feature-less)
 - Sacrifice accessibility for simplicity (clear labels and ARIA still required)
 - Make things so simple they're unclear (mystery ≠ minimalism)
