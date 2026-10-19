@@ -444,7 +444,15 @@ export class JsonlSessionStore implements SessionStore {
 		validateSessionText("sessionId", sessionId);
 		const known = await this.locateKnown(sessionId);
 		if (known) return known;
-		for (const path of await this.paths()) {
+		const suffix = `_${this.key(sessionId)}.jsonl`;
+		const paths = await this.paths();
+		const named = paths.filter((path) => basename(path).endsWith(suffix));
+		const others = paths.filter((path) => !named.includes(path));
+		return (await this.scan(sessionId, named)) ?? (await this.scan(sessionId, others));
+	}
+
+	private async scan(sessionId: string, paths: readonly string[]) {
+		for (const path of paths) {
 			const cached = this.fileStates.get(path);
 			let stored: StoredSessionHeader;
 			try {
@@ -481,10 +489,14 @@ export class JsonlSessionStore implements SessionStore {
 			let stored: StoredSessionHeader;
 			try {
 				stored = await this.readFirstLine(path);
-			} catch {
+			} catch (cause) {
+				if ((cause as NodeJS.ErrnoException).code === "ENOENT") this.fileStates.delete(path);
 				return undefined;
 			}
-			if (stored.id !== sessionId) return undefined;
+			if (stored.id !== sessionId) {
+				this.fileStates.delete(path);
+				return undefined;
+			}
 			const header = await this.readHeaderAt(path, stored);
 			const stats = await stat(path, { bigint: true });
 			return { path, header, stored, stats, state: this.fileStates.get(path) };

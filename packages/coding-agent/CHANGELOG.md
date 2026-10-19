@@ -18,6 +18,7 @@
 - Fixed Windows rejecting Bash and PowerShell executables installed as Windows Store app aliases, such as those in `%LOCALAPPDATA%\Microsoft\WindowsApps`, as missing. Shell discovery and a configured `shellPath` now accept them ([upstream commit](https://github.com/earendil-works/pi/commit/28bea006be4adb950dcb4f86f9ee5be857bf74ff)).
 - Fixed Windows PowerShell discovery when PowerShell is not on `PATH`: Atomic now also checks `%ProgramFiles%\PowerShell\7\pwsh.exe` and `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`. The legacy WSL `bash.exe` launcher is now recognized under the actual Windows directory, including installs on another drive or a renamed Windows directory ([#9490](https://github.com/earendil-works/pi/issues/9490)).
 - JSONL sessions no longer stall when many sessions share a directory. Each append now rereads only its own session header instead of every session header in the directory ([#3780](https://github.com/bastani-inc/atomic/pull/3780) by [@darionco](https://github.com/darionco)).
+- Opening or loading a session in a directory with many JSONL sessions no longer reads every session header, including the first lookup in a process and sessions created by another process.
 
 ## [0.9.39] - 2026-10-19
 
