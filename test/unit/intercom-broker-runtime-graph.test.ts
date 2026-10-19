@@ -22,6 +22,9 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const brokerEntrypoint = join(repoRoot, "packages/intercom/broker/broker.ts");
 const spawnModulePath = join(repoRoot, "packages/intercom/broker/spawn.ts");
 const groupModulePath = join(repoRoot, "packages/intercom/group.ts");
+/** Multi-node S5: the shared broker state, loaded lazily only when the settings select a shared `storage`. */
+const openBrokerStatePath = join(repoRoot, "packages/intercom/broker/open-broker-state.ts");
+const lazyMultiNode = new Set([openBrokerStatePath]);
 
 function describeViolations(violations: readonly GraphViolation[]): string[] {
 	return violations.map((entry) => `${relative(repoRoot, entry.importer)} -> ${entry.description}`);
@@ -39,7 +42,7 @@ function fixture(files: Record<string, string>): string {
 
 describe("intercom broker runtime module graph", () => {
 	test("no module reachable from broker.ts loads a non-node: package at runtime", () => {
-		const walk = walkRuntimeGraph(brokerEntrypoint);
+		const walk = walkRuntimeGraph(brokerEntrypoint, lazyMultiNode);
 
 		assert.deepEqual(describeViolations(walk.unresolved), []);
 		assert.deepEqual(describeViolations(walk.dynamic), []);
@@ -47,12 +50,30 @@ describe("intercom broker runtime module graph", () => {
 	});
 
 	test("the walk actually reaches group.ts and never reaches parent-side spawn.ts", () => {
-		const walk = walkRuntimeGraph(brokerEntrypoint);
+		const walk = walkRuntimeGraph(brokerEntrypoint, lazyMultiNode);
 
 		// Without this the first test would pass vacuously if the walker stopped early.
 		assert.ok(walk.visited.includes(groupModulePath), "group.ts not reached");
 		assert.equal(walk.visited.includes(spawnModulePath), false);
 		assert.ok(walk.visited.length >= 8, `unexpectedly small graph: ${walk.visited.length}`);
+	});
+
+	test("the shared multi-node state is reached only through a lazy import and needs only the host storage module", () => {
+		const walk = walkRuntimeGraph(brokerEntrypoint, lazyMultiNode);
+		assert.ok(walk.visited.includes(openBrokerStatePath), "open-broker-state.ts not reached");
+		const edges = walk.visited
+			.filter((file) => file !== openBrokerStatePath)
+			.flatMap((file) => runtimeRequestsOf(file).map((request) => ({ file, request })))
+			.filter(({ request }) => request.specifier?.endsWith("open-broker-state.js") === true);
+		assert.deepEqual(
+			edges.map(({ file, request }) => [relative(repoRoot, file), request.kind]),
+			[["packages/intercom/broker/broker.ts", "dynamic-import"]],
+		);
+		// A single-node broker never loads it; a standalone binary without the host package stays single-node.
+		const lazy = walkRuntimeGraph(openBrokerStatePath);
+		assert.deepEqual(describeViolations(lazy.unresolved), []);
+		assert.deepEqual(describeViolations(lazy.dynamic), []);
+		assert.deepEqual([...new Set(lazy.externals.map((entry) => entry.description))], ["@bastani/atomic/storage"]);
 	});
 
 	test("spawn.ts is parent-side and is allowed to keep its host-package import", () => {

@@ -6,6 +6,7 @@ import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/sto
 import {
 	openDatabaseWakeUpBus,
 	WAKE_UP_POLL_INTERVAL_MS,
+	WAKE_UP_RECONNECT_MAX_DELAY_MS,
 	type WakeUpPollScheduler,
 } from "../../packages/intercom/broker/database-wake-up-bus.js";
 import type { WakeUpBus, WakeUpEvent } from "../../packages/intercom/broker/wake-up-bus.js";
@@ -225,5 +226,55 @@ test("database wake-up bus drains a hint backlog larger than SQLite's parameter 
 		}
 	} finally {
 		await file.close();
+	}
+});
+
+test("database wake-up bus backs off exponentially while the database stays unavailable, then resyncs", async () => {
+	const directory = makeTempDirectory("atomic-intercom-wakeups-backoff-");
+	const connections: SqliteDatabase[] = [];
+	let unavailable = false;
+	let openAttempts = 0;
+	try {
+		const scheduler = manualScheduler();
+		const bus = await openDatabaseWakeUpBus({
+			openDatabase: async () => {
+				openAttempts++;
+				if (unavailable) throw new Error("database unavailable");
+				const database = await openNodeSqliteDatabase(join(directory, "storage.sqlite"));
+				connections.push(database);
+				return database;
+			},
+			schedule: scheduler.schedule,
+		});
+		const received = recorder();
+		await bus.subscribe("broker-b", received.listener);
+		unavailable = true;
+		await connections[0]?.close();
+		const failedPolls = 8;
+		for (let poll = 0; poll <= failedPolls; poll++) await scheduler.poll();
+		// The poll that finds the connection gone re-arms at the normal interval; each failed reopen doubles the wait.
+		const backoff = [2, 4, 8, 16, 32, 64, 128, 256].map((factor) =>
+			Math.min(WAKE_UP_POLL_INTERVAL_MS * factor, WAKE_UP_RECONNECT_MAX_DELAY_MS),
+		);
+		assert.deepEqual(scheduler.delays, [WAKE_UP_POLL_INTERVAL_MS, WAKE_UP_POLL_INTERVAL_MS, ...backoff]);
+		assert.equal(scheduler.delays.at(-1), WAKE_UP_RECONNECT_MAX_DELAY_MS);
+
+		const attemptsBeforePublish = openAttempts;
+		assert.deepEqual(await bus.publish({ brokerId: "broker-b", reason: "outbox", version: 1 }), {
+			status: "unavailable",
+		});
+		assert.equal(openAttempts, attemptsBeforePublish, "a publish during the backoff does not reopen the database");
+
+		unavailable = false;
+		await scheduler.poll();
+		assert.equal(scheduler.delays.at(-1), WAKE_UP_POLL_INTERVAL_MS, "a successful reopen resets the backoff");
+		assert.deepEqual(received.events, [
+			{ kind: "resync", cause: "subscribed" },
+			{ kind: "resync", cause: "reconnected" },
+		]);
+		await bus.close();
+	} finally {
+		for (const database of connections) await database.close().catch(() => {});
+		removeTempDirectory(directory);
 	}
 });

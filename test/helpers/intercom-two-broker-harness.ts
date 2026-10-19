@@ -86,11 +86,19 @@ interface NodeState {
 	broker: ChildProcess | undefined;
 }
 
-function nodeSettings(sharedDatabasePath: string): string {
+export interface TwoBrokerHarnessOptions {
+	/** Delay every shared database call by this many ms on a timer, as a remote database would. */
+	readonly databaseCallDelayMs?: number;
+}
+
+function nodeSettings(sharedDatabasePath: string, options: TwoBrokerHarnessOptions): string {
 	return JSON.stringify({
 		storage: {
 			adapter: storageAdapterModule,
-			options: { path: sharedDatabasePath },
+			options: {
+				path: sharedDatabasePath,
+				...(options.databaseCallDelayMs === undefined ? {} : { callDelayMs: options.databaseCallDelayMs }),
+			},
 			prefix: TWO_BROKER_STORAGE_PREFIX,
 		},
 	});
@@ -144,7 +152,7 @@ export class TwoBrokerHarness {
 		this.nodes = nodes;
 	}
 
-	static async start(): Promise<TwoBrokerHarness> {
+	static async start(options: TwoBrokerHarnessOptions = {}): Promise<TwoBrokerHarness> {
 		// Short root: a Unix socket path must fit in about 104 bytes.
 		const root = mkdtempSync(join(tmpdir(), "icmn-"));
 		const sharedDatabasePath = join(root, "shared.sqlite");
@@ -152,7 +160,7 @@ export class TwoBrokerHarness {
 		for (const node of BROKER_NODES) {
 			const agentDir = join(root, node);
 			mkdirSync(agentDir, { recursive: true });
-			writeFileSync(join(agentDir, "settings.json"), nodeSettings(sharedDatabasePath));
+			writeFileSync(join(agentDir, "settings.json"), nodeSettings(sharedDatabasePath, options));
 			nodes[node] = {
 				fixture: new IntercomBrokerFixture(agentDir),
 				clientModule: await loadClientModule(agentDir),

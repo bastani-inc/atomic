@@ -26,7 +26,7 @@ export function sessionsShareGroup(a: SessionInfo, b: SessionInfo): boolean {
 
 /** Return each session visible through at least one of the requester's memberships. */
 export function sessionsVisibleTo(
-	sessions: ReadonlyMap<string, BrokerConnectedSession>,
+	sessions: ReadonlyMap<string, Pick<BrokerConnectedSession, "info">>,
 	requester: SessionInfo,
 ): SessionInfo[] {
 	return [...sessions.values()].map(({ info }) => info).filter((info) => isAgentRecipient(info) && sessionsShareGroup(requester, info));
@@ -34,7 +34,7 @@ export function sessionsVisibleTo(
 
 /** Return sessions that belong to one explicit group. */
 export function sessionsInGroup(
-	sessions: ReadonlyMap<string, BrokerConnectedSession>,
+	sessions: ReadonlyMap<string, Pick<BrokerConnectedSession, "info">>,
 	group: string | undefined,
 ): SessionInfo[] {
 	return [...sessions.values()].map(({ info }) => info).filter((info) => isAgentRecipient(info) && hasGroup(sessionGroups(info), group));

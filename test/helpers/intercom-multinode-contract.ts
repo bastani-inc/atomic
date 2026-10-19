@@ -6,6 +6,8 @@ import type {
 	HeldSend,
 	HeldSendStore,
 	IntercomDeliveryFrame,
+	KnownSession,
+	KnownSessionStore,
 	LeaseSubject,
 	OutboxClaim,
 	OutboxEnqueueRequest,
@@ -1158,6 +1160,96 @@ export function registerSentMessageAuthorityConformance(
 		assert.deepEqual(await a.lookup({ messageId: "", digest: "d" }), empty("empty-message-id"));
 		assert.deepEqual(await a.forget({ messageId: "", digest: "d" }), empty("empty-message-id"));
 		assert.deepEqual(await a.lookup({ messageId: "m1", digest: "d" }), { status: "miss" });
+	});
+}
+
+/** S5 amendment (spec §14): sessions brokers hosted, so a send to one with no live presence is queued. */
+export function registerKnownSessionStoreConformance(
+	runner: MultiNodeConformanceRunner,
+	name: string,
+	open: OpenSharedStoreFixture<KnownSessionStore>,
+): void {
+	const check = withShared(runner, `${name} known sessions`, open);
+	const known = (overrides: Partial<KnownSession> = {}): KnownSession => ({
+		targetIdentity: RECIPIENT,
+		intercomSessionId: "recipient-session",
+		name: "  Réviewer\tÖne ",
+		atomicSessionId: "atomic-recipient",
+		group: "team",
+		groups: ["team", "review crew"],
+		...overrides,
+	});
+	const withoutAge = (sessions: readonly { readonly ageMs: number }[]) =>
+		sessions.map(({ ageMs, ...session }) => {
+			assert.ok(
+				Number.isSafeInteger(ageMs) && ageMs >= 0,
+				`ageMs must be a non-negative safe integer, got ${ageMs}`,
+			);
+			return session;
+		});
+
+	check(
+		"finds a session recorded through another broker by Intercom id, Atomic id or name, verbatim",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			const recorded = known();
+			assert.deepEqual(await a.record(recorded), { status: "recorded" });
+			Reflect.set(recorded, "name", "mutated after record");
+			const expected = { ...known(), groups: ["team", "review crew"] };
+			for (const target of ["recipient-session", "atomic-recipient", "  réviewer\töne ", "  RÉVIEWER\tÖNE "]) {
+				const found = expectStatus(await b.lookup(target, LIVE_MS), "found");
+				assert.deepEqual(withoutAge(found.sessions), [expected], target);
+			}
+			const found = expectStatus(await b.lookup("recipient-session", LIVE_MS), "found");
+			found.sessions[0]?.groups.push("mutated after lookup");
+			assert.deepEqual(withoutAge(expectStatus(await a.lookup("recipient-session", LIVE_MS), "found").sessions), [
+				expected,
+			]);
+			for (const target of ["Réviewer", "recipient", "RECIPIENT-SESSION", "unknown"]) {
+				assert.deepEqual(await a.lookup(target, LIVE_MS), { status: "found", sessions: [] }, target);
+			}
+			await a.record({ targetIdentity: OTHER_RECIPIENT, intercomSessionId: "bare", group: "team", groups: [] });
+			const bare = expectStatus(await b.lookup("bare", LIVE_MS), "found");
+			assert.deepEqual(withoutAge(bare.sessions), [
+				{ targetIdentity: OTHER_RECIPIENT, intercomSessionId: "bare", group: "team", groups: [] },
+			]);
+		},
+	);
+
+	check("replaces an identity's record in place, keeping its first-record order", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		await a.record(known({ intercomSessionId: "z-9", name: "shared" }));
+		await b.record(known({ targetIdentity: THIRD_RECIPIENT, intercomSessionId: "a-1", name: "shared" }));
+		await b.record(known({ intercomSessionId: "m-5", name: "shared", groups: ["elsewhere"] }));
+		const found = expectStatus(await a.lookup("shared", LIVE_MS), "found");
+		assert.deepEqual(
+			found.sessions.map((session) => [session.targetIdentity, session.intercomSessionId, session.groups]),
+			[
+				[RECIPIENT, "m-5", ["elsewhere"]],
+				[THIRD_RECIPIENT, "a-1", ["team", "review crew"]],
+			],
+		);
+		assert.deepEqual(await a.lookup("z-9", LIVE_MS), { status: "found", sessions: [] });
+	});
+
+	check("ignores records older than the retention and prunes them", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		await a.record(known());
+		assert.deepEqual(await b.lookup("recipient-session", EXPIRED_MS), { status: "found", sessions: [] });
+		assert.equal(await b.prune(LIVE_MS), 0);
+		assert.equal(expectStatus(await b.lookup("recipient-session", LIVE_MS), "found").sessions.length, 1);
+		assert.equal(await b.prune(EXPIRED_MS), 1);
+		assert.deepEqual(await a.lookup("recipient-session", LIVE_MS), { status: "found", sessions: [] });
+	});
+
+	check("rejects empty identifiers", async (connect) => {
+		const a = await connect();
+		const empty = (reason: string) => ({ status: "invalid", reason });
+		assert.deepEqual(await a.record(known({ targetIdentity: "" })), empty("empty-target-identity"));
+		assert.deepEqual(await a.record(known({ intercomSessionId: "" })), empty("empty-session-id"));
+		assert.deepEqual(await a.record(known({ group: "" })), empty("empty-group"));
+		assert.deepEqual(await a.lookup("", LIVE_MS), empty("empty-target"));
+		assert.deepEqual(await a.lookup("recipient-session", LIVE_MS), { status: "found", sessions: [] });
 	});
 }
 

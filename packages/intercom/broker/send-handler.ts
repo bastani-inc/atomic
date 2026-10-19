@@ -103,6 +103,31 @@ export type RestoringRecipientHold = (send: {
 export interface SendClientMessage extends Record<string, unknown> {
   type: string;
 }
+
+/**
+ * Multi-node S5: a validated send whose target no local session, local hold or workflow route resolved. The
+ * router answers it through the shared state (another broker's recipient, a shared hold or an offline session),
+ * or calls `notFound`, which answers exactly as a single-node broker would.
+ */
+export interface RemoteSendRequest {
+  readonly socket: net.Socket;
+  readonly from: BrokerConnectedSession;
+  readonly clientMessage: SendClientMessage & { readonly to: string };
+  readonly message: Message;
+  /** The trimmed `to`. */
+  readonly target: string;
+  /** The canonical send whose unkeyed SHA-256 is the cross-node digest. */
+  readonly signature: string;
+  readonly attemptId?: string;
+  readonly supervisorSend: boolean;
+  readonly requirePendingReply: boolean;
+  readonly expectedRecipientId?: string;
+  readonly resolveReplyTarget: boolean;
+  readonly awaitRestoringRecipient: boolean;
+  readonly notFound: () => void;
+}
+
+export type RemoteSendRouter = (request: RemoteSendRequest) => void;
 function wireMessageId(value: unknown): string {
   if (typeof value !== "object" || value === null) return "unknown";
   const id = (value as Record<string, unknown>).id;
@@ -134,6 +159,7 @@ export function handleBrokerSend(
 	isNonAgentWorkflowTarget?: (target: string) => boolean,
 	holdForRestoringRecipient?: RestoringRecipientHold,
 	receipts?: RecipientReceipts<BrokerConnectedSession>,
+	routeRemote?: RemoteSendRouter,
 ): void {
   const message = clientMessage.message;
   const messageId = wireMessageId(message);
@@ -317,6 +343,64 @@ export function handleBrokerSend(
         (info) => sessions.get(info.id)?.registrationReturnAddress,
       )
     : nameOrIdResolution;
+  if (
+    routeRemote !== undefined &&
+    resolution.kind === "not_found" &&
+    workflowTarget === undefined &&
+    !visibleCandidates.some((info) => !isAgentRecipient(info) && info.name?.toLowerCase() === trimmedTo.toLowerCase())
+  ) {
+    const send = clientMessage as SendClientMessage & { readonly to: string };
+    if (
+      !supervisorSend &&
+      !requirePendingReply &&
+      expectedRecipientId === undefined &&
+      holdForRestoringRecipient?.({
+        socket,
+        from: fromSession,
+        clientMessage: send,
+        target: trimmedTo,
+        messageId: message.id,
+        ...(attemptId ? { attemptId } : {}),
+      })
+    ) {
+      return;
+    }
+    routeRemote({
+      socket,
+      from: fromSession,
+      clientMessage: send,
+      message,
+      target: trimmedTo,
+      signature,
+      ...(attemptId === undefined ? {} : { attemptId }),
+      supervisorSend,
+      requirePendingReply,
+      ...(expectedRecipientId === undefined ? {} : { expectedRecipientId }),
+      resolveReplyTarget: clientMessage.resolveReplyTarget === true,
+      awaitRestoringRecipient: clientMessage.awaitRestoringRecipient === true,
+      // Nothing on any node: answer exactly as a single-node broker does.
+      notFound: () =>
+        handleBrokerSend(
+          socket,
+          clientMessage,
+          currentId,
+          sessions,
+          deliveredMessages,
+          write,
+          supervisorCache,
+          pendingQuestions,
+          routePendingStage,
+          resolveLiveWorkflowStage,
+          canControlLiveWorkflowStage,
+          resolveLegacyWorkflowStageTarget,
+          writeConfirmed,
+          isNonAgentWorkflowTarget,
+          holdForRestoringRecipient,
+          receipts,
+        ),
+    });
+    return;
+  }
   if (expectedRecipientId !== undefined && (resolution.kind !== "resolved" || resolution.session.id !== expectedRecipientId)) {
     write(socket, { type: "delivery_failed", messageId, attemptId,
       reason: resolution.kind === "resolved" ? "Reply target does not match the expected recipient" : sessionTargetFailureReason(clientMessage.to, resolution),

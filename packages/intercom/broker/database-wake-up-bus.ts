@@ -14,7 +14,8 @@ import type {
  * S4 wake-up bus (specs/2026-10-19-intercom-multi-node.md §5.6): a hint log in the shared storage database. Each
  * connection polls the rows addressed to its subscribed brokers, delivers them and deletes them. A failed query drops
  * the connection; the next poll or publish reopens it and every subscription gets a `reconnected` resync, because
- * hints written meanwhile may have been pruned or missed.
+ * hints written meanwhile may have been pruned or missed. While the database stays unavailable, reopening backs off
+ * exponentially from the poll interval up to `WAKE_UP_RECONNECT_MAX_DELAY_MS`.
  */
 
 /** How often a connection with subscriptions reads its hints. */
@@ -26,6 +27,8 @@ export const WAKE_UP_HINT_RETENTION_MS = OUTBOX_BACKUP_POLL_INTERVAL_MS;
  * parameter per hint, so a backlog never exceeds SQLite's bound-parameter limit (999 on old builds).
  */
 export const WAKE_UP_POLL_BATCH_SIZE = 500;
+/** Longest wait between attempts to reopen an unavailable database; the backup poll covers the gap. */
+export const WAKE_UP_RECONNECT_MAX_DELAY_MS = OUTBOX_BACKUP_POLL_INTERVAL_MS;
 
 /** Runs `callback` once after `delayMs` and returns a function that cancels it. */
 export type WakeUpPollScheduler = (callback: () => void, delayMs: number) => () => void;
@@ -97,6 +100,9 @@ class DatabaseWakeUpBus implements WakeUpBus {
 	private polling: Promise<void> | undefined;
 	private closed = false;
 	private closing: Promise<void> | undefined;
+	/** Consecutive failed attempts to reopen the database; each doubles the wait before the next. */
+	private reconnectFailures = 0;
+	private reconnectNotBefore = 0;
 
 	constructor(options: DatabaseWakeUpBusOptions, table: string, database: SqliteDatabase) {
 		this.options = options;
@@ -108,7 +114,7 @@ class DatabaseWakeUpBus implements WakeUpBus {
 
 	async publish(hint: WakeUpHint): Promise<WakeUpPublishResult> {
 		if (hint.brokerId.length === 0) return { status: "invalid", reason: "empty-broker-id" };
-		const database = await this.connection();
+		const database = await this.connection(false);
 		if (database === undefined) return { status: "unavailable" };
 		try {
 			await database.run(
@@ -178,11 +184,16 @@ class DatabaseWakeUpBus implements WakeUpBus {
 				this.polling = undefined;
 				this.armPoll();
 			});
-		}, this.pollIntervalMs);
+		}, this.nextPollDelayMs());
+	}
+
+	private nextPollDelayMs(): number {
+		if (this.database !== undefined || this.reconnectFailures === 0) return this.pollIntervalMs;
+		return Math.min(this.pollIntervalMs * 2 ** this.reconnectFailures, WAKE_UP_RECONNECT_MAX_DELAY_MS);
 	}
 
 	private async poll(): Promise<void> {
-		const database = await this.connection();
+		const database = await this.connection(true);
 		const brokerIds = [...new Set([...this.subscriptions].map((subscription) => subscription.brokerId))];
 		if (database === undefined || brokerIds.length === 0) return;
 		const placeholders = brokerIds.map(() => "?").join(", ");
@@ -217,9 +228,11 @@ class DatabaseWakeUpBus implements WakeUpBus {
 		}
 	}
 
-	private connection(): Promise<SqliteDatabase | undefined> {
+	/** `force` (the poll) reopens even while backing off; a publish waits for the backoff to pass. */
+	private connection(force: boolean): Promise<SqliteDatabase | undefined> {
 		if (this.closed) return Promise.resolve(undefined);
 		if (this.database !== undefined) return Promise.resolve(this.database);
+		if (!force && this.opening === undefined && Date.now() < this.reconnectNotBefore) return Promise.resolve(undefined);
 		this.opening ??= this.reconnect().finally(() => {
 			this.opening = undefined;
 		});
@@ -231,8 +244,11 @@ class DatabaseWakeUpBus implements WakeUpBus {
 		try {
 			database = await openSchemaConnection(this.options, this.table);
 		} catch {
+			this.reconnectFailures++;
+			this.reconnectNotBefore = Date.now() + this.nextPollDelayMs();
 			return undefined;
 		}
+		this.reconnectFailures = 0;
 		if (this.closed) {
 			await database.close().catch(() => {});
 			return undefined;

@@ -58,6 +58,15 @@ export type BrokerOutboundFrame =
 			notInKnownSet?: true;
 	  };
 
+/** A frame written while its socket's writes were held, with the outcome callback of a confirmed write. */
+export interface HeldWrite {
+	readonly message: BrokerOutboundFrame;
+	readonly onSettled?: (written: boolean) => void;
+}
+
+/** Multi-node S5: sockets whose frames are held until their deferred `registered` is written. */
+const heldWrites = new WeakMap<net.Socket, HeldWrite[]>();
+
 /**
  * Write one broker frame unless the socket's writable side is already gone.
  *
@@ -69,6 +78,11 @@ export type BrokerOutboundFrame =
  */
 export function writeMessageIfOpen(socket: net.Socket, message: BrokerOutboundFrame): boolean {
 	if (!isSocketOpenForWrite(socket)) return false;
+	const held = heldWrites.get(socket);
+	if (held !== undefined) {
+		held.push({ message });
+		return true;
+	}
 	writeMessage(socket, message);
 	return true;
 }
@@ -89,6 +103,11 @@ export function writeMessageWithOutcome(
 		onSettled(false);
 		return;
 	}
+	const held = heldWrites.get(socket);
+	if (held !== undefined) {
+		held.push({ message, onSettled });
+		return;
+	}
 	let settled = false;
 	const finish = (written: boolean): void => {
 		if (settled) return;
@@ -100,4 +119,32 @@ export function writeMessageWithOutcome(
 	} catch {
 		finish(false);
 	}
+}
+
+/**
+ * Multi-node S5: hold every frame written to `socket` until `releaseHeldWrites`. A session whose registration
+ * completes asynchronously is already routable, but its client accepts no frame before `registered`.
+ */
+export function holdWrites(socket: net.Socket): void {
+	if (!heldWrites.has(socket)) heldWrites.set(socket, []);
+}
+
+/** Stop holding frames for `socket`; returns the frames held, in the order they were written. */
+export function releaseHeldWrites(socket: net.Socket): HeldWrite[] {
+	const held = heldWrites.get(socket) ?? [];
+	heldWrites.delete(socket);
+	return held;
+}
+
+/** Write released frames in order; a confirmed write to a closed socket reports `false`, as any write does. */
+export function flushHeldWrites(socket: net.Socket, held: readonly HeldWrite[]): void {
+	for (const { message, onSettled } of held) {
+		if (onSettled === undefined) writeMessageIfOpen(socket, message);
+		else writeMessageWithOutcome(socket, message, onSettled);
+	}
+}
+
+/** Drop released frames that will never be written; each confirmed write reports `false`. */
+export function discardHeldWrites(held: readonly HeldWrite[]): void {
+	for (const { onSettled } of held) onSettled?.(false);
 }

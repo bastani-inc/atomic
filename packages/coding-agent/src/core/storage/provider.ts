@@ -39,7 +39,8 @@ export type StorageSelection =
 	  };
 export interface StorageOpenContext {
 	readonly agentDir: string;
-	readonly domain: "sessions" | "journal";
+	/** `intercom`: the shared Intercom broker state that multi-node brokers open on the top-level selection. */
+	readonly domain: "sessions" | "journal" | "intercom";
 	readonly signal?: AbortSignal;
 }
 export interface StorageAdapterModule {
@@ -119,7 +120,8 @@ export async function loadStorageAdapter(module: string, context: StorageOpenCon
 	}
 }
 
-async function adapterOptions(
+/** The adapter's options with every `secrets` reference resolved, as the provider passes them to its hooks. */
+export async function resolveAdapterOptions(
 	selection: Extract<StorageSelection, { kind: "adapter" }>,
 	context: StorageOpenContext,
 ): Promise<AdapterOptions> {
@@ -266,7 +268,7 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 		let openDatabase: () => Promise<SqliteDatabase>;
 		if (selection.kind === "adapter") {
 			const adapter = await loadStorageAdapter(selection.module, context);
-			const options = await adapterOptions(selection, context);
+			const options = await resolveAdapterOptions(selection, context);
 			try {
 				const direct = factories.direct(adapter, options, { prefix: selection.prefix });
 				if (direct !== undefined) return withIdempotentClose(await direct);
