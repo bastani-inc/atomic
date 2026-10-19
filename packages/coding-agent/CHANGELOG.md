@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.9.39] - 2026-10-19
+
+### Added
+
+- Added RPC `delete_session` (`{"type":"delete_session","sessionId":"<id>"}`, or `{"type":"delete_session","id":"<id>"}` when `sessionId` is omitted), `RpcClient.deleteSession(sessionId)`, and `SessionManager.deleteSession(sessionId)` to delete a stored session and its entries from SQLite or JSONL storage. The session currently open in the process cannot be deleted and returns an error ([#3740](https://github.com/bastani-inc/atomic/issues/3740)).
+- Added `createAgentSession({ journal })` so each SDK session can choose its workflow journal (file path, caller-owned database, process-local memory, adapter, or supplied journal) without the process-wide `ATOMIC_WORKFLOW_JOURNAL_PATH` ([#3743](https://github.com/bastani-inc/atomic/issues/3743)).
+- When Atomic runs on Node, the process that runs agents now gets half of system memory for its heap when that is more than Node's default limit (about 4 GiB), so large machines can run more subagents and workflow stages at once. This applies to the interactive engine and to headless runs (`-p`, `--mode json`, `--mode rpc`), which restart themselves once with the larger heap. Set `ATOMIC_HEAP_MB` to choose the size or `0` to keep Node's default; an explicit `--max-old-space-size` in `NODE_OPTIONS` still wins.
+
+### Fixed
+
+- `/export` and the RPC `export_html` command now export sessions stored in the default SQLite session store instead of refusing them, reading entries through the session store rather than a session file ([#3741](https://github.com/bastani-inc/atomic/issues/3741))
+- When the earlier JSONL sessions folder holds several copies of one session, such as conflict copies left by a file-sync tool, the default store now lists and imports the copy with the newest message instead of the alphabetically first file.
+- Fullscreen overlays that show chat messages (the workflow graph, stage chat, and the `/tasks` transcript) no longer write OSC 133 shell-integration marks to the terminal, so terminals keep the program status without Atomic re-sending an identical OSC 7501 report on every overlay frame ([#3739](https://github.com/bastani-inc/atomic/issues/3739))
+
 ## [0.9.39-alpha.2] - 2026-10-19
 
 ### Fixed
