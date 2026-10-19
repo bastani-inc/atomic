@@ -15,6 +15,8 @@
 
 - Resuming a session with `atomic --session <id>` or `/resume` now shows the transcript before any recovery work runs, instead of leaving the screen blank while hidden agent turns replay messages from before the restart. Recovery runs afterwards and is visible in the transcript. A "Replaying N interrupted deliveries" line precedes any replayed turn, and a status line summarizes the result ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
 - Resuming no longer starts agent turns on its own for stale queued messages or background task results. Results that an earlier process never delivered appear as cards without starting a turn. Messages from peers that no longer exist are not replayed; one notice tells you and the agent which peers are gone. Messages from a background subagent that was relaunched but has not reconnected yet are deferred instead, and the notice says it is not gone ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
+- Fixed Windows rejecting Bash and PowerShell executables installed as Windows Store app aliases, such as those in `%LOCALAPPDATA%\Microsoft\WindowsApps`, as missing. Shell discovery and a configured `shellPath` now accept them ([upstream commit](https://github.com/earendil-works/pi/commit/28bea006be4adb950dcb4f86f9ee5be857bf74ff)).
+- Fixed Windows PowerShell discovery when PowerShell is not on `PATH`: Atomic now also checks `%ProgramFiles%\PowerShell\7\pwsh.exe` and `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`. The legacy WSL `bash.exe` launcher is now recognized under the actual Windows directory, including installs on another drive or a renamed Windows directory ([#9490](https://github.com/earendil-works/pi/issues/9490)).
 
 ## [0.9.39] - 2026-10-19
 
