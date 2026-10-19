@@ -1100,3 +1100,80 @@ it("needs write access only inside the configured session root", async () => {
 		await rm(parent, { recursive: true, force: true });
 	}
 });
+
+it("appends to a tracked session without opening the directory's unrelated session files (#3780)", async () => {
+	await withStore(async (store, directory) => {
+		for (let index = 0; index < 64; index++) await store.create({ ...header, id: `unrelated-${index}` }, []);
+		await store.create(header, []);
+		// Target whichever session the directory lists last, so a full scan would open every other file first.
+		const [project] = (await readdir(directory)).filter((name) => name.startsWith("--"));
+		assert.ok(project);
+		const names = (await readdir(join(directory, project))).filter((name) => name.endsWith(".jsonl"));
+		const target = join(directory, project, names.at(-1)!);
+		const targetId = (JSON.parse((await readFile(target, "utf8")).split("\n")[0]!) as { id: string }).id;
+		const reopened = await JsonlSessionStore.open(directory);
+		const originalOpen = fs.open;
+		const openedPaths: string[] = [];
+		const opened = vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+			openedPaths.push(String(args[0]));
+			return originalOpen(...args);
+		});
+		try {
+			for (let index = 0; index < 3; index++) {
+				assert.deepEqual(
+					await reopened.append(targetId, [{ ...entry, id: `new-${index}` }], { expectSeq: index }),
+					{
+						lastSeq: index + 1,
+					},
+				);
+			}
+			assert.deepEqual(
+				openedPaths.filter((path) => path !== target),
+				[],
+			);
+		} finally {
+			opened.mockRestore();
+			await reopened.close();
+		}
+		assert.equal((await store.load(targetId)).lastSeq, 3);
+	});
+});
+
+for (const change of ["replaced by another session", "deleted"] as const) {
+	it(`appends to the session's current file when its tracked file was ${change} (#3780)`, async () => {
+		await withStore(async (store, directory) => {
+			await store.create(header, [entry]);
+			const tracked = await location(store);
+			const moved = join(directory, "moved.jsonl");
+			await writeFile(moved, await readFile(tracked));
+			const other = `${JSON.stringify({ type: "session", ...header, id: "other" })}\n`;
+			if (change === "deleted") await rm(tracked);
+			else await writeFile(tracked, other);
+			assert.deepEqual(await store.append(header.id, [{ ...entry, id: "next" }], { expectSeq: 1 }), { lastSeq: 2 });
+			assert.equal(await store.findFile(header.id), moved);
+			assert.deepEqual(
+				(await store.load(header.id)).entries.map((stored) => stored.id),
+				[entry.id, "next"],
+			);
+			if (change === "deleted") assert.equal(await fs.stat(tracked).catch(() => undefined), undefined);
+			else assert.equal(await readFile(tracked, "utf8"), other);
+		});
+	});
+}
+
+it("finds a session whose header is longer than one directory-scan read chunk (#3780)", async () => {
+	await withStore(async (store, directory) => {
+		const long = { ...header, cwd: `/project/${"é".repeat(3000)}` };
+		assert.ok(Buffer.byteLength(JSON.stringify(long)) > 4096);
+		await store.create({ ...long, id: "other" }, []);
+		await store.create(long, [entry]);
+		const fresh = await JsonlSessionStore.open(directory, { scanExisting: false });
+		try {
+			assert.deepEqual(await fresh.readHeader(header.id), long);
+			assert.deepEqual(await fresh.append(header.id, [entry], { expectSeq: 1 }), { lastSeq: 2 });
+			assert.equal((await fresh.load("other")).lastSeq, 0);
+		} finally {
+			await fresh.close();
+		}
+	});
+});
