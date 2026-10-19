@@ -1177,3 +1177,94 @@ it("finds a session whose header is longer than one directory-scan read chunk (#
 		}
 	});
 });
+
+function recordOpenedPaths(): { readonly paths: string[]; restore(): void } {
+	const originalOpen = fs.open;
+	const paths: string[] = [];
+	const opened = vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+		paths.push(String(args[0]));
+		return originalOpen(...args);
+	});
+	return { paths, restore: () => opened.mockRestore() };
+}
+
+it("opens only the requested session's file on a cold append or load among many sessions (#3780)", async () => {
+	await withStore(async (store, directory) => {
+		for (let index = 0; index < 64; index++) await store.create({ ...header, id: `unrelated-${index}` }, []);
+		await store.create(header, [entry]);
+		const target = await store.findFile(header.id);
+		assert.ok(target);
+		const appender = await JsonlSessionStore.open(directory, { scanExisting: false });
+		const loader = await JsonlSessionStore.open(directory, { scanExisting: false });
+		const opened = recordOpenedPaths();
+		try {
+			assert.deepEqual(await appender.append(header.id, [{ ...entry, id: "next" }], { expectSeq: 1 }), {
+				lastSeq: 2,
+			});
+			assert.equal((await loader.load(header.id)).lastSeq, 2);
+			assert.deepEqual(
+				opened.paths.filter((path) => path !== target),
+				[],
+			);
+		} finally {
+			opened.restore();
+			await appender.close();
+			await loader.close();
+		}
+	});
+});
+
+it("finds a session whose file was renamed without its session-hash suffix (#3780)", async () => {
+	await withStore(async (store, directory) => {
+		await store.create({ ...header, id: "other" }, []);
+		await store.create(header, [entry]);
+		const original = await store.findFile(header.id);
+		assert.ok(original);
+		const renamed = join(original, "..", "renamed.jsonl");
+		await rename(original, renamed);
+		const fresh = await JsonlSessionStore.open(directory, { scanExisting: false });
+		try {
+			assert.equal(await fresh.findFile(header.id), renamed);
+			assert.deepEqual(await fresh.append(header.id, [{ ...entry, id: "next" }], { expectSeq: 1 }), { lastSeq: 2 });
+		} finally {
+			await fresh.close();
+		}
+	});
+});
+
+it("skips a file named with the session's hash whose header holds another session id (#3780)", async () => {
+	await withStore(async (store, directory) => {
+		await store.create(header, [entry]);
+		const named = await store.findFile(header.id);
+		assert.ok(named);
+		const moved = join(directory, "moved.jsonl");
+		await rename(named, moved);
+		await writeFile(named, `${JSON.stringify({ type: "session", ...header, id: "other" })}\n`);
+		const fresh = await JsonlSessionStore.open(directory, { scanExisting: false });
+		try {
+			assert.equal(await fresh.findFile(header.id), moved);
+			assert.equal((await fresh.load(header.id)).lastSeq, 1);
+			assert.equal(await fresh.findFile("other"), named);
+		} finally {
+			await fresh.close();
+		}
+	});
+});
+
+it("stops trying a deleted tracked file once the session is found elsewhere (#3780)", async () => {
+	await withStore(async (store, directory) => {
+		await store.create(header, [entry]);
+		const tracked = await location(store);
+		const moved = join(directory, "moved.jsonl");
+		await writeFile(moved, await readFile(tracked));
+		await rm(tracked);
+		assert.equal(await store.findFile(header.id), moved);
+		const opened = recordOpenedPaths();
+		try {
+			assert.equal(await store.findFile(header.id), moved);
+			assert.equal(opened.paths.includes(tracked), false);
+		} finally {
+			opened.restore();
+		}
+	});
+});
