@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.40-alpha.1] - 2026-10-20
+
 ### Breaking Changes
 
 - Binding or switching a session no longer replays deliveries that a previous process left unfinished. SDK hosts call `session.startPendingRecovery()` and RPC clients send `start_pending_recovery` once they show the session. Until then, interrupted work stays pending ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.40-alpha.1] - 2026-10-20
+
 ### Breaking Changes
 
 - Removed the `kill` action from the `subagent` tool. Replace `subagent({ action: "kill", id })` with `subagent({ action: "quit", id })`, which stops the child gracefully and keeps it resumable. Calls with `action: "kill"` or the earlier `action: "interrupt"` are rejected with an error that names `quit` as the replacement ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).

@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.40-alpha.1] - 2026-10-20
+
 ### Added
 
 - Added multi-node routing: Intercom brokers on different machines that select the same shared `storage` (in settings, `ATOMIC_STORAGE`, or `--storage`) now deliver messages to each other through that database. A message to a session on another machine arrives exactly like a local one, with the same sender identity, replies and asks, group rules, supervisor routes and save-before-delivered receipts. A send to a session that is offline, including one that quit cleanly in the last 7 days, is reported as queued for an offline session and delivered when it reconnects on any broker. Brokers coordinate only through the shared database and a polled wake-up signal; there is no broker-to-broker network connection. Without a shared `storage` selection, Intercom behaves as before.
