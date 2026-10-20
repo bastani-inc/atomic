@@ -9,9 +9,11 @@ import {
 } from "./run-worktrees.js";
 import {
 	requestSubagentChildStop,
+	type SubagentChildLaunch,
 	type SubagentChildRecordInput,
 	type SubagentChildRecordSink,
 	type SubagentChildStopStatus,
+	subagentChildLaunch,
 	takeSubagentChildStop,
 } from "./subagent-child-records.js";
 import { runUnboundParallelTask } from "./subagent-executor-parallel-task.js";
@@ -106,7 +108,12 @@ export function runOwnerlessChild(input: {
 	let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile"> = {};
 	let childLaunch: Pick<SubagentChildRecordInput, "launchModel" | "launchThinkingLevel" | "launchLeafId"> = {};
 	let stoppedBeforeDispatch = false;
-	const record = (state: SubagentChildRecordInput["state"], terminalStatus?: string, held?: readonly string[]) => {
+	const record = (
+		state: SubagentChildRecordInput["state"],
+		terminalStatus?: string,
+		held?: readonly string[],
+		queuedLaunch?: SubagentChildLaunch,
+	) => {
 		const worktree = runWorktreeRecord(runId, index);
 		input.recordChild.record({
 			runId,
@@ -125,6 +132,7 @@ export function runOwnerlessChild(input: {
 			...(worktree ? { worktree } : {}),
 			...(terminalStatus ? { terminalStatus } : {}),
 			...(held?.length ? { heldMessages: { taskId: launchId, messages: held } } : {}),
+			...(queuedLaunch ? { launch: queuedLaunch } : {}),
 		});
 	};
 	const settled = Promise.withResolvers<void>();
@@ -221,9 +229,15 @@ export function runOwnerlessChild(input: {
 		}
 	};
 	liveLaunches.set(launchId, launch);
-	// Pause or quit right after the launch must find the child, also while it waits for a slot.
-	record("running");
+	// Pause or quit right after the launch must find the child, also while it waits for a slot. Nothing of a queued
+	// launch survives a restart but its records: they say how to start it fresh then.
 	const schedule = input.schedule;
+	record(
+		"running",
+		undefined,
+		undefined,
+		schedule ? subagentChildLaunch(input.task, undefined, input.options) : undefined,
+	);
 	if (schedule) rememberSubagentChildSchedule(runId, index, schedule);
 	const result = (
 		schedule

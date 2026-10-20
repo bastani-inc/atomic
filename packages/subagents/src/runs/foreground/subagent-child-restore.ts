@@ -39,6 +39,7 @@ import {
 	readSubagentChildRecords,
 	recordSubagentChildGone,
 	SUBAGENT_CHILD_GONE_STATUS,
+	type SubagentChildLaunch,
 	type SubagentChildRecord,
 	type SubagentChildRecordSink,
 	subagentChildOwner,
@@ -229,6 +230,19 @@ function resumedPrompts(
 	return { task, followUps };
 }
 
+/**
+ * What a child that never started is prompted with when it starts fresh: its original task, with the resume
+ * message after it as its original launch would have had it, then any messages it was sent while it waited.
+ */
+function freshPrompts(
+	record: SubagentChildRecord,
+	launch: SubagentChildLaunch,
+	resume: SubagentChildResumeRequest | undefined,
+): { readonly task: string; readonly followUps: readonly string[] } {
+	const held = record.heldMessages && record.heldMessages.taskId === record.taskId ? record.heldMessages.messages : [];
+	return { task: resume?.message ? `${launch.task}\n\n${resume.message}` : launch.task, followUps: held };
+}
+
 async function relaunchChild(
 	deps: SubagentChildRestoreDeps,
 	ctx: ExtensionContext,
@@ -279,12 +293,19 @@ async function relaunchChild(
 			})
 		: undefined;
 	const agent = bridge?.active ? applyIntercomBridgeToAgent(discovered, bridge) : discovered;
-	const reopened = await reopenChildSession(ctx, record);
-	if ("reason" in reopened) return unrestorable(reopened.reason);
-	const { sessionManager } = reopened;
-	const previousIntercomId = readPreviousIntercomId(sessionManager);
-	onReopened(previousIntercomId);
-	if (previousIntercomId) await hold?.add(previousIntercomId);
+	// A child that never started has no session to reopen; its records say how its launch starts it fresh.
+	const fresh =
+		record.childSessionId === undefined && record.childSessionFile === undefined ? record.launch : undefined;
+	let sessionManager: SessionManager | undefined;
+	if (fresh) onReopened(undefined);
+	else {
+		const reopened = await reopenChildSession(ctx, record);
+		if ("reason" in reopened) return unrestorable(reopened.reason);
+		sessionManager = reopened.sessionManager;
+		const previousIntercomId = readPreviousIntercomId(sessionManager);
+		onReopened(previousIntercomId);
+		if (previousIntercomId) await hold?.add(previousIntercomId);
+	}
 	const childOptions = ctx.getChildSessionOptions?.({ tools: agent.tools });
 	const supervisorAuthorization = childOptions && !childAllowsIntercom(childOptions) ? undefined : hold?.authorization;
 	// A child that will not use Intercom never registers, so nothing it could be sent should wait for it.
@@ -292,8 +313,12 @@ async function relaunchChild(
 	const intercomGroup = record.intercomGroup ?? inheritedIntercomGroup(ctx);
 	const currentProvider = ctx.model?.provider;
 	const resolveCandidateModel = createCandidateModelResolver(ctx.modelRegistry, currentProvider);
-	const ownModel = ownSessionModelCandidate(sessionManager, record, resolveCandidateModel);
-	const prompts = resumedPrompts(record, resume);
+	const ownModel = sessionManager
+		? ownSessionModelCandidate(sessionManager, record, resolveCandidateModel)
+		: fresh?.modelOverride && resolveCandidateModel(fresh.modelOverride)?.model
+			? fresh.modelOverride
+			: undefined;
+	const prompts = fresh ? freshPrompts(record, fresh, resume) : resumedPrompts(record, resume);
 	const options: RunSyncOptions = {
 		runningCapacity: deps.config.parallel?.runningCapacity,
 		getChildSessionOptions: ctx.getChildSessionOptions,
@@ -301,9 +326,15 @@ async function relaunchChild(
 		cwd: record.cwd,
 		runId: record.runId,
 		index: record.index,
-		sessionDir: sessionManager.getSessionDir() || mkdtempSync(join(tmpdir(), "atomic-subagent-restore-")),
-		sessionManager,
-		resumeSession: true,
+		sessionDir:
+			(sessionManager ? sessionManager.getSessionDir() : fresh?.sessionDir) ||
+			mkdtempSync(join(tmpdir(), "atomic-subagent-restore-")),
+		...(sessionManager ? { sessionManager, resumeSession: true } : {}),
+		...(fresh?.skills ? { skills: [...fresh.skills] } : {}),
+		...(fresh?.outputPath ? { outputPath: fresh.outputPath } : {}),
+		...(fresh?.outputMode ? { outputMode: fresh.outputMode } : {}),
+		...(fresh?.maxOutput ? { maxOutput: fresh.maxOutput } : {}),
+		...(fresh?.share === undefined ? {} : { share: fresh.share }),
 		...(prompts.followUps.length > 0 ? { resumeFollowUps: prompts.followUps } : {}),
 		intercomEvents: deps.pi.events,
 		parentDepth: getCurrentSubagentDepth(ctx),
@@ -346,7 +377,8 @@ async function relaunchChild(
 		agents: [agent],
 		agent: agent.name,
 		task: prompts.task,
-		...(resume ? { operation: `${record.runId}:${record.index}:resume:${randomUUID()}` } : {}),
+		...(fresh?.intentTask === undefined ? {} : { intentTask: fresh.intentTask }),
+		...(resume || fresh ? { operation: `${record.runId}:${record.index}:resume:${randomUUID()}` } : {}),
 		options,
 		wait: { kind: "background" },
 		runtime,

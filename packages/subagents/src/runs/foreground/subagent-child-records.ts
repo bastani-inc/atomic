@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@bastani/atomic";
+import type { MaxOutputConfig, OutputMode, RunSyncOptions } from "../../shared/types.js";
 import { type SubagentChildWorktree, unparkRunWorktree } from "./run-worktrees.js";
 import {
 	isSubagentChildRecord,
@@ -60,6 +61,46 @@ export interface SubagentChildRecord {
 	 * task `taskId`, in order. Resume delivers them once, before its own message; a later task's record supersedes them.
 	 */
 	readonly heldMessages?: { readonly taskId: string; readonly messages: readonly string[] };
+	/** How a child admitted while it waited for a slot in its run was launched, so it can start fresh after a restart. */
+	readonly launch?: SubagentChildLaunch;
+}
+
+/**
+ * What a child that has not started yet needs to start as a new launch after Atomic restarts, when nothing of its
+ * launch is left in the process: only what its original launch already had, and never a credential or capability.
+ * The agent, cwd, worktree, run identity, Intercom identity and held messages are the record's own fields.
+ */
+export interface SubagentChildLaunch {
+	/** The prompt the child runs, with every instruction its launch added. */
+	readonly task: string;
+	/** The task as the caller gave it, which its task host shows. */
+	readonly intentTask?: string;
+	readonly sessionDir?: string;
+	readonly modelOverride?: string;
+	readonly skills?: readonly string[];
+	readonly outputPath?: string;
+	readonly outputMode?: OutputMode;
+	readonly maxOutput?: MaxOutputConfig;
+	readonly share?: boolean;
+}
+
+/** The launch data of a child about to wait for a slot in its run; see {@link SubagentChildLaunch}. */
+export function subagentChildLaunch(
+	task: string,
+	intentTask: string | undefined,
+	options: RunSyncOptions,
+): SubagentChildLaunch {
+	return {
+		task,
+		...(intentTask === undefined ? {} : { intentTask }),
+		...(options.sessionDir ? { sessionDir: options.sessionDir } : {}),
+		...(options.modelOverride ? { modelOverride: options.modelOverride } : {}),
+		...(options.skills ? { skills: options.skills } : {}),
+		...(options.outputPath ? { outputPath: options.outputPath } : {}),
+		...(options.outputMode ? { outputMode: options.outputMode } : {}),
+		...(options.maxOutput ? { maxOutput: options.maxOutput } : {}),
+		...(options.share === undefined ? {} : { share: options.share }),
+	};
 }
 
 export type SubagentChildRecordInput = Omit<SubagentChildRecord, "version" | "childId" | "owner">;

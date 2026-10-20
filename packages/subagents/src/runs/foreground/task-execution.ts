@@ -25,8 +25,10 @@ import {
 import {
 	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
 	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
+	type SubagentChildLaunch,
 	type SubagentChildRecordInput,
 	type SubagentChildRecordSink,
+	subagentChildLaunch,
 	takeSubagentChildStop,
 } from "./subagent-child-records.js";
 import type { SubagentExecutorRuntimeDeps } from "./subagent-executor-types.js";
@@ -290,6 +292,7 @@ export async function runAgentTask(input: {
 		state: SubagentChildRecordInput["state"],
 		terminalStatus?: string,
 		heldMessages?: readonly string[],
+		launch?: SubagentChildLaunch,
 	) => {
 		const worktree = runWorktreeRecord(input.options.runId, input.options.index ?? 0);
 		input.recordChild?.record({
@@ -309,6 +312,7 @@ export async function runAgentTask(input: {
 			...(worktree ? { worktree } : {}),
 			...(terminalStatus ? { terminalStatus } : {}),
 			...(heldMessages?.length ? { heldMessages: { taskId, messages: heldMessages } } : {}),
+			...(launch ? { launch } : {}),
 		});
 	};
 	let dispatched = false;
@@ -559,8 +563,16 @@ export async function runAgentTask(input: {
 	admittedTaskId = started.value.taskId;
 	// Its execution waits for `registered`, so nothing it records can precede this. Pause and quit then find a child
 	// still queued behind its concurrency limit, and run control never reads a resumed child's previous task id.
-	recordChildTask(started.value.taskId, "running");
-	if (scheduled && !dispatched) queuedChildren.set(started.value.taskId, { start: queuedStart(), stopped: false });
+	const queuedAtAdmission = scheduled && !dispatched;
+	recordChildTask(
+		started.value.taskId,
+		"running",
+		undefined,
+		undefined,
+		// Nothing of a queued launch survives a restart but its records: they say how to start it fresh then.
+		queuedAtAdmission ? subagentChildLaunch(input.task, input.intentTask, input.options) : undefined,
+	);
+	if (queuedAtAdmission) queuedChildren.set(started.value.taskId, { start: queuedStart(), stopped: false });
 	// A queued execution has no runSync listener yet. Release its observation too,
 	// without spending a concurrency slot or cancelling its owner-bound execution.
 	const yieldForIntercom = () => {
