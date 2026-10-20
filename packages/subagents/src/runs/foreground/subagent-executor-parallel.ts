@@ -49,6 +49,7 @@ import {
 	buildParallelWorktreeTaskCwdError,
 	createParallelWorktreeSetup,
 	findDuplicateParallelOutputPath,
+	parallelWorktreeDiffsDir,
 	resolveParallelTaskCwd,
 } from "./subagent-executor-worktree.js";
 import { parallelTaskToolResultWithOutput } from "./task-execution.js";
@@ -197,9 +198,10 @@ export async function runParallelPath(
 	// Each child execution holds the worktrees; they go once the run returned and no execution holds them, except a
 	// stopped child's worktree with unsaved work.
 	const runWorktrees = worktreeSetup
-		? registerRunWorktrees(runId, worktreeSetup, (removing) =>
-				buildParallelWorktreeSuffix(removing, artifactsDir, tasks as TaskParam[]),
-			)
+		? registerRunWorktrees(runId, worktreeSetup, {
+				diffsDir: parallelWorktreeDiffsDir(artifactsDir),
+				agents: tasks.map((task) => task.agent),
+			})
 		: undefined;
 
 	try {

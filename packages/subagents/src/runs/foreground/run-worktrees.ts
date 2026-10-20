@@ -1,5 +1,6 @@
 import {
 	cleanupWorktrees,
+	diffWorktrees,
 	recreateWorktree,
 	type WorktreeInfo,
 	type WorktreeSetup,
@@ -14,6 +15,14 @@ export interface SubagentChildWorktree {
 	readonly branch: string;
 	readonly baseCommit: string;
 	readonly syntheticPaths: readonly string[];
+	/** Where the run saves the worktree's edits as a patch before removing it. */
+	readonly diffsDir?: string;
+}
+
+/** Where a run saves each worktree's edits as a patch before removing it, and the agent of each child by index. */
+export interface RunWorktreeDiffs {
+	readonly diffsDir: string;
+	readonly agents: readonly string[];
 }
 
 interface RunWorktrees {
@@ -26,7 +35,8 @@ interface RunWorktrees {
 	readonly removed: Set<number>;
 	/** The run returned: nothing more is launched by it, so worktrees go once no execution holds them. */
 	returned: boolean;
-	readonly onRemove?: (removing: WorktreeSetup) => void;
+	/** Edits are saved as a patch before a worktree is removed, also for a run tracked again after a restart. */
+	readonly diffs?: { readonly diffsDir: string; readonly agents: string[] };
 }
 
 /** Runs whose worktrees still exist in this process, by run id. */
@@ -46,7 +56,7 @@ function sweep(run: RunWorktrees): void {
 	if (removing.length > 0) {
 		const subset: WorktreeSetup = { ...run.setup, worktrees: removing };
 		try {
-			run.onRemove?.(subset);
+			if (run.diffs) diffWorktrees(subset, run.diffs.agents, run.diffs.diffsDir);
 		} finally {
 			cleanupWorktrees(subset);
 			for (const worktree of removing) run.removed.add(worktree.index);
@@ -63,7 +73,7 @@ function hold(run: RunWorktrees): () => void {
 		if (run.holds.delete(token)) sweep(run);
 	};
 }
-function track(runId: string, setup: WorktreeSetup, onRemove?: (removing: WorktreeSetup) => void): RunWorktrees {
+function track(runId: string, setup: WorktreeSetup, diffs?: RunWorktreeDiffs): RunWorktrees {
 	const run: RunWorktrees = {
 		runId,
 		setup: { ...setup, worktrees: [...setup.worktrees] },
@@ -71,22 +81,22 @@ function track(runId: string, setup: WorktreeSetup, onRemove?: (removing: Worktr
 		stopped: new Set(),
 		removed: new Set(),
 		returned: false,
-		...(onRemove ? { onRemove } : {}),
+		...(diffs ? { diffs: { diffsDir: diffs.diffsDir, agents: [...diffs.agents] } } : {}),
 	};
 	runs.set(runId, run);
 	return run;
 }
 
 /**
- * Track a parallel run's worktrees. `release` marks the run returned; `onRemove` runs before worktrees are removed,
- * with the ones about to go.
+ * Track a parallel run's worktrees. `release` marks the run returned; with `diffs`, each worktree's edits are saved as
+ * a patch before it is removed.
  */
 export function registerRunWorktrees(
 	runId: string,
 	setup: WorktreeSetup,
-	onRemove?: (removing: WorktreeSetup) => void,
+	diffs?: RunWorktreeDiffs,
 ): { readonly release: () => void } {
-	const run = track(runId, setup, onRemove);
+	const run = track(runId, setup, diffs);
 	return {
 		release() {
 			run.returned = true;
@@ -135,6 +145,7 @@ export function runWorktreeRecord(runId: string, index: number): SubagentChildWo
 		branch: worktree.branch,
 		baseCommit: run.setup.baseCommit,
 		syntheticPaths: worktree.syntheticPaths,
+		...(run.diffs ? { diffsDir: run.diffs.diffsDir } : {}),
 	};
 }
 
@@ -166,9 +177,15 @@ export function resumeRunWorktree(
 			syntheticPaths: [...child.worktree.syntheticPaths],
 		};
 		if (!run) {
-			run = track(child.runId, { cwd: child.worktree.repo, baseCommit: child.worktree.baseCommit, worktrees: [] });
+			run = track(
+				child.runId,
+				{ cwd: child.worktree.repo, baseCommit: child.worktree.baseCommit, worktrees: [] },
+				child.worktree.diffsDir ? { diffsDir: child.worktree.diffsDir, agents: [] } : undefined,
+			);
 			run.returned = true;
 		}
+		// Its edits are saved as a patch before its worktree is removed, as the run that created it would.
+		if (run.diffs) run.diffs.agents[child.index] = child.agent;
 		run.setup.worktrees.push(recorded);
 		run.removed.add(child.index);
 	}

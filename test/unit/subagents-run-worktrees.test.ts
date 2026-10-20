@@ -46,6 +46,8 @@ function repositoryWithSetupSources(): string {
 	runGitChecked(repo, ["init", "-b", "main"]);
 	runGitChecked(repo, ["config", "user.name", "Atomic Test"]);
 	runGitChecked(repo, ["config", "user.email", "atomic@example.com"]);
+	// Git for Windows defaults core.autocrlf to true, which checks the LF commits below out as CRLF.
+	runGitChecked(repo, ["config", "core.autocrlf", "false"]);
 	writeFileSync(join(repo, "seed.txt"), "seed\n");
 	runGitChecked(repo, ["add", "seed.txt"]);
 	runGitChecked(repo, ["commit", "--no-gpg-sign", "-m", "initial"]);
@@ -143,4 +145,37 @@ test("after a restart, resuming a child whose worktree was removed recreates it 
 
 	resumedExecution();
 	assert.equal(existsSync(worktree.path), false, "the recreated worktree is removed once the resumed execution ends");
+});
+
+test("after a restart, a resumed child's tracked and untracked edits are saved as a patch before its worktree is removed (#3784)", () => {
+	const repo = repositoryWithSetupSources();
+	const { runId, setup } = worktreeRun(repo);
+	const worktree = setup.worktrees[0]!;
+	const diffsDir = join(repo, "..", "artifacts", "worktree-diffs");
+	const run = registerRunWorktrees(runId, setup, { diffsDir, agents: ["worker"] });
+	// The child record, as the run wrote it while it tracked the worktree.
+	const record = runWorktreeRecord(runId, 0);
+	assert.ok(record, "the run records the child's worktree");
+	run.release();
+	assert.equal(existsSync(worktree.path), false, "the run removed the clean worktree");
+	assert.equal(runWorktreeRecord(runId, 0), undefined, "this process does not track the run, as after a restart");
+
+	const releaseResume = resumeRunWorktree({
+		runId,
+		index: 0,
+		cwd: worktree.agentCwd,
+		agent: "worker",
+		worktree: record,
+	});
+	const resumedExecution = holdRunWorktree(runId, 0);
+	claimRunWorktree(runId, 0);
+	releaseResume();
+	writeFileSync(join(worktree.path, "seed.txt"), "seed\nresumed edit\n");
+	writeFileSync(join(worktree.path, "new-file.md"), "resumed untracked\n");
+	resumedExecution();
+
+	assert.equal(existsSync(worktree.path), false, "the resumed child's worktree is removed once it ends");
+	const patch = readFileSync(join(diffsDir, "task-0-worker.patch"), "utf8");
+	assert.match(patch, /\+resumed edit/, "the tracked edit is in the patch");
+	assert.match(patch, /new-file\.md[\s\S]*\+resumed untracked/, "the untracked file is in the patch");
 });
