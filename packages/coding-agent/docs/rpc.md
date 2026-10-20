@@ -32,6 +32,9 @@ Common options:
 - `--name <name>` / `-n <name>`: Set the session display name at startup
 - `--no-session`: Disable session persistence
 - `--session-dir <path>`: Custom session storage directory
+- `--storage '<json>'` / `--storage-file <path>`: Select storage for this process's sessions and workflow runs
+
+To give an RPC child its own store without changing the user's settings, start it with `ATOMIC_STORAGE` (or `--storage`) holding the same JSON selection as the shared `storage` setting, for example an adapter selection with `secrets` read from `{ "env": ... }`. The child keeps its sessions and workflow runs there, and `list_sessions` and `list_workflow_runs` report that store. An `atomic` started without the selection keeps using its settings. An invalid selection fails at startup with `StorageConfigError` naming the variable or flag. See [Selecting storage per process](/storage#selecting-storage-per-process).
 
 ## Protocol Overview
 

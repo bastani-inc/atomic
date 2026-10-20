@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- The workflow journal can be selected for one process with `ATOMIC_WORKFLOWS_JOURNAL`, `ATOMIC_STORAGE`, or Atomic's `--storage` and `--storage-file` flags, using the same JSON as the `workflows.journal` and `storage` settings. Setting `ATOMIC_WORKFLOWS_JOURNAL` together with `ATOMIC_WORKFLOW_JOURNAL_PATH` is rejected as a conflict ([#3783](https://github.com/bastani-inc/atomic/issues/3783)).
+
 ### Changed
 
 - Updated the bundled Impeccable skill to 4.7.0 with engine 0.1.16. Critique and audit can scan a running Electron, NW.js, CEF, or WebView2 app window through its debugging port (`impeccable detect --cdp 9222`), and critique runs its design review on iOS, Android, and adaptive projects instead of reporting an empty web scan as clean. New `straggler` and `unbalanced-heading` typography checks flag a paragraph ending on one word and a heading whose last line is a stub, and the detector raises fewer false alarms on hidden, screen-reader-only, and layered content. Decision and review pages follow the OS dark mode, `context` offers only workspaces that render a UI as targets, and the Claude Code design hook can be installed in your user settings instead of the project's. Live Mode now starts on LAN and Tailscale addresses over plain HTTP, copying works there when the clipboard API is unavailable, and an interrupted engine download cleans up after itself. Atomic's launcher still turns off the engine's choice reports and update check by default.
@@ -14,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Resuming a workflow restores the background subagents its stages launched and delivers the stages' interrupted messages before the stage continues. Both happen visibly in the stage, and stages stay addressable at the same `workflow:<rootRunId>/...` targets ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
 - An interrupted workflow run stays addressable after the session that launched it restarts, before you run `/workflow resume`. Sends to `workflow:<rootRunId>/<stage>` and `workflow:<rootRunId>/**` are queued in the run's own journal instead of failing with `Session not found`, and `intercom list` shows the run's stages as pending. Each queued message is delivered exactly once when its stage is live again, including messages sent while resume is starting. A queued message no longer makes a resume that started at the same time fail as stale. The background subagents that the run's stages launched stay addressable in the same interval: sends to them wait and are delivered once after the resumed stage restores them. If another Atomic session resumes the run instead, that session takes over the run's Intercom targets and the sends still waiting for the subagents get an error saying so ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
+- A session created with its own `agentDir` now keeps its workflow runs in the same storage as its sessions. Relative paths, `{ file }` secrets, and storage adapters in a shared `storage` selection, from settings or from `ATOMIC_STORAGE`/`--storage`, previously resolved against the default Atomic home for workflow runs, and the default journal ignored the custom `agentDir` ([#3783](https://github.com/bastani-inc/atomic/issues/3783)).
 
 ## [0.9.39] - 2026-10-19
 

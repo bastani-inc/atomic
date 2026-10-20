@@ -37,6 +37,10 @@ export function buildInteractiveEngineArgs(
 	);
 	const storage = getEngineSessionStorage(sessionManager.getSessionStore());
 	if (storage) args.push(ENGINE_SESSION_STORAGE_FLAG, JSON.stringify(storage));
+	if (parsed.storage) {
+		const { flag, value } = parsed.storage;
+		args.push(flag, flag === "--storage-file" ? resolvePath(value) : value);
+	}
 	appendValue(args, "--provider", parsed.provider);
 	appendValue(args, "--model", parsed.model);
 	appendValue(args, "--thinking", parsed.thinking);

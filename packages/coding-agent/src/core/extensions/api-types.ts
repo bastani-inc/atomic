@@ -266,6 +266,8 @@ export interface ExtensionAPI {
 	getChildSessionOptions?: import("../child-session-options.ts").ChildSessionOptionsResolver;
 	/** Internal: the workflow journal the owning SDK session was created with, if any. */
 	getWorkflowJournal?: () => import("../storage/provider.js").RunJournalOption | undefined;
+	/** Internal: the agent directory the owning session resolved its storage against. */
+	getStorageAgentDir?: () => string | undefined;
 
 	// =========================================================================
 	// Message Rendering

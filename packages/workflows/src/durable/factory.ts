@@ -30,6 +30,8 @@ export interface DurableBackendOptions {
 	settings?: RunJournalSettings;
 	cwd?: string;
 	projectTrusted?: boolean;
+	/** The agent directory the owning session resolved its storage against; defaults to `getAgentDir()`. */
+	agentDir?: string;
 	/**
 	 * The session holding the selected backend. A settings-selected memory journal is scoped to it, and
 	 * `releaseDurableBackendsHeldBy` closes the backend once no holder remains. Without one the backend is
@@ -41,12 +43,14 @@ export interface DurableBackendOptions {
 export async function initializeDurableBackend(options: DurableBackendOptions = {}): Promise<DurableWorkflowBackend> {
 	const owner = getDurableBackendProcessOwner();
 	const choice = options.journal;
+	const agentDir = options.agentDir ?? getAgentDir();
 	const selection = selectRunJournal({
+		agentDir,
 		journal: choice,
 		settings:
 			choice === undefined
 				? (options.settings ??
-					SettingsManager.create(options.cwd ?? process.cwd(), getAgentDir(), {
+					SettingsManager.create(options.cwd ?? process.cwd(), agentDir, {
 						projectTrusted: options.projectTrusted,
 					}).getSettings())
 				: undefined,
@@ -59,13 +63,13 @@ export async function initializeDurableBackend(options: DurableBackendOptions = 
 				? choice
 				: selection.kind === "memory" && holder !== undefined
 					? holder
-					: storageSelectionKey(selection, getAgentDir());
+					: storageSelectionKey(selection, agentDir);
 	const ownsJournal = choice === undefined || !("createRun" in choice);
 	owner.selectedBackends ??= new Map();
 	const selected = owner.selectedBackends;
 	const existing = selected.get(key);
 	const entry: SelectedDurableBackend = existing ?? {
-		ready: openSelectedRunJournal(selection)
+		ready: openSelectedRunJournal(selection, agentDir)
 			.then((journal) => JournalDurableBackend.open(journal, { ownsJournal }))
 			.then((opened) => {
 				if (ownsJournal) opened.closeOnProcessExit();

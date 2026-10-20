@@ -1427,7 +1427,7 @@ interface RunJournal {
 
 Custom journals need only the async contract; no synchronous journal methods are required. Use `registerRunJournalConformance(runner, name, open, observeRead)` to check a fresh journal per case. Supply a read observer that reports actual page sizes and entries loaded or copied, with `restore()` and `reset()` methods, so the suite can verify lazy reads without consuming the whole history.
 
-Precedence is `RunOpts.journal` (`createAgentSession({ journal })` for a session's `workflow` tool), non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, `workflows.journal`, shared top-level `storage`, then the default `~/.atomic/workflows/journal.sqlite`. Nearer settings selections replace whole objects, never merge options or secrets. Relative settings paths resolve against Atomic home. Invalid selected values raise `StorageConfigError`; storage failures reject the call without selecting memory. Keep the same journal and working directory when resuming stored runs.
+Precedence is `RunOpts.journal` (`createAgentSession({ journal })` for a session's `workflow` tool), `--storage` or `--storage-file`, `ATOMIC_WORKFLOWS_JOURNAL` or non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, `ATOMIC_STORAGE`, `workflows.journal`, shared top-level `storage`, then the default `~/.atomic/workflows/journal.sqlite`. Nearer settings selections replace whole objects, never merge options or secrets. Relative settings paths resolve against Atomic home. Invalid selected values raise `StorageConfigError`; storage failures reject the call without selecting memory. Keep the same journal and working directory when resuming stored runs.
 
 ```ts
 import { run } from "@bastani/atomic/workflows";
