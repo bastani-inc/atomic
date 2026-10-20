@@ -8,7 +8,6 @@ import type { ToolDefinition } from "../extensions/types.ts";
 import type { SessionEntry } from "../session-manager.ts";
 import { SessionManager } from "../session-manager.ts";
 import { SessionNotFoundError } from "../storage/session/errors.js";
-import { readExportHtmlTemplateScript } from "./template-script.ts";
 
 /**
  * Interface for rendering custom tools to HTML.
@@ -146,7 +145,7 @@ function generateHtml(sessionData: SessionData, themeName?: string): string {
 	const templateDir = getExportTemplateDir();
 	const template = readFileSync(join(templateDir, "template.html"), "utf-8");
 	const templateCss = readFileSync(join(templateDir, "template.css"), "utf-8");
-	const templateJs = readExportHtmlTemplateScript(templateDir);
+	const templateJs = readFileSync(join(templateDir, "template.js"), "utf-8");
 	const markedJs = readFileSync(join(templateDir, "vendor", "marked.min.js"), "utf-8");
 	const markedCjkFriendlyJs = readFileSync(join(templateDir, "vendor", "marked-cjk-friendly.min.js"), "utf-8");
 	const hljsJs = readFileSync(join(templateDir, "vendor", "highlight.min.js"), "utf-8");
