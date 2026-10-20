@@ -159,6 +159,12 @@ export function openSessionPicker(
 		// overlay: false — picker replaces the editor in-place (see header
 		// comment). The host owns geometry/focus; no overlayOptions are
 		// forwarded by interactive pi today.
-		void custom(factory, { overlay: false, purpose: "navigation" });
+		void Promise.resolve(custom(factory, { overlay: false, purpose: "navigation" })).catch(() => {
+			unsubscribe?.();
+			unsubscribe = null;
+			if (settled) return;
+			settled = true;
+			resolve({ kind: "close" });
+		});
 	});
 }

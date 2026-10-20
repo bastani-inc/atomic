@@ -323,6 +323,7 @@ export function buildGraphOverlayAdapter(
 		if (typeof custom !== "function") return;
 
 		let settled = false;
+		let finishThisMount: (() => void) | undefined;
 		const factory = (
 			tui: PiCustomOverlayFactoryTui,
 			theme: PiTheme,
@@ -406,6 +407,7 @@ export function buildGraphOverlayAdapter(
 			});
 			currentView = view;
 			finishMounted = finish;
+			finishThisMount = finish;
 			mounted = true;
 			updateTerminalAutowrap(true);
 			updateMainChatInputHint(readHostCustomUiActive(ui));
@@ -428,7 +430,7 @@ export function buildGraphOverlayAdapter(
 				updateMainChatInputHint(readHostCustomUiActive(ui));
 			},
 		};
-		void custom(factory, options);
+		void Promise.resolve(custom(factory, options)).catch(() => finishThisMount?.());
 	}
 
 	function toggle(runId: string | null, surface?: OverlayPiSurface): void {
