@@ -8,6 +8,7 @@ import { afterEach, test, vi } from "vitest";
 import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-message-cache.js";
 import {
 	KNOWN_SESSION_REFRESH_INTERVAL_MS,
+	LOCAL_RETRY_LOOKUP_BOUND_MS,
 	MULTI_NODE_OUTCOME_POLL_INTERVAL_MS,
 	MultiNodeRouter,
 	OFFLINE_SESSION_TARGET,
@@ -111,6 +112,7 @@ class Node {
 				writeConfirmed: (socket, frame, onSettled) => onSettled(node.write(socket, frame)),
 				supervisorCache: node.supervisorCache,
 				pendingQuestions: node.pendingQuestions,
+				deliveredMessages: node.deliveredMessages,
 				dispatch: (socket, clientMessage, senderId) => node.dispatch(socket, clientMessage, senderId),
 			},
 		});
@@ -678,6 +680,57 @@ test("a same-id retry of a message delivered across nodes is not delivered again
 	assert.deepEqual(messageFrames(back, sent.id), []);
 });
 
+test("a local send is delivered at once when the shared database stops answering its retry lookup, and only once", async () => {
+	const [a] = await cluster(1);
+	const sender = await a!.connect("sender");
+	const recipient = await a!.connect("recipient");
+	const outbox = a!.opened.state.outbox;
+	let answerLate: (result: Awaited<ReturnType<typeof outbox.read>>) => void = () => {};
+	Object.assign(outbox, {
+		read: () =>
+			new Promise<Awaited<ReturnType<typeof outbox.read>>>((resolve) => {
+				answerLate = resolve;
+			}),
+	});
+	const sent = message();
+	a!.send(sender, "recipient", sent);
+	await waitFor(() => messageFrames(recipient, sent.id)[0], LOCAL_RETRY_LOOKUP_BOUND_MS + 2_000);
+	a!.router.received(recipient, sent.id);
+	answerLate({ status: "missing" });
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	assert.equal(messageFrames(recipient, sent.id).length, 1);
+	const outcomes = framesOf(sender).filter(
+		(frame) => (frame.type === "delivered" || frame.type === "delivery_failed") && frame.messageId === sent.id,
+	);
+	assert.ok(outcomes.length <= 1, JSON.stringify(outcomes));
+});
+
+test("a same-id retry of a message delivered locally is not delivered again after its recipient moves to another broker", async () => {
+	const [a, b] = await cluster();
+	const sender = await a!.connect("sender");
+	const recipient = await a!.connect("recipient");
+	const sent = message();
+	a!.send(sender, "recipient", sent);
+	await waitFor(() => messageFrames(recipient, sent.id)[0]);
+	assert.equal((await waitFor(() => outcomeOf(sender, sent.id))).type, "delivered");
+
+	a!.leave(recipient);
+	const moved = await b!.connect("recipient", {
+		returnAddress: recipient.registrationReturnAddress!,
+		id: recipient.info.id,
+	});
+	a!.send(sender, "recipient", sent);
+	const outcomes = () =>
+		framesOf(sender).filter(
+			(frame) => (frame.type === "delivered" || frame.type === "delivery_failed") && frame.messageId === sent.id,
+		);
+	await waitFor(() => (outcomes().length >= 2 || messageFrames(moved, sent.id).length > 0 ? true : undefined));
+	await new Promise((resolve) => setTimeout(resolve, 20 * BUS_POLL_INTERVAL_MS));
+	assert.deepEqual(messageFrames(moved, sent.id), [], "one logical message, one recipient frame");
+	assert.equal(messageFrames(recipient, sent.id).length, 1);
+	assert.equal(outcomes()[1]?.type, "delivered");
+});
+
 test("a restoring reservation released while its shared reserve is still being written ends in the shared store", async () => {
 	const [a, b] = await cluster();
 	const supervisor = await b!.connect("supervisor", { group: "crew" });
@@ -685,6 +738,42 @@ test("a restoring reservation released while its shared reserve is still being w
 	const capability = `${randomUUID()}.capability`;
 	b!.router.restoringReserved(capability, supervisor.info.id, "restored-child", normalizeGroup("crew"), [], false);
 	b!.router.restoringReleased(capability, supervisor.info.id);
+	await vi.waitFor(
+		async () => {
+			const read = await a!.opened.state.reservations.read(createHash("sha256").update(capability).digest("hex"));
+			assert.equal(read.status, "ended", JSON.stringify(read));
+		},
+		{ timeout: CROSS_NODE_WAIT_MS },
+	);
+	const lookup = await a!.opened.state.reservations.lookup(
+		"restored-child",
+		{ sessionId: sender.info.id, groups: [normalizeGroup("crew")] },
+		30_000,
+	);
+	assert.equal(lookup.status, "none");
+});
+
+test("a restoring reservation whose shared reserve is still being written when its supervisor leaves ends in the shared store", async () => {
+	const [a, b] = await cluster();
+	const supervisor = await b!.connect("supervisor", { group: "crew" });
+	const sender = await a!.connect("sender", { group: "crew" });
+	const reservations = b!.opened.state.reservations;
+	const reserve = reservations.reserve.bind(reservations);
+	let written: () => void = () => {};
+	const writing = new Promise<void>((resolve) => {
+		written = resolve;
+	});
+	Object.assign(reservations, {
+		reserve: async (...args: Parameters<typeof reserve>) => {
+			await writing;
+			return reserve(...args);
+		},
+	});
+	const capability = `${randomUUID()}.capability`;
+	b!.router.restoringReserved(capability, supervisor.info.id, "restored-child", normalizeGroup("crew"), [], false);
+	b!.leave(supervisor);
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	written();
 	await vi.waitFor(
 		async () => {
 			const read = await a!.opened.state.reservations.read(createHash("sha256").update(capability).digest("hex"));

@@ -12,6 +12,7 @@ import {
 	sessionTargetFailureReason,
 } from "../session-target.js";
 import type { SessionInfo } from "../types.js";
+import type { DeliveredMessageCache } from "./delivered-message-cache.js";
 import { sameGroup } from "./group-isolation.js";
 import { sessionGroups } from "./group-membership.js";
 import {
@@ -33,6 +34,7 @@ import {
 	type RestoringReservationLease,
 	reservationKeyFor,
 } from "./multinode-state-store.js";
+import { BROKER_STORAGE_ENV } from "./paths.js";
 import type { PendingQuestionIndex } from "./pending-question-index.js";
 import { UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
 import { RESTORING_RECIPIENT_HOLD_MS, restoringRecipientRetryReason } from "./restoring-recipients.js";
@@ -73,6 +75,12 @@ const PRESENCE_HANDOVER_RETRY_MS = 50;
  * client gives up after 10 s); the lease is still written when the database answers.
  */
 export const PRESENCE_REGISTRATION_BOUND_MS = 5_000;
+/**
+ * The longest a send to a local recipient waits for the shared outbox to say whether it is a retry of a cross-node
+ * send. Local delivery does not depend on the shared database (spec §8): past this bound the send is delivered
+ * locally, with the local accepted-delivery cache as its duplicate protection.
+ */
+export const LOCAL_RETRY_LOOKUP_BOUND_MS = 300;
 /** The longest `list` waits for other nodes' sessions; the client's list request gives up after 5 s. */
 const REMOTE_SESSIONS_BOUND_MS = 2_000;
 const MAX_SUPERSEDED_HOPS = 8;
@@ -84,22 +92,31 @@ export const KNOWN_SESSION_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 const TARGET_GROUP_REFUSAL = "Target session is in a different intercom group";
 
 /**
- * The raw top-level `storage` value of the agent directory's own settings, read without the host package so the
- * broker stays self-contained. `undefined` leaves multi-node routing off: no selection, and the selections the
- * storage layer reads as in-memory (`memory: true` without a path, or `path: ":memory:"`), which no other broker can
- * share. `path: ""` is not one of them: it selects the default storage file.
+ * The raw shared `storage` selection, read without the host package so the broker stays self-contained: the
+ * selection the launching process handed this broker in `ATOMIC_STORAGE` (its `--storage`, `--storage-file` or own
+ * `ATOMIC_STORAGE`), otherwise the top-level `storage` value of the agent directory's settings. Relative paths in
+ * either resolve against the agent directory's parent, as for sessions and the journal. `undefined` leaves
+ * multi-node routing off: no selection, a per-process selection that is not a JSON object (the launching process
+ * validated it; settings are never consulted instead), and the selections the storage layer reads as in-memory
+ * (`memory: true` without a path, or `path: ":memory:"`), which no other broker can share. `path: ""` is not one of
+ * them: it selects the default storage file.
  */
-export function readSharedStorageSetting(agentDir: string): Record<string, unknown> | undefined {
+export function readSharedStorageSetting(
+	agentDir: string,
+	env: NodeJS.ProcessEnv = process.env,
+): Record<string, unknown> | undefined {
+	const processSelection = env[BROKER_STORAGE_ENV];
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
+		parsed =
+			processSelection === undefined || processSelection.length === 0
+				? (JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")) as Record<string, unknown>).storage
+				: JSON.parse(processSelection);
 	} catch {
 		return undefined;
 	}
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
-	const storage = (parsed as Record<string, unknown>).storage;
-	if (typeof storage !== "object" || storage === null || Array.isArray(storage)) return undefined;
-	const selection = storage as Record<string, unknown>;
+	const selection = parsed as Record<string, unknown>;
 	if (selection.adapter === undefined) {
 		if (selection.memory === true && !selection.path) return undefined;
 		if (selection.path === ":memory:") return undefined;
@@ -163,6 +180,8 @@ export interface MultiNodeHost {
 	readonly supervisorCache: SupervisorChannelCache;
 	/** This broker's own ask routes: an ask whose asker and recipient are both here is answered on the local path. */
 	readonly pendingQuestions: PendingQuestionIndex;
+	/** This broker's local accepted deliveries: a retry whose recipient moved to another broker is answered from them. */
+	readonly deliveredMessages: Pick<DeliveredMessageCache, "lookupForTarget" | "lookupQuestionTarget">;
 	/** Route a held send again as its sender, exactly like a new send (local delivery or the outbox). */
 	dispatch(socket: BrokerConnectedSession["socket"], clientMessage: SendClientMessage, senderId: string): void;
 }
@@ -480,6 +499,7 @@ export class MultiNodeRouter {
 	): void {
 		if (this.closed) return;
 		const reservationKey = reservationKeyFor(capability);
+		const owner = this.host.sessions.get(ownerSessionId);
 		this.serial(`reservation:${reservationKey}`, async () => {
 			const reserved = await this.state.reservations.reserve({
 				reservationKey,
@@ -491,7 +511,15 @@ export class MultiNodeRouter {
 				group,
 				dormant,
 			});
-			if (reserved.status === "reserved") this.mirrored.set(reservationKey, { lease: reserved.lease });
+			if (reserved.status !== "reserved") return;
+			// The owner left (or its id was taken over) while the reserve was being written: its departure scanned the
+			// mirrors before this one existed, so end the reservation here instead of renewing it for a gone owner.
+			if (this.host.sessions.get(ownerSessionId) !== owner) {
+				await this.state.reservations.release(reserved.lease);
+				await this.wakeHeldOrigins(reservationKey);
+				return;
+			}
+			this.mirrored.set(reservationKey, { lease: reserved.lease });
 		});
 	}
 
@@ -645,10 +673,22 @@ export class MultiNodeRouter {
 	/**
 	 * A send that resolved to a session on this broker: a same-id retry of a send that already went through the shared
 	 * outbox (its recipient has since moved here) is answered from that row, never delivered again; any other send
-	 * takes the local path.
+	 * takes the local path. A lookup the shared database does not answer within `LOCAL_RETRY_LOOKUP_BOUND_MS` takes the
+	 * local path too, and its late answer is ignored: the send has been answered once already.
 	 */
 	private async answerLocalRetry(request: RemoteSendRequest, target: BrokerConnectedSession): Promise<void> {
-		const existing = await this.state.outbox.read(request.message.id);
+		const lookup = this.state.outbox.read(request.message.id);
+		let bound: ReturnType<typeof setTimeout> | undefined;
+		const expired = new Promise<"expired">((resolve) => {
+			bound = setTimeout(() => resolve("expired"), LOCAL_RETRY_LOOKUP_BOUND_MS);
+			bound.unref?.();
+		});
+		const existing = await Promise.race([lookup, expired]).finally(() => clearTimeout(bound));
+		if (existing === "expired") {
+			lookup.catch((error: Error) => this.report(error));
+			request.notFound();
+			return;
+		}
 		if (existing.status !== "found") {
 			request.notFound();
 			return;
@@ -708,6 +748,7 @@ export class MultiNodeRouter {
 			await this.answerExistingRow(request, target, digest, existing.row);
 			return;
 		}
+		if (this.answerLocalDelivery(request, target)) return;
 		const correlatedReply =
 			message.replyTo !== undefined &&
 			(
@@ -762,6 +803,53 @@ export class MultiNodeRouter {
 			return;
 		}
 		await this.answerExistingRow(request, target, digest, enqueued.row);
+	}
+
+	/**
+	 * A same-id retry of a send this broker delivered locally, whose recipient has since moved to another broker, is
+	 * answered from that local delivery (the same check the local path makes), never sent through the outbox again.
+	 * True when the send was answered.
+	 */
+	private answerLocalDelivery(request: RemoteSendRequest, target: RemoteTarget): boolean {
+		const { message } = request;
+		const delivered = this.host.deliveredMessages.lookupForTarget(message.id, request.signature, target.identity);
+		if (delivered === "miss") return false;
+		if (delivered === "conflict") {
+			this.failConflict(request);
+			return true;
+		}
+		if (delivered === "invalid") {
+			this.fail(request, "Intercom accepted-delivery authority is invalid; refusing possible duplicate delivery");
+			return true;
+		}
+		if (delivered === "uncertain") {
+			this.fail(
+				request,
+				"Intercom cannot prove whether this reserved operation reached its recipient; refusing redelivery",
+			);
+			return true;
+		}
+		if (message.expectsReply === true) {
+			const questionTarget = this.host.deliveredMessages.lookupQuestionTarget(
+				message.id,
+				request.signature,
+				senderGroupIdentity(request.from),
+			);
+			if (questionTarget === undefined) {
+				this.fail(request, "Accepted Intercom question route could not be securely rebound");
+				return true;
+			}
+			if (request.resolveReplyTarget && request.attemptId !== undefined) {
+				this.host.write(request.socket, {
+					type: "question_target",
+					messageId: message.id,
+					attemptId: request.attemptId,
+					sessionId: target.sessionId,
+				});
+			}
+		}
+		this.host.write(request.socket, { type: "delivered", messageId: message.id, attemptId: request.attemptId });
+		return true;
 	}
 
 	/** Report a row's current state to its sender, and keep waiting on it until it settles. */

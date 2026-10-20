@@ -2125,6 +2125,7 @@ class IntercomBroker {
                 writeConfirmed: writeMessageWithOutcome,
                 supervisorCache: this.supervisorChannel,
                 pendingQuestions: this.pendingQuestions,
+                deliveredMessages: this.deliveredMessages,
                 dispatch: (socket, clientMessage, senderId) => this.dispatchSend(socket, clientMessage, senderId),
               },
             });
