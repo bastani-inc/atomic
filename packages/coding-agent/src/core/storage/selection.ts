@@ -16,7 +16,7 @@ export type StorageInputSelection =
 
 export function selectStorage(
 	value: StorageInputSelection,
-	source: "sdk" | "settings",
+	source: "sdk" | "settings" | "env" | "cli",
 	field: string,
 	defaultPath: string,
 ): StorageSelection {

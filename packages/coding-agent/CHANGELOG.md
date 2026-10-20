@@ -10,6 +10,7 @@
 
 - Added `AgentSession.startPendingRecovery()`, the RPC `start_pending_recovery` command, and the `session_recovery_restore` and `session_recovery_replay` extension events. Extensions can now restore background work after a restart, decline to replay deliveries whose peer is gone, and defer deliveries they cannot decide on yet to the next resume without starting a turn ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
 - Added the `typesafe/jev-1.14.0` classifier. Both direct TypeSafe classifiers, `typesafe/jev-latest` and `typesafe/jev-1.14.0`, now accept up to 262K tokens and PNG or JPEG images, for example through `models.classify()` in codemode. See [TypeSafe Jev](docs/providers.md#typesafe-jev).
+- Added per-process storage selection. `ATOMIC_STORAGE`, `ATOMIC_SESSIONS_STORAGE`, `ATOMIC_WORKFLOWS_JOURNAL`, `--storage '<json>'`, and `--storage-file <path>` take the same JSON selections as the storage settings, adapters and `secrets` included, so a host can start `atomic --mode rpc` children on their own store without editing settings. A process without them keeps using its settings, and `/resume` in each lists only its own store. Invalid or conflicting selections stop startup with a `StorageConfigError` naming the variable or flag. See [Selecting storage per process](docs/storage.md#selecting-storage-per-process) ([#3783](https://github.com/bastani-inc/atomic/issues/3783)).
 
 ### Fixed
 

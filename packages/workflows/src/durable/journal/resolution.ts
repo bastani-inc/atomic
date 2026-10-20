@@ -1,5 +1,5 @@
 import { dirname, isAbsolute, join } from "node:path";
-import { getAgentDir } from "@bastani/atomic";
+import { getAgentDir, selectProcessStorage } from "@bastani/atomic";
 import {
 	type RunJournalOption,
 	StorageConfigError,
@@ -22,12 +22,17 @@ const provider = new StorageProvider({
 	memory: (descriptor) => new MemoryRunJournal(descriptor),
 	sql: SqlRunJournal.open,
 });
-const settingsSelections = new WeakSet<StorageSelection>();
+const origins = new WeakMap<StorageSelection, { source: "settings" | "cli" | "env"; field?: string }>();
 
-export function selectRunJournal(
-	options: { journal?: RunJournalOption; settings?: RunJournalSettings } = {},
-): StorageSelection | RunJournal {
-	const agentDir = getAgentDir();
+export interface RunJournalResolutionOptions {
+	journal?: RunJournalOption;
+	settings?: RunJournalSettings;
+	/** The agent directory the owning session resolved its storage against; defaults to `getAgentDir()`. */
+	agentDir?: string;
+}
+
+export function selectRunJournal(options: RunJournalResolutionOptions = {}): StorageSelection | RunJournal {
+	const agentDir = options.agentDir ?? getAgentDir();
 	const defaultPath = join(dirname(agentDir), "workflows", "journal.sqlite");
 	if (options.journal !== undefined) {
 		if (options.journal !== null && typeof options.journal === "object" && "createRun" in options.journal) {
@@ -57,8 +62,11 @@ export function selectRunJournal(
 		}
 		return selectStorage(options.journal, "sdk", "journal", defaultPath);
 	}
-	const environment = process.env.ATOMIC_WORKFLOW_JOURNAL_PATH;
-	if (environment !== undefined && environment.length > 0) return { kind: "sqlite", path: environment };
+	const processChoice = selectProcessStorage("journal", agentDir);
+	if (processChoice !== undefined) {
+		origins.set(processChoice.selection, { source: processChoice.source, field: processChoice.field });
+		return processChoice.selection;
+	}
 	const workflows = options.settings?.workflows;
 	const journal = Array.isArray(workflows) ? undefined : workflows?.journal;
 	const value = journal !== undefined ? journal : options.settings?.storage;
@@ -73,20 +81,21 @@ export function selectRunJournal(
 		selection.kind === "sqlite" && !isAbsolute(selection.path)
 			? { ...selection, path: join(dirname(agentDir), selection.path) }
 			: selection;
-	settingsSelections.add(resolved);
+	origins.set(resolved, { source: "settings" });
 	return resolved;
 }
 
-export async function resolveRunJournal(
-	options: { journal?: RunJournalOption; settings?: RunJournalSettings } = {},
-): Promise<RunJournal> {
-	return openSelectedRunJournal(selectRunJournal(options));
+export async function resolveRunJournal(options: RunJournalResolutionOptions = {}): Promise<RunJournal> {
+	return openSelectedRunJournal(selectRunJournal(options), options.agentDir);
 }
 
-export async function openSelectedRunJournal(selection: StorageSelection | RunJournal): Promise<RunJournal> {
+export async function openSelectedRunJournal(
+	selection: StorageSelection | RunJournal,
+	agentDir: string = getAgentDir(),
+): Promise<RunJournal> {
 	if ("createRun" in selection) return selection;
 	return withRunJournalConfigSource(selection, () =>
-		provider.openRunJournal(selection, { agentDir: getAgentDir(), domain: "journal" }),
+		provider.openRunJournal(selection, { agentDir, domain: "journal" }),
 	);
 }
 
@@ -99,8 +108,11 @@ export async function withRunJournalConfigSource<T>(
 		return await open();
 	} catch (error) {
 		if (error instanceof StorageConfigError) {
-			const source = settingsSelections.has(selection) ? "settings" : "sdk";
-			if (error.source !== source) throw new StorageConfigError(source, error.field, error.reason);
+			const origin = origins.get(selection);
+			const source = origin?.source ?? "sdk";
+			const field = origin?.field ?? error.field;
+			if (error.source !== source || error.field !== field)
+				throw new StorageConfigError(source, field, error.reason);
 		}
 		throw error;
 	}

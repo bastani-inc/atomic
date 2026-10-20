@@ -1,6 +1,6 @@
 # SQLite storage API
 
-The SDK exposes an async SQLite API from `@bastani/atomic` and `@bastani/atomic/storage`. Sessions and workflow runs default to one local file, `~/.atomic/workflows/journal.sqlite`, with `session_` and `wf_` table prefixes. Use [storage settings](/settings#sessions) to choose a different file, explicit JSONL sessions, explicit memory, or an adapter module. A failed persistent store never falls back to memory.
+The SDK exposes an async SQLite API from `@bastani/atomic` and `@bastani/atomic/storage`. Sessions and workflow runs default to one local file, `~/.atomic/workflows/journal.sqlite`, with `session_` and `wf_` table prefixes. Use [storage settings](/settings#sessions) to choose a different file, explicit JSONL sessions, explicit memory, or an adapter module, or [select storage per process](#selecting-storage-per-process) without editing settings. A failed persistent store never falls back to memory.
 
 For CLI storage selection and resume commands, see [Choosing a store](/sessions#choosing-a-store).
 
@@ -317,6 +317,53 @@ One provider shares a database for matching owned SQLite or adapter selections. 
 If opening storage fails and closing its owned database also fails, the original typed opening error is thrown with a `cleanupCause` field containing the cleanup failure. Inspect both errors when diagnosing the failed open.
 
 Factory-created journal headers record a credential-free `storage` descriptor for diagnostics. Full domain adapters are responsible for recording their own safe descriptor. Directly supplied journals and their caller-provided headers are not rewritten.
+
+## Selecting storage per process
+
+A host that starts Atomic processes, for example a supervisor that launches `atomic --mode rpc` children, can select storage for those processes alone. Each option holds the same JSON selection the settings accept, including `adapter`, `options`, `secrets`, and `prefix`:
+
+| Option | Applies to | Same form as |
+|---|---|---|
+| `--storage '<json>'` | Sessions and workflow runs | Shared `storage` setting |
+| `--storage-file <path>` | Sessions and workflow runs; reads the JSON from a file | Shared `storage` setting |
+| `ATOMIC_STORAGE` | Sessions and workflow runs | Shared `storage` setting |
+| `ATOMIC_SESSIONS_STORAGE` | Sessions only; also accepts `{ "dir": "..." }` | `sessions.storage` |
+| `ATOMIC_WORKFLOWS_JOURNAL` | Workflow runs only | `workflows.journal` |
+
+```bash
+ATOMIC_STORAGE='{"adapter":"@example/atomic-sqlite","options":{"url":"libsql://team.example"},"secrets":{"authToken":{"env":"TEAM_DB_TOKEN"}},"prefix":"svc_"}' \
+  atomic --mode rpc
+
+atomic --mode rpc --storage-file /etc/atomic/storage.json
+```
+
+Nothing is written to settings. A process started without these options keeps using its settings, so an interactive `atomic` and an RPC child started with `ATOMIC_STORAGE` in the same account each keep their own sessions and workflow runs, and `/resume` in each lists only its own store. `--storage` and `--storage-file` cannot be combined. The interactive CLI passes its `--storage` selection to its background engine process. Other processes that Atomic starts inherit the environment variables but not the flag.
+
+Precedence for each domain, highest first:
+
+| Sessions | Workflow runs |
+|---|---|
+| SDK `sessionStore` | SDK `RunOpts.journal` or `createAgentSession({ journal })` |
+| `--session-store`, `--no-session`, or `--session-dir` | |
+| `--storage` or `--storage-file` | `--storage` or `--storage-file` |
+| `ATOMIC_SESSIONS_STORAGE` or `ATOMIC_CODING_AGENT_SESSION_DIR` | `ATOMIC_WORKFLOWS_JOURNAL` or `ATOMIC_WORKFLOW_JOURNAL_PATH` |
+| `ATOMIC_STORAGE` | `ATOMIC_STORAGE` |
+| `sessions.storage` setting | `workflows.journal` setting |
+| Shared `storage` setting | Shared `storage` setting |
+| Default SQLite file | Default SQLite file |
+
+How the options combine with the path overrides:
+
+- The session flags are more specific than `--storage`. With `atomic --session-dir ./sessions --storage '{...}'`, sessions use `./sessions` and workflow runs use the `--storage` selection.
+- A path variable overrides `ATOMIC_STORAGE` for its domain. For example, `ATOMIC_WORKFLOW_JOURNAL_PATH` moves only the workflow runs.
+- `ATOMIC_SESSIONS_STORAGE` with a non-empty `ATOMIC_CODING_AGENT_SESSION_DIR`, or `ATOMIC_WORKFLOWS_JOURNAL` with a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, is a conflict. Startup fails with `StorageConfigError` whose `source` is `"env"`, whose `field` names both variables, and whose `reason` is `"conflicting-overrides"`. Unset one of them.
+- `--storage` or `--storage-file` with a non-empty `ATOMIC_CODING_AGENT_SESSION_DIR` or `ATOMIC_WORKFLOW_JOURNAL_PATH` is also a conflict, with `source` `"cli"`, because the flag would otherwise silently override the variable. Unset the variable, or for sessions pass a session flag such as `--session-dir`, which takes precedence over both.
+
+Relative `path`, `dir`, and `secrets.file` values resolve against Atomic home, normally `~/.atomic`, and relative adapter module specifiers resolve from the agent directory, exactly as in settings and regardless of the working directory. A relative `--storage-file` path resolves against the working directory. Empty variables are ignored. `ATOMIC_CODING_AGENT_SESSION_DIR` and `ATOMIC_WORKFLOW_JOURNAL_PATH` keep their existing behavior.
+
+At startup, before any session starts and in every mode including RPC, the CLI validates `--storage` or `--storage-file` and every set `ATOMIC_STORAGE`, `ATOMIC_SESSIONS_STORAGE`, and `ATOMIC_WORKFLOWS_JOURNAL`, even one that a flag or another variable outranks. `createAgentSession()` validates the same set variables before it creates a session, even when the host supplies `sessionManager` or `sessionStore`. Invalid JSON, a selection that does not match the settings schema, or an unreadable `--storage-file` raises `StorageConfigError` with `source` `"env"` or `"cli"`, a `field` naming the variable or flag, and a `reason` such as `"invalid-json"`, `"invalid-selection"`, or `"unreadable-file"`. A missing `{ "env": ... }` secret reports `"secret-env-missing"` against the selection's variable or flag when the store opens. Atomic never falls back to settings or another store. Errors name the variable or flag, never the selection text or a resolved secret.
+
+These options come from the process that starts Atomic, so they are not subject to [project trust](/security) the way project settings are. An adapter module runs code with Atomic's privileges: select only modules you trust. Pass credentials through `secrets` rather than `options`. Command-line arguments can be visible to other local users, so prefer `--storage-file` or an environment variable when the selection itself is sensitive.
 
 ## Sharing storage across hosts
 

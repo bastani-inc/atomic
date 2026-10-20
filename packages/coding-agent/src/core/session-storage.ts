@@ -1,11 +1,12 @@
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { Value } from "typebox/value";
-import { ENV_SESSION_DIR, getAgentDir } from "../config.js";
+import { getAgentDir } from "../config.js";
 import { resolvePath } from "../utils/paths.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { SessionStorageSelectionSchema } from "./settings-schema.ts";
 import type { Settings } from "./settings-types.ts";
 import { StorageConfigError } from "./storage/errors.js";
+import { selectProcessStorage } from "./storage/process-selection.js";
 import { StorageProvider, type StorageSelection } from "./storage/provider.js";
 import { selectStorage } from "./storage/selection.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
@@ -112,16 +113,21 @@ export function selectSessionStorage(
 		return selection;
 	}
 	if (options.noSession) return { kind: "memory" };
-	const directory = options.sessionDir !== undefined ? options.sessionDir : process.env[ENV_SESSION_DIR];
-	if (options.sessionDir !== undefined || (directory !== undefined && directory.length > 0)) {
-		const source = options.sessionDir !== undefined ? "cli" : "env";
-		const field = source === "cli" ? "--session-dir" : ENV_SESSION_DIR;
-		if (typeof directory !== "string") throw new StorageConfigError(source, field, "invalid-dir");
-		const selection = { kind: "jsonl", dir: resolveStoragePath(directory, cwd, source, field) } as const;
-		sources.set(selection, { source, field });
+	if (options.sessionDir !== undefined) {
+		if (typeof options.sessionDir !== "string") throw new StorageConfigError("cli", "--session-dir", "invalid-dir");
+		const selection = {
+			kind: "jsonl",
+			dir: resolveStoragePath(options.sessionDir, cwd, "cli", "--session-dir"),
+		} as const;
+		sources.set(selection, { source: "cli", field: "--session-dir" });
 		return selection;
 	}
 	const agentDir = options.agentDir ?? getAgentDir();
+	const processChoice = selectProcessStorage("sessions", agentDir, cwd);
+	if (processChoice !== undefined) {
+		sources.set(processChoice.selection, { source: processChoice.source, field: processChoice.field });
+		return processChoice.selection;
+	}
 	const defaultPath = join(dirname(agentDir), "workflows", "journal.sqlite");
 	const settings = options.settings ?? SettingsManager.create(cwd, agentDir).getSettings();
 	if (

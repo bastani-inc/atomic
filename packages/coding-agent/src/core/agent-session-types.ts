@@ -161,6 +161,8 @@ export interface AgentSessionConfig {
 	cacheWarmer?: import("./cache-warmer.ts").CacheWarmer;
 	childSessionOptions?: import("./child-session-options.ts").ChildSessionOptionsResolver;
 	workflowJournal?: import("./storage/provider.js").RunJournalOption;
+	/** The agent directory the session store resolved its storage against; the workflow journal uses the same base. */
+	storageAgentDir?: string;
 	initialActiveToolNames?: string[];
 	usesDefaultTools?: boolean;
 	defaultToolModifiers?: string[];

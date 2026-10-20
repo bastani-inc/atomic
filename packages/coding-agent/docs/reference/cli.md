@@ -142,6 +142,8 @@ When a print-mode turn correctly finishes by calling an opt-in terminating struc
 | `--session-prefix <prefix>` | Use a non-default table prefix with `--session-store` |
 | `--name <name>`, `-n <name>` | Set the session display name |
 | `--no-session` | Ephemeral mode; do not save |
+| `--storage <json>` | Select storage for this process's sessions and workflow runs, in the same JSON form as the shared `storage` setting; never saved. See [Selecting storage per process](/storage#selecting-storage-per-process) |
+| `--storage-file <path>` | Read the `--storage` selection from a JSON file; cannot be combined with `--storage` |
 
 See [Choosing a store](/sessions#choosing-a-store) for precedence, prefix rules, and conflicts.
 
@@ -251,6 +253,9 @@ atomic --tools read,search,find,ls -p "Review the code"
 | `AI_AGENT` | Set to `atomic` by the CLI, RPC, and compiled binary entry points and in every Atomic-owned child-process environment so generic tooling can identify Atomic processes; child environments override caller-supplied values without mutating the caller's environment object |
 | `ATOMIC_CODING_AGENT_DIR` | Override config directory; default is `~/.atomic/agent`. Bundled intercom runtime/config files live under its `intercom/` subdirectory |
 | `ATOMIC_CODING_AGENT_SESSION_DIR` | Override session storage directory; overridden by `--session-dir` |
+| `ATOMIC_STORAGE` | Storage selection JSON for this process's sessions and workflow runs; overridden by `--storage` and the domain variables |
+| `ATOMIC_SESSIONS_STORAGE` | Session-only storage selection JSON; cannot be combined with `ATOMIC_CODING_AGENT_SESSION_DIR` |
+| `ATOMIC_WORKFLOWS_JOURNAL` | Workflow-run-only storage selection JSON; cannot be combined with `ATOMIC_WORKFLOW_JOURNAL_PATH` |
 | `ATOMIC_PACKAGE_DIR` | Override package directory, useful for Nix/Guix store paths |
 | `ATOMIC_REDUCED_MOTION` | Set to `1` to skip startup choreography and render the ordinary working identity as a static regular accent `∀` without a timer |
 | `ATOMIC_OFFLINE` | Disable automatic network activity, including update checks, package update checks, install/update telemetry, and model catalog refreshes |

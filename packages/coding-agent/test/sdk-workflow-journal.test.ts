@@ -16,7 +16,9 @@ import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import type { Settings } from "../src/core/settings-types.js";
+import { StorageConfigError } from "../src/core/storage/errors.js";
 import { wrapNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
+import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 
 const REAL_SDK_WORKFLOW_TIMEOUT_MS = 120_000;
 const SESSIONS_PER_JOURNAL_KIND = 5;
@@ -283,6 +285,75 @@ test(
 		await second.dispose();
 		assert.equal(retainedBackendCount(), backendsBefore);
 		assert.deepEqual((await runIdsAt(shared)).sort(), [firstRun, secondRun, afterFirstDisposed].sort());
+	},
+	REAL_SDK_WORKFLOW_TIMEOUT_MS,
+);
+
+test("createAgentSession rejects a set but invalid storage variable even with an explicit sessionManager or sessionStore (#3783)", async () => {
+	const cwd = join(root, "project");
+	const agentDir = join(root, "agent");
+	const selection = "not-json-selection-text";
+	const hosts: Array<Pick<CreateAgentSessionOptions, "sessionManager" | "sessionStore">> = [
+		{ sessionManager: SessionManager.inMemory(cwd) },
+		{ sessionStore: new MemorySessionStore() },
+		{ sessionStore: { kind: "memory" } },
+	];
+	for (const variable of ["ATOMIC_STORAGE", "ATOMIC_WORKFLOWS_JOURNAL"]) {
+		vi.unstubAllEnvs();
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
+		vi.stubEnv(variable, selection);
+		for (const host of hosts) {
+			await assert.rejects(
+				createAgentSession({
+					cwd,
+					agentDir,
+					settingsManager: SettingsManager.inMemory(),
+					model: getModel("anthropic", "claude-sonnet-4-5")!,
+					builtins: WORKFLOWS_ONLY,
+					...host,
+				}),
+				(error: Error) => {
+					assert.ok(error instanceof StorageConfigError, String(error));
+					assert.equal(error.source, "env");
+					assert.equal(error.field, variable);
+					assert.equal(error.reason, "invalid-json");
+					assert.equal(error.message.includes(selection), false);
+					return true;
+				},
+			);
+		}
+	}
+});
+
+test(
+	"a relative ATOMIC_STORAGE path puts a custom agentDir session and its workflow runs in one database (#3783)",
+	async () => {
+		const cwd = join(root, "project");
+		const agentDir = join(root, "tenant", "agent");
+		mkdirSync(agentDir, { recursive: true });
+		vi.stubEnv("ATOMIC_STORAGE", JSON.stringify({ path: "shared.sqlite" }));
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			settingsManager: SettingsManager.inMemory(),
+			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			builtins: WORKFLOWS_ONLY,
+		});
+		sessions.push(session);
+		const runId = await runProbe(session);
+		const shared = join(root, "tenant", "shared.sqlite");
+		const database = new DatabaseSync(shared, { readOnly: true });
+		try {
+			const tables = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all();
+			assert.ok(
+				tables.some((table) => table.name === "session_sessions"),
+				JSON.stringify(tables),
+			);
+		} finally {
+			database.close();
+		}
+		assert.deepEqual(await runIdsAt(shared), [runId]);
+		assert.equal(existsSync(join(root, "shared.sqlite")), false);
 	},
 	REAL_SDK_WORKFLOW_TIMEOUT_MS,
 );
