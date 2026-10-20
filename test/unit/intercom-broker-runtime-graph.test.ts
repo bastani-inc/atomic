@@ -66,8 +66,8 @@ describe("intercom broker runtime module graph", () => {
 			.flatMap((file) => runtimeRequestsOf(file).map((request) => ({ file, request })))
 			.filter(({ request }) => request.specifier?.endsWith("open-broker-state.js") === true);
 		assert.deepEqual(
-			edges.map(({ file, request }) => [relative(repoRoot, file), request.kind]),
-			[["packages/intercom/broker/broker.ts", "dynamic-import"]],
+			edges.map(({ file, request }) => [file, request.kind]),
+			[[brokerEntrypoint, "dynamic-import"]],
 		);
 		// A single-node broker never loads it; a standalone binary without the host package stays single-node.
 		const lazy = walkRuntimeGraph(openBrokerStatePath);
