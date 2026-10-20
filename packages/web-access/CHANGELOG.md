@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.40] - 2026-10-20
+
+### Changed
+
+- Curator summary drafts for Codex-only users now prefer `openai-codex/gpt-6.1-sol`, the `openai-codex` default, instead of `gpt-5.3-codex-spark`, which ChatGPT accounts can no longer use. `anthropic/claude-haiku-4-5` remains the first choice.
+
 ## [0.9.40-alpha.2] - 2026-10-20
 
 ### Changed
