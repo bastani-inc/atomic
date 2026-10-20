@@ -14,6 +14,7 @@ import {
 	type SubagentChildRecordInput,
 	type SubagentChildRecordSink,
 	type SubagentChildStopStatus,
+	subagentChildInheritance,
 	subagentChildLaunch,
 	takeSubagentChildStop,
 } from "./subagent-child-records.js";
@@ -141,6 +142,7 @@ export function runOwnerlessChild(input: {
 			...(terminalStatus ? { terminalStatus } : {}),
 			...(held?.length ? { heldMessages: { taskId: launchId, messages: held } } : {}),
 			...(queuedLaunch ? { launch: queuedLaunch } : {}),
+			inherited: subagentChildInheritance(input.options),
 		});
 	};
 	const settled = Promise.withResolvers<void>();

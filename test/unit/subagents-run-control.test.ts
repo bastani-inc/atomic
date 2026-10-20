@@ -16,6 +16,7 @@ import { runSync } from "../../packages/subagents/src/runs/foreground/execution.
 import { takeStoppedQueuedOwnerlessChild } from "../../packages/subagents/src/runs/foreground/ownerless-children.js";
 import {
 	createSubagentChildRecordSink,
+	isSubagentChildRecord,
 	readSubagentChildRecords,
 	SUBAGENT_CHILD_RECORD_TYPE,
 	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
@@ -1475,12 +1476,14 @@ async function restoreStartedChild(
 	runId: string,
 	options: Partial<RunSyncOptions>,
 	launchAgent?: AgentConfig,
-): Promise<{ task: string; options: RunSyncOptions; agent: AgentConfig | undefined }> {
+	beforeRestore?: () => void,
+): Promise<{ task: string; options: RunSyncOptions; agent: AgentConfig | undefined; taskId: string }> {
 	await h.admit(runId, undefined, options, launchAgent);
 	const record = await h.waitForLatest(`${runId}:0`, (candidate) => candidate.launchLeafId !== undefined);
 	await h.closeOwnerAndReopen("session-close");
 	await sleep(50);
 	assert.equal(h.latest(record.childId)?.state, "running", "closing its owner records nothing terminal");
+	beforeRestore?.();
 	const [outcome] = await restoreSubagentChildren(h.deps, h.ctx);
 	assert.ok(outcome?.kind === "restored", JSON.stringify(outcome));
 	const restarted = h.runs.at(-1);
@@ -1488,7 +1491,7 @@ async function restoreStartedChild(
 	assert.equal(restarted.options.sessionManager?.getSessionId(), record.childSessionId, "it reopens its own session");
 	assert.equal(restarted.options.resumeSession, true);
 	await settled(h, outcome.taskId);
-	return restarted;
+	return { ...restarted, taskId: outcome.taskId };
 }
 
 /** Pause a child still queued behind a sibling, forget it as a restart does, and resume it from its records. */
@@ -1497,7 +1500,8 @@ async function resumeQueuedChildAfterRestart(
 	runId: string,
 	options: Partial<RunSyncOptions>,
 	launchAgent?: AgentConfig,
-): Promise<{ task: string; options: RunSyncOptions; agent: AgentConfig | undefined }> {
+	beforeResume?: () => void,
+): Promise<{ task: string; options: RunSyncOptions; agent: AgentConfig | undefined; taskId: string }> {
 	const schedule = createExecutionScheduler(1);
 	const childId = `${runId}:0`;
 	const runningTask = await h.admit(`${runId}-sibling`, schedule);
@@ -1508,6 +1512,7 @@ async function resumeQueuedChildAfterRestart(
 	await h.call({ action: "quit", id: `${runId}-sibling:0` });
 	await settled(h, runningTask);
 	assert.ok(takeStoppedQueuedSubagentChild(queuedTask), "Atomic restarts and forgets the queued launch");
+	beforeResume?.();
 	const resumed = await h.call({ action: "resume", id: childId });
 	assert.notEqual(resumed.isError, true, text(resumed));
 	const resumedTask = resumedTaskId(resumed);
@@ -1518,7 +1523,7 @@ async function resumeQueuedChildAfterRestart(
 	// It runs its original task, which the harness holds until it is stopped.
 	await h.call({ action: "quit", id: childId });
 	await settled(h, resumedTask);
-	return start;
+	return { ...start, taskId: resumedTask };
 }
 
 test("a started child of a user agent a project agent of the same name shadows is restored with the user agent (#3784)", async () => {
@@ -1553,6 +1558,153 @@ test("a forked never-started queued child started under the fork-only Intercom b
 	const start = await resumeQueuedChildAfterRestart(h, "queued-fork-bridge", { sessionManager: forked });
 	assert.ok(start.agent?.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER), start.agent?.systemPrompt);
 	assert.ok(start.options.orchestratorIntercomTarget, "it is told its orchestrator's Intercom target");
+});
+
+const sonnet = { provider: "anthropic", id: "claude-sonnet", reasoning: true };
+const haiku = { provider: "anthropic", id: "claude-haiku", reasoning: true };
+
+/** The owner's model registry with these models usable, as the reopened session finds them. */
+function usableModels(h: Harness, models: ReadonlyArray<{ provider: string; id: string; reasoning: boolean }>): void {
+	Object.assign(h.ctx, {
+		modelRegistry: {
+			getAvailable: () => [...models],
+			getAll: () => [...models],
+			find: (provider: string, id: string) => models.find((model) => model.provider === provider && model.id === id),
+			hasConfiguredAuth: () => true,
+		},
+	});
+}
+
+/** The owner switches to another model and thinking level, as `/model` and the thinking toggle do. */
+function ownerSwitchesTo(h: Harness, model: { provider: string; id: string }, thinkingLevel: string): void {
+	Object.assign(h.ctx, { model, thinkingLevel });
+}
+
+/** What the child's launch with this task id started on, as its own record says. */
+function startedOn(h: Harness, childId: string, taskId: string): { model?: string; thinking?: string } {
+	const started = h.sessionManager
+		.getEntries()
+		.filter(isSubagentChildRecord)
+		.map((entry) => entry.data as SubagentChildRecord)
+		.find((record) => record.childId === childId && record.taskId === taskId && record.launchLeafId !== undefined);
+	assert.ok(started, `the launch of ${childId} as ${taskId} never recorded what it started on`);
+	return {
+		...(started.launchModel ? { model: started.launchModel } : {}),
+		...(started.launchThinkingLevel ? { thinking: started.launchThinkingLevel } : {}),
+	};
+}
+
+/** What the parent was on when it admitted the child; a child that pins no model of its own inherits both. */
+const admittedOnSonnetHigh: Partial<RunSyncOptions> = {
+	currentModel: "anthropic/claude-sonnet",
+	currentThinkingLevel: "high",
+	preferredModelProvider: "anthropic",
+};
+
+test("a never-started queued child starts after a restart on the model and thinking level its parent had when it was admitted (#3784)", async () => {
+	const h = harness();
+	usableModels(h, [sonnet, haiku]);
+	const start = await resumeQueuedChildAfterRestart(h, "queued-inherited-model", admittedOnSonnetHigh, undefined, () =>
+		ownerSwitchesTo(h, haiku, "low"),
+	);
+	assert.deepEqual(startedOn(h, "queued-inherited-model:0", start.taskId), {
+		model: "anthropic/claude-sonnet",
+		thinking: "high",
+	});
+});
+
+test("a never-started queued child of an SDK session starts after a restart on the model and thinking level its parent had when it was admitted (#3784)", async () => {
+	const h = harness({ ownerless: true });
+	usableModels(h, [sonnet, haiku]);
+	ownerSwitchesTo(h, sonnet, "high");
+	const siblingDone = Promise.withResolvers<void>();
+	h.finishOn.set("model-a-marker", siblingDone);
+	h.finishOn.set("model-b-marker", Promise.withResolvers<void>());
+	cleanups.push(async () => siblingDone.resolve());
+	const launched = h.call({
+		tasks: [
+			{ agent: "worker", task: "model-a-marker" },
+			{ agent: "worker", task: "model-b-marker" },
+		],
+		concurrency: 1,
+	});
+	const children = () =>
+		[...readSubagentChildRecords(h.sessionManager.getEntries()).values()].sort(
+			(left, right) => left.index - right.index,
+		);
+	const deadline = Date.now() + RECORD_WAIT_MS;
+	while (children().length < 2 && Date.now() < deadline) await sleep(10);
+	const [childA, childB] = children();
+	assert.ok(childA && childB?.taskId);
+	await h.waitForLatest(childA.childId, (candidate) => candidate.launchLeafId !== undefined);
+	const paused = await h.call({ action: "pause", id: childB.childId });
+	assert.notEqual(paused.isError, true, text(paused));
+	siblingDone.resolve();
+	await launched;
+	assert.ok(takeStoppedQueuedOwnerlessChild(childB.taskId), "Atomic restarts and forgets the queued launch");
+	h.finishOn.clear();
+	ownerSwitchesTo(h, haiku, "low");
+
+	const resumed = await h.call({ action: "resume", id: childB.childId });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	const resumedTask = resumedTaskId(resumed);
+	await h.waitForLatest(
+		childB.childId,
+		(candidate) => candidate.taskId === resumedTask && candidate.state === "terminal",
+	);
+	assert.deepEqual(startedOn(h, childB.childId, resumedTask), { model: "anthropic/claude-sonnet", thinking: "high" });
+});
+
+test("a never-started queued child whose inherited model is no longer usable after a restart fails to resume, never starting on its parent's new model (#3784)", async () => {
+	const h = harness();
+	usableModels(h, [sonnet, haiku]);
+	const schedule = createExecutionScheduler(1);
+	const runId = "queued-inherited-model-gone";
+	const childId = `${runId}:0`;
+	const runningTask = await h.admit(`${runId}-sibling`, schedule);
+	const queuedTask = await h.admit(runId, schedule, admittedOnSonnetHigh);
+	await h.waitForLatest(`${runId}-sibling:0`, (candidate) => candidate.launchLeafId !== undefined);
+	await h.call({ action: "pause", id: childId });
+	await h.call({ action: "quit", id: `${runId}-sibling:0` });
+	await settled(h, runningTask);
+	assert.ok(takeStoppedQueuedSubagentChild(queuedTask), "Atomic restarts and forgets the queued launch");
+	usableModels(h, [haiku]);
+	ownerSwitchesTo(h, haiku, "low");
+
+	const resumed = await h.call({ action: "resume", id: childId });
+	assert.equal(resumed.isError, true, text(resumed));
+	assert.match(text(resumed), /anthropic\/claude-sonnet.*no longer available/);
+	assert.deepEqual(
+		h.runs.filter((run) => run.options.runId === runId),
+		[],
+		"it never starts on a model it was not admitted with",
+	);
+});
+
+test("a started child restored after a restart keeps its own model and thinking level, and falls back to the model it was admitted with, not its parent's new one (#3784)", async () => {
+	const h = harness();
+	usableModels(h, [sonnet, haiku]);
+	const restarted = await restoreStartedChild(h, "started-inherited-model", admittedOnSonnetHigh, undefined, () =>
+		ownerSwitchesTo(h, haiku, "low"),
+	);
+	assert.deepEqual(startedOn(h, "started-inherited-model:0", restarted.taskId), {
+		model: "anthropic/claude-sonnet",
+		thinking: "high",
+	});
+	assert.equal(restarted.options.currentModel, "anthropic/claude-sonnet");
+});
+
+test("a never-started queued child admitted outside any Intercom group stays out of the group its parent joined later (#3784)", async () => {
+	const h = harness();
+	usableModels(h, [sonnet]);
+	const start = await resumeQueuedChildAfterRestart(
+		h,
+		"queued-no-group",
+		{ ...admittedOnSonnetHigh, intercomGroup: undefined },
+		undefined,
+		() => Object.assign(h.ctx, { subagentPolicy: { intercomGroup: "joined-later" } }),
+	);
+	assert.equal(start.options.intercomGroup, undefined);
 });
 
 function initGitRepository(root: string): void {

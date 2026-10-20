@@ -78,6 +78,33 @@ export interface SubagentChildRecord {
 	readonly heldMessages?: { readonly taskId: string; readonly messages: readonly string[] };
 	/** How a child admitted while it waited for a slot in its run was launched, so it can start fresh after a restart. */
 	readonly launch?: SubagentChildLaunch;
+	/**
+	 * What the child inherited from its owner when it was admitted. Restore and resume use it, never the reopened
+	 * owner's current model and thinking level, and with it `intercomGroup` is exactly the launch's: absent means none.
+	 * Records written before Atomic recorded it have none, and take those from the owner as it is now.
+	 */
+	readonly inherited?: SubagentChildInheritance;
+}
+
+/**
+ * The owner's model and thinking level when it admitted the child. A child whose agent and launch pin no model runs
+ * on them, and every child falls back to that model.
+ */
+export interface SubagentChildInheritance {
+	/** `provider/id`; absent when the owner had no model. */
+	readonly model?: string;
+	/** The provider bare model names resolve against. */
+	readonly modelProvider?: string;
+	readonly thinkingLevel?: string;
+}
+
+/** What a launch with these options inherits from its owner; see {@link SubagentChildInheritance}. */
+export function subagentChildInheritance(options: RunSyncOptions): SubagentChildInheritance {
+	return {
+		...(options.currentModel ? { model: options.currentModel } : {}),
+		...(options.preferredModelProvider ? { modelProvider: options.preferredModelProvider } : {}),
+		...(options.currentThinkingLevel ? { thinkingLevel: options.currentThinkingLevel } : {}),
+	};
 }
 
 /**

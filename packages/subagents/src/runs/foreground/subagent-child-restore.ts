@@ -264,6 +264,14 @@ function rediscoverAgent(
 	return undefined;
 }
 
+/**
+ * The Intercom group the child's launch had. A record that says what the launch inherited names it exactly, none
+ * included; an older one falls back to the group the owner is in now.
+ */
+function launchIntercomGroup(record: SubagentChildRecord, ctx: ExtensionContext): string | undefined {
+	return record.inherited ? record.intercomGroup : (record.intercomGroup ?? inheritedIntercomGroup(ctx));
+}
+
 async function relaunchChild(
 	deps: SubagentChildRestoreDeps,
 	ctx: ExtensionContext,
@@ -342,13 +350,12 @@ async function relaunchChild(
 		onReopened(previousIntercomId);
 		if (previousIntercomId) await hold?.add(previousIntercomId);
 	}
-	const childOptions = ctx.getChildSessionOptions?.({ tools: agent.tools });
-	const supervisorAuthorization = childOptions && !childAllowsIntercom(childOptions) ? undefined : hold?.authorization;
-	// A child that will not use Intercom never registers, so nothing it could be sent should wait for it.
-	if (!supervisorAuthorization) await hold?.release();
-	const intercomGroup = record.intercomGroup ?? inheritedIntercomGroup(ctx);
-	const currentProvider = ctx.model?.provider;
-	const resolveCandidateModel = createCandidateModelResolver(ctx.modelRegistry, currentProvider);
+	// The owner as it was when it admitted the child, not as it is now (#3784); an older record has only the latter.
+	const inherited = record.inherited ?? {
+		...(ctx.model ? { model: currentModelFullId(ctx.model), modelProvider: ctx.model.provider } : {}),
+		...(ctx.thinkingLevel ? { thinkingLevel: ctx.thinkingLevel } : {}),
+	};
+	const resolveCandidateModel = createCandidateModelResolver(ctx.modelRegistry, inherited.modelProvider);
 	const ownModel = fresh
 		? fresh.modelOverride && resolveCandidateModel(fresh.modelOverride)?.model
 			? fresh.modelOverride
@@ -356,6 +363,21 @@ async function relaunchChild(
 		: sessionManager
 			? ownSessionModelCandidate(sessionManager, record, resolveCandidateModel)
 			: undefined;
+	// A model it inherited that is no longer usable is dropped, as an unusable model of its own is. It never takes the
+	// owner's new model instead: a child that would have run on the inherited model cannot continue.
+	const inheritedModel =
+		inherited.model && (!record.inherited || resolveCandidateModel(inherited.model)?.model)
+			? inherited.model
+			: undefined;
+	if (inherited.model && !inheritedModel && !ownModel && !agent.model && !agent.fallbackModels?.length)
+		return unrestorable(
+			`the model it inherited from its parent when it was launched, ${inherited.model}, is no longer available`,
+		);
+	const childOptions = ctx.getChildSessionOptions?.({ tools: agent.tools });
+	const supervisorAuthorization = childOptions && !childAllowsIntercom(childOptions) ? undefined : hold?.authorization;
+	// A child that will not use Intercom never registers, so nothing it could be sent should wait for it.
+	if (!supervisorAuthorization) await hold?.release();
+	const intercomGroup = launchIntercomGroup(record, ctx);
 	const prompts = fresh ? freshPrompts(record, fresh, resume) : resumedPrompts(record, resume);
 	const options: RunSyncOptions = {
 		runningCapacity: deps.config.parallel?.runningCapacity,
@@ -385,10 +407,10 @@ async function relaunchChild(
 		availableModels: ctx.modelRegistry.getAvailable().map(toModelInfo),
 		knownModelProviders: collectKnownModelProviders(ctx.modelRegistry),
 		resolveCandidateModel,
-		preferredModelProvider: currentProvider,
+		...(inherited.modelProvider ? { preferredModelProvider: inherited.modelProvider } : {}),
 		...(ownModel ? { modelOverride: ownModel } : {}),
-		currentModel: currentModelFullId(ctx.model),
-		currentThinkingLevel: ctx.thinkingLevel,
+		...(inheritedModel ? { currentModel: inheritedModel } : {}),
+		...(inherited.thinkingLevel ? { currentThinkingLevel: inherited.thinkingLevel } : {}),
 	};
 	ctx.orchestrationContext?.messageAdmission?.boundary.registerOwnedSubagentRun(record.runId);
 	const recordChild = createSubagentChildRecordSink(deps.pi, ctx);
@@ -466,7 +488,7 @@ async function startQueuedChild(
 		recordChild,
 		release,
 		supervisorAuthorization,
-		record.intercomGroup ?? inheritedIntercomGroup(ctx),
+		launchIntercomGroup(record, ctx),
 	);
 }
 
@@ -508,7 +530,7 @@ async function ownerlessRelaunched(
 		});
 	// Pause or quit right after this returns must find the child under its new launch id.
 	await recordChild.flushed?.();
-	const intercomGroup = record.intercomGroup ?? inheritedIntercomGroup(ctx);
+	const intercomGroup = launchIntercomGroup(record, ctx);
 	const intercomLive =
 		record.intercomTarget && supervisorAuthorization
 			? await awaitIntercomPeer(deps.pi.events, record.intercomTarget, intercomGroup)
@@ -606,7 +628,7 @@ export async function restoreSubagentChild(
 			hold = earlier;
 			await hold.refresh();
 		} else {
-			hold = await holdChildTargets(deps.pi.events, record, record.intercomGroup ?? inheritedIntercomGroup(ctx));
+			hold = await holdChildTargets(deps.pi.events, record, launchIntercomGroup(record, ctx));
 		}
 		return relaunchChild(deps, ctx, record, hold, release, onReopened, resume);
 	})().then(

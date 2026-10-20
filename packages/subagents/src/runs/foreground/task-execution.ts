@@ -28,6 +28,7 @@ import {
 	type SubagentChildLaunch,
 	type SubagentChildRecordInput,
 	type SubagentChildRecordSink,
+	subagentChildInheritance,
 	subagentChildLaunch,
 	takeSubagentChildStop,
 } from "./subagent-child-records.js";
@@ -319,6 +320,7 @@ export async function runAgentTask(input: {
 			...(terminalStatus ? { terminalStatus } : {}),
 			...(heldMessages?.length ? { heldMessages: { taskId, messages: heldMessages } } : {}),
 			...(launch ? { launch } : {}),
+			inherited: subagentChildInheritance(input.options),
 		});
 	};
 	let dispatched = false;
