@@ -130,6 +130,8 @@ By default, each machine's broker serves only the sessions on that machine. With
 
 Give every machine the same shared top-level `storage` selection, including the same `prefix`. To reach other machines, the selection must be an [adapter](/storage#selecting-an-adapter) whose module implements `openDatabase` and connects to a database that every machine can reach, as described in [Sharing storage across hosts](/storage#sharing-storage-across-hosts). Install the adapter module on every machine.
 
+Multi-node routing needs Atomic installed from npm (`npm install -g @bastani/atomic`). The standalone binary's broker cannot load storage adapters, so routing stays off there even with a shared `storage` selection, and sessions on other machines cannot be reached. Use an npm installation on every machine that should take part.
+
 The broker takes its selection from one of two places:
 
 - `--storage`, `--storage-file`, or `ATOMIC_STORAGE` on the Atomic process that starts the broker. See [Selecting storage per process](/storage#selecting-storage-per-process).
@@ -196,7 +198,6 @@ When a whole machine or its broker stops, its sessions still look connected for 
 - Message text and attachments are stored in the shared database until they are delivered, together with the sender's identity. Delivered messages are deleted about 12 minutes later, which keeps duplicate protection for retries. Messages for an offline session stay until it reconnects.
 - Session names, session IDs, and group memberships are stored there too, so brokers can list and route to sessions on other machines.
 - Anyone who can read the database can read Intercom messages that cross machines, just as they can read sessions stored there. Protect it with the database's own credentials and transport security, and pass credentials through `secrets` (`{ "env": ... }` or `{ "file": ... }`) rather than `options`. The broker reads `env` secrets from the environment of the Atomic process that started it.
-- Duplicate detection for cross-machine messages uses unkeyed SHA-256 digests of each message. They reveal nothing that the stored message does not already show. Messages between sessions on one machine keep using a key stored only on that machine.
 - Intercom opens no network port and no broker-to-broker connection. Its security across machines is the database's security.
 
 ### Troubleshooting multi-node
