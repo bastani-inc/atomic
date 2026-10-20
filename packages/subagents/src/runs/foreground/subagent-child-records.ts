@@ -41,6 +41,14 @@ export interface SubagentChildRecord {
 	readonly runId: string;
 	readonly index: number;
 	readonly agent: string;
+	/**
+	 * Where the agent definition the launch resolved came from. The same name can be defined by more than one source,
+	 * and its definition sets the child's system prompt, skills and inherited project context. Records written before
+	 * Atomic recorded it have none, and restore looks the agent up in the default scope.
+	 */
+	readonly agentSource?: AgentSource;
+	/** Whether the child was launched with `context: "fork"`, which shapes its Intercom bridge; absent means fresh. */
+	readonly forked?: boolean;
 	readonly state: "running" | "terminal";
 	readonly cwd: string;
 	readonly owner: SubagentChildOwner;
@@ -83,11 +91,6 @@ export interface SubagentChildLaunch {
 	/** The task as the caller gave it, which its task host shows. */
 	readonly intentTask?: string;
 	/**
-	 * Where the agent definition the launch resolved came from. The same name can be defined by more than one source,
-	 * and its definition sets the child's system prompt, skills and inherited project context.
-	 */
-	readonly agentSource?: AgentSource;
-	/**
 	 * The session a `context: "fork"` launch branched from its owner's conversation before admission, which the child
 	 * starts on: its id, in the owner's session store, and its file when that store keeps one.
 	 */
@@ -106,14 +109,12 @@ export function subagentChildLaunch(
 	task: string,
 	intentTask: string | undefined,
 	options: RunSyncOptions,
-	agentSource: AgentSource | undefined,
 ): SubagentChildLaunch {
 	const forkSession = options.resumeSession ? undefined : options.sessionManager;
 	const forkSessionFile = forkSession?.getSessionFile();
 	return {
 		task,
 		...(intentTask === undefined ? {} : { intentTask }),
-		...(agentSource ? { agentSource } : {}),
 		...(forkSession
 			? {
 					forkSession: {

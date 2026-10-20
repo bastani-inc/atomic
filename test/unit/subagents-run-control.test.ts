@@ -9,7 +9,8 @@ import { SessionManager } from "../../packages/coding-agent/src/core/session-man
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
-import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
+import type { AgentConfig, AgentScope } from "../../packages/subagents/src/agents/agents.js";
+import { INTERCOM_BRIDGE_MARKER } from "../../packages/subagents/src/intercom/intercom-bridge.js";
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { takeStoppedQueuedOwnerlessChild } from "../../packages/subagents/src/runs/foreground/ownerless-children.js";
@@ -76,6 +77,14 @@ const agent: AgentConfig = {
 	inheritSkills: false,
 };
 
+/** A user agent with the project agent's name: the default scope shadows it with the project one. */
+const userAgent: AgentConfig = {
+	...agent,
+	source: "user",
+	filePath: "user/worker.md",
+	systemPrompt: "Work as the user",
+};
+
 interface Harness {
 	readonly cwd: string;
 	host: AgentTaskHost;
@@ -90,8 +99,8 @@ interface Harness {
 	/** End the owning session's lifetime, as disposing an SDK session does, then reopen it with a new one. */
 	closeOwnerSessionAndReopen(): void;
 	readonly ctx: ExtensionContext;
-	/** Every child run: the prompt it received and its options. */
-	readonly runs: Array<{ task: string; options: RunSyncOptions }>;
+	/** Every child run: the prompt it received, its options, and the agent definition it ran. */
+	readonly runs: Array<{ task: string; options: RunSyncOptions; agent: AgentConfig | undefined }>;
 	readonly authorizations: string[];
 	readonly holds: Array<{ reserve: string; aliases: readonly string[] } | { release: string; gone?: string }>;
 	/** How the next child run settles once its prompt runs; the original launch always waits until stopped. */
@@ -104,6 +113,8 @@ interface Harness {
 	onSession?: (session: TestSessionQueue) => void;
 	/** Whether the worker agent is still defined; resume looks it up again. */
 	agentDefined: boolean;
+	/** The agent definitions discovery finds, from every source; a project agent shadows a user one of its name. */
+	agents: AgentConfig[];
 	/** Runs whose prompt contains a key wait until its gate resolves, then complete; checked before the rules above. */
 	readonly finishOn: Map<string, PromiseWithResolvers<void>>;
 	call(params: Parameters<ReturnType<typeof createSubagentExecutor>["execute"]>[1]): Promise<SubagentToolResult>;
@@ -113,6 +124,7 @@ interface Harness {
 		runId: string,
 		schedule?: (dispatch: () => Promise<void>) => void,
 		options?: Partial<RunSyncOptions>,
+		launchAgent?: AgentConfig,
 	): Promise<TaskId>;
 	latest(childId: string): SubagentChildRecord | undefined;
 	waitForLatest(childId: string, accept: (record: SubagentChildRecord) => boolean): Promise<SubagentChildRecord>;
@@ -231,6 +243,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 		completesWhenStopped: false,
 		resumedRunsWait: false,
 		agentDefined: true,
+		agents: [agent],
 		finishOn: new Map(),
 		call: (params) => executor.execute("run-control", params, new AbortController().signal, undefined, state.ctx),
 		async launch(runId) {
@@ -238,11 +251,11 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 			const record = await state.waitForLatest(`${runId}:0`, (candidate) => candidate.launchLeafId !== undefined);
 			return { record, taskId };
 		},
-		async admit(runId, schedule, extra) {
+		async admit(runId, schedule, extra, launchAgent = agent) {
 			const response = await runAgentTask({
 				host,
 				cwd,
-				agents: [agent],
+				agents: [launchAgent],
 				agent: "worker",
 				task: ORIGINAL_TASK,
 				options: {
@@ -279,7 +292,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 	};
 	const runtime = async (...args: Parameters<typeof runSync>): Promise<SingleResult> => {
 		const [parentCwd, agents, agentName, task, options] = args;
-		runs.push({ task, options });
+		runs.push({ task, options, agent: agents.find((candidate) => candidate.name === agentName) });
 		const original = task === ORIGINAL_TASK;
 		const gate = [...state.finishOn].find(([marker]) => task.includes(marker))?.[1];
 		const onSession = state.onSession ? { onSession: state.onSession } : {};
@@ -310,7 +323,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 		tempArtifactsDir: join(cwd, "artifacts"),
 		getSubagentSessionRoot: () => join(cwd, "sessions"),
 		expandTilde: (value) => value,
-		discoverAgents: () => ({ agents: state.agentDefined ? [agent] : [] }),
+		discoverAgents: (_cwd, scope) => ({ agents: state.agentDefined ? discoverInScope(state.agents, scope) : [] }),
 		runtime: { runSync: runtime },
 	};
 	const executor = createSubagentExecutor(deps);
@@ -320,6 +333,16 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 		removeTempDirectory(cwd);
 	});
 	return state;
+}
+
+/** Discovery as the default scope does it: a project agent shadows a user agent of the same name in `both`. */
+function discoverInScope(agents: readonly AgentConfig[], scope: AgentScope): AgentConfig[] {
+	const found = new Map<string, AgentConfig>();
+	for (const source of ["builtin", "user", "project"] as const) {
+		if (source !== "builtin" && scope !== "both" && scope !== source) continue;
+		for (const candidate of agents) if (candidate.source === source) found.set(candidate.name, candidate);
+	}
+	return [...found.values()];
 }
 
 function text(result: SubagentToolResult): string {
@@ -1446,6 +1469,92 @@ test("a forked queued child whose prepared branch is gone after a restart fails 
 	);
 });
 
+/** Launch a child that starts, then close its owner as Atomic exiting does and restore it as reopening the session does. */
+async function restoreStartedChild(
+	h: Harness,
+	runId: string,
+	options: Partial<RunSyncOptions>,
+	launchAgent?: AgentConfig,
+): Promise<{ task: string; options: RunSyncOptions; agent: AgentConfig | undefined }> {
+	await h.admit(runId, undefined, options, launchAgent);
+	const record = await h.waitForLatest(`${runId}:0`, (candidate) => candidate.launchLeafId !== undefined);
+	await h.closeOwnerAndReopen("session-close");
+	await sleep(50);
+	assert.equal(h.latest(record.childId)?.state, "running", "closing its owner records nothing terminal");
+	const [outcome] = await restoreSubagentChildren(h.deps, h.ctx);
+	assert.ok(outcome?.kind === "restored", JSON.stringify(outcome));
+	const restarted = h.runs.at(-1);
+	assert.ok(restarted);
+	assert.equal(restarted.options.sessionManager?.getSessionId(), record.childSessionId, "it reopens its own session");
+	assert.equal(restarted.options.resumeSession, true);
+	await settled(h, outcome.taskId);
+	return restarted;
+}
+
+/** Pause a child still queued behind a sibling, forget it as a restart does, and resume it from its records. */
+async function resumeQueuedChildAfterRestart(
+	h: Harness,
+	runId: string,
+	options: Partial<RunSyncOptions>,
+	launchAgent?: AgentConfig,
+): Promise<{ task: string; options: RunSyncOptions; agent: AgentConfig | undefined }> {
+	const schedule = createExecutionScheduler(1);
+	const childId = `${runId}:0`;
+	const runningTask = await h.admit(`${runId}-sibling`, schedule);
+	const queuedTask = await h.admit(runId, schedule, options, launchAgent);
+	await h.waitForLatest(`${runId}-sibling:0`, (candidate) => candidate.launchLeafId !== undefined);
+	const paused = await h.call({ action: "pause", id: childId });
+	assert.notEqual(paused.isError, true, text(paused));
+	await h.call({ action: "quit", id: `${runId}-sibling:0` });
+	await settled(h, runningTask);
+	assert.ok(takeStoppedQueuedSubagentChild(queuedTask), "Atomic restarts and forgets the queued launch");
+	const resumed = await h.call({ action: "resume", id: childId });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	const resumedTask = resumedTaskId(resumed);
+	await h.waitForLatest(childId, (candidate) => candidate.taskId === resumedTask && !!candidate.childSessionId);
+	const [start] = h.runs.filter((run) => run.options.runId === runId);
+	assert.ok(start);
+	assert.equal(start.options.resumeSession, undefined, "it is a new launch");
+	// It runs its original task, which the harness holds until it is stopped.
+	await h.call({ action: "quit", id: childId });
+	await settled(h, resumedTask);
+	return start;
+}
+
+test("a started child of a user agent a project agent of the same name shadows is restored with the user agent (#3784)", async () => {
+	const h = harness();
+	h.agents = [userAgent, agent];
+	const restarted = await restoreStartedChild(h, "started-user-agent", {}, userAgent);
+	assert.equal(restarted.agent?.source, "user");
+	assert.match(restarted.agent?.systemPrompt ?? "", /^Work as the user/);
+});
+
+test("a never-started queued child of a user agent a project agent of the same name shadows starts with the user agent (#3784)", async () => {
+	const h = harness();
+	h.agents = [userAgent, agent];
+	const start = await resumeQueuedChildAfterRestart(h, "queued-user-agent", {}, userAgent);
+	assert.equal(start.agent?.source, "user");
+	assert.match(start.agent?.systemPrompt ?? "", /^Work as the user/);
+});
+
+test("a forked started child restored under the fork-only Intercom bridge keeps its bridge instructions (#3784)", async () => {
+	const h = harness();
+	h.deps.config.intercomBridge = { mode: "fork-only" };
+	const forked = await forkFromParentConversation(h);
+	const restarted = await restoreStartedChild(h, "started-fork-bridge", { sessionManager: forked });
+	assert.ok(restarted.agent?.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER), restarted.agent?.systemPrompt);
+	assert.ok(restarted.options.orchestratorIntercomTarget, "it is told its orchestrator's Intercom target");
+});
+
+test("a forked never-started queued child started under the fork-only Intercom bridge gets its bridge instructions (#3784)", async () => {
+	const h = harness();
+	h.deps.config.intercomBridge = { mode: "fork-only" };
+	const forked = await forkFromParentConversation(h);
+	const start = await resumeQueuedChildAfterRestart(h, "queued-fork-bridge", { sessionManager: forked });
+	assert.ok(start.agent?.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER), start.agent?.systemPrompt);
+	assert.ok(start.options.orchestratorIntercomTarget, "it is told its orchestrator's Intercom target");
+});
+
 function initGitRepository(root: string): void {
 	const git = (args: string[]) => {
 		const result = spawnSync("git", args, { cwd: root, encoding: "utf8" });
@@ -1880,7 +1989,7 @@ test("a resume that cannot restart a paused worktree child keeps its dirty workt
 	h.agentDefined = false;
 	const resumed = await h.call({ action: "resume", id: childA.childId });
 	assert.equal(resumed.isError, true, text(resumed));
-	assert.match(text(resumed), /agent "worker" is no longer defined/);
+	assert.match(text(resumed), /agent "worker" \(project\) is no longer defined/);
 	await sleep(100);
 	assert.equal(readFileSync(trackedEdit, "utf8"), "edited by A\n", "the tracked edit survives the failed resume");
 	assert.equal(readFileSync(untrackedDraft, "utf8"), "draft by A\n", "the untracked draft survives the failed resume");

@@ -301,15 +301,15 @@ async function relaunchChild(
 	// A child that never started has no session to reopen; its records say how its launch starts it fresh.
 	const fresh =
 		record.childSessionId === undefined && record.childSessionFile === undefined ? record.launch : undefined;
-	const discovered = rediscoverAgent(deps, record.cwd, record.agent, fresh?.agentSource);
+	const discovered = rediscoverAgent(deps, record.cwd, record.agent, record.agentSource);
 	if (!discovered)
 		return unrestorable(
-			`agent "${record.agent}"${fresh?.agentSource ? ` (${fresh.agentSource})` : ""} is no longer defined`,
+			`agent "${record.agent}"${record.agentSource ? ` (${record.agentSource})` : ""} is no longer defined`,
 		);
 	const bridge = record.orchestratorTarget
 		? resolveIntercomBridge({
 				config: deps.config.intercomBridge,
-				context: fresh?.forkSession ? "fork" : "fresh",
+				context: record.forked ? "fork" : "fresh",
 				orchestratorTarget: resolveIntercomSessionTarget(
 					deps.pi.getSessionName(),
 					ctx.sessionManager.getSessionId(),
@@ -399,6 +399,8 @@ async function relaunchChild(
 		// No task host (an SDK session): it runs in the background directly, recorded like a task-host launch.
 		const launched = runOwnerlessChild({
 			agent: agent.name,
+			agentSource: agent.source,
+			forked: record.forked === true,
 			task: prompts.task,
 			cwd: record.cwd,
 			options,
@@ -421,6 +423,7 @@ async function relaunchChild(
 		wait: { kind: "background" },
 		runtime,
 		recordChild,
+		forked: record.forked === true,
 		...(schedule ? { schedule } : {}),
 		onTerminal: () => {
 			release();

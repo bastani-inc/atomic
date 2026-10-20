@@ -277,6 +277,8 @@ export async function runAgentTask(input: {
 	schedule?: (dispatch: () => Promise<void>) => void;
 	outputText?: (result: SingleResult) => string;
 	recordChild?: SubagentChildRecordSink;
+	/** Whether the child was launched with `context: "fork"`; by default, whether `options` fork a session for it. */
+	forked?: boolean;
 	/** Launch operation id; a resumed child needs a fresh one, since the host replays a repeated operation. */
 	operation?: string;
 }): Promise<ModelSingleResponse> {
@@ -287,6 +289,8 @@ export async function runAgentTask(input: {
 	const childCwd = input.options.cwd ?? input.cwd;
 	let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile"> = {};
 	let childLaunch: Pick<SubagentChildRecordInput, "launchModel" | "launchThinkingLevel" | "launchLeafId"> = {};
+	const agentSource = input.agents.find((agent) => agent.name === input.agent)?.source;
+	const forked = input.forked ?? (input.options.sessionManager !== undefined && input.options.resumeSession !== true);
 	const recordChildTask = (
 		taskId: TaskId,
 		state: SubagentChildRecordInput["state"],
@@ -299,6 +303,8 @@ export async function runAgentTask(input: {
 			runId: input.options.runId,
 			index: input.options.index ?? 0,
 			agent: input.agent,
+			...(agentSource ? { agentSource } : {}),
+			forked,
 			state,
 			cwd: childCwd,
 			taskId,
@@ -391,6 +397,7 @@ export async function runAgentTask(input: {
 				...(input.schedule ? { schedule: input.schedule } : {}),
 				...(input.outputText ? { outputText: input.outputText } : {}),
 				recordChild: launch.recordChild,
+				forked,
 				operation: `${input.options.runId}:${input.options.index ?? 0}:resume:${randomUUID()}`,
 			}),
 	});
@@ -570,14 +577,7 @@ export async function runAgentTask(input: {
 		undefined,
 		undefined,
 		// Nothing of a queued launch survives a restart but its records: they say how to start it fresh then.
-		queuedAtAdmission
-			? subagentChildLaunch(
-					input.task,
-					input.intentTask,
-					input.options,
-					input.agents.find((agent) => agent.name === input.agent)?.source,
-				)
-			: undefined,
+		queuedAtAdmission ? subagentChildLaunch(input.task, input.intentTask, input.options) : undefined,
 	);
 	if (queuedAtAdmission) queuedChildren.set(started.value.taskId, { start: queuedStart(), stopped: false });
 	// A queued execution has no runSync listener yet. Release its observation too,

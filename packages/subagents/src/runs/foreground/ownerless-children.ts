@@ -88,6 +88,8 @@ export function runOwnerlessChild(input: {
 	readonly agent: string;
 	/** Where the agent definition the launch resolved came from. */
 	readonly agentSource?: AgentSource;
+	/** Whether the child was launched with `context: "fork"`; by default, whether `options` fork a session for it. */
+	readonly forked?: boolean;
 	readonly task: string;
 	/** The child's working directory, as its records name it. */
 	readonly cwd: string;
@@ -111,6 +113,7 @@ export function runOwnerlessChild(input: {
 	let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile"> = {};
 	let childLaunch: Pick<SubagentChildRecordInput, "launchModel" | "launchThinkingLevel" | "launchLeafId"> = {};
 	let stoppedBeforeDispatch = false;
+	const forked = input.forked ?? (input.options.sessionManager !== undefined && input.options.resumeSession !== true);
 	const record = (
 		state: SubagentChildRecordInput["state"],
 		terminalStatus?: string,
@@ -122,6 +125,8 @@ export function runOwnerlessChild(input: {
 			runId,
 			index,
 			agent: input.agent,
+			...(input.agentSource ? { agentSource: input.agentSource } : {}),
+			forked,
 			state,
 			cwd: input.cwd,
 			taskId: launchId,
@@ -158,6 +163,7 @@ export function runOwnerlessChild(input: {
 			stoppedQueued.set(launchId, (resumed) =>
 				runOwnerlessChild({
 					...input,
+					forked,
 					task: resumed.message ? `${input.task}\n\n${resumed.message}` : input.task,
 					options: {
 						...input.options,
@@ -239,7 +245,7 @@ export function runOwnerlessChild(input: {
 		"running",
 		undefined,
 		undefined,
-		schedule ? subagentChildLaunch(input.task, undefined, input.options, input.agentSource) : undefined,
+		schedule ? subagentChildLaunch(input.task, undefined, input.options) : undefined,
 	);
 	if (schedule) rememberSubagentChildSchedule(runId, index, schedule);
 	const result = (
