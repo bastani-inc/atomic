@@ -3,7 +3,7 @@
 | Document Metadata      | Details |
 | ---------------------- | ------- |
 | Author(s)              | Norin Lavaee (with Atomic) |
-| Status                 | S0 and the S0b amendment (shared restoring reservations, follow-ups F1–F4, decisions 1 and 2 recorded) accepted for review; S1–S7 in progress or not started |
+| Status                 | S0 and the S0b amendment (shared restoring reservations, follow-ups F1–F4, decisions 1 and 2 recorded) accepted for review; S5 broker integration and its amendment (§14) implemented; S7 not started |
 | Team / Owner           | `packages/intercom` — broker; `packages/coding-agent` — shared `storage` adapter |
 | Created / Last Updated | 2026-10-19 |
 | Builds on              | [#3761](https://github.com/bastani-inc/atomic/issues/3761) — recipients save messages on arrival and `delivered` waits for the recipient's `received` ack (commit `75427a850`) |
@@ -741,3 +741,142 @@ case. The table below is the S0 sweep and is unchanged.
 | `W-subscription-close-noop` | closing a subscription stops its events | 1 failed | killed (1 failed) |
 | `W-connection-close-keeps-subscriptions` | closing a connection closes its subscriptions | 36/36 pass | killed (1 failed) |
 | `W-event-not-cloned` | (not documented for the bus) events are detached | 36/36 pass | survived: Not a documented bus rule: the detached-copy convention covers the state stores, and §10 item 6 records that bus events are not promised detached. |
+
+## 14. S5 amendment: broker integration
+
+S5 wires the seams into the broker (`multinode-router.ts`, `open-broker-state.ts`, `send-handler.ts`,
+`broker.ts`). This section records the user decisions S5 applies and the choices it made; the sections above are
+unchanged.
+
+### 14.1 Known sessions (user decision: clean quit is offline, not unknown)
+
+A session that quit cleanly, or whose broker crashed, is *known-offline*. `KnownSessionStore`
+(`multinode-state-store.ts`) keeps one record per `deliveryTargetIdentity` in `<prefix>intercom_known_sessions`:
+
+- `targetIdentity`, `intercomSessionId` (last Intercom id), `name` (verbatim), `atomicSessionId` (the return
+  address), `group` (normalized registration group) and `groups` (normalized memberships);
+- written by the hosting broker on register, on presence or membership changes, and on leave, and refreshed while
+  the session stays live, at most once per `KNOWN_SESSION_REFRESH_INTERVAL_MS` (1 h) on presence renewal, so the
+  retention counts from its last renewal and a session connected for longer than the retention stays known;
+- `lookup(target, retentionMs)` matches the Intercom id or Atomic session id exactly, or the name with
+  `toLowerCase`, among records younger than the retention, in first-record order; `prune(olderThanMs)` deletes older
+  records. The retention is `KNOWN_SESSION_RETENTION_MS` (7 days).
+
+Resolution order at the origin, after local delivery, local holds and workflow routes found nothing:
+
+1. a live presence lease (exact Intercom id at any group, then name, then Atomic session id among visible sessions);
+2. a shared restoring reservation (§5.7) for a send that may be held;
+3. a known session (exact Intercom id, then name, then Atomic session id among visible sessions): the row is
+   enqueued and the sender gets the `queued` frame with `target: "offline session"` at once;
+4. otherwise the send is answered exactly as on a single node (`Session not found`).
+
+The same group isolation, supervisor and reply-route checks run for 1 and 3. Conformance:
+`registerKnownSessionStoreConformance` (4 cases) passes on the memory reference and on the SQL store.
+
+### 14.2 Routing details
+
+- **Digests (decision 2).** Cross-node rows and sent-message records use the unkeyed SHA-256 (hex) of the send
+  handler's canonical send signature. Local-only sends keep `delivered-messages.sqlite` and its HMAC.
+- **Delivered.** The hosting broker writes the row's frame verbatim and settles it only on the recipient's
+  `received` (a recipient that never confirms saves is delivered once the frame is written, as locally). For an ask it
+  first records the ask route (§5.4: route before `markDelivered`), in its local `PendingQuestionIndex` when the asker
+  is a session on the same broker (the reply then takes the local path) and in `pendingAsks` otherwise. It then calls
+  `markDelivered`, clears an answered route (`clearReply`), records a supervisor crossing, and wakes the origin. A
+  write that fails before the row is settled releases the claim, so the row is delivered again (the recipient
+  deduplicates) and settled then. The origin accepts the sent-message record and tells a still-connected sender
+  `delivered`.
+- **Transit checks (§8).** Before writing, the hosting broker refuses with `markFailed` a row whose recipient became
+  terminal for an ask, or no longer shares a group with the sender. Only a supervisor frame, a reply on an open ask
+  route (`pendingAsks.matchesReply`) or a vertical reply between a child and its supervisor may still cross groups; a
+  `replyTo` alone authorizes nothing.
+- **Terminal recipients.** When a session's reply capability becomes `terminal`, its broker takes the shared asks
+  addressed to it and answers each asker with the correlated terminal error a local asker gets: written directly to a
+  local asker, otherwise enqueued for the asker's identity with the ask's route kept open until that error reply is
+  delivered.
+- **Waiting.** A sender waits `RECIPIENT_RECEIPT_TIMEOUT_MS` (8 s) for a live recipient, then gets #3761's
+  uncertain-outcome `delivery_failed`; a same-id retry is answered from the outbox row. A queued (offline) send is
+  told `delivered` later only while its sender stays connected.
+- **Retries after a move.** A send that resolves to a session on the origin's own broker first reads the shared
+  outbox: if a row for its message id exists (an earlier attempt went through the outbox and the recipient has since
+  moved here), the retry is answered from that row exactly as above and is not delivered again. Otherwise, or while
+  the shared database cannot be reached, it is delivered locally.
+- **Registration.** A session that registers on a multi-node broker is told `registered` once its presence lease is
+  written, retrying briefly (four attempts, 50 ms doubling) while the broker it just left still holds the lease, so a
+  sender that learns of it can route to it at once. The wait is bounded by `PRESENCE_REGISTRATION_BOUND_MS` (5 s,
+  half the client's 10 s connect timeout), so a database that does not answer cannot hang registration; the lease is
+  still written when it answers. The session is routable during the wait, so every frame written to its socket
+  meanwhile (another session's `session_joined`, a local or cross-node message) is held and written right after
+  `registered`, in order; a client never receives a frame before `registered`. Frames the session's previous
+  connection never confirmed go out first, as on a single node, without repeating any held frame.
+- **Listing peers.** In multi-node mode `list` adds the sessions other brokers host (live presence leases) after the
+  local ones, under the same group visibility. A sender connected through another node is therefore a live peer, so
+  #3761's recovery replay treats its saved messages exactly as a local sender's (replayed, not `historyOnly`), and the
+  `intercom` tool, name resolution and peer waits see the same sessions the router can reach. The lease read is
+  bounded (2 s, under the client's 5 s list timeout); a database that fails or does not answer in time yields the
+  local sessions only. A single-node broker's `list` is unchanged.
+- **Claims.** A broker claims the rows of each local session on every `outbox` hint, resync, presence acquisition,
+  renewal tick of a recipient whose rows another claimant holds, and `OUTBOX_BACKUP_POLL_INTERVAL_MS`. Claims of a
+  session that disconnects are released, so it receives them again wherever it reconnects.
+- **Held sends (§5.7).** The broker that owns a reservation mirrors its `reserve`, `release`, `consume` and the
+  owner's departure into the shared store and wakes the origins of the sends held for it. Origins re-read the
+  reservations of the sends they hold on every `outcome` hint, resync, and every `MULTI_NODE_OUTCOME_POLL_INTERVAL_MS`
+  (5 s). That poll is shorter than the 20 s hold, so a lost `outcome` hint is noticed before the hold times out. The
+  same poll re-reads outcomes for senders still waiting on a live recipient.
+- **Database unavailable (§8).** Local delivery is unaffected. When the selection resolved to a database that cannot
+  be opened or reached, a send no local session resolves gets `delivery_failed` saying the shared storage could not be
+  reached. Opening the shared state at broker start is
+  retried with exponential backoff (1 s doubling up to 30 s). The database wake-up bus also backs off exponentially
+  while reopening fails (poll interval doubling up to `WAKE_UP_RECONNECT_MAX_DELAY_MS`, 30 s), and a publish during
+  the backoff does not reopen the database.
+- **One connection per broker.** The stores and the wake-up bus share the connection opened from the selection. A
+  driver that waits for SQLite locks synchronously (node:sqlite) blocks its whole process, so a second connection in
+  the same process could wait for a transaction that the blocked event loop has to finish.
+
+### 14.3 Storage selection (open decision 7, applied)
+
+- The broker reads the top-level `storage` of its agent directory's own `settings.json`. A broker serves every
+  project of that directory, so there is no project selection to apply.
+- `StorageOpenContext.domain` gains `"intercom"`; adapters receive it in `openDatabase`. `resolveAdapterOptions` is
+  exported from `@bastani/atomic/storage` so the broker resolves `secrets` exactly as the provider does.
+- No top-level `storage`, a selection the storage layer reads as in-memory (`memory: true` without a path, or a
+  `path` of `:memory:`), or an adapter without `openDatabase` leaves multi-node routing off; the broker then answers
+  every send exactly as a single-node broker does. The in-memory spellings are recognized without the host package. A
+  `path` of `""` is not one of them: the storage layer reads it as the default storage file, which brokers on the same
+  host share.
+- **Self-contained broker.** The broker must not load the host package at startup (#2208).
+  `open-broker-state.ts`, which imports `@bastani/atomic/storage`, is loaded with a lazy `import()` only when a
+  top-level selection exists. `test/unit/intercom-broker-runtime-graph.test.ts` checks that the static broker graph
+  stays self-contained and that this lazy edge is the only path to the host storage module.
+- **Off when the selection gives no database.** A standalone binary has no physical copy of the host package and
+  cannot load `open-broker-state.ts`; a selection may also fail to resolve (invalid configuration, an adapter that
+  cannot be loaded). In each case the broker logs why on stderr and multi-node routing is off: every send is answered
+  exactly as on a single node, so a target no local session resolves gets `Session not found`. Only a selection that
+  resolved to a database whose connection then fails gets the explicit `delivery_failed` above.
+
+### 14.4 Open decisions 3 and 4 (resolved by S5)
+
+3. **Answered flag.** No new field. The hosting broker records an ask's route only when the recipient saves the ask,
+   and the origin never re-records it; a same-id retry of an answered ask is answered from its delivered outbox row
+   and opens no route. The absence of a route in `PendingAskStore` is sufficient.
+4. **Outcome hints after an origin change.** No new store operation. A retry through another broker attaches a
+   waiter to the existing row, and that broker learns the outcome from its 5 s outcome poll (or its backup poll for a
+   queued send) even though hints still name the original origin.
+
+### 14.5 Deferred
+
+- `peer_disconnected` is not sent across nodes: an asker on another node learns that the asked session left only
+  when its reply wait ends. The departed session's shared ask routes are removed as locally.
+- A session reconnecting under a `preferredSessionId` is checked for liveness against its own broker only.
+- Ambiguity between a local and a remote session of the same name resolves to the local one.
+- The stores do not reopen a connection that failed permanently; the bus does (with backoff).
+
+### 14.6 S6 acceptance addition
+
+`test/integration/intercom-multinode-two-broker.test.ts` gains "a send to a session that quit cleanly is queued at
+once, then delivered when it reconnects", which also asserts that a target no session ever used is still
+`Session not found`.
+
+Review round 1 adds: "on resume, a saved message from a live sender on the other node replays exactly as one from a
+local sender" to the same file, and `test/integration/intercom-multinode-parallel-register.test.ts`, where six
+same-group sessions connect in parallel to a broker whose shared database answers every call after a timer (as a
+remote database does) and each registers and is reachable from the other node at once.

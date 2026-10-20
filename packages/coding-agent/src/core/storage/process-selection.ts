@@ -181,3 +181,13 @@ export function hasProcessStorageSelection(domain: StorageDomain): boolean {
 		).some((name) => environmentValue(name) !== undefined)
 	);
 }
+
+/**
+ * The shared `storage` selection this process was launched with, as the `ATOMIC_STORAGE` value a child process it
+ * spawns should receive: `--storage`/`--storage-file`, then `ATOMIC_STORAGE`. `undefined` leaves the choice to
+ * settings. Validated when it was recorded or when this process started, not again here.
+ */
+export function processSharedStorageSelection(): string | undefined {
+	const cli = registry[CLI_SELECTION];
+	return cli === undefined ? environmentValue(STORAGE_ENV) : JSON.stringify(cli.value);
+}

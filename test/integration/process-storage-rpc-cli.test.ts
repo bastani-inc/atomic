@@ -155,7 +155,9 @@ test(
 			assert.deepEqual(await storedRuns(settingsStore), [fromSettings.runId]);
 			const database = await openNodeSqliteDatabase(selectedStore);
 			try {
-				const probes = await database.all("SELECT options FROM adapter_probe");
+				// The account's one Intercom broker opens the same adapter for multi-node routing (domain "intercom")
+				// when the selected child is the one that started it; it is a separate process, not a child domain.
+				const probes = await database.all("SELECT options FROM adapter_probe WHERE domain <> 'intercom'");
 				assert.equal(probes.length, 1, "sessions and the journal share one adapter database");
 				assert.ok(String(probes[0]?.options).includes(SECRET), "the { env } secret reached the adapter");
 			} finally {

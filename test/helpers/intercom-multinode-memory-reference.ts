@@ -4,6 +4,8 @@ import type {
 	HeldSend,
 	HeldSendStore,
 	InvalidStateInput,
+	KnownSession,
+	KnownSessionStore,
 	Lease,
 	LeaseKey,
 	LeaseStaleResult,
@@ -673,6 +675,58 @@ function sentMessageAuthority(sent: Map<string, SentRecord>): SentMessageAuthori
 	};
 }
 
+interface KnownRecord {
+	readonly session: KnownSession;
+	readonly order: number;
+	readonly recordedAt: number;
+}
+
+function knownSessionStore(known: Map<string, KnownRecord>, nextOrder: { value: number }): KnownSessionStore {
+	return {
+		async record(session) {
+			if (session.targetIdentity.length === 0) return invalid("empty-target-identity");
+			if (session.intercomSessionId.length === 0) return invalid("empty-session-id");
+			if (session.group.length === 0) return invalid("empty-group");
+			const order = known.get(session.targetIdentity)?.order ?? nextOrder.value++;
+			known.set(session.targetIdentity, {
+				session: structuredClone({ ...session, groups: [...session.groups] }),
+				order,
+				recordedAt: Date.now(),
+			});
+			return { status: "recorded" };
+		},
+		async lookup(target, retentionMs) {
+			if (target.length === 0) return invalid("empty-target");
+			const name = target.toLowerCase();
+			const sessions = [...known.values()]
+				.filter(
+					(record) =>
+						isLive(record.recordedAt, retentionMs) &&
+						(record.session.intercomSessionId === target ||
+							record.session.atomicSessionId === target ||
+							record.session.name?.toLowerCase() === name),
+				)
+				.sort((left, right) => left.order - right.order)
+				.map((record) => ({
+					...structuredClone(record.session),
+					groups: [...record.session.groups],
+					ageMs: ageOf(record.recordedAt),
+				}));
+			return { status: "found", sessions };
+		},
+		async prune(olderThanMs) {
+			let removed = 0;
+			for (const [identity, record] of known) {
+				if (ageOf(record.recordedAt) > olderThanMs) {
+					known.delete(identity);
+					removed++;
+				}
+			}
+			return removed;
+		},
+	};
+}
+
 function sharedFixture<Store>(connect: () => Store): Promise<SharedStoreFixture<Store>> {
 	return Promise.resolve({ connect: async () => connect(), close: async () => {} });
 }
@@ -706,6 +760,12 @@ export function openMemoryPendingAskFixture(): Promise<SharedStoreFixture<Pendin
 export function openMemorySentMessageFixture(): Promise<SharedStoreFixture<SentMessageAuthority>> {
 	const sent = new Map<string, SentRecord>();
 	return sharedFixture(() => sentMessageAuthority(sent));
+}
+
+export function openMemoryKnownSessionFixture(): Promise<SharedStoreFixture<KnownSessionStore>> {
+	const known = new Map<string, KnownRecord>();
+	const nextOrder = { value: 1 };
+	return sharedFixture(() => knownSessionStore(known, nextOrder));
 }
 
 interface MemorySubscription {

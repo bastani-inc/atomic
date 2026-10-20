@@ -37,6 +37,7 @@ export * from "./core/storage/index.js";
 // Outside the storage barrel: workflow durability setup imports that barrel in every test worker.
 export {
 	type ProcessStorageChoice,
+	processSharedStorageSelection,
 	type StorageDomain,
 	selectProcessStorage,
 } from "./core/storage/process-selection.js";

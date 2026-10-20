@@ -24,6 +24,8 @@ export const BROKER_LEASE_STALE_AFTER_MS = 30_000;
 export const OUTBOX_CLAIM_STALE_AFTER_MS = 30_000;
 /** Safety-net outbox scan interval for brokers whose wake-ups were lost. */
 export const OUTBOX_BACKUP_POLL_INTERVAL_MS = 30_000;
+/** How long a session that left stays known, so a send to it is queued for its return (spec §14, S5 amendment). */
+export const KNOWN_SESSION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** The exact frame a broker writes to a recipient's socket; a cross-node delivery writes the same frame. */
 export type IntercomDeliveryFrame = Extract<BrokerMessage, { type: "message" }>;
@@ -498,6 +500,53 @@ export interface SentMessageAuthority {
 	prune(olderThanMs: number): Promise<number>;
 }
 
+/**
+ * A session some broker hosted, recorded when it registers and when it leaves (spec §14, S5 amendment). A send
+ * to a known session with no live presence lease is queued for its return instead of failing.
+ */
+export interface KnownSession {
+	/** Stable recipient authority (`deliveryTargetIdentity`); one record per identity. */
+	readonly targetIdentity: string;
+	/** The Intercom session id it last registered with. */
+	readonly intercomSessionId: string;
+	/** Verbatim. */
+	readonly name?: string;
+	/** The host (Atomic) session id: the registration's return address. */
+	readonly atomicSessionId?: string;
+	/** The normalized registration group. */
+	readonly group: string;
+	/** The normalized memberships at its last record. */
+	readonly groups: readonly string[];
+	/** The host-declared connection purpose at its last record; only agents receive Intercom messages. */
+	readonly recipientPurpose?: SessionInfo["recipientPurpose"];
+	/** The reply capability at its last record: an ask to a terminal session is refused, offline as live. */
+	readonly replyCapability?: SessionInfo["replyCapability"];
+}
+
+export interface KnownSessionState extends KnownSession {
+	readonly groups: string[];
+	/** Store-clock milliseconds since the session was last recorded. */
+	readonly ageMs: number;
+}
+
+export type KnownSessionRecordResult = { readonly status: "recorded" } | InvalidStateInput;
+export type KnownSessionLookupResult =
+	| { readonly status: "found"; readonly sessions: KnownSessionState[] }
+	| InvalidStateInput;
+
+/** S5 amendment: sessions brokers hosted, kept for `KNOWN_SESSION_RETENTION_MS` so sends to them are queued. */
+export interface KnownSessionStore {
+	/** Insert or replace the identity's record and reset its age; the identity keeps its first-record order. */
+	record(session: KnownSession): Promise<KnownSessionRecordResult>;
+	/**
+	 * Records last recorded within `retentionMs` whose Intercom id or Atomic session id equals `target`, or whose
+	 * name equals it case-insensitively (`toLowerCase`), in first-record order.
+	 */
+	lookup(target: string, retentionMs: number): Promise<KnownSessionLookupResult>;
+	/** Delete records last recorded more than `olderThanMs` ago; returns the count. */
+	prune(olderThanMs: number): Promise<number>;
+}
+
 /** One broker's view of the shared Intercom state. */
 export interface IntercomBrokerStateStore {
 	readonly leases: BrokerLeaseStore;
@@ -506,6 +555,7 @@ export interface IntercomBrokerStateStore {
 	readonly reservations: RestoringReservationStore;
 	readonly pendingAsks: PendingAskStore;
 	readonly sentMessages: SentMessageAuthority;
+	readonly knownSessions: KnownSessionStore;
 	close(): Promise<void>;
 }
 

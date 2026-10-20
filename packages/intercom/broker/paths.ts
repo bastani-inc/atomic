@@ -1,6 +1,12 @@
 import { homedir } from "os";
 import { join } from "path";
 
+/**
+ * The shared storage selection (`ATOMIC_STORAGE` JSON) the launching Atomic process hands its broker: its
+ * `--storage`/`--storage-file` or its own `ATOMIC_STORAGE`. It outranks the agent directory's settings.
+ */
+export const BROKER_STORAGE_ENV = "ATOMIC_STORAGE";
+
 function getHomeDir(): string {
   if (process.platform === "win32") {
     if (process.env.USERPROFILE) return process.env.USERPROFILE;

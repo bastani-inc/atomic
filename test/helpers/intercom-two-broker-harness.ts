@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -36,6 +36,7 @@ const CLIENT_DISCONNECT_TIMEOUT_MS = 5_000;
 /** How long start() waits for a broker to write its lease before reporting single-node brokers. */
 const CAPABILITY_PROBE_TIMEOUT_MS = 2_000;
 const DROP_WAKEUPS_TRIGGER = "two_broker_harness_drop_wakeups";
+const STORAGE_OPEN_GATE = "storage-open-gate";
 
 export interface ReceivedFrame {
 	readonly from: SessionInfo;
@@ -86,11 +87,28 @@ interface NodeState {
 	broker: ChildProcess | undefined;
 }
 
-function nodeSettings(sharedDatabasePath: string): string {
+export interface TwoBrokerHarnessOptions {
+	/** Delay every shared database call by this many ms on a timer, as a remote database would. */
+	readonly databaseCallDelayMs?: number;
+	/**
+	 * This node's broker opens the shared storage only as `setStorageOpening` allows; it starts held. The other node's
+	 * broker and the harness's own connections are not held.
+	 */
+	readonly gatedStorageOpening?: BrokerNode;
+}
+
+/** Whether a gated broker's shared storage opening waits, fails, or proceeds. */
+export type StorageOpeningState = "held" | "fail" | "open";
+
+function nodeSettings(sharedDatabasePath: string, options: TwoBrokerHarnessOptions, openGate?: string): string {
 	return JSON.stringify({
 		storage: {
 			adapter: storageAdapterModule,
-			options: { path: sharedDatabasePath },
+			options: {
+				path: sharedDatabasePath,
+				...(options.databaseCallDelayMs === undefined ? {} : { callDelayMs: options.databaseCallDelayMs }),
+				...(openGate === undefined ? {} : { openGate }),
+			},
 			prefix: TWO_BROKER_STORAGE_PREFIX,
 		},
 	});
@@ -144,7 +162,7 @@ export class TwoBrokerHarness {
 		this.nodes = nodes;
 	}
 
-	static async start(): Promise<TwoBrokerHarness> {
+	static async start(options: TwoBrokerHarnessOptions = {}): Promise<TwoBrokerHarness> {
 		// Short root: a Unix socket path must fit in about 104 bytes.
 		const root = mkdtempSync(join(tmpdir(), "icmn-"));
 		const sharedDatabasePath = join(root, "shared.sqlite");
@@ -152,7 +170,8 @@ export class TwoBrokerHarness {
 		for (const node of BROKER_NODES) {
 			const agentDir = join(root, node);
 			mkdirSync(agentDir, { recursive: true });
-			writeFileSync(join(agentDir, "settings.json"), nodeSettings(sharedDatabasePath));
+			const openGate = options.gatedStorageOpening === node ? join(root, STORAGE_OPEN_GATE) : undefined;
+			writeFileSync(join(agentDir, "settings.json"), nodeSettings(sharedDatabasePath, options, openGate));
 			nodes[node] = {
 				fixture: new IntercomBrokerFixture(agentDir),
 				clientModule: await loadClientModule(agentDir),
@@ -178,6 +197,13 @@ export class TwoBrokerHarness {
 	 */
 	get multiNodeRouting(): boolean {
 		return this.advertised;
+	}
+
+	/** Hold, fail or let through the gated node's next shared storage opening (`gatedStorageOpening`). */
+	setStorageOpening(state: StorageOpeningState): void {
+		const gate = join(this.root, STORAGE_OPEN_GATE);
+		if (state === "held") rmSync(gate, { force: true });
+		else writeFileSync(gate, state);
 	}
 
 	agentDir(node: BrokerNode): string {

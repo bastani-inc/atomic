@@ -4,8 +4,9 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import { isSocketAnswering } from "./socket-liveness.js";
-import { createChildProcessEnvironment, isBunBinary } from "@bastani/atomic";
+import { createChildProcessEnvironment, isBunBinary, processSharedStorageSelection } from "@bastani/atomic";
 import {
+  BROKER_STORAGE_ENV,
   getBrokerLogPath,
   getBrokerPidPath,
   getBrokerSocketPath,
@@ -243,6 +244,9 @@ export function getBrokerLaunchSpec(
  * The broker is detached and outlives this process, so its stderr goes to an already-open file
  * descriptor rather than a pipe: a long-lived pipe would keep the parent's event loop attached
  * and break once the parent exits.
+ *
+ * The broker routes through the shared storage this process was launched with (`--storage`,
+ * `--storage-file` or `ATOMIC_STORAGE`), passed as `ATOMIC_STORAGE`; without one it reads settings.
  */
 export function getBrokerSpawnOptions(
   extensionDir: string = EXTENSION_DIR,
@@ -254,11 +258,15 @@ export function getBrokerSpawnOptions(
   env: NodeJS.ProcessEnv;
   windowsHide: true;
 } {
+  const storage = processSharedStorageSelection();
   return {
     detached: true,
     stdio: ["ignore", "ignore", stderr],
     cwd: extensionDir,
-    env: createChildProcessEnvironment({ NODE_NO_WARNINGS: "1" }),
+    env: createChildProcessEnvironment({
+      NODE_NO_WARNINGS: "1",
+      ...(storage === undefined ? {} : { [BROKER_STORAGE_ENV]: storage }),
+    }),
     windowsHide: true,
   };
 }

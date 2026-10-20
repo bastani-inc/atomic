@@ -3,9 +3,18 @@
 import "./bounded-stderr-install.js";
 import net from "net";
 import { chmodSync, writeFileSync, unlinkSync, mkdirSync, readFileSync, statSync } from "fs";
+import { dirname } from "path";
 import { randomUUID } from "crypto";
 import { createMessageReader, type JsonWireValue } from "./framing.js";
-import { writeMessageIfOpen, writeMessageWithOutcome } from "./socket-writes.js";
+import {
+  discardHeldWrites,
+  flushHeldWrites,
+  type HeldWrite,
+  holdWrites,
+  releaseHeldWrites,
+  writeMessageIfOpen,
+  writeMessageWithOutcome,
+} from "./socket-writes.js";
 import { isSocketAnswering } from "./socket-liveness.js";
 import { acquireSocketReplacementLock } from "./socket-replacement-lock.js";
 import {
@@ -39,10 +48,21 @@ import {
 	handleBrokerSend,
 	type BrokerConnectedSession,
 	type PendingStageRoute,
+	type RemoteSendRequest,
+	type RemoteSendRouter,
 	type RestoringRecipientHold,
 	type SendClientMessage,
 	senderGroupIdentity,
 } from "./send-handler.js";
+import {
+  type BrokerStateOpener,
+  LOCAL_RETRY_LOOKUP_BOUND_MS,
+  MultiNodeRouter,
+  readSharedStorageSetting,
+  resolveMultiNodeStartup,
+  SHARED_STORAGE_UNAVAILABLE_REASON,
+} from "./multinode-router.js";
+import { OUTBOX_BACKUP_POLL_INTERVAL_MS } from "./multinode-state-store.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
 import { SessionIdReclaim } from "./session-id-reclaim.js";
 import { type HeldSend, RestoringRecipients } from "./restoring-recipients.js";
@@ -74,6 +94,7 @@ const PENDING_STAGE_MESSAGE_TIMEOUT_MS = 10_000;
 const LISTEN_ATTEMPTS = 5;
 const LISTEN_RETRY_DELAY_MS = 100;
 const SOCKET_OWNERSHIP_CHECK_MS = 1_000;
+const MULTI_NODE_CLOSE_BOUND_MS = 2_000;
 
 function exitBecauseLiveBrokerOwnsSocket(): never {
   console.error(`Intercom broker not started: a live broker already answers on ${SOCKET_PATH}`);
@@ -302,6 +323,14 @@ class IntercomBroker {
   private liveWorkflowStageRoutes = new Map<string, LiveWorkflowStageRouteRegistration>();
   private workflowRosters = new Map<string, WorkflowRosterRegistration>();
   private liveWorkflowStageRouteActivations = new Map<string, LiveWorkflowStageRouteActivation>();
+  /** Multi-node S5: set only when the agent directory's settings select a top-level shared `storage`. */
+  private readonly sharedStorageSetting = readSharedStorageSetting(dirname(INTERCOM_DIR));
+  private readonly routeRemote: RemoteSendRouter | undefined =
+    this.sharedStorageSetting === undefined ? undefined : (request) => this.routeRemoteSend(request);
+  private multiNode: MultiNodeRouter | undefined;
+  private multiNodeStatus: "starting" | "on" | "off" | "unavailable" = "off";
+  private multiNodeFirstAttempt: Promise<void> = Promise.resolve();
+  private shuttingDown = false;
 
   constructor() {
     mkdirSync(INTERCOM_DIR, { recursive: true, mode: 0o700 });
@@ -311,6 +340,7 @@ class IntercomBroker {
 
   start(): void {
     this.listen(1);
+    if (this.sharedStorageSetting !== undefined) this.startMultiNode(this.sharedStorageSetting);
     process.on("SIGTERM", () => this.shutdown());
     process.on("SIGINT", () => this.shutdown());
   }
@@ -1527,28 +1557,62 @@ class IntercomBroker {
           this.shutdownTimer = null;
         }
 
-        // #3761: echoing the capability tells the client this broker understands `received`; an old broker never does.
-        writeMessageIfOpen(socket, {
-          type: "registered",
-          sessionId: id,
-          ...(supervisorId ? { supervisorSessionId: supervisorId } : {}),
-          ...(clientMessage.acknowledgesReceipt === true ? { acknowledgesReceipt: true as const } : {}),
-        });
-        if (isAgentRecipient(info)) this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
-        // #3761: messages written to this recipient's previous connection that it never confirmed saving go out again.
         const rejoined = this.sessions.get(id);
-        if (rejoined?.acknowledgesReceipt === true) {
-          for (const frame of this.receipts.framesFor(deliveryTargetIdentity(rejoined))) writeMessageIfOpen(socket, frame);
-        }
-        // #3760: a restored subagent is back under the capability its owner reserved it with; the sends held
-        // for it while it was being restored go out now, once each and in the order they arrived.
-        if (supervisorId && isSupervisorRegistration(clientMessage.supervisor)) {
-          const registered = info.name?.trim();
-          for (const send of this.restoringRecipients.consume(
-            clientMessage.supervisor.capability,
-            registered ? { childName: registered, groups: sessionGroups(info) } : undefined,
-          ))
-            this.dispatchSend(send.socket, send.clientMessage, send.senderId);
+        const consumedCapability =
+          supervisorId && isSupervisorRegistration(clientMessage.supervisor) ? clientMessage.supervisor.capability : undefined;
+        const completeRegistration = (held: readonly HeldWrite[] = []): void => {
+          // #3761: echoing the capability tells the client this broker understands `received`; an old broker never does.
+          writeMessageIfOpen(socket, {
+            type: "registered",
+            sessionId: id,
+            ...(supervisorId ? { supervisorSessionId: supervisorId } : {}),
+            ...(clientMessage.acknowledgesReceipt === true ? { acknowledgesReceipt: true as const } : {}),
+          });
+          if (isAgentRecipient(info)) this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
+          // #3761: messages written to this recipient's previous connection that it never confirmed saving go out again.
+          if (rejoined?.acknowledgesReceipt === true) {
+            const heldFrames = new Set(held.map((write) => write.message));
+            for (const frame of this.receipts.framesFor(deliveryTargetIdentity(rejoined))) {
+              if (!heldFrames.has(frame)) writeMessageIfOpen(socket, frame);
+            }
+          }
+          // Multi-node S5: frames written while registration waited for the presence lease follow `registered`.
+          flushHeldWrites(socket, held);
+          // #3760: a restored subagent is back under the capability its owner reserved it with; the sends held
+          // for it while it was being restored go out now, once each and in the order they arrived.
+          if (consumedCapability !== undefined) {
+            const registered = info.name?.trim();
+            for (const send of this.restoringRecipients.consume(
+              consumedCapability,
+              registered ? { childName: registered, groups: sessionGroups(info) } : undefined,
+            ))
+              this.dispatchSend(send.socket, send.clientMessage, send.senderId);
+          }
+        };
+        // Multi-node S5: brokers on other hosts find this session through its presence lease, so registration
+        // completes once the lease is written (or bounded attempts found it still held elsewhere). The session is
+        // routable meanwhile, so its frames are held until `registered` is written.
+        const presence =
+          rejoined === undefined
+            ? undefined
+            : this.multiNode?.sessionRegistered(
+                rejoined,
+                consumedCapability === undefined
+                  ? undefined
+                  : {
+                      capability: consumedCapability,
+                      ...(info.name?.trim() ? { childName: info.name.trim() } : {}),
+                      groups: sessionGroups(info),
+                    },
+              );
+        if (presence === undefined) completeRegistration();
+        else {
+          holdWrites(socket);
+          void presence.then(() => {
+            const held = releaseHeldWrites(socket);
+            if (this.sessions.get(id) === rejoined) completeRegistration(held);
+            else discardHeldWrites(held);
+          });
         }
         break;
       }
@@ -1570,19 +1634,27 @@ class IntercomBroker {
 
         const requester = currentId ? this.sessions.get(currentId) : undefined;
 		if (requester === undefined) throw new Error("Session not found");
-		const sessions =
-			typeof clientMessage.group === "string"
-				? this.canInspectSelectedGroup(requester, clientMessage.group)
-					? sessionsInGroup(this.sessions, clientMessage.group)
+		const requestId = clientMessage.requestId;
+		const selectedGroup = clientMessage.group;
+		const visible = (sessions: ReadonlyMap<string, Pick<ConnectedSession, "info">>): SessionInfo[] =>
+			typeof selectedGroup === "string"
+				? this.canInspectSelectedGroup(requester, selectedGroup)
+					? sessionsInGroup(sessions, selectedGroup)
 					: []
-				: sessionsVisibleTo(this.sessions, requester.info);
-        writeMessageIfOpen(socket, {
-			type: "sessions",
-			requestId: clientMessage.requestId,
-			sessions,
-			workflowStages: this.workflowStagesVisibleTo(requester, clientMessage.group),
-			workflowFutureStages: this.workflowFutureStagesVisibleTo(requester, clientMessage.group),
-		});
+				: sessionsVisibleTo(sessions, requester.info);
+		const respond = (sessions: SessionInfo[]): void => {
+			writeMessageIfOpen(socket, {
+				type: "sessions",
+				requestId,
+				sessions,
+				workflowStages: this.workflowStagesVisibleTo(requester, selectedGroup),
+				workflowFutureStages: this.workflowFutureStagesVisibleTo(requester, selectedGroup),
+			});
+		};
+		const multiNode = this.multiNode;
+		if (multiNode === undefined) respond(visible(this.sessions));
+		// Multi-node S5: a session connected through another node is a live peer too, under the same visibility.
+		else void multiNode.remoteSessions().then((remote) => respond([...visible(this.sessions), ...visible(remote)]));
         break;
       }
 
@@ -1654,6 +1726,14 @@ class IntercomBroker {
           aliases,
           { dormant: clientMessage.dormant === true },
         );
+        this.multiNode?.restoringReserved(
+          clientMessage.capability,
+          currentId,
+          childName,
+          normalizeGroup(typeof clientMessage.group === "string" ? clientMessage.group : owner.registrationGroup),
+          aliases,
+          clientMessage.dormant === true,
+        );
         writeMessageIfOpen(socket, { type: "restoring_recipient_ack", requestId: clientMessage.requestId });
         break;
       }
@@ -1674,6 +1754,9 @@ class IntercomBroker {
             ? clientMessage.refusal.slice(0, RESTORING_RECIPIENT_GONE_REASON_MAX)
             : undefined,
         );
+        if (released !== undefined) {
+          this.multiNode?.restoringReleased(clientMessage.capability, currentId, released.gone, released.refusal);
+        }
         writeMessageIfOpen(socket, { type: "restoring_recipient_ack", requestId: clientMessage.requestId });
         for (const send of released?.held ?? []) {
           if (released?.gone !== undefined) this.failHeldSend(send, released.gone);
@@ -1908,6 +1991,7 @@ class IntercomBroker {
 			if (typeof clientMessage.messageId !== "string") throw new Error("Invalid received message");
 			const recipient = this.sessions.get(currentId);
 			if (recipient?.acknowledgesReceipt === true) {
+				this.multiNode?.received(recipient, clientMessage.messageId);
 				this.receipts.settle(clientMessage.messageId, deliveryTargetIdentity(recipient), recipient);
 			}
 			break;
@@ -1937,6 +2021,8 @@ class IntercomBroker {
           (target, message) => writeMessageIfOpen(target, message),
           this.pendingQuestions,
         );
+        const updated = this.sessions.get(currentId);
+        if (updated !== undefined) this.multiNode?.sessionUpdated(updated);
         break;
       }
 
@@ -1964,7 +2050,135 @@ class IntercomBroker {
       this.isNonAgentWorkflowTarget,
       this.holdForRestoringRecipient,
       this.receipts,
+      this.routeRemote,
     );
+  }
+
+  /** Multi-node S5: a send no local session resolved goes to the shared state once it is open. */
+  private routeRemoteSend(request: RemoteSendRequest): void {
+    if (this.multiNode !== undefined) {
+      this.multiNode.routeSend(request);
+      return;
+    }
+    // Off, or a send to a session on this broker: local delivery never depends on the shared database (spec §8).
+    if (this.multiNodeStatus === "off" || (this.multiNodeStatus === "unavailable" && request.localTarget !== undefined)) {
+      request.notFound();
+      return;
+    }
+    if (this.multiNodeStatus === "starting") {
+      if (request.localTarget === undefined) {
+        void this.multiNodeFirstAttempt.then(() => this.routeRemoteSend(request));
+        return;
+      }
+      // A send to a session on this broker waits for the first opening at most as long as the router's own retry
+      // lookup would, then is delivered locally; whichever comes second does nothing, so it is answered once.
+      let answered = false;
+      const bound = setTimeout(() => {
+        answered = true;
+        request.notFound();
+      }, LOCAL_RETRY_LOOKUP_BOUND_MS);
+      void this.multiNodeFirstAttempt.then(() => {
+        if (answered) return;
+        answered = true;
+        clearTimeout(bound);
+        this.routeRemoteSend(request);
+      });
+      return;
+    }
+    writeMessageIfOpen(request.socket, {
+      type: "delivery_failed",
+      messageId: request.message.id,
+      ...(request.attemptId === undefined ? {} : { attemptId: request.attemptId }),
+      reason: SHARED_STORAGE_UNAVAILABLE_REASON,
+      ...(request.requirePendingReply ? { reasonCode: "session_not_found" as const } : {}),
+    });
+  }
+
+  /**
+   * The shared state is loaded lazily, so a single-node broker never loads the host storage layer. A database that
+   * cannot be opened is retried with exponential backoff; meanwhile local delivery continues.
+   */
+  private startMultiNode(setting: Record<string, unknown>): void {
+    this.multiNodeStatus = "starting";
+    let settleFirstAttempt: () => void = () => {};
+    this.multiNodeFirstAttempt = new Promise<void>((resolve) => {
+      settleFirstAttempt = resolve;
+    });
+    const settle = (status: "on" | "off" | "unavailable"): void => {
+      this.multiNodeStatus = status;
+      settleFirstAttempt();
+    };
+    const report = (error: unknown): void => {
+      console.error(`Intercom multi-node routing is unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    };
+    void (async () => {
+      const startup = await resolveMultiNodeStartup(setting, dirname(INTERCOM_DIR), async () => {
+        const loaded = await import("./open-broker-state.js");
+        type Source = Parameters<typeof loaded.openIntercomBrokerState>[0];
+        const opener: BrokerStateOpener<Source> = {
+          resolveBrokerStateSource: (value, agentDir) =>
+            loaded.resolveBrokerStateSource(value as Parameters<typeof loaded.resolveBrokerStateSource>[0], agentDir),
+          openIntercomBrokerState: (source) => loaded.openIntercomBrokerState(source),
+        };
+        return opener;
+      });
+      if (startup.status === "off") {
+        // A standalone binary has no host storage module, and a selection may not resolve to a database: both
+        // leave this broker single-node, exactly as without a shared `storage`.
+        if (startup.error !== undefined) console.error(`Intercom multi-node routing is off: ${startup.reason}`);
+        settle("off");
+        return;
+      }
+      const { opener, source } = startup;
+      for (let attempt = 0; !this.shuttingDown; attempt++) {
+        try {
+          const opened = await opener.openIntercomBrokerState(source);
+          try {
+            this.multiNode = await MultiNodeRouter.start({
+              ...opened,
+              host: {
+                sessions: this.sessions,
+                write: writeMessageIfOpen,
+                writeConfirmed: writeMessageWithOutcome,
+                supervisorCache: this.supervisorChannel,
+                pendingQuestions: this.pendingQuestions,
+                deliveredMessages: this.deliveredMessages,
+                dispatch: (socket, clientMessage, senderId) => this.dispatchSend(socket, clientMessage, senderId),
+              },
+            });
+          } catch (error) {
+            await opened.bus.close().catch(() => {});
+            await opened.state.close().catch(() => {});
+            throw error;
+          }
+          // Reservations acknowledged before routing started (or while an earlier opening failed) were kept only
+          // here; mirror the ones still in force so other brokers hold sends for them too. Releases and owner
+          // departures from now on reach the router behind these reserves.
+          for (const reservation of this.restoringRecipients.active()) {
+            this.multiNode.restoringReserved(
+              reservation.capability,
+              reservation.ownerSessionId,
+              reservation.childName,
+              reservation.group,
+              reservation.aliases,
+              reservation.dormant,
+            );
+            if (reservation.gone !== undefined) {
+              this.multiNode.restoringReleased(reservation.capability, reservation.ownerSessionId, reservation.gone);
+            }
+          }
+          if (this.shuttingDown) await this.multiNode.close().catch(() => {});
+          settle("on");
+          return;
+        } catch (error) {
+          report(error);
+          settle("unavailable");
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, Math.min(1_000 * 2 ** attempt, OUTBOX_BACKUP_POLL_INTERVAL_MS)).unref();
+          });
+        }
+      }
+    })();
   }
 
   /**
@@ -2051,6 +2265,7 @@ class IntercomBroker {
 		if (activation.sessionId === sessionId) this.liveWorkflowStageRouteActivations.delete(requestId);
 	}
 	this.sessions.delete(sessionId);
+	this.multiNode?.sessionLeft(departed);
 	this.sessionIdReclaim.retire(sessionId, departed.registrationReturnAddress);
 	if (isAgentRecipient(departed.info)) this.broadcastToMemberships({ type: "session_left", sessionId }, sessionGroups(departed.info), sessionId);
 	for (const send of unreserved) this.dispatchSend(send.socket, send.clientMessage, send.senderId);
@@ -2084,6 +2299,8 @@ class IntercomBroker {
   }
 
   private shutdown(): void {
+    if (this.shuttingDown) return;
+    this.shuttingDown = true;
     console.log("Broker shutting down");
 
     for (const session of this.sessions.values()) {
@@ -2099,6 +2316,17 @@ class IntercomBroker {
 	for (const pending of this.pendingStageNotificationAcknowledgments.values()) clearTimeout(pending.timeout);
 	this.pendingStageNotificationAcknowledgments.clear();
 	this.deliveredMessages.close();
+    const multiNode = this.multiNode;
+    if (multiNode === undefined) {
+      this.exitAfterShutdown();
+      return;
+    }
+    // Give this broker's leases up so other brokers see its sessions offline at once, within a bound.
+    const bound = new Promise<void>((resolve) => setTimeout(resolve, MULTI_NODE_CLOSE_BOUND_MS).unref());
+    void Promise.race([multiNode.close().catch(() => {}), bound]).finally(() => this.exitAfterShutdown());
+  }
+
+  private exitAfterShutdown(): never {
     const ownsRuntime = this.readPidFile() === process.pid;
     this.unlinkRuntimeFilesIfOwned();
     // Node unlinks a Unix socket path on server.close() even after a successor

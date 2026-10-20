@@ -577,7 +577,11 @@ function resolveRelative(importer: string, specifier: string): string | undefine
 	return candidates.find((candidate) => existsSync(candidate) && candidate.endsWith(".ts"));
 }
 
-export function walkRuntimeGraph(entrypoint: string): GraphWalk {
+/**
+ * `lazyBoundaries` are modules loaded only on demand (a literal `import()`); the walk records them in `visited`
+ * but does not descend into them, so the caller can check their own graph separately.
+ */
+export function walkRuntimeGraph(entrypoint: string, lazyBoundaries: ReadonlySet<string> = new Set()): GraphWalk {
 	const visited = new Set<string>();
 	const externals: GraphViolation[] = [];
 	const unresolved: GraphViolation[] = [];
@@ -600,6 +604,10 @@ export function walkRuntimeGraph(entrypoint: string): GraphWalk {
 				const resolved = resolveRelative(current, specifier);
 				if (resolved === undefined) {
 					unresolved.push({ importer: current, description: specifier });
+					continue;
+				}
+				if (lazyBoundaries.has(resolved)) {
+					visited.add(resolved);
 					continue;
 				}
 				queue.push(resolved);

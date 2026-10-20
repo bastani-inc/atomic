@@ -6,6 +6,7 @@ import {
 	registerCrossNodeHeldRoundTripConformance,
 	registerCrossNodeRoundTripConformance,
 	registerHeldSendStoreConformance,
+	registerKnownSessionStoreConformance,
 	registerOutboxStoreConformance,
 	registerPendingAskStoreConformance,
 	registerRestoringReservationStoreConformance,
@@ -14,6 +15,7 @@ import {
 } from "../helpers/intercom-multinode-contract.js";
 import {
 	openMemoryHeldSendFixture,
+	openMemoryKnownSessionFixture,
 	openMemoryLeaseStoreFixture,
 	openMemoryOutboxFixture,
 	openMemoryPendingAskFixture,
@@ -29,6 +31,7 @@ registerRestoringReservationStoreConformance(test, "memory reference", openMemor
 registerPendingAskStoreConformance(test, "memory reference", openMemoryPendingAskFixture);
 registerSentMessageAuthorityConformance(test, "memory reference", openMemorySentMessageFixture);
 registerWakeUpBusConformance(test, "memory reference", openMemoryWakeUpBusFixture);
+registerKnownSessionStoreConformance(test, "memory reference", openMemoryKnownSessionFixture);
 registerCrossNodeRoundTripConformance(test, "memory reference", {
 	openOutbox: openMemoryOutboxFixture,
 	openPendingAsks: openMemoryPendingAskFixture,

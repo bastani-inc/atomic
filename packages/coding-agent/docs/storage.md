@@ -306,7 +306,7 @@ export default {
 
 Select it with `sessions.storage: { "adapter": "@example/atomic-sqlite" }`, `workflows.journal`, or shared top-level `storage` in [settings](/settings#workflow-storage). SDK sessions accept `sessionStore: { kind: "adapter", module, options, secrets, prefix }`; workflow runs accept `journal: { adapter, options, secrets, prefix }`. Module specifiers resolve from the agent directory, normally `~/.atomic/agent`; absolute module paths also work. Project settings follow the same trust boundary as project extensions. A module executes with Atomic's privileges.
 
-`options` is an object of SQLite scalar values or booleans. In JSON settings use strings, numbers, booleans, or null. `secrets` maps option names to `{ env }` or `{ file }`; resolved values override same-named options without trimming file contents. Keep credentials out of `options` and database descriptors. `context` contains `agentDir`, `domain: "sessions" | "journal"`, and an optional `signal`.
+`options` is an object of SQLite scalar values or booleans. In JSON settings use strings, numbers, booleans, or null. `secrets` maps option names to `{ env }` or `{ file }`; resolved values override same-named options without trimming file contents. Keep credentials out of `options` and database descriptors. `context` contains `agentDir`, `domain: "sessions" | "journal" | "intercom"`, and an optional `signal`. Intercom brokers open the top-level `storage` selection with `domain: "intercom"` through `openDatabase`.
 
 A SQLite adapter implements `openDatabase(options, context): Promise<SqliteDatabase>`. Atomic applies its domain schema and optional table prefix. A full adapter can instead implement `openSessionStore(options, context, storage)` or `openRunJournal(options, context, storage)`; the domain hook takes priority over `openDatabase`. The typed third argument is `{ readonly prefix?: string }`. Domain adapters must honor this prefix to isolate selected stores. A missing domain/database hook raises `StorageConfigError` with reason `"adapter-domain-unsupported"`. Load failures and invalid module contracts raise `StorageAdapterLoadError`; driver opening failures raise `StorageUnavailableError`. None selects memory as a fallback.
 
@@ -338,6 +338,8 @@ atomic --mode rpc --storage-file /etc/atomic/storage.json
 ```
 
 Nothing is written to settings. A process started without these options keeps using its settings, so an interactive `atomic` and an RPC child started with `ATOMIC_STORAGE` in the same account each keep their own sessions and workflow runs, and `/resume` in each lists only its own store. `--storage` and `--storage-file` cannot be combined. The interactive CLI passes its `--storage` selection to its background engine process. Other processes that Atomic starts inherit the environment variables but not the flag.
+
+The Intercom broker an Atomic process starts uses the same selection for multi-node routing: `--storage`, `--storage-file`, or `ATOMIC_STORAGE` from that process outranks the top-level `storage` setting, and a broker started by a process without them reads settings. One broker serves every session in an agent directory, so it keeps the selection of the process that started it until it exits.
 
 Precedence for each domain, highest first:
 

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import type { PendingRecoveryDelivery } from "@bastani/atomic";
 import { afterAll, beforeAll, beforeEach, test, vi } from "vitest";
 import type { SendResult } from "../../packages/intercom/broker/client.js";
 import {
@@ -7,6 +8,7 @@ import {
 	OUTBOX_BACKUP_POLL_INTERVAL_MS,
 	OUTBOX_CLAIM_STALE_AFTER_MS,
 } from "../../packages/intercom/broker/multinode-state-store.js";
+import { planIntercomRecoveryReplay } from "../../packages/intercom/session-recovery.js";
 import { type ReceivedFrame, type TwoBrokerClient, TwoBrokerHarness } from "../helpers/intercom-two-broker-harness.js";
 import { sleep } from "../helpers/runtime.js";
 
@@ -256,6 +258,37 @@ test(
 	OFFLINE_QUEUED_TEST_TIMEOUT_MS,
 );
 
+test("a send to a session that quit cleanly is queued at once, then delivered when it reconnects", async ({
+	annotate,
+}) => {
+	const sender = await harness.connect("a", unique("quit-sender"));
+	const recipient = await harness.connect("b", unique("quit-recipient"));
+	if (!harness.multiNodeRouting) {
+		await annotate("multi-node routing not advertised: asserted that nothing crosses brokers");
+		await assertUnrouted(sender, recipient);
+		return;
+	}
+	const recipientId = recipient.sessionId;
+	await harness.disconnect(recipient);
+	const text = "queued for a session that quit";
+	const queued = await sender.client.send(recipient.name, { text });
+	assert.equal(queued.delivered, false, JSON.stringify(queued));
+	assert.equal(queued.queued, true, JSON.stringify(queued));
+	assert.equal(queued.target, "offline session");
+
+	const back = await harness.connect("b", recipient.name, {
+		returnAddress: recipient.returnAddress,
+		preferredSessionId: recipientId,
+	});
+	await waitForMessage(back, queued.id);
+	await confirmDelivered(sender, recipient.name, text, queued.id, DELIVERY_WAIT_MS);
+	assert.equal(back.messagesWithId(queued.id).length, 1);
+
+	const unknown = await sender.client.send(randomUUID(), { text });
+	assert.equal(unknown.queued, undefined);
+	assert.equal(unknown.reason, "Session not found");
+});
+
 test(
 	"a message claimed by a broker that crashes before the recipient's ack is redelivered after restart",
 	async ({ annotate }) => {
@@ -348,4 +381,49 @@ test("cross-node delivery matches local delivery: same card, sender identity and
 	const refusedRemote = await sender.client.send(isolatedRemote.sessionId, { text: "cross-group" });
 	assert.deepEqual(outcome(refusedRemote, isolatedRemote), outcome(refusedLocal, isolatedLocal));
 	assert.deepEqual(isolatedRemote.received, []);
+});
+
+/** A message the recipient saved but had not shown when it restarted (#3761 recovery replay). */
+function savedCard(frame: ReceivedFrame): PendingRecoveryDelivery {
+	return {
+		entryId: `entry-${frame.message.id}`,
+		customType: "intercom_message",
+		content: frame.message.content.text,
+		details: { from: frame.from, message: frame.message, bodyText: frame.message.content.text },
+		timestamp: new Date(frame.message.timestamp).toISOString(),
+		stageAdmissionKey: `intercom:${frame.message.id}`,
+		delivery: "steer",
+	};
+}
+
+test("on resume, a saved message from a live sender on the other node replays exactly as one from a local sender", async ({
+	annotate,
+}) => {
+	const group = unique("resume");
+	const recipient = await harness.connect("b", unique("resume-recipient"), { group });
+	const localSender = await harness.connect("b", unique("resume-local"), { group });
+	const remoteSender = await harness.connect("a", unique("resume-remote"), { group });
+	const isolated = await harness.connect("a", unique("resume-isolated"), { group: unique("elsewhere") });
+	const fromLocal = await localSender.client.send(recipient.name, { text: "saved before the restart" });
+	const localFrame = await waitForMessage(recipient, fromLocal.id);
+	if (!harness.multiNodeRouting) {
+		await annotate("multi-node routing not advertised: asserted that nothing crosses brokers");
+		await assertUnrouted(remoteSender, recipient);
+		return;
+	}
+	const fromRemote = await remoteSender.client.send(recipient.name, { text: "saved before the restart" });
+	const remoteFrame = await waitForMessage(recipient, fromRemote.id);
+
+	const peers = await recipient.client.listSessions();
+	assert.ok(
+		peers.some((peer) => peer.id === remoteSender.sessionId),
+		"a live remote sender is a listed peer",
+	);
+	assert.ok(!peers.some((peer) => peer.id === isolated.sessionId), "group isolation applies to remote sessions");
+	const plan = planIntercomRecoveryReplay([savedCard(localFrame), savedCard(remoteFrame)], peers);
+	assert.deepEqual(
+		plan.decisions?.map((decision) => decision.action),
+		["replay", "replay"],
+	);
+	assert.deepEqual(plan.notices ?? [], []);
 });
