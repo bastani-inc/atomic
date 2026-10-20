@@ -1,4 +1,4 @@
-import { expect, test, vi } from "vitest";
+import { test, vi } from "vitest";
 
 const lstatFailure = vi.hoisted(() => ({ path: "", code: "" }));
 vi.mock("node:fs", async (importOriginal) => {
@@ -67,8 +67,14 @@ for (const code of ["EACCES", "EIO"]) {
 				lstatFailure.path = "";
 			}
 			const gitCommands = vi.mocked(runGitChecked).mock.calls.map(([, args]) => args.join(" "));
-			expect(gitCommands.filter((command) => command.startsWith("worktree remove"))).toEqual([]);
-			expect(gitCommands.filter((command) => command.startsWith("branch -D"))).toEqual([]);
+			assert.deepEqual(
+				gitCommands.filter((command) => command.startsWith("worktree remove")),
+				[],
+			);
+			assert.deepEqual(
+				gitCommands.filter((command) => command.startsWith("branch -D")),
+				[],
+			);
 			assert.equal(existsSync(worktree.path), true, "the worktree must be left for recovery");
 			assert.equal(lstatSync(link).isSymbolicLink(), true, "the link must be left intact");
 			assert.equal(readFileSync(join(repo, "deps", "module.txt"), "utf8"), "dependency\n");
