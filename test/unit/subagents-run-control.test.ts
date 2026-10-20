@@ -1037,6 +1037,54 @@ for (const [owner, cause] of [
 	});
 }
 
+for (const [owner, cause] of [
+	["an interrupted workflow stage", "stage-close"],
+	["a session Atomic exited or switched away from", "session-close"],
+] as const) {
+	test(`a child of ${owner} keeps its queued messages, and reopening delivers them once, in order (#3784)`, async () => {
+		const h = harness({ stage: cause === "stage-close" });
+		const live = Promise.withResolvers<TestSessionQueue>();
+		h.onSession = (session) => live.resolve(session);
+		const { record } = await h.launch(`held-${cause}`);
+		h.onSession = undefined;
+		const session = await live.promise;
+		const steer = "STEER: report the permission error only";
+		const followUp = "FOLLOWUP: include the failing command";
+		await session.steer(steer);
+		await session.followUp(followUp);
+
+		await h.closeOwnerAndReopen(cause);
+		const kept = await h.waitForLatest(record.childId, (candidate) => candidate.heldMessages !== undefined);
+		assert.equal(kept.state, "running", "closing its owner records nothing terminal");
+		assert.deepEqual(kept.heldMessages?.messages, [steer, followUp], "it keeps what it had queued and not read");
+
+		const [outcome] = await restoreSubagentChildren(h.deps, h.ctx);
+		assert.equal(outcome?.kind, "restored", JSON.stringify(outcome));
+		assert.ok(outcome?.kind === "restored");
+		await settled(h, outcome.taskId);
+		const finished = await h.waitForLatest(
+			record.childId,
+			(candidate) => candidate.taskId === outcome.taskId && candidate.state === "terminal",
+		);
+		assert.equal(finished.terminalStatus, "ok", "the reopened owner restores it");
+		const delivered = transcript(finished);
+		assert.equal(occurrences(delivered, steer), 1, "the held steer is delivered exactly once");
+		assert.equal(occurrences(delivered, followUp), 1, "the held follow-up is delivered exactly once");
+		assert.ok(delivered.indexOf(steer) < delivered.indexOf(followUp), "in the order it queued them");
+
+		const again = resumedTaskId(await h.call({ action: "resume", id: record.childId }));
+		await settled(h, again);
+		const after = transcript(
+			await h.waitForLatest(
+				record.childId,
+				(candidate) => candidate.taskId === again && candidate.state === "terminal",
+			),
+		);
+		assert.equal(occurrences(after, steer), 1, "a later resume does not deliver the steer again");
+		assert.equal(occurrences(after, followUp), 1, "a later resume does not deliver the follow-up again");
+	});
+}
+
 test("resume refuses a child that is still running", async () => {
 	const h = harness();
 	const { record } = await h.launch("live1");

@@ -503,6 +503,8 @@ export async function runAgentTask(input: {
 							stoppedByControl || stoppedByStagePause ? child.pendingMessages : undefined,
 						);
 					else if (endedForGood) recordChild("terminal", SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
+					// Its owner closed, which ends nothing: it stays restorable, with what it had queued and not read.
+					else if (child.pendingMessages?.length) recordChild("running", undefined, child.pendingMessages);
 					input.onTerminal?.(child);
 					const text = input.outputText?.(child) ?? getSingleResultOutput(child);
 					retainTaskOutput(child, text, context.ref);
