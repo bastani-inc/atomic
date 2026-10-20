@@ -1216,6 +1216,21 @@ export function registerKnownSessionStoreConformance(
 		},
 	);
 
+	check(
+		"keeps the recipient attributes that gate delivery, so an offline session is refused as a live one",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			await a.record(known({ recipientPurpose: "control", replyCapability: "terminal" }));
+			const found = expectStatus(await b.lookup("recipient-session", LIVE_MS), "found");
+			assert.deepEqual(withoutAge(found.sessions), [
+				{ ...known(), groups: ["team", "review crew"], recipientPurpose: "control", replyCapability: "terminal" },
+			]);
+			await a.record(known());
+			const replaced = expectStatus(await b.lookup("recipient-session", LIVE_MS), "found");
+			assert.deepEqual(withoutAge(replaced.sessions), [{ ...known(), groups: ["team", "review crew"] }]);
+		},
+	);
+
 	check("replaces an identity's record in place, keeping its first-record order", async (connect) => {
 		const [a, b] = [await connect(), await connect()];
 		await a.record(known({ intercomSessionId: "z-9", name: "shared" }));

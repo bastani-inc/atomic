@@ -243,7 +243,11 @@ interface RemoteTarget {
 	readonly identity: string;
 	readonly sessionId: string;
 	readonly groups: ReadonlySet<string>;
-	readonly info?: SessionInfo;
+	/**
+	 * The recipient attributes that gate delivery, from its live presence or its known-session record: every route
+	 * to a session, live or offline, refuses non-agent recipients and asks to terminal ones alike.
+	 */
+	readonly gates: Pick<SessionInfo, "recipientPurpose" | "replyCapability">;
 	/** The broker hosting it now; absent for an offline session. */
 	readonly hostBrokerId?: string;
 }
@@ -649,15 +653,11 @@ export class MultiNodeRouter {
 		}
 		if (resolved !== undefined) {
 			const subject = presenceOf(resolved);
-			if (!isAgentRecipient(subject.session)) {
-				this.fail(request, NON_AGENT_RECIPIENT_REFUSAL);
-				return;
-			}
 			await this.deliverThroughOutbox(request, {
 				identity: subject.targetIdentity,
 				sessionId: subject.session.id,
 				groups: sessionGroups(subject.session),
-				info: subject.session,
+				gates: subject.session,
 				hostBrokerId: resolved.holderId,
 			});
 			return;
@@ -672,6 +672,7 @@ export class MultiNodeRouter {
 				identity: known.targetIdentity,
 				sessionId: known.intercomSessionId,
 				groups: new Set(known.groups),
+				gates: known,
 			});
 			return;
 		}
@@ -707,7 +708,7 @@ export class MultiNodeRouter {
 				identity: deliveryTargetIdentity(target),
 				sessionId: target.info.id,
 				groups: sessionGroups(target.info),
-				info: target.info,
+				gates: target.info,
 				hostBrokerId: this.brokerId,
 			},
 			crossNodeDigest(request.signature),
@@ -737,6 +738,11 @@ export class MultiNodeRouter {
 		return authorized;
 	}
 
+	/**
+	 * An offline session, resolved exactly as a live remote one is: an exact id first (its recipient checks follow in
+	 * `deliverThroughOutbox`), otherwise a visible agent by name or Atomic session id; a visible non-agent of that
+	 * name alone is refused as a live one is.
+	 */
 	private async resolveKnownSession(request: RemoteSendRequest): Promise<KnownSessionState | "answered" | undefined> {
 		const found = await this.state.knownSessions.lookup(request.target, KNOWN_SESSION_RETENTION_MS);
 		if (found.status !== "found") return undefined;
@@ -755,9 +761,10 @@ export class MultiNodeRouter {
 				replyAuthorized.has(session.intercomSessionId),
 		);
 		const target = request.target.toLowerCase();
+		const agents = visible.filter(isAgentRecipient);
 		const candidates = [
-			["ambiguous_name", visible.filter((session) => session.name?.toLowerCase() === target)],
-			["ambiguous_session_id", visible.filter((session) => session.atomicSessionId === request.target)],
+			["ambiguous_name", agents.filter((session) => session.name?.toLowerCase() === target)],
+			["ambiguous_session_id", agents.filter((session) => session.atomicSessionId === request.target)],
 		] as const;
 		for (const [ambiguity, matches] of candidates) {
 			if (matches.length === 1) return matches[0];
@@ -767,12 +774,20 @@ export class MultiNodeRouter {
 				return "answered";
 			}
 		}
+		if (visible.some((session) => !isAgentRecipient(session) && session.name?.toLowerCase() === target)) {
+			this.fail(request, NON_AGENT_RECIPIENT_REFUSAL);
+			return "answered";
+		}
 		return undefined;
 	}
 
 	/** Run the origin's routing decisions on the shared state, then enqueue the exact local frame. */
 	private async deliverThroughOutbox(request: RemoteSendRequest, target: RemoteTarget): Promise<void> {
 		const { message, from } = request;
+		if (!isAgentRecipient(target.gates)) {
+			this.fail(request, NON_AGENT_RECIPIENT_REFUSAL);
+			return;
+		}
 		if (request.expectedRecipientId !== undefined && request.expectedRecipientId !== target.sessionId) {
 			this.fail(request, "Reply target does not match the expected recipient");
 			return;
@@ -804,7 +819,7 @@ export class MultiNodeRouter {
 			this.fail(request, TARGET_GROUP_REFUSAL);
 			return;
 		}
-		if (message.expectsReply === true && target.info?.replyCapability === "terminal") {
+		if (message.expectsReply === true && target.gates.replyCapability === "terminal") {
 			this.fail(request, TERMINAL_CHILD_ASK_REFUSAL);
 			return;
 		}
@@ -1158,14 +1173,16 @@ export class MultiNodeRouter {
 	}
 
 	/**
-	 * What can change in transit: the recipient's groups and reply capability (§8, "Split ownership"). A `replyTo`
-	 * alone authorizes nothing: only a reply on an open ask route, or a vertical reply between a child and its
-	 * supervisor, may cross groups, exactly as the origin decided.
+	 * What can change in transit, and what a row written without it never checked: the recipient's purpose (only
+	 * agents receive messages), groups and reply capability (§8, "Split ownership"). A `replyTo` alone authorizes
+	 * nothing: only a reply on an open ask route, or a vertical reply between a child and its supervisor, may cross
+	 * groups, exactly as the origin decided.
 	 */
 	private async transitRefusal(
 		frame: IntercomDeliveryFrame,
 		recipient: BrokerConnectedSession,
 	): Promise<string | undefined> {
+		if (!isAgentRecipient(recipient.info)) return NON_AGENT_RECIPIENT_REFUSAL;
 		if (frame.message.expectsReply === true && recipient.info.replyCapability === "terminal") {
 			return TERMINAL_CHILD_ASK_REFUSAL;
 		}
@@ -1391,6 +1408,8 @@ export class MultiNodeRouter {
 			...(session.registrationReturnAddress === undefined ? {} : { atomicSessionId: session.registrationReturnAddress }),
 			group: normalizeGroup(session.registrationGroup),
 			groups: [...sessionGroups(session.info)],
+			...(session.info.recipientPurpose === undefined ? {} : { recipientPurpose: session.info.recipientPurpose }),
+			...(session.info.replyCapability === undefined ? {} : { replyCapability: session.info.replyCapability }),
 		};
 	}
 

@@ -16,6 +16,8 @@ type KnownRow = SqliteRow & {
 	atomic_session_id: string | null;
 	group_name: string;
 	groups_json: string;
+	recipient_purpose: string | null;
+	reply_capability: string | null;
 	age_ms: number | bigint;
 };
 
@@ -27,6 +29,12 @@ function stateFromRow(row: KnownRow): KnownSessionState {
 		...(row.atomic_session_id === null ? {} : { atomicSessionId: row.atomic_session_id }),
 		group: row.group_name,
 		groups: JSON.parse(row.groups_json) as string[],
+		...(row.recipient_purpose === null
+			? {}
+			: { recipientPurpose: row.recipient_purpose as NonNullable<KnownSessionState["recipientPurpose"]> }),
+		...(row.reply_capability === null
+			? {}
+			: { replyCapability: row.reply_capability as NonNullable<KnownSessionState["replyCapability"]> }),
 		ageMs: Number(row.age_ms),
 	};
 }
@@ -52,6 +60,8 @@ export async function openSqlKnownSessionStore({
 				atomic_session_id TEXT,
 				group_name TEXT NOT NULL,
 				groups_json TEXT NOT NULL,
+				recipient_purpose TEXT,
+				reply_capability TEXT,
 				recorded_at INTEGER NOT NULL
 			);
 			CREATE INDEX IF NOT EXISTS ${table}_intercom_id ON ${table}(intercom_session_id);
@@ -68,8 +78,8 @@ export async function openSqlKnownSessionStore({
 			if (session.group.length === 0) return { status: "invalid", reason: "empty-group" };
 			await database.run(
 				`INSERT INTO ${table}(target_identity, intercom_session_id, name_json, name_key, atomic_session_id,
-					group_name, groups_json, recorded_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ${STORE_NOW})
+					group_name, groups_json, recipient_purpose, reply_capability, recorded_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${STORE_NOW})
 				 ON CONFLICT(target_identity) DO UPDATE SET
 					intercom_session_id = excluded.intercom_session_id,
 					name_json = excluded.name_json,
@@ -77,6 +87,8 @@ export async function openSqlKnownSessionStore({
 					atomic_session_id = excluded.atomic_session_id,
 					group_name = excluded.group_name,
 					groups_json = excluded.groups_json,
+					recipient_purpose = excluded.recipient_purpose,
+					reply_capability = excluded.reply_capability,
 					recorded_at = excluded.recorded_at`,
 				session.targetIdentity,
 				session.intercomSessionId,
@@ -85,6 +97,8 @@ export async function openSqlKnownSessionStore({
 				session.atomicSessionId ?? null,
 				session.group,
 				JSON.stringify([...session.groups]),
+				session.recipientPurpose ?? null,
+				session.replyCapability ?? null,
 			);
 			return { status: "recorded" };
 		},
@@ -92,7 +106,7 @@ export async function openSqlKnownSessionStore({
 			if (target.length === 0) return { status: "invalid", reason: "empty-target" };
 			const rows = await database.all<KnownRow>(
 				`SELECT target_identity, intercom_session_id, name_json, atomic_session_id, group_name, groups_json,
-					MAX(0, ${STORE_NOW} - recorded_at) AS age_ms
+					recipient_purpose, reply_capability, MAX(0, ${STORE_NOW} - recorded_at) AS age_ms
 				 FROM ${table}
 				 WHERE (intercom_session_id = ? OR atomic_session_id = ? OR name_key = ?)
 					AND MAX(0, ${STORE_NOW} - recorded_at) <= ?

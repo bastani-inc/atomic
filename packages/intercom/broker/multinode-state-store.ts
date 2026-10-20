@@ -517,6 +517,10 @@ export interface KnownSession {
 	readonly group: string;
 	/** The normalized memberships at its last record. */
 	readonly groups: readonly string[];
+	/** The host-declared connection purpose at its last record; only agents receive Intercom messages. */
+	readonly recipientPurpose?: SessionInfo["recipientPurpose"];
+	/** The reply capability at its last record: an ask to a terminal session is refused, offline as live. */
+	readonly replyCapability?: SessionInfo["replyCapability"];
 }
 
 export interface KnownSessionState extends KnownSession {

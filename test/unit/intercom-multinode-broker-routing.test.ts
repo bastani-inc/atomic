@@ -41,7 +41,7 @@ import { openSqlKnownSessionStore } from "../../packages/intercom/broker/sql-kno
 import { SupervisorChannelCache } from "../../packages/intercom/broker/supervisor-channel.js";
 import type { WakeUpBus } from "../../packages/intercom/broker/wake-up-bus.js";
 import { normalizeGroup } from "../../packages/intercom/group.js";
-import { TERMINAL_CHILD_ASK_REFUSAL } from "../../packages/intercom/recipient-purpose.js";
+import { NON_AGENT_RECIPIENT_REFUSAL, TERMINAL_CHILD_ASK_REFUSAL } from "../../packages/intercom/recipient-purpose.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
 import {
 	type OpenSharedStoreFixture,
@@ -134,6 +134,8 @@ class Node {
 			id?: string;
 			supervisorId?: string;
 			consumed?: { capability: string };
+			recipientPurpose?: SessionInfo["recipientPurpose"];
+			replyCapability?: SessionInfo["replyCapability"];
 		} = {},
 	): Promise<BrokerConnectedSession> {
 		const group = options.group ?? "default";
@@ -148,6 +150,8 @@ class Node {
 			status: "idle",
 			group: options.groups?.[0] ?? group,
 			groups: options.groups ?? [group],
+			...(options.recipientPurpose === undefined ? {} : { recipientPurpose: options.recipientPurpose }),
+			...(options.replyCapability === undefined ? {} : { replyCapability: options.replyCapability }),
 		};
 		const session: BrokerConnectedSession = {
 			socket: fakeSocket(),
@@ -906,3 +910,77 @@ test(
 	},
 	BROKER_LEASE_RENEW_INTERVAL_MS + 2 * CROSS_NODE_WAIT_MS,
 );
+
+test("an offline workflow control connection is refused like a live one, by id and by name, and never queued", async () => {
+	const [a, b] = await cluster();
+	const sender = await a!.connect("sender");
+	const control = await b!.connect("workflow-control", { recipientPurpose: "control" });
+	const refusals = async () => {
+		const reasons: (string | undefined)[] = [];
+		for (const target of [control.info.id, "workflow-control"]) {
+			const sent = message();
+			a!.send(sender, target, sent);
+			const outcome = await waitFor(() => outcomeOf(sender, sent.id));
+			reasons.push(outcome.type === "delivery_failed" ? outcome.reason : outcome.type);
+		}
+		return reasons;
+	};
+	assert.deepEqual(await refusals(), [NON_AGENT_RECIPIENT_REFUSAL, NON_AGENT_RECIPIENT_REFUSAL], "live");
+
+	b!.leave(control);
+	await waitOffline(a!, control);
+	assert.deepEqual(await refusals(), [NON_AGENT_RECIPIENT_REFUSAL, NON_AGENT_RECIPIENT_REFUSAL], "offline");
+	const back = await b!.connect("workflow-control", {
+		recipientPurpose: "control",
+		returnAddress: control.registrationReturnAddress!,
+		id: control.info.id,
+	});
+	await new Promise((resolve) => setTimeout(resolve, 10 * BUS_POLL_INTERVAL_MS));
+	assert.deepEqual(
+		framesOf(back).filter((frame) => frame.type === "message"),
+		[],
+	);
+});
+
+test("an outbox row for a workflow control connection is refused when it is claimed, not written to it", async () => {
+	const [a, b] = await cluster();
+	const sender = await a!.connect("sender");
+	const returnAddress = randomUUID();
+	const sent = message();
+	// A row a broker wrote for this identity before it registered as a control connection.
+	const enqueued = await a!.opened.state.outbox.enqueue({
+		targetIdentity: JSON.stringify(["return", returnAddress, normalizeGroup("default")]),
+		originBrokerId: a!.router.brokerId,
+		digest: "digest",
+		frame: { type: "message", from: sender.info, message: sent },
+	});
+	assert.equal(enqueued.status, "inserted");
+	const control = await b!.connect("workflow-control", { recipientPurpose: "control", returnAddress });
+	await vi.waitFor(
+		async () => {
+			const read = await a!.opened.state.outbox.read(sent.id);
+			assert.ok(read.status === "found" && read.row.state === "failed", JSON.stringify(read));
+			assert.equal(read.row.failureReason, NON_AGENT_RECIPIENT_REFUSAL);
+		},
+		{ timeout: CROSS_NODE_WAIT_MS },
+	);
+	assert.deepEqual(messageFrames(control, sent.id), []);
+});
+
+test("an ask to an offline terminal child is refused like an ask to a live one", async () => {
+	const [a, b] = await cluster();
+	const asker = await a!.connect("asker");
+	const child = await b!.connect("child", { replyCapability: "terminal" });
+	const live = message({ expectsReply: true });
+	a!.send(asker, "child", live);
+	assert.equal(reasonOf(await waitFor(() => outcomeOf(asker, live.id))), TERMINAL_CHILD_ASK_REFUSAL);
+
+	b!.leave(child);
+	await waitOffline(a!, child);
+	const offline = message({ expectsReply: true });
+	a!.send(asker, "child", offline);
+	assert.equal(reasonOf(await waitFor(() => outcomeOf(asker, offline.id))), TERMINAL_CHILD_ASK_REFUSAL);
+	const plain = message();
+	a!.send(asker, "child", plain);
+	assert.equal((await waitFor(() => outcomeOf(asker, plain.id))).type, "queued", "a plain send is still queued");
+});
