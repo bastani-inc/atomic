@@ -226,6 +226,30 @@ test("a rebuilt session hydrates every background launch card from its child rec
 	await store.close();
 });
 
+test("opening a fork does not replace the original session's newer child state with the fork's copied history (#3784)", async () => {
+	initTheme("dark");
+	const store = new MemorySessionStore();
+	const original = await SessionManager.create(store, process.cwd());
+	const t = new TranscriptBuilder(original, process.cwd());
+	await t.launch("forkedcard", "task-forkedcard");
+	await t.record({ childId: "forkedcard:0", runId: "forkedcard", state: "running", taskId: "task-forkedcard" });
+	const fork = await original.forkTo(process.cwd(), store);
+	// The child completes in the original session after the fork point.
+	await t.record({
+		childId: "forkedcard:0",
+		runId: "forkedcard",
+		state: "terminal",
+		terminalStatus: "ok",
+		taskId: "task-forkedcard",
+	});
+	bindSubagentChildCards({ sessionManager: original });
+	assert.match(rebuildCards(original)[0]!, /✓ Completed/);
+
+	bindSubagentChildCards({ sessionManager: fork });
+	assert.match(rebuildCards(original)[0]!, /✓ Completed/, "the original's card keeps its newer state");
+	await store.close();
+});
+
 test("a resumed child continues in its original card and the run-control calls replay as compact results (#3760)", async () => {
 	initTheme("dark");
 	const store = new MemorySessionStore();

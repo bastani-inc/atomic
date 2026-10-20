@@ -25,6 +25,8 @@ const TRANSCRIPT_LINE_CHARS = 200;
 const RUNNING_TRANSCRIPT_REFRESH_MS = 1_000;
 
 const latest = new Map<string, SubagentChildRecord>();
+/** Children whose state came from their owner: written live, or read from the owner's own session. */
+const fromOwner = new Set<string>();
 const childIdsByTaskId = new Map<string, string>();
 const watchers = new Map<string, Set<WeakRef<object>>>();
 const invalidators = new WeakMap<object, () => void>();
@@ -43,8 +45,14 @@ function notify(key: string): void {
 	}
 }
 
-/** Fold a child record into what launch cards show, and redraw the cards of that child. */
-export function observeSubagentChildRecord(record: SubagentChildRecord): void {
+/**
+ * Fold a child record into what launch cards show, and redraw the cards of that child. A `copied` record was read from
+ * a session that did not launch the child (a fork copies the original's records): it never replaces state the owner's
+ * own records gave, which may be newer.
+ */
+export function observeSubagentChildRecord(record: SubagentChildRecord, copied = false): void {
+	if (copied && fromOwner.has(record.childId)) return;
+	if (!copied) fromOwner.add(record.childId);
 	const previous = latest.get(record.childId);
 	latest.set(record.childId, previous ? { ...previous, ...record } : record);
 	notify(record.childId);
@@ -53,16 +61,20 @@ export function observeSubagentChildRecord(record: SubagentChildRecord): void {
 	notify(record.taskId);
 }
 
-function observeEntries(entries: readonly SessionEntry[]): void {
-	for (const entry of entries)
-		if (isSubagentChildRecord(entry)) observeSubagentChildRecord(entry.data as SubagentChildRecord);
+function observeEntries(entries: readonly SessionEntry[], sessionId: string): void {
+	for (const entry of entries) {
+		if (!isSubagentChildRecord(entry)) continue;
+		const record = entry.data as SubagentChildRecord;
+		const owner = record.owner?.sessionId;
+		observeSubagentChildRecord(record, owner !== undefined && owner !== sessionId);
+	}
 }
 
 /** Read the child records of the session a card is shown in, and keep its store for records and transcripts. */
 export function bindSubagentChildCards(ctx: Pick<ExtensionContext, "sessionManager">): void {
 	source = ctx;
 	loadedOwners.add(ctx.sessionManager.getSessionId());
-	observeEntries(ctx.sessionManager.getEntries());
+	observeEntries(ctx.sessionManager.getEntries(), ctx.sessionManager.getSessionId());
 }
 
 /** The latest record of the child a launch card shows, by its child id or any task id it ran as. */
@@ -90,7 +102,7 @@ export function watchSubagentChildCard(
 	const from = source;
 	void (async () => {
 		const snapshot = await from.sessionManager.getSessionStore().load(ownerSessionId);
-		observeEntries(snapshot.entries);
+		observeEntries(snapshot.entries, ownerSessionId);
 	})().catch(() => undefined);
 }
 

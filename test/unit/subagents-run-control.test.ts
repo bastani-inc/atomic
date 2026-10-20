@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentSession, ExtensionContext } from "@bastani/atomic";
 import { afterEach, test } from "vitest";
@@ -82,6 +82,8 @@ interface Harness {
 	/** Close the owner's tasks as Atomic exiting, switching sessions, or a stage generation closing does, then reopen it. */
 	closeOwnerAndReopen(cause: "session-close" | "stage-close"): Promise<void>;
 	readonly sessionManager: SessionManager;
+	/** End the owning session's lifetime, as disposing an SDK session does, then reopen it with a new one. */
+	closeOwnerSessionAndReopen(): void;
 	readonly ctx: ExtensionContext;
 	/** Every child run: the prompt it received and its options. */
 	readonly runs: Array<{ task: string; options: RunSyncOptions }>;
@@ -124,6 +126,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 	const stageState = options.stage ? new Map<string, object>() : undefined;
 	const stageBoundary = options.stage ? new WorkflowStageAdmissionBoundary() : undefined;
 	const sessionManager = SessionManager.inMemory(cwd);
+	let ownerLifetime = new AbortController();
 	const runs: Harness["runs"] = [];
 	const authorizations: string[] = [];
 	const holds: Harness["holds"] = [];
@@ -175,8 +178,15 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 			state.host = host;
 		},
 		sessionManager,
+		closeOwnerSessionAndReopen() {
+			ownerLifetime.abort();
+			ownerLifetime = new AbortController();
+		},
 		ctx: {
 			cwd,
+			get sessionSignal() {
+				return ownerLifetime.signal;
+			},
 			mode: "tui",
 			hasUI: false,
 			ui: {},
@@ -1376,6 +1386,53 @@ test("a resumed paused child of an SDK session without a task host waits for its
 	await launched;
 });
 
+test("a child an SDK session without a task host resumed stops when that session closes, and stays resumable (#3784)", async () => {
+	const h = harness({ ownerless: true });
+	h.resumedRunsWait = true;
+	const launch = h.call({ agent: "worker", task: ORIGINAL_TASK, context: "fresh" });
+	const firstRecord = async () => {
+		const deadline = Date.now() + RECORD_WAIT_MS;
+		while (Date.now() < deadline) {
+			const [record] = readSubagentChildRecords(h.sessionManager.getEntries()).values();
+			if (record?.childSessionId) return record;
+			await sleep(10);
+		}
+		throw new Error("the child never started");
+	};
+	const running = await firstRecord();
+	const paused = await h.call({ action: "pause", id: running.childId });
+	assert.notEqual(paused.isError, true, text(paused));
+	await launch;
+
+	const resumed = await h.call({ action: "resume", id: running.childId });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	const resumedTask = resumedTaskId(resumed);
+	await h.waitForLatest(
+		running.childId,
+		(candidate) => candidate.taskId === resumedTask && !!candidate.childSessionId,
+	);
+	const starts = h.runs.length;
+
+	h.closeOwnerSessionAndReopen();
+	const stopped = await h.waitForLatest(
+		running.childId,
+		(candidate) => candidate.taskId === resumedTask && candidate.state === "terminal",
+	);
+	assert.equal(stopped.terminalStatus, "interrupted", "closing its owner stops it resumably");
+	await sleep(100);
+	assert.equal(h.runs.length, starts, "nothing runs for it after its owner closed");
+
+	h.resumedRunsWait = false;
+	const again = await h.call({ action: "resume", id: running.childId });
+	assert.notEqual(again.isError, true, text(again));
+	const againTask = resumedTaskId(again);
+	const finished = await h.waitForLatest(
+		running.childId,
+		(candidate) => candidate.taskId === againTask && candidate.state === "terminal",
+	);
+	assert.equal(finished.terminalStatus, "ok", "the reopened session resumes it");
+});
+
 test("a clean paused worktree child's worktree is removed when its session closes, and resume recreates it from the run's base (#3760 run control)", async () => {
 	const h = harness();
 	initGitRepository(h.cwd);
@@ -1474,6 +1531,67 @@ test("a resume that cannot restart a paused worktree child keeps its dirty workt
 	assert.equal(readFileSync(trackedEdit, "utf8"), "edited by A\n", "the tracked edit survives the failed resume");
 	assert.equal(readFileSync(untrackedDraft, "utf8"), "draft by A\n", "the untracked draft survives the failed resume");
 	assert.equal(gitOutput(h.cwd, ["branch", "--list", branch]).replace(/^[*+ ]+/, ""), branch, "its branch survives");
+});
+
+function savedPatches(record: SubagentChildRecord): string[] {
+	const diffsDir = record.worktree?.diffsDir;
+	assert.ok(diffsDir, "the child record names where its run saves its patches");
+	if (!existsSync(diffsDir)) return [];
+	return readdirSync(diffsDir)
+		.filter((file) => new RegExp(`^task-${record.index}-worker(\\.\\d+)?\\.patch$`).test(file))
+		.map((file) => join(diffsDir, file))
+		.sort();
+}
+
+test("resuming a completed worktree child starts from its saved edits, and no execution's patch overwrites an earlier one (#3784)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	const firstDone = Promise.withResolvers<void>();
+	const resumedDone = Promise.withResolvers<void>();
+	h.finishOn.set("task-a-marker", firstDone);
+	h.finishOn.set("task-b-marker", firstDone);
+	h.finishOn.set(SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT, resumedDone);
+	const [childA, childB] = await launchWorktreeRun(h, ["task-a-marker", "task-b-marker"]);
+	assert.ok(childA && childB);
+	const diffsDir = childA.worktree?.diffsDir;
+	if (diffsDir) cleanups.push(async () => rmSync(diffsDir, { recursive: true, force: true }));
+	await h.waitForLatest(childA.childId, (candidate) => !!candidate.childSessionId);
+	await h.waitForLatest(childB.childId, (candidate) => !!candidate.childSessionId);
+	writeFileSync(join(childA.cwd, "seed.txt"), "edited by A\n");
+	writeFileSync(join(childA.cwd, "draft.md"), "draft by A\n");
+
+	firstDone.resolve();
+	await settled(h, childA.taskId as string);
+	await settled(h, childB.taskId as string);
+	await waitUntilRemoved(childA.cwd);
+	assert.equal(existsSync(childA.cwd), false, "the completed run removed its worktree");
+	const [firstPatch] = savedPatches(childA);
+	assert.ok(firstPatch, "the first execution's edits were saved as a patch");
+	const firstContent = readFileSync(firstPatch, "utf8");
+	assert.match(firstContent, /draft by A/);
+
+	const resumed = await h.call({ action: "resume", id: childA.childId });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	const resumedTask = resumedTaskId(resumed);
+	await h.waitForLatest(childA.childId, (candidate) => candidate.taskId === resumedTask && !!candidate.childSessionId);
+	assert.equal(
+		readFileSync(join(childA.cwd, "seed.txt"), "utf8"),
+		"edited by A\n",
+		"the earlier tracked edit is back",
+	);
+	assert.equal(readFileSync(join(childA.cwd, "draft.md"), "utf8"), "draft by A\n", "the earlier draft is back");
+	writeFileSync(join(childA.cwd, "second.md"), "second pass by A\n");
+
+	resumedDone.resolve();
+	await settled(h, resumedTask);
+	await waitUntilRemoved(childA.cwd);
+	const patches = savedPatches(childA);
+	assert.equal(patches.length, 2, `one patch per execution: ${patches.join(", ")}`);
+	assert.equal(readFileSync(firstPatch, "utf8"), firstContent, "the first execution's patch is not overwritten");
+	const latest = readFileSync(patches.find((patch) => patch !== firstPatch)!, "utf8");
+	assert.match(latest, /edited by A/, "the resumed execution's patch keeps the earlier tracked edit");
+	assert.match(latest, /draft by A/, "the resumed execution's patch keeps the earlier draft");
+	assert.match(latest, /second pass by A/, "the resumed execution's patch has its own edits");
 });
 
 test("pause keeps the steering and follow-up messages a running child queued, and resume delivers them once, in order, before its message (#3784)", async () => {

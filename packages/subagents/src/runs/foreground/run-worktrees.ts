@@ -1,7 +1,11 @@
+import { existsSync } from "node:fs";
 import {
 	cleanupWorktrees,
 	diffWorktrees,
+	nextWorktreePatchPath,
 	recreateWorktree,
+	restoreWorktreePatch,
+	savedWorktreePatches,
 	type WorktreeInfo,
 	type WorktreeSetup,
 	type WorktreeSetupHookConfig,
@@ -36,7 +40,12 @@ interface RunWorktrees {
 	/** The run returned: nothing more is launched by it, so worktrees go once no execution holds them. */
 	returned: boolean;
 	/** Edits are saved as a patch before a worktree is removed, also for a run tracked again after a restart. */
-	readonly diffs?: { readonly diffsDir: string; readonly agents: string[] };
+	readonly diffs?: {
+		readonly diffsDir: string;
+		readonly agents: string[];
+		/** Where a resumed child saves its edits, past the patches its earlier executions saved. */
+		readonly patchPaths: Map<number, string>;
+	};
 }
 
 /** Runs whose worktrees still exist in this process, by run id. */
@@ -56,7 +65,7 @@ function sweep(run: RunWorktrees): void {
 	if (removing.length > 0) {
 		const subset: WorktreeSetup = { ...run.setup, worktrees: removing };
 		try {
-			if (run.diffs) diffWorktrees(subset, run.diffs.agents, run.diffs.diffsDir);
+			if (run.diffs) diffWorktrees(subset, run.diffs.agents, run.diffs.diffsDir, run.diffs.patchPaths);
 		} finally {
 			cleanupWorktrees(subset);
 			for (const worktree of removing) run.removed.add(worktree.index);
@@ -81,7 +90,7 @@ function track(runId: string, setup: WorktreeSetup, diffs?: RunWorktreeDiffs): R
 		stopped: new Set(),
 		removed: new Set(),
 		returned: false,
-		...(diffs ? { diffs: { diffsDir: diffs.diffsDir, agents: [...diffs.agents] } } : {}),
+		...(diffs ? { diffs: { diffsDir: diffs.diffsDir, agents: [...diffs.agents], patchPaths: new Map() } } : {}),
 	};
 	runs.set(runId, run);
 	return run;
@@ -151,9 +160,11 @@ export function runWorktreeRecord(runId: string, index: number): SubagentChildWo
 
 /**
  * A stopped child is resuming: hold its run's worktrees until its new execution holds them, and recreate its worktree
- * from the run's base when it was removed. A run this process no longer tracks, after a restart for one, is tracked
- * again from the child's record. The worktree stays kept for the stopped child until its new execution starts
- * ({@link claimRunWorktree}), so a resume that fails keeps its unsaved work. Returns the release of the resume hold.
+ * from the run's base when it was removed, with the edits its earlier executions saved as a patch put back. A run this
+ * process no longer tracks, after a restart for one, is tracked again from the child's record. Its new execution saves
+ * its edits as a patch of its own, so no earlier patch is overwritten. The worktree stays kept for the stopped child
+ * until its new execution starts ({@link claimRunWorktree}), so a resume that fails keeps its unsaved work. Returns the
+ * release of the resume hold.
  */
 export function resumeRunWorktree(
 	child: {
@@ -192,11 +203,19 @@ export function resumeRunWorktree(
 	const release = hold(run);
 	run.stopped.add(child.index);
 	const position = run.setup.worktrees.findIndex((worktree) => worktree.index === child.index);
+	const removed = !existsSync(run.setup.worktrees[position]!.path);
 	try {
-		run.setup.worktrees[position] = recreateWorktree(run.setup, run.setup.worktrees[position]!, child.runId, {
+		const worktree = recreateWorktree(run.setup, run.setup.worktrees[position]!, child.runId, {
 			...(setupHook ? { setupHook } : {}),
 			agent: child.agent,
 		});
+		run.setup.worktrees[position] = worktree;
+		if (run.diffs) {
+			const agent = run.diffs.agents[child.index] ?? child.agent;
+			const saved = savedWorktreePatches(run.diffs.diffsDir, child.index, agent).at(-1);
+			if (removed && saved) restoreWorktreePatch(run.setup, worktree, saved);
+			run.diffs.patchPaths.set(child.index, nextWorktreePatchPath(run.diffs.diffsDir, child.index, agent));
+		}
 		run.removed.delete(child.index);
 	} catch {
 		// Left missing: resume then reports that the child's working directory no longer exists.

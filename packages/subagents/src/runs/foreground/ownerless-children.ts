@@ -39,6 +39,8 @@ export interface OwnerlessChildLaunch {
 /** How a child that pause or quit stopped before it was dispatched starts later, on its original launch. */
 export type OwnerlessQueuedStart = (launch: {
 	readonly recordChild: SubagentChildRecordSink;
+	/** The resuming session's lifetime: closing it stops the child resumably. */
+	readonly signal?: AbortSignal;
 	/** Delivered after its original task, which it never started. */
 	readonly message?: string;
 	readonly supervisorAuthorization?: RunSyncOptions["supervisorAuthorization"];
@@ -141,7 +143,7 @@ export function runOwnerlessChild(input: {
 					task: resumed.message ? `${input.task}\n\n${resumed.message}` : input.task,
 					options: {
 						...input.options,
-						signal: undefined,
+						signal: resumed.signal,
 						supervisorAuthorization: resumed.supervisorAuthorization,
 					},
 					recordChild: resumed.recordChild,

@@ -199,7 +199,7 @@ export async function runParallelPath(
 	// stopped child's worktree with unsaved work.
 	const runWorktrees = worktreeSetup
 		? registerRunWorktrees(runId, worktreeSetup, {
-				diffsDir: parallelWorktreeDiffsDir(artifactsDir),
+				diffsDir: parallelWorktreeDiffsDir(artifactsDir, runId),
 				agents: tasks.map((task) => task.agent),
 			})
 		: undefined;
@@ -372,7 +372,7 @@ export async function runParallelPath(
 			};
 		}
 
-		const worktreeSuffix = buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, tasks as TaskParam[]);
+		const worktreeSuffix = buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, runId, tasks as TaskParam[]);
 		const childContent = formatParallelResultContent(
 			results.map((result) => ({
 				agent: result.agent,

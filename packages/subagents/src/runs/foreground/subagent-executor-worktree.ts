@@ -62,18 +62,19 @@ export function resolveParallelTaskCwd(
 	return resolveChildCwd(paramsCwd, task.cwd);
 }
 
-/** Where a parallel run saves each `worktree: true` child's edits as a patch. */
-export function parallelWorktreeDiffsDir(artifactsDir: string): string {
-	return path.join(artifactsDir, "worktree-diffs");
+/** Where a parallel run saves each `worktree: true` child's edits as a patch: a directory of its own per run. */
+export function parallelWorktreeDiffsDir(artifactsDir: string, runId: string): string {
+	return path.join(artifactsDir, "worktree-diffs", runId.replaceAll("/", "+"));
 }
 
 export function buildParallelWorktreeSuffix(
 	worktreeSetup: WorktreeSetup | undefined,
 	artifactsDir: string,
+	runId: string,
 	tasks: TaskParam[],
 ): string {
 	if (!worktreeSetup) return "";
-	const diffsDir = parallelWorktreeDiffsDir(artifactsDir);
+	const diffsDir = parallelWorktreeDiffsDir(artifactsDir, runId);
 	const diffs = diffWorktrees(
 		worktreeSetup,
 		tasks.map((task) => task.agent),

@@ -175,7 +175,8 @@ test("after a restart, a resumed child's tracked and untracked edits are saved a
 	resumedExecution();
 
 	assert.equal(existsSync(worktree.path), false, "the resumed child's worktree is removed once it ends");
-	const patch = readFileSync(join(diffsDir, "task-0-worker.patch"), "utf8");
-	assert.match(patch, /\+resumed edit/, "the tracked edit is in the patch");
+	assert.equal(readFileSync(join(diffsDir, "task-0-worker.patch"), "utf8"), "", "the first execution's patch is kept");
+	const patch = readFileSync(join(diffsDir, "task-0-worker.2.patch"), "utf8");
+	assert.match(patch, /\+resumed edit/, "the tracked edit is in the resumed execution's patch");
 	assert.match(patch, /new-file\.md[\s\S]*\+resumed untracked/, "the untracked file is in the patch");
 });
