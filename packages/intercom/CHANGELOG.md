@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Added
+
+- Added multi-node routing: Intercom brokers on different machines that select the same shared `storage` (in settings, `ATOMIC_STORAGE`, or `--storage`) now deliver messages to each other through that database. A message to a session on another machine arrives exactly like a local one, with the same sender identity, replies and asks, group rules, supervisor routes and save-before-delivered receipts. A send to a session that is offline, including one that quit cleanly in the last 7 days, is reported as queued for an offline session and delivered when it reconnects on any broker. Brokers coordinate only through the shared database and a polled wake-up signal; there is no broker-to-broker network connection. Without a shared `storage` selection, Intercom behaves as before.
+
 ### Fixed
 
 - On resume, Intercom messages interrupted by an exit are replayed only if their sender is connected again. Messages from a peer that is gone no longer start a hidden turn: they appear once as history in a visible notice that tells the agent the peer is gone. A resumed session that used Intercom re-registers right away. A resumed session or restored background subagent also keeps the Intercom session ID it had before the restart (unless a live session holds it), so peers can reach it by its name, by that ID, or by its Atomic session ID instead of getting `Session not found` ([#3760](https://github.com/bastani-inc/atomic/issues/3760)).
