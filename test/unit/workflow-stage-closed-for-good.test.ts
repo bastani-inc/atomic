@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import type { AgentSession, ExtensionContext } from "@bastani/atomic";
+import type { AgentSession, ExtensionContext, SessionEntry } from "@bastani/atomic";
 import { afterEach, describe, test } from "vitest";
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import {
 	createSubagentChildRecordSink,
+	readSubagentChildRecords,
+	type SubagentChildRecordInput,
 	type SubagentChildRecordSink,
 	WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
@@ -29,6 +31,10 @@ interface StageProbe {
 	readonly started: PromiseWithResolvers<void>;
 	readonly released: PromiseWithResolvers<void>;
 	readonly extensionState: Map<string, object>;
+	/** The child records the stage session holds. */
+	readonly entries: SessionEntry[];
+	/** Children the stage launched and stopped before its prompt settles, recorded as its prompt starts. */
+	children: readonly SubagentChildRecordInput[];
 	/** The child-record sink a subagent launched in this stage records through. */
 	sink?: SubagentChildRecordSink;
 }
@@ -44,10 +50,13 @@ interface StageHarness {
 
 afterEach(() => setDurableBackend(undefined));
 
-/** Prompts that fail with `boom` throw; every other prompt waits until it is released or the stage aborts it. */
+/**
+ * Prompts of stages in `failing` throw (the mapped error message, or `boom`); every other prompt waits until it is
+ * released or the stage aborts it.
+ */
 async function startRun(
 	define: WorkflowDefinition | ((stage: (name: string) => StageProbe) => WorkflowDefinition),
-	failing: ReadonlySet<string> = new Set(),
+	failing: ReadonlySet<string> | ReadonlyMap<string, string> = new Set(),
 ): Promise<StageHarness> {
 	const backend = await createMemoryTestBackend();
 	setDurableBackend(backend);
@@ -62,6 +71,8 @@ async function startRun(
 				started: Promise.withResolvers<void>(),
 				released: Promise.withResolvers<void>(),
 				extensionState: new Map(),
+				entries: [],
+				children: [],
 			};
 			probes.set(name, found);
 		}
@@ -82,19 +93,38 @@ async function startRun(
 				},
 			});
 		const ctx: Pick<ExtensionContext, "sessionManager" | "orchestrationContext"> = {
-			sessionManager: { getSessionId: () => `stage-${name}` } as ExtensionContext["sessionManager"],
+			sessionManager: {
+				getSessionId: () => `stage-${name}`,
+				getEntries: () => stage.entries,
+			} as unknown as ExtensionContext["sessionManager"],
 			orchestrationContext: orchestration,
 		};
-		stage.sink = createSubagentChildRecordSink({ appendEntry: async () => {} }, ctx);
+		stage.sink = createSubagentChildRecordSink(
+			{
+				appendEntry: async (customType: string, data?: unknown) => {
+					stage.entries.push({
+						type: "custom",
+						customType,
+						data,
+						id: crypto.randomUUID(),
+						parentId: null,
+						timestamp: new Date().toISOString(),
+					} as SessionEntry);
+				},
+			},
+			ctx,
+		);
 		const released = stage.released;
 		let rejectPrompt: ((reason: Error) => void) | undefined;
 		let streaming = false;
 		const session: StageSessionRuntime = {
 			async prompt() {
 				streaming = true;
+				for (const child of stage.children) stage.sink?.record(child);
+				await stage.sink?.flushed?.();
 				stage.started.resolve();
 				try {
-					if (failing.has(name)) throw new Error("boom");
+					if (failing.has(name)) throw new Error(failing instanceof Map ? (failing.get(name) ?? "boom") : "boom");
 					await new Promise<void>((resolve, reject) => {
 						rejectPrompt = reject;
 						void released.promise.then(resolve);
@@ -135,6 +165,8 @@ async function startRun(
 			sessionManager: {},
 			getContextUsage: () => undefined,
 			orchestrationContext: orchestration,
+			// As AgentSession does: closing the generation closes its admission, which ends or keeps its children.
+			closeWorkflowStageGeneration: () => orchestration.messageAdmission?.boundary.close(),
 		});
 	};
 	const runId = `closed-for-good-${crypto.randomUUID()}`;
@@ -294,5 +326,56 @@ describe("a workflow stage generation closing for good ends its subagent childre
 		stage.released.resolve();
 		assert.equal((await h.execution).status, "completed");
 		await handle.dispose?.();
+	});
+
+	/** The latest terminal status of each child the stage recorded, by child id. */
+	async function childStatuses(stage: StageProbe): Promise<Record<string, string | undefined>> {
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		await stage.sink?.flushed?.();
+		const latest = readSubagentChildRecords(stage.entries);
+		return Object.fromEntries([...latest.values()].map((record) => [record.agent, record.terminalStatus]));
+	}
+
+	function stoppedChildren(): readonly SubagentChildRecordInput[] {
+		const runId = `stage-child-${crypto.randomUUID().slice(0, 8)}`;
+		return (["paused", "quit"] as const).map((status, index) => ({
+			runId,
+			index,
+			agent: `${status}-child`,
+			state: "terminal",
+			cwd: "/tmp",
+			terminalStatus: status,
+		}));
+	}
+
+	test("a stage blocked by a recoverable failure keeps its paused and quit children resumable (#3784)", async () => {
+		const h = await startRun(
+			(stage) => {
+				stage("limited").children = stoppedChildren();
+				return singleStage("limited");
+			},
+			new Map([["limited", "HTTP 429 rate limit exceeded"]]),
+		);
+		await h.execution;
+		const stored = h.store.runs().find((snapshot) => snapshot.id === h.runId);
+		assert.equal(stored?.failureDisposition, "active_blocked", "the run stays blocked and resumable");
+		assert.equal(stored?.resumable, true);
+		const stage = h.stage("limited");
+		assert.equal(closedForGood(stage), false);
+		assert.deepEqual(await childStatuses(stage), { "paused-child": "paused", "quit-child": "quit" });
+	});
+
+	test("a stage that fails for good ends its paused and quit children (#3784)", async () => {
+		const h = await startRun(
+			(stage) => {
+				stage("broken").children = stoppedChildren();
+				return singleStage("broken");
+			},
+			new Set(["broken"]),
+		);
+		assert.equal((await h.execution).status, "failed");
+		const stage = h.stage("broken");
+		assert.equal(closedForGood(stage), true);
+		assert.deepEqual(await childStatuses(stage), { "paused-child": "stage-closed", "quit-child": "stage-closed" });
 	});
 });

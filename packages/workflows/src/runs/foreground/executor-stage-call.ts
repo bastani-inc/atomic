@@ -165,6 +165,9 @@ export function createTrackedStageCaller(input: {
 		// failure/skip classification recorded by the catch block.
 		let terminalStateIsSuccess = false;
 		let stageResultBeforeBudget: string | undefined;
+		// A recoverable failure blocks the stage resumably (the run stays `active_blocked`): its subagent children stay
+		// resumable with it, rather than ending as for a stage that closed for good.
+		let blockedResumably = false;
 		const unregisterBudgetWrapUp = runtime.budget.registerWrapUp(runtime.name, deliverBudgetWrapUp);
 		try {
 			let refreshedParentIds: readonly string[] | undefined;
@@ -395,6 +398,7 @@ export function createTrackedStageCaller(input: {
 				}
 			} else if (trackStageLifecycle && !runtime.signal.aborted && !runtime.state.skippedForParallelFailFast) {
 				const failure = runtime.classifyExecutorFailure(err);
+				blockedResumably = failure.disposition === "active_blocked" && failure.recoverability === "recoverable";
 				applyTerminalStageState = () => applyFailureToStage(runtime.stageSnapshot, failure);
 			}
 			throw err;
@@ -422,7 +426,7 @@ export function createTrackedStageCaller(input: {
 			}
 			try {
 				await runtime.innerCtx.__closeGeneration(
-					applyTerminalStageState !== undefined ||
+					(applyTerminalStageState !== undefined && !blockedResumably) ||
 						runtime.state.stageClosedByWorkflowExit ||
 						runtime.state.skippedForParallelFailFast ||
 						runtime.exit.currentWorkflowExitAbortReason() !== undefined ||
