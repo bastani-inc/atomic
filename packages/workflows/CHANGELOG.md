@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.40-alpha.2] - 2026-10-20
+
 ### Fixed
 
 - Quitting Atomic after opening the workflow graph or `/workflow` run picker no longer prints an `AbortError: The operation was aborted.` trace. The graph overlay also remounts cleanly when it is opened again after a reload.

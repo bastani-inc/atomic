@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.40-alpha.2] - 2026-10-20
+
 ### Breaking Changes
 
 - `resolveTranscriptTools()` now takes a `TranscriptToolSupport` (`"none"`, `"additions"`, or `"changes"`) instead of a boolean, and `TranscriptTools.anchorsAdditions` is replaced by `foldedSystemMessages`, the number of leading system messages folded into `requestTools` ([#10940](https://github.com/earendil-works/pi/issues/10940))
