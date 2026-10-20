@@ -337,6 +337,8 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 				store,
 				cancellation: cancellationRegistry,
 				persistence: runtimeState.persistenceRef.current,
+				...(pi.events?.emit ? { events: { emit: (event, payload) => pi.events?.emit?.(event, payload) } } : {}),
+				...(ctx ? { context: ctx } : {}),
 			});
 			store.clear();
 		}

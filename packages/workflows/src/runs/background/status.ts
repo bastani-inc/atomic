@@ -1,6 +1,8 @@
 import { requireStoreDurableBackend } from "../../durable/store-backend.js";
+import type { PiEventContext } from "../../extension/public-types.js";
 import { workflowObservationRuntime } from "../../shared/store-factory.js";
 import { WORKFLOW_KILLED_ABORT_REASON } from "../foreground/executor-abort.js";
+import { endRunStageSubagents, type RunEndedStageSubagentsEvents } from "./run-ended-stage-subagents.js";
 /**
  * Status, internal cancellation, and resume helpers for retained workflow runs.
  *
@@ -124,10 +126,19 @@ export function statusRuns(opts?: { store?: Store }): RunStatusEntry[] {
  *
  * If the run has already ended (completed/failed/killed), returns ok:false with
  * reason "already_ended". If the runId is unknown, returns ok:false "not_found".
+ *
+ * With `events`, the subagents its stages launched end with it, also when no stage generation of the run is live in
+ * this process, as for a run dormant after a restart.
  */
 export async function killRun(
 	runId: string,
-	opts?: { store?: Store; cancellation?: CancellationRegistry; persistence?: WorkflowPersistencePort },
+	opts?: {
+		store?: Store;
+		cancellation?: CancellationRegistry;
+		persistence?: WorkflowPersistencePort;
+		events?: RunEndedStageSubagentsEvents;
+		context?: PiEventContext;
+	},
 ): Promise<KillResult> {
 	const activeStore = opts?.store ?? defaultStore;
 
@@ -170,6 +181,7 @@ export async function killRun(
 			ts: Date.now(),
 		});
 	}
+	if (recorded) await endRunStageSubagents(opts?.events, activeStore, runId, opts?.context);
 
 	return { ok: true, runId, previousStatus };
 }
@@ -183,14 +195,12 @@ export async function killAllRuns(opts?: {
 	store?: Store;
 	cancellation?: CancellationRegistry;
 	persistence?: WorkflowPersistencePort;
+	events?: RunEndedStageSubagentsEvents;
+	context?: PiEventContext;
 }): Promise<KillResult[]> {
 	const activeStore = opts?.store ?? defaultStore;
 	const inFlight = topLevelWorkflowRuns(activeStore.runs()).filter((r) => r.endedAt === undefined);
-	return Promise.all(
-		inFlight.map((r) =>
-			killRun(r.id, { store: activeStore, cancellation: opts?.cancellation, persistence: opts?.persistence }),
-		),
-	);
+	return Promise.all(inFlight.map((r) => killRun(r.id, { ...opts, store: activeStore })));
 }
 
 /** Live owners include node-less children that the expanded display graph omits. */

@@ -27,6 +27,7 @@
 - Opening a fork no longer changes the original session's subagent launch cards back to an older state copied into the fork, such as showing a completed child as running.
 - `pause` or `quit` of a subagent that completes just before the stop takes effect now reports that it completed instead of "Paused", and Intercom messages sent to it are no longer held until a resume ([#3784](https://github.com/bastani-inc/atomic/pull/3784)).
 - A parallel subagent paused or quit while it still waited for a free slot can now be resumed after Atomic restarts, and one still waiting when Atomic exited starts when its session reopens, instead of being reported unrestorable or gone. It starts as a new launch under the same child id, Intercom name, and group, with its original agent, task, working directory or worktree, model, and skills, in task-host and SDK sessions alike ([#3784](https://github.com/bastani-inc/atomic/pull/3784)).
+- Subagents of a workflow stage whose run is killed while it waits, after Atomic restarts, for `/workflow resume` now end with the run: `resume` returns "its workflow stage ended", their cards no longer show them as resumable, and reopening the stage's session no longer restores them ([#3784](https://github.com/bastani-inc/atomic/pull/3784)).
 
 ## [0.9.39] - 2026-10-19
 

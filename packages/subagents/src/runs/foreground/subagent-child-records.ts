@@ -1,4 +1,10 @@
-import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@bastani/atomic";
+import {
+	type ExtensionAPI,
+	type ExtensionContext,
+	type SessionEntry,
+	SessionManager,
+	type SessionStore,
+} from "@bastani/atomic";
 import type { MaxOutputConfig, OutputMode, RunSyncOptions } from "../../shared/types.js";
 import { type SubagentChildWorktree, unparkRunWorktree } from "./run-worktrees.js";
 import {
@@ -164,6 +170,11 @@ function endsWithStage(record: SubagentChildRecord): boolean {
 	return record.state === "terminal" && !ENDED_STATUSES.has(record.terminalStatus ?? "");
 }
 
+/** Whether a workflow run ending for good ends this child: every one does that has not ended already, running or not. */
+function endsWithRun(record: SubagentChildRecord): boolean {
+	return record.state === "running" || endsWithStage(record);
+}
+
 export function subagentChildId(runId: string, index: number): string {
 	return `${runId}:${index}`;
 }
@@ -213,6 +224,8 @@ interface StageChildren {
 }
 
 const stageChildren = new WeakMap<AbortSignal, StageChildren>();
+/** Workflow stage sessions with a generation in this process, whose own session records how their children end. */
+const stageSessionsInProcess = new Set<string>();
 
 /**
  * Watch the children a workflow stage owns, so that when the stage generation closes for good every settled child,
@@ -240,6 +253,7 @@ export function watchWorkflowStageSubagentChildren(
 	};
 	const watched: StageChildren = { closeSignal, childIds: new Set(), endedForGood, end };
 	stageChildren.set(closeSignal, watched);
+	stageSessionsInProcess.add(owner.sessionId);
 	const endAll = () => {
 		if (!endedForGood()) return;
 		const persisted = readSubagentChildRecords(sessionManager.getEntries(), owner.sessionId);
@@ -251,6 +265,57 @@ export function watchWorkflowStageSubagentChildren(
 	const later: WorkflowStageChildrenEnd = { endChildren: endAll };
 	admission.extensionState.set(WORKFLOW_STAGE_END_CHILDREN_STATE, later);
 	return watched;
+}
+
+/**
+ * Workflows → subagents: a workflow run ended for good (killed, cancelled, or failed for good). Every subagent its
+ * stages launched ends with it, also when no generation of a stage is live in this process, as after a restart.
+ */
+export const WORKFLOW_RUN_ENDED_STAGE_SUBAGENTS_EVENT = "atomic:workflow-run-ended-stage-subagents";
+
+export interface WorkflowRunEndedStageSubagentsRequest {
+	readonly runId: string;
+	/** Sessions of the run's stages; their `subagent-child` records name the children. */
+	readonly stageSessionIds: readonly string[];
+	/** The launching session, whose store holds the stage sessions; defaults to the one the extension last saw start. */
+	readonly context?: Pick<ExtensionContext, "sessionManager">;
+	completion?: Promise<void>;
+}
+
+/**
+ * Record every child of the ended run's stages `stage-closed` (#3784). A stage with a generation in this process ends
+ * its children through that generation's close and its own session. A stage with none, such as a dormant run's stage
+ * after a restart, has the records appended to its saved session in the store, running children included, since no
+ * task of theirs is left to settle. A stage session that cannot be opened is skipped.
+ */
+export async function endWorkflowRunStageSubagentChildren(
+	ctx: Pick<ExtensionContext, "sessionManager">,
+	stageSessionIds: readonly string[],
+): Promise<void> {
+	let store: SessionStore;
+	try {
+		store = ctx.sessionManager.getSessionStore();
+	} catch {
+		return;
+	}
+	for (const stageSessionId of new Set(stageSessionIds)) {
+		if (stageSessionsInProcess.has(stageSessionId)) continue;
+		try {
+			const stageSession = await SessionManager.open(store, stageSessionId);
+			for (const record of readSubagentChildRecords(stageSession.getEntries(), stageSessionId).values()) {
+				if (!endsWithRun(record)) continue;
+				const ended: SubagentChildRecord = {
+					...record,
+					state: "terminal",
+					terminalStatus: SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
+				};
+				await stageSession.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, ended);
+				observeSubagentChildRecord(ended);
+			}
+		} catch {
+			// Its session is gone or unreadable: nothing restores its children either.
+		}
+	}
 }
 
 /**
