@@ -5,7 +5,7 @@ description: "What Intercom is, when sessions should talk to each other, and whe
 
 # Intercom
 
-Intercom is a message channel between agent sessions running on the same machine. Sessions in the same group can send each other messages, ask questions and wait for an answer, and coordinate without going through you.
+Intercom is a message channel between agent sessions running on the same machine, or on several machines that share a storage database ([Running Intercom across machines](/intercom/operations#running-intercom-across-machines)). Sessions in the same group can send each other messages, ask questions and wait for an answer, and coordinate without going through you.
 
 ## When to use one
 

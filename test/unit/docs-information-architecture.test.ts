@@ -955,6 +955,7 @@ describe("docs references and assets (#2847)", () => {
 				"How Connection Works",
 				"How It Works",
 				"Workflow and Subagent Notifications",
+				"Running Intercom across machines",
 				"Keyboard Shortcuts",
 				"Limitations",
 			],
@@ -988,6 +989,7 @@ describe("docs references and assets (#2847)", () => {
 				"Broker does not start",
 				"Half-closed peer or undeliverable send",
 				"Subagent being restored after a restart",
+				"Queued for an offline session",
 			],
 			"the runbook must cover every observable lifecycle state named by the Intercom contracts",
 		);
