@@ -15,7 +15,13 @@ import type {
 import type { AgentConfig } from "../../agents/agents.js";
 import type { RunSyncOptions, SingleResult, SubagentToolResult } from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
-import { holdRunWorktree, parkRunWorktree, runWorktreeRecord, unparkRunWorktree } from "./run-worktrees.js";
+import {
+	claimRunWorktree,
+	holdRunWorktree,
+	parkRunWorktree,
+	runWorktreeRecord,
+	unparkRunWorktree,
+} from "./run-worktrees.js";
 import {
 	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
 	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
@@ -274,7 +280,12 @@ export async function runAgentTask(input: {
 	const childCwd = input.options.cwd ?? input.cwd;
 	let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile"> = {};
 	let childLaunch: Pick<SubagentChildRecordInput, "launchModel" | "launchThinkingLevel" | "launchLeafId"> = {};
-	const recordChildTask = (taskId: TaskId, state: SubagentChildRecordInput["state"], terminalStatus?: string) => {
+	const recordChildTask = (
+		taskId: TaskId,
+		state: SubagentChildRecordInput["state"],
+		terminalStatus?: string,
+		heldMessages?: readonly string[],
+	) => {
 		const worktree = runWorktreeRecord(input.options.runId, input.options.index ?? 0);
 		input.recordChild?.record({
 			runId: input.options.runId,
@@ -292,6 +303,7 @@ export async function runAgentTask(input: {
 				: {}),
 			...(worktree ? { worktree } : {}),
 			...(terminalStatus ? { terminalStatus } : {}),
+			...(heldMessages?.length ? { heldMessages: { taskId, messages: heldMessages } } : {}),
 		});
 	};
 	let dispatched = false;
@@ -386,12 +398,17 @@ export async function runAgentTask(input: {
 		(context) => {
 			dispatched = true;
 			queuedChildren.delete(context.ref.taskId);
+			// This execution owns the child's worktree now; a stopped child's worktree was kept for it until here.
+			claimRunWorktree(runId, index);
 			const cleaned = Promise.withResolvers<Cleanup>();
 			let executionBound = false;
 			const ownerClosed = () =>
 				context.signal.aborted && (context.signal.reason === "owner-close" || context.signal.reason === "shutdown");
-			const recordChild = (state: SubagentChildRecordInput["state"], terminalStatus?: string) =>
-				recordChildTask(context.ref.taskId, state, terminalStatus);
+			const recordChild = (
+				state: SubagentChildRecordInput["state"],
+				terminalStatus?: string,
+				heldMessages?: readonly string[],
+			) => recordChildTask(context.ref.taskId, state, terminalStatus, heldMessages);
 			const result = registered.promise.then(async (): Promise<TaskResult> => {
 				try {
 					input.options.modelRoute?.assertCurrent();
@@ -477,6 +494,8 @@ export async function runAgentTask(input: {
 								: stoppedByStagePause
 									? SUBAGENT_CHILD_STAGE_PAUSED_STATUS
 									: child.status,
+							// A child that stays resumable keeps what it had queued and not read, for its resume.
+							stoppedByControl || stoppedByStagePause ? child.pendingMessages : undefined,
 						);
 					else if (endedForGood) recordChild("terminal", SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
 					input.onTerminal?.(child);

@@ -116,6 +116,14 @@ export function unparkRunWorktree(runId: string, index: number): void {
 	sweep(run);
 }
 
+/**
+ * An execution of the child started, a resumed one included: it owns the child's worktree now, so the worktree is no
+ * longer kept for a stopped child and goes with the others once no execution holds them.
+ */
+export function claimRunWorktree(runId: string, index: number): void {
+	runs.get(runId)?.stopped.delete(index);
+}
+
 /** The child's worktree, as recorded with the child. */
 export function runWorktreeRecord(runId: string, index: number): SubagentChildWorktree | undefined {
 	const run = runs.get(runId);
@@ -133,7 +141,8 @@ export function runWorktreeRecord(runId: string, index: number): SubagentChildWo
 /**
  * A stopped child is resuming: hold its run's worktrees until its new execution holds them, and recreate its worktree
  * from the run's base when it was removed. A run this process no longer tracks, after a restart for one, is tracked
- * again from the child's record. Returns the release of the resume hold.
+ * again from the child's record. The worktree stays kept for the stopped child until its new execution starts
+ * ({@link claimRunWorktree}), so a resume that fails keeps its unsaved work. Returns the release of the resume hold.
  */
 export function resumeRunWorktree(
 	child: {
@@ -164,7 +173,7 @@ export function resumeRunWorktree(
 		run.removed.add(child.index);
 	}
 	const release = hold(run);
-	run.stopped.delete(child.index);
+	run.stopped.add(child.index);
 	const position = run.setup.worktrees.findIndex((worktree) => worktree.index === child.index);
 	try {
 		run.setup.worktrees[position] = recreateWorktree(run.setup, run.setup.worktrees[position]!, child.runId, {

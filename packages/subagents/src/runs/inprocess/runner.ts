@@ -44,6 +44,7 @@ import {
 	DEFAULT_MAX_OUTPUT,
 	type MaxOutputConfig,
 	type TaskExecutionHooks,
+	type TestSessionQueue,
 	truncateOutput,
 } from "../../shared/types.js";
 import {
@@ -97,6 +98,8 @@ export interface TestSessionOptions {
 	readonly fallbackBeforeGate?: boolean;
 	/** Test-only disposal barrier/failure injection. */
 	readonly dispose?: () => void | Promise<void>;
+	/** Receives the stub session, to queue steering and follow-up messages as an SDK caller does. */
+	readonly onSession?: (session: TestSessionQueue) => void;
 }
 
 export interface ChildSpec {
@@ -117,8 +120,8 @@ export interface ChildSpec {
 	readonly sessionManager?: SessionManager;
 	/** The child reopens its own interrupted session, so its unreconciled deliveries are recovered before the task. */
 	readonly resumeSession?: boolean;
-	/** Follow-up queued with the task prompt, so a steered child picks its interrupted turn back up afterwards. */
-	readonly resumeContinuation?: string;
+	/** Follow-ups queued with the task prompt, in order: a resumed child's held messages, then its continuation. */
+	readonly resumeFollowUps?: readonly string[];
 	readonly testSession?: boolean | TestSessionOptions;
 	readonly artifactJsonlPath?: string;
 	/**
@@ -219,6 +222,8 @@ export type AttemptOutcome = (
 	| {
 			readonly status: "interrupted" | "killed";
 			readonly cause?: string;
+			/** Steering then follow-up messages the child had queued but not read when its parent stopped it, in order. */
+			readonly pendingMessages?: readonly string[];
 			readonly stats: AttemptStats;
 			readonly path: string;
 			readonly envelope: string;
@@ -431,6 +436,7 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 		messages.push({ role: "assistant", content, stopReason });
 		assistantMessages += 1;
 	};
+	const steering: string[] = [];
 	const followUps: string[] = [];
 	const session = {
 		sessionFile: sessionManager.getSessionFile(),
@@ -507,13 +513,18 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 			if (!testOptions.fallbackBeforeGate) emitFallback();
 			lastAssistantText = testOptions.output ?? "done";
 			await appendAssistant([{ type: "text", text: lastAssistantText }], "stop");
-			const followUp = followUps.shift();
-			return followUp === undefined ? lastAssistantText : session.prompt(followUp);
+			const next = steering.shift() ?? followUps.shift();
+			return next === undefined ? lastAssistantText : session.prompt(next);
+		},
+		steer: async (text: string) => {
+			steering.push(text);
 		},
 		followUp: async (text: string) => {
 			followUps.push(text);
 			return "queued";
 		},
+		getSteeringMessages: () => steering,
+		getFollowUpMessages: () => followUps,
 		getLastAssistantText: () => {
 			const lastAssistant = [...messages].reverse().find((message) => {
 				if (message.role !== "assistant") return false;
@@ -541,6 +552,14 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 		startPendingRecovery: async () => ({ replayed: 0, dropped: 0, completions: 0, notices: [] }),
 		dispose: testOptions.dispose ?? (() => {}),
 	} as unknown as AgentSession;
+	testOptions.onSession?.({
+		steer: async (text) => {
+			await session.steer(text);
+		},
+		followUp: async (text) => {
+			await session.followUp(text);
+		},
+	});
 	return session;
 }
 
@@ -607,6 +626,12 @@ function cancelledEnvelope(session: AgentSession | undefined, spec: ChildSpec, s
 		...(spec.progressArtifactPath ? { progressArtifactPath: spec.progressArtifactPath } : {}),
 		...(spec.outputArtifactPath ? { outputArtifactPath: spec.outputArtifactPath } : {}),
 	}).text;
+}
+
+/** What a stopped child had queued and not yet read, steering before follow-ups, so its resume delivers it. */
+function pendingMessagesOf(session: AgentSession | undefined): { pendingMessages?: readonly string[] } {
+	const pending = session ? [...session.getSteeringMessages(), ...session.getFollowUpMessages()] : [];
+	return pending.length > 0 ? { pendingMessages: pending } : {};
 }
 
 function attemptStatus(termination: TerminationCauseName | undefined): "ok" | "error" | "interrupted" {
@@ -1193,7 +1218,7 @@ export class SubagentControlRuntime {
 			if (signals.abort.aborted) await terminate("abort");
 			if (signals.interrupt.aborted) await terminate("interrupt");
 			if (!termination && admitted.spec.resumeSession) await session.startPendingRecovery("resume");
-			if (!termination && admitted.spec.resumeContinuation) await session.followUp(admitted.spec.resumeContinuation);
+			for (const followUp of admitted.spec.resumeFollowUps ?? []) if (!termination) await session.followUp(followUp);
 			if (!termination) await session.prompt(admitted.spec.task);
 			await terminating;
 			const stats = statsFor(session, admitted.identity.path);
@@ -1225,7 +1250,7 @@ export class SubagentControlRuntime {
 				return {
 					status: this.killedChildren.has(admitted.identity.path) ? "killed" : status,
 					...(termination === PARENT_CANCEL_CAUSE && !this.killedChildren.has(admitted.identity.path)
-						? { cause: PARENT_CANCEL_CAUSE }
+						? { cause: PARENT_CANCEL_CAUSE, ...pendingMessagesOf(session) }
 						: {}),
 					stats,
 					path: admitted.identity.path,
@@ -1264,7 +1289,7 @@ export class SubagentControlRuntime {
 				return {
 					status: this.killedChildren.has(admitted.identity.path) ? "killed" : status,
 					...(termination === PARENT_CANCEL_CAUSE && !this.killedChildren.has(admitted.identity.path)
-						? { cause: PARENT_CANCEL_CAUSE }
+						? { cause: PARENT_CANCEL_CAUSE, ...pendingMessagesOf(session) }
 						: {}),
 					stats,
 					path: admitted.identity.path,
@@ -1425,6 +1450,21 @@ export class SubagentControlRuntime {
 			...(model === undefined ? {} : { model }),
 			...(thinking === undefined ? {} : { thinking }),
 		};
+	}
+
+	/**
+	 * Interrupt a running child that no task host owns, as `subagent({ action: "quit" })` does for an SDK launch: its
+	 * launch returns interrupted. Returns whether a running child was stopped.
+	 */
+	async stopChild(pathValue: string): Promise<boolean> {
+		const running = [...this.runningAttempts.values()].find(
+			(attempt) =>
+				attempt.child.identity.path === pathValue &&
+				(attempt.status === "running" || attempt.status === "continued"),
+		);
+		if (!running) return false;
+		await this.terminateChildAttempt(running, "interrupt");
+		return true;
 	}
 
 	async terminateChildAttempt(running: RunningAttempt, cause: TerminationCauseName): Promise<void> {

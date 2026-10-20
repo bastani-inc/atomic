@@ -216,7 +216,7 @@ subagent({ action: "quit", all: true })           // also covers already-paused 
 subagent({ action: "resume", id: "<child-id>", message: "Focus on the failing test first." })
 ```
 
-- **`pause`** stops the child's current turn and holds its queued steering and follow-ups in place. Intercom messages sent to a paused child wait until you resume it, as long as the same Atomic process keeps running.
+- **`pause`** stops the child's current turn and holds its queued steering and follow-ups in place; `resume` delivers them once, in order, before its own `message`. Intercom messages sent to a paused child wait until you resume it, as long as the same Atomic process keeps running.
 - **`quit`** stops the child gracefully, including a child that is already paused, by you or with its workflow stage. A quit child stays resumable while the session or workflow stage that launched it can still resume it; once that workflow stage closes for good, the child becomes terminal like every other child of the stage.
 - A parallel child still waiting for a free slot behind its concurrency limit can be paused or quit too, by id or with `all: true`. It then does not start when a slot frees; `resume` starts it on its original task, with `message`, if given, added after the task. This works while Atomic keeps running: after a restart, a child that never started cannot be resumed, so launch it again.
 - A resumed child of a parallel run, queued or not, waits for a free slot under that run's concurrency limit, as its original launch did. A paused or quit child holds no slot.
@@ -228,7 +228,9 @@ Paused, quit, interrupted, completed, and failed children are resumable, includi
 - **Stage ended**: the workflow stage that launched it finished, or its run ended or was cancelled. This covers every subagent of that stage, including ones you paused or quit. The error reads `<agent> (<child-id>, <intercom-name>) is terminal and cannot be resumed: its workflow stage ended (the stage finished, or its run ended or was cancelled). Launch a fresh subagent if its work is still needed.`
 - **Gone**: it could not be restored after a restart.
 
-Resume also refuses a child that is still running (pause or quit it first) and an id this session did not launch. For a terminal child, launch a fresh child with an explicit context handoff.
+Resume also refuses a child that is still running (pause or quit it first) and an id this session did not launch. A resume that fails, for example because the child's agent is no longer defined, keeps its `worktree: true` worktree with its changes and branch.
+
+An SDK session without a task host runs its subagents directly. There, `quit` stops a running child by its child path (from `status`), its run id, or with `all: true`, but the child cannot be resumed, and `pause` returns an error that suggests `quit`. For a terminal child, launch a fresh child with an explicit context handoff.
 
 The `kill` action was removed, and `interrupt` before it. Calls with either are rejected with an error that names `quit` as the replacement. For `kill` it reads:
 

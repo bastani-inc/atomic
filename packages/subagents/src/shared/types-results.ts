@@ -192,6 +192,8 @@ export interface SingleResult {
 	detached?: boolean;
 	detachedReason?: string;
 	interrupted?: boolean;
+	/** Messages a child stopped by its parent had queued but not read, in order; its resume delivers them. */
+	pendingMessages?: readonly string[];
 	messages?: Message[];
 	usage: Usage;
 	model?: string;

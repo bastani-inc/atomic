@@ -55,6 +55,11 @@ export interface SubagentChildRecord {
 	/** The `worktree: true` worktree the child runs in, so resume can recreate it from the run's base. */
 	readonly worktree?: SubagentChildWorktree;
 	readonly terminalStatus?: string;
+	/**
+	 * Steering and follow-up messages the child had queued but not read when pause, quit or its stage's pause stopped
+	 * task `taskId`, in order. Resume delivers them once, before its own message; a later task's record supersedes them.
+	 */
+	readonly heldMessages?: { readonly taskId: string; readonly messages: readonly string[] };
 }
 
 export type SubagentChildRecordInput = Omit<SubagentChildRecord, "version" | "childId" | "owner">;

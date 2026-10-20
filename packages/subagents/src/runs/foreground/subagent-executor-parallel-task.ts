@@ -24,6 +24,7 @@ import { currentModelFullId } from "../shared/model-fallback.js";
 import { createExecutionScheduler } from "../shared/parallel-utils.js";
 import { injectSingleOutputInstruction, resolveSingleOutputPath } from "../shared/single-output.js";
 import type { WorktreeSetup } from "../shared/worktree.js";
+import { trackOwnerlessRun } from "./ownerless-children.js";
 import { holdRunWorktree } from "./run-worktrees.js";
 import type { SubagentChildRecordSink } from "./subagent-child-records.js";
 import { markLiveResultIndices } from "./subagent-executor-live-update.js";
@@ -323,8 +324,11 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			const release = holdRunWorktree(input.runId, index);
 			schedule(() => dispatch().finally(release));
 		};
-		return runUnboundParallelTask(runOptions, task.agent, taskText, holdingSchedule, (options) =>
-			input.runtime.runSync(input.ctx.cwd, taskAgents, task.agent, taskText, options),
+		// No task host owns this launch or records it: track it so `quit` can still stop it.
+		return trackOwnerlessRun(input.ctx, input.runId, () =>
+			runUnboundParallelTask(runOptions, task.agent, taskText, holdingSchedule, (options) =>
+				input.runtime.runSync(input.ctx.cwd, taskAgents, task.agent, taskText, options),
+			),
 		).finally(() => {
 			if (input.foregroundControl?.currentIndex === index) {
 				input.foregroundControl.interrupt = undefined;

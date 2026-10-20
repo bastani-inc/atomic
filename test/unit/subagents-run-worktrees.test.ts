@@ -8,12 +8,14 @@ import {
 	readFileSync,
 	realpathSync,
 	rmSync,
+	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "vitest";
 import {
+	claimRunWorktree,
 	holdRunWorktree,
 	parkRunWorktree,
 	registerRunWorktrees,
@@ -88,12 +90,18 @@ test("resuming a paused child in its kept worktree restores the node_modules lin
 
 	const releaseResume = resumeRunWorktree({ runId, index: 0, cwd: worktree.agentCwd, agent: "worker" });
 	const resumedExecution = holdRunWorktree(runId, 0);
+	claimRunWorktree(runId, 0);
 	releaseResume();
 	assert.equal(readFileSync(join(worktree.path, "draft.md"), "utf8"), "unsaved work\n", "it resumes in place");
 	assertAtomicSetupPresent(worktree.path, "the resumed worktree");
 
 	resumedExecution();
 	assert.equal(existsSync(worktree.path), false, "the worktree is removed once the resumed execution ends");
+	assert.equal(
+		readFileSync(join(repo, "node_modules", "dependency", "index.js"), "utf8"),
+		"module.exports = 1;\n",
+		"removing the worktree leaves the main checkout's node_modules behind its link",
+	);
 });
 
 test("after a restart, resuming a child whose worktree was removed recreates it on its branch from the child's record (#3784)", () => {
@@ -111,6 +119,8 @@ test("after a restart, resuming a child whose worktree was removed recreates it 
 		baseCommit: setup.baseCommit,
 		syntheticPaths: worktree.syntheticPaths,
 	};
+	// Git for Windows keeps a junction (and the worktree directory above it), so the link goes first, as on cleanup.
+	unlinkSync(join(worktree.path, "node_modules"));
 	runGitChecked(repo, ["worktree", "remove", "--force", worktree.path]);
 	assert.equal(existsSync(worktree.path), false);
 	assert.equal(runWorktreeRecord(runId, 0), undefined, "this process does not track the run, as after a restart");
@@ -123,6 +133,7 @@ test("after a restart, resuming a child whose worktree was removed recreates it 
 		worktree: record,
 	});
 	const resumedExecution = holdRunWorktree(runId, 0);
+	claimRunWorktree(runId, 0);
 	releaseResume();
 	assert.equal(existsSync(worktree.path), true, "resume recreated the worktree at its recorded path");
 	assert.equal(runGitChecked(worktree.path, ["branch", "--show-current"]).trim(), worktree.branch);

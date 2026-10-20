@@ -6,6 +6,7 @@ import type {
 	SubagentToolResult,
 } from "../../shared/types.js";
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
+import { ownerlessChildren, ownerlessSessionKey } from "./ownerless-children.js";
 import { parkRunWorktree, unparkRunWorktree } from "./run-worktrees.js";
 import { childHoldKey, holdChildTargets, parkPausedChildHold, releasePausedChildHold } from "./subagent-child-hold.js";
 import {
@@ -285,14 +286,56 @@ async function resumeChild(
 			: outcome.intercomLive === false
 				? " It has not reconnected to Intercom yet; its result still arrives as a task completion."
 				: "";
+	const held =
+		record.heldMessages?.taskId === record.taskId
+			? " The messages it had queued and not yet read when it stopped are delivered first, once."
+			: "";
 	return controlResult(
-		`Resumed ${label(record)} from its own session as task ${outcome.taskId}${message ? (interrupted ? ", with your message delivered before it continues its interrupted turn" : ", with your message as its new prompt") : ""}.${intercom}`,
+		`Resumed ${label(record)} from its own session as task ${outcome.taskId}${message ? (interrupted ? ", with your message delivered before it continues its interrupted turn" : ", with your message as its new prompt") : ""}.${held}${intercom}`,
 		{
 			action,
 			children: [childDetails(record, "running", outcome.taskId)],
 			...(message ? { message } : {}),
 		},
 	);
+}
+
+/**
+ * Pause and quit in a session without a task host (an SDK session): its children run directly and have no child
+ * record, so quit stops them through the in-process control plane, and nothing can resume them.
+ */
+async function stopOwnerlessChildren(
+	ctx: ExtensionContext,
+	request: SubagentRunControlRequest & { action: "pause" | "quit" },
+): Promise<SubagentToolResult> {
+	const { action } = request;
+	const targets = ownerlessChildren(ownerlessSessionKey(ctx), request.all ? undefined : request.id?.trim());
+	if (targets.length === 0)
+		return request.all
+			? controlResult(`No running subagent children to ${action}.`, { action, children: [] })
+			: errorResult(action, `Unknown subagent '${request.id}': this session has no such running child.`);
+	if (action === "pause")
+		return errorResult(
+			action,
+			"pause needs a task host to keep a child resumable, and this session launches subagents directly; use quit to stop it.",
+		);
+	const lines: string[] = [];
+	const children: SubagentRunControlChild[] = [];
+	for (const target of targets) {
+		if (!(await target.control.stopChild(target.path))) {
+			lines.push(`${target.path} already stopped.`);
+			continue;
+		}
+		children.push({
+			childId: target.path,
+			runId: target.runId,
+			index: target.index,
+			agent: target.agent,
+			state: "quit",
+		});
+		lines.push(`Quit ${target.agent} (${target.path}). This session has no task host, so it cannot be resumed.`);
+	}
+	return controlResult(lines.join("\n"), { action, children }, children.length === 0);
 }
 
 /** `subagent({ action: "pause" | "resume" | "quit" })` for the children this session launched. */
@@ -305,7 +348,7 @@ export function controlSubagentChildren(
 		return Promise.resolve(errorResult(request.action, "Pass either id or all: true, not both."));
 	if (!request.all && !request.id?.trim() && request.action !== "resume")
 		return Promise.resolve(errorResult(request.action, `${request.action} needs the id of a child, or all: true.`));
-	return request.action === "resume"
-		? resumeChild(deps, ctx, request)
-		: stopChildren(deps, ctx, { ...request, action: request.action });
+	if (request.action === "resume") return resumeChild(deps, ctx, request);
+	const stop = { ...request, action: request.action };
+	return ctx.getAgentTaskHost ? stopChildren(deps, ctx, stop) : stopOwnerlessChildren(ctx, stop);
 }

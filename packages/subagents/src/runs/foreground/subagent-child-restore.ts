@@ -205,6 +205,28 @@ function ownSessionModelCandidate(
 	return resolveCandidateModel(candidate)?.model ? candidate : undefined;
 }
 
+/**
+ * What the reopened child is prompted with, in order: the messages it had queued and not read when it was stopped,
+ * once, then the resume prompt and its continuation. A continuation it had queued is not repeated.
+ */
+function resumedPrompts(
+	record: SubagentChildRecord,
+	resume: SubagentChildResumeRequest | undefined,
+): { readonly task: string; readonly followUps: readonly string[] } {
+	const prompt = resume?.prompt ?? SUBAGENT_RESUME_CONTINUATION_PROMPT;
+	const continuations = new Set([
+		SUBAGENT_RESUME_CONTINUATION_PROMPT,
+		resume?.continuation,
+		resume?.message ? undefined : prompt,
+	]);
+	const held =
+		record.heldMessages && record.heldMessages.taskId === record.taskId
+			? record.heldMessages.messages.filter((message) => !continuations.has(message))
+			: [];
+	const [task = prompt, ...followUps] = [...held, prompt, ...(resume?.continuation ? [resume.continuation] : [])];
+	return { task, followUps };
+}
+
 async function relaunchChild(
 	deps: SubagentChildRestoreDeps,
 	ctx: ExtensionContext,
@@ -254,6 +276,7 @@ async function relaunchChild(
 	const currentProvider = ctx.model?.provider;
 	const resolveCandidateModel = createCandidateModelResolver(ctx.modelRegistry, currentProvider);
 	const ownModel = ownSessionModelCandidate(sessionManager, record, resolveCandidateModel);
+	const prompts = resumedPrompts(record, resume);
 	const options: RunSyncOptions = {
 		runningCapacity: deps.config.parallel?.runningCapacity,
 		getChildSessionOptions: ctx.getChildSessionOptions,
@@ -264,7 +287,7 @@ async function relaunchChild(
 		sessionDir: sessionManager.getSessionDir() || mkdtempSync(join(tmpdir(), "atomic-subagent-restore-")),
 		sessionManager,
 		resumeSession: true,
-		...(resume?.continuation ? { resumeContinuation: resume.continuation } : {}),
+		...(prompts.followUps.length > 0 ? { resumeFollowUps: prompts.followUps } : {}),
 		intercomEvents: deps.pi.events,
 		parentDepth: getCurrentSubagentDepth(ctx),
 		workflowStageSubagentGuard: isWorkflowStageOrchestrationContext(ctx),
@@ -290,7 +313,7 @@ async function relaunchChild(
 		cwd: ctx.cwd,
 		agents: [agent],
 		agent: agent.name,
-		task: resume?.prompt ?? SUBAGENT_RESUME_CONTINUATION_PROMPT,
+		task: prompts.task,
 		...(resume ? { operation: `${record.runId}:${record.index}:resume:${randomUUID()}` } : {}),
 		options,
 		wait: { kind: "background" },

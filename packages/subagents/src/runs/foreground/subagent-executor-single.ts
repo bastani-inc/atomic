@@ -34,6 +34,7 @@ import {
 	resolveSingleOutputPath,
 	validateFileOnlyOutputMode,
 } from "../shared/single-output.js";
+import { trackOwnerlessRun } from "./ownerless-children.js";
 import { formatParentAskHandoffOutput } from "./parent-ask-output.js";
 import { createSubagentChildRecordSink } from "./subagent-child-records.js";
 import { runUnboundParallelTask } from "./subagent-executor-parallel-task.js";
@@ -299,11 +300,14 @@ export async function runSinglePath(
 			r = settledChild;
 		} else {
 			const schedule = params[BURST_EXECUTION_SCHEDULE];
-			r = schedule
-				? await runUnboundParallelTask(runOptions, params.agent!, task, schedule, (options) =>
-						deps.runtime.runSync(ctx.cwd, agents, params.agent!, task, options),
-					)
-				: await deps.runtime.runSync(ctx.cwd, agents, params.agent!, task, runOptions);
+			// No task host owns this launch or records it: track it so `quit` can still stop it.
+			r = await trackOwnerlessRun(ctx, runId, () =>
+				schedule
+					? runUnboundParallelTask(runOptions, params.agent!, task, schedule, (options) =>
+							deps.runtime.runSync(ctx.cwd, agents, params.agent!, task, options),
+						)
+					: deps.runtime.runSync(ctx.cwd, agents, params.agent!, task, runOptions),
+			);
 		}
 	} catch (error) {
 		cleanupTransientProgress(progressDir, artifactConfig.enabled);

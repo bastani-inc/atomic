@@ -33,8 +33,14 @@ import { createSubagentExecutor } from "../../packages/subagents/src/runs/foregr
 import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import { SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT } from "../../packages/subagents/src/runs/foreground/subagent-run-control.js";
 import { runAgentTask } from "../../packages/subagents/src/runs/foreground/task-execution.js";
+import { listSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
 import { createExecutionScheduler } from "../../packages/subagents/src/runs/shared/parallel-utils.js";
-import type { RunSyncOptions, SingleResult, SubagentToolResult } from "../../packages/subagents/src/shared/types.js";
+import type {
+	RunSyncOptions,
+	SingleResult,
+	SubagentToolResult,
+	TestSessionQueue,
+} from "../../packages/subagents/src/shared/types.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
@@ -82,6 +88,10 @@ interface Harness {
 	settleAs: "ok" | "error";
 	/** Whether resumed runs also wait until stopped, instead of settling once their prompt runs. */
 	resumedRunsWait: boolean;
+	/** Receives each child run's stub session, to queue steering and follow-up messages as an SDK caller does. */
+	onSession?: (session: TestSessionQueue) => void;
+	/** Whether the worker agent is still defined; resume looks it up again. */
+	agentDefined: boolean;
 	/** Runs whose prompt contains a key wait until its gate resolves, then complete; checked before the rules above. */
 	readonly finishOn: Map<string, PromiseWithResolvers<void>>;
 	call(params: Parameters<ReturnType<typeof createSubagentExecutor>["execute"]>[1]): Promise<SubagentToolResult>;
@@ -194,6 +204,7 @@ function harness(options: { stage?: boolean } = {}): Harness {
 		holds,
 		settleAs: "ok",
 		resumedRunsWait: false,
+		agentDefined: true,
 		finishOn: new Map(),
 		call: (params) => executor.execute("run-control", params, new AbortController().signal, undefined, state.ctx),
 		async launch(runId) {
@@ -244,13 +255,14 @@ function harness(options: { stage?: boolean } = {}): Harness {
 		runs.push({ task, options });
 		const original = task === ORIGINAL_TASK;
 		const gate = [...state.finishOn].find(([marker]) => task.includes(marker))?.[1];
+		const onSession = state.onSession ? { onSession: state.onSession } : {};
 		const result = await runSync(parentCwd, agents, agentName, task, {
 			...options,
 			testSession: gate
-				? { output: "finished", promptGate: gate.promise, abortResolvesPrompt: true }
+				? { output: "finished", promptGate: gate.promise, abortResolvesPrompt: true, ...onSession }
 				: original || state.resumedRunsWait
-					? { output: "partial", promptGate: neverReleased.promise, abortResolvesPrompt: true }
-					: { output: "resumed" },
+					? { output: "partial", promptGate: neverReleased.promise, abortResolvesPrompt: true, ...onSession }
+					: { output: "resumed", ...onSession },
 		});
 		return !original && state.settleAs === "error" ? { ...result, status: "error", error: "boom" } : result;
 	};
@@ -269,7 +281,7 @@ function harness(options: { stage?: boolean } = {}): Harness {
 		tempArtifactsDir: join(cwd, "artifacts"),
 		getSubagentSessionRoot: () => join(cwd, "sessions"),
 		expandTilde: (value) => value,
-		discoverAgents: () => ({ agents: [agent] }),
+		discoverAgents: () => ({ agents: state.agentDefined ? [agent] : [] }),
 		runtime: { runSync: runtime },
 	};
 	const executor = createSubagentExecutor(deps);
@@ -381,9 +393,9 @@ test("resume with a message continues a paused child in the same run identity an
 	);
 	assert.equal(final.terminalStatus, "ok");
 	assert.equal(final.childSessionId, record.childSessionId);
-	assert.equal(
-		relaunch.options.resumeContinuation,
-		SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT,
+	assert.deepEqual(
+		relaunch.options.resumeFollowUps,
+		[SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT],
 		"the paused turn continues after the steer",
 	);
 	const childTranscript = transcript(final);
@@ -476,7 +488,7 @@ test("resume continues completed and failed children in the same run identity", 
 	await settled(h, resumedTaskId(first));
 	const completed = await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "ok");
 
-	assert.equal(h.runs.at(-1)?.options.resumeContinuation, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT);
+	assert.deepEqual(h.runs.at(-1)?.options.resumeFollowUps, [SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT]);
 
 	h.settleAs = "error";
 	const second = await h.call({ action: "resume", id: record.childId, message: "try the edge case" });
@@ -498,7 +510,7 @@ test("resume continues completed and failed children in the same run identity", 
 		assert.equal(run.options.index, 0);
 		assert.equal(run.options.sessionManager?.getSessionId(), completed.childSessionId);
 	}
-	for (const run of h.runs.slice(2)) assert.equal(run.options.resumeContinuation, undefined, run.task);
+	for (const run of h.runs.slice(2)) assert.equal(run.options.resumeFollowUps, undefined, run.task);
 	const childTranscript = transcript(completed);
 	for (const message of ["finish up", "try the edge case", "once more"])
 		assert.equal(occurrences(childTranscript, message), 1);
@@ -521,7 +533,7 @@ test("resume without a message continues a finished child with the continuation 
 	assert.notEqual(result.isError, true, text(result));
 	await settled(h, resumedTaskId(result));
 	assert.equal(h.runs.at(-1)?.task, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT);
-	assert.equal(h.runs.at(-1)?.options.resumeContinuation, undefined);
+	assert.equal(h.runs.at(-1)?.options.resumeFollowUps, undefined);
 	assert.equal(h.runs.at(-1)?.options.sessionManager?.getSessionId(), record.childSessionId);
 });
 
@@ -1324,4 +1336,162 @@ test("a dirty paused worktree child's worktree is kept when its session closes, 
 	await settled(h, resumedTask);
 	await waitUntilRemoved(childA.cwd);
 	assert.equal(existsSync(childA.cwd), false, "the worktree is removed once the resumed child finished");
+});
+
+test("a resume that cannot restart a paused worktree child keeps its dirty worktree, edits, draft and branch (#3784)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	const siblingDone = Promise.withResolvers<void>();
+	h.finishOn.set("task-a-marker", Promise.withResolvers<void>());
+	h.finishOn.set("task-b-marker", siblingDone);
+	const [childA, childB] = await launchWorktreeRun(h, ["task-a-marker", "task-b-marker"]);
+	assert.ok(childA && childB);
+	const running = await h.waitForLatest(childA.childId, (candidate) => !!candidate.childSessionId);
+	const branch = running.worktree?.branch;
+	assert.ok(branch, "the child record names its worktree branch");
+	const trackedEdit = join(childA.cwd, "seed.txt");
+	const untrackedDraft = join(childA.cwd, "draft.md");
+	writeFileSync(trackedEdit, "edited by A\n");
+	writeFileSync(untrackedDraft, "draft by A\n");
+
+	await h.call({ action: "pause", id: childA.childId });
+	await h.waitForLatest(childA.childId, (candidate) => candidate.terminalStatus === "paused");
+	siblingDone.resolve();
+	await settled(h, childB.taskId as string);
+	await waitUntilRemoved(childB.cwd);
+	assert.equal(existsSync(childB.cwd), false, "the run returned and removed its clean worktree");
+
+	h.agentDefined = false;
+	const resumed = await h.call({ action: "resume", id: childA.childId });
+	assert.equal(resumed.isError, true, text(resumed));
+	assert.match(text(resumed), /agent "worker" is no longer defined/);
+	await sleep(100);
+	assert.equal(readFileSync(trackedEdit, "utf8"), "edited by A\n", "the tracked edit survives the failed resume");
+	assert.equal(readFileSync(untrackedDraft, "utf8"), "draft by A\n", "the untracked draft survives the failed resume");
+	assert.equal(gitOutput(h.cwd, ["branch", "--list", branch]).replace(/^[*+ ]+/, ""), branch, "its branch survives");
+});
+
+test("pause keeps the steering and follow-up messages a running child queued, and resume delivers them once, in order, before its message (#3784)", async () => {
+	const h = harness();
+	const live = Promise.withResolvers<TestSessionQueue>();
+	h.onSession = (session) => live.resolve(session);
+	const { record } = await h.launch("held1");
+	h.onSession = undefined;
+	const session = await live.promise;
+	const steer = "STEER: report the permission error only";
+	const followUp = "FOLLOWUP: include the failing command";
+	await session.steer(steer);
+	await session.followUp(followUp);
+
+	const paused = await h.call({ action: "pause", id: record.childId });
+	assert.notEqual(paused.isError, true, text(paused));
+	await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "paused");
+	const resumed = await h.call({ action: "resume", id: record.childId, message: "then wrap up" });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	const resumedTask = resumedTaskId(resumed);
+	await settled(h, resumedTask);
+	const finished = await h.waitForLatest(
+		record.childId,
+		(candidate) => candidate.taskId === resumedTask && candidate.state === "terminal",
+	);
+	assert.equal(finished.terminalStatus, "ok");
+	const delivered = transcript(finished);
+	const order = [steer, followUp, "then wrap up", SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT].map((message) =>
+		delivered.indexOf(message),
+	);
+	assert.ok(
+		order.every((position, index) => position >= 0 && (index === 0 || position > order[index - 1]!)),
+		`held messages first, in order, then the message and the continuation: ${order.join(", ")}`,
+	);
+
+	await settled(h, resumedTaskId(await h.call({ action: "resume", id: record.childId })));
+	await h.waitForLatest(
+		record.childId,
+		(candidate) => candidate.taskId !== resumedTask && candidate.state === "terminal",
+	);
+	const after = transcript(h.latest(record.childId)!);
+	assert.equal(occurrences(after, steer), 1, "the held steer is delivered exactly once");
+	assert.equal(occurrences(after, followUp), 1, "the held follow-up is delivered exactly once");
+});
+
+test("quit stops a live child an SDK session without a task host launched, by id and with all: true (#3784)", async () => {
+	const cwd = makeTempDirectory("subagent-ownerless-");
+	const sessionManager = SessionManager.inMemory(cwd);
+	const gate = Promise.withResolvers<void>();
+	const settledResults: SingleResult[] = [];
+	const deps: ExecutorDeps = {
+		pi: {
+			events: { on: () => () => {}, emit() {} },
+			getSessionName: () => "parent",
+			appendEntry: async (customType: string, data?: SubagentChildRecord) => {
+				await sessionManager.appendCustomEntry(customType, data);
+			},
+		} as unknown as ExecutorDeps["pi"],
+		state: {
+			baseCwd: cwd,
+			currentSessionId: sessionManager.getSessionId(),
+			subagentInProgress: false,
+			foregroundControls: new Map(),
+			lastForegroundControlId: null,
+			pendingForegroundControlNotices: new Map(),
+			lastUiContext: null,
+		},
+		config: {},
+		tempArtifactsDir: join(cwd, "artifacts"),
+		getSubagentSessionRoot: () => join(cwd, "sessions"),
+		expandTilde: (value) => value,
+		discoverAgents: () => ({ agents: [agent] }),
+		runtime: {
+			runSync: async (...args: Parameters<typeof runSync>) => {
+				const [parentCwd, agents, agentName, task, options] = args;
+				const result = await runSync(parentCwd, agents, agentName, task, {
+					...options,
+					testSession: { output: "partial", promptGate: gate.promise, abortResolvesPrompt: true },
+				});
+				settledResults.push(result);
+				return result;
+			},
+		},
+	};
+	const ctx = {
+		cwd,
+		mode: "tui",
+		hasUI: false,
+		ui: {},
+		sessionManager,
+		modelRegistry: { getAvailable: () => [], getAll: () => [], find: () => undefined },
+	} as unknown as ExtensionContext;
+	const executor = createSubagentExecutor(deps);
+	const call = (params: Parameters<typeof executor.execute>[1], signal = new AbortController().signal) =>
+		executor.execute("ownerless", params, signal, undefined, ctx);
+	const cleanup = new AbortController();
+	cleanups.push(async () => {
+		cleanup.abort();
+		gate.resolve();
+		removeTempDirectory(cwd);
+	});
+	const runningChildren = () =>
+		listSubagentControls().flatMap((control) => control.listChildren().filter((child) => child.status === "running"));
+
+	const first = call({ agent: "worker", task: "hold until stopped", context: "fresh" }, cleanup.signal);
+	const firstDeadline = Date.now() + RECORD_WAIT_MS;
+	while (runningChildren().length < 1 && Date.now() < firstDeadline) await sleep(10);
+	const [child] = runningChildren();
+	assert.ok(child, "the SDK launch is running");
+	const byId = await call({ action: "quit", id: child.path });
+	assert.notEqual(byId.isError, true, text(byId));
+	await first;
+	assert.equal(settledResults.at(-1)?.status, "interrupted", "quit by id stopped the child");
+
+	const second = call({ agent: "worker", task: "hold until stopped again", context: "fresh" }, cleanup.signal);
+	const secondDeadline = Date.now() + RECORD_WAIT_MS;
+	while (runningChildren().length < 1 && Date.now() < secondDeadline) await sleep(10);
+	assert.equal(runningChildren().length, 1);
+	const all = await call({ action: "quit", all: true });
+	assert.notEqual(all.isError, true, text(all));
+	assert.equal(all.details.runControl?.children.length, 1, text(all));
+	await second;
+	assert.equal(settledResults.length, 2);
+	assert.equal(settledResults.at(-1)?.status, "interrupted", "quit with all: true stopped the child");
+	assert.match(text(await call({ action: "quit", all: true })), /No running subagent children to quit/);
 });

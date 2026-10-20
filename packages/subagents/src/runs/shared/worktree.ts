@@ -310,12 +310,30 @@ function runWorktreeSetupHook(hook: ResolvedWorktreeSetupHook, input: WorktreeSe
 function waitForGitLockRelease(): void {
 	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
 }
-function cleanupSingleWorktree(repoCwd: string, worktree: Pick<WorktreeInfo, "path" | "branch">): void {
-	try {
-		runGitChecked(repoCwd, ["worktree", "remove", "--force", worktree.path]);
-	} catch {
-		/* idempotent */
+type RemovableWorktree = Pick<WorktreeInfo, "path"> & { readonly syntheticPaths?: readonly string[] };
+/**
+ * Unlink the worktree's directory links (the `node_modules` link and the other synthetic links) before git removes it:
+ * Git for Windows keeps a junction and every directory above it while reporting success, and older versions delete
+ * through a junction into the main checkout.
+ */
+function unlinkWorktreeLinks(worktree: RemovableWorktree): void {
+	for (const relativePath of new Set(["node_modules", ...(worktree.syntheticPaths ?? [])])) {
+		const linkPath = path.resolve(worktree.path, relativePath);
+		const relative = path.relative(worktree.path, linkPath);
+		if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) continue;
+		try {
+			if (fs.lstatSync(linkPath).isSymbolicLink()) fs.unlinkSync(linkPath);
+		} catch {
+			/* absent */
+		}
 	}
+}
+function removeWorktreeCheckout(repoCwd: string, worktree: RemovableWorktree): void {
+	unlinkWorktreeLinks(worktree);
+	runGit(repoCwd, ["worktree", "remove", "--force", worktree.path]);
+}
+function cleanupSingleWorktree(repoCwd: string, worktree: RemovableWorktree & Pick<WorktreeInfo, "branch">): void {
+	removeWorktreeCheckout(repoCwd, worktree);
 	waitForGitLockRelease();
 	try {
 		runGitChecked(repoCwd, ["branch", "-D", worktree.branch]);
@@ -446,7 +464,7 @@ export function recreateWorktree(
 		return { ...worktree, nodeModulesLinked: syntheticPaths.includes("node_modules"), syntheticPaths };
 	} catch (error) {
 		// A branch that already existed may hold commits: remove only the worktree.
-		if (branchExists) runGit(setup.cwd, ["worktree", "remove", "--force", worktree.path]);
+		if (branchExists) removeWorktreeCheckout(setup.cwd, worktree);
 		else cleanupSingleWorktree(setup.cwd, worktree);
 		throw error;
 	}

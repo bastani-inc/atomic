@@ -5,6 +5,13 @@
 import type { AgentSessionEvent, SessionManager, SessionWorkflowMetadata } from "@bastani/atomic";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { CandidateModelResolver } from "./model-resolution.js";
+
+/** The queueing surface of a stub test session: queued messages are read after the current prompt, steering first. */
+export interface TestSessionQueue {
+	steer(text: string): Promise<void>;
+	followUp(text: string): Promise<void>;
+}
+
 import type {
 	ArtifactConfig,
 	ControlConfig,
@@ -130,8 +137,8 @@ export interface RunSyncOptions {
 	sessionManager?: SessionManager;
 	/** Reopen `sessionManager` as this child's own interrupted session rather than a fork. */
 	resumeSession?: boolean;
-	/** Queued as a follow-up to the task, when a resumed child's interrupted turn must continue past its steer. */
-	resumeContinuation?: string;
+	/** Queued as follow-ups to the task, in order: a resumed child's held messages, then its continuation. */
+	resumeFollowUps?: readonly string[];
 	share?: boolean;
 	outputPath?: string;
 	outputMode?: OutputMode;
@@ -195,6 +202,8 @@ export interface RunSyncOptions {
 				events?: readonly AgentSessionEvent[];
 				/** Seed an earlier assistant message so abort recovery can find real text. */
 				seededAssistantText?: string;
+				/** Receives the stub session, to queue steering and follow-up messages as an SDK caller does. */
+				onSession?: (session: TestSessionQueue) => void;
 				/** After abort, append a thinking-only aborted message with no text. */
 				thinkingOnlyOnAbort?: boolean;
 				/** Emit the fallback event before the prompt gate so abort can preserve live fallback metadata. */
