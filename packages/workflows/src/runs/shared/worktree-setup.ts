@@ -264,7 +264,51 @@ function waitForGitLockRelease(): void {
 	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
 }
 
-function cleanupSingleWorktree(repoCwd: string, worktree: Pick<WorktreeInfo, "path" | "branch">): void {
+/**
+ * Unlink Atomic's links inside a worktree (the `node_modules` link and other
+ * synthetic links) without following them. On Windows the link is a directory
+ * junction: current Git for Windows refuses to descend into it during
+ * `git worktree remove --force` and leaves the worktree directory behind while
+ * exiting 0, and older releases follow it and delete the main checkout's copy.
+ */
+function unlinkWorktreeLinks(worktreePath: string, relativePaths: readonly string[]): void {
+	for (const relativePath of new Set(relativePaths)) {
+		const target = path.resolve(worktreePath, relativePath);
+		const relative = path.relative(worktreePath, target);
+		if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue;
+		// Stop at the first link: a link above the target would redirect the unlink outside the worktree.
+		let current = worktreePath;
+		for (const component of relative.split(path.sep)) {
+			current = path.join(current, component);
+			let stat: fs.Stats;
+			try {
+				stat = fs.lstatSync(current);
+			} catch (error) {
+				// Only a missing path is safe to skip; any other inspection failure must
+				// keep the worktree out of `git worktree remove --force`.
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code === "ENOENT" || code === "ENOTDIR") break;
+				throw error;
+			}
+			if (!stat.isSymbolicLink()) continue;
+			if (current === target) fs.unlinkSync(current);
+			break;
+		}
+	}
+}
+
+function cleanupSingleWorktree(
+	repoCwd: string,
+	worktree: Pick<WorktreeInfo, "path" | "branch">,
+	linkPaths: readonly string[],
+): void {
+	try {
+		unlinkWorktreeLinks(worktree.path, linkPaths);
+	} catch {
+		// A link that cannot be inspected or unlinked must not reach `git worktree remove --force`,
+		// which may follow it into the main checkout; leave the worktree for recovery.
+		return;
+	}
 	try {
 		runGitChecked(repoCwd, ["worktree", "remove", "--force", worktree.path]);
 	} catch {
@@ -294,13 +338,14 @@ function createSingleWorktree(
 	const add = runGit(mainRoot, ["worktree", "add", "-B", branch, worktreePath, baseRef]);
 	if (add.status !== 0) {
 		const message = add.stderr.trim() || add.stdout.trim() || `failed to create worktree ${worktreePath}`;
-		cleanupSingleWorktree(mainRoot, { path: worktreePath, branch });
+		cleanupSingleWorktree(mainRoot, { path: worktreePath, branch }, []);
 		throw new Error(message);
 	}
 
 	const agentCwd = cwdRelative ? path.join(worktreePath, cwdRelative) : worktreePath;
+	const syntheticPaths: string[] = [];
 	try {
-		const syntheticPaths = performPostCreationSetup(mainRoot, worktreePath, symlinkDirectories);
+		syntheticPaths.push(...performPostCreationSetup(mainRoot, worktreePath, symlinkDirectories));
 		if (setupHook) {
 			const hookSyntheticPaths = runWorktreeSetupHook(setupHook, {
 				version: 1,
@@ -324,7 +369,8 @@ function createSingleWorktree(
 			syntheticPaths,
 		};
 	} catch (error) {
-		cleanupSingleWorktree(mainRoot, { path: worktreePath, branch });
+		// Setup can throw after linking a configured directory but before reporting it.
+		cleanupSingleWorktree(mainRoot, { path: worktreePath, branch }, [...syntheticPaths, ...symlinkDirectories]);
 		throw error;
 	}
 }
@@ -367,6 +413,7 @@ export function createWorktrees(
 
 export function cleanupWorktrees(setup: WorktreeSetup): void {
 	for (let index = setup.worktrees.length - 1; index >= 0; index--) {
-		cleanupSingleWorktree(setup.cwd, setup.worktrees[index]!);
+		const worktree = setup.worktrees[index]!;
+		cleanupSingleWorktree(setup.cwd, worktree, worktree.syntheticPaths);
 	}
 }
