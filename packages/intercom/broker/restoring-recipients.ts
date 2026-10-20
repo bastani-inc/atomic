@@ -24,6 +24,17 @@ export type RestoringRecipientAdmission =
 	| { readonly kind: "held"; readonly timeoutMs: number }
 	| { readonly kind: "refused"; readonly reason: string };
 
+/** One reservation as `RestoringRecipients.active` reports it; `gone` is the formatted gone refusal. */
+export interface RestoringReservationSnapshot {
+	readonly capability: string;
+	readonly ownerSessionId: string;
+	readonly childName: string;
+	readonly group: string;
+	readonly aliases: readonly string[];
+	readonly dormant: boolean;
+	readonly gone?: string;
+}
+
 interface Reservation {
 	readonly ownerSessionId: string;
 	readonly childName: string;
@@ -217,6 +228,25 @@ export class RestoringRecipients {
 				reservation.held.delete(held);
 			}
 		}
+	}
+
+	/**
+	 * The reservations in force now, as their owners made them: the child's name, its other targets, and the gone
+	 * marker its owner left. Multi-node routing that starts after they were acknowledged mirrors them from here.
+	 */
+	active(): RestoringReservationSnapshot[] {
+		return [...this.reservations].map(([capability, reservation]) => {
+			const childTarget = normalizeTarget(reservation.childName);
+			return {
+				capability,
+				ownerSessionId: reservation.ownerSessionId,
+				childName: reservation.childName,
+				group: reservation.group,
+				aliases: [...reservation.targets].filter((target) => target !== childTarget),
+				dormant: reservation.dormant,
+				...(reservation.gone === undefined ? {} : { gone: reservation.gone }),
+			};
+		});
 	}
 
 	clear(): void {

@@ -610,9 +610,17 @@ export class MultiNodeRouter {
 		const exact = live.find((lease) => presenceOf(lease).session.id === request.target);
 		let resolved: LeaseState | undefined = exact;
 		if (resolved === undefined) {
+			const replyAuthorized = await this.replyAuthorizedTargets(
+				request,
+				live.map((lease) => presenceOf(lease).session.id),
+			);
 			const visible = live.filter((lease) => {
 				const info = presenceOf(lease).session;
-				return sameGroup(info, from.info) || (request.supervisorSend && info.id === from.supervisorId);
+				return (
+					sameGroup(info, from.info) ||
+					(request.supervisorSend && info.id === from.supervisorId) ||
+					replyAuthorized.has(info.id)
+				);
 			});
 			const nonAgentNamed = visible.some(
 				(lease) =>
@@ -707,6 +715,28 @@ export class MultiNodeRouter {
 		);
 	}
 
+	/**
+	 * The sessions among `sessionIds` this send's `replyTo` answers: a recorded vertical crossing or an open ask route,
+	 * exactly as a local reply's candidates (`handleBrokerSend`). Such a session resolves by name across groups; the
+	 * outbox write still checks the same authorization.
+	 */
+	private async replyAuthorizedTargets(request: RemoteSendRequest, sessionIds: readonly string[]): Promise<Set<string>> {
+		const authorized = new Set<string>();
+		const replyTo = request.message.replyTo;
+		if (replyTo === undefined) return authorized;
+		const replySenderSessionId = request.from.info.id;
+		for (const sessionId of new Set(sessionIds)) {
+			if (this.host.supervisorCache.matchReply(replyTo, replySenderSessionId, sessionId)) authorized.add(sessionId);
+			else if (
+				(await this.state.pendingAsks.matchesReply({ replySenderSessionId, replyTargetSessionId: sessionId, replyTo }))
+					.status === "match"
+			) {
+				authorized.add(sessionId);
+			}
+		}
+		return authorized;
+	}
+
 	private async resolveKnownSession(request: RemoteSendRequest): Promise<KnownSessionState | "answered" | undefined> {
 		const found = await this.state.knownSessions.lookup(request.target, KNOWN_SESSION_RETENTION_MS);
 		if (found.status !== "found") return undefined;
@@ -714,10 +744,15 @@ export class MultiNodeRouter {
 		const sessions = found.sessions.filter((session) => !localIdentities.has(session.targetIdentity));
 		const byId = sessions.find((session) => session.intercomSessionId === request.target);
 		if (byId !== undefined) return byId;
+		const replyAuthorized = await this.replyAuthorizedTargets(
+			request,
+			sessions.map((session) => session.intercomSessionId),
+		);
 		const visible = sessions.filter(
 			(session) =>
 				sharesGroup(new Set(session.groups), request.from.info) ||
-				(request.supervisorSend && session.intercomSessionId === request.from.supervisorId),
+				(request.supervisorSend && session.intercomSessionId === request.from.supervisorId) ||
+				replyAuthorized.has(session.intercomSessionId),
 		);
 		const target = request.target.toLowerCase();
 		const candidates = [

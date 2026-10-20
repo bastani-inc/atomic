@@ -56,6 +56,7 @@ import {
 } from "./send-handler.js";
 import {
   type BrokerStateOpener,
+  LOCAL_RETRY_LOOKUP_BOUND_MS,
   MultiNodeRouter,
   readSharedStorageSetting,
   resolveMultiNodeStartup,
@@ -2065,7 +2066,23 @@ class IntercomBroker {
       return;
     }
     if (this.multiNodeStatus === "starting") {
-      void this.multiNodeFirstAttempt.then(() => this.routeRemoteSend(request));
+      if (request.localTarget === undefined) {
+        void this.multiNodeFirstAttempt.then(() => this.routeRemoteSend(request));
+        return;
+      }
+      // A send to a session on this broker waits for the first opening at most as long as the router's own retry
+      // lookup would, then is delivered locally; whichever comes second does nothing, so it is answered once.
+      let answered = false;
+      const bound = setTimeout(() => {
+        answered = true;
+        request.notFound();
+      }, LOCAL_RETRY_LOOKUP_BOUND_MS);
+      void this.multiNodeFirstAttempt.then(() => {
+        if (answered) return;
+        answered = true;
+        clearTimeout(bound);
+        this.routeRemoteSend(request);
+      });
       return;
     }
     writeMessageIfOpen(request.socket, {
@@ -2133,6 +2150,22 @@ class IntercomBroker {
             await opened.bus.close().catch(() => {});
             await opened.state.close().catch(() => {});
             throw error;
+          }
+          // Reservations acknowledged before routing started (or while an earlier opening failed) were kept only
+          // here; mirror the ones still in force so other brokers hold sends for them too. Releases and owner
+          // departures from now on reach the router behind these reserves.
+          for (const reservation of this.restoringRecipients.active()) {
+            this.multiNode.restoringReserved(
+              reservation.capability,
+              reservation.ownerSessionId,
+              reservation.childName,
+              reservation.group,
+              reservation.aliases,
+              reservation.dormant,
+            );
+            if (reservation.gone !== undefined) {
+              this.multiNode.restoringReleased(reservation.capability, reservation.ownerSessionId, reservation.gone);
+            }
           }
           if (this.shuttingDown) await this.multiNode.close().catch(() => {});
           settle("on");

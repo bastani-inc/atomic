@@ -346,6 +346,37 @@ test("a supervisor send reaches its supervisor on another node on the supervisor
 	assert.equal((await waitFor(() => outcomeOf(child, sent.id))).type, "delivered");
 });
 
+test("a supervisor's reply by name reaches its child in another group on another node, live or offline", async () => {
+	const [a, b] = await cluster();
+	const supervisor = await b!.connect("supervisor", { group: "parent" });
+	const child = await a!.connect("isolated-child", { group: "isolated-child", supervisorId: supervisor.info.id });
+	const sent = message();
+	a!.dispatch(
+		child.socket,
+		{ type: "supervisor_send", to: supervisor.info.id, message: sent, attemptId: randomUUID() },
+		child.info.id,
+	);
+	await waitFor(() => messageFrames(supervisor, sent.id)[0]);
+	b!.router.received(supervisor, sent.id);
+
+	const reply = message({ replyTo: sent.id, content: { text: "by name" } });
+	b!.send(supervisor, "isolated-child", reply);
+	await waitFor(() => messageFrames(child, reply.id)[0]);
+	a!.router.received(child, reply.id);
+	assert.equal((await waitFor(() => outcomeOf(supervisor, reply.id))).type, "delivered");
+
+	a!.leave(child);
+	await waitOffline(a!, child);
+	const offline = message({ replyTo: sent.id, content: { text: "by name, offline" } });
+	b!.send(supervisor, "isolated-child", offline);
+	assert.equal((await waitFor(() => outcomeOf(supervisor, offline.id))).type, "queued");
+
+	const unrelated = message({ content: { text: "no reply relationship" } });
+	b!.send(supervisor, "isolated-child", unrelated);
+	const refused = await waitFor(() => outcomeOf(supervisor, unrelated.id));
+	assert.equal(refused.type === "delivery_failed" && refused.reason, "Session not found");
+});
+
 test("a remote session in another group is refused exactly as a local one is", async () => {
 	const [a, b] = await cluster();
 	const sender = await a!.connect("sender", { group: "team" });

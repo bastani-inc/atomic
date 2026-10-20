@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFile } from "node:fs/promises";
+import { appendFile, readFile } from "node:fs/promises";
 import type { SqliteDatabase, SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.js";
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
@@ -28,12 +28,28 @@ function withCallDelay(database: SqliteDatabase, ms: number): SqliteDatabase {
 	};
 }
 
+/**
+ * Holds the Intercom broker's opening (domain "intercom") on the file at `gate`: missing, it waits; `fail`, the
+ * opening fails; `open`, it proceeds.
+ */
+async function passStorageOpenGate(gate: string): Promise<void> {
+	for (;;) {
+		const state = await readFile(gate, "utf8").catch(() => "");
+		if (state === "open") return;
+		if (state === "fail") throw new Error("injected storage opening failure");
+		await new Promise<void>((resolveWait) => setTimeout(resolveWait, 20));
+	}
+}
+
 export default {
 	atomicStorageAdapter: 1,
 	cleanupFailure,
 	cleanupErrorType: StorageUnavailableError,
 	async openDatabase(options, context) {
 		assert.equal(typeof options.path, "string");
+		if (typeof options.openGate === "string" && context.domain === "intercom") {
+			await passStorageOpenGate(options.openGate);
+		}
 		const database = await openNodeSqliteDatabase(String(options.path));
 		await database.exec("CREATE TABLE IF NOT EXISTS adapter_probe (options TEXT, domain TEXT)");
 		await database.run("INSERT INTO adapter_probe VALUES (?, ?)", JSON.stringify(options), context.domain);
