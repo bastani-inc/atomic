@@ -9,11 +9,14 @@ import { SessionManager } from "../../packages/coding-agent/src/core/session-man
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
-import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
+import type { AgentConfig, AgentScope } from "../../packages/subagents/src/agents/agents.js";
+import { INTERCOM_BRIDGE_MARKER } from "../../packages/subagents/src/intercom/intercom-bridge.js";
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
+import { takeStoppedQueuedOwnerlessChild } from "../../packages/subagents/src/runs/foreground/ownerless-children.js";
 import {
 	createSubagentChildRecordSink,
+	isSubagentChildRecord,
 	readSubagentChildRecords,
 	SUBAGENT_CHILD_RECORD_TYPE,
 	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
@@ -33,8 +36,12 @@ import {
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import { SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT } from "../../packages/subagents/src/runs/foreground/subagent-run-control.js";
-import { runAgentTask } from "../../packages/subagents/src/runs/foreground/task-execution.js";
+import {
+	runAgentTask,
+	takeStoppedQueuedSubagentChild,
+} from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import { createExecutionScheduler } from "../../packages/subagents/src/runs/shared/parallel-utils.js";
+import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
 import type {
 	RunSyncOptions,
 	SingleResult,
@@ -71,6 +78,14 @@ const agent: AgentConfig = {
 	inheritSkills: false,
 };
 
+/** A user agent with the project agent's name: the default scope shadows it with the project one. */
+const userAgent: AgentConfig = {
+	...agent,
+	source: "user",
+	filePath: "user/worker.md",
+	systemPrompt: "Work as the user",
+};
+
 interface Harness {
 	readonly cwd: string;
 	host: AgentTaskHost;
@@ -85,24 +100,33 @@ interface Harness {
 	/** End the owning session's lifetime, as disposing an SDK session does, then reopen it with a new one. */
 	closeOwnerSessionAndReopen(): void;
 	readonly ctx: ExtensionContext;
-	/** Every child run: the prompt it received and its options. */
-	readonly runs: Array<{ task: string; options: RunSyncOptions }>;
+	/** Every child run: the prompt it received, its options, and the agent definition it ran. */
+	readonly runs: Array<{ task: string; options: RunSyncOptions; agent: AgentConfig | undefined }>;
 	readonly authorizations: string[];
 	readonly holds: Array<{ reserve: string; aliases: readonly string[] } | { release: string; gone?: string }>;
 	/** How the next child run settles once its prompt runs; the original launch always waits until stopped. */
 	settleAs: "ok" | "error";
+	/** Whether the original launch completes normally when it is stopped, as a child finishing just before the stop does. */
+	completesWhenStopped: boolean;
 	/** Whether resumed runs also wait until stopped, instead of settling once their prompt runs. */
 	resumedRunsWait: boolean;
 	/** Receives each child run's stub session, to queue steering and follow-up messages as an SDK caller does. */
 	onSession?: (session: TestSessionQueue) => void;
 	/** Whether the worker agent is still defined; resume looks it up again. */
 	agentDefined: boolean;
+	/** The agent definitions discovery finds, from every source; a project agent shadows a user one of its name. */
+	agents: AgentConfig[];
 	/** Runs whose prompt contains a key wait until its gate resolves, then complete; checked before the rules above. */
 	readonly finishOn: Map<string, PromiseWithResolvers<void>>;
 	call(params: Parameters<ReturnType<typeof createSubagentExecutor>["execute"]>[1]): Promise<SubagentToolResult>;
 	launch(runId: string): Promise<{ record: SubagentChildRecord; taskId: TaskId }>;
 	/** Admit a child through `schedule`, as a parallel launch does, without waiting for it to start. */
-	admit(runId: string, schedule?: (dispatch: () => Promise<void>) => void): Promise<TaskId>;
+	admit(
+		runId: string,
+		schedule?: (dispatch: () => Promise<void>) => void,
+		options?: Partial<RunSyncOptions>,
+		launchAgent?: AgentConfig,
+	): Promise<TaskId>;
 	latest(childId: string): SubagentChildRecord | undefined;
 	waitForLatest(childId: string, accept: (record: SubagentChildRecord) => boolean): Promise<SubagentChildRecord>;
 }
@@ -217,8 +241,10 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 		authorizations,
 		holds,
 		settleAs: "ok",
+		completesWhenStopped: false,
 		resumedRunsWait: false,
 		agentDefined: true,
+		agents: [agent],
 		finishOn: new Map(),
 		call: (params) => executor.execute("run-control", params, new AbortController().signal, undefined, state.ctx),
 		async launch(runId) {
@@ -226,11 +252,11 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 			const record = await state.waitForLatest(`${runId}:0`, (candidate) => candidate.launchLeafId !== undefined);
 			return { record, taskId };
 		},
-		async admit(runId, schedule) {
+		async admit(runId, schedule, extra, launchAgent = agent) {
 			const response = await runAgentTask({
 				host,
 				cwd,
-				agents: [agent],
+				agents: [launchAgent],
 				agent: "worker",
 				task: ORIGINAL_TASK,
 				options: {
@@ -241,6 +267,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 					intercomSessionName: `subagent-worker-${runId}`,
 					intercomGroup: "lane-group",
 					orchestratorIntercomTarget: "parent",
+					...extra,
 				},
 				wait: { kind: "background" },
 				recordChild: createSubagentChildRecordSink(pi, state.ctx),
@@ -266,7 +293,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 	};
 	const runtime = async (...args: Parameters<typeof runSync>): Promise<SingleResult> => {
 		const [parentCwd, agents, agentName, task, options] = args;
-		runs.push({ task, options });
+		runs.push({ task, options, agent: agents.find((candidate) => candidate.name === agentName) });
 		const original = task === ORIGINAL_TASK;
 		const gate = [...state.finishOn].find(([marker]) => task.includes(marker))?.[1];
 		const onSession = state.onSession ? { onSession: state.onSession } : {};
@@ -278,6 +305,8 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 					? { output: "partial", promptGate: neverReleased.promise, abortResolvesPrompt: true, ...onSession }
 					: { output: "resumed", ...onSession },
 		});
+		if (original && state.completesWhenStopped && result.interrupted)
+			return { ...result, status: "ok", interrupted: false, pendingMessages: undefined };
 		return !original && state.settleAs === "error" ? { ...result, status: "error", error: "boom" } : result;
 	};
 	const deps: ExecutorDeps = {
@@ -295,7 +324,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 		tempArtifactsDir: join(cwd, "artifacts"),
 		getSubagentSessionRoot: () => join(cwd, "sessions"),
 		expandTilde: (value) => value,
-		discoverAgents: () => ({ agents: state.agentDefined ? [agent] : [] }),
+		discoverAgents: (_cwd, scope) => ({ agents: state.agentDefined ? discoverInScope(state.agents, scope) : [] }),
 		runtime: { runSync: runtime },
 	};
 	const executor = createSubagentExecutor(deps);
@@ -305,6 +334,16 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 		removeTempDirectory(cwd);
 	});
 	return state;
+}
+
+/** Discovery as the default scope does it: a project agent shadows a user agent of the same name in `both`. */
+function discoverInScope(agents: readonly AgentConfig[], scope: AgentScope): AgentConfig[] {
+	const found = new Map<string, AgentConfig>();
+	for (const source of ["builtin", "user", "project"] as const) {
+		if (source !== "builtin" && scope !== "both" && scope !== source) continue;
+		for (const candidate of agents) if (candidate.source === source) found.set(candidate.name, candidate);
+	}
+	return [...found.values()];
 }
 
 function text(result: SubagentToolResult): string {
@@ -368,6 +407,47 @@ test("pause stops a running child resumably and holds sends to it until resume",
 	const again = await h.call({ action: "pause", id: record.childId });
 	assert.notEqual(again.isError, true);
 	assert.match(text(again), /is already paused/);
+});
+
+test("pause of a child that completes before the stop takes effect reports it completed and holds nothing (#3784)", async () => {
+	const h = harness();
+	h.completesWhenStopped = true;
+	const { record } = await h.launch("race1");
+
+	const paused = await h.call({ action: "pause", id: record.childId });
+	assert.equal(paused.isError, true, text(paused));
+	assert.match(text(paused), /worker \(race1:0, subagent-worker-race1\) completed \(ok\) before it could be paused/);
+	assert.doesNotMatch(text(paused), /Paused/);
+	assert.deepEqual(paused.details.runControl?.children, []);
+	assert.equal(h.latest(record.childId)?.terminalStatus, "ok");
+	assert.deepEqual(
+		h.holds.filter((hold) => "reserve" in hold),
+		[],
+		"no Intercom hold is parked for a completed child",
+	);
+});
+
+test("pause of an SDK session's child that completes before the stop takes effect reports it completed (#3784)", async () => {
+	const h = harness({ ownerless: true });
+	h.completesWhenStopped = true;
+	const launch = h.call({ agent: "worker", task: ORIGINAL_TASK, context: "fresh" });
+	const deadline = Date.now() + RECORD_WAIT_MS;
+	let running: SubagentChildRecord | undefined;
+	while (!running?.childSessionId && Date.now() < deadline) {
+		[running] = readSubagentChildRecords(h.sessionManager.getEntries()).values();
+		await sleep(10);
+	}
+	assert.ok(running?.childSessionId, "the child started");
+
+	const paused = await h.call({ action: "pause", id: running.childId });
+	await launch;
+	assert.equal(paused.isError, true, text(paused));
+	assert.match(text(paused), /completed \(ok\) before it could be paused/);
+	assert.equal(h.latest(running.childId)?.terminalStatus, "ok");
+	assert.deepEqual(
+		h.holds.filter((hold) => "reserve" in hold),
+		[],
+	);
 });
 
 test("resume with a message continues a paused child in the same run identity and delivers the message once", async () => {
@@ -1165,6 +1245,468 @@ test("a resumed queued child waits for its run's concurrency slot, as its origin
 	assert.equal(startsOfB().length, 1, "it starts once its sibling releases the slot");
 });
 
+for (const action of ["pause", "quit"] as const) {
+	test(`a queued child ${action === "pause" ? "paused" : "quit"} before it started is started fresh by resume after a restart, under the same identity (#3784)`, async () => {
+		const h = harness();
+		const schedule = createExecutionScheduler(1);
+		const runId = `fresh-${action}`;
+		const childId = `${runId}:0`;
+		const runningTask = await h.admit(`${runId}-sibling`, schedule);
+		const queuedTask = await h.admit(runId, schedule, { skills: ["review"], outputMode: "inline" });
+		await h.waitForLatest(`${runId}-sibling:0`, (candidate) => candidate.launchLeafId !== undefined);
+		const stopped = await h.call({ action, id: childId });
+		assert.notEqual(stopped.isError, true, text(stopped));
+		await h.call({ action: "quit", id: `${runId}-sibling:0` });
+		await settled(h, runningTask);
+		const record = h.latest(childId);
+		assert.equal(record?.childSessionId, undefined, "the child never started");
+		assert.doesNotMatch(JSON.stringify(record), /capability/, "no supervisor capability is persisted");
+		// Atomic restarts: nothing of the launch is left in this process but the child's records.
+		assert.ok(takeStoppedQueuedSubagentChild(queuedTask));
+
+		const resumed = await h.call({ action: "resume", id: childId, message: "also check the docs" });
+		assert.notEqual(resumed.isError, true, text(resumed));
+		const resumedTask = resumedTaskId(resumed);
+		const started = await h.waitForLatest(
+			childId,
+			(candidate) => candidate.taskId === resumedTask && candidate.childSessionId !== undefined,
+		);
+		assert.equal(started.intercomTarget, `subagent-worker-${runId}`);
+		assert.equal(started.intercomGroup, "lane-group");
+		const starts = h.runs.filter((run) => run.options.runId === runId);
+		assert.deepEqual(
+			starts.map((run) => run.task),
+			[`${ORIGINAL_TASK}\n\nalso check the docs`],
+			"it starts on its original task, with the message after it",
+		);
+		const [start] = starts;
+		assert.equal(start?.options.index, 0);
+		assert.equal(start?.options.resumeSession, undefined, "it is a new launch, not a reopened session");
+		assert.equal(start?.options.sessionDir, join(h.cwd, "children", runId));
+		assert.deepEqual(start?.options.skills, ["review"]);
+		assert.equal(start?.options.intercomSessionName, `subagent-worker-${runId}`);
+		assert.ok(start?.options.supervisorAuthorization, "it gets fresh supervisor authorization");
+		await settled(h, resumedTask);
+	});
+}
+
+test("a child still queued when Atomic exited is started fresh when its session reopens (#3784)", async () => {
+	const h = harness();
+	const schedule = createExecutionScheduler(1);
+	await h.admit("fresh-exit-sibling", schedule);
+	const queuedTask = await h.admit("fresh-exit", schedule);
+	await h.waitForLatest("fresh-exit-sibling:0", (candidate) => candidate.launchLeafId !== undefined);
+	await h.closeOwnerAndReopen("session-close");
+	await sleep(50);
+	assert.equal(h.latest("fresh-exit:0")?.state, "running", "closing its owner records nothing terminal");
+	assert.ok(takeStoppedQueuedSubagentChild(queuedTask));
+
+	const outcomes = await restoreSubagentChildren(h.deps, h.ctx);
+	const outcome = outcomes.find(
+		(candidate) => candidate.kind === "restored" && candidate.record.runId === "fresh-exit",
+	);
+	assert.ok(outcome?.kind === "restored", JSON.stringify(outcomes));
+	await h.waitForLatest(
+		"fresh-exit:0",
+		(candidate) => candidate.taskId === outcome.taskId && !!candidate.childSessionId,
+	);
+	assert.deepEqual(
+		h.runs.filter((run) => run.options.runId === "fresh-exit").map((run) => run.task),
+		[ORIGINAL_TASK],
+	);
+});
+
+test("a queued child of an SDK session without a task host paused before it started is started fresh by resume after a restart (#3784)", async () => {
+	const h = harness({ ownerless: true });
+	const siblingDone = Promise.withResolvers<void>();
+	h.finishOn.set("fresh-a-marker", siblingDone);
+	h.finishOn.set("fresh-b-marker", Promise.withResolvers<void>());
+	cleanups.push(async () => siblingDone.resolve());
+	const launched = h.call({
+		tasks: [
+			{ agent: "worker", task: "fresh-a-marker" },
+			{ agent: "worker", task: "fresh-b-marker" },
+		],
+		concurrency: 1,
+	});
+	const children = () =>
+		[...readSubagentChildRecords(h.sessionManager.getEntries()).values()].sort(
+			(left, right) => left.index - right.index,
+		);
+	const deadline = Date.now() + RECORD_WAIT_MS;
+	while (children().length < 2 && Date.now() < deadline) await sleep(10);
+	const [childA, childB] = children();
+	assert.ok(childA && childB?.taskId);
+	await h.waitForLatest(childA.childId, (candidate) => !!candidate.childSessionId);
+	const paused = await h.call({ action: "pause", id: childB.childId });
+	assert.notEqual(paused.isError, true, text(paused));
+	siblingDone.resolve();
+	await launched;
+	assert.ok(takeStoppedQueuedOwnerlessChild(childB.taskId), "Atomic restarts and forgets the queued launch");
+	h.finishOn.clear();
+
+	const resumed = await h.call({ action: "resume", id: childB.childId, message: "also check the docs" });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	const resumedTask = resumedTaskId(resumed);
+	const finished = await h.waitForLatest(
+		childB.childId,
+		(candidate) => candidate.taskId === resumedTask && candidate.state === "terminal",
+	);
+	assert.equal(finished.terminalStatus, "ok");
+	const starts = h.runs.filter((run) => run.options.runId === childB.runId && run.options.index === childB.index);
+	assert.equal(starts.length, 1);
+	assert.match(starts[0]!.task, /fresh-b-marker[\s\S]*\n\nalso check the docs$/);
+	assert.equal(starts[0]!.options.resumeSession, undefined);
+});
+
+/** Give the owner a conversation and branch a forked child's session from it, as a `context: "fork"` launch does. */
+async function forkFromParentConversation(h: Harness): Promise<SessionManager> {
+	await h.sessionManager.appendMessage({ role: "user", content: "parent-only context", timestamp: Date.now() });
+	const forked = await createForkContextResolver(h.sessionManager, "fork").sessionManagerForIndex(0);
+	assert.ok(forked);
+	return forked;
+}
+
+test("a forked queued child paused before it started is resumed after a restart on its parent's conversation (#3784)", async () => {
+	const h = harness();
+	const schedule = createExecutionScheduler(1);
+	const runId = "fresh-fork";
+	const childId = `${runId}:0`;
+	const runningTask = await h.admit(`${runId}-sibling`, schedule);
+	const forked = await forkFromParentConversation(h);
+	const queuedTask = await h.admit(runId, schedule, { sessionManager: forked });
+	await h.waitForLatest(`${runId}-sibling:0`, (candidate) => candidate.launchLeafId !== undefined);
+	const paused = await h.call({ action: "pause", id: childId });
+	assert.notEqual(paused.isError, true, text(paused));
+	await h.call({ action: "quit", id: `${runId}-sibling:0` });
+	await settled(h, runningTask);
+	assert.ok(takeStoppedQueuedSubagentChild(queuedTask), "Atomic restarts and forgets the queued launch");
+
+	const resumed = await h.call({ action: "resume", id: childId });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	const resumedTask = resumedTaskId(resumed);
+	const started = await h.waitForLatest(
+		childId,
+		(candidate) => candidate.taskId === resumedTask && candidate.childSessionId !== undefined,
+	);
+	assert.equal(started.childSessionId, forked.getSessionId(), "it starts on the branch its launch prepared");
+	const [start] = h.runs.filter((run) => run.options.runId === runId);
+	assert.equal(start?.task, ORIGINAL_TASK);
+	assert.equal(start?.options.resumeSession, undefined, "it is a new launch on the branch, not a resumed session");
+	const child = await SessionManager.open(h.sessionManager.getSessionStore(), forked.getSessionId(), h.cwd);
+	assert.match(JSON.stringify(child.buildSessionContext().messages), /parent-only context/);
+	// It runs its original task, which the harness holds until it is stopped.
+	await h.call({ action: "quit", id: childId });
+	await settled(h, resumedTask);
+});
+
+test("a forked queued child of an SDK session paused before it started is resumed after a restart on its parent's conversation (#3784)", async () => {
+	const h = harness({ ownerless: true });
+	await h.sessionManager.appendMessage({ role: "user", content: "parent-only context", timestamp: Date.now() });
+	const siblingDone = Promise.withResolvers<void>();
+	h.finishOn.set("fork-a-marker", siblingDone);
+	h.finishOn.set("fork-b-marker", Promise.withResolvers<void>());
+	cleanups.push(async () => siblingDone.resolve());
+	const launched = h.call({
+		tasks: [
+			{ agent: "worker", task: "fork-a-marker" },
+			{ agent: "worker", task: "fork-b-marker" },
+		],
+		concurrency: 1,
+		context: "fork",
+	});
+	const children = () =>
+		[...readSubagentChildRecords(h.sessionManager.getEntries()).values()].sort(
+			(left, right) => left.index - right.index,
+		);
+	const deadline = Date.now() + RECORD_WAIT_MS;
+	while (children().length < 2 && Date.now() < deadline) await sleep(10);
+	const [childA, childB] = children();
+	assert.ok(childA && childB?.taskId);
+	await h.waitForLatest(childA.childId, (candidate) => !!candidate.childSessionId);
+	const paused = await h.call({ action: "pause", id: childB.childId });
+	assert.notEqual(paused.isError, true, text(paused));
+	siblingDone.resolve();
+	await launched;
+	assert.ok(takeStoppedQueuedOwnerlessChild(childB.taskId), "Atomic restarts and forgets the queued launch");
+	h.finishOn.clear();
+
+	const resumed = await h.call({ action: "resume", id: childB.childId });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	const resumedTask = resumedTaskId(resumed);
+	const finished = await h.waitForLatest(
+		childB.childId,
+		(candidate) => candidate.taskId === resumedTask && candidate.state === "terminal",
+	);
+	assert.equal(finished.terminalStatus, "ok");
+	assert.ok(finished.childSessionId);
+	const child = await SessionManager.open(h.sessionManager.getSessionStore(), finished.childSessionId, h.cwd);
+	assert.match(JSON.stringify(child.buildSessionContext().messages), /parent-only context/);
+});
+
+test("a forked queued child whose prepared branch is gone after a restart fails to resume, never starting on a fresh context (#3784)", async () => {
+	const h = harness();
+	const schedule = createExecutionScheduler(1);
+	const runId = "fresh-fork-lost";
+	const childId = `${runId}:0`;
+	const runningTask = await h.admit(`${runId}-sibling`, schedule);
+	const forked = await forkFromParentConversation(h);
+	const queuedTask = await h.admit(runId, schedule, { sessionManager: forked });
+	await h.waitForLatest(`${runId}-sibling:0`, (candidate) => candidate.launchLeafId !== undefined);
+	const paused = await h.call({ action: "pause", id: childId });
+	assert.notEqual(paused.isError, true, text(paused));
+	await h.call({ action: "quit", id: `${runId}-sibling:0` });
+	await settled(h, runningTask);
+	assert.ok(takeStoppedQueuedSubagentChild(queuedTask), "Atomic restarts and forgets the queued launch");
+	await h.sessionManager.getSessionStore().delete(forked.getSessionId());
+
+	const resumed = await h.call({ action: "resume", id: childId });
+	assert.equal(resumed.isError, true, text(resumed));
+	assert.match(text(resumed), /could not be resumed: .*forked from its parent's conversation/);
+	assert.deepEqual(
+		h.runs.filter((run) => run.options.runId === runId),
+		[],
+		"it never starts without the context it was launched with",
+	);
+});
+
+/** Launch a child that starts, then close its owner as Atomic exiting does and restore it as reopening the session does. */
+async function restoreStartedChild(
+	h: Harness,
+	runId: string,
+	options: Partial<RunSyncOptions>,
+	launchAgent?: AgentConfig,
+	beforeRestore?: () => void,
+): Promise<{ task: string; options: RunSyncOptions; agent: AgentConfig | undefined; taskId: string }> {
+	await h.admit(runId, undefined, options, launchAgent);
+	const record = await h.waitForLatest(`${runId}:0`, (candidate) => candidate.launchLeafId !== undefined);
+	await h.closeOwnerAndReopen("session-close");
+	await sleep(50);
+	assert.equal(h.latest(record.childId)?.state, "running", "closing its owner records nothing terminal");
+	beforeRestore?.();
+	const [outcome] = await restoreSubagentChildren(h.deps, h.ctx);
+	assert.ok(outcome?.kind === "restored", JSON.stringify(outcome));
+	const restarted = h.runs.at(-1);
+	assert.ok(restarted);
+	assert.equal(restarted.options.sessionManager?.getSessionId(), record.childSessionId, "it reopens its own session");
+	assert.equal(restarted.options.resumeSession, true);
+	await settled(h, outcome.taskId);
+	return { ...restarted, taskId: outcome.taskId };
+}
+
+/** Pause a child still queued behind a sibling, forget it as a restart does, and resume it from its records. */
+async function resumeQueuedChildAfterRestart(
+	h: Harness,
+	runId: string,
+	options: Partial<RunSyncOptions>,
+	launchAgent?: AgentConfig,
+	beforeResume?: () => void,
+): Promise<{ task: string; options: RunSyncOptions; agent: AgentConfig | undefined; taskId: string }> {
+	const schedule = createExecutionScheduler(1);
+	const childId = `${runId}:0`;
+	const runningTask = await h.admit(`${runId}-sibling`, schedule);
+	const queuedTask = await h.admit(runId, schedule, options, launchAgent);
+	await h.waitForLatest(`${runId}-sibling:0`, (candidate) => candidate.launchLeafId !== undefined);
+	const paused = await h.call({ action: "pause", id: childId });
+	assert.notEqual(paused.isError, true, text(paused));
+	await h.call({ action: "quit", id: `${runId}-sibling:0` });
+	await settled(h, runningTask);
+	assert.ok(takeStoppedQueuedSubagentChild(queuedTask), "Atomic restarts and forgets the queued launch");
+	beforeResume?.();
+	const resumed = await h.call({ action: "resume", id: childId });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	const resumedTask = resumedTaskId(resumed);
+	await h.waitForLatest(childId, (candidate) => candidate.taskId === resumedTask && !!candidate.childSessionId);
+	const [start] = h.runs.filter((run) => run.options.runId === runId);
+	assert.ok(start);
+	assert.equal(start.options.resumeSession, undefined, "it is a new launch");
+	// It runs its original task, which the harness holds until it is stopped.
+	await h.call({ action: "quit", id: childId });
+	await settled(h, resumedTask);
+	return { ...start, taskId: resumedTask };
+}
+
+test("a started child of a user agent a project agent of the same name shadows is restored with the user agent (#3784)", async () => {
+	const h = harness();
+	h.agents = [userAgent, agent];
+	const restarted = await restoreStartedChild(h, "started-user-agent", {}, userAgent);
+	assert.equal(restarted.agent?.source, "user");
+	assert.match(restarted.agent?.systemPrompt ?? "", /^Work as the user/);
+});
+
+test("a never-started queued child of a user agent a project agent of the same name shadows starts with the user agent (#3784)", async () => {
+	const h = harness();
+	h.agents = [userAgent, agent];
+	const start = await resumeQueuedChildAfterRestart(h, "queued-user-agent", {}, userAgent);
+	assert.equal(start.agent?.source, "user");
+	assert.match(start.agent?.systemPrompt ?? "", /^Work as the user/);
+});
+
+test("a forked started child restored under the fork-only Intercom bridge keeps its bridge instructions (#3784)", async () => {
+	const h = harness();
+	h.deps.config.intercomBridge = { mode: "fork-only" };
+	const forked = await forkFromParentConversation(h);
+	const restarted = await restoreStartedChild(h, "started-fork-bridge", { sessionManager: forked });
+	assert.ok(restarted.agent?.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER), restarted.agent?.systemPrompt);
+	assert.ok(restarted.options.orchestratorIntercomTarget, "it is told its orchestrator's Intercom target");
+});
+
+test("a forked never-started queued child started under the fork-only Intercom bridge gets its bridge instructions (#3784)", async () => {
+	const h = harness();
+	h.deps.config.intercomBridge = { mode: "fork-only" };
+	const forked = await forkFromParentConversation(h);
+	const start = await resumeQueuedChildAfterRestart(h, "queued-fork-bridge", { sessionManager: forked });
+	assert.ok(start.agent?.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER), start.agent?.systemPrompt);
+	assert.ok(start.options.orchestratorIntercomTarget, "it is told its orchestrator's Intercom target");
+});
+
+const sonnet = { provider: "anthropic", id: "claude-sonnet", reasoning: true };
+const haiku = { provider: "anthropic", id: "claude-haiku", reasoning: true };
+
+/** The owner's model registry with these models usable, as the reopened session finds them. */
+function usableModels(h: Harness, models: ReadonlyArray<{ provider: string; id: string; reasoning: boolean }>): void {
+	Object.assign(h.ctx, {
+		modelRegistry: {
+			getAvailable: () => [...models],
+			getAll: () => [...models],
+			find: (provider: string, id: string) => models.find((model) => model.provider === provider && model.id === id),
+			hasConfiguredAuth: () => true,
+		},
+	});
+}
+
+/** The owner switches to another model and thinking level, as `/model` and the thinking toggle do. */
+function ownerSwitchesTo(h: Harness, model: { provider: string; id: string }, thinkingLevel: string): void {
+	Object.assign(h.ctx, { model, thinkingLevel });
+}
+
+/** What the child's launch with this task id started on, as its own record says. */
+function startedOn(h: Harness, childId: string, taskId: string): { model?: string; thinking?: string } {
+	const started = h.sessionManager
+		.getEntries()
+		.filter(isSubagentChildRecord)
+		.map((entry) => entry.data as SubagentChildRecord)
+		.find((record) => record.childId === childId && record.taskId === taskId && record.launchLeafId !== undefined);
+	assert.ok(started, `the launch of ${childId} as ${taskId} never recorded what it started on`);
+	return {
+		...(started.launchModel ? { model: started.launchModel } : {}),
+		...(started.launchThinkingLevel ? { thinking: started.launchThinkingLevel } : {}),
+	};
+}
+
+/** What the parent was on when it admitted the child; a child that pins no model of its own inherits both. */
+const admittedOnSonnetHigh: Partial<RunSyncOptions> = {
+	currentModel: "anthropic/claude-sonnet",
+	currentThinkingLevel: "high",
+	preferredModelProvider: "anthropic",
+};
+
+test("a never-started queued child starts after a restart on the model and thinking level its parent had when it was admitted (#3784)", async () => {
+	const h = harness();
+	usableModels(h, [sonnet, haiku]);
+	const start = await resumeQueuedChildAfterRestart(h, "queued-inherited-model", admittedOnSonnetHigh, undefined, () =>
+		ownerSwitchesTo(h, haiku, "low"),
+	);
+	assert.deepEqual(startedOn(h, "queued-inherited-model:0", start.taskId), {
+		model: "anthropic/claude-sonnet",
+		thinking: "high",
+	});
+});
+
+test("a never-started queued child of an SDK session starts after a restart on the model and thinking level its parent had when it was admitted (#3784)", async () => {
+	const h = harness({ ownerless: true });
+	usableModels(h, [sonnet, haiku]);
+	ownerSwitchesTo(h, sonnet, "high");
+	const siblingDone = Promise.withResolvers<void>();
+	h.finishOn.set("model-a-marker", siblingDone);
+	h.finishOn.set("model-b-marker", Promise.withResolvers<void>());
+	cleanups.push(async () => siblingDone.resolve());
+	const launched = h.call({
+		tasks: [
+			{ agent: "worker", task: "model-a-marker" },
+			{ agent: "worker", task: "model-b-marker" },
+		],
+		concurrency: 1,
+	});
+	const children = () =>
+		[...readSubagentChildRecords(h.sessionManager.getEntries()).values()].sort(
+			(left, right) => left.index - right.index,
+		);
+	const deadline = Date.now() + RECORD_WAIT_MS;
+	while (children().length < 2 && Date.now() < deadline) await sleep(10);
+	const [childA, childB] = children();
+	assert.ok(childA && childB?.taskId);
+	await h.waitForLatest(childA.childId, (candidate) => candidate.launchLeafId !== undefined);
+	const paused = await h.call({ action: "pause", id: childB.childId });
+	assert.notEqual(paused.isError, true, text(paused));
+	siblingDone.resolve();
+	await launched;
+	assert.ok(takeStoppedQueuedOwnerlessChild(childB.taskId), "Atomic restarts and forgets the queued launch");
+	h.finishOn.clear();
+	ownerSwitchesTo(h, haiku, "low");
+
+	const resumed = await h.call({ action: "resume", id: childB.childId });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	const resumedTask = resumedTaskId(resumed);
+	await h.waitForLatest(
+		childB.childId,
+		(candidate) => candidate.taskId === resumedTask && candidate.state === "terminal",
+	);
+	assert.deepEqual(startedOn(h, childB.childId, resumedTask), { model: "anthropic/claude-sonnet", thinking: "high" });
+});
+
+test("a never-started queued child whose inherited model is no longer usable after a restart fails to resume, never starting on its parent's new model (#3784)", async () => {
+	const h = harness();
+	usableModels(h, [sonnet, haiku]);
+	const schedule = createExecutionScheduler(1);
+	const runId = "queued-inherited-model-gone";
+	const childId = `${runId}:0`;
+	const runningTask = await h.admit(`${runId}-sibling`, schedule);
+	const queuedTask = await h.admit(runId, schedule, admittedOnSonnetHigh);
+	await h.waitForLatest(`${runId}-sibling:0`, (candidate) => candidate.launchLeafId !== undefined);
+	await h.call({ action: "pause", id: childId });
+	await h.call({ action: "quit", id: `${runId}-sibling:0` });
+	await settled(h, runningTask);
+	assert.ok(takeStoppedQueuedSubagentChild(queuedTask), "Atomic restarts and forgets the queued launch");
+	usableModels(h, [haiku]);
+	ownerSwitchesTo(h, haiku, "low");
+
+	const resumed = await h.call({ action: "resume", id: childId });
+	assert.equal(resumed.isError, true, text(resumed));
+	assert.match(text(resumed), /anthropic\/claude-sonnet.*no longer available/);
+	assert.deepEqual(
+		h.runs.filter((run) => run.options.runId === runId),
+		[],
+		"it never starts on a model it was not admitted with",
+	);
+});
+
+test("a started child restored after a restart keeps its own model and thinking level, and falls back to the model it was admitted with, not its parent's new one (#3784)", async () => {
+	const h = harness();
+	usableModels(h, [sonnet, haiku]);
+	const restarted = await restoreStartedChild(h, "started-inherited-model", admittedOnSonnetHigh, undefined, () =>
+		ownerSwitchesTo(h, haiku, "low"),
+	);
+	assert.deepEqual(startedOn(h, "started-inherited-model:0", restarted.taskId), {
+		model: "anthropic/claude-sonnet",
+		thinking: "high",
+	});
+	assert.equal(restarted.options.currentModel, "anthropic/claude-sonnet");
+});
+
+test("a never-started queued child admitted outside any Intercom group stays out of the group its parent joined later (#3784)", async () => {
+	const h = harness();
+	usableModels(h, [sonnet]);
+	const start = await resumeQueuedChildAfterRestart(
+		h,
+		"queued-no-group",
+		{ ...admittedOnSonnetHigh, intercomGroup: undefined },
+		undefined,
+		() => Object.assign(h.ctx, { subagentPolicy: { intercomGroup: "joined-later" } }),
+	);
+	assert.equal(start.options.intercomGroup, undefined);
+});
+
 function initGitRepository(root: string): void {
 	const git = (args: string[]) => {
 		const result = spawnSync("git", args, { cwd: root, encoding: "utf8" });
@@ -1599,7 +2141,7 @@ test("a resume that cannot restart a paused worktree child keeps its dirty workt
 	h.agentDefined = false;
 	const resumed = await h.call({ action: "resume", id: childA.childId });
 	assert.equal(resumed.isError, true, text(resumed));
-	assert.match(text(resumed), /agent "worker" is no longer defined/);
+	assert.match(text(resumed), /agent "worker" \(project\) is no longer defined/);
 	await sleep(100);
 	assert.equal(readFileSync(trackedEdit, "utf8"), "edited by A\n", "the tracked edit survives the failed resume");
 	assert.equal(readFileSync(untrackedDraft, "utf8"), "draft by A\n", "the untracked draft survives the failed resume");

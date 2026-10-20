@@ -12,6 +12,7 @@ import {
 } from "@bastani/atomic";
 import type { ModelSingleResponse } from "../../../../coding-agent/src/core/tasks/contracts.js";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.js";
+import type { AgentConfig, AgentScope, AgentSource } from "../../agents/agent-types.js";
 import {
 	applyIntercomBridgeToAgent,
 	resolveIntercomBridge,
@@ -39,6 +40,7 @@ import {
 	readSubagentChildRecords,
 	recordSubagentChildGone,
 	SUBAGENT_CHILD_GONE_STATUS,
+	type SubagentChildLaunch,
 	type SubagentChildRecord,
 	type SubagentChildRecordSink,
 	subagentChildOwner,
@@ -229,6 +231,47 @@ function resumedPrompts(
 	return { task, followUps };
 }
 
+/**
+ * What a child that never started is prompted with when it starts fresh: its original task, with the resume
+ * message after it as its original launch would have had it, then any messages it was sent while it waited.
+ */
+function freshPrompts(
+	record: SubagentChildRecord,
+	launch: SubagentChildLaunch,
+	resume: SubagentChildResumeRequest | undefined,
+): { readonly task: string; readonly followUps: readonly string[] } {
+	const held = record.heldMessages && record.heldMessages.taskId === record.taskId ? record.heldMessages.messages : [];
+	return { task: resume?.message ? `${launch.task}\n\n${resume.message}` : launch.task, followUps: held };
+}
+
+/**
+ * The agent definition the child was launched with, looked up again by name. With the source its launch resolved,
+ * the definition from that source, wherever the default scope would shadow it with another of the same name.
+ */
+function rediscoverAgent(
+	deps: SubagentChildRestoreDeps,
+	cwd: string,
+	name: string,
+	source: AgentSource | undefined,
+): AgentConfig | undefined {
+	const scopes: readonly AgentScope[] = source ? ["both", "user", "project"] : [resolveExecutionAgentScope(undefined)];
+	for (const scope of scopes) {
+		const agent = deps
+			.discoverAgents(cwd, scope)
+			.agents.find((candidate) => candidate.name === name && (!source || candidate.source === source));
+		if (agent) return agent;
+	}
+	return undefined;
+}
+
+/**
+ * The Intercom group the child's launch had. A record that says what the launch inherited names it exactly, none
+ * included; an older one falls back to the group the owner is in now.
+ */
+function launchIntercomGroup(record: SubagentChildRecord, ctx: ExtensionContext): string | undefined {
+	return record.inherited ? record.intercomGroup : (record.intercomGroup ?? inheritedIntercomGroup(ctx));
+}
+
 async function relaunchChild(
 	deps: SubagentChildRestoreDeps,
 	ctx: ExtensionContext,
@@ -263,14 +306,18 @@ async function relaunchChild(
 		return ownerlessRelaunched(deps, record, launched, recordChild, release, hold, supervisorAuthorization, ctx);
 	}
 	if (!existsSync(record.cwd)) return unrestorable(`its working directory no longer exists: ${record.cwd}`);
-	const discovered = deps
-		.discoverAgents(record.cwd, resolveExecutionAgentScope(undefined))
-		.agents.find((agent) => agent.name === record.agent);
-	if (!discovered) return unrestorable(`agent "${record.agent}" is no longer defined`);
+	// A child that never started has no session to reopen; its records say how its launch starts it fresh.
+	const fresh =
+		record.childSessionId === undefined && record.childSessionFile === undefined ? record.launch : undefined;
+	const discovered = rediscoverAgent(deps, record.cwd, record.agent, record.agentSource);
+	if (!discovered)
+		return unrestorable(
+			`agent "${record.agent}"${record.agentSource ? ` (${record.agentSource})` : ""} is no longer defined`,
+		);
 	const bridge = record.orchestratorTarget
 		? resolveIntercomBridge({
 				config: deps.config.intercomBridge,
-				context: "fresh",
+				context: record.forked ? "fork" : "fresh",
 				orchestratorTarget: resolveIntercomSessionTarget(
 					deps.pi.getSessionName(),
 					ctx.sessionManager.getSessionId(),
@@ -279,21 +326,59 @@ async function relaunchChild(
 			})
 		: undefined;
 	const agent = bridge?.active ? applyIntercomBridgeToAgent(discovered, bridge) : discovered;
-	const reopened = await reopenChildSession(ctx, record);
-	if ("reason" in reopened) return unrestorable(reopened.reason);
-	const { sessionManager } = reopened;
-	const previousIntercomId = readPreviousIntercomId(sessionManager);
-	onReopened(previousIntercomId);
-	if (previousIntercomId) await hold?.add(previousIntercomId);
+	let sessionManager: SessionManager | undefined;
+	if (fresh) {
+		// A forked launch starts on the branch it prepared from its owner's conversation, never on a fresh context.
+		if (fresh.forkSession) {
+			const branch = await reopenChildSession(ctx, {
+				cwd: record.cwd,
+				childSessionId: fresh.forkSession.id,
+				...(fresh.forkSession.file ? { childSessionFile: fresh.forkSession.file } : {}),
+			});
+			if ("reason" in branch)
+				return unrestorable(
+					`the session forked from its parent's conversation for it could not be reopened: ${branch.reason}`,
+				);
+			sessionManager = branch.sessionManager;
+		}
+		onReopened(undefined);
+	} else {
+		const reopened = await reopenChildSession(ctx, record);
+		if ("reason" in reopened) return unrestorable(reopened.reason);
+		sessionManager = reopened.sessionManager;
+		const previousIntercomId = readPreviousIntercomId(sessionManager);
+		onReopened(previousIntercomId);
+		if (previousIntercomId) await hold?.add(previousIntercomId);
+	}
+	// The owner as it was when it admitted the child, not as it is now (#3784); an older record has only the latter.
+	const inherited = record.inherited ?? {
+		...(ctx.model ? { model: currentModelFullId(ctx.model), modelProvider: ctx.model.provider } : {}),
+		...(ctx.thinkingLevel ? { thinkingLevel: ctx.thinkingLevel } : {}),
+	};
+	const resolveCandidateModel = createCandidateModelResolver(ctx.modelRegistry, inherited.modelProvider);
+	const ownModel = fresh
+		? fresh.modelOverride && resolveCandidateModel(fresh.modelOverride)?.model
+			? fresh.modelOverride
+			: undefined
+		: sessionManager
+			? ownSessionModelCandidate(sessionManager, record, resolveCandidateModel)
+			: undefined;
+	// A model it inherited that is no longer usable is dropped, as an unusable model of its own is. It never takes the
+	// owner's new model instead: a child that would have run on the inherited model cannot continue.
+	const inheritedModel =
+		inherited.model && (!record.inherited || resolveCandidateModel(inherited.model)?.model)
+			? inherited.model
+			: undefined;
+	if (inherited.model && !inheritedModel && !ownModel && !agent.model && !agent.fallbackModels?.length)
+		return unrestorable(
+			`the model it inherited from its parent when it was launched, ${inherited.model}, is no longer available`,
+		);
 	const childOptions = ctx.getChildSessionOptions?.({ tools: agent.tools });
 	const supervisorAuthorization = childOptions && !childAllowsIntercom(childOptions) ? undefined : hold?.authorization;
 	// A child that will not use Intercom never registers, so nothing it could be sent should wait for it.
 	if (!supervisorAuthorization) await hold?.release();
-	const intercomGroup = record.intercomGroup ?? inheritedIntercomGroup(ctx);
-	const currentProvider = ctx.model?.provider;
-	const resolveCandidateModel = createCandidateModelResolver(ctx.modelRegistry, currentProvider);
-	const ownModel = ownSessionModelCandidate(sessionManager, record, resolveCandidateModel);
-	const prompts = resumedPrompts(record, resume);
+	const intercomGroup = launchIntercomGroup(record, ctx);
+	const prompts = fresh ? freshPrompts(record, fresh, resume) : resumedPrompts(record, resume);
 	const options: RunSyncOptions = {
 		runningCapacity: deps.config.parallel?.runningCapacity,
 		getChildSessionOptions: ctx.getChildSessionOptions,
@@ -301,9 +386,15 @@ async function relaunchChild(
 		cwd: record.cwd,
 		runId: record.runId,
 		index: record.index,
-		sessionDir: sessionManager.getSessionDir() || mkdtempSync(join(tmpdir(), "atomic-subagent-restore-")),
-		sessionManager,
-		resumeSession: true,
+		sessionDir:
+			(fresh ? fresh.sessionDir : sessionManager?.getSessionDir()) ||
+			mkdtempSync(join(tmpdir(), "atomic-subagent-restore-")),
+		...(sessionManager ? { sessionManager, ...(fresh ? {} : { resumeSession: true }) } : {}),
+		...(fresh?.skills ? { skills: [...fresh.skills] } : {}),
+		...(fresh?.outputPath ? { outputPath: fresh.outputPath } : {}),
+		...(fresh?.outputMode ? { outputMode: fresh.outputMode } : {}),
+		...(fresh?.maxOutput ? { maxOutput: fresh.maxOutput } : {}),
+		...(fresh?.share === undefined ? {} : { share: fresh.share }),
 		...(prompts.followUps.length > 0 ? { resumeFollowUps: prompts.followUps } : {}),
 		intercomEvents: deps.pi.events,
 		parentDepth: getCurrentSubagentDepth(ctx),
@@ -316,10 +407,10 @@ async function relaunchChild(
 		availableModels: ctx.modelRegistry.getAvailable().map(toModelInfo),
 		knownModelProviders: collectKnownModelProviders(ctx.modelRegistry),
 		resolveCandidateModel,
-		preferredModelProvider: currentProvider,
+		...(inherited.modelProvider ? { preferredModelProvider: inherited.modelProvider } : {}),
 		...(ownModel ? { modelOverride: ownModel } : {}),
-		currentModel: currentModelFullId(ctx.model),
-		currentThinkingLevel: ctx.thinkingLevel,
+		...(inheritedModel ? { currentModel: inheritedModel } : {}),
+		...(inherited.thinkingLevel ? { currentThinkingLevel: inherited.thinkingLevel } : {}),
 	};
 	ctx.orchestrationContext?.messageAdmission?.boundary.registerOwnedSubagentRun(record.runId);
 	const recordChild = createSubagentChildRecordSink(deps.pi, ctx);
@@ -330,6 +421,8 @@ async function relaunchChild(
 		// No task host (an SDK session): it runs in the background directly, recorded like a task-host launch.
 		const launched = runOwnerlessChild({
 			agent: agent.name,
+			agentSource: agent.source,
+			forked: record.forked === true,
 			task: prompts.task,
 			cwd: record.cwd,
 			options,
@@ -346,11 +439,13 @@ async function relaunchChild(
 		agents: [agent],
 		agent: agent.name,
 		task: prompts.task,
-		...(resume ? { operation: `${record.runId}:${record.index}:resume:${randomUUID()}` } : {}),
+		...(fresh?.intentTask === undefined ? {} : { intentTask: fresh.intentTask }),
+		...(resume || fresh ? { operation: `${record.runId}:${record.index}:resume:${randomUUID()}` } : {}),
 		options,
 		wait: { kind: "background" },
 		runtime,
 		recordChild,
+		forked: record.forked === true,
 		...(schedule ? { schedule } : {}),
 		onTerminal: () => {
 			release();
@@ -393,7 +488,7 @@ async function startQueuedChild(
 		recordChild,
 		release,
 		supervisorAuthorization,
-		record.intercomGroup ?? inheritedIntercomGroup(ctx),
+		launchIntercomGroup(record, ctx),
 	);
 }
 
@@ -435,7 +530,7 @@ async function ownerlessRelaunched(
 		});
 	// Pause or quit right after this returns must find the child under its new launch id.
 	await recordChild.flushed?.();
-	const intercomGroup = record.intercomGroup ?? inheritedIntercomGroup(ctx);
+	const intercomGroup = launchIntercomGroup(record, ctx);
 	const intercomLive =
 		record.intercomTarget && supervisorAuthorization
 			? await awaitIntercomPeer(deps.pi.events, record.intercomTarget, intercomGroup)
@@ -533,7 +628,7 @@ export async function restoreSubagentChild(
 			hold = earlier;
 			await hold.refresh();
 		} else {
-			hold = await holdChildTargets(deps.pi.events, record, record.intercomGroup ?? inheritedIntercomGroup(ctx));
+			hold = await holdChildTargets(deps.pi.events, record, launchIntercomGroup(record, ctx));
 		}
 		return relaunchChild(deps, ctx, record, hold, release, onReopened, resume);
 	})().then(

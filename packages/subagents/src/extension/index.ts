@@ -24,7 +24,13 @@ import {
 import { discoverAgents } from "../agents/agents.js";
 import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/foreground/notify.js";
 import { bindSubagentChildCards } from "../runs/foreground/subagent-child-card-state.js";
-import { subagentChildOwner, watchWorkflowStageSubagentChildren } from "../runs/foreground/subagent-child-records.js";
+import {
+	endWorkflowRunStageSubagentChildren,
+	subagentChildOwner,
+	WORKFLOW_RUN_ENDED_STAGE_SUBAGENTS_EVENT,
+	type WorkflowRunEndedStageSubagentsRequest,
+	watchWorkflowStageSubagentChildren,
+} from "../runs/foreground/subagent-child-records.js";
 import {
 	awaitSubagentChildRestoration,
 	holdDormantRunSubagentChildren,
@@ -527,6 +533,16 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			);
 		});
 		eventUnsubscribes.push(unsubscribeDormantRunHold);
+		// The workflows extension of this session ended a run for good: its stages' subagents end with it.
+		const unsubscribeRunEnded = pi.events.on(WORKFLOW_RUN_ENDED_STAGE_SUBAGENTS_EVENT, (payload) => {
+			const request = payload as Partial<WorkflowRunEndedStageSubagentsRequest> | null;
+			const ctx = request?.context ?? state.lastUiContext;
+			if (!lifecycle.isCurrent() || !request || request.completion || !ctx) return;
+			if (!Array.isArray(request.stageSessionIds)) return;
+			const stageSessionIds = request.stageSessionIds.filter((id): id is string => typeof id === "string");
+			request.completion = endWorkflowRunStageSubagentChildren(ctx, stageSessionIds);
+		});
+		eventUnsubscribes.push(unsubscribeRunEnded);
 		pi.on("session_shutdown", (_event, ctx) => {
 			// Holds nothing took over end with the session; the broker also ends them when its connection closes.
 			try {

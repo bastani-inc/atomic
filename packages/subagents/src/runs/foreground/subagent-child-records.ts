@@ -1,4 +1,12 @@
-import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@bastani/atomic";
+import {
+	type ExtensionAPI,
+	type ExtensionContext,
+	type SessionEntry,
+	SessionManager,
+	type SessionStore,
+} from "@bastani/atomic";
+import type { AgentSource } from "../../agents/agent-types.js";
+import type { MaxOutputConfig, OutputMode, RunSyncOptions } from "../../shared/types.js";
 import { type SubagentChildWorktree, unparkRunWorktree } from "./run-worktrees.js";
 import {
 	isSubagentChildRecord,
@@ -33,6 +41,14 @@ export interface SubagentChildRecord {
 	readonly runId: string;
 	readonly index: number;
 	readonly agent: string;
+	/**
+	 * Where the agent definition the launch resolved came from. The same name can be defined by more than one source,
+	 * and its definition sets the child's system prompt, skills and inherited project context. Records written before
+	 * Atomic recorded it have none, and restore looks the agent up in the default scope.
+	 */
+	readonly agentSource?: AgentSource;
+	/** Whether the child was launched with `context: "fork"`, which shapes its Intercom bridge; absent means fresh. */
+	readonly forked?: boolean;
 	readonly state: "running" | "terminal";
 	readonly cwd: string;
 	readonly owner: SubagentChildOwner;
@@ -60,6 +76,88 @@ export interface SubagentChildRecord {
 	 * task `taskId`, in order. Resume delivers them once, before its own message; a later task's record supersedes them.
 	 */
 	readonly heldMessages?: { readonly taskId: string; readonly messages: readonly string[] };
+	/** How a child admitted while it waited for a slot in its run was launched, so it can start fresh after a restart. */
+	readonly launch?: SubagentChildLaunch;
+	/**
+	 * What the child inherited from its owner when it was admitted. Restore and resume use it, never the reopened
+	 * owner's current model and thinking level, and with it `intercomGroup` is exactly the launch's: absent means none.
+	 * Records written before Atomic recorded it have none, and take those from the owner as it is now.
+	 */
+	readonly inherited?: SubagentChildInheritance;
+}
+
+/**
+ * The owner's model and thinking level when it admitted the child. A child whose agent and launch pin no model runs
+ * on them, and every child falls back to that model.
+ */
+export interface SubagentChildInheritance {
+	/** `provider/id`; absent when the owner had no model. */
+	readonly model?: string;
+	/** The provider bare model names resolve against. */
+	readonly modelProvider?: string;
+	readonly thinkingLevel?: string;
+}
+
+/** What a launch with these options inherits from its owner; see {@link SubagentChildInheritance}. */
+export function subagentChildInheritance(options: RunSyncOptions): SubagentChildInheritance {
+	return {
+		...(options.currentModel ? { model: options.currentModel } : {}),
+		...(options.preferredModelProvider ? { modelProvider: options.preferredModelProvider } : {}),
+		...(options.currentThinkingLevel ? { thinkingLevel: options.currentThinkingLevel } : {}),
+	};
+}
+
+/**
+ * What a child that has not started yet needs to start as a new launch after Atomic restarts, when nothing of its
+ * launch is left in the process: only what its original launch already had, and never a credential or capability.
+ * The agent, cwd, worktree, run identity, Intercom identity and held messages are the record's own fields.
+ */
+export interface SubagentChildLaunch {
+	/** The prompt the child runs, with every instruction its launch added. */
+	readonly task: string;
+	/** The task as the caller gave it, which its task host shows. */
+	readonly intentTask?: string;
+	/**
+	 * The session a `context: "fork"` launch branched from its owner's conversation before admission, which the child
+	 * starts on: its id, in the owner's session store, and its file when that store keeps one.
+	 */
+	readonly forkSession?: { readonly id: string; readonly file?: string };
+	readonly sessionDir?: string;
+	readonly modelOverride?: string;
+	readonly skills?: readonly string[];
+	readonly outputPath?: string;
+	readonly outputMode?: OutputMode;
+	readonly maxOutput?: MaxOutputConfig;
+	readonly share?: boolean;
+}
+
+/** The launch data of a child about to wait for a slot in its run; see {@link SubagentChildLaunch}. */
+export function subagentChildLaunch(
+	task: string,
+	intentTask: string | undefined,
+	options: RunSyncOptions,
+): SubagentChildLaunch {
+	const forkSession = options.resumeSession ? undefined : options.sessionManager;
+	const forkSessionFile = forkSession?.getSessionFile();
+	return {
+		task,
+		...(intentTask === undefined ? {} : { intentTask }),
+		...(forkSession
+			? {
+					forkSession: {
+						id: forkSession.getSessionId(),
+						...(forkSessionFile ? { file: forkSessionFile } : {}),
+					},
+				}
+			: {}),
+		...(options.sessionDir ? { sessionDir: options.sessionDir } : {}),
+		...(options.modelOverride ? { modelOverride: options.modelOverride } : {}),
+		...(options.skills ? { skills: options.skills } : {}),
+		...(options.outputPath ? { outputPath: options.outputPath } : {}),
+		...(options.outputMode ? { outputMode: options.outputMode } : {}),
+		...(options.maxOutput ? { maxOutput: options.maxOutput } : {}),
+		...(options.share === undefined ? {} : { share: options.share }),
+	};
 }
 
 export type SubagentChildRecordInput = Omit<SubagentChildRecord, "version" | "childId" | "owner">;
@@ -123,6 +221,11 @@ function endsWithStage(record: SubagentChildRecord): boolean {
 	return record.state === "terminal" && !ENDED_STATUSES.has(record.terminalStatus ?? "");
 }
 
+/** Whether a workflow run ending for good ends this child: every one does that has not ended already, running or not. */
+function endsWithRun(record: SubagentChildRecord): boolean {
+	return record.state === "running" || endsWithStage(record);
+}
+
 export function subagentChildId(runId: string, index: number): string {
 	return `${runId}:${index}`;
 }
@@ -159,6 +262,11 @@ function appendInOrder(pi: Pick<ExtensionAPI, "appendEntry">, record: SubagentCh
 	return appended;
 }
 
+/** Settles once every record of this owner handed to a sink so far has been appended. */
+export function subagentChildRecordsAppended(ownerSessionId: string): Promise<void> {
+	return appendChains.get(ownerSessionId) ?? Promise.resolve();
+}
+
 interface StageChildren {
 	readonly closeSignal: AbortSignal;
 	readonly childIds: Set<string>;
@@ -167,6 +275,8 @@ interface StageChildren {
 }
 
 const stageChildren = new WeakMap<AbortSignal, StageChildren>();
+/** Workflow stage sessions with a generation in this process, whose own session records how their children end. */
+const stageSessionsInProcess = new Set<string>();
 
 /**
  * Watch the children a workflow stage owns, so that when the stage generation closes for good every settled child,
@@ -194,6 +304,7 @@ export function watchWorkflowStageSubagentChildren(
 	};
 	const watched: StageChildren = { closeSignal, childIds: new Set(), endedForGood, end };
 	stageChildren.set(closeSignal, watched);
+	stageSessionsInProcess.add(owner.sessionId);
 	const endAll = () => {
 		if (!endedForGood()) return;
 		const persisted = readSubagentChildRecords(sessionManager.getEntries(), owner.sessionId);
@@ -205,6 +316,57 @@ export function watchWorkflowStageSubagentChildren(
 	const later: WorkflowStageChildrenEnd = { endChildren: endAll };
 	admission.extensionState.set(WORKFLOW_STAGE_END_CHILDREN_STATE, later);
 	return watched;
+}
+
+/**
+ * Workflows → subagents: a workflow run ended for good (killed, cancelled, or failed for good). Every subagent its
+ * stages launched ends with it, also when no generation of a stage is live in this process, as after a restart.
+ */
+export const WORKFLOW_RUN_ENDED_STAGE_SUBAGENTS_EVENT = "atomic:workflow-run-ended-stage-subagents";
+
+export interface WorkflowRunEndedStageSubagentsRequest {
+	readonly runId: string;
+	/** Sessions of the run's stages; their `subagent-child` records name the children. */
+	readonly stageSessionIds: readonly string[];
+	/** The launching session, whose store holds the stage sessions; defaults to the one the extension last saw start. */
+	readonly context?: Pick<ExtensionContext, "sessionManager">;
+	completion?: Promise<void>;
+}
+
+/**
+ * Record every child of the ended run's stages `stage-closed` (#3784). A stage with a generation in this process ends
+ * its children through that generation's close and its own session. A stage with none, such as a dormant run's stage
+ * after a restart, has the records appended to its saved session in the store, running children included, since no
+ * task of theirs is left to settle. A stage session that cannot be opened is skipped.
+ */
+export async function endWorkflowRunStageSubagentChildren(
+	ctx: Pick<ExtensionContext, "sessionManager">,
+	stageSessionIds: readonly string[],
+): Promise<void> {
+	let store: SessionStore;
+	try {
+		store = ctx.sessionManager.getSessionStore();
+	} catch {
+		return;
+	}
+	for (const stageSessionId of new Set(stageSessionIds)) {
+		if (stageSessionsInProcess.has(stageSessionId)) continue;
+		try {
+			const stageSession = await SessionManager.open(store, stageSessionId);
+			for (const record of readSubagentChildRecords(stageSession.getEntries(), stageSessionId).values()) {
+				if (!endsWithRun(record)) continue;
+				const ended: SubagentChildRecord = {
+					...record,
+					state: "terminal",
+					terminalStatus: SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
+				};
+				await stageSession.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, ended);
+				observeSubagentChildRecord(ended);
+			}
+		} catch {
+			// Its session is gone or unreadable: nothing restores its children either.
+		}
+	}
 }
 
 /**

@@ -20,6 +20,7 @@ import {
 	type SubagentChildRecord,
 	type SubagentChildStopStatus,
 	subagentChildOwner,
+	subagentChildRecordsAppended,
 	takeSubagentChildStop,
 } from "./subagent-child-records.js";
 import { restoreSubagentChild, type SubagentChildRestoreDeps } from "./subagent-child-restore.js";
@@ -164,29 +165,47 @@ async function stopHostChild(
 	return undefined;
 }
 
-/** Stop a live child resumably: through its task host, or directly when no task host launched it (an SDK session). */
+type LiveChildStop =
+	| { readonly kind: "stopped" }
+	/** The child settled on its own before the stop took effect, with this terminal status. */
+	| { readonly kind: "settled"; readonly status: string }
+	| { readonly kind: "failed"; readonly reason: string };
+
+/**
+ * Stop a live child resumably: through its task host, or directly when no task host launched it (an SDK session).
+ * A child that completes before the stop takes effect keeps its own outcome, which its latest record then names.
+ */
 async function stopLiveChild(
 	deps: SubagentChildRestoreDeps,
 	ctx: ExtensionContext,
 	host: AgentTaskHost | undefined,
 	record: SubagentChildRecord,
 	status: SubagentChildStopStatus,
-): Promise<string | undefined> {
+): Promise<LiveChildStop> {
 	if (record.taskId !== undefined && isLiveOwnerlessChild(record.taskId))
 		await stopOwnerlessChild(record.taskId, status);
 	else if (host) {
 		const failure = await stopHostChild(deps, host, record, status);
-		if (failure) return failure;
-	} else return "it is not running in this process";
+		if (failure) return { kind: "failed", reason: failure };
+	} else return { kind: "failed", reason: "it is not running in this process" };
+	const ownerSessionId = subagentChildOwner(ctx).sessionId;
+	const key = childHoldKey(ownerSessionId, record.childId);
+	await subagentChildRecordsAppended(ownerSessionId);
+	const settled = ownedRecords(ctx).get(record.childId);
+	if (settled?.state === "terminal" && settled.taskId === record.taskId && settled.terminalStatus !== status) {
+		// It is not paused, so nothing sent to it waits for a resume.
+		releasePausedChildHold(key);
+		return { kind: "settled", status: settled.terminalStatus ?? "settled" };
+	}
 	if (status === "paused") {
 		const hold = await holdChildTargets(
 			deps.pi.events,
 			record,
 			record.intercomGroup ?? inheritedIntercomGroup(ctx),
 		).catch(() => undefined);
-		if (hold) parkPausedChildHold(childHoldKey(subagentChildOwner(ctx).sessionId, record.childId), hold);
+		if (hold) parkPausedChildHold(key, hold);
 	}
-	return undefined;
+	return { kind: "stopped" };
 }
 
 async function stopChildren(
@@ -224,9 +243,15 @@ async function stopChildren(
 	for (const record of targets) {
 		const key = childHoldKey(subagentChildOwner(ctx).sessionId, record.childId);
 		if (isLive(record)) {
-			const failure = await stopLiveChild(deps, ctx, host, record, status);
-			if (failure) {
-				failures.push(`Could not ${action} ${label(record)}: ${failure}`);
+			const stop = await stopLiveChild(deps, ctx, host, record, status);
+			if (stop.kind === "failed") {
+				failures.push(`Could not ${action} ${label(record)}: ${stop.reason}`);
+				continue;
+			}
+			if (stop.kind === "settled") {
+				failures.push(
+					`${label(record)} ${stop.status === "ok" ? "completed" : stop.status === "error" ? "failed" : "ended"} (${stop.status}) before it could be ${status}; there is nothing to ${action}.`,
+				);
 				continue;
 			}
 			children.push(childDetails(record, status));

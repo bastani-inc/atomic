@@ -322,6 +322,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 		// execution holds the run's worktrees until it exits, detached or not.
 		const launched = runOwnerlessChild({
 			agent: task.agent,
+			...(agentConfig ? { agentSource: agentConfig.source } : {}),
 			task: taskText,
 			cwd: taskCwd,
 			options: runOptions,

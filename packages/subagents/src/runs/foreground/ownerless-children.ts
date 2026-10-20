@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { AgentSource } from "../../agents/agent-types.js";
 import type { RunSyncOptions, SingleResult } from "../../shared/types.js";
 import {
 	claimRunWorktree,
@@ -9,9 +10,12 @@ import {
 } from "./run-worktrees.js";
 import {
 	requestSubagentChildStop,
+	type SubagentChildLaunch,
 	type SubagentChildRecordInput,
 	type SubagentChildRecordSink,
 	type SubagentChildStopStatus,
+	subagentChildInheritance,
+	subagentChildLaunch,
 	takeSubagentChildStop,
 } from "./subagent-child-records.js";
 import { runUnboundParallelTask } from "./subagent-executor-parallel-task.js";
@@ -83,6 +87,10 @@ const NO_USAGE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, tu
  */
 export function runOwnerlessChild(input: {
 	readonly agent: string;
+	/** Where the agent definition the launch resolved came from. */
+	readonly agentSource?: AgentSource;
+	/** Whether the child was launched with `context: "fork"`; by default, whether `options` fork a session for it. */
+	readonly forked?: boolean;
 	readonly task: string;
 	/** The child's working directory, as its records name it. */
 	readonly cwd: string;
@@ -106,12 +114,20 @@ export function runOwnerlessChild(input: {
 	let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile"> = {};
 	let childLaunch: Pick<SubagentChildRecordInput, "launchModel" | "launchThinkingLevel" | "launchLeafId"> = {};
 	let stoppedBeforeDispatch = false;
-	const record = (state: SubagentChildRecordInput["state"], terminalStatus?: string, held?: readonly string[]) => {
+	const forked = input.forked ?? (input.options.sessionManager !== undefined && input.options.resumeSession !== true);
+	const record = (
+		state: SubagentChildRecordInput["state"],
+		terminalStatus?: string,
+		held?: readonly string[],
+		queuedLaunch?: SubagentChildLaunch,
+	) => {
 		const worktree = runWorktreeRecord(runId, index);
 		input.recordChild.record({
 			runId,
 			index,
 			agent: input.agent,
+			...(input.agentSource ? { agentSource: input.agentSource } : {}),
+			forked,
 			state,
 			cwd: input.cwd,
 			taskId: launchId,
@@ -125,6 +141,8 @@ export function runOwnerlessChild(input: {
 			...(worktree ? { worktree } : {}),
 			...(terminalStatus ? { terminalStatus } : {}),
 			...(held?.length ? { heldMessages: { taskId: launchId, messages: held } } : {}),
+			...(queuedLaunch ? { launch: queuedLaunch } : {}),
+			inherited: subagentChildInheritance(input.options),
 		});
 	};
 	const settled = Promise.withResolvers<void>();
@@ -147,6 +165,7 @@ export function runOwnerlessChild(input: {
 			stoppedQueued.set(launchId, (resumed) =>
 				runOwnerlessChild({
 					...input,
+					forked,
 					task: resumed.message ? `${input.task}\n\n${resumed.message}` : input.task,
 					options: {
 						...input.options,
@@ -221,9 +240,15 @@ export function runOwnerlessChild(input: {
 		}
 	};
 	liveLaunches.set(launchId, launch);
-	// Pause or quit right after the launch must find the child, also while it waits for a slot.
-	record("running");
+	// Pause or quit right after the launch must find the child, also while it waits for a slot. Nothing of a queued
+	// launch survives a restart but its records: they say how to start it fresh then.
 	const schedule = input.schedule;
+	record(
+		"running",
+		undefined,
+		undefined,
+		schedule ? subagentChildLaunch(input.task, undefined, input.options) : undefined,
+	);
 	if (schedule) rememberSubagentChildSchedule(runId, index, schedule);
 	const result = (
 		schedule

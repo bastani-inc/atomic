@@ -301,6 +301,7 @@ export async function runSinglePath(
 			// No task host owns this launch: it is recorded in this session like one, so run control reaches it.
 			r = await runOwnerlessChild({
 				agent: params.agent!,
+				agentSource: agentConfig.source,
 				task,
 				cwd: effectiveCwd,
 				options: runOptions,

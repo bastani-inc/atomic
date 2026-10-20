@@ -27,7 +27,7 @@ export function readPreviousIntercomId(sessionManager: SessionManager): string |
  */
 export async function reopenChildSession(
 	ctx: Pick<ExtensionContext, "sessionManager">,
-	record: SubagentChildRecord,
+	record: Pick<SubagentChildRecord, "childSessionId" | "childSessionFile" | "cwd">,
 ): Promise<{ readonly sessionManager: SessionManager } | { readonly reason: string }> {
 	try {
 		if (record.childSessionFile && existsSync(record.childSessionFile)) {
