@@ -1,13 +1,13 @@
 ---
 title: "Intercom"
-description: "Direct messaging between Atomic sessions on the same machine"
+description: "Direct messaging between Atomic sessions, on one machine or across machines that share storage"
 ---
 
 > Atomic sessions can talk to each other. Press ALT+M to message another session, or ask the agent to coordinate with a peer.
 
 # Intercom
 
-Atomic bundles `@bastani/intercom` for direct 1:1 messaging between sessions on the same machine. Send context, findings, or requests yourself, or let agents coordinate. No separate install is needed.
+Atomic bundles `@bastani/intercom` for direct 1:1 messaging between sessions on the same machine, or on several machines that share a storage database. Send context, findings, or requests yourself, or let agents coordinate. No separate install is needed.
 
 The extension registers commands and tools at startup. Connections are lazy: a session connects when you or the model invoke Intercom. Workflow stages and admitted subagent children connect at session start so they are listable and steerable immediately.
 
@@ -29,9 +29,10 @@ The extension registers commands and tools at startup. Connections are lazy: a s
 
 ## Where to go next
 
-Intercom coordinates several Atomic sessions on one machine. Read this page for the quick start and the coordination patterns, then continue:
+Intercom coordinates several Atomic sessions on one machine, or across machines that share storage. Read this page for the quick start and the coordination patterns, then continue:
 
 - [Intercom operations](/intercom/operations) covers connection states, delivery, notifications, shortcuts, and recovery.
+- [Running Intercom across machines](/intercom/operations#running-intercom-across-machines) explains how sessions on different machines message each other through shared storage.
 - [Intercom reference](/intercom/reference) — the `intercom` tool contract and every intercom setting.
 
 ## Table of Contents
@@ -57,6 +58,7 @@ Intercom coordinates several Atomic sessions on one machine. Read this page for 
   - [Workflow Delivery Modes](/intercom/operations#workflow-delivery-modes)
   - [Subagent Control Notices](/intercom/operations#subagent-control-notices)
   - [Delivery Ordering](/intercom/operations#delivery-ordering)
+- [Running Intercom across machines](/intercom/operations#running-intercom-across-machines)
 - [Configuration](/intercom/reference#configuration)
 - [Keyboard Shortcuts](/intercom/operations#keyboard-shortcuts)
 - [How It Works](/intercom/operations#how-it-works)
