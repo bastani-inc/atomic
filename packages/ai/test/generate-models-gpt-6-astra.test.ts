@@ -209,8 +209,6 @@ test("advertises OpenAI and Codex service tiers per model with their published r
 		]),
 	);
 	assert.deepEqual(codexTierIds, {
-		"gpt-5.3-codex-spark": [],
-		"gpt-5.5": ["priority"],
 		"gpt-5.6-luna": ["priority"],
 		"gpt-5.6-sol": ["priority"],
 		"gpt-5.6-terra": ["priority"],
@@ -262,8 +260,6 @@ test("gives Codex GPT-6.1 Sol a 500K context without long-context pricing and le
 			.map(([id, model]) => [id, { contextWindow: model.contextWindow, tiered: model.cost.tiers !== undefined }]),
 	);
 	assert.deepEqual(otherCodex, {
-		"gpt-5.3-codex-spark": { contextWindow: 128_000, tiered: false },
-		"gpt-5.5": { contextWindow: 272_000, tiered: true },
 		"gpt-5.6-luna": { contextWindow: 272_000, tiered: true },
 		"gpt-5.6-sol": { contextWindow: 272_000, tiered: true },
 		"gpt-5.6-terra": { contextWindow: 272_000, tiered: true },

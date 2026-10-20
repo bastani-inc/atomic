@@ -3,10 +3,6 @@ import { describe, expect, it } from "vitest";
 
 describe("export HTML skill block rendering", () => {
 	const templateJs = readFileSync(new URL("../src/core/export-html/template.js", import.meta.url), "utf-8");
-	const treeScript = readFileSync(
-		new URL("../src/core/export-html/template-js/tree-filter-render.js", import.meta.url),
-		"utf-8",
-	);
 
 	it("strips skill wrapper XML from user message rendering", () => {
 		// Skill commands store a structural wrapper in the raw user message:
@@ -18,9 +14,9 @@ describe("export HTML skill block rendering", () => {
 	});
 
 	it("parses source-qualified skill blocks with stable candidate identity", () => {
-		const parserSource = treeScript.slice(
-			treeScript.indexOf("function parseSkillBlock"),
-			treeScript.indexOf("function getSearchableText"),
+		const parserSource = templateJs.slice(
+			templateJs.indexOf("function parseSkillBlock"),
+			templateJs.indexOf("function getSearchableText"),
 		);
 		const parse = Function(`${parserSource}; return parseSkillBlock;`)() as (text: string) => {
 			name: string;

@@ -388,7 +388,7 @@ ${chalk.bold("Examples:")}
   ${APP_NAME} auth check --provider openai
 
   # Print an OAuth bearer token, refreshing it when under the minimum expiry
-  ${APP_NAME} auth print-bearer-token --model gpt-5.5 --provider openai-codex --min-expiry 30m
+  ${APP_NAME} auth print-bearer-token --model gpt-6.1-sol --provider openai-codex --min-expiry 30m
 
   # Interactive mode
   ${APP_NAME}

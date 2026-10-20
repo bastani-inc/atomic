@@ -1592,6 +1592,8 @@ Models with `supportsMidConvoSystemMessages` receive updates in place. Other mod
 
 With Anthropic's `supportsMidConvoToolChanges`, the `inline-tools-2026-09-15` beta keeps the initial top-level tools and a deferred placeholder fixed. Later `tool_addition` blocks carry complete definitions, including replacements under an existing name; `tool_removal` blocks reference names. This preserves the cached prefix across tool changes. At least one initial tool is required; otherwise the current tool list is sent at the top level.
 
+With OpenAI Responses' `supportsAdditionalTools`, every tool is declared in `additional_tools` items, like Codex: the initial tools in one at the head of the input, and later additions and redefinitions at their message, with no top-level tool list. A later item replaces same-name definitions from earlier items but cannot remove a tool, so removals are announced as text, later updates restate the tools that are still unavailable, and calls to removed tools fail at execution. With only `supportsToolSearch`, or OpenAI Completions' `supportsMidConvoToolAdditions`, new tools are anchored at their message; a removal or a redeclared name moves the tool state up to that point into the top-level list once.
+
 ## Context Serialization
 
 The `Context` object can be easily serialized and deserialized using standard JSON methods, making it simple to persist conversations, implement chat history, or transfer contexts between services:

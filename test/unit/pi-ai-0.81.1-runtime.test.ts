@@ -26,7 +26,7 @@ function assertCost(actual: number, expected: number): void {
 
 describe("pi-ai 0.81.1 runtime compatibility", () => {
 	test("uses one long-context tier for every GPT-5.5 cost bucket", () => {
-		const model = requireModel("openai-codex", "gpt-5.5");
+		const model = requireModel("openai", "gpt-5.5");
 
 		const atThreshold = calculateCost(model, usage(1, 10, 271_999));
 		assertCost(atThreshold.input, 0.000_005);
