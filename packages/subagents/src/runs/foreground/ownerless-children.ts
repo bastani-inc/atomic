@@ -39,8 +39,8 @@ export interface OwnerlessChildLaunch {
 /** How a child that pause or quit stopped before it was dispatched starts later, on its original launch. */
 export type OwnerlessQueuedStart = (launch: {
 	readonly recordChild: SubagentChildRecordSink;
-	/** The resuming session's lifetime: closing it stops the child resumably. */
-	readonly signal?: AbortSignal;
+	/** The resuming session's lifetime: closing it stops the child, which reopening that session restores. */
+	readonly ownerSignal?: AbortSignal;
 	/** Delivered after its original task, which it never started. */
 	readonly message?: string;
 	readonly supervisorAuthorization?: RunSyncOptions["supervisorAuthorization"];
@@ -87,6 +87,11 @@ export function runOwnerlessChild(input: {
 	/** The child's working directory, as its records name it. */
 	readonly cwd: string;
 	readonly options: RunSyncOptions;
+	/**
+	 * The owning session's lifetime. Closing it stops the child without settling it: the child stays `running`, with
+	 * what it had queued and not read, so reopening the session restores it as it restores a task-host child.
+	 */
+	readonly ownerSignal?: AbortSignal;
 	readonly recordChild: SubagentChildRecordSink;
 	readonly schedule?: (dispatch: () => Promise<void>) => void;
 	readonly runSync: (task: string, options: RunSyncOptions) => Promise<SingleResult>;
@@ -95,7 +100,9 @@ export function runOwnerlessChild(input: {
 	const runId = input.options.runId;
 	const index = input.options.index ?? 0;
 	const stopper = new AbortController();
-	const signal = input.options.signal ? AbortSignal.any([input.options.signal, stopper.signal]) : stopper.signal;
+	const signal = AbortSignal.any(
+		[input.options.signal, input.ownerSignal, stopper.signal].filter((candidate) => candidate !== undefined),
+	);
 	let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile"> = {};
 	let childLaunch: Pick<SubagentChildRecordInput, "launchModel" | "launchThinkingLevel" | "launchLeafId"> = {};
 	let stoppedBeforeDispatch = false;
@@ -143,9 +150,10 @@ export function runOwnerlessChild(input: {
 					task: resumed.message ? `${input.task}\n\n${resumed.message}` : input.task,
 					options: {
 						...input.options,
-						signal: resumed.signal,
+						signal: undefined,
 						supervisorAuthorization: resumed.supervisorAuthorization,
 					},
+					ownerSignal: resumed.ownerSignal,
 					recordChild: resumed.recordChild,
 				}),
 			);
@@ -188,9 +196,16 @@ export function runOwnerlessChild(input: {
 			});
 			const stopped = takeSubagentChildStop(launchId);
 			const stoppedByControl = stopped !== undefined && child.status === "interrupted";
+			const ownerClosed = !stoppedByControl && child.status === "interrupted" && input.ownerSignal?.aborted === true;
 			// Run control marked it stopped before it stopped it; a child that ended otherwise is not stopped.
 			if (stopped !== undefined && !stoppedByControl) unparkRunWorktree(runId, index);
 			if (child.status === "killed") forgetRunMembership(runId, index);
+			if (ownerClosed) {
+				// Its owner closed, which ends nothing: it stays restorable, with its worktree and unread messages.
+				parkRunWorktree(runId, index);
+				record("running", undefined, child.pendingMessages);
+				return child;
+			}
 			// A child that stays resumable keeps what it had queued and not read, for its resume.
 			record(
 				"terminal",
@@ -200,7 +215,8 @@ export function runOwnerlessChild(input: {
 			return child;
 		} catch (error) {
 			if (takeSubagentChildStop(launchId) !== undefined) unparkRunWorktree(runId, index);
-			record("terminal", "error");
+			// Its owner closed: its latest record stays `running`, so reopening the owner restores it.
+			if (input.ownerSignal?.aborted !== true) record("terminal", "error");
 			throw error;
 		}
 	};

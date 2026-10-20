@@ -1386,7 +1386,7 @@ test("a resumed paused child of an SDK session without a task host waits for its
 	await launched;
 });
 
-test("a child an SDK session without a task host resumed stops when that session closes, and stays resumable (#3784)", async () => {
+test("a child an SDK session without a task host resumed keeps running across that session's close: reopening restores it, and its queued messages arrive once, in order (#3784)", async () => {
 	const h = harness({ ownerless: true });
 	h.resumedRunsWait = true;
 	const launch = h.call({ agent: "worker", task: ORIGINAL_TASK, context: "fresh" });
@@ -1404,33 +1404,58 @@ test("a child an SDK session without a task host resumed stops when that session
 	assert.notEqual(paused.isError, true, text(paused));
 	await launch;
 
+	const live = Promise.withResolvers<TestSessionQueue>();
+	h.onSession = (session) => live.resolve(session);
 	const resumed = await h.call({ action: "resume", id: running.childId });
 	assert.notEqual(resumed.isError, true, text(resumed));
 	const resumedTask = resumedTaskId(resumed);
+	const session = await live.promise;
+	h.onSession = undefined;
 	await h.waitForLatest(
 		running.childId,
 		(candidate) => candidate.taskId === resumedTask && !!candidate.childSessionId,
 	);
+	const steer = "STEER: report the permission error only";
+	const followUp = "FOLLOWUP: include the failing command";
+	await session.steer(steer);
+	await session.followUp(followUp);
 	const starts = h.runs.length;
 
 	h.closeOwnerSessionAndReopen();
-	const stopped = await h.waitForLatest(
+	const kept = await h.waitForLatest(
 		running.childId,
-		(candidate) => candidate.taskId === resumedTask && candidate.state === "terminal",
+		(candidate) => candidate.taskId === resumedTask && candidate.heldMessages !== undefined,
 	);
-	assert.equal(stopped.terminalStatus, "interrupted", "closing its owner stops it resumably");
+	assert.equal(kept.state, "running", "closing its owner records nothing terminal");
+	assert.deepEqual(kept.heldMessages?.messages, [steer, followUp], "it keeps what it had queued and not read");
 	await sleep(100);
 	assert.equal(h.runs.length, starts, "nothing runs for it after its owner closed");
 
 	h.resumedRunsWait = false;
+	const [outcome] = await restoreSubagentChildren(h.deps, h.ctx);
+	assert.equal(outcome?.kind, "restored", JSON.stringify(outcome));
+	assert.ok(outcome?.kind === "restored");
+	const finished = await h.waitForLatest(
+		running.childId,
+		(candidate) => candidate.taskId === outcome.taskId && candidate.state === "terminal",
+	);
+	assert.equal(finished.terminalStatus, "ok", "the reopened session restores it");
+	const delivered = transcript(finished);
+	assert.equal(occurrences(delivered, steer), 1, "the held steer is delivered exactly once");
+	assert.equal(occurrences(delivered, followUp), 1, "the held follow-up is delivered exactly once");
+	assert.ok(delivered.indexOf(steer) < delivered.indexOf(followUp), "in the order it queued them");
+
 	const again = await h.call({ action: "resume", id: running.childId });
 	assert.notEqual(again.isError, true, text(again));
 	const againTask = resumedTaskId(again);
-	const finished = await h.waitForLatest(
-		running.childId,
-		(candidate) => candidate.taskId === againTask && candidate.state === "terminal",
+	const after = transcript(
+		await h.waitForLatest(
+			running.childId,
+			(candidate) => candidate.taskId === againTask && candidate.state === "terminal",
+		),
 	);
-	assert.equal(finished.terminalStatus, "ok", "the reopened session resumes it");
+	assert.equal(occurrences(after, steer), 1, "a later resume does not deliver the steer again");
+	assert.equal(occurrences(after, followUp), 1, "a later resume does not deliver the follow-up again");
 });
 
 test("a clean paused worktree child's worktree is removed when its session closes, and resume recreates it from the run's base (#3760 run control)", async () => {
@@ -1543,6 +1568,14 @@ function savedPatches(record: SubagentChildRecord): string[] {
 		.sort();
 }
 
+/**
+ * A restored file as Git checks it out on this machine: with `core.autocrlf=true` (Git for Windows' default) the
+ * restored text has CRLF line endings, like every other file of the recreated worktree.
+ */
+function readCheckedOut(file: string): string {
+	return readFileSync(file, "utf8").replaceAll("\r\n", "\n");
+}
+
 test("resuming a completed worktree child starts from its saved edits, and no execution's patch overwrites an earlier one (#3784)", async () => {
 	const h = harness();
 	initGitRepository(h.cwd);
@@ -1574,12 +1607,8 @@ test("resuming a completed worktree child starts from its saved edits, and no ex
 	assert.notEqual(resumed.isError, true, text(resumed));
 	const resumedTask = resumedTaskId(resumed);
 	await h.waitForLatest(childA.childId, (candidate) => candidate.taskId === resumedTask && !!candidate.childSessionId);
-	assert.equal(
-		readFileSync(join(childA.cwd, "seed.txt"), "utf8"),
-		"edited by A\n",
-		"the earlier tracked edit is back",
-	);
-	assert.equal(readFileSync(join(childA.cwd, "draft.md"), "utf8"), "draft by A\n", "the earlier draft is back");
+	assert.equal(readCheckedOut(join(childA.cwd, "seed.txt")), "edited by A\n", "the earlier tracked edit is back");
+	assert.equal(readCheckedOut(join(childA.cwd, "draft.md")), "draft by A\n", "the earlier draft is back");
 	writeFileSync(join(childA.cwd, "second.md"), "second pass by A\n");
 
 	resumedDone.resolve();

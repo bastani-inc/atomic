@@ -248,7 +248,7 @@ async function relaunchChild(
 	const queued = record.taskId && host ? takeStoppedQueuedSubagentChild(record.taskId) : undefined;
 	if (queued && host) return startQueuedChild(deps, ctx, host, record, queued, hold, release, resume);
 	const queuedOwnerless = record.taskId && !host ? takeStoppedQueuedOwnerlessChild(record.taskId) : undefined;
-	// Without a task host nothing else ends the resumed child with its owner: closing the session stops it resumably.
+	// Without a task host nothing else stops the resumed child with its owner: closing the session stops it, restorably.
 	const ownerSignal = host ? undefined : (ctx.getCurrentSessionSignal?.() ?? ctx.sessionSignal);
 	if (queuedOwnerless) {
 		const supervisorAuthorization = record.intercomTarget ? hold?.authorization : undefined;
@@ -256,7 +256,7 @@ async function relaunchChild(
 		const recordChild = createSubagentChildRecordSink(deps.pi, ctx);
 		const launched = queuedOwnerless({
 			recordChild,
-			...(ownerSignal ? { signal: ownerSignal } : {}),
+			...(ownerSignal ? { ownerSignal } : {}),
 			...(resume?.message ? { message: resume.message } : {}),
 			...(supervisorAuthorization ? { supervisorAuthorization } : {}),
 		});
@@ -332,7 +332,8 @@ async function relaunchChild(
 			agent: agent.name,
 			task: prompts.task,
 			cwd: record.cwd,
-			options: { ...options, ...(ownerSignal ? { signal: ownerSignal } : {}) },
+			options,
+			...(ownerSignal ? { ownerSignal } : {}),
 			recordChild,
 			...(schedule ? { schedule } : {}),
 			runSync: (task, childOptions) => runtime.runSync(ctx.cwd, [agent], agent.name, task, childOptions),
