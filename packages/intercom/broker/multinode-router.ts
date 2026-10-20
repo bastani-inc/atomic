@@ -33,6 +33,7 @@ import {
 	type RestoringReservationLease,
 	reservationKeyFor,
 } from "./multinode-state-store.js";
+import type { PendingQuestionIndex } from "./pending-question-index.js";
 import { UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
 import { RESTORING_RECIPIENT_HOLD_MS, restoringRecipientRetryReason } from "./restoring-recipients.js";
 import {
@@ -75,6 +76,11 @@ export const PRESENCE_REGISTRATION_BOUND_MS = 5_000;
 /** The longest `list` waits for other nodes' sessions; the client's list request gives up after 5 s. */
 const REMOTE_SESSIONS_BOUND_MS = 2_000;
 const MAX_SUPERSEDED_HOPS = 8;
+/**
+ * How often renewal refreshes a live session's known-session record. Far below `KNOWN_SESSION_RETENTION_MS`, so a
+ * session that stays connected for longer than the retention is still known (queued for) after its broker crashes.
+ */
+export const KNOWN_SESSION_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 const TARGET_GROUP_REFUSAL = "Target session is in a different intercom group";
 
 /**
@@ -155,6 +161,8 @@ export interface MultiNodeHost {
 		onSettled: (written: boolean) => void,
 	): void;
 	readonly supervisorCache: SupervisorChannelCache;
+	/** This broker's own ask routes: an ask whose asker and recipient are both here is answered on the local path. */
+	readonly pendingQuestions: PendingQuestionIndex;
 	/** Route a held send again as its sender, exactly like a new send (local delivery or the outbox). */
 	dispatch(socket: BrokerConnectedSession["socket"], clientMessage: SendClientMessage, senderId: string): void;
 }
@@ -200,6 +208,14 @@ interface TrackedHold {
 	readonly timer: ReturnType<typeof setTimeout>;
 }
 
+interface PresenceEntry {
+	lease?: Lease;
+	/** `Date.now()` when this broker last wrote the session's known-session record. */
+	knownAt?: number;
+	/** The session's asks were failed once it turned terminal. */
+	terminal?: boolean;
+}
+
 interface MirroredReservation {
 	lease: RestoringReservationLease;
 }
@@ -235,7 +251,7 @@ export class MultiNodeRouter {
 	private readonly nodeId: string;
 	private membership: Lease | undefined;
 	private subscription: WakeUpSubscription | undefined;
-	private readonly presence = new Map<BrokerConnectedSession, { lease?: Lease }>();
+	private readonly presence = new Map<BrokerConnectedSession, PresenceEntry>();
 	private readonly inflight = new Map<string, Inflight>();
 	private readonly waiters = new Map<string, Waiter>();
 	private readonly holds = new Map<string, TrackedHold>();
@@ -288,7 +304,7 @@ export class MultiNodeRouter {
 		consumed?: { readonly capability: string; readonly childName?: string; readonly groups: ReadonlySet<string> },
 	): Promise<void> {
 		if (this.closed || this.presence.has(session)) return Promise.resolve();
-		const entry: { lease?: Lease } = {};
+		const entry: PresenceEntry = {};
 		this.presence.set(session, entry);
 		const identity = deliveryTargetIdentity(session);
 		return new Promise<void>((resolve) => {
@@ -296,7 +312,7 @@ export class MultiNodeRouter {
 			bound.unref?.();
 			this.serial(identity, async () => {
 				try {
-					await this.state.knownSessions.record(this.knownOf(session));
+					await this.recordKnown(session, entry);
 					for (let attempt = 0; ; attempt++) {
 						await this.acquirePresence(session, entry);
 						if (entry.lease !== undefined || attempt >= PRESENCE_HANDOVER_ATTEMPTS || this.presence.get(session) !== entry)
@@ -318,11 +334,66 @@ export class MultiNodeRouter {
 		const entry = this.presence.get(session);
 		if (this.closed || entry === undefined) return;
 		this.serial(deliveryTargetIdentity(session), async () => {
-			await this.state.knownSessions.record(this.knownOf(session));
+			await this.recordKnown(session, entry);
+			if (session.info.replyCapability === "terminal" && entry.terminal !== true) {
+				entry.terminal = true;
+				await this.failTerminalAsks(session);
+			}
 			if (entry.lease === undefined) return;
 			const renewed = await this.state.leases.renew(entry.lease, this.presenceSubject(session));
 			if (renewed.status !== "renewed") entry.lease = undefined;
 		});
+	}
+
+	/**
+	 * The session can no longer answer: the asks other nodes delivered to it get the terminal error a local asker gets
+	 * (`failTerminalQuestions`), as a reply correlated to each ask. A remote asker's error travels the outbox, so its
+	 * route stays open until that reply is delivered and then closes like any answered ask.
+	 */
+	private async failTerminalAsks(target: BrokerConnectedSession): Promise<void> {
+		const taken = await this.state.pendingAsks.takeForTarget(target.info.id);
+		if (taken.status !== "taken" || taken.asks.length === 0) return;
+		const live = (await this.state.leases.listLive("presence", BROKER_LEASE_STALE_AFTER_MS)).filter(
+			(lease) => lease.subject.kind === "presence",
+		);
+		for (const ask of taken.asks) {
+			const frame: IntercomDeliveryFrame = {
+				type: "message",
+				from: target.info,
+				message: {
+					id: `terminal:${ask.messageId}`,
+					timestamp: Date.now(),
+					replyTo: ask.messageId,
+					replyError: TERMINAL_CHILD_ASK_REFUSAL,
+					content: { text: TERMINAL_CHILD_ASK_REFUSAL },
+				},
+			};
+			const local = this.host.sessions.get(ask.senderSessionId);
+			if (local !== undefined) {
+				this.host.write(local.socket, frame);
+				continue;
+			}
+			const hosted = live.find((lease) => (lease.subject as RecipientPresenceSubject).session.id === ask.senderSessionId);
+			let identity = hosted === undefined ? undefined : (hosted.subject as RecipientPresenceSubject).targetIdentity;
+			if (identity === undefined) {
+				const known = await this.state.knownSessions.lookup(ask.senderSessionId, KNOWN_SESSION_RETENTION_MS);
+				identity =
+					known.status === "found"
+						? known.sessions.find((session) => session.intercomSessionId === ask.senderSessionId)?.targetIdentity
+						: undefined;
+			}
+			if (identity === undefined) continue;
+			await this.state.pendingAsks.record(ask);
+			const enqueued = await this.state.outbox.enqueue({
+				targetIdentity: identity,
+				originBrokerId: this.brokerId,
+				digest: crossNodeDigest(JSON.stringify(frame)),
+				frame,
+			});
+			if (enqueued.status === "inserted" && hosted !== undefined) {
+				await this.bus.publish({ brokerId: hosted.holderId, reason: "outbox", version: enqueued.row.sequence });
+			}
+		}
 	}
 
 	/** A session left (cleanly or not): it stays known, so sends to it are queued until it returns anywhere. */
@@ -345,7 +416,7 @@ export class MultiNodeRouter {
 		this.serial(identity, async () => {
 			for (const inflight of claims) await this.state.outbox.releaseClaim(inflight.claim);
 			if (entry.lease !== undefined) await this.state.leases.release(entry.lease);
-			await this.state.knownSessions.record(this.knownOf(session));
+			await this.recordKnown(session, entry);
 			await this.state.pendingAsks.pruneSender(sessionId);
 			await this.state.pendingAsks.takeForTarget(sessionId);
 			for (const hold of holds) await this.state.heldSends.drop(hold.messageId);
@@ -426,11 +497,13 @@ export class MultiNodeRouter {
 
 	/** The owner released the reservation; `gone` is the formatted gone refusal kept as a marker. */
 	restoringReleased(capability: string, ownerSessionId: string, gone?: string, refusal?: string): void {
+		if (this.closed) return;
 		const reservationKey = reservationKeyFor(capability);
-		const mirror = this.mirrored.get(reservationKey);
-		if (this.closed || mirror === undefined || mirror.lease.ownerSessionId !== ownerSessionId) return;
-		if (gone === undefined) this.mirrored.delete(reservationKey);
+		// Behind the reserve on the same key: a release while the reserve is still being written ends what it wrote.
 		this.serial(`reservation:${reservationKey}`, async () => {
+			const mirror = this.mirrored.get(reservationKey);
+			if (mirror === undefined || mirror.lease.ownerSessionId !== ownerSessionId) return;
+			if (gone === undefined) this.mirrored.delete(reservationKey);
 			await this.state.reservations.release(
 				mirror.lease,
 				gone !== undefined ? { gone } : refusal !== undefined ? { refusal } : undefined,
@@ -486,9 +559,12 @@ export class MultiNodeRouter {
 
 	private async routeSendSafely(request: RemoteSendRequest): Promise<void> {
 		try {
-			await this.route(request);
+			if (request.localTarget !== undefined) await this.answerLocalRetry(request, request.localTarget);
+			else await this.route(request);
 		} catch (error) {
 			this.report(error);
+			// Local delivery does not depend on the shared database (spec §8).
+			if (request.localTarget !== undefined) return request.notFound();
 			this.fail(request, SHARED_STORAGE_UNAVAILABLE_REASON, request.requirePendingReply ? "session_not_found" : undefined);
 		}
 	}
@@ -564,6 +640,31 @@ export class MultiNodeRouter {
 			return;
 		}
 		request.notFound();
+	}
+
+	/**
+	 * A send that resolved to a session on this broker: a same-id retry of a send that already went through the shared
+	 * outbox (its recipient has since moved here) is answered from that row, never delivered again; any other send
+	 * takes the local path.
+	 */
+	private async answerLocalRetry(request: RemoteSendRequest, target: BrokerConnectedSession): Promise<void> {
+		const existing = await this.state.outbox.read(request.message.id);
+		if (existing.status !== "found") {
+			request.notFound();
+			return;
+		}
+		await this.answerExistingRow(
+			request,
+			{
+				identity: deliveryTargetIdentity(target),
+				sessionId: target.info.id,
+				groups: sessionGroups(target.info),
+				info: target.info,
+				hostBrokerId: this.brokerId,
+			},
+			crossNodeDigest(request.signature),
+			existing.row,
+		);
 	}
 
 	private async resolveKnownSession(request: RemoteSendRequest): Promise<KnownSessionState | "answered" | undefined> {
@@ -912,7 +1013,7 @@ export class MultiNodeRouter {
 				await this.state.outbox.releaseClaim(claim);
 				continue;
 			}
-			const refusal = this.transitRefusal(row.frame, session);
+			const refusal = await this.transitRefusal(row.frame, session);
 			if (refusal !== undefined) {
 				const failed = await this.state.outbox.markFailed(claim, refusal);
 				if (failed.status === "failed") await this.wakeOrigin(row);
@@ -933,28 +1034,51 @@ export class MultiNodeRouter {
 		}
 	}
 
-	/** What can change in transit: the recipient's groups and reply capability (§8, "Split ownership"). */
-	private transitRefusal(frame: IntercomDeliveryFrame, recipient: BrokerConnectedSession): string | undefined {
+	/**
+	 * What can change in transit: the recipient's groups and reply capability (§8, "Split ownership"). A `replyTo`
+	 * alone authorizes nothing: only a reply on an open ask route, or a vertical reply between a child and its
+	 * supervisor, may cross groups, exactly as the origin decided.
+	 */
+	private async transitRefusal(
+		frame: IntercomDeliveryFrame,
+		recipient: BrokerConnectedSession,
+	): Promise<string | undefined> {
 		if (frame.message.expectsReply === true && recipient.info.replyCapability === "terminal") {
 			return TERMINAL_CHILD_ASK_REFUSAL;
 		}
-		if (frame.channel === "supervisor" || frame.message.replyTo !== undefined) return undefined;
-		return sameGroup(recipient.info, frame.from) ? undefined : TARGET_GROUP_REFUSAL;
+		if (frame.channel === "supervisor" || sameGroup(recipient.info, frame.from)) return undefined;
+		const replyTo = frame.message.replyTo;
+		if (replyTo === undefined) return TARGET_GROUP_REFUSAL;
+		if (recipient.supervisorId === frame.from.id) return undefined;
+		if (this.host.supervisorCache.matchReply(replyTo, frame.from.id, recipient.info.id)) return undefined;
+		const route = await this.state.pendingAsks.matchesReply({
+			replySenderSessionId: frame.from.id,
+			replyTargetSessionId: recipient.info.id,
+			replyTo,
+		});
+		return route.status === "match" ? undefined : TARGET_GROUP_REFUSAL;
 	}
 
 	private settleDelivered(inflight: Inflight, recipient: BrokerConnectedSession): void {
 		this.inflight.delete(inflight.row.messageId);
+		const { frame } = inflight.row;
 		const settling = (async () => {
+			// Route first (spec §5.4): a settled row is never claimed again, so a route written after `markDelivered`
+			// would be lost if this broker stopped between the writes. Redelivery repeats the route write safely.
+			if (frame.message.expectsReply === true) {
+				const asker = this.host.sessions.get(frame.from.id);
+				// The asker is here too: the reply takes the local path, which answers only local routes.
+				if (asker !== undefined) this.host.pendingQuestions.record(frame.from.id, recipient.info.id, frame.message.id);
+				else {
+					await this.state.pendingAsks.record({
+						senderSessionId: frame.from.id,
+						targetSessionId: recipient.info.id,
+						messageId: frame.message.id,
+					});
+				}
+			}
 			const delivered = await this.state.outbox.markDelivered(inflight.claim);
 			if (delivered.status !== "delivered") return;
-			const { frame } = inflight.row;
-			if (frame.message.expectsReply === true) {
-				await this.state.pendingAsks.record({
-					senderSessionId: frame.from.id,
-					targetSessionId: recipient.info.id,
-					messageId: frame.message.id,
-				});
-			}
 			if (frame.message.replyTo !== undefined) {
 				await this.state.pendingAsks.clearReply({
 					replySenderSessionId: frame.from.id,
@@ -966,7 +1090,14 @@ export class MultiNodeRouter {
 				this.host.supervisorCache.record(frame.message.id, frame.from.id, recipient.info.id);
 			}
 			await this.wakeOrigin(inflight.row);
-		})().catch((error: Error) => this.report(error));
+		})().catch((error: Error) => {
+			this.report(error);
+			// Not settled: hand the row back so it is delivered again (the recipient deduplicates) and settled then.
+			void this.state.outbox
+				.releaseClaim(inflight.claim)
+				.then(() => this.scanIdentity(inflight.identity))
+				.catch((released: Error) => this.report(released));
+		});
 		this.settling.add(settling);
 		void settling.finally(() => this.settling.delete(settling));
 	}
@@ -1071,6 +1202,10 @@ export class MultiNodeRouter {
 			if (entry.lease !== undefined) {
 				const renewed = await this.state.leases.renew(entry.lease, this.presenceSubject(session));
 				if (renewed.status !== "renewed") entry.lease = undefined;
+				else if (entry.knownAt === undefined || Date.now() - entry.knownAt >= KNOWN_SESSION_REFRESH_INTERVAL_MS) {
+					// A live session stays known: retention counts from its last renewal, not from its registration.
+					this.serial(deliveryTargetIdentity(session), () => this.recordKnown(session, entry));
+				}
 			} else {
 				this.serial(deliveryTargetIdentity(session), async () => {
 					if (this.presence.get(session) !== entry) return;
@@ -1107,7 +1242,12 @@ export class MultiNodeRouter {
 		if (this.holds.size > 0) await this.checkHolds();
 	}
 
-	private async acquirePresence(session: BrokerConnectedSession, entry: { lease?: Lease }): Promise<void> {
+	private async recordKnown(session: BrokerConnectedSession, entry: PresenceEntry): Promise<void> {
+		await this.state.knownSessions.record(this.knownOf(session));
+		entry.knownAt = Date.now();
+	}
+
+	private async acquirePresence(session: BrokerConnectedSession, entry: PresenceEntry): Promise<void> {
 		const acquired = await this.state.leases.acquire(
 			this.presenceSubject(session),
 			this.brokerId,

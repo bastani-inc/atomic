@@ -7,6 +7,7 @@ import { openNodeSqliteDatabase, type SqliteDatabase } from "@bastani/atomic/sto
 import { afterEach, test, vi } from "vitest";
 import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-message-cache.js";
 import {
+	KNOWN_SESSION_REFRESH_INTERVAL_MS,
 	MULTI_NODE_OUTCOME_POLL_INTERVAL_MS,
 	MultiNodeRouter,
 	OFFLINE_SESSION_TARGET,
@@ -14,7 +15,11 @@ import {
 	readSharedStorageSetting,
 	resolveMultiNodeStartup,
 } from "../../packages/intercom/broker/multinode-router.js";
-import type { IntercomBrokerStateOptions } from "../../packages/intercom/broker/multinode-state-store.js";
+import {
+	BROKER_LEASE_RENEW_INTERVAL_MS,
+	type IntercomBrokerStateOptions,
+	KNOWN_SESSION_RETENTION_MS,
+} from "../../packages/intercom/broker/multinode-state-store.js";
 import {
 	borrowedDatabase,
 	type OpenedBrokerState,
@@ -35,6 +40,7 @@ import { openSqlKnownSessionStore } from "../../packages/intercom/broker/sql-kno
 import { SupervisorChannelCache } from "../../packages/intercom/broker/supervisor-channel.js";
 import type { WakeUpBus } from "../../packages/intercom/broker/wake-up-bus.js";
 import { normalizeGroup } from "../../packages/intercom/group.js";
+import { TERMINAL_CHILD_ASK_REFUSAL } from "../../packages/intercom/recipient-purpose.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
 import {
 	type OpenSharedStoreFixture,
@@ -67,6 +73,7 @@ class Node {
 	readonly deliveredMessages: DeliveredMessageCache;
 	router!: MultiNodeRouter;
 	opened!: OpenedBrokerState;
+	database!: SqliteDatabase;
 
 	constructor(
 		readonly name: string,
@@ -90,6 +97,7 @@ class Node {
 		wrapBus?: (bus: WakeUpBus) => WakeUpBus,
 	): Promise<Node> {
 		const node = new Node(name, directory);
+		node.database = shared;
 		node.opened = await openIntercomBrokerState(
 			{ openDatabase: async () => borrowedDatabase(shared), prefix: "mn_" },
 			{ pollIntervalMs: BUS_POLL_INTERVAL_MS },
@@ -102,6 +110,7 @@ class Node {
 				write: (socket, frame) => node.write(socket, frame),
 				writeConfirmed: (socket, frame, onSettled) => onSettled(node.write(socket, frame)),
 				supervisorCache: node.supervisorCache,
+				pendingQuestions: node.pendingQuestions,
 				dispatch: (socket, clientMessage, senderId) => node.dispatch(socket, clientMessage, senderId),
 			},
 		});
@@ -117,6 +126,8 @@ class Node {
 		name: string,
 		options: {
 			group?: string;
+			/** Current memberships when they differ from the registration group (it left that group). */
+			groups?: string[];
 			returnAddress?: string;
 			id?: string;
 			supervisorId?: string;
@@ -133,8 +144,8 @@ class Node {
 			startedAt: 1,
 			lastActivity: 1,
 			status: "idle",
-			group,
-			groups: [group],
+			group: options.groups?.[0] ?? group,
+			groups: options.groups ?? [group],
 		};
 		const session: BrokerConnectedSession = {
 			socket: fakeSocket(),
@@ -579,3 +590,199 @@ function knownSessionFixture(): OpenSharedStoreFixture<Awaited<ReturnType<typeof
 }
 
 registerKnownSessionStoreConformance(test, "SQL on two node:sqlite connections to one file", knownSessionFixture());
+
+/** Wait until no live presence lease names this session, so a send to it is queued for an offline session. */
+async function waitOffline(node: Node, session: BrokerConnectedSession): Promise<void> {
+	await vi.waitFor(
+		async () => {
+			const live = await node.opened.state.leases.listLive("presence", 30_000);
+			assert.ok(
+				!live.some((lease) => lease.subject.kind === "presence" && lease.subject.session.id === session.info.id),
+			);
+		},
+		{ timeout: CROSS_NODE_WAIT_MS },
+	);
+}
+
+function reasonOf(frame: BrokerOutboundFrame | undefined): string | undefined {
+	return frame?.type === "delivery_failed" ? frame.reason : undefined;
+}
+
+test("a queued message with an unrelated replyTo is refused when its recipient left the sender's group in transit", async () => {
+	const [a, b, c] = await cluster(3);
+	const sender = await a!.connect("sender", { group: "team" });
+	const recipient = await b!.connect("recipient", { group: "team" });
+	b!.leave(recipient);
+	await waitOffline(a!, recipient);
+	const sent = message({ replyTo: "no-such-question" });
+	a!.send(sender, "recipient", sent);
+	assert.equal((await waitFor(() => outcomeOf(sender, sent.id))).type, "queued");
+
+	const back = await c!.connect("recipient", {
+		group: "team",
+		groups: ["elsewhere"],
+		returnAddress: recipient.registrationReturnAddress!,
+		id: recipient.info.id,
+	});
+	const refused = await waitFor(() =>
+		framesOf(sender).find((frame) => frame.type === "delivery_failed" && frame.messageId === sent.id),
+	);
+	assert.equal(reasonOf(refused), "Target session is in a different intercom group");
+	assert.deepEqual(messageFrames(back, sent.id), []);
+});
+
+test("an ask queued for an offline session that reconnects on the asker's broker can be answered there", async () => {
+	const [a, b] = await cluster();
+	const asker = await a!.connect("asker");
+	const replier = await b!.connect("replier");
+	b!.leave(replier);
+	await waitOffline(a!, replier);
+	const ask = message({ expectsReply: true });
+	a!.send(asker, "replier", ask);
+	assert.equal((await waitFor(() => outcomeOf(asker, ask.id))).type, "queued");
+
+	const back = await a!.connect("replier", { returnAddress: replier.registrationReturnAddress!, id: replier.info.id });
+	await waitFor(() => messageFrames(back, ask.id)[0]);
+	a!.router.received(back, ask.id);
+	await waitFor(() => framesOf(asker).find((frame) => frame.type === "delivered" && frame.messageId === ask.id));
+
+	const reply = message({ replyTo: ask.id, content: { text: "answered locally" } });
+	a!.send(back, asker.info.id, reply, { requirePendingReply: true, expectedRecipientId: asker.info.id });
+	const frame = await waitFor(() => messageFrames(asker, reply.id)[0] ?? reasonOf(outcomeOf(back, reply.id)));
+	assert.deepEqual(frame, { type: "message", from: back.info, message: reply });
+});
+
+test("a same-id retry of a message delivered across nodes is not delivered again after its recipient moves to the sender's broker", async () => {
+	const [a, b] = await cluster();
+	const sender = await a!.connect("sender");
+	const recipient = await b!.connect("recipient");
+	const sent = message();
+	a!.send(sender, "recipient", sent);
+	await waitFor(() => messageFrames(recipient, sent.id)[0]);
+	b!.router.received(recipient, sent.id);
+	assert.equal((await waitFor(() => outcomeOf(sender, sent.id))).type, "delivered");
+
+	b!.leave(recipient);
+	const back = await a!.connect("recipient", {
+		returnAddress: recipient.registrationReturnAddress!,
+		id: recipient.info.id,
+	});
+	a!.send(sender, "recipient", sent);
+	const outcomes = await waitFor(() => {
+		const all = framesOf(sender).filter(
+			(frame) => (frame.type === "delivered" || frame.type === "delivery_failed") && frame.messageId === sent.id,
+		);
+		return all.length >= 2 ? all : undefined;
+	});
+	assert.equal(outcomes[1]?.type, "delivered");
+	assert.deepEqual(messageFrames(back, sent.id), []);
+});
+
+test("a restoring reservation released while its shared reserve is still being written ends in the shared store", async () => {
+	const [a, b] = await cluster();
+	const supervisor = await b!.connect("supervisor", { group: "crew" });
+	const sender = await a!.connect("sender", { group: "crew" });
+	const capability = `${randomUUID()}.capability`;
+	b!.router.restoringReserved(capability, supervisor.info.id, "restored-child", normalizeGroup("crew"), [], false);
+	b!.router.restoringReleased(capability, supervisor.info.id);
+	await vi.waitFor(
+		async () => {
+			const read = await a!.opened.state.reservations.read(createHash("sha256").update(capability).digest("hex"));
+			assert.equal(read.status, "ended", JSON.stringify(read));
+		},
+		{ timeout: CROSS_NODE_WAIT_MS },
+	);
+	const lookup = await a!.opened.state.reservations.lookup(
+		"restored-child",
+		{ sessionId: sender.info.id, groups: [normalizeGroup("crew")] },
+		30_000,
+	);
+	assert.equal(lookup.status, "none");
+});
+
+test("a child that turns terminal fails the asks delivered to it from another node with the terminal error", async () => {
+	const [a, b] = await cluster();
+	const asker = await a!.connect("asker");
+	const child = await b!.connect("child");
+	const ask = message({ expectsReply: true });
+	a!.send(asker, "child", ask);
+	await waitFor(() => messageFrames(child, ask.id)[0]);
+	b!.router.received(child, ask.id);
+	assert.equal((await waitFor(() => outcomeOf(asker, ask.id))).type, "delivered");
+
+	child.info.replyCapability = "terminal";
+	b!.router.sessionUpdated(child);
+	const terminal = await waitFor(() =>
+		framesOf(asker).find((frame) => frame.type === "message" && frame.message.replyTo === ask.id),
+	);
+	assert.equal(terminal.type === "message" && terminal.message.replyError, TERMINAL_CHILD_ASK_REFUSAL);
+	assert.ok(terminal.type === "message");
+	a!.router.received(asker, terminal.message.id);
+	await vi.waitFor(
+		async () =>
+			assert.deepEqual(
+				await a!.opened.state.pendingAsks.matchesReply({
+					replySenderSessionId: child.info.id,
+					replyTargetSessionId: asker.info.id,
+					replyTo: ask.id,
+				}),
+				{ status: "no-match" },
+			),
+		{ timeout: CROSS_NODE_WAIT_MS },
+	);
+});
+
+test("an ask whose route write fails is redelivered and keeps its reply route instead of settling without one", async () => {
+	const [a, b] = await cluster();
+	const asker = await a!.connect("asker");
+	const replier = await b!.connect("replier");
+	const pendingAsks = b!.opened.state.pendingAsks;
+	const record = pendingAsks.record.bind(pendingAsks);
+	let failures = 1;
+	Object.assign(pendingAsks, {
+		record: async (...args: Parameters<typeof record>) => {
+			if (failures-- > 0) throw new Error("stopped between the route and delivered writes");
+			return record(...args);
+		},
+	});
+	const ask = message({ expectsReply: true });
+	a!.send(asker, "replier", ask);
+	await waitFor(() => messageFrames(replier, ask.id)[0]);
+	b!.router.received(replier, ask.id);
+	await waitFor(() => (messageFrames(replier, ask.id).length >= 2 ? true : undefined));
+	b!.router.received(replier, ask.id);
+	assert.equal((await waitFor(() => outcomeOf(asker, ask.id))).type, "delivered");
+
+	const reply = message({ replyTo: ask.id, content: { text: "route kept" } });
+	b!.send(replier, asker.info.id, reply, { requirePendingReply: true, expectedRecipientId: asker.info.id });
+	const frame = await waitFor(() => messageFrames(asker, reply.id)[0] ?? reasonOf(outcomeOf(replier, reply.id)));
+	assert.deepEqual(frame, { type: "message", from: replier.info, message: reply });
+});
+
+test(
+	"a session that stays connected past the known-session retention is still known after its broker stops",
+	async () => {
+		const [a] = await cluster(1);
+		const session = await a!.connect("long-lived");
+		const shared = a!.opened.state.knownSessions;
+		const aged = KNOWN_SESSION_RETENTION_MS + 60_000;
+		const lookup = async () => {
+			const found = await shared.lookup(session.info.id, KNOWN_SESSION_RETENTION_MS);
+			return found.status === "found" && found.sessions.length > 0;
+		};
+		// Its record was written when it registered, longer ago than the retention.
+		await a!.database.run("UPDATE mn_intercom_known_sessions SET recorded_at = recorded_at - ?", aged);
+		assert.equal(await lookup(), false, "the aged record is past the retention");
+		vi.useFakeTimers({ toFake: ["Date"] });
+		try {
+			vi.setSystemTime(Date.now() + KNOWN_SESSION_REFRESH_INTERVAL_MS);
+			const deadline = performance.now() + BROKER_LEASE_RENEW_INTERVAL_MS + CROSS_NODE_WAIT_MS;
+			while (!(await lookup()) && performance.now() < deadline)
+				await new Promise((resolve) => setTimeout(resolve, 50));
+		} finally {
+			vi.useRealTimers();
+		}
+		assert.equal(await lookup(), true, "renewal refreshed the record of the live session");
+	},
+	BROKER_LEASE_RENEW_INTERVAL_MS + 2 * CROSS_NODE_WAIT_MS,
+);

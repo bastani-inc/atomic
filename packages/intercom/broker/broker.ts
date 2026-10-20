@@ -2059,7 +2059,8 @@ class IntercomBroker {
       this.multiNode.routeSend(request);
       return;
     }
-    if (this.multiNodeStatus === "off") {
+    // Off, or a send to a session on this broker: local delivery never depends on the shared database (spec §8).
+    if (this.multiNodeStatus === "off" || (this.multiNodeStatus === "unavailable" && request.localTarget !== undefined)) {
       request.notFound();
       return;
     }
@@ -2123,6 +2124,7 @@ class IntercomBroker {
                 write: writeMessageIfOpen,
                 writeConfirmed: writeMessageWithOutcome,
                 supervisorCache: this.supervisorChannel,
+                pendingQuestions: this.pendingQuestions,
                 dispatch: (socket, clientMessage, senderId) => this.dispatchSend(socket, clientMessage, senderId),
               },
             });

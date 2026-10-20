@@ -124,8 +124,17 @@ export interface RemoteSendRequest {
   readonly expectedRecipientId?: string;
   readonly resolveReplyTarget: boolean;
   readonly awaitRestoringRecipient: boolean;
+  /**
+   * Set when the target resolved to a session on this broker: the router answers a same-id retry of a send that
+   * already went through the shared outbox from that row, and calls `notFound` to deliver anything else locally.
+   */
+  readonly localTarget?: BrokerConnectedSession;
+  /** Without `localTarget`, nothing on any node: answer exactly as a single-node broker does. */
   readonly notFound: () => void;
 }
+
+/** Local sends the multi-node router has already checked against the shared outbox. */
+const checkedAgainstSharedOutbox = new WeakSet<SendClientMessage>();
 
 export type RemoteSendRouter = (request: RemoteSendRequest) => void;
 function wireMessageId(value: unknown): string {
@@ -427,6 +436,48 @@ export function handleBrokerSend(
       write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Cannot message the current session" });
       return;
     }
+	if (routeRemote !== undefined && !checkedAgainstSharedOutbox.delete(clientMessage)) {
+		// Multi-node: a retry whose first attempt reached this recipient through another broker is answered from the
+		// shared outbox row; `DeliveredMessageCache` never saw that delivery.
+		routeRemote({
+			socket,
+			from: fromSession,
+			clientMessage: clientMessage as SendClientMessage & { readonly to: string },
+			message,
+			target: trimmedTo,
+			signature,
+			...(attemptId === undefined ? {} : { attemptId }),
+			supervisorSend,
+			requirePendingReply,
+			...(expectedRecipientId === undefined ? {} : { expectedRecipientId }),
+			resolveReplyTarget: clientMessage.resolveReplyTarget === true,
+			awaitRestoringRecipient: clientMessage.awaitRestoringRecipient === true,
+			localTarget: target,
+			notFound: () => {
+				checkedAgainstSharedOutbox.add(clientMessage);
+				handleBrokerSend(
+					socket,
+					clientMessage,
+					currentId,
+					sessions,
+					deliveredMessages,
+					write,
+					supervisorCache,
+					pendingQuestions,
+					routePendingStage,
+					resolveLiveWorkflowStage,
+					canControlLiveWorkflowStage,
+					resolveLegacyWorkflowStageTarget,
+					writeConfirmed,
+					isNonAgentWorkflowTarget,
+					holdForRestoringRecipient,
+					receipts,
+					routeRemote,
+				);
+			},
+		});
+		return;
+	}
 	const targetIdentity = deliveryTargetIdentity(target);
 	const deliveredMatch = deliveredMessages.lookupForTarget(message.id, signature, targetIdentity);
 	// #3761: a recipient that confirms saves ignores a copy it already saved, so a reserved message is sent again.

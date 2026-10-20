@@ -755,7 +755,9 @@ A session that quit cleanly, or whose broker crashed, is *known-offline*. `Known
 
 - `targetIdentity`, `intercomSessionId` (last Intercom id), `name` (verbatim), `atomicSessionId` (the return
   address), `group` (normalized registration group) and `groups` (normalized memberships);
-- written by the hosting broker on register, on presence or membership changes, and on leave;
+- written by the hosting broker on register, on presence or membership changes, and on leave, and refreshed while
+  the session stays live, at most once per `KNOWN_SESSION_REFRESH_INTERVAL_MS` (1 h) on presence renewal, so the
+  retention counts from its last renewal and a session connected for longer than the retention stays known;
 - `lookup(target, retentionMs)` matches the Intercom id or Atomic session id exactly, or the name with
   `toLowerCase`, among records younger than the retention, in first-record order; `prune(olderThanMs)` deletes older
   records. The retention is `KNOWN_SESSION_RETENTION_MS` (7 days).
@@ -775,15 +777,29 @@ The same group isolation, supervisor and reply-route checks run for 1 and 3. Con
 
 - **Digests (decision 2).** Cross-node rows and sent-message records use the unkeyed SHA-256 (hex) of the send
   handler's canonical send signature. Local-only sends keep `delivered-messages.sqlite` and its HMAC.
-- **Delivered.** The hosting broker writes the row's frame verbatim and calls `markDelivered` only on the recipient's
-  `received` (a recipient that never confirms saves is delivered once the frame is written, as locally). It then
-  records the ask route (`pendingAsks.record`), clears an answered route (`clearReply`), records a supervisor crossing,
-  and wakes the origin. The origin accepts the sent-message record and tells a still-connected sender `delivered`.
-- **Transit checks (§8).** Before writing, the hosting broker refuses a row whose recipient became terminal for an ask
-  or no longer shares a group with the sender (except supervisor frames and replies) with `markFailed`.
+- **Delivered.** The hosting broker writes the row's frame verbatim and settles it only on the recipient's
+  `received` (a recipient that never confirms saves is delivered once the frame is written, as locally). For an ask it
+  first records the ask route (§5.4: route before `markDelivered`), in its local `PendingQuestionIndex` when the asker
+  is a session on the same broker (the reply then takes the local path) and in `pendingAsks` otherwise. It then calls
+  `markDelivered`, clears an answered route (`clearReply`), records a supervisor crossing, and wakes the origin. A
+  write that fails before the row is settled releases the claim, so the row is delivered again (the recipient
+  deduplicates) and settled then. The origin accepts the sent-message record and tells a still-connected sender
+  `delivered`.
+- **Transit checks (§8).** Before writing, the hosting broker refuses with `markFailed` a row whose recipient became
+  terminal for an ask, or no longer shares a group with the sender. Only a supervisor frame, a reply on an open ask
+  route (`pendingAsks.matchesReply`) or a vertical reply between a child and its supervisor may still cross groups; a
+  `replyTo` alone authorizes nothing.
+- **Terminal recipients.** When a session's reply capability becomes `terminal`, its broker takes the shared asks
+  addressed to it and answers each asker with the correlated terminal error a local asker gets: written directly to a
+  local asker, otherwise enqueued for the asker's identity with the ask's route kept open until that error reply is
+  delivered.
 - **Waiting.** A sender waits `RECIPIENT_RECEIPT_TIMEOUT_MS` (8 s) for a live recipient, then gets #3761's
   uncertain-outcome `delivery_failed`; a same-id retry is answered from the outbox row. A queued (offline) send is
   told `delivered` later only while its sender stays connected.
+- **Retries after a move.** A send that resolves to a session on the origin's own broker first reads the shared
+  outbox: if a row for its message id exists (an earlier attempt went through the outbox and the recipient has since
+  moved here), the retry is answered from that row exactly as above and is not delivered again. Otherwise, or while
+  the shared database cannot be reached, it is delivered locally.
 - **Registration.** A session that registers on a multi-node broker is told `registered` once its presence lease is
   written, retrying briefly (four attempts, 50 ms doubling) while the broker it just left still holds the lease, so a
   sender that learns of it can route to it at once. The wait is bounded by `PRESENCE_REGISTRATION_BOUND_MS` (5 s,
