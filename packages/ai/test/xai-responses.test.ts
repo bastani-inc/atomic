@@ -130,10 +130,14 @@ describe("xAI Responses provider", () => {
 		for (const model of Object.values(XAI_MODELS)) {
 			expect(model.api, model.id).toBe("openai-responses");
 		}
-		expect(getSupportedThinkingLevels(XAI_MODELS["grok-4.5"])).toEqual(["low", "medium", "high"]);
-		expect(getSupportedThinkingLevels(XAI_MODELS["grok-4.6"])).toEqual(["low", "medium", "high", "xhigh"]);
-		expect(getSupportedThinkingLevels(XAI_MODELS["grok-4.7"])).toEqual(["low", "medium", "high", "xhigh"]);
-		expect(getSupportedThinkingLevels(XAI_MODELS["grok-4.3"])).toEqual(["off", "low", "medium", "high"]);
+		// Levels come from models.dev effort metadata, which gains levels over time; pin what each model must support.
+		for (const id of ["grok-4.5", "grok-4.6", "grok-4.7"] as const) {
+			expect(getSupportedThinkingLevels(XAI_MODELS[id]), id).toEqual(expect.arrayContaining(["low", "medium", "high"]));
+			expect(getSupportedThinkingLevels(XAI_MODELS[id]), id).not.toContain("off");
+		}
+		expect(getSupportedThinkingLevels(XAI_MODELS["grok-4.6"])).toEqual(expect.arrayContaining(["xhigh"]));
+		expect(getSupportedThinkingLevels(XAI_MODELS["grok-4.7"])).toEqual(expect.arrayContaining(["xhigh"]));
+		expect(getSupportedThinkingLevels(XAI_MODELS["grok-4.3"])).toEqual(expect.arrayContaining(["off", "low", "medium", "high"]));
 	});
 
 	it("includes Grok 4.7 capabilities and long-context pricing", () => {
