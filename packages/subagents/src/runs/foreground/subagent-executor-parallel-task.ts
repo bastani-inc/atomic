@@ -24,8 +24,7 @@ import { currentModelFullId } from "../shared/model-fallback.js";
 import { createExecutionScheduler } from "../shared/parallel-utils.js";
 import { injectSingleOutputInstruction, resolveSingleOutputPath } from "../shared/single-output.js";
 import type { WorktreeSetup } from "../shared/worktree.js";
-import { trackOwnerlessRun } from "./ownerless-children.js";
-import { holdRunWorktree } from "./run-worktrees.js";
+import { runOwnerlessChild } from "./ownerless-children.js";
 import type { SubagentChildRecordSink } from "./subagent-child-records.js";
 import { markLiveResultIndices } from "./subagent-executor-live-update.js";
 import type { SubagentExecutorRuntimeDeps, TaskParam } from "./subagent-executor-types.js";
@@ -319,17 +318,19 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 				taskResponse: response,
 			};
 		}
-		// Each legacy execution holds the run's worktrees until it exits, detached or not.
-		const holdingSchedule = (dispatch: () => Promise<void>) => {
-			const release = holdRunWorktree(input.runId, index);
-			schedule(() => dispatch().finally(release));
-		};
-		// No task host owns this launch or records it: track it so `quit` can still stop it.
-		return trackOwnerlessRun(input.ctx, input.runId, () =>
-			runUnboundParallelTask(runOptions, task.agent, taskText, holdingSchedule, (options) =>
-				input.runtime.runSync(input.ctx.cwd, taskAgents, task.agent, taskText, options),
-			),
-		).finally(() => {
+		// No task host owns this launch: it is recorded in this session like one, so run control reaches it. Each
+		// execution holds the run's worktrees until it exits, detached or not.
+		const launched = runOwnerlessChild({
+			agent: task.agent,
+			task: taskText,
+			cwd: taskCwd,
+			options: runOptions,
+			recordChild: input.recordChild ?? { record() {} },
+			schedule,
+			runSync: (childTask, options) =>
+				input.runtime.runSync(input.ctx.cwd, taskAgents, task.agent, childTask, options),
+		}).result;
+		return launched.finally(() => {
 			if (input.foregroundControl?.currentIndex === index) {
 				input.foregroundControl.interrupt = undefined;
 				input.foregroundControl.updatedAt = Date.now();

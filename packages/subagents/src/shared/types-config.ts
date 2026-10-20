@@ -139,6 +139,10 @@ export interface RunSyncOptions {
 	resumeSession?: boolean;
 	/** Queued as follow-ups to the task, in order: a resumed child's held messages, then its continuation. */
 	resumeFollowUps?: readonly string[];
+	/** Told the child's own session once it is created, for a launch no task host records (an SDK session). */
+	onChildSession?: (session: { sessionId: string; sessionFile: string | undefined }) => void;
+	/** Told the model and thinking level the child's session started on, and its leaf entry then, as `onChildSession`. */
+	onChildLaunch?: (launch: { model: string | undefined; thinking: string | undefined; leafId: string | null }) => void;
 	share?: boolean;
 	outputPath?: string;
 	outputMode?: OutputMode;

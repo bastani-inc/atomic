@@ -122,6 +122,9 @@ export interface ChildSpec {
 	readonly resumeSession?: boolean;
 	/** Follow-ups queued with the task prompt, in order: a resumed child's held messages, then its continuation. */
 	readonly resumeFollowUps?: readonly string[];
+	/** Told the child's own session, and the model it started on, for a launch no task host records. */
+	readonly onChildSession?: TaskExecutionHooks["bindChildSession"];
+	readonly onChildLaunch?: TaskExecutionHooks["bindChildLaunch"];
 	readonly testSession?: boolean | TestSessionOptions;
 	readonly artifactJsonlPath?: string;
 	/**
@@ -628,9 +631,17 @@ function cancelledEnvelope(session: AgentSession | undefined, spec: ChildSpec, s
 	}).text;
 }
 
-/** What a stopped child had queued and not yet read, steering before follow-ups, so its resume delivers it. */
-function pendingMessagesOf(session: AgentSession | undefined): { pendingMessages?: readonly string[] } {
-	const pending = session ? [...session.getSteeringMessages(), ...session.getFollowUpMessages()] : [];
+/**
+ * What a stopped child had queued and not yet read, steering before follow-ups, so its resume delivers it. A child
+ * stopped before its prompt ran never read its task either: that comes first, then the follow-ups it was to queue.
+ */
+function pendingMessagesOf(
+	session: AgentSession | undefined,
+	unsent: readonly string[],
+): { pendingMessages?: readonly string[] } {
+	const queued = session ? [...session.getSteeringMessages(), ...session.getFollowUpMessages()] : [];
+	const [task, ...followUps] = unsent;
+	const pending = task === undefined ? queued : [task, ...queued, ...followUps];
 	return pending.length > 0 ? { pendingMessages: pending } : {};
 }
 
@@ -920,7 +931,15 @@ export class SubagentControlRuntime {
 					this.native.publishChildStatus(admitted.identity.path, nativeStatus("interrupted"));
 					return {
 						status: killed ? "killed" : "interrupted",
-						...(waitResult === PARENT_CANCEL_CAUSE && !killed ? { cause: PARENT_CANCEL_CAUSE } : {}),
+						...(waitResult === PARENT_CANCEL_CAUSE && !killed
+							? {
+									cause: PARENT_CANCEL_CAUSE,
+									...pendingMessagesOf(undefined, [
+										admitted.spec.task,
+										...(admitted.spec.resumeFollowUps ?? []),
+									]),
+								}
+							: {}),
 						stats,
 						path: admitted.identity.path,
 						envelope: killed
@@ -965,6 +984,8 @@ export class SubagentControlRuntime {
 		const executionEnded = new AbortController();
 
 		let termination: TerminationCauseName | undefined;
+		// The task and resume follow-ups the session has not been given yet; a stop before then keeps them for resume.
+		const unsent = [admitted.spec.task, ...(admitted.spec.resumeFollowUps ?? [])];
 		let terminating: Promise<void> | undefined;
 		let terminationWasKill = false;
 		let unsubscribe: (() => void) | undefined;
@@ -1014,10 +1035,12 @@ export class SubagentControlRuntime {
 					);
 			transcriptManager = sessionManager;
 			taskHooks?.bindTranscript?.(sessionManager);
-			taskHooks?.bindChildSession?.({
+			const childSession = {
 				sessionId: sessionManager.getSessionId(),
 				sessionFile: sessionManager.getSessionFile(),
-			});
+			};
+			taskHooks?.bindChildSession?.(childSession);
+			admitted.spec.onChildSession?.(childSession);
 			if (workflow) await sessionManager.markSessionInternal(workflow);
 			let created: { session: AgentSession };
 			if (admitted.spec.testSession) {
@@ -1108,11 +1131,13 @@ export class SubagentControlRuntime {
 				thinkingLevelForSession(session) ?? initialThinkingForAttempt(candidateModelId, configuredThinking);
 			attemptedModels = initialModelId ? [initialModelId] : [];
 			onModelChange?.(effectiveModelId, effectiveThinking);
-			taskHooks?.bindChildLaunch?.({
+			const childLaunch = {
 				model: effectiveModelId === undefined ? undefined : splitKnownThinkingSuffix(effectiveModelId).baseModel,
 				thinking: effectiveThinking,
 				leafId: sessionManager.getLeafId(),
-			});
+			};
+			taskHooks?.bindChildLaunch?.(childLaunch);
+			admitted.spec.onChildLaunch?.(childLaunch);
 			const progressState: AgentProgress = {
 				index: 0,
 				agent: admitted.spec.agent.name,
@@ -1218,8 +1243,15 @@ export class SubagentControlRuntime {
 			if (signals.abort.aborted) await terminate("abort");
 			if (signals.interrupt.aborted) await terminate("interrupt");
 			if (!termination && admitted.spec.resumeSession) await session.startPendingRecovery("resume");
-			for (const followUp of admitted.spec.resumeFollowUps ?? []) if (!termination) await session.followUp(followUp);
-			if (!termination) await session.prompt(admitted.spec.task);
+			for (const followUp of admitted.spec.resumeFollowUps ?? []) {
+				if (termination) break;
+				await session.followUp(followUp);
+				unsent.splice(1, 1);
+			}
+			if (!termination) {
+				unsent.splice(0, 1);
+				await session.prompt(admitted.spec.task);
+			}
 			await terminating;
 			const stats = statsFor(session, admitted.identity.path);
 			const sessionFile = session.sessionFile;
@@ -1250,7 +1282,7 @@ export class SubagentControlRuntime {
 				return {
 					status: this.killedChildren.has(admitted.identity.path) ? "killed" : status,
 					...(termination === PARENT_CANCEL_CAUSE && !this.killedChildren.has(admitted.identity.path)
-						? { cause: PARENT_CANCEL_CAUSE, ...pendingMessagesOf(session) }
+						? { cause: PARENT_CANCEL_CAUSE, ...pendingMessagesOf(session, unsent) }
 						: {}),
 					stats,
 					path: admitted.identity.path,
@@ -1289,7 +1321,7 @@ export class SubagentControlRuntime {
 				return {
 					status: this.killedChildren.has(admitted.identity.path) ? "killed" : status,
 					...(termination === PARENT_CANCEL_CAUSE && !this.killedChildren.has(admitted.identity.path)
-						? { cause: PARENT_CANCEL_CAUSE, ...pendingMessagesOf(session) }
+						? { cause: PARENT_CANCEL_CAUSE, ...pendingMessagesOf(session, unsent) }
 						: {}),
 					stats,
 					path: admitted.identity.path,
@@ -1450,21 +1482,6 @@ export class SubagentControlRuntime {
 			...(model === undefined ? {} : { model }),
 			...(thinking === undefined ? {} : { thinking }),
 		};
-	}
-
-	/**
-	 * Interrupt a running child that no task host owns, as `subagent({ action: "quit" })` does for an SDK launch: its
-	 * launch returns interrupted. Returns whether a running child was stopped.
-	 */
-	async stopChild(pathValue: string): Promise<boolean> {
-		const running = [...this.runningAttempts.values()].find(
-			(attempt) =>
-				attempt.child.identity.path === pathValue &&
-				(attempt.status === "running" || attempt.status === "continued"),
-		);
-		if (!running) return false;
-		await this.terminateChildAttempt(running, "interrupt");
-		return true;
 	}
 
 	async terminateChildAttempt(running: RunningAttempt, cause: TerminationCauseName): Promise<void> {

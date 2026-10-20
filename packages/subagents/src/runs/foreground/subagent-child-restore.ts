@@ -29,6 +29,7 @@ import {
 } from "../../shared/types.js";
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.js";
+import { type OwnerlessChildLaunch, runOwnerlessChild, takeStoppedQueuedOwnerlessChild } from "./ownerless-children.js";
 import { resumeRunWorktree } from "./run-worktrees.js";
 import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHold } from "./subagent-child-hold.js";
 import {
@@ -44,6 +45,7 @@ import {
 } from "./subagent-child-records.js";
 import { readPreviousIntercomId, reopenChildSession } from "./subagent-child-session.js";
 import { resolveSubagentExecutorRuntimeDeps } from "./subagent-executor-runtime.js";
+import { notifyDetachedForegroundChildExit } from "./subagent-executor-status.js";
 import type { ExecutorDeps } from "./subagent-executor-types.js";
 import {
 	type QueuedSubagentChildStart,
@@ -242,9 +244,21 @@ async function relaunchChild(
 		record,
 		reason,
 	});
-	if (!ctx.getAgentTaskHost) return unrestorable("this session cannot host background subagents");
-	const queued = record.taskId ? takeStoppedQueuedSubagentChild(record.taskId) : undefined;
-	if (queued) return startQueuedChild(deps, ctx, ctx.getAgentTaskHost(), record, queued, hold, release, resume);
+	const host = ctx.getAgentTaskHost?.();
+	const queued = record.taskId && host ? takeStoppedQueuedSubagentChild(record.taskId) : undefined;
+	if (queued && host) return startQueuedChild(deps, ctx, host, record, queued, hold, release, resume);
+	const queuedOwnerless = record.taskId && !host ? takeStoppedQueuedOwnerlessChild(record.taskId) : undefined;
+	if (queuedOwnerless) {
+		const supervisorAuthorization = record.intercomTarget ? hold?.authorization : undefined;
+		if (!supervisorAuthorization) await hold?.release();
+		const recordChild = createSubagentChildRecordSink(deps.pi, ctx);
+		const launched = queuedOwnerless({
+			recordChild,
+			...(resume?.message ? { message: resume.message } : {}),
+			...(supervisorAuthorization ? { supervisorAuthorization } : {}),
+		});
+		return ownerlessRelaunched(deps, record, launched, recordChild, release, hold, supervisorAuthorization, ctx);
+	}
 	if (!existsSync(record.cwd)) return unrestorable(`its working directory no longer exists: ${record.cwd}`);
 	const discovered = deps
 		.discoverAgents(record.cwd, resolveExecutionAgentScope(undefined))
@@ -306,10 +320,23 @@ async function relaunchChild(
 	};
 	ctx.orchestrationContext?.messageAdmission?.boundary.registerOwnedSubagentRun(record.runId);
 	const recordChild = createSubagentChildRecordSink(deps.pi, ctx);
+	const runtime = resolveSubagentExecutorRuntimeDeps(deps.runtime);
+	if (!host) {
+		// No task host (an SDK session): it runs in the background directly, recorded like a task-host launch.
+		const launched = runOwnerlessChild({
+			agent: agent.name,
+			task: prompts.task,
+			cwd: record.cwd,
+			options,
+			recordChild,
+			runSync: (task, childOptions) => runtime.runSync(ctx.cwd, [agent], agent.name, task, childOptions),
+		});
+		return ownerlessRelaunched(deps, record, launched, recordChild, release, hold, supervisorAuthorization, ctx);
+	}
 	// It waits for a slot in its run, as its original launch did.
 	const schedule = subagentChildSchedule(record.runId, record.index);
 	const response = await runAgentTask({
-		host: ctx.getAgentTaskHost(),
+		host,
 		cwd: ctx.cwd,
 		agents: [agent],
 		agent: agent.name,
@@ -317,7 +344,7 @@ async function relaunchChild(
 		...(resume ? { operation: `${record.runId}:${record.index}:resume:${randomUUID()}` } : {}),
 		options,
 		wait: { kind: "background" },
-		runtime: resolveSubagentExecutorRuntimeDeps(deps.runtime),
+		runtime,
 		recordChild,
 		...(schedule ? { schedule } : {}),
 		onTerminal: () => {
@@ -363,6 +390,52 @@ async function startQueuedChild(
 		supervisorAuthorization,
 		record.intercomGroup ?? inheritedIntercomGroup(ctx),
 	);
+}
+
+/**
+ * A child relaunched without a task host runs in the background: its result reaches the owner as a completion notice,
+ * as a task-host child's does.
+ */
+async function ownerlessRelaunched(
+	deps: SubagentChildRestoreDeps,
+	record: SubagentChildRecord,
+	launched: OwnerlessChildLaunch,
+	recordChild: SubagentChildRecordSink,
+	release: () => void,
+	hold: ChildTargetHold | undefined,
+	supervisorAuthorization: ChildTargetHold["authorization"] | undefined,
+	ctx: ExtensionContext,
+): Promise<SubagentChildRestoreOutcome> {
+	void launched.result
+		.then(
+			(child) => {
+				// Pause and quit report through their own results.
+				if (!child.interrupted)
+					notifyDetachedForegroundChildExit({
+						pi: deps.pi,
+						runId: record.runId,
+						mode: "single",
+						index: record.index,
+						result: child,
+						notificationId: `subagent-resume-${launched.launchId}`,
+						noticeLabel: "Resumed subagent task",
+					});
+			},
+			() => {},
+		)
+		.finally(() => {
+			release();
+			// Normally the child consumed the hold when it registered; one that never did must not keep it.
+			void hold?.release();
+		});
+	// Pause or quit right after this returns must find the child under its new launch id.
+	await recordChild.flushed?.();
+	const intercomGroup = record.intercomGroup ?? inheritedIntercomGroup(ctx);
+	const intercomLive =
+		record.intercomTarget && supervisorAuthorization
+			? await awaitIntercomPeer(deps.pi.events, record.intercomTarget, intercomGroup)
+			: undefined;
+	return { kind: "restored", record, taskId: launched.launchId, intercomLive };
 }
 
 async function relaunched(

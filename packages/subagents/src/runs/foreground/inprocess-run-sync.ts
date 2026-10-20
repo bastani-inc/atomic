@@ -288,6 +288,8 @@ export async function runSingleInProcess(
 		sessionManager: options.sessionManager,
 		...(options.resumeSession ? { resumeSession: true } : {}),
 		...(options.resumeFollowUps?.length ? { resumeFollowUps: options.resumeFollowUps } : {}),
+		...(options.onChildSession ? { onChildSession: options.onChildSession } : {}),
+		...(options.onChildLaunch ? { onChildLaunch: options.onChildLaunch } : {}),
 		...(options.progressPath ? { progressPath: options.progressPath } : {}),
 		...(options.progressArtifactPath
 			? { progressArtifactPath: options.progressArtifactPath }

@@ -33,7 +33,6 @@ import { createSubagentExecutor } from "../../packages/subagents/src/runs/foregr
 import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import { SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT } from "../../packages/subagents/src/runs/foreground/subagent-run-control.js";
 import { runAgentTask } from "../../packages/subagents/src/runs/foreground/task-execution.js";
-import { listSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
 import { createExecutionScheduler } from "../../packages/subagents/src/runs/shared/parallel-utils.js";
 import type {
 	RunSyncOptions,
@@ -1414,84 +1413,118 @@ test("pause keeps the steering and follow-up messages a running child queued, an
 	assert.equal(occurrences(after, followUp), 1, "the held follow-up is delivered exactly once");
 });
 
-test("quit stops a live child an SDK session without a task host launched, by id and with all: true (#3784)", async () => {
+test("an SDK session without a task host can pause, resume, quit and resume again its subagent, with queued messages replayed once (#3784)", async () => {
 	const cwd = makeTempDirectory("subagent-ownerless-");
 	const sessionManager = SessionManager.inMemory(cwd);
-	const gate = Promise.withResolvers<void>();
-	const settledResults: SingleResult[] = [];
-	const deps: ExecutorDeps = {
-		pi: {
-			events: { on: () => () => {}, emit() {} },
-			getSessionName: () => "parent",
-			appendEntry: async (customType: string, data?: SubagentChildRecord) => {
-				await sessionManager.appendCustomEntry(customType, data);
-			},
-		} as unknown as ExecutorDeps["pi"],
-		state: {
-			baseCwd: cwd,
-			currentSessionId: sessionManager.getSessionId(),
-			subagentInProgress: false,
-			foregroundControls: new Map(),
-			lastForegroundControlId: null,
-			pendingForegroundControlNotices: new Map(),
-			lastUiContext: null,
-		},
-		config: {},
-		tempArtifactsDir: join(cwd, "artifacts"),
-		getSubagentSessionRoot: () => join(cwd, "sessions"),
-		expandTilde: (value) => value,
-		discoverAgents: () => ({ agents: [agent] }),
-		runtime: {
-			runSync: async (...args: Parameters<typeof runSync>) => {
-				const [parentCwd, agents, agentName, task, options] = args;
-				const result = await runSync(parentCwd, agents, agentName, task, {
-					...options,
-					testSession: { output: "partial", promptGate: gate.promise, abortResolvesPrompt: true },
-				});
-				settledResults.push(result);
-				return result;
-			},
-		},
+	const neverReleased = Promise.withResolvers<void>();
+	const live = Promise.withResolvers<TestSessionQueue>();
+	const tasks: string[] = [];
+	const runSyncFor = async (...args: Parameters<typeof runSync>) => {
+		const [parentCwd, agents, agentName, task, options] = args;
+		tasks.push(task);
+		// The original launch and the first resume run until stopped; the second resume finishes.
+		const waits = tasks.length <= 2;
+		return runSync(parentCwd, agents, agentName, task, {
+			...options,
+			testSession: waits
+				? {
+						output: "partial",
+						promptGate: neverReleased.promise,
+						abortResolvesPrompt: true,
+						...(tasks.length === 1 ? { onSession: (session: TestSessionQueue) => live.resolve(session) } : {}),
+					}
+				: { output: "resumed" },
+		});
 	};
-	const ctx = {
-		cwd,
-		mode: "tui",
-		hasUI: false,
-		ui: {},
-		sessionManager,
-		modelRegistry: { getAvailable: () => [], getAll: () => [], find: () => undefined },
-	} as unknown as ExtensionContext;
-	const executor = createSubagentExecutor(deps);
-	const call = (params: Parameters<typeof executor.execute>[1], signal = new AbortController().signal) =>
-		executor.execute("ownerless", params, signal, undefined, ctx);
-	const cleanup = new AbortController();
+	const sdkSession = () => {
+		const deps: ExecutorDeps = {
+			pi: {
+				events: { on: () => () => {}, emit() {} },
+				getSessionName: () => "parent",
+				appendEntry: async (customType: string, data?: SubagentChildRecord) => {
+					await sessionManager.appendCustomEntry(customType, data);
+				},
+			} as unknown as ExecutorDeps["pi"],
+			state: {
+				baseCwd: cwd,
+				currentSessionId: sessionManager.getSessionId(),
+				subagentInProgress: false,
+				foregroundControls: new Map(),
+				lastForegroundControlId: null,
+				pendingForegroundControlNotices: new Map(),
+				lastUiContext: null,
+			},
+			config: {},
+			tempArtifactsDir: join(cwd, "artifacts"),
+			getSubagentSessionRoot: () => join(cwd, "sessions"),
+			expandTilde: (value) => value,
+			discoverAgents: () => ({ agents: [agent] }),
+			runtime: { runSync: runSyncFor },
+		};
+		// No getAgentTaskHost: an SDK session that launches subagents directly.
+		const ctx = {
+			cwd,
+			mode: "tui",
+			hasUI: false,
+			ui: {},
+			sessionManager,
+			modelRegistry: { getAvailable: () => [], getAll: () => [], find: () => undefined },
+		} as unknown as ExtensionContext;
+		const executor = createSubagentExecutor(deps);
+		return (params: Parameters<typeof executor.execute>[1]) =>
+			executor.execute("ownerless", params, new AbortController().signal, undefined, ctx);
+	};
 	cleanups.push(async () => {
-		cleanup.abort();
-		gate.resolve();
+		neverReleased.resolve();
 		removeTempDirectory(cwd);
 	});
-	const runningChildren = () =>
-		listSubagentControls().flatMap((control) => control.listChildren().filter((child) => child.status === "running"));
+	const records = () => [...readSubagentChildRecords(sessionManager.getEntries()).values()];
+	const waitForRecord = async (accept: (record: SubagentChildRecord) => boolean) => {
+		const deadline = Date.now() + RECORD_WAIT_MS;
+		while (Date.now() < deadline) {
+			const found = records().find(accept);
+			if (found) return found;
+			await sleep(10);
+		}
+		throw new Error(`no child record matched: ${JSON.stringify(records())}`);
+	};
+	const call = sdkSession();
 
-	const first = call({ agent: "worker", task: "hold until stopped", context: "fresh" }, cleanup.signal);
-	const firstDeadline = Date.now() + RECORD_WAIT_MS;
-	while (runningChildren().length < 1 && Date.now() < firstDeadline) await sleep(10);
-	const [child] = runningChildren();
-	assert.ok(child, "the SDK launch is running");
-	const byId = await call({ action: "quit", id: child.path });
-	assert.notEqual(byId.isError, true, text(byId));
-	await first;
-	assert.equal(settledResults.at(-1)?.status, "interrupted", "quit by id stopped the child");
+	const launch = call({ agent: "worker", task: ORIGINAL_TASK, context: "fresh" });
+	const running = await waitForRecord((candidate) => candidate.state === "running" && !!candidate.childSessionFile);
+	const steer = "STEER: report the permission error only";
+	const followUp = "FOLLOWUP: include the failing command";
+	const session = await live.promise;
+	await session.steer(steer);
+	await session.followUp(followUp);
 
-	const second = call({ agent: "worker", task: "hold until stopped again", context: "fresh" }, cleanup.signal);
-	const secondDeadline = Date.now() + RECORD_WAIT_MS;
-	while (runningChildren().length < 1 && Date.now() < secondDeadline) await sleep(10);
-	assert.equal(runningChildren().length, 1);
-	const all = await call({ action: "quit", all: true });
-	assert.notEqual(all.isError, true, text(all));
-	assert.equal(all.details.runControl?.children.length, 1, text(all));
-	await second;
-	assert.equal(settledResults.length, 2);
-	assert.equal(settledResults.at(-1)?.status, "interrupted", "quit with all: true stopped the child");
-	assert.match(text(await call({ action: "quit", all: true })), /No running subagent children to quit/);
+	const paused = await call({ action: "pause", id: running.childId });
+	assert.notEqual(paused.isError, true, text(paused));
+	await launch;
+	const pausedRecord = await waitForRecord((candidate) => candidate.terminalStatus === "paused");
+	assert.deepEqual(pausedRecord.heldMessages?.messages, [steer, followUp], "pause keeps what the child had queued");
+
+	const resumed = await call({ action: "resume", id: running.childId, message: "then wrap up" });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	const firstResume = resumedTaskId(resumed);
+	await waitForRecord((candidate) => candidate.taskId === firstResume && candidate.state === "running");
+	const quit = await call({ action: "quit", all: true });
+	assert.notEqual(quit.isError, true, text(quit));
+	assert.equal(quit.details.runControl?.children.length, 1, text(quit));
+	await waitForRecord((candidate) => candidate.taskId === firstResume && candidate.terminalStatus === "quit");
+
+	// A new extension instance over the same session, as after reopening it: only the child records carry the child.
+	const again = await sdkSession()({ action: "resume", id: running.childId });
+	assert.notEqual(again.isError, true, text(again));
+	const secondResume = resumedTaskId(again);
+	const finished = await waitForRecord(
+		(candidate) => candidate.taskId === secondResume && candidate.state === "terminal",
+	);
+	assert.equal(finished.terminalStatus, "ok");
+	const delivered = transcript(finished);
+	assert.equal(occurrences(delivered, steer), 1, "the held steer is delivered exactly once");
+	assert.equal(occurrences(delivered, followUp), 1, "the held follow-up is delivered exactly once");
+	assert.equal(occurrences(delivered, "then wrap up"), 1, "the resume message is delivered exactly once");
+	const order = [steer, followUp, "then wrap up"].map((message) => delivered.indexOf(message));
+	assert.ok(order[0]! < order[1]! && order[1]! < order[2]!, `held messages first, in order: ${order.join(", ")}`);
 });

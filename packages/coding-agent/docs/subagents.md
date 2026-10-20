@@ -230,7 +230,7 @@ Paused, quit, interrupted, completed, and failed children are resumable, includi
 
 Resume also refuses a child that is still running (pause or quit it first) and an id this session did not launch. A resume that fails, for example because the child's agent is no longer defined, keeps its `worktree: true` worktree with its changes and branch.
 
-An SDK session without a task host runs its subagents directly. There, `quit` stops a running child by its child path (from `status`), its run id, or with `all: true`, but the child cannot be resumed, and `pause` returns an error that suggests `quit`. For a terminal child, launch a fresh child with an explicit context handoff.
+An SDK session without a task host runs its subagents directly and records them in its session the same way, so `pause`, `resume` (with or without `message`, queued messages included) and `quit` work there by id and with `all: true`, also after the session is reopened. A child resumed there runs in the background, and its result arrives as a completion notice. For a terminal child, launch a fresh child with an explicit context handoff.
 
 The `kill` action was removed, and `interrupt` before it. Calls with either are rejected with an error that names `quit` as the replacement. For `kill` it reads:
 
