@@ -5,6 +5,7 @@ import {
 	SessionManager,
 	type SessionStore,
 } from "@bastani/atomic";
+import type { AgentSource } from "../../agents/agent-types.js";
 import type { MaxOutputConfig, OutputMode, RunSyncOptions } from "../../shared/types.js";
 import { type SubagentChildWorktree, unparkRunWorktree } from "./run-worktrees.js";
 import {
@@ -81,6 +82,16 @@ export interface SubagentChildLaunch {
 	readonly task: string;
 	/** The task as the caller gave it, which its task host shows. */
 	readonly intentTask?: string;
+	/**
+	 * Where the agent definition the launch resolved came from. The same name can be defined by more than one source,
+	 * and its definition sets the child's system prompt, skills and inherited project context.
+	 */
+	readonly agentSource?: AgentSource;
+	/**
+	 * The session a `context: "fork"` launch branched from its owner's conversation before admission, which the child
+	 * starts on: its id, in the owner's session store, and its file when that store keeps one.
+	 */
+	readonly forkSession?: { readonly id: string; readonly file?: string };
 	readonly sessionDir?: string;
 	readonly modelOverride?: string;
 	readonly skills?: readonly string[];
@@ -95,10 +106,22 @@ export function subagentChildLaunch(
 	task: string,
 	intentTask: string | undefined,
 	options: RunSyncOptions,
+	agentSource: AgentSource | undefined,
 ): SubagentChildLaunch {
+	const forkSession = options.resumeSession ? undefined : options.sessionManager;
+	const forkSessionFile = forkSession?.getSessionFile();
 	return {
 		task,
 		...(intentTask === undefined ? {} : { intentTask }),
+		...(agentSource ? { agentSource } : {}),
+		...(forkSession
+			? {
+					forkSession: {
+						id: forkSession.getSessionId(),
+						...(forkSessionFile ? { file: forkSessionFile } : {}),
+					},
+				}
+			: {}),
 		...(options.sessionDir ? { sessionDir: options.sessionDir } : {}),
 		...(options.modelOverride ? { modelOverride: options.modelOverride } : {}),
 		...(options.skills ? { skills: options.skills } : {}),

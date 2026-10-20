@@ -39,6 +39,7 @@ import {
 	takeStoppedQueuedSubagentChild,
 } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import { createExecutionScheduler } from "../../packages/subagents/src/runs/shared/parallel-utils.js";
+import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
 import type {
 	RunSyncOptions,
 	SingleResult,
@@ -1332,6 +1333,117 @@ test("a queued child of an SDK session without a task host paused before it star
 	assert.equal(starts.length, 1);
 	assert.match(starts[0]!.task, /fresh-b-marker[\s\S]*\n\nalso check the docs$/);
 	assert.equal(starts[0]!.options.resumeSession, undefined);
+});
+
+/** Give the owner a conversation and branch a forked child's session from it, as a `context: "fork"` launch does. */
+async function forkFromParentConversation(h: Harness): Promise<SessionManager> {
+	await h.sessionManager.appendMessage({ role: "user", content: "parent-only context", timestamp: Date.now() });
+	const forked = await createForkContextResolver(h.sessionManager, "fork").sessionManagerForIndex(0);
+	assert.ok(forked);
+	return forked;
+}
+
+test("a forked queued child paused before it started is resumed after a restart on its parent's conversation (#3784)", async () => {
+	const h = harness();
+	const schedule = createExecutionScheduler(1);
+	const runId = "fresh-fork";
+	const childId = `${runId}:0`;
+	const runningTask = await h.admit(`${runId}-sibling`, schedule);
+	const forked = await forkFromParentConversation(h);
+	const queuedTask = await h.admit(runId, schedule, { sessionManager: forked });
+	await h.waitForLatest(`${runId}-sibling:0`, (candidate) => candidate.launchLeafId !== undefined);
+	const paused = await h.call({ action: "pause", id: childId });
+	assert.notEqual(paused.isError, true, text(paused));
+	await h.call({ action: "quit", id: `${runId}-sibling:0` });
+	await settled(h, runningTask);
+	assert.ok(takeStoppedQueuedSubagentChild(queuedTask), "Atomic restarts and forgets the queued launch");
+
+	const resumed = await h.call({ action: "resume", id: childId });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	const resumedTask = resumedTaskId(resumed);
+	const started = await h.waitForLatest(
+		childId,
+		(candidate) => candidate.taskId === resumedTask && candidate.childSessionId !== undefined,
+	);
+	assert.equal(started.childSessionId, forked.getSessionId(), "it starts on the branch its launch prepared");
+	const [start] = h.runs.filter((run) => run.options.runId === runId);
+	assert.equal(start?.task, ORIGINAL_TASK);
+	assert.equal(start?.options.resumeSession, undefined, "it is a new launch on the branch, not a resumed session");
+	const child = await SessionManager.open(h.sessionManager.getSessionStore(), forked.getSessionId(), h.cwd);
+	assert.match(JSON.stringify(child.buildSessionContext().messages), /parent-only context/);
+	// It runs its original task, which the harness holds until it is stopped.
+	await h.call({ action: "quit", id: childId });
+	await settled(h, resumedTask);
+});
+
+test("a forked queued child of an SDK session paused before it started is resumed after a restart on its parent's conversation (#3784)", async () => {
+	const h = harness({ ownerless: true });
+	await h.sessionManager.appendMessage({ role: "user", content: "parent-only context", timestamp: Date.now() });
+	const siblingDone = Promise.withResolvers<void>();
+	h.finishOn.set("fork-a-marker", siblingDone);
+	h.finishOn.set("fork-b-marker", Promise.withResolvers<void>());
+	cleanups.push(async () => siblingDone.resolve());
+	const launched = h.call({
+		tasks: [
+			{ agent: "worker", task: "fork-a-marker" },
+			{ agent: "worker", task: "fork-b-marker" },
+		],
+		concurrency: 1,
+		context: "fork",
+	});
+	const children = () =>
+		[...readSubagentChildRecords(h.sessionManager.getEntries()).values()].sort(
+			(left, right) => left.index - right.index,
+		);
+	const deadline = Date.now() + RECORD_WAIT_MS;
+	while (children().length < 2 && Date.now() < deadline) await sleep(10);
+	const [childA, childB] = children();
+	assert.ok(childA && childB?.taskId);
+	await h.waitForLatest(childA.childId, (candidate) => !!candidate.childSessionId);
+	const paused = await h.call({ action: "pause", id: childB.childId });
+	assert.notEqual(paused.isError, true, text(paused));
+	siblingDone.resolve();
+	await launched;
+	assert.ok(takeStoppedQueuedOwnerlessChild(childB.taskId), "Atomic restarts and forgets the queued launch");
+	h.finishOn.clear();
+
+	const resumed = await h.call({ action: "resume", id: childB.childId });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	const resumedTask = resumedTaskId(resumed);
+	const finished = await h.waitForLatest(
+		childB.childId,
+		(candidate) => candidate.taskId === resumedTask && candidate.state === "terminal",
+	);
+	assert.equal(finished.terminalStatus, "ok");
+	assert.ok(finished.childSessionId);
+	const child = await SessionManager.open(h.sessionManager.getSessionStore(), finished.childSessionId, h.cwd);
+	assert.match(JSON.stringify(child.buildSessionContext().messages), /parent-only context/);
+});
+
+test("a forked queued child whose prepared branch is gone after a restart fails to resume, never starting on a fresh context (#3784)", async () => {
+	const h = harness();
+	const schedule = createExecutionScheduler(1);
+	const runId = "fresh-fork-lost";
+	const childId = `${runId}:0`;
+	const runningTask = await h.admit(`${runId}-sibling`, schedule);
+	const forked = await forkFromParentConversation(h);
+	const queuedTask = await h.admit(runId, schedule, { sessionManager: forked });
+	await h.waitForLatest(`${runId}-sibling:0`, (candidate) => candidate.launchLeafId !== undefined);
+	const paused = await h.call({ action: "pause", id: childId });
+	assert.notEqual(paused.isError, true, text(paused));
+	await h.call({ action: "quit", id: `${runId}-sibling:0` });
+	await settled(h, runningTask);
+	assert.ok(takeStoppedQueuedSubagentChild(queuedTask), "Atomic restarts and forgets the queued launch");
+	await h.sessionManager.getSessionStore().delete(forked.getSessionId());
+
+	const resumed = await h.call({ action: "resume", id: childId });
+	assert.equal(resumed.isError, true, text(resumed));
+	assert.match(text(resumed), /could not be resumed: .*forked from its parent's conversation/);
+	assert.deepEqual(
+		h.runs.filter((run) => run.options.runId === runId),
+		[],
+		"it never starts without the context it was launched with",
+	);
 });
 
 function initGitRepository(root: string): void {

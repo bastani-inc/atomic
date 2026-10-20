@@ -12,6 +12,7 @@ import {
 } from "@bastani/atomic";
 import type { ModelSingleResponse } from "../../../../coding-agent/src/core/tasks/contracts.js";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.js";
+import type { AgentConfig, AgentScope, AgentSource } from "../../agents/agent-types.js";
 import {
 	applyIntercomBridgeToAgent,
 	resolveIntercomBridge,
@@ -243,6 +244,26 @@ function freshPrompts(
 	return { task: resume?.message ? `${launch.task}\n\n${resume.message}` : launch.task, followUps: held };
 }
 
+/**
+ * The agent definition the child was launched with, looked up again by name. With the source its launch resolved,
+ * the definition from that source, wherever the default scope would shadow it with another of the same name.
+ */
+function rediscoverAgent(
+	deps: SubagentChildRestoreDeps,
+	cwd: string,
+	name: string,
+	source: AgentSource | undefined,
+): AgentConfig | undefined {
+	const scopes: readonly AgentScope[] = source ? ["both", "user", "project"] : [resolveExecutionAgentScope(undefined)];
+	for (const scope of scopes) {
+		const agent = deps
+			.discoverAgents(cwd, scope)
+			.agents.find((candidate) => candidate.name === name && (!source || candidate.source === source));
+		if (agent) return agent;
+	}
+	return undefined;
+}
+
 async function relaunchChild(
 	deps: SubagentChildRestoreDeps,
 	ctx: ExtensionContext,
@@ -277,14 +298,18 @@ async function relaunchChild(
 		return ownerlessRelaunched(deps, record, launched, recordChild, release, hold, supervisorAuthorization, ctx);
 	}
 	if (!existsSync(record.cwd)) return unrestorable(`its working directory no longer exists: ${record.cwd}`);
-	const discovered = deps
-		.discoverAgents(record.cwd, resolveExecutionAgentScope(undefined))
-		.agents.find((agent) => agent.name === record.agent);
-	if (!discovered) return unrestorable(`agent "${record.agent}" is no longer defined`);
+	// A child that never started has no session to reopen; its records say how its launch starts it fresh.
+	const fresh =
+		record.childSessionId === undefined && record.childSessionFile === undefined ? record.launch : undefined;
+	const discovered = rediscoverAgent(deps, record.cwd, record.agent, fresh?.agentSource);
+	if (!discovered)
+		return unrestorable(
+			`agent "${record.agent}"${fresh?.agentSource ? ` (${fresh.agentSource})` : ""} is no longer defined`,
+		);
 	const bridge = record.orchestratorTarget
 		? resolveIntercomBridge({
 				config: deps.config.intercomBridge,
-				context: "fresh",
+				context: fresh?.forkSession ? "fork" : "fresh",
 				orchestratorTarget: resolveIntercomSessionTarget(
 					deps.pi.getSessionName(),
 					ctx.sessionManager.getSessionId(),
@@ -293,12 +318,23 @@ async function relaunchChild(
 			})
 		: undefined;
 	const agent = bridge?.active ? applyIntercomBridgeToAgent(discovered, bridge) : discovered;
-	// A child that never started has no session to reopen; its records say how its launch starts it fresh.
-	const fresh =
-		record.childSessionId === undefined && record.childSessionFile === undefined ? record.launch : undefined;
 	let sessionManager: SessionManager | undefined;
-	if (fresh) onReopened(undefined);
-	else {
+	if (fresh) {
+		// A forked launch starts on the branch it prepared from its owner's conversation, never on a fresh context.
+		if (fresh.forkSession) {
+			const branch = await reopenChildSession(ctx, {
+				cwd: record.cwd,
+				childSessionId: fresh.forkSession.id,
+				...(fresh.forkSession.file ? { childSessionFile: fresh.forkSession.file } : {}),
+			});
+			if ("reason" in branch)
+				return unrestorable(
+					`the session forked from its parent's conversation for it could not be reopened: ${branch.reason}`,
+				);
+			sessionManager = branch.sessionManager;
+		}
+		onReopened(undefined);
+	} else {
 		const reopened = await reopenChildSession(ctx, record);
 		if ("reason" in reopened) return unrestorable(reopened.reason);
 		sessionManager = reopened.sessionManager;
@@ -313,10 +349,12 @@ async function relaunchChild(
 	const intercomGroup = record.intercomGroup ?? inheritedIntercomGroup(ctx);
 	const currentProvider = ctx.model?.provider;
 	const resolveCandidateModel = createCandidateModelResolver(ctx.modelRegistry, currentProvider);
-	const ownModel = sessionManager
-		? ownSessionModelCandidate(sessionManager, record, resolveCandidateModel)
-		: fresh?.modelOverride && resolveCandidateModel(fresh.modelOverride)?.model
+	const ownModel = fresh
+		? fresh.modelOverride && resolveCandidateModel(fresh.modelOverride)?.model
 			? fresh.modelOverride
+			: undefined
+		: sessionManager
+			? ownSessionModelCandidate(sessionManager, record, resolveCandidateModel)
 			: undefined;
 	const prompts = fresh ? freshPrompts(record, fresh, resume) : resumedPrompts(record, resume);
 	const options: RunSyncOptions = {
@@ -327,9 +365,9 @@ async function relaunchChild(
 		runId: record.runId,
 		index: record.index,
 		sessionDir:
-			(sessionManager ? sessionManager.getSessionDir() : fresh?.sessionDir) ||
+			(fresh ? fresh.sessionDir : sessionManager?.getSessionDir()) ||
 			mkdtempSync(join(tmpdir(), "atomic-subagent-restore-")),
-		...(sessionManager ? { sessionManager, resumeSession: true } : {}),
+		...(sessionManager ? { sessionManager, ...(fresh ? {} : { resumeSession: true }) } : {}),
 		...(fresh?.skills ? { skills: [...fresh.skills] } : {}),
 		...(fresh?.outputPath ? { outputPath: fresh.outputPath } : {}),
 		...(fresh?.outputMode ? { outputMode: fresh.outputMode } : {}),

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { AgentSource } from "../../agents/agent-types.js";
 import type { RunSyncOptions, SingleResult } from "../../shared/types.js";
 import {
 	claimRunWorktree,
@@ -85,6 +86,8 @@ const NO_USAGE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, tu
  */
 export function runOwnerlessChild(input: {
 	readonly agent: string;
+	/** Where the agent definition the launch resolved came from. */
+	readonly agentSource?: AgentSource;
 	readonly task: string;
 	/** The child's working directory, as its records name it. */
 	readonly cwd: string;
@@ -236,7 +239,7 @@ export function runOwnerlessChild(input: {
 		"running",
 		undefined,
 		undefined,
-		schedule ? subagentChildLaunch(input.task, undefined, input.options) : undefined,
+		schedule ? subagentChildLaunch(input.task, undefined, input.options, input.agentSource) : undefined,
 	);
 	if (schedule) rememberSubagentChildSchedule(runId, index, schedule);
 	const result = (

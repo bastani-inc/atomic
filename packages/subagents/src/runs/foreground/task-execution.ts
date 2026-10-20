@@ -570,7 +570,14 @@ export async function runAgentTask(input: {
 		undefined,
 		undefined,
 		// Nothing of a queued launch survives a restart but its records: they say how to start it fresh then.
-		queuedAtAdmission ? subagentChildLaunch(input.task, input.intentTask, input.options) : undefined,
+		queuedAtAdmission
+			? subagentChildLaunch(
+					input.task,
+					input.intentTask,
+					input.options,
+					input.agents.find((agent) => agent.name === input.agent)?.source,
+				)
+			: undefined,
 	);
 	if (queuedAtAdmission) queuedChildren.set(started.value.taskId, { start: queuedStart(), stopped: false });
 	// A queued execution has no runSync listener yet. Release its observation too,
