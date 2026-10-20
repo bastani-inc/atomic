@@ -155,6 +155,7 @@ export function createWorkflowExtensionRuntimeState(
 		isProjectTrusted: () => projectTrusted ?? pi.getResourceLoaderInheritanceSnapshot?.()?.projectTrusted ?? true,
 		resolveJournal: () => pi.getWorkflowJournal?.(),
 		resolveJournalSettings: () => pi.getSettings?.(),
+		resolveStorageAgentDir: () => pi.getStorageAgentDir?.(),
 	};
 	// #3105: discovery follows the SDK session, never the process working directory.
 	let contextCwd: string | undefined;

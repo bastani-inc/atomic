@@ -18,6 +18,7 @@ import type { ExtensionFlag } from "../core/extensions/types.ts";
 import { getToolListError } from "../core/settings-merge.js";
 import { StorageConfigError } from "../core/storage/errors.js";
 import { validateStoragePrefix } from "../core/storage/prefix.js";
+import type { StorageFlagArgument } from "../core/storage/process-selection.js";
 
 export type Mode = "text" | "json" | "rpc";
 
@@ -42,6 +43,7 @@ export interface Args {
 	sessionDir?: string;
 	sessionStorePath?: string;
 	sessionPrefix?: string;
+	storage?: StorageFlagArgument;
 	models?: string[];
 	tools?: string[];
 	excludeTools?: string[];
@@ -165,6 +167,14 @@ export function parseArgs(args: string[]): Args {
 		} else if (arg === "--session-prefix") {
 			if (i + 1 === args.length) throw new StorageConfigError("cli", arg, "prefix-required");
 			result.sessionPrefix = args[++i];
+		} else if (arg === "--storage" || arg === "--storage-file") {
+			if (i + 1 === args.length) {
+				throw new StorageConfigError("cli", arg, arg === "--storage" ? "selection-required" : "path-required");
+			}
+			if (result.storage !== undefined && result.storage.flag !== arg) {
+				throw new StorageConfigError("cli", "--storage, --storage-file", "conflicting-flags");
+			}
+			result.storage = { flag: arg, value: args[++i] };
 		} else if (arg === "--models" && i + 1 < args.length) {
 			result.models = args[++i]
 				.split(",")
@@ -333,6 +343,9 @@ ${chalk.bold("Options:")}
   --session-store <path>         Select a SQLite session database
   --session-prefix <prefix>      Table prefix for --session-store (default: empty)
   --no-session                   Don't save session (ephemeral)
+  --storage <json>               Storage selection for this process's sessions and workflow runs,
+                                 in the same JSON form as the "storage" setting; never saved
+  --storage-file <path>          Read the --storage selection from a JSON file
   --name, -n <name>              Set session display name
   --models <patterns>            Comma-separated model patterns for ctrl+p cycling
                                  Supports globs (anthropic/*, *sonnet*) and fuzzy matching
@@ -483,6 +496,10 @@ ${chalk.bold("Environment Variables:")}
   ${ENV_TELEMETRY.padEnd(32)} - Override install telemetry when set to 1/true/yes or 0/false/no
   ${ENV_SHARE_VIEWER_URL.padEnd(32)} - Base URL for /share command (default: https://pi.dev/session/)
   PI_* aliases are also supported for app-specific variables above.
+  ATOMIC_STORAGE                   - Storage selection JSON for sessions and workflow runs (overridden by --storage)
+  ATOMIC_SESSIONS_STORAGE          - Session-only storage selection JSON (cannot be combined with ${ENV_SESSION_DIR})
+  ATOMIC_WORKFLOWS_JOURNAL         - Workflow-run-only storage selection JSON
+  ATOMIC_WORKFLOW_JOURNAL_PATH     - Workflow journal SQLite path (cannot be combined with ATOMIC_WORKFLOWS_JOURNAL)
 
 ${chalk.bold("Built-in Tool Names:")}
   read              - Read path selectors (files, dirs, archives, URLs)

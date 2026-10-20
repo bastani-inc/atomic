@@ -197,6 +197,7 @@ export interface ExtensionAPI {
 	getResourceLoaderInheritanceSnapshot?: () => DefaultResourceLoaderInheritanceSnapshot | undefined;
 	getChildSessionOptions?: (options: CreateAgentSessionOptions) => CreateAgentSessionOptions;
 	getWorkflowJournal?: () => CreateAgentSessionOptions["journal"];
+	getStorageAgentDir?: () => string | undefined;
 	getSettings?: () => RunJournalSettings;
 	registerShortcut?: (
 		key: string,

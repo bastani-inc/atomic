@@ -413,6 +413,10 @@ export function createExtensionAPI(
 			assertActive(true);
 			return runtime.workflowJournal;
 		},
+		getStorageAgentDir() {
+			assertActive(true);
+			return runtime.storageAgentDir;
+		},
 
 		sendMessage(message, options): void | Promise<void> {
 			assertActive();

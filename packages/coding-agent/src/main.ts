@@ -64,6 +64,11 @@ import { ownedSessionManagerStores, ownedSessionStores } from "./core/session-li
 import { canIsolateSessionStore, takeEngineSessionStorageArg } from "./core/session-storage.js";
 import { deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
+import {
+	hasProcessStorageSelection,
+	selectProcessStorage,
+	setCliStorageSelection,
+} from "./core/storage/process-selection.js";
 import { endTimingSpan, printTimings, resetTimings, startTimingSpan, time } from "./core/timings.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "./core/trust-manager.ts";
 import { builtInExtensions } from "./extensions/index.ts";
@@ -476,6 +481,11 @@ export async function main(argv: string[], options?: MainOptions) {
 		process.exit(0);
 	}
 
+	// Process-level storage comes from the launching process, so it is validated before any session
+	// starts and is never subject to project trust.
+	setCliStorageSelection(parsed.storage, cwd);
+	selectProcessStorage("journal", agentDir, cwd);
+
 	// Decide the final runtime cwd before creating cwd-bound runtime services.
 	// --session and --resume may select a session from another project, so project-local
 	// settings, resources, provider registrations, and models must be resolved only after
@@ -516,7 +526,8 @@ export async function main(argv: string[], options?: MainOptions) {
 		parsed.noSession ||
 		parsed.sessionDir !== undefined ||
 		parsed.sessionStorePath !== undefined ||
-		!!getEnvValue(ENV_SESSION_DIR);
+		!!getEnvValue(ENV_SESSION_DIR) ||
+		hasProcessStorageSelection("sessions");
 	const selectedProjectTrusted =
 		parsed.projectTrustOverride ??
 		(hasProjectTrustInputs(sessionCwd) ? projectTrustStore.get(sessionCwd) : true) ??
