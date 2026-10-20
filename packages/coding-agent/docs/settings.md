@@ -103,7 +103,7 @@ Remove secrets from routing tasks, inputs, and workflow descriptions/contracts b
   "modelRouting": {
     "allowedProviders": ["github-copilot", "openai-codex", "anthropic"],
     "excludedProviders": ["openrouter"],
-    "allowedModels": ["github-copilot/*", "anthropic/claude-sonnet-*", "openai-codex/gpt-5.5"],
+    "allowedModels": ["github-copilot/*", "anthropic/claude-sonnet-*", "openai-codex/gpt-6.1-sol"],
     "excludedModels": ["*-fast"]
   }
 }

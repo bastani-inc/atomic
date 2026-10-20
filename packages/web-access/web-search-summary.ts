@@ -132,10 +132,7 @@ export async function loadSummaryModelChoices(
 
 	const config = loadConfig();
 	const configuredSummaryModel = typeof config.summaryModel === "string" ? config.summaryModel.trim() : "";
-	const preferredDefaults = [
-		"anthropic/claude-haiku-4-5",
-		"openai-codex/gpt-5.3-codex-spark",
-	];
+	const preferredDefaults = ["anthropic/claude-haiku-4-5"];
 
 	let defaultSummaryModel: string | null = null;
 	if (configuredSummaryModel.length > 0 && availableValues.has(configuredSummaryModel)) {

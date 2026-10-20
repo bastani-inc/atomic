@@ -602,18 +602,16 @@ describe("deferred tools", () => {
 
 	it("selects additional tools, tool search, or top-level tools for Codex models", async () => {
 		const context = makeContext([makeTool("base_tool"), makeTool("late_tool")]);
-		const additionalTools = await capturePayload<OpenAIPayload>(
-			getModel("openai-codex", "gpt-5.6-sol"),
-			context,
-			makeCodexToken(),
-		);
+		const codexModel = getModel("openai-codex", "gpt-5.6-sol");
+		const additionalTools = await capturePayload<OpenAIPayload>(codexModel, context, makeCodexToken());
+		// Every catalog Codex model supports additional_tools; compat overrides select the other transports.
 		const toolSearch = await capturePayload<OpenAIPayload>(
-			getModel("openai-codex", "gpt-5.5"),
+			{ ...codexModel, compat: { ...codexModel.compat, supportsAdditionalTools: false } },
 			context,
 			makeCodexToken(),
 		);
 		const topLevel = await capturePayload<OpenAIPayload>(
-			getModel("openai-codex", "gpt-5.3-codex-spark"),
+			{ ...codexModel, compat: { ...codexModel.compat, supportsAdditionalTools: false, supportsToolSearch: false } },
 			context,
 			makeCodexToken(),
 		);

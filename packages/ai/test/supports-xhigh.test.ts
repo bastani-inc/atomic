@@ -12,7 +12,13 @@ describe("retired provider models", () => {
 		const codexIds = getModels("openai-codex").map((model) => model.id);
 		expect(codexIds).not.toContain("gpt-5.4");
 		expect(codexIds).not.toContain("gpt-5.4-mini");
-		expect(codexIds).toContain("gpt-5.5");
+		expect(codexIds).toContain("gpt-6.1-sol");
+	});
+
+	it("omits Codex models rejected for ChatGPT accounts", () => {
+		const codexIds = getModels("openai-codex").map((model) => model.id);
+		expect(codexIds).not.toContain("gpt-5.5");
+		expect(codexIds).not.toContain("gpt-5.3-codex-spark");
 	});
 });
 
@@ -168,19 +174,14 @@ describe("getSupportedThinkingLevels", () => {
 		expect(getSupportedThinkingLevels(model!)).not.toContain("max");
 	});
 
-	it.each([
-		"gpt-5.5",
-		"gpt-5.6-sol",
-		"gpt-5.6-terra",
-		"gpt-5.6-luna",
-		"gpt-6-astra",
-		"gpt-6-sol",
-		"gpt-6-luna",
-	] as const)("includes xhigh for openai-codex %s models", (modelId) => {
-		const model = getModel("openai-codex", modelId);
-		expect(model).toBeDefined();
-		expect(getSupportedThinkingLevels(model!)).toContain("xhigh");
-	});
+	it.each(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] as const)(
+		"includes xhigh for openai-codex %s models",
+		(modelId) => {
+			const model = getModel("openai-codex", modelId);
+			expect(model).toBeDefined();
+			expect(getSupportedThinkingLevels(model!)).toContain("xhigh");
+		},
+	);
 
 	it.each(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-sol", "gpt-6-luna"] as const)(
 		"includes xhigh and max for OpenAI %s models",

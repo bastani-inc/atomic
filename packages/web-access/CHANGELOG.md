@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Curator summary drafts no longer fall back to `openai-codex/gpt-5.3-codex-spark`, which the `openai-codex` provider no longer offers. `anthropic/claude-haiku-4-5` remains the preferred default, and `summaryModel` or the curator's model picker can select any other available model.
+
 ## [0.9.38] - 2026-10-18
 
 ### Fixed

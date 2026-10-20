@@ -668,7 +668,6 @@ describe("ModelRuntime fast model catalog", () => {
 			"gpt-6.1-sol-ultrafast",
 		]);
 		assert.deepEqual(routed("openai-codex", "priority"), [
-			"gpt-5.5-fast",
 			"gpt-5.6-luna-fast",
 			"gpt-5.6-sol-fast",
 			"gpt-5.6-terra-fast",
