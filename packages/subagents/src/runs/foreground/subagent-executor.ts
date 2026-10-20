@@ -1,8 +1,15 @@
 import type { ExtensionContext } from "@bastani/atomic";
 import { handleManagementAction } from "../../agents/agent-management.js";
 import { clearPendingForegroundControlNotices } from "../../extension/control-notices.js";
-import { SUBAGENT_ACTIONS, type SubagentToolResult } from "../../shared/types.js";
-import { inspectInProcessChildStatus, killInProcessChild } from "../inprocess/control-status.js";
+import {
+	REMOVED_SUBAGENT_ACTIONS,
+	removedSubagentActionMessage,
+	SUBAGENT_ACTIONS,
+	SUBAGENT_RUN_CONTROL_ACTIONS,
+	type SubagentRunControlAction,
+	type SubagentToolResult,
+} from "../../shared/types.js";
+import { inspectInProcessChildStatus } from "../inprocess/control-status.js";
 import { createExecutionBurstDispatcher } from "./subagent-executor-burst.js";
 import { prepareExecutionContext, refuseSubagentChildDelegation } from "./subagent-executor-context.js";
 import { resolveRequestedCwd } from "./subagent-executor-cwd.js";
@@ -17,6 +24,7 @@ import {
 	type ResolvedExecutorDeps,
 	type SubagentParamsLike,
 } from "./subagent-executor-types.js";
+import { controlSubagentChildren } from "./subagent-run-control.js";
 import {
 	settledOutputsFromRecords,
 	settledTaskOutputText,
@@ -47,6 +55,13 @@ async function handleManagementRequest(input: {
 			details: { mode: "management", results: [] },
 		};
 	}
+	if ((REMOVED_SUBAGENT_ACTIONS as readonly string[]).includes(action)) {
+		return {
+			content: [{ type: "text", text: removedSubagentActionMessage(action) }],
+			isError: true,
+			details: { mode: "management" as const, results: [] },
+		};
+	}
 	if (!(SUBAGENT_ACTIONS as readonly string[]).includes(action)) {
 		return {
 			content: [{ type: "text", text: `Unknown action: ${action}. Valid: ${SUBAGENT_ACTIONS.join(", ")}` }],
@@ -61,7 +76,7 @@ async function handleManagementRequest(input: {
 			details: { mode: "management" as const, results: [] },
 		};
 	}
-	// `kill` is privileged control over a running child, so only the
+	// Run control (`pause`, `resume`, `quit`) is privileged control over a child, so only the
 	// observing actions reach handlers for a child without fanout authorization.
 	if (deps.childPolicy && !deps.childPolicy.fanoutAuthorized && !READ_ONLY_MANAGEMENT_ACTIONS.has(action)) {
 		return {
@@ -109,31 +124,31 @@ async function handleManagementRequest(input: {
 			...(!observed.ok ? { isError: true } : {}),
 		};
 	}
+	if ((SUBAGENT_RUN_CONTROL_ACTIONS as readonly string[]).includes(action)) {
+		return controlSubagentChildren(deps, ctx, {
+			action: action as SubagentRunControlAction,
+			...((paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId)
+				? { id: paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId }
+				: {}),
+			...(params.message !== undefined ? { message: params.message } : {}),
+			...(params.all !== undefined ? { all: params.all } : {}),
+		});
+	}
 	const targetTaskId = paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId;
-	if ((action === "status" || action === "kill") && ctx.getAgentTaskHost && targetTaskId) {
+	if (action === "status" && ctx.getAgentTaskHost && targetTaskId) {
 		const host = ctx.getAgentTaskHost();
 		const taskId = targetTaskId as import("@bastani/atomic").TaskId;
 		if (host.resolveTask(taskId).ok) {
-			if (action === "kill") {
-				const cancelled = await host.cancelTask(taskId, "user");
-				if (!cancelled.ok)
-					return {
-						content: [{ type: "text", text: cancelled.error.message }],
-						isError: true,
-						details: { mode: "management", results: [], taskError: cancelled.error.message },
-					};
-			}
 			const watched = host.watchOwnerTasks();
 			if (watched.ok) {
 				const records = watched.value.snapshot.tasks.filter((task) => task.ref.taskId === taskId);
 				watched.value.dispose();
-				const settledOutput =
-					action === "status" ? await settledTaskOutputText(host, settledOutputsFromRecords(records)) : "";
+				const settledOutput = await settledTaskOutputText(host, settledOutputsFromRecords(records));
 				return {
 					content: [
 						{
 							type: "text",
-							text: `${records.some((task) => task.execution.kind === "settled" && subagentTaskResultLabel(task.execution.result) === "killed (non-resumable)") ? "Killed. This child cannot be resumed. Underlying host records:\n" : action === "kill" ? "Kill requested. This child cannot be resumed. Underlying host records:\n" : ""}${JSON.stringify(records)}${settledOutput}`,
+							text: `${records.some((task) => task.execution.kind === "settled" && subagentTaskResultLabel(task.execution.result) === "killed (non-resumable)") ? "Killed. This child cannot be resumed. Underlying host records:\n" : ""}${JSON.stringify(records)}${settledOutput}`,
 						},
 					],
 					details: { mode: "management", results: [], taskRecords: records },
@@ -157,25 +172,6 @@ async function handleManagementRequest(input: {
 				{
 					type: "text",
 					text: targetRunId ? `No in-process child found for '${targetRunId}'.` : "No in-process subagent found.",
-				},
-			],
-			isError: true,
-			details: { mode: "management", results: [] },
-		};
-	}
-	if (action === "kill") {
-		const targetRunId = paramsWithResolvedCwd.runId ?? paramsWithResolvedCwd.id;
-		if (targetRunId) {
-			const inProcess = await killInProcessChild(targetRunId);
-			if (inProcess) return inProcess;
-		}
-		return {
-			content: [
-				{
-					type: "text",
-					text: targetRunId
-						? `No running in-process child found for '${targetRunId}'.`
-						: "No kill-capable child found.",
 				},
 			],
 			isError: true,
@@ -229,7 +225,7 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 			return handleManagementRequest({ params, paramsWithResolvedCwd, requestCwd, ctx, deps });
 		}
 		// Fanout authorization gates delegation and privileged control. Only `list`,
-		// `get`, and `status` stay available to an unauthorized child; `kill`
+		// `get`, `status`, and `wait` stay available to an unauthorized child; run control
 		// and mutating management are refused by handleManagementRequest.
 		if (deps.childPolicy && !deps.childPolicy.fanoutAuthorized) {
 			return {

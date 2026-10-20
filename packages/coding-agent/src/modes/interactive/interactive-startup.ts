@@ -191,13 +191,14 @@ InteractiveModeBase.prototype.showManagedToolStatus = function (this: Interactiv
 
 export function attachInteractiveEngineResourceExtensionRefresh(mode: InteractiveModeBase): () => void {
 	return onInteractiveEngineResourceExtensionsChanged(mode.runtimeHost, () => {
+		mode.chatContainer.invalidate();
+		mode.ui.requestRender();
 		if (mode.resourceDisclosureContainer.children.length === 0) return;
 		mode.showLoadedResources({
 			force: true,
 			showDiagnosticsWhenQuiet: true,
 			targetContainer: mode.resourceDisclosureContainer,
 		});
-		mode.ui.requestRender();
 	});
 }
 

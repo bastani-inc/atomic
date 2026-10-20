@@ -296,14 +296,9 @@ function fixture(wait: WaitPolicy | undefined, owned = true, resources: { worktr
 		snapshot,
 		host,
 		batchSignal,
-		kill(taskId: TaskId) {
-			return executor.execute(
-				"kill",
-				{ action: "kill", id: taskId },
-				new AbortController().signal,
-				undefined,
-				ctx as never,
-			);
+		async kill(taskId: TaskId) {
+			const cancelled = await host.cancelTask(taskId, "user");
+			return { isError: cancelled.ok ? undefined : true };
 		},
 		get launch() {
 			return launch;

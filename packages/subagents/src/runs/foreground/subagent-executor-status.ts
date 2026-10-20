@@ -160,6 +160,9 @@ export function notifyDetachedForegroundChildExit(input: {
 	index: number;
 	totalTasks?: number;
 	result: SingleResult;
+	/** Set for a child that outlived its launch otherwise, such as one resumed without a task host. */
+	notificationId?: string;
+	noticeLabel?: string;
 }): void {
 	const { pi, runId, index, result } = input;
 	void deliverLocalCompletionNotification(
@@ -177,9 +180,9 @@ export function notifyDetachedForegroundChildExit(input: {
 			...(input.totalTasks !== undefined && input.totalTasks > 1
 				? { taskIndex: index, totalTasks: input.totalTasks }
 				: {}),
-			noticeLabel: "Detached subagent task",
+			noticeLabel: input.noticeLabel ?? "Detached subagent task",
 		},
-		`foreground-detach-${runId}-${index}`,
+		input.notificationId ?? `foreground-detach-${runId}-${index}`,
 	).catch((error) => {
 		if (!isStaleExtensionContextError(error)) {
 			console.error("Failed to emit detached subagent completion notification:", error);

@@ -164,9 +164,10 @@ export function renderChatSessionEntry<TExtraEntry extends ChatTranscriptEntryLi
 	}
 	if (isChatMessageEntry(entry)) {
 		const isStreaming = isChatSessionStreaming(state) && state.liveChat.isStreamingAssistantEntry(entry);
+		const options = chatMessageRenderOptions(state, isStreaming);
 		return renderChatMessageEntry(
 			streamingWindowedEntry(state, entry, isStreaming),
-			chatMessageRenderOptions(state, isStreaming),
+			entry.kind === "tool" ? { ...options, ui: entryTui(state, entry) } : options,
 		);
 	}
 	if (!state.renderExtraEntry) {
@@ -186,6 +187,7 @@ export function transcriptCacheKey<TExtraEntry extends ChatTranscriptEntryLike>(
 		entry.role,
 		renderIdentityKey(state, entry),
 		entryContentCacheKey(state, entry),
+		state.entryRevisions.get(entry) ?? 0,
 	]);
 }
 
@@ -218,6 +220,18 @@ function chatMessageRenderOptions<TExtraEntry extends ChatTranscriptEntryLike>(
 		markdownTheme: inherited?.markdownTheme ?? state.getMarkdownTheme?.(),
 		isStreaming,
 		showImages: inherited?.showImages ?? true,
+	};
+}
+
+function entryTui<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	entry: ChatMessageEntry,
+): Pick<TUI, "requestRender"> {
+	return {
+		requestRender: () => {
+			state.entryRevisions.set(entry, (state.entryRevisions.get(entry) ?? 0) + 1);
+			state.requestRender?.();
+		},
 	};
 }
 

@@ -1,7 +1,13 @@
-import type { CustomEntry, ExtensionAPI, ExtensionContext, SessionEntry } from "@bastani/atomic";
+import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@bastani/atomic";
+import { type SubagentChildWorktree, unparkRunWorktree } from "./run-worktrees.js";
+import {
+	isSubagentChildRecord,
+	observeSubagentChildRecord,
+	SUBAGENT_CHILD_RECORD_TYPE,
+	subagentChildCardRecord,
+} from "./subagent-child-card-state.js";
 
-/** Session entry type that durably records each background child a session launched (#3760). */
-export const SUBAGENT_CHILD_RECORD_TYPE = "subagent-child";
+export { isSubagentChildRecord, SUBAGENT_CHILD_RECORD_TYPE };
 
 export type SubagentChildOwner =
 	| { readonly kind: "session"; readonly sessionId: string }
@@ -16,7 +22,10 @@ export type SubagentChildOwner =
 /**
  * One durable observation of a launched child. The latest record for a child id
  * is authoritative: `running` means the child had not settled when it was written,
- * `terminal` means it completed, failed, or was stopped and must not be restored.
+ * `terminal` means it settled: completed, failed, was interrupted, paused or quit, or was stopped
+ * for good. Session recovery restores `running` children and those its workflow stage's pause stopped
+ * (`stage-paused`); an explicit `resume` also reopens a settled child unless its `terminalStatus` is
+ * non-resumable (`killed`, `stage-closed`, `gone`).
  */
 export interface SubagentChildRecord {
 	readonly version: 1;
@@ -43,13 +52,75 @@ export interface SubagentChildRecord {
 	readonly intercomTarget?: string;
 	readonly intercomGroup?: string;
 	readonly orchestratorTarget?: string;
+	/** The `worktree: true` worktree the child runs in, so resume can recreate it from the run's base. */
+	readonly worktree?: SubagentChildWorktree;
 	readonly terminalStatus?: string;
+	/**
+	 * Steering and follow-up messages the child had queued but not read when pause, quit or its stage's pause stopped
+	 * task `taskId`, in order. Resume delivers them once, before its own message; a later task's record supersedes them.
+	 */
+	readonly heldMessages?: { readonly taskId: string; readonly messages: readonly string[] };
 }
 
 export type SubagentChildRecordInput = Omit<SubagentChildRecord, "version" | "childId" | "owner">;
 
 export interface SubagentChildRecordSink {
 	record(input: SubagentChildRecordInput): void;
+	/** Whether the owner is a workflow stage whose generation is closing for good, not merely interrupted. */
+	ownerEndedForGood?(): boolean;
+	/** Settles once every record this sink was given has been appended. */
+	flushed?(): Promise<void>;
+}
+
+/** `terminalStatus` of a child whose workflow stage finished, or whose run ended or was cancelled; never resumable. */
+export const SUBAGENT_CHILD_STAGE_CLOSED_STATUS = "stage-closed";
+
+/**
+ * `terminalStatus` of a child stopped because its workflow stage paused: the run was paused or quit, Atomic exited,
+ * or the session was switched. It stays resumable, and is restored when its stage resumes from its session (#3760).
+ */
+export const SUBAGENT_CHILD_STAGE_PAUSED_STATUS = "stage-paused";
+
+/** Whether session recovery restores this child: it had not settled, or its stage's pause stopped it (#3760). */
+export function isRestorableSubagentChild(record: SubagentChildRecord): boolean {
+	return (
+		record.state === "running" ||
+		(record.state === "terminal" && record.terminalStatus === SUBAGENT_CHILD_STAGE_PAUSED_STATUS)
+	);
+}
+
+/**
+ * Workflow-stage extension state the workflows extension sets before it closes a stage generation for good. Without
+ * it a closing stage was interrupted (Atomic exited, or the run was paused), and its children stay restorable (#3760).
+ */
+export const WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE = "atomic:workflow-stage-closed-for-good";
+
+/**
+ * Workflow-stage extension state this extension sets to a {@link WorkflowStageChildrenEnd}: a stage generation that
+ * closed resumably and later ended for good (its blocked run was then killed or ended) ends its children through it.
+ */
+export const WORKFLOW_STAGE_END_CHILDREN_STATE = "atomic:workflow-stage-end-children";
+
+export interface WorkflowStageChildrenEnd {
+	/** End every settled child the stage owns, once the stage closed for good. */
+	readonly endChildren: () => void;
+}
+
+/** `terminalStatus` of a child that could not be restored after a restart and was reported gone to its owner. */
+export const SUBAGENT_CHILD_GONE_STATUS = "gone";
+
+const ENDED_STATUSES: ReadonlySet<string> = new Set([
+	"killed",
+	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
+	SUBAGENT_CHILD_GONE_STATUS,
+]);
+
+/**
+ * Whether a workflow stage closing for good ends this settled child: every one does, completed, failed, interrupted,
+ * paused or quit. Running children end when their task settles.
+ */
+function endsWithStage(record: SubagentChildRecord): boolean {
+	return record.state === "terminal" && !ENDED_STATUSES.has(record.terminalStatus ?? "");
 }
 
 export function subagentChildId(runId: string, index: number): string {
@@ -72,13 +143,81 @@ export function subagentChildOwner(
 		: { kind: "session", sessionId };
 }
 
-/** Append child records to the owning session in launch order. */
+const appendChains = new Map<string, Promise<void>>();
+
+/** Append records of one owner in order, across every sink of that owner. */
+function appendInOrder(pi: Pick<ExtensionAPI, "appendEntry">, record: SubagentChildRecord): Promise<void> {
+	observeSubagentChildRecord(record);
+	const key = record.owner.sessionId;
+	const appended = (appendChains.get(key) ?? Promise.resolve())
+		.then(() => pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record))
+		.catch(() => undefined);
+	appendChains.set(key, appended);
+	void appended.then(() => {
+		if (appendChains.get(key) === appended) appendChains.delete(key);
+	});
+	return appended;
+}
+
+interface StageChildren {
+	readonly closeSignal: AbortSignal;
+	readonly childIds: Set<string>;
+	readonly endedForGood: () => boolean;
+	readonly end: (childId: string) => void;
+}
+
+const stageChildren = new WeakMap<AbortSignal, StageChildren>();
+
+/**
+ * Watch the children a workflow stage owns, so that when the stage generation closes for good every settled child,
+ * quit ones included, is recorded `stage-closed`: resume then names why it cannot continue (#3760).
+ */
+export function watchWorkflowStageSubagentChildren(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	ctx: Pick<ExtensionContext, "sessionManager" | "orchestrationContext">,
+): StageChildren | undefined {
+	const orchestration = ctx.orchestrationContext;
+	const admission = orchestration?.kind === "workflow-stage" ? orchestration.messageAdmission : undefined;
+	const closeSignal = admission?.boundary.closeSignal;
+	if (!admission || !closeSignal) return undefined;
+	const existing = stageChildren.get(closeSignal);
+	if (existing) return existing;
+	const owner = subagentChildOwner(ctx);
+	const sessionManager = ctx.sessionManager;
+	const endedForGood = () => admission.extensionState.has(WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE);
+	const end = (childId: string, persisted?: SubagentChildRecord) => {
+		const latest = subagentChildCardRecord(childId, "") ?? persisted;
+		if (!endedForGood() || latest?.owner?.sessionId !== owner.sessionId || !endsWithStage(latest)) return;
+		void appendInOrder(pi, { ...latest, terminalStatus: SUBAGENT_CHILD_STAGE_CLOSED_STATUS });
+		// It can no longer resume, so its worktree is no longer kept for it.
+		unparkRunWorktree(latest.runId, latest.index);
+	};
+	const watched: StageChildren = { closeSignal, childIds: new Set(), endedForGood, end };
+	stageChildren.set(closeSignal, watched);
+	const endAll = () => {
+		if (!endedForGood()) return;
+		const persisted = readSubagentChildRecords(sessionManager.getEntries(), owner.sessionId);
+		for (const childId of new Set([...persisted.keys(), ...watched.childIds])) end(childId, persisted.get(childId));
+	};
+	if (closeSignal.aborted) endAll();
+	else closeSignal.addEventListener("abort", endAll, { once: true });
+	// A generation that closed resumably can still end for good later, after its close.
+	const later: WorkflowStageChildrenEnd = { endChildren: endAll };
+	admission.extensionState.set(WORKFLOW_STAGE_END_CHILDREN_STATE, later);
+	return watched;
+}
+
+/**
+ * Append child records to the owning session in launch order. When the owner's workflow stage generation closes for
+ * good, its children end with it (see {@link watchWorkflowStageSubagentChildren}).
+ */
 export function createSubagentChildRecordSink(
 	pi: Pick<ExtensionAPI, "appendEntry">,
 	ctx: Pick<ExtensionContext, "sessionManager" | "orchestrationContext">,
 ): SubagentChildRecordSink {
 	const owner = subagentChildOwner(ctx);
-	let chain: Promise<void> = Promise.resolve();
+	const stage = watchWorkflowStageSubagentChildren(pi, ctx);
+	let appended: Promise<void> = Promise.resolve();
 	return {
 		record(input) {
 			const record: SubagentChildRecord = {
@@ -87,13 +226,42 @@ export function createSubagentChildRecordSink(
 				owner,
 				...input,
 			};
-			chain = chain.then(() => pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record)).catch(() => undefined);
+			appended = appendInOrder(pi, record);
+			stage?.childIds.add(record.childId);
+			// A child that settles after its stage already closed for good ends with it at once.
+			if (stage?.closeSignal.aborted) stage.end(record.childId);
 		},
+		ownerEndedForGood: () => stage?.endedForGood() === true,
+		flushed: () => appended,
 	};
 }
 
-/** `terminalStatus` of a child that could not be restored after a restart and was reported gone to its owner. */
-export const SUBAGENT_CHILD_GONE_STATUS = "gone";
+/** `terminalStatus` of a child stopped by `pause` or `quit`; both stay resumable. */
+export type SubagentChildStopStatus = "paused" | "quit";
+
+const stopRequests = new Map<string, SubagentChildStopStatus>();
+
+/** Mark the task about to be cancelled so its settlement is recorded as paused or quit, not interrupted. */
+export function requestSubagentChildStop(taskId: string, status: SubagentChildStopStatus): void {
+	stopRequests.set(taskId, status);
+}
+
+export function takeSubagentChildStop(taskId: string): SubagentChildStopStatus | undefined {
+	const status = stopRequests.get(taskId);
+	stopRequests.delete(taskId);
+	return status;
+}
+
+/** Append a new latest observation of a child that changes only its terminal status. */
+export async function recordSubagentChildStatus(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	record: SubagentChildRecord,
+	terminalStatus: string,
+): Promise<void> {
+	const next: SubagentChildRecord = { ...record, state: "terminal", terminalStatus };
+	observeSubagentChildRecord(next);
+	await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, next);
+}
 
 /**
  * Append the terminal observation of a child that could not be restored and has been reported
@@ -105,21 +273,8 @@ export async function recordSubagentChildGone(
 	record: SubagentChildRecord,
 ): Promise<void> {
 	const gone: SubagentChildRecord = { ...record, state: "terminal", terminalStatus: SUBAGENT_CHILD_GONE_STATUS };
+	observeSubagentChildRecord(gone);
 	await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, gone);
-}
-
-function isSubagentChildRecord(value: SessionEntry): value is CustomEntry<SubagentChildRecord> {
-	if (value.type !== "custom" || value.customType !== SUBAGENT_CHILD_RECORD_TYPE) return false;
-	const data = value.data as Partial<SubagentChildRecord> | undefined;
-	return (
-		data?.version === 1 &&
-		typeof data.childId === "string" &&
-		typeof data.runId === "string" &&
-		typeof data.index === "number" &&
-		typeof data.agent === "string" &&
-		typeof data.cwd === "string" &&
-		(data.state === "running" || data.state === "terminal")
-	);
 }
 
 /**

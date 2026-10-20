@@ -107,6 +107,8 @@ subagent({ action: "wait", id: taskId })
 subagent({ action: "status", id: taskId })
 ```
 
+To stop, hold, or continue a child, use `pause`, `quit`, and `resume`; see [Run control](/subagents#run-control).
+
 Do not launch a duplicate just to retrieve its result. Use the task ID returned at launch. IDs are scoped to the session or workflow stage that owns them.
 
 Foreground subagent launches and explicit `action: "wait"` calls also yield when user steering or an Intercom ask/send is admitted to the waiting parent, in main chat or a live workflow stage. The message stays in the normal delivery queue so the parent can handle it and reply. This releases only observation: children keep running under the same task IDs, and other owners' waits are unaffected.
@@ -125,7 +127,7 @@ The parent model also receives the result context. Delivery retries do not relau
 
 Supervisor progress messages are labelled **Historical supervisor update** with their original `Sent:` timestamp. They describe the child's state when sent, not its current status, and can arrive after completion. Prefer a later correction or final result over an earlier progress hypothesis; use `/tasks` for the current task state.
 
-Stopping a subagent through `/tasks` (`x`, then `y`) delivers a **stopped** card and stop context to the parent model. The notice arrives only after termination is confirmed, not while the task is **Stopping**. It requires no final response from the child. Cancelling queued work sends the notice without starting it.
+Stopping a subagent through `/tasks` (`x`, then `y`) delivers a **stopped** card and stop context to the parent model. The notice arrives only after termination is confirmed, not while the task is **Stopping**. It requires no final response from the child. Cancelling queued work sends the notice without starting it. A subagent stopped this way cannot be resumed; to stop one and keep it resumable, use `subagent({ action: "quit", id })` (see [Run control](/subagents#run-control)).
 
 Repeated stop requests or late child results do not duplicate the notice or overwrite the recorded outcome. A task that finished before cancellation keeps its actual result. Closing the owning session or workflow stage still suppresses late notices.
 
@@ -229,9 +231,9 @@ Custom operations adapters receive `wait` but must implement it themselves. Exte
 
 Background means independent of the current observation, not independent of its owner. **Pausing main chat** aborts the foreground turn only; its background agents and shells keep running. Detaching a workflow pane, ending a model turn, or closing `/tasks` also leaves owned background work alone.
 
-**Pausing a workflow stage** blocks new launches and cancels its active and queued agents and shells. Pause completes only after confirming cleanup; failures are reported rather than treated as a successful pause. Main-chat tasks, sibling stages, and future stage generations are unaffected.
+**Pausing a workflow stage** blocks new launches, stops its active and queued agents, and cancels its shells. The stopped subagents stay resumable with `subagent({ action: "resume", id })`. Pause completes only after confirming cleanup; failures are reported rather than treated as a successful pause. Main-chat tasks, sibling stages, and future stage generations are unaffected.
 
-Pause does not close the stage's message generation: queued user and Intercom messages remain held for resume. Resume permits fresh launches but never resurrects cancelled executions; retained task results remain inspectable. Closing a session or stage generation still cancels its remaining owned work. Explicit `/tasks` stop and declared execution timeouts remain separate controls.
+Pause does not close the stage's message generation: queued user and Intercom messages remain held for resume. Resume permits fresh launches but never resurrects cancelled shells; retained task results remain inspectable. Closing a session or stage generation still cancels its remaining owned work. Explicit `/tasks` stop and declared execution timeouts remain separate controls.
 
 On native Windows, Suspend opens a PowerShell subshell rather than freezing Atomic. Exit the subshell to restore the same session; owned background tasks continue while it is open.
 

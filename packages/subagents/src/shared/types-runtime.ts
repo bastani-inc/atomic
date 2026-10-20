@@ -82,7 +82,26 @@ export const SLASH_SUBAGENT_STARTED_EVENT = "subagent:slash:started";
 export const SLASH_SUBAGENT_RESPONSE_EVENT = "subagent:slash:response";
 export const SLASH_SUBAGENT_UPDATE_EVENT = "subagent:slash:update";
 export const SLASH_SUBAGENT_CANCEL_EVENT = "subagent:slash:cancel";
-export const SUBAGENT_ACTIONS = ["list", "get", "create", "update", "delete", "status", "kill", "wait"] as const;
+export const SUBAGENT_ACTIONS = [
+	"list",
+	"get",
+	"create",
+	"update",
+	"delete",
+	"status",
+	"wait",
+	"pause",
+	"resume",
+	"quit",
+] as const;
+export const SUBAGENT_RUN_CONTROL_ACTIONS = ["pause", "resume", "quit"] as const;
+export type SubagentRunControlAction = (typeof SUBAGENT_RUN_CONTROL_ACTIONS)[number];
+/** Removed control actions, rejected with an error that names their replacement. */
+export const REMOVED_SUBAGENT_ACTIONS = ["kill", "interrupt"] as const;
+
+export function removedSubagentActionMessage(action: string): string {
+	return `The subagent action "${action}" was removed. Use { action: "quit", id } to stop a child gracefully; it stays resumable with { action: "resume", id, message? }.`;
+}
 
 export const DEFAULT_FORK_PREAMBLE =
 	"You are a delegated subagent running from a fork of the parent session. " +

@@ -100,11 +100,11 @@ In a parallel run, `intercom.ask`, `contact_supervisor({ reason: "need_decision"
 
 To update a working child, use ordinary Intercom `send` or `ask` with its exact connected name or full session ID from `intercom list`. An admitted child registers with Intercom when its session starts, so it is listed and reachable while it works even if it never calls Intercom itself. Foreground and background children treat it as a priority interrupt: the child's current model call or cancellable tool is cancelled and the message is handled next in the same child execution, without relaunching its task or repeating the original prompt. Tools that ignore cancellation finish first, and completed side effects are kept. Multiple updates stay in arrival order. A reply to an incoming ask uses ordinary `intercom.reply`; this does not change the single-child parent-targeted handoff described below.
 
-Targeted `kill` stops only the selected child and cannot be resumed. Explicit batch cancellation and session/workflow-stage lifetime closure still stop the intended owned children, including pending reply waits. A late or duplicate reply cannot revive a terminal child. Ordinary Intercom group restrictions and the authorized cross-group `contact_supervisor` route are unchanged.
+[Run control](#run-control) (`pause`, `quit`) stops only the selected child, and it stays resumable. Explicit batch cancellation and workflow-stage closure stop the intended owned children for good, including pending reply waits. Closing or switching away from a session also stops its children, but they stay resumable, as described next. A late or duplicate reply cannot revive a terminal child. Ordinary Intercom group restrictions and the authorized cross-group `contact_supervisor` route are unchanged.
 
-If Atomic exits while background subagents are still running, they come back when you reopen the session, or continue the workflow whose stage launched them: each unfinished child is relaunched from its own saved session with a continuation prompt. A restored child keeps its Intercom name and group and gets a fresh supervisor authorization, so you can keep messaging it. Messages sent to it by any session in its group wait for it, from the moment the reopened session starts, or, for a workflow stage's subagent, from the moment the run becomes addressable, until it has been restored; see [Intercom operations](/intercom/operations#connection-states-and-recovery). A child that finished or that you killed is never relaunched. Only the session that launched a child restores it: a fork of that session (`/fork`, `atomic --fork`) copies the child's record but never relaunches or reports it. If a child cannot be restored, for example because its session file or agent definition is gone, the agent gets a notice that it is gone. That notice is given once: the child is then recorded as gone in the session, so later restarts neither retry the restoration nor repeat the notice.
+If Atomic exits or crashes while background subagents are still running, they come back when you reopen the session, or continue the workflow whose stage launched them: each unfinished child is relaunched from its own saved session with a continuation prompt. The same applies when you switch away from the session with `/new`, `/resume` to another session, or `/fork`: its running children stay resumable and are restored when you reopen it. A restored child first receives the steering and follow-up messages it had queued and not read, once, in order. A restored child keeps its Intercom name and group and gets a fresh supervisor authorization, so you can keep messaging it. Messages sent to it by any session in its group wait for it, from the moment the reopened session starts, or, for a workflow stage's subagent, from the moment the run becomes addressable, until it has been restored; see [Intercom operations](/intercom/operations#connection-states-and-recovery). Only children that were still running are relaunched automatically; a child that finished, was paused or quit, or was cancelled for good stays as it was, and you can continue a resumable one with `resume`. Only the session that launched a child restores it: a fork of that session (`/fork`, `atomic --fork`) copies the child's record but never relaunches or reports it. If a child cannot be restored, for example because its session file or agent definition is gone, the agent gets a notice that it is gone. That notice is given once: the child is then recorded as gone in the session, so later restarts neither retry the restoration nor repeat the notice.
 
-Completed, failed, interrupted, and cancelled noninteractive children cannot answer new Intercom asks, even when their retained registration still says `idle`. Such asks fail immediately with an explicit terminal-child error; an admitted ask also fails if its child terminates before replying. Launch a fresh child with the required context for follow-up work. This does not restrict live interactive idle sessions or workflow-stage post-mortem conversations, and does not change `send` delivery semantics.
+Completed, failed, interrupted, and cancelled noninteractive children cannot answer new Intercom asks, even when their retained registration still says `idle`. Such asks fail immediately with an explicit terminal-child error; an admitted ask also fails if its child terminates before replying. For follow-up work, [resume](#run-control) a resumable child or launch a fresh child with the required context. This does not restrict live interactive idle sessions or workflow-stage post-mortem conversations, and does not change `send` delivery semantics.
 
 ### Peer coordination
 
@@ -116,7 +116,7 @@ Peers do not coordinate spontaneously. When related work runs in parallel, name 
 
 A claimed parent-targeted blocking request ends a single child and returns its question, attachments, agent identity, and `[TASK_CONTEXT]` through the parent's `subagent` call. Start a fresh child with the answer and handoff. In parallel runs and collected sibling launches, the requesting child instead stays alive and continues its ongoing execution after receiving the supervisor's reply.
 
-The handoff explicitly tells the parent to start a fresh child with a normal launch such as `subagent({ agent: "worker", task: "[TASK_CONTEXT] ... Continue with this supervisor answer: ..." })`. The new child receives a new run identity. Completed, interrupted, and parent-question children are terminal for continuation; a prior run ID cannot revive one.
+The handoff explicitly tells the parent to start a fresh child with a normal launch such as `subagent({ agent: "worker", task: "[TASK_CONTEXT] ... Continue with this supervisor answer: ..." })`. The new child receives a new run identity.
 
 ## Foreground supervisor coordination
 
@@ -192,21 +192,59 @@ Tool examples:
 subagent({ agent: "codebase-analyzer", task: "Trace the auth flow with file references.", wait: { kind: "foreground", budgetMs: 30000 } })
 ```
 
-Use `subagent({ action: "kill", id: "<task-or-run-id>" })` to terminally stop a live child. Killed children cannot be resumed; launch a fresh child with an explicit context handoff for follow-up work. The former `interrupt` action is no longer accepted. Replace subagent calls using `action: "interrupt"` with `action: "kill"`. Workflow controls use `pause`; host cancellation APIs are unchanged.
+Use [run control](#run-control) to stop, hold, or continue a child.
 
 Cancelling the parent turn stops a running foreground child. This is terminal cancellation, not completion or a retryable failure. Atomic returns labelled partial findings from the run's modified `progress.md`, the last assistant text, or a cancellation notice with available artifact paths. Parallel siblings do not each receive duplicate copies of shared progress.
 
-Use the returned task or run ID for status and kill. Neither action revives completed work. Expand status cards to see every child, full paths, task, parent, and any recorded termination cause; status inspection does not start work.
+Use the returned task or run ID for status and run control. Expand status cards to see every child, full paths, task, parent, and any recorded termination cause; status inspection does not start work.
 
-When a workflow stage closes, it cancels its remaining children and suppresses their late findings. Already-submitted Intercom sends are not retracted, so a transport acknowledgement is not proof that a finding appeared in parent chat. Deliberate post-mortem stage chat remains separate.
+When a workflow stage closes for good (the stage finished, or its run ended or was cancelled), it cancels its remaining children and suppresses their late findings. Every subagent it launched then becomes terminal, whether it was running, paused, quit, completed, or failed: `resume` on one returns an error that says why. Already-submitted Intercom sends are not retracted, so a transport acknowledgement is not proof that a finding appeared in parent chat. Deliberate post-mortem stage chat remains separate.
 
 Live progress and completed results show each step's resolved model ID and effective reasoning level, including after a model fallback; parallel steps keep their metadata separate. Fast inference is part of the model ID, so an agent pinned to a fast variant renders it directly — `codebase-analyzer (openai-codex/gpt-5.6-sol-fast · thinking medium)` — with no separate `fast` badge. Select fast inference in an agent definition's `model` and fallback model fields, for example `openai-codex/gpt-5.6-sol-fast:medium`; normal and fast IDs stay distinct fallback candidates and distinct records. See [Providers](/providers#fast-models) for which providers publish fast variants and what each one sends upstream.
 
 Owner-task rows, status cards, foreground result receipts, and background completion cards retain these settings too. Background launch receipts include the concrete model and known, capability-clamped reasoning level selected at admission, including inherited defaults, without waiting for child session startup. A launch receipt remains a snapshot; inspect `/tasks` for later session resolution or fallback changes. Settings that are not yet resolved remain unavailable rather than being guessed from the parent's display. Completion metadata is persisted with the notification so it remains visible when replaying chat history.
 
+### Run control
+
+The `subagent` tool has the same run-control actions as the workflow tool: `pause`, `resume`, and `quit`. `id` accepts the child id (`<runId>:<index>`), its task id, its Intercom name, or the run id of a run that launched one child.
+
+```ts
+subagent({ action: "pause", id: "<child-id>" })   // stop now; queued messages wait for resume
+subagent({ action: "pause", all: true })          // every running child this session launched
+subagent({ action: "quit", id: "<child-id>" })    // graceful stop; stays resumable
+subagent({ action: "quit", all: true })           // also covers already-paused children
+subagent({ action: "resume", id: "<child-id>", message: "Focus on the failing test first." })
+```
+
+- **`pause`** stops the child's current turn and holds its queued steering and follow-ups in place; `resume` delivers them once, in order, before its own `message`. Intercom messages sent to a paused child wait until you resume it, as long as the same Atomic process keeps running.
+- **`quit`** stops the child gracefully, including a child that is already paused, by you or with its workflow stage. A quit child stays resumable while the session or workflow stage that launched it can still resume it; once that workflow stage closes for good, the child becomes terminal like every other child of the stage.
+- A parallel child still waiting for a free slot behind its concurrency limit can be paused or quit too, by id or with `all: true`. It then does not start when a slot frees; `resume` starts it on its original task, with `message`, if given, added after the task. This works while Atomic keeps running: after a restart, a child that never started cannot be resumed, so launch it again.
+- A resumed child of a parallel run, queued or not, waits for a free slot under that run's concurrency limit, as its original launch did. A paused or quit child holds no slot.
+- **`resume`** continues the child from its own saved session, under the same child id, Intercom name, and group, with fresh supervisor authorization. For a paused, quit, or interrupted child, `message` is delivered once as its next prompt, and after replying the child continues where it left off. For a completed or failed child, `message` is one fresh prompt in the same session, with nothing queued after it. Without `message`, the child is asked to continue where it left off, or to stop if its task is finished; this works for completed and failed children too. `all: true` is not accepted for `resume`.
+
+Paused, quit, interrupted, completed, and failed children are resumable, including a paused child that you later quit. So are children whose session you closed or switched away from, whether Atomic exited or crashed, or you used `/new`, `/resume` to another session, or `/fork`; they are restored when that session reopens. Subagents of a workflow stage that was paused or quit, including by Atomic exiting or a session switch, stay resumable too: the stage agent can continue them with `resume`, and resuming the run after Atomic restarts restores them with the stage. These children are terminal, and `resume` returns an error that says why:
+
+- **Killed**: cancelled for good by an owner or batch cancellation. This includes stopping the subagent from `/tasks` and the removed `kill` action.
+- **Stage ended**: the workflow stage that launched it finished, or its run ended or was cancelled. This covers every subagent of that stage, including ones you paused or quit. The error reads `<agent> (<child-id>, <intercom-name>) is terminal and cannot be resumed: its workflow stage ended (the stage finished, or its run ended or was cancelled). Launch a fresh subagent if its work is still needed.`
+- **Gone**: it could not be restored after a restart.
+
+Resume also refuses a child that is still running (pause or quit it first) and an id this session did not launch. A resume that fails, for example because the child's agent is no longer defined, keeps its `worktree: true` worktree with its changes and branch.
+
+An SDK session without a task host runs its subagents directly and records them in its session the same way, so `pause`, `resume` (with or without `message`, queued messages included) and `quit` work there by id and with `all: true`, also after the session is reopened. A child resumed there runs in the background, and its result arrives as a completion notice. Closing the session stops such a child; reopening the session relaunches it automatically, and the messages it had queued and not read are delivered once, in order. For a terminal child, launch a fresh child with an explicit context handoff.
+
+The `kill` action was removed, and `interrupt` before it. Calls with either are rejected with an error that names `quit` as the replacement. For `kill` it reads:
+
+```text
+The subagent action "kill" was removed. Use { action: "quit", id } to stop a child gracefully; it stays resumable with { action: "resume", id, message? }.
+```
+
+Each background subagent launch card shows the child's latest state, including after you reopen the session with `/resume` or `atomic --session <id>`, and when you view a workflow stage's transcript: **Running in background**, **Paused (resumable)**, **Quit (resumable)**, **Interrupted (resumable)**, **Paused with its workflow stage (resumable)**, **Completed**, **Failed**, **Terminal · killed**, **Terminal · gone after a restart**, or **Terminal · its workflow stage ended**. A resumed child continues in its original launch card, marked **· resumed**, and the `resume` call's own card says the child continues in its original launch card. Expand a launch card to see the end of the child's saved transcript. Earlier `pause`, `resume`, and `quit` calls show their results, and rejected calls show their error.
+
 ## Task inspection
 
 Hosts with an owner task store expose `/tasks` and `/tasks <id>` for background agents and shells, including their retained terminal results. Foreground-only work is excluded. Enter opens detail; arrows select an explicit action. Cancel asks for confirmation of the selected task. Terminal tasks retain transcript inspection but omit foreground, cancellation, and stdin actions. Escape returns from detail or stdin before returning to the composer.
+
+Cancelling a subagent from `/tasks` stops it for good: its row shows **Killed (non-resumable)** and `resume` refuses it. To stop a child and keep it resumable, use `subagent({ action: "quit", id })` or `pause` instead.
 
 `/tasks` appears in slash-command autocomplete. The inspector groups agents and shells with counts, status symbols, and a highlighted selection. Task descriptions lead; the selected row shows secondary activity and tool counts. The header and footer remain visible in ordinary terminal sizes, with a compact fallback for short terminals.
 
@@ -243,7 +281,7 @@ For adversarial review or research, prefer fresh context so the specialist inspe
 
 For parallel implementation work, `worktree: true` can give each child an isolated git worktree so concurrent edits do not clobber each other.
 
-Observation yields do not release these worktrees. Cancelling a queued child before it starts, or closing the session or workflow-stage owner, still allows the batch's worktrees and branches to be removed after the remaining executions finish. Live children's changes stay in place until then; Atomic captures worktree diffs before cleanup.
+Observation yields do not release these worktrees. The batch's worktrees and branches are removed once every child that uses them has finished; Atomic first saves each worktree's changes as a patch under the run's `worktree-diffs/<run id>` artifact directory. When a child is paused or quit, or stays resumable because you closed or switched away from its session or its workflow stage paused, its worktree is kept only if it has uncommitted or untracked changes or commits that are not in the run's base; a clean worktree is removed with the others. Resuming the child continues in its kept worktree, or recreates a removed one from the run's base with its saved patch applied, so a resumed completed child starts with its earlier changes. A resumed child keeps its worktree until it finishes again, and then saves a new patch (`task-<n>-<agent>.<execution>.patch`) rather than overwriting the earlier one. Cancelling a child for good, including a queued one, or its workflow stage closing for good, lets its worktree be removed. If you never resume a stopped child that has unsaved changes, its worktree stays on disk under `.atomic/worktrees/`.
 
 Fresh children inherit the invoking session's SDK configuration, resource-discovery inputs, model/auth runtime and host callbacks. Child tool selections can narrow the parent's permissions but cannot restore disabled packages or excluded tools. Intercom has no mandatory bypass; a child without access receives no supervisor grant. Model fallback keeps the same inherited restrictions. See [SDK child configuration](/sdk#workflow-and-subagent-children).
 
@@ -277,7 +315,7 @@ Use `group` on a call or task to select the child's [Intercom](/intercom) group.
 
 Pending Intercom asks belong to the addressed session. A workflow child cannot inspect or answer its parent stage's pending asks, and sibling children keep separate pending lists.
 
-Detached children remain owned by the workflow stage that launched them. When that stage completes, Atomic cancels every still-running owned child (single or parallel) with the existing parent-cancellation outcome (`status: "interrupted"`, `cause: "abort"`) and suppresses late findings and completion notifications instead of routing them to the parent/main chat. A detached child that finishes while its stage is still live notifies normally, and completing one stage does not affect children owned by other stages or sessions.
+Detached children remain owned by the workflow stage that launched them. When that stage completes, Atomic cancels every still-running owned child (single or parallel) with the existing parent-cancellation outcome (`status: "interrupted"`, `cause: "abort"`) and suppresses late findings and completion notifications instead of routing them to the parent/main chat. These children are terminal; `resume` refuses them with an error that says their workflow stage ended. When the stage completes, or its run ends or is cancelled, every other subagent it launched becomes terminal too, whether it was paused, quit, completed, or failed. A detached child that finishes while its stage is still live notifies normally, and completing one stage does not affect children owned by other stages or sessions.
 
 When a subagent call or parallel task uses a `cwd`, Atomic validates that working directory before starting the child runtime. Missing or non-directory paths are reported as `cwd` problems instead of lower-level runtime errors.
 
@@ -291,7 +329,7 @@ subagent({ agent: "worker", task: "Implement the approved fix.", progress: true 
 
 ## Delegation and child boundaries
 
-Delegation is exactly one level deep and cannot be configured. Children complete their assigned tasks directly; they cannot launch or kill other children. Children can still run background shells. Those shells appear in the parent's `/tasks`: the main chat's, or the current workflow stage's. See [Shells started by subagents](/background-tasks#shells-started-by-subagents). They may inspect definitions and status with `list`, `get`, and `status`; management-restricted children also cannot `create`, `update`, or `delete` definitions.
+Delegation is exactly one level deep and cannot be configured. Children complete their assigned tasks directly; they cannot launch other children or `pause`, `resume`, or `quit` them. Children can still run background shells. Those shells appear in the parent's `/tasks`: the main chat's, or the current workflow stage's. See [Shells started by subagents](/background-tasks#shells-started-by-subagents). They may inspect definitions and status with `list`, `get`, `status`, and `wait`; management-restricted children also cannot `create`, `update`, or `delete` definitions.
 
 Child prompts omit parent orchestration artifacts and prior subagent control traffic. Tool availability does not grant delegation authority. The parent remains responsible for orchestration.
 

@@ -5,7 +5,12 @@ import {
 } from "../../intercom/supervisor-authorization.js";
 import type { IntercomEventBus } from "../../shared/types.js";
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
-import { readSubagentChildRecords, type SubagentChildRecord, subagentChildOwner } from "./subagent-child-records.js";
+import {
+	isRestorableSubagentChild,
+	readSubagentChildRecords,
+	type SubagentChildRecord,
+	subagentChildOwner,
+} from "./subagent-child-records.js";
 import { readPreviousIntercomId, reopenChildSession } from "./subagent-child-session.js";
 
 /**
@@ -184,7 +189,8 @@ export const EARLY_CHILD_HOLD_MAX_MS = 60_000;
 
 interface EarlyChildHold {
 	readonly hold: Promise<ChildTargetHold | undefined>;
-	readonly expire: ReturnType<typeof setTimeout>;
+	/** Absent for a paused child's hold, which lasts until its resume, its quit, or the end of its owner's session. */
+	readonly expire?: ReturnType<typeof setTimeout>;
 	wanted: boolean;
 }
 
@@ -212,7 +218,7 @@ function endEarlyHold(key: string, early: EarlyChildHold): void {
 export async function holdRunningSubagentChildren(events: IntercomEventBus, ctx: ExtensionContext): Promise<void> {
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
 	const running = [...readSubagentChildRecords(ctx.sessionManager.getEntries(), ownerSessionId).values()].filter(
-		(record) => record.state === "running" && record.intercomTarget,
+		(record) => isRestorableSubagentChild(record) && record.intercomTarget,
 	);
 	await Promise.all(
 		running.map(async (record) => {
@@ -229,7 +235,7 @@ export async function holdRunningSubagentChildren(events: IntercomEventBus, ctx:
 					() => early.wanted,
 				),
 			};
-			early.expire.unref?.();
+			early.expire?.unref?.();
 			earlyHolds.set(key, early);
 			const hold = await early.hold.catch(() => undefined);
 			if (hold === undefined) {
@@ -248,6 +254,22 @@ export function takeEarlyChildHold(key: string): Promise<ChildTargetHold | undef
 	earlyHolds.delete(key);
 	clearTimeout(early.expire);
 	return early.hold.catch(() => undefined);
+}
+
+/**
+ * Keep a paused child's targets held, so sends to it wait in the broker instead of failing, until `resume` takes
+ * the hold over under the same capability, `quit` ends it, or its owner's session ends.
+ */
+export function parkPausedChildHold(key: string, hold: ChildTargetHold): void {
+	const previous = earlyHolds.get(key);
+	if (previous) endEarlyHold(key, previous);
+	earlyHolds.set(key, { hold: Promise.resolve(hold), wanted: true });
+}
+
+/** End a paused child's hold; sends to it are routed normally again. */
+export function releasePausedChildHold(key: string): void {
+	const early = earlyHolds.get(key);
+	if (early) endEarlyHold(key, early);
 }
 
 /** End the holds of the session's children that nothing took over, because its session ended. */
@@ -277,7 +299,7 @@ export function holdDormantRunSubagentChildren(
 		try {
 			const snapshot = await store.load(stageSessionId);
 			records = [...readSubagentChildRecords(snapshot.entries, stageSessionId).values()].filter(
-				(record) => record.state === "running" && record.intercomTarget,
+				(record) => isRestorableSubagentChild(record) && record.intercomTarget,
 			);
 		} catch {
 			return;

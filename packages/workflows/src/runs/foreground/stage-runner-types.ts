@@ -216,10 +216,13 @@ export interface InternalStageContext extends StageContext {
 	__subscribeDeliveryActivity(
 		listener: (event: import("./stage-delivery-activity.js").StageDeliveryActivityEvent) => void,
 	): () => void;
-	/** Internal: synchronously reject new detached traffic without waiting for active work. */
-	__sealGeneration(): void;
-	/** Internal: atomically stop detached traffic admission and drain admitted work. */
-	__closeGeneration(): Promise<string | undefined>;
+	/**
+	 * Internal: synchronously reject new detached traffic without waiting for active work. `closedForGood` marks a
+	 * stage that finished or whose run ended, rather than one interrupted, so its subagent children end with it.
+	 */
+	__sealGeneration(closedForGood?: boolean): void;
+	/** Internal: atomically stop detached traffic admission and drain admitted work; `closedForGood` as for seal. */
+	__closeGeneration(closedForGood?: boolean): Promise<string | undefined>;
 	/** Internal: snapshot of currently-known SDK session metadata. */
 	__sessionMeta(): { sessionId: string | undefined; sessionFile: string | undefined };
 	/** Internal: live coding-agent session when the adapter returned one. */

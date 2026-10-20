@@ -13,7 +13,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { join } from "node:path";
-import type { ExtensionAPI, SubagentChildPolicy, ToolDefinition } from "@bastani/atomic";
+import type { ExtensionAPI, SessionEntry, SubagentChildPolicy, ToolDefinition } from "@bastani/atomic";
 import { beforeEach, describe, test, vi } from "vitest";
 import registerSubagentExtension from "../../packages/subagents/src/extension/index.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
@@ -109,6 +109,7 @@ function makeContext(cwd: string, subagentPolicy?: SubagentChildPolicy): Executo
 			getSessionFile: () => undefined,
 			getSessionId: () => "parent-session",
 			getLeafId: () => null,
+			getEntries: (): SessionEntry[] => [],
 		} as ExecutorContextForTest["sessionManager"],
 		orchestrationContext: undefined,
 		...(subagentPolicy === undefined ? {} : { subagentPolicy }),
@@ -200,11 +201,11 @@ describe("subagent child policy gates fanout, not management", () => {
 		}
 	});
 
-	test("a child without fanout authorization is refused kill", async () => {
+	test("a child without fanout authorization is refused run control", async () => {
 		const executor = makeExecutor(policyFor({ fanoutAuthorized: false, managementActions: "full" }));
 
-		// Kill is privileged control over a running child, not observation.
-		for (const action of ["kill"] as const) {
+		// Run control is privileged control over a child, not observation.
+		for (const action of ["pause", "resume", "quit"] as const) {
 			const result = await runAction(executor, {
 				action,
 				id: "victim-run/victim_1",
@@ -217,10 +218,10 @@ describe("subagent child policy gates fanout, not management", () => {
 		assert.deepEqual(runSyncCalls, []);
 	});
 
-	test("a fanout-authorized child still reaches kill", async () => {
+	test("a fanout-authorized child still reaches run control", async () => {
 		const executor = makeExecutor(policyFor({ fanoutAuthorized: true, managementActions: "full" }));
 
-		for (const action of ["kill"] as const) {
+		for (const action of ["pause", "resume", "quit"] as const) {
 			const result = await runAction(executor, {
 				action,
 				id: "missing-run/missing_1",
@@ -228,7 +229,7 @@ describe("subagent child policy gates fanout, not management", () => {
 			// No such child exists, so the handler's own "not found" answer proves the
 			// request passed the gate rather than being refused as fanout.
 			assert.notEqual(resultText(result), FANOUT_MESSAGE);
-			assert.match(resultText(result), /No (running )?in-process child found for 'missing-run\/missing_1'\./);
+			assert.match(resultText(result), /Unknown subagent 'missing-run\/missing_1'/);
 		}
 	});
 
@@ -283,7 +284,9 @@ describe("subagent child policy gates fanout, not management", () => {
 		const executionActions: Parameters<ExecutorForTest["execute"]>[1][] = [
 			{ agent: "alpha", task: "do work" },
 			{ tasks: [{ agent: "alpha", task: "do work" }] },
-			{ action: "kill", id: "run-1" },
+			{ action: "pause", id: "run-1" },
+			{ action: "resume", id: "run-1" },
+			{ action: "quit", id: "run-1" },
 		];
 
 		for (const params of executionActions) {
@@ -370,6 +373,27 @@ describe("workflow stage subagent policy", () => {
 		const delegated = await runAction(executor, { agent: "alpha", task: "do work" });
 		assert.equal(delegated.isError, undefined);
 		assert.deepEqual(runSyncCalls, ["alpha"]);
+	});
+
+	test("the registered subagent tool rejects kill and interrupt before schema validation with an error naming quit", () => {
+		let registered: ToolDefinition | undefined;
+		const pi = {
+			registerTool: (tool: ToolDefinition) => {
+				registered = tool;
+			},
+			registerCommand: () => {},
+			registerMessageRenderer: () => {},
+			sendMessage: () => {},
+			on: () => {},
+			events: { on: () => () => {}, emit: () => {} },
+			getSessionName: () => "parent-session",
+		} as unknown as ExtensionAPI;
+		registerSubagentExtension(pi);
+		const prepare = registered?.prepareArguments;
+		assert.ok(prepare, "the subagent tool must prepare arguments before validation");
+		for (const action of ["kill", "interrupt"])
+			assert.throws(() => prepare({ action, id: "child" }), /was removed\. Use \{ action: "quit", id \}/);
+		assert.deepEqual(prepare({ action: "quit", id: "child" }), { action: "quit", id: "child" });
 	});
 
 	test("the parent-registered subagent tool answers 'list' for a stage-policy context", async () => {

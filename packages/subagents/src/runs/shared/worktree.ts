@@ -10,7 +10,7 @@ export interface WorktreeSetup {
 	worktrees: WorktreeInfo[];
 	baseCommit: string;
 }
-interface WorktreeInfo {
+export interface WorktreeInfo {
 	path: string;
 	agentCwd: string;
 	branch: string;
@@ -33,7 +33,7 @@ interface WorktreeTaskCwdConflict {
 	agent: string;
 	cwd: string;
 }
-interface WorktreeSetupHookConfig {
+export interface WorktreeSetupHookConfig {
 	hookPath: string;
 	timeoutMs?: number;
 }
@@ -150,6 +150,38 @@ export function formatWorktreeTaskCwdConflict(conflict: WorktreeTaskCwdConflict,
 }
 function safePatchAgentName(agent: string): string {
 	return agent.replace(/[^\w.-]/g, "_");
+}
+function worktreePatchName(index: number, agent: string, execution: number): string {
+	return `task-${index}-${safePatchAgentName(agent)}${execution > 1 ? `.${execution}` : ""}.patch`;
+}
+/**
+ * The patches saved for a child's worktree, oldest first: one per execution of the child, each with every edit since
+ * the run's base, so the last one holds all of them.
+ */
+export function savedWorktreePatches(diffsDir: string, index: number, agent: string): string[] {
+	const saved: string[] = [];
+	for (let execution = 1; ; execution++) {
+		const patchPath = path.join(diffsDir, worktreePatchName(index, agent, execution));
+		if (!fs.existsSync(patchPath)) return saved;
+		saved.push(patchPath);
+	}
+}
+/** Where the next execution of a child saves its worktree's edits, past every patch an earlier execution saved. */
+export function nextWorktreePatchPath(diffsDir: string, index: number, agent: string): string {
+	return path.join(diffsDir, worktreePatchName(index, agent, savedWorktreePatches(diffsDir, index, agent).length + 1));
+}
+/**
+ * Put a child's saved edits back into its worktree, recreated at the run's base after it was removed. A worktree not at
+ * the base (its branch survived, with its commits) is left as it is. When the edits cannot be applied, the recreated
+ * worktree is removed again and the error is thrown: the child must not continue without its earlier work.
+ */
+export function restoreWorktreePatch(setup: WorktreeSetup, worktree: WorktreeInfo, patchPath: string): void {
+	if (!fs.readFileSync(patchPath, "utf-8").trim()) return;
+	if (runGitChecked(worktree.path, ["rev-parse", "HEAD"]).trim() !== setup.baseCommit) return;
+	const applied = runGit(worktree.path, ["apply", "--whitespace=nowarn", patchPath]);
+	if (applied.status === 0) return;
+	cleanupSingleWorktree(setup.cwd, worktree);
+	throw new Error(applied.stderr.trim() || `could not apply ${patchPath}`);
 }
 function flattenedWorktreeName(runId: string, index: number): string {
 	return `${runId}-${index}`.replaceAll("/", "+");
@@ -310,18 +342,66 @@ function runWorktreeSetupHook(hook: ResolvedWorktreeSetupHook, input: WorktreeSe
 function waitForGitLockRelease(): void {
 	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
 }
-function cleanupSingleWorktree(repoCwd: string, worktree: Pick<WorktreeInfo, "path" | "branch">): void {
-	try {
-		runGitChecked(repoCwd, ["worktree", "remove", "--force", worktree.path]);
-	} catch {
-		/* idempotent */
+type RemovableWorktree = Pick<WorktreeInfo, "path"> & { readonly syntheticPaths?: readonly string[] };
+/**
+ * Unlink the worktree's directory links (the `node_modules` link and the other synthetic links) before git removes it:
+ * Git for Windows keeps a junction and every directory above it while reporting success, and older versions delete
+ * through a junction into the main checkout.
+ */
+function unlinkWorktreeLinks(worktree: RemovableWorktree): void {
+	for (const relativePath of new Set(["node_modules", ...(worktree.syntheticPaths ?? [])])) {
+		const linkPath = path.resolve(worktree.path, relativePath);
+		const relative = path.relative(worktree.path, linkPath);
+		if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) continue;
+		try {
+			if (fs.lstatSync(linkPath).isSymbolicLink()) fs.unlinkSync(linkPath);
+		} catch {
+			/* absent */
+		}
 	}
+}
+function removeWorktreeCheckout(repoCwd: string, worktree: RemovableWorktree): void {
+	unlinkWorktreeLinks(worktree);
+	runGit(repoCwd, ["worktree", "remove", "--force", worktree.path]);
+}
+function cleanupSingleWorktree(repoCwd: string, worktree: RemovableWorktree & Pick<WorktreeInfo, "branch">): void {
+	removeWorktreeCheckout(repoCwd, worktree);
 	waitForGitLockRelease();
 	try {
 		runGitChecked(repoCwd, ["branch", "-D", worktree.branch]);
 	} catch {
 		/* idempotent */
 	}
+}
+/** Synthetic paths the setup created in a new worktree: copied settings, the `node_modules` link, and hook output. */
+function prepareWorktree(
+	mainRoot: string,
+	worktreePath: string,
+	agentCwd: string,
+	branch: string,
+	runId: string,
+	index: number,
+	baseCommit: string,
+	setupHook: ResolvedWorktreeSetupHook | undefined,
+	agent: string | undefined,
+): string[] {
+	const syntheticPaths = performPostCreationSetup(runGit, mainRoot, worktreePath);
+	if (setupHook) {
+		syntheticPaths.push(
+			...runWorktreeSetupHook(setupHook, {
+				version: 1,
+				repoRoot: mainRoot,
+				worktreePath,
+				agentCwd,
+				branch,
+				index,
+				runId,
+				baseCommit,
+				agent,
+			}),
+		);
+	}
+	return syntheticPaths;
 }
 function createSingleWorktree(
 	mainRoot: string,
@@ -343,22 +423,17 @@ function createSingleWorktree(
 	}
 	const agentCwd = cwdRelative ? path.join(worktreePath, cwdRelative) : worktreePath;
 	try {
-		const syntheticPaths = performPostCreationSetup(runGit, mainRoot, worktreePath);
-		if (setupHook) {
-			syntheticPaths.push(
-				...runWorktreeSetupHook(setupHook, {
-					version: 1,
-					repoRoot: mainRoot,
-					worktreePath,
-					agentCwd,
-					branch,
-					index,
-					runId,
-					baseCommit,
-					agent,
-				}),
-			);
-		}
+		const syntheticPaths = prepareWorktree(
+			mainRoot,
+			worktreePath,
+			agentCwd,
+			branch,
+			runId,
+			index,
+			baseCommit,
+			setupHook,
+			agent,
+		);
 		return {
 			path: worktreePath,
 			agentCwd,
@@ -371,6 +446,81 @@ function createSingleWorktree(
 		cleanupSingleWorktree(mainRoot, { path: worktreePath, branch });
 		throw error;
 	}
+}
+
+/**
+ * Recreate a removed child worktree at its path: on its branch when that still exists, else on a new branch from the
+ * run's base commit. An existing worktree is kept, and the setup that is safe to repeat (copied settings, the
+ * `node_modules` link, included files) is re-applied where it is missing: capturing the worktree's diff removes it.
+ * Returns the worktree as it now is.
+ */
+export function recreateWorktree(
+	setup: WorktreeSetup,
+	worktree: WorktreeInfo,
+	runId: string,
+	options?: { setupHook?: WorktreeSetupHookConfig; agent?: string },
+): WorktreeInfo {
+	if (fs.existsSync(worktree.path)) {
+		let restored: string[];
+		try {
+			restored = performPostCreationSetup(runGit, setup.cwd, worktree.path);
+		} catch {
+			// The worktree itself is intact: the child resumes in it without the setup that could not be re-applied.
+			return worktree;
+		}
+		if (restored.length === 0) return worktree;
+		const syntheticPaths = [...new Set([...worktree.syntheticPaths, ...restored])];
+		return { ...worktree, nodeModulesLinked: syntheticPaths.includes("node_modules"), syntheticPaths };
+	}
+	runGit(setup.cwd, ["worktree", "prune"]);
+	const branchExists =
+		runGit(setup.cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${worktree.branch}`]).status === 0;
+	runGitChecked(
+		setup.cwd,
+		branchExists
+			? ["worktree", "add", worktree.path, worktree.branch]
+			: ["worktree", "add", "-b", worktree.branch, worktree.path, setup.baseCommit],
+	);
+	try {
+		const syntheticPaths = prepareWorktree(
+			setup.cwd,
+			worktree.path,
+			worktree.agentCwd,
+			worktree.branch,
+			runId,
+			worktree.index,
+			setup.baseCommit,
+			resolveWorktreeSetupHook(setup.cwd, options?.setupHook),
+			options?.agent,
+		);
+		return { ...worktree, nodeModulesLinked: syntheticPaths.includes("node_modules"), syntheticPaths };
+	} catch (error) {
+		// A branch that already existed may hold commits: remove only the worktree.
+		if (branchExists) removeWorktreeCheckout(setup.cwd, worktree);
+		else cleanupSingleWorktree(setup.cwd, worktree);
+		throw error;
+	}
+}
+
+/**
+ * Whether removing this worktree would lose work: uncommitted or untracked changes other than its synthetic paths, or
+ * commits not in the run's base. When git cannot tell, the work is treated as unsaved.
+ */
+export function worktreeHasUnsavedWork(setup: WorktreeSetup, worktree: WorktreeInfo): boolean {
+	if (!fs.existsSync(worktree.path)) return false;
+	const status = runGit(worktree.path, ["status", "--porcelain", "--untracked-files=all"]);
+	if (status.status !== 0) return true;
+	const synthetic = worktree.syntheticPaths.map((syntheticPath) => syntheticPath.split(path.sep).join("/"));
+	const changed = status.stdout
+		.split("\n")
+		.filter((line) => line.trim().length > 0)
+		.map((line) => line.slice(3))
+		.filter(
+			(changedPath) => !synthetic.some((entry) => changedPath === entry || changedPath.startsWith(`${entry}/`)),
+		);
+	if (changed.length > 0) return true;
+	const ahead = runGit(worktree.path, ["rev-list", "--count", `${setup.baseCommit}..HEAD`]);
+	return ahead.status !== 0 || ahead.stdout.trim() !== "0";
 }
 function removeSyntheticPath(worktree: WorktreeInfo, syntheticPath: string): void {
 	const resolved = path.resolve(worktree.path, syntheticPath);
@@ -450,7 +600,7 @@ function captureWorktreeDiff(
 	removeSyntheticPathsBeforeDiff(worktree);
 	runGitChecked(worktree.path, ["add", "-A"]);
 	const diffStat = runGitChecked(worktree.path, ["diff", "--cached", "--stat", setup.baseCommit]).trim();
-	const patch = runGitChecked(worktree.path, ["diff", "--cached", setup.baseCommit]);
+	const patch = runGitChecked(worktree.path, ["diff", "--cached", "--binary", setup.baseCommit]);
 	const numstat = runGitChecked(worktree.path, ["diff", "--cached", "--numstat", setup.baseCommit]);
 	fs.writeFileSync(patchPath, patch, "utf-8");
 	if (!patch.trim()) {
@@ -508,17 +658,26 @@ export function createWorktrees(
 	}
 	return { cwd: repo.mainRoot, worktrees, baseCommit: repo.baseCommit };
 }
-export function diffWorktrees(setup: WorktreeSetup, agents: string[], diffsDir: string): WorktreeDiff[] {
+/**
+ * Save each worktree's edits since the run's base as a patch. `patchPaths` names where a worktree's patch goes when an
+ * earlier execution of its child already saved one there.
+ */
+export function diffWorktrees(
+	setup: WorktreeSetup,
+	agents: string[],
+	diffsDir: string,
+	patchPaths?: ReadonlyMap<number, string>,
+): WorktreeDiff[] {
 	try {
 		fs.mkdirSync(diffsDir, { recursive: true });
 	} catch {
 		return [];
 	}
 	const diffs: WorktreeDiff[] = [];
-	for (let index = 0; index < setup.worktrees.length; index++) {
-		const worktree = setup.worktrees[index]!;
+	for (const worktree of setup.worktrees) {
+		const index = worktree.index;
 		const agent = agents[index] ?? `task-${index + 1}`;
-		const patchPath = path.join(diffsDir, `task-${index}-${safePatchAgentName(agent)}.patch`);
+		const patchPath = patchPaths?.get(index) ?? path.join(diffsDir, worktreePatchName(index, agent, 1));
 		try {
 			diffs.push(captureWorktreeDiff(setup, worktree, agent, patchPath));
 		} catch {

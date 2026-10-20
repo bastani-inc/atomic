@@ -34,9 +34,9 @@ import {
 	resolveSingleOutputPath,
 	validateFileOnlyOutputMode,
 } from "../shared/single-output.js";
+import { runOwnerlessChild } from "./ownerless-children.js";
 import { formatParentAskHandoffOutput } from "./parent-ask-output.js";
 import { createSubagentChildRecordSink } from "./subagent-child-records.js";
-import { runUnboundParallelTask } from "./subagent-executor-parallel-task.js";
 import {
 	createForegroundControlNotifier,
 	maybeBuildForegroundIntercomReceipt,
@@ -298,12 +298,16 @@ export async function runSinglePath(
 				return await taskToolResultWithOutput(response, ctx.getAgentTaskHost());
 			r = settledChild;
 		} else {
-			const schedule = params[BURST_EXECUTION_SCHEDULE];
-			r = schedule
-				? await runUnboundParallelTask(runOptions, params.agent!, task, schedule, (options) =>
-						deps.runtime.runSync(ctx.cwd, agents, params.agent!, task, options),
-					)
-				: await deps.runtime.runSync(ctx.cwd, agents, params.agent!, task, runOptions);
+			// No task host owns this launch: it is recorded in this session like one, so run control reaches it.
+			r = await runOwnerlessChild({
+				agent: params.agent!,
+				task,
+				cwd: effectiveCwd,
+				options: runOptions,
+				recordChild: createSubagentChildRecordSink(deps.pi, ctx),
+				...(params[BURST_EXECUTION_SCHEDULE] ? { schedule: params[BURST_EXECUTION_SCHEDULE] } : {}),
+				runSync: (childTask, options) => deps.runtime.runSync(ctx.cwd, agents, params.agent!, childTask, options),
+			}).result;
 		}
 	} catch (error) {
 		cleanupTransientProgress(progressDir, artifactConfig.enabled);

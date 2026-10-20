@@ -27,8 +27,8 @@ import { routeSubagentModel } from "../shared/model-router.js";
 import { formatParallelResultContent } from "../shared/parallel-utils.js";
 import { recordRun } from "../shared/run-history.js";
 import { resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.js";
-import { cleanupWorktrees, type WorktreeSetup } from "../shared/worktree.js";
-import { createDetachedCleanupBarrier } from "./detached-cleanup-barrier.js";
+import type { WorktreeSetup } from "../shared/worktree.js";
+import { registerRunWorktrees } from "./run-worktrees.js";
 import { createSubagentChildRecordSink } from "./subagent-child-records.js";
 import { runForegroundParallelTasks } from "./subagent-executor-parallel-task.js";
 import {
@@ -49,6 +49,7 @@ import {
 	buildParallelWorktreeTaskCwdError,
 	createParallelWorktreeSetup,
 	findDuplicateParallelOutputPath,
+	parallelWorktreeDiffsDir,
 	resolveParallelTaskCwd,
 } from "./subagent-executor-worktree.js";
 import { parallelTaskToolResultWithOutput } from "./task-execution.js";
@@ -193,13 +194,15 @@ export async function runParallelPath(
 		deps.config.worktreeSetupHook,
 		deps.config.worktreeSetupHookTimeoutMs,
 	);
-	let worktreeCleanupDeferred = false;
-	const detachedCleanup = createDetachedCleanupBarrier(() => {
-		if (!worktreeSetup) return;
-		buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, tasks as TaskParam[]);
-		cleanupWorktrees(worktreeSetup);
-	});
 	if (errorResult) return errorResult;
+	// Each child execution holds the worktrees; they go once the run returned and no execution holds them, except a
+	// stopped child's worktree with unsaved work.
+	const runWorktrees = worktreeSetup
+		? registerRunWorktrees(runId, worktreeSetup, {
+				diffsDir: parallelWorktreeDiffsDir(artifactsDir, runId),
+				agents: tasks.map((task) => task.agent),
+			})
+		: undefined;
 
 	try {
 		const duplicateOutputError = findDuplicateParallelOutputPath({
@@ -233,21 +236,16 @@ export async function runParallelPath(
 		const results = await runForegroundParallelTasks({
 			wait: params.wait,
 			schedule: params[BURST_EXECUTION_SCHEDULE],
-			onTaskTerminal: (index) => detachedCleanup.recover(index),
 			onDetachedExit: (index, result) => {
-				try {
-					if (workflowStageAcceptsDetachedNotification(ctx)) {
-						notifyDetachedForegroundChildExit({
-							pi: deps.pi,
-							runId,
-							mode: "parallel",
-							index,
-							totalTasks: tasks.length,
-							result,
-						});
-					}
-				} finally {
-					detachedCleanup.recover(index);
+				if (workflowStageAcceptsDetachedNotification(ctx)) {
+					notifyDetachedForegroundChildExit({
+						pi: deps.pi,
+						runId,
+						mode: "parallel",
+						index,
+						totalTasks: tasks.length,
+						result,
+					});
 				}
 			},
 			tasks,
@@ -304,11 +302,6 @@ export async function runParallelPath(
 					},
 				})),
 			};
-			worktreeCleanupDeferred = detachedCleanup.defer(
-				response.slots.flatMap(({ ordinal, outcome }) =>
-					outcome.kind === "admitted" && outcome.observation.kind === "yielded" ? [ordinal] : [],
-				),
-			);
 			return parallelTaskToolResultWithOutput(response, ctx.getAgentTaskHost());
 		}
 		for (let i = 0; i < results.length; i++) {
@@ -353,9 +346,6 @@ export async function runParallelPath(
 		}
 		const detachedIndex = results.findIndex((result) => result.detached);
 		const detached = detachedIndex >= 0 ? results[detachedIndex] : undefined;
-		worktreeCleanupDeferred = detachedCleanup.defer(
-			results.flatMap((result, index) => (result.detached ? [index] : [])),
-		);
 		if (detached) {
 			return {
 				content: [
@@ -382,7 +372,7 @@ export async function runParallelPath(
 			};
 		}
 
-		const worktreeSuffix = buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, tasks as TaskParam[]);
+		const worktreeSuffix = buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, runId, tasks as TaskParam[]);
 		const childContent = formatParallelResultContent(
 			results.map((result) => ({
 				agent: result.agent,
@@ -400,6 +390,6 @@ export async function runParallelPath(
 			details,
 		};
 	} finally {
-		if (worktreeSetup && !worktreeCleanupDeferred) cleanupWorktrees(worktreeSetup);
+		runWorktrees?.release();
 	}
 }

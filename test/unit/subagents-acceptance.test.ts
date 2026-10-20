@@ -122,11 +122,11 @@ describe("subagent acceptance removal", () => {
 		});
 		assert.doesNotMatch(serializedLegacyAgent, removedNoMutationPattern);
 	});
-	test("subagent schema rejects removed resume action and resume-only inputs", () => {
+	test("subagent schema keeps the pre-#2205 resume index removed and accepts run-control resume", () => {
 		const properties = (SubagentParams as { properties: Record<string, unknown> }).properties;
 		assert.equal("index" in properties, false);
-		assert.equal("message" in properties, false);
-		assert.equal(Value.Check(SubagentParams, { action: "resume", id: "old-run", message: "continue" }), false);
+		assert.equal(Value.Check(SubagentParams, { action: "resume", id: "old-run", index: 0 }), false);
+		assert.equal(Value.Check(SubagentParams, { action: "resume", id: "run:0", message: "continue" }), true);
 	});
 	test("subagent schema omits sequential execution and dynamic fan-out", () => {
 		const properties = (SubagentParams as { properties: Record<string, unknown> }).properties;

@@ -93,6 +93,7 @@ async function launchInterruptedChild(cwd: string, sessionManager: SessionManage
 		() => {
 			running = readSubagentChildRecords(sessionManager.getEntries()).get(`${runId}:0`);
 			assert.equal(running?.state, "running");
+			assert.ok(running?.childSessionFile, "its own session is recorded once it starts");
 		},
 		{ timeout: RECORD_WAIT_MS, interval: 10 },
 	);

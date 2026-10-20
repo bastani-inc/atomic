@@ -372,12 +372,12 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 			await controller.ensureSessionFromId(sessionId);
 		},
 
-		__sealGeneration() {
-			controller.sealGeneration();
+		__sealGeneration(closedForGood) {
+			controller.sealGeneration(closedForGood);
 		},
 
-		async __closeGeneration() {
-			await controller.closeGeneration();
+		async __closeGeneration(closedForGood) {
+			await controller.closeGeneration(closedForGood);
 			if (artifactOptions && !artifactClosed) {
 				await exportArtifact();
 				artifactClosed = true;

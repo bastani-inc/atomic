@@ -23,7 +23,8 @@ import {
 } from "@earendil-works/pi-tui";
 import { discoverAgents } from "../agents/agents.js";
 import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/foreground/notify.js";
-import { subagentChildOwner } from "../runs/foreground/subagent-child-records.js";
+import { bindSubagentChildCards } from "../runs/foreground/subagent-child-card-state.js";
+import { subagentChildOwner, watchWorkflowStageSubagentChildren } from "../runs/foreground/subagent-child-records.js";
 import {
 	awaitSubagentChildRestoration,
 	holdDormantRunSubagentChildren,
@@ -63,7 +64,7 @@ import {
 import { loadConfig } from "./config.js";
 import { parseSubagentNotifyContent } from "./notification-content.js";
 import { DEFAULT_PROMPT_GUIDANCE } from "./prompt-guidance.js";
-import { SubagentParams } from "./schemas.js";
+import { prepareSubagentArguments, SubagentParams } from "./schemas.js";
 import { SUBAGENT_TOOL_DESCRIPTION } from "./tool-description.js";
 import { renderSubagentToolCall, renderSubagentToolResult } from "./tool-rendering.js";
 
@@ -343,7 +344,12 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				state.lastUiContext = ctx;
 				ctx.ui.setToolsExpanded(false);
 			}
-			return executorForContext(ctx).execute(id, params, signal, onUpdate, ctx);
+			const ownerSessionId = subagentChildOwner(ctx).sessionId;
+			return executorForContext(ctx)
+				.execute(id, params, signal, onUpdate, ctx)
+				.then((result) =>
+					result.details?.taskResponse ? { ...result, details: { ...result.details, ownerSessionId } } : result,
+				);
 		};
 		const slashBridge = registerSlashSubagentBridge({
 			events: pi.events,
@@ -392,6 +398,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			label: "Subagent",
 			description: SUBAGENT_TOOL_DESCRIPTION,
 			parameters: SubagentParams,
+			prepareArguments: prepareSubagentArguments,
 			promptGuidelines: DEFAULT_PROMPT_GUIDANCE,
 			execute(id, params, signal, onUpdate, ctx) {
 				const executionSignal = signal ?? ctx.signal ?? new AbortController().signal;
@@ -459,6 +466,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			cleanupSessionArtifacts(ctx);
 			clearPendingForegroundControlNotices(state);
 			restoreSlashFinalSnapshots(ctx.sessionManager.getEntries(), pi);
+			bindSubagentChildCards(ctx);
 		};
 		pi.on("session_start", (event, ctx) => {
 			if (!lifecycle.isCurrent()) return;
@@ -467,8 +475,11 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			// recovery has restored them (#3760). Recovery takes these holds over; this never blocks session start. Only
 			// a session that was just opened has interrupted children: after a reload its running children are alive.
 			const opened = event.reason === "startup" || event.reason === "resume";
-			if (opened && !isSubagentChildSession(ctx) && ctx.isPresentationOnly !== true)
-				void holdRunningSubagentChildren(pi.events, ctx).catch(() => undefined);
+			if (!isSubagentChildSession(ctx) && ctx.isPresentationOnly !== true) {
+				// Children a workflow stage launched in earlier generations end with it too when it closes for good.
+				watchWorkflowStageSubagentChildren(pi, ctx);
+				if (opened) void holdRunningSubagentChildren(pi.events, ctx).catch(() => undefined);
+			}
 		});
 		pi.on("session_recovery_restore", async (_event, ctx) => {
 			// Subagent children never own children; workflow stages carry a policy but do (#3760).

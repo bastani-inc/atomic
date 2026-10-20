@@ -61,6 +61,8 @@ for (const outcome of ["completed", "failed", "interrupted", "cancelled"] as con
 					release.resolve();
 				},
 				getLastAssistantText: () => "result",
+				getSteeringMessages: () => [],
+				getFollowUpMessages: () => [],
 				dispose: () => {
 					assert.equal(capability(), "terminal");
 					disposed = true;

@@ -499,6 +499,8 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 	};
 	for (const entry of sessionEntries) {
 		if (entry.type === "custom") {
+			// An unrendered record between a tool call and its result must not split them into two cards.
+			if (!this.session.extensionRunner.getEntryRenderer(entry.customType)) continue;
 			flushMessages();
 			this.addCustomEntryToChat(entry);
 		} else {
