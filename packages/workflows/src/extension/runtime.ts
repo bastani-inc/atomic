@@ -56,6 +56,8 @@ export interface ExtensionRuntimeOpts {
 	resolveJournal?: () => RunJournalOption | undefined;
 	/** Read when the journal first opens; used when no journal option applies. Defaults to the on-disk settings. */
 	resolveJournalSettings?: () => RunJournalSettings | undefined;
+	/** The agent directory the owning session resolved its storage against. */
+	resolveStorageAgentDir?: () => string | undefined;
 	isProjectTrusted?: () => boolean;
 	/**
 	 * Pre-populated registry — takes precedence over `definitions`.
@@ -204,6 +206,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 						cwd: runtimeCwd,
 						journal: opts.journal ?? opts.resolveJournal?.(),
 						settings: opts.resolveJournalSettings?.(),
+						agentDir: opts.resolveStorageAgentDir?.(),
 						projectTrusted: opts.isProjectTrusted?.(),
 						holder: activeStore,
 					})

@@ -24,10 +24,15 @@ const provider = new StorageProvider({
 });
 const origins = new WeakMap<StorageSelection, { source: "settings" | "cli" | "env"; field?: string }>();
 
-export function selectRunJournal(
-	options: { journal?: RunJournalOption; settings?: RunJournalSettings } = {},
-): StorageSelection | RunJournal {
-	const agentDir = getAgentDir();
+export interface RunJournalResolutionOptions {
+	journal?: RunJournalOption;
+	settings?: RunJournalSettings;
+	/** The agent directory the owning session resolved its storage against; defaults to `getAgentDir()`. */
+	agentDir?: string;
+}
+
+export function selectRunJournal(options: RunJournalResolutionOptions = {}): StorageSelection | RunJournal {
+	const agentDir = options.agentDir ?? getAgentDir();
 	const defaultPath = join(dirname(agentDir), "workflows", "journal.sqlite");
 	if (options.journal !== undefined) {
 		if (options.journal !== null && typeof options.journal === "object" && "createRun" in options.journal) {
@@ -80,16 +85,17 @@ export function selectRunJournal(
 	return resolved;
 }
 
-export async function resolveRunJournal(
-	options: { journal?: RunJournalOption; settings?: RunJournalSettings } = {},
-): Promise<RunJournal> {
-	return openSelectedRunJournal(selectRunJournal(options));
+export async function resolveRunJournal(options: RunJournalResolutionOptions = {}): Promise<RunJournal> {
+	return openSelectedRunJournal(selectRunJournal(options), options.agentDir);
 }
 
-export async function openSelectedRunJournal(selection: StorageSelection | RunJournal): Promise<RunJournal> {
+export async function openSelectedRunJournal(
+	selection: StorageSelection | RunJournal,
+	agentDir: string = getAgentDir(),
+): Promise<RunJournal> {
 	if ("createRun" in selection) return selection;
 	return withRunJournalConfigSource(selection, () =>
-		provider.openRunJournal(selection, { agentDir: getAgentDir(), domain: "journal" }),
+		provider.openRunJournal(selection, { agentDir, domain: "journal" }),
 	);
 }
 

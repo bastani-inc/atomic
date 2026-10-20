@@ -206,6 +206,7 @@ class AgentSessionBase {
 	protected _excludedTools?: (name: string) => boolean;
 	protected _childSessionOptions?: import("./child-session-options.ts").ChildSessionOptionsResolver;
 	protected _workflowJournal?: import("./storage/provider.js").RunJournalOption;
+	protected _storageAgentDir?: string;
 	protected _baseToolsOverride?: Record<string, AgentTool>;
 	protected _sessionStartEvent: SessionStartEvent;
 	protected _orchestrationContext?: OrchestrationContext;
@@ -284,6 +285,7 @@ class AgentSessionBase {
 		this._excludedTools = config.excludedToolNames ? createToolNameMatcher(config.excludedToolNames) : undefined;
 		this._childSessionOptions = config.childSessionOptions;
 		this._workflowJournal = config.workflowJournal;
+		this._storageAgentDir = config.storageAgentDir;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._orchestrationContext = config.orchestrationContext;

@@ -324,3 +324,36 @@ test("createAgentSession rejects a set but invalid storage variable even with an
 		}
 	}
 });
+
+test(
+	"a relative ATOMIC_STORAGE path puts a custom agentDir session and its workflow runs in one database (#3783)",
+	async () => {
+		const cwd = join(root, "project");
+		const agentDir = join(root, "tenant", "agent");
+		mkdirSync(agentDir, { recursive: true });
+		vi.stubEnv("ATOMIC_STORAGE", JSON.stringify({ path: "shared.sqlite" }));
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			settingsManager: SettingsManager.inMemory(),
+			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			builtins: WORKFLOWS_ONLY,
+		});
+		sessions.push(session);
+		const runId = await runProbe(session);
+		const shared = join(root, "tenant", "shared.sqlite");
+		const database = new DatabaseSync(shared, { readOnly: true });
+		try {
+			const tables = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all();
+			assert.ok(
+				tables.some((table) => table.name === "session_sessions"),
+				JSON.stringify(tables),
+			);
+		} finally {
+			database.close();
+		}
+		assert.deepEqual(await runIdsAt(shared), [runId]);
+		assert.equal(existsSync(join(root, "shared.sqlite")), false);
+	},
+	REAL_SDK_WORKFLOW_TIMEOUT_MS,
+);
