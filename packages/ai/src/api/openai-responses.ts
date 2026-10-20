@@ -35,6 +35,7 @@ import {
 	assertPayloadPreservesFastRoute,
 	convertResponsesMessages,
 	convertResponsesTools,
+	getResponsesToolSupport,
 	isChatGPTSubscriptionToken,
 	isServiceTierRejection,
 	openAIServiceTierForRequest,
@@ -447,10 +448,7 @@ function buildParams(
 	grammarToolInputProperties: ReadonlyMap<string, string>,
 	configurationUpdateEffort: string | undefined,
 ) {
-	const transcriptTools = resolveTranscriptTools(
-		context.messages,
-		compat.supportsAdditionalTools || compat.supportsToolSearch,
-	);
+	const transcriptTools = resolveTranscriptTools(context.messages, getResponsesToolSupport(compat));
 	const messages = convertResponsesMessages(model, context, OPENAI_TOOL_CALL_PROVIDERS, {
 		grammarToolInputProperties,
 		supportsMidConvoSystemMessages: compat.supportsMidConvoSystemMessages,
