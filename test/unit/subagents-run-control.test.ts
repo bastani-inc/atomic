@@ -91,6 +91,8 @@ interface Harness {
 	readonly holds: Array<{ reserve: string; aliases: readonly string[] } | { release: string; gone?: string }>;
 	/** How the next child run settles once its prompt runs; the original launch always waits until stopped. */
 	settleAs: "ok" | "error";
+	/** Whether the original launch completes normally when it is stopped, as a child finishing just before the stop does. */
+	completesWhenStopped: boolean;
 	/** Whether resumed runs also wait until stopped, instead of settling once their prompt runs. */
 	resumedRunsWait: boolean;
 	/** Receives each child run's stub session, to queue steering and follow-up messages as an SDK caller does. */
@@ -217,6 +219,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 		authorizations,
 		holds,
 		settleAs: "ok",
+		completesWhenStopped: false,
 		resumedRunsWait: false,
 		agentDefined: true,
 		finishOn: new Map(),
@@ -278,6 +281,8 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 					? { output: "partial", promptGate: neverReleased.promise, abortResolvesPrompt: true, ...onSession }
 					: { output: "resumed", ...onSession },
 		});
+		if (original && state.completesWhenStopped && result.interrupted)
+			return { ...result, status: "ok", interrupted: false, pendingMessages: undefined };
 		return !original && state.settleAs === "error" ? { ...result, status: "error", error: "boom" } : result;
 	};
 	const deps: ExecutorDeps = {
@@ -368,6 +373,47 @@ test("pause stops a running child resumably and holds sends to it until resume",
 	const again = await h.call({ action: "pause", id: record.childId });
 	assert.notEqual(again.isError, true);
 	assert.match(text(again), /is already paused/);
+});
+
+test("pause of a child that completes before the stop takes effect reports it completed and holds nothing (#3784)", async () => {
+	const h = harness();
+	h.completesWhenStopped = true;
+	const { record } = await h.launch("race1");
+
+	const paused = await h.call({ action: "pause", id: record.childId });
+	assert.equal(paused.isError, true, text(paused));
+	assert.match(text(paused), /worker \(race1:0, subagent-worker-race1\) completed \(ok\) before it could be paused/);
+	assert.doesNotMatch(text(paused), /Paused/);
+	assert.deepEqual(paused.details.runControl?.children, []);
+	assert.equal(h.latest(record.childId)?.terminalStatus, "ok");
+	assert.deepEqual(
+		h.holds.filter((hold) => "reserve" in hold),
+		[],
+		"no Intercom hold is parked for a completed child",
+	);
+});
+
+test("pause of an SDK session's child that completes before the stop takes effect reports it completed (#3784)", async () => {
+	const h = harness({ ownerless: true });
+	h.completesWhenStopped = true;
+	const launch = h.call({ agent: "worker", task: ORIGINAL_TASK, context: "fresh" });
+	const deadline = Date.now() + RECORD_WAIT_MS;
+	let running: SubagentChildRecord | undefined;
+	while (!running?.childSessionId && Date.now() < deadline) {
+		[running] = readSubagentChildRecords(h.sessionManager.getEntries()).values();
+		await sleep(10);
+	}
+	assert.ok(running?.childSessionId, "the child started");
+
+	const paused = await h.call({ action: "pause", id: running.childId });
+	await launch;
+	assert.equal(paused.isError, true, text(paused));
+	assert.match(text(paused), /completed \(ok\) before it could be paused/);
+	assert.equal(h.latest(running.childId)?.terminalStatus, "ok");
+	assert.deepEqual(
+		h.holds.filter((hold) => "reserve" in hold),
+		[],
+	);
 });
 
 test("resume with a message continues a paused child in the same run identity and delivers the message once", async () => {

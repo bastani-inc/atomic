@@ -159,6 +159,11 @@ function appendInOrder(pi: Pick<ExtensionAPI, "appendEntry">, record: SubagentCh
 	return appended;
 }
 
+/** Settles once every record of this owner handed to a sink so far has been appended. */
+export function subagentChildRecordsAppended(ownerSessionId: string): Promise<void> {
+	return appendChains.get(ownerSessionId) ?? Promise.resolve();
+}
+
 interface StageChildren {
 	readonly closeSignal: AbortSignal;
 	readonly childIds: Set<string>;

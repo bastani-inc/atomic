@@ -25,6 +25,7 @@
 - Resuming a `worktree: true` child whose worktree was already removed, such as a completed child, now restores the edits it saved as a patch before it continues, so its earlier work is not lost. Each run saves its patches in its own `worktree-diffs/<run id>` directory, and each execution of a resumed child writes its own patch (`task-<n>-<agent>.<execution>.patch`) instead of overwriting the earlier one. Patches now include binary changes.
 - A subagent that an SDK session without a task host resumed now stops when that session closes, as the original launch does. Reopening the session relaunches it automatically, as it does a task-host child, and the steering and follow-up messages it had queued and not read are delivered once, in order. A task-host child whose session or workflow stage closes now keeps its unread steering and follow-up messages the same way, and restoring or resuming it delivers them once, in order, instead of losing them.
 - Opening a fork no longer changes the original session's subagent launch cards back to an older state copied into the fork, such as showing a completed child as running.
+- `pause` or `quit` of a subagent that completes just before the stop takes effect now reports that it completed instead of "Paused", and Intercom messages sent to it are no longer held until a resume ([#3784](https://github.com/bastani-inc/atomic/pull/3784)).
 
 ## [0.9.39] - 2026-10-19
 
