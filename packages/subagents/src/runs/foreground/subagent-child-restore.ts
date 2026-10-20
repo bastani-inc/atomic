@@ -321,6 +321,8 @@ async function relaunchChild(
 	ctx.orchestrationContext?.messageAdmission?.boundary.registerOwnedSubagentRun(record.runId);
 	const recordChild = createSubagentChildRecordSink(deps.pi, ctx);
 	const runtime = resolveSubagentExecutorRuntimeDeps(deps.runtime);
+	// It waits for a slot in its run, as its original launch did.
+	const schedule = subagentChildSchedule(record.runId, record.index);
 	if (!host) {
 		// No task host (an SDK session): it runs in the background directly, recorded like a task-host launch.
 		const launched = runOwnerlessChild({
@@ -329,12 +331,11 @@ async function relaunchChild(
 			cwd: record.cwd,
 			options,
 			recordChild,
+			...(schedule ? { schedule } : {}),
 			runSync: (task, childOptions) => runtime.runSync(ctx.cwd, [agent], agent.name, task, childOptions),
 		});
 		return ownerlessRelaunched(deps, record, launched, recordChild, release, hold, supervisorAuthorization, ctx);
 	}
-	// It waits for a slot in its run, as its original launch did.
-	const schedule = subagentChildSchedule(record.runId, record.index);
 	const response = await runAgentTask({
 		host,
 		cwd: ctx.cwd,

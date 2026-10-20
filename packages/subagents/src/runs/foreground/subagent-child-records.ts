@@ -95,6 +95,17 @@ export function isRestorableSubagentChild(record: SubagentChildRecord): boolean 
  */
 export const WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE = "atomic:workflow-stage-closed-for-good";
 
+/**
+ * Workflow-stage extension state this extension sets to a {@link WorkflowStageChildrenEnd}: a stage generation that
+ * closed resumably and later ended for good (its blocked run was then killed or ended) ends its children through it.
+ */
+export const WORKFLOW_STAGE_END_CHILDREN_STATE = "atomic:workflow-stage-end-children";
+
+export interface WorkflowStageChildrenEnd {
+	/** End every settled child the stage owns, once the stage closed for good. */
+	readonly endChildren: () => void;
+}
+
 /** `terminalStatus` of a child that could not be restored after a restart and was reported gone to its owner. */
 export const SUBAGENT_CHILD_GONE_STATUS = "gone";
 
@@ -190,6 +201,9 @@ export function watchWorkflowStageSubagentChildren(
 	};
 	if (closeSignal.aborted) endAll();
 	else closeSignal.addEventListener("abort", endAll, { once: true });
+	// A generation that closed resumably can still end for good later, after its close.
+	const later: WorkflowStageChildrenEnd = { endChildren: endAll };
+	admission.extensionState.set(WORKFLOW_STAGE_END_CHILDREN_STATE, later);
 	return watched;
 }
 

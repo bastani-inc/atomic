@@ -249,8 +249,13 @@ export function subagentChildSchedule(runId: string, index: number): ExecutionSc
 	return childSchedules.get(`${runId}:${index}`);
 }
 
+/** Remember the scheduler the child's run dispatched it on, so its resume waits for a slot in that run. */
+export function rememberSubagentChildSchedule(runId: string, index: number, schedule: ExecutionSchedule): void {
+	childSchedules.set(`${runId}:${index}`, schedule);
+}
+
 /** The child ended for good: nothing resumes it into its run's scheduler or worktrees any more. */
-function forgetRunMembership(runId: string, index: number): void {
+export function forgetRunMembership(runId: string, index: number): void {
 	childSchedules.delete(`${runId}:${index}`);
 	unparkRunWorktree(runId, index);
 }
@@ -310,7 +315,7 @@ export async function runAgentTask(input: {
 	let admittedTaskId: TaskId | undefined;
 	const runId = input.options.runId;
 	const index = input.options.index ?? 0;
-	if (input.schedule) childSchedules.set(`${runId}:${index}`, input.schedule);
+	if (input.schedule) rememberSubagentChildSchedule(runId, index, input.schedule);
 	// The host skips a queued dispatch once its task was cancelled: record how a child that never started ended.
 	const settleSkipped = async (taskId: TaskId) => {
 		const queued = queuedChildren.get(taskId);

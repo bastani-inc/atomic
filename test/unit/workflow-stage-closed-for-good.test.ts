@@ -365,6 +365,23 @@ describe("a workflow stage generation closing for good ends its subagent childre
 		assert.deepEqual(await childStatuses(stage), { "paused-child": "paused", "quit-child": "quit" });
 	});
 
+	test("a resumably blocked stage's paused and quit children end once the blocked run is killed (#3784)", async () => {
+		const h = await startRun(
+			(stage) => {
+				stage("limited").children = stoppedChildren();
+				return singleStage("limited");
+			},
+			new Map([["limited", "HTTP 429 rate limit exceeded"]]),
+		);
+		await h.execution;
+		const stage = h.stage("limited");
+		assert.deepEqual(await childStatuses(stage), { "paused-child": "paused", "quit-child": "quit" });
+		assert.equal((await killRun(h.runId, { store: h.store, cancellation: h.cancellation })).ok, true);
+		assert.equal(h.store.runs().find((snapshot) => snapshot.id === h.runId)?.status, "killed");
+		assert.equal(closedForGood(stage), true);
+		assert.deepEqual(await childStatuses(stage), { "paused-child": "stage-closed", "quit-child": "stage-closed" });
+	});
+
 	test("a stage that fails for good ends its paused and quit children (#3784)", async () => {
 		const h = await startRun(
 			(stage) => {

@@ -7,6 +7,7 @@ import type {
 	WorkflowSerializableValue,
 } from "../../shared/types.js";
 import type { ConcurrencyLimiter } from "../shared/concurrency.js";
+import { closeBlockedStageForGoodWhenRunEnds } from "./blocked-stage-close.js";
 import { raceAbort, WORKFLOW_KILLED_ABORT_REASON } from "./executor-abort.js";
 import {
 	askReadinessViaStageBroker,
@@ -432,6 +433,10 @@ export function createTrackedStageCaller(input: {
 						runtime.exit.currentWorkflowExitAbortReason() !== undefined ||
 						runtime.signal.reason === WORKFLOW_KILLED_ABORT_REASON,
 				);
+				if (blockedResumably)
+					closeBlockedStageForGoodWhenRunEnds(runtime.activeStore, runtime.runId, async () => {
+						await runtime.innerCtx.__closeGeneration(true);
+					});
 				await runtime.captureStageSessionMeta({ awaitDurable: true });
 			} catch (err) {
 				durableCheckpointError ??= { thrown: true, error: err };

@@ -95,6 +95,12 @@ import { waitForStageStartup } from "./stage-startup-wait.js";
 /** Stage extension state the subagents extension reads to end, rather than keep restorable, a closing stage's children. */
 export const WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE = "atomic:workflow-stage-closed-for-good";
 
+/**
+ * Stage extension state the subagents extension sets to end a stage's children when its generation, closed resumably,
+ * ends for good later.
+ */
+export const WORKFLOW_STAGE_END_CHILDREN_STATE = "atomic:workflow-stage-end-children";
+
 type RetryPauseResume = NonNullable<ReturnType<StageSessionPause["currentResume"]>>;
 
 type StageMessage = StageSessionRuntime["messages"][number];
@@ -653,6 +659,13 @@ export class StageSessionController {
 		const session = pending ? await pending : this.session;
 		await session?.closeWorkflowStageGeneration?.();
 		this.artifactCapture.close();
+		// A generation that already closed resumably (its stage blocked) ends its children now that it ends for good.
+		if (closedForGood) {
+			const end = this.sharedOrchestrationContext?.messageAdmission?.extensionState.get(
+				WORKFLOW_STAGE_END_CHILDREN_STATE,
+			);
+			if (end && "endChildren" in end && typeof end.endChildren === "function") end.endChildren();
+		}
 	}
 
 	async promptWithFallback(

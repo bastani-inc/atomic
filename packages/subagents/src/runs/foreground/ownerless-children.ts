@@ -15,6 +15,7 @@ import {
 	takeSubagentChildStop,
 } from "./subagent-child-records.js";
 import { runUnboundParallelTask } from "./subagent-executor-parallel-task.js";
+import { forgetRunMembership, rememberSubagentChildSchedule } from "./task-execution.js";
 
 /**
  * Children a session without a task host (an SDK session) launched directly, recorded like task-host launches so
@@ -75,7 +76,8 @@ const NO_USAGE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, tu
 /**
  * Launch a child no task host owns, recording it in the owner's session as a task-host launch is: running at launch
  * and once its own session exists, then how it settled, with what it had queued when pause or quit stopped it.
- * With `schedule` it waits for a slot in its run. The launch holds its run's worktrees until it ends.
+ * With `schedule` it waits for a slot in its run, and so does every resume of it. The launch holds its run's
+ * worktrees until it ends.
  */
 export function runOwnerlessChild(input: {
 	readonly agent: string;
@@ -128,8 +130,10 @@ export function runOwnerlessChild(input: {
 				await settled.promise;
 				return;
 			}
-			// It never starts, so nothing else records how it stopped; resuming it in this process starts it.
+			// It never starts, so nothing else records how it stopped; resuming it in this process starts it. It is not
+			// live any more: its dispatch, still waiting for a slot, only drains once a slot frees.
 			stoppedBeforeDispatch = true;
+			liveLaunches.delete(launchId);
 			stopper.abort();
 			stoppedQueued.set(launchId, (resumed) =>
 				runOwnerlessChild({
@@ -184,6 +188,7 @@ export function runOwnerlessChild(input: {
 			const stoppedByControl = stopped !== undefined && child.status === "interrupted";
 			// Run control marked it stopped before it stopped it; a child that ended otherwise is not stopped.
 			if (stopped !== undefined && !stoppedByControl) unparkRunWorktree(runId, index);
+			if (child.status === "killed") forgetRunMembership(runId, index);
 			// A child that stays resumable keeps what it had queued and not read, for its resume.
 			record(
 				"terminal",
@@ -201,6 +206,7 @@ export function runOwnerlessChild(input: {
 	// Pause or quit right after the launch must find the child, also while it waits for a slot.
 	record("running");
 	const schedule = input.schedule;
+	if (schedule) rememberSubagentChildSchedule(runId, index, schedule);
 	const result = (
 		schedule
 			? runUnboundParallelTask(

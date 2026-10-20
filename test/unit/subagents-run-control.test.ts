@@ -20,6 +20,7 @@ import {
 	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 	type SubagentChildRecord,
 	WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE,
+	WORKFLOW_STAGE_END_CHILDREN_STATE,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import {
 	restoreSubagentChildren,
@@ -48,7 +49,10 @@ import { killRun, pauseRun, resumeRun } from "../../packages/workflows/src/runs/
 import { run as runWorkflow } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
-import { WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE as WORKFLOWS_STAGE_CLOSED_FOR_GOOD_STATE } from "../../packages/workflows/src/runs/foreground/stage-runner-controller.js";
+import {
+	WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE as WORKFLOWS_STAGE_CLOSED_FOR_GOOD_STATE,
+	WORKFLOW_STAGE_END_CHILDREN_STATE as WORKFLOWS_STAGE_END_CHILDREN_STATE,
+} from "../../packages/workflows/src/runs/foreground/stage-runner-controller.js";
 import { createStore as createWorkflowStore } from "../../packages/workflows/src/shared/store.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
@@ -114,7 +118,7 @@ function newHost(): AgentTaskHost {
 	});
 }
 
-function harness(options: { stage?: boolean } = {}): Harness {
+function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harness {
 	const cwd = makeTempDirectory("subagent-run-control-");
 	let host = newHost();
 	const stageState = options.stage ? new Map<string, object>() : undefined;
@@ -177,7 +181,8 @@ function harness(options: { stage?: boolean } = {}): Harness {
 			hasUI: false,
 			ui: {},
 			sessionManager,
-			getAgentTaskHost: () => host,
+			// Without a task host the session is an SDK session that launches subagents directly.
+			...(options.ownerless ? {} : { getAgentTaskHost: () => host }),
 			...(stageState
 				? {
 						orchestrationContext: {
@@ -541,6 +546,11 @@ test("a workflow stage generation closing for good ends its children, and resume
 		WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE,
 		WORKFLOWS_STAGE_CLOSED_FOR_GOOD_STATE,
 		"subagents reads the state the workflows extension sets",
+	);
+	assert.equal(
+		WORKFLOW_STAGE_END_CHILDREN_STATE,
+		WORKFLOWS_STAGE_END_CHILDREN_STATE,
+		"the workflows extension ends a blocked stage's children through the state subagents sets",
 	);
 	const h = harness({ stage: true });
 	const { record, taskId } = await h.launch("stage1");
@@ -1268,6 +1278,102 @@ test("a queued worktree child resumed behind its cancelled dispatch starts in it
 	);
 	await waitUntilRemoved(childA.cwd);
 	assert.equal(existsSync(childA.cwd), false, "the worktree is removed once the resumed child finished");
+});
+
+test("a resumed queued child of an SDK session without a task host waits for its run's concurrency slot (#3784)", async () => {
+	const h = harness({ ownerless: true });
+	const siblingDone = Promise.withResolvers<void>();
+	const queuedDone = Promise.withResolvers<void>();
+	h.finishOn.set("slot-a-marker", siblingDone);
+	h.finishOn.set("slot-b-marker", queuedDone);
+	cleanups.push(async () => {
+		siblingDone.resolve();
+		queuedDone.resolve();
+	});
+	// Without a task host the parallel call returns once its children settled.
+	const launched = h.call({
+		tasks: [
+			{ agent: "worker", task: "slot-a-marker" },
+			{ agent: "worker", task: "slot-b-marker" },
+		],
+		concurrency: 1,
+	});
+	const children = () =>
+		[...readSubagentChildRecords(h.sessionManager.getEntries()).values()].sort(
+			(left, right) => left.index - right.index,
+		);
+	const deadline = Date.now() + RECORD_WAIT_MS;
+	while (children().length < 2 && Date.now() < deadline) await sleep(10);
+	const [childA, childB] = children();
+	assert.ok(childA && childB);
+	await h.waitForLatest(childA.childId, (candidate) => !!candidate.childSessionId);
+	const startsOfB = () => h.runs.filter((run) => run.task.includes("slot-b-marker"));
+
+	const paused = await h.call({ action: "pause", id: childB.childId });
+	assert.notEqual(paused.isError, true, text(paused));
+	await h.waitForLatest(childB.childId, (candidate) => candidate.terminalStatus === "paused");
+	const resumed = await h.call({ action: "resume", id: childB.childId });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	const resumedTask = resumedTaskId(resumed);
+	await sleep(100);
+	assert.deepEqual(startsOfB(), [], "the resumed child waits while its sibling holds the only slot");
+
+	siblingDone.resolve();
+	const started = await h.waitForLatest(
+		childB.childId,
+		(candidate) => candidate.taskId === resumedTask && (!!candidate.childSessionId || candidate.state === "terminal"),
+	);
+	assert.equal(started.state, "running", `the resumed child started: ${JSON.stringify(started)}`);
+	assert.equal(startsOfB().length, 1, "it starts once its sibling releases the slot");
+	queuedDone.resolve();
+	await launched;
+});
+
+test("a resumed paused child of an SDK session without a task host waits for its run's concurrency slot; paused, it holds none (#3784)", async () => {
+	const h = harness({ ownerless: true });
+	const firstDone = Promise.withResolvers<void>();
+	const secondDone = Promise.withResolvers<void>();
+	h.finishOn.set("slot-a-marker", firstDone);
+	h.finishOn.set("slot-b-marker", secondDone);
+	cleanups.push(async () => {
+		firstDone.resolve();
+		secondDone.resolve();
+	});
+	const launched = h.call({
+		tasks: [
+			{ agent: "worker", task: "slot-a-marker" },
+			{ agent: "worker", task: "slot-b-marker" },
+		],
+		concurrency: 1,
+	});
+	const children = () =>
+		[...readSubagentChildRecords(h.sessionManager.getEntries()).values()].sort(
+			(left, right) => left.index - right.index,
+		);
+	const deadline = Date.now() + RECORD_WAIT_MS;
+	while (children().length < 2 && Date.now() < deadline) await sleep(10);
+	const [childA, childB] = children();
+	assert.ok(childA && childB);
+	await h.waitForLatest(childA.childId, (candidate) => !!candidate.childSessionId);
+	const startsOfA = () => h.runs.filter((run) => run.options.runId === childA.runId && run.options.index === 0);
+
+	const paused = await h.call({ action: "pause", id: childA.childId });
+	assert.notEqual(paused.isError, true, text(paused));
+	await h.waitForLatest(childB.childId, (candidate) => !!candidate.childSessionId);
+	const resumed = await h.call({ action: "resume", id: childA.childId });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	const resumedTask = resumedTaskId(resumed);
+	await sleep(100);
+	assert.equal(startsOfA().length, 1, "the resumed child waits while its sibling holds the only slot");
+
+	secondDone.resolve();
+	const finished = await h.waitForLatest(
+		childA.childId,
+		(candidate) => candidate.taskId === resumedTask && candidate.state === "terminal",
+	);
+	assert.equal(finished.terminalStatus, "ok");
+	assert.equal(startsOfA().length, 2, "it starts once its sibling releases the slot");
+	await launched;
 });
 
 test("a clean paused worktree child's worktree is removed when its session closes, and resume recreates it from the run's base (#3760 run control)", async () => {
