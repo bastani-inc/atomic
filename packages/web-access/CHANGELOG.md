@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
-- Curator summary drafts no longer fall back to `openai-codex/gpt-5.3-codex-spark`, which the `openai-codex` provider no longer offers. `anthropic/claude-haiku-4-5` remains the preferred default, and `summaryModel` or the curator's model picker can select any other available model.
+- Curator summary drafts for Codex-only users now prefer `openai-codex/gpt-6.1-sol`, the `openai-codex` default, instead of `gpt-5.3-codex-spark`, which ChatGPT accounts can no longer use. `anthropic/claude-haiku-4-5` remains the first choice.
 
 ## [0.9.38] - 2026-10-18
 
