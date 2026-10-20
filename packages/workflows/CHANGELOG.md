@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.40-alpha.1] - 2026-10-20
+
 ### Added
 
 - The workflow journal can be selected for one process with `ATOMIC_WORKFLOWS_JOURNAL`, `ATOMIC_STORAGE`, or Atomic's `--storage` and `--storage-file` flags, using the same JSON as the `workflows.journal` and `storage` settings. Setting `ATOMIC_WORKFLOWS_JOURNAL` together with `ATOMIC_WORKFLOW_JOURNAL_PATH` is rejected as a conflict ([#3783](https://github.com/bastani-inc/atomic/issues/3783)).
