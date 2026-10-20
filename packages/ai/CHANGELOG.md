@@ -4,6 +4,31 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.40] - 2026-10-20
+
+### Breaking Changes
+
+- `resolveTranscriptTools()` now takes a `TranscriptToolSupport` (`"none"`, `"additions"`, or `"changes"`) instead of a boolean, and `TranscriptTools.anchorsAdditions` is replaced by `foldedSystemMessages`, the number of leading system messages folded into `requestTools` ([#10940](https://github.com/earendil-works/pi/issues/10940))
+
+### Added
+
+- Added `MiniMax-M3.1-Flash` to the `minimax` and `minimax-cn` providers, with thinking levels low through max sent as `output_config.effort`. Thinking cannot be turned off for this model. New MiniMax models from models.dev now appear without a manual allowlist entry; only the older M2, M2.1, M2.5, and M2.5-highspeed models stay hidden ([#11121](https://github.com/earendil-works/pi/issues/11121))
+- Added the `typesafe/jev-1.14.0` classifier for Jev 1.14 alongside `typesafe/jev-latest`.
+- Direct TypeSafe Jev classifiers (`typesafe/jev-latest`, `typesafe/jev-1.14.0`) now send TypeSafe's long-context and image preview headers on every request, accept up to 262K tokens, and accept PNG or JPEG `images`. Images are sent as referenced assets and listed in order under the state's `images` field; other image types, or a state that already has an `images` field, return an error result. Jev on Vercel AI Gateway, OpenCode Zen, OpenRouter, and Cloudflare Workers AI still rejects images.
+
+### Changed
+
+- Grok 4.3 and Grok 4.5 on the `xai` provider now offer the `xhigh` thinking level, matching the reasoning efforts xAI supports for these models.
+
+### Fixed
+
+- Treat any HTTP 413 from a provider as request-size overflow, so a GitHub Copilot request over its byte-size limit (`413 ... failed to parse request`) now compacts and retries instead of surfacing a raw API error ([pi 73f8de80](https://github.com/earendil-works/pi/commit/73f8de80bc87021375f8b525292ac07492253002))
+- Fixed OpenAI Responses deferred tool loads rewriting the top-level tool list, and losing the prompt cache, on every load after a tool removal. Models with `additional_tools` now declare all tools in `additional_tools` items, starting with one at the head of the input, so removals (announced as text) and redefinitions no longer rewrite the prefix. Tool search and Kimi tool messages rewrite the top-level tools once per removal or redeclaration and keep later loads anchored ([#10940](https://github.com/earendil-works/pi/issues/10940))
+
+### Removed
+
+- Removed `gpt-5.5` and `gpt-5.3-codex-spark` from the `openai-codex` provider. The Codex backend rejects both for ChatGPT accounts ("not supported when using Codex with a ChatGPT account"), so selecting them always failed ([#11173](https://github.com/earendil-works/pi/pull/11173))
+
 ## [0.9.40-alpha.2] - 2026-10-20
 
 ### Breaking Changes
