@@ -283,8 +283,12 @@ function unlinkWorktreeLinks(worktreePath: string, relativePaths: readonly strin
 			let stat: fs.Stats;
 			try {
 				stat = fs.lstatSync(current);
-			} catch {
-				break;
+			} catch (error) {
+				// Only a missing path is safe to skip; any other inspection failure must
+				// keep the worktree out of `git worktree remove --force`.
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code === "ENOENT" || code === "ENOTDIR") break;
+				throw error;
 			}
 			if (!stat.isSymbolicLink()) continue;
 			if (current === target) fs.unlinkSync(current);
@@ -301,7 +305,7 @@ function cleanupSingleWorktree(
 	try {
 		unlinkWorktreeLinks(worktree.path, linkPaths);
 	} catch {
-		// A link that cannot be unlinked must not reach `git worktree remove --force`,
+		// A link that cannot be inspected or unlinked must not reach `git worktree remove --force`,
 		// which may follow it into the main checkout; leave the worktree for recovery.
 		return;
 	}
