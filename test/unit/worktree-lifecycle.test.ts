@@ -88,6 +88,53 @@ test("temporary worktree uses main-root path, flattened branch, and post-creatio
 	}
 });
 
+// On Windows the linked directory is a real junction, which Git for Windows either
+// leaves behind (keeping the worktree) or follows into the main checkout.
+test("cleanup removes a worktree with a linked directory and keeps the main checkout's copy", () => {
+	const { root, repo } = createRepository();
+	mkdirSync(join(repo, "deps"));
+	writeFileSync(join(repo, "deps", "module.txt"), "dependency\n");
+	let setup: ReturnType<typeof createWorktrees> | undefined;
+	try {
+		setup = createWorktrees(repo, "linked/cleanup", 1, { baseBranch: "main", symlinkDirectories: ["deps"] });
+		const worktree = setup.worktrees[0]!;
+		assert.equal(lstatSync(join(worktree.path, "deps")).isSymbolicLink(), true);
+		cleanupWorktrees(setup);
+		setup = undefined;
+		assert.equal(existsSync(worktree.path), false, "the worktree directory must be deleted");
+		assert.equal(readFileSync(join(repo, "deps", "module.txt"), "utf8"), "dependency\n");
+		assert.equal(runGitChecked(repo, ["branch", "--list", worktree.branch]).trim(), "");
+	} finally {
+		if (setup) cleanupWorktrees(setup);
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("setup rollback removes a worktree with a linked directory and keeps the main checkout's copy", () => {
+	const { root, repo } = createRepository();
+	mkdirSync(join(repo, "deps"));
+	writeFileSync(join(repo, "deps", "module.txt"), "dependency\n");
+	// Not executable on any platform, so the hook fails after the directory was linked.
+	const hook = join(root, "not-executable.txt");
+	writeFileSync(hook, "not a program\n");
+	try {
+		assert.throws(
+			() =>
+				createWorktrees(repo, "linked/rollback", 1, {
+					baseBranch: "main",
+					symlinkDirectories: ["deps"],
+					setupHook: { hookPath: hook },
+				}),
+			/worktree setup hook failed/,
+		);
+		assert.equal(existsSync(join(repo, ".atomic", "worktrees", "linked+rollback-0")), false);
+		assert.equal(readFileSync(join(repo, "deps", "module.txt"), "utf8"), "dependency\n");
+		assert.equal(runGitChecked(repo, ["branch", "--list", "worktree-linked+rollback-0"]).trim(), "");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("non-ignored local settings propagate without leaking into patches and repeated creation stays usable", () => {
 	const { root, repo } = createRepository(false);
 	const diffs = join(root, "diffs");
