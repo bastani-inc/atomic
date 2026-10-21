@@ -36,7 +36,10 @@ import {
 } from "../../packages/subagents/src/runs/foreground/subagent-child-restore.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
-import { SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT } from "../../packages/subagents/src/runs/foreground/subagent-run-control.js";
+import {
+	resumeAwaitingSubagentChildren,
+	SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT,
+} from "../../packages/subagents/src/runs/foreground/subagent-run-control.js";
 import {
 	runAgentTask,
 	takeStoppedQueuedSubagentChild,
@@ -2454,4 +2457,220 @@ test("an SDK session without a task host can pause, resume, quit and resume agai
 	assert.equal(occurrences(delivered, "then wrap up"), 1, "the resume message is delivered exactly once");
 	const order = [steer, followUp, "then wrap up"].map((message) => delivered.indexOf(message));
 	assert.ok(order[0]! < order[1]! && order[1]! < order[2]!, `held messages first, in order: ${order.join(", ")}`);
+});
+
+interface StartupUi {
+	readonly confirms: Array<{ title: string; message: string }>;
+	readonly notices: Array<{ message: string; type: string }>;
+}
+
+function startupContext(
+	h: Harness,
+	options: { hasUI?: boolean; answer?: boolean | Error; confirm?: boolean } = {},
+): { ctx: ExtensionContext; ui: StartupUi } {
+	const ui: StartupUi = { confirms: [], notices: [] };
+	const hasUI = options.hasUI ?? true;
+	const ctx = Object.assign(Object.create(h.ctx) as ExtensionContext, {
+		hasUI,
+		ui: {
+			...(options.confirm === false
+				? {}
+				: {
+						confirm: async (title: string, message: string) => {
+							ui.confirms.push({ title, message });
+							if (options.answer instanceof Error) throw options.answer;
+							return options.answer ?? true;
+						},
+					}),
+			notify: (message: string, type: string) => ui.notices.push({ message, type }),
+		},
+	});
+	return { ctx, ui };
+}
+
+async function quitChild(h: Harness, runId: string): Promise<SubagentChildRecord> {
+	const { record } = await h.launch(runId);
+	const quit = await h.call({ action: "quit", id: record.childId });
+	assert.notEqual(quit.isError, true, text(quit));
+	return h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "quit");
+}
+
+async function waitForResumed(h: Harness, quit: SubagentChildRecord): Promise<SubagentChildRecord> {
+	return h.waitForLatest(
+		quit.childId,
+		(candidate) => candidate.taskId !== quit.taskId && candidate.state === "terminal",
+	);
+}
+
+test("resumeInFlight never leaves a quit subagent awaiting resume without asking (#3827)", async () => {
+	const h = harness();
+	const quit = await quitChild(h, "never1");
+	const { ctx, ui } = startupContext(h);
+	const runsBefore = h.runs.length;
+
+	await resumeAwaitingSubagentChildren(h.deps, ctx, "never", () => true);
+
+	assert.deepEqual(ui, { confirms: [], notices: [] });
+	assert.equal(h.runs.length, runsBefore, "nothing was relaunched");
+	assert.equal(h.latest(quit.childId)?.terminalStatus, "quit");
+	assert.match(
+		text(await h.call({ action: "status" })),
+		/Awaiting resume:\n.*never1:0.*quit · paused · awaiting resume/,
+	);
+});
+
+test("resumeInFlight ask resumes every quit or paused subagent after one confirmation (#3827)", async () => {
+	const h = harness();
+	const quit = await quitChild(h, "ask1");
+	const { record: running } = await h.launch("ask2");
+	await h.call({ action: "pause", id: running.childId });
+	const paused = await h.waitForLatest(running.childId, (candidate) => candidate.terminalStatus === "paused");
+	const { ctx, ui } = startupContext(h, { answer: true });
+
+	await resumeAwaitingSubagentChildren(h.deps, ctx, "ask", () => true);
+
+	assert.equal(ui.confirms.length, 1, "one confirmation for all of them");
+	assert.equal(ui.confirms[0]?.title, "Resume interrupted subagents?");
+	assert.match(ui.confirms[0]?.message ?? "", /^2 interrupted subagent\(s\) can resume from their own sessions:\n/);
+	assert.ok(
+		ui.confirms[0]?.message.includes(`- worker (${quit.childId}, subagent-worker-ask1)`),
+		"names the quit child",
+	);
+	assert.ok(
+		ui.confirms[0]?.message.includes(`- worker (${paused.childId}, subagent-worker-ask2)`),
+		"names the paused child",
+	);
+	assert.match(ui.confirms[0]?.message ?? "", /\nResume now\? Choose No/);
+	const resumed = await waitForResumed(h, quit);
+	assert.equal(resumed.terminalStatus, "ok");
+	assert.equal(resumed.childSessionId, quit.childSessionId, "it continued from its own session");
+	assert.equal((await waitForResumed(h, paused)).terminalStatus, "ok");
+	assert.deepEqual(
+		ui.notices.map((notice) => notice.type),
+		["info", "info"],
+	);
+	assert.match(ui.notices[0]?.message ?? "", /^Resumed worker \(ask1:0, subagent-worker-ask1\) from its own session/);
+	assert.match(ui.notices[1]?.message ?? "", /^Resumed worker \(ask2:0, subagent-worker-ask2\) from its own session/);
+});
+
+test("resumeInFlight ask leaves subagents awaiting resume when declined (#3827)", async () => {
+	const h = harness();
+	const quit = await quitChild(h, "decline1");
+	const { ctx, ui } = startupContext(h, { answer: false });
+	const runsBefore = h.runs.length;
+
+	await resumeAwaitingSubagentChildren(h.deps, ctx, "ask", () => true);
+
+	assert.equal(ui.confirms.length, 1);
+	assert.deepEqual(ui.notices, []);
+	assert.equal(h.runs.length, runsBefore);
+	assert.equal(h.latest(quit.childId)?.terminalStatus, "quit");
+	assert.match(text(await h.call({ action: "status" })), /Awaiting resume:\n.*decline1:0/);
+	const manual = await h.call({ action: "resume", id: quit.childId });
+	assert.notEqual(manual.isError, true, text(manual));
+});
+
+test("resumeInFlight ask falls back to never without a UI (#3827)", async () => {
+	for (const options of [{ hasUI: false }, { confirm: false }]) {
+		const h = harness();
+		const quit = await quitChild(h, "noui1");
+		const { ctx, ui } = startupContext(h, options);
+		const runsBefore = h.runs.length;
+
+		await resumeAwaitingSubagentChildren(h.deps, ctx, "ask", () => true);
+
+		assert.deepEqual(ui, { confirms: [], notices: [] });
+		assert.equal(h.runs.length, runsBefore);
+		assert.equal(h.latest(quit.childId)?.terminalStatus, "quit");
+	}
+});
+
+test("resumeInFlight auto resumes a subagent quit before a restart without asking (#3827)", async () => {
+	const h = harness();
+	const quit = await quitChild(h, "auto1");
+	await h.closeOwnerAndReopen("session-close");
+	const { ctx, ui } = startupContext(h);
+
+	await resumeAwaitingSubagentChildren(h.deps, ctx, "auto", () => true);
+
+	assert.deepEqual(ui.confirms, []);
+	const resumed = await waitForResumed(h, quit);
+	assert.equal(resumed.terminalStatus, "ok");
+	assert.equal(resumed.childSessionId, quit.childSessionId);
+	const relaunch = h.runs.at(-1)!;
+	assert.equal(relaunch.task, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT);
+	assert.equal(relaunch.options.resumeSession, true);
+	assert.equal(relaunch.options.sessionManager?.getSessionId(), quit.childSessionId);
+	assert.equal(ui.notices.length, 1);
+	assert.equal(ui.notices[0]?.type, "info");
+});
+
+test("resumeInFlight never resumes subagents owned by a workflow stage (#3827)", async () => {
+	const h = harness({ stage: true });
+	const quit = await quitChild(h, "stage1");
+	const { ctx, ui } = startupContext(h);
+	const runsBefore = h.runs.length;
+
+	await resumeAwaitingSubagentChildren(h.deps, ctx, "auto", () => true);
+
+	assert.deepEqual(ui, { confirms: [], notices: [] });
+	assert.equal(h.runs.length, runsBefore);
+	assert.equal(h.latest(quit.childId)?.terminalStatus, "quit");
+});
+
+test("resumeInFlight leaves children another session launched alone (#3827)", async () => {
+	const h = harness();
+	const quit = await quitChild(h, "foreign1");
+	const { ctx, ui } = startupContext(h);
+	const forked = Object.assign(Object.create(ctx) as ExtensionContext, {
+		sessionManager: Object.assign(Object.create(h.sessionManager) as SessionManager, {
+			getSessionId: () => "forked-session",
+		}),
+	});
+	const runsBefore = h.runs.length;
+
+	await resumeAwaitingSubagentChildren(h.deps, forked, "auto", () => true);
+
+	assert.deepEqual(ui, { confirms: [], notices: [] });
+	assert.equal(h.runs.length, runsBefore);
+	assert.equal(h.latest(quit.childId)?.terminalStatus, "quit");
+});
+
+test("resumeInFlight reports a subagent that cannot resume and never throws (#3827)", async () => {
+	const h = harness();
+	await quitChild(h, "broken1");
+	h.agentDefined = false;
+	const { ctx, ui } = startupContext(h);
+
+	await resumeAwaitingSubagentChildren(h.deps, ctx, "auto", () => true);
+
+	assert.equal(ui.notices.length, 1);
+	assert.equal(ui.notices[0]?.type, "warning");
+	assert.match(ui.notices[0]?.message ?? "", /could not be resumed: agent "worker" \(project\) is no longer defined/);
+});
+
+test("resumeInFlight warns when the confirmation fails and never throws (#3827)", async () => {
+	const h = harness();
+	const quit = await quitChild(h, "failed1");
+	const { ctx, ui } = startupContext(h, { answer: new Error("dialog closed") });
+
+	await resumeAwaitingSubagentChildren(h.deps, ctx, "ask", () => true);
+
+	assert.equal(ui.notices.length, 1);
+	assert.equal(ui.notices[0]?.type, "warning");
+	assert.match(ui.notices[0]?.message ?? "", /^Subagent startup resume failed: Error: dialog closed/);
+	assert.equal(h.latest(quit.childId)?.terminalStatus, "quit");
+});
+
+test("resumeInFlight stops resuming once its session is no longer current (#3827)", async () => {
+	const h = harness();
+	const quit = await quitChild(h, "stale1");
+	const { ctx, ui } = startupContext(h);
+	const runsBefore = h.runs.length;
+
+	await resumeAwaitingSubagentChildren(h.deps, ctx, "auto", () => false);
+
+	assert.deepEqual(ui, { confirms: [], notices: [] });
+	assert.equal(h.runs.length, runsBefore);
+	assert.equal(h.latest(quit.childId)?.terminalStatus, "quit");
 });

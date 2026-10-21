@@ -48,6 +48,7 @@ import {
 	type WorkflowDormantRunSubagentHoldRequest,
 } from "../runs/foreground/subagent-child-restore.js";
 import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.js";
+import { resumeAwaitingSubagentChildren } from "../runs/foreground/subagent-run-control.js";
 import { getArtifactsDir } from "../shared/artifacts.js";
 import { formatDuration, shortenPath } from "../shared/formatters.js";
 import { resolveCurrentSessionId } from "../shared/session-identity.js";
@@ -485,6 +486,13 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				// Children a workflow stage launched in earlier generations end with it too when it closes for good.
 				watchWorkflowStageSubagentChildren(pi, ctx);
 				if (opened) void holdRunningSubagentChildren(pi.events, ctx).catch(() => undefined);
+				if (opened)
+					void resumeAwaitingSubagentChildren(
+						executorDeps,
+						ctx,
+						config.resumeInFlight ?? "never",
+						lifecycle.isCurrent,
+					);
 			}
 		});
 		pi.on("session_recovery_restore", async (_event, ctx) => {
