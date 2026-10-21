@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.41-alpha.1] - 2026-10-21
+
 ### Breaking Changes
 
 - The default `User-Agent` is now `pi/<version> (<platform>; <runtime>; <arch>)` instead of `pi (<platform> <release>; <arch>)`, and `@bastani/pi-ai/utils/pi-user-agent` (`getPiUserAgent()`) is removed; use `formatUserAgent()`.
