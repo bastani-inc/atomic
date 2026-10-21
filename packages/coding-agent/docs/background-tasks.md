@@ -129,6 +129,8 @@ Supervisor progress messages are labelled **Historical supervisor update** with 
 
 Stopping a subagent through `/tasks` (`x`, then `y`) delivers a **stopped** card and stop context to the parent model. The notice arrives only after termination is confirmed, not while the task is **Stopping**. It requires no final response from the child. Cancelling queued work sends the notice without starting it. A subagent stopped this way cannot be resumed; to stop one and keep it resumable, use `subagent({ action: "quit", id })` (see [Run control](/subagents#run-control)).
 
+A subagent stopped with `subagent({ action: "pause" | "quit", id })`, or by its workflow stage pausing, is not ended. Its notice reads **paused · awaiting resume** (for a quit child, `Subagent <agent> quit · paused, awaiting resume`), gives `Stop reason: pause` or `quit`, and names the call that continues it, `subagent({ action: "resume", id: "<child-id>" })`, instead of telling the model the execution has ended. Its `/tasks` row shows **Paused · awaiting resume**.
+
 Repeated stop requests or late child results do not duplicate the notice or overwrite the recorded outcome. A task that finished before cancellation keeps its actual result. Closing the owning session or workflow stage still suppresses late notices.
 
 Restored completions may have only an outcome and task identity if the original live task or transcript is unavailable. Atomic does not invent missing output. Excerpts are bounded; inspect retained history for more detail.

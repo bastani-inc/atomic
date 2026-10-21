@@ -13,8 +13,8 @@ MANAGEMENT (use action field, omit agent/task/tasks):
 • { action: "update", agent: "code-analysis.custom-agent", config: { package: "analysis", ... } } - merge
 • { action: "delete", agent: "code-analysis.custom-agent" }
 CONTROL:
-• { action: "status", id: "..." } - inspect an in-process run by id or prefix
+• { action: "status", id: "..." } - inspect an in-process run by id or prefix; a paused or quit child shows as paused · awaiting resume with its resume call, and { action: "status" } lists every such child
 • { action: "pause", id: "..." } / { action: "pause", all: true } - stop a running child and hold its queued messages until resume; it stays resumable
-• { action: "quit", id: "..." } / { action: "quit", all: true } - stop a child gracefully (including a paused one); it stays resumable
+• { action: "quit", id: "..." } / { action: "quit", all: true } - stop a child gracefully (including a paused one), as a workflow quit does: it is paused · awaiting resume, not ended, and stays resumable
 • { action: "resume", id: "...", message?: "..." } - continue a paused, quit, interrupted, completed or failed child from its own session under the same id and Intercom name; message is delivered once as its next prompt, otherwise it continues where it left off. Children cancelled for good (owner or batch cancellation, the removed kill action), ended with their workflow stage (quit ones included), or reported gone cannot be resumed
 • id accepts the child id (<runId>:<index>), its task id, its Intercom name, or the run id of a single-child run. kill and interrupt were removed: use quit`;

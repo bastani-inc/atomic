@@ -30,6 +30,10 @@ pub enum CancelCause {
 	ExecutionTimeout,
 	OutputLimit,
 	ParentHandoff,
+	/// A resumable stop: the agent is paused, awaiting resume.
+	Pause,
+	/// A resumable quit: the agent is paused, awaiting resume.
+	Quit,
 	Shutdown,
 }
 #[napi(string_enum = "kebab-case")]

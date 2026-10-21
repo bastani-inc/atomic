@@ -35,6 +35,8 @@ const CANCEL_CAUSE_TEXT: Record<CancelCause, string> = {
 	"execution-timeout": "timed out",
 	"output-limit": "output limit reached",
 	"parent-handoff": "handed off",
+	pause: "paused · awaiting resume",
+	quit: "quit · paused · awaiting resume",
 	shutdown: "Atomic shut down",
 };
 

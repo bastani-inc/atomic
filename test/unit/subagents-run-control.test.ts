@@ -7,7 +7,8 @@ import type { AgentSession, ExtensionContext } from "@bastani/atomic";
 import { afterEach, test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
-import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import { formatTaskCompletion } from "../../packages/coding-agent/src/core/tasks/completion.js";
+import type { Sequence, TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import type { AgentConfig, AgentScope } from "../../packages/subagents/src/agents/agents.js";
 import { INTERCOM_BRIDGE_MARKER } from "../../packages/subagents/src/intercom/intercom-bridge.js";
@@ -397,8 +398,8 @@ test("pause stops a running child resumably and holds sends to it until resume",
 	assert.ok(observed.ok && observed.value.kind === "settled");
 	assert.deepEqual(
 		{ kind: observed.value.result.kind, cause: "cause" in observed.value.result ? observed.value.result.cause : "" },
-		{ kind: "cancelled", cause: "parent-handoff" },
-		"pause is never an owner cancellation",
+		{ kind: "cancelled", cause: "pause" },
+		"pause is a typed resumable stop, never an owner cancellation",
 	);
 	const latest = await h.waitForLatest(record.childId, (candidate) => candidate.state === "terminal");
 	assert.equal(latest.terminalStatus, "paused");
@@ -527,6 +528,82 @@ test("quit stops a running child gracefully and resume without a message continu
 		(candidate) => candidate.taskId === newTaskId && candidate.state === "terminal",
 	);
 	assert.equal(occurrences(transcript(final), SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT), 1);
+});
+
+const QUIT_PARITY_RUN_ID = "quitparity1";
+const QUIT_PARITY_CHILD_ID = `${QUIT_PARITY_RUN_ID}:0`;
+const QUIT_PARITY_RESUME_CALL = `{ action: "resume", id: "${QUIT_PARITY_CHILD_ID}"`;
+const PAUSED_AWAITING_RESUME = /paused · awaiting resume/;
+const ENDED_FOR_GOOD_WORDING = /This execution has ended|Do not restart it|parent-handoff/;
+
+test("quit reports a child paused and awaiting resume with its resume call, as a workflow quit does, and status keeps listing it so across a restart", async () => {
+	const h = harness();
+	const { record, taskId } = await h.launch(QUIT_PARITY_RUN_ID);
+
+	const quit = await h.call({ action: "quit", id: QUIT_PARITY_CHILD_ID });
+	assert.notEqual(quit.isError, true, text(quit));
+	assert.match(text(quit), PAUSED_AWAITING_RESUME);
+	assert.ok(text(quit).includes(QUIT_PARITY_RESUME_CALL), text(quit));
+	const observed = await h.host.waitForTask(taskId);
+	assert.ok(observed.ok && observed.value.kind === "settled");
+	assert.deepEqual(observed.value.result.kind === "cancelled" ? observed.value.result.cause : "", "quit");
+	await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "quit");
+
+	const watched = h.host.watchOwnerTasks();
+	assert.ok(watched.ok);
+	const task = watched.value.snapshot.tasks.find((candidate) => candidate.ref.taskId === taskId);
+	watched.value.dispose();
+	assert.ok(task?.execution.kind === "settled");
+	const notice = formatTaskCompletion(
+		{
+			completionId: "quit-parity",
+			ownerId: task.ref.ownerId,
+			taskId,
+			terminalSequence: "1" as Sequence,
+			result: task.execution.result,
+			display: false,
+		},
+		task,
+	);
+	assert.match(notice, /^Subagent worker quit · paused, awaiting resume/);
+	assert.ok(notice.includes(QUIT_PARITY_RESUME_CALL), notice);
+	assert.doesNotMatch(notice, ENDED_FOR_GOOD_WORDING);
+
+	const statusLists = async (when: string) => {
+		for (const params of [
+			{ action: "status", id: QUIT_PARITY_CHILD_ID },
+			{ action: "status", id: taskId },
+			{ action: "status" },
+		] as const) {
+			const status = await h.call(params);
+			assert.notEqual(status.isError, true, `${when}: ${text(status)}`);
+			assert.match(
+				text(status),
+				/worker \(quitparity1:0, subagent-worker-quitparity1\) quit · paused · awaiting resume/,
+			);
+			assert.ok(text(status).includes(QUIT_PARITY_RESUME_CALL), `${when}: ${text(status)}`);
+			if (params.id !== taskId) assert.doesNotMatch(text(status), /cancelled|stopped/i);
+		}
+	};
+	await statusLists("before the restart");
+	const taskStatus = await h.call({ action: "status", id: taskId });
+	assert.match(
+		text(taskStatus),
+		/^worker \(quitparity1:0, subagent-worker-quitparity1\) quit · paused · awaiting resume/,
+	);
+	assert.match(
+		text(taskStatus),
+		/Output of task-[\w-]+ \(paused · awaiting resume, \d+ bytes\):\nFull output: /,
+		"status by task id keeps the child's retained output",
+	);
+
+	await h.closeOwnerAndReopen("session-close");
+	const outcomes = await restoreSubagentChildren(h.deps, h.ctx);
+	assert.deepEqual(outcomes, [], "a quit child is not relaunched at startup: it waits for resume");
+	await statusLists("after the restart");
+	const resumed = await h.call({ action: "resume", id: QUIT_PARITY_CHILD_ID });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	await settled(h, resumedTaskId(resumed));
 });
 
 test("quitting an already-paused child keeps it resumable and resume then succeeds", async () => {
@@ -809,7 +886,11 @@ test("a workflow quit pauses the stage, keeps its subagent resumable, and a fini
 	assert.equal((await quitRun(stage.runId, controls)).ok, true);
 	const observed = await h.host.waitForTask(taskId);
 	assert.ok(observed.ok && observed.value.kind === "settled");
-	assert.equal("cause" in observed.value.result ? observed.value.result.cause : "", "parent-handoff");
+	assert.equal(
+		"cause" in observed.value.result ? observed.value.result.cause : "",
+		"pause",
+		"a workflow quit pauses its stage's subagents with the typed resumable pause cause",
+	);
 	const quit = await h.waitForLatest(record.childId, (candidate) => candidate.state === "terminal");
 	assert.equal(quit.terminalStatus, SUBAGENT_CHILD_STAGE_PAUSED_STATUS, "a quit stage subagent is never killed");
 	assert.equal(h.stageState?.has(WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE), false);
@@ -965,7 +1046,10 @@ test("pause and quit right after resume stop the resumed child, not its previous
 		);
 		const observed = await h.host.waitForTask(resumedTask as TaskId);
 		assert.ok(observed.ok && observed.value.kind === "settled", `${action} ${target}: the resumed task stopped`);
-		assert.equal("cause" in observed.value.result ? observed.value.result.cause : "", "parent-handoff");
+		assert.equal(
+			"cause" in observed.value.result ? observed.value.result.cause : "",
+			action === "pause" ? "pause" : "quit",
+		);
 		const latest = await h.waitForLatest(
 			record.childId,
 			(candidate) => candidate.taskId === resumedTask && candidate.state === "terminal",

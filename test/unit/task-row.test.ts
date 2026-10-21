@@ -8,7 +8,11 @@ import {
 	TaskList,
 	taskListSections,
 } from "../../packages/coding-agent/src/modes/interactive/components/task-list.js";
-import { TaskRow, taskShortId } from "../../packages/coding-agent/src/modes/interactive/components/task-row.js";
+import {
+	TaskRow,
+	taskShortId,
+	taskStatusAppearance,
+} from "../../packages/coding-agent/src/modes/interactive/components/task-row.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskFixture } from "../helpers/task-projection.js";
 import { taskRecord } from "../helpers/task-record.js";
@@ -63,6 +67,24 @@ test("compact rows show states, zero counts and display-only truncation", async 
 		assert.doesNotMatch(expanded, /Transcript unavailable/);
 	} finally {
 		await fixture.dispose();
+	}
+});
+
+test("a quit or paused agent row shows it paused and awaiting resume, not stopped or killed", () => {
+	for (const cause of ["quit", "pause"] as const) {
+		const paused: TaskRecord = {
+			...taskRecord(`paused-${cause}`),
+			execution: { kind: "settled", result: { kind: "cancelled", cause } },
+		};
+		const row = plain(new TaskRow(paused).render(80));
+		assert.match(row, /‖ worker|‖ agent/);
+		assert.match(row, /paused · awaiting resume/);
+		assert.doesNotMatch(row, /cancelled|killed|stopped/i);
+		assert.deepEqual(taskStatusAppearance(paused), {
+			label: "Paused · awaiting resume",
+			icon: "‖",
+			color: "warning",
+		});
 	}
 });
 

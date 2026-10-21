@@ -171,7 +171,7 @@ export interface BlockRangeOptions {
   line: number
 }
 
-export type CancelCause = 'user' | 'owner-close' | 'execution-timeout' | 'output-limit' | 'parent-handoff' | 'shutdown'
+export type CancelCause = 'user' | 'owner-close' | 'execution-timeout' | 'output-limit' | 'parent-handoff' | 'pause' | 'quit' | 'shutdown'
 
 export interface CancelReceipt {
   taskId: string

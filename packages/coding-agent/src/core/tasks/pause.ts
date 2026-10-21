@@ -3,7 +3,8 @@ import type { CancelCause, OwnerSnapshot, TaskRecord } from "./contracts.js";
 
 /**
  * The caller synchronously blocks new launches; this never closes the owner or its messages. Agents are stopped
- * as a handoff, not a user cancellation, so they stay resumable; shell commands cannot resume and are cancelled.
+ * with the resumable `pause` cause, not a user cancellation, so they stay paused, awaiting resume; shell commands
+ * cannot resume and are cancelled.
  */
 export async function cancelPausedOwnerTasks(host: AgentTaskHost): Promise<void> {
 	const errors: Error[] = [];
@@ -24,7 +25,7 @@ export async function cancelPausedOwnerTasks(host: AgentTaskHost): Promise<void>
 	try {
 		await cancel(
 			watch.snapshot.tasks.filter((task) => task.kind === "agent" && task.execution.kind !== "settled"),
-			"parent-handoff",
+			"pause",
 		);
 		const { supervisor, owner } = host.ownerBinding;
 		// Already-started native setup may briefly launch during the transition. Wait for

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Quitting a subagent now behaves like quitting a workflow. The `quit` and `pause` results say the child is paused · awaiting resume and name `{ action: "resume", id: "<child-id>" }`; the parent's completion notice says the same, with the typed `quit` or `pause` stop reason instead of `parent-handoff` and without "This execution has ended". `{ action: "status", id }` reports a paused or quit child as paused · awaiting resume with its resume call, and `{ action: "status" }` lists every such child, including after Atomic restarts. Launch cards of such children show `‖ Paused · awaiting resume` (or `‖ Quit · paused · awaiting resume`) instead of `(resumable)`.
+
 ### Fixed
 
 - A subagent with `model: "auto"` no longer waits indefinitely on a slow routing model. Each routing inference now stops after the `httpIdleTimeoutMs` deadline (10 minutes by default), and the subagent runs on the current chat model when it satisfies the routing constraints ([#3806](https://github.com/bastani-inc/atomic/issues/3806))

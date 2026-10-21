@@ -195,12 +195,12 @@ test("a rebuilt session hydrates every background launch card from its child rec
 	const t = new TranscriptBuilder(manager, process.cwd());
 	const states: Array<[string, Partial<SubagentChildRecord>, RegExp]> = [
 		["hyrun", { state: "running" }, /∀ Running in background/],
-		["hypause", { state: "terminal", terminalStatus: "paused" }, /‖ Paused \(resumable\)/],
-		["hyquit", { state: "terminal", terminalStatus: "quit" }, /■ Quit \(resumable\)/],
+		["hypause", { state: "terminal", terminalStatus: "paused" }, /‖ Paused · awaiting resume/],
+		["hyquit", { state: "terminal", terminalStatus: "quit" }, /‖ Quit · paused · awaiting resume/],
 		[
 			"hystagepause",
 			{ state: "terminal", terminalStatus: "stage-paused" },
-			/‖ Paused with its workflow stage \(resumable\)/,
+			/‖ Paused with its workflow stage · awaiting resume/,
 		],
 		["hydone", { state: "terminal", terminalStatus: "ok" }, /✓ Completed/],
 		["hyfail", { state: "terminal", terminalStatus: "error" }, /✗ Failed/],
@@ -348,7 +348,7 @@ test("an expanded launch card shows the child's own saved transcript (#3760)", a
 	bindSubagentChildCards({ sessionManager: manager });
 	assert.doesNotMatch(rebuildCards(manager, false)[0]!, /Audit the parser/, "collapsed cards stay compact");
 	const expanded = await eventually(() => rebuildCards(manager, true)[0]!, /Parser audit is half done/);
-	assert.match(expanded, /‖ Paused \(resumable\)[\s\S]*│ › Audit the parser │ Parser audit is half done/);
+	assert.match(expanded, /‖ Paused · awaiting resume[\s\S]*│ › Audit the parser │ Parser audit is half done/);
 	await store.close();
 });
 
@@ -461,7 +461,7 @@ test("atomic --session hydrates launch cards once the isolated engine loads the 
 	try {
 		await eventually(body, /"agent": "hyiso"/);
 		host.loadSubagentRenderer();
-		const text = await eventually(body, /‖ Paused \(resumable\)/);
+		const text = await eventually(body, /‖ Paused · awaiting resume/);
 		assert.doesNotMatch(text, /Launched in background|"agent": "hyiso"/);
 	} finally {
 		host.dispose();
@@ -499,10 +499,13 @@ test("atomic --session shows the child's saved transcript in an expanded launch 
 
 	const host = isolatedEngineHost(manager, definition as ToolRenderers);
 	try {
-		await eventually(host.painted, /‖ Paused \(resumable\)/);
+		await eventually(host.painted, /‖ Paused · awaiting resume/);
 		for (const card of host.cards) card.setExpanded(true);
 		const expanded = await eventually(host.painted, /Changelog index is partway done/);
-		assert.match(expanded, /‖ Paused \(resumable\)[\s\S]*│ › Index the changelog │ Changelog index is partway done/);
+		assert.match(
+			expanded,
+			/‖ Paused · awaiting resume[\s\S]*│ › Index the changelog │ Changelog index is partway done/,
+		);
 	} finally {
 		host.dispose();
 		await store.close();
@@ -526,7 +529,7 @@ test("atomic --session redraws a resumed child's original card in place when its
 
 	const host = isolatedEngineHost(manager, definition as ToolRenderers);
 	try {
-		await eventually(host.painted, /‖ Paused \(resumable\)/);
+		await eventually(host.painted, /‖ Paused · awaiting resume/);
 		createSubagentChildRecordSink(
 			{
 				appendEntry: async (type, data) => {
@@ -580,7 +583,7 @@ test("/resume redraws a resumed child's original card in place when its record c
 		toolOutputExpanded: false,
 		getToolDefinition: (name) => (name === "subagent" ? definition : undefined),
 	});
-	assert.match(stripVTControlCharacters(card.render(140).join("\n")), /‖ Paused \(resumable\)/);
+	assert.match(stripVTControlCharacters(card.render(140).join("\n")), /‖ Paused · awaiting resume/);
 	createSubagentChildRecordSink(
 		{
 			appendEntry: async (type, data) => {

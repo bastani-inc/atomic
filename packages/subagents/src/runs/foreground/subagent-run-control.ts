@@ -150,7 +150,8 @@ async function stopHostChild(
 	requestSubagentChildStop(taskId, status);
 	// It stays resumable: its worktree is kept if it has unsaved work when its run's worktrees are removed.
 	parkRunWorktree(record.runId, record.index);
-	const cancelled = await host.cancelTask(taskId, "parent-handoff");
+	// A typed resumable stop: its parent is told it is paused and awaiting resume, never that it ended.
+	const cancelled = await host.cancelTask(taskId, status === "quit" ? "quit" : "pause");
 	if (!cancelled.ok) {
 		unparkRunWorktree(record.runId, record.index);
 		return cancelled.error.message;
@@ -257,8 +258,8 @@ async function stopChildren(
 			children.push(childDetails(record, status));
 			lines.push(
 				action === "pause"
-					? `Paused ${label(record)}. Its queued messages are held until resume; resume it with { action: "resume", id: "${record.childId}", message? }.`
-					: `Quit ${label(record)}. It stays resumable with { action: "resume", id: "${record.childId}", message? }.`,
+					? `Paused ${label(record)} · awaiting resume. Its queued messages are held until resume; resume it with { action: "resume", id: "${record.childId}", message? }.`
+					: `Quit ${label(record)}: paused · awaiting resume, as a quit workflow run is. It stays resumable with { action: "resume", id: "${record.childId}", message? }.`,
 			);
 			continue;
 		}
@@ -268,7 +269,9 @@ async function stopChildren(
 				releasePausedChildHold(key);
 				await recordSubagentChildStatus(deps.pi, record, "quit");
 				children.push(childDetails(record, "quit"));
-				lines.push(`Quit paused ${label(record)}. It stays resumable.`);
+				lines.push(
+					`Quit paused ${label(record)}: paused · awaiting resume. It stays resumable with { action: "resume", id: "${record.childId}", message? }.`,
+				);
 				continue;
 			}
 			children.push(childDetails(record, stopped));
@@ -343,6 +346,29 @@ async function resumeChild(
 			...(message ? { message } : {}),
 		},
 	);
+}
+/** How `status` shows a child pause or quit stopped: paused and awaiting resume, as a quit workflow run shows. */
+function awaitingResumeLine(record: SubagentChildRecord): string {
+	const how =
+		record.terminalStatus === "quit"
+			? "quit · paused · awaiting resume"
+			: record.terminalStatus === SUBAGENT_CHILD_STAGE_PAUSED_STATUS
+				? "paused with its workflow stage · awaiting resume"
+				: "paused · awaiting resume";
+	return `${label(record)} ${how}. Resume it with { action: "resume", id: "${record.childId}", message? }.`;
+}
+
+/**
+ * `status` lines for the paused or quit children this session launched: the one `id` names, or every one without an
+ * id. Read from the session's child records, so they survive a restart.
+ */
+export function subagentChildrenAwaitingResume(ctx: ExtensionContext, id?: string): string[] {
+	const records = ownedRecords(ctx);
+	if (id?.trim()) {
+		const resolved = resolveRecord(records, id);
+		return typeof resolved === "object" && stoppedAs(resolved) ? [awaitingResumeLine(resolved)] : [];
+	}
+	return [...records.values()].filter((record) => stoppedAs(record)).map(awaitingResumeLine);
 }
 
 /** `subagent({ action: "pause" | "resume" | "quit" })` for the children this session launched. */

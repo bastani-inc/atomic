@@ -42,10 +42,28 @@ export function taskCompletionNotice(
 	};
 }
 
+/** A stop that leaves an agent paused and awaiting resume rather than ended. */
+export function isResumableStop(result: TaskResult): result is Extract<TaskResult, { kind: "cancelled" }> & {
+	cause: "pause" | "quit";
+} {
+	return result.kind === "cancelled" && (result.cause === "pause" || result.cause === "quit");
+}
+
+/**
+ * The id a subagent resume names: the child id the agent launched under. A resumed child's launch operation appends
+ * `:resume:<id>` to it. Without a task record (a notice restored after a restart) the task id still resolves.
+ */
+function resumeId(envelope: TaskCompletionEnvelope, task?: Partial<Pick<TaskRecord, "launchOperationId">>): string {
+	const operation = task?.launchOperationId;
+	if (!operation) return envelope.taskId;
+	const suffix = operation.indexOf(":resume:");
+	return suffix > 0 ? operation.slice(0, suffix) : operation;
+}
+
 /** Human/model-facing notice; the envelope remains the structured delivery identity. */
 export function formatTaskCompletion(
 	envelope: TaskCompletionEnvelope,
-	task?: Pick<TaskRecord, "kind" | "title" | "agentName">,
+	task?: Pick<TaskRecord, "kind" | "title" | "agentName"> & Partial<Pick<TaskRecord, "launchOperationId">>,
 	output?: string,
 ): string {
 	const singleLine = (text: string) => text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
@@ -57,8 +75,12 @@ export function formatTaskCompletion(
 				: "Background task";
 	const result = envelope.result;
 	const outcome = taskOutcomeStatus(result, task?.kind);
-	const status =
-		task?.kind === "agent" && result.kind === "cancelled" && result.cause === "user"
+	const resumable = isResumableStop(result);
+	const status = resumable
+		? result.cause === "quit"
+			? "quit · paused, awaiting resume"
+			: "paused · awaiting resume"
+		: task?.kind === "agent" && result.kind === "cancelled" && result.cause === "user"
 			? "killed (non-resumable)"
 			: outcome === "cancelled"
 				? "stopped"
@@ -76,7 +98,9 @@ export function formatTaskCompletion(
 	}
 	lines.push(
 		"",
-		"This execution has ended. Do not restart it merely to retrieve its result. The user can inspect retained output with /tasks.",
+		resumable
+			? `It was ${result.cause === "quit" ? "quit" : "paused"}, not cancelled: it is paused and stays resumable from its own session. Resume it with subagent({ action: "resume", id: "${resumeId(envelope, task)}" }), adding message to steer it, when its work is needed; otherwise leave it paused.`
+			: "This execution has ended. Do not restart it merely to retrieve its result. The user can inspect retained output with /tasks.",
 	);
 	return lines.join("\n");
 }

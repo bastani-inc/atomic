@@ -24,7 +24,7 @@ import {
 	type ResolvedExecutorDeps,
 	type SubagentParamsLike,
 } from "./subagent-executor-types.js";
-import { controlSubagentChildren } from "./subagent-run-control.js";
+import { controlSubagentChildren, subagentChildrenAwaitingResume } from "./subagent-run-control.js";
 import {
 	settledOutputsFromRecords,
 	settledTaskOutputText,
@@ -135,6 +135,8 @@ async function handleManagementRequest(input: {
 		});
 	}
 	const targetTaskId = paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId;
+	// A paused or quit child awaits resume, as a quit workflow run does; its records outlive its task and a restart.
+	const awaitingResume = action === "status" ? subagentChildrenAwaitingResume(ctx, targetTaskId) : [];
 	if (action === "status" && ctx.getAgentTaskHost && targetTaskId) {
 		const host = ctx.getAgentTaskHost();
 		const taskId = targetTaskId as import("@bastani/atomic").TaskId;
@@ -148,7 +150,7 @@ async function handleManagementRequest(input: {
 					content: [
 						{
 							type: "text",
-							text: `${records.some((task) => task.execution.kind === "settled" && subagentTaskResultLabel(task.execution.result) === "killed (non-resumable)") ? "Killed. This child cannot be resumed. Underlying host records:\n" : ""}${JSON.stringify(records)}${settledOutput}`,
+							text: `${awaitingResume.length > 0 ? `${awaitingResume.join("\n")}\n` : ""}${records.some((task) => task.execution.kind === "settled" && subagentTaskResultLabel(task.execution.result) === "killed (non-resumable)") ? "Killed. This child cannot be resumed. Underlying host records:\n" : ""}${JSON.stringify(records)}${settledOutput}`,
 						},
 					],
 					details: { mode: "management", results: [], taskRecords: records },
@@ -161,12 +163,22 @@ async function handleManagementRequest(input: {
 			};
 		}
 	}
+	if (targetTaskId && awaitingResume.length > 0)
+		return {
+			content: [{ type: "text", text: awaitingResume.join("\n") }],
+			details: { mode: "management", results: [] },
+		};
 	if (action === "status") {
 		const targetRunId = paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId;
-		const inProcess = inspectInProcessChildStatus(targetRunId);
-		if (inProcess) return inProcess;
 		const foreground = getForegroundControl(deps.state, targetRunId);
-		if (foreground) return foregroundStatusResult(foreground);
+		const live =
+			inspectInProcessChildStatus(targetRunId) ?? (foreground ? foregroundStatusResult(foreground) : undefined);
+		if (awaitingResume.length > 0) {
+			const liveText = live?.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
+			const text = [liveText, `Awaiting resume:\n${awaitingResume.join("\n")}`].filter(Boolean).join("\n\n");
+			return { details: live?.details ?? { mode: "management", results: [] }, content: [{ type: "text", text }] };
+		}
+		if (live) return live;
 		return {
 			content: [
 				{

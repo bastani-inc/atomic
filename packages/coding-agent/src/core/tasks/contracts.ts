@@ -88,7 +88,20 @@ export type TaskIntent = AgentIntent | CommandIntent;
 export type TaskWaitConfiguration =
 	| { kind: "automatic"; commandBudgetMs?: number; agentBudgetMs?: number }
 	| { kind: "until-settled" };
-export type CancelCause = "user" | "owner-close" | "execution-timeout" | "output-limit" | "parent-handoff" | "shutdown";
+/**
+ * Why a task stopped. `pause` and `quit` stop an agent resumably (a subagent pause or quit, or its workflow stage
+ * pausing): it is paused, awaiting resume, not ended. `parent-handoff` is a fresh-start handoff, and also how earlier
+ * versions recorded those resumable stops.
+ */
+export type CancelCause =
+	| "user"
+	| "owner-close"
+	| "execution-timeout"
+	| "output-limit"
+	| "parent-handoff"
+	| "pause"
+	| "quit"
+	| "shutdown";
 export type OwnerCloseCause = "session-close" | "stage-close" | "app-shutdown";
 export type Cursor = { generation: Generation; sequence: Sequence };
 export type NativeTaskRef = { ownerId: OwnerId; taskId: TaskId; attemptId: AttemptId; generation: Generation };
