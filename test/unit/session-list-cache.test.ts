@@ -161,6 +161,25 @@ describe("/resume session list cache", () => {
 		await sibling.close();
 	});
 
+	test.each(["this", "another"] as const)(
+		"a later message's text replaced through %s connection, with the listed columns unchanged, is searched on reopen",
+		async (writer) => {
+			const before = [message("a1", "alpha words"), message("a2", "removed needle")];
+			const { lastSeq } = await store.replace("alpha", header("alpha", cwd), before, { expectSeq: 1 });
+			assert.match(byId(await SessionManager.listAll(store)).get("alpha")?.allMessagesText ?? "", /removed needle/);
+			const replacing = writer === "this" ? store : await otherConnection();
+			await replacing.replace(
+				"alpha",
+				header("alpha", cwd),
+				[message("a1", "alpha words"), message("a2", "replacement needle")],
+				{ expectSeq: lastSeq },
+			);
+			const searched = byId(await SessionManager.listAll(store)).get("alpha")?.allMessagesText ?? "";
+			assert.match(searched, /replacement needle/);
+			assert.doesNotMatch(searched, /removed needle/);
+		},
+	);
+
 	test("another connection's creates, renames, deletes and visibility changes are reflected", async () => {
 		const other = await otherConnection();
 		await SessionManager.listAll(store);
