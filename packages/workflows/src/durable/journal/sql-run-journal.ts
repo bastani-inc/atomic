@@ -9,9 +9,9 @@ import {
 	StorageSchemaVersionError,
 	StorageUnavailableError,
 } from "@bastani/atomic/storage";
-import { JOURNAL_READ_PAGE_SIZE } from "./internal.js";
+import { JOURNAL_READ_PAGE_SIZE, type RunVersion, registerRunJournalVersions } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
-import { LegacyJournalRuns } from "./legacy-journal-tables.js";
+import { LegacyJournalRuns, latestEventColumns, type RunVersionRow } from "./legacy-journal-tables.js";
 import {
 	type AppendOutcome,
 	JOURNAL_COLUMNS as c,
@@ -70,6 +70,10 @@ export class SqlRunJournal implements RunJournal {
 		this.database = database;
 		this.tables = tables;
 		this.legacy = legacy;
+		registerRunJournalVersions(this, {
+			changeToken: () => this.changeToken(),
+			runVersions: () => this.runVersions(),
+		});
 	}
 
 	static async open(database: SqliteDatabase, options: { readonly prefix?: string } = {}): Promise<SqlRunJournal> {
@@ -188,6 +192,39 @@ export class SqlRunJournal implements RunJournal {
 			return [...rows, ...legacy]
 				.map((row) => ({ ...(JSON.parse(row[c.headerJson]) as RunHeader), status: row[c.status] }))
 				.sort((left, right) => (left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : 0));
+		});
+	}
+
+	/**
+	 * `data_version` moves when another connection commits and `total_changes()` when this one writes; the
+	 * table aggregates also catch run changes if the adapter does not serve every statement from one connection.
+	 */
+	private async changeToken(): Promise<string> {
+		this.assertOpen();
+		return this.operation(async () => {
+			const row = await this.database.get<SqliteRow>(
+				`SELECT data_version, total_changes() AS changes,
+					(SELECT count(*) FROM ${this.tables.runs}) AS runs,
+					(SELECT max(rowid) FROM ${this.tables.events}) AS last_event
+				FROM pragma_data_version`,
+			);
+			return JSON.stringify(Object.values(row ?? {}).map(String));
+		});
+	}
+
+	private async runVersions(): Promise<ReadonlyMap<string, RunVersion>> {
+		this.assertOpen();
+		return this.operation(async () => {
+			const rows = await this.database.all<RunVersionRow>(
+				`SELECT runs.${c.runId}, ${latestEventColumns(this.tables.events, "runs")} FROM ${this.tables.runs} AS runs`,
+			);
+			const legacy = (await this.legacy?.versions(this.database)) ?? [];
+			return new Map(
+				[...rows, ...legacy].map((row) => [
+					row[c.runId],
+					{ seq: journalCounter(row[c.runId], "seq", row[c.seq]), at: Number(row[c.at]) },
+				]),
+			);
 		});
 	}
 

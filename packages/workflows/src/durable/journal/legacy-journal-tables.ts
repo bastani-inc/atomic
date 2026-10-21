@@ -37,6 +37,14 @@ type LegacyEventRow = SqliteRow & {
 	[c.at]: number;
 };
 
+export type RunVersionRow = SqliteRow & { [c.runId]: string; [c.seq]: number; [c.at]: number };
+
+/** `seq` and `at` of the latest event of `${runs}.run_id`, through the `(run_id, seq)` primary key. */
+export function latestEventColumns(events: string, runs: string): string {
+	const latest = (column: string) =>
+		`COALESCE((SELECT ${column} FROM ${events} AS latest WHERE latest.${c.runId} = ${runs}.${c.runId} ORDER BY latest.${c.seq} DESC LIMIT 1), 0) AS ${column}`;
+	return `${latest(c.seq)}, ${latest(c.at)}`;
+}
 async function hasLegacyTable(tx: SqliteExecutor, table: keyof typeof JOURNAL_TABLES): Promise<boolean> {
 	const columns = await tx.all<SqliteRow & { name: string }>(
 		"SELECT name FROM pragma_table_info(?)",
@@ -96,6 +104,13 @@ export class LegacyJournalRuns {
 
 	async find(executor: SqliteExecutor, runId: string): Promise<LegacyRunRow | undefined> {
 		return executor.get<LegacyRunRow>(`${PENDING_LEGACY_RUNS} AND ${c.runId} = ?`, runId);
+	}
+
+	/** Latest event of each pending legacy run; the legacy tables are never modified. */
+	async versions(executor: SqliteExecutor): Promise<RunVersionRow[]> {
+		return executor.all<RunVersionRow>(
+			`SELECT pending.${c.runId}, ${latestEventColumns(JOURNAL_TABLES.events, "pending")} FROM (${PENDING_LEGACY_RUNS}) AS pending`,
+		);
 	}
 
 	/** Events of an unconverted legacy run, read in place. */

@@ -26,6 +26,7 @@ import type {
 	DurableWorkflowHandle,
 	DurableWorkflowStatus,
 } from "../types.js";
+import { type RunVersion, runJournalVersions } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import { MemoryRunJournal } from "./memory-run-journal.js";
 import {
@@ -163,6 +164,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	readonly persistent: boolean;
 	private readonly projection = createJournalProjection();
 	private readonly sequences = new Map<string, number>();
+	/** `at` of the event folded at `sequences`, so a run whose history was replaced is rebuilt, not extended. */
+	private readonly foldedAt = new Map<string, number>();
+	/** Journal change token at the last complete catalog hydration. */
+	private catalogToken: string | undefined;
 	private readonly leases = new Map<string, Lease>();
 	private readonly executions = new Map<string, WorkflowLeaseExecution>();
 	private readonly executionContext = new AsyncLocalStorage<ReadonlyMap<string, WorkflowLeaseExecution>>();
@@ -295,6 +300,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 				this.projection.applyWorkflowSnapshot({ ...handle, pendingStageMessages: messages });
 		}
 		this.sequences.set(entry.runId, entry.seq);
+		this.foldedAt.set(entry.runId, entry.at);
 	}
 
 	private *entries(runId: string, fromSeq?: number): Operation<readonly JournalEntry[]> {
@@ -308,6 +314,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		const entries = yield* this.entries(runId);
 		void this.projection.deleteWorkflow(runId);
 		this.sequences.delete(runId);
+		this.foldedAt.delete(runId);
 		this.prompts.delete(runId);
 		for (const entry of entries) this.fold(entry);
 	}
@@ -749,14 +756,43 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	async hydrateWorkflow(runId: string): Promise<void> {
 		await this.serialize(runId, () => this.rebuild(runId), false);
 	}
+	/**
+	 * Brings every run up to date for the resume catalog. With a versioned journal an unchanged store is
+	 * detected from one token read, and otherwise only runs whose latest event moved are read: appended
+	 * events are folded onto the cached projection and a run whose history was replaced or removed is
+	 * rebuilt. Ownership is never cached here; resume checks the lease when an entry is selected.
+	 */
 	hydrateResumableWorkflows(): Promise<void> {
 		return this.serialize(this.catalogQueue, () =>
 			invoke(async () => {
-				const runs = await this.journal.listRuns();
-				for (const runId of new Set([...this.sequences.keys(), ...runs.map((run) => run.runId)]))
-					await this.hydrateWorkflow(runId);
+				const journal = runJournalVersions(this.journal);
+				if (journal === undefined) {
+					const runs = await this.journal.listRuns();
+					for (const runId of new Set([...this.sequences.keys(), ...runs.map((run) => run.runId)]))
+						await this.hydrateWorkflow(runId);
+					return;
+				}
+				// Read the token first: a commit racing the version read moves it again before the next call.
+				const token = await journal.changeToken();
+				if (token === this.catalogToken) return;
+				const versions = await journal.runVersions();
+				for (const runId of new Set([...this.sequences.keys(), ...versions.keys()]))
+					await this.serialize(runId, () => this.catchUp(runId, versions.get(runId)), false);
+				this.catalogToken = token;
 			}),
 		);
+	}
+	private *catchUp(runId: string, version: RunVersion | undefined): Operation<void> {
+		const folded = this.sequences.get(runId) ?? 0;
+		if (version !== undefined && version.seq === folded && version.at === (this.foldedAt.get(runId) ?? 0)) return;
+		if (version !== undefined && folded > 0 && version.seq > folded) {
+			const entries = yield* this.entries(runId, folded);
+			if (entries[0]?.seq === folded && entries[0].at === this.foldedAt.get(runId)) {
+				for (const entry of entries) this.fold(entry);
+				return;
+			}
+		}
+		yield* this.rebuild(runId);
 	}
 	async prepareWorkflowCatalog() {
 		await this.hydrateResumableWorkflows();
@@ -774,6 +810,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		}
 		this.leases.delete(runId);
 		this.sequences.delete(runId);
+		this.foldedAt.delete(runId);
 		this.prompts.delete(runId);
 		void this.projection.deleteWorkflow(runId);
 	}
