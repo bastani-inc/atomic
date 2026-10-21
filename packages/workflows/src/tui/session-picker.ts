@@ -21,7 +21,7 @@
 import { keyText } from "@bastani/atomic";
 import { isWorkflowRunResumable, type WorkflowRunResumeCandidate } from "../durable/resume-eligibility.js";
 import { runIndicatorStatus } from "../shared/run-indicator-status.js";
-import { compareRunsByStatus } from "../shared/run-order.js";
+import { sortRunsByStatus } from "../shared/run-order.js";
 import { isTopLevelWorkflowRun } from "../shared/run-visibility.js";
 import type { RunSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
@@ -138,8 +138,11 @@ export function selectRunsForPicker(
 			rows.push({ run: r, bucket: "terminal" });
 		}
 	}
-	const compare = compareRunsByStatus((run) => runIndicatorStatus(run, runs));
-	return rows.sort((a, b) => compare(a.run, b.run));
+	return sortRunsByStatus(
+		rows,
+		(row) => row.run,
+		(run) => runIndicatorStatus(run, runs),
+	);
 }
 
 // ---------------------------------------------------------------------------

@@ -30,17 +30,26 @@ function statusRank(run: RunSnapshot, statusOf: (run: RunSnapshot) => RunIndicat
 }
 
 /**
- * Comparator shared by the workflow run lists: active runs before ended runs,
- * then status rank (runs that need the user first), then newest first.
+ * Order shared by the workflow run lists: active runs before ended runs, then
+ * status rank (runs that need the user first), then newest first. Each run's
+ * status is resolved once, not once per comparison.
  */
-export function compareRunsByStatus(
+export function sortRunsByStatus<T>(
+	items: readonly T[],
+	runOf: (item: T) => RunSnapshot,
 	statusOf: (run: RunSnapshot) => RunIndicatorStatus,
-): (a: RunSnapshot, b: RunSnapshot) => number {
-	return (a, b) => {
-		const aEnded = a.endedAt !== undefined;
-		if (aEnded !== (b.endedAt !== undefined)) return aEnded ? 1 : -1;
-		const rankDelta = statusRank(a, statusOf) - statusRank(b, statusOf);
-		if (rankDelta !== 0) return rankDelta;
-		return aEnded ? (b.endedAt ?? 0) - (a.endedAt ?? 0) : b.startedAt - a.startedAt;
-	};
+): T[] {
+	return items
+		.map((item) => {
+			const run = runOf(item);
+			return { item, run, rank: statusRank(run, statusOf) };
+		})
+		.sort((a, b) => {
+			const aEnded = a.run.endedAt !== undefined;
+			if (aEnded !== (b.run.endedAt !== undefined)) return aEnded ? 1 : -1;
+			const rankDelta = a.rank - b.rank;
+			if (rankDelta !== 0) return rankDelta;
+			return aEnded ? (b.run.endedAt ?? 0) - (a.run.endedAt ?? 0) : b.run.startedAt - a.run.startedAt;
+		})
+		.map((entry) => entry.item);
 }

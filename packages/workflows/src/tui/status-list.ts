@@ -28,7 +28,7 @@ import { pendingWorkflowStageStatuses, workflowBoundarySegments } from "../share
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { RunIndicatorStatus } from "../shared/run-indicator-status.js";
 import { runIndicatorStatus } from "../shared/run-indicator-status.js";
-import { compareRunsByStatus } from "../shared/run-order.js";
+import { sortRunsByStatus } from "../shared/run-order.js";
 import type { RunSnapshot, StageSnapshot, StageStatus } from "../shared/store-types.js";
 import { elapsedRunMs, elapsedStageMs } from "../shared/timing.js";
 import type { FlatBandBadge } from "./chat-surface.js";
@@ -488,8 +488,10 @@ function plainBadges(c: Counts): FlatBandBadge[] {
 
 function sortRuns(runs: readonly RunSnapshot[], opts: RenderStatusListOpts): RunSnapshot[] {
 	const allRuns = opts.allRuns ?? runs;
-	return [...runs].sort(
-		compareRunsByStatus((run) => opts.indicatorStatuses?.[run.id] ?? runIndicatorStatus(run, allRuns)),
+	return sortRunsByStatus(
+		runs,
+		(run) => run,
+		(run) => opts.indicatorStatuses?.[run.id] ?? runIndicatorStatus(run, allRuns),
 	);
 }
 

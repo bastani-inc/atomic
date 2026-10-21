@@ -4,6 +4,8 @@
  */
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import { runIndicatorStatus } from "../../packages/workflows/src/shared/run-indicator-status.js";
+import { sortRunsByStatus } from "../../packages/workflows/src/shared/run-order.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { selectRunsForPicker } from "../../packages/workflows/src/tui/session-picker.js";
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
@@ -150,4 +152,31 @@ test("status list ranks by persisted indicator statuses without the full run col
 		"c-newer",
 		"a-older",
 	]);
+});
+
+test("resolves each run's indicator status exactly once per sort (#3824)", () => {
+	const activeStatuses: RunSnapshot["status"][] = ["running", "paused", "pending"];
+	const endedStatuses: RunSnapshot["status"][] = ["completed", "failed", "cancelled", "skipped"];
+	const runs = Array.from({ length: 60 }, (_, index) =>
+		index % 2 === 0
+			? makeRun({ id: `active-${index}`, status: activeStatuses[index % 3]!, startedAt: 1000 + index })
+			: ended(`ended-${index}`, endedStatuses[index % 4]!, 1000 + index, 5000 + index),
+	);
+	const calls = new Map<string, number>();
+	const sorted = sortRunsByStatus(
+		runs,
+		(run) => run,
+		(run) => {
+			calls.set(run.id, (calls.get(run.id) ?? 0) + 1);
+			return runIndicatorStatus(run, runs);
+		},
+	);
+	assert.deepEqual(
+		Object.fromEntries(runs.map((run) => [run.id, calls.get(run.id)])),
+		Object.fromEntries(runs.map((run) => [run.id, 1])),
+	);
+	assert.deepEqual(
+		sorted.map((run) => run.id),
+		pickerOrder(runs),
+	);
 });
