@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { SessionEntry } from "../../../packages/coding-agent/src/core/session-manager-types.ts";
+import type { SessionEntry } from "../../../packages/coding-agent/src/core/session-manager-types.js";
 import type { SqliteDatabase } from "../../../packages/coding-agent/src/core/storage/database.js";
 import type { SessionRecordHeader } from "../../../packages/coding-agent/src/core/storage/session/types.js";
 import type { DurableCheckpoint } from "../../../packages/workflows/src/durable/types.js";

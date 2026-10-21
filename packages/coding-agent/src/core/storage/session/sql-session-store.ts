@@ -51,12 +51,13 @@ type ListingRow = HeaderRow & {
 	has_name: number;
 	summary: string | null;
 	summarized_through_id: string | null;
+	revision: string;
 };
 type SummaryRow = ListingRow & { search_texts_json: string };
 
 /** Every listing column except search text, so an unchanged row keeps its cached summary. */
 const LISTING_COLUMNS =
-	"id, cwd, internal, header_json, last_seq, modified_at, message_count, first_message, name, has_name, summary, summarized_through_id";
+	"id, cwd, internal, header_json, last_seq, modified_at, message_count, first_message, name, has_name, summary, summarized_through_id, revision";
 /** Rows whose search text is read per query; well under SQLite's bound-parameter limit. */
 export const LISTING_FETCH_BATCH = 500;
 /** Listing scopes (visibility and project) kept at once; the picker uses two. */
@@ -82,8 +83,9 @@ function summaryFromRow(row: SummaryRow): SessionSummary {
 	};
 }
 
+/** Changes on every write: `revision` catches a rewrite that leaves every other listed column as it was. */
 function listingVersion(row: ListingRow): string {
-	return `${row.last_seq}\u0000${row.modified_at}\u0000${row.message_count}\u0000${row.has_name}\u0000${row.name}\u0000${row.summarized_through_id}\u0000${row.summary}\u0000${row.first_message}\u0000${row.header_json}`;
+	return `${row.revision}\u0000${row.last_seq}\u0000${row.modified_at}\u0000${row.message_count}\u0000${row.has_name}\u0000${row.name}\u0000${row.summarized_through_id}\u0000${row.summary}\u0000${row.first_message}\u0000${row.header_json}`;
 }
 
 export class SqlSessionStore implements SessionStore {
@@ -131,7 +133,7 @@ export class SqlSessionStore implements SessionStore {
 					first_message TEXT NOT NULL CHECK(json_valid(first_message)),
 					name TEXT CHECK(name IS NULL OR json_valid(name)), has_name INTEGER NOT NULL,
 					summary TEXT CHECK(summary IS NULL OR json_valid(summary)), summarized_through_id TEXT,
-					summary_state TEXT NOT NULL CHECK(json_valid(summary_state))
+					summary_state TEXT NOT NULL CHECK(json_valid(summary_state)), revision TEXT NOT NULL DEFAULT ''
 				) STRICT;
 				CREATE TABLE IF NOT EXISTS ${tables.entries} (
 					session_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL,
@@ -142,6 +144,14 @@ export class SqlSessionStore implements SessionStore {
 					text_json TEXT NOT NULL CHECK(json_valid(text_json)), PRIMARY KEY(session_id, seq)
 				) STRICT;
 			`);
+			// Sessions tables created before the write revision gain it; their rows pick one up on the next write.
+			const revision = await tx.get(
+				"SELECT name FROM pragma_table_info(?) WHERE name = 'revision'",
+				tables.sessions,
+			);
+			if (!revision) {
+				await tx.exec(`ALTER TABLE ${tables.sessions} ADD COLUMN revision TEXT NOT NULL DEFAULT ''`);
+			}
 		});
 		return new SqlSessionStore(database, tables, options.prefix, options.cwdMatcher);
 	}
@@ -454,15 +464,15 @@ export class SqlSessionStore implements SessionStore {
 		await tx.run(
 			`INSERT INTO ${this.tables.sessions}
 				(id, cwd, created_at, header_json, internal, last_seq, modified_at, message_count,
-				 first_message, name, has_name, summary, summarized_through_id, summary_state)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				 first_message, name, has_name, summary, summarized_through_id, summary_state, revision)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, lower(hex(randomblob(16))))
 				ON CONFLICT(id) DO UPDATE SET
 				cwd = excluded.cwd, created_at = excluded.created_at, header_json = excluded.header_json,
 				internal = excluded.internal, last_seq = excluded.last_seq, modified_at = excluded.modified_at,
 				message_count = excluded.message_count, first_message = excluded.first_message, name = excluded.name,
 				has_name = excluded.has_name, summary = excluded.summary,
 				summarized_through_id = excluded.summarized_through_id,
-				summary_state = excluded.summary_state`,
+				summary_state = excluded.summary_state, revision = excluded.revision`,
 			sessionId,
 			header.cwd,
 			header.createdAt,

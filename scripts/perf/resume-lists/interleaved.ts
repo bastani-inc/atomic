@@ -9,17 +9,18 @@
  * warm, as on the first open after starting Atomic. `--processes` also starts a fresh Bun process per sample.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { SessionManager } from "../../../packages/coding-agent/src/core/session-manager.ts";
+import { SessionManager } from "../../../packages/coding-agent/src/core/session-manager.js";
 import type { SqliteDatabase } from "../../../packages/coding-agent/src/core/storage/database.js";
 import { openNodeSqliteDatabase } from "../../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import type { SessionStore } from "../../../packages/coding-agent/src/core/storage/session/types.js";
-import { createSessionCwdMatcher } from "../../../packages/coding-agent/src/utils/canonical-path.ts";
+import { createSessionCwdMatcher } from "../../../packages/coding-agent/src/utils/canonical-path.js";
 import type { DurableWorkflowCatalogEntries } from "../../../packages/workflows/src/durable/backend.js";
 import { openSqlRunJournal } from "../../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import type { RunJournal } from "../../../packages/workflows/src/durable/journal/types.js";
-import { sessionCwd } from "./fixtures.ts";
+import { sessionCwd } from "./fixtures.js";
 
 const REPO = resolve(import.meta.dir, "../../..");
 const STORE = "packages/coding-agent/src/core/storage/session/sql-session-store.ts";
@@ -48,11 +49,12 @@ function option(name: string): string | undefined {
 	return index === -1 ? undefined : process.argv[index + 1];
 }
 
-/** Copies the base commit's two modules beside nothing else, with every import pointing back into this checkout. */
+/**
+ * Copies the base commit's two modules into a fresh private directory, with every import pointing back into this
+ * checkout. The caller removes the directory.
+ */
 function materializeBase(commit: string): string {
-	const directory = join("/tmp", `resume-lists-base-${commit}`);
-	mkdirSync(directory, { recursive: true });
-	for (const path of [STORE, BACKEND]) {
+	const modules = [STORE, BACKEND].map((path) => {
 		const source = execFileSync("git", ["show", `${commit}:${path}`], { cwd: REPO, encoding: "utf8" });
 		const from = join(REPO, dirname(path));
 		const rewritten = source
@@ -61,7 +63,15 @@ function materializeBase(commit: string): string {
 				'from "@bastani/atomic/storage"',
 				`from "${join(REPO, "packages/coding-agent/src/core/storage/index.ts")}"`,
 			);
-		writeFileSync(join(directory, path.split("/").at(-1)!), rewritten);
+		return { name: path.split("/").at(-1)!, rewritten };
+	});
+	// Read the base first so a missing commit leaves no directory behind.
+	const directory = mkdtempSync(join(tmpdir(), "resume-lists-base-"));
+	try {
+		for (const { name, rewritten } of modules) writeFileSync(join(directory, name), rewritten, { flag: "wx" });
+	} catch (error) {
+		rmSync(directory, { recursive: true, force: true });
+		throw error;
 	}
 	return directory;
 }
@@ -131,11 +141,9 @@ function table(title: string, samples: Record<"base" | "after", Sample[]>): stri
 	return lines.join("\n");
 }
 
-async function main(): Promise<void> {
+async function main(commit: string, baseDirectory: string): Promise<void> {
 	const database = resolve(option("database") ?? "");
-	const commit = option("base") ?? "debf9d9db";
 	const count = Number(option("n") ?? "20");
-	const baseDirectory = materializeBase(commit);
 	const child = option("child") as "base" | "after" | undefined;
 	if (child !== undefined) {
 		process.stdout.write(JSON.stringify(await sample(await load(child, baseDirectory), database)));
@@ -177,4 +185,10 @@ async function main(): Promise<void> {
 	if (out !== undefined) writeFileSync(out, `${report}\n`);
 }
 
-await main();
+const baseCommit = option("base") ?? "debf9d9db";
+const baseDirectory = materializeBase(baseCommit);
+try {
+	await main(baseCommit, baseDirectory);
+} finally {
+	rmSync(baseDirectory, { recursive: true, force: true });
+}

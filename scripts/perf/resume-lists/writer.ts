@@ -6,10 +6,10 @@
 import { randomUUID } from "node:crypto";
 import { openNodeSqliteDatabase } from "../../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { SqlSessionStore } from "../../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
-import { createSessionCwdMatcher } from "../../../packages/coding-agent/src/utils/canonical-path.ts";
+import { createSessionCwdMatcher } from "../../../packages/coding-agent/src/utils/canonical-path.js";
 import { JournalDurableBackend } from "../../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlRunJournal } from "../../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
-import { messageEntry, sessionFixture, toolCheckpoint, words } from "./fixtures.ts";
+import { messageEntry, sessionFixture, toolCheckpoint, words } from "./fixtures.js";
 
 const [path, root, intervalArg] = process.argv.slice(2);
 if (path === undefined || root === undefined) throw new Error("usage: writer.ts <database> <root> [intervalMs]");
