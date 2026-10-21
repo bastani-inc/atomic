@@ -37,9 +37,6 @@ import {
 	CustomEditor,
 	type EditorComponent,
 	type EditorFactory,
-	type ExtensionEditorComponent,
-	type ExtensionInputComponent,
-	type ExtensionSelectorComponent,
 	FooterComponent,
 	FooterDataProvider,
 	getEditorTheme,
@@ -59,7 +56,11 @@ import {
 	VERSION,
 } from "./interactive-mode-deps.ts";
 import type {} from "./interactive-mode-surface.ts";
-import type { CompactionQueuedMessage, InteractiveModeOptions } from "./interactive-mode-types.ts";
+import type {
+	CompactionQueuedMessage,
+	ExtensionDialogComponent,
+	InteractiveModeOptions,
+} from "./interactive-mode-types.ts";
 import { StartupChatContainer } from "./interactive-startup-chat-container.ts";
 import type { InteractiveSubmission } from "./interactive-submission.ts";
 import {
@@ -69,7 +70,7 @@ import {
 	type InteractiveTui,
 	type InternalUiActionResult,
 } from "./interactive-tui.ts";
-import { ProgramStatusReporter } from "./program-status-reporter.ts";
+import { type BlockedStatus, ProgramStatusReporter } from "./program-status-reporter.ts";
 
 /** Move the transcript and nothing else: what a reserving overlay may release. */
 const FULLSCREEN_TRANSCRIPT_SCROLL_ACTIONS = [
@@ -452,11 +453,9 @@ export class InteractiveModeBase {
 	shutdownRequested = false;
 
 	// Extension UI state
-	extensionSelector: ExtensionSelectorComponent | undefined = undefined;
-
-	extensionInput: ExtensionInputComponent | undefined = undefined;
-
-	extensionEditor: ExtensionEditorComponent | undefined = undefined;
+	// Extension dialogs shown in the editor slot (select, confirm, input, editor, inline custom).
+	// The last entry is visible; see pushExtensionDialog().
+	extensionDialogs: Array<{ component: ExtensionDialogComponent; blocked: BlockedStatus | undefined }> = [];
 
 	tuiInputSubscriptions = new Set<InteractiveTuiInputSubscription>();
 
@@ -471,9 +470,6 @@ export class InteractiveModeBase {
 	deferredInlineCustomUiFocusDepth = 0;
 
 	pendingInlineCustomUiFocus: Component | undefined = undefined;
-
-	/** Pending inline mounts in display order, oldest first. */
-	inlineCustomUiStack: { component: Component }[] = [];
 
 	hostCustomUiStateListeners = new Set<HostCustomUiStateListener>();
 
@@ -538,6 +534,36 @@ export class InteractiveModeBase {
 		this.activeSelectorToken = undefined;
 		this.activeSelectorDispose = undefined;
 		dispose?.();
+	}
+
+	/**
+	 * Show an extension dialog in the editor slot.
+	 * Dialogs form a stack: a new dialog hides the visible one, and closing the visible dialog shows
+	 * the previous one again. Every dialog stays answerable, so no dialog promise is left pending,
+	 * and dialogs opened from inside another dialog (for example a confirm from a custom component) work.
+	 */
+	pushExtensionDialog(component: ExtensionDialogComponent, blocked?: BlockedStatus, focus = true): void {
+		this.disposeActiveSelector();
+		this.extensionDialogs.push({ component, blocked });
+		this.showTopExtensionDialog(focus);
+	}
+
+	/** Remove an extension dialog. If it was visible, show the previous dialog or the editor. */
+	removeExtensionDialog(component: ExtensionDialogComponent, focus = true): void {
+		const index = this.extensionDialogs.findIndex((dialog) => dialog.component === component);
+		if (index === -1) return;
+		this.extensionDialogs.splice(index, 1);
+		if (index === this.extensionDialogs.length) this.showTopExtensionDialog(focus);
+	}
+
+	showTopExtensionDialog(focus = true): void {
+		const top = this.extensionDialogs.at(-1);
+		const component = top?.component ?? this.editor;
+		this.editorContainer.clear();
+		this.editorContainer.addChild(component);
+		if (focus) this.ui.setFocus(component);
+		this.programStatus.setBlocked("extension-dialog", top?.blocked);
+		this.ui.requestRender();
 	}
 
 	addTuiInputListener(handler: TuiInputListener): () => void {

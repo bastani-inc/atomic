@@ -253,14 +253,12 @@ InteractiveModeBase.prototype.clearExtensionWidgets = function (this: Interactiv
 };
 
 InteractiveModeBase.prototype.resetExtensionUI = function (this: InteractiveModeBase): void {
-	if (this.extensionSelector) {
-		this.hideExtensionSelector();
-	}
-	if (this.extensionInput) {
-		this.hideExtensionInput();
-	}
-	if (this.extensionEditor) {
-		this.hideExtensionEditor();
+	if (this.extensionDialogs.length > 0) {
+		for (const dialog of this.extensionDialogs) {
+			dialog.component.dispose?.();
+		}
+		this.extensionDialogs = [];
+		this.showTopExtensionDialog();
 	}
 	this.ui.hideOverlay();
 	this.clearExtensionTerminalInputListeners();

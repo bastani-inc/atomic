@@ -52,6 +52,8 @@ function makeStub(options?: { overlayStaysUp?: boolean }): CustomUiStub {
 			state.selectorDisposals += 1;
 		},
 		editor,
+		extensionDialogs: [],
+		programStatus: { setBlocked: () => {} },
 		keybindings: {},
 		editorContainer: {
 			clear: () => {
@@ -211,6 +213,7 @@ test("an in-process overlay that omits the opt-in leaves its component unmarked"
 test("clearExtensionWidgets and resetExtensionUI reattach a live below-editor widget", () => {
 	const scheduled: Array<() => void> = [];
 	const mode = Object.assign(Object.create(InteractiveModeBase.prototype), {
+		extensionDialogs: [],
 		extensionWidgetsAbove: new Map(),
 		extensionWidgetsBelow: new Map(),
 		widgetReleaseListeners: new Map(),

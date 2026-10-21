@@ -16,6 +16,7 @@ export function attachedCliPresentation(text: string, reply: "true" | "false" | 
 	initTheme("dark");
 	const mode = Object.assign(Object.create(InteractiveModeBase.prototype), {
 		editor,
+		extensionDialogs: [],
 		programStatus: new ProgramStatusReporter(
 			() => ({ setProgramStatus() {} }) as never,
 			() => undefined,
@@ -56,7 +57,7 @@ export function attachedCliPresentation(text: string, reply: "true" | "false" | 
 		dialogs,
 		lateTrue: () => selector?.handleInput("\r"),
 		get activeDialog() {
-			return mode.extensionSelector !== undefined;
+			return mode.extensionDialogs.length > 0;
 		},
 	};
 }

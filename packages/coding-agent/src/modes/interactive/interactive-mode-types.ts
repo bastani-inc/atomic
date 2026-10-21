@@ -1,4 +1,4 @@
-import type { Terminal } from "@earendil-works/pi-tui";
+import type { Component, Terminal } from "@earendil-works/pi-tui";
 import type { AgentSessionRuntimeDiagnostic } from "../../core/agent-session-services.ts";
 import type { EarlyInputCapture } from "../../main-early-input.ts";
 import type { ImageContent } from "./interactive-mode-deps.ts";
@@ -12,6 +12,8 @@ export type CompactionQueuedMessage = {
 	text: string;
 	mode: "steer" | "followUp";
 };
+
+export type ExtensionDialogComponent = Component & { dispose?(): void };
 
 /**
  * Options for InteractiveMode initialization.

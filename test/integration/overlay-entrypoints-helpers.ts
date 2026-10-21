@@ -242,6 +242,8 @@ export function buildInteractiveHostCustomUi(): {
 			setText: () => undefined,
 		},
 		editorContainer: new Container(),
+		extensionDialogs: [],
+		programStatus: { setBlocked: () => undefined },
 		keybindings: {},
 		ui: {
 			setFocus: (target: unknown) => {

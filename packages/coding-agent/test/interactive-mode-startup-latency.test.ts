@@ -84,6 +84,7 @@ type InitContext = {
 	widgetContainerAbove: TestNode;
 	usageMeter: TestNode;
 	editorContainer: TestNode;
+	extensionDialogs: { component: TestNode }[];
 	footer: TestNode;
 	footerContainer: TestNode;
 	widgetContainerBelow: TestNode;
@@ -241,7 +242,10 @@ describe("InteractiveMode startup latency hooks", () => {
 			init: InteractiveMode.prototype.init,
 			showExtensionConfirm: InteractiveMode.prototype.showExtensionConfirm,
 			showExtensionSelector: InteractiveMode.prototype.showExtensionSelector,
-			hideExtensionSelector: InteractiveMode.prototype.hideExtensionSelector,
+			pushExtensionDialog: InteractiveMode.prototype.pushExtensionDialog,
+			removeExtensionDialog: InteractiveMode.prototype.removeExtensionDialog,
+			showTopExtensionDialog: InteractiveMode.prototype.showTopExtensionDialog,
+			extensionDialogs: [],
 			runtimeHost: {},
 			isInitialized: false,
 			registerSignalHandlers: vi.fn(),
@@ -296,7 +300,7 @@ describe("InteractiveMode startup latency hooks", () => {
 		try {
 			await waitForImmediate();
 			assert.equal(context.isInitialized, false);
-			assert.equal(focused, context.extensionSelector);
+			assert.equal(focused, context.extensionDialogs.at(-1)?.component);
 			focused?.handleInput?.("\x1b[B");
 			focused?.handleInput?.("\r");
 			assert.equal(await confirmation, false);
@@ -337,6 +341,7 @@ describe("InteractiveMode startup latency hooks", () => {
 			widgetContainerAbove: {},
 			usageMeter: {},
 			editorContainer: {},
+			extensionDialogs: [],
 			footerContainer: {},
 			widgetContainerBelow: {},
 			editor: {},
@@ -404,6 +409,7 @@ describe("InteractiveMode startup latency hooks", () => {
 				widgetContainerAbove: {},
 				usageMeter: {},
 				editorContainer: {},
+				extensionDialogs: [],
 				footerContainer: {},
 				widgetContainerBelow: {},
 				editor: {},
@@ -458,6 +464,7 @@ describe("InteractiveMode startup latency hooks", () => {
 			widgetContainerAbove: {},
 			usageMeter: {},
 			editorContainer: {},
+			extensionDialogs: [],
 			footer: {},
 			footerContainer: {},
 			widgetContainerBelow: {},
