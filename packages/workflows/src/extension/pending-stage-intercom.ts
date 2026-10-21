@@ -272,7 +272,7 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 		announcedRoutes.clear();
 		announceRoutes();
 	});
-	const subscription = pi.events?.on?.(PENDING_STAGE_MESSAGE_EVENT, (payload) => {
+	const routePendingStageMessage = (payload: unknown): void => {
 		if (disposed || !isPendingStageMessageEvent(payload) || payload.handled) return;
 		const runs = activeStore.runs();
 		const parsedTarget = parseWorkflowStageTarget(payload.target);
@@ -351,11 +351,14 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 			workflowInvocationIntercomGroup(rootRunId),
 			stage.pendingStageDeliveryAvailable === true,
 		);
-	});
+	};
+	const subscription = pi.events?.on?.(PENDING_STAGE_MESSAGE_EVENT, (payload) =>
+		outsideWorkflowExecutions(() => routePendingStageMessage(payload)),
+	);
 	const stickySubscription = pi.events?.on?.(STICKY_LIVE_DELIVERED_EVENT, (payload) => {
 		if (disposed || !isStickyLiveDeliveredEvent(payload) || payload.handled) return;
 		payload.handled = true;
-		payload.completion = recordConfirmedStickyDeliveries(activeStore, payload);
+		payload.completion = outsideWorkflowExecutions(() => recordConfirmedStickyDeliveries(activeStore, payload));
 	});
 	const dispose = (): void => {
 		disposed = true;
