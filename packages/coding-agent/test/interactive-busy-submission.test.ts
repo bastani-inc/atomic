@@ -46,6 +46,32 @@ function settledHandlerSends(
 	};
 }
 
+function runLifecycle(rig: Rig): string[] {
+	return rig.engine.events
+		.map((event) => event.type)
+		.filter((type) => type === "agent_start" || type === "agent_end" || type === "agent_settled");
+}
+
+function assertTurnsNeverOverlapAndSettle(lifecycle: string[]): void {
+	let running = false;
+	for (const [index, type] of lifecycle.entries()) {
+		if (type === "agent_end") running = false;
+		else {
+			assert.equal(
+				running,
+				false,
+				`${type} at ${index} fired while a turn was running: ${JSON.stringify(lifecycle)}`,
+			);
+			if (type === "agent_start") running = true;
+		}
+	}
+	assert.equal(lifecycle.at(-1), "agent_settled", `the last run did not settle: ${JSON.stringify(lifecycle)}`);
+}
+
+function settledRuns(count: number): string[] {
+	return Array.from({ length: count }, () => ["agent_start", "agent_end", "agent_settled"]).flat();
+}
+
 describe.each(["local", "isolated"] as const)("interactive submissions while the agent is busy (%s host)", (wiring) => {
 	const rigs: Rig[] = [];
 	afterEach(async () => {
@@ -252,6 +278,100 @@ describe.each(["local", "isolated"] as const)("interactive submissions while the
 			assert.deepEqual(sessionLifecycle, expected, "a run started without settling");
 			assert.deepEqual(extensionLifecycle, expected, "extensions did not see the delivering run settle");
 			assert.deepEqual(getUserTexts(rig.engine), ["P1", "M-settled"], "order or exactly-once delivery was lost");
+			assert.deepEqual(rig.host.notices, [], "a notice was shown for an accepted message");
+		});
+
+		test("a message typed while agent_settled handlers run after an aborted run is delivered once they finish", async () => {
+			const settled = createGate();
+			const hold = createGate();
+			const rig = await createRig(wiring, load, {
+				extensions: [hookGate("agent_settled", settled)],
+				tools: [holdTool(hold)],
+			});
+			rigs.push(rig);
+			rig.engine.setResponses([
+				fauxAssistantMessage([fauxToolCall("hold", {})], { stopReason: "toolUse" }),
+				fauxAssistantMessage("answer to the typed message"),
+				fauxAssistantMessage("unexpected extra reply"),
+			]);
+
+			await rig.host.defaultEditor.onSubmit?.("P1");
+			await hold.entered.promise;
+			const aborted = rig.engine.session.abort();
+			hold.release.resolve();
+			await aborted;
+			await settled.entered.promise;
+			if (wiring === "isolated") {
+				await waitFor("the host to see the prompt dispatched", () => rig.host.onInputCallback !== undefined);
+			}
+			await rig.host.defaultEditor.onSubmit?.("M-after-abort");
+			await waitFor("the typed message to be visible while the settled handlers run", () =>
+				isVisible(rig.host, "M-after-abort"),
+			);
+			await waitFor("the session to queue the typed message", () =>
+				rig.engine.session.getSteeringMessages().includes("M-after-abort"),
+			);
+
+			settled.release.resolve();
+			await waitFor(
+				"the typed message to be answered",
+				() => getUserTexts(rig.engine).includes("M-after-abort") && isIdleAfterAnswering(rig.engine),
+			);
+			await waitFor("the delivering run to settle", () => rig.engine.eventsOfType("agent_settled").length >= 2);
+			await sleep(DUPLICATE_DELIVERY_SETTLE_MS);
+
+			assert.deepEqual(getUserTexts(rig.engine), ["P1", "M-after-abort"], "order or exactly-once delivery was lost");
+			assert.deepEqual(rig.engine.session.getSteeringMessages(), [], "the typed message stayed queued");
+			assert.deepEqual(runLifecycle(rig), settledRuns(2), "a run started without settling");
+			assert.deepEqual(rig.host.notices, [], "a notice was shown for an accepted message");
+		});
+
+		test("messages typed while an agent_end handler still runs are queued for the next run, with no error and every run settled in order", async () => {
+			const ended = createGate();
+			const hold = createGate();
+			const rig = await createRig(wiring, load, {
+				extensions: [hookGate("agent_end", ended)],
+				tools: [holdTool(hold)],
+			});
+			rigs.push(rig);
+			rig.engine.setResponses([
+				fauxAssistantMessage("first answer"),
+				fauxAssistantMessage([fauxToolCall("hold", {})], { stopReason: "toolUse" }),
+				fauxAssistantMessage("answer to the typed messages"),
+				fauxAssistantMessage("unexpected extra reply"),
+				fauxAssistantMessage("unexpected extra reply"),
+			]);
+
+			await rig.host.defaultEditor.onSubmit?.("P1");
+			await ended.entered.promise;
+			await waitFor("the agent to stop streaming", () => !rig.engine.session.isStreaming);
+			if (wiring === "isolated") {
+				await waitFor("the host to see the prompt dispatched", () => rig.host.onInputCallback !== undefined);
+			}
+			await rig.host.defaultEditor.onSubmit?.("M-gap");
+			await waitFor("the typed message to be visible while the agent_end handler runs", () =>
+				isVisible(rig.host, "M-gap"),
+			);
+			assert.deepEqual(getUserTexts(rig.engine), ["P1"], "a second run started before the first one settled");
+
+			ended.release.resolve();
+			await hold.entered.promise;
+			await rig.host.defaultEditor.onSubmit?.("M-gap-2");
+			await waitFor("the second message to be visible while the tool runs", () => isVisible(rig.host, "M-gap-2"));
+			hold.release.resolve();
+			await waitFor(
+				"both messages to be answered",
+				() => getUserTexts(rig.engine).includes("M-gap-2") && isIdleAfterAnswering(rig.engine),
+			);
+			await waitFor("the run to settle", () => runLifecycle(rig).at(-1) === "agent_settled");
+			await sleep(DUPLICATE_DELIVERY_SETTLE_MS);
+
+			assert.deepEqual(
+				getUserTexts(rig.engine),
+				["P1", "M-gap", "M-gap-2"],
+				"order or exactly-once delivery was lost",
+			);
+			assertTurnsNeverOverlapAndSettle(runLifecycle(rig));
 			assert.deepEqual(rig.host.notices, [], "a notice was shown for an accepted message");
 		});
 

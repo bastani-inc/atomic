@@ -49,6 +49,7 @@ type SubmitHost = {
 	deferredStartupPromise: Promise<void> | undefined;
 	discardDeferredRenderedUserInput: (text: string) => void;
 	discarded: string[];
+	shownQueued: string[];
 	renderDeferredUserInput: (text: string) => void;
 	rendered: string[];
 	isExtensionCommand(text: string): boolean;
@@ -118,6 +119,7 @@ function createSubmitHost(session: AgentSession): SubmitHost {
 		deferredStartupPending: false,
 		deferredStartupPromise: undefined,
 		discarded: [],
+		shownQueued: [],
 		discardDeferredRenderedUserInput(value) {
 			host.discarded.push(value);
 		},
@@ -139,6 +141,9 @@ function createSubmitHost(session: AgentSession): SubmitHost {
 		isBashMode: false,
 		updateEditorBorderColor() {},
 	};
+	session.subscribe((event) => {
+		if (event.type === "queue_update") host.shownQueued.push(...event.steering, ...event.followUp);
+	});
 	setupKeyHandlers.call(host);
 	setupEditorSubmitHandler.call(host);
 	return host;
@@ -245,7 +250,10 @@ describe("submitting while the admitted-message recovery turn streams (issue 236
 		}
 
 		assert.deepEqual(host.errors, [], `submission failed with: ${host.errors.join(" | ")}`);
-		assert.deepEqual(host.discarded, [], "the submitted text was rendered and then discarded");
+		assert.ok(
+			host.discarded.every((text) => host.shownQueued.includes(text)),
+			"the submitted text was rendered and then discarded without being shown as queued",
+		);
 		assert.equal(
 			harness.session.messages.filter((message) => getMessageText(message) === "TYPED-INSIDE-RECOVERY-WINDOW")
 				.length,

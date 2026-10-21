@@ -4,7 +4,7 @@
 
 ### Breaking Changes
 
-- SDK `steer()` and `followUp()`, and the RPC `steer` and `follow_up` commands, now start a turn when the agent is idle and the session already has messages. On a session with no messages yet, the message still waits for the next prompt. If you queue a message on an idle session that has messages and then call `prompt()` (or send an RPC `prompt`) right away, that prompt now fails with "Agent is already processing" unless you pass `streamingBehavior` (`"steer"` or `"followUp"`) to queue it behind the running turn.
+- SDK `steer()` and `followUp()`, and the RPC `steer` and `follow_up` commands, now start a turn when the agent is idle and the session already has messages. On a session with no messages yet, or after a run was aborted, the message still waits for the next prompt. If you queue a message on an idle session that has messages and then call `prompt()` (or send an RPC `prompt`) right away, that prompt now fails with "Agent is already processing" unless you pass `streamingBehavior` (`"steer"` or `"followUp"`) to queue it behind the running turn.
 
 ### Added
 

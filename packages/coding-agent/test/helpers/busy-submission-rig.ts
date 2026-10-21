@@ -69,7 +69,10 @@ export function gateOnce(gate: Gate): () => Promise<void> {
 	};
 }
 
-export function hookGate(event: "before_agent_start" | "agent_start" | "agent_settled", gate: Gate): ExtensionFactory {
+export function hookGate(
+	event: "before_agent_start" | "agent_start" | "agent_end" | "agent_settled",
+	gate: Gate,
+): ExtensionFactory {
 	const run = gateOnce(gate);
 	return (pi) => {
 		pi.on(event, async () => {

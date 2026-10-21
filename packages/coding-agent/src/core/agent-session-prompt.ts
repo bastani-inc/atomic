@@ -30,6 +30,17 @@ import {
 import { getSkillCatalog } from "./skill-catalog.ts";
 
 const customPreparations = new WeakMap<AgentSession, Promise<void>>();
+const openRuns = new WeakMap<AgentSession, number>();
+
+function openRun(session: AgentSession): void {
+	openRuns.set(session, (openRuns.get(session) ?? 0) + 1);
+}
+
+function closeRun(session: AgentSession): void {
+	const open = openRuns.get(session) ?? 0;
+	if (open > 1) openRuns.set(session, open - 1);
+	else openRuns.delete(session);
+}
 
 export async function waitForCustomMessagePreparation(session: AgentSession): Promise<void> {
 	await customPreparations.get(session);
@@ -102,6 +113,10 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 
 function queuesDuringAgentSettled(session: AgentSession, options: PromptOptions | undefined): boolean {
 	return session._isEmittingAgentSettled && options?.streamingBehavior !== undefined && options.source !== "extension";
+}
+
+function queuesBehindOpenRun(session: AgentSession, options: PromptOptions | undefined): boolean {
+	return openRuns.has(session) && options?.streamingBehavior !== undefined && options.source !== "extension";
 }
 
 async function admittedPrompt(this: AgentSession, text: string, options?: PromptOptions): Promise<void> {
@@ -233,8 +248,9 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		// If streaming, queue via steer() or followUp() based on option. The run is still
 		// open while agent_before_settle handlers decide on its continuation, so input sent
 		// from that boundary queues for the continuation instead of starting a second run.
-		const settling = queuesDuringAgentSettled(this, options);
-		if (this.isStreaming || this._isPreparingRun || this._isBeforeSettle || settling) {
+		const busy = this.isStreaming || this._isPreparingRun || this._isBeforeSettle;
+		const settling = queuesDuringAgentSettled(this, options) || (!busy && queuesBehindOpenRun(this, options));
+		if (busy || settling) {
 			if (!options?.streamingBehavior) {
 				throw new Error(
 					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
@@ -244,7 +260,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 				options.streamingBehavior === "followUp"
 					? this._queueFollowUp(expandedText, currentImages)
 					: this._queueSteer(expandedText, currentImages);
-			if (settling) deliverQueuedInputIfIdle(this);
+			if (settling) deliverQueuedInputIfIdle(this, { userSubmission: true });
 			await queued;
 			workflowDelivery?.delivered?.(options.streamingBehavior);
 			preflightResult?.(true, "queued");
@@ -427,6 +443,7 @@ export async function _runAgentPrompt(
 		}
 	};
 	this._activePromptCount += 1;
+	openRun(this);
 	try {
 		if (this._subagentMessageAdmission) {
 			await this._subagentMessageAdmission.waitForPendingDeliveries();
@@ -528,6 +545,7 @@ async function settleAgentRun(session: AgentSession): Promise<void> {
 	session._cacheWarmer?.onAgentSettled();
 	await session._agentEventQueue;
 	await session._flushPendingCustomMessages();
+	closeRun(session);
 	session._isEmittingAgentSettled = true;
 	try {
 		const aborted = session._agentRunAbortRequested === true;
@@ -866,6 +884,7 @@ async function runQueuedInput(session: AgentSession): Promise<void> {
 	const run = session.agent.continue();
 	if (!session.agent.state.isStreaming) return run;
 	session._activePromptCount += 1;
+	openRun(session);
 	try {
 		await run;
 		await session.waitForRetry();
@@ -878,11 +897,15 @@ async function runQueuedInput(session: AgentSession): Promise<void> {
 	}
 }
 
-function deliverQueuedInputIfIdle(session: AgentSession): void {
+function deliverQueuedInputIfIdle(session: AgentSession, options?: { userSubmission?: boolean }): void {
 	const deliver = async (): Promise<void> => {
+		if (options?.userSubmission && !session.isStreaming && !session._queuedMessagesPaused) {
+			session._agentRunAbortRequested = false;
+		}
 		await runQueuedInput(session).catch(() => {});
 	};
-	if (session._isEmittingAgentSettled) session._deferredSettledActions.push(deliver);
+	if (session._isEmittingAgentSettled || (options?.userSubmission && openRuns.has(session)))
+		session._deferredSettledActions.push(deliver);
 	else if (session._activePromptCount === 0) void deliver();
 }
 

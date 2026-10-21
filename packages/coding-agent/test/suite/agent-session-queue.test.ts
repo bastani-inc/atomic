@@ -579,6 +579,33 @@ describe("AgentSession queue characterization", () => {
 		assert.deepEqual(harness.session.getSteeringMessages(), []);
 	});
 
+	it("leaves a steer queued after an aborted run until the next prompt", async () => {
+		const waiting = await createWaitingHarness();
+		const { harness } = waiting;
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("wait", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage("reply to both"),
+			fauxAssistantMessage("unexpected reply"),
+		]);
+		await waiting.waitForToolStart;
+		const aborted = harness.session.abort();
+		waiting.releaseToolExecution();
+		await aborted;
+		await waiting.promptPromise;
+
+		await harness.session.steer("queued after abort");
+		await new Promise((resolve) => setTimeout(resolve, PAUSED_QUEUE_SETTLE_MS));
+
+		assert.deepEqual(getUserTexts(harness), ["start"]);
+		assert.deepEqual(harness.session.getSteeringMessages(), ["queued after abort"]);
+
+		await harness.session.prompt("next");
+		await harness.session.agent.waitForIdle();
+		assert.deepEqual(getUserTexts(harness), ["start", "next", "queued after abort"]);
+		assert.deepEqual(harness.session.getSteeringMessages(), []);
+	});
+
 	it("keeps a steer queued while idle until a paused session resumes", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
