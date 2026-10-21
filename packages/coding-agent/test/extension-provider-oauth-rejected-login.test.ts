@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OAUTH_REFRESH_LOCK_HOLD_MS, type OAuthCredential } from "@bastani/pi-ai";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
-import { sleep } from "../../../test/helpers/runtime.ts";
-import { AuthStorage, FileAuthStorageBackend } from "../src/core/auth-storage.ts";
-import type { ProviderConfig } from "../src/core/extensions/provider-types.ts";
-import { ModelRuntime } from "../src/core/model-runtime.ts";
-import { OAuthRefreshRejectedError } from "../src/index.ts";
+import { sleep } from "../../../test/helpers/runtime.js";
+import { AuthStorage, FileAuthStorageBackend } from "../src/core/auth-storage.js";
+import type { ProviderConfig } from "../src/core/extensions/provider-types.js";
+import { ModelRuntime } from "../src/core/model-runtime.js";
+import { OAuthRefreshRejectedError } from "../src/index.js";
 
 const PROVIDER = "corp-oauth";
 const HOUR_MS = 60 * 60 * 1000;

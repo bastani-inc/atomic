@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, test, vi } from "vitest";
-import type { AgentSession } from "../src/core/agent-session.ts";
-import { AuthStorage, InMemoryAuthStorageBackend } from "../src/core/auth-storage.ts";
-import { ModelRuntime } from "../src/core/model-runtime.ts";
-import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
-import { loginIsolatedApiKeyProvider } from "../src/modes/interactive-engine/isolated-auth.ts";
-import { RemoteModelCatalog } from "../src/modes/interactive-engine/remote-model-catalog.ts";
-import "../src/modes/interactive/interactive-auth-routing.ts";
-import type { RpcClient } from "../src/modes/rpc/rpc-client.ts";
-import { createRpcModelCatalog } from "../src/modes/rpc/rpc-model-catalog.ts";
-import { RpcProviderAuth } from "../src/modes/rpc/rpc-provider-auth.ts";
+import type { AgentSession } from "../src/core/agent-session.js";
+import { AuthStorage, InMemoryAuthStorageBackend } from "../src/core/auth-storage.js";
+import { ModelRuntime } from "../src/core/model-runtime.js";
+import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.js";
+import { loginIsolatedApiKeyProvider } from "../src/modes/interactive-engine/isolated-auth.js";
+import { RemoteModelCatalog } from "../src/modes/interactive-engine/remote-model-catalog.js";
+import "../src/modes/interactive/interactive-auth-routing.js";
+import type { RpcClient } from "../src/modes/rpc/rpc-client.js";
+import { createRpcModelCatalog } from "../src/modes/rpc/rpc-model-catalog.js";
+import { RpcProviderAuth } from "../src/modes/rpc/rpc-provider-auth.js";
 
 const BUILTIN = "groq";
 const EXTENSION = "corp-key";
