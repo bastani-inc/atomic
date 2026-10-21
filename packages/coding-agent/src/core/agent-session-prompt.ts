@@ -858,7 +858,7 @@ async function admittedQueueUserInput(
 		if (lifetime.aborted) throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
 		if (behavior === "steer") await session._queueSteer(expandedText, images);
 		else await session._queueFollowUp(expandedText, images);
-		deliverQueuedInputIfIdle(session);
+		if (!session.isStreaming) deliverQueuedInputIfIdle(session);
 		return "queued";
 	} finally {
 		admission.release();

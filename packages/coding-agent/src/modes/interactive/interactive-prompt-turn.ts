@@ -55,7 +55,7 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 				preflightResult: (success, disposition) => {
 					refused = !success;
 					if (success && disposition === "queued") this.discardDeferredRenderedUserInput(userInput);
-					settleDispatch();
+					if (success) settleDispatch();
 				},
 			});
 		}
@@ -74,7 +74,7 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 	} finally {
 		unsubscribeTurnStart();
 		if (this.promptTurn === turn) this.promptTurn = undefined;
-		settleDispatch();
+		if (!refused || turnStarted) settleDispatch();
 		this.promptTurnWorkingLoaderActive = false;
 		// A submission that resolves without starting an agent turn (e.g. a
 		// handled slash command) never emits `agent_end`, so clear the pre-shown

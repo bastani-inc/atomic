@@ -1,3 +1,4 @@
+import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { combineQueuedMessagesForEditor, Spacer, TruncatedText, theme } from "./interactive-mode-deps.ts";
 import type { CompactionQueuedMessage } from "./interactive-mode-types.ts";
@@ -232,7 +233,7 @@ async function promptUntilAccepted(
 	});
 	prompt.then(
 		() => accept(true),
-		() => accept(false),
+		(error: unknown) => accept(isRpcRequestAcceptedFailure(error)),
 	);
 	if (await accepted) {
 		prompt.catch((error) => showCompactionQueueError(mode, error));

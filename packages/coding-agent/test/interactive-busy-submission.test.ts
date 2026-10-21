@@ -725,4 +725,64 @@ describe("a submission the session refuses while a turn is in flight", () => {
 		await sleep(DUPLICATE_DELIVERY_SETTLE_MS);
 		assert.deepEqual(getUserTexts(rig.engine), ["P1"]);
 	});
+
+	test("held behind a prompt and accepted by the engine before its response was lost is not queued again", async () => {
+		const preflight = createGate();
+		const rig = await createRig("local", "quiet", { extensions: [hookGate("before_agent_start", preflight)] });
+		rigs.push(rig);
+		rig.engine.setResponses([fauxAssistantMessage("first answer"), fauxAssistantMessage("unexpected extra reply")]);
+		const originalPrompt = rig.host.session.prompt.bind(rig.host.session);
+		rig.host.session.prompt = async (text, options) => {
+			if (text !== "M-accepted") return originalPrompt(text, options);
+			await originalPrompt(text, { ...options, preflightResult: undefined });
+			throw asAcceptedRequestFailure(rpcTransportError("Agent process stopped"));
+		};
+
+		await rig.host.defaultEditor.onSubmit?.("P1");
+		await preflight.entered.promise;
+		await rig.host.defaultEditor.onSubmit?.("M-accepted");
+		preflight.release.resolve();
+		await waitFor("the accepted message to be answered", () => getUserTexts(rig.engine).includes("M-accepted"));
+		await waitFor("the engine to go idle", () => isIdleAfterAnswering(rig.engine));
+		await sleep(DUPLICATE_DELIVERY_SETTLE_MS);
+
+		assert.deepEqual(rig.host.compactionQueuedMessages, [], "the accepted message was queued for resending");
+		assert.equal(countOf(getUserTexts(rig.engine), "M-accepted"), 1, "the accepted message was not delivered once");
+		assert.deepEqual(rig.host.notices, ["error: Failed to send queued message: Agent process stopped"]);
+	});
+
+	test("held behind a prompt the session refuses stays held until that prompt is sent again, then follows it", async () => {
+		const refusalGate = createGate();
+		const rig = await createRig("local", "quiet", {});
+		rigs.push(rig);
+		rig.engine.setResponses([fauxAssistantMessage("first answer"), fauxAssistantMessage("unexpected extra reply")]);
+		const originalPrompt = rig.host.session.prompt.bind(rig.host.session);
+		let refusePrompt = true;
+		rig.host.session.prompt = async (text, options) => {
+			if (text !== "P1" || !refusePrompt) return originalPrompt(text, options);
+			refusePrompt = false;
+			refusalGate.entered.resolve();
+			await refusalGate.release.promise;
+			options?.preflightResult?.(false);
+			throw new Error("provider rejected the prompt");
+		};
+
+		await rig.host.defaultEditor.onSubmit?.("P1");
+		await refusalGate.entered.promise;
+		await rig.host.defaultEditor.onSubmit?.("M-held");
+		refusalGate.release.resolve();
+		await waitFor("the refused prompt to return to the editor", () => rig.host.editor.getText() === "P1");
+		await sleep(DUPLICATE_DELIVERY_SETTLE_MS);
+
+		assert.deepEqual(rig.host.compactionQueuedMessages, [{ text: "M-held", mode: "steer" }]);
+		assert.deepEqual(getUserTexts(rig.engine), [], "the held message ran without the refused prompt");
+
+		rig.host.editor.setText("");
+		await rig.host.defaultEditor.onSubmit?.("P1");
+		await waitFor("both messages to be answered", () => {
+			const users = getUserTexts(rig.engine);
+			return users.includes("P1") && users.includes("M-held") && isIdleAfterAnswering(rig.engine);
+		});
+		assert.deepEqual(getUserTexts(rig.engine), ["P1", "M-held"]);
+	});
 });
