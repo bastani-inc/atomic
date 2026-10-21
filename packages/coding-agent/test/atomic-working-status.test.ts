@@ -171,7 +171,8 @@ describe("Atomic working status", () => {
 			peak: "#eef4ff",
 		};
 		const rendered = new AtomicWorkingStatusComponent({ frame: 0, palette, messageColor: String }).render(64)[1]!;
-		expect(indexed(rendered)).toBe(59);
+		// #2550: the nearest ramp entry is closer than cube index 59.
+		expect(indexed(rendered)).toBe(238);
 		expect(rgb(rendered)).toBeUndefined();
 	});
 
@@ -239,7 +240,8 @@ describe("Atomic working status", () => {
 			if (color === undefined) throw new Error(`Missing indexed phase ${frame}`);
 			return ansi256ToHex(color);
 		});
-		expect(quantized).toEqual(["#5f87af", "#8787af", "#8787d7", "#87afff", "#afd7ff", "#ffffff"]);
+		// #2550: nearest-color quantization also considers the grayscale ramp.
+		expect(quantized).toEqual(["#767676", "#8787af", "#8787d7", "#87afff", "#afd7ff", "#eeeeee"]);
 
 		for (const [colors, phaseBackground] of [
 			[truecolor, background],

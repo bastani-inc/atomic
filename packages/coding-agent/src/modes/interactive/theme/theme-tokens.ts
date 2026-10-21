@@ -3,6 +3,8 @@ export interface ThemeTokenDescriptor {
 	description: string;
 	/** Token in the same slot that supplies this token's color when a theme omits it. */
 	fallback?: string;
+	/** A status color: in 256-color mode it keeps its hue instead of collapsing to the nearest gray. */
+	status?: true;
 }
 
 export type ThemeTokenDescriptors = Readonly<Record<string, ThemeTokenDescriptor>>;
@@ -59,9 +61,9 @@ export const THEME_TOKENS = defineThemeTokens({
 	customMessageBg: { slot: "background", description: "Custom message background (hook-injected messages)" },
 	customMessageText: { slot: "foreground", description: "Custom message text color" },
 	customMessageLabel: { slot: "foreground", description: "Custom message type label color" },
-	toolPendingBg: { slot: "background", description: "Tool execution box (pending state)" },
-	toolSuccessBg: { slot: "background", description: "Tool execution box (success state)" },
-	toolErrorBg: { slot: "background", description: "Tool execution box (error state)" },
+	toolPendingBg: { slot: "background", description: "Tool execution box (pending state)", status: true },
+	toolSuccessBg: { slot: "background", description: "Tool execution box (success state)", status: true },
+	toolErrorBg: { slot: "background", description: "Tool execution box (error state)", status: true },
 	toolTitle: { slot: "foreground", description: "Tool execution box title color" },
 	toolOutput: { slot: "foreground", description: "Tool execution box output text color" },
 	mdHeading: { slot: "foreground", description: "Markdown heading text" },
@@ -152,4 +154,9 @@ export function splitThemeColors(colors: ResolvedThemeColorValues<string | numbe
 		}
 	}
 	return { fgColors, bgColors };
+}
+
+export function isStatusToken(token: ThemeToken): boolean {
+	const descriptor: ThemeTokenDescriptor = THEME_TOKENS[token];
+	return descriptor.status === true;
 }
