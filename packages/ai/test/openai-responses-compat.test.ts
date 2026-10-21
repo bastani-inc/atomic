@@ -721,6 +721,29 @@ describe("openai-responses provider defaults", () => {
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
+	it.each([
+		["subscription_sharing_usage_limit_exceeded", "Check your ChatGPT usage: https://chatgpt.com/settings/usage"],
+		["subscription_sharing_workplace_individual_usage_limit_exceeded", "Ask your workspace admin to increase it"],
+	] as const)("explains the ChatGPT usage limit error %s", async (code, hint) => {
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			async () =>
+				new Response(JSON.stringify({ error: { code, message: "Usage limit reached." } }), {
+					status: 429,
+					headers: { "content-type": "application/json" },
+				}),
+		);
+
+		const result = await streamOpenAIResponses(
+			getModel("openai", "gpt-5.5"),
+			normalizeContext({ systemPrompt: "sys", messages: [{ role: "user", content: "hi", timestamp: Date.now() }] }),
+			{ apiKey: "sk-test-key", maxRetries: 2, maxRetryDelayMs: 1 },
+		).result();
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain(code);
+		expect(result.errorMessage).toContain(hint);
+	});
+
 	it("omits an unadvertised ultrafast tier instead of throwing", async () => {
 		const model = getModel("openai", "gpt-5.5");
 		let capturedPayload: { model?: string; service_tier?: string } | undefined;

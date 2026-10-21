@@ -51,6 +51,8 @@ const OPENAI_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-api", "openai-code
 // OpenAI Responses rejects max_output_tokens below 16: https://github.com/earendil-works/pi/issues/6265
 const OPENAI_RESPONSES_MIN_OUTPUT_TOKENS = 16;
 const CHATGPT_USAGE_URL = "https://chatgpt.com/settings/usage";
+const CHATGPT_WORKSPACE_LIMIT_HINT =
+	"You've reached your ChatGPT workspace's usage limit. Ask your workspace admin to increase it at admin.openai.com → Workspace → Usage limits.";
 const CONFIGURATION_UPDATE_REQUEST_EFFORT = "medium";
 
 function isChatGPTSignIn(model: Model<"openai-responses">, apiKey: string | undefined): boolean {
@@ -305,9 +307,14 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				normalizeProviderError(error),
 				`${model.provider === "openai" || model.provider === "openai-api" ? "OpenAI" : model.provider} API error`,
 			);
-			output.errorMessage = errorMessage.includes("subscription_sharing_usage_limit_exceeded")
-				? `${errorMessage}\nCheck your ChatGPT usage: ${CHATGPT_USAGE_URL}`
-				: errorMessage;
+			// On ChatGPT Business plans, the workspace admin also sets a per-user limit.
+			if (errorMessage.includes("subscription_sharing_usage_limit_exceeded")) {
+				output.errorMessage = `${errorMessage}\nCheck your ChatGPT usage: ${CHATGPT_USAGE_URL}`;
+			} else if (errorMessage.includes("subscription_sharing_workplace_individual_usage_limit_exceeded")) {
+				output.errorMessage = `${errorMessage}\n${CHATGPT_WORKSPACE_LIMIT_HINT}`;
+			} else {
+				output.errorMessage = errorMessage;
+			}
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		} finally {
