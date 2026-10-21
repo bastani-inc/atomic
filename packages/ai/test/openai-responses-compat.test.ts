@@ -75,8 +75,7 @@ describe("openai-responses provider defaults", () => {
 		vi.restoreAllMocks();
 	});
 
-	// #2567: Copilot rejected reasoning.effort "none". gpt-6-luna has off: "none", so this exercises the Copilot exception.
-	it("omits reasoning when no reasoning is requested", async () => {
+	it("omits reasoning for Copilot gpt-6-luna, whose off level is none, when no reasoning is requested (earendil-works/pi#2567)", async () => {
 		const model = getModel("github-copilot", "gpt-6-luna");
 		let capturedPayload: unknown;
 
