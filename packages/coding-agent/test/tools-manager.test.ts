@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SpawnSyncReturns } from "child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ENV_AGENT_DIR, ENV_OFFLINE } from "../src/config.ts";
+import { ENV_AGENT_DIR, ENV_OFFLINE, VERSION } from "../src/config.ts";
+import { getPiUserAgent } from "../src/utils/pi-user-agent.ts";
 
 const mocks = vi.hoisted(() => ({
 	arch: vi.fn<typeof import("node:os").arch>(),
@@ -148,6 +149,21 @@ describe("managed tool downloads", () => {
 		assert.equal(await getLatestVersion("sharkdp/fd"), "10.4.2");
 		assert.equal(fetchMock.mock.calls[0]?.[0], "https://github.com/sharkdp/fd/releases/latest");
 		assert.equal((fetchMock.mock.calls[0]?.[1] as RequestInit | undefined)?.redirect, "manual");
+	});
+
+	it("identifies itself with Atomic's detailed User-Agent when resolving the version", async () => {
+		const fetchMock = vi.fn(
+			async () =>
+				new Response(null, {
+					status: 302,
+					headers: { location: "https://github.com/sharkdp/fd/releases/tag/v10.4.2" },
+				}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await getLatestVersion("sharkdp/fd");
+		const headers = (fetchMock.mock.calls[0]?.[1] as RequestInit | undefined)?.headers as Record<string, string>;
+		assert.equal(headers["User-Agent"], getPiUserAgent(VERSION));
 	});
 
 	it("resolves relative release redirects", async () => {

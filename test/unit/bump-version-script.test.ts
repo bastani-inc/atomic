@@ -52,6 +52,7 @@ function createFixtureRoot(): string {
 	mkdirSync(join(root, "packages", "alpha"), { recursive: true });
 	mkdirSync(join(root, "packages", "beta"), { recursive: true });
 	mkdirSync(join(root, "packages", "natives", "native"), { recursive: true });
+	mkdirSync(join(root, "packages", "ai", "src", "utils"), { recursive: true });
 	mkdirSync(join(root, "crates", "native"), { recursive: true });
 
 	writeJson(join(root, "package.json"), {
@@ -85,6 +86,10 @@ function createFixtureRoot(): string {
 	writeFileSync(
 		join(root, "packages", "alpha", "README.md"),
 		'<img src="https://img.shields.io/badge/version-0.1.0-blue" alt="Version 0.1.0">\n',
+	);
+	writeFileSync(
+		join(root, "packages", "ai", "src", "utils", "version.ts"),
+		'// The @bastani/pi-ai package version. scripts/bump-version.ts keeps it in sync with package.json.\nexport const PI_AI_VERSION = "0.1.0";\n',
 	);
 	writeFileSync(
 		join(root, "crates", "native", "Cargo.toml"),
@@ -199,6 +204,11 @@ describe("scripts/bump-version.ts", () => {
 			assert.match(nativeIndex, /bindingPackageVersion !== '1\.2\.3-alpha\.1'/);
 			assert.match(nativeIndex, /expected 1\.2\.3-alpha\.1 but got \$\{bindingPackageVersion\}/);
 			assert.doesNotMatch(nativeIndex, /0\.1\.0/);
+			// pi-ai reports its version in the User-Agent from a constant, not package.json.
+			assert.match(
+				readFileSync(join(root, "packages", "ai", "src", "utils", "version.ts"), "utf8"),
+				/export const PI_AI_VERSION = "1\.2\.3-alpha\.1";\n$/,
+			);
 
 			// The npm lockfile is stamped in place, or `npm ci` on the tagged release
 			// commit refuses the tree the stamp just produced.

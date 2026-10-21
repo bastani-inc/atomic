@@ -102,6 +102,11 @@ describe("provider retry classification", () => {
 		assert.equal(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage })), true);
 	});
 
+	it("matches Codex CLI stream disconnects relayed by proxies (#11057)", () => {
+		const errorMessage = "stream disconnected before completion: stream closed before response.completed";
+		expect(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage }))).toBe(true);
+	});
+
 	it("matches OpenAI Responses streams that end before terminal events", () => {
 		expect(
 			isRetryableAssistantError(
@@ -155,6 +160,29 @@ describe("provider retry classification", () => {
 			),
 		).toBe(true);
 		expect(isRetryableAssistantError(fauxAssistantMessage("not an error"))).toBe(false);
+	});
+
+	it.each([
+		// Regression for #11057: status codes inside ids or other numbers are not status codes.
+		'401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"},"request_id":"req_011CU503xyz"}',
+		"400 image exceeds 5 MB maximum: 5316784 bytes > 5242880 bytes",
+	])("does not match status codes inside ids or longer numbers: %s", (errorMessage) => {
+		expect(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage }))).toBe(false);
+	});
+
+	it.each([
+		"HTTP 429",
+		"status 500",
+		'{"status":502}',
+		"(503)",
+		"504",
+		"520",
+		"Cloudflare 521",
+		"Cloudflare 522",
+		"Cloudflare 523",
+		"524.",
+	])("still matches status codes that stand alone: %s", (errorMessage) => {
+		expect(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage }))).toBe(true);
 	});
 });
 

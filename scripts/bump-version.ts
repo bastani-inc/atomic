@@ -40,6 +40,7 @@ type VersionTarget =
 	| { kind: "cargoLock"; filePath: string }
 	| { kind: "readme"; filePath: string; optional?: boolean }
 	| { kind: "nativeIndex"; filePath: string }
+	| { kind: "aiVersion"; filePath: string }
 	| { kind: "npmLock"; filePath: string };
 
 /**
@@ -206,12 +207,19 @@ function nativeIndexTargets(): VersionTarget[] {
 	return existsSync(resolve(ROOT, filePath)) ? [{ kind: "nativeIndex", filePath }] : [];
 }
 
+/** pi-ai reports its version in the User-Agent without reading package.json, which browsers cannot do. */
+function aiVersionTargets(): VersionTarget[] {
+	const filePath = "packages/ai/src/utils/version.ts";
+	return existsSync(resolve(ROOT, filePath)) ? [{ kind: "aiVersion", filePath }] : [];
+}
+
 async function versionTargets(): Promise<VersionTarget[]> {
 	return [
 		...(await packageJsonTargets()),
 		...cargoTargets(),
 		...readmeTargets(),
 		...nativeIndexTargets(),
+		...aiVersionTargets(),
 		...npmLockTargets(),
 	];
 }
@@ -372,6 +380,22 @@ async function bumpNativeIndex(filePath: string, version: string): Promise<void>
 	console.log(`  ${filePath}: generated NAPI version checks → ${version}`);
 }
 
+async function bumpAiVersion(filePath: string, version: string): Promise<void> {
+	const fullPath = resolve(ROOT, filePath);
+	const content = await Bun.file(fullPath).text();
+	const pattern = /(export const PI_AI_VERSION = ")[^"]*(")/;
+	if (!pattern.test(content)) throw new Error(`${filePath}: no PI_AI_VERSION constant`);
+	const updated = content.replace(pattern, `$1${version}$2`);
+
+	if (updated === content) {
+		console.log(`  ${filePath}: already at ${version}`);
+		return;
+	}
+
+	await Bun.write(fullPath, updated);
+	console.log(`  ${filePath}: PI_AI_VERSION → ${version}`);
+}
+
 interface NpmLockEntry {
 	version?: string;
 	dependencies?: Record<string, string>;
@@ -422,6 +446,9 @@ async function bumpTarget(target: VersionTarget, version: string): Promise<void>
 			break;
 		case "nativeIndex":
 			await bumpNativeIndex(target.filePath, version);
+			break;
+		case "aiVersion":
+			await bumpAiVersion(target.filePath, version);
 			break;
 		case "npmLock":
 			await bumpNpmLock(target.filePath, version);

@@ -22,6 +22,7 @@ Unified LLM API with provider collections, automatic auth resolution, token and 
 - [Auth](#auth)
   - [How Auth Resolves](#how-auth-resolves)
   - [Transforming Request Headers](#transforming-request-headers)
+  - [Client Identity](#client-identity)
   - [Credential Store](#credential-store)
   - [Environment Variables](#environment-variables)
 - [Tools](#tools)
@@ -431,6 +432,33 @@ provider auth headers -> model.headers -> explicit options.headers -> transformH
 Header names are merged case-insensitively. Explicit headers override auth/model headers, and the transform has final control; returning `null` for a header suppresses lower-level defaults that support deletion.
 
 `transformHeaders` belongs to `Models`, not `Provider`. A `Models` implementation must consume it and remove it before calling `Provider.stream*()`. Provider implementations continue receiving ordinary `ApiStreamOptions` or `SimpleStreamOptions` and never handle the transform themselves. Use this option instead of calling `getAuth(model)` before `stream*()`, which would resolve request auth twice.
+
+### Client Identity
+
+`identity` controls how requests identify the calling app to providers. Set it on `createModels()` as a default, or per request; a request's fields override the `Models` default field by field:
+
+```typescript
+const models = createModels({
+  identity: {
+    userAgent: 'detailed',
+    version: '2.1.0',
+    attribution: { name: 'my-app', url: 'https://my-app.example', categories: ['cloud-agent'] },
+  },
+});
+
+await models.completeSimple(model, context, { identity: { attribution: null } });
+```
+
+- `userAgent`: `"detailed"` (default) sends `pi/<version> (<platform>; <runtime>; <arch>)`, `"short"` sends `pi`, and `{ custom: "..." }` sends the given value. On Bedrock the value is appended to the AWS SDK user agent.
+- `version`: the version in the detailed `User-Agent`. Default: the pi-ai version.
+- `attribution`: provider attribution headers. Absent (default) or `null` sends none; `null` also turns off attribution from a merged identity. `{ name, url, categories? }` maps to each provider's headers:
+  - OpenRouter: `HTTP-Referer: <url>` (the app's identity in OpenRouter's rankings, grouped by origin), `X-OpenRouter-Title: <name>`, and `X-OpenRouter-Categories` (comma-separated).
+  - NVIDIA NIM: `X-BILLING-INVOKE-ORIGIN: <name>` with its first letter upper-cased.
+  - OpenCode: `x-opencode-client: <name>`.
+
+  `PI_ATTRIBUTION` is pi's: `{ name: "pi", url: "https://pi.dev", categories: ["cli-agent"] }`.
+
+Identity headers are defaults below provider, model, and request headers, so configured headers win and a `null` request header removes one. Providers that send a fixed client identity, such as GitHub Copilot and Anthropic OAuth, keep it. `withClientIdentity(models, identity)` returns a wrapper of a `Models` (or `MutableModels`) whose requests use `identity` over the one the `Models` was created with, for libraries that receive a `Models` from their host. `identity` is plain JSON, so it can be persisted with other request options.
 
 ### Credential Store
 

@@ -56,6 +56,7 @@ import { assertSupportedDocumentMimeType } from "../utils/document-input.ts";
 import { normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
+import { type ClientIdentity, getClientVersion } from "../utils/identity.ts";
 import { parseStreamingJson, parseToolCallArguments } from "../utils/json-parse.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
@@ -169,6 +170,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 		const optionsProfile = options.profile || options.env?.AWS_PROFILE;
 		const config: BedrockRuntimeClientConfig = {
 			profile: optionsProfile || getProviderEnvValue("AWS_PROFILE", options.env),
+			customUserAgent: bedrockUserAgent(options.identity),
 			// AWS counts the initial request as an attempt; preserve SDK defaults when omitted.
 			...(options.maxRetries !== undefined ? { maxAttempts: options.maxRetries + 1 } : {}),
 		};
@@ -483,6 +485,16 @@ const RESERVED_HEADER_EXACT = new Set(["authorization", "host"]);
 function isReservedHeader(key: string): boolean {
 	const lower = key.toLowerCase();
 	return lower.startsWith("x-amz-") || RESERVED_HEADER_EXACT.has(lower);
+}
+
+/**
+ * The client identity as AWS SDK user agent pairs. The SDK appends them to its own `User-Agent` and escapes characters
+ * that are not valid in a user agent token, so the detailed form is reduced to name and version.
+ */
+function bedrockUserAgent(identity: ClientIdentity | undefined): string | [string, string?][] {
+	const mode = identity?.userAgent ?? "detailed";
+	if (typeof mode === "object") return mode.custom;
+	return mode === "short" ? [["pi"]] : [["pi", getClientVersion(identity)]];
 }
 
 /**

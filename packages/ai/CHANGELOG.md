@@ -4,6 +4,16 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- The default `User-Agent` is now `pi/<version> (<platform>; <runtime>; <arch>)` instead of `pi (<platform> <release>; <arch>)`, and `@bastani/pi-ai/utils/pi-user-agent` (`getPiUserAgent()`) is removed; use `formatUserAgent()`.
+
+### Added
+
+- Added client identity configuration: an `identity` request option and `createModels({ identity })` default choose the `User-Agent` (`"detailed"` with a version, `"short"`, or custom) and provider attribution headers for OpenRouter, NVIDIA NIM, and OpenCode from `attribution: { name, url, categories? }`. `withClientIdentity()` applies an identity to a `Models` or `MutableModels` a library receives from its host. `formatUserAgent()`, `getIdentityHeaders()`, `getOpenCodeSessionHeaders()`, `mergeClientIdentity()`, `PI_ATTRIBUTION`, and `PI_AI_VERSION` are exported. Attribution matches OpenRouter by its exact `openrouter.ai` host, so a custom endpoint that merely contains that name is not attributed.
+- Bedrock, OpenRouter image generation, pi-messages, and classifier requests now send pi's `User-Agent` too.
+- `Models` requests with a `sessionId` to custom providers pointing at OpenCode (`opencode.ai`) now send the `x-opencode-session` header too, like the built-in OpenCode providers.
+
 ### Fixed
 
 - `refreshStoredOAuthCredential()` no longer aborts a token exchange when its caller stops waiting. A token rotation that completes after the 60-second refresh timeout is now saved instead of leaving the replaced refresh token stored. The refresh keeps the credential lock until the exchange settles, for up to `OAUTH_REFRESH_LOCK_HOLD_MS`, so no other refresh presents the token it may already have rotated. When the provider rejects a refresh, it returns a newer credential that another process has saved. A refresh rejected with `invalid_grant` reports only the provider's error code and description, never request URLs, bodies, or tokens, followed by an instruction to run `/login <provider>`. `OAUTH_REFRESH_TIMEOUT_MS` and `OAUTH_REFRESH_LOCK_HOLD_MS` are exported.
@@ -12,6 +22,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - A refresh rejected because the stored login is revoked or expired now tells you to run `/login <provider>` for more cases than a literal `invalid_grant`. This includes OpenAI's `refresh_token_expired`, `refresh_token_invalidated` and `refresh_token_reused` codes (also in a nested `error.code`), any HTTP 401 from a token endpoint, Kimi Code's 401 and 403 responses, Meta's expired session, and a revoked GitHub Copilot login. Built-in refreshers throw the new exported `OAuthRefreshRejectedError`, which carries only the HTTP status and the provider's error code and description. Custom refreshers can throw it too, and `refreshStoredOAuthCredential()` maps it to the `/login <provider>` message. The description is dropped when it contains the presented token or a URL. Kimi Code's own refresh errors no longer include the provider's raw error description. `isOAuthRefreshRejectedError`, `isPermanentRefreshRejection`, `parseOAuthErrorBody` and the `OAuthRefreshRejection` and `OAuthErrorDetail` types are exported alongside it.
 - A token rotation that completes after its caller stopped waiting is no longer lost when the process exits. The new `drainPendingOAuthRotations(timeoutMs = OAUTH_SHUTDOWN_DRAIN_MS)` waits, for at most `OAUTH_SHUTDOWN_DRAIN_MS` (3 seconds) by default, until every token exchange that has started settles and its result is saved. It resolves `true` when none is left and `false` when the bound passes first, and never rejects. Hosts call it before a graceful exit. A process killed or crashing mid-exchange still cannot save a rotation it never received; `/login <provider>` signs in again. If a late rotation succeeds but saving it fails, the next refresh failure for that provider adds that an earlier refresh succeeded but its new login could not be saved, with only the save error's code or name (for example `ELOCKED`).
 - Sign in with ChatGPT: a ChatGPT Business workspace usage-limit error (`subscription_sharing_workplace_individual_usage_limit_exceeded`) is no longer classified as a transient error to retry, and its message now tells you to ask your workspace admin to increase the limit.
+- Fixed automatic retry not triggering for `stream disconnected before completion` errors relayed by proxies that wrap the Codex CLI ([#11057](https://github.com/earendil-works/pi/issues/11057))
+- Fixed automatic retry treating digits inside request ids or other numbers (for example `req_011CU503xyz` or `5242880 bytes`) as retryable HTTP status codes. Status codes 429, 500, 502-504 and 520-524 now match only as standalone numbers ([#11057](https://github.com/earendil-works/pi/issues/11057))
 
 ## [0.9.40] - 2026-10-20
 

@@ -3,9 +3,10 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } fro
 import { writeFile } from "fs/promises";
 import { arch, platform } from "os";
 import { join } from "path";
-import { APP_NAME, ENV_OFFLINE, getBinDir, getEnvValue } from "../config.js";
+import { ENV_OFFLINE, getBinDir, getEnvValue, VERSION } from "../config.js";
 import { createChildProcessEnvironment } from "./child-process.ts";
 import { fetchWithRetry } from "./management-http.ts";
+import { getPiUserAgent } from "./pi-user-agent.ts";
 
 const TOOLS_DIR = getBinDir();
 const NETWORK_TIMEOUT_MS = 10_000;
@@ -106,7 +107,7 @@ export function getToolPath(tool: "fd" | "rg"): string | null {
 export async function getLatestVersion(repo: string): Promise<string> {
 	const response = await fetchWithRetry(
 		`https://github.com/${repo}/releases/latest`,
-		{ headers: { "User-Agent": APP_NAME }, redirect: "manual" },
+		{ headers: { "User-Agent": getPiUserAgent(VERSION) }, redirect: "manual" },
 		{ timeoutMs: NETWORK_TIMEOUT_MS },
 	);
 	try {

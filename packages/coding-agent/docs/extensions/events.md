@@ -536,7 +536,7 @@ Rules: keep a system message at index 0 (providers read the prompt and initial t
 
 #### before_provider_headers
 
-Fires after outgoing HTTP headers are assembled. Mutate `event.headers` to add, override, or remove headers. The event also identifies the provider and model.
+Fires after outgoing HTTP headers are assembled. Mutate `event.headers` to add, override, or remove headers. The event also identifies the provider and model. Atomic's default `User-Agent` and provider attribution headers (OpenRouter, NVIDIA NIM, OpenCode) are added after this event, so handlers do not see them; headers you set here or in `models.json` take precedence over them. For OpenCode models the `x-opencode-session` header is already present, so a handler can read, replace, or remove it.
 
 When Atomic retries a request with credentials saved by another process after a credential rejection, this event fires again for the retry.
 
