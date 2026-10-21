@@ -27,6 +27,7 @@ import {
 	type DefaultResourceLoaderInheritanceSnapshot,
 	isStaleExtensionContextError,
 	ModelRuntime,
+	noOpUIContext,
 	resolveRestoredModelReference,
 } from "@bastani/atomic";
 import { outsideWorkflowExecutions } from "../durable/execution-context-boundary.js";
@@ -450,6 +451,7 @@ function makeStageExtensionUiContext(
 		confirm: ui.confirm ?? (async () => false),
 		input: ui.input ?? (async () => undefined),
 		notify: ui.notify ?? (() => undefined),
+		requestRender: noOpUIContext.requestRender,
 		onTerminalInput: ui.onTerminalInput ?? (() => () => undefined),
 		setStatus: ui.setStatus ?? (() => undefined),
 		setWorkingMessage: ui.setWorkingMessage ?? (() => undefined),
@@ -488,13 +490,14 @@ function makeStageExtensionUiContext(
 		addAutocompleteProvider: ui.addAutocompleteProvider ?? (() => undefined),
 		setEditorComponent: ui.setEditorComponent ?? (() => undefined),
 		getEditorComponent: ui.getEditorComponent ?? (() => undefined),
-		theme: ui.theme,
+		theme: ui.theme ?? noOpUIContext.theme,
 		getAllThemes: ui.getAllThemes ?? (() => []),
 		getTheme: ui.getTheme ?? (() => undefined),
 		setTheme: ui.setTheme ?? (() => ({ success: false, error: "atomic-workflows: theme UI is unavailable" })),
 		getToolsExpanded: ui.getToolsExpanded ?? (() => false),
 		setToolsExpanded: ui.setToolsExpanded ?? (() => undefined),
-		getChatRenderSettings: ui.getChatRenderSettings ?? (() => undefined),
+		getFooterDataProvider: noOpUIContext.getFooterDataProvider,
+		getChatRenderSettings: ui.getChatRenderSettings ?? noOpUIContext.getChatRenderSettings,
 	};
 }
 
