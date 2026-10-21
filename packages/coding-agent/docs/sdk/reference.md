@@ -378,6 +378,8 @@ The calling model does not supply the decision fields. It calls `structured_outp
 
 The tool infers the result through the session model registry. A successful call returns the schema-validated value as pretty-printed JSON, stores that value in `details`, and sets `terminate: true`. It does not capture the calling model's arguments as the decision. A classifier is used only when the registered schema is a finite Choice; otherwise that candidate is skipped and the next fallback, then the current chat model, is tried. A classifier failure such as missing credentials, an unavailable provider, an unsupported classify operation, a refusal, or a malformed answer advances the same chain. A chat provider refusal advances immediately when reported as an error; plain text without a result gets up to three repairs before advancing. Cancellation stops the call. Saved `/login` credentials are used through the session model registry; a listed model does not prove live access.
 
+Each call must finish within a wall-clock deadline that covers every repair attempt, retry, and model fallback. It defaults to the session's [`httpIdleTimeoutMs`](/settings#http) setting; pass `timeoutMs` (a positive integer in milliseconds) to `createStructuredOutputTool()` to change it. The calling model cannot. See [Structured decisions](/sdk/structured-decisions#cancellation-and-failures).
+
 A custom tool name still works. Include that name in any explicit `tools` allowlist:
 
 ```typescript

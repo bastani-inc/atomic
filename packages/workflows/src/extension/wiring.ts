@@ -291,7 +291,14 @@ function stripWorkflowOnlyOptions(
 ): CreateAgentSessionOptions | undefined {
 	if (!options) return options;
 	const maybeWorkflowOptions = options as StageOptions;
-	const { schema: _schema, mcp: _mcp, fallbackModels, group: _group, ...sessionOptions } = maybeWorkflowOptions;
+	const {
+		schema: _schema,
+		schemaTimeoutMs: _schemaTimeoutMs,
+		mcp: _mcp,
+		fallbackModels,
+		group: _group,
+		...sessionOptions
+	} = maybeWorkflowOptions;
 	return (
 		fallbackModels?.length === 0 ? { ...sessionOptions, fallbackModels: [] } : sessionOptions
 	) as CreateAgentSessionOptions;

@@ -5,6 +5,7 @@ import type { PiModelContext } from "./public-types.js";
 export type WorkflowModelContext = PiModelContext & {
 	getRouterModel?: () => string;
 	getModelRouting?: () => ModelRoutingSettings;
+	getHttpIdleTimeoutMs?: () => number;
 };
 
 /**
@@ -40,6 +41,7 @@ export function workflowModelCatalogFromContext(
 					model: current.model,
 					getRouterModel: () => current.getRouterModel!(),
 					...(current.getModelRouting ? { getModelRouting: () => current.getModelRouting!() } : {}),
+					...(current.getHttpIdleTimeoutMs ? { getHttpIdleTimeoutMs: () => current.getHttpIdleTimeoutMs!() } : {}),
 					modelRegistry: {
 						getAvailable: () => registry.getAvailable(),
 						getAll: () => registry.getAll!(),

@@ -14,6 +14,7 @@ import { raceWithAbortSignal } from "../../utils/abort.js";
 import { reportModelRoutingDebug } from "../model-routing-debug.js";
 import { type JsonObject, STRUCTURED_OUTPUT_TOOL_NAME } from "../tools/structured-output.ts";
 import { compileChoiceSchema } from "./choice-schema.js";
+import { abortFailure, type DecisionTrace, resolveDecisionDeadlineMs, withinDecisionDeadline } from "./deadline.js";
 import { InvalidDecisionOutputError } from "./invalid-output.js";
 import { describeSchemaErrors, schemaMismatchMessage, unparseableArgumentsMessage } from "./rejection-detail.js";
 import { resolveRouterModel } from "./resolver.js";
@@ -85,6 +86,7 @@ async function inferChat<T extends TSchema>(
 	model: Model<Api>,
 	signal: AbortSignal,
 	assertActive: () => void,
+	trace: DecisionTrace,
 ): Promise<StructuredOutputResult<Static<T>>> {
 	// Anthropic catalog configuration may opt into server-side fallback. A decision must not.
 	const decisionModel =
@@ -100,8 +102,9 @@ async function inferChat<T extends TSchema>(
 	assertActive();
 	try {
 		response = await retryAssistantCall(
-			() =>
-				request.modelRegistry
+			() => {
+				const attempt = trace.begin();
+				return request.modelRegistry
 					.streamSimple(
 						decisionModel,
 						{
@@ -134,7 +137,18 @@ async function inferChat<T extends TSchema>(
 							...(request.maxTokens === undefined ? {} : { maxTokens: request.maxTokens }),
 						},
 					)
-					.result(),
+					.result()
+					.then(
+						(message) => {
+							attempt.settle(message.stopReason);
+							return message;
+						},
+						(error: Error) => {
+							attempt.settle();
+							throw error;
+						},
+					);
+			},
 			request.retry ?? DEFAULT_DECISION_RETRY,
 			signal,
 		);
@@ -185,7 +199,7 @@ async function inferChat<T extends TSchema>(
 }
 
 function assertNotCancelled(signal?: AbortSignal): void {
-	if (signal?.aborted) throw new Error("Structured output cancelled; no decision was accepted.");
+	if (signal?.aborted) throw abortFailure(signal);
 }
 
 function resolveCandidate(
@@ -239,6 +253,7 @@ async function inferClassifier<T extends TSchema>(
 	request: InternalStructuredOutputRequest<T>,
 	selected: Extract<StructuredOutputModel, { kind: "classifier" }>,
 	signal: AbortSignal,
+	trace: DecisionTrace,
 ): Promise<StructuredOutputResult<Static<T>>> {
 	const classify = request.modelRegistry.classify;
 	if (!classify) throw new ClassifierDecisionError();
@@ -253,6 +268,7 @@ async function inferClassifier<T extends TSchema>(
 		]),
 	);
 	let result: Awaited<ReturnType<typeof classify>>;
+	const attempt = trace.begin();
 	try {
 		result = await classify.call(
 			request.modelRegistry,
@@ -271,6 +287,7 @@ async function inferClassifier<T extends TSchema>(
 	}
 	signal.throwIfAborted();
 	if (!result || typeof result !== "object") throw new ClassifierDecisionError();
+	attempt.settle(result.stopReason);
 	if (result.stopReason === "aborted") throw new TerminalDecisionError(CLASSIFIER_ABORTED);
 	if (result.stopReason !== "stop") throw new ClassifierDecisionError(result.errorMessage);
 	if (!result.answers || typeof result.answers !== "object" || typeof result.model !== "string")
@@ -296,6 +313,17 @@ export async function generateStructuredOutput<T extends TSchema>(
 	request: StructuredOutputRequest<T>,
 ): Promise<StructuredOutputResult<Static<T>>> {
 	assertNotCancelled(request.signal);
+	const timeoutMs = resolveDecisionDeadlineMs(request.timeoutMs);
+	return withinDecisionDeadline(request.signal, timeoutMs, ({ signal, trace }) =>
+		generateWithinDeadline({ ...request, signal }, trace),
+	);
+}
+
+async function generateWithinDeadline<T extends TSchema>(
+	request: StructuredOutputRequest<T> & { readonly signal: AbortSignal },
+	trace: DecisionTrace,
+): Promise<StructuredOutputResult<Static<T>>> {
+	assertNotCancelled(request.signal);
 	const current = request.currentModel;
 	if (current && (current.id === "auto" || !isModelType(current, "chat")))
 		throw new Error("Structured output currentModel must be a concrete chat model.");
@@ -304,6 +332,7 @@ export async function generateStructuredOutput<T extends TSchema>(
 	if (!request.instructions?.trim()) throw new Error("Structured output requires complete judgment instructions.");
 	const snapshot = {
 		...request,
+		trace,
 		state: jsonSnapshot(request.state),
 		schema: jsonSnapshot(request.schema),
 		instructions: request.instructions,
@@ -402,12 +431,12 @@ class TerminalDecisionError extends Error {}
 class CandidateProviderError extends Error {}
 
 async function inferDecision<T extends TSchema>(
-	request: InternalStructuredOutputRequest<T>,
+	request: InternalStructuredOutputRequest<T> & { readonly signal: AbortSignal; readonly trace: DecisionTrace },
 	repairs: number,
 	validateDecision?: (value: Static<T>) => boolean,
 	fallbackModel?: Model<Api>,
 ): Promise<StructuredOutputResult<Static<T>>> {
-	request.signal?.throwIfAborted();
+	request.signal.throwIfAborted();
 	validateMaxTokensOverride(request.maxTokens);
 	validateState(request.state);
 	if (!request.instructions?.trim()) throw new Error("Structured output requires complete judgment instructions.");
@@ -453,13 +482,14 @@ async function inferDecision<T extends TSchema>(
 	}
 	let fallback: StructuredOutputResult<Static<T>>["fallback"];
 	const controller = new AbortController();
-	const abort = () => controller.abort(new Error("Structured output cancelled; no decision was accepted."));
-	request.signal?.addEventListener("abort", abort, { once: true });
+	const abort = () => controller.abort(abortFailure(request.signal));
+	request.signal.addEventListener("abort", abort, { once: true });
 	const assertActive = () => controller.signal.throwIfAborted();
 	try {
-		if (request.signal?.aborted) abort();
+		if (request.signal.aborted) abort();
 		const usage = { inputTokens: 0, outputTokens: 0 };
 		let rejection: string | undefined;
+		let firstAttempt = request.trace.size;
 		for (let attempt = 0; ; ) {
 			assertActive();
 			const current = {
@@ -473,8 +503,8 @@ async function inferDecision<T extends TSchema>(
 			try {
 				const result = await raceWithAbortSignal(
 					selected.kind === "classifier"
-						? inferClassifier(current, selected, controller.signal)
-						: inferChat(current, selected.model, controller.signal, assertActive),
+						? inferClassifier(current, selected, controller.signal, request.trace)
+						: inferChat(current, selected.model, controller.signal, assertActive, request.trace),
 					controller.signal,
 				);
 				assertActive();
@@ -495,6 +525,7 @@ async function inferDecision<T extends TSchema>(
 				assertActive();
 				return { ...result, value, usage, ...(fallback ? { fallback } : {}) };
 			} catch (error) {
+				request.trace.settleOpen();
 				assertActive();
 				if (
 					selected.kind === "classifier" &&
@@ -517,6 +548,7 @@ async function inferDecision<T extends TSchema>(
 					selected = { kind: "chat", fullId: fallback.to, model: fallbackChat };
 					rejection = undefined;
 					attempt = 0;
+					firstAttempt = request.trace.size;
 					continue;
 				}
 				if (!(error instanceof InvalidDecisionOutputError)) throw error;
@@ -530,12 +562,16 @@ async function inferDecision<T extends TSchema>(
 					continue;
 				}
 				const scope = request.candidateFallback ? "Structured" : fallback ? "Chat fallback" : "Routing";
-				const message = `${error.message} ${repairs ? `${scope} output repair exhausted after ${repairs + 1} attempts.` : "No repair request was made."}`;
+				const exhaustion = repairs
+					? `${scope} output repair exhausted after ${repairs + 1} attempts.`
+					: "No repair request was made.";
+				const attempts = request.trace.describe(firstAttempt);
+				const message = `${error.message} ${exhaustion}${attempts ? ` ${attempts}` : ""}`;
 				throw request.candidateFallback ? new OutputRepairExhaustedError(message) : new Error(message);
 			}
 		}
 	} finally {
-		request.signal?.removeEventListener("abort", abort);
+		request.signal.removeEventListener("abort", abort);
 	}
 }
 
@@ -546,12 +582,15 @@ export async function routeModel<T extends TSchema>(
 	validateDecision?: (value: Static<T>) => boolean,
 ): Promise<StructuredOutputResult<Static<T>>> {
 	request.signal?.throwIfAborted();
-	const { settings, currentModel, ...inference } = request;
+	const { settings, currentModel, timeoutMs, ...inference } = request;
 	const model = resolveRouterModel({ settings, currentModel, modelRegistry: request.modelRegistry });
 	const fallback =
 		model.kind !== "chat" && currentModel && currentModel.id !== "auto" && isModelType(currentModel, "chat")
 			? currentModel
 			: undefined;
 	const retry = inference.retry ?? settings.getRetrySettings?.() ?? DEFAULT_DECISION_RETRY;
-	return inferDecision({ ...inference, model, retry }, 3, validateDecision, fallback);
+	const deadlineMs = resolveDecisionDeadlineMs(timeoutMs, settings.getHttpIdleTimeoutMs?.());
+	return withinDecisionDeadline(request.signal, deadlineMs, ({ signal, trace }) =>
+		inferDecision({ ...inference, model, retry, signal, trace }, 3, validateDecision, fallback),
+	);
 }

@@ -173,6 +173,13 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 	extends WorkflowModelFallbackFields {
 	/** Optional structured final-answer schema. When set, the stage receives a schema-specific final-answer tool. */
 	readonly schema?: TSchemaDef;
+	/**
+	 * Wall-clock limit in milliseconds for each `structured_output` decision of a schema-backed stage, covering
+	 * every repair attempt, transport retry and model fallback together. Defaults to the session's
+	 * `httpIdleTimeoutMs` setting (10 minutes unless changed). A decision that overruns fails with an error naming
+	 * the deadline. Ignored without `schema`.
+	 */
+	readonly schemaTimeoutMs?: number;
 	readonly model?: WorkflowModelValue;
 	/** Hard restrictions for automatic model selection and its execution fallbacks. */
 	readonly modelConstraints?: ModelConstraints;

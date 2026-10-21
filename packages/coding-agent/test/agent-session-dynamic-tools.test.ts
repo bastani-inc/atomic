@@ -62,6 +62,35 @@ describe("AgentSession dynamic tool registration", () => {
 		}
 	});
 
+	// #3806: structured decisions derive their wall-clock deadline from the owning session's live setting.
+	it("exposes the session's live httpIdleTimeoutMs setting to tools (#3806)", async () => {
+		const settingsManager = SettingsManager.inMemory({ httpIdleTimeoutMs: 45_000 });
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: tempDir,
+			agentDir,
+			settingsManager,
+			extensionFactories: [() => {}],
+		});
+		await resourceLoader.reload();
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir,
+			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			settingsManager,
+			sessionManager: SessionManager.inMemory(),
+			resourceLoader,
+		});
+		try {
+			await session.bindExtensions({});
+			const context = session.extensionRunner.createContext();
+			expect(context.getHttpIdleTimeoutMs?.()).toBe(45_000);
+			settingsManager.applyOverrides({ httpIdleTimeoutMs: "disabled" });
+			expect(context.getHttpIdleTimeoutMs?.()).toBe(0);
+		} finally {
+			session.dispose();
+		}
+	});
+
 	it("refreshes tool registry when tools are registered after initialization", async () => {
 		const settingsManager = SettingsManager.create(tempDir, agentDir);
 		const sessionManager = SessionManager.inMemory();

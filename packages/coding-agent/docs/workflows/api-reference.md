@@ -648,6 +648,14 @@ A schema-backed `StageContext` supports one `prompt()` call, so create another s
 
 With both `schema` and `output`, ordinary text from the successful `structured_output` message goes to the artifact. The inferred tool result is the typed value. Corrective attempts and later turns cannot replace that pair. If the successful message has no ordinary text, the artifact uses the most recent earlier assistant text without a `structured_output` call, or stays empty with a warning. The pattern builtins save their inter-stage decisions as JSON separately.
 
+### `schemaTimeoutMs`
+
+```typescript
+readonly schemaTimeoutMs?: number;
+```
+
+Sets the wall-clock limit, in milliseconds, for each `structured_output` decision of a schema-backed item. The limit covers the whole decision, every repair attempt, transport retry, and model fallback together, not each generation alone. It must be a positive integer; anything else fails when the stage is set up. Without it, the limit follows the [`httpIdleTimeoutMs`](/settings#http) setting, 10 minutes by default. A decision that overruns stops its in-flight generation and fails with `Structured output decision exceeded its <n>ms deadline; no decision was accepted.` followed by how each attempt ended and how long it took. The stage then handles that error like any other failed `structured_output` call: the model receives the text unchanged, the corrective follow-ups and `fallbackModels` apply as usual, and a stage that runs out of both fails with that error rather than a structured-output contract error. Raise the limit for slow, reasoning-heavy models or a large `state`; the calling model cannot change it. `schemaTimeoutMs` has no effect without `schema`.
+
 ### `output` / `outputMode`
 
 ```typescript

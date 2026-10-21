@@ -3,7 +3,9 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { beforeEach, describe, test, vi } from "vitest";
+import { SETTINGS_DEFAULTS } from "../../packages/coding-agent/src/core/settings-defaults.js";
 import type { StructuredOutputRequest } from "../../packages/coding-agent/src/core/structured-output/types.js";
 import { buildSystemPrompt } from "../../packages/coding-agent/src/core/system-prompt.js";
 import {
@@ -16,6 +18,7 @@ import {
 	type StructuredOutputCapture,
 } from "../../packages/coding-agent/src/core/tools/index.js";
 import { redirectOversizedToolResult } from "../../packages/coding-agent/src/core/tools/oversized-tool-result.js";
+import { StructuredOutputParameters } from "../../packages/coding-agent/src/core/tools/structured-output.js";
 import {
 	DEFAULT_MAX_RESULT_SIZE_CHARS,
 	PERSISTED_OUTPUT_TAG,
@@ -149,6 +152,60 @@ describe("structured_output inference tool", () => {
 		assert.deepEqual(request?.fallbackModels, ["openai-codex/gpt-6-sol-fast"]);
 		assert.equal(request?.currentModel, currentModel);
 		assert.equal(request?.signal, controller.signal);
+	});
+
+	test("forwards the timeoutMs option as the decision deadline ahead of the session setting (#3806)", async () => {
+		const tool = createStructuredOutputTool({ schema: Type.Object({ ok: Type.Boolean() }), timeoutMs: 45_000 });
+		inference.value = { ok: true };
+
+		await tool.execute("call-1", args(), undefined, undefined, {
+			...context,
+			getHttpIdleTimeoutMs: () => 1_000,
+		});
+
+		assert.equal(inference.requests[0]?.timeoutMs, 45_000);
+	});
+
+	test("derives the decision deadline from the session's httpIdleTimeoutMs when no option is set (#3806)", async () => {
+		const tool = createStructuredOutputTool({ schema: Type.Object({ ok: Type.Boolean() }) });
+		inference.value = { ok: true };
+
+		for (const [httpIdleTimeoutMs, expected] of [
+			[1_234, 1_234],
+			[0, 2_147_483_647],
+		] as const) {
+			await tool.execute("call-1", args(), undefined, undefined, {
+				...context,
+				getHttpIdleTimeoutMs: () => httpIdleTimeoutMs,
+			});
+			assert.equal(inference.requests.at(-1)?.timeoutMs, expected, `httpIdleTimeoutMs ${httpIdleTimeoutMs}`);
+		}
+	});
+
+	test("a context without the setting accessor is still bounded by the default httpIdleTimeoutMs (#3806)", async () => {
+		const tool = createStructuredOutputTool({ schema: Type.Object({ ok: Type.Boolean() }) });
+		inference.value = { ok: true };
+
+		await tool.execute("call-1", args(), undefined, undefined, context);
+
+		assert.equal(inference.requests[0]?.timeoutMs, SETTINGS_DEFAULTS.httpIdleTimeoutMs);
+	});
+
+	test("rejects an invalid timeoutMs option when the tool is created (#3806)", () => {
+		for (const timeoutMs of [0, -5, 2.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+			assert.throws(
+				() => createStructuredOutputTool({ schema: Type.Object({}), timeoutMs }),
+				/timeoutMs/,
+				String(timeoutMs),
+			);
+		}
+	});
+
+	test("the calling model cannot supply a deadline (#3806)", () => {
+		assert.equal(Value.Check(StructuredOutputParameters, args()), true);
+		for (const field of ["timeoutMs", "deadlineMs", "timeout"]) {
+			assert.equal(Value.Check(StructuredOutputParameters, args({ [field]: 1 })), false, field);
+		}
 	});
 
 	test("captures and returns the inferred value, never the input arguments, and terminates", async () => {

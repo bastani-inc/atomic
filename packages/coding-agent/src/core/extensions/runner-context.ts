@@ -63,6 +63,7 @@ export interface ExtensionContextSource {
 	getSystemPrompt(): string;
 	getRouterModel?(): string;
 	getModelRouting?(): import("../settings-types.ts").ModelRoutingSettings;
+	getHttpIdleTimeoutMs?(): number;
 	getSkillCatalog?(): SkillCatalog;
 	getAgentTaskHost?(): import("../tasks/agent-adapter.js").AgentTaskHost;
 }
@@ -351,6 +352,14 @@ export function createExtensionContext(source: ExtensionContextSource, owner: ob
 			source.assertActive();
 			return source.getModelRouting?.() ?? {};
 		},
+		...(source.getHttpIdleTimeoutMs
+			? {
+					getHttpIdleTimeoutMs: () => {
+						source.assertActive();
+						return source.getHttpIdleTimeoutMs!();
+					},
+				}
+			: {}),
 		getSystemPrompt: () => {
 			source.assertActive();
 			return source.getSystemPrompt();

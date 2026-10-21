@@ -22,10 +22,15 @@ const DEADLINE_SLACK_MS = 5_000;
 
 beforeEach(useVirtualTime);
 
-function routingContext(provider: RoutingProvider, withCurrentModel: boolean): ModelRoutingContext {
+function routingContext(
+	provider: RoutingProvider,
+	withCurrentModel: boolean,
+	httpIdleTimeoutMs?: number,
+): ModelRoutingContext {
 	return {
 		...(withCurrentModel ? { model: decisionModel } : {}),
 		getRouterModel: () => "decision-test/chat",
+		...(httpIdleTimeoutMs === undefined ? {} : { getHttpIdleTimeoutMs: () => httpIdleTimeoutMs }),
 		modelRegistry: {
 			getAvailable: () => [decisionModel, OTHER_MODEL],
 			getAll: () => [decisionModel, OTHER_MODEL],
@@ -45,13 +50,14 @@ async function route(
 	behavior: RoutingProviderBehavior,
 	withCurrentModel: boolean,
 	inference?: (deadline: AbortSignal) => RoutingInferenceBounds,
+	httpIdleTimeoutMs?: number,
 ) {
 	const provider = new RoutingProvider(behavior);
 	const started = Date.now();
 	const deadline = deadlineAfter(CALLER_DEADLINE_MS);
 	const settlement = recordSettlement(
 		routeExecutionModel({
-			ctx: routingContext(provider, withCurrentModel),
+			ctx: routingContext(provider, withCurrentModel, httpIdleTimeoutMs),
 			task: "Review the change",
 			agent: { name: "reviewer", description: "Reviews code" },
 			inference: inference ? inference(deadline) : { deadline },
@@ -110,8 +116,43 @@ test("a limit that never admits the inference ends routing at the caller's deadl
 	assert.ok(elapsedMs <= CALLER_DEADLINE_MS + DEADLINE_SLACK_MS, `routing took ${elapsedMs}ms of virtual time`);
 });
 
-test("without caller bounds, a slow routing provider is still waited for", async () => {
-	const { result } = await route({ kind: "answer", latencyMs: 10 * CALLER_DEADLINE_MS }, true, () => ({}));
+test("without caller bounds, a provider slower than any caller deadline is still waited for within the decision deadline", async () => {
+	const { result } = await route({ kind: "answer", latencyMs: 5 * CALLER_DEADLINE_MS }, true, () => ({}));
 	assert.ok(result.ok, "routing gave up on a slow provider");
 	assert.equal(result.value.modelOverride, "decision-test/other");
+});
+
+const DEFAULT_DECISION_DEADLINE_MS = 600_000;
+
+for (const [name, behavior] of [
+	["a hung provider that ignores abort", { kind: "hang", honorsAbort: false }],
+	["a provider that answers after the deadline", { kind: "answer", latencyMs: 20 * CALLER_DEADLINE_MS }],
+] as const) {
+	test(`routing against ${name} ends at the decision deadline and offers the current chat model (#3806)`, async () => {
+		const { result, elapsedMs } = await route(behavior, true, () => ({}));
+		assert.ok(!result.ok, "routing unexpectedly produced a route");
+		assert.ok(result.error instanceof AutoRoutingInferenceError);
+		assert.match(
+			result.error.message,
+			new RegExp(`^Structured output decision exceeded its ${DEFAULT_DECISION_DEADLINE_MS}ms deadline`),
+		);
+		assert.equal(result.error.currentModelRoute?.modelOverride, "decision-test/chat");
+		assert.ok(
+			elapsedMs >= DEFAULT_DECISION_DEADLINE_MS && elapsedMs <= DEFAULT_DECISION_DEADLINE_MS + DEADLINE_SLACK_MS,
+			`routing took ${elapsedMs}ms of virtual time`,
+		);
+	});
+}
+
+test("the decision deadline follows the session's httpIdleTimeoutMs (#3806)", async () => {
+	const { result, elapsedMs } = await route(
+		{ kind: "answer", latencyMs: 5 * CALLER_DEADLINE_MS },
+		true,
+		() => ({}),
+		120_000,
+	);
+	assert.ok(!result.ok, "routing unexpectedly produced a route");
+	assert.ok(result.error instanceof AutoRoutingInferenceError);
+	assert.match(result.error.message, /^Structured output decision exceeded its 120000ms deadline/);
+	assert.ok(elapsedMs >= 120_000 && elapsedMs <= 120_000 + DEADLINE_SLACK_MS, `routing took ${elapsedMs}ms`);
 });

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added `schemaTimeoutMs` to workflow stage, task, chain, and parallel options: the wall-clock limit in milliseconds for each `structured_output` decision of a schema-backed item, covering its repair attempts, retries, and model fallbacks together. It defaults to the `httpIdleTimeoutMs` setting ([#3806](https://github.com/bastani-inc/atomic/issues/3806))
+
 ### Changed
 
 - Reopening `/workflow resume` is faster: the run list is kept between opens and rereads only the runs whose journal changed since the last open, including changes made by other Atomic processes. Whether another session still owns a run is checked when you select it.
@@ -23,6 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A `ctx.parallel(..., { failFast: false })` call that has a failing step no longer loses the results of the steps that succeeded. The `AggregateError` it rejects with now carries `partialResults`, one entry per step in step order, holding each completed step's result and `undefined` for a step that failed. The `WorkflowParallelFailure` type describes it ([#3809](https://github.com/bastani-inc/atomic/issues/3809))
 - A workflow stage's corrective prompt after a rejected `structured_output` result now names the failing paths and expected types, or reports that the tool arguments were not valid JSON, instead of only saying the response does not match the decision schema ([#3802](https://github.com/bastani-inc/atomic/issues/3802))
 - Disposing a session right after a workflow run reports that it ended no longer leaves the run `running` in the workflow journal, with its lease released, for readers to report as crashed. `session.dispose()` now waits up to 10 seconds for runs that have ended but are still recording their ending, before it closes the journal, and it rejects naming the run when that ending still cannot be recorded. A run whose journal rejects the write of its `completed` status now retries it once, and reports it with an error notice and a rejected `waitForSettled` when it still fails, instead of failing in silence ([#3811](https://github.com/bastani-inc/atomic/issues/3811))
+- A schema-backed workflow stage no longer stays `running` for hours inside one `structured_output` call when a slow model keeps generating without calling the tool. The decision now stops after the `httpIdleTimeoutMs` deadline (10 minutes by default) or the stage's `schemaTimeoutMs`, and the error that names the deadline and each attempt's duration reaches the model and the failed stage unchanged instead of being treated as a structured-output contract failure ([#3806](https://github.com/bastani-inc/atomic/issues/3806))
 
 ## [0.9.40] - 2026-10-20
 

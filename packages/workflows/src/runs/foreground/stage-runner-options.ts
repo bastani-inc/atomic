@@ -48,6 +48,7 @@ export async function stripWorkflowOnlyOptions(
 	}
 	const {
 		schema: _schema,
+		schemaTimeoutMs: _schemaTimeoutMs,
 		mcp: _mcp,
 		fallbackModels,
 		modelConstraints: _modelConstraints,

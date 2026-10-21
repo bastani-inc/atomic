@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A subagent with `model: "auto"` no longer waits indefinitely on a slow routing model. Each routing inference now stops after the `httpIdleTimeoutMs` deadline (10 minutes by default), and the subagent runs on the current chat model when it satisfies the routing constraints ([#3806](https://github.com/bastani-inc/atomic/issues/3806))
+
 ## [0.9.40] - 2026-10-20
 
 ### Breaking Changes
