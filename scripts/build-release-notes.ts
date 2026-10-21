@@ -4,6 +4,13 @@
  * `packages/*\/CHANGELOG.md` section for that version into one flat set of
  * `###` sections.
  *
+ * A changelog may open a version with a human-readable summary: prose between
+ * the `## [x.y.z]` heading and its first `###` section. When any package has
+ * one, the notes lead with the summary (stated once when packages repeat it)
+ * and the merged sections move into a collapsed "Full changelog" block, so the
+ * release page reads as highlights first with the complete list one click
+ * away. A version with no summary keeps the flat merged sections unchanged.
+ *
  * Five packages (workflows, subagents, mcp, web-access, intercom) ship bundled
  * inside `@bastani/atomic` rather than being published independently, so their
  * entries are user-facing for anyone installing it. Reading only
@@ -134,9 +141,17 @@ export function buildReleaseNotes(sources: readonly ChangelogSource[], version: 
 		}
 	}
 
-	const blocks: string[] = [...preambles];
+	const sectionBlocks: string[] = [];
 	for (const title of orderSectionTitles([...merged.keys()])) {
-		blocks.push(`### ${title}\n\n${(merged.get(title) ?? []).join("\n")}`);
+		sectionBlocks.push(`### ${title}\n\n${(merged.get(title) ?? []).join("\n")}`);
+	}
+
+	const blocks: string[] = [...preambles];
+	if (preambles.length > 0 && sectionBlocks.length > 0) {
+		// Blank lines inside the element keep GitHub rendering the markdown within it.
+		blocks.push(`<details>\n<summary>Full changelog</summary>\n\n${sectionBlocks.join("\n\n")}\n\n</details>`);
+	} else {
+		blocks.push(...sectionBlocks);
 	}
 
 	if (blocks.length === 0) {

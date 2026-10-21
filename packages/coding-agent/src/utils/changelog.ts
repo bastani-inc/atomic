@@ -142,6 +142,18 @@ export function normalizeChangelogLinks(markdown: string, version: string | Chan
 }
 
 /**
+ * The human-readable summary a release section opens with: the prose between the
+ * `## [x.y.z]` heading and its first `###` section. Undefined when there is none,
+ * so callers fall back to the full entry.
+ */
+export function getChangelogHighlights(entry: ChangelogEntry): string | undefined {
+	const [, ...body] = entry.content.split("\n");
+	const sectionStart = body.findIndex((line) => line.startsWith("### "));
+	const highlights = (sectionStart === -1 ? body : body.slice(0, sectionStart)).join("\n").trim();
+	return highlights.length > 0 ? highlights : undefined;
+}
+
+/**
  * Parse changelog entries from CHANGELOG.md
  * Scans for ## lines and collects content until next ## or EOF
  */

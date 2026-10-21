@@ -108,6 +108,7 @@ export {
 	ProjectTrustStore,
 } from "../../core/trust-manager.ts";
 export {
+	getChangelogHighlights,
 	getChangelogPath,
 	getEntriesForVersion,
 	getNewEntries,
