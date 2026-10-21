@@ -85,6 +85,47 @@ Successful login persists credentials before refreshing the catalog. Logout remo
 
 Intentional cancellation is quiet, including native `AbortError`, an aborted signal or its exact reason, nested abort causes, and the legacy exact `Login cancelled` error. Provider denial, timeout, network/protocol errors, malformed responses, token exchange failures, and storage failures remain visible. Catalog-refresh failures are reported by `/model` while cached models remain selectable; they do not turn a persisted login into a failed transaction.
 
+## Rejected logins
+
+When the provider rejects the stored refresh token, for example because the user revoked access or the login expired, throw `OAuthRefreshRejectedError` from `refreshToken`:
+
+```typescript
+import { OAuthRefreshRejectedError } from "@bastani/atomic";
+
+async refreshToken(credentials, signal) {
+  const response = await fetch("https://sso.corp.com/token", { method: "POST", body: refreshBody(credentials), signal });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    if (response.status === 401 || body.error === "invalid_grant") {
+      throw new OAuthRefreshRejectedError(
+        `Corporate AI token refresh failed (${response.status})`,
+        { status: response.status, code: body.error, description: body.error_description },
+        [credentials.refresh, credentials.access],
+      );
+    }
+    throw new Error(`Token refresh failed (${response.status})`);
+  }
+  // ...
+}
+```
+
+Atomic then handles the refresh as it does for a built-in provider. It first uses a newer login that another session saved, if there is one. Otherwise the request fails with:
+
+```
+OAuth refresh failed for corporate-ai: invalid_grant (Refresh token expired). The provider rejected the stored login; run /login corporate-ai to sign in again.
+```
+
+The message shows only the provider ID, the error code (or `HTTP <status>` when there is none), and the description. Pass the stored tokens as the third argument: a description that contains one of them, contains a URL, or is too long is left out. Never put tokens or request bodies in the code or description.
+
+Atomic also treats these errors from `refreshToken` as a rejected login, including when they are the `cause` of the error you throw:
+
+- an error with an `error` or `code` property of `invalid_grant`, such as openid-client's response errors; `error_description` supplies the description
+- an error whose `body`, `data`, `response.data`, or `response.body` holds an OAuth error response (`{"error":"invalid_grant", ...}`), as an object or JSON text, as HTTP clients such as axios attach it
+- an error whose `status`, `statusCode`, or `response.status` is 401
+- an error message that contains an OAuth error response with `invalid_grant`, as the built-in providers report it
+
+Other failures, such as a 5xx status, a network error, or another OAuth error code, are reported as `OAuth refresh failed for <provider>: <message>` without asking the user to sign in again, because a retry may succeed.
+
 ## Dynamic model catalog refresh
 
 Providers whose catalogs change at runtime can add `refreshModels`. Atomic calls it during the model picker's bounded asynchronous refresh, independently of authentication completion:

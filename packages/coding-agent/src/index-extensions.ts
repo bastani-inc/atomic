@@ -1,4 +1,6 @@
 // Extension system
+// Extension OAuth providers throw OAuthRefreshRejectedError from `refreshToken` when the provider rejected the login.
+export { isOAuthRefreshRejectedError, OAuthRefreshRejectedError } from "@bastani/pi-ai";
 export type {
 	AfterProviderResponseEvent,
 	AgentActivityOutcome,
