@@ -90,13 +90,14 @@ const VIRTUAL_BUDGET_MS = 30 * 60_000;
 const HUNG_IDLE_MS = 5_000;
 
 /**
- * Async resource types that count as real work in flight: file-system requests and the real
- * macrotasks `setImmediate` schedules. Each ends in exactly one callback, which is how the ledger
+ * Async resource types that count as real work in flight: file-system requests (including the
+ * request that closes a `fs/promises` file handle, which Node 22 and later issue after every
+ * `readFile`) and the real macrotasks `setImmediate` schedules. Each ends in exactly one callback, which is how the ledger
  * knows it is done. Other native resources are left out on purpose: a crypto job run
  * synchronously (`randomUUID`, `randomBytes`) or a stream write that finishes at once opens a
  * resource that never gets a callback, so it would read as work in flight forever.
  */
-const REAL_WORK_TYPE = /^(?:FSREQ|Immediate$)/;
+const REAL_WORK_TYPE = /^(?:FSREQ|FILEHANDLECLOSEREQ$|Immediate$)/;
 
 /**
  * Real asynchronous work in flight: file-system requests (the evals read, credential-file probes) and

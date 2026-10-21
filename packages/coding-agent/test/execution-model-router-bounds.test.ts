@@ -13,7 +13,7 @@ import {
 	type ModelRoutingContext,
 	type RoutingInferenceBounds,
 	routeExecutionModel,
-} from "../src/core/execution-model-router.ts";
+} from "../src/core/execution-model-router.js";
 
 const OTHER_MODEL = { ...decisionModel, id: "other", name: "Other" };
 const CALLER_DEADLINE_MS = 60_000;
