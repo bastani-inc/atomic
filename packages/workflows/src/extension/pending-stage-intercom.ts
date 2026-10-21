@@ -223,7 +223,9 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 			const entry = { signature };
 			announcedRoutes.set(run.id, entry);
 			try {
-				pi.events?.emit?.(PENDING_STAGE_ROUTE_EVENT, announcement);
+				// Intercom may open this session's own broker connection for the route; opened inside the
+				// run's execution, every later inbound message would start host turns inside it once it retires.
+				outsideWorkflowExecutions(() => pi.events?.emit?.(PENDING_STAGE_ROUTE_EVENT, announcement));
 			} catch (error) {
 				// Never cache a failed emission; the store observer owns the error.
 				if (announcedRoutes.get(run.id) === entry) announcedRoutes.delete(run.id);

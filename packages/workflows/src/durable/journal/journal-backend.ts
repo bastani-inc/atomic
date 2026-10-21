@@ -223,7 +223,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	): Promise<T> {
 		try {
 			this.ensureOpen();
-			if (requiresActiveExecution) this.assertExecutionActive(runId);
+			if (requiresActiveExecution) this.assertExecutionActive();
 		} catch (error) {
 			return Promise.reject(error);
 		}
@@ -317,7 +317,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	}
 	private *current(runId: string): Operation<DurableWorkflowHandle | undefined> {
 		this.ensureOpen();
-		this.assertExecutionActive(runId, true);
+		this.assertExecutionActive(true);
 		yield* this.refresh(runId);
 		if (this.projection.getWorkflow(runId) === undefined) return undefined;
 		try {
@@ -334,14 +334,14 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		if (this.state === "closed" || (this.state === "closing" && !this.mutationContext.getStore()))
 			throw new JournalBackendClosedError();
 	}
-	private assertExecutionActive(runId: string | symbol, admitted = false): void {
+	private assertExecutionActive(admitted = false): void {
 		for (const [executionRunId, execution] of this.executionContext.getStore() ?? [])
 			if (execution.retired && !(admitted && this.mutationContext.getStore()?.has(execution)))
-				throw new JournalExecutionRetiredError(typeof runId === "string" ? runId : executionRunId);
+				throw new JournalExecutionRetiredError(executionRunId);
 	}
 	private *ownership(runId: string): Operation<Lease> {
 		this.ensureOpen();
-		this.assertExecutionActive(runId, true);
+		this.assertExecutionActive(true);
 		const lost = this.lost.get(runId);
 		if (lost) throw lost;
 		const existing = this.leases.get(runId);
@@ -415,7 +415,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		return this.serialize(input.workflowId, () => this.register(input));
 	}
 	private *register(input: WorkflowRegistrationInput): Operation<void> {
-		this.assertExecutionActive(input.workflowId, true);
+		this.assertExecutionActive(true);
 		this.ensureOpen();
 		const header = {
 			runId: input.workflowId,
@@ -854,7 +854,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	}
 	async withWorkflowLease<T>(runId: string, action: () => Promise<T>): Promise<T> {
 		this.ensureOpen();
-		this.assertExecutionActive(runId);
+		this.assertExecutionActive();
 		const context = this.executionContext.getStore();
 		const active = this.executions.get(runId);
 		if (active !== undefined && context?.get(runId) !== active) throw new JournalOwnershipError(runId, this.holderId);
@@ -883,7 +883,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		return this.serialize(runId, () => this.release(runId, execution), false);
 	}
 	releaseWorkflow(runId: string): Promise<void> {
-		this.assertExecutionActive(runId);
+		this.assertExecutionActive();
 		return this.serialize(runId, () => this.release(runId));
 	}
 	private *release(runId: string, execution?: WorkflowLeaseExecution): Operation<void> {

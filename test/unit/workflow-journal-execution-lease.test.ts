@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { AsyncResource } from "node:async_hooks";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { test } from "vitest";
@@ -438,6 +439,29 @@ test("completed detached runs release their lease for deletion without unlocking
 		await active.promise;
 		await successor.close();
 		await contender.close();
+		await backend.close();
+		removeTempDirectory(directory);
+	}
+});
+
+test("a launch from inside a retired execution is refused with an error naming the retired run", async () => {
+	const directory = makeTempDirectory("retired-execution-name-");
+	const backend = await JournalDurableBackend.open(await openSqlRunJournal(join(directory, "journal.sqlite")));
+	const retiredRunId = testRunId("retired-execution");
+	const launchedRunId = testRunId("launched-from-retired-context");
+	try {
+		const launchInsideRetiredExecution = await backend.withWorkflowLease(retiredRunId, async () =>
+			AsyncResource.bind(() => backend.withWorkflowLease(launchedRunId, async () => "launched")),
+		);
+		const refusal = await launchInsideRetiredExecution().then(
+			() => assert.fail("a launch inside a retired execution must be refused"),
+			(error: Error) => error,
+		);
+		assert.ok(refusal instanceof JournalExecutionRetiredError);
+		assert.equal(refusal.runId, retiredRunId);
+		assert.equal(refusal.message, `Workflow execution for ${retiredRunId} is retired`);
+		assert.doesNotMatch(refusal.message, new RegExp(launchedRunId));
+	} finally {
 		await backend.close();
 		removeTempDirectory(directory);
 	}
