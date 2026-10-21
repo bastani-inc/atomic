@@ -1,4 +1,5 @@
 import { basename, join, relative, sep } from "node:path";
+import { getOpenCodeSessionHeaders } from "@bastani/pi-ai";
 import { clampThinkingLevel, type Message, type ProviderHeaders, streamSimple } from "@bastani/pi-ai/compat";
 import { getProviderEnvValue } from "@bastani/pi-ai/utils/provider-env";
 import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
@@ -13,6 +14,7 @@ import { withBuiltinResourceLoader } from "./builtin-resource-loader.ts";
 import { getDefaultCacheRetention } from "./cache-retention.ts";
 import { CacheWarmer } from "./cache-warmer.ts";
 import { inheritChildSessionOptions } from "./child-session-options.ts";
+import { getClientIdentity } from "./client-identity.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { startupCleanupFailureMessage } from "./extension-startup-failure.ts";
 import type { ExtensionRunner } from "./extensions/index.js";
@@ -33,7 +35,6 @@ import { findInitialModel, resolveRestoredModelReference } from "./model-resolve
 import { ModelRuntime } from "./model-runtime.js";
 import { type ModelRuntimeSimpleStreamOptions, mergeHeaders } from "./model-runtime-streaming.ts";
 import { sanitizeOpenAIResponsesPayload } from "./openai-responses-payload-sanitizer.ts";
-import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
 import { canCloneDefaultResourceDiscovery, DefaultResourceLoader } from "./resource-loader.ts";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-types.ts";
@@ -500,11 +501,10 @@ async function constructAgentSession(
 				const websocketConnectTimeoutMs =
 					streamOptions?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
 				const streamDeadlineMs = streamOptions?.streamDeadlineMs ?? settingsManager.getStreamDeadlineMs();
-				const requestHeaders = mergeProviderAttributionHeaders(
-					model,
-					settingsManager,
-					streamOptions?.sessionId,
-					auth.headers,
+				// The OpenCode session header joins here, not in `ModelRuntimeStreaming`, so `before_provider_headers`
+				// handlers see it and can change or remove it.
+				const requestHeaders = mergeHeaders(
+					mergeHeaders(getOpenCodeSessionHeaders(requestModel, streamOptions?.sessionId), auth.headers),
 					streamOptions?.headers,
 				);
 				const mergedHeaders = mergeHeaders(model.headers, requestHeaders);
@@ -545,6 +545,8 @@ async function constructAgentSession(
 					timeoutMs,
 					websocketConnectTimeoutMs,
 					streamDeadlineMs,
+					// Replaces the agent loop's default identity; read per request so telemetry changes apply at once.
+					identity: getClientIdentity(settingsManager),
 					maxRetries: streamOptions?.maxRetries ?? providerRetrySettings.maxRetries,
 					maxRetryDelayMs: streamOptions?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
 					headers: transportHeaders,

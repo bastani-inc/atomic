@@ -10,6 +10,7 @@ import {
 	type DeferredCancelOptions,
 	type DeferredFetchOptions,
 	type DeferredHandle,
+	getOpenCodeSessionHeaders,
 	lazyStream,
 	type Model,
 	type ModelsApiStreamOptions,
@@ -129,7 +130,13 @@ export class ModelRuntimeStreaming {
 		options?.signal?.throwIfAborted();
 		if (!resolution) throw new ModelsError("auth", `Provider is not configured: ${model.provider}`);
 
-		let headers = mergeHeaders(resolution.auth.headers, providerOptions.headers);
+		const requestModel = resolution.auth.baseUrl ? { ...model, baseUrl: resolution.auth.baseUrl } : model;
+		// An SDK-prepared request already carries the session header, which `before_provider_headers`
+		// handlers may have removed, so only other requests add it here.
+		const sessionHeaders = preparedRequestAuth
+			? undefined
+			: getOpenCodeSessionHeaders(requestModel, providerOptions.sessionId);
+		let headers = mergeHeaders(mergeHeaders(sessionHeaders, resolution.auth.headers), providerOptions.headers);
 		if (transformHeaders) headers = await transformHeaders(headers ?? {});
 		options?.signal?.throwIfAborted();
 		const env =
@@ -155,7 +162,7 @@ export class ModelRuntimeStreaming {
 				env: Object.entries(env ?? {}).sort(([left], [right]) => left.localeCompare(right)),
 				baseUrl: resolution.auth.baseUrl ?? model.baseUrl,
 			}),
-			model: resolution.auth.baseUrl ? { ...model, baseUrl: resolution.auth.baseUrl } : model,
+			model: requestModel,
 			options: {
 				...providerOptions,
 				apiKey,

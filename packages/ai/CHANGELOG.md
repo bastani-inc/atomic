@@ -4,6 +4,16 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- The default `User-Agent` is now `pi/<version> (<platform>; <runtime>; <arch>)` instead of `pi (<platform> <release>; <arch>)`, and `@bastani/pi-ai/utils/pi-user-agent` (`getPiUserAgent()`) is removed; use `formatUserAgent()`.
+
+### Added
+
+- Added client identity configuration: an `identity` request option and `createModels({ identity })` default choose the `User-Agent` (`"detailed"` with a version, `"short"`, or custom) and provider attribution headers for OpenRouter, NVIDIA NIM, and OpenCode from `attribution: { name, url, categories? }`. `withClientIdentity()` applies an identity to a `Models` or `MutableModels` a library receives from its host. `formatUserAgent()`, `getIdentityHeaders()`, `getOpenCodeSessionHeaders()`, `mergeClientIdentity()`, `PI_ATTRIBUTION`, and `PI_AI_VERSION` are exported. Attribution matches OpenRouter by its exact `openrouter.ai` host, so a custom endpoint that merely contains that name is not attributed.
+- Bedrock, OpenRouter image generation, pi-messages, and classifier requests now send pi's `User-Agent` too.
+- `Models` requests with a `sessionId` to custom providers pointing at OpenCode (`opencode.ai`) now send the `x-opencode-session` header too, like the built-in OpenCode providers.
+
 ### Fixed
 
 - `refreshStoredOAuthCredential()` no longer aborts a token exchange when its caller stops waiting. A token rotation that completes after the 60-second refresh timeout is now saved instead of leaving the replaced refresh token stored. The refresh keeps the credential lock until the exchange settles, for up to `OAUTH_REFRESH_LOCK_HOLD_MS`, so no other refresh presents the token it may already have rotated. When the provider rejects a refresh, it returns a newer credential that another process has saved. A refresh rejected with `invalid_grant` reports only the provider's error code and description, never request URLs, bodies, or tokens, followed by an instruction to run `/login <provider>`. `OAUTH_REFRESH_TIMEOUT_MS` and `OAUTH_REFRESH_LOCK_HOLD_MS` are exported.

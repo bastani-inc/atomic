@@ -309,7 +309,7 @@ Use these sections under `## [Unreleased]`:
 
 ## Versionless release bases & bumping
 
-`main` and supported workstream bases are versionless: every `packages/*/package.json` (plus `package-lock.json` workspace entries, the `@bastani/atomic-natives` dependency pin, `packages/natives/native/index.js` checks, and the Cargo manifests/lock) stays at the `0.0.0` placeholder. **Do not bump the version on a release base.**
+`main` and supported workstream bases are versionless: every `packages/*/package.json` (plus `package-lock.json` workspace entries, the `@bastani/atomic-natives` dependency pin, `packages/natives/native/index.js` checks, the `PI_AI_VERSION` constant in `packages/ai/src/utils/version.ts`, and the Cargo manifests/lock) stays at the `0.0.0` placeholder. **Do not bump the version on a release base.**
 
 `scripts/bump-version.ts` is the low-level stamper that rewrites every versioned manifest. It is invoked by `scripts/cut-release.ts` inside a throwaway worktree at the exact remote base SHA to materialize the real version on the tagged release commit. You normally never run it directly against a release base; the only direct use is resetting the placeholder if it ever drifts:
 
