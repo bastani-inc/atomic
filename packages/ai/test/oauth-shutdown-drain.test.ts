@@ -152,9 +152,13 @@ class StoreThatCannotSaveRotation extends InMemoryCredentialStore {
 
 /**
  * The first exchange answers {@link LATE_RESPONSE_AFTER_LOCK_HOLD_MS} after the lock hold with `lateResult`; the
- * provider then rejects the still-stored `fake-refresh-1` with `invalid_grant`.
+ * provider then rejects the still-stored `fake-refresh-1` with `invalid_grant`. With `alsoRefreshAnotherStore`, a second
+ * store holding a login for the same provider is refreshed (and rejected) first, and its message is returned too.
  */
-async function lateExchangeThenRejectedRefresh(lateResult: () => Promise<OAuthCredential>) {
+async function lateExchangeThenRejectedRefresh(
+	lateResult: () => Promise<OAuthCredential>,
+	alsoRefreshAnotherStore = false,
+): Promise<{ message: string; otherStoreMessage?: string }> {
 	useFakeTimers();
 	const credentials = new StoreThatCannotSaveRotation();
 	await credentials.modify(PROVIDER, async () => ({
@@ -182,23 +186,36 @@ async function lateExchangeThenRejectedRefresh(lateResult: () => Promise<OAuthCr
 	assert.equal(exchanges, 1);
 	assert.equal(await storedRefreshToken(credentials), "fake-refresh-1");
 
-	const next = refreshStoredOAuthCredential(
-		credentials,
-		PROVIDER,
-		oauth,
-		(credential) => Date.now() >= credential.expires,
-		new AbortController().signal,
-	);
-	const error = await next.then(
-		() => assert.fail("the provider rejected the refresh"),
-		(rejected: unknown) => rejected,
-	);
-	assert.ok(error instanceof Error);
-	return error.message;
+	const rejectedRefreshMessage = async (store: InMemoryCredentialStore) => {
+		const error = await refreshStoredOAuthCredential(
+			store,
+			PROVIDER,
+			oauth,
+			(credential) => Date.now() >= credential.expires,
+			new AbortController().signal,
+		).then(
+			() => assert.fail("the provider rejected the refresh"),
+			(rejected: unknown) => rejected,
+		);
+		assert.ok(error instanceof Error);
+		return error.message;
+	};
+	let otherStoreMessage: string | undefined;
+	if (alsoRefreshAnotherStore) {
+		const otherStore = new InMemoryCredentialStore();
+		await otherStore.modify(PROVIDER, async () => ({
+			type: "oauth",
+			access: "fake-access-other",
+			refresh: "fake-refresh-other",
+			expires: 0,
+		}));
+		otherStoreMessage = await rejectedRefreshMessage(otherStore);
+	}
+	return { message: await rejectedRefreshMessage(credentials), otherStoreMessage };
 }
 
 it("a rejected refresh explains that an earlier rotation could not be saved", async () => {
-	const message = await lateExchangeThenRejectedRefresh(async () => ({
+	const { message } = await lateExchangeThenRejectedRefresh(async () => ({
 		type: "oauth",
 		access: "fake-access-2",
 		refresh: "fake-refresh-2",
@@ -216,11 +233,23 @@ it("a rejected refresh explains that an earlier rotation could not be saved", as
 });
 
 it("a late exchange that itself fails leaves no unsaved-rotation note", async () => {
-	const message = await lateExchangeThenRejectedRefresh(async () => {
+	const { message } = await lateExchangeThenRejectedRefresh(async () => {
 		throw new Error("network down");
 	});
 
 	assert.match(message, /invalid_grant/);
 	assert.match(message, /run \/login openai-1/);
 	assert.equal(message.includes("could not be saved"), false);
+});
+
+it("an unsaved rotation in one credential store is not reported against another store's login", async () => {
+	const { message, otherStoreMessage } = await lateExchangeThenRejectedRefresh(
+		async () => ({ type: "oauth", access: "fake-access-2", refresh: "fake-refresh-2", expires: Date.now() + 3_600_000 }),
+		true,
+	);
+
+	assert.ok(otherStoreMessage !== undefined);
+	assert.match(otherStoreMessage, /invalid_grant/);
+	assert.equal(otherStoreMessage.includes("could not be saved"), false, "another store's login gets the note");
+	assert.match(message, /An earlier refresh for openai-1 succeeded, but its new login could not be saved \(ELOCKED\)\./);
 });

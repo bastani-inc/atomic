@@ -230,10 +230,20 @@ function describeRejectedLogin(error: unknown, presented: OAuthCredential): stri
 }
 
 /**
- * Per provider, why the last late rotation could not be saved: only the save error's `code` or `name`, never its
- * message, which may contain paths or tokens. Cleared by a later save or rotation, or once a refresh failure reports it.
+ * Per credential store and provider, why the last late rotation could not be saved: only the save error's `code` or
+ * `name`, never its message, which may contain paths or tokens. Keyed by store so one store's lost save is never
+ * reported against another's login. Cleared by a later save or rotation, or once a refresh failure reports it.
  */
-const unsavedLateRotations = new Map<string, string>();
+const unsavedLateRotations = new WeakMap<CredentialStore, Map<string, string>>();
+
+function unsavedLateRotationsFor(credentials: CredentialStore): Map<string, string> {
+	let byProvider = unsavedLateRotations.get(credentials);
+	if (byProvider === undefined) {
+		byProvider = new Map();
+		unsavedLateRotations.set(credentials, byProvider);
+	}
+	return byProvider;
+}
 
 function safeSaveErrorReason(error: unknown): string {
 	if (error instanceof Error) {
@@ -243,17 +253,23 @@ function safeSaveErrorReason(error: unknown): string {
 	return "unknown error";
 }
 
-/** The sentence explaining a lost late rotation for `providerId`, reported once. */
-function takeUnsavedLateRotationNote(providerId: string): string {
-	const reason = unsavedLateRotations.get(providerId);
+/** The sentence explaining a lost late rotation for `providerId` in `credentials`, reported once. */
+function takeUnsavedLateRotationNote(credentials: CredentialStore, providerId: string): string {
+	const byProvider = unsavedLateRotations.get(credentials);
+	const reason = byProvider?.get(providerId);
 	if (reason === undefined) return "";
-	unsavedLateRotations.delete(providerId);
+	byProvider?.delete(providerId);
 	return ` An earlier refresh for ${providerId} succeeded, but its new login could not be saved (${reason}).`;
 }
 
-function oauthRefreshFailure(providerId: string, error: unknown, presented: OAuthCredential): ModelsError {
+function oauthRefreshFailure(
+	credentials: CredentialStore,
+	providerId: string,
+	error: unknown,
+	presented: OAuthCredential,
+): ModelsError {
 	const rejectedLogin = describeRejectedLogin(error, presented);
-	const unsavedNote = takeUnsavedLateRotationNote(providerId);
+	const unsavedNote = takeUnsavedLateRotationNote(credentials, providerId);
 	if (rejectedLogin === undefined) {
 		const message = unsavedNote
 			? `OAuth refresh failed for ${providerId}.${unsavedNote}`
@@ -283,10 +299,10 @@ function persistLateRotation(
 					)
 					.then(
 						() => {
-							unsavedLateRotations.delete(providerId);
+							unsavedLateRotations.get(credentials)?.delete(providerId);
 						},
 						(saveError: unknown) => {
-							unsavedLateRotations.set(providerId, safeSaveErrorReason(saveError));
+							unsavedLateRotationsFor(credentials).set(providerId, safeSaveErrorReason(saveError));
 						},
 					),
 			// The exchange itself failed: nothing was rotated that could be lost.
@@ -366,12 +382,12 @@ export async function refreshStoredOAuthCredential(
 				try {
 					exchangeSettled ??= trackTokenExchange();
 					const rotated = await rotateOAuthCredential(credentials, providerId, oauth, current, stopCallerWaiting);
-					unsavedLateRotations.delete(providerId);
+					unsavedLateRotations.get(credentials)?.delete(providerId);
 					return rotated;
 				} catch (error) {
 					const newer = await readNewerOAuthCredential(credentials, providerId, current);
 					if (newer) return newer;
-					throw oauthRefreshFailure(providerId, error, current);
+					throw oauthRefreshFailure(credentials, providerId, error, current);
 				}
 			},
 			{ signal: lockWait.signal },
