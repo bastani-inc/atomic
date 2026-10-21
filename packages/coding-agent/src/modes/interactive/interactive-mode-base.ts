@@ -419,6 +419,8 @@ export class InteractiveModeBase {
 	/** True while `runUserPromptTurn()` owns the working loader. */
 	promptTurnWorkingLoaderActive = false;
 
+	promptTurn: { dispatched: boolean } | undefined = undefined;
+
 	// Auto-retry state
 	retryLoader: AtomicWorkingLoader | undefined = undefined;
 	fallbackLoader: Loader | undefined = undefined;

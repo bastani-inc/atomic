@@ -12,6 +12,7 @@ type PromptTurnContext = {
 	loadingAnimation: WorkingLoader | undefined;
 	workingVisible: boolean;
 	promptTurnWorkingLoaderActive: boolean;
+	compactionQueuedMessages: Array<{ text: string; mode: "steer" | "followUp" }>;
 	deferredStartupPending: boolean;
 	deferredStartupPromise: Promise<void> | undefined;
 	options: { deferredModelScopePatterns?: string[] };
@@ -76,6 +77,7 @@ function createContext(overrides: {
 		loadingAnimation: undefined,
 		workingVisible: true,
 		promptTurnWorkingLoaderActive: false,
+		compactionQueuedMessages: [],
 		deferredStartupPending: true,
 		deferredStartupPromise: undefined,
 		options: {},
@@ -176,7 +178,10 @@ describe("prompt turn working indicator continuity", () => {
 
 		await context.runUserPromptTurn.call(context, "/workflow status");
 
-		expect(context.session.prompt).toHaveBeenCalledWith("/workflow status");
+		expect(context.session.prompt).toHaveBeenCalledWith(
+			"/workflow status",
+			expect.objectContaining({ streamingBehavior: "steer" }),
+		);
 		expect(context.session.resumeQueuedMessages).not.toHaveBeenCalled();
 		expect(context.session._tryExecuteExtensionCommand).not.toHaveBeenCalled();
 		expect(indicatorVisible(context)).toBe(false);

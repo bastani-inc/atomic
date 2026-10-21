@@ -1,3 +1,4 @@
+import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { combineQueuedMessagesForEditor, Spacer, TruncatedText, theme } from "./interactive-mode-deps.ts";
 import type { CompactionQueuedMessage } from "./interactive-mode-types.ts";
@@ -116,13 +117,16 @@ InteractiveModeBase.prototype.flushCompactionQueue = async function (
 	this: InteractiveModeBase,
 	options?: {
 		willRetry?: boolean;
+		afterPrompt?: boolean;
 	},
 ): Promise<void> {
 	if (this.compactionFlushPending || this.compactionQueuedMessages.length === 0) return;
+	if (this.promptTurn?.dispatched === false) return;
 	this.compactionFlushPending = true;
 	this.compactionSendFailed = false;
 	try {
-		await sendCompactionQueue(this, options?.willRetry === true);
+		if (options?.afterPrompt === true) await sendHeldInput(this);
+		else await sendCompactionQueue(this, options?.willRetry === true);
 	} finally {
 		this.compactionFlushPending = false;
 		this.updatePendingMessagesDisplay();
@@ -205,31 +209,61 @@ async function startCompactionQueuePrompt(mode: InteractiveModeBase): Promise<bo
 	if (!ranCommands) return false;
 	const first = takeNextCompactionMessage(mode);
 	if (!first) return false;
+	const refused = await promptUntilAccepted(mode, first);
+	if (refused === undefined) return true;
+	returnCompactionMessage(mode, first, refused.error);
+	return false;
+}
+
+async function promptUntilAccepted(
+	mode: InteractiveModeBase,
+	message: CompactionQueuedMessage,
+	onQueued?: () => void,
+): Promise<{ error: unknown } | undefined> {
 	let accept!: (accepted: boolean) => void;
 	const accepted = new Promise<boolean>((resolve) => {
 		accept = resolve;
 	});
-	const prompt = mode.session.prompt(first.text, {
-		streamingBehavior: first.mode,
-		preflightResult: (success) => accept(success),
+	const prompt = mode.session.prompt(message.text, {
+		streamingBehavior: message.mode,
+		preflightResult: (success, disposition) => {
+			if (success && disposition === "queued") onQueued?.();
+			accept(success);
+		},
 	});
 	prompt.then(
 		() => accept(true),
-		() => accept(false),
+		(error: unknown) => accept(isRpcRequestAcceptedFailure(error)),
 	);
 	if (await accepted) {
 		prompt.catch((error) => showCompactionQueueError(mode, error));
-		return true;
+		return undefined;
 	}
-	returnCompactionMessage(
-		mode,
-		first,
-		await prompt.then(
+	return {
+		error: await prompt.then(
 			() => undefined,
 			(error: unknown) => error,
 		),
-	);
-	return false;
+	};
+}
+
+async function sendHeldInput(mode: InteractiveModeBase): Promise<void> {
+	while (mode.compactionQueuedMessages.length > 0) {
+		const message = takeNextCompactionMessage(mode);
+		if (!message) return;
+		const echoed = !message.text.startsWith("/");
+		if (echoed) mode.renderDeferredUserInput(message.text);
+		const refused = await promptUntilAccepted(
+			mode,
+			message,
+			echoed ? () => mode.discardDeferredRenderedUserInput(message.text) : undefined,
+		);
+		if (refused !== undefined) {
+			if (echoed) mode.discardDeferredRenderedUserInput(message.text);
+			returnCompactionMessage(mode, message, refused.error);
+			return;
+		}
+	}
 }
 
 InteractiveModeBase.prototype.flushPendingBashComponents = function (this: InteractiveModeBase): void {

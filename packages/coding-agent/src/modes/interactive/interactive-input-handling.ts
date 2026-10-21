@@ -12,6 +12,7 @@ import {
 	remoteEngineProxyOwner,
 	remoteProxyHandlesCtrlC,
 } from "../interactive-engine/remote-input-ownership.ts";
+import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
 import { showTaskInspector } from "../rpc/task-ui-bridge.js";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
 import { COMPACTION_ALREADY_IN_PROGRESS_WARNING } from "./interactive-bash-compact.ts";
@@ -20,7 +21,7 @@ import { isPhysicalCtrlC, isPhysicalEscape, isSafetyKeyRelease } from "./interac
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { pasteClipboardImageToEditor, recordTimeSinceReset } from "./interactive-mode-deps.ts";
 import { pauseAndAbortInteractiveSession } from "./interactive-pause.ts";
-import { restoreFailedSubmissionDraft } from "./interactive-prompt-restore.ts";
+import { restoreFailedSubmissionDraft, restoreRefusedSubmission } from "./interactive-prompt-restore.ts";
 
 export function registerStartupInputListeners(mode: InteractiveModeBase): void {
 	mode.addTuiInputListener(() =>
@@ -427,7 +428,8 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 			// Queue input behind compaction-queued messages (extension commands execute immediately)
 			if (
 				this.compactionActive ||
-				(!this.session.queuedMessagesPaused && (this.compactionFlushPending || this.compactionSendFailed))
+				(!this.session.queuedMessagesPaused &&
+					(this.compactionFlushPending || this.compactionSendFailed || this.promptTurn?.dispatched === false))
 			) {
 				if (this.isExtensionCommand(text)) {
 					this.editor.addToHistory?.(text);
@@ -447,10 +449,28 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 
 			// If streaming, use prompt() with steer behavior
 			// This handles extension commands (execute immediately), prompt template expansion, and queueing
-			if (this.session.isStreaming && !this.session.queuedMessagesPaused) {
+			if ((this.session.isStreaming || this.promptTurn !== undefined) && !this.session.queuedMessagesPaused) {
 				this.editor.addToHistory?.(text);
 				this.editor.setText("");
-				await this.session.prompt(text, { streamingBehavior: "steer" });
+				let accepted = false;
+				try {
+					await this.session.prompt(text, {
+						streamingBehavior: "steer",
+						preflightResult: (success, disposition) => {
+							accepted = success;
+							if (success && disposition === "started" && !text.startsWith("/"))
+								this.renderDeferredUserInput(text);
+						},
+					});
+				} catch (error) {
+					if (accepted) throw error;
+					if (isRpcRequestAcceptedFailure(error)) {
+						this.showError(error.message);
+						return;
+					}
+					restoreRefusedSubmission(this, error, submittedDraft);
+					return;
+				}
 				this.updatePendingMessagesDisplay();
 				this.ui.requestRender();
 				return;
@@ -468,6 +488,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				if (!text.startsWith("/")) {
 					this.renderDeferredUserInput(text);
 				}
+				this.promptTurn ??= { dispatched: false };
 				this.onInputCallback(submission);
 			} else {
 				this.pendingUserInputs.push(submission);

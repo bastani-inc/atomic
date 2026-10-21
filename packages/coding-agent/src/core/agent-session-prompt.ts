@@ -30,6 +30,17 @@ import {
 import { getSkillCatalog } from "./skill-catalog.ts";
 
 const customPreparations = new WeakMap<AgentSession, Promise<void>>();
+const openRuns = new WeakMap<AgentSession, number>();
+
+function openRun(session: AgentSession): void {
+	openRuns.set(session, (openRuns.get(session) ?? 0) + 1);
+}
+
+function closeRun(session: AgentSession): void {
+	const open = openRuns.get(session) ?? 0;
+	if (open > 1) openRuns.set(session, open - 1);
+	else openRuns.delete(session);
+}
 
 export async function waitForCustomMessagePreparation(session: AgentSession): Promise<void> {
 	await customPreparations.get(session);
@@ -92,12 +103,20 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 		throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
 	const owner = resolveWorkflowStageDeliveryTarget(this);
 	if (owner !== this) return owner.prompt(text, options);
-	if (this._isEmittingAgentSettled) {
+	if (this._isEmittingAgentSettled && !queuesDuringAgentSettled(this, options)) {
 		// A run started by an agent_settled handler waits until every settled handler completes.
 		this._deferredSettledActions.push(async () => await this.prompt(text, options));
 		return;
 	}
 	return trackSessionWork(this, () => admittedPrompt.call(this, text, options));
+}
+
+function queuesDuringAgentSettled(session: AgentSession, options: PromptOptions | undefined): boolean {
+	return session._isEmittingAgentSettled && options?.streamingBehavior !== undefined && options.source !== "extension";
+}
+
+function queuesBehindOpenRun(session: AgentSession, options: PromptOptions | undefined): boolean {
+	return openRuns.has(session) && options?.streamingBehavior !== undefined && options.source !== "extension";
 }
 
 async function admittedPrompt(this: AgentSession, text: string, options?: PromptOptions): Promise<void> {
@@ -229,17 +248,20 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		// If streaming, queue via steer() or followUp() based on option. The run is still
 		// open while agent_before_settle handlers decide on its continuation, so input sent
 		// from that boundary queues for the continuation instead of starting a second run.
-		if (this.isStreaming || this._isPreparingRun || this._isBeforeSettle) {
+		const busy = this.isStreaming || this._isPreparingRun || this._isBeforeSettle;
+		const settling = queuesDuringAgentSettled(this, options) || (!busy && queuesBehindOpenRun(this, options));
+		if (busy || settling) {
 			if (!options?.streamingBehavior) {
 				throw new Error(
 					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 				);
 			}
-			if (options.streamingBehavior === "followUp") {
-				await this._queueFollowUp(expandedText, currentImages);
-			} else {
-				await this._queueSteer(expandedText, currentImages);
-			}
+			const queued =
+				options.streamingBehavior === "followUp"
+					? this._queueFollowUp(expandedText, currentImages)
+					: this._queueSteer(expandedText, currentImages);
+			if (settling) deliverQueuedInputIfIdle(this, { userSubmission: true });
+			await queued;
 			workflowDelivery?.delivered?.(options.streamingBehavior);
 			preflightResult?.(true, "queued");
 			return;
@@ -421,6 +443,7 @@ export async function _runAgentPrompt(
 		}
 	};
 	this._activePromptCount += 1;
+	openRun(this);
 	try {
 		if (this._subagentMessageAdmission) {
 			await this._subagentMessageAdmission.waitForPendingDeliveries();
@@ -514,24 +537,41 @@ export async function _runAgentPrompt(
 		releasePreparation();
 		if (ownsPreparation && !preparation) this._isPreparingRun = false;
 		this._runSystemPromptOptions = undefined;
-		this._cacheWarmer?.onAgentSettled();
-		await this._agentEventQueue;
-		await this._flushPendingCustomMessages();
-		this._isEmittingAgentSettled = true;
+		await settleAgentRun(this);
+	}
+}
+
+async function settleAgentRun(session: AgentSession): Promise<void> {
+	session._cacheWarmer?.onAgentSettled();
+	try {
+		await session._agentEventQueue;
+		await session._flushPendingCustomMessages();
+	} finally {
+		// A failed event or flush must still close and settle the run; otherwise the open-run
+		// marker and active prompt count leak and later interactive messages stay queued forever.
+		await finishAgentRun(session);
+	}
+}
+
+async function finishAgentRun(session: AgentSession): Promise<void> {
+	closeRun(session);
+	try {
+		session._isEmittingAgentSettled = true;
 		try {
-			const aborted = this._agentRunAbortRequested === true;
-			if (typeof this._extensionRunner?.emit === "function") {
-				await this._extensionRunner.emit({ type: "agent_settled", aborted });
+			const aborted = session._agentRunAbortRequested === true;
+			if (typeof session._extensionRunner?.emit === "function") {
+				await session._extensionRunner.emit({ type: "agent_settled", aborted });
 			}
-			this._emit?.({ type: "agent_settled", aborted });
+			session._emit?.({ type: "agent_settled", aborted });
 		} finally {
-			this._isEmittingAgentSettled = false;
+			session._isEmittingAgentSettled = false;
 		}
-		if (this._subagentMessageAdmission) await settleSubagentMessages(this);
-		this._activePromptCount -= 1;
+		if (session._subagentMessageAdmission) await settleSubagentMessages(session);
+	} finally {
+		session._activePromptCount -= 1;
 		// Runs deferred by agent_settled handlers start only after every settled handler completed.
 		// Guarded because prompt-handshake suites drive this function on a synthetic session.
-		const deferred = this._deferredSettledActions?.splice(0) ?? [];
+		const deferred = session._deferredSettledActions?.splice(0) ?? [];
 		for (const action of deferred) await action();
 	}
 }
@@ -818,10 +858,67 @@ async function admittedQueueUserInput(
 		if (lifetime.aborted) throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
 		if (behavior === "steer") await session._queueSteer(expandedText, images);
 		else await session._queueFollowUp(expandedText, images);
+		if (!session.isStreaming) deliverQueuedInputIfIdle(session);
 		return "queued";
 	} finally {
 		admission.release();
 	}
+}
+
+function canContinueQueuedInput(session: AgentSession): boolean {
+	return !(
+		session.isStreaming ||
+		session.isCompacting ||
+		session._isPreparingRun ||
+		session._isBeforeSettle ||
+		session._isEmittingAgentSettled ||
+		session._queuedMessagesPaused ||
+		session._pendingInterruptDeliveries > 0 ||
+		session._subagentMessageAdmission !== undefined ||
+		session._workflowStageAdmission !== undefined
+	);
+}
+
+function canStartQueuedInputRun(session: AgentSession): boolean {
+	return (
+		canContinueQueuedInput(session) &&
+		!session._agentRunAbortRequested &&
+		!session._stopAfterTurnBlockedContinuation &&
+		session.agent.hasQueuedMessages() &&
+		session.agent.state.messages.some((message) => message.role !== "system")
+	);
+}
+
+async function runQueuedInput(session: AgentSession): Promise<void> {
+	// A failed event was already reported by the run that produced it; it must not drop this delivery.
+	await session._agentEventQueue.catch(() => {});
+	await preparePriorityContinuation(session);
+	if (!canStartQueuedInputRun(session)) return;
+	const run = session.agent.continue();
+	if (!session.agent.state.isStreaming) return run;
+	session._activePromptCount += 1;
+	openRun(session);
+	try {
+		await run;
+		await session.waitForRetry();
+		await session._continueQueuedAgentMessages();
+		if (session._agentRunAbortRequested) return;
+		await session._awaitPendingPostCompactionContinuation();
+		await runBeforeSettleContinuations(session);
+	} finally {
+		await settleAgentRun(session);
+	}
+}
+
+function deliverQueuedInputIfIdle(session: AgentSession, options?: { userSubmission?: boolean }): void {
+	const deliver = async (): Promise<void> => {
+		if (options?.userSubmission && !session.isStreaming && !session._queuedMessagesPaused) {
+			session._agentRunAbortRequested = false;
+		}
+		await runQueuedInput(session).catch(() => {});
+	};
+	if (session._isEmittingAgentSettled || openRuns.has(session)) session._deferredSettledActions.push(deliver);
+	else if (session._activePromptCount === 0) void deliver();
 }
 
 /**

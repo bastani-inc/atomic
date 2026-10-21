@@ -65,7 +65,7 @@ The `images` field is optional. Each image uses `ImageContent` format: `{"type":
 
 #### steer
 
-Queue a steering message while the agent is running. It is delivered after the current assistant turn finishes executing its tool calls, before the next LLM call. Skill commands and prompt templates are expanded. Extension commands are not allowed (use `prompt` instead).
+Queue a steering message while the agent is running. It is delivered after the current assistant turn finishes executing its tool calls, before the next LLM call. If no run is active when it arrives and the session already has messages, Atomic starts a turn to deliver it, so a `prompt` sent while that turn runs needs `streamingBehavior`. On a session with no messages yet, or after a run was stopped with `abort`, it stays queued until the next `prompt`. Skill commands and prompt templates are expanded. Extension commands are not allowed (use `prompt` instead).
 
 ```json
 {"type": "steer", "message": "Stop and do this instead"}
@@ -89,7 +89,7 @@ See [set_steering_mode](#set_steering_mode) for controlling how steering message
 
 #### follow_up
 
-Queue a follow-up message to be processed after the agent finishes. Delivered only when agent has no more tool calls or steering messages. Skill commands and prompt templates are expanded. Extension commands are not allowed (use `prompt` instead).
+Queue a follow-up message to be processed after the agent finishes. Delivered only when agent has no more tool calls or steering messages. If no run is active when it arrives and the session already has messages, Atomic starts a turn to deliver it, so a `prompt` sent while that turn runs needs `streamingBehavior`. On a session with no messages yet, or after a run was stopped with `abort`, it stays queued until the next `prompt`. Skill commands and prompt templates are expanded. Extension commands are not allowed (use `prompt` instead).
 
 ```json
 {"type": "follow_up", "message": "After you're done, also do this"}

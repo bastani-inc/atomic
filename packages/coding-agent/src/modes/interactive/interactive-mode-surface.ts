@@ -322,7 +322,7 @@ declare module "./interactive-mode-base.ts" {
 		}): number;
 		queueCompactionMessage(text: string, mode: "steer" | "followUp"): void;
 		isExtensionCommand(text: string): boolean;
-		flushCompactionQueue(options?: { willRetry?: boolean }): Promise<void>;
+		flushCompactionQueue(options?: { willRetry?: boolean; afterPrompt?: boolean }): Promise<void>;
 		flushPendingBashComponents(): void;
 		showSelector(
 			create: (done: () => void) => { component: Component; focus: Component; dispose?: () => void },
