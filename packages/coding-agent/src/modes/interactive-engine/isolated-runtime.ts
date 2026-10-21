@@ -4,7 +4,12 @@ import type { AuthInteraction } from "@bastani/pi-ai";
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { AgentSession, CompactionReason } from "../../core/agent-session.js";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.ts";
-import type { ModelMutationOptions, PromptOptions, SessionRecoveryReport } from "../../core/agent-session-types.js";
+import type {
+	ModelMutationOptions,
+	PromptDisposition,
+	PromptOptions,
+	SessionRecoveryReport,
+} from "../../core/agent-session-types.js";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { SessionRecoveryReason } from "../../core/extensions/session-events.ts";
 import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
@@ -17,7 +22,12 @@ import { canonicalizePath } from "../../utils/paths.ts";
 import { sleep } from "../../utils/sleep.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
-import { isRpcTransportFailure, markRpcTransportFailure, rpcTransportError } from "../rpc/rpc-transport-error.ts";
+import {
+	isRpcRequestAcceptedFailure,
+	isRpcTransportFailure,
+	markRpcTransportFailure,
+	rpcTransportError,
+} from "../rpc/rpc-transport-error.ts";
 import type {
 	RpcAutocompleteItem,
 	RpcEvent,
@@ -682,7 +692,13 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					const cancellationEpoch = this.promptCancellationEpoch;
 					await this.waitUntilResourcesReady();
 					if (cancellationEpoch !== this.promptCancellationEpoch) return;
-					const disposition = await this.client.prompt(text, options?.images, options?.streamingBehavior);
+					let disposition: PromptDisposition;
+					try {
+						disposition = await this.client.prompt(text, options?.images, options?.streamingBehavior);
+					} catch (error) {
+						if (!isRpcRequestAcceptedFailure(error)) options?.preflightResult?.(false);
+						throw error;
+					}
 					options?.preflightResult?.(true, disposition);
 				},
 			},

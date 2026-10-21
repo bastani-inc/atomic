@@ -3,7 +3,7 @@ import { tryExecuteSessionSlashCommand } from "../../core/agent-session-prompt.t
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { restoreFailedSubmissionDraft } from "./interactive-prompt-restore.ts";
+import { restoreFailedSubmissionDraft, restoreRefusedSubmission } from "./interactive-prompt-restore.ts";
 import { type InteractiveSubmission, toInteractiveSubmission } from "./interactive-submission.ts";
 
 InteractiveModeBase.prototype.runUserPromptTurn = async function (
@@ -32,6 +32,7 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 	// A submission that never reaches an agent turn stays user-owned, so track
 	// whether the turn actually started before deciding to restore the draft.
 	let turnStarted = false;
+	let refused = false;
 	const unsubscribeTurnStart = this.session.subscribe((event) => {
 		if (event.type === "agent_start") turnStarted = true;
 	});
@@ -49,10 +50,20 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 			if (!(this.runtimeHost instanceof IsolatedInteractiveRuntime) || !this.isExtensionCommand(userInput)) {
 				await this.session.resumeQueuedMessages();
 			}
-			await this.session.prompt(userInput, { streamingBehavior: "steer", preflightResult: settleDispatch });
+			await this.session.prompt(userInput, {
+				streamingBehavior: "steer",
+				preflightResult: (success) => {
+					refused = !success;
+					settleDispatch();
+				},
+			});
 		}
 	} catch (error) {
 		this.discardDeferredRenderedUserInput(userInput);
+		if (refused && !turnStarted) {
+			restoreRefusedSubmission(this, error, draft);
+			return;
+		}
 		const restored = restoreFailedSubmissionDraft(this, error, draft, { turnStarted });
 		// A restored draft already tells the user the submission did not land, and
 		// the recovery status explains why. A red transport error beside it is noise.

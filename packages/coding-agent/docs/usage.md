@@ -102,7 +102,7 @@ You can submit messages while the agent is still working:
 
 Each queue preserves submission order, and steering messages take priority over follow-ups. Messages submitted during compaction keep their queue type and join that queue when compaction finishes or is cancelled, even if the agent is still working.
 
-Messages you submit while Atomic is still preparing a prompt, or while it waits to retry a failed request, are queued the same way. They show as queued at once and join the run at its next turn boundary, in the order you submitted them. If the agent refuses one, Atomic returns the text to the editor, or keeps it queued, and shows the error.
+Messages you submit while Atomic is still preparing a prompt, while it waits to retry a failed request, or while extensions finish handling the end of a run are queued the same way. They show as queued at once and join the run at its next turn boundary, in the order you submitted them. If the agent refuses one, Atomic returns the text to the editor, or keeps it queued, and shows the error.
 
 If the first message sent after compaction fails, it stays queued with the messages after it, in the order you typed them, and Atomic shows the error. Anything you submit next is queued behind them, and your next submission sends them again in order. **ALT+Up** retrieves them to the editor in that same order.
 

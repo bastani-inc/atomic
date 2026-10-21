@@ -92,12 +92,16 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 		throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
 	const owner = resolveWorkflowStageDeliveryTarget(this);
 	if (owner !== this) return owner.prompt(text, options);
-	if (this._isEmittingAgentSettled) {
+	if (this._isEmittingAgentSettled && !queuesDuringAgentSettled(this, options)) {
 		// A run started by an agent_settled handler waits until every settled handler completes.
 		this._deferredSettledActions.push(async () => await this.prompt(text, options));
 		return;
 	}
 	return trackSessionWork(this, () => admittedPrompt.call(this, text, options));
+}
+
+function queuesDuringAgentSettled(session: AgentSession, options: PromptOptions | undefined): boolean {
+	return session._isEmittingAgentSettled && options?.streamingBehavior !== undefined && options.source !== "extension";
 }
 
 async function admittedPrompt(this: AgentSession, text: string, options?: PromptOptions): Promise<void> {
@@ -229,17 +233,19 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		// If streaming, queue via steer() or followUp() based on option. The run is still
 		// open while agent_before_settle handlers decide on its continuation, so input sent
 		// from that boundary queues for the continuation instead of starting a second run.
-		if (this.isStreaming || this._isPreparingRun || this._isBeforeSettle) {
+		const settling = queuesDuringAgentSettled(this, options);
+		if (this.isStreaming || this._isPreparingRun || this._isBeforeSettle || settling) {
 			if (!options?.streamingBehavior) {
 				throw new Error(
 					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 				);
 			}
-			if (options.streamingBehavior === "followUp") {
-				await this._queueFollowUp(expandedText, currentImages);
-			} else {
-				await this._queueSteer(expandedText, currentImages);
-			}
+			const queued =
+				options.streamingBehavior === "followUp"
+					? this._queueFollowUp(expandedText, currentImages)
+					: this._queueSteer(expandedText, currentImages);
+			if (settling) deliverQueuedInputIfIdle(this);
+			await queued;
 			workflowDelivery?.delivered?.(options.streamingBehavior);
 			preflightResult?.(true, "queued");
 			return;

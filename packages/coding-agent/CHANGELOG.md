@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- SDK `steer()` and `followUp()`, and the RPC `steer` and `follow_up` commands, now start a turn when the agent is idle. If you queue a message on an idle session and then call `prompt()` (or send an RPC `prompt`) right away, that prompt now fails with "Agent is already processing" unless you pass `streamingBehavior` (`"steer"` or `"followUp"`) to queue it behind the running turn.
+
 ### Added
 
 - `routeExecutionModel()` accepts an optional `inference` option (exported type `RoutingInferenceBounds`) for callers that must not wait indefinitely on routing inference: `deadline` is an `AbortSignal` whose abort ends routing as a complete inference failure, so the caller can degrade to `AutoRoutingInferenceError.currentModelRoute`, and `limit` runs each routing inference under the caller's concurrency limit. Without it, routing keeps having no built-in deadline.
@@ -37,6 +41,7 @@
 - Fixed a structured decision having no total time limit: a `structured_output` call, a `generateStructuredOutput()` call, or one routing inference for `model: "auto"` could run four slow generations back to back, plus retries, past every configured timeout, and held a workflow stage for over an hour. The whole decision is now stopped after the `httpIdleTimeoutMs` setting (10 minutes by default; disabled means effectively unbounded) and fails with `Structured output decision exceeded its <n>ms deadline; no decision was accepted.`, without trying another repair or fallback model ([#3806](https://github.com/bastani-inc/atomic/issues/3806))
 - The error for exhausted `structured_output` and `generateStructuredOutput` repairs, and the new deadline error, now end with how each attempt finished and how long it took, such as `Attempts: 1) stopReason=stop 25m02s; 2) stopReason=length 1m30s.`, so one slow generation reads differently from several failed ones. Each provider request, including a transport retry, is listed on its own ([#3806](https://github.com/bastani-inc/atomic/issues/3806))
 - Messages typed while the agent was busy are no longer dropped or left waiting for the end of the run. A message typed while a prompt was still being prepared, while Atomic waited to retry a failed request, or just after you sent a prompt (before the screen showed that the turn had started) used to appear nowhere and be sent only after the run ended, or be refused with "Agent is already processing" and lost. It now shows as queued straight away and joins the run at its next turn boundary, in the order you typed it. If the agent refuses a message, the text comes back to the editor, or stays in the queue, together with the error.
+- Messages typed while the agent was busy are no longer dropped or left waiting for the end of the run. A message typed while a prompt was still being prepared, while Atomic waited to retry a failed request, just after you sent a prompt (before the screen showed that the turn had started), or while extensions were still finishing the previous run used to appear nowhere and be sent only after the run ended, or be refused with "Agent is already processing" and lost. It now shows as queued straight away and joins the run at its next turn boundary, in the order you typed it. If the agent refuses a message, the text comes back to the editor, or stays in the queue, together with the error.
 - Queued messages are no longer left undelivered when the agent finishes before they are queued. The rest of a queued batch, such as the messages held during compaction, and a `steer` or `follow_up` sent to an idle agent now start a turn instead of waiting for your next prompt.
 
 ## [0.9.40] - 2026-10-20

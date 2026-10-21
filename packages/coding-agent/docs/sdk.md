@@ -692,7 +692,7 @@ await session.steer("New instruction");
 await session.followUp("After you're done, also do this");
 ```
 
-If the session is idle when either is called, it starts a turn to deliver the message instead of leaving it queued. Both `steer()` and `followUp()` expand file-based prompt templates but error on extension commands (extension commands cannot be queued). They return `"queued"` if the input was queued (including after an extension transformed it), or `"handled"` if an extension consumed it.
+If the session is idle when either is called, it starts a turn to deliver the message instead of leaving it queued. A `prompt()` call made while that turn runs must pass `streamingBehavior`, or it fails with "Agent is already processing". Both `steer()` and `followUp()` expand file-based prompt templates but error on extension commands (extension commands cannot be queued). They return `"queued"` if the input was queued (including after an extension transformed it), or `"handled"` if an extension consumed it.
 
 `pauseQueuedMessages()` synchronously holds existing raw steering/follow-up entries before an abort boundary. Later context-bearing arrivals also stay queued without starting a provider turn. These include trigger-turn custom messages, batches, interrupts, `sendUserMessage()`, and ordinary `prompt()` calls.
 
