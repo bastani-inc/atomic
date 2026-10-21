@@ -81,7 +81,7 @@ describeModelRegistry((context) => {
 					"github-copilot": overrideConfig("https://copilot-proxy.example.com"),
 				});
 				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
-				const model = registry.find("github-copilot", "gpt-5.5");
+				const model = registry.find("github-copilot", "gpt-6.1-sol");
 
 				expect(model?.baseUrl).toBe("https://copilot-proxy.example.com");
 			} finally {
@@ -97,7 +97,7 @@ describeModelRegistry((context) => {
 			delete process.env.GITHUB_SERVER_URL;
 			try {
 				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
-				const model = registry.find("github-copilot", "gpt-5.5");
+				const model = registry.find("github-copilot", "gpt-6.1-sol");
 
 				// Regression: pi pins the individual CAPI host, which answers 421
 				// Misdirected Request for business/enterprise PATs.
@@ -114,7 +114,7 @@ describeModelRegistry((context) => {
 			process.env.COPILOT_GITHUB_TOKEN = "tid=abc;exp=1;proxy-ep=proxy.business.githubcopilot.com;st=dotcom";
 			try {
 				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
-				const model = registry.find("github-copilot", "gpt-5.5");
+				const model = registry.find("github-copilot", "gpt-6.1-sol");
 
 				expect(model?.baseUrl).toBe("https://api.business.githubcopilot.com");
 			} finally {
@@ -128,7 +128,7 @@ describeModelRegistry((context) => {
 			delete process.env.COPILOT_GITHUB_TOKEN;
 			try {
 				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
-				const model = registry.find("github-copilot", "gpt-5.5");
+				const model = registry.find("github-copilot", "gpt-6.1-sol");
 
 				expect(model?.baseUrl).toBe("https://api.individual.githubcopilot.com");
 			} finally {
@@ -146,7 +146,7 @@ describeModelRegistry((context) => {
 			});
 
 			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
-			const model = registry.find("github-copilot", "gpt-5.5");
+			const model = registry.find("github-copilot", "gpt-6.1-sol");
 			expect(model).toBeDefined();
 
 			const auth = await registry.getApiKeyAndHeaders(model!);
@@ -161,7 +161,7 @@ describeModelRegistry((context) => {
 			writeRawModelsJson({
 				"github-copilot": {
 					modelOverrides: {
-						"gpt-5.5": {
+						"gpt-6.1-sol": {
 							headers: {
 								"X-GitHub-Api-Version": "model-version",
 							},
@@ -171,7 +171,7 @@ describeModelRegistry((context) => {
 			});
 
 			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
-			const model = registry.find("github-copilot", "gpt-5.5");
+			const model = registry.find("github-copilot", "gpt-6.1-sol");
 			expect(model).toBeDefined();
 
 			const auth = await registry.getApiKeyAndHeaders(model!);

@@ -112,8 +112,8 @@ it("defaults only capable OpenAI and Bedrock models to extended retention", asyn
 					? ([
 							[getModel("cloudflare-ai-gateway", "gpt-4o"), false],
 							[getModel("cloudflare-ai-gateway", "gpt-5"), true],
-							[getModel("github-copilot", "gpt-5-mini"), false],
-							[getModel("github-copilot", "gpt-5.4"), true],
+							[getModel("github-copilot", "gpt-6-luna"), false],
+							[{ ...getModel("github-copilot", "gpt-6.1-sol"), id: "gpt-5.4" }, true],
 							[getModel("opencode", "gpt-5-nano"), false],
 							[getModel("opencode", "gpt-5"), true],
 						] as const)

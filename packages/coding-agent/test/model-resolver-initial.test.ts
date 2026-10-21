@@ -463,7 +463,7 @@ describe("default model selection", () => {
 					return Response.json({
 						data: [
 							{
-								id: "gpt-5.4",
+								id: "gpt-6.1-sol",
 								model_picker_enabled: false,
 								policy: { state: "enabled" },
 								capabilities: { supports: { tool_calls: true } },
@@ -497,14 +497,14 @@ describe("default model selection", () => {
 			expect(refreshed.errors.size).toBe(0);
 			expect(await storage.read("github-copilot")).toMatchObject({
 				type: "oauth",
-				availableModelIds: ["gpt-5.4", policyModelId],
+				availableModelIds: ["gpt-6.1-sol", policyModelId],
 			});
 			expect(
 				modelRuntime
 					.getAvailableSnapshot()
 					.filter((model) => model.provider === "github-copilot")
 					.map((model) => model.id),
-			).toEqual(["gpt-5.4"]);
+			).toEqual(["gpt-6.1-sol"]);
 			expect(modelRuntime.getModel("github-copilot", policyModelId)).toBeUndefined();
 
 			const restored = await restoreModelFromSession(
@@ -514,7 +514,7 @@ describe("default model selection", () => {
 				false,
 				modelRuntime,
 			);
-			const template = modelRuntime.getModel("github-copilot", "gpt-5.4");
+			const template = modelRuntime.getModel("github-copilot", "gpt-6.1-sol");
 			expect(restored.fallbackMessage).toBeUndefined();
 			expect(restored.model).toMatchObject({
 				provider: "github-copilot",
