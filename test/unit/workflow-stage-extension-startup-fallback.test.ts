@@ -7,9 +7,11 @@ import { Type } from "typebox";
 import { test } from "vitest";
 import type { InlineExtension } from "../../packages/coding-agent/src/core/extensions/provider-types.js";
 import { DefaultResourceLoader, SettingsManager } from "../../packages/coding-agent/src/index.js";
+import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
 import type { RunResult } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import { run, workflow } from "../../packages/workflows/src/sdk-surface.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { readJournalEntries } from "../helpers/journal-internals.js";
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
 
 const BUILTINS = { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false } as const;
@@ -216,6 +218,39 @@ test("a deterministic extension startup failure fails the stage promptly and nam
 				openDescriptorsTo(join(harness.cwd, "workflows", "journal.sqlite")),
 				[],
 				"no session store stays open after the stage fails",
+			);
+		},
+	);
+});
+
+test("a stage whose extension throws in session_start surfaces the extension and cause in the run result and journal (#3807)", async () => {
+	const cause = "Cannot read properties of undefined (reading 'fg')";
+	await withHarness(
+		() => new TypeError(cause),
+		async (harness) => {
+			const journal = new MemoryRunJournal();
+			const def = workflow({
+				name: "stage-extension-startup-diagnosis",
+				description: "One stage whose extension crashes at session_start.",
+				inputs: {},
+				outputs: {},
+				run: async (ctx) => {
+					await ctx.task("reviewer", { prompt: "review", ...harness.stageOptions("primary", []) });
+					return {};
+				},
+			});
+			const result = await run(def, {}, { cwd: harness.cwd, journal });
+
+			assert.equal(result.status, "failed");
+			const stage = stageNamed(result, "reviewer");
+			for (const text of [result.error, stage.error, stage.failureMessage]) {
+				assert.ok(text?.startsWith("Extension startup failed: "), text);
+				assert.ok(text?.includes(`<inline:${EXTENSION_NAME}>: ${cause}`), text);
+			}
+			const journaled = JSON.stringify(await readJournalEntries(journal, result.runId));
+			assert.ok(
+				journaled.includes(`<inline:${EXTENSION_NAME}>: ${cause}`),
+				"journal records the extension and cause",
 			);
 		},
 	);
