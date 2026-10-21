@@ -125,6 +125,12 @@ describe("provider retry classification", () => {
 		).toBe(false);
 	});
 
+	it("keeps the ChatGPT Business workspace usage limit non-retryable", () => {
+		const errorMessage =
+			'OpenAI API error (429): {"code":"subscription_sharing_workplace_individual_usage_limit_exceeded","message":"Usage limit reached."}';
+		expect(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage }))).toBe(false);
+	});
+
 	it.each([
 		["subscription_sharing_usage_limit_exceeded", false],
 		["subscription_sharing_usage_unavailable", true],

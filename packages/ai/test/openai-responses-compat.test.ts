@@ -75,7 +75,7 @@ describe("openai-responses provider defaults", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("omits reasoning when no reasoning is requested", async () => {
+	it("omits reasoning for Copilot gpt-6-luna, whose off level is none, when no reasoning is requested (earendil-works/pi#2567)", async () => {
 		const model = getModel("github-copilot", "gpt-6-luna");
 		let capturedPayload: unknown;
 
@@ -718,6 +718,29 @@ describe("openai-responses provider defaults", () => {
 		expect(result.stopReason).toBe("error");
 		expect(result.errorMessage).toContain('A request hook changed payload for fast model "openai/gpt-5.5-fast"');
 		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["subscription_sharing_usage_limit_exceeded", "Check your ChatGPT usage: https://chatgpt.com/settings/usage"],
+		["subscription_sharing_workplace_individual_usage_limit_exceeded", "Ask your workspace admin to increase it"],
+	] as const)("explains the ChatGPT usage limit error %s", async (code, hint) => {
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			async () =>
+				new Response(JSON.stringify({ error: { code, message: "Usage limit reached." } }), {
+					status: 429,
+					headers: { "content-type": "application/json" },
+				}),
+		);
+
+		const result = await streamOpenAIResponses(
+			getModel("openai", "gpt-5.5"),
+			normalizeContext({ systemPrompt: "sys", messages: [{ role: "user", content: "hi", timestamp: Date.now() }] }),
+			{ apiKey: "sk-test-key", maxRetries: 2, maxRetryDelayMs: 1 },
+		).result();
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain(code);
+		expect(result.errorMessage).toContain(hint);
 	});
 
 	it("omits an unadvertised ultrafast tier instead of throwing", async () => {
