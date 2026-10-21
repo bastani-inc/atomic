@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - A workflow stage no longer stays stuck selecting its model when many workflows run at once. A stage with `model: "auto"` now waits at most five minutes for model selection, counting any wait for one of eight routing slots shared by every stage, so a burst of stages queues instead of overloading the router provider. When the wait ends, the stage runs on the current chat model if that model satisfies every routing constraint; otherwise it fails with an error that names the stage and the `model-resolution` startup phase, and its startup status reads `failed` instead of staying active. A failed selection is no longer remembered, so the next prompt on the same stage selects a model again, without launching a replacement workflow.
+- After a blocked workflow run is resumed, Intercom sends to `workflow:<rootRunId>/**`, to stage patterns, and to stages that have not started yet are accepted and delivered again instead of failing with `Workflow execution for <runId> is retired`.
 
 ## [0.9.40] - 2026-10-20
 
