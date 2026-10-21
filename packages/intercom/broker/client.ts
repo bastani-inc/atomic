@@ -20,11 +20,15 @@ import { buildSendSignature, PendingSendRegistry } from "./pending-send-registry
 import { readSubagentMessageSource } from "../source-ownership.js";
 import { isMessage, isSessionInfo } from "./client-message-validation.js";
 import { normalizeGroups } from "../group.js";
-import { IntercomClientDisconnectedError } from "../recoverable-disconnect.js";
+import { IntercomBrokerTimeoutError, IntercomClientDisconnectedError } from "../recoverable-disconnect.js";
 import { IntercomLiveRouteRefusedError, isLiveWorkflowStageRouteRefusalCode } from "../live-route-refusal.js";
 import { SEND_RESPONSE_TIMEOUT_MS } from "../retry-policy.js";
 
 const BROKER_SOCKET = getBrokerSocketPath();
+/** How long `connect()` waits for the broker to answer `register`. */
+export const BROKER_CONNECT_TIMEOUT_MS = 10_000;
+/** How long an acknowledged pending-stage route registration waits for the broker's answer. */
+export const PENDING_STAGE_ROUTE_ACK_TIMEOUT_MS = 10_000;
 const GROUP_REQUEST_TIMEOUT_MS = 5000;
 const PRESENCE_ACK_TIMEOUT_MS = 5000;
 const RESTORING_RECIPIENT_REQUEST_TIMEOUT_MS = 5000;
@@ -53,6 +57,8 @@ export interface IntercomClientOptions {
 	readonly preferredSessionId?: string;
 	/** #3761: this client confirms each received message with `acknowledgeReceived` once it has saved it. */
 	readonly acknowledgesReceipt?: true;
+	/** Registration answer bound for `connect()`; defaults to `BROKER_CONNECT_TIMEOUT_MS`. */
+	readonly connectTimeoutMs?: number;
 }
 
 export interface SendResult {
@@ -164,8 +170,11 @@ export class IntercomClient extends EventEmitter {
 	private readonly returnAddress: string;
 	private readonly preferredSessionId: string | undefined;
 	private readonly acknowledgesReceipt: boolean;
+	private readonly connectTimeoutMs: number;
 	/** #3761: the broker of the current registration echoed `acknowledgesReceipt`, so it understands `received`. */
 	private brokerAcknowledgesReceipt = false;
+	/** The broker of the current registration answers a pending-stage route registration that carries a `requestId`. */
+	private brokerAcknowledgesPendingStageRoutes = false;
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
   private _supervisorSessionId: string | null = null;
@@ -183,6 +192,7 @@ export class IntercomClient extends EventEmitter {
   private pendingMemberships = new Map<string, { resolve: (groups: string[]) => void; reject: (error: Error) => void }>();
   private _groups = normalizeGroups();
   private pendingLiveWorkflowStageRoutes = new Map<string, { resolve(): void; reject(error: Error): void }>();
+  private pendingStageRouteRegistrations = new Map<string, { resolve(): void; reject(error: Error): void }>();
 
   private pendingSupervisorAuthorizations = new Map<string, {
     resolve: (authorization: SupervisorAuthorization) => void;
@@ -198,6 +208,7 @@ export class IntercomClient extends EventEmitter {
 		this.returnAddress = returnAddress;
 		this.preferredSessionId = options.preferredSessionId;
 		this.acknowledgesReceipt = options.acknowledgesReceipt === true;
+		this.connectTimeoutMs = options.connectTimeoutMs ?? BROKER_CONNECT_TIMEOUT_MS;
 	}
 
   private failPending(error: Error): void {
@@ -209,6 +220,7 @@ export class IntercomClient extends EventEmitter {
     for (const pending of this.pendingPresence.values()) pending.reject(error);
     for (const pending of this.pendingMemberships.values()) pending.reject(error);
     for (const pending of this.pendingLiveWorkflowStageRoutes.values()) pending.reject(error);
+    for (const pending of this.pendingStageRouteRegistrations.values()) pending.reject(error);
     this.pendingLists.clear();
     this.pendingGroupLists.clear();
     this.pendingSupervisorAuthorizations.clear();
@@ -216,6 +228,7 @@ export class IntercomClient extends EventEmitter {
     this.pendingPresence.clear();
     this.pendingMemberships.clear();
     this.pendingLiveWorkflowStageRoutes.clear();
+    this.pendingStageRouteRegistrations.clear();
   }
 
 
@@ -279,9 +292,9 @@ export class IntercomClient extends EventEmitter {
             this.socket = null;
           }
           socket.destroy();
-          reject(new Error("Connection timeout"));
+          reject(new IntercomBrokerTimeoutError("Connection timeout"));
         }
-      }, 10000);
+      }, this.connectTimeoutMs);
       
       let connectionEstablished = false;
       
@@ -318,6 +331,7 @@ export class IntercomClient extends EventEmitter {
         this._sessionId = null;
         this._supervisorSessionId = null;
         this.brokerAcknowledgesReceipt = false;
+        this.brokerAcknowledgesPendingStageRoutes = false;
         this._messageSource = undefined;
         this.disconnectError = null;
         if (connectionEstablished && !wasDisconnecting) {
@@ -425,7 +439,8 @@ export class IntercomClient extends EventEmitter {
       case "registered": {
         if (typeof brokerMessage.sessionId !== "string"
           || (brokerMessage.supervisorSessionId !== undefined && typeof brokerMessage.supervisorSessionId !== "string")
-          || (brokerMessage.acknowledgesReceipt !== undefined && brokerMessage.acknowledgesReceipt !== true)) {
+          || (brokerMessage.acknowledgesReceipt !== undefined && brokerMessage.acknowledgesReceipt !== true)
+          || (brokerMessage.acknowledgesPendingStageRoutes !== undefined && brokerMessage.acknowledgesPendingStageRoutes !== true)) {
           throw new Error("Invalid registered message");
         }
 
@@ -438,6 +453,7 @@ export class IntercomClient extends EventEmitter {
           : null;
         // #3761: a broker from before receipts never echoes the capability and drops a client that sends `received`.
         this.brokerAcknowledgesReceipt = this.acknowledgesReceipt && brokerMessage.acknowledgesReceipt === true;
+        this.brokerAcknowledgesPendingStageRoutes = brokerMessage.acknowledgesPendingStageRoutes === true;
         this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
         break;
       }
@@ -606,6 +622,15 @@ export class IntercomClient extends EventEmitter {
 			this.emit("pending_stage_route_revoked", { runId });
 			break;
 		}
+      case "pending_stage_route_registered": {
+        const { requestId } = brokerMessage;
+        if (typeof requestId !== "string") throw new Error("Invalid pending-stage route registration acknowledgement");
+        const pending = this.pendingStageRouteRegistrations.get(requestId);
+        if (!pending) return;
+        this.pendingStageRouteRegistrations.delete(requestId);
+        pending.resolve();
+        break;
+      }
       case "live_workflow_stage_route_registered": {
         const { requestId } = brokerMessage;
         if (typeof requestId !== "string") throw new Error("Invalid live workflow-stage route registration");
@@ -1030,6 +1055,70 @@ export class IntercomClient extends EventEmitter {
 		...(dormant === true ? { dormant: true as const } : {}),
 	});
   }
+
+	/**
+	 * Register a pending-stage route and settle once the broker has applied it, so a request on any other
+	 * socket observes the update. A broker that does not advertise the answer is covered by a session listing
+	 * on this socket, which that broker only answers after the registration ahead of it.
+	 */
+	registerPendingStageRouteAcknowledged(
+		runId: string,
+		group: string,
+		capability: string,
+		stages?: WorkflowStageRosterAnnouncement[],
+		possibleStages?: WorkflowPossibleStageAnnouncement[],
+		parent?: WorkflowRunParentAnnouncement,
+		dormant?: boolean,
+	): Promise<void> {
+		let socket: net.Socket;
+		try {
+			socket = this.requireActiveSocket();
+		} catch (error) {
+			return Promise.reject(toError(error));
+		}
+		if (!this.brokerAcknowledgesPendingStageRoutes) {
+			try {
+				this.registerPendingStageRoute(runId, group, capability, stages, possibleStages, parent, dormant);
+			} catch (error) {
+				return Promise.reject(toError(error));
+			}
+			return this.listSessions().then(() => undefined);
+		}
+		return new Promise((resolve, reject) => {
+			const requestId = randomUUID();
+			const timeout = setTimeout(() => {
+				if (!this.pendingStageRouteRegistrations.delete(requestId)) return;
+				reject(new IntercomBrokerTimeoutError("Pending-stage route registration timeout"));
+			}, PENDING_STAGE_ROUTE_ACK_TIMEOUT_MS);
+			this.pendingStageRouteRegistrations.set(requestId, {
+				resolve: () => {
+					clearTimeout(timeout);
+					resolve();
+				},
+				reject: (error) => {
+					clearTimeout(timeout);
+					reject(error);
+				},
+			});
+			try {
+				writeMessage(socket, {
+					type: "register_pending_stage_route",
+					requestId,
+					runId,
+					group,
+					capability,
+					stages,
+					possibleStages,
+					...(parent === undefined ? {} : { parent }),
+					...(dormant === true ? { dormant: true as const } : {}),
+				});
+			} catch (error) {
+				clearTimeout(timeout);
+				this.pendingStageRouteRegistrations.delete(requestId);
+				reject(toError(error));
+			}
+		});
+	}
 
   registerLiveWorkflowStageRoute(runId: string, stageKeys: readonly string[], capability: string): Promise<void> {
     let socket: net.Socket;

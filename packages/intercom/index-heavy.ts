@@ -72,7 +72,10 @@ import { routeClosedWorkflowStageMessage } from "./closed-workflow-stage-message
 import { createWorkflowStageDeliveryFailureHandler } from "./workflow-stage-delivery-failure.js";
 import { normalizeGroup, normalizeGroups, resolveHomeGroup } from "./group.js";
 import { clearRuntimeIntercomGroup, setRuntimeIntercomGroup } from "./runtime-group.js";
-import { reconnectDelayMs } from "./reconnect-backoff.js";
+import { jitteredReconnectDelayMs, reconnectDelayMs } from "./reconnect-backoff.js";
+import { IntercomClientDisconnectedError } from "./recoverable-disconnect.js";
+import { RouteRetryWaiters, scheduledRetryFailure } from "./route-retry-waiters.js";
+import { createConcurrencyGate, ROUTE_CLIENT_CONNECT_CONCURRENCY } from "./route-connect-gate.js";
 import { isReleasedStageAnnouncement, RELEASED_STAGE_EVENT, ReleasedStagePeers } from "./released-stage-peers.js";
 import { SupervisorAuthorizationRegistry } from "./supervisor-authorization-registry.js";
 if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL === "1") {
@@ -87,6 +90,8 @@ const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
 const PENDING_STAGE_MESSAGE_EVENT = "atomic:workflow-pending-stage-message";
 const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
 const STICKY_LIVE_DELIVERED_EVENT = "atomic:workflow-sticky-live-delivered";
+/** Heavy → lightweight wrapper: a run's scheduled route retry ended, so the wrapper can track a broker outage. */
+const ROUTE_RETRY_OUTCOME_EVENT = "atomic:intercom-route-retry-outcome";
 /** Intercom → workflows: another process resumed a dormant route's interrupted run (#3760). */
 const PENDING_STAGE_ROUTE_REVOKED_EVENT = "atomic:workflow-pending-stage-route-revoked";
 
@@ -113,6 +118,8 @@ interface PendingStageRouteClientState {
   promise: Promise<void> | null;
   reconnectTimer: NodeJS.Timeout | null;
   reconnectAttempt: number;
+	/** Route publications waiting for `reconnectTimer`'s retry; it registers the latest route. */
+	readonly retryWaiters: RouteRetryWaiters;
 }
 
 interface PendingStageMessageEvent extends PendingStageMessageRequest {
@@ -222,6 +229,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   const inboundDeliveries = new InboundMessageAdmission();
   const pendingStageRoutes = new Map<string, PendingStageRouteRegistration>();
   const pendingStageRouteClients = new Map<string, PendingStageRouteClientState>();
+  const routeClientConnectGate = createConcurrencyGate(ROUTE_CLIENT_CONNECT_CONCURRENCY);
   const supervisorAuthorizations = new SupervisorAuthorizationRegistry();
   const releasedStagePeers = new ReleasedStagePeers({
     prepare: () => spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs),
@@ -852,15 +860,36 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       && samePendingStageRoute(pendingStageRoutes.get(runId), state.route)
       && Boolean(getLiveContext(context, generation));
   }
+  /** The run stops waiting out its backoff; publications that waited for its retry are told how it ended. */
+  function endPendingStageRouteBackoff(state: PendingStageRouteClientState, failure?: Error): void {
+    if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
+    state.reconnectTimer = null;
+    if (failure === undefined) state.retryWaiters.succeed();
+    else state.retryWaiters.fail(failure);
+  }
   function schedulePendingStageRouteReconnect(runId: string, state: PendingStageRouteClientState): void {
     if (state.reconnectTimer || state.promise || !pendingStageRouteClientIsCurrent(runId, state)) return;
     const scheduledGeneration = runtimeGeneration;
     state.reconnectTimer = setTimeout(() => {
       state.reconnectTimer = null;
-      if (!pendingStageRouteClientIsCurrent(runId, state, runtimeContext, scheduledGeneration)) return;
+      if (!pendingStageRouteClientIsCurrent(runId, state, runtimeContext, scheduledGeneration)) {
+        // Nothing will register the route now; a waiter must not outlive the run's route.
+        endPendingStageRouteBackoff(state, new IntercomClientDisconnectedError());
+        return;
+      }
       state.reconnectAttempt += 1;
-      void ensurePendingStageRouteClient(runId, state.route).catch(() => {});
-    }, reconnectDelayMs(state.reconnectAttempt));
+      void ensurePendingStageRouteClient(runId, state.route).then(
+        () => {
+          state.retryWaiters.succeed();
+          pi.events.emit(ROUTE_RETRY_OUTCOME_EVENT, { runId });
+        },
+        (error: unknown) => {
+          const failure = toError(error);
+          state.retryWaiters.fail(scheduledRetryFailure(failure));
+          pi.events.emit(ROUTE_RETRY_OUTCOME_EVENT, { runId, error: failure });
+        },
+      );
+    }, jitteredReconnectDelayMs(state.reconnectAttempt));
   }
   function attachPendingStageRouteClientHandlers(
     runId: string,
@@ -889,8 +918,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     nextClient.on("pending_stage_route_revoked", (notice: { runId: string }) => {
       if (notice.runId !== runId || state.client !== nextClient) return;
       state.client = null;
-      if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
-      state.reconnectTimer = null;
+      endPendingStageRouteBackoff(state, new IntercomClientDisconnectedError());
       if (pendingStageRouteClients.get(runId) === state) pendingStageRouteClients.delete(runId);
       if (samePendingStageRoute(pendingStageRoutes.get(runId), state.route)) pendingStageRoutes.delete(runId);
       void nextClient.disconnect().catch(() => {});
@@ -900,6 +928,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   async function ensurePendingStageRouteClient(
     runId: string,
     route: PendingStageRouteRegistration,
+    options: { readonly bypassBackoff?: boolean } = {},
   ): Promise<void> {
     const contextAtStart = getLiveContext();
     const generationAtStart = runtimeGeneration;
@@ -908,7 +937,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     let existing = pendingStageRouteClients.get(runId);
     if (existing && !samePendingStageRoute(existing.route, route)) {
       pendingStageRouteClients.delete(runId);
-      if (existing.reconnectTimer) clearTimeout(existing.reconnectTimer);
+      endPendingStageRouteBackoff(existing, new IntercomClientDisconnectedError());
       try { await existing.promise; } catch {}
       if (existing.client) {
         try { await existing.client.disconnect(); } catch {}
@@ -921,11 +950,15 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       promise: null,
       reconnectTimer: null,
       reconnectAttempt: 0,
+      retryWaiters: new RouteRetryWaiters(),
     };
     if (!existing) pendingStageRouteClients.set(runId, state);
+    // The run's own retries register what the run publishes now, not what it first published.
+    state.route = route;
 	if (state.client?.isConnected()) {
-		state.route = route;
-		state.client.registerPendingStageRoute(
+		// Route completion must observe broker processing, not merely enqueue a write.
+		// A list on another session's socket can overtake this roster update.
+		await state.client.registerPendingStageRouteAcknowledged(
 			runId,
 			normalizeGroup(route.group),
 			route.capability,
@@ -934,19 +967,25 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 			route.parent,
 			route.dormant === true,
 		);
-		// Route completion must observe broker processing, not merely enqueue a write.
-		// A list on another session's socket can overtake this roster update.
-		await state.client.listSessions();
 		return;
 	}
 	if (state.promise) {
 		await state.promise;
-		return ensurePendingStageRouteClient(runId, route);
+		return ensurePendingStageRouteClient(runId, route, options);
 	}
+	// A run waiting out its own backoff is not retried by every route update, and the update is not refused:
+	// the timer owns the retry, which registers this latest route, so the update waits for it.
+	if (state.reconnectTimer !== null && options.bypassBackoff !== true) return state.retryWaiters.join();
 
-    const promise = (async () => {
+    const promise = routeClientConnectGate.run(async () => {
+      if (!pendingStageRouteClientIsCurrent(runId, state, contextAtStart, generationAtStart)) {
+        throw new Error("Intercom runtime no longer active");
+      }
       await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs);
-		const nextClient = new IntercomClient(`${currentSessionId}:pending-stage-route:${runId}`);
+		const routeReturnAddress = `${currentSessionId}:pending-stage-route:${runId}`;
+		const nextClient = new IntercomClient(routeReturnAddress, {
+			connectTimeoutMs: testOverrides.connectTimeoutMs?.(routeReturnAddress),
+		});
       state.client = nextClient;
       attachPendingStageRouteClientHandlers(runId, state, nextClient);
       await nextClient.connect(
@@ -959,7 +998,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         await nextClient.disconnect();
         throw new Error("Intercom runtime no longer active");
       }
-      nextClient.registerPendingStageRoute(
+      await nextClient.registerPendingStageRouteAcknowledged(
         runId,
         normalizeGroup(route.group),
         route.capability,
@@ -968,13 +1007,13 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         route.parent,
         route.dormant === true,
       );
-      await nextClient.listSessions();
       if (!pendingStageRouteClientIsCurrent(runId, state, contextAtStart, generationAtStart)) {
         await nextClient.disconnect();
         throw new Error("Intercom runtime no longer active");
       }
       state.reconnectAttempt = 0;
-    })();
+      endPendingStageRouteBackoff(state);
+    });
     state.promise = promise;
     try {
       await promise;
@@ -995,7 +1034,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const states = [...pendingStageRouteClients.values()];
     pendingStageRouteClients.clear();
     for (const state of states) {
-      if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
+      endPendingStageRouteBackoff(state, new IntercomClientDisconnectedError());
       try { await state.promise; } catch {}
       if (!state.client) continue;
       try { await state.client.disconnect(); } catch {}
@@ -1007,21 +1046,22 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     runId: string,
     route: PendingStageRouteRegistration,
   ): Promise<void> {
-    const routeGroup = normalizeGroup(route.group);
-    // A dormant route always gets its own connection so a revocation can close it alone (#3760).
-    if (clientRegistrationGroup === routeGroup && route.dormant !== true) {
-      activeClient.registerPendingStageRoute(
+    if (registersOnMainClient(route)) {
+      await activeClient.registerPendingStageRouteAcknowledged(
         runId,
-        routeGroup,
+        normalizeGroup(route.group),
         route.capability,
         route.stages,
         route.possibleStages,
         route.parent,
       );
-      await activeClient.listSessions();
       return;
     }
-    await ensurePendingStageRouteClient(runId, { ...route, group: routeGroup });
+    await ensurePendingStageRouteClient(runId, { ...route, group: normalizeGroup(route.group) });
+  }
+  /** A dormant route always gets its own connection so a revocation can close it alone (#3760). */
+  function registersOnMainClient(route: PendingStageRouteRegistration): boolean {
+    return clientRegistrationGroup === normalizeGroup(route.group) && route.dormant !== true;
   }
   function persistedIntercomSessionId(ctx: ExtensionContext, sessionId: string): string | undefined {
     try {
@@ -1070,7 +1110,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const nextReconnectPromise = (async () => {
       let connectFailed = false;
       await ownershipRecorded.promise;
-		const nextClient = new IntercomClient(sessionIdAtStart, { preferredSessionId, acknowledgesReceipt: true });
+		const nextClient = new IntercomClient(sessionIdAtStart, {
+			preferredSessionId,
+			acknowledgesReceipt: true,
+			connectTimeoutMs: testOverrides.connectTimeoutMs?.(sessionIdAtStart),
+		});
       client = nextClient;
       attachClientHandlers(nextClient);
       try {
@@ -1092,7 +1136,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         if (replyCapability() === "terminal") nextClient.updatePresence({ replyCapability: "terminal" });
         await supervisorAuthorizations.restore(nextClient);
         for (const [runId, route] of pendingStageRoutes) {
-          await registerPendingStageRoute(nextClient, runId, route);
+          if (registersOnMainClient(route)) {
+            await registerPendingStageRoute(nextClient, runId, route);
+            continue;
+          }
+          // A run's own connection recovers on that run's own backoff; it must not decide this client's fate.
+          void ensurePendingStageRouteClient(runId, { ...route, group: normalizeGroup(route.group) }).catch(() => {});
         }
         const orchestration = contextAtStart.orchestrationContext;
         if (orchestration?.kind === "workflow-stage" && orchestration.pendingStageDelivery !== undefined) {
@@ -1192,7 +1241,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const route = pendingStageRoutes.get(runId);
     if (route === undefined) throw new Error("Pending workflow route is unavailable");
     if (client?.isConnected() && clientRegistrationGroup === normalizeGroup(route.group)) return client;
-    await ensurePendingStageRouteClient(runId, route);
+    await ensurePendingStageRouteClient(runId, route, { bypassBackoff: true });
     const routeClient = pendingStageRouteClients.get(runId)?.client;
     if (!routeClient?.isConnected()) throw new Error("Pending workflow route is disconnected");
     return routeClient;

@@ -188,6 +188,8 @@ export type ClientMessage =
 	| { type: "pending_stage_notification_result"; requestId: string; delivered: boolean }
  | {
 		type: "register_pending_stage_route";
+		/** When present, the broker answers with `pending_stage_route_registered` once the route is applied. */
+		requestId?: string;
 		runId: string;
 		group: string;
 		capability: string;
@@ -232,6 +234,8 @@ export type BrokerMessage =
 			supervisorSessionId?: string;
 			/** #3761: echoed only to a client that advertised it; that client may now send `received`. */
 			acknowledgesReceipt?: true;
+			/** This broker acknowledges a `register_pending_stage_route` that carries a `requestId`; absent on older brokers. */
+			acknowledgesPendingStageRoutes?: true;
 	  }
   | { type: "registration_failed"; reason: string; code?: LiveWorkflowStageRouteRefusalCode }
   | { type: "question_target"; messageId: string; attemptId: string; sessionId: string }
@@ -253,6 +257,7 @@ export type BrokerMessage =
 			live?: boolean;
 	  }
   | { type: "live_workflow_stage_route_registered"; requestId: string }
+	| { type: "pending_stage_route_registered"; requestId: string }
 	/** A dormant route's run was resumed by another process, which now owns the run's routes (#3760). */
 	| { type: "pending_stage_route_revoked"; runId: string }
   | { type: "presence_update"; session: SessionInfo }
