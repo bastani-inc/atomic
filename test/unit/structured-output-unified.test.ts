@@ -191,11 +191,102 @@ test("a built-in registry classifier runs through the model runtime's provider a
 	assert.equal(fetcher.mock.calls.length, 1);
 });
 
-test("an ID the registry does not list fails before any request", async () => {
+test("an ID the registry does not list is skipped and the current chat model decides (#3814)", async () => {
 	const { calls, modelRegistry } = classifierRegistry(() => classifierResult({ verdict: choice("approved") }));
-	await assert.rejects(
-		generateStructuredOutput({ ...verdictRequest(modelRegistry), model: "openrouter/~typesafe/jev-latest" }),
+	const result = await generateStructuredOutput({
+		...verdictRequest(modelRegistry),
+		model: "openrouter/~typesafe/jev-latest",
+	});
+	assert.deepEqual(calls, ["chat"]);
+	assert.equal(result.model, "decision-test/chat");
+	assert.equal(result.modelAttempts?.[0]?.model, "openrouter/~typesafe/jev-latest");
+	assert.match(
+		result.modelAttempts?.[0]?.error ?? "",
 		/unavailable or not a chat or classifier model: openrouter\/~typesafe\/jev-latest/,
+	);
+});
+
+test("an unresolvable explicit model ID falls back to the current chat model (#3814)", async () => {
+	const calls: string[] = [];
+	const modelRegistry: StructuredOutputRequest<TSchema>["modelRegistry"] = {
+		getAll: () => [decisionModel],
+		streamSimple: (model) => {
+			calls.push(model.id);
+			return messageStream(decisionMessage({ summary: "ok" }));
+		},
+	};
+	const result = await generateStructuredOutput({
+		model: "some-model-display-name",
+		currentModel: decisionModel,
+		modelRegistry,
+		schema: Type.Object({ summary: Type.String() }),
+		state: { summary: "ok" },
+		instructions: "Return the result.",
+	});
+	assert.deepEqual(calls, [decisionModel.id]);
+	assert.deepEqual(result.value, { summary: "ok" });
+	assert.equal(result.model, `${decisionModel.provider}/${decisionModel.id}`);
+	assert.deepEqual(result.modelAttempts, [
+		{
+			model: "some-model-display-name",
+			error: "Structured output model is unavailable or not a chat or classifier model: some-model-display-name",
+		},
+		{ model: `${decisionModel.provider}/${decisionModel.id}` },
+	]);
+	assert.equal(result.fallback?.from, "some-model-display-name");
+	assert.equal(result.fallback?.to, `${decisionModel.provider}/${decisionModel.id}`);
+});
+
+test("unresolvable and malformed fallback model IDs are recorded and skipped in order (#3814)", async () => {
+	const calls: string[] = [];
+	const modelRegistry: StructuredOutputRequest<TSchema>["modelRegistry"] = {
+		getAll: () => [decisionModel],
+		streamSimple: (model) => {
+			calls.push(model.id);
+			return messageStream(decisionMessage({ summary: "ok" }));
+		},
+	};
+	const result = await generateStructuredOutput({
+		model: "Claude Display Name",
+		fallbackModels: ["nonexistent/model", " padded/model ", "auto"],
+		currentModel: decisionModel,
+		modelRegistry,
+		schema: Type.Object({ summary: Type.String() }),
+		state: { summary: "ok" },
+		instructions: "Return the result.",
+	});
+	assert.deepEqual(calls, [decisionModel.id]);
+	assert.deepEqual(
+		result.modelAttempts?.map(({ model }) => model),
+		[
+			"Claude Display Name",
+			"nonexistent/model",
+			" padded/model ",
+			"auto",
+			`${decisionModel.provider}/${decisionModel.id}`,
+		],
+	);
+	assert.equal(result.modelAttempts?.filter(({ error }) => error).length, 4);
+});
+
+test("every candidate ID unresolvable still fails before any request (#3814)", async () => {
+	const calls: string[] = [];
+	await assert.rejects(
+		generateStructuredOutput({
+			model: "bad/one",
+			fallbackModels: ["bad/two"],
+			modelRegistry: {
+				getAll: () => [],
+				streamSimple: (model) => {
+					calls.push(model.id);
+					return messageStream(decisionMessage({ summary: "ok" }));
+				},
+			},
+			schema: Type.Object({ summary: Type.String() }),
+			state: { summary: "ok" },
+			instructions: "Return the result.",
+		}),
+		/unavailable or not a chat or classifier model: bad\/one/,
 	);
 	assert.deepEqual(calls, []);
 });
