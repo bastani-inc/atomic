@@ -350,9 +350,13 @@ export function classifyOAuthFailure(error: ModelsError): CredentialPrintError {
 		);
 	}
 	if (error.message.startsWith(OAUTH_REFRESH_FAILED_PHRASE)) {
-		return new CredentialPrintError("RefreshFailed", `${detail} (the stored credential was left untouched)`, {
-			cause: error,
-		});
+		return new CredentialPrintError(
+			"RefreshFailed",
+			`${detail} (the stored credential changes only if the provider completes this refresh later)`,
+			{
+				cause: error,
+			},
+		);
 	}
 	return new CredentialPrintError("OAuthUnavailable", detail, { cause: error });
 }
