@@ -28,7 +28,7 @@ export interface ValidationError {
 	reason: string;
 }
 
-function firstSchemaError(def: TSchema, value: unknown, kind: string): string {
+function firstSchemaError(def: TSchema, value: number, kind: string): string {
 	const first = [...Value.Errors(def, value)][0];
 	return first === undefined ? `does not match ${kind} schema` : first.message;
 }
