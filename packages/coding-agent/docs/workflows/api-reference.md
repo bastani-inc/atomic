@@ -796,16 +796,21 @@ readonly failFast?: boolean;
 
 `WorkflowParallelOptions` uses `concurrency` to bound active tasks in an authored `ctx.parallel(...)`. When omitted, the runtime uses the workflow's `defaultConcurrency` setting, which defaults to `3`; explicit configuration and per-call concurrency remain honored. Parallel execution is fail-fast unless `failFast` is explicitly `false`.
 
-With `failFast: false`, every step settles before the call rejects. When any step failed, the rejection is an `AggregateError` whose `errors` hold the step failures and whose `partialResults` holds one entry per step, in step order: the task result for each step that completed, and `undefined` for a step that failed or did not run. Use it to keep completed work:
+With `failFast: false`, every step settles before the call rejects. When any step failed, the rejection is usually an `AggregateError` whose `errors` hold the step failures and whose `partialResults` holds one entry per step, in step order: the task result for each step that completed, and `undefined` for a step that failed or did not run. Two rejections are not wrapped and have no `partialResults`: a workflow exit, and a `WorkflowBudgetExceededError` when every failed step exhausted a budget. Check for `partialResults` and rethrow anything else unchanged:
 
 ```typescript
 import type { WorkflowParallelFailure } from "@bastani/atomic/workflows";
 
+function isParallelFailure(error: unknown): error is WorkflowParallelFailure {
+  return error instanceof AggregateError && Array.isArray((error as Partial<WorkflowParallelFailure>).partialResults);
+}
+
 try {
   return await ctx.parallel(steps, { failFast: false });
 } catch (error) {
-  const completed = (error as WorkflowParallelFailure).partialResults.filter((result) => result !== undefined);
-  // Use `completed`, then rethrow or handle the failures in `(error as AggregateError).errors`.
+  if (!isParallelFailure(error)) throw error;
+  const completed = error.partialResults.filter((result) => result !== undefined);
+  // Use `completed`, then rethrow or handle the failures in `error.errors`.
 }
 ```
 
