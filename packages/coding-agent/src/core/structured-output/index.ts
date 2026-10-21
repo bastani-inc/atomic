@@ -14,13 +14,7 @@ import { raceWithAbortSignal } from "../../utils/abort.js";
 import { reportModelRoutingDebug } from "../model-routing-debug.js";
 import { type JsonObject, STRUCTURED_OUTPUT_TOOL_NAME } from "../tools/structured-output.ts";
 import { compileChoiceSchema } from "./choice-schema.js";
-import {
-	abortFailure,
-	type DecisionAttempt,
-	type DecisionTrace,
-	resolveDecisionDeadlineMs,
-	withinDecisionDeadline,
-} from "./deadline.ts";
+import { abortFailure, type DecisionTrace, resolveDecisionDeadlineMs, withinDecisionDeadline } from "./deadline.js";
 import { InvalidDecisionOutputError } from "./invalid-output.js";
 import { describeSchemaErrors, schemaMismatchMessage, unparseableArgumentsMessage } from "./rejection-detail.js";
 import { resolveRouterModel } from "./resolver.js";
@@ -92,7 +86,7 @@ async function inferChat<T extends TSchema>(
 	model: Model<Api>,
 	signal: AbortSignal,
 	assertActive: () => void,
-	attempt: DecisionAttempt,
+	trace: DecisionTrace,
 ): Promise<StructuredOutputResult<Static<T>>> {
 	// Anthropic catalog configuration may opt into server-side fallback. A decision must not.
 	const decisionModel =
@@ -108,8 +102,9 @@ async function inferChat<T extends TSchema>(
 	assertActive();
 	try {
 		response = await retryAssistantCall(
-			() =>
-				request.modelRegistry
+			() => {
+				const attempt = trace.begin();
+				return request.modelRegistry
 					.streamSimple(
 						decisionModel,
 						{
@@ -142,7 +137,18 @@ async function inferChat<T extends TSchema>(
 							...(request.maxTokens === undefined ? {} : { maxTokens: request.maxTokens }),
 						},
 					)
-					.result(),
+					.result()
+					.then(
+						(message) => {
+							attempt.settle(message.stopReason);
+							return message;
+						},
+						(error: Error) => {
+							attempt.settle();
+							throw error;
+						},
+					);
+			},
 			request.retry ?? DEFAULT_DECISION_RETRY,
 			signal,
 		);
@@ -154,7 +160,6 @@ async function inferChat<T extends TSchema>(
 		// Provider exceptions can echo private state or credentials; do not retain their cause.
 		throw new Error("Structured output provider request failed. Check provider configuration and connectivity.");
 	}
-	attempt.settle(response.stopReason);
 	signal.throwIfAborted();
 	if (request.candidateFallback && response.stopReason === "error")
 		throw new CandidateProviderError("Structured output provider request failed.");
@@ -248,7 +253,7 @@ async function inferClassifier<T extends TSchema>(
 	request: InternalStructuredOutputRequest<T>,
 	selected: Extract<StructuredOutputModel, { kind: "classifier" }>,
 	signal: AbortSignal,
-	attempt: DecisionAttempt,
+	trace: DecisionTrace,
 ): Promise<StructuredOutputResult<Static<T>>> {
 	const classify = request.modelRegistry.classify;
 	if (!classify) throw new ClassifierDecisionError();
@@ -263,6 +268,7 @@ async function inferClassifier<T extends TSchema>(
 		]),
 	);
 	let result: Awaited<ReturnType<typeof classify>>;
+	const attempt = trace.begin();
 	try {
 		result = await classify.call(
 			request.modelRegistry,
@@ -494,12 +500,11 @@ async function inferDecision<T extends TSchema>(
 						? snapshot.instructions
 						: `${snapshot.instructions}\n\nThe previous response failed output validation${rejection ? `: ${rejection}` : "."} Return a complete valid decision satisfying the original schema, candidates and constraints. Do not change the task or invent values.`,
 			};
-			const record = request.trace.begin();
 			try {
 				const result = await raceWithAbortSignal(
 					selected.kind === "classifier"
-						? inferClassifier(current, selected, controller.signal, record)
-						: inferChat(current, selected.model, controller.signal, assertActive, record),
+						? inferClassifier(current, selected, controller.signal, request.trace)
+						: inferChat(current, selected.model, controller.signal, assertActive, request.trace),
 					controller.signal,
 				);
 				assertActive();
@@ -520,7 +525,7 @@ async function inferDecision<T extends TSchema>(
 				assertActive();
 				return { ...result, value, usage, ...(fallback ? { fallback } : {}) };
 			} catch (error) {
-				record.settle();
+				request.trace.settleOpen();
 				assertActive();
 				if (
 					selected.kind === "classifier" &&

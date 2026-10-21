@@ -193,9 +193,13 @@ test("the deadline spans model-candidate fallbacks and ends the chain (#3806)", 
 	);
 });
 
-test("transport retries and their backoff count toward the deadline (#3806)", async () => {
+test("transport retries and their backoff count toward the deadline, each request reported on its own (#3806)", async () => {
 	const stream = vi.fn<Stream>((_model, _context, options) =>
-		answerAfter(0, { ...textMessage("error"), errorMessage: "429 Too Many Requests: rate limit exceeded" }, options),
+		answerAfter(
+			100,
+			{ ...textMessage("error"), errorMessage: "429 Too Many Requests: rate limit exceeded" },
+			options,
+		),
 	);
 	const outcome = observe(
 		generateStructuredOutput({
@@ -210,7 +214,7 @@ test("transport retries and their backoff count toward the deadline (#3806)", as
 	assert.equal(outcome.state, "rejected");
 	assert.equal(
 		outcome.error?.message,
-		"Structured output decision exceeded its 5000ms deadline; no decision was accepted. Attempts: 1) still generating 5.0s.",
+		"Structured output decision exceeded its 5000ms deadline; no decision was accepted. Attempts: 1) stopReason=error 100ms; 2) stopReason=error 100ms.",
 	);
 	assert.equal(stream.mock.calls.length, 2, "the third retry would have started after the deadline");
 });

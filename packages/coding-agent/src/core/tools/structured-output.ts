@@ -3,7 +3,7 @@ import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { type Static, type TSchema, Type } from "typebox";
 import { defineTool, type ToolDefinition } from "../extensions/types.ts";
-import { resolveDecisionDeadlineMs, validateTimeoutOverride } from "../structured-output/deadline.ts";
+import { resolveDecisionDeadlineMs, validateTimeoutOverride } from "../structured-output/deadline.js";
 
 export const STRUCTURED_OUTPUT_TOOL_NAME = "structured_output";
 

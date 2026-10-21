@@ -1,4 +1,4 @@
-import { SETTINGS_DEFAULTS } from "../settings-defaults.ts";
+import { SETTINGS_DEFAULTS } from "../settings-defaults.js";
 
 /** The largest delay `setTimeout` honors; a larger one fires immediately. */
 const MAX_DEADLINE_MS = 2_147_483_647;
@@ -48,7 +48,7 @@ function formatDuration(milliseconds: number): string {
 	return `${clock}${pad(totalSeconds % 60)}s`;
 }
 
-/** One model generation, from request to response. Records only the stop reason and timing, never content. */
+/** One model request, from send to response; transport retries and their waits are not part of it. Records only the stop reason and timing, never content. */
 export class DecisionAttempt {
 	readonly startedAt = performance.now();
 	endedAt: number | undefined;
@@ -82,6 +82,11 @@ export class DecisionTrace {
 		const attempt = new DecisionAttempt();
 		this.attempts.push(attempt);
 		return attempt;
+	}
+
+	/** Mark every generation still in flight as ended without a response. */
+	settleOpen(): void {
+		for (const attempt of this.attempts) attempt.settle();
 	}
 
 	/** The attempts from `first` onward, numbered from 1, or an empty string when there are none. */
