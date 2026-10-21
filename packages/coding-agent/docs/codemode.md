@@ -18,7 +18,7 @@ A script may start with an options line. It must be the first line; an options l
 ```
 
 - `max_output_tokens` (default 10000) limits the output. Longer output keeps its start and end, and the full text is written to a temp file whose path is included in the result.
-- `timeout_ms` is a hard deadline for the whole script. It is unset by default. Image generation can take minutes, so do not set a short deadline for scripts that generate images.
+- `timeout_ms` is a hard deadline for the whole script, including any wait for a free worker. It is unset by default. Image generation can take minutes, so do not set a short deadline for scripts that generate images.
 
 The result starts with `Script completed` or `Script failed`, the wall time, and the output. Text and image items appear in order. When output has multiple text items (from `text()` or `return`), each starts with a `==> text N/M <==` line. Console calls follow the other output in one `<console_output>` block, with one line per call. A failed script keeps its partial output, followed by `Script error:` and the error. Tool calls are real: calls made before a failure are not undone. Calls still running when the script ends are cancelled, and unawaited promises are discarded.
 
@@ -236,6 +236,6 @@ Extensions call classifiers and image models through `ctx.modelRegistry.classify
 
 - A script's VM has 256 MB of memory. Running out throws `InternalError: out of memory`; filter or aggregate large data instead of accumulating it.
 - Stopping a script or reaching its deadline ends the call promptly. In the standalone `atomic` binary (Bun), a built-in that does not check for interruption, such as a long string search, can keep computing in its worker until it returns.
-- At most two codemode workers may be alive across all sessions in one Atomic process. A cancelled worker occupies its slot until it exits. At capacity, new scripts fail immediately with `Codemode worker limit reached` without starting another worker; retry after an existing worker exits.
+- At most two codemode workers may be alive across all sessions in one Atomic process; `ATOMIC_CODEMODE_MAX_WORKERS` changes the limit. A cancelled worker occupies its slot until it exits. At capacity, new scripts wait for a free worker in arrival order. A script that gets no worker within 60 seconds, or before its `timeout_ms`, fails without running.
 - A script that waits on a promise that can never settle (no tool call pending) fails immediately, since there are no timers.
 - Scripts cannot start other `codemode` scripts.

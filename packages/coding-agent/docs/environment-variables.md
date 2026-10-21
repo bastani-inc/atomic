@@ -20,6 +20,7 @@ Atomic accepts environment variables for configuration, provider credentials, an
 | `ATOMIC_SESSIONS_STORAGE` | None | JSON session-only storage selection, in the same form as `sessions.storage`. Conflicts with a non-empty `ATOMIC_CODING_AGENT_SESSION_DIR` |
 | `ATOMIC_WORKFLOWS_JOURNAL` | None | JSON workflow-run-only storage selection, in the same form as `workflows.journal`. Conflicts with a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH` |
 | `ATOMIC_HEAP_MB` | `PI_HEAP_MB` | Heap size in MiB for the Atomic process that runs agents when Atomic runs on Node (npm installs): the interactive engine, or a headless run (`-p`, `--mode json`, `--mode rpc`), which restarts itself once with the larger heap. By default it gets half of system memory when that is more than Node's default limit, because every in-process subagent and workflow stage shares that heap. `0` keeps Node's default. A `--max-old-space-size` in `NODE_OPTIONS` or on Atomic's own command line takes precedence. The standalone binary does not use this value |
+| `ATOMIC_CODEMODE_MAX_WORKERS` | `PI_CODEMODE_MAX_WORKERS` | Maximum codemode workers alive at once across all sessions in the process; default `2`. Each worker's script may use up to 256 MB. Raise it when one process runs several sessions, such as in-process subagents. Further scripts wait for a free worker. See [Codemode](/codemode) |
 
 `VISUAL` and `EDITOR` select the Ctrl+G external editor when `externalEditor` is unset.
 
