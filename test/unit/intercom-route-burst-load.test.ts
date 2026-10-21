@@ -20,8 +20,14 @@ import { afterAll, afterEach, beforeAll, test, vi } from "vitest";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { jitteredReconnectDelayMs, reconnectDelayMs } from "../../packages/intercom/reconnect-backoff.js";
-import { isRecoverableIntercomDisconnect } from "../../packages/intercom/recoverable-disconnect.js";
+import {
+	IntercomBrokerTimeoutError,
+	IntercomClientDisconnectedError,
+	isRecoverableIntercomDisconnect,
+} from "../../packages/intercom/recoverable-disconnect.js";
 import { ROUTE_CLIENT_CONNECT_CONCURRENCY } from "../../packages/intercom/route-connect-gate.js";
+import { scheduledRetryFailure } from "../../packages/intercom/route-retry-waiters.js";
+import { isRetryableSameModelFailure } from "../../packages/workflows/src/runs/shared/model-fallback-failures.js";
 import { IntercomWireProxy, type WireFrame } from "../helpers/intercom-wire-proxy.js";
 import { sleep } from "../helpers/runtime.js";
 
@@ -64,6 +70,8 @@ const POLL_MS = 10;
 const CONNECT_SETTLE_MS = 250;
 /** One main-client reconnect attempt is armed `reconnectDelayMs(0)` after a teardown; observe past it. */
 const MAIN_RECONNECT_WINDOW_MS = reconnectDelayMs(0) + 500;
+/** `setTimeout` may fire a hair before a `Date.now()` difference reaches its delay. */
+const TIMER_EARLY_SLACK_MS = 50;
 const ROUTE_PREFIX = ":pending-stage-route:";
 
 let broker: ChildProcess | undefined;
@@ -141,12 +149,12 @@ function runGroup(runId: string): string {
 	return `workflow:${runId}`;
 }
 
-function routePayload(runId: string, round: number) {
+function routePayload(runId: string, round: number, capability = `capability-${runId}`) {
 	const group = runGroup(runId);
 	return {
 		runId,
 		group,
-		capability: `capability-${runId}`,
+		capability,
 		stages: [
 			{
 				stageId: `reviewer-${round}`,
@@ -229,8 +237,8 @@ function createHost(connectTimeoutMs: (returnAddress: string) => number | undefi
 		start: () => fire("session_start", { type: "session_start", reason: "startup" }),
 		shutdown: () => fire("session_shutdown", { type: "session_shutdown", reason: "quit" }),
 		/** Publish one run's route the way the workflows bridge does, and hand back what it awaits. */
-		publishRoute(runId: string, round: number): Promise<void> {
-			const payload = routePayload(runId, round);
+		publishRoute(runId: string, round: number, capability?: string): Promise<void> {
+			const payload = routePayload(runId, round, capability);
 			pi.events.emit("atomic:workflow-pending-stage-route", payload);
 			assert.ok(payload.completion, "the Intercom relay must claim every route event");
 			return payload.completion;
@@ -286,6 +294,28 @@ function relayDiagnostics(spy: { mock: { calls: unknown[][] } }): string[] {
 	return spy.mock.calls
 		.map(([message]) => String(message))
 		.filter((message) => message.startsWith("Intercom event relay failed") || message.includes("has not answered"));
+}
+
+/** How a completion settles. One still pending after the bound is a hang, which a stage startup would wait on forever. */
+async function settleWithinBound(completion: Promise<void>): Promise<PromiseSettledResult<void>> {
+	let timer: NodeJS.Timeout | undefined;
+	const hang = new Promise<never>((_resolve, reject) => {
+		timer = setTimeout(
+			() => reject(new Error(`the route completion is still pending after ${WAIT_TIMEOUT_MS}ms`)),
+			WAIT_TIMEOUT_MS,
+		);
+	});
+	try {
+		return await Promise.race([Promise.allSettled([completion]).then(([outcome]) => outcome), hang]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+function routeRegistersFor(runId: string): number {
+	return proxy.toBroker.filter(
+		({ frame }) => frame.type === "register" && String(frame.returnAddress).endsWith(`${ROUTE_PREFIX}${runId}`),
+	).length;
 }
 
 function isRouteClientRegister(frame: WireFrame): boolean {
@@ -529,6 +559,158 @@ test("an acknowledged registration still refuses a route another session owns", 
 	assert.equal(isRecoverableIntercomDisconnect(refusal), false);
 	assert.equal(owner.isConnected(), true);
 	await owner.registerPendingStageRouteAcknowledged(runId, group, "owner-capability");
+});
+
+/**
+ * One run's route connection times out, so that run waits out its own jittered backoff. A stage that starts in
+ * that window awaits the completion of the route its run published last; the run's retry, not the caller,
+ * registers it.
+ */
+async function withRunInBackoff<T>(
+	scope: string,
+	body: (context: {
+		readonly runId: string;
+		readonly host: Host;
+		readonly observer: Client;
+		readonly diagnostics: { mock: { calls: unknown[][] } };
+		recover(): void;
+	}) => Promise<T>,
+): Promise<T> {
+	const runId = runIdFor(scope, 0);
+	const diagnostics = vi.spyOn(console, "error").mockImplementation(() => {});
+	const observer = await connectObserver([runGroup(runId)]);
+	let stalled = true;
+	const host = createHost((returnAddress) =>
+		stalled && returnAddress.endsWith(`${ROUTE_PREFIX}${runId}`) ? STALLED_CONNECT_TIMEOUT_MS : undefined,
+	);
+	proxy.hold((first) => first.type === "register" && String(first.returnAddress).endsWith(`${ROUTE_PREFIX}${runId}`));
+	await host.start();
+	try {
+		const first = await settleWithinBound(host.publishRoute(runId, 1));
+		assert.ok(
+			first.status === "rejected" && isRecoverableIntercomDisconnect(first.reason),
+			"the run's route connection must time out for the run to enter its backoff",
+		);
+		return await body({
+			runId,
+			host,
+			observer,
+			diagnostics,
+			recover() {
+				stalled = false;
+				proxy.release();
+			},
+		});
+	} finally {
+		await host.shutdown();
+	}
+}
+
+test("a route published while its run waits out a connection timeout registers once the run's retry connects", async () => {
+	await withRunInBackoff("88880008", async ({ runId, host, observer, diagnostics, recover }) => {
+		const publishedAt = Date.now();
+		const completion = host.publishRoute(runId, 2);
+		recover();
+		// Releasing forwards the register frame of the timed-out connection the proxy had not yet seen close.
+		const registersBefore = routeRegistersFor(runId);
+
+		const outcome = await settleWithinBound(completion);
+
+		assert.ok(
+			outcome.status === "fulfilled",
+			`a publication during the backoff must wait for the run's retry, not fail (${outcome.status === "rejected" ? outcome.reason.message : ""})`,
+		);
+		assert.ok(
+			Date.now() - publishedAt >= reconnectDelayMs(0) / 2 - TIMER_EARLY_SLACK_MS,
+			"the run's jittered backoff is kept: the publication did not open a connection of its own",
+		);
+		assert.equal(routeRegistersFor(runId) - registersBefore, 1, "one retry connection serves every publication");
+		const roster = (await observer.listDirectory()).workflowStages;
+		assert.deepEqual(
+			roster.filter((stage) => stage.runId === runId).map((stage) => stage.target),
+			[`${runGroup(runId)}/reviewer-2`],
+			"the broker holds the latest route the run published",
+		);
+		assert.deepEqual(relayDiagnostics(diagnostics), []);
+	});
+});
+
+test("a route published while its run waits out a connection timeout fails retryably when the run's retry fails too", async () => {
+	await withRunInBackoff("99990009", async ({ runId, host, diagnostics }) => {
+		const publishedAt = Date.now();
+		const outcome = await settleWithinBound(host.publishRoute(runId, 2));
+
+		assert.ok(outcome.status === "rejected", "the retry meets the same unresponsive broker");
+		assert.ok(
+			Date.now() - publishedAt >= STALLED_CONNECT_TIMEOUT_MS - TIMER_EARLY_SLACK_MS,
+			"the failure is the run's retry giving up, not an immediate refusal",
+		);
+		assert.equal(isRecoverableIntercomDisconnect(outcome.reason), true);
+		assert.equal(
+			isRetryableSameModelFailure(outcome.reason),
+			true,
+			"a stage starting in the backoff window retries instead of failing terminally",
+		);
+		assert.deepEqual(relayDiagnostics(diagnostics), [], "a recoverable timeout is not reported per publication");
+	});
+});
+
+test("a route waiting on its run's retry settles when the session shuts down", async () => {
+	const runId = runIdFor("aaaa000a", 0);
+	const diagnostics = vi.spyOn(console, "error").mockImplementation(() => {});
+	await connectObserver([runGroup(runId)]);
+	const host = createHost((returnAddress) =>
+		returnAddress.endsWith(`${ROUTE_PREFIX}${runId}`) ? STALLED_CONNECT_TIMEOUT_MS : undefined,
+	);
+	proxy.hold((first) => first.type === "register" && String(first.returnAddress).endsWith(`${ROUTE_PREFIX}${runId}`));
+	await host.start();
+	let shutDown = false;
+	try {
+		await settleWithinBound(host.publishRoute(runId, 1));
+		const waiting = host.publishRoute(runId, 2);
+		// The relay claims the event at once but reaches the run's backoff a few microtasks later.
+		await tick();
+		await host.shutdown();
+		shutDown = true;
+
+		const outcome = await settleWithinBound(waiting);
+
+		assert.ok(outcome.status === "rejected", "nothing is left to register the route");
+		assert.equal(isRecoverableIntercomDisconnect(outcome.reason), true);
+		assert.deepEqual(relayDiagnostics(diagnostics), [], "teardown is not reported as a relay failure");
+	} finally {
+		if (!shutDown) await host.shutdown();
+	}
+});
+
+test("a route waiting on its run's retry settles when the run's route is replaced", async () => {
+	await withRunInBackoff("bbbb000b", async ({ runId, host }) => {
+		const waiting = host.publishRoute(runId, 2);
+		const replacement = host.publishRoute(runId, 3, `replacement-capability-${runId}`);
+
+		const outcome = await settleWithinBound(waiting);
+
+		assert.ok(outcome.status === "rejected", "the retry that would have registered the old route is gone");
+		assert.equal(isRecoverableIntercomDisconnect(outcome.reason), true);
+		await settleWithinBound(replacement);
+	});
+});
+
+test("a failed scheduled retry reaches a waiting stage as a retryable failure unless it is a real one", () => {
+	const timeout = new IntercomBrokerTimeoutError("Connection timeout");
+	assert.equal(scheduledRetryFailure(timeout), timeout, "a broker timeout is already what a stage retries");
+
+	const lostSocket = scheduledRetryFailure(new IntercomClientDisconnectedError());
+	assert.equal(isRetryableSameModelFailure(new IntercomClientDisconnectedError()), false, "the bare loss is terminal");
+	assert.equal(isRecoverableIntercomDisconnect(lostSocket), true);
+	assert.equal(isRetryableSameModelFailure(lostSocket), true, "a loss during the retry is retried by the stage");
+
+	for (const real of [
+		new Error("Pending-stage route is not authorized"),
+		new Error("Intercom runtime no longer active"),
+	]) {
+		assert.equal(scheduledRetryFailure(real), real, "a failure that is not transient is reported as it happened");
+	}
 });
 
 test("route clients that failed together retry spread across their backoff step, never beyond it", () => {
