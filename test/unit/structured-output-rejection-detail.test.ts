@@ -120,22 +120,51 @@ test("caps the listed errors and reports how many were omitted (#3802)", async (
 	assert.ok(message.length < 600, `message was ${message.length} characters`);
 });
 
-test("reports non-JSON tool arguments distinctly, with a bounded parser excerpt and no raw payload (#3802)", async () => {
-	const parserMessage = `Unexpected token '}', ..."note": }" is not valid JSON${" overlong".repeat(60)}`;
-	const stream = vi.fn(() =>
-		replyWith({}, `${parserMessage}\n\nReceived arguments:\n{"summary":"${REJECTED_SECRET}","note": }`),
-	);
+function realParserError(json: string): string {
+	try {
+		JSON.parse(json);
+	} catch (error) {
+		return `${(error as Error).message}\n\nReceived arguments:\n${json}`;
+	}
+	throw new Error(`expected ${json} to be rejected by JSON.parse`);
+}
+
+test("reports non-JSON tool arguments distinctly without echoing the parser's quote of the input (#3802)", async () => {
+	const nearbySecret = "SECRET";
+	const argumentsError = realParserError(`{"x":"${nearbySecret}","y":}`);
+	assert.match(argumentsError.split("\n", 1)[0], new RegExp(nearbySecret));
+	const systemPrompts: string[] = [];
+	const stream = vi.fn((model: Model<Api>, context: { systemPrompt?: string }) => {
+		if (model.id !== "chat") return replyWith({ summary: "ok", files: [] });
+		systemPrompts.push(context.systemPrompt ?? "");
+		return replyWith({}, argumentsError);
+	});
+
+	const result = await generateStructuredOutput({
+		...requestFor(stream, schema),
+		modelRegistry: { getAll: () => [decisionModel, { ...decisionModel, id: "chat-2" }], streamSimple: stream },
+		fallbackModels: ["decision-test/chat-2"],
+	});
+
+	const message = result.modelAttempts?.[0]?.error ?? "";
+	assert.ok(message.startsWith("Invalid structured output: tool call arguments were not valid JSON."), message);
+	assert.doesNotMatch(message, /does not match the decision schema/);
+	assert.match(message, /an unexpected character was found/);
+	assert.doesNotMatch(message, /Received arguments/);
+	assert.doesNotMatch(JSON.stringify(result), new RegExp(nearbySecret));
+	assert.equal(systemPrompts.length, REPAIR_ATTEMPTS);
+	for (const prompt of systemPrompts) assert.doesNotMatch(prompt, new RegExp(nearbySecret));
+});
+
+test("non-JSON tool arguments report the parser position, not the parser text (#3802)", async () => {
+	const argumentsError = realParserError(`{"summary":"${REJECTED_SECRET}" "files":[]}`);
+	const stream = vi.fn(() => replyWith({}, argumentsError));
 
 	const message = await messageOf(generateStructuredOutput(requestFor(stream, schema)));
 
-	assert.ok(message.startsWith("Invalid structured output: tool call arguments were not valid JSON."), message);
-	assert.doesNotMatch(message, /does not match the decision schema/);
-	assert.match(message, /Unexpected token '}', \.\.\."note": }" is not valid JSON/);
-	assert.doesNotMatch(message, /Received arguments/);
+	assert.match(message, /Parsing failed at position \d+: the JSON syntax was malformed\./);
 	assert.doesNotMatch(message, new RegExp(REJECTED_SECRET));
-	assert.ok(message.length < 450, `message was ${message.length} characters`);
 	assert.match(message, /repair exhausted after 4 attempts\.$/);
-	assert.equal(stream.mock.calls.length, REPAIR_ATTEMPTS);
 });
 
 test("non-JSON tool arguments take part in repair and usage accounting (#3802)", async () => {
@@ -150,7 +179,10 @@ test("non-JSON tool arguments take part in repair and usage accounting (#3802)",
 
 	assert.equal(result.value.route, "review");
 	assert.deepEqual(result.usage, { inputTokens: 40, outputTokens: 20 });
-	assert.match(stream.mock.calls[1][1].systemPrompt!, /not valid JSON.*Unexpected token '}' at position 12/);
+	assert.match(
+		stream.mock.calls[1][1].systemPrompt!,
+		/not valid JSON\. Parsing failed at position 12: an unexpected character was found\./,
+	);
 	assert.doesNotMatch(stream.mock.calls[1][1].systemPrompt!, /Received arguments/);
 });
 
@@ -207,7 +239,7 @@ test("model attempts keep the value-free rejection detail of an exhausted candid
 test("workflow corrective prompt carries the rejection detail and treats both messages as contract failures (#3802)", () => {
 	const mismatch = `${ISSUE_MESSAGE_PREFIX} Failing paths: /files: expected array, got string; /summary: required. Structured output repair exhausted after 4 attempts.`;
 	const notJson =
-		"Invalid structured output: tool call arguments were not valid JSON. Parser stopped at: Unexpected token '}'. Structured output repair exhausted after 4 attempts.";
+		"Invalid structured output: tool call arguments were not valid JSON. Parsing failed: an unexpected character was found. Structured output repair exhausted after 4 attempts.";
 
 	for (const message of [mismatch, notJson]) {
 		assert.equal(isStructuredOutputContractFailure(message), true, message);

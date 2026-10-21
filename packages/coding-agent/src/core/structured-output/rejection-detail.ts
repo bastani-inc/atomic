@@ -8,7 +8,6 @@ export const UNPARSEABLE_ARGUMENTS_PREFIX = "Invalid structured output: tool cal
 const MAX_LISTED_ERRORS = 5;
 const MAX_LINE_LENGTH = 160;
 const MAX_LISTED_LITERALS = 6;
-const MAX_PARSER_EXCERPT_LENGTH = 200;
 
 function truncate(text: string, limit: number): string {
 	return text.length > limit ? `${text.slice(0, limit)}…` : text;
@@ -125,9 +124,27 @@ export function schemaMismatchMessage(lines: readonly string[]): string {
 	return `${SCHEMA_MISMATCH_PREFIX} Failing paths: ${lines.slice(0, MAX_LISTED_ERRORS).join("; ")}${omitted > 0 ? `; and ${omitted} more` : ""}.`;
 }
 
-/** pi-ai appends the raw payload after a blank line; only the parser's first line is safe to surface. */
+const PARSER_FAILURE_CATEGORIES: readonly (readonly [RegExp, string])[] = [
+	[/^Unexpected end of JSON input/, "the JSON ended before the value was complete"],
+	[/^Unexpected non-whitespace character after JSON/, "unexpected content followed the JSON value"],
+	[/^Unexpected token/, "an unexpected character was found"],
+	[/^(Expected|Unterminated|Bad (control|escaped) character)/, "the JSON syntax was malformed"],
+	[/^Tool arguments must be a JSON object/, "the arguments were not a JSON object"],
+];
+
+function parserFailureCategory(parserLine: string): string {
+	return (
+		PARSER_FAILURE_CATEGORIES.find(([pattern]) => pattern.test(parserLine))?.[1] ?? "the parser rejected the input"
+	);
+}
+
+function parserPosition(parserLine: string): string {
+	const position = /\bat position (\d{1,9})\b/.exec(parserLine)?.[1];
+	return position === undefined ? "" : ` at position ${position}`;
+}
+
+/** Parser messages quote the rejected input, so only a fixed category and a numeric position are surfaced. */
 export function unparseableArgumentsMessage(argumentsError: string): string {
-	const excerpt = truncate(argumentsError.split("\n", 1)[0].trim(), MAX_PARSER_EXCERPT_LENGTH);
-	if (!excerpt) return UNPARSEABLE_ARGUMENTS_PREFIX;
-	return `${UNPARSEABLE_ARGUMENTS_PREFIX} Parser stopped at: ${excerpt}${/[.…]$/.test(excerpt) ? "" : "."}`;
+	const parserLine = argumentsError.split("\n", 1)[0].trim();
+	return `${UNPARSEABLE_ARGUMENTS_PREFIX} Parsing failed${parserPosition(parserLine)}: ${parserFailureCategory(parserLine)}.`;
 }
