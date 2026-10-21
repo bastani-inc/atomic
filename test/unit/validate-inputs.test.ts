@@ -6,7 +6,11 @@
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { describe, test } from "vitest";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { run } from "../../packages/workflows/src/engine/run.js";
+import { resolveAndValidateInputs } from "../../packages/workflows/src/runs/foreground/executor-inputs.js";
 import { validateInputs } from "../../packages/workflows/src/runs/shared/validate-inputs.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowInputSchema } from "../../packages/workflows/src/shared/types.js";
 
 const schema = (obj: Record<string, WorkflowInputSchema>): Readonly<Record<string, WorkflowInputSchema>> => obj;
@@ -115,5 +119,83 @@ describe("validateInputs", () => {
 			assert.equal(errors[0]!.key, "value");
 			assert.match(errors[0]!.reason, /JSON-serializable/);
 		}
+	});
+});
+
+describe("numeric minimum/maximum on integer and number inputs", () => {
+	const bounded = schema({ count: Type.Integer({ minimum: 1, maximum: 8 }) });
+	const ratio = schema({ ratio: Type.Number({ minimum: 0.5, maximum: 2.5 }) });
+
+	test("rejects an integer below the minimum, zero and negative (#3812)", () => {
+		for (const count of [0, -3]) {
+			const errors = validateInputs(bounded, { count });
+			assert.equal(errors.length, 1, `count=${count}`);
+			assert.equal(errors[0]!.key, "count");
+			assert.match(errors[0]!.reason, /1/);
+		}
+	});
+
+	test("rejects an integer above the maximum (#3812)", () => {
+		const errors = validateInputs(bounded, { count: 9 });
+		assert.equal(errors.length, 1);
+		assert.equal(errors[0]!.key, "count");
+		assert.match(errors[0]!.reason, /8/);
+	});
+
+	test("accepts integers inside the bounds, minimum and maximum inclusive (#3812)", () => {
+		for (const count of [1, 4, 8]) assert.deepEqual(validateInputs(bounded, { count }), [], `count=${count}`);
+	});
+
+	test("rejects a number below the minimum or above the maximum (#3812)", () => {
+		for (const value of [0.49, -1, 2.51, 100]) {
+			const errors = validateInputs(ratio, { ratio: value });
+			assert.equal(errors.length, 1, `ratio=${value}`);
+			assert.equal(errors[0]!.key, "ratio");
+		}
+	});
+
+	test("accepts numbers inside the bounds, minimum and maximum inclusive (#3812)", () => {
+		for (const value of [0.5, 1.25, 2.5]) assert.deepEqual(validateInputs(ratio, { ratio: value }), []);
+	});
+
+	test("keeps the type message for a non-integer, not a bound message (#3812)", () => {
+		const errors = validateInputs(bounded, { count: 2.5 });
+		assert.equal(errors.length, 1);
+		assert.match(errors[0]!.reason, /expected integer/);
+	});
+
+	test("rejects an out-of-range value on an optional bounded input (#3812)", () => {
+		const errors = validateInputs(schema({ count: Type.Optional(Type.Integer({ minimum: 1 })) }), { count: 0 });
+		assert.equal(errors.length, 1);
+		assert.deepEqual(validateInputs(schema({ count: Type.Optional(Type.Integer({ minimum: 1 })) }), {}), []);
+	});
+
+	test("resolveAndValidateInputs rejects an out-of-range default-less value and names the input (#3812)", () => {
+		assert.throws(() => resolveAndValidateInputs(bounded, { count: 0 }, 'workflow "bounds-demo"'), /count/);
+		assert.deepEqual(resolveAndValidateInputs(bounded, { count: 1 }, 'workflow "bounds-demo"'), { count: 1 });
+	});
+
+	test("run() rejects count=0 before the workflow body runs (#3812)", async () => {
+		let bodyRan = false;
+		const boundsDemo = workflow({
+			name: "bounds-demo",
+			description: "One bounded integer input; a tracked tool node echoes the accepted value.",
+			inputs: { count: Type.Integer({ minimum: 1, maximum: 8, description: "Must be 1-8." }) },
+			outputs: { accepted: Type.String() },
+			run: async (ctx) => {
+				bodyRan = true;
+				const accepted = await ctx.tool(
+					"echo",
+					{ count: ctx.inputs.count },
+					async () => `body received count=${ctx.inputs.count}`,
+				);
+				return { accepted };
+			},
+		});
+		await assert.rejects(() => run(boundsDemo, { count: 0 }, { store: createStore() }), /invalid inputs[\s\S]*count/);
+		assert.equal(bodyRan, false);
+		const ok = await run(boundsDemo, { count: 1 }, { store: createStore() });
+		assert.equal(ok.status, "completed", ok.error);
+		assert.deepEqual(ok.result, { accepted: "body received count=1" });
 	});
 });
