@@ -6,6 +6,7 @@
  */
 
 import { getProviderEnvValue } from "../../utils/provider-env.ts";
+import { isPermanentRefreshRejection, OAuthRefreshRejectedError, parseOAuthErrorBody } from "../oauth-refresh-errors.ts";
 import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { startOAuthCallbackServer, waitForCallbackOrManualInput } from "./callback-server.ts";
 import { generatePKCE } from "./pkce.ts";
@@ -87,6 +88,14 @@ async function postJson(url: string, body: Record<string, string | number>, sign
 	const responseBody = await response.text();
 
 	if (!response.ok) {
+		if (body.grant_type === "refresh_token" && typeof body.refresh_token === "string") {
+			const rejection = { status: response.status, ...parseOAuthErrorBody(responseBody) };
+			if (isPermanentRefreshRejection(rejection)) {
+				throw new OAuthRefreshRejectedError(`Anthropic token refresh failed (HTTP ${response.status})`, rejection, [
+					body.refresh_token,
+				]);
+			}
+		}
 		throw new Error(`HTTP request failed. status=${response.status}; url=${url}; body=${responseBody}`);
 	}
 
@@ -249,6 +258,7 @@ async function refreshAnthropicToken(refreshToken: string, signal: AbortSignal):
 			signal,
 		);
 	} catch (error) {
+		if (error instanceof OAuthRefreshRejectedError) throw error;
 		throw new Error(`Anthropic token refresh request failed. url=${TOKEN_URL}; details=${formatErrorDetails(error)}`);
 	}
 

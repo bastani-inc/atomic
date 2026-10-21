@@ -22,6 +22,14 @@ export type { PiMessagesEvent, PiMessagesOptions, PiMessagesRewriteImpact } from
 export * from "./auth/context.ts";
 export * from "./auth/credential-store.ts";
 export * from "./auth/helpers.ts";
+export {
+	isOAuthRefreshRejectedError,
+	isPermanentRefreshRejection,
+	type OAuthErrorDetail,
+	OAuthRefreshRejectedError,
+	type OAuthRefreshRejection,
+	parseOAuthErrorBody,
+} from "./auth/oauth-refresh-errors.ts";
 export * from "./auth/types.ts";
 export type {
 	OAuthAuthInfo,

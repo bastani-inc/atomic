@@ -14,6 +14,7 @@ if (typeof process !== "undefined" && (process.versions?.node || process.version
 }
 
 import { getProviderEnvValue } from "../../utils/provider-env.ts";
+import { isPermanentRefreshRejection, OAuthRefreshRejectedError, parseOAuthErrorBody } from "../oauth-refresh-errors.ts";
 import type { LoginOptions, OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.js";
 import { startOAuthCallbackServer, waitForCallbackOrManualInput } from "./callback-server.ts";
 import { pollOAuthDeviceCodeFlow } from "./device-code.ts";
@@ -119,9 +120,21 @@ async function fetchWithLoginCancellation(input: string, init: RequestInit): Pro
 	}
 }
 
-async function readTokenResponse(response: Response, operation: TokenOperation): Promise<OAuthToken> {
+async function readTokenResponse(
+	response: Response,
+	operation: TokenOperation,
+	presentedRefreshToken?: string,
+): Promise<OAuthToken> {
 	if (!response.ok) {
 		const text = await response.text().catch(() => "");
+		if (operation === "refresh" && presentedRefreshToken !== undefined) {
+			const rejection = { status: response.status, ...parseOAuthErrorBody(text) };
+			if (isPermanentRefreshRejection(rejection)) {
+				throw new OAuthRefreshRejectedError(`OpenAI Codex token refresh failed (${response.status})`, rejection, [
+					presentedRefreshToken,
+				]);
+			}
+		}
 		throw new Error(`OpenAI Codex token ${operation} failed (${response.status}): ${text || response.statusText}`);
 	}
 
@@ -181,7 +194,7 @@ async function refreshAccessToken(refreshToken: string, signal: AbortSignal): Pr
 		throw new Error(`OpenAI Codex token refresh error: ${error instanceof Error ? error.message : String(error)}`);
 	}
 
-	return readTokenResponse(response, "refresh");
+	return readTokenResponse(response, "refresh", refreshToken);
 }
 
 async function startOpenAICodexDeviceAuth(signal: AbortSignal): Promise<DeviceAuthInfo> {

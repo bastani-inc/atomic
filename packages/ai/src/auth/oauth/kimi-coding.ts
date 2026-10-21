@@ -8,6 +8,14 @@
 
 import { getProviderEnvValue } from "../../utils/provider-env.ts";
 import { sleep } from "../../utils/sleep.ts";
+import {
+	formatOAuthErrorDetail,
+	isPermanentRefreshRejection,
+	OAuthRefreshRejectedError,
+	type OAuthRefreshRejection,
+	parseOAuthErrorBody,
+	requestNeverReachedServer,
+} from "../oauth-refresh-errors.ts";
 import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { pollOAuthDeviceCodeFlow } from "./device-code.ts";
 
@@ -15,8 +23,11 @@ const CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098";
 const DEFAULT_OAUTH_HOST = "https://auth.kimi.com";
 const DEVICE_CODE_TIMEOUT_SECONDS = 15 * 60;
 const DEFAULT_POLL_INTERVAL_SECONDS = 5;
+/** Login requests (device authorization and polling) give up after this; a refresh request never does. */
 const REQUEST_TIMEOUT_MS = 30 * 1000;
+/** Retries of a refresh request that never reached the server, after 1 s, 2 s, then 4 s. */
 const REFRESH_MAX_RETRIES = 3;
+const REFRESH_RETRY_BASE_DELAY_MS = 1000;
 
 type DeviceAuthorization = {
 	deviceCode: string;
@@ -207,15 +218,15 @@ async function pollForToken(
 	});
 }
 
-function isRetryableRefreshFailure(response: Response): boolean {
-	return response.status === 429 || response.status >= 500;
+/** Kimi treats 401 and 403 from its token endpoint as a dead login, along with the usual permanent codes. */
+function isUnauthorizedRefresh(rejection: OAuthRefreshRejection): boolean {
+	return rejection.status === 401 || rejection.status === 403 || isPermanentRefreshRejection(rejection);
 }
 
 async function refreshToken(oauthHost: string, refreshTokenValue: string, signal: AbortSignal): Promise<TokenResponse> {
-	let lastError: Error | undefined;
-	for (let attempt = 0; attempt <= REFRESH_MAX_RETRIES; attempt++) {
+	for (let attempt = 0; ; attempt++) {
 		if (attempt > 0) {
-			await sleep(1000 * 2 ** (attempt - 1), signal);
+			await sleep(REFRESH_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), signal);
 		}
 		if (signal.aborted) {
 			throw new Error("Kimi Code token refresh aborted");
@@ -223,6 +234,8 @@ async function refreshToken(oauthHost: string, refreshTokenValue: string, signal
 
 		let response: Response;
 		try {
+			// No timeout of its own: once sent, the server may already have rotated the refresh token, and only
+			// this response carries the replacement.
 			response = await fetch(`${oauthHost}/api/oauth/token`, {
 				method: "POST",
 				headers: {
@@ -234,34 +247,33 @@ async function refreshToken(oauthHost: string, refreshTokenValue: string, signal
 					grant_type: "refresh_token",
 					refresh_token: refreshTokenValue,
 				}),
-				signal: requestSignal(signal),
+				signal,
 			});
 		} catch (error) {
-			lastError = error instanceof Error ? error : new Error(String(error));
-			continue;
+			const failure = error instanceof Error ? error : new Error(String(error));
+			// Presenting the same refresh token again is safe only if this attempt provably never reached the server.
+			if (attempt < REFRESH_MAX_RETRIES && !signal.aborted && requestNeverReachedServer(failure)) continue;
+			throw failure;
 		}
 
-		const json = await readJson(response);
 		if (response.ok) {
-			return parseTokenResponse(json, "refresh");
+			return parseTokenResponse(await readJson(response), "refresh");
 		}
 
-		// Unauthorized: the stored credential is dead; Models clears it and prompts re-login.
-		if (response.status === 401 || response.status === 403 || json?.error === "invalid_grant") {
-			const description = typeof json?.error_description === "string" ? `: ${json.error_description}` : "";
-			throw new Error(`Kimi Code token refresh unauthorized (status ${response.status})${description}`);
+		// Any answer, a 429 or 5xx included, means the request was delivered and may have rotated the token, so it
+		// is never retried with the same one.
+		const rejection = { status: response.status, ...parseOAuthErrorBody(await response.text().catch(() => "")) };
+		if (isUnauthorizedRefresh(rejection)) {
+			throw new OAuthRefreshRejectedError(
+				`Kimi Code token refresh unauthorized (status ${response.status})`,
+				rejection,
+				[refreshTokenValue],
+			);
 		}
-
-		if (isRetryableRefreshFailure(response) && attempt < REFRESH_MAX_RETRIES) {
-			lastError = new Error(`Kimi Code token refresh failed with status ${response.status}`);
-			continue;
-		}
-
-		const text = JSON.stringify(json);
-		throw new Error(`Kimi Code token refresh failed with status ${response.status}${text ? `: ${text}` : ""}`);
+		throw new Error(
+			`Kimi Code token refresh failed with status ${response.status}${formatOAuthErrorDetail(rejection, [refreshTokenValue])}`,
+		);
 	}
-
-	throw lastError ?? new Error("Kimi Code token refresh failed");
 }
 
 async function loginKimiCoding(interaction: ProviderAuthInteraction): Promise<OAuthCredential> {

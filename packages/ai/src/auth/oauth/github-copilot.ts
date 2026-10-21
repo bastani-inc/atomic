@@ -4,6 +4,7 @@
 
 import { GITHUB_COPILOT_MODELS } from "../../providers/github-copilot.models.ts";
 import { sleep } from "../../utils/sleep.ts";
+import { OAuthRefreshRejectedError, parseOAuthErrorBody } from "../oauth-refresh-errors.ts";
 import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { pollOAuthDeviceCodeFlow } from "./device-code.ts";
 
@@ -199,10 +200,18 @@ async function fetchGitHubCopilotModels(
 	return parseGitHubCopilotModelCatalog(await response.json(), allowPolicyFallback);
 }
 
-async function fetchJson(url: string, init: RequestInit): Promise<unknown> {
+/** `presentedToken` marks a request authenticated by the stored login: a 401 then means that login was revoked. */
+async function fetchJson(url: string, init: RequestInit, presentedToken?: string): Promise<unknown> {
 	const response = await fetch(url, init);
 	if (!response.ok) {
 		const text = await response.text();
+		if (presentedToken !== undefined && response.status === 401) {
+			throw new OAuthRefreshRejectedError(
+				`GitHub Copilot token request failed (${response.status})`,
+				{ status: response.status, ...parseOAuthErrorBody(text) },
+				[presentedToken],
+			);
+		}
 		throw new Error(`${response.status} ${response.statusText}: ${text}`);
 	}
 	return response.json();
@@ -323,14 +332,18 @@ async function refreshGitHubCopilotAccessToken(
 	const domain = enterpriseDomain || "github.com";
 	const urls = getUrls(domain);
 
-	const raw = await fetchJson(urls.copilotTokenUrl, {
-		headers: {
-			Accept: "application/json",
-			Authorization: `Bearer ${refreshToken}`,
-			...COPILOT_HEADERS,
+	const raw = await fetchJson(
+		urls.copilotTokenUrl,
+		{
+			headers: {
+				Accept: "application/json",
+				Authorization: `Bearer ${refreshToken}`,
+				...COPILOT_HEADERS,
+			},
+			signal,
 		},
-		signal,
-	});
+		refreshToken,
+	);
 
 	if (!raw || typeof raw !== "object") {
 		throw new Error("Invalid Copilot token response");

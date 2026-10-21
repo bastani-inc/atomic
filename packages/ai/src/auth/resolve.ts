@@ -3,6 +3,12 @@ import type { ProviderEnv } from "../types.ts";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.ts";
 import { formatThrownValue } from "../utils/diagnostics.ts";
 import { ModelsError } from "../utils/models-error.ts";
+import {
+	findPermanentRefreshRejectionInText,
+	isOAuthRefreshRejectedError,
+	safeOAuthErrorCode,
+	safeOAuthErrorDescription,
+} from "./oauth-refresh-errors.ts";
 
 export { ModelsError, type ModelsErrorCode } from "../utils/models-error.ts";
 
@@ -144,45 +150,44 @@ export const OAUTH_REFRESH_LOCK_HOLD_MS = 2 * OAUTH_REFRESH_TIMEOUT_MS;
  */
 const TOKEN_EXCHANGE_SIGNAL = new AbortController().signal;
 
-const OAUTH_ERROR_CODE = /"error"\s*:\s*"([\w.-]+)"/;
-const OAUTH_ERROR_DESCRIPTION = /"error_description"\s*:\s*("(?:[^"\\]|\\.)*")/;
 const MAX_ERROR_CHAIN_DEPTH = 5;
 
-function parseJsonString(literal: string): string | undefined {
-	try {
-		const value: string | number | boolean | null | object = JSON.parse(literal);
-		return typeof value === "string" ? value : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-/** The provider's `invalid_grant` code and description, without request bodies, URLs, or tokens. */
-function describeRejectedGrant(error: unknown, presented: OAuthCredential): string | undefined {
+/**
+ * The provider's error code (or HTTP status) and description for a refresh it rejected because the stored login is
+ * revoked or expired: an {@link OAuthRefreshRejectedError} anywhere in the cause chain, or a permanent OAuth error
+ * code in a custom refresher's message. Never request bodies, URLs, or tokens.
+ */
+function describeRejectedLogin(error: unknown, presented: OAuthCredential): string | undefined {
+	const secrets = [presented.refresh, presented.access];
+	const describe = (code: string, description: string | undefined) => {
+		const safeDescription = safeOAuthErrorDescription(description, secrets);
+		return safeDescription ? `${code} (${safeDescription})` : code;
+	};
 	let current = error;
 	for (let depth = 0; depth < MAX_ERROR_CHAIN_DEPTH && current !== undefined && current !== null; depth++) {
-		const message = formatThrownValue(current);
-		const code = OAUTH_ERROR_CODE.exec(message)?.[1] ?? (/\binvalid_grant\b/.test(message) ? "invalid_grant" : "");
-		if (code === "invalid_grant") {
-			const literal = OAUTH_ERROR_DESCRIPTION.exec(message)?.[1];
-			const description = literal === undefined ? undefined : parseJsonString(literal)?.trim();
-			const safe =
-				description && !description.includes(presented.refresh) && !description.includes(presented.access);
-			return safe ? `${code} (${description})` : code;
+		if (current instanceof Error && isOAuthRefreshRejectedError(current)) {
+			return describe(safeOAuthErrorCode(current.code) ?? `HTTP ${current.status}`, current.description);
 		}
+		current = current instanceof Error ? current.cause : undefined;
+	}
+	current = error;
+	for (let depth = 0; depth < MAX_ERROR_CHAIN_DEPTH && current !== undefined && current !== null; depth++) {
+		const rejection = findPermanentRefreshRejectionInText(formatThrownValue(current));
+		const code = safeOAuthErrorCode(rejection?.code);
+		if (code !== undefined) return describe(code, rejection?.description);
 		current = current instanceof Error ? current.cause : undefined;
 	}
 	return undefined;
 }
 
 function oauthRefreshFailure(providerId: string, error: unknown, presented: OAuthCredential): ModelsError {
-	const rejectedGrant = describeRejectedGrant(error, presented);
-	if (rejectedGrant === undefined) {
+	const rejectedLogin = describeRejectedLogin(error, presented);
+	if (rejectedLogin === undefined) {
 		return new ModelsError("oauth", `OAuth refresh failed for ${providerId}`, { cause: error });
 	}
 	return new ModelsError(
 		"oauth",
-		`OAuth refresh failed for ${providerId}: ${rejectedGrant}. The provider rejected the stored login; run /login ${providerId} to sign in again.`,
+		`OAuth refresh failed for ${providerId}: ${rejectedLogin}. The provider rejected the stored login; run /login ${providerId} to sign in again.`,
 	);
 }
 

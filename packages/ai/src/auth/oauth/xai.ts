@@ -2,6 +2,7 @@
  * xAI OAuth device-code flow.
  */
 
+import { isPermanentRefreshRejection, OAuthRefreshRejectedError } from "../oauth-refresh-errors.ts";
 import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { pollOAuthDeviceCodeFlow } from "./device-code.ts";
 
@@ -221,6 +222,17 @@ async function refreshXaiToken(refreshToken: string, signal: AbortSignal): Promi
 		signal,
 	);
 	if (!response.ok) {
+		const rejection = {
+			status: response.status,
+			code: typeof response.body.error === "string" ? response.body.error : undefined,
+			description:
+				typeof response.body.error_description === "string" ? response.body.error_description : undefined,
+		};
+		if (isPermanentRefreshRejection(rejection)) {
+			throw new OAuthRefreshRejectedError(`xAI OAuth token refresh failed (HTTP ${response.status})`, rejection, [
+				refreshToken,
+			]);
+		}
 		throw requestFailure("token refresh", response);
 	}
 	return credentialsFromTokenResponse(response.body, refreshToken);

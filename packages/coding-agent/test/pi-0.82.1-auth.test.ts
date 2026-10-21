@@ -201,7 +201,7 @@ describe("Pi 0.82.1 authentication integration", () => {
 
 	it("retains the provider response cause in Atomic model-auth errors", async () => {
 		const storage = AuthStorage.inMemory({
-			"kimi-coding": { type: "oauth", access: "old", refresh: "revoked", expires: 0 },
+			"kimi-coding": { type: "oauth", access: "fake-access-1", refresh: "fake-refresh-1", expires: 0 },
 		});
 		const registry = await createInMemoryModelRegistry(storage);
 		vi.spyOn(globalThis, "fetch").mockResolvedValue(
