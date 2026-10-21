@@ -42,12 +42,12 @@ function effectiveParallelTaskCount(tasks: Array<{ count?: unknown }> | undefine
 const SETTLED_VIEWS: Readonly<Record<string, { icon: string; label: string; color: ThemeColor }>> = {
 	ok: { icon: "✓", label: "Completed", color: "success" },
 	error: { icon: "✗", label: "Failed", color: "error" },
-	paused: { icon: "‖", label: "Paused (resumable)", color: "warning" },
-	quit: { icon: "■", label: "Quit (resumable)", color: "warning" },
+	paused: { icon: "‖", label: "Paused · awaiting resume", color: "warning" },
+	quit: { icon: "‖", label: "Quit · paused · awaiting resume", color: "warning" },
 	interrupted: { icon: "○", label: "Interrupted (resumable)", color: "warning" },
 	[SUBAGENT_CHILD_STAGE_PAUSED_STATUS]: {
 		icon: "‖",
-		label: "Paused with its workflow stage (resumable)",
+		label: "Paused with its workflow stage · awaiting resume",
 		color: "warning",
 	},
 	killed: { icon: "✗", label: "Terminal · killed", color: "error" },

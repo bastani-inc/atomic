@@ -582,10 +582,20 @@ test("quit reports a child paused and awaiting resume with its resume call, as a
 				/worker \(quitparity1:0, subagent-worker-quitparity1\) quit · paused · awaiting resume/,
 			);
 			assert.ok(text(status).includes(QUIT_PARITY_RESUME_CALL), `${when}: ${text(status)}`);
-			assert.doesNotMatch(text(status), /cancelled|stopped/i);
+			if (params.id !== taskId) assert.doesNotMatch(text(status), /cancelled|stopped/i);
 		}
 	};
 	await statusLists("before the restart");
+	const taskStatus = await h.call({ action: "status", id: taskId });
+	assert.match(
+		text(taskStatus),
+		/^worker \(quitparity1:0, subagent-worker-quitparity1\) quit · paused · awaiting resume/,
+	);
+	assert.match(
+		text(taskStatus),
+		/Output of task-[\w-]+ \(paused · awaiting resume, \d+ bytes\):\nFull output: /,
+		"status by task id keeps the child's retained output",
+	);
 
 	await h.closeOwnerAndReopen("session-close");
 	const outcomes = await restoreSubagentChildren(h.deps, h.ctx);

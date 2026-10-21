@@ -137,11 +137,6 @@ async function handleManagementRequest(input: {
 	const targetTaskId = paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId;
 	// A paused or quit child awaits resume, as a quit workflow run does; its records outlive its task and a restart.
 	const awaitingResume = action === "status" ? subagentChildrenAwaitingResume(ctx, targetTaskId) : [];
-	if (targetTaskId && awaitingResume.length > 0)
-		return {
-			content: [{ type: "text", text: awaitingResume.join("\n") }],
-			details: { mode: "management", results: [] },
-		};
 	if (action === "status" && ctx.getAgentTaskHost && targetTaskId) {
 		const host = ctx.getAgentTaskHost();
 		const taskId = targetTaskId as import("@bastani/atomic").TaskId;
@@ -155,7 +150,7 @@ async function handleManagementRequest(input: {
 					content: [
 						{
 							type: "text",
-							text: `${records.some((task) => task.execution.kind === "settled" && subagentTaskResultLabel(task.execution.result) === "killed (non-resumable)") ? "Killed. This child cannot be resumed. Underlying host records:\n" : ""}${JSON.stringify(records)}${settledOutput}`,
+							text: `${awaitingResume.length > 0 ? `${awaitingResume.join("\n")}\n` : ""}${records.some((task) => task.execution.kind === "settled" && subagentTaskResultLabel(task.execution.result) === "killed (non-resumable)") ? "Killed. This child cannot be resumed. Underlying host records:\n" : ""}${JSON.stringify(records)}${settledOutput}`,
 						},
 					],
 					details: { mode: "management", results: [], taskRecords: records },
@@ -168,6 +163,11 @@ async function handleManagementRequest(input: {
 			};
 		}
 	}
+	if (targetTaskId && awaitingResume.length > 0)
+		return {
+			content: [{ type: "text", text: awaitingResume.join("\n") }],
+			details: { mode: "management", results: [] },
+		};
 	if (action === "status") {
 		const targetRunId = paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId;
 		const foreground = getForegroundControl(deps.state, targetRunId);
