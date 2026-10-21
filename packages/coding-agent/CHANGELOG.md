@@ -7,6 +7,7 @@
 - `routeExecutionModel()` accepts an optional `inference` option (exported type `RoutingInferenceBounds`) for callers that must not wait indefinitely on routing inference: `deadline` is an `AbortSignal` whose abort ends routing as a complete inference failure, so the caller can degrade to `AutoRoutingInferenceError.currentModelRoute`, and `limit` runs each routing inference under the caller's concurrency limit. Without it, routing keeps having no built-in deadline.
 - RPC `get_available_models` and `refresh_models` responses now list extension providers that accept an API key in `customAuthProviders`, and report extension providers' environment or configured-key authentication in `providerAuthStatuses`.
 - Extension OAuth providers can throw `OAuthRefreshRejectedError` (exported from `@bastani/atomic`, with `isOAuthRefreshRejectedError`) from `refreshToken` when the provider rejected the stored login. The user then sees the same `run /login <provider>` guidance as for a built-in provider. See [Provider OAuth](docs/custom-provider/oauth.md#rejected-logins).
+- Exported `noOpUIContext`, the default no-op extension UI context, from the SDK entry point ([#3801](https://github.com/bastani-inc/atomic/issues/3801))
 
 ### Changed
 

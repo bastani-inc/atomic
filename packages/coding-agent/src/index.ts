@@ -204,6 +204,8 @@ export {
 	isExtensionStartupFailure,
 	isTransientExtensionStartupFailure,
 } from "./core/extension-startup-failure.ts";
+// Run modes for programmatic SDK usage
+export { noOpUIContext } from "./core/extensions/runner-ui.ts";
 export {
 	getModelFastRoute,
 	resolveUpstreamModelId,
@@ -644,7 +646,6 @@ export {
 	Theme,
 	type ThemeColor,
 } from "./modes/interactive/theme/theme.js";
-// Run modes for programmatic SDK usage
 export { pickWhimsicalWorkingMessage } from "./modes/interactive/whimsical-messages.ts";
 export { createChildProcessEnvironment, spawnProcess } from "./utils/child-process.ts";
 // Clipboard utilities

@@ -3,7 +3,7 @@
  */
 
 import assert from "node:assert/strict";
-import type { CreateAgentSessionOptions } from "@bastani/atomic";
+import { type CreateAgentSessionOptions, initTheme } from "@bastani/atomic";
 import { describe, test } from "vitest";
 import type { RuntimeWiringSurface } from "../../packages/workflows/src/extension/wiring.js";
 import { buildRuntimeAdapters } from "../../packages/workflows/src/extension/wiring.js";
@@ -257,5 +257,39 @@ describe("buildRuntimeAdapters — SDK sessions", () => {
 		assert.equal((uiContext.getTheme as (name: string) => unknown)("host-theme"), theme);
 		assert.equal((uiContext.setTheme as (name: string) => { success: boolean })("host-theme").success, true);
 		assert.equal((uiContext.getToolsExpanded as () => boolean)(), true);
+	});
+
+	test("binds a usable theme and UI defaults onto stage sessions when the host has no ui (#3801)", async () => {
+		initTheme("dark");
+		const bindCalls: Array<{ uiContext?: Record<string, unknown> }> = [];
+		const session = {
+			...fakeSession(),
+			async bindExtensions(bindings: { uiContext?: Record<string, unknown> }): Promise<void> {
+				bindCalls.push(bindings);
+			},
+		};
+		const adapters = buildRuntimeAdapters({}, { createAgentSession: async () => ({ session }) });
+
+		await adapters.agentSession!.create(
+			{},
+			{
+				runId: "run-1",
+				stageId: "stage-1",
+				stageName: "worker-a",
+				signal: new AbortController().signal,
+			},
+		);
+
+		const uiContext = bindCalls[0]?.uiContext as
+			| {
+					theme?: { fg(color: string, text: string): string };
+					requestRender?: () => void;
+					getFooterDataProvider?: () => unknown;
+			  }
+			| undefined;
+		assert.ok(uiContext?.theme);
+		assert.equal(typeof uiContext.theme.fg("dim", "x"), "string");
+		assert.equal(typeof uiContext.requestRender, "function");
+		assert.equal(typeof uiContext.getFooterDataProvider, "function");
 	});
 });
