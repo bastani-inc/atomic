@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync, fstatSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { AssistantMessage, Model } from "@bastani/pi-ai";
 import { fauxAssistantMessage, registerFauxProvider } from "@bastani/pi-ai/compat";
@@ -19,8 +20,26 @@ const EXTENSION_NAME = "flaky-startup";
 const TRANSIENT_STARTUP_ERROR = "Broker failed to start within timeout";
 /** Same-candidate creation retries the stage may spend, with a near-zero backoff. */
 const MAX_RETRIES = 2;
+/** Lists this process's open descriptors on POSIX; Windows instead refuses to remove an open file. */
+const DESCRIPTOR_DIRECTORY = "/dev/fd";
 
 type StartupBehavior = (model: ModelId, attempt: number) => Error | undefined;
+
+function openDescriptorsTo(path: string): number[] {
+	if (!existsSync(DESCRIPTOR_DIRECTORY)) return [];
+	const { dev, ino } = statSync(path);
+	return readdirSync(DESCRIPTOR_DIRECTORY)
+		.map(Number)
+		.filter((descriptor) => {
+			try {
+				const stat = fstatSync(descriptor);
+				return stat.dev === dev && stat.ino === ino;
+			} catch {
+				// The descriptor that listed the directory is already closed.
+				return false;
+			}
+		});
+}
 
 interface Harness {
 	readonly cwd: string;
@@ -191,6 +210,13 @@ test("a deterministic extension startup failure fails the stage promptly and nam
 			for (const text of [result.error, stage.error, stage.failureMessage, stage.modelAttempts?.at(-1)?.error]) {
 				assert.match(text ?? "", new RegExp(`${EXTENSION_NAME}.*Cannot read properties of undefined`));
 			}
+			// The primary session was retired for the fallback that never started; the
+			// failed stage must still close its store, or Windows cannot remove the file.
+			assert.deepEqual(
+				openDescriptorsTo(join(harness.cwd, "workflows", "journal.sqlite")),
+				[],
+				"no session store stays open after the stage fails",
+			);
 		},
 	);
 });

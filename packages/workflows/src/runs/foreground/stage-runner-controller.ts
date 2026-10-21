@@ -2032,6 +2032,9 @@ export class StageSessionController {
 			this.modelWarnings.push(...this.pendingFallbackWarnings);
 			this.pendingFallbackWarnings.length = 0;
 			this.notifyModelFallbackMetaChange();
+			// No successor will adopt the session retired for this candidate, so close
+			// it before the stage settles rather than leave its store open.
+			await this.replacement.disposeRetired();
 			return "throw";
 		}
 		const nextCandidate = candidates[index + 1]!;
