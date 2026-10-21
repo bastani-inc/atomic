@@ -20,7 +20,7 @@
 
 import { keyText } from "@bastani/atomic";
 import { isWorkflowRunResumable, type WorkflowRunResumeCandidate } from "../durable/resume-eligibility.js";
-import { runIndicatorStatus } from "../shared/run-indicator-status.js";
+import { createRunIndicatorStatusResolver, runIndicatorStatus } from "../shared/run-indicator-status.js";
 import { sortRunsByStatus } from "../shared/run-order.js";
 import { isTopLevelWorkflowRun } from "../shared/run-visibility.js";
 import type { RunSnapshot, StoreSnapshot } from "../shared/store-types.js";
@@ -48,6 +48,8 @@ export interface SessionPickerState {
 	query: string;
 	/** 0-based index into the filtered/visible list. */
 	selectedIndex: number;
+	/** Full id of the selected run, so live reordering keeps the same run selected. */
+	selectedRunId?: string;
 	/** Toggle for terminal run visibility. Default true so retained terminal runs stay inspectable. */
 	includeAll: boolean;
 	/** True when the filter input has focus (typing routes to query). */
@@ -138,11 +140,30 @@ export function selectRunsForPicker(
 			rows.push({ run: r, bucket: "terminal" });
 		}
 	}
-	return sortRunsByStatus(
-		rows,
-		(row) => row.run,
-		(run) => runIndicatorStatus(run, runs),
-	);
+	return sortRunsByStatus(rows, (row) => row.run, createRunIndicatorStatusResolver(runs));
+}
+
+/**
+ * Re-anchor the selection on the previously selected run after rows were
+ * re-derived, so a live status change that reorders rows never moves the
+ * selection to a different run.
+ */
+export function syncSessionPickerSelection(state: SessionPickerState, rows: readonly PickerRow[]): void {
+	if (state.selectedRunId !== undefined) {
+		const index = rows.findIndex((row) => row.run.id === state.selectedRunId);
+		if (index >= 0) state.selectedIndex = index;
+	}
+	state.selectedRunId = rows[state.selectedIndex]?.run.id;
+}
+
+function selectIndex(state: SessionPickerState, rows: readonly PickerRow[], index: number): void {
+	state.selectedIndex = index;
+	state.selectedRunId = rows[index]?.run.id;
+}
+
+function resetSelection(state: SessionPickerState): void {
+	state.selectedIndex = 0;
+	state.selectedRunId = undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -437,12 +458,12 @@ export function handleSessionPickerInput(
 		}
 		if (matchesKey(data, Key.backspace)) {
 			state.query = state.query.slice(0, -1);
-			state.selectedIndex = 0;
+			resetSelection(state);
 			return { kind: "noop" };
 		}
 		if (data.length === 1 && data >= " " && data <= "~") {
 			state.query += data;
-			state.selectedIndex = 0;
+			resetSelection(state);
 			return { kind: "noop" };
 		}
 		return { kind: "noop" };
@@ -457,18 +478,18 @@ export function handleSessionPickerInput(
 	if (matchesKey(data, "q") || matchesKey(data, Key.shift("q"))) return { kind: "close" };
 	if (matchesKey(data, "a") || matchesKey(data, Key.shift("a"))) {
 		state.includeAll = !state.includeAll;
-		state.selectedIndex = 0;
+		resetSelection(state);
 		return { kind: "noop" };
 	}
 
 	// Arrows + j/k.
 	if (matchesKey(data, Key.down) || matchesKey(data, "j")) {
-		state.selectedIndex = Math.min(state.selectedIndex + 1, Math.max(0, rows.length - 1));
+		selectIndex(state, rows, Math.min(state.selectedIndex + 1, Math.max(0, rows.length - 1)));
 		return { kind: "noop" };
 	}
 	if (matchesKey(data, Key.up) || matchesKey(data, "k")) {
 		if (rows.length > 0 && state.selectedIndex === 0) return { kind: "noop" };
-		state.selectedIndex = Math.max(state.selectedIndex - 1, 0);
+		selectIndex(state, rows, Math.max(state.selectedIndex - 1, 0));
 		return { kind: "noop" };
 	}
 

@@ -27,7 +27,7 @@ import type {
 import { pendingWorkflowStageStatuses, workflowBoundarySegments } from "../shared/pending-stage-status.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { RunIndicatorStatus } from "../shared/run-indicator-status.js";
-import { runIndicatorStatus } from "../shared/run-indicator-status.js";
+import { createRunIndicatorStatusResolver, runIndicatorStatus } from "../shared/run-indicator-status.js";
 import { sortRunsByStatus } from "../shared/run-order.js";
 import type { RunSnapshot, StageSnapshot, StageStatus } from "../shared/store-types.js";
 import { elapsedRunMs, elapsedStageMs } from "../shared/timing.js";
@@ -487,11 +487,11 @@ function plainBadges(c: Counts): FlatBandBadge[] {
 // ---------------------------------------------------------------------------
 
 function sortRuns(runs: readonly RunSnapshot[], opts: RenderStatusListOpts): RunSnapshot[] {
-	const allRuns = opts.allRuns ?? runs;
+	const statusOf = createRunIndicatorStatusResolver(opts.allRuns ?? runs);
 	return sortRunsByStatus(
 		runs,
 		(run) => run,
-		(run) => opts.indicatorStatuses?.[run.id] ?? runIndicatorStatus(run, allRuns),
+		(run) => opts.indicatorStatuses?.[run.id] ?? statusOf(run),
 	);
 }
 

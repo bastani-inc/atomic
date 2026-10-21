@@ -4,10 +4,18 @@
  */
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { runIndicatorStatus } from "../../packages/workflows/src/shared/run-indicator-status.js";
+import {
+	createRunIndicatorStatusResolver,
+	runIndicatorStatus,
+} from "../../packages/workflows/src/shared/run-indicator-status.js";
 import { sortRunsByStatus } from "../../packages/workflows/src/shared/run-order.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import { selectRunsForPicker } from "../../packages/workflows/src/tui/session-picker.js";
+import {
+	createSessionPickerState,
+	handleSessionPickerInput,
+	selectRunsForPicker,
+	syncSessionPickerSelection,
+} from "../../packages/workflows/src/tui/session-picker.js";
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
 
 const NOW = 10_000_000;
@@ -179,4 +187,72 @@ test("resolves each run's indicator status exactly once per sort (#3824)", () =>
 		sorted.map((run) => run.id),
 		pickerOrder(runs),
 	);
+});
+
+test("picker keeps the selected run selected when another run starts awaiting input (#3824)", () => {
+	const alpha = makeRun({ id: "alpha", name: "Alpha", status: "running", startedAt: 300 });
+	const beta = makeRun({ id: "beta", name: "Beta", status: "running", startedAt: 200 });
+	const state = createSessionPickerState();
+	const before = selectRunsForPicker([alpha, beta], "", true, NOW);
+	syncSessionPickerSelection(state, before);
+	assert.equal(before[state.selectedIndex]?.run.id, "alpha");
+
+	const after = selectRunsForPicker([alpha, withPrompt(beta)], "", true, NOW);
+	assert.deepEqual(
+		after.map((row) => row.run.id),
+		["beta", "alpha"],
+	);
+	syncSessionPickerSelection(state, after);
+	assert.deepEqual(handleSessionPickerInput("\r", state, after), { kind: "connect", runId: "alpha" });
+	assert.equal(state.selectedIndex, 1);
+});
+
+test("picker moves from the re-anchored selection after a live reorder (#3824)", () => {
+	const alpha = makeRun({ id: "alpha", status: "running", startedAt: 300 });
+	const beta = makeRun({ id: "beta", status: "running", startedAt: 200 });
+	const gamma = makeRun({ id: "gamma", status: "running", startedAt: 100 });
+	const state = createSessionPickerState();
+	syncSessionPickerSelection(state, selectRunsForPicker([alpha, beta, gamma], "", true, NOW));
+
+	const reordered = selectRunsForPicker([alpha, beta, withPrompt(gamma)], "", true, NOW);
+	syncSessionPickerSelection(state, reordered);
+	handleSessionPickerInput("\x1b[B", state, reordered);
+	assert.equal(reordered[state.selectedIndex]?.run.id, "beta");
+	assert.equal(state.selectedRunId, "beta");
+});
+
+test("shared indicator resolver matches per-run resolution across nested and cyclic ancestry (#3824)", () => {
+	const root = makeRun({ id: "root", status: "running" });
+	const middle = makeRun({ id: "middle", status: "running", parentRunId: "root" });
+	const leaf = withPrompt(makeRun({ id: "leaf", status: "running", parentRunId: "middle" }));
+	const unrelated = makeRun({ id: "unrelated", status: "running" });
+	const cycleA = withPrompt(makeRun({ id: "cycle-a", status: "running", parentRunId: "cycle-b" }));
+	const cycleB = makeRun({ id: "cycle-b", status: "running", parentRunId: "cycle-a" });
+	const finishedChild = withPrompt(ended("finished-child", "completed", 10, 20));
+	const quietParent = makeRun({ id: "quiet-parent", status: "running" });
+	const runs = [
+		root,
+		middle,
+		leaf,
+		unrelated,
+		cycleA,
+		cycleB,
+		{ ...finishedChild, parentRunId: quietParent.id },
+		quietParent,
+	];
+	const statusOf = createRunIndicatorStatusResolver(runs);
+	assert.deepEqual(
+		Object.fromEntries(runs.map((run) => [run.id, statusOf(run)])),
+		Object.fromEntries(runs.map((run) => [run.id, runIndicatorStatus(run, runs)])),
+	);
+	assert.deepEqual(Object.fromEntries(runs.map((run) => [run.id, statusOf(run)])), {
+		root: "awaiting_input",
+		middle: "awaiting_input",
+		leaf: "awaiting_input",
+		unrelated: "running",
+		"cycle-a": "awaiting_input",
+		"cycle-b": "awaiting_input",
+		"finished-child": "completed",
+		"quiet-parent": "running",
+	});
 });

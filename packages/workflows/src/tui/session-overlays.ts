@@ -35,6 +35,7 @@ import {
 	isSessionPickerKey,
 	renderSessionPicker,
 	selectRunsForPicker,
+	syncSessionPickerSelection,
 } from "./session-picker.js";
 
 export interface UiSurface {
@@ -129,10 +130,12 @@ export function openSessionPicker(
 			return {
 				render: (width: number) => {
 					const rows = selectRows();
+					syncSessionPickerSelection(state, rows);
 					return renderSessionPicker({ width, theme, rows, state, allRuns: store.runs() });
 				},
 				handleInput: (data: string): boolean => {
 					const rows = selectRows();
+					syncSessionPickerSelection(state, rows);
 					const consumed = isSessionPickerKey(data, state, rows);
 					const action = handleSessionPickerInput(data, state, rows);
 					if (action.kind === "noop") {
