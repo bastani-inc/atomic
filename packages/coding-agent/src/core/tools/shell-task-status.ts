@@ -42,6 +42,12 @@ function firstLine(text: string): string {
 	return text.trim().split(/\r?\n/, 1)[0]?.trim() ?? "";
 }
 
+function withoutTrailingPeriods(text: string): string {
+	let end = text.length;
+	while (end > 0 && (text[end - 1] === "." || /\s/.test(text[end - 1] ?? ""))) end--;
+	return text.slice(0, end);
+}
+
 /** The message of a failure, unless it only repeats the failure code. */
 function informativeMessage(code: string, message: string): string | undefined {
 	const line = firstLine(message);
@@ -79,7 +85,8 @@ function taskResultPhrase(result: TaskResult): string {
 			if (result.exitCode === undefined) return "ended without an exit code";
 			return `exited with code ${result.exitCode}`;
 		case "failed": {
-			const reason = informativeMessage(result.code, result.message)?.replace(/[.\s]+$/, "");
+			const message = informativeMessage(result.code, result.message);
+			const reason = message === undefined ? undefined : withoutTrailingPeriods(message);
 			return `failed (${result.code})${reason ? `: ${reason}` : ""}${result.exitCode === undefined ? "" : ` (exit code ${result.exitCode})`}`;
 		}
 		case "cancelled":
@@ -119,7 +126,7 @@ export function waitResultTail({ observation, truncated, fullOutputPath }: WaitR
 function cleanupSentence(cleanup: Cleanup): string {
 	if (cleanup.kind !== "failed") return `Cleanup: ${cleanup.kind}.`;
 	const resources = cleanup.resources.map(
-		(entry) => `${entry.resource} (${entry.code}): ${firstLine(entry.message).replace(/[.\s]+$/, "")}`,
+		(entry) => `${entry.resource} (${entry.code}): ${withoutTrailingPeriods(firstLine(entry.message))}`,
 	);
 	return `Cleanup failed: ${resources.join("; ")}.`;
 }
