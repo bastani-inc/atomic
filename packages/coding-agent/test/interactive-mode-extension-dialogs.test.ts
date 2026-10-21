@@ -1,5 +1,6 @@
+import assert from "node:assert/strict";
 import { type Component, Container, Text } from "@earendil-works/pi-tui";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, it, vi } from "vitest";
 import type { HostCustomUiStateListener } from "../src/core/extensions/types.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
@@ -22,6 +23,7 @@ type DialogContext = {
 
 type DialogMethods = {
 	showExtensionConfirm(title: string, message: string, opts?: { signal?: AbortSignal }): Promise<boolean>;
+	focusHostInlineCustomUi(): boolean;
 	showExtensionCustom<T>(
 		factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: T) => void) => Component,
 	): Promise<T>;
@@ -67,7 +69,7 @@ function createContext(): DialogContext & DialogMethods {
 }
 
 function visible(context: DialogContext): string {
-	expect(context.editorContainer.children).toEqual([context.focused]);
+	assert.deepEqual(context.editorContainer.children, [context.focused]);
 	return (context.focused?.render(80) ?? []).join("\n");
 }
 
@@ -79,23 +81,29 @@ describe("InteractiveMode extension dialogs", () => {
 		const first = context.showExtensionConfirm("First", "first dialog");
 		const second = context.showExtensionConfirm("Second", "second dialog");
 
-		expect(visible(context)).toContain("Second");
-		expect(context.programStatus.setBlocked).toHaveBeenLastCalledWith("extension-dialog", {
-			kind: "permission",
-			message: "Second",
-		});
+		assert.match(visible(context), /Second/);
+		assert.deepEqual(context.programStatus.setBlocked.mock.lastCall, [
+			"extension-dialog",
+			{
+				kind: "permission",
+				message: "Second",
+			},
+		]);
 		context.focused?.handleInput?.("\x1b");
-		await expect(second).resolves.toBe(false);
+		assert.equal(await second, false);
 
-		expect(visible(context)).toContain("First");
-		expect(context.programStatus.setBlocked).toHaveBeenLastCalledWith("extension-dialog", {
-			kind: "permission",
-			message: "First",
-		});
+		assert.match(visible(context), /First/);
+		assert.deepEqual(context.programStatus.setBlocked.mock.lastCall, [
+			"extension-dialog",
+			{
+				kind: "permission",
+				message: "First",
+			},
+		]);
 		context.focused?.handleInput?.("\r");
-		await expect(first).resolves.toBe(true);
-		expect(context.focused).toBe(context.editor);
-		expect(context.programStatus.setBlocked).toHaveBeenLastCalledWith("extension-dialog", undefined);
+		assert.equal(await first, true);
+		assert.equal(context.focused, context.editor);
+		assert.deepEqual(context.programStatus.setBlocked.mock.lastCall, ["extension-dialog", undefined]);
 	});
 
 	it("removes a hidden dialog when its signal aborts", async () => {
@@ -105,12 +113,12 @@ describe("InteractiveMode extension dialogs", () => {
 		const second = context.showExtensionConfirm("Second", "second dialog");
 
 		controller.abort();
-		await expect(first).resolves.toBe(false);
-		expect(visible(context)).toContain("Second");
+		assert.equal(await first, false);
+		assert.match(visible(context), /Second/);
 
 		context.focused?.handleInput?.("\r");
-		await expect(second).resolves.toBe(true);
-		expect(context.focused).toBe(context.editor);
+		assert.equal(await second, true);
+		assert.equal(context.focused, context.editor);
 	});
 
 	it("stacks concurrent inline custom components (earendil-works/pi#9909)", async () => {
@@ -123,16 +131,16 @@ describe("InteractiveMode extension dialogs", () => {
 			});
 		const first = open("custom one");
 		const second = open("custom two");
-		await vi.waitFor(() => expect(dones).toHaveLength(2));
-		await vi.waitFor(() => expect(visible(context)).toContain("custom two"));
+		await vi.waitFor(() => assert.equal(dones.length, 2));
+		await vi.waitFor(() => assert.match(visible(context), /custom two/));
 
 		dones[1]("two");
-		await expect(second).resolves.toBe("two");
-		expect(visible(context)).toContain("custom one");
+		assert.equal(await second, "two");
+		assert.match(visible(context), /custom one/);
 
 		dones[0]("one");
-		await expect(first).resolves.toBe("one");
-		expect(context.focused).toBe(context.editor);
+		assert.equal(await first, "one");
+		assert.equal(context.focused, context.editor);
 	});
 
 	it("shows a confirm opened from an inline custom component and then restores the component", async () => {
@@ -147,16 +155,40 @@ describe("InteractiveMode extension dialogs", () => {
 				},
 			});
 		});
-		await vi.waitFor(() => expect(visible(context)).toContain("custom form"));
+		await vi.waitFor(() => assert.match(visible(context), /custom form/));
 
 		context.focused?.handleInput?.("x");
-		expect(visible(context)).toContain("Discard?");
+		assert.match(visible(context), /Discard?/);
 		context.focused?.handleInput?.("\x1b");
-		await expect(confirmed).resolves.toBe(false);
+		assert.equal(await confirmed, false);
 
-		expect(visible(context)).toContain("custom form");
+		assert.match(visible(context), /custom form/);
 		done?.("kept");
-		await expect(custom).resolves.toBe("kept");
-		expect(context.focused).toBe(context.editor);
+		assert.equal(await custom, "kept");
+		assert.equal(context.focused, context.editor);
+	});
+
+	it("does not focus a dialog that aborted while inline focus was deferred", async () => {
+		const context = createContext();
+		const controller = new AbortController();
+		const confirmed = context.showExtensionConfirm("Native", "native dialog", { signal: controller.signal });
+		let done: ((result: string) => void) | undefined;
+		const custom = context.showExtensionCustom<string>((_tui, _theme, _keybindings, finish) => {
+			done = finish;
+			return new Text("custom form");
+		});
+		await vi.waitFor(() => assert.match(visible(context), /custom form/));
+
+		context.deferredInlineCustomUiFocusDepth = 1;
+		done?.("closed");
+		assert.equal(await custom, "closed");
+		controller.abort();
+		assert.equal(await confirmed, false);
+
+		context.deferredInlineCustomUiFocusDepth = 0;
+		context.focusHostInlineCustomUi();
+		assert.equal(context.pendingInlineCustomUiFocus, undefined);
+		assert.equal(context.focused, context.editor);
+		assert.deepEqual(context.editorContainer.children, [context.editor]);
 	});
 });

@@ -553,7 +553,12 @@ export class InteractiveModeBase {
 		const index = this.extensionDialogs.findIndex((dialog) => dialog.component === component);
 		if (index === -1) return;
 		this.extensionDialogs.splice(index, 1);
-		if (index === this.extensionDialogs.length) this.showTopExtensionDialog(focus);
+		const wasPendingFocus = this.pendingInlineCustomUiFocus === component;
+		if (wasPendingFocus) this.pendingInlineCustomUiFocus = this.extensionDialogs.at(-1)?.component ?? this.editor;
+		if (index === this.extensionDialogs.length) {
+			this.showTopExtensionDialog(focus && !(wasPendingFocus && this.shouldDeferInlineCustomUiFocus()));
+		}
+		if (wasPendingFocus) this.notifyHostCustomUiStateListeners();
 	}
 
 	showTopExtensionDialog(focus = true): void {
