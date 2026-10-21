@@ -114,10 +114,16 @@ export async function mapParallelSteps<T>(
 			const selectedFailure = control?.selectSettledFailure?.(failures);
 			if (selectedFailure !== undefined) throw selectedFailure;
 		}
-		throw new AggregateError(
+		const aggregate = new AggregateError(
 			failures.map((failure) => failure.error),
 			`atomic-workflows: ${failures.length} parallel ${failures.length === 1 ? "step" : "steps"} failed`,
 		);
+		if (failFastEnabled) throw aggregate;
+		const failedIndexes = new Set(failures.map((failure) => failure.index));
+		const partialResults = Array.from({ length: steps.length }, (_, index) =>
+			failedIndexes.has(index) ? undefined : results[index],
+		);
+		throw Object.assign(aggregate, { partialResults });
 	}
 	return results;
 }
