@@ -12,6 +12,7 @@
 - Fixed pasting in the shell hanging after copying text in Atomic and suspending it with Ctrl+Z on Linux: the background `wl-copy`/`xclip`/`xsel` process that keeps serving the clipboard was suspended along with Atomic ([#11179](https://github.com/earendil-works/pi/issues/11179))
 - Fixed codemode scripts failing immediately when both codemode workers are busy, for example with parallel codemode calls or in-process subagents. Scripts now wait up to 60 seconds for a free worker, and `ATOMIC_CODEMODE_MAX_WORKERS` (or `PI_CODEMODE_MAX_WORKERS`) raises the limit of two workers ([#11184](https://github.com/earendil-works/pi/issues/11184))
 - Fixed `mcp.json` files that start with a UTF-8 BOM failing to parse, which skipped all their MCP servers and made `atomic mcp add`/`atomic mcp remove` fail ([#11191](https://github.com/earendil-works/pi/issues/11191))
+- The default GitHub Copilot model is now GPT-6.1 Sol. The previous default, GPT-5.4, was deprecated by GitHub on 2026-10-19 and dropped from the model catalog, so a Copilot login had no usable default model. GPT-6.1 Sol is GitHub's suggested replacement.
 
 ## [0.9.40] - 2026-10-20
 

@@ -746,14 +746,14 @@ describe("ModelRuntime fast model catalog", () => {
 		);
 
 		// A different advertised entitlement exposes only that sibling, never the one it does not cover.
-		const other = await runtimeWithCopilotCredential(["claude-opus-4.7-fast"]);
+		const other = await runtimeWithCopilotCredential(["claude-opus-5-fast"]);
 		assert.equal(other.getModel("github-copilot", "claude-opus-4.8-fast"), undefined);
-		assert.ok(other.getModel("github-copilot", "claude-opus-4.7-fast"));
+		assert.ok(other.getModel("github-copilot", "claude-opus-5-fast"));
 		const otherAvailable = await other.getAvailable();
 		const otherFastIds = otherAvailable
 			.filter((entry) => entry.provider === "github-copilot" && entry.fastRoute !== undefined)
 			.map((entry) => entry.id);
-		assert.deepEqual(otherFastIds, ["claude-opus-4.7-fast"]);
+		assert.deepEqual(otherFastIds, ["claude-opus-5-fast"]);
 
 		// No advertised entitlement means no fast sibling anywhere.
 		const none = await runtimeWithCopilotCredential([]);
