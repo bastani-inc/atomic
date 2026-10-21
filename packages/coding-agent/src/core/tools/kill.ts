@@ -1,8 +1,11 @@
+import { Container, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import type { CancelReceipt } from "../tasks/contracts.js";
 import { lookupOwnedTask, type SupervisedCommandOwner } from "./bash-pty-native.js";
+import { formatKillCall, rebuildKillResult } from "./shell-task-render.ts";
+import { cancelReceiptSentence, TaskToolError } from "./shell-task-status.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
 const killSchema = Type.Object({
@@ -29,21 +32,32 @@ export function createKillToolDefinition(options?: KillToolOptions): ToolDefinit
 			const { supervisor, owner } = binding;
 			const task = lookupOwnedTask(binding, id);
 			const watched = supervisor.watchOwnerTasks(owner);
-			if (!watched.ok) throw new Error(`${watched.error.code}: ${watched.error.message}`);
+			if (!watched.ok) throw new TaskToolError(watched.error, id);
 			try {
 				const record = watched.value.snapshot.tasks.find((entry) => entry.ref.taskId === id);
 				if (record?.kind !== "command") throw new Error("kill only supports shell tasks");
 				const result = await supervisor.cancelTask(task, "user");
-				if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`);
+				if (!result.ok) throw new TaskToolError(result.error, id);
 				const receipt = result.value;
 				return {
-					content: [{ type: "text", text: JSON.stringify(receipt) }],
+					content: [{ type: "text", text: cancelReceiptSentence(receipt) }],
 					details: receipt,
 					...(receipt.cleanup.kind === "failed" ? { isError: true } : {}),
 				};
 			} finally {
 				watched.value.dispose();
 			}
+		},
+		renderCall(args, _theme, context) {
+			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			text.setText(formatKillCall(args));
+			return text;
+		},
+		renderResult(result, _options, _theme, context) {
+			const component = (context.lastComponent as Container | undefined) ?? new Container();
+			rebuildKillResult(component, result, { isError: context.isError, taskId: context.args.id });
+			component.invalidate();
+			return component;
 		},
 	};
 }

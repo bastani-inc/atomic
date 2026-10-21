@@ -204,7 +204,11 @@ test("kill reports cancellation rejection, thrown failures and current cleanup f
 		const cancel = vi.spyOn(supervisor, "cancelTask");
 		try {
 			cancel.mockResolvedValueOnce({ ok: false, error: { code: "CleanupFailed", message: "termination denied" } });
-			await assert.rejects(registered.kill.execute("rejected", { id }), /CleanupFailed: termination denied/);
+			await assert.rejects(registered.kill.execute("rejected", { id }), (error: Error & { code?: string }) => {
+				assert.equal(error.code, "CleanupFailed");
+				assert.equal(error.message, `CleanupFailed: Could not stop task "${id}": termination denied`);
+				return true;
+			});
 			cancel.mockRejectedValueOnce(new Error("native cancellation unavailable"));
 			await assert.rejects(registered.kill.execute("throws", { id }), /native cancellation unavailable/);
 		} finally {
