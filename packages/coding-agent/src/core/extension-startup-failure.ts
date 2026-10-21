@@ -50,12 +50,16 @@ function isExtensionStartupError(error: unknown): error is ExtensionStartupError
 	);
 }
 
-/** True when `error` is, or aggregates, an extension startup failure. */
-export function isExtensionStartupFailure(error: unknown, seen = new Set<unknown>()): boolean {
+function aggregatesExtensionStartupError(error: unknown, seen: Set<unknown>): boolean {
 	if (!(error instanceof AggregateError) || seen.has(error)) return false;
 	seen.add(error);
 	if (isExtensionStartupError(error)) return true;
-	return error.errors.some((inner: unknown) => isExtensionStartupFailure(inner, seen));
+	return error.errors.some((inner: unknown) => aggregatesExtensionStartupError(inner, seen));
+}
+
+/** True when `error` is, or aggregates, an extension startup failure. */
+export function isExtensionStartupFailure(error: unknown): boolean {
+	return aggregatesExtensionStartupError(error, new Set());
 }
 
 /**
