@@ -10,10 +10,12 @@
 - Exported `noOpUIContext`, the default no-op extension UI context, from the SDK entry point ([#3801](https://github.com/bastani-inc/atomic/issues/3801))
 - `session.workflows.waitForSettled(runId)` resolves once a workflow run's ending is recorded in the workflow journal and its lease is released, so an SDK host can wait for the journal to be final after a run reports `completed`, `failed` or `killed`. It resolves at once for a run the session is not executing, and rejects with `WorkflowRunStorageError` when the journal could not record the ending. Extensions that call `registerWorkflowRunControl` must implement `waitForSettled` ([#3811](https://github.com/bastani-inc/atomic/issues/3811))
 - `createStructuredOutputTool()` and `generateStructuredOutput()` accept a `timeoutMs` option: the wall-clock limit in milliseconds for one whole structured decision, covering every repair attempt, transport retry, and model fallback together. Without it, the `structured_output` tool uses the session's `httpIdleTimeoutMs` setting and other calls use that setting's 10-minute default. The calling model cannot set it. Extensions can read the setting with `ctx.getHttpIdleTimeoutMs()` ([#3806](https://github.com/bastani-inc/atomic/issues/3806))
+- The task-host `CancelCause` contract adds `pause` and `quit`, typed resumable stops for an agent that is paused and awaiting resume rather than ended. A workflow stage pausing now stops its agents with `pause` instead of `parent-handoff`; `parent-handoff` stays valid for fresh-start handoffs and for entries recorded by earlier versions.
 
 ### Changed
 
 - Reopening `/resume` is faster: the session list is kept between opens and reloads only the sessions that were created, renamed, deleted, or changed since the last open, including changes made by other Atomic processes sharing the store.
+- A subagent stopped with `pause` or `quit`, or by its workflow stage pausing, now reaches the parent as `Subagent <agent> quit · paused, awaiting resume` (or `paused · awaiting resume`) with `Stop reason: quit` or `pause` and the exact `subagent({ action: "resume", id: "<child-id>" })` call, as a quit workflow run is reported, instead of a `parent-handoff` stop notice saying the execution has ended and must not be restarted. Its `/tasks` row shows **Paused · awaiting resume**. Children cancelled for good keep the ended notice.
 
 ### Fixed
 

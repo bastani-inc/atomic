@@ -224,7 +224,9 @@ export function renderSubagentToolResult(
 							? "Failed"
 							: subagentTaskResultLabel(observation.result) === "killed (non-resumable)"
 								? "Killed (non-resumable)"
-								: "Stopped";
+								: subagentTaskResultLabel(observation.result) === "paused · awaiting resume"
+									? "Paused · awaiting resume"
+									: "Stopped";
 			const icon =
 				observation.kind === "yielded"
 					? "∀"

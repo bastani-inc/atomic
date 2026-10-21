@@ -39,7 +39,11 @@ export { INLINE_TASK_OUTPUT_MAX_BYTES } from "./task-output-retention.js";
 
 /** Project explicit user stops without changing the shared host cancellation record. */
 export function subagentTaskResultLabel(result: TaskResult): string {
-	return result.kind === "cancelled" && result.cause === "user" ? "killed (non-resumable)" : result.kind;
+	if (result.kind === "cancelled" && result.cause === "user") return "killed (non-resumable)";
+	// A quit or paused child awaits resume, as a quit workflow run does.
+	if (result.kind === "cancelled" && (result.cause === "pause" || result.cause === "quit"))
+		return "paused · awaiting resume";
+	return result.kind;
 }
 
 export function subagentTaskResponseText(response: ModelSingleResponse | ModelParallelResponse): string {
@@ -492,12 +496,12 @@ export async function runAgentTask(input: {
 						});
 					const stopped = takeSubagentChildStop(context.ref.taskId);
 					const stoppedByControl = stopped !== undefined && child.status === "interrupted";
-					// The only handoff cancellation run control did not request is the owner's workflow stage pausing.
+					// The only resumable pause run control did not request is the owner's workflow stage pausing.
 					const stoppedByStagePause =
 						!stoppedByControl &&
 						child.status === "interrupted" &&
 						context.signal.aborted &&
-						context.signal.reason === "parent-handoff";
+						context.signal.reason === "pause";
 					const endedForGood = ownerClosed() && input.recordChild?.ownerEndedForGood?.() === true;
 					// Run control marked it stopped before it stopped it; a child that ended otherwise is not stopped.
 					if (stopped !== undefined && !stoppedByControl) unparkRunWorktree(runId, index);
@@ -537,10 +541,16 @@ export async function runAgentTask(input: {
 					if (child.interrupted)
 						return {
 							kind: "cancelled",
-							cause:
-								stoppedByControl || stoppedByStagePause || input.options.interruptSignal?.aborted
-									? "parent-handoff"
-									: "owner-close",
+							// Pause and quit are typed resumable stops; a fresh-start handoff stays parent-handoff.
+							cause: stoppedByControl
+								? stopped === "quit"
+									? "quit"
+									: "pause"
+								: stoppedByStagePause
+									? "pause"
+									: input.options.interruptSignal?.aborted
+										? "parent-handoff"
+										: "owner-close",
 							output,
 						};
 					return child.status === "ok"

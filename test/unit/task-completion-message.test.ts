@@ -41,6 +41,33 @@ test("restored and killed completions report only known context", () => {
 	assert.doesNotMatch(stopped, /completed|Result excerpt/);
 });
 
+const RESUMABLE_CHILD_ID = "quitrun:0";
+const RESUMABLE_STOP_TITLES = {
+	quit: /^Subagent worker quit · paused, awaiting resume: /,
+	pause: /^Subagent worker paused · awaiting resume: /,
+} as const;
+
+test("a quit or paused subagent's notice says it is paused and resumable and names its resume call, never that it ended", () => {
+	// A resumed child's launch operation carries a resume suffix; its resume call still names the child id.
+	const resumedLaunch = { ...task, agentName: "worker", launchOperationId: `${RESUMABLE_CHILD_ID}:resume:uuid` };
+	for (const cause of ["quit", "pause"] as const) {
+		for (const launched of [{ ...task, agentName: "worker", launchOperationId: RESUMABLE_CHILD_ID }, resumedLaunch]) {
+			const notice = formatTaskCompletion(
+				{ ...envelope, result: { kind: "cancelled", cause } },
+				launched as typeof task,
+				"partial work",
+			);
+			assert.match(notice, RESUMABLE_STOP_TITLES[cause]);
+			assert.match(notice, new RegExp(`Stop reason: ${cause}\\n`));
+			assert.ok(notice.includes(`subagent({ action: "resume", id: "${RESUMABLE_CHILD_ID}" })`), notice);
+			assert.match(notice, /partial work/);
+			assert.doesNotMatch(notice, /This execution has ended|Do not restart it|parent-handoff|stopped/);
+		}
+	}
+	const killed = formatTaskCompletion({ ...envelope, result: { kind: "cancelled", cause: "user" } }, task);
+	assert.match(killed, /This execution has ended\. Do not restart it/);
+});
+
 test("completion cards shade their full width with chat-card padding in both themes", () => {
 	for (const mode of ["dark", "light"] as const) {
 		initTheme(mode);

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { type Component, truncateToWidth } from "@earendil-works/pi-tui";
 import { taskOutcomeStatus } from "../../../core/tasks/command-output.js";
+import { isResumableStop } from "../../../core/tasks/completion.js";
 import type { TaskRecord } from "../../../core/tasks/contracts.js";
 import type { TaskActivity } from "../../../core/tasks/owner-store.js";
 import { theme } from "../theme/theme.js";
@@ -18,6 +19,9 @@ export function taskState(task: TaskRecord): string {
 		task.execution.result.cause === "user"
 	)
 		return "killed";
+	// A quit or paused agent awaits resume, as a quit workflow run does.
+	if (task.kind === "agent" && task.execution.kind === "settled" && isResumableStop(task.execution.result))
+		return "paused";
 	if (task.execution.kind === "settled") return taskOutcomeStatus(task.execution.result, task.kind);
 	if (task.execution.kind === "cancelling") return "cancelling";
 	if (task.attention.kind === "input-needed") return "input-needed";
@@ -58,6 +62,8 @@ export function taskStatusAppearance(task: TaskRecord): {
 			return { label: "Failed", icon: "✗", color: "error" };
 		case "killed":
 			return { label: "Killed (non-resumable)", icon: "■", color: "warning" };
+		case "paused":
+			return { label: "Paused · awaiting resume", icon: "‖", color: "warning" };
 		case "cancelled":
 			return { label: "Stopped", icon: "✗", color: "warning" };
 		case "cancelling":
@@ -105,7 +111,12 @@ export class TaskRow implements Component {
 		const index = group?.findIndex((item) => item.ref.taskId === task.ref.taskId) ?? -1;
 		const grouped = group !== undefined && index >= 0;
 		const rowWidth = Math.max(1, width - (grouped ? 2 : 0));
-		const state = taskState(task) === "killed" ? "killed (non-resumable)" : taskState(task);
+		const state =
+			taskState(task) === "killed"
+				? "killed (non-resumable)"
+				: taskState(task) === "paused"
+					? "paused · awaiting resume"
+					: taskState(task);
 		const live = task.execution.kind === "running" || task.execution.kind === "queued";
 		const badge = live && task.observation.kind !== "none" ? ` · ${task.observation.kind}` : "";
 		const { icon: glyph, color } = taskStatusAppearance(task);
