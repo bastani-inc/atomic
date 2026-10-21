@@ -67,7 +67,12 @@ function materializeBase(commit: string): string {
 	});
 	// Read the base first so a missing commit leaves no directory behind.
 	const directory = mkdtempSync(join(tmpdir(), "resume-lists-base-"));
-	for (const { name, rewritten } of modules) writeFileSync(join(directory, name), rewritten, { flag: "wx" });
+	try {
+		for (const { name, rewritten } of modules) writeFileSync(join(directory, name), rewritten, { flag: "wx" });
+	} catch (error) {
+		rmSync(directory, { recursive: true, force: true });
+		throw error;
+	}
 	return directory;
 }
 
