@@ -22,6 +22,7 @@ function createGateMode(): InteractiveMode {
 		ui: { requestRender() {} },
 		lastStatusSpacer: undefined,
 		lastStatusText: undefined,
+		compactionQueuedMessages: [],
 	});
 	mode.chatContainer.addChild(mode.resourceDisclosureContainer);
 	mode.chatContainer.addChild(mode.startupNoticesContainer);

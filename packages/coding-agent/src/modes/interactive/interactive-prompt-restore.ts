@@ -39,6 +39,7 @@ export function mergeRestoredDraft(draft: string, currentText: string): string {
 export interface PromptDraftRestoreTarget {
 	/** True once the submission reached an agent turn (`agent_start` observed). */
 	turnStarted: boolean;
+	refused?: boolean;
 	/** Text to put back, exactly as the editor handed it to the submit callback. */
 	draft: string;
 	getEditorText(): string;
@@ -57,7 +58,9 @@ export interface PromptDraftRestoreTarget {
  */
 export function restoreUnsentPromptDraft(error: unknown, target: PromptDraftRestoreTarget): boolean {
 	if (target.turnStarted) return false;
-	if (!isEngineSendFailure(error) && !isInteractiveEngineResourceReadinessError(error)) return false;
+	if (target.refused !== true && !isEngineSendFailure(error) && !isInteractiveEngineResourceReadinessError(error)) {
+		return false;
+	}
 	target.setEditorText(mergeRestoredDraft(target.draft, target.getEditorText()));
 	// Never steal focus from a modal that took over while the send was pending.
 	if (target.editorOwnsInput()) target.focusEditor();
@@ -76,7 +79,7 @@ export function restoreFailedSubmissionDraft(
 	mode: InteractiveModeBase,
 	error: unknown,
 	draft: string,
-	options?: { turnStarted?: boolean },
+	options?: { turnStarted?: boolean; refused?: boolean },
 ): boolean {
 	// Submissions still waiting in the queue were never sent either. They come
 	// back with this one, in FIFO order, because leaving them queued would let
@@ -84,6 +87,7 @@ export function restoreFailedSubmissionDraft(
 	const queued = mode.pendingUserInputs;
 	const restored = restoreUnsentPromptDraft(error, {
 		turnStarted: options?.turnStarted === true,
+		refused: options?.refused === true,
 		draft: [draft, ...queued.map((submission) => submission.draft)].join(RESTORED_DRAFT_SEPARATOR),
 		// Expand first: a large paste lives in the editor's private paste registry
 		// and shows only a `[paste #1 … chars]` marker in the visible buffer, and
@@ -99,4 +103,10 @@ export function restoreFailedSubmissionDraft(
 		queued.length = 0;
 	}
 	return restored;
+}
+
+export function restoreRefusedSubmission(mode: InteractiveModeBase, error: unknown, draft: string): void {
+	const restored = restoreFailedSubmissionDraft(mode, error, draft, { refused: true });
+	if (restored && (isEngineSendFailure(error) || isInteractiveEngineResourceReadinessError(error))) return;
+	mode.showError(error instanceof Error ? error.message : "Unknown error occurred");
 }

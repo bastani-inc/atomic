@@ -19,6 +19,7 @@ import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isol
 type PromptTurnHarness = {
 	deferredStartupPending: boolean;
 	deferredStartupPromise?: Promise<void>;
+	compactionQueuedMessages: Array<{ text: string; mode: "steer" | "followUp" }>;
 	session: {
 		readonly isStreaming: boolean;
 		subscribe: (listener: (event: { type: string }) => void) => () => void;
@@ -195,6 +196,7 @@ describe("interactive deferred startup first prompt readiness", () => {
 			const harness: PromptTurnHarness = {
 				deferredStartupPending: true,
 				deferredStartupPromise: undefined,
+				compactionQueuedMessages: [],
 				session: {
 					get isStreaming() {
 						return session.isStreaming;

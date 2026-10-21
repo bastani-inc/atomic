@@ -11,6 +11,15 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 	input: InteractiveSubmission | string,
 ): Promise<void> {
 	const { text: userInput, draft } = toInteractiveSubmission(input);
+	const turn = this.promptTurn ?? { dispatched: false };
+	this.promptTurn = turn;
+	const settleDispatch = (): void => {
+		if (turn.dispatched) return;
+		turn.dispatched = true;
+		if (this.compactionQueuedMessages.length > 0 && !this.compactionActive) {
+			void this.flushCompactionQueue({ afterPrompt: true });
+		}
+	};
 	// Show the working spinner immediately on submit so there is no visible gap
 	// while prompt preflight runs before the agent emits `agent_start`. The
 	// ownership flag keeps deferred startup from tearing it down mid-way.
@@ -40,7 +49,7 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 			if (!(this.runtimeHost instanceof IsolatedInteractiveRuntime) || !this.isExtensionCommand(userInput)) {
 				await this.session.resumeQueuedMessages();
 			}
-			await this.session.prompt(userInput);
+			await this.session.prompt(userInput, { streamingBehavior: "steer", preflightResult: settleDispatch });
 		}
 	} catch (error) {
 		this.discardDeferredRenderedUserInput(userInput);
@@ -52,6 +61,8 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 		}
 	} finally {
 		unsubscribeTurnStart();
+		if (this.promptTurn === turn) this.promptTurn = undefined;
+		settleDispatch();
 		this.promptTurnWorkingLoaderActive = false;
 		// A submission that resolves without starting an agent turn (e.g. a
 		// handled slash command) never emits `agent_end`, so clear the pre-shown

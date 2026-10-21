@@ -273,6 +273,7 @@ test("idle Alt+Enter restores the exact expanded buffer when the send fails", as
 			},
 		},
 		pendingUserInputs: [],
+		compactionQueuedMessages: [],
 		session: {
 			isCompacting: false,
 			isStreaming: false,

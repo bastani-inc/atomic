@@ -86,6 +86,7 @@ function makeStub(options: {
 			},
 		},
 		pendingUserInputs: state.queued,
+		compactionQueuedMessages: [],
 		session: {
 			isStreaming: false,
 			subscribe: options.subscribe ?? (() => () => {}),

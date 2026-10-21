@@ -104,6 +104,7 @@ type InitContext = {
 type PromptTurnContext = {
 	deferredStartupPending: boolean;
 	deferredStartupPromise?: Promise<void>;
+	compactionQueuedMessages: Array<{ text: string; mode: "steer" | "followUp" }>;
 	session: {
 		isStreaming: boolean;
 		subscribe: (listener: (event: { type: string }) => void) => () => void;
@@ -139,6 +140,7 @@ function createPromptTurnContext(
 	return {
 		deferredStartupPending: options.deferredStartupPending ?? false,
 		deferredStartupPromise: options.deferredStartupPromise,
+		compactionQueuedMessages: [],
 		session: {
 			isStreaming: false,
 			subscribe: vi.fn(() => () => {}),
@@ -508,7 +510,10 @@ describe("InteractiveMode startup latency hooks", () => {
 		await interactiveModePrototype.runUserPromptTurn.call(context, "hello");
 
 		expect(order).toEqual(["deferred", "prompt"]);
-		expect(context.session.prompt).toHaveBeenCalledWith("hello");
+		expect(context.session.prompt).toHaveBeenCalledWith(
+			"hello",
+			expect.objectContaining({ streamingBehavior: "steer" }),
+		);
 	});
 
 	it("waits for deferred startup already in flight before prompting", async () => {
