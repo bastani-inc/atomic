@@ -1,3 +1,4 @@
+import { createHook, type HookCallbacks } from "node:async_hooks";
 import {
 	type Api,
 	type AssistantMessage,
@@ -85,22 +86,95 @@ export class RoutingProvider {
 
 const realSetImmediate = setImmediate;
 const VIRTUAL_BUDGET_MS = 30 * 60_000;
-/** Real time with no pending timer after which an unsettled operation counts as hung. */
+/** Real time with no timer to advance to and no change in real work after which an unsettled operation counts as hung. */
 const HUNG_IDLE_MS = 5_000;
 
-export function useVirtualTime(): void {
+/**
+ * Async resource types that count as real work in flight: file-system requests and the real
+ * macrotasks `setImmediate` schedules. Each ends in exactly one callback, which is how the ledger
+ * knows it is done. Other native resources are left out on purpose: a crypto job run
+ * synchronously (`randomUUID`, `randomBytes`) or a stream write that finishes at once opens a
+ * resource that never gets a callback, so it would read as work in flight forever.
+ */
+const REAL_WORK_TYPE = /^(?:FSREQ|Immediate$)/;
+
+/**
+ * Real asynchronous work in flight: file-system requests (the evals read, credential-file probes) and
+ * real macrotasks the code under test scheduled. Virtual time may advance only while none is,
+ * because only then is every continuation of the operation waiting on a fake timer rather than
+ * on this machine. A turn of the real event loop cannot show that: a read that outlives the turn
+ * on a loaded machine would otherwise let a deadline timer fire under a healthy operation.
+ * Work of another kind, such as a network request, must not be part of the operation; the routing
+ * tests keep the provider and credential store in memory.
+ */
+class RealWork {
+	private readonly pending = new Map<number, string>();
+	private ownTurn = false;
+	/** Counts every start and completion, so a waiter can tell real work that moves from real work that is stuck. */
+	changes = 0;
+	private readonly hook = createHook({
+		init: (id: number, type: string) => {
+			if (this.ownTurn || !REAL_WORK_TYPE.test(type)) return;
+			this.pending.set(id, type);
+			this.changes += 1;
+		},
+		before: (id: number) => this.finish(id),
+		destroy: (id: number) => this.finish(id),
+		// Promises are neither real work nor tracked here; Node versions that predate the option still ignore them.
+		trackPromises: false,
+	} as HookCallbacks);
+
+	get inFlight(): readonly string[] {
+		return [...this.pending.values()];
+	}
+
+	enable(): void {
+		this.hook.enable();
+	}
+
+	disable(): void {
+		this.hook.disable();
+		this.pending.clear();
+	}
+
+	/** One real macrotask turn. The turn's own immediate is not work to wait for. */
+	turn(): Promise<void> {
+		return new Promise<void>((resolve) => {
+			this.ownTurn = true;
+			realSetImmediate(resolve);
+			this.ownTurn = false;
+		});
+	}
+
+	private finish(id: number): void {
+		if (this.pending.delete(id)) this.changes += 1;
+	}
+}
+
+const realWork = new RealWork();
+
+/**
+ * Switches the test to virtual time and starts tracking real work. Register it with
+ * `beforeEach`: the returned cleanup restores real timers after each test.
+ */
+export function useVirtualTime(): () => void {
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+	realWork.enable();
+	return () => {
+		realWork.disable();
+		vi.useRealTimers();
+	};
 }
 
 /**
- * Drive virtual time to the next pending timer whenever real work is idle until `operation`
- * settles, so elapsed virtual time depends on the timers the code under test arms and
- * never on how long this machine takes to do real I/O.
+ * Drive virtual time to the next pending timer, but only when no tracked real work is in flight,
+ * until `operation` settles. Elapsed virtual time therefore depends on the timers the code under
+ * test arms and never on how long this machine takes to do real I/O: a deadline cannot fire under
+ * an operation that is still reading a file.
  */
 export async function settleVirtually<T>(operation: Promise<T>): Promise<void> {
 	const started = Date.now();
 	let settled = false;
-	let idleSince: number | undefined;
 	void operation.then(
 		() => {
 			settled = true;
@@ -109,18 +183,29 @@ export async function settleVirtually<T>(operation: Promise<T>): Promise<void> {
 			settled = true;
 		},
 	);
+	let seenChanges = realWork.changes;
+	let quietSince = performance.now();
 	while (!settled) {
-		await new Promise<void>((resolve) => realSetImmediate(resolve));
+		await realWork.turn();
 		if (settled) break;
 		if (Date.now() - started > VIRTUAL_BUDGET_MS)
 			throw new Error("operation did not settle within the virtual-time budget");
-		if (vi.getTimerCount() === 0) {
-			idleSince ??= performance.now();
-			if (performance.now() - idleSince > HUNG_IDLE_MS)
-				throw new Error("operation is hung: no timer is pending to end it");
+		const now = performance.now();
+		if (realWork.changes !== seenChanges) {
+			seenChanges = realWork.changes;
+			quietSince = now;
+		}
+		const inFlight = realWork.inFlight;
+		if (inFlight.length > 0) {
+			if (now - quietSince > HUNG_IDLE_MS)
+				throw new Error(`operation is stuck on real work that never completes: ${inFlight.join(", ")}`);
 			continue;
 		}
-		idleSince = undefined;
+		if (vi.getTimerCount() === 0) {
+			if (now - quietSince > HUNG_IDLE_MS) throw new Error("operation is hung: no timer is pending to end it");
+			continue;
+		}
+		quietSince = now;
 		await vi.advanceTimersToNextTimerAsync();
 	}
 }

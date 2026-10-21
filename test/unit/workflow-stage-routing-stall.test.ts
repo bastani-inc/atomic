@@ -27,7 +27,6 @@ const PARALLEL_AUTO_STAGES = 5;
 beforeEach(useVirtualTime);
 afterEach(() => {
 	vi.restoreAllMocks();
-	vi.useRealTimers();
 });
 
 async function fixture(provider: RoutingProvider, withCurrentModel = true) {

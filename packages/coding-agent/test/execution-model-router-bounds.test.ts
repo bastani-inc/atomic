@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { afterEach, beforeEach, test, vi } from "vitest";
+import { beforeEach, test, vi } from "vitest";
 import {
 	RoutingProvider,
 	type RoutingProviderBehavior,
@@ -21,7 +21,6 @@ const CALLER_DEADLINE_MS = 60_000;
 const DEADLINE_SLACK_MS = 5_000;
 
 beforeEach(useVirtualTime);
-afterEach(() => vi.useRealTimers());
 
 function routingContext(provider: RoutingProvider, withCurrentModel: boolean): ModelRoutingContext {
 	return {
@@ -95,9 +94,10 @@ test("every routing inference runs through the caller's limit", async () => {
 
 test("a limit that never admits the inference ends routing at the caller's deadline", async () => {
 	const waits = (_run: () => Promise<never>, signal: AbortSignal | undefined) =>
-		new Promise<never>((_resolve, reject) =>
-			signal?.addEventListener("abort", () => reject(signal.reason), { once: true }),
-		);
+		new Promise<never>((_resolve, reject) => {
+			if (signal?.aborted) return reject(signal.reason);
+			signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+		});
 	const { provider, result, elapsedMs } = await route({ kind: "answer", latencyMs: 10 }, true, (deadline) => ({
 		deadline,
 		limit: waits,
