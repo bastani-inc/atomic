@@ -30,6 +30,24 @@ export function runIndicatorStatus(run: RunSnapshot, allRuns: readonly RunSnapsh
 }
 
 /**
+ * Build a resolver that answers `runIndicatorStatus(run, allRuns)` for many
+ * runs from one pass over `allRuns`, instead of rescanning the collection for
+ * every run.
+ */
+export function createRunIndicatorStatusResolver(
+	allRuns: readonly RunSnapshot[],
+): (run: RunSnapshot) => RunIndicatorStatus {
+	let runsWithPendingDescendants: Set<string> | undefined;
+	return (run) => {
+		const status = effectiveRunStatus(run);
+		if (TERMINAL_OR_BLOCKED.has(status)) return status;
+		if (runHasPendingInput(run)) return "awaiting_input";
+		runsWithPendingDescendants ??= ancestorsOfPendingInputRuns(allRuns);
+		return runsWithPendingDescendants.has(run.id) ? "awaiting_input" : status;
+	};
+}
+
+/**
  * Precompute the indicator status of each listed run against the complete
  * run collection. The result is plain serializable data, so a surface whose
  * payload is persisted and re-rendered after a session restore (e.g. the
@@ -40,8 +58,9 @@ export function resolveRunIndicatorStatuses(
 	runs: readonly RunSnapshot[],
 	allRuns: readonly RunSnapshot[],
 ): Readonly<Record<string, RunIndicatorStatus>> {
+	const statusOf = createRunIndicatorStatusResolver(allRuns);
 	const statuses: Record<string, RunIndicatorStatus> = {};
-	for (const run of runs) statuses[run.id] = runIndicatorStatus(run, allRuns);
+	for (const run of runs) statuses[run.id] = statusOf(run);
 	return statuses;
 }
 
@@ -54,6 +73,27 @@ function runHasPendingInput(run: RunSnapshot): boolean {
 			stage.pendingPrompt !== undefined ||
 			stage.inputRequest !== undefined,
 	);
+}
+
+function ancestorsOfPendingInputRuns(allRuns: readonly RunSnapshot[]): Set<string> {
+	const runsById = new Map(allRuns.map((candidate) => [candidate.id, candidate]));
+	const ancestors = new Set<string>();
+	for (const candidate of allRuns) {
+		if (TERMINAL_OR_BLOCKED.has(effectiveRunStatus(candidate)) || !runHasPendingInput(candidate)) continue;
+		const mark = (ancestorId: string): void => {
+			if (ancestorId !== candidate.id) ancestors.add(ancestorId);
+		};
+		if (candidate.rootRunId !== undefined) mark(candidate.rootRunId);
+		const visited = new Set<string>();
+		let current: RunSnapshot | undefined = candidate;
+		while (current !== undefined && current.parentRunId !== undefined) {
+			mark(current.parentRunId);
+			if (visited.has(current.id)) break;
+			visited.add(current.id);
+			current = runsById.get(current.parentRunId);
+		}
+	}
+	return ancestors;
 }
 
 function runBelongsTo(

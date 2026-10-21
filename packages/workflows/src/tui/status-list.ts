@@ -27,7 +27,8 @@ import type {
 import { pendingWorkflowStageStatuses, workflowBoundarySegments } from "../shared/pending-stage-status.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { RunIndicatorStatus } from "../shared/run-indicator-status.js";
-import { runIndicatorStatus } from "../shared/run-indicator-status.js";
+import { createRunIndicatorStatusResolver, runIndicatorStatus } from "../shared/run-indicator-status.js";
+import { sortRunsByStatus } from "../shared/run-order.js";
 import type { RunSnapshot, StageSnapshot, StageStatus } from "../shared/store-types.js";
 import { elapsedRunMs, elapsedStageMs } from "../shared/timing.js";
 import type { FlatBandBadge } from "./chat-surface.js";
@@ -77,9 +78,7 @@ export function renderStatusList(runs: readonly RunSnapshot[], opts: RenderStatu
 	const width = effectiveWidth(opts.width);
 	const cardWidth = Math.max(20, width - 4);
 
-	// The list shows active + recently-ended runs together. Sorting:
-	// active first, then ended, each bucket by startedAt desc.
-	const sorted = sortRuns(runs);
+	const sorted = sortRuns(runs, opts);
 	const resolveBoundarySegments: WorkflowBoundarySegmentsResolver =
 		opts.resolveBoundarySegments ?? ((runId) => workflowBoundarySegments(runs, runId));
 
@@ -487,11 +486,13 @@ function plainBadges(c: Counts): FlatBandBadge[] {
 // Sorting + helpers
 // ---------------------------------------------------------------------------
 
-function sortRuns(runs: readonly RunSnapshot[]): RunSnapshot[] {
-	const active = runs.filter((r) => r.endedAt === undefined);
-	const ended = runs.filter((r) => r.endedAt !== undefined);
-	const byStart = (a: RunSnapshot, b: RunSnapshot) => (b.startedAt ?? 0) - (a.startedAt ?? 0);
-	return [...[...active].sort(byStart), ...[...ended].sort(byStart)];
+function sortRuns(runs: readonly RunSnapshot[], opts: RenderStatusListOpts): RunSnapshot[] {
+	const statusOf = createRunIndicatorStatusResolver(opts.allRuns ?? runs);
+	return sortRunsByStatus(
+		runs,
+		(run) => run,
+		(run) => opts.indicatorStatuses?.[run.id] ?? statusOf(run),
+	);
 }
 
 function renderStatusHintRows(id: string, theme: GraphTheme | undefined, width: number): string[] {
