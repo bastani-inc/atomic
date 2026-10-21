@@ -2048,6 +2048,8 @@ describe("credential egress chokepoint", () => {
 				) => ({ type: "api_key", key: await options.prompt({ message: "API key" }) }),
 				getAvailableSnapshot: () => [],
 				getOAuthProviderMetadata: () => [],
+				getRegisteredProviderIds: () => [],
+				getApiKeyLoginProviderMetadata: () => [],
 			},
 		} as unknown as AgentSession;
 

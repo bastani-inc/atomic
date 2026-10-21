@@ -38,6 +38,9 @@ export async function loginIsolatedOAuthProvider(
  * deliberately skips the remote catalog refresh: catalog freshness belongs to
  * /model's bounded background refresh, and a failed fetch would otherwise leave the
  * key persisted in the engine while the frontend took the error branch.
+ *
+ * An extension provider is registered only in the engine, so its own login runs there and asks
+ * for the key through the engine's input form.
  */
 export async function loginIsolatedApiKeyProvider(
 	session: AgentSession,
@@ -47,9 +50,18 @@ export async function loginIsolatedApiKeyProvider(
 	interaction: AuthInteraction,
 ): Promise<{ modelsRefreshed: true }> {
 	const apiKeyAuth = session.modelRuntime.getProvider(provider)?.auth.apiKey;
-	if (!apiKeyAuth?.login) throw new Error(`Provider does not support api_key login: ${provider}`);
+	if (!apiKeyAuth?.login && !catalog.hasEngineApiKeyLogin(provider)) {
+		throw new Error(`Provider does not support api_key login: ${provider}`);
+	}
 	const signal = operationSignal(interaction.signal);
 	signal.throwIfAborted();
+	if (!apiKeyAuth?.login) {
+		const result = await client.loginProvider(provider, signal);
+		if (result.cancelled) throw normalizeOAuthLoginError(signal.reason ?? new Error("Login cancelled"), signal);
+		catalog.apply(result);
+		await session.modelRuntime.reloadCredentials({ refreshAvailability: false });
+		return { modelsRefreshed: true };
+	}
 	const credential = await raceWithAbortSignal(apiKeyAuth.login({ ...interaction, signal }), signal);
 	if (signal.aborted) throw normalizeOAuthLoginError(signal.reason ?? new Error("Login cancelled"), signal);
 	const remoteCatalog = await client.saveProviderCredential(provider, credential, { refreshCatalog: false });

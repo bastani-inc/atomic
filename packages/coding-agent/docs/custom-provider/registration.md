@@ -102,6 +102,8 @@ await pi.registerProvider("my-llm", {
 
 When `models` is provided, it **replaces** all existing chat, image, and classifier models for that provider. A missing `type` means chat; image and classifier models need `type: "image"` or `type: "classifier"` and implementations in the `images` or `classifiers` maps keyed by each model's `api`. See the [mixed-operation provider example](/custom-provider#quick-reference).
 
+A provider registered this way is listed in `/login` like a built-in provider: `/login my-llm` prompts for an API key and saves it to `auth.json`, and the selector shows whether the provider is configured (for example `✓ env: MY_LLM_API_KEY`). `/model` lists its models once it is configured. When `$MY_LLM_API_KEY` is unset and no key is stored, using one of its models reports `No API key found for my-llm` with the `/login` hint, as for a built-in provider. This also holds in interactive sessions, where extensions run in the engine process.
+
 ## Unregister Provider
 
 Use `pi.unregisterProvider(name)` to remove a provider that was previously registered via `pi.registerProvider(name, ...)`:

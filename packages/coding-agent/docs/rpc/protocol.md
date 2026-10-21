@@ -317,6 +317,8 @@ Response contains an array of full [Model](#model) objects:
 }
 ```
 
+`data` also carries `scopedModels`, `oauthProviders`, `customAuthProviders`, and `providerAuthStatuses`. `customAuthProviders` lists extension-registered providers (`{ id, name }`) that accept an API key through `login_provider`. `providerAuthStatuses` lists the authentication status of extension-registered providers (`{ provider, status }`, where `status` is `{ configured, source?, label? }`) when it does not come from a credential stored in `auth.json`, for example an environment variable. `refresh_models` responses carry the same fields.
+
 The subprocess protocol returns full `Model` objects. The exported TypeScript `RpcClient.getAvailableModels()` keeps its smaller backward-compatible `ModelInfo` shape (`provider`, `id`, `contextWindow`, `reasoning`) and adds optional `compat`. When present, `compat` exposes constrained-sampling capability claims including `supportsStrictTools`, `supportsStrictMode`, canonical `supportsOpenAIGrammarTools`, and Atomic's synchronized `supportsGrammarTools` alias. Treat absence as unknown/unsupported; do not infer enforcement from the provider name.
 
 ```typescript

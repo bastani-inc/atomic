@@ -47,8 +47,11 @@ import type { JsonAgentSessionEvent } from "../json-event.ts";
 export interface RpcModelCatalog {
 	models: Model<Api>[];
 	scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
+	/** Extension-registered providers that offer API-key login (`login_provider`). */
 	customAuthProviders: Array<{ id: string; name: string }>;
 	oauthProviders?: OAuthProviderMetadata[];
+	/** Auth status of extension-registered providers that is not a stored credential (environment, configured key, runtime key). */
+	providerAuthStatuses?: Array<{ provider: string; status: AuthStatus }>;
 }
 
 export interface RpcModelRefreshResult extends RpcModelCatalog {

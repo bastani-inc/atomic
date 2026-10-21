@@ -65,6 +65,8 @@ export interface ProviderConfig {
 		 * `signal` bounds the rotation to 60 seconds; forward it into network calls.
 		 * Once started, rotation is independent of caller cancellation so updated
 		 * credentials can be persisted even after the caller stops waiting.
+		 * When the provider rejects the stored login (for example `invalid_grant`),
+		 * throw `OAuthRefreshRejectedError` so the user is told to run `/login <provider>`.
 		 */
 		refreshToken(credentials: OAuthCredentials, signal: AbortSignal): Promise<OAuthCredentials>;
 		/** Convert credentials to API key string for the provider. */

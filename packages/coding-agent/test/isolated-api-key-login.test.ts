@@ -43,7 +43,7 @@ async function createIsolatedRuntimes() {
 		frontendSession,
 		client: { saveProviderCredential } as never,
 		saveProviderCredential,
-		catalog: { apply: vi.fn() },
+		catalog: { apply: vi.fn(), hasEngineApiKeyLogin: () => false },
 	};
 }
 

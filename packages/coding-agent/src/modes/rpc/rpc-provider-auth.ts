@@ -3,6 +3,7 @@ import type { AgentSession } from "../../core/agent-session.js";
 import type { HostInputFormRequest } from "../../core/extensions/ui-types.js";
 import { CredentialSynchronizationError, type SaveCredentialOptions } from "../../core/model-runtime.js";
 import { createAuthInteraction, isOAuthLoginCancelled } from "../../core/oauth-login.ts";
+import { createRpcModelCatalog } from "./rpc-model-catalog.ts";
 import { createRpcOAuthCallbacks, type OAuthInteractionTransport } from "./rpc-oauth-interaction.ts";
 import type { RpcLoginProviderResult, RpcModelCatalog, RpcOAuthLoginProviderResult } from "./rpc-types.ts";
 
@@ -122,11 +123,6 @@ export class RpcProviderAuth {
 		if (this.controllers.get(loginId)?.controller === controller) this.controllers.delete(loginId);
 	}
 	private catalog(session: AgentSession): RpcModelCatalog {
-		return {
-			models: [...session.modelRuntime.getAvailableSnapshot()],
-			scopedModels: [...session.scopedModels],
-			customAuthProviders: [],
-			oauthProviders: session.modelRuntime.getOAuthProviderMetadata(),
-		};
+		return createRpcModelCatalog(session);
 	}
 }

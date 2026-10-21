@@ -1,6 +1,7 @@
 import { setKeybindings } from "@earendil-works/pi-tui";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
+import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { OAuthSelectorComponent } from "../src/modes/interactive/components/oauth-selector.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
@@ -51,6 +52,10 @@ describe("OAuthSelectorComponent", () => {
 			session: {
 				modelRuntime: {
 					getProviders: () => providers,
+					getApiKeyLoginProviderMetadata: () =>
+						ModelRuntime.prototype.getApiKeyLoginProviderMetadata.call({
+							getProviders: () => providers,
+						} as unknown as ModelRuntime),
 					getOAuthProviderMetadata: () => [{ id: "anthropic", name: "Anthropic" }],
 					getProviderAuthStatus: () => ({ configured: false }),
 					isUsingOAuth: () => false,
@@ -80,6 +85,7 @@ describe("OAuthSelectorComponent", () => {
 			session: {
 				modelRuntime: {
 					getProviders: () => [{ id: "oauth-only", name: "OAuth Only", auth: { oauth: {} } }],
+					getApiKeyLoginProviderMetadata: () => [],
 					getOAuthProviderMetadata: () => [{ id: "oauth-only", name: "OAuth Only" }],
 					getProviderAuthStatus: () => ({ configured: true, source: "stored" }),
 					getStoredCredentialType: () => "api_key",
@@ -105,6 +111,7 @@ describe("OAuthSelectorComponent", () => {
 			session: {
 				modelRuntime: {
 					getProviders: () => [],
+					getApiKeyLoginProviderMetadata: () => [],
 					getOAuthProviderMetadata: () => [{ id: "engine-oauth", name: "Engine OAuth" }],
 					getProviderAuthStatus: () => ({ configured: true, source: "stored" }),
 					getStoredCredentialType: () => "api_key",

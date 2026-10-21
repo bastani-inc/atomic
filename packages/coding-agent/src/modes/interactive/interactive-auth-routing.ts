@@ -47,14 +47,13 @@ InteractiveModeBase.prototype.getLoginProviderOptions = function (
 		authType: "oauth" as const,
 		...subscriptionFlag(provider.isSubscription),
 	}));
-	for (const provider of this.session.modelRuntime.getProviders()) {
-		if (provider.auth.apiKey?.login)
-			options.push({
-				id: provider.id,
-				name: provider.name ?? provider.id,
-				authType: "api_key",
-				...subscriptionFlag(subscriptions.get(provider.id)),
-			});
+	for (const provider of this.session.modelRuntime.getApiKeyLoginProviderMetadata()) {
+		options.push({
+			id: provider.id,
+			name: provider.name,
+			authType: "api_key",
+			...subscriptionFlag(subscriptions.get(provider.id)),
+		});
 	}
 	return (authType ? options.filter((option) => option.authType === authType) : options).sort((a, b) =>
 		a.name.localeCompare(b.name),
@@ -62,8 +61,10 @@ InteractiveModeBase.prototype.getLoginProviderOptions = function (
 };
 InteractiveModeBase.prototype.getLogoutProviderOptions = function (this: InteractiveModeBase): AuthSelectorProvider[] {
 	const runtime = this.session.modelRuntime;
-	const providers = runtime.getProviders();
-	const providerNames = new Map(providers.map((provider) => [provider.id, provider.name ?? provider.id]));
+	const providerNames = new Map(runtime.getProviders().map((provider) => [provider.id, provider.name ?? provider.id]));
+	for (const provider of runtime.getApiKeyLoginProviderMetadata()) {
+		if (!providerNames.has(provider.id)) providerNames.set(provider.id, provider.name);
+	}
 	const subscriptions = new Map<string, boolean | undefined>();
 	for (const provider of runtime.getOAuthProviderMetadata()) {
 		providerNames.set(provider.id, provider.name);

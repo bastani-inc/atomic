@@ -22,11 +22,13 @@ import type {
 	TranscriptContext,
 } from "@bastani/pi-ai";
 import { isModelType } from "@bastani/pi-ai";
+import { extensionRefreshRejection } from "./extension-oauth-refresh-rejection.ts";
 import type { ModelsJsonModel, ModelsJsonModelOverride, ModelsJsonProvider } from "./model-config.ts";
 import {
 	clearConfigValueCache,
 	getConfigValueEnvVarNames,
 	isCommandConfigValue,
+	isConfigValueConfigured,
 	resolveConfigValueOrThrow,
 	resolveHeadersOrThrow,
 } from "./resolve-config-value.ts";
@@ -41,6 +43,8 @@ export interface ExtensionOAuthConfig {
 	 * never aborts it on a timeout, because once the request is sent the provider may already have rotated the
 	 * refresh token. The caller stops waiting after 60 seconds; a later result is still saved, and a graceful exit
 	 * waits briefly for it. It is a required parameter so the contract is stated in the type.
+	 * Throw `OAuthRefreshRejectedError` when the provider rejected the stored login; common error shapes are mapped
+	 * onto it (see `extensionRefreshRejection`).
 	 */
 	refreshToken(credentials: OAuthCredentials, signal: AbortSignal): Promise<OAuthCredentials>;
 	getApiKey(credentials: OAuthCredentials): string;
@@ -351,7 +355,13 @@ function adaptOAuth(config: ExtensionOAuthConfig): OAuthAuth {
 			const credential = await config.login(legacyCallbacks, callbacks.signal);
 			return { ...credential, type: "oauth" };
 		},
-		refresh: async (credential, signal) => ({ ...(await config.refreshToken(credential, signal)), type: "oauth" }),
+		refresh: async (credential, signal) => {
+			try {
+				return { ...(await config.refreshToken(credential, signal)), type: "oauth" };
+			} catch (error) {
+				throw extensionRefreshRejection(error, credential, config.name) ?? error;
+			}
+		},
 		toAuth: async (credential) => ({ apiKey: config.getApiKey(credential) }),
 	};
 }
@@ -451,6 +461,8 @@ export function composeApiKeyAuth(
 						: undefined;
 			} else if (rawKey !== undefined) {
 				const env = await configContextEnv([rawKey], input.ctx);
+				// Like a built-in whose key variable is unset, an unset `$VAR` key means no credential, not an error.
+				if (!isCommandConfigValue(rawKey) && !isConfigValueConfigured(rawKey, env)) return undefined;
 				const key = resolveConfigValueOrThrow(rawKey, `API key for provider "${providerId}"`, env);
 				result = inherited
 					? await inherited.resolve({ ...input, credential: { type: "api_key", key } })

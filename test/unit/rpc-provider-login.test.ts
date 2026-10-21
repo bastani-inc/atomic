@@ -54,7 +54,7 @@ test("login_provider persists and returns the current provider snapshot without 
 	assert.deepEqual(await state.authStorage.read("extension-login"), { type: "api_key", key: "child-secret" });
 	assert.equal(state.refreshCount(), 0);
 	if (!response.data.cancelled) {
-		assert.deepEqual(response.data.customAuthProviders, []);
+		assert.deepEqual(response.data.customAuthProviders, [{ id: "extension-login", name: "extension-login" }]);
 		assert.equal(
 			response.data.models.some((model) => model.provider === "extension-login"),
 			true,
