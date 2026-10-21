@@ -620,6 +620,20 @@ Subagent configuration controls discovery, parallel limits, session storage, con
 
 Running capacity is selected when a parent's first child is created. Restart Atomic after changing this setting to apply the new capacity.
 
+### `resumeInFlight`
+
+```json
+{ "resumeInFlight": "ask" }
+```
+
+Startup recovery of paused and quit subagents that are awaiting resume, using the same values as the workflow setting of that name:
+
+- `never` (default): leave them listed under "Awaiting resume" for a manual `resume`.
+- `ask`: confirm once for all of them. No leaves them awaiting resume; without a UI it behaves like `never`.
+- `auto`: resume each from its own session. Its result reaches the session that launched it.
+
+Only process startup recovers, not a reload or session switch, and only children the starting session launched; workflow-stage children are never resumed this way. Any other value is reported and treated as `never`.
+
 ### `defaultSessionDir`
 
 ```json

@@ -1,9 +1,12 @@
 import type { AgentTaskHost, ExtensionContext, TaskId } from "@bastani/atomic";
-import type {
-	SubagentRunControlAction,
-	SubagentRunControlChild,
-	SubagentRunControlDetails,
-	SubagentToolResult,
+import {
+	isSubagentChildSession,
+	isWorkflowStageOrchestrationContext,
+	type ResumeInFlight,
+	type SubagentRunControlAction,
+	type SubagentRunControlChild,
+	type SubagentRunControlDetails,
+	type SubagentToolResult,
 } from "../../shared/types.js";
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { isLiveOwnerlessChild, isQueuedOwnerlessChild, stopOwnerlessChild } from "./ownerless-children.js";
@@ -384,4 +387,55 @@ export function controlSubagentChildren(
 	return request.action === "resume"
 		? resumeChild(deps, ctx, request)
 		: stopChildren(deps, ctx, { ...request, action: request.action });
+}
+
+/**
+ * Startup recovery of the paused and quit children this session launched, as `resumeInFlight` selects: `ask` confirms
+ * once, `auto` resumes them, and each resumes through the `resume` action. Workflow-stage children are never touched.
+ * It never throws: a failure is reported as a warning, and `isCurrent` ends it once the session it began in is gone.
+ */
+export async function resumeAwaitingSubagentChildren(
+	deps: SubagentChildRestoreDeps,
+	ctx: ExtensionContext,
+	mode: ResumeInFlight,
+	isCurrent: () => boolean,
+): Promise<void> {
+	if (mode === "never" || ctx.isPresentationOnly === true) return;
+	if (isSubagentChildSession(ctx) || isWorkflowStageOrchestrationContext(ctx)) return;
+	if (mode === "ask" && (ctx.hasUI === false || typeof ctx.ui?.confirm !== "function")) return;
+	const notify = (message: string, type: "info" | "warning"): void => {
+		try {
+			ctx.ui?.notify?.(message, type);
+		} catch {
+			return;
+		}
+	};
+	try {
+		const awaiting = [...ownedRecords(ctx).values()].filter(
+			(record) => record.owner.kind === "session" && stoppedAs(record),
+		);
+		if (awaiting.length === 0) return;
+		if (
+			mode === "ask" &&
+			!(await ctx.ui.confirm(
+				"Resume interrupted subagents?",
+				`${awaiting.length} interrupted subagent(s) can resume from their own sessions. Resume now? Choose No to leave them awaiting resume; resume one later with subagent({ action: "resume", id }).`,
+			))
+		)
+			return;
+		for (const record of awaiting) {
+			if (!isCurrent()) return;
+			const result = await controlSubagentChildren(deps, ctx, { action: "resume", id: record.childId });
+			notify(
+				result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n"),
+				result.isError ? "warning" : "info",
+			);
+		}
+	} catch (error) {
+		if (!isCurrent()) return;
+		notify(
+			`Subagent startup resume failed: ${String(error)}. Use subagent({ action: "resume", id }) to retry.`,
+			"warning",
+		);
+	}
 }

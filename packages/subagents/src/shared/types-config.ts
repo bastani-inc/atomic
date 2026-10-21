@@ -222,6 +222,10 @@ export interface IntercomBridgeConfig {
 	instructionFile?: string;
 }
 
+export const RESUME_IN_FLIGHT_MODES = ["ask", "auto", "never"] as const;
+
+export type ResumeInFlight = (typeof RESUME_IN_FLIGHT_MODES)[number];
+
 interface TopLevelParallelConfig {
 	maxTasks?: number;
 	concurrency?: number;
@@ -235,4 +239,6 @@ export interface ExtensionConfig {
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
 	intercomBridge?: IntercomBridgeConfig;
+	/** Startup recovery of the paused and quit subagents a session launched. Default: "never". */
+	resumeInFlight?: ResumeInFlight;
 }
