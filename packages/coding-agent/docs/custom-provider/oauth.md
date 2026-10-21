@@ -117,14 +117,14 @@ OAuth refresh failed for corporate-ai: invalid_grant (Refresh token expired). Th
 
 The message shows only the provider ID, the error code (or `HTTP <status>` when there is none), and the description. Pass the stored tokens as the third argument: a description that contains one of them, contains a URL, or is too long is left out. Never put tokens or request bodies in the code or description.
 
-Atomic also treats these errors from `refreshToken` as a rejected login, including when they are the `cause` of the error you throw:
+Atomic also treats these errors from `refreshToken` as a rejected login, including when they are the `cause` of the error you throw. The rejected-login codes are the ones the built-in providers use: `invalid_grant`, `refresh_token_expired`, `refresh_token_reused`, and `refresh_token_invalidated`.
 
-- an error with an `error` or `code` property of `invalid_grant`, such as openid-client's response errors; `error_description` supplies the description
-- an error whose `body`, `data`, `response.data`, or `response.body` holds an OAuth error response (`{"error":"invalid_grant", ...}`), as an object or JSON text, as HTTP clients such as axios attach it
-- an error whose `status`, `statusCode`, or `response.status` is 401
-- an error message that contains an OAuth error response with `invalid_grant`, as the built-in providers report it
+- an error whose `error` or `code` property is a rejected-login code, such as openid-client's response errors; an `error_description` property supplies the description
+- an error whose `body`, `data`, `response.data`, or `response.body` holds an OAuth error response with a rejected-login code in `error`, `error.code`, or `code`, as an object or JSON text, as HTTP clients such as axios attach it; `error_description` or `error.message` supplies the description
+- an error whose `status`, `statusCode`, `response.status`, or `response.statusCode` is 401, as HTTP clients such as axios and got report it
+- an error message that contains a rejected-login code, alone or in an OAuth error response, as the built-in providers report it
 
-Other failures, such as a 5xx status, a network error, or another OAuth error code, are reported as `OAuth refresh failed for <provider>: <message>` without asking the user to sign in again, because a retry may succeed.
+Other failures are reported as `OAuth refresh failed for <provider>: <message>` without asking the user to sign in again, because a retry may succeed. These include a 5xx status, a network error, and other OAuth error codes such as `invalid_client`, `invalid_request`, or `server_error`.
 
 ## Dynamic model catalog refresh
 

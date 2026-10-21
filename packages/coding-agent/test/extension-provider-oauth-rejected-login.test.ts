@@ -13,13 +13,14 @@ import { OAuthRefreshRejectedError } from "../src/index.ts";
 const PROVIDER = "corp-oauth";
 const HOUR_MS = 60 * 60 * 1000;
 const FAKE_REFRESH = "fake-corp-refresh-81b2";
+const FAKE_ACCESS = "fake-corp-access-81b2";
 /** A contender that ignored the provider lock would present the refresh token well within this. */
 const CONTENDER_HEAD_START_MS = 200;
 const RELOGIN = "The provider rejected the stored login; run /login corp-oauth to sign in again.";
 type RefreshToken = NonNullable<ProviderConfig["oauth"]>["refreshToken"];
 
 function expiredLogin(): OAuthCredential {
-	return { type: "oauth", access: "fake-corp-access-81b2", refresh: FAKE_REFRESH, expires: 1 };
+	return { type: "oauth", access: FAKE_ACCESS, refresh: FAKE_REFRESH, expires: 1 };
 }
 
 /** How an extension's refresher reports a revoked or expired login with the typed contract. */
@@ -103,7 +104,7 @@ describe("extension OAuth providers get the built-in rejected-login guidance", (
 			await refreshFailure(rejectedLogin(expiredLogin(), "Session revoked")),
 			`OAuth refresh failed for corp-oauth: invalid_grant (Session revoked). ${RELOGIN}`,
 		);
-		assert.equal(await storedAccess(AuthStorage.create(authPath)), "fake-corp-access-81b2");
+		assert.equal(await storedAccess(AuthStorage.create(authPath)), FAKE_ACCESS);
 	});
 
 	const commonShapes: Array<[string, unknown, string]> = [
@@ -144,7 +145,51 @@ describe("extension OAuth providers get the built-in rejected-login guidance", (
 			Object.assign(new Error("refresh failed"), { code: "invalid_grant" }),
 			"invalid_grant",
 		],
+		[
+			"error with code invalid_grant and an error_description property",
+			Object.assign(new Error("refresh failed"), {
+				code: "invalid_grant",
+				error_description: "Grant revoked by an administrator",
+			}),
+			"invalid_grant (Grant revoked by an administrator)",
+		],
+		[
+			"HTTP error carrying a nested OAuth error object in body.error.code",
+			Object.assign(new Error("Bad Request"), {
+				status: 400,
+				body: { error: { code: "invalid_grant", message: "Refresh token revoked" } },
+			}),
+			"invalid_grant (Refresh token revoked)",
+		],
+		[
+			"axios-style error with a nested OAuth error object in response.data",
+			Object.assign(new Error("Request failed with status code 400"), {
+				code: "ERR_BAD_REQUEST",
+				response: { status: 400, data: { error: { code: "invalid_grant" } } },
+			}),
+			"invalid_grant",
+		],
+		[
+			"axios-style error with a nested OAuth error in response.data as JSON text",
+			Object.assign(new Error("Request failed with status code 400"), {
+				code: "ERR_BAD_REQUEST",
+				response: { status: 400, data: '{"error":{"code":"invalid_grant","message":"Grant expired"}}' },
+			}),
+			"invalid_grant (Grant expired)",
+		],
+		...["refresh_token_expired", "refresh_token_reused", "refresh_token_invalidated"].map(
+			(code): [string, unknown, string] => [
+				`HTTP error carrying the OAuth error code ${code}`,
+				Object.assign(new Error(`refresh failed for ${FAKE_REFRESH}`), { status: 400, body: { error: code } }),
+				code,
+			],
+		),
 		["HTTP 401 from the token endpoint", Object.assign(new Error("Unauthorized"), { status: 401 }), "HTTP 401"],
+		[
+			"got-style HTTP 401 in response.statusCode",
+			Object.assign(new Error("Response code 401 (Unauthorized)"), { response: { statusCode: 401 } }),
+			"HTTP 401",
+		],
 		[
 			"recognised error wrapped as the cause of the extension's own error",
 			new Error("corp refresh failed", { cause: Object.assign(new Error("Unauthorized"), { status: 401 }) }),
@@ -156,6 +201,7 @@ describe("extension OAuth providers get the built-in rejected-login guidance", (
 			const message = await refreshFailure(thrown);
 			assert.equal(message, `OAuth refresh failed for corp-oauth: ${detail}. ${RELOGIN}`);
 			assert.equal(message.includes(FAKE_REFRESH), false);
+			assert.equal(message.includes(FAKE_ACCESS), false);
 		});
 	}
 
@@ -168,6 +214,28 @@ describe("extension OAuth providers get the built-in rejected-login guidance", (
 			assert.doesNotMatch(await refreshFailure(thrown), /run \/login/);
 		}
 	});
+
+	const retryableShapes: Array<[string, Error]> = [
+		[
+			"HTTP 400 with the OAuth error code invalid_client",
+			Object.assign(new Error("Bad Request"), { status: 400, body: { error: "invalid_client" } }),
+		],
+		[
+			"nested OAuth error code server_error in response.data",
+			Object.assign(new Error("Request failed with status code 500"), {
+				response: { status: 500, data: { error: { code: "server_error" } } },
+			}),
+		],
+		[
+			"got-style HTTP 503 in response.statusCode",
+			Object.assign(new Error("Response code 503 (Service Unavailable)"), { response: { statusCode: 503 } }),
+		],
+	];
+	for (const [shape, thrown] of retryableShapes) {
+		test(`an extension refresher's ${shape} does not ask for a new login`, async () => {
+			assert.equal(await refreshFailure(thrown), `OAuth refresh failed for corp-oauth: ${thrown.message}`);
+		});
+	}
 
 	test("a rejected extension refresh uses the newer login another session saved", async () => {
 		const newer: OAuthCredential = {
