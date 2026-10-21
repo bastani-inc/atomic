@@ -543,25 +543,37 @@ export async function _runAgentPrompt(
 
 async function settleAgentRun(session: AgentSession): Promise<void> {
 	session._cacheWarmer?.onAgentSettled();
-	await session._agentEventQueue;
-	await session._flushPendingCustomMessages();
-	closeRun(session);
-	session._isEmittingAgentSettled = true;
 	try {
-		const aborted = session._agentRunAbortRequested === true;
-		if (typeof session._extensionRunner?.emit === "function") {
-			await session._extensionRunner.emit({ type: "agent_settled", aborted });
-		}
-		session._emit?.({ type: "agent_settled", aborted });
+		await session._agentEventQueue;
+		await session._flushPendingCustomMessages();
 	} finally {
-		session._isEmittingAgentSettled = false;
+		// A failed event or flush must still close and settle the run; otherwise the open-run
+		// marker and active prompt count leak and later interactive messages stay queued forever.
+		await finishAgentRun(session);
 	}
-	if (session._subagentMessageAdmission) await settleSubagentMessages(session);
-	session._activePromptCount -= 1;
-	// Runs deferred by agent_settled handlers start only after every settled handler completed.
-	// Guarded because prompt-handshake suites drive this function on a synthetic session.
-	const deferred = session._deferredSettledActions?.splice(0) ?? [];
-	for (const action of deferred) await action();
+}
+
+async function finishAgentRun(session: AgentSession): Promise<void> {
+	closeRun(session);
+	try {
+		session._isEmittingAgentSettled = true;
+		try {
+			const aborted = session._agentRunAbortRequested === true;
+			if (typeof session._extensionRunner?.emit === "function") {
+				await session._extensionRunner.emit({ type: "agent_settled", aborted });
+			}
+			session._emit?.({ type: "agent_settled", aborted });
+		} finally {
+			session._isEmittingAgentSettled = false;
+		}
+		if (session._subagentMessageAdmission) await settleSubagentMessages(session);
+	} finally {
+		session._activePromptCount -= 1;
+		// Runs deferred by agent_settled handlers start only after every settled handler completed.
+		// Guarded because prompt-handshake suites drive this function on a synthetic session.
+		const deferred = session._deferredSettledActions?.splice(0) ?? [];
+		for (const action of deferred) await action();
+	}
 }
 
 /**
@@ -878,7 +890,8 @@ function canStartQueuedInputRun(session: AgentSession): boolean {
 }
 
 async function runQueuedInput(session: AgentSession): Promise<void> {
-	await session._agentEventQueue;
+	// A failed event was already reported by the run that produced it; it must not drop this delivery.
+	await session._agentEventQueue.catch(() => {});
 	await preparePriorityContinuation(session);
 	if (!canStartQueuedInputRun(session)) return;
 	const run = session.agent.continue();

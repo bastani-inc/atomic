@@ -72,6 +72,36 @@ function settledRuns(count: number): string[] {
 	return Array.from({ length: count }, () => ["agent_start", "agent_end", "agent_settled"]).flat();
 }
 
+const SETTLE_FAILURE = "the settle step failed";
+
+function failOnAgentEnd(rig: Rig): () => boolean {
+	let failed = false;
+	rig.engine.session.subscribe((event) => {
+		if (failed || event.type !== "agent_end") return;
+		failed = true;
+		throw new Error(SETTLE_FAILURE);
+	});
+	return () => failed;
+}
+
+function failNextCustomMessageFlush(rig: Rig): () => boolean {
+	const engineSession = rig.engine.session as typeof rig.engine.session &
+		Pick<AgentSessionInternalSurface, "_flushPendingCustomMessages">;
+	const flush = engineSession._flushPendingCustomMessages.bind(engineSession);
+	let armed = false;
+	let failed = false;
+	engineSession.subscribe((event) => {
+		if (event.type === "agent_end" && !failed) armed = true;
+	});
+	engineSession._flushPendingCustomMessages = async () => {
+		if (!armed) return flush();
+		armed = false;
+		failed = true;
+		throw new Error(SETTLE_FAILURE);
+	};
+	return () => failed;
+}
+
 describe.each(["local", "isolated"] as const)("interactive submissions while the agent is busy (%s host)", (wiring) => {
 	const rigs: Rig[] = [];
 	afterEach(async () => {
@@ -449,6 +479,91 @@ describe.each(["local", "isolated"] as const)("interactive submissions while the
 
 				assert.deepEqual(getUserTexts(rig.engine), expected, "order or exactly-once delivery was lost");
 				assert.deepEqual(rig.host.notices, [], "a notice was shown for an accepted message");
+			},
+		);
+
+		test.each([
+			{ failure: "an agent_end listener throws", fail: failOnAgentEnd },
+			{ failure: "the custom-message flush rejects", fail: failNextCustomMessageFlush },
+		] as const)(
+			"after a run whose settle fails because $failure, the next typed message is delivered once and every run settles",
+			async ({ fail }) => {
+				const rig = await createRig(wiring, load, {});
+				rigs.push(rig);
+				rig.engine.setResponses([
+					fauxAssistantMessage("first answer"),
+					fauxAssistantMessage("answer after the failure"),
+					fauxAssistantMessage("unexpected extra reply"),
+				]);
+				const hasFailed = fail(rig);
+
+				await rig.host.defaultEditor.onSubmit?.("P1");
+				await waitFor("the settle step to fail", () => hasFailed() && !rig.engine.session.isStreaming);
+				if (wiring === "local") {
+					await waitFor("the failure to be shown", () => rig.host.notices.includes(`error: ${SETTLE_FAILURE}`));
+				} else {
+					await waitFor("the host to be ready for input", () => rig.host.onInputCallback !== undefined);
+				}
+				await rig.host.defaultEditor.onSubmit?.("P2");
+				await waitFor(
+					"the next message to be answered",
+					() => getUserTexts(rig.engine).includes("P2") && isIdleAfterAnswering(rig.engine),
+				);
+				await waitFor("the next run to settle", () => rig.engine.eventsOfType("agent_settled").length >= 2);
+				await sleep(DUPLICATE_DELIVERY_SETTLE_MS);
+
+				assert.deepEqual(getUserTexts(rig.engine), ["P1", "P2"], "order or exactly-once delivery was lost");
+				assert.deepEqual(rig.engine.session.getSteeringMessages(), [], "the next message stayed queued");
+				assert.deepEqual(runLifecycle(rig), settledRuns(2), "a run started without settling");
+				assert.deepEqual(rig.host.notices, wiring === "local" ? [`error: ${SETTLE_FAILURE}`] : []);
+			},
+		);
+
+		test.each(["agent_end", "agent_settled"] as const)(
+			"a message typed while %s handlers of a run whose agent_end listener throws is delivered once after them",
+			async (hook) => {
+				const held = createGate();
+				const rig = await createRig(wiring, load, { extensions: [hookGate(hook, held)] });
+				rigs.push(rig);
+				rig.engine.setResponses([
+					fauxAssistantMessage("first answer"),
+					fauxAssistantMessage("answer to the typed message"),
+					fauxAssistantMessage("unexpected extra reply"),
+				]);
+				const hasFailed = failOnAgentEnd(rig);
+
+				await rig.host.defaultEditor.onSubmit?.("P1");
+				await held.entered.promise;
+				await waitFor("the agent to stop streaming", () => !rig.engine.session.isStreaming);
+				if (wiring === "isolated") {
+					await waitFor("the host to see the prompt dispatched", () => rig.host.onInputCallback !== undefined);
+				}
+				await rig.host.defaultEditor.onSubmit?.("M-failed-run");
+				await waitFor("the typed message to be visible", () => isVisible(rig.host, "M-failed-run"));
+				assert.deepEqual(getUserTexts(rig.engine), ["P1"], "a second run started before the first one settled");
+
+				held.release.resolve();
+				await waitFor("the agent_end listener to throw", hasFailed);
+				await waitFor(
+					"the typed message to be answered",
+					() => getUserTexts(rig.engine).includes("M-failed-run") && isIdleAfterAnswering(rig.engine),
+				);
+				await waitFor("the delivering run to settle", () => runLifecycle(rig).at(-1) === "agent_settled");
+				await sleep(DUPLICATE_DELIVERY_SETTLE_MS);
+
+				const lifecycle = runLifecycle(rig);
+				assert.deepEqual(
+					getUserTexts(rig.engine),
+					["P1", "M-failed-run"],
+					"order or exactly-once delivery was lost",
+				);
+				assert.deepEqual(rig.engine.session.getSteeringMessages(), [], "the typed message stayed queued");
+				assertTurnsNeverOverlapAndSettle(lifecycle);
+				assert.equal(
+					countOf(lifecycle, "agent_settled"),
+					countOf(lifecycle, "agent_start"),
+					`a run started without settling: ${JSON.stringify(lifecycle)}`,
+				);
 			},
 		);
 	});
