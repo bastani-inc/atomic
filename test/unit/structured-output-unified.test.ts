@@ -269,6 +269,30 @@ test("unresolvable and malformed fallback model IDs are recorded and skipped in 
 	assert.equal(result.modelAttempts?.filter(({ error }) => error).length, 4);
 });
 
+test("a resolvable primary succeeds without touching an unresolvable fallback ID (#3814)", async () => {
+	const calls: string[] = [];
+	const modelRegistry: StructuredOutputRequest<TSchema>["modelRegistry"] = {
+		getAll: () => [decisionModel],
+		streamSimple: (model) => {
+			calls.push(model.id);
+			return messageStream(decisionMessage({ summary: "ok" }));
+		},
+	};
+	const result = await generateStructuredOutput({
+		model: `${decisionModel.provider}/${decisionModel.id}`,
+		fallbackModels: ["nonexistent/model"],
+		modelRegistry,
+		schema: Type.Object({ summary: Type.String() }),
+		state: { summary: "ok" },
+		instructions: "Return the result.",
+	});
+	assert.deepEqual(calls, [decisionModel.id]);
+	assert.deepEqual(result.value, { summary: "ok" });
+	assert.equal(result.model, `${decisionModel.provider}/${decisionModel.id}`);
+	assert.equal(result.modelAttempts, undefined);
+	assert.equal(result.fallback, undefined);
+});
+
 test("every candidate ID unresolvable still fails before any request (#3814)", async () => {
 	const calls: string[] = [];
 	await assert.rejects(
