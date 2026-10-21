@@ -9,7 +9,16 @@ import type {
 	OAuthCredential,
 	ProviderAuth,
 } from "../src/auth/types.ts";
-import { calculateCost, createModels, createProvider, hasApi, type Provider } from "../src/models.ts";
+import {
+	calculateCost,
+	createModels,
+	createProvider,
+	hasApi,
+	OAUTH_REFRESH_LOCK_HOLD_MS,
+	OAUTH_REFRESH_TIMEOUT_MS,
+	type Provider,
+	REQUEST_AUTH_PREPARATION_TIMEOUT_MS,
+} from "../src/models.ts";
 import { InMemoryModelsStore, type ModelsStore, type ModelsStoreEntry } from "../src/models-store.ts";
 import type { Api, AssistantMessage, Context, Model, SimpleStreamOptions, StreamOptions, Usage } from "../src/types.ts";
 import { AssistantMessageEventStream } from "../src/utils/event-stream.ts";
@@ -112,6 +121,72 @@ function testOAuth(overrides?: Partial<OAuthAuth>): OAuthAuth {
 		toAuth: async (credential) => ({ apiKey: credential.access }),
 		...overrides,
 	};
+}
+
+/** `AbortSignal.timeout` is not driven by vitest's fake timers; route it through the faked `setTimeout`. */
+function mockAbortSignalTimeoutWithFakeTimers() {
+	return vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+		const controller = new AbortController();
+		setTimeout(() => controller.abort(new DOMException("The operation timed out.", "TimeoutError")), ms);
+		return controller.signal;
+	});
+}
+
+/** Fake timers clamp a zero-delay `setTimeout` to this, so a prompt response needs the clock moved by it. */
+const PROMPT_RESPONSE_MS = 1;
+
+/** Fake token endpoint that rotates on every accepted refresh and honours the exchange's abort signal. */
+function rotatingTokenServer(initialResponseDelayMs: number) {
+	let generation = 1;
+	let responseDelayMs = initialResponseDelayMs;
+	const presented: Array<"rotated" | "invalid_grant"> = [];
+	const exchange = (credential: OAuthCredential, signal: AbortSignal): Promise<OAuthCredential> => {
+		if (credential.refresh !== `fake-refresh-${generation}`) {
+			presented.push("invalid_grant");
+			return Promise.reject(new Error('token refresh failed (400): {"error":"invalid_grant"}'));
+		}
+		generation++;
+		presented.push("rotated");
+		const rotated: OAuthCredential = {
+			type: "oauth",
+			access: `fake-access-${generation}`,
+			refresh: `fake-refresh-${generation}`,
+			expires: Date.now() + OAUTH_REFRESH_TIMEOUT_MS,
+		};
+		return new Promise<OAuthCredential>((resolve, reject) => {
+			const response = setTimeout(() => resolve(rotated), responseDelayMs);
+			signal.addEventListener(
+				"abort",
+				() => {
+					clearTimeout(response);
+					reject(signal.reason);
+				},
+				{ once: true },
+			);
+		});
+	};
+	return {
+		exchange,
+		presented,
+		respondAfter: (ms: number) => {
+			responseDelayMs = ms;
+		},
+	};
+}
+
+async function modelsWithExpiredLogin(providerId: string, refresh: OAuthAuth["refresh"]) {
+	const credentials = new InMemoryCredentialStore();
+	await credentials.modify(providerId, async () => ({
+		type: "oauth",
+		access: "fake-access-1",
+		refresh: "fake-refresh-1",
+		expires: 0,
+	}));
+	const models = createModels({ credentials });
+	models.setProvider(
+		testProvider({ id: providerId, auth: { oauth: testOAuth({ refresh }) }, refreshModels: async () => {} }),
+	);
+	return { models, credentials };
 }
 
 describe("Models runtime", () => {
@@ -543,7 +618,6 @@ describe("Models runtime", () => {
 	});
 
 	it("bounds a stalled rotation and releases its lock while request callers keep their own deadline (#3429)", async () => {
-		const rotationTimeoutMs = 60_000;
 		vi.useFakeTimers();
 		const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
 			const controller = new AbortController();
@@ -588,18 +662,70 @@ describe("Models runtime", () => {
 				lockReleased = true;
 				return undefined;
 			});
-			await vi.advanceTimersByTimeAsync(rotationTimeoutMs - 15_000 - 1);
-			assert.equal(lockReleased, false);
-			await vi.advanceTimersByTimeAsync(1);
+			await vi.advanceTimersByTimeAsync(OAUTH_REFRESH_TIMEOUT_MS - 15_000);
 			const result = await refresh;
 			assert.equal(result.errors.size, 1);
 			assert.match(result.errors.get("stalled")?.message ?? "", /OAuth refresh failed/);
+			await vi.advanceTimersByTimeAsync(OAUTH_REFRESH_LOCK_HOLD_MS - OAUTH_REFRESH_TIMEOUT_MS - 1);
+			assert.equal(lockReleased, false, "the stalled exchange may still rotate the stored token");
+			await vi.advanceTimersByTimeAsync(1);
 			await queued;
 			assert.equal(lockReleased, true);
 			assert.equal(rotations, 1);
-			finish?.({ ...old, access: "too-late", refresh: "too-late" });
+			const late = { ...old, access: "too-late", refresh: "too-late" };
+			finish?.(late);
 			await vi.advanceTimersByTimeAsync(0);
-			assert.deepEqual(await credentials.read("stalled"), old);
+			assert.deepEqual(await credentials.read("stalled"), late, "the provider already rotated the stored token");
+		} finally {
+			timeout.mockRestore();
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps a token rotation whose response arrives after the refresh timeout from a provider that honours its signal", async () => {
+		const lateResponseMs = OAUTH_REFRESH_TIMEOUT_MS / 2;
+		vi.useFakeTimers();
+		const timeout = mockAbortSignalTimeoutWithFakeTimers();
+		try {
+			const server = rotatingTokenServer(OAUTH_REFRESH_TIMEOUT_MS + lateResponseMs);
+			const { models, credentials } = await modelsWithExpiredLogin("openai-1", server.exchange);
+
+			const refresh = models.refresh();
+			await vi.advanceTimersByTimeAsync(OAUTH_REFRESH_TIMEOUT_MS);
+			assert.match((await refresh).errors.get("openai-1")?.message ?? "", /OAuth refresh failed for openai-1/);
+			await vi.advanceTimersByTimeAsync(lateResponseMs);
+			const stored = await credentials.read("openai-1");
+			assert.equal(stored?.type === "oauth" ? stored.refresh : undefined, "fake-refresh-2");
+
+			server.respondAfter(PROMPT_RESPONSE_MS);
+			const auth = models.getAuth("openai-1");
+			await vi.advanceTimersByTimeAsync(PROMPT_RESPONSE_MS);
+			assert.equal((await auth)?.auth.apiKey, "fake-access-3");
+			assert.deepEqual(server.presented, ["rotated", "rotated"]);
+		} finally {
+			timeout.mockRestore();
+			vi.useRealTimers();
+		}
+	});
+
+	it("makes a refresh started after the caller's timeout wait for the still-running exchange", async () => {
+		const lateResponseMs = REQUEST_AUTH_PREPARATION_TIMEOUT_MS / 3;
+		vi.useFakeTimers();
+		const timeout = mockAbortSignalTimeoutWithFakeTimers();
+		try {
+			const server = rotatingTokenServer(OAUTH_REFRESH_TIMEOUT_MS + lateResponseMs);
+			const { models } = await modelsWithExpiredLogin("openai-1", server.exchange);
+
+			const refresh = models.refresh();
+			await vi.advanceTimersByTimeAsync(OAUTH_REFRESH_TIMEOUT_MS);
+			assert.match((await refresh).errors.get("openai-1")?.message ?? "", /OAuth refresh failed for openai-1/);
+			server.respondAfter(PROMPT_RESPONSE_MS);
+			const auth = models.getAuth("openai-1");
+			await vi.advanceTimersByTimeAsync(lateResponseMs);
+			await vi.advanceTimersByTimeAsync(PROMPT_RESPONSE_MS);
+
+			assert.equal((await auth)?.auth.apiKey, "fake-access-3");
+			assert.deepEqual(server.presented, ["rotated", "rotated"]);
 		} finally {
 			timeout.mockRestore();
 			vi.useRealTimers();
@@ -1206,9 +1332,76 @@ describe("Models runtime", () => {
 			}),
 		);
 
-		await expect(models.getAuth("p1")).rejects.toThrow(
-			"OAuth refresh failed for p1: token refresh failed (400): invalid_grant",
+		await expect(models.getAuth("p1")).rejects.toThrow("OAuth refresh failed for p1: invalid_grant");
+	});
+
+	it("tells the user to sign in again to the provider whose stored login was rejected", async () => {
+		const credentials = new InMemoryCredentialStore();
+		await credentials.modify("anthropic-2", async () => ({
+			type: "oauth",
+			access: "fake-access-1",
+			refresh: "fake-refresh-1",
+			expires: 0,
+		}));
+		const models = createModels({ credentials });
+		models.setProvider(
+			testProvider({
+				id: "anthropic-2",
+				auth: {
+					oauth: testOAuth({
+						refresh: async () => {
+							throw new Error(
+								'token refresh failed (400): {"error":"invalid_grant","error_description":"Refresh token not found or invalid"}',
+							);
+						},
+					}),
+				},
+			}),
 		);
+
+		await assert.rejects(models.getAuth("anthropic-2"), (error: Error) => {
+			assert.match(error.message, /^OAuth refresh failed for anthropic-2: invalid_grant/);
+			assert.match(error.message, /Refresh token not found or invalid/);
+			assert.match(error.message, /run \/login anthropic-2 to sign in again/);
+			return true;
+		});
+	});
+
+	it("keeps request bodies, URLs and tokens out of a rejected-login message", async () => {
+		const token = "fake-secret-refresh-7f3a9c";
+		const credentials = new InMemoryCredentialStore();
+		await credentials.modify("openai-1", async () => ({ type: "oauth", access: "old", refresh: token, expires: 0 }));
+		const models = createModels({ credentials });
+		models.setProvider(
+			testProvider({
+				id: "openai-1",
+				auth: {
+					oauth: testOAuth({
+						refresh: async () => {
+							throw new Error(
+								`HTTP request failed. status=400; url=https://auth.example.test/token?refresh_token=${token}; ` +
+									`body={"error":"invalid_grant","error_description":"Refresh token ${token} not found","refresh_token":"${token}"}`,
+								{ cause: new Error(`request body: grant_type=refresh_token&refresh_token=${token}`) },
+							);
+						},
+					}),
+				},
+			}),
+		);
+
+		await assert.rejects(models.getAuth("openai-1"), (error: Error) => {
+			const shown: string[] = [];
+			for (let current: unknown = error; current instanceof Error; current = current.cause) {
+				shown.push(current.message, String(current));
+			}
+			assert.equal(
+				shown.some((text) => text.includes(token)),
+				false,
+			);
+			assert.match(error.message, /^OAuth refresh failed for openai-1: invalid_grant/);
+			assert.match(error.message, /run \/login openai-1 to sign in again/);
+			return true;
+		});
 	});
 
 	it("wraps api-key auth failures in ModelsError", async () => {

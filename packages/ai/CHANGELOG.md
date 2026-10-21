@@ -4,6 +4,11 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Fixed
+
+- `refreshStoredOAuthCredential()` no longer aborts a token exchange when its caller stops waiting. A token rotation that completes after the 60-second refresh timeout is now saved instead of leaving the replaced refresh token stored. The refresh keeps the credential lock until the exchange settles, for up to `OAUTH_REFRESH_LOCK_HOLD_MS`, so no other refresh presents the token it may already have rotated. When the provider rejects a refresh, it returns a newer credential that another process has saved. A refresh rejected with `invalid_grant` reports only the provider's error code and description, never request URLs, bodies, or tokens, followed by an instruction to run `/login <provider>`. `OAUTH_REFRESH_TIMEOUT_MS` and `OAUTH_REFRESH_LOCK_HOLD_MS` are exported.
+- Anthropic OAuth no longer cuts off a token refresh request after 30 seconds, because the provider may already have rotated the refresh token. The 30-second limit still applies to the login code exchange.
+
 ## [0.9.40] - 2026-10-20
 
 ### Breaking Changes

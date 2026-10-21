@@ -51,9 +51,9 @@ Type `/logout ` to autocomplete providers with stored credentials, or use `/logo
 
 Atomic refreshes a stored OAuth token when fewer than **five minutes** of validity remain, so a long turn does not start with a token about to expire. Tokens outside this window are untouched.
 
-Concurrent sessions sharing `auth.json`, including workflow stages and subagents, coordinate token refresh rather than rotating the same credential independently.
+Concurrent sessions sharing `auth.json`, including workflow stages and subagents, coordinate token refresh rather than rotating the same credential independently. This holds when a session is slow or briefly unresponsive under heavy load. If a refresh reports a timeout, the token exchange keeps running and its result is saved when it arrives. Retry the request instead of signing in again.
 
-Running sessions pick up changes to `auth.json` made by another Atomic window, `atomic auth`, or another process's token refresh without restarting. This applies to extension-provided OAuth too. Refresh runs automatically through the shared credential store; a failed refresh is reported as an OAuth error rather than starting a new login flow. Sign in again with `/login <provider>` if the provider has revoked access.
+Running sessions pick up changes to `auth.json` made by another Atomic window, `atomic auth`, or another process's token refresh without restarting. This applies to extension-provided OAuth too. Refresh runs automatically through the shared credential store; a failed refresh is reported as an OAuth error rather than starting a new login flow. If the provider rejects the stored refresh token (`invalid_grant`), Atomic first uses a newer login that another session saved. When there is none, the error names the provider and tells you to run `/login <provider>`, because the provider has revoked or expired that login.
 
 If a chat request is rejected with HTTP 401 or an invalid/revoked-token error before any response content arrives, Atomic rereads credentials and retries once only if the effective credential changed. It does not repeatedly retry the same rejected token or replay a partially delivered response. Explicit request credentials and runtime API-key overrides still take precedence over the auth file.
 

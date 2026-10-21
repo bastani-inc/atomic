@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Credential } from "@bastani/pi-ai";
+import { type Credential, OAUTH_REFRESH_TIMEOUT_MS } from "@bastani/pi-ai";
 import {
 	chmodSync,
 	existsSync,
@@ -32,6 +32,24 @@ const AUTH_DELETE_LOCK_RETRY_OPTIONS = {
 	maxTimeout: 2_000,
 	randomize: true,
 } as const;
+
+/** How often a provider lock holder refreshes the lock's heartbeat (its mtime). */
+const PROVIDER_LOCK_HEARTBEAT_MS = 2_000;
+
+/**
+ * Another process takes over a provider lock only once the holder has missed heartbeats for this long:
+ * a whole OAuth refresh plus the same again of event-loop lag. A waiter therefore never exchanges a
+ * refresh token that a live, merely slow holder is still rotating.
+ */
+const PROVIDER_LOCK_STALE_MS = 2 * OAUTH_REFRESH_TIMEOUT_MS + PROVIDER_LOCK_HEARTBEAT_MS;
+
+/** The result of a provider transaction may be a completed token rotation, so a lost or busy auth file lock retries its commit. */
+const PROVIDER_COMMIT_ATTEMPTS = 3;
+
+function isLockContention(error: unknown): boolean {
+	const code = error instanceof Error && "code" in error ? error.code : undefined;
+	return code === "ECOMPROMISED" || code === "ELOCKED";
+}
 
 function describeFileVersion(path: string): string {
 	try {
@@ -90,7 +108,8 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		const release = await lockfile.lock(providerPath, {
 			realpath: false,
 			retries: { retries: 10, factor: 2, minTimeout: 100, maxTimeout: 10000, randomize: true },
-			stale: 30000,
+			stale: PROVIDER_LOCK_STALE_MS,
+			update: PROVIDER_LOCK_HEARTBEAT_MS,
 			onCompromised: (error) => {
 				compromised = error;
 			},
@@ -101,10 +120,12 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 			const originalData = JSON.parse(this.readMergedAuth() ?? "{}") as AuthStorageData;
 			const original = JSON.stringify(originalData[provider]);
 			const next = await fn(originalData[provider]);
-			if (compromised) throw compromised;
-			return await this.withLockAsync(async (content) => {
+			// Even when another process took over the provider lock meanwhile, `next` may be a token rotation the
+			// provider already completed. It is committed only if the stored credential is still the one it replaces.
+			const commit = async (
+				content: string | undefined,
+			): Promise<LockResult<LockResult<Credential | undefined>>> => {
 				signal?.throwIfAborted();
-				if (compromised) throw compromised;
 				const current = JSON.parse(content ?? "{}") as AuthStorageData;
 				if (next !== undefined && JSON.stringify(current[provider]) === original) {
 					const merged = JSON.stringify({ ...current, [provider]: next }, null, 2);
@@ -116,7 +137,14 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 						next: content,
 					},
 				};
-			});
+			};
+			for (let attempt = 1; ; attempt++) {
+				try {
+					return await this.withLockAsync(commit);
+				} catch (error) {
+					if (attempt >= PROVIDER_COMMIT_ATTEMPTS || !isLockContention(error)) throw error;
+				}
+			}
 		} finally {
 			await release().catch(() => undefined);
 		}

@@ -114,6 +114,35 @@ describe.sequential("Anthropic OAuth", () => {
 		assert.equal(fetchMock.mock.calls.length, 1);
 	});
 
+	it("does not cut off a refresh token exchange the server may already have processed", async () => {
+		const timeout = vi
+			.spyOn(AbortSignal, "timeout")
+			.mockImplementation(() => AbortSignal.abort(new DOMException("The operation timed out.", "TimeoutError")));
+		let exchangeAborted: boolean | undefined;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_input: unknown, init?: RequestInit): Promise<Response> => {
+				exchangeAborted = init?.signal?.aborted;
+				return jsonResponse({
+					access_token: "new-access-token",
+					refresh_token: "new-refresh-token",
+					expires_in: 3600,
+				});
+			}),
+		);
+		try {
+			const credentials = await anthropicOAuth.refresh(
+				{ type: "oauth", access: "old-access-token", refresh: "refresh-token", expires: 0 },
+				neverAbortedSignal,
+			);
+
+			assert.equal(exchangeAborted, false);
+			assert.equal(credentials.refresh, "new-refresh-token");
+		} finally {
+			timeout.mockRestore();
+		}
+	});
+
 	it("manual browser prompt is aborted after settling (#10194)", async () => {
 		const fetchMock = vi.fn(async (input: unknown): Promise<Response> => {
 			const url = typeof input === "string" ? input : String(input);

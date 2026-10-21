@@ -76,6 +76,8 @@ import { normalizeContext } from "./utils/transcript.ts";
 export {
 	ModelsError,
 	type ModelsErrorCode,
+	OAUTH_REFRESH_LOCK_HOLD_MS,
+	OAUTH_REFRESH_TIMEOUT_MS,
 	REQUEST_AUTH_PREPARATION_TIMEOUT_MS,
 	requestAuthTimeoutMessage,
 } from "./auth/resolve.ts";
