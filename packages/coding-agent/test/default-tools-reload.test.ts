@@ -251,8 +251,7 @@ test("resume restores the recorded built-in and extension loadout (#10785)", asy
 	assert.deepEqual(session.getActiveToolNames().sort(), ["inactive_tool", "ls", "read"]);
 });
 
-// #11062
-test("resume activates extension tools the transcript never added or removed", async () => {
+test("resume activates extension tools the transcript never added or removed (#11062)", async () => {
 	// Tools registered inactive stay inactive.
 	const session = await createFileSession({
 		sessionManager: await recordedSession(["read", "ls"]),
@@ -270,8 +269,7 @@ test("resume keeps tools removed before a compaction inactive (#11062)", async (
 	assert.deepEqual(session.getActiveToolNames().sort(), ["inactive_tool", "ls", "read"]);
 });
 
-// #11075
-test("tree navigation restores the target branch's loadout", async () => {
+test("tree navigation restores the target branch's loadout (#11075)", async () => {
 	// The target branch never mentions active_tool, so it is active there. It removed ls.
 	const sessionManager = await recordedSession(["read", "ls"]);
 	await recordLoadoutChange(sessionManager, [], ["ls"]);
@@ -567,8 +565,7 @@ for (const activate of [false, true]) {
 	}
 }
 
-// #11062
-test("startup completion activates extension tools the transcript never mentioned", async () => {
+test("startup completion activates extension tools the transcript never mentioned (#11062)", async () => {
 	// Resuming after installing the extension: the recording predates its tools, and the branch removed removed_probe.
 	const sessionManager = await recordedSession(["read", "ls", "startup_probe", "removed_probe"]);
 	await recordLoadoutChange(sessionManager, [], ["removed_probe"]);
