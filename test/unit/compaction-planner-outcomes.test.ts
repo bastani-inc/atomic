@@ -262,6 +262,22 @@ test("the full explicit 5xx class is rate limiting, and neighbours are not", asy
 	}
 });
 
+test("429 is rate limiting only as a standalone number (#11057)", async () => {
+	const cases: Array<[string, string]> = [
+		["HTTP 429", "rateLimited"],
+		["request failed (429)", "rateLimited"],
+		[
+			'401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"},"request_id":"req_011CU429xyz"}',
+			"providerError",
+		],
+		["400 image exceeds 5 MB maximum: 4291 bytes", "providerError"],
+	];
+	for (const [message, kind] of cases) {
+		const { outcome } = await plan({ default: [{ errorMessage: message }] });
+		assert.equal(outcome.kind, kind, `"${message}" classified as ${outcome.kind}`);
+	}
+});
+
 test("exhausted is false when the retry budget was never spent", async () => {
 	// Retry disabled: one 429 request schedules nothing.
 	const stream = scriptedStream({ default: [{ errorMessage: "429 Too Many Requests" }] });

@@ -96,7 +96,8 @@ const RATE_LIMITED_PATTERN = buildProviderErrorPattern([
 	"overloaded",
 	"rate.?limit",
 	"too many requests",
-	"429",
+	// Not part of a longer word or number, such as a request id or byte count; pi-ai matches it the same way.
+	"(?<![a-z0-9])429(?![a-z0-9])",
 	"service.?unavailable",
 	"server.?error",
 	"internal.?error",

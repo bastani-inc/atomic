@@ -36,14 +36,9 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"model is at capacity",
 	"rate.?limit",
 	"too many requests",
-	"429",
-	"500",
-	"502",
-	"503",
-	"504",
-	"520",
-	"\\b52[1-3]\\b",
-	"524",
+	// Status codes must not be part of a longer word or number, e.g. a request id or byte count (#11057).
+	// 521-523 are Cloudflare origin errors (#3623).
+	"(?<![a-z0-9])(?:429|500|502|503|504|52[0-4])(?![a-z0-9])",
 	// Also matches "The service is temporarily unavailable" (#10965).
 	"service.?(?:is.?)?(?:temporarily.?)?unavailable",
 	"server.?error",
