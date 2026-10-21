@@ -201,6 +201,21 @@ function resolveCandidate(
 	throw new Error(`Structured output model is unavailable or not a chat or classifier model: ${id}`);
 }
 
+type CandidateResolution =
+	| { readonly candidate: StructuredOutputModel }
+	| { readonly id: string; readonly failure: Error };
+
+function resolveCandidateOutcome(
+	id: string,
+	request: Pick<StructuredOutputRequest<TSchema>, "currentModel" | "modelRegistry">,
+): CandidateResolution {
+	try {
+		return { candidate: resolveCandidate(id, request) };
+	} catch (error) {
+		return { id, failure: error instanceof Error ? error : new Error(String(error)) };
+	}
+}
+
 class ClassifierDecisionError extends Error {
 	/** Status and error type only; provider bodies can echo private state. */
 	readonly detail?: string;
@@ -293,12 +308,19 @@ export async function generateStructuredOutput<T extends TSchema>(
 		...(current ? [`${current.provider}/${current.id}`] : []),
 	];
 	if (!ids[0]) throw new Error("Structured output requires model or currentModel.");
-	const selected = [...new Set(ids)].map((id) => resolveCandidate(id, request));
+	const resolutions = [...new Set(ids)].map((id) => resolveCandidateOutcome(id, request));
+	const resolutionFailures = resolutions.filter((resolution) => "failure" in resolution);
+	if (resolutionFailures.length === resolutions.length) throw resolutionFailures[0].failure;
 	const choices = compileChoiceSchema(snapshot.schema);
 	const modelAttempts: ModelAttempt[] = [];
 	let lastDiagnostic: Error | undefined;
-	for (const candidate of selected) {
+	for (const resolution of resolutions) {
 		assertNotCancelled(request.signal);
+		if ("failure" in resolution) {
+			modelAttempts.push({ model: resolution.id, error: resolution.failure.message });
+			continue;
+		}
+		const candidate = resolution.candidate;
 		if (candidate.kind === "classifier" && !choices) {
 			modelAttempts.push({
 				model: candidate.fullId,
