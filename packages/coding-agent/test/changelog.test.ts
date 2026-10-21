@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { describe, expect, test } from "vitest";
 import { type ChangelogEntry, getChangelogHighlights, normalizeChangelogLinks } from "../src/utils/changelog.ts";
 
@@ -66,20 +67,21 @@ describe("getChangelogHighlights", () => {
 			"- detailed entry",
 		].join("\n");
 
-		expect(getChangelogHighlights(withContent(content))).toBe(
+		assert.equal(
+			getChangelogHighlights(withContent(content)),
 			"Calmer, faster sessions.\n\n- **Quicker start:** boots sooner. ([#1](https://github.com/bastani-inc/atomic/pull/1))",
 		);
 	});
 
 	test("returns undefined when the entry opens straight into sections (#3804)", () => {
-		expect(getChangelogHighlights(withContent("## [0.79.0]\n\n### Fixed\n\n- a fix"))).toBeUndefined();
+		assert.equal(getChangelogHighlights(withContent("## [0.79.0]\n\n### Fixed\n\n- a fix")), undefined);
 	});
 
 	test("returns undefined for a heading-only entry (#3804)", () => {
-		expect(getChangelogHighlights(withContent("## [0.79.0]"))).toBeUndefined();
+		assert.equal(getChangelogHighlights(withContent("## [0.79.0]")), undefined);
 	});
 
 	test("returns the whole body when the entry has no sections (#3804)", () => {
-		expect(getChangelogHighlights(withContent("## [0.79.0]\n\nOnly a summary.\n"))).toBe("Only a summary.");
+		assert.equal(getChangelogHighlights(withContent("## [0.79.0]\n\nOnly a summary.\n")), "Only a summary.");
 	});
 });
