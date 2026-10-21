@@ -14,6 +14,7 @@ import { getDefaultCacheRetention } from "./cache-retention.ts";
 import { CacheWarmer } from "./cache-warmer.ts";
 import { inheritChildSessionOptions } from "./child-session-options.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
+import { startupCleanupFailureMessage } from "./extension-startup-failure.ts";
 import type { ExtensionRunner } from "./extensions/index.js";
 import {
 	factoryAcquisitions,
@@ -727,8 +728,13 @@ async function constructAgentSession(
 			providerRollback.commit(),
 		]);
 		const cleanupErrors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
-		if (cleanupErrors.length)
-			throw new AggregateError([error, ...cleanupErrors], "Extension startup failed and rollback reported errors");
+		if (cleanupErrors.length) {
+			const errors = [error, ...cleanupErrors];
+			throw new AggregateError(
+				errors,
+				startupCleanupFailureMessage("Extension startup failed and rollback reported errors", errors),
+			);
+		}
 		throw error;
 	});
 	if (acquisition.store) {

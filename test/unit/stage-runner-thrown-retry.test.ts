@@ -1,4 +1,5 @@
 import { describe, test, vi } from "vitest";
+import { ExtensionStartupError } from "../../packages/coding-agent/src/core/extension-startup-failure.js";
 import { nextRetryDecision as codingAgentNextRetryDecision } from "../../packages/coding-agent/src/core/retry-policy.js";
 import type {
 	AgentSessionAdapter,
@@ -985,6 +986,72 @@ describe("createStageContext — eager session creation walks the candidate chai
 
 		assert.deepEqual(created, ["anthropic/primary", "anthropic/primary", "anthropic/primary", "openai/fallback"]);
 		assert.equal(await ctx.prompt("go"), "fallback answer");
+	});
+
+	test("an eagerly created session retries a transient extension startup failure, then advances", async () => {
+		const created: string[] = [];
+		const settings = retrySettings();
+		const agentSession: AgentSessionAdapter = {
+			async create(options) {
+				const model = modelFor(options);
+				created.push(model);
+				if (model === "anthropic/primary")
+					throw new ExtensionStartupError([
+						{
+							extensionPath: "intercom",
+							event: "session_start",
+							message: "Broker failed to start within timeout",
+						},
+					]);
+				return sessionWithSettings(settings, async () => "fallback answer", {
+					getLastAssistantText: () => "fallback answer",
+				});
+			},
+		};
+		const ctx = createStageContext(
+			makeOpts({
+				adapters: { agentSession },
+				stageOptions: {
+					model: "anthropic/primary",
+					fallbackModels: ["openai/fallback"],
+					settingsManager: eagerSettingsManager(settings) as never,
+				},
+			}),
+		) as InternalStageContext;
+
+		await ctx.__ensureSession();
+
+		assert.deepEqual(created, ["anthropic/primary", "anthropic/primary", "anthropic/primary", "openai/fallback"]);
+		assert.equal(
+			ctx.__modelFallbackMeta().modelAttempts?.[0]?.error,
+			"Extension startup failed: intercom: Broker failed to start within timeout",
+		);
+	});
+
+	test("an eagerly created session stops at a deterministic extension startup failure", async () => {
+		const created: string[] = [];
+		const settings = retrySettings();
+		const agentSession: AgentSessionAdapter = {
+			async create(options) {
+				created.push(modelFor(options));
+				throw new ExtensionStartupError([
+					{ extensionPath: "broken", event: "session_start", message: "config.servers is not iterable" },
+				]);
+			},
+		};
+		const ctx = createStageContext(
+			makeOpts({
+				adapters: { agentSession },
+				stageOptions: {
+					model: "anthropic/primary",
+					fallbackModels: ["openai/fallback"],
+					settingsManager: eagerSettingsManager(settings) as never,
+				},
+			}),
+		) as InternalStageContext;
+
+		await assert.rejects(ctx.__ensureSession(), /Extension startup failed: broken: config\.servers is not iterable/);
+		assert.deepEqual(created, ["anthropic/primary"]);
 	});
 
 	// #3020: joining a replacement candidate must not change fresh-walk behavior after terminal failure.

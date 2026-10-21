@@ -7,6 +7,11 @@ import { preservesInitialToolLoadout } from "./agent-session-state.ts";
 import { replaceSessionTaskOwner } from "./agent-session-tasks.js";
 import type { AgentSessionReloadOptions, ExtensionBindings } from "./agent-session-types.js";
 import { generateWorkflowSummary } from "./compaction/session-summarization.ts";
+import {
+	ExtensionStartupError,
+	type ExtensionStartupFailure,
+	startupCleanupFailureMessage,
+} from "./extension-startup-failure.ts";
 import { hostInputError } from "./extensions/host-input.js";
 import { ExtensionRunner } from "./extensions/index.js";
 import {
@@ -214,17 +219,17 @@ function startExtensions(
 	if (existing) return finalize ? existing.then(finalize) : existing;
 	const start = trackSessionWork(session, () =>
 		Promise.resolve().then(async () => {
-			const failures: Error[] = [];
+			const failures: ExtensionStartupFailure[] = [];
 			const unsubscribe = runner.onError((error) => {
 				if (error.event === "session_start" || error.event === "resources_discover") {
-					failures.push(new Error(`${error.extensionPath}: ${error.error}`));
+					failures.push({ extensionPath: error.extensionPath, event: error.event, message: error.error });
 				}
 			});
 			try {
 				if (session._extensionProviderIds.size > 0) await session.refreshCurrentModelFromRegistry();
 				await runner.emit(event);
 				await extendRunnerResources(session, runner, loader, event.reason === "reload" ? "reload" : "startup");
-				if (failures.length) throw new AggregateError(failures, "Extension startup failed");
+				if (failures.length) throw new ExtensionStartupError(failures);
 				await finalize?.();
 				if (runner === session.extensionRunner) runner.reportUnhandledMcpServers();
 				completeStartup(runner);
@@ -238,9 +243,11 @@ function startExtensions(
 			try {
 				if (!hasSessionReload(session)) await session.dispose();
 			} catch (cleanupError) {
-				throw Object.assign(new AggregateError([cause, cleanupError], "Extension startup and cleanup failed"), {
-					code: "ShutdownFailed",
-				});
+				const errors = [cause, cleanupError];
+				throw Object.assign(
+					new AggregateError(errors, startupCleanupFailureMessage("Extension startup and cleanup failed", errors)),
+					{ code: "ShutdownFailed" },
+				);
 			}
 			throw cause;
 		});

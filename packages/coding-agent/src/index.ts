@@ -199,6 +199,12 @@ export {
 export { areExperimentalFeaturesEnabled } from "./core/experimental.ts";
 export { sessionScopedExtensionState } from "./core/extension-session-state.ts";
 export {
+	ExtensionStartupError,
+	type ExtensionStartupFailure,
+	isExtensionStartupFailure,
+	isTransientExtensionStartupFailure,
+} from "./core/extension-startup-failure.ts";
+export {
 	getModelFastRoute,
 	resolveUpstreamModelId,
 	usesChatGptCodexTransport,

@@ -38,6 +38,16 @@ export class StageSessionReplacement {
 		await Promise.allSettled([...(previous ? [disposeStageSession(previous)] : []), ...this.cleanups]);
 	}
 
+	/** A walk that ends without a successor leaves the retired session unowned, so it closes now. */
+	async disposeRetired(): Promise<void> {
+		const previous = this.previous;
+		this.previous = undefined;
+		if (!previous) return;
+		await disposeStageSession(previous).catch((error: unknown) => {
+			console.error("atomic-workflows: retired stage session disposal failed", error);
+		});
+	}
+
 	private async disposeAfterIdle(session: StageSessionRuntime): Promise<void> {
 		const agent = session.agent as { waitForIdle?: () => Promise<void> } | undefined;
 		if (typeof agent?.waitForIdle === "function") await agent.waitForIdle();

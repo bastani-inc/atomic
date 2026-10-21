@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
+import { ExtensionStartupError } from "../../packages/coding-agent/src/core/extension-startup-failure.js";
 import {
 	isRetryableModelFailure as subagentsIsRetryable,
 	normalizeModelFailureSignal as subagentsNormalize,
@@ -367,6 +368,30 @@ const CONFORMANCE_FIXTURES: readonly Fixture[] = [
 	{
 		label: "unknown structured failure",
 		failure: { message: "something inexplicable happened" },
+		kind: "unknown",
+		retryable: false,
+	},
+	// Extension startup is not a model request, even when the extension path and
+	// its error read like a provider outage.
+	{
+		label: "extension startup failure naming a provider-like extension error",
+		failure: new ExtensionStartupError([
+			{ extensionPath: "/ext/oauth-fetch/index.ts", event: "session_start", message: "socket timeout 503" },
+		]),
+		kind: "unknown",
+		retryable: false,
+	},
+	{
+		label: "extension startup failure wrapped with rollback errors",
+		failure: new AggregateError(
+			[
+				new ExtensionStartupError([
+					{ extensionPath: "/ext/intercom/index.ts", event: "session_start", message: "connect ECONNREFUSED" },
+				]),
+				new Error("network unreachable during rollback"),
+			],
+			"Extension startup failed and rollback reported errors: rate limit",
+		),
 		kind: "unknown",
 		retryable: false,
 	},

@@ -7,6 +7,8 @@
  * expose it to the raw-TypeScript companion packages without a cycle.
  */
 
+import { isExtensionStartupFailure } from "./extension-startup-failure.ts";
+
 const RETRYABLE_MODEL_FAILURE_PATTERNS: readonly RegExp[] = [
 	/rate\s*limit/i,
 	/too\s*many\s*requests/i,
@@ -644,6 +646,17 @@ export function errorMessage(error: unknown): string {
 export const modelFailureMessage = errorMessage;
 
 export function normalizeModelFailureSignal(error: unknown): ModelFallbackFailureSignal {
+	// Extension startup is not a model request. Its message names extension paths
+	// and their own errors, which must not read as a provider failure.
+	if (isExtensionStartupFailure(error)) {
+		const name = errorName(error);
+		return {
+			kind: "unknown",
+			message: errorMessage(error),
+			source: "string_fallback",
+			...(name !== undefined ? { name } : {}),
+		};
+	}
 	const structured = structuredSignal(error, new Set());
 	if (structured !== undefined) return structured;
 	const message = errorMessage(error);

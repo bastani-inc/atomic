@@ -3,7 +3,9 @@ import {
 	AutoRoutingInferenceError,
 	type CreateAgentSessionOptions,
 	convertToLlm,
+	isExtensionStartupFailure,
 	isModelRoutingDebugEnabled,
+	isTransientExtensionStartupFailure,
 	type ModelConstraints,
 	type ModelRoute,
 	type PromptOptions,
@@ -103,6 +105,22 @@ export const WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE = "atomic:workflow-stage-close
 export const WORKFLOW_STAGE_END_CHILDREN_STATE = "atomic:workflow-stage-end-children";
 
 type RetryPauseResume = NonNullable<ReturnType<StageSessionPause["currentResume"]>>;
+
+/**
+ * Extension startup is not a model request: the model classifiers never decide it.
+ * A transient one (a broker or socket that did not come up in time under load) is
+ * worth a fresh session, first on the same candidate and then on the next. A
+ * deterministic one fails identically for every candidate, so it ends the stage.
+ */
+function isRetryableSameCandidateFailure(error: unknown): boolean {
+	if (isExtensionStartupFailure(error)) return isTransientExtensionStartupFailure(error);
+	return isRetryableSameModelFailure(error);
+}
+
+function mayAdvanceToNextCandidate(error: unknown): boolean {
+	if (isExtensionStartupFailure(error)) return isTransientExtensionStartupFailure(error);
+	return isRetryableModelFailure(error);
+}
 
 type StageMessage = StageSessionRuntime["messages"][number];
 type StageAssistantMessage = Extract<StageMessage, { role: "assistant" }>;
@@ -1518,7 +1536,7 @@ export class StageSessionController {
 				// independent of what the shared model-failure classifier makes of it.
 				const decision = isWorkflowPendingStageDeliveryFailure(error)
 					? undefined
-					: nextRetryDecision(this.retrySettings(), retryAttempt, isRetryableSameModelFailure(error));
+					: nextRetryDecision(this.retrySettings(), retryAttempt, isRetryableSameCandidateFailure(error));
 				if (
 					decision === undefined ||
 					this.disposed ||
@@ -2008,12 +2026,15 @@ export class StageSessionController {
 			this.opts.signal?.aborted ||
 			this.startupWait.signal.aborted ||
 			terminalStageDelivery ||
-			!isRetryableModelFailure(err) ||
+			!mayAdvanceToNextCandidate(err) ||
 			index === candidates.length - 1
 		) {
 			this.modelWarnings.push(...this.pendingFallbackWarnings);
 			this.pendingFallbackWarnings.length = 0;
 			this.notifyModelFallbackMetaChange();
+			// No successor will adopt the session retired for this candidate, so close
+			// it before the stage settles rather than leave its store open.
+			await this.replacement.disposeRetired();
 			return "throw";
 		}
 		const nextCandidate = candidates[index + 1]!;
