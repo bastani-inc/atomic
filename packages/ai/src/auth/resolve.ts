@@ -229,14 +229,40 @@ function describeRejectedLogin(error: unknown, presented: OAuthCredential): stri
 	return undefined;
 }
 
+/**
+ * Per provider, why the last late rotation could not be saved: only the save error's `code` or `name`, never its
+ * message, which may contain paths or tokens. Cleared by a later save or rotation, or once a refresh failure reports it.
+ */
+const unsavedLateRotations = new Map<string, string>();
+
+function safeSaveErrorReason(error: unknown): string {
+	if (error instanceof Error) {
+		const code = "code" in error ? error.code : undefined;
+		return typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? code : error.name;
+	}
+	return "unknown error";
+}
+
+/** The sentence explaining a lost late rotation for `providerId`, reported once. */
+function takeUnsavedLateRotationNote(providerId: string): string {
+	const reason = unsavedLateRotations.get(providerId);
+	if (reason === undefined) return "";
+	unsavedLateRotations.delete(providerId);
+	return ` An earlier refresh for ${providerId} succeeded, but its new login could not be saved (${reason}).`;
+}
+
 function oauthRefreshFailure(providerId: string, error: unknown, presented: OAuthCredential): ModelsError {
 	const rejectedLogin = describeRejectedLogin(error, presented);
+	const unsavedNote = takeUnsavedLateRotationNote(providerId);
 	if (rejectedLogin === undefined) {
-		return new ModelsError("oauth", `OAuth refresh failed for ${providerId}`, { cause: error });
+		const message = unsavedNote
+			? `OAuth refresh failed for ${providerId}.${unsavedNote}`
+			: `OAuth refresh failed for ${providerId}`;
+		return new ModelsError("oauth", message, { cause: error });
 	}
 	return new ModelsError(
 		"oauth",
-		`OAuth refresh failed for ${providerId}: ${rejectedLogin}. The provider rejected the stored login; run /login ${providerId} to sign in again.`,
+		`OAuth refresh failed for ${providerId}: ${rejectedLogin}. The provider rejected the stored login; run /login ${providerId} to sign in again.${unsavedNote}`,
 	);
 }
 
@@ -249,12 +275,23 @@ function persistLateRotation(
 ): void {
 	const settled = trackTokenExchange();
 	void rotation
-		.then((late) =>
-			credentials.modify(providerId, async (current) =>
-				current?.type === "oauth" && current.refresh === rotatedFrom.refresh ? late : undefined,
-			),
+		.then(
+			(late) =>
+				credentials
+					.modify(providerId, async (current) =>
+						current?.type === "oauth" && current.refresh === rotatedFrom.refresh ? late : undefined,
+					)
+					.then(
+						() => {
+							unsavedLateRotations.delete(providerId);
+						},
+						(saveError: unknown) => {
+							unsavedLateRotations.set(providerId, safeSaveErrorReason(saveError));
+						},
+					),
+			// The exchange itself failed: nothing was rotated that could be lost.
+			() => undefined,
 		)
-		.catch(() => undefined)
 		.finally(settled);
 }
 
@@ -328,7 +365,9 @@ export async function refreshStoredOAuthCredential(
 				if (!needsRefresh(current)) return undefined;
 				try {
 					exchangeSettled ??= trackTokenExchange();
-					return await rotateOAuthCredential(credentials, providerId, oauth, current, stopCallerWaiting);
+					const rotated = await rotateOAuthCredential(credentials, providerId, oauth, current, stopCallerWaiting);
+					unsavedLateRotations.delete(providerId);
+					return rotated;
 				} catch (error) {
 					const newer = await readNewerOAuthCredential(credentials, providerId, current);
 					if (newer) return newer;
