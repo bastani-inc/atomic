@@ -1,9 +1,14 @@
 import { basename, dirname } from "node:path";
-import { getCurrentSystemMessage, type Provider } from "@bastani/pi-ai";
+import type { Provider } from "@bastani/pi-ai";
 import { clampThinkingLevel, resetApiProviders } from "@bastani/pi-ai/compat";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { executeNestedToolCall, getCallableTools } from "./agent-session-nested-tools.js";
-import { preservesInitialToolLoadout } from "./agent-session-state.ts";
+import {
+	activatesAfterRecordedLoadout,
+	preservesInitialToolLoadout,
+	type RecordedToolLoadout,
+	recordedToolLoadout,
+} from "./agent-session-state.ts";
 import { replaceSessionTaskOwner } from "./agent-session-tasks.js";
 import type { AgentSessionReloadOptions, ExtensionBindings } from "./agent-session-types.js";
 import { generateWorkflowSummary } from "./compaction/session-summarization.ts";
@@ -393,6 +398,7 @@ export function _bindExtensionCore(
 	runner: ExtensionRunner,
 	publication?: ExtensionPublicationGate,
 	startupToolNames?: readonly string[],
+	startupLoadout?: RecordedToolLoadout,
 ): void {
 	runner.bindWorkOwner(this);
 	if (publication) {
@@ -437,9 +443,12 @@ export function _bindExtensionCore(
 		const definitions = candidateDefinitions();
 		for (const [name, { definition }] of definitions) {
 			if (
-				startupToolNames === undefined &&
 				!candidateRegistryNames.has(name) &&
-				activatesOnRegistration(this, name, definition, this._toolRegistry.has(name))
+				(startupLoadout
+					? activatesAfterRecordedLoadout(this, startupLoadout, name, definition) &&
+						applyToolModifiers([name], this._defaultToolModifiers).includes(name)
+					: startupToolNames === undefined &&
+						activatesOnRegistration(this, name, definition, this._toolRegistry.has(name)))
 			)
 				candidateActiveTools.push(name);
 			candidateRegistryNames.add(name);
@@ -926,17 +935,14 @@ async function reloadOwnedGeneration(
 			throw Object.assign(new AggregateError(discoveryFailures, "Reload discovery cleanup failed"), {
 				code: "ShutdownFailed",
 			});
-		const recordedTools =
+		const startupLoadout =
 			reason === "startup" && this._usesDefaultTools && !preservesInitialToolLoadout(this)
-				? getCurrentSystemMessage(this.sessionManager.buildSessionContext().messages)
+				? recordedToolLoadout(this)
 				: undefined;
-		const startupToolNames = recordedTools
-			? applyToolModifiers(
-					(recordedTools.toolsAdded ?? []).map((tool) => tool.name),
-					this._defaultToolModifiers,
-				)
+		const startupToolNames = startupLoadout
+			? applyToolModifiers([...startupLoadout.current], this._defaultToolModifiers)
 			: undefined;
-		this._bindExtensionCore(candidateRunner, publication, startupToolNames);
+		this._bindExtensionCore(candidateRunner, publication, startupToolNames, startupLoadout);
 		candidateRunner.setHostBindings(
 			this._extensionHumanInput,
 			this._extensionDiagnosticListener,
@@ -1059,13 +1065,26 @@ export async function completeStartupResources(this: AgentSession, resourceLoade
 	return trackSessionWork(this, async () => {
 		this._resourceLoader = resourceLoader;
 		const startNewcomers = this._extensionRunner.attachStartupExtensions(resourceLoader.getExtensions().extensions);
+		const recorded = preservesInitialToolLoadout(this) ? undefined : recordedToolLoadout(this);
+		const knownToolNames = new Set(this._toolRegistry.keys());
 		this._buildRuntime({
+			// Keeps the tools the session activated or deactivated before startup completed.
 			activeToolNames: this.getActiveToolNames(),
-			includeAllExtensionTools:
-				preservesInitialToolLoadout(this) ||
-				getCurrentSystemMessage(this.sessionManager.buildSessionContext().messages) === undefined,
+			includeAllExtensionTools: !recorded,
 			preserveRunner: true,
 		});
+		if (recorded) {
+			// Tools this completion registers for the first time were registered after the branch recorded its
+			// loadout, like extensions installed after it: they activate unless the branch mentioned them, as in
+			// `_restoreToolsFromTranscript`. Tools registered earlier keep the choices already made about them.
+			const newTools = [...this._toolRegistry.keys()].filter(
+				(name) =>
+					!knownToolNames.has(name) &&
+					activatesAfterRecordedLoadout(this, recorded, name, this._toolDefinitions.get(name)?.definition) &&
+					applyToolModifiers([name], this._defaultToolModifiers).includes(name),
+			);
+			if (newTools.length > 0) this._setActiveTools([...this.getActiveToolNames(), ...newTools]);
+		}
 		await this.refreshCurrentModelFromRegistry();
 		await startNewcomers();
 		assertSessionOpen(this);

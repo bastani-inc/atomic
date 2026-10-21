@@ -8,12 +8,14 @@ import { afterEach, beforeEach, test } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
 import { createAgentSessionFromServices, prepareAgentSessionServices } from "../src/core/agent-session-services.js";
 import { inheritChildSessionOptions } from "../src/core/child-session-options.js";
+import type { ExtensionFactory } from "../src/core/extensions/types.js";
 import { DefaultResourceLoader } from "../src/core/resource-loader.js";
 import { createAgentSession } from "../src/core/sdk.js";
 import type { CreateAgentSessionOptions } from "../src/core/sdk-types.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { getDefaultToolNames } from "../src/core/tools/index.js";
+import { appendTestCompaction } from "./verbatim-compaction-test-helpers.ts";
 
 let tempDir: string;
 let agentDir: string;
@@ -215,20 +217,86 @@ test("SDK rejects mixed tool lists and modifier patterns", async () => {
 	await assert.rejects(createFileSession({ tools: ["-mcp__docs__*"] }), /take exact tool names, not patterns/);
 });
 
-async function recordedSession(toolNames: string[]) {
-	const sessionManager = SessionManager.inMemory(tempDir);
-	await sessionManager.appendMessage({
+const toolReferences = (names: string[]) =>
+	names.map((name) => ({ name, description: name, parameters: Type.Object({}) }));
+
+/** Append a system message that adds and removes tools, as a run records loadout changes. */
+async function recordLoadoutChange(sessionManager: SessionManager, added: string[], removed: string[] = []) {
+	return await sessionManager.appendMessage({
 		role: "system",
 		content: "",
-		toolsAdded: toolNames.map((name) => ({ name, description: name, parameters: Type.Object({}) })),
+		...(added.length > 0 ? { toolsAdded: toolReferences(added) } : {}),
+		...(removed.length > 0 ? { toolsRemoved: toolReferences(removed) } : {}),
 		timestamp: Date.now(),
 	});
+}
+
+async function recordedSession(toolNames: string[]) {
+	const sessionManager = SessionManager.inMemory(tempDir);
+	await recordLoadoutChange(sessionManager, toolNames);
 	return sessionManager;
 }
+
+/** An SDK tool registered like an extension tool: default-active, and not a built-in. */
+const activeTool = {
+	name: "active_tool",
+	label: "Active",
+	description: "Fixture",
+	parameters: Type.Object({}),
+	execute: async () => ({ content: [{ type: "text" as const, text: "ok" }], details: {} }),
+};
 
 test("resume restores the recorded built-in and extension loadout (#10785)", async () => {
 	const session = await createFileSession({ sessionManager: await recordedSession(["read", "ls", "inactive_tool"]) });
 	assert.deepEqual(session.getActiveToolNames().sort(), ["inactive_tool", "ls", "read"]);
+});
+
+// #11062
+test("resume activates extension tools the transcript never added or removed", async () => {
+	// Tools registered inactive stay inactive.
+	const session = await createFileSession({
+		sessionManager: await recordedSession(["read", "ls"]),
+		customTools: [activeTool],
+	});
+	assert.deepEqual(session.getActiveToolNames().sort(), ["active_tool", "ls", "read"]);
+});
+
+test("resume keeps tools removed before a compaction inactive (#11062)", async () => {
+	const sessionManager = await recordedSession(["read", "ls", "active_tool"]);
+	await recordLoadoutChange(sessionManager, ["inactive_tool"], ["active_tool"]);
+	await sessionManager.appendMessage({ role: "user", content: "hi", timestamp: Date.now() });
+	await appendTestCompaction(sessionManager, 1000, 500);
+	const session = await createFileSession({ sessionManager, customTools: [activeTool] });
+	assert.deepEqual(session.getActiveToolNames().sort(), ["inactive_tool", "ls", "read"]);
+});
+
+// #11075
+test("tree navigation restores the target branch's loadout", async () => {
+	// The target branch never mentions active_tool, so it is active there. It removed ls.
+	const sessionManager = await recordedSession(["read", "ls"]);
+	await recordLoadoutChange(sessionManager, [], ["ls"]);
+	const target = await sessionManager.appendMessage({ role: "user", content: "first", timestamp: Date.now() });
+	await recordLoadoutChange(sessionManager, ["ls"], ["active_tool"]);
+	const session = await createFileSession({ sessionManager, customTools: [activeTool] });
+	assert.deepEqual(session.getActiveToolNames().sort(), ["ls", "read"]);
+
+	await session.navigateTree(target, { summarize: false });
+	assert.deepEqual(session.getActiveToolNames().sort(), ["active_tool", "read"]);
+});
+
+test("tree navigation keeps registered tools outside the tools allowlist inactive", async () => {
+	// An allowlist without mcp__ entries keeps MCP tools registered but inactive.
+	const sessionManager = await recordedSession(["read"]);
+	const target = await sessionManager.appendMessage({ role: "user", content: "first", timestamp: Date.now() });
+	const session = await createFileSession({
+		sessionManager,
+		tools: ["read"],
+		customTools: [{ ...activeTool, name: "mcp__server__lookup", label: "Lookup", description: "MCP tool" }],
+	});
+	assert.deepEqual(session.getActiveToolNames(), ["read"]);
+
+	await session.navigateTree(target, { summarize: false });
+	assert.deepEqual(session.getActiveToolNames(), ["read"]);
 });
 
 test("resume applies tool modifiers to the recorded loadout (#10785)", async () => {
@@ -315,9 +383,10 @@ for (const transactional of [true, false]) {
 			);
 			assert.deepEqual(session.getActiveToolNames().sort(), modified ? ["read", "write"] : ["ls", "read"]);
 			await session.reload({ reason: "startup" });
+			// active_tool registers once the deferred extensions load, and the transcript never mentioned it.
 			assert.deepEqual(
 				session.getActiveToolNames().sort(),
-				modified ? ["read", "write"] : ["inactive_tool", "ls", "read"],
+				modified ? ["active_tool", "read", "write"] : ["active_tool", "inactive_tool", "ls", "read"],
 			);
 			await session.reload();
 			assert.ok(session.getActiveToolNames().includes("active_tool"));
@@ -366,82 +435,188 @@ for (const transactional of [true, false]) {
 			"find",
 		);
 		await session.reload({ reason: "startup" });
-		assert.deepEqual(session.getActiveToolNames().sort(), ["find", "inactive_tool", "read"]);
+		// The handler saw active_tool, which the transcript never mentioned, and kept it.
+		assert.deepEqual(session.getActiveToolNames().sort(), ["active_tool", "find", "inactive_tool", "read"]);
 	});
+}
+
+/** The builtin intercom extension registers a default-active tool, so it is active in every session. */
+const MANDATORY_RUNTIME_TOOLS = ["intercom"];
+
+interface StartupExtensionTool {
+	name: string;
+	defaultActive?: false;
+}
+
+/**
+ * A session whose project extension loads only after project trust completes, as with `-e` extensions or an
+ * unresolved trust prompt. The extension registers `tools`, records the tools its `session_start` handler sees
+ * as the session name, and activates `activate`. `earlyExtension` is already loaded when the session starts.
+ */
+async function createDeferredTrustSession(options: {
+	sessionManager: SessionManager;
+	tools: StartupExtensionTool[];
+	activate?: string[];
+	earlyExtension?: ExtensionFactory;
+	sessionOptions?: Pick<CreateAgentSessionOptions, "tools" | "excludedTools">;
+}) {
+	const extensionDir = join(tempDir, ".atomic", "extensions");
+	mkdirSync(extensionDir, { recursive: true });
+	writeFileSync(
+		join(extensionDir, "startup.ts"),
+		`export default function(pi) {
+			for (const tool of ${JSON.stringify(options.tools)}) {
+				pi.registerTool({ ...tool, label: tool.name, description: "Fixture",
+					parameters: { type: "object", properties: {} },
+					execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }) });
+			}
+			pi.on("session_start", () => {
+				pi.setSessionName(JSON.stringify(pi.getActiveTools().sort()));
+				pi.setActiveTools([...pi.getActiveTools(), ...${JSON.stringify(options.activate ?? [])}]);
+			});
+		}`,
+	);
+	const settingsManager = SettingsManager.create(tempDir, agentDir, { projectTrusted: false });
+	let completeTrust!: () => Promise<void>;
+	const completeServices = await prepareAgentSessionServices({
+		cwd: tempDir,
+		agentDir,
+		settingsManager,
+		resourceLoaderOptions: {
+			builtinPackagePaths: [],
+			extensionFactories: options.earlyExtension ? [options.earlyExtension] : [],
+			noSkills: true,
+			noThemes: true,
+			noPromptTemplates: true,
+			noContextFiles: true,
+		},
+		resourceLoaderReloadOptions: {
+			deferProjectTrust: (complete) => {
+				completeTrust = complete;
+			},
+			resolveProjectTrust: () => true,
+		},
+	});
+	const { session } = await createAgentSessionFromServices({
+		services: await completeServices(),
+		model: getModel("anthropic", "claude-sonnet-4-5"),
+		sessionManager: options.sessionManager,
+		...options.sessionOptions,
+	});
+	sessions.push(session);
+	return {
+		session,
+		/** Complete project trust and startup, then return the tools the extension's `session_start` saw. */
+		async completeStartup() {
+			await completeTrust();
+			await session.completeStartupResources((await completeServices()).resourceLoader);
+			return JSON.parse(session.sessionManager.getSessionName() ?? "null") as string[] | null;
+		},
+	};
 }
 
 for (const activate of [false, true]) {
 	for (const safeChange of ["none", "activate", "deactivate"] as const) {
 		test(`startup completion preserves tool choices, activation=${activate}, safeChange=${safeChange} (#3624)`, async () => {
-			const extensionDir = join(tempDir, ".atomic", "extensions");
-			mkdirSync(extensionDir, { recursive: true });
-			writeFileSync(
-				join(extensionDir, "startup.ts"),
-				`export default function(pi) {
-				for (const name of ["startup_probe", "newcomer_probe"]) {
-					pi.registerTool({ name, label: name, description: "Fixture",
-						parameters: { type: "object", properties: {} },
-						execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }) });
-				}
-				pi.on("session_start", () => {
-					pi.setSessionName(JSON.stringify(pi.getActiveTools().sort()));
-					if (${activate}) pi.setActiveTools([...pi.getActiveTools(), "newcomer_probe"]);
-				});
-			}`,
-			);
-			const settingsManager = SettingsManager.create(tempDir, agentDir, { projectTrusted: false });
-			let completeTrust!: () => Promise<void>;
-			const completeServices = await prepareAgentSessionServices({
-				cwd: tempDir,
-				agentDir,
-				settingsManager,
-				resourceLoaderOptions: {
-					builtinPackagePaths: [],
-					extensionFactories: [
-						(pi) => {
-							pi.on("session_start", () => {
-								if (safeChange === "activate") pi.setActiveTools([...pi.getActiveTools(), "find"]);
-								if (safeChange === "deactivate")
-									pi.setActiveTools(pi.getActiveTools().filter((name) => name !== "read"));
-							});
-						},
-					],
-					noSkills: true,
-					noThemes: true,
-					noPromptTemplates: true,
-					noContextFiles: true,
-				},
-				resourceLoaderReloadOptions: {
-					deferProjectTrust: (complete) => {
-						completeTrust = complete;
-					},
-					resolveProjectTrust: () => true,
-				},
-			});
-			const { session } = await createAgentSessionFromServices({
-				services: await completeServices(),
-				model: getModel("anthropic", "claude-sonnet-4-5"),
+			const { session, completeStartup } = await createDeferredTrustSession({
 				sessionManager: await recordedSession(["read", "ls", "startup_probe"]),
+				// newcomer_probe is default-active and never mentioned by the recording. optin_probe is opt-in.
+				tools: [
+					{ name: "startup_probe" },
+					{ name: "newcomer_probe" },
+					{ name: "optin_probe", defaultActive: false },
+				],
+				activate: activate ? ["optin_probe"] : [],
+				earlyExtension: (pi) => {
+					pi.on("session_start", () => {
+						if (safeChange === "activate") pi.setActiveTools([...pi.getActiveTools(), "find"]);
+						if (safeChange === "deactivate")
+							pi.setActiveTools(pi.getActiveTools().filter((name) => name !== "read"));
+					});
+				},
 			});
-			sessions.push(session);
 			assert.deepEqual(
 				session.getActiveToolNames().sort(),
-				safeChange === "activate" ? ["find", "ls", "read"] : safeChange === "deactivate" ? ["ls"] : ["ls", "read"],
+				[
+					...(safeChange === "activate"
+						? ["find", "ls", "read"]
+						: safeChange === "deactivate"
+							? ["ls"]
+							: ["ls", "read"]),
+					...MANDATORY_RUNTIME_TOOLS,
+				].sort(),
 			);
-			await completeTrust();
-			await session.completeStartupResources((await completeServices()).resourceLoader);
-			const observedTools = JSON.parse(session.sessionManager.getSessionName() ?? "null") as string[] | null;
-			const expected =
-				safeChange === "activate"
+			const observedTools = await completeStartup();
+			// The recorded startup_probe is dropped once the loadout changes by deactivation. newcomer_probe was
+			// registered after the recording and is active either way (#11062).
+			const expected = [
+				...(safeChange === "activate"
 					? ["find", "ls", "read", "startup_probe"]
 					: safeChange === "deactivate"
 						? ["ls"]
-						: ["ls", "read", "startup_probe"];
+						: ["ls", "read", "startup_probe"]),
+				"newcomer_probe",
+				...MANDATORY_RUNTIME_TOOLS,
+			].sort();
 			assert.deepEqual(observedTools, expected);
 			assert.deepEqual(
 				session.getActiveToolNames().sort(),
-				[...expected, ...(activate ? ["newcomer_probe"] : [])].sort(),
+				[...expected, ...(activate ? ["optin_probe"] : [])].sort(),
 			);
 		});
 	}
+}
+
+// #11062
+test("startup completion activates extension tools the transcript never mentioned", async () => {
+	// Resuming after installing the extension: the recording predates its tools, and the branch removed removed_probe.
+	const sessionManager = await recordedSession(["read", "ls", "startup_probe", "removed_probe"]);
+	await recordLoadoutChange(sessionManager, [], ["removed_probe"]);
+	const { session, completeStartup } = await createDeferredTrustSession({
+		sessionManager,
+		tools: [
+			{ name: "startup_probe" },
+			{ name: "removed_probe" },
+			{ name: "newcomer_probe" },
+			{ name: "optin_probe", defaultActive: false },
+		],
+	});
+	await completeStartup();
+	assert.deepEqual(
+		session.getActiveToolNames().sort(),
+		["ls", "newcomer_probe", "read", "startup_probe", ...MANDATORY_RUNTIME_TOOLS].sort(),
+	);
+});
+
+test("startup completion keeps a deactivated tool inactive while activating newly registered tools (#11062)", async () => {
+	const { session, completeStartup } = await createDeferredTrustSession({
+		sessionManager: await recordedSession(["read", "ls"]),
+		tools: [{ name: "newcomer_probe" }],
+		// early_probe registers before startup completes, so the first restore already decided about it.
+		earlyExtension: (pi) => {
+			pi.registerTool({ ...activeTool, name: "early_probe" });
+		},
+	});
+	assert.ok(session.getActiveToolNames().includes("early_probe"));
+	session.setActiveToolsByName(session.getActiveToolNames().filter((name) => name !== "early_probe"));
+	await completeStartup();
+	assert.deepEqual(
+		session.getActiveToolNames().sort(),
+		["ls", "newcomer_probe", "read", ...MANDATORY_RUNTIME_TOOLS].sort(),
+	);
+});
+
+for (const options of [{ excludedTools: ["newcomer_probe"] }, { tools: ["-newcomer_probe"] }]) {
+	test(`startup completion keeps ${Object.keys(options)[0]} entries inactive (#11062)`, async () => {
+		const { session, completeStartup } = await createDeferredTrustSession({
+			sessionManager: await recordedSession(["read", "ls", "startup_probe"]),
+			tools: [{ name: "startup_probe" }, { name: "newcomer_probe" }, { name: "other_probe" }],
+			sessionOptions: options,
+		});
+		await completeStartup();
+		assert.deepEqual(
+			session.getActiveToolNames().sort(),
+			["ls", "other_probe", "read", "startup_probe", ...MANDATORY_RUNTIME_TOOLS].sort(),
+		);
+	});
 }

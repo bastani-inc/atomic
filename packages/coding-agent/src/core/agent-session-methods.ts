@@ -17,6 +17,7 @@ import type {
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import type { PendingPostToolCompactionGuard } from "./agent-session-post-tool-compaction.ts";
+import type { RecordedToolLoadout } from "./agent-session-state.ts";
 import type {
 	AgentSessionEvent,
 	AgentSessionEventListener,
@@ -359,6 +360,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 			defer(effect: () => void | Promise<void>): void;
 		},
 		startupToolNames?: readonly string[],
+		startupLoadout?: RecordedToolLoadout,
 	): void;
 	_refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void;
 	_buildRuntime(options: RuntimeBuildOptions): void;

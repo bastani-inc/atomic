@@ -1,4 +1,4 @@
-import { getCurrentSystemMessage, type SystemMessage } from "@bastani/pi-ai";
+import { getCurrentSystemMessage, getCurrentTools, type SystemMessage } from "@bastani/pi-ai";
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
@@ -14,7 +14,7 @@ import {
 	normalizeBuildSystemPromptOptions,
 } from "./system-prompt.ts";
 import { applyToolLoadout, isToolDeclarationHidden } from "./tool-loadout.js";
-import { selectedToolNames } from "./tool-selection.ts";
+import { activatesOnRegistration, selectedToolNames } from "./tool-selection.ts";
 import {
 	buildToolStatusReport,
 	describeToolSelection,
@@ -203,22 +203,74 @@ export function preservesInitialToolLoadout(session: AgentSession): boolean {
 	);
 }
 
+/** The tools the selected transcript records, and every tool it ever added or removed. */
+export interface RecordedToolLoadout {
+	readonly current: readonly string[];
+	readonly mentioned: ReadonlySet<string>;
+}
+
+/** The recorded loadout of the selected branch, or undefined when it recorded none. */
+export function recordedToolLoadout(session: AgentSession): RecordedToolLoadout | undefined {
+	// All system messages on the branch, including those before a compaction, whose snapshot lists only
+	// the tools still added. Replaying them gives the current loadout and every tool the branch mentioned.
+	const systemMessages = session.sessionManager
+		.getBranch()
+		.flatMap((entry) =>
+			entry.type === "message" && entry.message.role === "system"
+				? [entry.message]
+				: entry.type === "compaction" && entry.systemMessage
+					? [entry.systemMessage]
+					: [],
+		);
+	if (systemMessages.length === 0) return undefined;
+	return {
+		current: getCurrentTools(systemMessages).map((tool) => tool.name),
+		mentioned: new Set(
+			systemMessages
+				.flatMap((message) => [...(message.toolsAdded ?? []), ...(message.toolsRemoved ?? [])])
+				.map((tool) => tool.name),
+		),
+	};
+}
+
+/**
+ * Whether restoring a transcript activates a registered tool it never mentioned. Such an extension tool
+ * was registered after the branch recorded its loadout, so it activates like a newly registered tool.
+ * Built-in tools follow `defaultTools` instead, and opt-in tools stay inactive until a selection names them.
+ */
+export function activatesAfterRecordedLoadout(
+	session: AgentSession,
+	recorded: RecordedToolLoadout,
+	name: string,
+	definition: { exposure?: string; defaultActive?: boolean } | undefined,
+): boolean {
+	return (
+		!recorded.mentioned.has(name) &&
+		!session._baseToolDefinitions.has(name) &&
+		activatesOnRegistration(session, name, definition, false)
+	);
+}
+
 /**
  * Restore registered tools from the selected transcript, not another branch's live state.
  *
  * Explicit tool selections keep their built-in loadout while restoring dynamically registered tools.
- * Default selections restore the recorded loadout with any CLI modifiers applied.
+ * Default selections restore the recorded loadout with any CLI modifiers applied. Extension tools the
+ * branch never added or removed were registered after it recorded its loadout, so they are activated
+ * like newly registered tools.
  */
 export function _restoreToolsFromTranscript(this: AgentSession, options?: { startup?: boolean }): void {
 	this._pendingToolNames.clear();
-	const current = getCurrentSystemMessage(this.sessionManager.buildSessionContext().messages);
-	if (!current) return;
+	const recorded = recordedToolLoadout(this);
+	// No recorded loadout: keep the current tools.
+	if (!recorded) return;
 	const keepLoadout = options?.startup && preservesInitialToolLoadout(this);
 	const modifiers = options?.startup && this._usesDefaultTools ? this._defaultToolModifiers : [];
-	const declared = applyToolModifiers(
-		(current.toolsAdded ?? []).map((tool) => tool.name),
-		modifiers,
+	// Removed tools are mentioned too, so they stay inactive.
+	const newTools = [...this._toolRegistry.keys()].filter((name) =>
+		activatesAfterRecordedLoadout(this, recorded, name, this._toolDefinitions.get(name)?.definition),
 	);
+	const declared = applyToolModifiers([...recorded.current, ...newTools], modifiers);
 	if (!keepLoadout) {
 		this._pendingToolNames = new Set(declared);
 		this._setActiveTools(declared);
