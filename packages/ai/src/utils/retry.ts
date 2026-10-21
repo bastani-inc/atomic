@@ -109,6 +109,9 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"stream ended before message_stop",
 	"stream ended before a terminal response event",
 	"http2 request did not get a response",
+	// Codex CLI mid-stream disconnect, relayed by proxies that wrap the Codex CLI,
+	// e.g. "stream disconnected before completion: stream closed before response.completed" (#11057).
+	"stream disconnected before completion",
 	"pending stream has been canceled",
 
 	// Provider-requested retry delay cap failures should flow through the outer

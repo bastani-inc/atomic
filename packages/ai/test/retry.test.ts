@@ -102,6 +102,11 @@ describe("provider retry classification", () => {
 		assert.equal(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage })), true);
 	});
 
+	it("matches Codex CLI stream disconnects relayed by proxies (#11057)", () => {
+		const errorMessage = "stream disconnected before completion: stream closed before response.completed";
+		expect(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage }))).toBe(true);
+	});
+
 	it("matches OpenAI Responses streams that end before terminal events", () => {
 		expect(
 			isRetryableAssistantError(
