@@ -1,6 +1,6 @@
 import type { ExtensionCommandContext, ExtensionContext, ToolDefinition } from "@bastani/atomic";
 import { setTimeout as delay } from "node:timers/promises";
-import { isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
+import { isIntercomBrokerTimeout, isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
 import { RECONNECT_DELAYS_MS } from "./retry-policy.js";
 
 type CommandHandler = (args: string, ctx: ExtensionCommandContext) => void | Promise<void>;
@@ -33,7 +33,9 @@ export async function executeHeavyTool<THeavy extends ExecutableHeavy>(
 		} catch (error) {
 			if (!recoverInitialization || !isRecoverableIntercomDisconnect(error)) throw error;
 			const delayMs = RECONNECT_DELAYS_MS[retries];
-			if (delayMs === undefined) return initializationFailure("Client disconnected", retries);
+			if (delayMs === undefined) {
+				return initializationFailure(isIntercomBrokerTimeout(error) ? "Connection timeout" : "Client disconnected", retries);
+			}
 			try {
 				await delay(delayMs, undefined, { signal: args[2] });
 			} catch {

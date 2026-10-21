@@ -1566,6 +1566,7 @@ class IntercomBroker {
             sessionId: id,
             ...(supervisorId ? { supervisorSessionId: supervisorId } : {}),
             ...(clientMessage.acknowledgesReceipt === true ? { acknowledgesReceipt: true as const } : {}),
+            acknowledgesPendingStageRoutes: true as const,
           });
           if (isAgentRecipient(info)) this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
           // #3761: messages written to this recipient's previous connection that it never confirmed saving go out again.
@@ -1764,10 +1765,18 @@ class IntercomBroker {
           !clientMessage.runId ||
           typeof clientMessage.group !== "string" ||
           typeof clientMessage.capability !== "string" ||
-          !clientMessage.capability
+          !clientMessage.capability ||
+          (clientMessage.requestId !== undefined && typeof clientMessage.requestId !== "string")
         ) {
           throw new Error("Invalid pending-stage route registration");
         }
+        const routeRequestId = clientMessage.requestId;
+        // The route is applied synchronously, so this answer proves the update is visible to every later request.
+        const acknowledgeRoute = (): void => {
+          if (routeRequestId !== undefined) {
+            writeMessageIfOpen(socket, { type: "pending_stage_route_registered", requestId: routeRequestId });
+          }
+        };
         const owner = this.sessions.get(currentId);
         const existing = this.pendingStageRoutes.get(clientMessage.runId);
         const ownerGroup = normalizeGroup(owner?.registrationGroup);
@@ -1846,6 +1855,7 @@ class IntercomBroker {
             });
             this.retireAmbiguousNameAliases(clientMessage.runId);
           }
+          acknowledgeRoute();
           break;
         }
         this.pendingStageRoutes.set(clientMessage.runId, {
@@ -1869,6 +1879,7 @@ class IntercomBroker {
           });
           this.retireAmbiguousNameAliases(clientMessage.runId);
         }
+        acknowledgeRoute();
         break;
       }
 

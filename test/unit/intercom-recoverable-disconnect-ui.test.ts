@@ -30,7 +30,7 @@ import assert from "node:assert/strict";
 import { setImmediate as tick } from "node:timers/promises";
 import type { ExtensionAPI, ToolDefinition } from "@bastani/atomic";
 import { Type } from "typebox";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { runGenericHandlers } from "../../packages/coding-agent/src/core/extensions/runner-events.js";
 import type {
 	Extension,
@@ -39,12 +39,16 @@ import type {
 } from "../../packages/coding-agent/src/core/extensions/types.js";
 import intercom from "../../packages/intercom/index.js";
 import { IntercomLiveRouteRefusedError } from "../../packages/intercom/live-route-refusal.js";
-import { IntercomClientDisconnectedError } from "../../packages/intercom/recoverable-disconnect.js";
+import {
+	IntercomBrokerTimeoutError,
+	IntercomClientDisconnectedError,
+} from "../../packages/intercom/recoverable-disconnect.js";
 import { IntercomWarmUpExhaustedError } from "../../packages/intercom/warm-up-exhaustion.js";
 import { requestSupervisorAuthorization } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import { sleep } from "../helpers/runtime.js";
 
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
+const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
 const SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT = "subagent:result-intercom-delivery";
 const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
 const EXTENSION_PATH = "<intercom>";
@@ -660,5 +664,91 @@ describe("Intercom bounded warm-up retry for a parked workflow stage", () => {
 		assert.equal(reported.length, 1);
 		assert.equal(reported[0]?.error, "Live workflow-stage route capability does not match the workflow owner");
 		assert.equal(current.imports, 1, "a configuration mismatch is not retried");
+	});
+});
+
+describe("Intercom broker registration timeout at the lazy event-relay boundary", () => {
+	const PERSISTENT_OUTAGE_MS = 60_000;
+	const OUTAGE_REPORT = /^Intercom broker has not answered for over 60s/;
+
+	function outageReports(): ConsoleErrorCall[] {
+		return consoleErrorCalls.filter(([message]) => typeof message === "string" && OUTAGE_REPORT.test(message));
+	}
+
+	async function relayRouteUpdate(current: ReturnType<typeof fixture>): Promise<void> {
+		current.emitPiEvent(PENDING_STAGE_ROUTE_EVENT, {
+			runId: "run-1",
+			group: "workflow:run-1",
+			capability: "capability",
+		});
+		await tick();
+	}
+
+	test("keeps a burst of route updates that all time out out of the stage output", async () => {
+		const current = fixture([{ error: new IntercomBrokerTimeoutError("Connection timeout") }]);
+
+		for (let update = 0; update < 50; update += 1) {
+			current.emitPiEvent(PENDING_STAGE_ROUTE_EVENT, { runId: `run-${update}`, group: `workflow:run-${update}` });
+		}
+		await tick();
+
+		assert.deepEqual(consoleErrorCalls, []);
+	});
+
+	test("reports a broker that stays silent once per outage, and again only after a relay succeeds", async () => {
+		const broker = { silent: true };
+		const current = fixture([
+			{
+				module: {
+					default(heavyPi) {
+						heavyPi.events.on(PENDING_STAGE_ROUTE_EVENT, () => {
+							if (broker.silent) throw new IntercomBrokerTimeoutError("Connection timeout");
+						});
+					},
+				},
+			},
+		]);
+		vi.useFakeTimers({ toFake: ["Date"] });
+		try {
+			const outageStart = Date.UTC(2026, 0, 1);
+			vi.setSystemTime(outageStart);
+			await relayRouteUpdate(current);
+			vi.setSystemTime(outageStart + PERSISTENT_OUTAGE_MS - 1);
+			await relayRouteUpdate(current);
+			assert.equal(outageReports().length, 0, "a timeout that has not persisted is not an outage");
+
+			vi.setSystemTime(outageStart + PERSISTENT_OUTAGE_MS);
+			await relayRouteUpdate(current);
+			assert.equal(outageReports().length, 1);
+			vi.setSystemTime(outageStart + 3 * PERSISTENT_OUTAGE_MS);
+			await relayRouteUpdate(current);
+			await relayRouteUpdate(current);
+			assert.equal(outageReports().length, 1, "one outage is reported once, however many relays it times out");
+			assert.deepEqual(relayFailureLogs(), []);
+
+			broker.silent = false;
+			await relayRouteUpdate(current);
+			broker.silent = true;
+			const nextOutageStart = outageStart + 4 * PERSISTENT_OUTAGE_MS;
+			vi.setSystemTime(nextOutageStart);
+			await relayRouteUpdate(current);
+			assert.equal(
+				outageReports().length,
+				1,
+				"a relay that succeeded ended the outage; a new timeout starts a fresh one",
+			);
+			vi.setSystemTime(nextOutageStart + PERSISTENT_OUTAGE_MS);
+			await relayRouteUpdate(current);
+			assert.equal(outageReports().length, 2);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("keeps a user-initiated Intercom call visibly failing on a broker registration timeout", async () => {
+		const timeout = new IntercomBrokerTimeoutError("Connection timeout");
+		const current = fixture([{ error: timeout }]);
+
+		await assert.rejects(current.executeIntercomTool(), timeout);
 	});
 });

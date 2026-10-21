@@ -18,6 +18,10 @@
  * reconnect, or the previous attempt's session is still being torn down), the
  * same bounded retry that recovers a lost socket clears it (#3163). A refusal
  * whose code repeats identically on retry is not recoverable.
+ *
+ * A broker that accepts the socket but does not answer a registration in time is
+ * saturated, not gone. Its timeout is recoverable for the same reason, and a
+ * background relay that sees it keeps quiet unless the outage persists.
  */
 
 import { IntercomLiveRouteRefusedError } from "./live-route-refusal.js";
@@ -47,8 +51,18 @@ export class IntercomClientDisconnectedError extends Error implements Recoverabl
 	}
 }
 
+/** Raised when the broker accepted the socket but did not answer a registration within its bound. */
+export class IntercomBrokerTimeoutError extends Error implements RecoverableDisconnectMarker {
+	readonly intercomRecoverableDisconnect = true;
+
+	constructor(message: string, options?: ErrorOptions) {
+		super(message, options);
+		this.name = "IntercomBrokerTimeoutError";
+	}
+}
+
 /**
- * True for an `IntercomClientDisconnectedError` or a transient
+ * True for an `IntercomClientDisconnectedError`, an `IntercomBrokerTimeoutError`, or a transient
  * `IntercomLiveRouteRefusedError`, directly or as a bounded `cause` ancestor.
  */
 export function isRecoverableIntercomDisconnect(error: unknown): boolean {
@@ -56,7 +70,19 @@ export function isRecoverableIntercomDisconnect(error: unknown): boolean {
 	for (let depth = 0; depth <= MAX_CAUSE_DEPTH; depth += 1) {
 		if (!(current instanceof Error)) return false;
 		if (current instanceof IntercomClientDisconnectedError) return true;
+		if (current instanceof IntercomBrokerTimeoutError) return true;
 		if (current instanceof IntercomLiveRouteRefusedError) return current.transient;
+		current = current.cause;
+	}
+	return false;
+}
+
+/** True for an `IntercomBrokerTimeoutError`, directly or as a bounded `cause` ancestor. */
+export function isIntercomBrokerTimeout(error: unknown): boolean {
+	let current: unknown = error;
+	for (let depth = 0; depth <= MAX_CAUSE_DEPTH; depth += 1) {
+		if (!(current instanceof Error)) return false;
+		if (current instanceof IntercomBrokerTimeoutError) return true;
 		current = current.cause;
 	}
 	return false;

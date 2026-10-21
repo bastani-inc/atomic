@@ -7,7 +7,7 @@ import { renderIntercomToolResult } from "./result-renderers.js";
 import { executeHeavyTool, runHeavyCommand, type HeavyHandle } from "./lazy-tool-execution.js";
 import { assertCurrentLifecycleLease, createLifecycleLease, retainSettledLifecycleCleanup, retireLifecycleLease, SerializedLifecycleForwarder, type LifecycleLease } from "./lifecycle-lease.js";
 import { rejectLazyResultRelay } from "./lazy-subagent-ack.js";
-import { isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
+import { isIntercomBrokerTimeout, isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
 import { IntercomWarmUpExhaustedError } from "./warm-up-exhaustion.js";
 import { reconnectDelayMs } from "./reconnect-backoff.js";
 import {
@@ -217,6 +217,33 @@ function reportRelayFailure(route: DiagnosticRoute, eventName: string, error: un
 }
 
 /**
+ * How long a broker must keep timing out before a background relay reports it.
+ *
+ * Under load one saturated broker times out every relay in flight at once, and each of those is
+ * recovered by the retries behind it. Only a broker that is still silent after this long is an outage
+ * the user can act on, and it is reported once until a relay succeeds again.
+ */
+const BROKER_OUTAGE_REPORT_AFTER_MS = 60_000;
+
+class BrokerOutage {
+	private startedAt: number | null = null;
+	private reported = false;
+
+	/** True exactly once per outage: on the first timeout seen after it has lasted long enough. */
+	timedOut(now: number): boolean {
+		this.startedAt ??= now;
+		if (this.reported || now - this.startedAt < BROKER_OUTAGE_REPORT_AFTER_MS) return false;
+		this.reported = true;
+		return true;
+	}
+
+	recovered(): void {
+		this.startedAt = null;
+		this.reported = false;
+	}
+}
+
+/**
  * Bounded attempts for the workflow-stage warm-up retry.
  *
  * A stage that carries queued pending messages parks on
@@ -239,6 +266,15 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 	let activeLease = createLifecycleLease<ShutdownSnapshot>(nextLeaseId++);
 	let replayedGeneration = 0;
 	let replayAttempt: ReplayAttempt | null = null;
+	const brokerOutage = new BrokerOutage();
+	function reportBackgroundRelayFailure(route: DiagnosticRoute, eventName: string, error: unknown): void {
+		if (isIntercomBrokerTimeout(error) && brokerOutage.timedOut(Date.now())) {
+			const prefix = `Intercom broker has not answered for over ${BROKER_OUTAGE_REPORT_AFTER_MS / 1000}s; background relays keep retrying (${eventName}):`;
+			reportDiagnostic(route, `${prefix} ${diagnosticDetail(error)}`, error, "error", prefix);
+			return;
+		}
+		reportRelayFailure(route, eventName, error);
+	}
 	const lifecycleForward = new SerializedLifecycleForwarder();
 	const invalidatedMessage = "Intercom initialization was invalidated by session shutdown";
 	const activeLifecycle: ActiveLifecycleState = {
@@ -790,7 +826,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 					: false;
 			})
 			.catch((error) => {
-				reportRelayFailure(diagnosticRoute, PENDING_STAGE_UNDELIVERABLE_EVENT, error);
+				reportBackgroundRelayFailure(diagnosticRoute, PENDING_STAGE_UNDELIVERABLE_EVENT, error);
 				return false;
 			});
 	});
@@ -815,10 +851,13 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			if (eventName === PENDING_STAGE_ROUTE_EVENT && payload && typeof payload === "object") {
 				(payload as { completion?: Promise<void> }).completion = completion;
 			}
-			void completion.catch((error) => {
-				rejectLazyResultRelay(pi, eventName, payload, error);
-				reportRelayFailure(diagnosticRoute, eventName, error);
-			});
+			void completion.then(
+				() => brokerOutage.recovered(),
+				(error) => {
+					rejectLazyResultRelay(pi, eventName, payload, error);
+					reportBackgroundRelayFailure(diagnosticRoute, eventName, error);
+				},
+			);
 		});
 	}
 	pi.events.on(WORKFLOW_STAGE_LATE_MESSAGE_EVENT, (payload) => {
