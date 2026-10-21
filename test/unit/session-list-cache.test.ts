@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import { join, resolve } from "node:path";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import type { SessionEntry, SessionInfo } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import type { SqliteDatabase, SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
-import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
+import {
+	LISTING_FETCH_BATCH,
+	SqlSessionStore,
+} from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import type { SessionRecordHeader } from "../../packages/coding-agent/src/core/storage/session/types.js";
 import { createSessionCwdMatcher } from "../../packages/coding-agent/src/utils/canonical-path.ts";
 import { bunExecutable, makeTempDirectory, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
@@ -51,8 +55,25 @@ function observeReads(database: SqliteDatabase) {
 	};
 }
 
+/**
+ * Resumes every by-id search-text read on a later event-loop turn, so the read of a listing's next batch
+ * always gives a concurrent listing the chance to run to completion first, whatever the adapter's queueing.
+ */
+function yieldAfterFetchBatches(database: SqliteDatabase): void {
+	const all = database.all.bind(database);
+	database.all = async <Row extends SqliteRow>(sql: string, ...values: readonly SqliteValue[]): Promise<Row[]> => {
+		const rows = await all<Row>(sql, ...values);
+		if (sql.includes("search_texts") && sql.includes("WHERE id IN")) await nextTurn();
+		return rows;
+	};
+}
+
 function byId(sessions: readonly SessionInfo[]): Map<string, SessionInfo> {
 	return new Map(sessions.map((session) => [session.id, session]));
+}
+
+function ids(sessions: readonly SessionInfo[]): string[] {
+	return sessions.map((session) => session.id).sort();
 }
 
 describe("/resume session list cache", () => {
@@ -175,6 +196,45 @@ describe("/resume session list cache", () => {
 			assert.deepEqual([...byId(await SessionManager.list(cwd, store)).keys()].sort(), ["alpha", "gamma"]);
 		},
 		WRITER_PROCESS_TIMEOUT_MS * 3,
+	);
+
+	test.each(["project", "all-projects"] as const)(
+		"concurrent listings of two scopes keep every session another connection created, when the %s listing starts first",
+		async (startsFirst) => {
+			// More changed sessions than one fetch batch, in a scope large enough to re-read them by id in batches.
+			// One lands in the project too, so both listings fetch by id and each pauses after its batches.
+			const changed = LISTING_FETCH_BATCH + 1;
+			const elsewhere = join(dir, "other");
+			for (let index = 0; index < 4 * changed; index++) {
+				const listed = `listed-${index}`;
+				await store.create(header(listed, index % 2 === 0 ? cwd : elsewhere), [message(`${listed}-m`, listed)]);
+			}
+			await SessionManager.list(cwd, store);
+			await SessionManager.listAll(store);
+			const other = await otherConnection();
+			for (let index = 0; index < changed; index++) {
+				const created = `created-${index}`;
+				await other.create(header(created, index === 0 ? cwd : elsewhere), [message(`${created}-m`, created)]);
+			}
+			const expectedProject = ids(await SessionManager.list(cwd, other));
+			const expectedAll = ids(await SessionManager.listAll(other));
+			yieldAfterFetchBatches(database);
+
+			// Both listings run at once, as when Tab switches the picker's scope while the first scope still loads.
+			const allFirst = startsFirst === "all-projects" ? SessionManager.listAll(store) : undefined;
+			const projectListing = SessionManager.list(cwd, store);
+			const [projectListed, allListed] = await Promise.all([
+				projectListing,
+				allFirst ?? SessionManager.listAll(store),
+			]);
+			const assertLists = (listed: readonly SessionInfo[], expected: readonly string[], listing: string) =>
+				assert.deepEqual(ids(listed), expected, `${listing} lists ${listed.length} of ${expected.length} sessions`);
+			assertLists(projectListed, expectedProject, "the concurrent project listing");
+			assertLists(allListed, expectedAll, "the concurrent all-projects listing");
+			// The unchanged reopen is served from the cache the concurrent listings left behind.
+			assertLists(await SessionManager.listAll(store), expectedAll, "the reopened all-projects listing");
+			assertLists(await SessionManager.list(cwd, store), expectedProject, "the reopened project listing");
+		},
 	);
 
 	test("selecting a listed session that another connection deleted finds nothing to open", async () => {

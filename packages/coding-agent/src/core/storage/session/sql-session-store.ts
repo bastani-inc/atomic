@@ -58,7 +58,7 @@ type SummaryRow = ListingRow & { search_texts_json: string };
 const LISTING_COLUMNS =
 	"id, cwd, internal, header_json, last_seq, modified_at, message_count, first_message, name, has_name, summary, summarized_through_id";
 /** Rows whose search text is read per query; well under SQLite's bound-parameter limit. */
-const LISTING_FETCH_BATCH = 500;
+export const LISTING_FETCH_BATCH = 500;
 /** Listing scopes (visibility and project) kept at once; the picker uses two. */
 const LISTING_SCOPES = 8;
 
@@ -96,6 +96,11 @@ export class SqlSessionStore implements SessionStore {
 	private readonly scopes = new Map<string, { readonly token: string; readonly ids: readonly string[] }>();
 	/** Listed summaries of sessions that still exist at the cached version; never more than the store holds. */
 	private readonly summaries = new Map<string, { readonly version: string; readonly summary: SessionSummary }>();
+	/**
+	 * Settles when the latest listing has read and updated the caches. Listings take turns, so one listing's
+	 * pruning never drops summaries that another has fetched but not yet recorded under its scope.
+	 */
+	private listing: Promise<void> = Promise.resolve();
 
 	private constructor(database: SqliteDatabase, tables: Tables, prefix = "", cwdMatcher?: SessionCwdMatcher) {
 		this.database = database;
@@ -232,18 +237,40 @@ export class SqlSessionStore implements SessionStore {
 	 * Lists from a per-scope cache revalidated on every call. A cheap change token, which moves on any commit
 	 * from this or another connection, decides whether the scope is re-read. A scope listed for the first time
 	 * is read exactly as an uncached listing; afterwards only its light columns are re-read and search text is
-	 * read only for sessions whose stored listing columns changed.
+	 * read only for sessions whose stored listing columns changed. Listings of the same store take turns
+	 * reading and updating the caches; the yielding below runs outside that turn.
 	 */
 	async *list(query: SessionListQuery): AsyncIterable<SessionSummary> {
 		this.assertListing(query);
 		// Validate the original query before binding only matching stored spellings below.
 		if (query.cwd?.includes("\0")) throw new StorageInvalidTextError(0);
+		const listed = this.listing.then(() => this.listScope(query));
+		this.listing = listed.then(
+			() => {},
+			() => {},
+		);
+		// Resolve before yielding so a concurrent listing cannot change what this one returns.
+		const summaries = await listed;
+		for (const summary of summaries) {
+			this.assertListing(query);
+			yield summary;
+		}
+		this.assertListing(query);
+	}
+
+	/** Revalidates one scope's cache and resolves its summaries; called for one listing at a time. */
+	private async listScope(query: SessionListQuery): Promise<readonly SessionSummary[]> {
+		// The store may have closed, or the caller given up, while an earlier listing held the turn.
+		this.assertListing(query);
 		// Read the token first: a commit racing the reads below moves it again before the next call.
 		const token = await this.changeToken();
 		const key = JSON.stringify([query.includeInternal === true, query.cwd ?? null]);
 		const cached = this.scopes.get(key);
+		// A cached id without a summary is never expected; re-reading the scope repairs it instead of dropping it.
 		const scope =
-			cached?.token === token ? cached : { token, ids: await this.readScope(query, cached !== undefined) };
+			cached?.token === token && cached.ids.every((id) => this.summaries.has(id))
+				? cached
+				: { token, ids: await this.readScope(query, cached !== undefined) };
 		// Map order is recency order: re-inserting marks the scope as used, and the oldest scope is evicted first.
 		this.scopes.delete(key);
 		this.scopes.set(key, scope);
@@ -252,13 +279,7 @@ export class SqlSessionStore implements SessionStore {
 			this.scopes.delete(oldest);
 		}
 		if (scope !== cached) this.pruneSummaries();
-		// Resolve before yielding so a concurrent listing cannot change what this one returns.
-		const summaries = scope.ids.flatMap((id) => this.summaries.get(id)?.summary ?? []);
-		for (const summary of summaries) {
-			this.assertListing(query);
-			yield summary;
-		}
-		this.assertListing(query);
+		return scope.ids.flatMap((id) => this.summaries.get(id)?.summary ?? []);
 	}
 
 	async findMostRecent(query: {
@@ -332,7 +353,7 @@ export class SqlSessionStore implements SessionStore {
 					for (const id of ids) if (!fetched.has(id)) this.summaries.delete(id);
 					this.assertListing(query);
 				}
-				return rows.map((row) => row.id);
+				return rows.flatMap((row) => (this.summaries.has(row.id) ? [row.id] : []));
 			}
 		}
 		const rows = (await this.readSummaries(scope, params)).filter(inScope);
@@ -356,7 +377,10 @@ export class SqlSessionStore implements SessionStore {
 		return rows;
 	}
 
-	/** Keeps only summaries some cached scope still lists, so memory follows the live sessions. */
+	/**
+	 * Keeps only summaries some cached scope still lists, so memory follows the live sessions. Runs in a
+	 * listing's turn after it records its scope, when no other listing holds summaries it has not recorded.
+	 */
 	private pruneSummaries(): void {
 		const listed = new Set([...this.scopes.values()].flatMap((scope) => scope.ids));
 		for (const id of this.summaries.keys()) if (!listed.has(id)) this.summaries.delete(id);
