@@ -818,10 +818,33 @@ async function admittedQueueUserInput(
 		if (lifetime.aborted) throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
 		if (behavior === "steer") await session._queueSteer(expandedText, images);
 		else await session._queueFollowUp(expandedText, images);
+		deliverQueuedInputIfIdle(session);
 		return "queued";
 	} finally {
 		admission.release();
 	}
+}
+
+function canContinueQueuedInput(session: AgentSession): boolean {
+	return !(
+		session.isStreaming ||
+		session.isCompacting ||
+		session._isPreparingRun ||
+		session._isBeforeSettle ||
+		session._isEmittingAgentSettled ||
+		session._queuedMessagesPaused ||
+		session._pendingInterruptDeliveries > 0 ||
+		session._subagentMessageAdmission !== undefined ||
+		session._workflowStageAdmission !== undefined
+	);
+}
+
+function deliverQueuedInputIfIdle(session: AgentSession): void {
+	const deliver = (): void => {
+		if (canContinueQueuedInput(session)) void session._continueQueuedAgentMessages().catch(() => {});
+	};
+	if (session._isEmittingAgentSettled) session._deferredSettledActions.push(async () => deliver());
+	else if (session._activePromptCount === 0) deliver();
 }
 
 /**

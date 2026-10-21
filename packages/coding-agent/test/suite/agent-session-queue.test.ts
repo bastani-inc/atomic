@@ -2,9 +2,11 @@ import type { ExtensionAPI } from "@bastani/atomic";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { convertToLlm } from "../../src/core/messages.ts";
 import { createHarness, getAssistantTexts, getMessageText, getUserTexts, type Harness } from "./harness.ts";
+
+const PAUSED_QUEUE_SETTLE_MS = 50;
 
 async function createWaitingHarness(
 	options: {
@@ -489,5 +491,38 @@ describe("AgentSession queue characterization", () => {
 		await harness.session.agent.waitForIdle();
 
 		expect(getUserTexts(harness)).toEqual(["hello", "conflict report"]);
+	});
+
+	it.each(["steer", "followUp"] as const)("delivers a %s queued while the session is idle", async (behavior) => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("first reply"), fauxAssistantMessage("reply to the queued message")]);
+		await harness.session.prompt("first");
+
+		await (behavior === "steer"
+			? harness.session.steer("queued while idle")
+			: harness.session.followUp("queued while idle"));
+		await vi.waitFor(() =>
+			expect(getAssistantTexts(harness)).toEqual(["first reply", "reply to the queued message"]),
+		);
+		await harness.session.agent.waitForIdle();
+
+		expect(getUserTexts(harness)).toEqual(["first", "queued while idle"]);
+		expect(harness.session.getSteeringMessages()).toEqual([]);
+		expect(harness.session.getFollowUpMessages()).toEqual([]);
+	});
+
+	it("keeps a steer queued while idle until a paused session resumes", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("first reply"), fauxAssistantMessage("unexpected reply")]);
+		await harness.session.prompt("first");
+
+		harness.session.pauseQueuedMessages();
+		await harness.session.steer("held while paused");
+		await new Promise((resolve) => setTimeout(resolve, PAUSED_QUEUE_SETTLE_MS));
+
+		expect(getAssistantTexts(harness)).toEqual(["first reply"]);
+		expect(harness.session.getSteeringMessages()).toEqual(["held while paused"]);
 	});
 });
