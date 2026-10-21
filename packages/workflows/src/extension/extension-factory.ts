@@ -197,6 +197,7 @@ function factory(pi: ExtensionAPI): void {
 			execute: executeWorkflowTool,
 			context: () => sessionContext,
 			store: owner.store,
+			jobs: runState.jobs,
 			catalog: async () => {
 				const runtime = runtimeState.runtimeForContext(sessionContext);
 				return (await runtime.prepareDurableCatalog?.()) ?? { resumable: [], completed: [] };

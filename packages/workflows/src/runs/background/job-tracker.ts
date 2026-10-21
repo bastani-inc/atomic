@@ -20,6 +20,11 @@ export interface JobEntry {
 	readonly controller: AbortController;
 	/** Settles when the background run resolves or rejects. */
 	readonly promise: Promise<void>;
+	/**
+	 * Settles with `promise`, but rejects with the error the run rejected with, such as a durable
+	 * ending that could not be recorded. A rejection nobody awaits is already handled.
+	 */
+	readonly outcome?: Promise<void>;
 }
 
 export interface JobTracker {

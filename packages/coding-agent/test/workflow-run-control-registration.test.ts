@@ -46,6 +46,9 @@ function recordingControl(label: string, calls: string[]): WorkflowRunControl {
 			calls.push(`${label}:resume:${runId}:${options?.stageId ?? "-"}:${options?.message ?? "-"}`);
 			return outcome("resume", label);
 		},
+		async waitForSettled(runId) {
+			calls.push(`${label}:waitForSettled:${runId}`);
+		},
 	};
 }
 
@@ -82,6 +85,7 @@ test("session workflows delegate every method to the registered control (#3377)"
 	await handle.quit(RUN_ID);
 	await handle.quit({ all: true });
 	const resumed = await handle.resume(RUN_ID, { stageId: "review", message: "continue" });
+	await handle.waitForSettled(RUN_ID);
 
 	assert.deepEqual(calls, [
 		"ext:listRuns:paused",
@@ -92,6 +96,7 @@ test("session workflows delegate every method to the registered control (#3377)"
 		`ext:quit:${RUN_ID}`,
 		"ext:quit:all",
 		`ext:resume:${RUN_ID}:review:continue`,
+		`ext:waitForSettled:${RUN_ID}`,
 	]);
 	assert.deepEqual(resumed, outcome("resume", "ext"));
 	runner.invalidate();
@@ -107,6 +112,7 @@ test("session workflows reject with a typed error until a control is registered 
 		() => handle.pause({ all: true }),
 		() => handle.quit(RUN_ID),
 		() => handle.resume(RUN_ID),
+		() => handle.waitForSettled(RUN_ID),
 	];
 	for (const operation of operations) {
 		await assert.rejects(operation, (error: Error) => {

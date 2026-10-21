@@ -165,11 +165,15 @@ export function runDetached<TInputs extends WorkflowInputValues, TRunInputs exte
 	//   Cleanup is identity-conditional throughout: an abandoned executor may
 	//   settle long after a resume registered its replacement under the same run
 	//   id, and it must never evict that replacement.
-	let settleJob: () => void = () => {};
-	const voidPromise: Promise<void> = new Promise<void>((resolve) => {
-		settleJob = resolve;
-	});
-	const jobEntry: JobEntry = { runId, controller, promise: voidPromise };
+	const jobSettled = Promise.withResolvers<void>();
+	const jobOutcome = Promise.withResolvers<void>();
+	jobOutcome.promise.catch(() => {});
+	const settleJob = (failure?: { readonly error: unknown }): void => {
+		jobSettled.resolve();
+		if (failure === undefined) jobOutcome.resolve();
+		else jobOutcome.reject(failure.error);
+	};
+	const jobEntry: JobEntry = { runId, controller, promise: jobSettled.promise, outcome: jobOutcome.promise };
 	try {
 		opts.startupSignal?.addEventListener("abort", cancelStartup, { once: true });
 		registry.register(runId, controller);
@@ -226,13 +230,14 @@ export function runDetached<TInputs extends WorkflowInputValues, TRunInputs exte
 		throw error;
 	}
 	const settle = async (...args: Parameters<NonNullable<DetachedRunOpts["onRawSettled"]>>): Promise<void> => {
+		const [ok, , error] = args;
 		try {
 			if (!observed) await observe(...args);
 		} finally {
 			detachStartup();
 			registry.unregister(runId, controller);
 			tracker.unregister(runId, jobEntry);
-			settleJob();
+			settleJob(ok ? undefined : { error });
 		}
 	};
 	void backgroundPromise.then(

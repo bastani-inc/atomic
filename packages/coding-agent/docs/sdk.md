@@ -310,6 +310,7 @@ interface SessionWorkflows {
   pause(target: { all: true }): Promise<WorkflowRunControlOutcome>;
   quit(target: string | { all: true }): Promise<WorkflowRunControlOutcome>;
   resume(runId: string, options?: { stageId?: string; message?: string }): Promise<WorkflowRunControlOutcome>;
+  waitForSettled(runId: string): Promise<void>;
   observe(observer: WorkflowActivityObserver): WorkflowActivitySubscription;
 }
 ```
@@ -323,6 +324,8 @@ After an owning process crashes, create a new authorized SDK session with the or
 A run with a live foreign lease remains read-only, even while a long-running tool has not refreshed progress. `pause()` and `quit()` require the owning session. Missing ownership metadata, a different working directory, or unavailable journal storage prevents adoption. Use the full UUID to recover a foreign run.
 
 Disposing an owning session with `await session.dispose()` stops its in-flight runs at their last checkpoint and records their release in the journal. Another authorized SDK session with the same `cwd` and journal can then call `resume(runId)`. The adopting session becomes the owner, and completed checkpoints replay without rerunning their callbacks.
+
+A run reports `completed`, `failed` or `killed` to `workflow_lifecycle` and `session.workflows` as soon as it ends, and then records that ending in the journal. With a remote journal this takes a few round trips. `await session.dispose()` waits up to 10 seconds for runs in that window before it closes the journal. If the journal still cannot record an ending, `dispose()` rejects with `ShutdownFailed` and names the run, rather than leaving the journal showing it as `running`. To wait without disposing, for example before another process reads the journal, call `await session.workflows.waitForSettled(runId)`. It resolves once the ending is in the journal and the run's lease is released, resolves at once for a run this session is not executing, and rejects with `WorkflowRunStorageError` when the journal could not record the ending. It has no timeout of its own, so race it against your own deadline.
 
 Workflow resume is project-scoped. SDK and workflow-tool resume calls for a run from a different `cwd` return an actionable error without changing it. To continue in a different project, use `/workflow resume <id>` interactively and confirm the fork into the current directory. The fork receives a new run ID and copies saved progress; the original run is left untouched. To keep the original ID, create the successor session with the original `cwd`.
 

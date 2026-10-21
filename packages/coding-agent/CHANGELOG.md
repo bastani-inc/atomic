@@ -8,6 +8,7 @@
 - RPC `get_available_models` and `refresh_models` responses now list extension providers that accept an API key in `customAuthProviders`, and report extension providers' environment or configured-key authentication in `providerAuthStatuses`.
 - Extension OAuth providers can throw `OAuthRefreshRejectedError` (exported from `@bastani/atomic`, with `isOAuthRefreshRejectedError`) from `refreshToken` when the provider rejected the stored login. The user then sees the same `run /login <provider>` guidance as for a built-in provider. See [Provider OAuth](docs/custom-provider/oauth.md#rejected-logins).
 - Exported `noOpUIContext`, the default no-op extension UI context, from the SDK entry point ([#3801](https://github.com/bastani-inc/atomic/issues/3801))
+- `session.workflows.waitForSettled(runId)` resolves once a workflow run's ending is recorded in the workflow journal and its lease is released, so an SDK host can wait for the journal to be final after a run reports `completed`, `failed` or `killed`. It resolves at once for a run the session is not executing, and rejects with `WorkflowRunStorageError` when the journal could not record the ending. Extensions that call `registerWorkflowRunControl` must implement `waitForSettled` ([#3811](https://github.com/bastani-inc/atomic/issues/3811))
 
 ### Changed
 

@@ -4,6 +4,7 @@ import { reclaimReleasedRunsOwnedBy, releasePausedRunsOwnedBy } from "../durable
 import { canonicalDirectory, isSdkReleasedRunAdoptable } from "../durable/sdk-recovery-scope.js";
 import { availableStoreDurableBackend, requireStoreDurableBackend } from "../durable/store-backend.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
+import { settleEndedRuns } from "../runs/background/ended-run-settlement.js";
 import { quitAllRuns } from "../runs/background/quit.js";
 import { killAllRuns } from "../runs/background/status.js";
 import { installCompactionHook } from "../shared/persistence-compaction-policy.js";
@@ -163,6 +164,16 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 								(result) =>
 									`${result.runId}: ${result.reason}${"message" in result ? ` (${result.message})` : ""}`,
 							)
+							.join("; "),
+					);
+			},
+			async () => {
+				if (boundary !== "quit") return;
+				const failures = await settleEndedRuns({ store, jobs });
+				if (failures.length > 0)
+					throw new Error(
+						failures
+							.map((failure) => `${failure.runId}: ended but its ending was not recorded (${failure.message})`)
 							.join("; "),
 					);
 			},
