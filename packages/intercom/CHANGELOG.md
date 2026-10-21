@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- `intercom list` with a `group` that names a workflow invocation group you are not a member of no longer reports `No sessions or workflow stages in this group.` The group is visible only to its members, so the peek now says that and tells you to `intercom join` it to see its stages, instead of looking like a run whose stages had all disappeared.
+
 ## [0.9.40] - 2026-10-20
 
 ### Added

@@ -1636,19 +1636,21 @@ class IntercomBroker {
 		if (requester === undefined) throw new Error("Session not found");
 		const requestId = clientMessage.requestId;
 		const selectedGroup = clientMessage.group;
+		const restricted = typeof selectedGroup === "string" && !this.canInspectSelectedGroup(requester, selectedGroup);
 		const visible = (sessions: ReadonlyMap<string, Pick<ConnectedSession, "info">>): SessionInfo[] =>
-			typeof selectedGroup === "string"
-				? this.canInspectSelectedGroup(requester, selectedGroup)
+			restricted
+				? []
+				: typeof selectedGroup === "string"
 					? sessionsInGroup(sessions, selectedGroup)
-					: []
-				: sessionsVisibleTo(sessions, requester.info);
+					: sessionsVisibleTo(sessions, requester.info);
 		const respond = (sessions: SessionInfo[]): void => {
 			writeMessageIfOpen(socket, {
 				type: "sessions",
 				requestId,
 				sessions,
-				workflowStages: this.workflowStagesVisibleTo(requester, selectedGroup),
-				workflowFutureStages: this.workflowFutureStagesVisibleTo(requester, selectedGroup),
+				workflowStages: restricted ? [] : this.workflowStagesVisibleTo(requester, selectedGroup),
+				workflowFutureStages: restricted ? [] : this.workflowFutureStagesVisibleTo(requester, selectedGroup),
+				...(restricted ? { restricted: true as const } : {}),
 			});
 		};
 		const multiNode = this.multiNode;

@@ -70,6 +70,8 @@ export interface SessionDirectory {
 	readonly sessions: SessionInfo[];
  	readonly workflowStages: WorkflowStageRosterEntry[];
 	readonly workflowFutureStages: WorkflowFutureStageRosterEntry[];
+	/** The peeked workflow invocation group exists but is visible only to its members. */
+	readonly restricted?: true;
  }
 
 export interface WorkflowStageRosterAnnouncement {
@@ -233,7 +235,7 @@ export type BrokerMessage =
 	  }
   | { type: "registration_failed"; reason: string; code?: LiveWorkflowStageRouteRefusalCode }
   | { type: "question_target"; messageId: string; attemptId: string; sessionId: string }
- | { type: "sessions"; requestId: string; sessions: SessionInfo[]; workflowStages?: WorkflowStageRosterEntry[]; workflowFutureStages?: WorkflowFutureStageRosterEntry[] }
+ | { type: "sessions"; requestId: string; sessions: SessionInfo[]; workflowStages?: WorkflowStageRosterEntry[]; workflowFutureStages?: WorkflowFutureStageRosterEntry[]; restricted?: true }
 	| { type: "groups"; requestId: string; groups: GroupSummary[] }
 	| { type: "membership_ack"; requestId: string; groups: string[] }
   | { type: "supervisor_authorized"; requestId: string; capability: string; supervisorSessionId: string; childName: string }

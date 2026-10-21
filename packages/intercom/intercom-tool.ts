@@ -436,9 +436,12 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
 				...peeked.workflowStages.map(formatWorkflowStageRow),
 				...(peeked.workflowFutureStages ?? []).map(formatWorkflowFutureStageRow),
 			  ];
-			  const section = rows.length === 0
-				? `**Group [${requestedGroup}] (read-only peek):**\nNo sessions or workflow stages in this group.`
-				: `**Group [${requestedGroup}] (read-only peek):**\n${rows.join("\n")}`;
+			  const heading = `**Group [${requestedGroup}] (read-only peek):**`;
+			  const section = peeked.restricted === true
+				? `${heading}\nWorkflow group ${requestedGroup} is visible only to its members. Join it with \`intercom join\` to list its stages.`
+				: rows.length === 0
+					? `${heading}\nNo sessions or workflow stages in this group.`
+					: `${heading}\n${rows.join("\n")}`;
 			  return {
 				content: [{ type: "text", text: `Your groups: ${ownGroups.join(", ")}\n\n${section}` }],
 				isError: false,
@@ -450,6 +453,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
 					...((peeked.workflowFutureStages?.length ?? 0) === 0
 						? {}
 						: { workflowFutureStages: peeked.workflowFutureStages }),
+					...(peeked.restricted === true ? { restricted: true } : {}),
 				},
 			  };
             }
