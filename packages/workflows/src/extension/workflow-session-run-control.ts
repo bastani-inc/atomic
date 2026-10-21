@@ -16,7 +16,11 @@ import {
 	WorkflowStageResumeUnsupportedError,
 } from "@bastani/atomic";
 import type { DurableWorkflowCatalogEntries } from "../durable/backend.js";
+import { JournalError } from "../durable/journal/types.js";
 import { canonicalDirectory, isSdkDurableRunInScope } from "../durable/sdk-recovery-scope.js";
+import { awaitJobSettlement } from "../runs/background/ended-run-settlement.js";
+import { currentJobTracker, type JobTracker } from "../runs/background/job-tracker.js";
+import { describeErrorWithCauses } from "../shared/error-with-causes.js";
 import { isRunIdPrefix, resolveRunIdTarget } from "../shared/run-id.js";
 import type { Store } from "../shared/store.js";
 import { workflowIdentity } from "../shared/workflow-identity.js";
@@ -37,6 +41,8 @@ export interface SessionRunControlHost {
 	readonly context: () => PiEventContext | undefined;
 	readonly store: Pick<Store, "runs">;
 	readonly catalog?: () => Promise<DurableWorkflowCatalogEntries>;
+	/** The owning session's executors; defaults to the current session's. */
+	readonly jobs?: Pick<JobTracker, "get">;
 }
 
 function executeContext(ctx: PiEventContext | undefined): PiExecuteContext {
@@ -259,6 +265,17 @@ export function createSessionRunControl(host: SessionRunControlHost): WorkflowRu
 		},
 		async quit(runId) {
 			return controlOutcome(await request({ action: "quit", ...target(runId) }));
+		},
+		async waitForSettled(runId) {
+			const job = (host.jobs ?? currentJobTracker()).get(runId);
+			if (job === undefined) return;
+			try {
+				await awaitJobSettlement(job);
+			} catch (error) {
+				const cause = error instanceof Error ? error : new Error(String(error));
+				const code = error instanceof JournalError ? "storage_unavailable" : classifyControlError(error);
+				throw failure(code, `Run ${runId} did not settle cleanly: ${describeErrorWithCauses(error)}`, runId, cause);
+			}
 		},
 		async resume(runId, options) {
 			return controlOutcome(

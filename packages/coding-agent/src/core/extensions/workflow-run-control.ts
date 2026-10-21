@@ -151,6 +151,14 @@ export interface WorkflowRunControl {
 	pause(target: WorkflowRunAllTarget): Promise<WorkflowRunControlOutcome>;
 	quit(target: string | WorkflowRunAllTarget): Promise<WorkflowRunControlOutcome>;
 	resume(runId: string, options?: WorkflowRunResumeOptions): Promise<WorkflowRunControlOutcome>;
+	/**
+	 * Resolves once this session has finished executing the run, which includes recording its ending in the
+	 * workflow journal and releasing its lease. A run reports `completed`, `failed` or `killed` before this
+	 * point, so wait here before treating the journal as final. Resolves at once when this session is not
+	 * executing the run. Rejects with `WorkflowRunStorageError` when the journal could not record the ending.
+	 * It never times out; race it against your own deadline.
+	 */
+	waitForSettled(runId: string): Promise<void>;
 }
 
 /** `session.workflows`: run management plus observation of the workflow runs owned by one session. */

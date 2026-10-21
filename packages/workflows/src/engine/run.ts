@@ -871,6 +871,7 @@ async function executeRun(
 	};
 	const runtimeSettled = Promise.withResolvers<void>();
 	let durableRootAdmitted = false;
+	let terminalStatusCommitted = false;
 	let pausePersistence: Promise<void> | undefined;
 	let resumePersistence: Promise<void> | undefined;
 	let controlSettlements: Promise<void> = Promise.resolve();
@@ -1073,6 +1074,7 @@ async function executeRun(
 			await recordRunResultCheckpointAsync(durableBackend, runSnapshot);
 		}
 		await durableBackend.commitWorkflowStatus(runId, returned.status, undefined, returned.metadata?.resumable);
+		terminalStatusCommitted = true;
 		await appendRunEndWhenRecorded(opts.persistence, recorded, {
 			runId,
 			status: returned.status,
@@ -1233,6 +1235,8 @@ async function executeRun(
 					runSnapshot,
 					isRoot: opts.parentRun === undefined,
 					durableBackend,
+					terminalStatusCommitted,
+					store: activeStore,
 				});
 			}
 		} finally {

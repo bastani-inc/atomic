@@ -171,4 +171,8 @@ export class SessionWorkflowsHandle implements SessionWorkflows {
 	async resume(runId: string, options?: WorkflowRunResumeOptions): Promise<WorkflowRunControlOutcome> {
 		return this.control().resume(runId, options);
 	}
+
+	async waitForSettled(runId: string): Promise<void> {
+		return this.control().waitForSettled(runId);
+	}
 }
