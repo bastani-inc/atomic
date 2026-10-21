@@ -1,20 +1,29 @@
 import assert from "node:assert/strict";
+import { performance } from "node:perf_hooks";
 import type { Credential } from "@bastani/pi-ai";
 import { afterEach, test, vi } from "vitest";
 import { makeTempDirectory, removeTempDirectory } from "../../../test/helpers/runtime.ts";
+import { TEST_TIMEOUT_MS } from "../../../test/helpers/test-timeout.ts";
 import { OAUTH_REFRESH_LOCK_HOLD_MS } from "../../ai/src/auth/resolve.ts";
 import { FileAuthStorageBackend } from "../src/core/auth-storage.ts";
 
 const PROVIDER = "openai-1";
 
-/** Fake time advanced per step; real file-system work for the locks runs between steps. */
+/** Fake time advanced per step while the holder keeps the lock; real file-system work for the locks runs between steps. */
 const FAKE_CLOCK_STEP_MS = 1_000;
 
 /** Real event-loop turns given to lock file I/O after each fake-clock step. */
 const IO_TURNS_PER_STEP = 5;
 
-/** Steps allowed for a released lock to reach the waiter: its longest poll interval is a few seconds. */
-const MAX_STEPS_UNTIL_ACQUIRED = 60;
+/** Bounded real-time waits in one test; each gets an equal share of the per-test budget. */
+const BOUNDED_WAITS_PER_TEST = 3;
+
+/**
+ * Real (unfaked) time a wait gives lock file I/O to reach the state it expects. Lock I/O runs on the libuv
+ * threadpool, which a loaded CI runner can delay far beyond any fixed number of event-loop turns, so waits are
+ * bounded in real time. Splitting the per-test budget makes a stuck wait fail with its own message, not a timeout.
+ */
+const LOCK_IO_SETTLE_MS = TEST_TIMEOUT_MS / (BOUNDED_WAITS_PER_TEST + 1);
 
 const rotated: Credential = { type: "oauth", access: "fake-access-2", refresh: "fake-refresh-2", expires: 1 };
 
@@ -39,6 +48,20 @@ async function advanceFakeClock(ms: number): Promise<void> {
 	}
 }
 
+/**
+ * Lets real lock I/O run until `reached()` holds, failing after LOCK_IO_SETTLE_MS of real time. With
+ * `fireSleepingTimers`, a fake timer that is pending while no I/O is in flight (a poll sleep) is fired, so fake
+ * time advances only as far as the code under test actually sleeps, never ahead of its file-system work.
+ */
+async function waitUntil(reached: () => boolean, what: string, fireSleepingTimers = false): Promise<void> {
+	const deadline = performance.now() + LOCK_IO_SETTLE_MS;
+	while (!reached()) {
+		assert.ok(performance.now() < deadline, `${what} within ${LOCK_IO_SETTLE_MS} ms`);
+		await letLockIoRun();
+		if (fireSleepingTimers && !reached() && vi.getTimerCount() > 0) await vi.advanceTimersToNextTimerAsync();
+	}
+}
+
 type Settled = { state: "pending" } | { state: "fulfilled" } | { state: "rejected"; error: Error };
 
 function track(promise: Promise<object>): { readonly current: Settled } {
@@ -56,17 +79,15 @@ function track(promise: Promise<object>): { readonly current: Settled } {
 
 /** Another session holding the provider lock (heartbeating it) until `release` is called. */
 async function holdProviderLock(authPath: string) {
-	const holding = gate();
+	let holding = false;
 	const release = gate();
 	const done = new FileAuthStorageBackend(authPath).modifyProviderAsync(PROVIDER, async () => {
-		holding.release();
+		holding = true;
 		await release.promise;
 		return rotated;
 	});
-	while (!(await Promise.race([holding.promise.then(() => true), letLockIoRun().then(() => false)]))) {
-		await vi.advanceTimersByTimeAsync(0);
-	}
-	return { release: release.release, done };
+	await waitUntil(() => holding, "the holder takes the free provider lock");
+	return { release: release.release, done: track(done), settled: done.catch(() => undefined) };
 }
 
 afterEach(() => {
@@ -95,14 +116,14 @@ test("a session waiting for the provider lock outlasts a holder that keeps it fo
 		);
 
 		holder.release();
-		for (let step = 0; step < MAX_STEPS_UNTIL_ACQUIRED && waiter.current.state === "pending"; step++) {
-			await advanceFakeClock(FAKE_CLOCK_STEP_MS);
-		}
+		await waitUntil(() => holder.done.current.state !== "pending", "the holder commits and releases the lock");
+		assert.deepEqual(holder.done.current, { state: "fulfilled" });
+		await waitUntil(() => waiter.current.state !== "pending", "the waiter takes the released lock", true);
 		assert.deepEqual(waiter.current, { state: "fulfilled" });
 		assert.deepEqual(seen, rotated, "the waiter reads the credential the holder committed");
 	} finally {
 		holder.release();
-		await holder.done.catch(() => undefined);
+		await holder.settled;
 		vi.useRealTimers();
 		removeTempDirectory(directory);
 	}
@@ -117,6 +138,7 @@ test("a session waiting for the provider lock stops waiting when its lock wait i
 		const lockWait = new AbortController();
 		const reason = new Error("caller stopped waiting");
 		let ran = false;
+		const timersBeforeWaiter = vi.getTimerCount();
 		const waiter = track(
 			new FileAuthStorageBackend(authPath).modifyProviderAsync(
 				PROVIDER,
@@ -127,17 +149,19 @@ test("a session waiting for the provider lock stops waiting when its lock wait i
 				lockWait.signal,
 			),
 		);
-		await advanceFakeClock(FAKE_CLOCK_STEP_MS);
+		// The waiter found the lock held and is sleeping until its next poll.
+		await waitUntil(() => vi.getTimerCount() > timersBeforeWaiter, "the waiter starts polling the held lock");
 
+		// No fake time passes: the cancellation must end the poll sleep itself, not wait for it to elapse.
 		lockWait.abort(reason);
-		await advanceFakeClock(FAKE_CLOCK_STEP_MS);
+		await waitUntil(() => waiter.current.state !== "pending", "the cancelled waiter stops waiting");
 
 		assert.equal(waiter.current.state, "rejected");
 		assert.equal(waiter.current.state === "rejected" ? waiter.current.error : undefined, reason);
 		assert.equal(ran, false);
 	} finally {
 		holder.release();
-		await holder.done.catch(() => undefined);
+		await holder.settled;
 		vi.useRealTimers();
 		removeTempDirectory(directory);
 	}
