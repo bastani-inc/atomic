@@ -217,6 +217,7 @@ async function startCompactionQueuePrompt(mode: InteractiveModeBase): Promise<bo
 async function promptUntilAccepted(
 	mode: InteractiveModeBase,
 	message: CompactionQueuedMessage,
+	onQueued?: () => void,
 ): Promise<{ error: unknown } | undefined> {
 	let accept!: (accepted: boolean) => void;
 	const accepted = new Promise<boolean>((resolve) => {
@@ -224,7 +225,10 @@ async function promptUntilAccepted(
 	});
 	const prompt = mode.session.prompt(message.text, {
 		streamingBehavior: message.mode,
-		preflightResult: (success) => accept(success),
+		preflightResult: (success, disposition) => {
+			if (success && disposition === "queued") onQueued?.();
+			accept(success);
+		},
 	});
 	prompt.then(
 		() => accept(true),
@@ -248,7 +252,11 @@ async function sendHeldInput(mode: InteractiveModeBase): Promise<void> {
 		if (!message) return;
 		const echoed = !message.text.startsWith("/");
 		if (echoed) mode.renderDeferredUserInput(message.text);
-		const refused = await promptUntilAccepted(mode, message);
+		const refused = await promptUntilAccepted(
+			mode,
+			message,
+			echoed ? () => mode.discardDeferredRenderedUserInput(message.text) : undefined,
+		);
 		if (refused !== undefined) {
 			if (echoed) mode.discardDeferredRenderedUserInput(message.text);
 			returnCompactionMessage(mode, message, refused.error);

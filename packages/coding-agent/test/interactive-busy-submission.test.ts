@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { afterEach, describe, test } from "vitest";
 import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.ts";
+import type { ExtensionFactory } from "../src/core/extensions/index.ts";
 import {
 	countOf,
 	createGate,
 	createRig,
 	DUPLICATE_DELIVERY_SETTLE_MS,
+	type Gate,
 	gateOnce,
 	holdTool,
 	hookGate,
@@ -19,6 +21,30 @@ import {
 	waitFor,
 } from "./helpers/busy-submission-rig.ts";
 import { getAssistantTexts, getUserTexts } from "./suite/harness.ts";
+
+function isShownOnceAsQueued(host: Rig["host"], text: string): boolean {
+	const pendingLines = host.pendingMessagesContainer.render(200).filter((line) => line.includes(text));
+	return pendingLines.length === 1 && countOf(host.rendered, text) === countOf(host.discarded, text);
+}
+
+function settledHandlerSends(
+	gate: Gate,
+	sendBeforeWaiting: boolean,
+	deliverAs: "followUp" | undefined,
+): ExtensionFactory {
+	const wait = gateOnce(gate);
+	let armed = true;
+	return (pi) => {
+		pi.on("agent_settled", async () => {
+			if (!armed) return;
+			armed = false;
+			const send = () => pi.sendUserMessage("EXT", deliverAs ? { deliverAs } : undefined);
+			if (sendBeforeWaiting) send();
+			await wait();
+			if (!sendBeforeWaiting) send();
+		});
+	};
+}
 
 describe.each(["local", "isolated"] as const)("interactive submissions while the agent is busy (%s host)", (wiring) => {
 	const rigs: Rig[] = [];
@@ -157,6 +183,9 @@ describe.each(["local", "isolated"] as const)("interactive submissions while the
 			await waitFor("both messages to be visible while the settled handlers run", () =>
 				["M-settled-1", "M-settled-2"].every((text) => isVisible(rig.host, text)),
 			);
+			await waitFor("each message to be shown once, as a queued entry", () =>
+				["M-settled-1", "M-settled-2"].every((text) => isShownOnceAsQueued(rig.host, text)),
+			);
 			assert.deepEqual(rig.host.pendingUserInputs, [], "a message was parked where nothing shows or delivers it");
 			assert.deepEqual(getUserTexts(rig.engine), ["P1"], "a message was delivered before the handlers finished");
 
@@ -206,6 +235,51 @@ describe.each(["local", "isolated"] as const)("interactive submissions while the
 			assert.deepEqual(rig.host.notices, ["error: the session refused the queued message"]);
 			assert.deepEqual(getUserTexts(rig.engine), ["P1"], "the refused message was delivered anyway");
 		});
+
+		test.each([
+			{ extensionSends: "after", deliverAs: undefined, expected: ["P1", "M-settled", "EXT"] },
+			{ extensionSends: "after", deliverAs: "followUp", expected: ["P1", "M-settled", "EXT"] },
+			{ extensionSends: "before", deliverAs: undefined, expected: ["P1", "EXT", "M-settled"] },
+			{ extensionSends: "before", deliverAs: "followUp", expected: ["P1", "EXT", "M-settled"] },
+		] as const)(
+			"an extension message sent from agent_settled $extensionSends the user types there (deliverAs $deliverAs) is delivered once, in order, beside it",
+			async ({ extensionSends, deliverAs, expected }) => {
+				const settled = createGate();
+				const rig = await createRig(wiring, load, {
+					extensions: [settledHandlerSends(settled, extensionSends === "before", deliverAs)],
+				});
+				rigs.push(rig);
+				rig.engine.setResponses([
+					fauxAssistantMessage("first answer"),
+					fauxAssistantMessage("second answer"),
+					fauxAssistantMessage("third answer"),
+					fauxAssistantMessage("unexpected extra reply"),
+				]);
+
+				await rig.host.defaultEditor.onSubmit?.("P1");
+				await settled.entered.promise;
+				if (wiring === "isolated") {
+					await waitFor("the host to see the prompt dispatched", () => rig.host.onInputCallback !== undefined);
+				}
+				await rig.host.defaultEditor.onSubmit?.("M-settled");
+				await waitFor("the typed message to be visible while the settled handlers run", () =>
+					isVisible(rig.host, "M-settled"),
+				);
+				await waitFor("the session to queue the typed message", () =>
+					rig.engine.session.getSteeringMessages().includes("M-settled"),
+				);
+
+				settled.release.resolve();
+				await waitFor("both messages to be answered", () => {
+					const users = getUserTexts(rig.engine);
+					return users.includes("M-settled") && users.includes("EXT") && isIdleAfterAnswering(rig.engine);
+				});
+				await sleep(DUPLICATE_DELIVERY_SETTLE_MS);
+
+				assert.deepEqual(getUserTexts(rig.engine), expected, "order or exactly-once delivery was lost");
+				assert.deepEqual(rig.host.notices, [], "a notice was shown for an accepted message");
+			},
+		);
 	});
 });
 
@@ -243,6 +317,9 @@ describe.each(["quiet", "loaded"] as const)("isolated host, %s process", (load) 
 			const queued = rig.engine.session.getSteeringMessages().includes("M-stale");
 			return queued || getUserTexts(rig.engine).includes("M-stale") || rig.host.notices.length > 0;
 		});
+		await waitFor("the typed message to be shown once, as a queued entry", () =>
+			isShownOnceAsQueued(rig.host, "M-stale"),
+		);
 		turnStart.release.resolve();
 		firstReply.release.resolve();
 		await waitFor("the typed message to be answered", () =>
@@ -251,7 +328,6 @@ describe.each(["quiet", "loaded"] as const)("isolated host, %s process", (load) 
 
 		assert.equal(countOf(getUserTexts(rig.engine), "M-stale"), 1, "the typed message was not delivered exactly once");
 		assert.deepEqual(rig.host.notices, [], "the busy engine rejected the message");
-		assert.deepEqual(rig.host.discarded, [], "the typed message was shown and then discarded");
 	});
 
 	test("a queued batch is delivered in order even when its first prompt finishes before the rest is queued", async () => {

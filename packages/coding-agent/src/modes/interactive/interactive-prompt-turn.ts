@@ -52,8 +52,9 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 			}
 			await this.session.prompt(userInput, {
 				streamingBehavior: "steer",
-				preflightResult: (success) => {
+				preflightResult: (success, disposition) => {
 					refused = !success;
+					if (success && disposition === "queued") this.discardDeferredRenderedUserInput(userInput);
 					settleDispatch();
 				},
 			});

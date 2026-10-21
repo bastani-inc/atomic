@@ -846,11 +846,11 @@ function canContinueQueuedInput(session: AgentSession): boolean {
 }
 
 function deliverQueuedInputIfIdle(session: AgentSession): void {
-	const deliver = (): void => {
-		if (canContinueQueuedInput(session)) void session._continueQueuedAgentMessages().catch(() => {});
+	const deliver = async (): Promise<void> => {
+		if (canContinueQueuedInput(session)) await session._continueQueuedAgentMessages().catch(() => {});
 	};
-	if (session._isEmittingAgentSettled) session._deferredSettledActions.push(async () => deliver());
-	else if (session._activePromptCount === 0) deliver();
+	if (session._isEmittingAgentSettled) session._deferredSettledActions.push(deliver);
+	else if (session._activePromptCount === 0) void deliver();
 }
 
 /**
