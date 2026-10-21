@@ -1411,12 +1411,12 @@ describe("Generate E2E Tests", () => {
 		});
 
 		it.skipIf(!githubCopilotToken)("should handle thinking", { retry: 2 }, async () => {
-			const thinkingModel = getModel("github-copilot", "gpt-5-mini");
+			const thinkingModel = getModel("github-copilot", "gpt-5.4-nano");
 			await handleThinking(thinkingModel, { apiKey: githubCopilotToken, reasoningEffort: "high" });
 		});
 
 		it.skipIf(!githubCopilotToken)("should handle multi-turn with thinking and tools", { retry: 3 }, async () => {
-			const thinkingModel = getModel("github-copilot", "gpt-5-mini");
+			const thinkingModel = getModel("github-copilot", "gpt-5.4-nano");
 			await multiTurn(thinkingModel, { apiKey: githubCopilotToken, reasoningEffort: "high" });
 		});
 
