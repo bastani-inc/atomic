@@ -26,6 +26,7 @@ export function isStructuredOutputContractFailure(message: string): boolean {
 		message.startsWith('Validation failed for tool "structured_output":') ||
 		message.startsWith("Invalid structured output: response does not match the decision schema.") ||
 		message.startsWith("Invalid structured output: non-JSON decision.") ||
+		message.startsWith("Invalid structured output: tool call arguments were not valid JSON.") ||
 		message.startsWith("Structured output requires one structured_output call.") ||
 		message.startsWith("Structured output requires exactly one structured_output call and no provider fallback.") ||
 		message === "Structured output requires complete judgment instructions." ||

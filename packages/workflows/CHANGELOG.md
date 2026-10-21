@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Workflow stage sessions now provide `ctx.ui.theme` and the other default UI members, so extensions that read `ctx.ui.theme.fg(...)` in `session_start`, such as `examples/extensions/status-line.ts`, no longer fail stage startup with `Extension startup failed` ([#3801](https://github.com/bastani-inc/atomic/issues/3801))
 - Workflow inputs now reject integer and number values outside the `minimum`/`maximum` declared in the input schema, such as `count: 0` for `Type.Integer({ minimum: 1, maximum: 8 })`, when the run is started, instead of passing them to the workflow body. The error names the input and the violated bound ([#3812](https://github.com/bastani-inc/atomic/issues/3812)).
 - A `ctx.parallel(..., { failFast: false })` call that has a failing step no longer loses the results of the steps that succeeded. The `AggregateError` it rejects with now carries `partialResults`, one entry per step in step order, holding each completed step's result and `undefined` for a step that failed. The `WorkflowParallelFailure` type describes it ([#3809](https://github.com/bastani-inc/atomic/issues/3809))
+- A workflow stage's corrective prompt after a rejected `structured_output` result now names the failing paths and expected types, or reports that the tool arguments were not valid JSON, instead of only saying the response does not match the decision schema ([#3802](https://github.com/bastani-inc/atomic/issues/3802))
 
 ## [0.9.40] - 2026-10-20
 
