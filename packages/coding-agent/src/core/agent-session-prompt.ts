@@ -917,8 +917,7 @@ function deliverQueuedInputIfIdle(session: AgentSession, options?: { userSubmiss
 		}
 		await runQueuedInput(session).catch(() => {});
 	};
-	if (session._isEmittingAgentSettled || (options?.userSubmission && openRuns.has(session)))
-		session._deferredSettledActions.push(deliver);
+	if (session._isEmittingAgentSettled || openRuns.has(session)) session._deferredSettledActions.push(deliver);
 	else if (session._activePromptCount === 0) void deliver();
 }
 

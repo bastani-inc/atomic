@@ -4,6 +4,7 @@ import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AgentSessionInternalSurface } from "../../src/core/agent-session-methods.ts";
 import { convertToLlm } from "../../src/core/messages.ts";
 import { createHarness, getAssistantTexts, getMessageText, getUserTexts, type Harness } from "./harness.ts";
 
@@ -510,13 +511,13 @@ describe("AgentSession queue characterization", () => {
 			? harness.session.steer("queued while idle")
 			: harness.session.followUp("queued while idle"));
 		await vi.waitFor(() =>
-			expect(getAssistantTexts(harness)).toEqual(["first reply", "reply to the queued message"]),
+			assert.deepEqual(getAssistantTexts(harness), ["first reply", "reply to the queued message"]),
 		);
 		await harness.session.agent.waitForIdle();
 
-		expect(getUserTexts(harness)).toEqual(["first", "queued while idle"]);
-		expect(harness.session.getSteeringMessages()).toEqual([]);
-		expect(harness.session.getFollowUpMessages()).toEqual([]);
+		assert.deepEqual(getUserTexts(harness), ["first", "queued while idle"]);
+		assert.deepEqual(harness.session.getSteeringMessages(), []);
+		assert.deepEqual(harness.session.getFollowUpMessages(), []);
 	});
 
 	it.each(["steer", "followUp"] as const)(
@@ -543,7 +544,7 @@ describe("AgentSession queue characterization", () => {
 			await (behavior === "steer"
 				? harness.session.steer("queued while idle")
 				: harness.session.followUp("queued while idle"));
-			await vi.waitFor(() => expect(harness.eventsOfType("agent_settled")).toHaveLength(2), {
+			await vi.waitFor(() => assert.equal(harness.eventsOfType("agent_settled").length, 2), {
 				timeout: IDLE_DELIVERY_SETTLE_TIMEOUT_MS,
 			});
 			await new Promise((resolve) => setTimeout(resolve, PAUSED_QUEUE_SETTLE_MS));
@@ -559,6 +560,61 @@ describe("AgentSession queue characterization", () => {
 			assert.equal(extensionSettles, 2, "extensions did not see the delivering run settle");
 			assert.deepEqual(getUserTexts(harness), ["first", "queued while idle"]);
 			assert.equal(harness.session.isStreaming, false);
+		},
+	);
+
+	it.each(["steer", "followUp"] as const)(
+		"delivers a %s queued while the finished run flushes its custom messages",
+		async (behavior) => {
+			const harness = await createHarness();
+			harnesses.push(harness);
+			harness.setResponses([
+				fauxAssistantMessage("first reply"),
+				fauxAssistantMessage("reply to the queued message"),
+				fauxAssistantMessage("unexpected reply"),
+			]);
+			const session = harness.session as typeof harness.session &
+				Pick<AgentSessionInternalSurface, "_flushPendingCustomMessages">;
+			const flush = session._flushPendingCustomMessages.bind(session);
+			let armed = false;
+			let flushEntered: () => void = () => {};
+			const entered = new Promise<void>((resolve) => {
+				flushEntered = resolve;
+			});
+			let releaseFlush: () => void = () => {};
+			const released = new Promise<void>((resolve) => {
+				releaseFlush = resolve;
+			});
+			session.subscribe((event) => {
+				if (event.type === "agent_end") armed = true;
+			});
+			session._flushPendingCustomMessages = async () => {
+				if (armed) {
+					armed = false;
+					flushEntered();
+					await released;
+				}
+				return flush();
+			};
+
+			const firstRun = session.prompt("first");
+			await entered;
+			const queued =
+				behavior === "steer" ? session.steer("queued during flush") : session.followUp("queued during flush");
+			await queued;
+			releaseFlush();
+			await firstRun;
+			await vi.waitFor(
+				() => assert.deepEqual(getAssistantTexts(harness), ["first reply", "reply to the queued message"]),
+				{ timeout: IDLE_DELIVERY_SETTLE_TIMEOUT_MS },
+			);
+			await vi.waitFor(() => assert.equal(harness.eventsOfType("agent_settled").length, 2), {
+				timeout: IDLE_DELIVERY_SETTLE_TIMEOUT_MS,
+			});
+
+			assert.deepEqual(getUserTexts(harness), ["first", "queued during flush"]);
+			assert.deepEqual(session.getSteeringMessages(), []);
+			assert.deepEqual(session.getFollowUpMessages(), []);
 		},
 	);
 
@@ -616,7 +672,7 @@ describe("AgentSession queue characterization", () => {
 		await harness.session.steer("held while paused");
 		await new Promise((resolve) => setTimeout(resolve, PAUSED_QUEUE_SETTLE_MS));
 
-		expect(getAssistantTexts(harness)).toEqual(["first reply"]);
-		expect(harness.session.getSteeringMessages()).toEqual(["held while paused"]);
+		assert.deepEqual(getAssistantTexts(harness), ["first reply"]);
+		assert.deepEqual(harness.session.getSteeringMessages(), ["held while paused"]);
 	});
 });

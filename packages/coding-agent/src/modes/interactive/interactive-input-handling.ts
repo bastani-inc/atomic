@@ -12,6 +12,7 @@ import {
 	remoteEngineProxyOwner,
 	remoteProxyHandlesCtrlC,
 } from "../interactive-engine/remote-input-ownership.ts";
+import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
 import { showTaskInspector } from "../rpc/task-ui-bridge.js";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
 import { COMPACTION_ALREADY_IN_PROGRESS_WARNING } from "./interactive-bash-compact.ts";
@@ -463,6 +464,10 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 					});
 				} catch (error) {
 					if (accepted) throw error;
+					if (isRpcRequestAcceptedFailure(error)) {
+						this.showError(error.message);
+						return;
+					}
 					restoreRefusedSubmission(this, error, submittedDraft);
 					return;
 				}

@@ -3,6 +3,7 @@ import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { afterEach, describe, test } from "vitest";
 import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.ts";
 import type { ExtensionFactory } from "../src/core/extensions/index.ts";
+import { asAcceptedRequestFailure, rpcTransportError } from "../src/modes/rpc/rpc-transport-error.ts";
 import {
 	countOf,
 	createGate,
@@ -674,6 +675,34 @@ describe("a submission the session refuses while a turn is in flight", () => {
 		assert.equal(refusals(), 1);
 		assert.equal(rig.host.editor.getText(), "M-refused", "the refused text was not restored to the editor");
 		assert.deepEqual(rig.host.notices, ["error: provider rejected the queued message"]);
+	});
+
+	test("accepted by the engine before its response was lost stays out of the editor and is answered once", async () => {
+		const toolHold = createGate();
+		const rig = await createRig("local", "quiet", { tools: [holdTool(toolHold)] });
+		rigs.push(rig);
+		rig.engine.setResponses([
+			fauxAssistantMessage([fauxToolCall("hold", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage("final answer"),
+			fauxAssistantMessage("unexpected extra reply"),
+		]);
+		const originalPrompt = rig.host.session.prompt.bind(rig.host.session);
+		rig.host.session.prompt = async (text, options) => {
+			if (text !== "M-accepted") return originalPrompt(text, options);
+			await originalPrompt(text, { ...options, preflightResult: undefined });
+			throw asAcceptedRequestFailure(rpcTransportError("Agent process stopped"));
+		};
+
+		await rig.host.defaultEditor.onSubmit?.("P1");
+		await toolHold.entered.promise;
+		await rig.host.defaultEditor.onSubmit?.("M-accepted");
+		toolHold.release.resolve();
+		await waitFor("the run to finish", () => getAssistantTexts(rig.engine).includes("final answer"));
+		await waitFor("the engine to go idle", () => isIdleAfterAnswering(rig.engine));
+
+		assert.equal(rig.host.editor.getText(), "", "the accepted message came back to the editor as a draft");
+		assert.equal(countOf(getUserTexts(rig.engine), "M-accepted"), 1, "the accepted message was not delivered once");
+		assert.deepEqual(rig.host.notices, ["error: Agent process stopped"]);
 	});
 
 	test("held behind a prompt that is still being prepared stays queued and visible with a notice", async () => {
