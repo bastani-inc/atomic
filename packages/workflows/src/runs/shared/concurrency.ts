@@ -28,15 +28,26 @@ export class ConcurrencyLimiter {
 
 	/**
 	 * Acquire a slot.  Resolves immediately when capacity is available; otherwise
-	 * queues the caller until a slot is released.
+	 * queues the caller until a slot is released.  A queued caller whose `signal`
+	 * aborts leaves the queue and rejects with the abort reason.
 	 */
-	acquire(): Promise<void> {
+	acquire(signal?: AbortSignal): Promise<void> {
+		if (signal?.aborted) return Promise.reject(signal.reason);
 		if (this._running < this.limit) {
 			this._running++;
 			return Promise.resolve();
 		}
-		return new Promise<void>((resolve) => {
-			this._queue.push(resolve);
+		return new Promise<void>((resolve, reject) => {
+			const grant = (): void => {
+				signal?.removeEventListener("abort", onAbort);
+				resolve();
+			};
+			const onAbort = (): void => {
+				this._queue.splice(this._queue.indexOf(grant), 1);
+				reject(signal?.reason);
+			};
+			this._queue.push(grant);
+			signal?.addEventListener("abort", onAbort, { once: true });
 		});
 	}
 
@@ -57,8 +68,8 @@ export class ConcurrencyLimiter {
 	 * Convenience wrapper: acquires a slot, runs `fn`, releases on completion.
 	 * Rethrows any error thrown by `fn` after releasing.
 	 */
-	async run<T>(fn: () => Promise<T>): Promise<T> {
-		await this.acquire();
+	async run<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+		await this.acquire(signal);
 		try {
 			return await fn();
 		} finally {

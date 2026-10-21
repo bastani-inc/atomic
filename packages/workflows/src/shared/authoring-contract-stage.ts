@@ -6,6 +6,7 @@ import type {
 	ModelConstraints,
 	ModelRoute,
 	ModelRouterOutput,
+	RoutingInferenceBounds,
 	TaskNeeds,
 } from "@bastani/atomic";
 import type { Static, TSchema } from "typebox";
@@ -122,6 +123,8 @@ export interface WorkflowModelCatalogPort {
 		taskNeeds?: TaskNeeds;
 		/** The stage's own constraints set a provider list, replacing the user's provider settings. */
 		overrideProviderSettings?: boolean;
+		/** Deadline and concurrency limit the stage owns for routing inference. */
+		inference?: RoutingInferenceBounds;
 	}): Promise<ModelRoute>;
 	readonly currentModel?: WorkflowModelValue;
 	readonly preferredProvider?: string;

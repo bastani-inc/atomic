@@ -40,6 +40,7 @@ import { nextRetryDecision, sleepOrAbort } from "../shared/retry.js";
 import { isWorkflowPendingStageDeliveryFailure } from "./pending-stage-delivery.js";
 import { StageDeliveryActivity, type StageDeliveryActivityListener } from "./stage-delivery-activity.js";
 import { stageSessionQueueUpdateEvent } from "./stage-queued-user-messages.js";
+import { routeStageModel } from "./stage-routing.js";
 import { StageArtifactCapture } from "./stage-runner-artifact-capture.js";
 import { candidateLabel, modelAttemptReasoning } from "./stage-runner-candidate.js";
 import { StageMessageAdmission } from "./stage-runner-message-admission.js";
@@ -464,7 +465,8 @@ export class StageSessionController {
 		if (!this.awaitingAutoPrompt && this.routingPromise === undefined) return;
 		if (!this.routingPromise) {
 			this.beginStartup();
-			this.routingPromise = (async () => {
+			// A failed routing attempt is not memoized: the next prompt routes again.
+			const routing: Promise<void> = (async () => {
 				const route = this.modelCatalog?.routeModel;
 				if (!route) throw new Error("Workflow stage auto routing requires a routing-capable model catalog.");
 				const options = this.effectiveStageOptions;
@@ -475,7 +477,7 @@ export class StageSessionController {
 					...(thinking === undefined ? [] : [{ allowedEfforts: [thinking] }]),
 				].filter((c): c is ModelConstraints => c !== undefined);
 				try {
-					this.modelRoute = await route({
+					this.modelRoute = await routeStageModel(route, {
 						task: text,
 						stageName: this.opts.stageName,
 						constraints,
@@ -502,7 +504,18 @@ export class StageSessionController {
 				this.modelRoute.assertCurrent();
 				this.meta.stageOptions = { ...options, model: this.modelRoute.modelOverride };
 				this.opts.onModelFallbackMetaChange?.(this.currentModelFallbackMeta());
-			})();
+			})().catch((error: unknown) => {
+				if (this.routingPromise === routing) {
+					this.routingPromise = undefined;
+					this.modelRoute = undefined;
+				}
+				if (this.startupWait.signal.aborted || this.opts.signal?.aborted) throw error;
+				this.settleStartup(true);
+				throw new Error(
+					`atomic-workflows: stage "${this.opts.stageName}" failed during startup phase model-resolution: ${errorMessage(error)}`,
+				);
+			});
+			this.routingPromise = routing;
 		}
 		await this.routingPromise;
 	}

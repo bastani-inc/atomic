@@ -193,6 +193,7 @@ export {
 	AutoRoutingInferenceError,
 	type ModelRoute,
 	type ModelRoutingContext,
+	type RoutingInferenceBounds,
 	routeExecutionModel,
 } from "./core/execution-model-router.js";
 export { areExperimentalFeaturesEnabled } from "./core/experimental.ts";

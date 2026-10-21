@@ -98,6 +98,43 @@ describe("ConcurrencyLimiter", () => {
 		assert.equal(result, "ok");
 	});
 
+	test("a queued acquire leaves the queue when its signal aborts and never takes a slot", async () => {
+		const lim = new ConcurrencyLimiter(1);
+		await lim.acquire();
+		const controller = new AbortController();
+		const reason = new Error("stage stopped");
+		const abandoned = lim.acquire(controller.signal);
+		let next = false;
+		const waiter = lim.acquire().then(() => {
+			next = true;
+		});
+		assert.equal(lim.queued, 2);
+
+		controller.abort(reason);
+		await assert.rejects(abandoned, reason);
+		assert.equal(lim.queued, 1);
+
+		lim.release();
+		await waiter;
+		assert.equal(next, true);
+		assert.equal(lim.running, 1);
+		lim.release();
+		assert.equal(lim.running, 0);
+	});
+
+	test("an acquire whose signal is already aborted rejects without taking a slot", async () => {
+		const lim = new ConcurrencyLimiter(1);
+		const controller = new AbortController();
+		controller.abort(new Error("stage stopped"));
+		await assert.rejects(lim.acquire(controller.signal), { message: /stage stopped/ });
+		await assert.rejects(
+			lim.run(async () => "never", controller.signal),
+			{ message: /stage stopped/ },
+		);
+		assert.equal(lim.running, 0);
+		assert.equal(lim.queued, 0);
+	});
+
 	test("enforces serialization with limit=1", async () => {
 		const lim = new ConcurrencyLimiter(1);
 		const concurrentPeak = { value: 0 };
