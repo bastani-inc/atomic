@@ -37,7 +37,7 @@ export class IntercomWireProxy {
 	) {}
 
 	async listen(): Promise<void> {
-		mkdirSync(dirname(this.listenPath), { recursive: true });
+		if (process.platform !== "win32") mkdirSync(dirname(this.listenPath), { recursive: true });
 		await new Promise<void>((resolve, reject) => {
 			this.server.once("error", reject);
 			this.server.listen(this.listenPath, () => resolve());

@@ -23,6 +23,7 @@ import { jitteredReconnectDelayMs, reconnectDelayMs } from "../../packages/inter
 import {
 	IntercomBrokerTimeoutError,
 	IntercomClientDisconnectedError,
+	isIntercomBrokerTimeout,
 	isRecoverableIntercomDisconnect,
 } from "../../packages/intercom/recoverable-disconnect.js";
 import { ROUTE_CLIENT_CONNECT_CONCURRENCY } from "../../packages/intercom/route-connect-gate.js";
@@ -183,6 +184,7 @@ function createHost(connectTimeoutMs: (returnAddress: string) => number | undefi
 	const sessionName = `route-burst-host-name-${hostCounter}`;
 	const lifecycleHandlers = new Map<string, Array<(event: object, ctx: object) => unknown>>();
 	const eventHandlers = new Map<string, EventHandler[]>();
+	const emittedEvents: Array<{ eventName: string; payload: object }> = [];
 	const tools = new Map<string, { execute: (...args: unknown[]) => Promise<ToolResult> }>();
 	let activeTools: string[] = [];
 	const context = {
@@ -219,6 +221,7 @@ function createHost(connectTimeoutMs: (returnAddress: string) => number | undefi
 				return () => {};
 			},
 			emit(eventName: string, payload: object) {
+				emittedEvents.push({ eventName, payload });
 				for (const handler of eventHandlers.get(eventName) ?? []) handler(payload);
 			},
 		},
@@ -234,6 +237,7 @@ function createHost(connectTimeoutMs: (returnAddress: string) => number | undefi
 	return {
 		sessionId,
 		sessionName,
+		emittedEvents,
 		start: () => fire("session_start", { type: "session_start", reason: "startup" }),
 		shutdown: () => fire("session_shutdown", { type: "session_shutdown", reason: "quit" }),
 		/** Publish one run's route the way the workflows bridge does, and hand back what it awaits. */
@@ -639,6 +643,13 @@ test("a route published while its run waits out a connection timeout fails retry
 	await withRunInBackoff("99990009", async ({ runId, host, diagnostics }) => {
 		const publishedAt = Date.now();
 		const outcome = await settleWithinBound(host.publishRoute(runId, 2));
+		const retryOutcomes = host.emittedEvents.filter(
+			({ eventName }) => eventName === "atomic:intercom-route-retry-outcome",
+		);
+		assert.equal(retryOutcomes.length, 1, "the failed retry is reported to the outage tracker, waiter or not");
+		const [retryOutcome] = retryOutcomes;
+		assert.ok(retryOutcome);
+		assert.equal(isIntercomBrokerTimeout((retryOutcome.payload as { error?: Error }).error), true);
 
 		assert.ok(outcome.status === "rejected", "the retry meets the same unresponsive broker");
 		assert.ok(

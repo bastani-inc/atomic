@@ -49,6 +49,7 @@ import { sleep } from "../helpers/runtime.js";
 
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
 const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
+const ROUTE_RETRY_OUTCOME_EVENT = "atomic:intercom-route-retry-outcome";
 const SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT = "subagent:result-intercom-delivery";
 const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
 const EXTENSION_PATH = "<intercom>";
@@ -693,6 +694,37 @@ describe("Intercom broker registration timeout at the lazy event-relay boundary"
 		await tick();
 
 		assert.deepEqual(consoleErrorCalls, []);
+	});
+
+	test("reports a broker that stays silent through repeated failed route retries with no further publications", async () => {
+		const current = fixture([]);
+		vi.useFakeTimers({ toFake: ["Date"] });
+		try {
+			const outageStart = Date.UTC(2026, 0, 1);
+			const failRetry = async (at: number): Promise<void> => {
+				vi.setSystemTime(at);
+				current.emitPiEvent(ROUTE_RETRY_OUTCOME_EVENT, {
+					runId: "run-1",
+					error: new IntercomBrokerTimeoutError("Connection timeout"),
+				});
+				await tick();
+			};
+			await failRetry(outageStart);
+			await failRetry(outageStart + PERSISTENT_OUTAGE_MS - 1);
+			assert.equal(outageReports().length, 0, "retries that have not failed for long enough are not an outage");
+
+			await failRetry(outageStart + PERSISTENT_OUTAGE_MS);
+			await failRetry(outageStart + 2 * PERSISTENT_OUTAGE_MS);
+			assert.equal(outageReports().length, 1, "repeated failed retries report one outage");
+
+			current.emitPiEvent(ROUTE_RETRY_OUTCOME_EVENT, { runId: "run-1" });
+			await failRetry(outageStart + 3 * PERSISTENT_OUTAGE_MS);
+			await failRetry(outageStart + 4 * PERSISTENT_OUTAGE_MS);
+			assert.equal(outageReports().length, 2, "a retry that succeeded ended the outage");
+			assert.deepEqual(relayFailureLogs(), []);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	test("reports a broker that stays silent once per outage, and again only after a relay succeeds", async () => {

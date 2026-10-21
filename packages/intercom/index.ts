@@ -78,6 +78,7 @@ interface SupervisorAuthorizationRequest {
 const WORKFLOW_STAGE_LATE_MESSAGE_EVENT = "atomic:workflow-stage-late-message";
 const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
 const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
+const ROUTE_RETRY_OUTCOME_EVENT = "atomic:intercom-route-retry-outcome";
 const RELEASED_STAGE_EVENT = "atomic:workflow-released-stage";
 
 interface PendingStageUndeliverableRelay {
@@ -809,6 +810,17 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		const peers = await recoveryPeers(ctx);
 		const restored = await awaitRestoredIntercomPeers(pi.events, ctx.sessionManager.getSessionId());
 		return planIntercomRecoveryReplay(event.pending, peers, restored);
+	});
+	pi.events.on(ROUTE_RETRY_OUTCOME_EVENT, (payload) => {
+		const outcome = payload as { error?: Error } | undefined;
+		if (outcome?.error === undefined) {
+			brokerOutage.recovered();
+			return;
+		}
+		if (!isIntercomBrokerTimeout(outcome.error)) return;
+		const ctx = latestLifecycleContext();
+		const diagnosticRoute = ctx ? captureDiagnosticRoute(ctx) : shutdownDiagnosticRoute ?? "console";
+		reportBackgroundRelayFailure(diagnosticRoute, PENDING_STAGE_ROUTE_EVENT, outcome.error);
 	});
 	pi.events.on(PENDING_STAGE_UNDELIVERABLE_EVENT, (payload) => {
 		if (!isPendingStageUndeliverableRelay(payload) || payload.handled === true) return;

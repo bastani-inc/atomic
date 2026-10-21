@@ -90,6 +90,8 @@ const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
 const PENDING_STAGE_MESSAGE_EVENT = "atomic:workflow-pending-stage-message";
 const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
 const STICKY_LIVE_DELIVERED_EVENT = "atomic:workflow-sticky-live-delivered";
+/** Heavy → lightweight wrapper: a run's scheduled route retry ended, so the wrapper can track a broker outage. */
+const ROUTE_RETRY_OUTCOME_EVENT = "atomic:intercom-route-retry-outcome";
 /** Intercom → workflows: another process resumed a dormant route's interrupted run (#3760). */
 const PENDING_STAGE_ROUTE_REVOKED_EVENT = "atomic:workflow-pending-stage-route-revoked";
 
@@ -877,8 +879,15 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       }
       state.reconnectAttempt += 1;
       void ensurePendingStageRouteClient(runId, state.route).then(
-        () => state.retryWaiters.succeed(),
-        (error: unknown) => state.retryWaiters.fail(scheduledRetryFailure(toError(error))),
+        () => {
+          state.retryWaiters.succeed();
+          pi.events.emit(ROUTE_RETRY_OUTCOME_EVENT, { runId });
+        },
+        (error: unknown) => {
+          const failure = toError(error);
+          state.retryWaiters.fail(scheduledRetryFailure(failure));
+          pi.events.emit(ROUTE_RETRY_OUTCOME_EVENT, { runId, error: failure });
+        },
       );
     }, jitteredReconnectDelayMs(state.reconnectAttempt));
   }
