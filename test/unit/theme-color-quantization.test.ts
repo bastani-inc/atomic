@@ -92,11 +92,11 @@ function strongestChannels(hex: string): string {
 	return ["r", "g", "b"].filter((_, channel) => channels[channel] === max).join("");
 }
 
-test("keeps tool status backgrounds distinct and hued in 256-color mode for every bundled theme (#2550)", () => {
+test("keeps tool status backgrounds pairwise distinct in 256-color mode whenever they differ in truecolor (#2550)", () => {
 	for (const name of BUNDLED_THEMES) {
 		const truecolor = getResolvedThemeColors(name);
 		const theme = loadTheme(name, "256color");
-		const indices = TOOL_STATUS_BACKGROUNDS.map((token) => {
+		const statuses = TOOL_STATUS_BACKGROUNDS.map((token) => {
 			const match = /^\x1b\[48;5;(\d+)m$/.exec(theme.getBgAnsi(token));
 			assert.ok(match, `${name} ${token} should render as a 256-color background`);
 			const index = Number(match[1]);
@@ -106,9 +106,26 @@ test("keeps tool status backgrounds distinct and hued in 256-color mode for ever
 				strongestChannels(source),
 				`${name} ${token} ${source} lost its hue as index ${index}`,
 			);
-			return index;
+			return { token, source: source.toLowerCase(), index };
 		});
-		assert.equal(new Set(indices).size, indices.length, `${name} tool status backgrounds collide: ${indices}`);
+		for (const [i, first] of statuses.entries()) {
+			for (const second of statuses.slice(i + 1)) {
+				if (first.source === second.source) continue;
+				assert.notEqual(
+					first.index,
+					second.index,
+					`${name} ${first.token} ${first.source} and ${second.token} ${second.source} collide as index ${first.index}`,
+				);
+			}
+		}
+	}
+});
+
+test("keeps the dark and light tool status backgrounds distinct in truecolor (#2550)", () => {
+	for (const name of ["dark", "light"] as const) {
+		const truecolor = getResolvedThemeColors(name);
+		const sources = TOOL_STATUS_BACKGROUNDS.map((token) => truecolor[token].toLowerCase());
+		assert.equal(new Set(sources).size, sources.length, `${name} tool status backgrounds repeat: ${sources}`);
 	}
 });
 

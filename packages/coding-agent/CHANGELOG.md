@@ -21,7 +21,6 @@
 - Reopening `/resume` is faster: the session list is kept between opens and reloads only the sessions that were created, renamed, deleted, or changed since the last open, including changes made by other Atomic processes sharing the store.
 - A subagent stopped with `pause` or `quit`, or by its workflow stage pausing, now reaches the parent as `Subagent <agent> quit · paused, awaiting resume` (or `paused · awaiting resume`) with `Stop reason: quit` or `pause` and the exact `subagent({ action: "resume", id: "<child-id>" })` call, as a quit workflow run is reported, instead of a `parent-handoff` stop notice saying the execution has ended and must not be restarted. Its `/tasks` row shows **Paused · awaiting resume**. Children cancelled for good keep the ended notice.
 - The What's New banner shown after an update now leads with the release's highlights summary and points to `/changelog` for the full list of changes. Releases without a summary still show their full notes ([#3804](https://github.com/bastani-inc/atomic/issues/3804))
-- The Catppuccin themes now tint successful and failed tool blocks green and red instead of drawing pending, successful, and failed tool blocks on the same surface color, so the three states are distinguishable, including in 256-color terminals ([#2550](https://github.com/bastani-inc/atomic/issues/2550))
 
 ### Fixed
 
