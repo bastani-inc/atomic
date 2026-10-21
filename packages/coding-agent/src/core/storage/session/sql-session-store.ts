@@ -1,5 +1,5 @@
 import type { SessionEntry } from "../../session-manager-types.ts";
-import type { SqliteDatabase, SqliteExecutor, SqliteRow } from "../database.js";
+import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "../database.js";
 import { StorageInvalidTextError } from "../errors.js";
 import { renderStorageIdentifiers } from "../prefix.js";
 import { assertStorageSchemaVersion } from "../schema.js";
@@ -40,7 +40,10 @@ export const SESSION_TABLES = Object.freeze({
 type Tables = Readonly<Record<keyof typeof SESSION_TABLES, string>>;
 type HeaderRow = SqliteRow & { header_json: string; last_seq: number };
 type SummaryStateRow = HeaderRow & { summary_state: string };
-type SummaryRow = HeaderRow & {
+type ListingRow = HeaderRow & {
+	id: string;
+	cwd: string;
+	internal: number;
 	modified_at: string;
 	message_count: number;
 	first_message: string;
@@ -48,8 +51,40 @@ type SummaryRow = HeaderRow & {
 	has_name: number;
 	summary: string | null;
 	summarized_through_id: string | null;
-	search_texts_json: string;
 };
+type SummaryRow = ListingRow & { search_texts_json: string };
+
+/** Every listing column except search text, so an unchanged row keeps its cached summary. */
+const LISTING_COLUMNS =
+	"id, cwd, internal, header_json, last_seq, modified_at, message_count, first_message, name, has_name, summary, summarized_through_id";
+/** Rows whose search text is read per query; well under SQLite's bound-parameter limit. */
+export const LISTING_FETCH_BATCH = 500;
+/** Listing scopes (visibility and project) kept at once; the picker uses two. */
+const LISTING_SCOPES = 8;
+
+function summaryFromRow(row: SummaryRow): SessionSummary {
+	const header = JSON.parse(row.header_json) as SessionRecordHeader;
+	return {
+		id: header.id,
+		cwd: header.cwd,
+		...(header.parentSessionId !== undefined ? { parentSessionId: header.parentSessionId } : {}),
+		internal: header.internal === true,
+		...(header.workflow !== undefined ? { workflow: header.workflow } : {}),
+		...(row.name !== null ? { name: JSON.parse(row.name) as string } : {}),
+		hasName: row.has_name === 1,
+		createdAt: header.createdAt,
+		modifiedAt: row.modified_at,
+		messageCount: row.message_count,
+		firstMessage: JSON.parse(row.first_message) as string,
+		...(row.summary !== null ? { summary: JSON.parse(row.summary) as string } : {}),
+		...(row.summarized_through_id !== null ? { summarizedThroughId: row.summarized_through_id } : {}),
+		searchText: (JSON.parse(row.search_texts_json) as string[]).join(" "),
+	};
+}
+
+function listingVersion(row: ListingRow): string {
+	return `${row.last_seq}\u0000${row.modified_at}\u0000${row.message_count}\u0000${row.has_name}\u0000${row.name}\u0000${row.summarized_through_id}\u0000${row.summary}\u0000${row.first_message}\u0000${row.header_json}`;
+}
 
 export class SqlSessionStore implements SessionStore {
 	private readonly database: SqliteDatabase;
@@ -57,6 +92,15 @@ export class SqlSessionStore implements SessionStore {
 	private readonly prefix: string;
 	private closed = false;
 	private readonly cwdMatcher?: SessionCwdMatcher;
+	/** Session ids of each recently listed scope, valid while the store's change token is unchanged. */
+	private readonly scopes = new Map<string, { readonly token: string; readonly ids: readonly string[] }>();
+	/** Listed summaries of sessions that still exist at the cached version; never more than the store holds. */
+	private readonly summaries = new Map<string, { readonly version: string; readonly summary: SessionSummary }>();
+	/**
+	 * Settles when the latest listing has read and updated the caches. Listings take turns, so one listing's
+	 * pruning never drops summaries that another has fetched but not yet recorded under its scope.
+	 */
+	private listing: Promise<void> = Promise.resolve();
 
 	private constructor(database: SqliteDatabase, tables: Tables, prefix = "", cwdMatcher?: SessionCwdMatcher) {
 		this.database = database;
@@ -189,56 +233,53 @@ export class SqlSessionStore implements SessionStore {
 		});
 	}
 
+	/**
+	 * Lists from a per-scope cache revalidated on every call. A cheap change token, which moves on any commit
+	 * from this or another connection, decides whether the scope is re-read. A scope listed for the first time
+	 * is read exactly as an uncached listing; afterwards only its light columns are re-read and search text is
+	 * read only for sessions whose stored listing columns changed. Listings of the same store take turns
+	 * reading and updating the caches; the yielding below runs outside that turn.
+	 */
 	async *list(query: SessionListQuery): AsyncIterable<SessionSummary> {
 		this.assertListing(query);
 		// Validate the original query before binding only matching stored spellings below.
 		if (query.cwd?.includes("\0")) throw new StorageInvalidTextError(0);
-		const matchesCwd =
-			query.cwd === undefined
-				? undefined
-				: (this.cwdMatcher?.(query.cwd) ?? ((candidate: string | undefined) => candidate === query.cwd));
-		let projectCwds: string[] | undefined;
-		if (matchesCwd) {
-			const projects = await this.database.all<SqliteRow & { cwd: string }>(
-				`SELECT DISTINCT cwd FROM ${this.tables.sessions}`,
-			);
-			projectCwds = projects.map((project) => project.cwd).filter(matchesCwd);
-			this.assertListing(query);
-			if (projectCwds.length === 0) return;
-		}
-		const projectFilter = projectCwds ? ` AND cwd IN (${projectCwds.map(() => "?").join(", ")})` : "";
-		// Combine encoded strings only at read time, preserving NUL and lone surrogates verbatim.
-		const rows = await this.database.all<SummaryRow>(
-			`SELECT s.*, (
-				SELECT COALESCE('[' || group_concat(text_json, ',') || ']', '[]')
-				FROM (SELECT text_json FROM ${this.tables.searchTexts} WHERE session_id = s.id ORDER BY seq)
-			) AS search_texts_json
-			FROM ${this.tables.sessions} AS s WHERE (? = 1 OR internal = 0)${projectFilter}`,
-			query.includeInternal ? 1 : 0,
-			...(projectCwds ?? []),
+		const listed = this.listing.then(() => this.listScope(query));
+		this.listing = listed.then(
+			() => {},
+			() => {},
 		);
-		for (const row of rows) {
+		// Resolve before yielding so a concurrent listing cannot change what this one returns.
+		const summaries = await listed;
+		for (const summary of summaries) {
 			this.assertListing(query);
-			const header = JSON.parse(row.header_json) as SessionRecordHeader;
-			if (matchesCwd && !matchesCwd(header.cwd)) continue;
-			yield {
-				id: header.id,
-				cwd: header.cwd,
-				...(header.parentSessionId !== undefined ? { parentSessionId: header.parentSessionId } : {}),
-				internal: header.internal === true,
-				...(header.workflow !== undefined ? { workflow: header.workflow } : {}),
-				...(row.name !== null ? { name: JSON.parse(row.name) as string } : {}),
-				hasName: row.has_name === 1,
-				createdAt: header.createdAt,
-				modifiedAt: row.modified_at,
-				messageCount: row.message_count,
-				firstMessage: JSON.parse(row.first_message) as string,
-				...(row.summary !== null ? { summary: JSON.parse(row.summary) as string } : {}),
-				...(row.summarized_through_id !== null ? { summarizedThroughId: row.summarized_through_id } : {}),
-				searchText: (JSON.parse(row.search_texts_json) as string[]).join(" "),
-			};
+			yield summary;
 		}
 		this.assertListing(query);
+	}
+
+	/** Revalidates one scope's cache and resolves its summaries; called for one listing at a time. */
+	private async listScope(query: SessionListQuery): Promise<readonly SessionSummary[]> {
+		// The store may have closed, or the caller given up, while an earlier listing held the turn.
+		this.assertListing(query);
+		// Read the token first: a commit racing the reads below moves it again before the next call.
+		const token = await this.changeToken();
+		const key = JSON.stringify([query.includeInternal === true, query.cwd ?? null]);
+		const cached = this.scopes.get(key);
+		// A cached id without a summary is never expected; re-reading the scope repairs it instead of dropping it.
+		const scope =
+			cached?.token === token && cached.ids.every((id) => this.summaries.has(id))
+				? cached
+				: { token, ids: await this.readScope(query, cached !== undefined) };
+		// Map order is recency order: re-inserting marks the scope as used, and the oldest scope is evicted first.
+		this.scopes.delete(key);
+		this.scopes.set(key, scope);
+		for (const oldest of this.scopes.keys()) {
+			if (this.scopes.size <= LISTING_SCOPES) break;
+			this.scopes.delete(oldest);
+		}
+		if (scope !== cached) this.pruneSummaries();
+		return scope.ids.flatMap((id) => this.summaries.get(id)?.summary ?? []);
 	}
 
 	async findMostRecent(query: {
@@ -255,6 +296,94 @@ export class SqlSessionStore implements SessionStore {
 	async close(): Promise<void> {
 		this.assertOpen();
 		this.closed = true;
+		this.scopes.clear();
+		this.summaries.clear();
+	}
+
+	/**
+	 * `data_version` moves when another connection commits and `total_changes()` when this one writes, so
+	 * together they cover writers in every process; the table aggregates also catch a change to the sessions
+	 * table if the adapter does not serve every statement from one connection.
+	 */
+	private async changeToken(): Promise<string> {
+		const row = await this.database.get<SqliteRow>(
+			`SELECT data_version, total_changes() AS changes,
+				(SELECT count(*) FROM ${this.tables.sessions}) AS sessions,
+				(SELECT max(rowid) FROM ${this.tables.sessions}) AS last_row
+			FROM pragma_data_version`,
+		);
+		return JSON.stringify(Object.values(row ?? {}).map(String));
+	}
+
+	/** The scope's session ids in store order, with a current summary cached for each. */
+	private async readScope(query: SessionListQuery, listedBefore: boolean): Promise<readonly string[]> {
+		const matchesCwd =
+			query.cwd === undefined
+				? undefined
+				: (this.cwdMatcher?.(query.cwd) ?? ((candidate: string | undefined) => candidate === query.cwd));
+		let projectCwds: string[] | undefined;
+		if (matchesCwd) {
+			const projects = await this.database.all<SqliteRow & { cwd: string }>(
+				`SELECT DISTINCT cwd FROM ${this.tables.sessions}`,
+			);
+			projectCwds = projects.map((project) => project.cwd).filter(matchesCwd);
+			this.assertListing(query);
+			if (projectCwds.length === 0) return [];
+		}
+		const scope = `(? = 1 OR internal = 0)${projectCwds ? ` AND cwd IN (${projectCwds.map(() => "?").join(", ")})` : ""}`;
+		const params = [query.includeInternal ? 1 : 0, ...(projectCwds ?? [])];
+		const inScope = (row: ListingRow) => !matchesCwd || matchesCwd(row.cwd);
+		if (listedBefore) {
+			const rows = (
+				await this.database.all<ListingRow>(
+					`SELECT ${LISTING_COLUMNS} FROM ${this.tables.sessions} WHERE ${scope}`,
+					...params,
+				)
+			).filter(inScope);
+			this.assertListing(query);
+			const stale = rows.filter((row) => this.summaries.get(row.id)?.version !== listingVersion(row));
+			// A few changed sessions are read by id; when most changed, one scan of the scope is cheaper.
+			if (stale.length <= rows.length / 4) {
+				for (let start = 0; start < stale.length; start += LISTING_FETCH_BATCH) {
+					const ids = stale.slice(start, start + LISTING_FETCH_BATCH).map((row) => row.id);
+					const fetched = new Set(
+						(await this.readSummaries(`id IN (${ids.map(() => "?").join(", ")})`, ids)).map((row) => row.id),
+					);
+					// A session deleted after the light read must not be listed from an older cached copy.
+					for (const id of ids) if (!fetched.has(id)) this.summaries.delete(id);
+					this.assertListing(query);
+				}
+				return rows.flatMap((row) => (this.summaries.has(row.id) ? [row.id] : []));
+			}
+		}
+		const rows = (await this.readSummaries(scope, params)).filter(inScope);
+		this.assertListing(query);
+		return rows.map((row) => row.id);
+	}
+
+	/** Reads full listing rows, search text included, and caches their summaries. */
+	private async readSummaries(where: string, params: readonly SqliteValue[]): Promise<readonly SummaryRow[]> {
+		// Combine encoded strings only at read time, preserving NUL and lone surrogates verbatim.
+		const rows = await this.database.all<SummaryRow>(
+			`SELECT ${LISTING_COLUMNS}, (
+				SELECT COALESCE('[' || group_concat(text_json, ',') || ']', '[]')
+				FROM (SELECT text_json FROM ${this.tables.searchTexts} WHERE session_id = s.id ORDER BY seq)
+			) AS search_texts_json
+			FROM ${this.tables.sessions} AS s WHERE ${where}`,
+			...params,
+		);
+		for (const row of rows)
+			this.summaries.set(row.id, { version: listingVersion(row), summary: summaryFromRow(row) });
+		return rows;
+	}
+
+	/**
+	 * Keeps only summaries some cached scope still lists, so memory follows the live sessions. Runs in a
+	 * listing's turn after it records its scope, when no other listing holds summaries it has not recorded.
+	 */
+	private pruneSummaries(): void {
+		const listed = new Set([...this.scopes.values()].flatMap((scope) => scope.ids));
+		for (const id of this.summaries.keys()) if (!listed.has(id)) this.summaries.delete(id);
 	}
 
 	private assertOpen(): void {
