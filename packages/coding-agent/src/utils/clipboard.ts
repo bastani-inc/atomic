@@ -14,6 +14,7 @@ type NativeClipboardExecOptions = {
 	timeout: number;
 	stdio: ["pipe", "ignore", "ignore"];
 	env: NodeJS.ProcessEnv;
+	detached: boolean;
 };
 
 function copyToX11Clipboard(options: NativeClipboardExecOptions): void {
@@ -184,6 +185,9 @@ export async function copyToClipboard(text: string): Promise<void> {
 		timeout: 5000,
 		stdio: ["pipe", "ignore", "ignore"],
 		env: createChildProcessEnvironment(),
+		// Clipboard writers can daemonize. Detach on POSIX so the daemon leaves Atomic's process group
+		// and Ctrl+Z suspend (SIGTSTP to the group) does not stop the clipboard owner (earendil-works/pi#11179).
+		detached: p !== "win32",
 	};
 
 	if (!copied) {
@@ -219,6 +223,7 @@ export async function copyToClipboard(text: string): Promise<void> {
 								const proc = spawn("wl-copy", [], {
 									stdio: ["pipe", "ignore", "ignore"],
 									env: createChildProcessEnvironment(),
+									detached: options.detached,
 								});
 								let settled = false;
 								const finish = (code: number) => {

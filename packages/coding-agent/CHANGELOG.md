@@ -9,6 +9,7 @@
 ### Fixed
 
 - Fixed concurrent extension `select`/`confirm`/`input`/`editor` dialogs in interactive mode: a second dialog replaced the first and the first promise never settled, and a dialog opened from an inline `custom()` component hid that component for good. Closing the visible dialog now shows the previous one again ([#11166](https://github.com/earendil-works/pi/issues/11166))
+- Fixed pasting in the shell hanging after copying text in Atomic and suspending it with Ctrl+Z on Linux: the background `wl-copy`/`xclip`/`xsel` process that keeps serving the clipboard was suspended along with Atomic ([#11179](https://github.com/earendil-works/pi/issues/11179))
 
 ## [0.9.40] - 2026-10-20
 

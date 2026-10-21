@@ -73,12 +73,12 @@ function execFileSyncFiles(): string[] {
 function spawnCalls(): {
 	command: string;
 	args: readonly string[];
-	options: { stdio?: unknown; env?: NodeJS.ProcessEnv };
+	options: { stdio?: unknown; env?: NodeJS.ProcessEnv; detached?: boolean };
 }[] {
 	return mockedSpawn.mock.calls.map(([command, args, options]) => ({
 		command: command as string,
 		args: args as readonly string[],
-		options: options as { stdio?: unknown; env?: NodeJS.ProcessEnv },
+		options: options as { stdio?: unknown; env?: NodeJS.ProcessEnv; detached?: boolean },
 	}));
 }
 
@@ -312,6 +312,32 @@ describe("copyToClipboard", () => {
 
 		assert.deepEqual(execSyncCommands(), ["which wl-copy", "xclip -selection clipboard"]);
 		assert.equal(osc52Writes().length, 0);
+	});
+
+	test("runs Linux clipboard writers outside Atomic's process group so Ctrl+Z does not stop them (earendil-works/pi#11179)", async () => {
+		mockedPlatform.mockReturnValue("linux");
+		mocks.isWaylandSession.mockReturnValue(true);
+		vi.stubEnv("WAYLAND_DISPLAY", "wayland-1");
+		vi.stubEnv("DISPLAY", ":0");
+		mockWlCopyExit(1);
+		mockedExecSync.mockReturnValue(Buffer.alloc(0));
+
+		await copyToClipboard("hello");
+
+		assert.deepEqual(execSyncCommands(), ["which wl-copy", "xclip -selection clipboard"]);
+		assert.equal(spawnCalls()[0]!.options.detached, true);
+		assert.equal((mockedExecSync.mock.calls[1]![1] as { detached?: boolean }).detached, true);
+	});
+
+	test("keeps the Windows clip command in Atomic's process group", async () => {
+		mockedPlatform.mockReturnValue("win32");
+		mocks.clipboard.setText.mockRejectedValue(new Error("native failed"));
+		mockedExecSync.mockReturnValue(Buffer.alloc(0));
+
+		await copyToClipboard("hello");
+
+		assert.deepEqual(execSyncCommands(), ["clip"]);
+		assert.notEqual((mockedExecSync.mock.calls[0]![1] as { detached?: boolean }).detached, true);
 	});
 
 	test("rejects failed local wl-copy without emitting OSC 52", async () => {
