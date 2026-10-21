@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
 import { ModelRuntime } from "../src/core/model-runtime.js";
-import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
-import { createAgentSession } from "../src/core/sdk.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import { DefaultResourceLoader } from "../src/core/resource-loader.js";
+import { createAgentSession } from "../src/core/sdk.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
 import { ExtensionStartupError } from "../src/index.js";
 
 const CAUSE = "Cannot read properties of undefined (reading 'fg')";
@@ -57,20 +57,16 @@ test("a session_start failure names the failing extension and its cause on every
 	]);
 
 	assert.ok(error instanceof ExtensionStartupError);
-	const [failure] = error.failures;
 	assert.equal(error.failures.length, 1);
-	assert.equal(failure?.event, "session_start");
-	assert.equal(failure?.message, CAUSE);
-	assert.ok(failure?.extensionPath);
-	const expected = `Extension startup failed: ${failure.extensionPath}: ${CAUSE}`;
+	assert.deepEqual(JSON.parse(JSON.stringify(error.failures)), [
+		{ extensionPath: "<inline:1>", event: "session_start", message: CAUSE },
+	]);
+	const expected = `Extension startup failed: <inline:1>: ${CAUSE}`;
 	assert.equal(error.message, expected);
 	assert.equal(String(error), `ExtensionStartupError: ${expected}`);
-	assert.deepEqual(JSON.parse(JSON.stringify(error.failures)), [
-		{ extensionPath: failure.extensionPath, event: "session_start", message: CAUSE },
-	]);
 	assert.deepEqual(
 		error.errors.map((member) => (member as Error).message),
-		[`${failure.extensionPath}: ${CAUSE}`],
+		[`<inline:1>: ${CAUSE}`],
 	);
 });
 
@@ -90,12 +86,11 @@ test("every failing extension is named in one startup error, in load order (#380
 
 	assert.ok(error instanceof ExtensionStartupError);
 	assert.deepEqual(
-		error.failures.map((failure) => failure.message),
-		[CAUSE, "second extension failed"],
+		error.failures.map((failure) => [failure.extensionPath, failure.message]),
+		[
+			["<inline:1>", CAUSE],
+			["<inline:2>", "second extension failed"],
+		],
 	);
-	const [first, second] = error.failures;
-	assert.equal(
-		error.message,
-		`Extension startup failed: ${first?.extensionPath}: ${CAUSE}; ${second?.extensionPath}: second extension failed`,
-	);
+	assert.equal(error.message, `Extension startup failed: <inline:1>: ${CAUSE}; <inline:2>: second extension failed`);
 });
