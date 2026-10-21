@@ -6,6 +6,7 @@
  * Reports:
  *   - unknown input keys (catches typos like "propmt")
  *   - wrong-typed values (number/boolean/string/select-union/integer)
+ *   - number/integer values outside the schema's declared minimum/maximum
  *   - select values not in the declared literal union
  *   - missing required inputs
  *   - non-JSON-serializable values
@@ -25,6 +26,11 @@ import type { TSchema, WorkflowInputValues } from "../../shared/types.js";
 export interface ValidationError {
 	key: string;
 	reason: string;
+}
+
+function firstSchemaError(def: TSchema, value: unknown, kind: string): string {
+	const first = [...Value.Errors(def, value)][0];
+	return first === undefined ? `does not match ${kind} schema` : first.message;
 }
 
 export function validateInputs(
@@ -62,12 +68,16 @@ export function validateInputs(
 				if (typeof value !== "number" || !Number.isFinite(value)) {
 					errors.push({ key, reason: `expected finite number, got ${workflowSerializableTypeName(value)}` });
 					hasTypeError = true;
+				} else if (!Value.Check(def, value)) {
+					errors.push({ key, reason: firstSchemaError(def, value, kind) });
 				}
 				break;
 			case "integer":
 				if (typeof value !== "number" || !Number.isInteger(value)) {
 					errors.push({ key, reason: `expected integer, got ${workflowSerializableTypeName(value)}` });
 					hasTypeError = true;
+				} else if (!Value.Check(def, value)) {
+					errors.push({ key, reason: firstSchemaError(def, value, kind) });
 				}
 				break;
 			case "boolean":
