@@ -463,6 +463,14 @@ export interface WorkflowParallelOptions extends WorkflowSharedTaskDefaults {
 	readonly possibleStageNames?: readonly string[];
 }
 
+/**
+ * Error thrown by `ctx.parallel(..., { failFast: false })` after every step has settled and at least one
+ * failed. `partialResults` has one entry per step in step order; a step that failed or never ran is `undefined`.
+ */
+export interface WorkflowParallelFailure<TResult = WorkflowTaskResult> extends AggregateError {
+	readonly partialResults: readonly (TResult | undefined)[];
+}
+
 export type WorkflowTaskSessionOptions = StageOptions & WorkflowTaskSessionFields;
 
 export interface WorkflowRunChildOptions<TInputs extends WorkflowInputValues = WorkflowInputValues> {

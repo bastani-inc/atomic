@@ -94,6 +94,7 @@ export type {
 	WorkflowOutputSchema,
 	WorkflowOutputSchemaMap,
 	WorkflowOutputValues,
+	WorkflowParallelFailure,
 	WorkflowParallelOptions,
 	WorkflowPersistencePort,
 	WorkflowProgressSummary,
