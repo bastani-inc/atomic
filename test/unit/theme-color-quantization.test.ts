@@ -16,11 +16,9 @@ function quantize(hex: string): { index: number; hex: string } {
 	return { index, hex: ansi256ToHex(index) };
 }
 
-// Regression: #2550 — near-neutral dark backgrounds quantize onto the 6x6x6 cube instead of
-// the far closer 232-255 grayscale ramp. Both expected values below are the true nearest
-// palette entry, confirmed by brute-force argmin over all 216 cube + 24 grayscale entries
-// under the module's weighted distance (0.299/0.587/0.114).
-test("quantizes near-neutral dark backgrounds onto the nearest grayscale ramp entry", () => {
+// Both expected values below are the true nearest palette entry, confirmed by brute-force argmin
+// over all 216 cube + 24 grayscale entries under the module's weighted distance (0.299/0.587/0.114).
+test("quantizes near-neutral dark backgrounds onto the nearest grayscale ramp entry (#2550)", () => {
 	// rgb(52,53,65): cube gives #5f5f5f at weighted distance ~1691; grey 237 sits at ~31.
 	assert.deepEqual(quantize("#343541"), { index: 237, hex: "#3a3a3a" });
 
@@ -53,9 +51,9 @@ test("preserves saturated colors and vivid theme accents without changing trueco
 	}
 });
 
-// Regression: #2550. Stride 5 includes both endpoints: 52^3 = 140,608 inputs.
+// Stride 5 includes both endpoints: 52^3 = 140,608 inputs.
 // Compare every result with all 216 cube and 24 ramp entries; equal minima are valid.
-test("returns a nearest palette entry across a stride-5 RGB sweep", () => {
+test("returns a nearest palette entry across a stride-5 RGB sweep (#2550)", () => {
 	const palette = Array.from({ length: 240 }, (_, offset) => {
 		const hex = ansi256ToHex(offset + 16);
 		return [1, 3, 5].map((start) => Number.parseInt(hex.slice(start, start + 2), 16));

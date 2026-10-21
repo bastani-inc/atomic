@@ -62,7 +62,7 @@ describe("DefaultResourceLoader theme color mode", () => {
 			environment: "truecolor",
 			environmentOverride: "1",
 			setting: false,
-			expected: "\x1b[48;5;59mx\x1b[49m",
+			expected: "\x1b[48;5;237mx\x1b[49m",
 		},
 	])(
 		"uses the $setting setting over a $environment environment (#9973)",
@@ -112,7 +112,7 @@ describe("DefaultResourceLoader theme color mode", () => {
 				.getThemes()
 				.themes.find((candidate) => candidate.name === "capability-test")
 				?.bg("userMessageBg", "x"),
-			"\x1b[48;5;59mx\x1b[49m",
+			"\x1b[48;5;237mx\x1b[49m",
 		);
 		setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides());
 
