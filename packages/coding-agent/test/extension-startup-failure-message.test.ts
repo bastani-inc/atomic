@@ -12,7 +12,9 @@ import { ExtensionStartupError } from "../src/index.js";
 
 const CAUSE = "Cannot read properties of undefined (reading 'fg')";
 
-async function startupFailureOf(extensionFactories: ((pi: ExtensionFactoryApi) => void)[]): Promise<unknown> {
+async function startupFailureOf(
+	extensionFactories: ((pi: ExtensionFactoryApi) => void)[],
+): Promise<ExtensionStartupError> {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-startup-failure-message-"));
 	try {
 		const modelRuntime = await ModelRuntime.create({ authPath: join(cwd, "auth.json"), modelsPath: null });
@@ -35,6 +37,7 @@ async function startupFailureOf(extensionFactories: ((pi: ExtensionFactoryApi) =
 				extensionBindings: { mode: "rpc" },
 			});
 		} catch (error) {
+			assert.ok(error instanceof ExtensionStartupError, `expected ExtensionStartupError, got ${String(error)}`);
 			return error;
 		}
 		throw new Error("session creation did not fail");
@@ -56,7 +59,6 @@ test("a session_start failure names the failing extension and its cause on every
 		},
 	]);
 
-	assert.ok(error instanceof ExtensionStartupError);
 	assert.equal(error.failures.length, 1);
 	assert.deepEqual(JSON.parse(JSON.stringify(error.failures)), [
 		{ extensionPath: "<inline:1>", event: "session_start", message: CAUSE },
@@ -84,7 +86,6 @@ test("every failing extension is named in one startup error, in load order (#380
 		},
 	]);
 
-	assert.ok(error instanceof ExtensionStartupError);
 	assert.deepEqual(
 		error.failures.map((failure) => [failure.extensionPath, failure.message]),
 		[
