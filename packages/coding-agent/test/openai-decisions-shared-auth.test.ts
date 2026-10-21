@@ -99,7 +99,7 @@ describe("openai-decisions shares OpenAI API credentials", () => {
 			loginIsolatedApiKeyProvider(
 				asSession(frontendRuntime),
 				{ saveProviderCredential } as never,
-				{ apply: vi.fn() } as never,
+				{ apply: vi.fn(), hasEngineApiKeyLogin: () => false } as never,
 				CLASSIFIER,
 				{ signal: new AbortController().signal, prompt, notify: () => {} },
 			),

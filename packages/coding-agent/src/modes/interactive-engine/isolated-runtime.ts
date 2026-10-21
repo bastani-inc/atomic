@@ -298,6 +298,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.remoteModelCatalog.applyModels({ models: result.models, scopedModels: result.scopedModels ?? [] });
 		await super.session.modelRuntime.reloadCredentials({ refreshAvailability: false });
 		super.session.modelRuntime.applyExternalProviderAuthStatus(provider, result.authStatus);
+		this.remoteModelCatalog.applyProviderAuthStatus(provider, result.authStatus);
 		await super.session.refreshCurrentModelFromRegistry();
 		return result;
 	}

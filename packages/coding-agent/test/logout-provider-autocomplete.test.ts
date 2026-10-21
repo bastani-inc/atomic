@@ -40,6 +40,7 @@ function createHarness() {
 					{ id: "absent", name: "Unconfigured" },
 				],
 				getOAuthProviderMetadata: () => [{ id: "anthropic", name: "Anthropic" }],
+				getApiKeyLoginProviderMetadata: () => [],
 				getStoredCredentialType: (id: string) => stored.get(id),
 				getProviderAuthStatus: (id: string): AuthStatus => ({
 					configured: id !== "absent",

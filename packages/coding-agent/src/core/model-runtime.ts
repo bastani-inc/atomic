@@ -649,6 +649,12 @@ export class ModelRuntime implements Models {
 	getOAuthProviderMetadata() {
 		return collectOAuthProviderMetadata(this.getProviders(), this.extensionProviders);
 	}
+	/** Providers that offer API-key login in `/login`. */
+	getApiKeyLoginProviderMetadata(): Array<{ id: string; name: string }> {
+		return this.getProviders()
+			.filter((provider) => provider.auth.apiKey?.login !== undefined)
+			.map((provider) => ({ id: provider.id, name: provider.name ?? provider.id }));
+	}
 	/** @internal Compatibility fallback for ModelRegistry when provider auth is unconfigured. */
 	getCompatibilityRequestConfig(model: Model<Api>): CompatibilityRequestConfig {
 		model = normalizeModelProvider(model);

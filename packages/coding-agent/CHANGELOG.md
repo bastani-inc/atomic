@@ -5,6 +5,7 @@
 ### Added
 
 - `routeExecutionModel()` accepts an optional `inference` option (exported type `RoutingInferenceBounds`) for callers that must not wait indefinitely on routing inference: `deadline` is an `AbortSignal` whose abort ends routing as a complete inference failure, so the caller can degrade to `AutoRoutingInferenceError.currentModelRoute`, and `limit` runs each routing inference under the caller's concurrency limit. Without it, routing keeps having no built-in deadline.
+- RPC `get_available_models` and `refresh_models` responses now list extension providers that accept an API key in `customAuthProviders`, and report extension providers' environment or configured-key authentication in `providerAuthStatuses`.
 
 ### Fixed
 
@@ -18,6 +19,8 @@
 - Sessions waiting for another session's OAuth token refresh no longer fail with `Lock file is already being held` before that refresh finishes under heavy load. They now wait as long as a refresh can keep its claim, then use the rotated token. Cancelling the request still stops the wait.
 - Kimi Code logins no longer break with `invalid_grant` when a token refresh takes longer than 30 seconds or loses its connection mid-request. A revoked or expired OpenAI, Kimi Code, xAI, Meta or GitHub Copilot login now also tells you to run `/login <provider>`, for example on OpenAI's `refresh_token_expired` or `refresh_token_reused` errors.
 - A stored OAuth login no longer breaks with `invalid_grant` after Atomic exits while a token refresh is still running, for example a subagent or `atomic -p` run ending after its request timed out, quitting an interactive session, `SIGTERM`, or `atomic auth`. Atomic now waits up to three seconds on exit for the provider's response and saves the rotated token. An `atomic -p` run no longer stays alive waiting for a token refresh that never answers. If Atomic is killed or crashes during a token refresh, run `/login <provider>`.
+- An extension or `models.json` provider whose `$VAR` API key is unset now reports the missing key the way a built-in provider does wherever its models are used, for example `No API key found for <provider>` with the `/login` hint during compaction and branch summaries. Previously compaction, branch summaries, workflow stages, and subagents failed with `Failed to resolve API key ... from environment variable`.
+- In interactive sessions, `/login` lists extension providers that take an API key and logs in to them, `/logout` offers their stored keys, and `/login` shows an extension provider configured through an environment variable as configured instead of `not configured`.
 
 ## [0.9.40] - 2026-10-20
 

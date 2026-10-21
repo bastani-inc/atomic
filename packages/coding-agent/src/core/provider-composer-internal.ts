@@ -27,6 +27,7 @@ import {
 	clearConfigValueCache,
 	getConfigValueEnvVarNames,
 	isCommandConfigValue,
+	isConfigValueConfigured,
 	resolveConfigValueOrThrow,
 	resolveHeadersOrThrow,
 } from "./resolve-config-value.ts";
@@ -451,6 +452,8 @@ export function composeApiKeyAuth(
 						: undefined;
 			} else if (rawKey !== undefined) {
 				const env = await configContextEnv([rawKey], input.ctx);
+				// Like a built-in whose key variable is unset, an unset `$VAR` key means no credential, not an error.
+				if (!isCommandConfigValue(rawKey) && !isConfigValueConfigured(rawKey, env)) return undefined;
 				const key = resolveConfigValueOrThrow(rawKey, `API key for provider "${providerId}"`, env);
 				result = inherited
 					? await inherited.resolve({ ...input, credential: { type: "api_key", key } })

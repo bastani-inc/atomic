@@ -9,6 +9,7 @@ import { getSkillCatalog } from "../../core/skill-catalog.ts";
 import { RpcBashRequestOwners } from "./rpc-bash-request-owners.ts";
 import type { RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
 import type { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";
+import { createRpcModelCatalog } from "./rpc-model-catalog.ts";
 import { rejectUnsupportedProviderPrompt } from "./rpc-model-fallback-prompt.ts";
 import { type ProviderLoginInput, RpcProviderAuth } from "./rpc-provider-auth.ts";
 import {
@@ -236,15 +237,8 @@ export function createRpcCommandHandler({
 				runtimeHost.resolveModelFallbackAfterExplicitModelSelection(previousModel, result?.model);
 				return createRpcSuccessResponse(id, "cycle_model", result ?? null);
 			}
-			case "get_available_models": {
-				const models = await session.modelRuntime.getAvailableSnapshot();
-				return createRpcSuccessResponse(id, "get_available_models", {
-					models,
-					scopedModels: session.scopedModels,
-					customAuthProviders: [],
-					oauthProviders: session.modelRuntime.getOAuthProviderMetadata(),
-				});
-			}
+			case "get_available_models":
+				return createRpcSuccessResponse(id, "get_available_models", createRpcModelCatalog(session));
 
 			case "login_provider": {
 				const result =
@@ -299,10 +293,7 @@ export function createRpcCommandHandler({
 					return createRpcSuccessResponse(id, "refresh_models", {
 						aborted: result.aborted,
 						errors: [...result.errors].map(([provider, error]) => ({ provider, message: error.message })),
-						models: session.modelRuntime.getAvailableSnapshot(),
-						scopedModels: session.scopedModels,
-						customAuthProviders: [],
-						oauthProviders: session.modelRuntime.getOAuthProviderMetadata(),
+						...createRpcModelCatalog(session),
 					});
 				} finally {
 					if (timeout) clearTimeout(timeout);
