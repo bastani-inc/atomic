@@ -62,7 +62,7 @@ test("names the failing path and expected type when a property has the wrong typ
 	assert.ok(message.startsWith(ISSUE_MESSAGE_PREFIX), message);
 	assert.match(message, /\/files: expected array, got string/);
 	assert.doesNotMatch(message, new RegExp(REJECTED_SECRET));
-	assert.match(message, /repair exhausted after 4 attempts\.$/);
+	assert.match(message, /repair exhausted after 4 attempts\. Attempts: 1\) stopReason=toolUse /);
 	assert.equal(stream.mock.calls.length, REPAIR_ATTEMPTS);
 });
 
@@ -164,7 +164,7 @@ test("non-JSON tool arguments report the parser position, not the parser text (#
 
 	assert.match(message, /Parsing failed at position \d+: the JSON syntax was malformed\./);
 	assert.doesNotMatch(message, new RegExp(REJECTED_SECRET));
-	assert.match(message, /repair exhausted after 4 attempts\.$/);
+	assert.match(message, /repair exhausted after 4 attempts\. Attempts: 1\) stopReason=toolUse /);
 });
 
 test("non-JSON tool arguments take part in repair and usage accounting (#3802)", async () => {
@@ -212,7 +212,7 @@ test("routing rejects a correlated-validation failure with the schema-mismatch p
 
 	assert.ok(message.startsWith(ISSUE_MESSAGE_PREFIX), message);
 	assert.match(message, /candidates and constraints/);
-	assert.match(message, /Routing output repair exhausted after 4 attempts\.$/);
+	assert.match(message, /Routing output repair exhausted after 4 attempts\. Attempts: 1\) stopReason=toolUse /);
 });
 
 test("model attempts keep the value-free rejection detail of an exhausted candidate (#3802)", async () => {

@@ -60,7 +60,7 @@ for (const [name, value] of [
 		await assert.rejects(routeModel(request), {
 			name: "Error",
 			message:
-				/^Invalid structured output: response does not match the decision schema\. Failing paths: .{1,600}\. Routing output repair exhausted after 4 attempts\.$/,
+				/^Invalid structured output: response does not match the decision schema\. Failing paths: .{1,600}\. Routing output repair exhausted after 4 attempts\. Attempts: (?:\d\) stopReason=toolUse \d+ms(?:; |\.)){4}$/,
 		});
 		assert.equal(dispatch.mock.calls.length, 4);
 		assert.deepEqual(value, before);

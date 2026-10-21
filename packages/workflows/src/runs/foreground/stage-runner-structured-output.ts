@@ -117,6 +117,7 @@ export function stageOptionsWithStructuredOutput<TSchemaDef extends TSchema>(
 	const structuredOutputTool = createStructuredOutputTool({
 		schema: options.schema,
 		capture,
+		...(options.schemaTimeoutMs === undefined ? {} : { timeoutMs: options.schemaTimeoutMs }),
 	});
 	const executeStructuredOutput = structuredOutputTool.execute;
 	const capturedStructuredOutputTool = {

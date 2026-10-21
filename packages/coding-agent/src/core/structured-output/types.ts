@@ -11,7 +11,8 @@ export interface StructuredChoiceQuestion {
 }
 
 export interface RouterModelSelectionOptions {
-	readonly settings: Pick<SettingsManager, "getRouterModel"> & Partial<Pick<SettingsManager, "getRetrySettings">>;
+	readonly settings: Pick<SettingsManager, "getRouterModel"> &
+		Partial<Pick<SettingsManager, "getRetrySettings" | "getHttpIdleTimeoutMs">>;
 	readonly modelRegistry: Pick<ModelRegistry, "getAll"> &
 		Partial<Pick<ModelRegistry, "getProviderAuthStatus" | "getClassifierModel" | "classify">>;
 	/** Read the active chat model at invocation time; never change it to perform a decision. */
@@ -43,6 +44,13 @@ export interface StructuredOutputRequest<T extends TSchema> {
 	readonly signal?: AbortSignal;
 	readonly maxTokens?: number;
 	readonly retry?: RetryPolicy;
+	/**
+	 * Wall-clock limit in milliseconds for the whole decision: every repair attempt, transport retry and model
+	 * candidate together. A positive integer. When omitted, the `structured_output` tool uses its session's
+	 * `httpIdleTimeoutMs` setting and any other call uses that setting's default of 10 minutes. A disabled idle
+	 * timeout (0) leaves only the largest timer delay, about 24.8 days.
+	 */
+	readonly timeoutMs?: number;
 }
 
 export interface InternalStructuredOutputRequest<T extends TSchema>

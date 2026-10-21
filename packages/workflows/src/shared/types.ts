@@ -190,6 +190,13 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 		Omit<Mutable<AuthoringContract.StageOptions<TSchemaDef>>, "sessionManager" | "settingsManager"> {
 	/** Optional structured final-answer schema. When set, the stage receives a schema-specific final-answer tool. */
 	schema?: TSchemaDef;
+	/**
+	 * Wall-clock limit in milliseconds for each `structured_output` decision of a schema-backed stage, covering
+	 * every repair attempt, transport retry and model fallback together. Defaults to the session's
+	 * `httpIdleTimeoutMs` setting (10 minutes unless changed). A decision that overruns fails with an error naming
+	 * the deadline. Ignored without `schema`.
+	 */
+	schemaTimeoutMs?: number;
 	/** Model id or pi SDK model object used as the primary stage model. */
 	model?: WorkflowModelValue;
 	/** Per-stage MCP server gating. No-op when no WorkflowMcpPort is configured. */

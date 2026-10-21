@@ -268,6 +268,8 @@ export interface ExtensionContext {
 	getRouterModel(): string;
 	/** Provider filters for `model: "auto"` candidates from the owning session's settings. */
 	getModelRouting?(): import("../settings-types.ts").ModelRoutingSettings;
+	/** The owning session's `httpIdleTimeoutMs` setting in milliseconds; 0 means the idle timeout is disabled. */
+	getHttpIdleTimeoutMs?(): number;
 }
 
 /**

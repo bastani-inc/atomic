@@ -218,6 +218,7 @@ export interface ExtensionContextActions {
 	getSystemPromptOptions?: () => BuildSystemPromptOptions;
 	getRouterModel?: () => string;
 	getModelRouting?: () => import("../settings-types.ts").ModelRoutingSettings;
+	getHttpIdleTimeoutMs?: () => number;
 	executeTool?: (
 		callerId: string,
 		name: string,

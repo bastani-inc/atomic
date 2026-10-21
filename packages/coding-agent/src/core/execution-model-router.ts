@@ -49,6 +49,8 @@ export interface ModelRoutingContext {
 	getRouterModel(): string;
 	/** Provider and model filters from settings.json `modelRouting`; absent means every model is a candidate. */
 	getModelRouting?(): ModelRoutingSettings;
+	/** The `httpIdleTimeoutMs` setting; bounds each routing inference. Absent means the setting's default. */
+	getHttpIdleTimeoutMs?(): number;
 }
 export interface ModelRoute {
 	readonly routerSelection: ModelRouterOutput;
@@ -79,8 +81,9 @@ export class AutoRoutingInferenceError extends Error {
 }
 
 /**
- * Caller-owned bounds on routing inference. Routing has no built-in deadline or
- * concurrency limit; a caller that must not wait indefinitely supplies them.
+ * Caller-owned bounds on routing inference, on top of the structured-decision
+ * deadline that already limits each inference call. A caller that needs a
+ * shorter wait, or a concurrency limit, supplies them.
  */
 export interface RoutingInferenceBounds {
 	/**
@@ -227,7 +230,10 @@ export async function routeExecutionModel(input: {
 	const candidates = [...new Set(available.map((entry) => `${entry.model.provider}/${entry.model.id}`))];
 	let selection = input.selection;
 	if (selection === undefined) {
-		const settings = { getRouterModel: () => ctx.getRouterModel() };
+		const settings = {
+			getRouterModel: () => ctx.getRouterModel(),
+			...(ctx.getHttpIdleTimeoutMs ? { getHttpIdleTimeoutMs: () => ctx.getHttpIdleTimeoutMs!() } : {}),
+		};
 		const router = resolveRouterModel({ settings, currentModel: ctx.model, modelRegistry: ctx.modelRegistry });
 		if (!input.task.trim()) throw new Error("Auto routing requires task instructions.");
 		const stated = statedNeeds;
@@ -352,7 +358,7 @@ export async function routeExecutionModel(input: {
 			const result = await infer((inferenceSignal) =>
 				routeModel(
 					{
-						settings: { getRouterModel: () => reader! },
+						settings: { ...settings, getRouterModel: () => reader! },
 						modelRegistry: ctx.modelRegistry,
 						currentModel: ctx.model,
 						state: {

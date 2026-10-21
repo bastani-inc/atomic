@@ -267,6 +267,7 @@ export class ExtensionRunner {
 	private getSkillCatalogFn: ExtensionContextActions["getSkillCatalog"] = undefined;
 	private getRouterModelFn: ExtensionContextActions["getRouterModel"] = undefined;
 	private getModelRoutingFn: ExtensionContextActions["getModelRouting"] = undefined;
+	private getHttpIdleTimeoutMsFn: ExtensionContextActions["getHttpIdleTimeoutMs"] = undefined;
 	private executeToolFn: ExtensionContextActions["executeTool"];
 	private getCallableToolsFn: NonNullable<ExtensionContextActions["getCallableTools"]> = () => [];
 	private newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
@@ -352,6 +353,7 @@ export class ExtensionRunner {
 		this.getSkillCatalogFn = contextActions.getSkillCatalog;
 		this.getRouterModelFn = contextActions.getRouterModel;
 		this.getModelRoutingFn = contextActions.getModelRouting;
+		this.getHttpIdleTimeoutMsFn = contextActions.getHttpIdleTimeoutMs;
 		this.executeToolFn = contextActions.executeTool;
 		this.getCallableToolsFn = contextActions.getCallableTools ?? (() => []);
 		this.runtime.getSettings = contextActions.getSettings;
@@ -916,6 +918,7 @@ export class ExtensionRunner {
 			...(this.getSkillCatalogFn ? { getSkillCatalog: () => this.getSkillCatalogFn!() } : {}),
 			...(this.getRouterModelFn ? { getRouterModel: () => this.getRouterModelFn!() } : {}),
 			...(this.getModelRoutingFn ? { getModelRouting: () => this.getModelRoutingFn!() } : {}),
+			...(this.getHttpIdleTimeoutMsFn ? { getHttpIdleTimeoutMs: () => this.getHttpIdleTimeoutMsFn!() } : {}),
 			getSystemPromptOptions: () => this.getSystemPromptOptionsFn(),
 			waitForIdle: () => this.waitForIdleFn(),
 			newSession: (options) => this.newSessionHandler(options),

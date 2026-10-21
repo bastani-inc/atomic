@@ -70,6 +70,7 @@ InteractiveModeBase.prototype.setupExtensionShortcuts = function (
 		getSystemPrompt: () => this.session.systemPrompt,
 		getRouterModel: () => this.session.settingsManager.getRouterModel(),
 		getModelRouting: () => this.session.settingsManager.getModelRouting(),
+		getHttpIdleTimeoutMs: () => this.session.settingsManager.getHttpIdleTimeoutMs(),
 	});
 
 	// Set up the extension shortcut handler on the default editor

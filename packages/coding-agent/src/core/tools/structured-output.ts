@@ -3,6 +3,7 @@ import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { type Static, type TSchema, Type } from "typebox";
 import { defineTool, type ToolDefinition } from "../extensions/types.ts";
+import { resolveDecisionDeadlineMs, validateTimeoutOverride } from "../structured-output/deadline.ts";
 
 export const STRUCTURED_OUTPUT_TOOL_NAME = "structured_output";
 
@@ -24,6 +25,11 @@ export interface StructuredOutputToolOptions<TSchemaDef extends TSchema> {
 	capture?: StructuredOutputCapture<Static<TSchemaDef>>;
 	output?: StructuredOutputFileCapture;
 	name?: string;
+	/**
+	 * Wall-clock limit in milliseconds for each call's whole decision, covering every repair attempt, transport retry
+	 * and model fallback. Defaults to the session's `httpIdleTimeoutMs` setting. The calling model cannot change it.
+	 */
+	timeoutMs?: number;
 }
 
 export const StructuredOutputParameters = Type.Object(
@@ -89,6 +95,7 @@ export function createStructuredOutputTool<TSchemaDef extends TSchema>(
 	options: StructuredOutputToolOptions<TSchemaDef>,
 ): ToolDefinition<typeof StructuredOutputParameters, Static<TSchemaDef>> {
 	const name = options.name ?? STRUCTURED_OUTPUT_TOOL_NAME;
+	validateTimeoutOverride(options.timeoutMs);
 
 	return defineTool({
 		name,
@@ -114,6 +121,7 @@ export function createStructuredOutputTool<TSchemaDef extends TSchema>(
 				...(params.fallbackModels !== undefined ? { fallbackModels: params.fallbackModels } : {}),
 				currentModel: ctx.model,
 				modelRegistry: ctx.modelRegistry,
+				timeoutMs: resolveDecisionDeadlineMs(options.timeoutMs, ctx.getHttpIdleTimeoutMs?.()),
 				...(signal ? { signal } : {}),
 			});
 			const value = result.value;
