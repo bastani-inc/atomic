@@ -37,11 +37,10 @@ export interface ExtensionOAuthConfig {
 	usesCallbackServer?: boolean;
 	login(callbacks: OAuthLoginCallbacks, signal: AbortSignal): Promise<OAuthCredentials>;
 	/**
-	 * Refresh expired credentials. `signal` is the caller's cancellation signal,
-	 * forwarded by pi through `oauth.refresh(credential, signal)`; honor it by
-	 * passing it into whatever performs the network call. It is a required
-	 * parameter rather than an optional one so the contract cannot be satisfied
-	 * by ignoring cancellation.
+	 * Refresh expired credentials. Pass `signal` to the network call, but add no timeout or abort of your own: Atomic
+	 * never aborts it on a timeout, because once the request is sent the provider may already have rotated the
+	 * refresh token. The caller stops waiting after 60 seconds; a later result is still saved, and a graceful exit
+	 * waits briefly for it. It is a required parameter so the contract is stated in the type.
 	 */
 	refreshToken(credentials: OAuthCredentials, signal: AbortSignal): Promise<OAuthCredentials>;
 	getApiKey(credentials: OAuthCredentials): string;

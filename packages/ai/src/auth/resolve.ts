@@ -150,6 +150,55 @@ export const OAUTH_REFRESH_LOCK_HOLD_MS = 2 * OAUTH_REFRESH_TIMEOUT_MS;
  */
 const TOKEN_EXCHANGE_SIGNAL = new AbortController().signal;
 
+/**
+ * How long a graceful shutdown waits for token exchanges still in flight, and for persisting their results, before
+ * the process exits (see {@link drainPendingOAuthRotations}).
+ *
+ * Abrupt termination (SIGKILL, a crash, power loss) cannot wait. If the provider already rotated the refresh token
+ * when that happens, its response never reaches the process and the stored login keeps the replaced token; the
+ * next refresh then fails and `/login <provider>` signs in again.
+ */
+export const OAUTH_SHUTDOWN_DRAIN_MS = 3_000;
+
+/** One entry per started token exchange, settled once its result is persisted or given up on. */
+const pendingTokenExchanges = new Set<Promise<void>>();
+
+function trackTokenExchange(): () => void {
+	let settle!: () => void;
+	const pending = new Promise<void>((resolve) => {
+		settle = resolve;
+	});
+	pendingTokenExchanges.add(pending);
+	return () => {
+		pendingTokenExchanges.delete(pending);
+		settle();
+	};
+}
+
+/**
+ * Waits for every started OAuth token exchange to settle and its result to be persisted, at most `timeoutMs`.
+ * Callers stop waiting for an exchange after {@link OAUTH_REFRESH_TIMEOUT_MS} while it keeps running, so a process
+ * that exits gracefully calls this first: the provider may already have rotated the token. Resolves `true` once none
+ * is in flight, `false` when the bound passes first; never rejects.
+ */
+export async function drainPendingOAuthRotations(timeoutMs: number = OAUTH_SHUTDOWN_DRAIN_MS): Promise<boolean> {
+	const deadline = Date.now() + timeoutMs;
+	while (pendingTokenExchanges.size > 0) {
+		const remainingMs = deadline - Date.now();
+		if (remainingMs <= 0) return false;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const expired = new Promise<void>((resolve) => {
+			timer = setTimeout(resolve, remainingMs);
+		});
+		try {
+			await Promise.race([Promise.all(pendingTokenExchanges), expired]);
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+	return true;
+}
+
 const MAX_ERROR_CHAIN_DEPTH = 5;
 
 /**
@@ -198,13 +247,15 @@ function persistLateRotation(
 	rotatedFrom: OAuthCredential,
 	rotation: Promise<OAuthCredential>,
 ): void {
+	const settled = trackTokenExchange();
 	void rotation
 		.then((late) =>
 			credentials.modify(providerId, async (current) =>
 				current?.type === "oauth" && current.refresh === rotatedFrom.refresh ? late : undefined,
 			),
 		)
-		.catch(() => undefined);
+		.catch(() => undefined)
+		.finally(settled);
 }
 
 /**
@@ -262,6 +313,8 @@ export async function refreshStoredOAuthCredential(
 	signal.addEventListener("abort", cancelLockWait, { once: true });
 	if (signal.aborted) cancelLockWait();
 	let stopCallerWaiting!: (reason: Error) => void;
+	/** Set once the token exchange starts; settles its pending entry when the transaction that commits it ends. */
+	let exchangeSettled: (() => void) | undefined;
 	const callerWaitExpired = new Promise<never>((_, reject) => {
 		stopCallerWaiting = reject;
 	});
@@ -274,6 +327,7 @@ export async function refreshStoredOAuthCredential(
 				if (current?.type !== "oauth") return undefined;
 				if (!needsRefresh(current)) return undefined;
 				try {
+					exchangeSettled ??= trackTokenExchange();
 					return await rotateOAuthCredential(credentials, providerId, oauth, current, stopCallerWaiting);
 				} catch (error) {
 					const newer = await readNewerOAuthCredential(credentials, providerId, current);
@@ -283,7 +337,8 @@ export async function refreshStoredOAuthCredential(
 			},
 			{ signal: lockWait.signal },
 		);
-		void transaction.catch(() => undefined);
+		const untrackExchange = () => exchangeSettled?.();
+		void transaction.then(untrackExchange, untrackExchange);
 		post = await Promise.race([transaction, callerWaitExpired]);
 	} catch (error) {
 		if (error instanceof ModelsError) throw error;

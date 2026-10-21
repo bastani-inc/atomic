@@ -73,7 +73,7 @@ await pi.registerProvider("corporate-ai", {
 
 After registration, users can authenticate via `/login corporate-ai`.
 
-Existing extension OAuth definitions keep their `login`, `refreshToken`, `getApiKey`, and optional `modifyModels` methods. OAuth refresh is serialized so concurrent requests do not overwrite each other's credentials.
+Existing extension OAuth definitions keep their `login`, `refreshToken`, `getApiKey`, and optional `modifyModels` methods. OAuth refresh is serialized so concurrent requests do not overwrite each other's credentials. Atomic never aborts the `signal` passed to `refreshToken` on a timeout, because the provider may already have rotated the refresh token; a late result is saved, and a normal exit waits up to three seconds for it. Do not add your own timeout or abort to the token request.
 
 OAuth callbacks run in the engine in isolated interactive mode. Use the provided callbacks for user interaction rather than relying on terminal-process state.
 

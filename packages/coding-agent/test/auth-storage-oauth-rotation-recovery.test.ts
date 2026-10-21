@@ -6,16 +6,26 @@ import { fileURLToPath } from "node:url";
 import lockfile from "proper-lockfile";
 import { afterEach, test, vi } from "vitest";
 import {
+	type ByteStream,
 	bunExecutable,
+	decodeStream,
 	makeTempDirectory,
 	readStreamText,
 	removeTempDirectory,
+	sleep,
 	spawnProcess,
+	writeTextSync,
 } from "../../../test/helpers/runtime.ts";
-import { OAUTH_REFRESH_TIMEOUT_MS, refreshStoredOAuthCredential } from "../../ai/src/auth/resolve.ts";
+import {
+	OAUTH_REFRESH_TIMEOUT_MS,
+	OAUTH_SHUTDOWN_DRAIN_MS,
+	refreshStoredOAuthCredential,
+	requestAuthTimeoutMessage,
+} from "../../ai/src/auth/resolve.ts";
 import type { OAuthAuth, OAuthCredential } from "../../ai/src/auth/types.ts";
 import { AuthStorage, FileAuthStorageBackend } from "../src/core/auth-storage.ts";
 import type { LockResult } from "../src/core/auth-storage-backends.ts";
+import { cliPath } from "./cli-test-helpers.ts";
 
 /** Every child here is a real Bun process taking the real cross-process provider lock. */
 const CROSS_PROCESS_LOCK_TEST_TIMEOUT_MS = 60_000;
@@ -23,13 +33,31 @@ const CROSS_PROCESS_LOCK_TEST_TIMEOUT_MS = 60_000;
 /** A lock holder whose process was suspended (or whose event loop was blocked) for this long. */
 const SUSPENDED_HOLDER_MS = 60 * 60_000;
 
+/** A real `atomic` CLI process: Bun transpiles the CLI graph and builtin extensions, then waits out request auth. */
+const ATOMIC_PROCESS_TEST_TIMEOUT_MS = 120_000;
+
+/** The provider answers a rotation this long after the agent is asked to shut down, well inside the drain bound. */
+const ROTATION_RESPONSE_AFTER_SHUTDOWN_MS = OAUTH_SHUTDOWN_DRAIN_MS / 3;
+
+/**
+ * Extra time a loaded machine gets, beyond the drain bound, to finish shutting down. An exchange nothing bounds keeps
+ * the process alive for at least OAUTH_REFRESH_LOCK_HOLD_MS, which is far longer.
+ */
+const EXIT_HEADROOM_MS = 15_000;
+
+/** A later process sees the rotated login as expired after this long, so it refreshes it again. */
+const LATER_PROCESS_CLOCK_AHEAD_MS = 2 * 60 * 60_000;
+
 const PROVIDER = "openai-1";
 const FIRST_REFRESH_TOKEN = "fake-refresh-1";
 
 type TokenPresentation = { token: string; outcome: "rotated" | "invalid_grant" };
 
-/** Fake OAuth token endpoint that rotates refresh tokens: every refresh invalidates the token it was given. */
-async function startRotatingTokenServer() {
+/**
+ * Fake OAuth token endpoint that rotates refresh tokens: every refresh invalidates the token it was given. A rotation
+ * happens on receipt; its response is sent once `respondToRotation` settles.
+ */
+async function startRotatingTokenServer(respondToRotation: () => Promise<void> = async () => {}) {
 	let generation = 1;
 	const presentations: TokenPresentation[] = [];
 	const server = createServer((request: IncomingMessage, response: ServerResponse) => {
@@ -37,7 +65,7 @@ async function startRotatingTokenServer() {
 		request.on("data", (chunk: Buffer) => {
 			body += chunk.toString();
 		});
-		request.on("end", () => {
+		request.on("end", async () => {
 			const { refresh_token: token } = JSON.parse(body) as { refresh_token: string };
 			response.setHeader("content-type", "application/json");
 			if (token !== `fake-refresh-${generation}`) {
@@ -46,12 +74,13 @@ async function startRotatingTokenServer() {
 				response.end(JSON.stringify({ error: "invalid_grant", error_description: "Refresh token not found" }));
 				return;
 			}
-			generation++;
+			const rotatedTo = ++generation;
 			presentations.push({ token, outcome: "rotated" });
+			await respondToRotation();
 			response.end(
 				JSON.stringify({
-					access_token: `fake-access-${generation}`,
-					refresh_token: `fake-refresh-${generation}`,
+					access_token: `fake-access-${rotatedTo}`,
+					refresh_token: `fake-refresh-${rotatedTo}`,
 					expires_in: 3600,
 				}),
 			);
@@ -63,7 +92,11 @@ async function startRotatingTokenServer() {
 		url: `http://127.0.0.1:${port}/token`,
 		presentations,
 		currentRefreshToken: () => `fake-refresh-${generation}`,
-		close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+		close: () =>
+			new Promise<void>((resolve) => {
+				server.close(() => resolve());
+				server.closeAllConnections();
+			}),
 	};
 }
 
@@ -391,3 +424,179 @@ test("a completed rotation is persisted when the auth file lock is lost during t
 		removeTempDirectory(directory);
 	}
 });
+
+/** An extension provider whose OAuth refresh exchanges tokens with the fake server, as a provider extension would. */
+function writeOAuthProviderExtension(directory: string, tokenUrl: string): string {
+	const path = `${directory}/fake-oauth-provider.ts`;
+	writeTextSync(
+		path,
+		`export default async function (pi) {
+	await pi.registerProvider(${JSON.stringify(PROVIDER)}, {
+		baseUrl: "http://127.0.0.1:9/v1",
+		api: "openai-completions",
+		models: [{ id: "fake-model", name: "Fake model", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8000, maxTokens: 1000 }],
+		oauth: {
+			name: "Fake rotating OAuth",
+			async login() { throw new Error("login is not part of this test"); },
+			async refreshToken(credentials, signal) {
+				const response = await fetch(${JSON.stringify(tokenUrl)}, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ refresh_token: credentials.refresh }),
+					signal,
+				});
+				const text = await response.text();
+				if (!response.ok) throw new Error("fake token refresh failed (" + response.status + "): " + text);
+				const token = JSON.parse(text);
+				return { access: token.access_token, refresh: token.refresh_token, expires: Date.now() + token.expires_in * 1000 };
+			},
+			getApiKey: (credentials) => credentials.access,
+		},
+	});
+}
+`,
+	);
+	return path;
+}
+
+/** A real `atomic` process using the fake provider, with its own agent directory. */
+function spawnAtomic(mode: string[], directory: string, extensionPath: string, stdin: "pipe" | "ignore") {
+	const agentDir = `${directory}/agent`;
+	const child = spawnProcess(
+		[
+			bunExecutable(),
+			cliPath,
+			...mode,
+			"--provider",
+			PROVIDER,
+			"--model",
+			"fake-model",
+			"-e",
+			extensionPath,
+			"--no-session",
+		],
+		{
+			cwd: directory,
+			env: {
+				...process.env,
+				ATOMIC_CODING_AGENT_DIR: agentDir,
+				ATOMIC_OFFLINE: "1",
+				ATOMIC_SKIP_VERSION_CHECK: "1",
+				ATOMIC_INTERACTIVE_ENGINE_CHILD: undefined,
+				ATOMIC_INTERACTIVE_ENGINE_API_KEY: undefined,
+				NO_COLOR: "1",
+			},
+			stdin,
+			stdout: "pipe",
+			stderr: "pipe",
+		},
+	);
+	let output = "";
+	const listeners = new Set<() => void>();
+	const collect = async (stream: ByteStream | null) => {
+		if (!stream) return;
+		const reader = decodeStream(stream).getReader();
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			output += value;
+			for (const listener of listeners) listener();
+		}
+	};
+	const collected = Promise.all([collect(child.stdout), collect(child.stderr)]);
+	const exited = child.exited.then(async (code) => {
+		await collected;
+		return code;
+	});
+	return {
+		child,
+		exited,
+		output: () => output,
+		/** Resolves once the process printed `text`; rejects if it exits without doing so. */
+		printed: (text: string) =>
+			new Promise<void>((resolve, reject) => {
+				const check = () => {
+					if (!output.includes(text)) return false;
+					listeners.delete(check);
+					resolve();
+					return true;
+				};
+				if (check()) return;
+				listeners.add(check);
+				void exited.then((code) => {
+					if (!check()) reject(new Error(`atomic exited (${code}) without printing "${text}":\n${output}`));
+				});
+			}),
+	};
+}
+
+test(
+	"a graceful shutdown keeps a rotation the provider completed after its caller timed out",
+	async () => {
+		const directory = makeTempDirectory("oauth-shutdown-drain-");
+		const authPath = `${directory}/agent/auth.json`;
+		const respond = gate();
+		const server = await startRotatingTokenServer(() => respond.promise);
+		let agent: ReturnType<typeof spawnAtomic> | undefined;
+		try {
+			await seedExpiredLogin(authPath);
+			agent = spawnAtomic(["--mode", "rpc"], directory, writeOAuthProviderExtension(directory, server.url), "pipe");
+			agent.child.stdin?.write(`${JSON.stringify({ type: "prompt", message: "hi" })}\n`);
+			await agent.printed(requestAuthTimeoutMessage(PROVIDER));
+
+			// Closing stdin is how an RPC client (the interactive host, a subagent runner) ends the agent.
+			agent.child.stdin?.end();
+			await sleep(ROTATION_RESPONSE_AFTER_SHUTDOWN_MS);
+			respond.release();
+
+			assert.equal(await agent.exited, 0, agent.output());
+			assert.deepEqual(server.presentations, [{ token: FIRST_REFRESH_TOKEN, outcome: "rotated" }]);
+			assert.equal(await storedRefreshToken(authPath), server.currentRefreshToken());
+			const later = await spawnContender(authPath, server.url, LATER_PROCESS_CLOCK_AHEAD_MS).finished;
+			assert.deepEqual(later, { event: "result", refresh: server.currentRefreshToken() });
+			assert.deepEqual(
+				server.presentations.filter(({ outcome }) => outcome === "invalid_grant"),
+				[],
+				"a later process presented the refresh token the provider had already rotated",
+			);
+		} finally {
+			respond.release();
+			agent?.child.kill("SIGKILL");
+			await agent?.exited.catch(() => undefined);
+			await server.close();
+			removeTempDirectory(directory);
+		}
+	},
+	ATOMIC_PROCESS_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a hung token exchange delays exit by at most the shutdown drain",
+	async () => {
+		const directory = makeTempDirectory("oauth-shutdown-hung-");
+		const authPath = `${directory}/agent/auth.json`;
+		const server = await startRotatingTokenServer(() => new Promise<void>(() => {}));
+		let agent: ReturnType<typeof spawnAtomic> | undefined;
+		try {
+			await seedExpiredLogin(authPath);
+			agent = spawnAtomic(["-p", "hi"], directory, writeOAuthProviderExtension(directory, server.url), "ignore");
+			await agent.printed(requestAuthTimeoutMessage(PROVIDER));
+
+			const exitBoundMs = OAUTH_SHUTDOWN_DRAIN_MS + EXIT_HEADROOM_MS;
+			const exitCode = await Promise.race([agent.exited, sleep(exitBoundMs).then(() => "still running")]);
+
+			assert.equal(
+				exitCode,
+				1,
+				`atomic was ${exitCode} ${exitBoundMs} ms after its request failed:\n${agent.output()}`,
+			);
+			assert.equal(await storedRefreshToken(authPath), FIRST_REFRESH_TOKEN);
+		} finally {
+			agent?.child.kill("SIGKILL");
+			await agent?.exited.catch(() => undefined);
+			await server.close();
+			removeTempDirectory(directory);
+		}
+	},
+	ATOMIC_PROCESS_TEST_TIMEOUT_MS,
+);
