@@ -71,10 +71,9 @@ import { handleBrokerPresence } from "./presence-handler.js";
 import {
 	knownGroupSummaries,
 	sessionGroups,
-	sessionsInGroup,
-	sessionsVisibleTo,
 	setSessionGroups,
 } from "./group-membership.js";
+import { replyToList } from "./list-reply.js";
 import { PendingQuestionIndex } from "./pending-question-index.js";
 import { type ReceiptSender, RecipientReceipts, UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
 import { matchStagePathSegments } from "../workflow-stage-path-matching.js";
@@ -1636,27 +1635,18 @@ class IntercomBroker {
 		if (requester === undefined) throw new Error("Session not found");
 		const requestId = clientMessage.requestId;
 		const selectedGroup = clientMessage.group;
-		const restricted = typeof selectedGroup === "string" && !this.canInspectSelectedGroup(requester, selectedGroup);
-		const visible = (sessions: ReadonlyMap<string, Pick<ConnectedSession, "info">>): SessionInfo[] =>
-			restricted
-				? []
-				: typeof selectedGroup === "string"
-					? sessionsInGroup(sessions, selectedGroup)
-					: sessionsVisibleTo(sessions, requester.info);
-		const respond = (sessions: SessionInfo[]): void => {
-			writeMessageIfOpen(socket, {
-				type: "sessions",
-				requestId,
-				sessions,
-				workflowStages: restricted ? [] : this.workflowStagesVisibleTo(requester, selectedGroup),
-				workflowFutureStages: restricted ? [] : this.workflowFutureStagesVisibleTo(requester, selectedGroup),
-				...(restricted ? { restricted: true as const } : {}),
-			});
-		};
 		const multiNode = this.multiNode;
-		if (multiNode === undefined) respond(visible(this.sessions));
-		// Multi-node S5: a session connected through another node is a live peer too, under the same visibility.
-		else void multiNode.remoteSessions().then((remote) => respond([...visible(this.sessions), ...visible(remote)]));
+		replyToList({
+			requestId,
+			requesterInfo: requester.info,
+			selectedGroup,
+			localSessions: () => this.sessions,
+			remoteSessions: multiNode === undefined ? undefined : () => multiNode.remoteSessions(),
+			canInspectSelectedGroup: (group) => this.canInspectSelectedGroup(requester, group),
+			workflowStages: () => this.workflowStagesVisibleTo(requester, selectedGroup),
+			workflowFutureStages: () => this.workflowFutureStagesVisibleTo(requester, selectedGroup),
+			write: (reply) => writeMessageIfOpen(socket, reply),
+		});
         break;
       }
 
