@@ -121,9 +121,52 @@ function rgbTo256(r: number, g: number, b: number): number {
 	return cubeIndex;
 }
 
-function hexTo256(hex: string): number {
+/**
+ * `nearest` picks the closest cube or grayscale entry. `preserve-hue` picks the closest entry whose strongest
+ * channels are the same as the input's, so a tinted color keeps its hue instead of collapsing to a gray.
+ */
+export type Quantization = "nearest" | "preserve-hue";
+
+interface PaletteEntry {
+	index: number;
+	r: number;
+	g: number;
+	b: number;
+}
+
+const PALETTE_256: PaletteEntry[] = [
+	...Array.from({ length: 216 }, (_, offset) => ({
+		index: 16 + offset,
+		r: CUBE_VALUES[Math.floor(offset / 36)],
+		g: CUBE_VALUES[Math.floor(offset / 6) % 6],
+		b: CUBE_VALUES[offset % 6],
+	})),
+	...GRAY_VALUES.map((value, offset) => ({ index: 232 + offset, r: value, g: value, b: value })),
+];
+
+function strongestChannels(r: number, g: number, b: number): number {
+	const max = Math.max(r, g, b);
+	return (r === max ? 4 : 0) | (g === max ? 2 : 0) | (b === max ? 1 : 0);
+}
+
+function rgbTo256PreservingHue(r: number, g: number, b: number): number {
+	const channels = strongestChannels(r, g, b);
+	let minDist = Infinity;
+	let minIndex = 16;
+	for (const entry of PALETTE_256) {
+		if (strongestChannels(entry.r, entry.g, entry.b) !== channels) continue;
+		const dist = colorDistance(r, g, b, entry.r, entry.g, entry.b);
+		if (dist < minDist) {
+			minDist = dist;
+			minIndex = entry.index;
+		}
+	}
+	return minIndex;
+}
+
+function hexTo256(hex: string, quantization: Quantization): number {
 	const { r, g, b } = hexToRgb(hex);
-	return rgbTo256(r, g, b);
+	return quantization === "preserve-hue" ? rgbTo256PreservingHue(r, g, b) : rgbTo256(r, g, b);
 }
 
 export function fgAnsi(color: string | number, mode: ColorMode): string {
@@ -134,14 +177,14 @@ export function fgAnsi(color: string | number, mode: ColorMode): string {
 			const { r, g, b } = hexToRgb(color);
 			return `\x1b[38;2;${r};${g};${b}m`;
 		} else {
-			const index = hexTo256(color);
+			const index = hexTo256(color, "nearest");
 			return `\x1b[38;5;${index}m`;
 		}
 	}
 	throw new Error(`Invalid color value: ${color}`);
 }
 
-export function bgAnsi(color: string | number, mode: ColorMode): string {
+export function bgAnsi(color: string | number, mode: ColorMode, quantization: Quantization = "nearest"): string {
 	if (color === "") return "\x1b[49m";
 	if (typeof color === "number") return `\x1b[48;5;${color}m`;
 	if (color.startsWith("#")) {
@@ -149,7 +192,7 @@ export function bgAnsi(color: string | number, mode: ColorMode): string {
 			const { r, g, b } = hexToRgb(color);
 			return `\x1b[48;2;${r};${g};${b}m`;
 		} else {
-			const index = hexTo256(color);
+			const index = hexTo256(color, quantization);
 			return `\x1b[48;5;${index}m`;
 		}
 	}

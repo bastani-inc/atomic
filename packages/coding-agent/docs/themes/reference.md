@@ -171,7 +171,9 @@ Five formats are supported:
 
 ### Terminal Compatibility
 
-Atomic uses 24-bit RGB colors. Most modern terminals support this (iTerm2, Kitty, WezTerm, Windows Terminal, VS Code). For older terminals with only 256-color support, Atomic falls back to the nearest approximation.
+Atomic uses 24-bit RGB colors. Most modern terminals support this (iTerm2, Kitty, WezTerm, Windows Terminal, VS Code). For older terminals with only 256-color support, Atomic falls back to the nearest palette color, which turns a slightly tinted background into a gray.
+
+The tool status backgrounds `toolPendingBg`, `toolSuccessBg`, and `toolErrorBg` keep their hue instead: each uses the nearest palette color whose strongest RGB channel is the same, so a green-tinted success background stays green. Give these three tokens different strongest channels (for example blue, green, and red tints) to keep them distinguishable in 256-color terminals, or set a palette index directly.
 
 Check truecolor support:
 

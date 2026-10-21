@@ -2,6 +2,7 @@ import chalk from "chalk";
 import type { SourceInfo } from "../../../core/source-info.ts";
 import { bgAnsi, type ColorMode, fgAnsi } from "./color-utils.ts";
 import {
+	isStatusToken,
 	splitThemeColors,
 	type ThemeBg,
 	type ThemeColor,
@@ -47,7 +48,7 @@ export class Theme {
 		}
 		this.bgColors = new Map();
 		for (const [key, value] of Object.entries(backgrounds) as [ThemeBg, string | number][]) {
-			this.bgColors.set(key, bgAnsi(value, mode));
+			this.bgColors.set(key, bgAnsi(value, mode, isStatusToken(key) ? "preserve-hue" : "nearest"));
 		}
 		this.workingIndicatorColors = new Map();
 		for (const [key, value] of Object.entries(options.workingIndicator ?? {}) as [

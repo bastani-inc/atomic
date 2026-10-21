@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { ansi256ToHex, bgAnsi } from "../../packages/coding-agent/src/modes/interactive/theme/color-utils.js";
+import { getResolvedThemeColors } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { loadTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme-loading.js";
 
 /**
  * `rgbTo256` is module-private; `bgAnsi(hex, "256color")` is the public surface that
@@ -72,4 +74,49 @@ test("returns a nearest palette entry across a stride-5 RGB sweep (#2550)", () =
 			}
 		}
 	}
+});
+
+const BUNDLED_THEMES = [
+	"dark",
+	"light",
+	"catppuccin-frappe",
+	"catppuccin-latte",
+	"catppuccin-macchiato",
+	"catppuccin-mocha",
+] as const;
+const TOOL_STATUS_BACKGROUNDS = ["toolPendingBg", "toolSuccessBg", "toolErrorBg"] as const;
+
+function strongestChannels(hex: string): string {
+	const channels = [1, 3, 5].map((start) => Number.parseInt(hex.slice(start, start + 2), 16));
+	const max = Math.max(...channels);
+	return ["r", "g", "b"].filter((_, channel) => channels[channel] === max).join("");
+}
+
+test("keeps tool status backgrounds distinct and hued in 256-color mode for every bundled theme (#2550)", () => {
+	for (const name of BUNDLED_THEMES) {
+		const truecolor = getResolvedThemeColors(name);
+		const theme = loadTheme(name, "256color");
+		const indices = TOOL_STATUS_BACKGROUNDS.map((token) => {
+			const match = /^\x1b\[48;5;(\d+)m$/.exec(theme.getBgAnsi(token));
+			assert.ok(match, `${name} ${token} should render as a 256-color background`);
+			const index = Number(match[1]);
+			const source = truecolor[token];
+			assert.equal(
+				strongestChannels(ansi256ToHex(index)),
+				strongestChannels(source),
+				`${name} ${token} ${source} lost its hue as index ${index}`,
+			);
+			return index;
+		});
+		assert.equal(new Set(indices).size, indices.length, `${name} tool status backgrounds collide: ${indices}`);
+	}
+});
+
+test("renders the dark theme's tool status backgrounds as navy, green, and red in 256-color mode", () => {
+	const theme = loadTheme("dark", "256color");
+	assert.deepEqual(
+		TOOL_STATUS_BACKGROUNDS.map((token) => theme.getBgAnsi(token)),
+		["\x1b[48;5;17m", "\x1b[48;5;22m", "\x1b[48;5;52m"],
+	);
+	assert.equal(theme.getBgAnsi("userMessageBg"), "\x1b[48;5;237m");
 });

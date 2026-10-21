@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
-import { afterEach, beforeEach, test, vi } from "vitest";
+import { afterEach, beforeEach, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../../packages/coding-agent/src/utils/ansi.ts";
@@ -20,15 +20,11 @@ function backgroundPrefix(token: "toolSuccessBg" | "toolErrorBg" | "toolPendingB
 }
 
 beforeEach(() => {
-	vi.stubEnv("COLORTERM", "truecolor");
 	initTheme("dark");
 	setKeybindings(new KeybindingsManager({ "app.tools.expand": "ctrl+o" }));
 });
 
-afterEach(() => {
-	vi.unstubAllEnvs();
-	setKeybindings(originalKeybindings);
-});
+afterEach(() => setKeybindings(originalKeybindings));
 
 test("completion notifications render as status-colored tool blocks without losing content", () => {
 	const completed = render({
