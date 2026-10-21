@@ -3,12 +3,10 @@ import { access as fsAccess, stat as fsStat } from "node:fs/promises";
 import { constants as osConstants } from "node:os";
 import { resolve as resolvePath } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { Container, Spacer, Text } from "@earendil-works/pi-tui";
+import { Container, Text } from "@earendil-works/pi-tui";
 import { spawn } from "child_process";
 import { type Static, Type } from "typebox";
 import { APP_NAME } from "../../config.js";
-import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.js";
-import { VisualLinePreview } from "../../modes/interactive/components/visual-truncate.ts";
 import { theme } from "../../modes/interactive/theme/theme.js";
 import { createChildProcessEnvironment, waitForChildProcess } from "../../utils/child-process.ts";
 import {
@@ -47,6 +45,7 @@ import {
 } from "./render-utils.ts";
 import { expandShellInternalUrls, type InternalResourceContext } from "./resource-selectors.ts";
 import { invalidateNativeSearchCache } from "./search-native.ts";
+import { addShellOutputPreview, formatTruncationNotice, rebuildShellWaitResult } from "./shell-task-render.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult } from "./truncate.ts";
 
@@ -327,8 +326,7 @@ export const BASH_SHELL_PRESENTATION: ShellToolPresentation = {
 	prompt: "$",
 	tempFilePrefix: `${APP_NAME}-bash`,
 };
-const BASH_PREVIEW_LINES = 5,
-	BASH_UPDATE_THROTTLE_MS = 100;
+const BASH_UPDATE_THROTTLE_MS = 100;
 function bashResultToToolResult(result: BashResult): {
 	content: Array<{ type: "text"; text: string }>;
 	details: BashToolDetails | undefined;
@@ -388,41 +386,13 @@ function rebuildBashResultRenderComponent(
 			output = output.slice(0, footerStart).trimEnd();
 		}
 	}
-	if (output) {
-		const styledOutput = output
-			.split("\n")
-			.map((line) => theme.fg("toolOutput", line))
-			.join("\n");
-		if (options.expanded) {
-			component.addChild(new Text(`\n${styledOutput}`, 0, 0));
-		} else {
-			component.addChild(new Spacer(1));
-			component.addChild(
-				new VisualLinePreview({
-					text: styledOutput,
-					maxVisualLines: BASH_PREVIEW_LINES,
-					keep: "end",
-					formatHint: (hidden) =>
-						theme.fg("muted", "... ") +
-						parenthesizedKeyHint("app.tools.expand", "Expand", `${hidden} earlier lines`),
-				}),
-			);
-		}
-	}
+	if (output) addShellOutputPreview(component, output, options.expanded);
 	if (truncation?.truncated || fullOutputPath) {
 		const warnings: string[] = [];
 		if (fullOutputPath) {
 			warnings.push(`Full output: ${fullOutputPath}`);
 		}
-		if (truncation?.truncated) {
-			if (truncation.truncatedBy === "lines") {
-				warnings.push(`Truncated: showing ${truncation.outputLines} of ${truncation.totalLines} lines`);
-			} else {
-				warnings.push(
-					`Truncated: ${truncation.outputLines} lines shown (${formatSize(truncation.maxBytes ?? DEFAULT_MAX_BYTES)} limit)`,
-				);
-			}
-		}
+		if (truncation?.truncated) warnings.push(formatTruncationNotice(truncation));
 		component.addChild(new Text(`\n${theme.fg("warning", `[${warnings.join(". ")}]`)}`, 0, 0));
 	}
 	if (timerText) component.addChild(new Text(`\n${theme.fg("muted", timerText)}`, 0, 0));
@@ -730,7 +700,15 @@ export function createBashToolDefinition(
 			const finalLabel = result.details?.observation?.kind === "yielded" ? "Observed for" : "Took";
 			const timerText = toolTimerText(context, options.isPartial, finalLabel);
 			const component = (context.lastComponent as Container | undefined) ?? new Container();
-			rebuildBashResultRenderComponent(component, result, options, context.showImages, timerText);
+			const waited =
+				context.args.action === "wait" &&
+				rebuildShellWaitResult(component, result, options, {
+					showImages: context.showImages,
+					isError: context.isError,
+					taskId: context.args.id,
+					timerText,
+				});
+			if (!waited) rebuildBashResultRenderComponent(component, result, options, context.showImages, timerText);
 			component.invalidate();
 			return component;
 		},

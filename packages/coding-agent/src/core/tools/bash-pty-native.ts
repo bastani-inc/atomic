@@ -6,6 +6,7 @@ import type { OperationId, TaskId, WaitOutcome, WaitPolicy } from "../tasks/cont
 import type { OwnerLease, TaskLease, TaskSupervisor, WaitLease } from "../tasks/supervisor.js";
 import { OutputAccumulator, type OutputAccumulatorOptions } from "./output-accumulator.ts";
 import { completeUtf8PrefixLength } from "./persisted-output-file.ts";
+import { EMPTY_OUTPUT_TEXT, TaskToolError, waitResultTail } from "./shell-task-status.ts";
 
 const NATIVE_PACKAGE = "@bastani/atomic-natives";
 
@@ -87,8 +88,9 @@ export interface SupervisedCommandOwner {
 export function lookupOwnedTask(context: SupervisedCommandOwner, id: string): TaskLease {
 	const taskId = id as TaskId;
 	const task = context.supervisor.lookupTask(context.owner, taskId);
-	if (!task.ok) throw new Error(`${task.error.code}: ${task.error.message}`);
-	if (context.ownsTask && !context.ownsTask(taskId)) throw new Error("UnknownTask: task was not launched here");
+	if (!task.ok) throw new TaskToolError(task.error, id);
+	if (context.ownsTask && !context.ownsTask(taskId))
+		throw new TaskToolError({ code: "UnknownTask", message: "task was not launched here" }, id);
 	return task.value;
 }
 export interface SupervisedCommandResult {
@@ -124,13 +126,13 @@ export async function waitForSupervisedCommand(
 			? context.waitForTask(id as TaskId, budgetMs, registered)
 			: context.supervisor.waitForTaskId(context.owner, id as TaskId, budgetMs, registered));
 		if (signal?.aborted) throw new Error("aborted");
-		if (!observed.ok) throw new Error(`${observed.error.code}: ${observed.error.message}`);
+		if (!observed.ok) throw new TaskToolError(observed.error, id);
 		let offset: string | undefined =
 			observed.value.kind === "yielded" ? (yieldedOutputOffsets.get(task) ?? "0") : "0";
 		let nextOffset: string;
 		do {
 			const page = await context.supervisor.readTaskOutput(task, { start: offset, maximumBytes: 8192 });
-			if (!page.ok) throw new Error(`${page.error.code}: ${page.error.message}`);
+			if (!page.ok) throw new TaskToolError(page.error, id);
 			const segments = [
 				...page.value.chunks.map((chunk) => ({ offsets: chunk.offsets, bytes: Buffer.from(chunk.bytes) })),
 				...page.value.omittedRanges.map((offsets) => ({
@@ -158,7 +160,11 @@ export async function waitForSupervisedCommand(
 			content: [
 				{
 					type: "text" as const,
-					text: `${snapshot.content || "(no output)"}${snapshot.truncation.truncated ? "\n[Output truncated.]" : ""}\n\n${JSON.stringify(observed.value)}${snapshot.fullOutputPath ? `\nFull output: ${snapshot.fullOutputPath}` : ""}`,
+					text: `${snapshot.content || EMPTY_OUTPUT_TEXT}${waitResultTail({
+						observation: observed.value,
+						truncated: snapshot.truncation.truncated,
+						fullOutputPath: snapshot.truncation.truncated ? snapshot.fullOutputPath : undefined,
+					})}`,
 				},
 			],
 			details: {
