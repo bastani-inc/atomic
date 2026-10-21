@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createStructuredOutputCapture, createStructuredOutputTool } from "@bastani/atomic";
+import { createStructuredOutputCapture, createStructuredOutputTool, type ModelRegistry } from "@bastani/atomic";
 import { createAssistantMessageEventStream } from "@bastani/pi-ai";
 import { Type } from "typebox";
 import { afterEach, beforeEach, test, vi } from "vitest";
@@ -31,22 +31,23 @@ afterEach(() => {
 });
 
 function hangingContext(extra: { getHttpIdleTimeoutMs?: () => number } = {}) {
+	const streamSimple: ModelRegistry["streamSimple"] = (_model, _context, options) => {
+		const stream = createAssistantMessageEventStream();
+		options?.signal?.addEventListener(
+			"abort",
+			() => {
+				const message = { ...decisionMessage(), content: [], stopReason: "aborted" as const };
+				stream.push({ type: "error", reason: "aborted", error: message });
+			},
+			{ once: true },
+		);
+		return stream;
+	};
 	const context = toolContext({
 		model: decisionModel,
 		modelRegistry: {
 			getAll: () => [decisionModel],
-			streamSimple: (_model: unknown, _context: unknown, options?: { signal?: AbortSignal }) => {
-				const stream = createAssistantMessageEventStream();
-				options?.signal?.addEventListener(
-					"abort",
-					() => {
-						const message = { ...decisionMessage(), content: [], stopReason: "aborted" as const };
-						stream.push({ type: "error", reason: "aborted", error: message });
-					},
-					{ once: true },
-				);
-				return stream;
-			},
+			streamSimple,
 		},
 		...extra,
 	} as never);

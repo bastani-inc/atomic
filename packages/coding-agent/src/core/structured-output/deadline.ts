@@ -1,4 +1,4 @@
-import { SETTINGS_DEFAULTS } from "../settings-defaults.js";
+import { SETTINGS_DEFAULTS } from "../settings-defaults.ts";
 
 /** The largest delay `setTimeout` honors; a larger one fires immediately. */
 const MAX_DEADLINE_MS = 2_147_483_647;

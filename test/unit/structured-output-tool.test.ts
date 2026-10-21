@@ -161,7 +161,7 @@ describe("structured_output inference tool", () => {
 		await tool.execute("call-1", args(), undefined, undefined, {
 			...context,
 			getHttpIdleTimeoutMs: () => 1_000,
-		} as unknown as ToolContext);
+		});
 
 		assert.equal(inference.requests[0]?.timeoutMs, 45_000);
 	});
@@ -177,7 +177,7 @@ describe("structured_output inference tool", () => {
 			await tool.execute("call-1", args(), undefined, undefined, {
 				...context,
 				getHttpIdleTimeoutMs: () => httpIdleTimeoutMs,
-			} as unknown as ToolContext);
+			});
 			assert.equal(inference.requests.at(-1)?.timeoutMs, expected, `httpIdleTimeoutMs ${httpIdleTimeoutMs}`);
 		}
 	});
