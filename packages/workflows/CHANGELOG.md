@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.41-alpha.1] - 2026-10-21
+
 ### Added
 
 - Added `schemaTimeoutMs` to workflow stage, task, chain, and parallel options: the wall-clock limit in milliseconds for each `structured_output` decision of a schema-backed item, covering its repair attempts, retries, and model fallbacks together. It defaults to the `httpIdleTimeoutMs` setting ([#3806](https://github.com/bastani-inc/atomic/issues/3806))

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.41-alpha.1] - 2026-10-21
+
 ### Added
 
 - The task supervisor accepts the `pause` and `quit` cancel causes, for agents stopped resumably.
