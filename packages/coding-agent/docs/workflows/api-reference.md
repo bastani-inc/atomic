@@ -575,6 +575,8 @@ A same-candidate retry resumes the existing turn when the transcript ends in a m
 
 Request/context incompatibility also advances it, including HTTP 400/413/422 bad, unprocessable, or payload-too-large requests; unsupported tools or parameters; context-length or context-window overflow; and `too large`, `invalid_request`, or `bad_request` errors.
 
+If an extension fails to start a stage session, the stage error and its model attempts name each failing extension and its own error, for example `Extension startup failed: <extension path>: Broker failed to start within timeout`. A load-dependent failure, such as a timeout or a refused or closed local connection, uses the same-candidate retry budget from `settings.retry` and then advances to the next candidate, so the stage keeps its fallbacks and a fail-fast `parallel()` group keeps its siblings running. Any other extension startup error fails the stage at once, because every candidate would load the same extension; fix the extension named in the error and resume the run.
+
 If extension initialization fails and its session cannot be cleaned up, the stage stops without trying another model. Later prompts or attachment attempts on that stage also fail. Inspect both the initialization and cleanup errors and resolve the extension failure before starting a new run; changing fallback models does not fix a cleanup failure.
 
 A context overflow that the stage session's compaction has already failed to resolve is terminal for its candidate: it skips the same-candidate retry, because re-sending an identical request cannot fit a context compaction could not shrink, and advances straight to the next candidate.
