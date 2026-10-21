@@ -78,6 +78,24 @@ export class AutoRoutingInferenceError extends Error {
 	}
 }
 
+/**
+ * Caller-owned bounds on routing inference. Routing has no built-in deadline or
+ * concurrency limit; a caller that must not wait indefinitely supplies them.
+ */
+export interface RoutingInferenceBounds {
+	/**
+	 * When it aborts, inference stops and routing ends like any total inference
+	 * failure, so a consumer may degrade to `AutoRoutingInferenceError.currentModelRoute`.
+	 * Cancellation still goes through `signal`.
+	 */
+	readonly deadline?: AbortSignal;
+	/** Runs each inference under the caller's concurrency limit; the queue wait must end when `signal` aborts. */
+	readonly limit?: <T>(run: () => Promise<T>, signal: AbortSignal | undefined) => Promise<T>;
+}
+
+const INFERENCE_DEADLINE_MESSAGE =
+	"Auto routing timed out waiting for the routing model; the provider may be unavailable or overloaded.";
+
 /** Degraded routes keep a balanced effort when the constraints leave a choice. */
 const CURRENT_MODEL_EFFORT_PREFERENCE: readonly (string | null)[] = [
 	null,
@@ -138,6 +156,7 @@ export async function routeExecutionModel(input: {
 	 * candidates on top of the settings and never lift a user's exclusion.
 	 */
 	overrideProviderSettings?: boolean;
+	inference?: RoutingInferenceBounds;
 }): Promise<ModelRoute> {
 	const { ctx, signal } = input;
 	signal?.throwIfAborted();
@@ -245,13 +264,16 @@ export async function routeExecutionModel(input: {
 		};
 		// Any failure before a model is chosen is a total inference failure: the
 		// router and its chat structured-output fallback both failed (#3206).
-		const infer = async <T>(decide: () => Promise<T>): Promise<T> => {
+		const { deadline, limit } = input.inference ?? {};
+		const infer = async <T>(decide: (inferenceSignal: AbortSignal | undefined) => Promise<T>): Promise<T> => {
+			const inferenceSignal =
+				deadline === undefined ? signal : signal === undefined ? deadline : AbortSignal.any([signal, deadline]);
 			try {
-				return await decide();
+				return await (limit ? limit(() => decide(inferenceSignal), inferenceSignal) : decide(inferenceSignal));
 			} catch (error) {
 				signal?.throwIfAborted();
 				throw new AutoRoutingInferenceError(
-					error instanceof Error ? error.message : String(error),
+					deadline?.aborted ? INFERENCE_DEADLINE_MESSAGE : error instanceof Error ? error.message : String(error),
 					await currentModelRoute().catch(() => undefined),
 				);
 			}
@@ -327,7 +349,7 @@ export async function routeExecutionModel(input: {
 							: {}),
 					}
 				: undefined;
-			const result = await infer(() =>
+			const result = await infer((inferenceSignal) =>
 				routeModel(
 					{
 						settings: { getRouterModel: () => reader! },
@@ -351,7 +373,7 @@ export async function routeExecutionModel(input: {
 							decode: (choices) =>
 								Object.fromEntries(questions.map((question) => [question.id, choices[question.id]!])),
 						},
-						signal,
+						signal: inferenceSignal,
 					},
 					(value) => questions.every((question) => Object.hasOwn(question.criteria, String(value[question.id]))),
 				),
@@ -436,7 +458,7 @@ export async function routeExecutionModel(input: {
 				{ modelId: Type.String({ enum: shortlist.map((option) => option.model) }) },
 				{ additionalProperties: false },
 			);
-			const result = await infer(() =>
+			const result = await infer((inferenceSignal) =>
 				routeModel(
 					{
 						settings,
@@ -460,7 +482,7 @@ export async function routeExecutionModel(input: {
 								return { modelId: option.model };
 							},
 						},
-						signal,
+						signal: inferenceSignal,
 					},
 					(value) => shortlist.some((option) => option.model === value.modelId),
 				),

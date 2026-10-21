@@ -60,6 +60,7 @@ export function workflowModelCatalogFromContext(
 				selection: input.selection,
 				...(input.taskNeeds ? { taskNeeds: input.taskNeeds } : {}),
 				...(input.overrideProviderSettings ? { overrideProviderSettings: true } : {}),
+				...(input.inference ? { inference: input.inference } : {}),
 			});
 		},
 		listModels: async (): Promise<readonly WorkflowModelInfo[]> => {

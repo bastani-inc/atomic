@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `routeExecutionModel()` accepts an optional `inference` option (exported type `RoutingInferenceBounds`) for callers that must not wait indefinitely on routing inference: `deadline` is an `AbortSignal` whose abort ends routing as a complete inference failure, so the caller can degrade to `AutoRoutingInferenceError.currentModelRoute`, and `limit` runs each routing inference under the caller's concurrency limit. Without it, routing keeps having no built-in deadline.
+
 ## [0.9.40] - 2026-10-20
 
 ### Breaking Changes
