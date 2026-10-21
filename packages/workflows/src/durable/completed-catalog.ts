@@ -12,6 +12,7 @@ import {
 	childRunStatus,
 	childScopedEvidenceExists,
 	compareDraftSourceOrder,
+	isPendingChildBoundary,
 	isSyntheticExitedChild,
 	mergeStageDraft,
 	mergeStageGroup,
@@ -438,14 +439,25 @@ function runSnapshotsFromCheckpoints(
 	const groupedCount = grouped.size;
 	retainReachableRunGroups(grouped, rootRunId);
 	if (policy.failOnUnreachable && grouped.size !== groupedCount) return [];
-	if (!validateRunGroups(grouped, rootRunId, toolCheckpoints, checkpoints)) return [];
+	if (!validateRunGroups(grouped, rootRunId, toolCheckpoints, checkpoints, policy.retainActive)) return [];
 	const syntheticChildren: Array<{
 		readonly parentRunId: string;
 		readonly owner: StageDraft;
 		readonly child: NonNullable<StageSnapshot["workflowChild"]>;
 	}> = [];
+	const pendingChildren: Array<{ readonly parentRunId: string; readonly owner: StageDraft }> = [];
 	for (const [parentRunId, runDrafts] of grouped) {
 		for (const draft of runDrafts) {
+			const pendingChildRunId = childRunIdFromDraft(draft);
+			if (
+				policy.retainActive &&
+				pendingChildRunId !== undefined &&
+				!grouped.has(pendingChildRunId) &&
+				isPendingChildBoundary(draft, parentRunId, pendingChildRunId, rootRunId)
+			) {
+				pendingChildren.push({ parentRunId, owner: draft });
+				continue;
+			}
 			const child = workflowChildFromDraft(draft);
 			if (child?.exited !== true || grouped.has(child.runId)) continue;
 			if (
@@ -573,6 +585,26 @@ function runSnapshotsFromCheckpoints(
 			result: child.outputs,
 			exited: true,
 			...(child.exitReason !== undefined ? { exitReason: child.exitReason } : {}),
+			resumable: false,
+		});
+	}
+	for (const { parentRunId, owner } of pendingChildren) {
+		if (!emittedRunIds.has(parentRunId)) return [];
+		const topology = owner.topology!;
+		const boundary = topology.boundary!;
+		const parentStageId = idMaps.get(parentRunId)?.get(topology.stageId);
+		if (parentStageId === undefined) return [];
+		runs.push({
+			id: boundary.child.runId,
+			name: boundary.child.runName,
+			inputs: {},
+			status: "running",
+			stages: [],
+			toolNodes: [],
+			startedAt: owner.startedAt ?? owner.firstCompletedAt,
+			parentRunId,
+			parentStageId,
+			rootRunId: boundary.child.rootRunId,
 			resumable: false,
 		});
 	}

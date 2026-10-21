@@ -94,6 +94,7 @@ import {
 	recordDurableActiveStage,
 } from "./run-durable-topology.js";
 import { deferStageUntilRunRelease } from "./run-paused-stage.js";
+import { containRejectionsOf } from "./run-rejection-boundary.js";
 import { classifyReturnedRunStatus } from "./run-returned-status.js";
 import { createRunTerminalEventArbiter } from "./run-terminal-event.js";
 import { finalizeTerminalFailure } from "./run-terminal-failure.js";
@@ -816,6 +817,10 @@ async function executeRun(
 		baseFromPromptNodes: getPromptNodeUi,
 	});
 	let pausedExit: Promise<never> | undefined;
+	const failRunFromUnhandledRejection = (error: object): void => {
+		if (findWorkflowGracefulQuit(error) === undefined) terminalEvents.selectFailure(error);
+	};
+	const ignoreUnhandledRejection = (): void => {};
 	const ctx: WorkflowRunContext = {
 		inputs: resolvedInputs,
 		runId,
@@ -848,24 +853,28 @@ async function executeRun(
 		chain: (...args) => whenRunning(() => chain(...args)),
 		parallel: (...args) => whenRunning(() => parallel(...args)),
 		workflow: (...args) =>
-			whenRunning(() => {
-				const pending = durableWorkflow(...args);
-				pendingChildWorkflows.add(pending);
-				const settled = (): void => {
-					pendingChildWorkflows.delete(pending);
-				};
-				void pending.then(settled, settled);
-				return pending;
-			}),
+			containRejectionsOf(
+				whenRunning(() => {
+					const pending = durableWorkflow(...args);
+					pendingChildWorkflows.add(pending);
+					const settled = (): void => {
+						pendingChildWorkflows.delete(pending);
+					};
+					void pending.then(settled, settled);
+					return pending;
+				}),
+				failRunFromUnhandledRejection,
+			),
 		tool: (...args) => {
 			// Let the tracker retain its terminal rejection, rather than replaying
 			// a stored drain failure or the run's abort reason to a late caller.
-			if (admittedTools.closed) return tool(...args);
+			if (admittedTools.closed) return containRejectionsOf(tool(...args), ignoreUnhandledRejection);
 			// Wait before admission so pause cannot hold the registration lease
 			// that a subsequent quit needs to drain.
-			const pending = whenRunning(() => tool(...args));
-			void pending.catch(() => {});
-			return pending;
+			return containRejectionsOf(
+				whenRunning(() => tool(...args)),
+				failRunFromUnhandledRejection,
+			);
 		},
 		...(opts.models !== undefined ? { models: opts.models } : {}),
 	};

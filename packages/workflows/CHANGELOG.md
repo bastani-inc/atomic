@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- A `ctx.tool` call that rejects, or one made after its run has stopped (`ctx.tool admission is closed for this run`), no longer ends the whole Atomic process when workflow code leaves the rejected promise unhandled, for example a rolling pool that keeps `branch.finally(...)` as a separate promise. The rejection fails only its own run, or is ignored when that run has already ended, and other runs, stages, and the interactive engine keep going. Unrelated unhandled rejections still end the process ([#3846](https://github.com/bastani-inc/atomic/issues/3846))
+- `/workflow status <runId>` no longer reports `durable checkpoint topology is malformed or incomplete` for a running or crashed run whose child `ctx.workflow` calls have started but not yet recorded a stage or tool of their own, such as a pool of concurrent children when the process was killed. The children now show as running, and a crashed run can be inspected and resumed ([#3846](https://github.com/bastani-inc/atomic/issues/3846))
+
 ## [0.9.41-alpha.1] - 2026-10-21
 
 ### Added
