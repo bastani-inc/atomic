@@ -204,6 +204,57 @@ describe.each(["local", "isolated"] as const)("interactive submissions while the
 			assert.deepEqual(rig.host.notices, [], "a notice was shown for an accepted message");
 		});
 
+		test("the run that delivers a message typed while agent_settled handlers run settles like any other run", async () => {
+			const settled = createGate();
+			const extensionLifecycle: string[] = [];
+			const recordLifecycle: ExtensionFactory = (pi) => {
+				pi.on("agent_start", () => {
+					extensionLifecycle.push("agent_start");
+				});
+				pi.on("agent_end", () => {
+					extensionLifecycle.push("agent_end");
+				});
+				pi.on("agent_settled", () => {
+					extensionLifecycle.push("agent_settled");
+				});
+			};
+			const rig = await createRig(wiring, load, {
+				extensions: [recordLifecycle, hookGate("agent_settled", settled)],
+			});
+			rigs.push(rig);
+			rig.engine.setResponses([
+				fauxAssistantMessage("first answer"),
+				fauxAssistantMessage("answer to the typed message"),
+				fauxAssistantMessage("unexpected extra reply"),
+			]);
+
+			await rig.host.defaultEditor.onSubmit?.("P1");
+			await settled.entered.promise;
+			if (wiring === "isolated") {
+				await waitFor("the host to see the prompt dispatched", () => rig.host.onInputCallback !== undefined);
+			}
+			await rig.host.defaultEditor.onSubmit?.("M-settled");
+			await waitFor("the session to queue the typed message", () =>
+				rig.engine.session.getSteeringMessages().includes("M-settled"),
+			);
+
+			settled.release.resolve();
+			await waitFor(
+				"the delivering run to settle",
+				() => rig.engine.eventsOfType("agent_settled").length >= 2 && isIdleAfterAnswering(rig.engine),
+			);
+			await sleep(DUPLICATE_DELIVERY_SETTLE_MS);
+
+			const expected = ["agent_start", "agent_end", "agent_settled", "agent_start", "agent_end", "agent_settled"];
+			const sessionLifecycle = rig.engine.events
+				.map((event) => event.type)
+				.filter((type) => type === "agent_start" || type === "agent_end" || type === "agent_settled");
+			assert.deepEqual(sessionLifecycle, expected, "a run started without settling");
+			assert.deepEqual(extensionLifecycle, expected, "extensions did not see the delivering run settle");
+			assert.deepEqual(getUserTexts(rig.engine), ["P1", "M-settled"], "order or exactly-once delivery was lost");
+			assert.deepEqual(rig.host.notices, [], "a notice was shown for an accepted message");
+		});
+
 		test("a message the session refuses while agent_settled handlers run comes back to the editor with a notice", async () => {
 			const settled = createGate();
 			const rig = await createRig(wiring, load, { extensions: [hookGate("agent_settled", settled)] });

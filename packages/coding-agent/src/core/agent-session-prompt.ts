@@ -520,26 +520,30 @@ export async function _runAgentPrompt(
 		releasePreparation();
 		if (ownsPreparation && !preparation) this._isPreparingRun = false;
 		this._runSystemPromptOptions = undefined;
-		this._cacheWarmer?.onAgentSettled();
-		await this._agentEventQueue;
-		await this._flushPendingCustomMessages();
-		this._isEmittingAgentSettled = true;
-		try {
-			const aborted = this._agentRunAbortRequested === true;
-			if (typeof this._extensionRunner?.emit === "function") {
-				await this._extensionRunner.emit({ type: "agent_settled", aborted });
-			}
-			this._emit?.({ type: "agent_settled", aborted });
-		} finally {
-			this._isEmittingAgentSettled = false;
-		}
-		if (this._subagentMessageAdmission) await settleSubagentMessages(this);
-		this._activePromptCount -= 1;
-		// Runs deferred by agent_settled handlers start only after every settled handler completed.
-		// Guarded because prompt-handshake suites drive this function on a synthetic session.
-		const deferred = this._deferredSettledActions?.splice(0) ?? [];
-		for (const action of deferred) await action();
+		await settleAgentRun(this);
 	}
+}
+
+async function settleAgentRun(session: AgentSession): Promise<void> {
+	session._cacheWarmer?.onAgentSettled();
+	await session._agentEventQueue;
+	await session._flushPendingCustomMessages();
+	session._isEmittingAgentSettled = true;
+	try {
+		const aborted = session._agentRunAbortRequested === true;
+		if (typeof session._extensionRunner?.emit === "function") {
+			await session._extensionRunner.emit({ type: "agent_settled", aborted });
+		}
+		session._emit?.({ type: "agent_settled", aborted });
+	} finally {
+		session._isEmittingAgentSettled = false;
+	}
+	if (session._subagentMessageAdmission) await settleSubagentMessages(session);
+	session._activePromptCount -= 1;
+	// Runs deferred by agent_settled handlers start only after every settled handler completed.
+	// Guarded because prompt-handshake suites drive this function on a synthetic session.
+	const deferred = session._deferredSettledActions?.splice(0) ?? [];
+	for (const action of deferred) await action();
 }
 
 /**
@@ -845,9 +849,38 @@ function canContinueQueuedInput(session: AgentSession): boolean {
 	);
 }
 
+function canStartQueuedInputRun(session: AgentSession): boolean {
+	return (
+		canContinueQueuedInput(session) &&
+		!session._agentRunAbortRequested &&
+		!session._stopAfterTurnBlockedContinuation &&
+		session.agent.hasQueuedMessages() &&
+		session.agent.state.messages.some((message) => message.role !== "system")
+	);
+}
+
+async function runQueuedInput(session: AgentSession): Promise<void> {
+	await session._agentEventQueue;
+	await preparePriorityContinuation(session);
+	if (!canStartQueuedInputRun(session)) return;
+	const run = session.agent.continue();
+	if (!session.agent.state.isStreaming) return run;
+	session._activePromptCount += 1;
+	try {
+		await run;
+		await session.waitForRetry();
+		await session._continueQueuedAgentMessages();
+		if (session._agentRunAbortRequested) return;
+		await session._awaitPendingPostCompactionContinuation();
+		await runBeforeSettleContinuations(session);
+	} finally {
+		await settleAgentRun(session);
+	}
+}
+
 function deliverQueuedInputIfIdle(session: AgentSession): void {
 	const deliver = async (): Promise<void> => {
-		if (canContinueQueuedInput(session)) await session._continueQueuedAgentMessages().catch(() => {});
+		await runQueuedInput(session).catch(() => {});
 	};
 	if (session._isEmittingAgentSettled) session._deferredSettledActions.push(deliver);
 	else if (session._activePromptCount === 0) void deliver();

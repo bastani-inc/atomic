@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import type { ExtensionAPI } from "@bastani/atomic";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
@@ -7,6 +8,12 @@ import { convertToLlm } from "../../src/core/messages.ts";
 import { createHarness, getAssistantTexts, getMessageText, getUserTexts, type Harness } from "./harness.ts";
 
 const PAUSED_QUEUE_SETTLE_MS = 50;
+const IDLE_DELIVERY_SETTLE_TIMEOUT_MS = 10_000;
+const LIFECYCLE_EVENT_TYPES = new Set(["agent_start", "agent_end", "agent_settled"]);
+
+function lifecycleEvents(harness: Harness): string[] {
+	return harness.events.filter((event) => LIFECYCLE_EVENT_TYPES.has(event.type)).map((event) => event.type);
+}
 
 async function createWaitingHarness(
 	options: {
@@ -510,6 +517,66 @@ describe("AgentSession queue characterization", () => {
 		expect(getUserTexts(harness)).toEqual(["first", "queued while idle"]);
 		expect(harness.session.getSteeringMessages()).toEqual([]);
 		expect(harness.session.getFollowUpMessages()).toEqual([]);
+	});
+
+	it.each(["steer", "followUp"] as const)(
+		"settles the run that delivers a %s queued while the session is idle",
+		async (behavior) => {
+			let extensionSettles = 0;
+			const harness = await createHarness({
+				extensionFactories: [
+					(pi) => {
+						pi.on("agent_settled", () => {
+							extensionSettles += 1;
+						});
+					},
+				],
+			});
+			harnesses.push(harness);
+			harness.setResponses([
+				fauxAssistantMessage("first reply"),
+				fauxAssistantMessage("reply to the queued message"),
+				fauxAssistantMessage("unexpected reply"),
+			]);
+			await harness.session.prompt("first");
+
+			await (behavior === "steer"
+				? harness.session.steer("queued while idle")
+				: harness.session.followUp("queued while idle"));
+			await vi.waitFor(() => expect(harness.eventsOfType("agent_settled")).toHaveLength(2), {
+				timeout: IDLE_DELIVERY_SETTLE_TIMEOUT_MS,
+			});
+			await new Promise((resolve) => setTimeout(resolve, PAUSED_QUEUE_SETTLE_MS));
+
+			assert.deepEqual(lifecycleEvents(harness), [
+				"agent_start",
+				"agent_end",
+				"agent_settled",
+				"agent_start",
+				"agent_end",
+				"agent_settled",
+			]);
+			assert.equal(extensionSettles, 2, "extensions did not see the delivering run settle");
+			assert.deepEqual(getUserTexts(harness), ["first", "queued while idle"]);
+			assert.equal(harness.session.isStreaming, false);
+		},
+	);
+
+	it("leaves a steer queued on a session with no messages until the next prompt", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("reply to both"), fauxAssistantMessage("unexpected reply")]);
+
+		await harness.session.steer("queued before any prompt");
+		await new Promise((resolve) => setTimeout(resolve, PAUSED_QUEUE_SETTLE_MS));
+
+		assert.deepEqual(lifecycleEvents(harness), []);
+		assert.deepEqual(harness.session.getSteeringMessages(), ["queued before any prompt"]);
+
+		await harness.session.prompt("first");
+		await harness.session.agent.waitForIdle();
+		assert.deepEqual(getUserTexts(harness), ["first", "queued before any prompt"]);
+		assert.deepEqual(harness.session.getSteeringMessages(), []);
 	});
 
 	it("keeps a steer queued while idle until a paused session resumes", async () => {
