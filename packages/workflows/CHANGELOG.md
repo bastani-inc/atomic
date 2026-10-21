@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - Reopening `/workflow resume` is faster: the run list is kept between opens and rereads only the runs whose journal changed since the last open, including changes made by other Atomic processes. Whether another session still owns a run is checked when you select it.
+- `/workflow connect` and `/workflow status` now list runs the way `/tasks` does. Active runs come before ended ones, with runs waiting for your input or blocked first, then running, then paused; ended runs follow with failed, cancelled, then completed. Within each group the newest run comes first, where before the `/workflow connect` list showed the oldest running run first ([#3824](https://github.com/bastani-inc/atomic/issues/3824)).
 
 ### Fixed
 

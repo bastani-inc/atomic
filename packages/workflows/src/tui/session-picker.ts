@@ -21,6 +21,7 @@
 import { keyText } from "@bastani/atomic";
 import { isWorkflowRunResumable, type WorkflowRunResumeCandidate } from "../durable/resume-eligibility.js";
 import { runIndicatorStatus } from "../shared/run-indicator-status.js";
+import { compareRunsByStatus } from "../shared/run-order.js";
 import { isTopLevelWorkflowRun } from "../shared/run-visibility.js";
 import type { RunSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
@@ -119,8 +120,7 @@ export function selectRunsForPicker(
 		return r.name.toLowerCase().includes(q) || r.id.startsWith(q);
 	};
 
-	const active: PickerRow[] = [];
-	const terminal: PickerRow[] = [];
+	const rows: PickerRow[] = [];
 	for (const r of runs) {
 		if (!isTopLevelWorkflowRun(r)) continue;
 		if (!matches(r)) continue;
@@ -130,17 +130,16 @@ export function selectRunsForPicker(
 		}
 		const endedAt = r.endedAt;
 		if (endedAt === undefined) {
-			active.push({ run: r, bucket: "active" });
+			rows.push({ run: r, bucket: "active" });
 			continue;
 		}
 
 		if (includeAll || now - endedAt <= RECENT_WINDOW_MS) {
-			terminal.push({ run: r, bucket: "terminal" });
+			rows.push({ run: r, bucket: "terminal" });
 		}
 	}
-	active.sort((a, b) => a.run.startedAt - b.run.startedAt);
-	terminal.sort((a, b) => (b.run.endedAt ?? 0) - (a.run.endedAt ?? 0));
-	return [...active, ...terminal];
+	const compare = compareRunsByStatus((run) => runIndicatorStatus(run, runs));
+	return rows.sort((a, b) => compare(a.run, b.run));
 }
 
 // ---------------------------------------------------------------------------

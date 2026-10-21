@@ -70,7 +70,7 @@ Status, run detail, dispatch confirmation, and run-picker cards wrap full IDs on
 
 An `AWAITING INPUT` banner has two identity rows: `？` with the full run id, then the workflow name and optional metadata. The question and options appear below it in the normal prompt UI.
 
-The `/workflow connect` run picker shows five runs at a time; use the arrow keys or mouse wheel to scroll through additional retained runs.
+The `/workflow connect` run picker shows five runs at a time; use the arrow keys or mouse wheel to scroll through additional retained runs. Active runs come first, with runs waiting for input or blocked at the top, then running and paused runs, followed by ended runs (failed, cancelled, then completed); the newest run comes first within each group, and `/workflow status` lists runs in the same order.
 
 The rendered card shape at the 80-column breakpoint is:
 
