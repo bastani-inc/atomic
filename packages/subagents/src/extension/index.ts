@@ -486,8 +486,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				// Children a workflow stage launched in earlier generations end with it too when it closes for good.
 				watchWorkflowStageSubagentChildren(pi, ctx);
 				if (opened) void holdRunningSubagentChildren(pi.events, ctx).catch(() => undefined);
-				// Like workflows, only a process startup recovers; a reload or session switch leaves them awaiting resume.
-				if (event.reason === "startup")
+				if (opened)
 					void resumeAwaitingSubagentChildren(
 						executorDeps,
 						ctx,

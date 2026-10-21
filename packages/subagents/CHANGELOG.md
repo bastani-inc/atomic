@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added a `resumeInFlight` subagent setting (`"never"`, `"ask"`, or `"auto"`, default `"never"`) for startup recovery of paused and quit subagents that are awaiting resume. `ask` confirms once and `auto` resumes each from its own session, with its completion reaching the session that launched it; `never` leaves them for a manual `resume`. It applies at process startup to the starting session's own subagents, never to workflow-stage children, and an invalid value is reported and treated as `never` ([#3827](https://github.com/bastani-inc/atomic/issues/3827)).
+- Added a `resumeInFlight` subagent setting (`"never"`, `"ask"`, or `"auto"`, default `"never"`) for recovery of paused and quit subagents that are awaiting resume. `ask` confirms once, listing each subagent, and `auto` resumes each from its own session, with its completion reaching the session that launched it; `never` leaves them for a manual `resume`. It applies when Atomic starts or a session is resumed, to that session's own subagents, never to workflow-stage children, and an invalid value is reported and treated as `never` ([#3827](https://github.com/bastani-inc/atomic/issues/3827)).
 
 ### Changed
 

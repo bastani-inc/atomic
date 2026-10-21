@@ -307,17 +307,17 @@ To run up to 100 children at once, raise both concurrency and running capacity a
 
 Running capacity is selected when a parent's first child is created. Restart Atomic after changing this setting to apply the new capacity.
 
-`resumeInFlight` controls what happens at startup to subagents you paused or quit that are still awaiting resume (the same values as the [workflow setting](/workflows/operations)):
+`resumeInFlight` controls what happens when a session starts or is resumed to subagents you paused or quit that are still awaiting resume (the same values as the [workflow setting](/workflows/operations)):
 
 ```json
 { "resumeInFlight": "ask" }
 ```
 
 - `"never"` (the default) leaves them listed under **Awaiting resume** in `subagent({ action: "status" })` until you resume them.
-- `"ask"` shows one confirmation, such as "2 interrupted subagent(s) can resume from their own sessions. Resume now?". Choosing No leaves them awaiting resume. Without an interactive UI it behaves like `"never"`.
+- `"ask"` shows one confirmation that lists each subagent by name and id, such as "2 interrupted subagent(s) can resume from their own sessions: ... Resume now?". Choosing No leaves them awaiting resume. Without an interactive UI it behaves like `"never"`.
 - `"auto"` resumes them, each continuing from its own session, and its result reaches the session that launched it.
 
-Only process startup recovers children, not `/reload` or a session switch. Only subagents the starting session launched are affected; subagents owned by a workflow stage are never resumed this way. Any other value is reported when the config loads and treated as `"never"`.
+Starting Atomic and resuming a session (`/resume`) recover children; `/reload`, `/new`, and forking do not. Only subagents launched by the session being started or resumed are affected; subagents owned by a workflow stage are never resumed this way. Any other value is reported when the config loads and treated as `"never"`.
 
 When one assistant response emits several sibling execution-mode `subagent` tool calls, Atomic collects that synchronous burst before starting a child and runs it as one indexed parallel set. Each original tool call still receives one result containing only the children it requested, and its live result, progress, control, and artifact updates are projected to that same route without sibling data. The TUI redraws the shared run as one aggregate parallel widget rather than retaining one widget per original call. A single call keeps its original SINGLE or PARALLEL mode, calls awaited in sequence remain separate runs, and management actions bypass collection. An execution call that arrives after a child has started still receives the existing in-progress rejection. Prefer one explicit `{ tasks: [...] }` call when planning parallel work; burst collection handles sibling calls emitted by a model.
 

@@ -2531,10 +2531,16 @@ test("resumeInFlight ask resumes every quit or paused subagent after one confirm
 
 	assert.equal(ui.confirms.length, 1, "one confirmation for all of them");
 	assert.equal(ui.confirms[0]?.title, "Resume interrupted subagents?");
-	assert.match(
-		ui.confirms[0]?.message ?? "",
-		/^2 interrupted subagent\(s\) can resume from their own sessions\. Resume now\?/,
+	assert.match(ui.confirms[0]?.message ?? "", /^2 interrupted subagent\(s\) can resume from their own sessions:\n/);
+	assert.ok(
+		ui.confirms[0]?.message.includes(`- worker (${quit.childId}, subagent-worker-ask1)`),
+		"names the quit child",
 	);
+	assert.ok(
+		ui.confirms[0]?.message.includes(`- worker (${paused.childId}, subagent-worker-ask2)`),
+		"names the paused child",
+	);
+	assert.match(ui.confirms[0]?.message ?? "", /\nResume now\? Choose No/);
 	const resumed = await waitForResumed(h, quit);
 	assert.equal(resumed.terminalStatus, "ok");
 	assert.equal(resumed.childSessionId, quit.childSessionId, "it continued from its own session");

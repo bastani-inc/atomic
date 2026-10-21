@@ -186,7 +186,10 @@ test("resumeInFlight ask confirms once at startup and honours no (#3827)", async
 	await sleep(100);
 
 	assert.equal(startup.confirms.length, 1);
-	assert.match(startup.confirms[0] ?? "", /^1 interrupted subagent\(s\) can resume from their own sessions\./);
+	assert.equal(
+		startup.confirms[0]?.split("\n").slice(0, 2).join("\n"),
+		"1 interrupted subagent(s) can resume from their own sessions:\n- worker (wiring1:0)",
+	);
 	assert.deepEqual(startup.notices, []);
 });
 
@@ -200,14 +203,35 @@ test("resumeInFlight ask does not prompt without a UI (#3827)", async () => {
 	assert.deepEqual({ confirms: startup.confirms, notices: startup.notices }, { confirms: [], notices: [] });
 });
 
-test("resumeInFlight only recovers at process startup, not on reload or session switches (#3827)", async () => {
-	useSubagentConfig(JSON.stringify({ resumeInFlight: "auto" }));
+test("resumeInFlight ask recovers when a session is resumed in-process (#3827)", async () => {
+	useSubagentConfig(JSON.stringify({ resumeInFlight: "ask" }));
 	const startup = await registerWithQuitChild();
 
-	for (const reason of ["reload", "new", "resume", "fork"]) startup.start(reason);
+	startup.start("resume");
+	await settle(startup, 1);
 	await sleep(100);
 
-	assert.deepEqual({ confirms: startup.confirms, notices: startup.notices }, { confirms: [], notices: [] });
+	assert.equal(startup.confirms.length, 1, "one confirmation for the resumed session");
+	assert.match(startup.confirms[0] ?? "", /- worker \(wiring1:0\)/);
+});
+
+test("resumeInFlight recovers at startup and resume but not on reload, new, or fork (#3827)", async () => {
+	useSubagentConfig(JSON.stringify({ resumeInFlight: "auto" }));
+	const skipped = await registerWithQuitChild();
+
+	for (const reason of ["reload", "new", "fork"]) skipped.start(reason);
+	await sleep(100);
+
+	assert.deepEqual({ confirms: skipped.confirms, notices: skipped.notices }, { confirms: [], notices: [] });
+
+	for (const reason of ["startup", "resume"]) {
+		const recovered = await registerWithQuitChild();
+		recovered.start(reason);
+		await settle(recovered, 1);
+
+		assert.equal(recovered.notices.length, 1, `${reason} recovers the quit subagent`);
+		assert.match(recovered.notices[0]?.message ?? "", /worker \(wiring1:0\) could not be resumed/);
+	}
 });
 
 test("an invalid resumeInFlight behaves as never at startup (#3827)", async () => {

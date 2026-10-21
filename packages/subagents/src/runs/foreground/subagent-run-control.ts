@@ -390,8 +390,9 @@ export function controlSubagentChildren(
 }
 
 /**
- * Startup recovery of the paused and quit children this session launched, as `resumeInFlight` selects: `ask` confirms
- * once, `auto` resumes them, and each resumes through the `resume` action. Workflow-stage children are never touched.
+ * Recovery, when a session is opened at startup or by resume, of the paused and quit children it launched, as
+ * `resumeInFlight` selects: `ask` confirms once and lists them, `auto` resumes them, and each resumes through the
+ * `resume` action. Workflow-stage children are never touched.
  * It never throws: a failure is reported as a warning, and `isCurrent` ends it once the session it began in is gone.
  */
 export async function resumeAwaitingSubagentChildren(
@@ -419,7 +420,7 @@ export async function resumeAwaitingSubagentChildren(
 			mode === "ask" &&
 			!(await ctx.ui.confirm(
 				"Resume interrupted subagents?",
-				`${awaiting.length} interrupted subagent(s) can resume from their own sessions. Resume now? Choose No to leave them awaiting resume; resume one later with subagent({ action: "resume", id }).`,
+				`${awaiting.length} interrupted subagent(s) can resume from their own sessions:\n${awaiting.map((record) => `- ${label(record)}`).join("\n")}\nResume now? Choose No to leave them awaiting resume; resume one later with subagent({ action: "resume", id }).`,
 			))
 		)
 			return;
