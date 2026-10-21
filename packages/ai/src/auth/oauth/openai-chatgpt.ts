@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { oauthErrorHtml, oauthSuccessHtml } from "../../utils/oauth-page.ts";
 import { getProviderEnvValue } from "../../utils/provider-env.ts";
+import { isPermanentRefreshRejection, OAuthRefreshRejectedError, parseOAuthErrorBody } from "../oauth-refresh-errors.ts";
 import type { LoginOptions, OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { generatePKCE } from "./pkce.ts";
 
@@ -119,6 +120,15 @@ async function requestToken(body: URLSearchParams, signal: AbortSignal): Promise
 	});
 	if (!response.ok) {
 		const responseBody = await response.text().catch(() => "");
+		const presentedRefreshToken = body.get("grant_type") === "refresh_token" ? body.get("refresh_token") : null;
+		if (presentedRefreshToken !== null) {
+			const rejection = { status: response.status, ...parseOAuthErrorBody(responseBody) };
+			if (isPermanentRefreshRejection(rejection)) {
+				throw new OAuthRefreshRejectedError(`OpenAI OAuth token refresh failed (${response.status})`, rejection, [
+					presentedRefreshToken,
+				]);
+			}
+		}
 		throw new Error(`OpenAI OAuth token request failed (${response.status}): ${responseBody || response.statusText}`);
 	}
 	const data: unknown = await response.json();

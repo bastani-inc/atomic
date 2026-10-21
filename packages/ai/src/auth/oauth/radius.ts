@@ -10,6 +10,7 @@
  */
 
 import { normalizeRadiusGatewayUrl } from "../../providers/radius-config.ts";
+import { isPermanentRefreshRejection, OAuthRefreshRejectedError } from "../oauth-refresh-errors.ts";
 import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { startOAuthCallbackServer } from "./callback-server.ts";
 import { pollOAuthDeviceCodeFlow } from "./device-code.ts";
@@ -60,8 +61,16 @@ async function loadRadiusOAuthDiscovery(gateway: string, signal: AbortSignal): P
 class OAuthResponseError extends Error {
 	readonly status: number;
 	readonly oauthError?: string;
+	/** `error_description` from a JSON error body; never the raw body. */
+	readonly oauthDescription?: string;
 
-	constructor(status: number, oauthError: string | undefined, description: string | undefined, message: string) {
+	constructor(
+		status: number,
+		oauthError: string | undefined,
+		description: string | undefined,
+		message: string,
+		oauthDescription?: string,
+	) {
 		const detail = oauthError
 			? description
 				? `${oauthError}: ${description}`
@@ -70,6 +79,7 @@ class OAuthResponseError extends Error {
 		super(`${message}: ${detail}`);
 		this.status = status;
 		this.oauthError = oauthError;
+		this.oauthDescription = oauthDescription;
 	}
 }
 
@@ -77,18 +87,20 @@ async function readOAuthResponseError(response: Response, message: string): Prom
 	const text = await response.text().catch(() => "");
 	let oauthError: string | undefined;
 	let description: string | undefined;
+	let oauthDescription: string | undefined;
 
 	if (text) {
 		try {
 			const data = JSON.parse(text) as { error?: unknown; error_description?: unknown };
 			oauthError = typeof data.error === "string" ? data.error : undefined;
 			description = typeof data.error_description === "string" ? data.error_description : undefined;
+			oauthDescription = description;
 		} catch {
 			description = text;
 		}
 	}
 
-	return new OAuthResponseError(response.status, oauthError, description, message);
+	return new OAuthResponseError(response.status, oauthError, description, message, oauthDescription);
 }
 
 async function requestOAuthToken(
@@ -302,16 +314,29 @@ export function createRadiusOAuth(options: RadiusOAuthOptions): OAuthAuth {
 		},
 
 		async refresh(credential, signal): Promise<OAuthCredential> {
-			const refreshed = await requestOAuthToken(
-				gateway,
-				new URLSearchParams({
-					grant_type: "refresh_token",
-					client_id: OAUTH_CLIENT_ID,
-					refresh_token: credential.refresh,
-				}),
-				signal,
-			);
-			return refreshed;
+			try {
+				return await requestOAuthToken(
+					gateway,
+					new URLSearchParams({
+						grant_type: "refresh_token",
+						client_id: OAUTH_CLIENT_ID,
+						refresh_token: credential.refresh,
+					}),
+					signal,
+				);
+			} catch (error) {
+				if (error instanceof OAuthResponseError) {
+					const rejection = { status: error.status, code: error.oauthError, description: error.oauthDescription };
+					if (isPermanentRefreshRejection(rejection)) {
+						throw new OAuthRefreshRejectedError(
+							`${options.name} OAuth token refresh failed (HTTP ${error.status})`,
+							rejection,
+							[credential.refresh],
+						);
+					}
+				}
+				throw error;
+			}
 		},
 
 		async toAuth(credential) {

@@ -1,9 +1,12 @@
+import assert from "node:assert/strict";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { kimiCodingOAuth } from "../src/auth/oauth/kimi-coding.ts";
 import type { ProviderAuthInteraction } from "../src/auth/types.ts";
 
 const CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098";
 const OAUTH_HOST = "https://auth.kimi.com";
+/** Kimi waits 1 s, 2 s and 4 s before its three refresh retries. */
+const KIMI_REFRESH_BACKOFF_TOTAL_MS = 7_000;
 
 function jsonResponse(body: unknown, status: number = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -228,37 +231,74 @@ describe("Kimi Code OAuth", () => {
 		});
 	});
 
-	it("retries refresh on 429 and fails unauthorized on invalid_grant", async () => {
+	it("presents a refresh token again only after an attempt that never reached the server", async () => {
 		vi.useFakeTimers();
-
-		// 429 once, then success.
-		let calls = 0;
+		const connectionRefused = new TypeError("fetch failed", {
+			cause: Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:443"), { code: "ECONNREFUSED" }),
+		});
+		const connectionLostAfterSend = new TypeError("fetch failed", {
+			cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }),
+		});
+		const outcomes: Array<Error | Response> = [
+			connectionRefused,
+			connectionLostAfterSend,
+			jsonResponse({ access_token: "a", refresh_token: "r", expires_in: 60 }),
+		];
+		let attempts = 0;
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(async (): Promise<Response> => {
-				calls += 1;
-				if (calls === 1) return jsonResponse({ error: "temporarily_unavailable" }, 429);
-				return jsonResponse({ access_token: "a", refresh_token: "r", expires_in: 60 });
+				attempts += 1;
+				const outcome = outcomes.shift();
+				if (outcome === undefined) throw new Error("unexpected extra token request");
+				if (outcome instanceof Error) throw outcome;
+				return outcome;
 			}),
 		);
 
-		const refreshPromise = kimiCodingOAuth.refresh(
-			{
-				type: "oauth",
-				access: "old",
-				refresh: "old",
-				expires: 0,
-			},
+		const refresh = kimiCodingOAuth.refresh(
+			{ type: "oauth", access: "old", refresh: "old", expires: 0 },
 			new AbortController().signal,
 		);
-		await vi.advanceTimersByTimeAsync(1000);
-		await expect(refreshPromise).resolves.toMatchObject({ access: "a" });
-		expect(calls).toBe(2);
+		const rejected = assert.rejects(refresh, (error: Error) => error === connectionLostAfterSend);
+		await vi.advanceTimersByTimeAsync(KIMI_REFRESH_BACKOFF_TOTAL_MS);
+		await rejected;
+		assert.equal(attempts, 2, "the refused connection is retried; the one lost after sending is not");
+	});
 
-		// invalid_grant is not retried.
+	it.each([429, 503])(
+		"does not present a refresh token again after a delivered HTTP %i response",
+		async (status) => {
+			vi.useFakeTimers();
+			let attempts = 0;
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async (): Promise<Response> => {
+					attempts += 1;
+					if (attempts > 1) throw new Error("unexpected extra token request");
+					return jsonResponse({ error: "temporarily_unavailable" }, status);
+				}),
+			);
+
+			const refresh = kimiCodingOAuth.refresh(
+				{ type: "oauth", access: "old", refresh: "old", expires: 0 },
+				new AbortController().signal,
+			);
+			const rejected = assert.rejects(refresh, new RegExp(`status ${status}`));
+			await vi.advanceTimersByTimeAsync(KIMI_REFRESH_BACKOFF_TOTAL_MS);
+			await rejected;
+			assert.equal(attempts, 1);
+		},
+	);
+
+	it("fails unauthorized on invalid_grant without retrying", async () => {
+		let attempts = 0;
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async (): Promise<Response> => jsonResponse({ error: "invalid_grant" }, 400)),
+			vi.fn(async (): Promise<Response> => {
+				attempts += 1;
+				return jsonResponse({ error: "invalid_grant" }, 400);
+			}),
 		);
 		await expect(
 			kimiCodingOAuth.refresh(
@@ -266,5 +306,6 @@ describe("Kimi Code OAuth", () => {
 				new AbortController().signal,
 			),
 		).rejects.toThrow("unauthorized");
+		expect(attempts).toBe(1);
 	});
 });

@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync } from "node:fs";
 import { dirname } from "node:path";
-import type { AuthInteraction } from "@bastani/pi-ai";
+import { type AuthInteraction, drainPendingOAuthRotations, OAUTH_SHUTDOWN_DRAIN_MS } from "@bastani/pi-ai";
 import { type Api, type Model, modelsAreEqual } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { resolvePath } from "../utils/paths.ts";
@@ -716,6 +716,8 @@ export class AgentSessionRuntime {
 		if (this.closing) return this.closing;
 		this.closed = true;
 		this.endedBySignal = options?.fromSignal === true;
+		// Every graceful exit path (quit, signals, RPC shutdown, print mode) disposes the runtime before exiting.
+		const oauthDrainDeadline = Date.now() + OAUTH_SHUTDOWN_DRAIN_MS;
 		const current = this.disposeCurrentSession(this.quitEvent());
 		void current.catch(() => {});
 		this.closing = (async () => {
@@ -747,6 +749,9 @@ export class AgentSessionRuntime {
 				}
 			}
 			this.ownedStores.clear();
+			// A token exchange whose caller already gave up may have rotated the login server-side; persist it if it
+			// completes within the drain bound, measured from the start of the shutdown.
+			await drainPendingOAuthRotations(Math.max(0, oauthDrainDeadline - Date.now()));
 			if (this.cleanupFailures.length)
 				throw Object.assign(new AggregateError(this.cleanupFailures, "Runtime shutdown failed"), {
 					code: "ShutdownFailed",

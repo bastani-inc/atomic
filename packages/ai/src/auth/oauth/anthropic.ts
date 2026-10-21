@@ -6,6 +6,7 @@
  */
 
 import { getProviderEnvValue } from "../../utils/provider-env.ts";
+import { isPermanentRefreshRejection, OAuthRefreshRejectedError, parseOAuthErrorBody } from "../oauth-refresh-errors.ts";
 import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { startOAuthCallbackServer, waitForCallbackOrManualInput } from "./callback-server.ts";
 import { generatePKCE } from "./pkce.ts";
@@ -17,6 +18,8 @@ const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
 const CALLBACK_HOST = getProviderEnvValue("PI_OAUTH_CALLBACK_HOST") || "127.0.0.1";
 const CALLBACK_PORT = 53692;
 const CALLBACK_PATH = "/callback";
+/** Login gives up on a stalled authorization-code exchange; a refresh exchange is never cut off (it may have rotated). */
+const AUTHORIZATION_CODE_EXCHANGE_TIMEOUT_MS = 30_000;
 const REDIRECT_URI = `http://localhost:${CALLBACK_PORT}${CALLBACK_PATH}`;
 const COPY_CODE_REDIRECT_URI = "https://platform.claude.com/oauth/code/callback";
 const ANTHROPIC_BROWSER_LOGIN_METHOD = "browser";
@@ -79,12 +82,20 @@ async function postJson(url: string, body: Record<string, string | number>, sign
 			Accept: "application/json",
 		},
 		body: JSON.stringify(body),
-		signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+		signal,
 	});
 
 	const responseBody = await response.text();
 
 	if (!response.ok) {
+		if (body.grant_type === "refresh_token" && typeof body.refresh_token === "string") {
+			const rejection = { status: response.status, ...parseOAuthErrorBody(responseBody) };
+			if (isPermanentRefreshRejection(rejection)) {
+				throw new OAuthRefreshRejectedError(`Anthropic token refresh failed (HTTP ${response.status})`, rejection, [
+					body.refresh_token,
+				]);
+			}
+		}
 		throw new Error(`HTTP request failed. status=${response.status}; url=${url}; body=${responseBody}`);
 	}
 
@@ -110,7 +121,7 @@ async function exchangeAuthorizationCode(
 				redirect_uri: redirectUri,
 				code_verifier: verifier,
 			},
-			signal,
+			AbortSignal.any([signal, AbortSignal.timeout(AUTHORIZATION_CODE_EXCHANGE_TIMEOUT_MS)]),
 		);
 	} catch (error) {
 		throw new Error(
@@ -247,6 +258,7 @@ async function refreshAnthropicToken(refreshToken: string, signal: AbortSignal):
 			signal,
 		);
 	} catch (error) {
+		if (error instanceof OAuthRefreshRejectedError) throw error;
 		throw new Error(`Anthropic token refresh request failed. url=${TOKEN_URL}; details=${formatErrorDetails(error)}`);
 	}
 

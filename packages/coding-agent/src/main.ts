@@ -1,3 +1,4 @@
+import { drainPendingOAuthRotations } from "@bastani/pi-ai";
 import { setCapabilityOverrides } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { type Args, parseArgs, printHelp } from "./cli/args.ts";
@@ -284,6 +285,16 @@ async function runAuthCommand(args: string[]): Promise<boolean> {
 	}
 	return true;
 }
+/**
+ * Ends a one-shot command. A model refresh or credential print may have started an OAuth token exchange whose caller
+ * already gave up; the provider may have rotated the login, so its result is persisted if it arrives within the bound.
+ */
+async function exitAfterCommand(): Promise<void> {
+	const exitCode = process.exitCode ?? 0;
+	await drainPendingOAuthRotations();
+	await drainProcessStdio();
+	process.exit(exitCode);
+}
 export async function main(argv: string[], options?: MainOptions) {
 	// Consume the private engine handshake before anything else: the bootstrap
 	// file carries engine role, host PID, guardian path, and any API key, is read
@@ -309,18 +320,14 @@ export async function main(argv: string[], options?: MainOptions) {
 	applyHttpProxySettings(bootstrapSettingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher();
 	if (await handlePackageCommand(args, { extensionFactories })) {
-		const exitCode = process.exitCode ?? 0;
-		await drainProcessStdio();
-		process.exit(exitCode);
+		await exitAfterCommand();
 		return;
 	}
 	if (await handleConfigCommand(args, { extensionFactories })) {
 		return;
 	}
 	if (await runAuthCommand(args)) {
-		const exitCode = process.exitCode ?? 0;
-		await drainProcessStdio();
-		process.exit(exitCode);
+		await exitAfterCommand();
 		return;
 	}
 	if (args[0] === "mcp") {
@@ -1017,6 +1024,12 @@ export async function main(argv: string[], options?: MainOptions) {
 		restoreStdout();
 		if (exitCode !== 0) {
 			process.exitCode = exitCode;
+		}
+		// runPrintMode disposed the runtime, which already waited the bounded OAuth drain. A token exchange still
+		// running is hung and would keep the process alive, so end it instead of waiting for the provider.
+		if (!(await drainPendingOAuthRotations(0))) {
+			await drainProcessStdio();
+			process.exit(process.exitCode ?? 0);
 		}
 		return;
 	}

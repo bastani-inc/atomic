@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Credential } from "@bastani/pi-ai";
+import { type Credential, OAUTH_REFRESH_LOCK_HOLD_MS, OAUTH_REFRESH_TIMEOUT_MS } from "@bastani/pi-ai";
 import {
 	chmodSync,
 	existsSync,
@@ -12,7 +12,7 @@ import {
 	writeFileSync,
 } from "fs";
 import { dirname, join } from "path";
-import lockfile from "proper-lockfile";
+import lockfile, { type LockOptions } from "proper-lockfile";
 import { getAgentDir } from "../config.js";
 import { normalizePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
@@ -32,6 +32,57 @@ const AUTH_DELETE_LOCK_RETRY_OPTIONS = {
 	maxTimeout: 2_000,
 	randomize: true,
 } as const;
+
+/** How often a provider lock holder refreshes the lock's heartbeat (its mtime). */
+const PROVIDER_LOCK_HEARTBEAT_MS = 2_000;
+
+/**
+ * Another process takes over a provider lock only once the holder has missed heartbeats for this long:
+ * a whole OAuth refresh plus the same again of event-loop lag. A waiter therefore never exchanges a
+ * refresh token that a live, merely slow holder is still rotating.
+ */
+const PROVIDER_LOCK_STALE_MS = 2 * OAUTH_REFRESH_TIMEOUT_MS + PROVIDER_LOCK_HEARTBEAT_MS;
+
+/** How long a commit waits for the shared auth file lock. */
+const AUTH_FILE_LOCK_WAIT_MS = 30_000;
+
+/**
+ * How long a session waits for a provider lock another session holds. A live holder keeps it while its token
+ * exchange runs (up to OAUTH_REFRESH_LOCK_HOLD_MS) and then waits for the auth file lock to commit; a dead one
+ * loses it after PROVIDER_LOCK_STALE_MS. Waiting out both means a waiter gets the rotated token instead of an error.
+ */
+const PROVIDER_LOCK_WAIT_MS = Math.max(OAUTH_REFRESH_LOCK_HOLD_MS, PROVIDER_LOCK_STALE_MS) + AUTH_FILE_LOCK_WAIT_MS;
+
+/** A waiter polls a held provider lock at growing intervals, at least once per holder heartbeat (plus jitter). */
+const PROVIDER_LOCK_POLL_MIN_MS = 100;
+const PROVIDER_LOCK_POLL_MAX_MS = PROVIDER_LOCK_HEARTBEAT_MS;
+
+/** The result of a provider transaction may be a completed token rotation, so a lost or busy auth file lock retries its commit. */
+const PROVIDER_COMMIT_ATTEMPTS = 3;
+
+/** Waits `ms`, or rejects with the signal's reason as soon as it aborts. */
+function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
+	return new Promise((resolve, reject) => {
+		if (signal?.aborted) {
+			reject(signal.reason);
+			return;
+		}
+		const onAbort = () => {
+			clearTimeout(timer);
+			reject(signal?.reason);
+		};
+		const timer = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
+function isLockContention(error: unknown): boolean {
+	const code = error instanceof Error && "code" in error ? error.code : undefined;
+	return code === "ECOMPROMISED" || code === "ELOCKED";
+}
 
 function describeFileVersion(path: string): string {
 	try {
@@ -87,24 +138,30 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		this.ensureFileExists();
 		const providerPath = `${realpathSync(this.authPath)}.${createHash("sha256").update(provider).digest("hex")}`;
 		let compromised: Error | undefined;
-		const release = await lockfile.lock(providerPath, {
-			realpath: false,
-			retries: { retries: 10, factor: 2, minTimeout: 100, maxTimeout: 10000, randomize: true },
-			stale: 30000,
-			onCompromised: (error) => {
-				compromised = error;
+		const release = await this.acquireProviderLock(
+			providerPath,
+			{
+				realpath: false,
+				stale: PROVIDER_LOCK_STALE_MS,
+				update: PROVIDER_LOCK_HEARTBEAT_MS,
+				onCompromised: (error) => {
+					compromised = error;
+				},
 			},
-		});
+			signal,
+		);
 		try {
 			signal?.throwIfAborted();
 			if (compromised) throw compromised;
 			const originalData = JSON.parse(this.readMergedAuth() ?? "{}") as AuthStorageData;
 			const original = JSON.stringify(originalData[provider]);
 			const next = await fn(originalData[provider]);
-			if (compromised) throw compromised;
-			return await this.withLockAsync(async (content) => {
+			// Even when another process took over the provider lock meanwhile, `next` may be a token rotation the
+			// provider already completed. It is committed only if the stored credential is still the one it replaces.
+			const commit = async (
+				content: string | undefined,
+			): Promise<LockResult<LockResult<Credential | undefined>>> => {
 				signal?.throwIfAborted();
-				if (compromised) throw compromised;
 				const current = JSON.parse(content ?? "{}") as AuthStorageData;
 				if (next !== undefined && JSON.stringify(current[provider]) === original) {
 					const merged = JSON.stringify({ ...current, [provider]: next }, null, 2);
@@ -116,7 +173,14 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 						next: content,
 					},
 				};
-			});
+			};
+			for (let attempt = 1; ; attempt++) {
+				try {
+					return await this.withLockAsync(commit);
+				} catch (error) {
+					if (attempt >= PROVIDER_COMMIT_ATTEMPTS || !isLockContention(error)) throw error;
+				}
+			}
 		} finally {
 			await release().catch(() => undefined);
 		}
@@ -141,6 +205,25 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		if (code === "ELOCKED") return code;
 		if (code === "EPERM" && process.platform === "win32") return code;
 		return undefined;
+	}
+
+	/** Takes a provider lock, waiting up to PROVIDER_LOCK_WAIT_MS for its holder; the caller's signal stops the wait. */
+	private async acquireProviderLock(
+		path: string,
+		options: Omit<LockOptions, "retries">,
+		signal: AbortSignal | undefined,
+	): Promise<() => Promise<void>> {
+		const deadline = Date.now() + PROVIDER_LOCK_WAIT_MS;
+		for (let pollMs = PROVIDER_LOCK_POLL_MIN_MS; ; pollMs = Math.min(pollMs * 2, PROVIDER_LOCK_POLL_MAX_MS)) {
+			signal?.throwIfAborted();
+			try {
+				return await lockfile.lock(path, { ...options, retries: 0 });
+			} catch (error) {
+				const remainingMs = deadline - Date.now();
+				if (!this.getRetryableLockErrorCode(error) || remainingMs <= 0) throw error;
+				await delay(Math.min(Math.round(pollMs * (1 + Math.random())), remainingMs), signal);
+			}
+		}
 	}
 
 	private acquireLockSyncWithRetry(path: string): () => void {
@@ -296,7 +379,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 			if (!existsSync(this.authPath)) {
 				this.ensureFileExists();
 			}
-			const deadline = Date.now() + 30_000;
+			const deadline = Date.now() + AUTH_FILE_LOCK_WAIT_MS;
 			let retry = 0;
 			let epermRetries = 0;
 			for (;;) {

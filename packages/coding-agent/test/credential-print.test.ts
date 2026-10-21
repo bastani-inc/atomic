@@ -858,7 +858,7 @@ describe("OAuth failure classification", () => {
 				runtime,
 				"bearer_token",
 			),
-		).rejects.toThrow("the stored credential was left untouched");
+		).rejects.toThrow("the stored credential changes only if the provider completes this refresh later");
 	});
 
 	it("keeps a credential the provider quoted back out of the reported message", async () => {
@@ -930,13 +930,13 @@ describe("OAuth failure classification", () => {
 
 		// Derivation fails after credentials.modify may already have persisted a
 		// rotated credential, so it cannot claim the stored one was left alone.
-		expect(derivationFailed.message).not.toContain("left untouched");
+		expect(derivationFailed.message).not.toContain("completes this refresh later");
 		expect(derivationFailed.code).toBe("OAuthUnavailable");
 		expect(derivationFailed.exitCode).toBe(7);
 
 		const refreshFailed = classifyOAuthFailure(new ModelsError("oauth", "OAuth refresh failed for anthropic"));
 		expect(refreshFailed.exitCode).toBe(5);
-		expect(refreshFailed.message).toContain("left untouched");
+		expect(refreshFailed.message).toContain("completes this refresh later");
 
 		// The 5/6 split rests on upstream prose. Pin both phrases against the
 		// installed build so a rewording fails here instead of collapsing exit 6

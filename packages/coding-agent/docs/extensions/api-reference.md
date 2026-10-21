@@ -986,9 +986,8 @@ await pi.registerProvider("corporate-ai", {
       return { refresh: code, access: code, expires: Date.now() + 3600000 };
     },
     async refreshToken(credentials, signal) {
-      // Forward the rotation timeout signal, not the caller's cancellation signal.
-      signal.throwIfAborted();
-      return credentials;
+      // Pass `signal` through, but add no timeout or abort of your own (see below).
+      return refreshCorporateToken(credentials.refresh, { signal });
     },
     getApiKey(credentials) {
       return credentials.access;
@@ -1016,7 +1015,7 @@ await pi.registerProvider("local-server", {
 });
 ```
 
-OAuth `refreshToken` receives a 60-second rotation timeout signal. Forward it to your network request. Cancelling a request or model refresh stops that caller's wait, but an already started token rotation continues so Atomic can persist the updated credentials. Return the rotated credentials promptly and do not discard them because the initiating caller cancelled.
+OAuth `refreshToken` receives a signal that Atomic does not abort on a timeout: once the token request is sent, the provider may already have rotated the refresh token, and only its response carries the replacement. The caller stops waiting after 60 seconds, but the exchange keeps running and Atomic saves its result when it arrives. When Atomic exits normally, it waits up to three seconds for an exchange still in flight. Cancelling a request or model refresh likewise stops only that caller's wait. Do not add your own timeout or abort to the token request, and do not send the same refresh token again after the provider may have received it. Return the rotated credentials, even when the caller that started the refresh has stopped waiting.
 
 **Config options:**
 - `name` - Display name for the provider in UI such as `/login`.

@@ -1,7 +1,14 @@
 import { normalizeProviderId } from "../provider-id.ts";
 import type { ProviderEnv } from "../types.ts";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.ts";
+import { formatThrownValue } from "../utils/diagnostics.ts";
 import { ModelsError } from "../utils/models-error.ts";
+import {
+	findPermanentRefreshRejectionInText,
+	isOAuthRefreshRejectedError,
+	safeOAuthErrorCode,
+	safeOAuthErrorDescription,
+} from "./oauth-refresh-errors.ts";
 
 export { ModelsError, type ModelsErrorCode } from "../utils/models-error.ts";
 
@@ -128,7 +135,222 @@ function overlayEnvAuthContext(base: AuthContext, env: ProviderEnv): AuthContext
 }
 
 const DEFAULT_OAUTH_MINIMUM_VALIDITY_MS = 5 * 60 * 1000;
-const DEFAULT_OAUTH_REFRESH_TIMEOUT_MS = 60_000;
+/** How long a refresh keeps its caller waiting for one token exchange. */
+export const OAUTH_REFRESH_TIMEOUT_MS = 60_000;
+
+/**
+ * How long a refresh keeps the credential lock while its token exchange is still running, so no other refresh
+ * presents a token the exchange may already have rotated. A response after this is still persisted, lock-free.
+ */
+export const OAUTH_REFRESH_LOCK_HOLD_MS = 2 * OAUTH_REFRESH_TIMEOUT_MS;
+
+/**
+ * Signal handed to a provider's token exchange. Nothing aborts it: once sent, the provider may already have
+ * rotated the refresh token, so only the exchange's own response can tell us the replacement.
+ */
+const TOKEN_EXCHANGE_SIGNAL = new AbortController().signal;
+
+/**
+ * How long a graceful shutdown waits for token exchanges still in flight, and for persisting their results, before
+ * the process exits (see {@link drainPendingOAuthRotations}).
+ *
+ * Abrupt termination (SIGKILL, a crash, power loss) cannot wait. If the provider already rotated the refresh token
+ * when that happens, its response never reaches the process and the stored login keeps the replaced token; the
+ * next refresh then fails and `/login <provider>` signs in again.
+ */
+export const OAUTH_SHUTDOWN_DRAIN_MS = 3_000;
+
+/** One entry per started token exchange, settled once its result is persisted or given up on. */
+const pendingTokenExchanges = new Set<Promise<void>>();
+
+function trackTokenExchange(): () => void {
+	let settle!: () => void;
+	const pending = new Promise<void>((resolve) => {
+		settle = resolve;
+	});
+	pendingTokenExchanges.add(pending);
+	return () => {
+		pendingTokenExchanges.delete(pending);
+		settle();
+	};
+}
+
+/**
+ * Waits for every started OAuth token exchange to settle and its result to be persisted, at most `timeoutMs`.
+ * Callers stop waiting for an exchange after {@link OAUTH_REFRESH_TIMEOUT_MS} while it keeps running, so a process
+ * that exits gracefully calls this first: the provider may already have rotated the token. Resolves `true` once none
+ * is in flight, `false` when the bound passes first; never rejects.
+ */
+export async function drainPendingOAuthRotations(timeoutMs: number = OAUTH_SHUTDOWN_DRAIN_MS): Promise<boolean> {
+	const deadline = Date.now() + timeoutMs;
+	while (pendingTokenExchanges.size > 0) {
+		const remainingMs = deadline - Date.now();
+		if (remainingMs <= 0) return false;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const expired = new Promise<void>((resolve) => {
+			timer = setTimeout(resolve, remainingMs);
+		});
+		try {
+			await Promise.race([Promise.all(pendingTokenExchanges), expired]);
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+	return true;
+}
+
+const MAX_ERROR_CHAIN_DEPTH = 5;
+
+/**
+ * The provider's error code (or HTTP status) and description for a refresh it rejected because the stored login is
+ * revoked or expired: an {@link OAuthRefreshRejectedError} anywhere in the cause chain, or a permanent OAuth error
+ * code in a custom refresher's message. Never request bodies, URLs, or tokens.
+ */
+function describeRejectedLogin(error: unknown, presented: OAuthCredential): string | undefined {
+	const secrets = [presented.refresh, presented.access];
+	const describe = (code: string, description: string | undefined) => {
+		const safeDescription = safeOAuthErrorDescription(description, secrets);
+		return safeDescription ? `${code} (${safeDescription})` : code;
+	};
+	let current = error;
+	for (let depth = 0; depth < MAX_ERROR_CHAIN_DEPTH && current !== undefined && current !== null; depth++) {
+		if (current instanceof Error && isOAuthRefreshRejectedError(current)) {
+			return describe(safeOAuthErrorCode(current.code) ?? `HTTP ${current.status}`, current.description);
+		}
+		current = current instanceof Error ? current.cause : undefined;
+	}
+	current = error;
+	for (let depth = 0; depth < MAX_ERROR_CHAIN_DEPTH && current !== undefined && current !== null; depth++) {
+		const rejection = findPermanentRefreshRejectionInText(formatThrownValue(current));
+		const code = safeOAuthErrorCode(rejection?.code);
+		if (code !== undefined) return describe(code, rejection?.description);
+		current = current instanceof Error ? current.cause : undefined;
+	}
+	return undefined;
+}
+
+/**
+ * Per credential store and provider, why the last late rotation could not be saved: only the save error's `code` or
+ * `name`, never its message, which may contain paths or tokens. Keyed by store so one store's lost save is never
+ * reported against another's login. Cleared by a later save or rotation, or once a refresh failure reports it.
+ */
+const unsavedLateRotations = new WeakMap<CredentialStore, Map<string, string>>();
+
+function unsavedLateRotationsFor(credentials: CredentialStore): Map<string, string> {
+	let byProvider = unsavedLateRotations.get(credentials);
+	if (byProvider === undefined) {
+		byProvider = new Map();
+		unsavedLateRotations.set(credentials, byProvider);
+	}
+	return byProvider;
+}
+
+function safeSaveErrorReason(error: unknown): string {
+	if (error instanceof Error) {
+		const code = "code" in error ? error.code : undefined;
+		return typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? code : error.name;
+	}
+	return "unknown error";
+}
+
+/** The sentence explaining a lost late rotation for `providerId` in `credentials`, reported once. */
+function takeUnsavedLateRotationNote(credentials: CredentialStore, providerId: string): string {
+	const byProvider = unsavedLateRotations.get(credentials);
+	const reason = byProvider?.get(providerId);
+	if (reason === undefined) return "";
+	byProvider?.delete(providerId);
+	return ` An earlier refresh for ${providerId} succeeded, but its new login could not be saved (${reason}).`;
+}
+
+function oauthRefreshFailure(
+	credentials: CredentialStore,
+	providerId: string,
+	error: unknown,
+	presented: OAuthCredential,
+): ModelsError {
+	const rejectedLogin = describeRejectedLogin(error, presented);
+	const unsavedNote = takeUnsavedLateRotationNote(credentials, providerId);
+	if (rejectedLogin === undefined) {
+		const message = unsavedNote
+			? `OAuth refresh failed for ${providerId}.${unsavedNote}`
+			: `OAuth refresh failed for ${providerId}`;
+		return new ModelsError("oauth", message, { cause: error });
+	}
+	return new ModelsError(
+		"oauth",
+		`OAuth refresh failed for ${providerId}: ${rejectedLogin}. The provider rejected the stored login; run /login ${providerId} to sign in again.${unsavedNote}`,
+	);
+}
+
+/** A token exchange that settles after its timeout already rotated the token server-side, so keep its result. */
+function persistLateRotation(
+	credentials: CredentialStore,
+	providerId: string,
+	rotatedFrom: OAuthCredential,
+	rotation: Promise<OAuthCredential>,
+): void {
+	const settled = trackTokenExchange();
+	void rotation
+		.then(
+			(late) =>
+				credentials
+					.modify(providerId, async (current) =>
+						current?.type === "oauth" && current.refresh === rotatedFrom.refresh ? late : undefined,
+					)
+					.then(
+						() => {
+							unsavedLateRotations.get(credentials)?.delete(providerId);
+						},
+						(saveError: unknown) => {
+							unsavedLateRotationsFor(credentials).set(providerId, safeSaveErrorReason(saveError));
+						},
+					),
+			// The exchange itself failed: nothing was rotated that could be lost.
+			() => undefined,
+		)
+		.finally(settled);
+}
+
+/**
+ * Runs one token exchange under the credential lock. The caller stops waiting after {@link OAUTH_REFRESH_TIMEOUT_MS};
+ * the lock is kept until the exchange settles or {@link OAUTH_REFRESH_LOCK_HOLD_MS} passes, after which a late
+ * response is still persisted.
+ */
+async function rotateOAuthCredential(
+	credentials: CredentialStore,
+	providerId: string,
+	oauth: OAuthAuth,
+	current: OAuthCredential,
+	stopCallerWaiting: (reason: Error) => void,
+): Promise<OAuthCredential> {
+	const rotation = oauth.refresh(current, TOKEN_EXCHANGE_SIGNAL);
+	const callerWait = AbortSignal.timeout(OAUTH_REFRESH_TIMEOUT_MS);
+	const onCallerWaitExpired = () => {
+		stopCallerWaiting(
+			new ModelsError("oauth", `OAuth refresh failed for ${providerId}`, { cause: callerWait.reason }),
+		);
+	};
+	callerWait.addEventListener("abort", onCallerWaitExpired, { once: true });
+	const lockHold = AbortSignal.timeout(OAUTH_REFRESH_LOCK_HOLD_MS);
+	try {
+		return await raceWithAbortSignal(rotation, lockHold);
+	} catch (error) {
+		if (lockHold.aborted) persistLateRotation(credentials, providerId, current, rotation);
+		throw error;
+	} finally {
+		callerWait.removeEventListener("abort", onCallerWaitExpired);
+	}
+}
+
+/** A login another process saved after this refresh read the store, e.g. its own rotation of the same token. */
+async function readNewerOAuthCredential(
+	credentials: CredentialStore,
+	providerId: string,
+	rejected: OAuthCredential,
+): Promise<OAuthCredential | undefined> {
+	const latest = await credentials.read(providerId).catch(() => undefined);
+	return latest?.type === "oauth" && latest.refresh !== rejected.refresh ? latest : undefined;
+}
 
 /** Cancellation stops waiting for the credential lock, not an already started token rotation. */
 export async function refreshStoredOAuthCredential(
@@ -143,8 +365,14 @@ export async function refreshStoredOAuthCredential(
 	const cancelLockWait = () => lockWait.abort(signal.reason);
 	signal.addEventListener("abort", cancelLockWait, { once: true });
 	if (signal.aborted) cancelLockWait();
+	let stopCallerWaiting!: (reason: Error) => void;
+	/** Set once the token exchange starts; settles its pending entry when the transaction that commits it ends. */
+	let exchangeSettled: (() => void) | undefined;
+	const callerWaitExpired = new Promise<never>((_, reject) => {
+		stopCallerWaiting = reject;
+	});
 	try {
-		post = await credentials.modify(
+		const transaction = credentials.modify(
 			providerId,
 			async (current) => {
 				signal.removeEventListener("abort", cancelLockWait);
@@ -152,14 +380,21 @@ export async function refreshStoredOAuthCredential(
 				if (current?.type !== "oauth") return undefined;
 				if (!needsRefresh(current)) return undefined;
 				try {
-					const refreshSignal = AbortSignal.timeout(DEFAULT_OAUTH_REFRESH_TIMEOUT_MS);
-					return await raceWithAbortSignal(oauth.refresh(current, refreshSignal), refreshSignal);
+					exchangeSettled ??= trackTokenExchange();
+					const rotated = await rotateOAuthCredential(credentials, providerId, oauth, current, stopCallerWaiting);
+					unsavedLateRotations.get(credentials)?.delete(providerId);
+					return rotated;
 				} catch (error) {
-					throw new ModelsError("oauth", `OAuth refresh failed for ${providerId}`, { cause: error });
+					const newer = await readNewerOAuthCredential(credentials, providerId, current);
+					if (newer) return newer;
+					throw oauthRefreshFailure(credentials, providerId, error, current);
 				}
 			},
 			{ signal: lockWait.signal },
 		);
+		const untrackExchange = () => exchangeSettled?.();
+		void transaction.then(untrackExchange, untrackExchange);
+		post = await Promise.race([transaction, callerWaitExpired]);
 	} catch (error) {
 		if (error instanceof ModelsError) throw error;
 		signal.throwIfAborted();

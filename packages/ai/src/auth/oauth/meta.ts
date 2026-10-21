@@ -13,6 +13,7 @@
  * user must sign in again.
  */
 
+import { OAuthRefreshRejectedError } from "../oauth-refresh-errors.ts";
 import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { pollOAuthDeviceCodeFlow } from "./device-code.ts";
 
@@ -157,9 +158,15 @@ async function mintApiKey(identityToken: string, signal: AbortSignal): Promise<O
 	});
 	const json = await readJson(response);
 	if (response.status === 401 || response.status === 403) {
-		// Identity token is not renewable (see file header); only a fresh device flow helps.
-		throw new Error(
-			`Meta session expired (status ${response.status}). Run \`/login meta\` to sign in again.${errorDetail(json)}`,
+		// Identity token is not renewable (see file header); only a fresh device flow helps, which the refresh
+		// caller tells the user to start with /login for the provider they use.
+		const description = ["error_description", "detail", "message"]
+			.map((key) => json?.[key])
+			.find((value): value is string => typeof value === "string" && value.trim().length > 0);
+		throw new OAuthRefreshRejectedError(
+			`Meta session expired (status ${response.status})`,
+			{ status: response.status, code: typeof json?.error === "string" ? json.error : undefined, description },
+			[identityToken],
 		);
 	}
 	if (!response.ok) {
