@@ -33,6 +33,7 @@ import {
 	ENV_OFFLINE,
 	ensureTool,
 	getAgentDir,
+	getChangelogHighlights,
 	getChangelogPath,
 	getCwdRelativePath,
 	getEntriesForVersion,
@@ -509,6 +510,8 @@ InteractiveModeBase.prototype.checkTmuxKeyboardSetup = async function (
 	return undefined;
 };
 
+const FULL_CHANGELOG_HINT = "Run `/changelog` for the full list of changes.";
+
 InteractiveModeBase.prototype.getChangelogForDisplay = function (this: InteractiveModeBase): string | undefined {
 	// Skip changelog for resumed/continued sessions (already have messages)
 	if (this.session.state.messages.length > 0) {
@@ -531,7 +534,14 @@ InteractiveModeBase.prototype.getChangelogForDisplay = function (this: Interacti
 	if (currentEntries.length > 0) {
 		this.settingsManager.setLastChangelogVersion(VERSION);
 		this.reportInstallTelemetry(VERSION);
-		return currentEntries.map((e) => normalizeChangelogLinks(e.content, e)).join("\n\n");
+		return currentEntries
+			.map((e) => {
+				const highlights = getChangelogHighlights(e);
+				if (!highlights) return normalizeChangelogLinks(e.content, e);
+				const [heading] = e.content.split("\n");
+				return normalizeChangelogLinks(`${heading}\n\n${highlights}\n\n${FULL_CHANGELOG_HINT}`, e);
+			})
+			.join("\n\n");
 	}
 
 	return undefined;

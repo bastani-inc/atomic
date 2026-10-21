@@ -283,11 +283,22 @@ Use these sections under `## [Unreleased]`:
 - A release section (`## [0.9.19]`) lists every entry from the prereleases that led to
   it (`0.9.19-alpha.1` through `0.9.19-alpha.12`), grouped under the standard
   subsections. It must stand alone: the GitHub release page shows only that section.
+- A release section opens with a human-readable summary: the prose between the
+  `## [x.y.z]` heading and its first `###` section. Write it when preparing the
+  release (the `publish-release` workflow does this), never under `## [Unreleased]`.
+  Use one theme-title sentence, then short bullets grouped by theme, each with a bold
+  lead, the benefit to the user, and links to the core PRs or issues at the end, plus
+  a `**Breaking change:**` line when `### Breaking Changes` is non-empty. The GitHub
+  Release page shows the summary first with the merged `###` sections folded under
+  "Full changelog", and the startup What's New banner shows the same summary with a
+  pointer to `/changelog`. A section without a summary keeps the flat merged output
+  and the full banner.
 - Do not open a section with a preamble that names the prereleases it covers and
   redirects the reader, e.g. "Cumulative release of the `0.9.19-alpha.1` through
   `0.9.19-alpha.12` prereleases. Per-change details remain in the prerelease sections
   below." `scripts/build-release-notes.ts` merges one preamble per package, so this
-  stacks eight redirections above the first real entry.
+  stacks eight redirections above the first real entry. The summary above is the only
+  prose a version heading should carry.
 - Each entry says what changed for the user. "Bumped package version for the Atomic
   prerelease" is not an entry.
 

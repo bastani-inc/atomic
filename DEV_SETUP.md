@@ -325,7 +325,7 @@ Atomic uses a **versionless release-base** flow: `main` and supported workstream
 
 ### Workflow
 
-1. Land the CHANGELOG move on the selected versionless base like any other change: move the `[Unreleased]` section in `packages/coding-agent/CHANGELOG.md` into a new `## [<version>] - <YYYY-MM-DD>` section (CI extracts release notes from it). **Do not bump any `package.json` version.**
+1. Land the CHANGELOG move on the selected versionless base like any other change: move the `[Unreleased]` section in `packages/coding-agent/CHANGELOG.md` into a new `## [<version>] - <YYYY-MM-DD>` section (CI builds the release notes from it). Open the new section with a short human-readable summary before its first `###` heading, as described in the AGENTS.md Changelog rules; the release page shows it first and folds the detailed entries under "Full changelog". **Do not bump any `package.json` version.**
 2. From a clean selected base, cut the release. This resolves the exact remote branch, stamps the version onto a detached `Release <version>` commit, records `Release-base-ref` and `Release-base-sha`, tags it, and pushes only the tag:
     ```sh
     bun run scripts/cut-release.ts <version> --base main --push

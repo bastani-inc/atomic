@@ -194,7 +194,7 @@ Type `/` in the editor to trigger commands. [Extensions](#extensions) can regist
 | `/share` | Upload as private GitHub gist with shareable HTML link |
 | `/reload` | Reload keybindings, extensions, skills, prompts, and context files (themes hot-reload automatically) |
 | `/hotkeys` | Show all keyboard shortcuts |
-| `/changelog` | Display version history |
+| `/changelog` | Display the full version history |
 | `/exit` | Exit Atomic |
 | `/quit` | Quit Atomic |
 

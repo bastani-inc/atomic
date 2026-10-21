@@ -205,7 +205,7 @@ See [Providers](/providers#fast-models) for which providers publish fast variant
 | `fullscreenWheelScrollLines` | `"auto"` or number | `"auto"` | Lines per mouse-wheel tick in fullscreen views. `"auto"` uses terminal-aware scrolling; numeric values are clamped to 1–100. Settable from `/settings` |
 | `quietStartup` | boolean or `"header"` | `false` | `true` hides the startup header. `"header"` keeps the startup header but hides the model scope line |
 | `defaultProjectTrust` | string | `"ask"` | Fallback project trust behavior: `"ask"`, `"always"`, or `"never"`. Global setting only |
-| `collapseChangelog` | boolean | `false` | Show condensed changelog after updates |
+| `collapseChangelog` | boolean | `false` | Show a one-line update notice after updates instead of the What's New highlights; `/changelog` shows the full changelog |
 | `enableInstallTelemetry` | boolean | `true` | Send a version-adoption ping on the first interactive launch with fresh settings, and on the first interactive launch after an update whose version has changelog entries. This does not control update checks |
 | `firstRunOnboardingStartedVersion` | string | - | Managed onboarding state; leave unchanged |
 | `onboardedVersion` | string | - | Managed onboarding completion state; leave unchanged |

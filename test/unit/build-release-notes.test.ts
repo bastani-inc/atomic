@@ -11,6 +11,9 @@ interface NotesResult {
 	readonly stderr: string;
 }
 
+const FULL_CHANGELOG_OPEN = "<details>\n<summary>Full changelog</summary>\n\n";
+const FULL_CHANGELOG_CLOSE = "\n</details>\n";
+
 function createPackagesDir(changelogs: Readonly<Record<string, string>>): string {
 	const root = mkdtempSync(join(tmpdir(), "atomic-release-notes-"));
 	const packagesDir = join(root, "packages");
@@ -104,7 +107,7 @@ describe("scripts/build-release-notes.ts", () => {
 		}
 	});
 
-	test("states a shared preamble once and keeps distinct ones", () => {
+	test("states a shared summary once, keeps distinct ones, and folds the full changelog away (#3804)", () => {
 		const shared = "Cumulative release summary.";
 		const packagesDir = createPackagesDir({
 			"coding-agent": `# Changelog\n\n## [1.0.0]\n\n${shared}\n\n### Added\n\n- a\n`,
@@ -114,8 +117,61 @@ describe("scripts/build-release-notes.ts", () => {
 		try {
 			const result = runNotes(packagesDir, "1.0.0");
 			assert.equal(result.exitCode, 0, result.stderr);
-			assert.equal(result.stdout.split(shared).length - 1, 1, "identical preambles must collapse to one");
-			assert.equal(result.stdout, `${shared}\n\nWorkflow-specific note.\n\n### Added\n\n- a\n- b\n- c\n`);
+			assert.equal(result.stdout.split(shared).length - 1, 1, "identical summaries must collapse to one");
+			assert.equal(
+				result.stdout,
+				`${shared}\n\nWorkflow-specific note.\n\n${FULL_CHANGELOG_OPEN}### Added\n\n- a\n- b\n- c\n${FULL_CHANGELOG_CLOSE}`,
+			);
+		} finally {
+			rmSync(join(packagesDir, ".."), { recursive: true, force: true });
+		}
+	});
+
+	test("leads with the human summary and wraps the merged sections in a collapsible full changelog (#3804)", () => {
+		const packagesDir = createPackagesDir({
+			"coding-agent":
+				"# Changelog\n\n## [1.0.0]\n\nFaster, calmer sessions.\n\n- **Quicker start:** boots sooner.\n\n### Fixed\n\n- agent fix\n",
+			subagents: "# Changelog\n\n## [1.0.0]\n\n### Added\n\n- subagent feature\n",
+		});
+		try {
+			const result = runNotes(packagesDir, "1.0.0");
+			assert.equal(result.exitCode, 0, result.stderr);
+			assert.equal(
+				result.stdout,
+				"Faster, calmer sessions.\n\n- **Quicker start:** boots sooner.\n\n" +
+					"<details>\n<summary>Full changelog</summary>\n\n" +
+					"### Added\n\n- subagent feature\n\n### Fixed\n\n- agent fix\n" +
+					"\n</details>\n",
+			);
+		} finally {
+			rmSync(join(packagesDir, ".."), { recursive: true, force: true });
+		}
+	});
+
+	test("emits only the summary when the version has no detailed sections (#3804)", () => {
+		const packagesDir = createPackagesDir({
+			"coding-agent": "# Changelog\n\n## [1.0.0]\n\nJust the summary.\n\n## [0.9.0]\n\n### Fixed\n\n- old fix\n",
+		});
+		try {
+			const result = runNotes(packagesDir, "1.0.0");
+			assert.equal(result.exitCode, 0, result.stderr);
+			assert.equal(result.stdout, "Just the summary.\n");
+			assert.doesNotMatch(result.stdout, /<details>/);
+		} finally {
+			rmSync(join(packagesDir, ".."), { recursive: true, force: true });
+		}
+	});
+
+	test("keeps the flat output when no package carries a summary (#3804)", () => {
+		const packagesDir = createPackagesDir({
+			"coding-agent": "# Changelog\n\n## [1.0.0]\n\n### Fixed\n\n- agent fix\n",
+			workflows: "# Changelog\n\n## [1.0.0]\n\n### Added\n\n- workflow feature\n",
+		});
+		try {
+			const result = runNotes(packagesDir, "1.0.0");
+			assert.equal(result.exitCode, 0, result.stderr);
+			assert.equal(result.stdout, "### Added\n\n- workflow feature\n\n### Fixed\n\n- agent fix\n");
+			assert.doesNotMatch(result.stdout, /<details>/);
 		} finally {
 			rmSync(join(packagesDir, ".."), { recursive: true, force: true });
 		}

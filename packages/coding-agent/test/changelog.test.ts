@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { type ChangelogEntry, normalizeChangelogLinks } from "../src/utils/changelog.ts";
+import { type ChangelogEntry, getChangelogHighlights, normalizeChangelogLinks } from "../src/utils/changelog.ts";
 
 const entry: ChangelogEntry = {
 	major: 0,
@@ -47,5 +47,39 @@ describe("normalizeChangelogLinks", () => {
 				"[Local anchor](#settings)",
 			].join("\n"),
 		);
+	});
+});
+
+describe("getChangelogHighlights", () => {
+	const withContent = (content: string): ChangelogEntry => ({ ...entry, content });
+
+	test("returns the summary between the version heading and the first section (#3804)", () => {
+		const content = [
+			"## [0.79.0] - 2026-01-01",
+			"",
+			"Calmer, faster sessions.",
+			"",
+			"- **Quicker start:** boots sooner. ([#1](https://github.com/bastani-inc/atomic/pull/1))",
+			"",
+			"### Added",
+			"",
+			"- detailed entry",
+		].join("\n");
+
+		expect(getChangelogHighlights(withContent(content))).toBe(
+			"Calmer, faster sessions.\n\n- **Quicker start:** boots sooner. ([#1](https://github.com/bastani-inc/atomic/pull/1))",
+		);
+	});
+
+	test("returns undefined when the entry opens straight into sections (#3804)", () => {
+		expect(getChangelogHighlights(withContent("## [0.79.0]\n\n### Fixed\n\n- a fix"))).toBeUndefined();
+	});
+
+	test("returns undefined for a heading-only entry (#3804)", () => {
+		expect(getChangelogHighlights(withContent("## [0.79.0]"))).toBeUndefined();
+	});
+
+	test("returns the whole body when the entry has no sections (#3804)", () => {
+		expect(getChangelogHighlights(withContent("## [0.79.0]\n\nOnly a summary.\n"))).toBe("Only a summary.");
 	});
 });

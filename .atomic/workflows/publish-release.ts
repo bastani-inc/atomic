@@ -195,6 +195,7 @@ export default workflow({
 					preparationInspection.summary,
 					"Start from a clean checkout and create the release branch from the exact current origin release base. The deterministic preflight proved that no reusable branch or PR exists.",
 					"Read AGENTS.md Changelog rules. Move every relevant package CHANGELOG.md Unreleased entry into the target version section dated today. Do not modify released sections.",
+					"Also write the human-readable release summary directly under the new version heading, before the first ### section, in packages/coding-agent/CHANGELOG.md (and in any other affected package whose users need one). Open with one theme-title sentence, then short bullets grouped by theme rather than by change. Give each bullet a bold lead and the benefit to the user. End each bullet with links to the core PRs or issues, for example ([#123](https://github.com/bastani-inc/atomic/pull/123)). When the Breaking Changes section is non-empty, add a \"**Breaking change:**\" line saying what to do. Do not write a preamble that names prereleases or redirects the reader. Merge duplicate or rhyming entries in the detailed sections without dropping any content or links.",
 					"Do not commit, push, open a PR, bump versions, tag, or publish in this stage.",
 					"Do not reset or force any branch. The resulting diff must contain CHANGELOG.md files only. Return blocked with exact evidence if the checkout is unsafe.",
 					"Return status, summary, and changed_files through structured_output.",
