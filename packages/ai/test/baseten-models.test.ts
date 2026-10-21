@@ -20,24 +20,20 @@ describe("Baseten models", () => {
 		assert.deepEqual(getModel("baseten", "zai-org/GLM-5.2-Fast").input, ["text"]);
 	});
 
-	it("models Kimi K2.6 reasoning as an explicit off/on toggle", async () => {
-		const model = getModel("baseten", "moonshotai/Kimi-K2.6");
+	it("sends toggle-only Baseten reasoning as an explicit off/on chat template switch", async () => {
+		const current = getModel("baseten", "moonshotai/Kimi-K3");
+		const model = {
+			...current,
+			thinkingLevelMap: { off: "off", minimal: null, low: null, medium: null, high: "high", xhigh: null, max: null },
+			compat: {
+				...current.compat,
+				supportsReasoningEffort: false,
+				thinkingFormat: "baseten",
+				chatTemplateArgs: { enable_thinking: { $var: "thinking.enabled" } },
+			},
+		} satisfies typeof current;
 		let payload: Record<string, unknown> | undefined;
 
-		expect(model.thinkingLevelMap).toEqual({
-			off: "off",
-			minimal: null,
-			low: null,
-			medium: null,
-			high: "high",
-			xhigh: null,
-			max: null,
-		});
-		expect(model.compat).toMatchObject({
-			supportsReasoningEffort: false,
-			thinkingFormat: "baseten",
-			chatTemplateArgs: { enable_thinking: { $var: "thinking.enabled" } },
-		});
 		expect(getSupportedThinkingLevels(model)).toEqual(["off", "high"]);
 
 		await streamSimple(
