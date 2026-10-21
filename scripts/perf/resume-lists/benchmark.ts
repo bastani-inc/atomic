@@ -13,15 +13,15 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { SessionManager } from "../../../packages/coding-agent/src/core/session-manager.ts";
+import { SessionManager } from "../../../packages/coding-agent/src/core/session-manager.js";
 import type { SqliteDatabase, SqliteRow } from "../../../packages/coding-agent/src/core/storage/database.js";
 import { openNodeSqliteDatabase } from "../../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { SqlSessionStore } from "../../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
-import { createSessionCwdMatcher } from "../../../packages/coding-agent/src/utils/canonical-path.ts";
+import { createSessionCwdMatcher } from "../../../packages/coding-agent/src/utils/canonical-path.js";
 import { JournalDurableBackend } from "../../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlRunJournal } from "../../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import type { DurableWorkflowStatus } from "../../../packages/workflows/src/durable/types.js";
-import { fastSeeding, sessionCwd, sessionFixture, toolCheckpoint } from "./fixtures.ts";
+import { fastSeeding, sessionCwd, sessionFixture, toolCheckpoint } from "./fixtures.js";
 
 interface Options {
 	readonly database: string;

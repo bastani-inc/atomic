@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { join, resolve } from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
-import type { SessionEntry, SessionInfo } from "../../packages/coding-agent/src/core/session-manager-types.ts";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import type { SessionEntry, SessionInfo } from "../../packages/coding-agent/src/core/session-manager-types.js";
 import type { SqliteDatabase, SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import {
@@ -11,7 +11,7 @@ import {
 	SqlSessionStore,
 } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import type { SessionRecordHeader } from "../../packages/coding-agent/src/core/storage/session/types.js";
-import { createSessionCwdMatcher } from "../../packages/coding-agent/src/utils/canonical-path.ts";
+import { createSessionCwdMatcher } from "../../packages/coding-agent/src/utils/canonical-path.js";
 import { bunExecutable, makeTempDirectory, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
 
 /** A real Bun child process that opens the store, writes once and exits. */

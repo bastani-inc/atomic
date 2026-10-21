@@ -11,15 +11,15 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { SessionManager } from "../../../packages/coding-agent/src/core/session-manager.ts";
+import { SessionManager } from "../../../packages/coding-agent/src/core/session-manager.js";
 import type { SqliteDatabase } from "../../../packages/coding-agent/src/core/storage/database.js";
 import { openNodeSqliteDatabase } from "../../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import type { SessionStore } from "../../../packages/coding-agent/src/core/storage/session/types.js";
-import { createSessionCwdMatcher } from "../../../packages/coding-agent/src/utils/canonical-path.ts";
+import { createSessionCwdMatcher } from "../../../packages/coding-agent/src/utils/canonical-path.js";
 import type { DurableWorkflowCatalogEntries } from "../../../packages/workflows/src/durable/backend.js";
 import { openSqlRunJournal } from "../../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import type { RunJournal } from "../../../packages/workflows/src/durable/journal/types.js";
-import { sessionCwd } from "./fixtures.ts";
+import { sessionCwd } from "./fixtures.js";
 
 const REPO = resolve(import.meta.dir, "../../..");
 const STORE = "packages/coding-agent/src/core/storage/session/sql-session-store.ts";
