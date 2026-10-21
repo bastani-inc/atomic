@@ -15,6 +15,7 @@ import { reportModelRoutingDebug } from "../model-routing-debug.js";
 import { type JsonObject, STRUCTURED_OUTPUT_TOOL_NAME } from "../tools/structured-output.ts";
 import { compileChoiceSchema } from "./choice-schema.js";
 import { InvalidDecisionOutputError } from "./invalid-output.js";
+import { describeSchemaErrors, schemaMismatchMessage, unparseableArgumentsMessage } from "./rejection-detail.js";
 import { resolveRouterModel } from "./resolver.js";
 import type {
 	InternalStructuredOutputRequest,
@@ -166,6 +167,11 @@ async function inferChat<T extends TSchema>(
 		const error = new InvalidDecisionOutputError(
 			"Structured output requires exactly one structured_output call and no provider fallback.",
 		);
+		error.usage = { inputTokens: response.usage.input, outputTokens: response.usage.output };
+		throw error;
+	}
+	if (calls[0].argumentsError) {
+		const error = new InvalidDecisionOutputError(unparseableArgumentsMessage(calls[0].argumentsError));
 		error.usage = { inputTokens: response.usage.input, outputTokens: response.usage.output };
 		throw error;
 	}
@@ -363,7 +369,10 @@ export async function generateStructuredOutput<T extends TSchema>(
 				);
 			}
 			lastDiagnostic = error instanceof OutputRepairExhaustedError ? error : undefined;
-			modelAttempts.push({ model: candidate.fullId, error: "Structured output inference failed." });
+			modelAttempts.push({
+				model: candidate.fullId,
+				error: error instanceof OutputRepairExhaustedError ? error.message : "Structured output inference failed.",
+			});
 		}
 	}
 	if (lastDiagnostic) throw lastDiagnostic;
@@ -450,6 +459,7 @@ async function inferDecision<T extends TSchema>(
 	try {
 		if (request.signal?.aborted) abort();
 		const usage = { inputTokens: 0, outputTokens: 0 };
+		let rejection: string | undefined;
 		for (let attempt = 0; ; ) {
 			assertActive();
 			const current = {
@@ -458,7 +468,7 @@ async function inferDecision<T extends TSchema>(
 				instructions:
 					attempt === 0
 						? snapshot.instructions
-						: `${snapshot.instructions}\n\nThe previous response failed output validation. Return a complete valid decision satisfying the original schema, candidates and constraints. Do not change the task or invent values.`,
+						: `${snapshot.instructions}\n\nThe previous response failed output validation${rejection ? `: ${rejection}` : "."} Return a complete valid decision satisfying the original schema, candidates and constraints. Do not change the task or invent values.`,
 			};
 			try {
 				const result = await raceWithAbortSignal(
@@ -477,9 +487,10 @@ async function inferDecision<T extends TSchema>(
 					throw new InvalidDecisionOutputError("Invalid structured output: non-JSON decision.");
 				}
 				if (request.candidateFallback && selected.kind === "chat") omitOptionalNulls(value, snapshot.schema);
-				if (!Check(snapshot.schema, value) || (validateDecision && !validateDecision(value)))
+				const matchesSchema = Check(snapshot.schema, value);
+				if (!matchesSchema || (validateDecision && !validateDecision(value)))
 					throw new InvalidDecisionOutputError(
-						"Invalid structured output: response does not match the decision schema.",
+						schemaMismatchMessage(matchesSchema ? [] : describeSchemaErrors(snapshot.schema, value)),
 					);
 				assertActive();
 				return { ...result, value, usage, ...(fallback ? { fallback } : {}) };
@@ -504,6 +515,7 @@ async function inferDecision<T extends TSchema>(
 						`Classifier routing failed${error instanceof ClassifierDecisionError && error.detail ? ` (${error.detail})` : ""}; falling back to current chat model ${fallback.to} for this routing decision.`,
 					);
 					selected = { kind: "chat", fullId: fallback.to, model: fallbackChat };
+					rejection = undefined;
 					attempt = 0;
 					continue;
 				}
@@ -513,6 +525,7 @@ async function inferDecision<T extends TSchema>(
 					usage.outputTokens += error.usage.outputTokens;
 				}
 				if (attempt < repairs) {
+					rejection = error.message;
 					attempt++;
 					continue;
 				}
