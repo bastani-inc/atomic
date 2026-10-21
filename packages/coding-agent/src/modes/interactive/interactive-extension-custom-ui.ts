@@ -16,6 +16,7 @@ import {
 	type TUI,
 	theme,
 } from "./interactive-mode-deps.ts";
+import type { ExtensionDialogComponent } from "./interactive-mode-types.ts";
 import { isMouseWheelInput, isOverlayMounted } from "./interactive-tui.ts";
 
 function validateReservedBottomOverlayOptions(options: OverlayOptions | undefined): void {
@@ -69,13 +70,11 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 	const savedText = this.editor.getText();
 	const isOverlay = options?.overlay ?? false;
 
-	const restoreEditor = (focusEditor: boolean) => {
-		this.editorContainer.clear();
-		this.editorContainer.addChild(this.editor);
-		this.editor.setText(savedText);
+	const restoreEditor = (mount: ExtensionDialogComponent, focusEditor: boolean) => {
 		// Focus fence: a surviving overlay owns input, and taking it away to
 		// "restore" the editor would dismiss a newer native dialog.
-		if (focusEditor && !this.ui.hasOverlay()) this.ui.setFocus(this.editor);
+		this.removeExtensionDialog(mount, focusEditor && !this.ui.hasOverlay());
+		this.editor.setText(savedText);
 		this.ui.requestRender();
 	};
 
@@ -84,7 +83,7 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 		let closed = false;
 		let mounted = false;
 		let overlayHandle: OverlayHandle | undefined;
-		let inlineMount: { component: Component } | undefined;
+		let inlineMount: ExtensionDialogComponent | undefined;
 		let releaseHostInlineCustomUi: (() => void) | undefined;
 		let releaseOverlayInlineCustomUiFocusDeferral: (() => void) | undefined;
 		let transcriptReserveCoordinator: TranscriptOverlayReserve | undefined;
@@ -143,25 +142,25 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 					this.ui.setFocus(this.editorContainer.children.at(-1) ?? this.editor);
 				}
 			} else if (inlineMount) {
-				const stack = this.inlineCustomUiStack;
-				const ownsSlot =
-					stack.at(-1) === inlineMount && this.editorContainer.children.includes(inlineMount.component);
-				stack.splice(stack.indexOf(inlineMount), 1);
+				const dialogs = this.extensionDialogs;
+				const index = dialogs.findIndex((dialog) => dialog.component === inlineMount);
+				if (index === -1) return;
+				const ownsSlot = index === dialogs.length - 1 && this.editorContainer.children.includes(inlineMount);
 				// An older completion must not clear a newer prompt's editor slot.
-				if (!ownsSlot) return;
-				const previous = stack.at(-1)?.component;
+				if (!ownsSlot) {
+					dialogs.splice(index, 1);
+					return;
+				}
+				const previous = dialogs.at(-2)?.component;
+				const deferFocus = this.shouldDeferInlineCustomUiFocus();
 				if (previous) {
-					this.editorContainer.clear();
-					this.editorContainer.addChild(previous);
-					if (this.shouldDeferInlineCustomUiFocus()) {
+					this.removeExtensionDialog(inlineMount, !deferFocus && !this.ui.hasOverlay());
+					if (deferFocus) {
 						this.pendingInlineCustomUiFocus = previous;
 						this.notifyHostCustomUiStateListeners();
-					} else if (!this.ui.hasOverlay()) {
-						this.ui.setFocus(previous);
 					}
-					this.ui.requestRender();
 				} else {
-					restoreEditor(!this.shouldDeferInlineCustomUiFocus() && this.pendingInlineCustomUiFocus !== component);
+					restoreEditor(inlineMount, !deferFocus && this.pendingInlineCustomUiFocus !== component);
 				}
 			}
 		};
@@ -362,20 +361,14 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 						options?.onHandle?.(handle);
 					}
 				} else {
-					this.disposeActiveSelector();
-					inlineMount = { component };
-					this.inlineCustomUiStack ??= [];
-					this.inlineCustomUiStack.push(inlineMount);
-					this.editorContainer.clear();
-					this.editorContainer.addChild(component);
-					if (this.shouldDeferInlineCustomUiFocus()) {
+					inlineMount = component;
+					const deferFocus = this.shouldDeferInlineCustomUiFocus();
+					this.pushExtensionDialog(component, undefined, !deferFocus);
+					if (deferFocus) {
 						this.pendingInlineCustomUiFocus = component;
 						this.notifyHostCustomUiStateListeners();
-					} else {
-						this.ui.setFocus(component);
 					}
 					mounted = true;
-					this.ui.requestRender();
 				}
 			})
 			.catch((err) => {

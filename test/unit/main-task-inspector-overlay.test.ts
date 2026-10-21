@@ -151,6 +151,8 @@ async function mountMainInspector(isolated: boolean, populated = true) {
 		editor,
 		defaultEditor: editor,
 		editorContainer,
+		extensionDialogs: [],
+		programStatus: { setBlocked: () => {} },
 		documentContainer: document,
 		transcriptScrollView: scroll,
 		keybindings: keys,

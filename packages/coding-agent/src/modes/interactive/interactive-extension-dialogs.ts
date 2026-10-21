@@ -36,59 +36,28 @@ InteractiveModeBase.prototype.showExtensionSelector = function (
 			return;
 		}
 
-		const onAbort = () => {
-			this.hideExtensionSelector(selector);
-			resolve(undefined);
+		const finish = (option: string | undefined) => {
+			opts?.signal?.removeEventListener("abort", onAbort);
+			selector.dispose();
+			this.removeExtensionDialog(selector);
+			resolve(option);
 		};
+		const onAbort = () => finish(undefined);
 		opts?.signal?.addEventListener("abort", onAbort, { once: true });
 
 		const selector = new ExtensionSelectorComponent(
 			title,
 			options,
-			(option) => {
-				opts?.signal?.removeEventListener("abort", onAbort);
-				this.hideExtensionSelector(selector);
-				resolve(option);
-			},
-			() => {
-				opts?.signal?.removeEventListener("abort", onAbort);
-				this.hideExtensionSelector(selector);
-				resolve(undefined);
-			},
+			(option) => finish(option),
+			() => finish(undefined),
 			{
 				tui: this.ui,
 				timeout: opts?.timeout,
 				onToggleToolsExpanded: () => this.toggleToolOutputExpansion(),
 			},
 		);
-		this.extensionSelector = selector;
-
-		this.disposeActiveSelector();
-		this.editorContainer.clear();
-		this.editorContainer.addChild(selector);
-		this.ui.setFocus(selector);
-		this.programStatus.setBlocked("extension-dialog", blocked);
-		this.ui.requestRender();
+		this.pushExtensionDialog(selector, blocked);
 	});
-};
-
-/**
- * Close the selector. Pass the instance that is closing: a late abort from a
- * dead engine generation must never dismiss a newer dialog that has since taken
- * over `editorContainer`.
- */
-InteractiveModeBase.prototype.hideExtensionSelector = function (
-	this: InteractiveModeBase,
-	instance?: ExtensionSelectorComponent,
-): void {
-	if (instance !== undefined && this.extensionSelector !== instance) return;
-	this.extensionSelector?.dispose();
-	this.editorContainer.clear();
-	this.editorContainer.addChild(this.editor);
-	this.extensionSelector = undefined;
-	this.programStatus.setBlocked("extension-dialog", undefined);
-	this.ui.setFocus(this.editor);
-	this.ui.requestRender();
 };
 
 InteractiveModeBase.prototype.showExtensionConfirm = async function (
@@ -130,51 +99,24 @@ InteractiveModeBase.prototype.showExtensionInput = function (
 			return;
 		}
 
-		const onAbort = () => {
-			this.hideExtensionInput(input);
-			resolve(undefined);
+		const finish = (value: string | undefined) => {
+			opts?.signal?.removeEventListener("abort", onAbort);
+			input.dispose();
+			this.removeExtensionDialog(input);
+			resolve(value);
 		};
+		const onAbort = () => finish(undefined);
 		opts?.signal?.addEventListener("abort", onAbort, { once: true });
 
 		const input = new ExtensionInputComponent(
 			title,
 			placeholder,
-			(value) => {
-				opts?.signal?.removeEventListener("abort", onAbort);
-				this.hideExtensionInput(input);
-				resolve(value);
-			},
-			() => {
-				opts?.signal?.removeEventListener("abort", onAbort);
-				this.hideExtensionInput(input);
-				resolve(undefined);
-			},
+			(value) => finish(value),
+			() => finish(undefined),
 			{ tui: this.ui, timeout: opts?.timeout },
 		);
-		this.extensionInput = input;
-
-		this.disposeActiveSelector();
-		this.editorContainer.clear();
-		this.editorContainer.addChild(input);
-		this.ui.setFocus(input);
-		this.programStatus.setBlocked("extension-dialog", { kind: "question", message: title });
-		this.ui.requestRender();
+		this.pushExtensionDialog(input, { kind: "question", message: title });
 	});
-};
-
-/** Instance-scoped: see hideExtensionSelector. */
-InteractiveModeBase.prototype.hideExtensionInput = function (
-	this: InteractiveModeBase,
-	instance?: ExtensionInputComponent,
-): void {
-	if (instance !== undefined && this.extensionInput !== instance) return;
-	this.extensionInput?.dispose();
-	this.editorContainer.clear();
-	this.editorContainer.addChild(this.editor);
-	this.extensionInput = undefined;
-	this.programStatus.setBlocked("extension-dialog", undefined);
-	this.ui.setFocus(this.editor);
-	this.ui.requestRender();
 };
 
 InteractiveModeBase.prototype.showExtensionEditor = function (
@@ -189,10 +131,12 @@ InteractiveModeBase.prototype.showExtensionEditor = function (
 			return;
 		}
 
-		const onAbort = () => {
-			this.hideExtensionEditor(editor);
-			resolve(undefined);
+		const finish = (value: string | undefined) => {
+			opts?.signal?.removeEventListener("abort", onAbort);
+			this.removeExtensionDialog(editor);
+			resolve(value);
 		};
+		const onAbort = () => finish(undefined);
 		opts?.signal?.addEventListener("abort", onAbort, { once: true });
 
 		const editor = new ExtensionEditorComponent(
@@ -200,42 +144,13 @@ InteractiveModeBase.prototype.showExtensionEditor = function (
 			this.keybindings,
 			title,
 			prefill,
-			(value) => {
-				opts?.signal?.removeEventListener("abort", onAbort);
-				this.hideExtensionEditor(editor);
-				resolve(value);
-			},
-			() => {
-				opts?.signal?.removeEventListener("abort", onAbort);
-				this.hideExtensionEditor(editor);
-				resolve(undefined);
-			},
+			(value) => finish(value),
+			() => finish(undefined),
 			undefined,
 			this.settingsManager.getExternalEditorCommand(),
 		);
-		this.extensionEditor = editor;
-
-		this.disposeActiveSelector();
-		this.editorContainer.clear();
-		this.editorContainer.addChild(editor);
-		this.ui.setFocus(editor);
-		this.programStatus.setBlocked("extension-dialog", { kind: "question", message: title });
-		this.ui.requestRender();
+		this.pushExtensionDialog(editor, { kind: "question", message: title });
 	});
-};
-
-/** Instance-scoped: see hideExtensionSelector. */
-InteractiveModeBase.prototype.hideExtensionEditor = function (
-	this: InteractiveModeBase,
-	instance?: ExtensionEditorComponent,
-): void {
-	if (instance !== undefined && this.extensionEditor !== instance) return;
-	this.editorContainer.clear();
-	this.editorContainer.addChild(this.editor);
-	this.extensionEditor = undefined;
-	this.programStatus.setBlocked("extension-dialog", undefined);
-	this.ui.setFocus(this.editor);
-	this.ui.requestRender();
 };
 
 InteractiveModeBase.prototype.setCustomEditorComponent = function (

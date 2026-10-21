@@ -213,6 +213,7 @@ export function createProductionFullscreenContext(
 		},
 		extensionWidgetsAbove: new Map(),
 		extensionWidgetsBelow: new Map(),
+		extensionDialogs: [],
 		pendingUserInputs: [],
 		startupReplayInputs: [],
 		registerSignalHandlers: () => {},

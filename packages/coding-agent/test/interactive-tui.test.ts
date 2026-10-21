@@ -760,9 +760,7 @@ describe("clear-on-shrink working status spacing", () => {
 		setKeybindings(KeybindingsManager.create());
 		const setMessage = vi.fn();
 		const context = {
-			extensionSelector: undefined,
-			extensionInput: undefined,
-			extensionEditor: undefined,
+			extensionDialogs: [],
 			ui: { hideOverlay: vi.fn() },
 			clearExtensionTerminalInputListeners: vi.fn(),
 			setExtensionFooter: vi.fn(),

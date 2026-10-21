@@ -16,6 +16,7 @@ import {
 } from "../../src/extensions/mcp/client/index.js";
 import { createInMemoryTransportPair, type InMemoryTransport } from "../../src/extensions/mcp/client/testing/index.js";
 import {
+	addMcpServerConfig,
 	getMcpToolExposure,
 	loadMcpConfig,
 	type McpServerEntry,
@@ -130,6 +131,30 @@ describe("MCP config", () => {
 
 		updateMcpServerConfig(project, "toString", { enabled: false }, { override: true });
 		assert.deepEqual(JSON.parse(readFileSync(project, "utf8")).mcpServers, { toString: { enabled: false } });
+	});
+
+	it("reads and edits mcp.json files that start with a UTF-8 BOM (earendil-works/pi#11191)", () => {
+		const paths = setup({}, {});
+		const global = join(paths.agentDir, "mcp.json");
+		const project = join(paths.cwd, ".atomic", "mcp.json");
+		writeFileSync(global, '\uFEFF{"mcpServers":{"demo":{"command":"echo","enabled":false}}}\n');
+		writeFileSync(project, '\uFEFF{"mcpServers":{"local":{"command":"local-cmd"}}}\n');
+
+		const loaded = loadMcpConfig({ ...paths, projectTrusted: true });
+		assert.deepEqual(loaded.errors, []);
+		assert.deepEqual(
+			loaded.servers.map((server) => [server.name, server.scope]),
+			[
+				["demo", "global"],
+				["local", "project"],
+			],
+		);
+
+		assert.equal(addMcpServerConfig(global, "other", { command: "other-cmd" }), false);
+		assert.deepEqual(JSON.parse(readFileSync(global, "utf8")).mcpServers, {
+			demo: { command: "echo", enabled: false },
+			other: { command: "other-cmd" },
+		});
 	});
 
 	// Regression: #10239.

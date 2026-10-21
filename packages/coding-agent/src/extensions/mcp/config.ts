@@ -38,6 +38,7 @@ import {
 	mcpNamespace,
 	validateMcpServerConfig,
 } from "../../core/mcp-servers.ts";
+import { stripBom } from "../../utils/text.ts";
 
 export type {
 	McpExposure,
@@ -95,7 +96,7 @@ function readConfigFile(path: string, scope: "global" | "project", state: McpCon
 	if (!existsSync(path)) return;
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(readFileSync(path, "utf8"));
+		parsed = JSON.parse(stripBom(readFileSync(path, "utf8")));
 	} catch {
 		errors.push(`${path}: failed to read or parse MCP configuration`);
 		return;
@@ -233,7 +234,7 @@ function editMcpServers(
 	path: string,
 	edit: (servers: Record<string, unknown> | undefined, parsed: Record<string, unknown>) => boolean,
 ): void {
-	const text = existsSync(path) ? readFileSync(path, "utf8") : undefined;
+	const text = existsSync(path) ? stripBom(readFileSync(path, "utf8")) : undefined;
 	const parsed: unknown = text === undefined ? {} : JSON.parse(text);
 	if (!isRecord(parsed) || (parsed.mcpServers !== undefined && !isRecord(parsed.mcpServers))) {
 		throw new Error(`${path}: expected an object with an "mcpServers" object`);
