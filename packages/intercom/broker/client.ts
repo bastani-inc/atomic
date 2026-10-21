@@ -480,13 +480,14 @@ export class IntercomClient extends EventEmitter {
         break;
       }
       case "sessions": {
-		const { requestId, sessions, workflowStages, workflowFutureStages } = brokerMessage;
+		const { requestId, sessions, workflowStages, workflowFutureStages, restricted } = brokerMessage;
 		if (
 			typeof requestId !== "string" ||
 			!Array.isArray(sessions) ||
 			!sessions.every(isSessionInfo) ||
 			(workflowStages !== undefined && !isWorkflowStageRosterEntries(workflowStages)) ||
-			(workflowFutureStages !== undefined && !isWorkflowFutureStageRosterEntries(workflowFutureStages))
+			(workflowFutureStages !== undefined && !isWorkflowFutureStageRosterEntries(workflowFutureStages)) ||
+			(restricted !== undefined && restricted !== true)
 		) {
 			throw new Error("Invalid sessions message");
 		}
@@ -497,6 +498,7 @@ export class IntercomClient extends EventEmitter {
 			sessions,
 			workflowStages: workflowStages ?? [],
 			workflowFutureStages: workflowFutureStages ?? [],
+			...(restricted === true ? { restricted: true as const } : {}),
 		});
 		break;
 	  }

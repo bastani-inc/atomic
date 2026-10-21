@@ -760,6 +760,55 @@ describe("intercom list renders possible future stage rows (D7)", () => {
 		const details = (result as unknown as { details?: { workflowFutureStages?: unknown[] } }).details;
 		assert.deepEqual(details?.workflowFutureStages, [futureRow]);
 	});
+
+	test("a restricted group peek tells the caller to join instead of reporting an empty group", async () => {
+		const self = session("self-session-id", "self");
+		self.groups = ["default"];
+		const peekedGroup = "workflow:d7000012-0000-4000-8000-000000000012";
+		let tool: Tool | undefined;
+		const client = {
+			sessionId: "self-session-id",
+			groups: ["default"],
+			async listSessions(): Promise<SessionInfo[]> {
+				return [self];
+			},
+			async listDirectory(group?: string) {
+				return group === undefined
+					? { sessions: [self], workflowStages: [], workflowFutureStages: [] }
+					: { sessions: [], workflowStages: [], workflowFutureStages: [], restricted: true };
+			},
+		};
+		registerIntercomTool(
+			{
+				registerTool(value: Tool) {
+					tool = value;
+				},
+				async appendEntry() {},
+			} as never,
+			{
+				ensureConnected: async () => client,
+				syncPresenceIdentity() {},
+				confirmSend: false,
+				beginReplyWait: () => ({ ok: false, reason: "busy" as const, limit: 0 }),
+				replyTracker: new ReplyTracker(),
+			} as never,
+		);
+		assert.ok(tool);
+		const result = await tool!.execute(
+			"restricted-peek-call",
+			{ action: "list", group: peekedGroup },
+			undefined,
+			undefined,
+			context,
+		);
+		const text = result.content[0]?.text ?? "";
+		assert.equal(result.isError, false);
+		assert.doesNotMatch(text, /No sessions or workflow stages in this group/);
+		assert.match(text, /visible only to its members/);
+		assert.match(text, /intercom join/);
+		const details = (result as unknown as { details?: { restricted?: boolean } }).details;
+		assert.equal(details?.restricted, true);
+	});
 });
 
 test("agent list leads with copyable IDs and keeps meaningful names secondary", async () => {

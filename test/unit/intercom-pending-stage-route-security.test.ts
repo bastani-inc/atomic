@@ -1851,6 +1851,39 @@ test("possible future rows are listed inside the invocation, refreshed, and clea
 	assert.deepEqual((await member.listDirectory()).workflowFutureStages, []);
 });
 
+test("an outsider's peek at a workflow invocation group is reported as restricted, not empty", async () => {
+	const runId = "d7000011-0000-4000-8000-000000000011";
+	const group = `workflow:${runId}`;
+	const owner = new IntercomClient();
+	const member = new IntercomClient();
+	const outsider = new IntercomClient();
+	for (const client of [owner, member, outsider]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("restricted-owner", group));
+	await member.connect(productionRegistration("restricted-member", group));
+	await outsider.connect(productionRegistration("restricted-outsider", "other-group"));
+
+	owner.registerPendingStageRoute(runId, group, "restricted-peek-capability", [
+		rosterStage(runId, "stage-a", "orchestrator", group),
+	]);
+	await owner.listSessions();
+
+	const refused = await outsider.listDirectory(group);
+	assert.equal(refused.restricted, true);
+	assert.deepEqual(refused.sessions, []);
+	assert.deepEqual(refused.workflowStages, []);
+	assert.deepEqual(refused.workflowFutureStages, []);
+
+	const visible = await member.listDirectory(group);
+	assert.equal(visible.restricted, undefined);
+	assert.ok(visible.sessions.length > 0);
+
+	const ordinaryPeek = await outsider.listDirectory("unrelated-empty-group");
+	assert.equal(ordinaryPeek.restricted, undefined);
+});
+
 test("delivery-only sticky listing preserves group isolation and clears with the root (#3406)", async () => {
 	const runId = "d7000010-0000-4000-8000-000000000010";
 	const group = `workflow:${runId}`;
