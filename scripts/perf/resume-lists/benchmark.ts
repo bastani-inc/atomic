@@ -11,7 +11,8 @@ import { spawn } from "node:child_process";
  *   bun run scripts/perf/resume-lists/benchmark.ts --database /tmp/resume-lists/journal.sqlite
  */
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { SessionManager } from "../../../packages/coding-agent/src/core/session-manager.js";
 import type { SqliteDatabase, SqliteRow } from "../../../packages/coding-agent/src/core/storage/database.js";
@@ -39,7 +40,7 @@ function parseOptions(argv: readonly string[]): Options {
 		return index === -1 ? undefined : argv[index + 1];
 	};
 	return {
-		database: resolve(value("database") ?? join("/tmp", `resume-lists-${randomUUID()}`, "journal.sqlite")),
+		database: resolve(value("database") ?? join(mkdtempSync(join(tmpdir(), "resume-lists-")), "journal.sqlite")),
 		sessions: Number(value("sessions") ?? "2000"),
 		runs: Number(value("runs") ?? "500"),
 		checkpoints: Number(value("checkpoints") ?? "40"),
