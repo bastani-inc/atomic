@@ -89,6 +89,20 @@ test("installer documentation keeps the literal entry points, knobs, defaults, a
 	assert.match(docs.quickstart, /including any trailing whitespace or newline/u);
 	assert.match(docs.readme, /relative directories resolve against the physical directory/u);
 	assert.match(docs.quickstart, /does not need Node\.js or a package manager/u);
+	for (const name of ["quickstart", "windows"] as const) {
+		assert.match(docs[name], /ATOMIC_FORCE_INSTALL=1/u, `${name} does not document ATOMIC_FORCE_INSTALL`);
+	}
+	assert.match(docs.quickstart, /skipping download \(use --force to reinstall\)/u);
+	assert.match(docs.quickstart, /`--force` on macOS\/Linux or `-Force` on Windows/u);
+	assert.match(docs.windows, /pass `-Force` or set `ATOMIC_FORCE_INSTALL=1` to reinstall anyway/u);
+	assert.match(docs.windows, /restores a missing User PATH entry/u);
+	assert.match(
+		docs.quickstart,
+		/the version directory must still hold the files Atomic needs to start: `package\.json`, `app\.js`/u,
+	);
+	assert.match(docs.quickstart, /`current` that points at a versions directory somewhere else is repaired/u);
+	assert.match(docs.windows, /`current` junction that points outside the install root/u);
+	assert.match(docs.windows, /lost `app\.js` or another startup file/u);
 	assert.match(docs.quickstart, /\*\*Package install:\*\* Node\.js 22\.19 or newer/u);
 	assert.match(docs.quickstart, /payload-local `libgcc` and `libstdc\+\+`/u);
 	assert.match(docs.quickstart, /stock Alpine needs no runtime package install/u);

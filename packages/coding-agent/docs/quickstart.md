@@ -37,7 +37,7 @@ Full detail: package manager commands and the `--ignore-scripts` note.
 
 Moved to [Installation](/getting-started/installation#release-archive).
 
-Full detail: version pinning, `ATOMIC_VERSION`, `ATOMIC_INSTALL_DIR`, `ATOMIC_BIN_DIR`, `GITHUB_TOKEN`/`GH_TOKEN`, default paths, and PATH guidance. It also describes what the installer prints: the release and platform, a live download progress bar, one-line phase confirmations, the Atomic logo, and a `To start:` block, or plain text when `NO_COLOR=1` is set, `CI` is set, or output is not a terminal.
+Full detail: version pinning, `ATOMIC_VERSION`, `ATOMIC_INSTALL_DIR`, `ATOMIC_BIN_DIR`, `GITHUB_TOKEN`/`GH_TOKEN`, rerunning the installer (it skips the download when the version is already installed; `--force`, `-Force`, or `ATOMIC_FORCE_INSTALL=1` reinstalls), default paths, and PATH guidance. It also describes what the installer prints: the release and platform, a live download progress bar, one-line phase confirmations, the Atomic logo, and a `To start:` block, or plain text when `NO_COLOR=1` is set, `CI` is set, or output is not a terminal.
 
 #### ATOMIC_VERSION
 

@@ -55,16 +55,22 @@ usage() {
     printf '%s\n' 'Atomic release archive installer
 
 Usage:
-  install.sh [--ref <tag> | --ref=<tag> | -r <tag>] [--help]
+  install.sh [--ref <tag> | --ref=<tag> | -r <tag>] [--force] [--help]
 
 Options:
   --ref <tag>   Install the exact GitHub release tag.
   --ref=<tag>   Install the exact GitHub release tag.
   -r <tag>      Install the exact GitHub release tag.
+  --force       Reinstall even when the requested version is already installed and healthy.
   --help        Show this help and exit.
+
+An existing healthy install of the requested release (or of the latest release
+when none is requested) is left untouched and nothing is downloaded.
 
 Environment:
   ATOMIC_VERSION      Exact release tag when --ref is not supplied.
+  ATOMIC_FORCE_INSTALL
+                      Set to 1 to behave like --force.
   ATOMIC_INSTALL_DIR  Installation root (default: $HOME/.local/share/atomic).
   ATOMIC_BIN_DIR      Directory containing the atomic link (default: $HOME/.local/bin).
   GITHUB_TOKEN        Optional GitHub API token (preferred over GH_TOKEN).
@@ -249,6 +255,10 @@ percent_decode() {
 }
 
 REQUESTED_REF=${ATOMIC_VERSION:-}
+FORCE_INSTALL=0
+if [ "${ATOMIC_FORCE_INSTALL:-}" = 1 ]; then
+    FORCE_INSTALL=1
+fi
 while [ "$#" -gt 0 ]; do
     case $1 in
         --ref)
@@ -266,6 +276,9 @@ while [ "$#" -gt 0 ]; do
             [ "$#" -gt 0 ] || fail "-r requires a release tag"
             [ -n "$1" ] || fail "-r requires a non-empty release tag"
             REQUESTED_REF=$1
+            ;;
+        --force)
+            FORCE_INSTALL=1
             ;;
         --help|-h)
             usage
@@ -972,6 +985,114 @@ parse_release_tag() {
     printf '%s\n' "$parsed_release_tag"
 }
 
+shell_quote() {
+    shell_quote_input=$1
+    printf '%s' "'"
+    while [ -n "$shell_quote_input" ]; do
+        shell_quote_character=${shell_quote_input%"${shell_quote_input#?}"}
+        shell_quote_input=${shell_quote_input#?}
+        case $shell_quote_character in
+            "'") printf '%s' "'\\''" ;;
+            *) printf '%s' "$shell_quote_character" ;;
+        esac
+    done
+    printf '%s' "'"
+}
+
+# Collapse $HOME to ~ for display on a terminal; plain mode prints full paths.
+display_path() {
+    if [ "$OUTPUT_MODE" = tty ] && [ -n "${HOME:-}" ]; then
+        case $1 in
+            "$HOME") printf '~' ;;
+            "$HOME"/*) printf '~%s' "${1#"$HOME"}" ;;
+            *) printf '%s' "$1" ;;
+        esac
+    else
+        printf '%s' "$1"
+    fi
+}
+
+print_banner() {
+    printf '\n%s' "$ACCENT"
+    printf '%s\n' \
+        '  ██████▙                  ▟██████' \
+        '   ██████▙                ▟██████' \
+        '    ██████▙              ▟██████' \
+        '     ██████▙            ▟██████' \
+        '      ████████████████████████' \
+        '       ██████▛        ▜██████' \
+        '        ██████▛      ▜██████' \
+        '         ██████▛    ▜██████' \
+        '          ██████▛  ▜██████' \
+        '            ████████████'
+    printf '%s\n' "$RESET"
+}
+
+print_install_summary() {
+    printf '%sInstalled to%s ' "$MUTED" "$RESET"
+    display_path "$BIN_PATH"
+    printf '\n'
+    if [ "$OUTPUT_MODE" = tty ]; then
+        if [ "$CALLER_UTF8" -eq 1 ]; then
+            print_banner
+        else
+            printf '\n'
+        fi
+        printf 'To start:\n\n'
+        printf 'cd <project>  %s# Open directory%s\n' "$MUTED" "$RESET"
+        printf 'atomic        %s# Run command%s\n\n' "$MUTED" "$RESET"
+    fi
+
+    case ${SHELL:-} in
+        */zsh|zsh) SHELL_KIND=zsh ;;
+        */bash|bash) SHELL_KIND=bash ;;
+        */fish|fish) SHELL_KIND=fish ;;
+        *) SHELL_KIND= ;;
+    esac
+    # shellcheck disable=SC2088 # the hint names the file for a human, so ~ stays literal
+    case $SHELL_KIND in
+        zsh) SHELL_RC='~/.zshrc' ;;
+        bash) SHELL_RC='~/.bashrc' ;;
+        fish) SHELL_RC='~/.config/fish/config.fish' ;;
+        *) SHELL_RC='~/.profile' ;;
+    esac
+
+    case $BIN_DIR in
+        *:*)
+            printf '%s\n' "ATOMIC_BIN_DIR contains ':' and cannot be represented as one POSIX PATH entry."
+            printf 'Run Atomic directly: '
+            shell_quote "$BIN_PATH"
+            printf '\n'
+            printf '%s\n' "Choose a colon-free ATOMIC_BIN_DIR to add Atomic to PATH."
+            [ "$OUTPUT_MODE" != tty ] || printf '\n'
+            ;;
+        *)
+            case :${PATH:-}: in
+                *:"$BIN_DIR":*) ;;
+                *)
+                    printf '%sAdd%s ' "$MUTED" "$RESET"
+                    display_path "$BIN_DIR"
+                    printf ' %sto PATH for this shell:%s\n' "$MUTED" "$RESET"
+                    if [ "$SHELL_KIND" = fish ]; then
+                        printf '  fish_add_path '
+                        shell_quote "$BIN_DIR"
+                        printf '\n'
+                    else
+                        printf '  export PATH='
+                        shell_quote "$BIN_DIR"
+                        printf ':"$PATH"\n'
+                    fi
+                    if [ "$OUTPUT_MODE" = tty ]; then
+                        printf '%sAdd that line to %s to make it permanent.%s\n\n' "$MUTED" "$SHELL_RC" "$RESET"
+                    fi
+                    ;;
+            esac
+            ;;
+    esac
+
+    printf '%sFor more information visit%s %s\n' "$MUTED" "$RESET" "$DOCS_URL"
+}
+
 TAGS_API=$GITHUB_API/repos/$REPOSITORY/releases/tags
 RELEASE_TAG=
 RELEASE_TAG_ENCODED=
@@ -1037,7 +1158,32 @@ if [ -L "$INSTALL_ROOT/current" ] && [ -d "$INSTALL_ROOT/current" ]; then
     installed_physical=
     installed_encoded=
 fi
+installed_payload_is_complete() {
+    for required_file in package.json app.js native-modifiers.js native-module-path.js native-platform.js; do
+        [ -f "$INSTALL_ROOT/current/$required_file" ] || return 1
+    done
+    for required_directory in builtin node_modules; do
+        [ -d "$INSTALL_ROOT/current/$required_directory" ] || return 1
+    done
+}
+
+installed_launcher_is_healthy() {
+    [ -f "$INSTALL_ROOT/current/atomic" ] && [ -x "$INSTALL_ROOT/current/atomic" ] || return 1
+    [ -L "$BIN_PATH" ] || return 1
+    # shellcheck disable=SC3013 # -ef is the only way to compare symlink targets without readlink
+    [ "$BIN_PATH" -ef "$INSTALL_ROOT/current/atomic" ] || return 1
+    # shellcheck disable=SC3013 # -ef compares the physical directories, so a symlinked install root still matches
+    [ "$INSTALL_ROOT/current" -ef "$INSTALL_ROOT/versions/$RELEASE_TAG_ENCODED" ] || return 1
+    installed_payload_is_complete
+}
+
 if [ -n "$INSTALLED_VERSION" ]; then
+    if [ "$INSTALLED_VERSION" = "$RELEASE_TAG" ] && [ "$FORCE_INSTALL" -eq 0 ] && installed_launcher_is_healthy; then
+        printf '%satomic %s is already installed; skipping download (use --force to reinstall)%s\n' \
+            "$MUTED" "$RELEASE_TAG" "$RESET"
+        print_install_summary
+        exit 0
+    fi
     if [ "$INSTALLED_VERSION" = "$RELEASE_TAG" ]; then
         printf '%sVersion%s %s %salready installed%s\n' "$MUTED" "$RESET" "$RELEASE_TAG" "$MUTED" "$RESET"
     else
@@ -1184,108 +1330,4 @@ if [ "$VERSION_BACKED_UP" -eq 1 ]; then
     VERSION_BACKED_UP=0
 fi
 
-shell_quote() {
-    shell_quote_input=$1
-    printf '%s' "'"
-    while [ -n "$shell_quote_input" ]; do
-        shell_quote_character=${shell_quote_input%"${shell_quote_input#?}"}
-        shell_quote_input=${shell_quote_input#?}
-        case $shell_quote_character in
-            "'") printf '%s' "'\\''" ;;
-            *) printf '%s' "$shell_quote_character" ;;
-        esac
-    done
-    printf '%s' "'"
-}
-
-# Collapse $HOME to ~ for display on a terminal; plain mode prints full paths.
-display_path() {
-    if [ "$OUTPUT_MODE" = tty ] && [ -n "${HOME:-}" ]; then
-        case $1 in
-            "$HOME") printf '~' ;;
-            "$HOME"/*) printf '~%s' "${1#"$HOME"}" ;;
-            *) printf '%s' "$1" ;;
-        esac
-    else
-        printf '%s' "$1"
-    fi
-}
-
-print_banner() {
-    printf '\n%s' "$ACCENT"
-    printf '%s\n' \
-        '  ██████▙                  ▟██████' \
-        '   ██████▙                ▟██████' \
-        '    ██████▙              ▟██████' \
-        '     ██████▙            ▟██████' \
-        '      ████████████████████████' \
-        '       ██████▛        ▜██████' \
-        '        ██████▛      ▜██████' \
-        '         ██████▛    ▜██████' \
-        '          ██████▛  ▜██████' \
-        '            ████████████'
-    printf '%s\n' "$RESET"
-}
-
-printf '%sInstalled to%s ' "$MUTED" "$RESET"
-display_path "$BIN_PATH"
-printf '\n'
-if [ "$OUTPUT_MODE" = tty ]; then
-    if [ "$CALLER_UTF8" -eq 1 ]; then
-        print_banner
-    else
-        printf '\n'
-    fi
-    printf 'To start:\n\n'
-    printf 'cd <project>  %s# Open directory%s\n' "$MUTED" "$RESET"
-    printf 'atomic        %s# Run command%s\n\n' "$MUTED" "$RESET"
-fi
-
-case ${SHELL:-} in
-    */zsh|zsh) SHELL_KIND=zsh ;;
-    */bash|bash) SHELL_KIND=bash ;;
-    */fish|fish) SHELL_KIND=fish ;;
-    *) SHELL_KIND= ;;
-esac
-# shellcheck disable=SC2088 # the hint names the file for a human, so ~ stays literal
-case $SHELL_KIND in
-    zsh) SHELL_RC='~/.zshrc' ;;
-    bash) SHELL_RC='~/.bashrc' ;;
-    fish) SHELL_RC='~/.config/fish/config.fish' ;;
-    *) SHELL_RC='~/.profile' ;;
-esac
-
-case $BIN_DIR in
-    *:*)
-        printf '%s\n' "ATOMIC_BIN_DIR contains ':' and cannot be represented as one POSIX PATH entry."
-        printf 'Run Atomic directly: '
-        shell_quote "$BIN_PATH"
-        printf '\n'
-        printf '%s\n' "Choose a colon-free ATOMIC_BIN_DIR to add Atomic to PATH."
-        [ "$OUTPUT_MODE" != tty ] || printf '\n'
-        ;;
-    *)
-        case :${PATH:-}: in
-            *:"$BIN_DIR":*) ;;
-            *)
-                printf '%sAdd%s ' "$MUTED" "$RESET"
-                display_path "$BIN_DIR"
-                printf ' %sto PATH for this shell:%s\n' "$MUTED" "$RESET"
-                if [ "$SHELL_KIND" = fish ]; then
-                    printf '  fish_add_path '
-                    shell_quote "$BIN_DIR"
-                    printf '\n'
-                else
-                    printf '  export PATH='
-                    shell_quote "$BIN_DIR"
-                    printf ':"$PATH"\n'
-                fi
-                if [ "$OUTPUT_MODE" = tty ]; then
-                    printf '%sAdd that line to %s to make it permanent.%s\n\n' "$MUTED" "$SHELL_RC" "$RESET"
-                fi
-                ;;
-        esac
-        ;;
-esac
-
-printf '%sFor more information visit%s %s\n' "$MUTED" "$RESET" "$DOCS_URL"
+print_install_summary

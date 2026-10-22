@@ -315,6 +315,7 @@ irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
 The archive installer verifies `SHA256SUMS`, keeps versioned payloads, and links its launcher from `~/.local/bin/atomic` on macOS/Linux or `%LOCALAPPDATA%\atomic\bin\atomic.cmd` on Windows, printing PATH guidance when needed. It accepts a few environment variables:
 
 - `ATOMIC_VERSION` — pin an exact release tag.
+- `ATOMIC_FORCE_INSTALL=1` (or `--force` / `-Force`) — reinstall even when that release is already installed. By default the installer skips the download for a healthy install of the requested or latest release.
 - `ATOMIC_INSTALL_DIR` / `ATOMIC_BIN_DIR` — change the install and launcher locations. On macOS/Linux, relative directories resolve against the physical directory where the installer starts.
 - `GITHUB_TOKEN` / `GH_TOKEN` — optional; raises GitHub API limits on shared networks.
 - `NO_COLOR` — plain output with no colours, progress bar, or logo; the installer also switches to plain output when its output is not a terminal or `CI` is set.

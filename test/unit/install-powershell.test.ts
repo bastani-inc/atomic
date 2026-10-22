@@ -78,6 +78,76 @@ test("Windows installer declares the PowerShell 5.1 archive installation contrac
 	assert.ok(unexpectedPointer >= 0 && unexpectedPointer < apiHeaders);
 });
 
+test("Windows installer skips a healthy install before any download and keeps the force escape hatch documented", () => {
+	const source = installerSource();
+
+	assert.match(source, /param\([\s\S]*\[switch\]\$Force[\s\S]*\[switch\]\$Help[\s\S]*\)/u);
+	assert.match(source, /install\.ps1 \[-Ref <tag>\] \[-Force\] \[-Help\]/u);
+	assert.match(
+		source,
+		/^ {2}-Force +Reinstall even when the requested version is already installed and healthy\.\r?$/mu,
+	);
+	assert.match(source, /^ {2}ATOMIC_FORCE_INSTALL\r?\n +Set to 1 to behave like -Force\.\r?$/mu);
+	assert.match(source, /\$forceInstall = \$Force\.IsPresent -or \$env:ATOMIC_FORCE_INSTALL -eq "1"/u);
+
+	const skipCondition = source.indexOf("if (-not $forceInstall -and (Test-AtomicInstallIntact");
+	const skipMessage = source.indexOf(
+		'Write-AtomicMuted "atomic $releaseTag is already installed; skipping download (use -Force to reinstall)"',
+	);
+	const pathRepair = source.indexOf("Add-AtomicBinDirToPath $binDir", skipMessage);
+	const skipSummary = source.indexOf("Write-AtomicInstallSummary $userPathAdded", pathRepair);
+	const skipReturn = source.indexOf("return", skipSummary);
+	const firstDownload = source.indexOf("$tempDir = Join-Path");
+	assert.ok(
+		skipCondition >= 0 &&
+			skipMessage > skipCondition &&
+			pathRepair > skipMessage &&
+			skipSummary > pathRepair &&
+			skipReturn > skipSummary &&
+			firstDownload > skipReturn,
+		"the healthy-install skip must repair PATH, print the summary, and return before any temp directory or download",
+	);
+	const releaseResolution = source.indexOf("$encodedReleaseTag = [Uri]::EscapeDataString($releaseTag)");
+	assert.ok(
+		releaseResolution >= 0 && releaseResolution < skipCondition,
+		"the release tag is resolved before the skip decision",
+	);
+
+	const health = source.slice(
+		source.indexOf("function Get-AtomicComparablePath"),
+		source.indexOf("function Get-AtomicFileSha256"),
+	);
+	assert.match(health, /\$InstalledVersion -cne \$ReleaseTag/u);
+	assert.match(health, /Get-AtomicReparseTarget \(Get-AtomicDirectoryEntry \(Join-Path \$InstallRoot "current"\)\)/u);
+	assert.match(
+		health,
+		/Get-AtomicReparseTarget \(Get-AtomicDirectoryEntry \(Join-Path \$BinDir "atomic-current"\)\)/u,
+	);
+	assert.match(health, /\$currentTarget -ine \$atomicCurrentTarget/u);
+	assert.match(health, /\[Uri\]::EscapeDataString\(\$ReleaseTag\)/u);
+	assert.match(
+		health,
+		/\(Get-AtomicComparablePath \$currentTarget\) -ine \(Get-AtomicComparablePath \$expectedVersionPath\)/u,
+		"current must resolve physically to the install root's versions directory for the release",
+	);
+	assert.match(health, /Test-AtomicInstalledPayloadComplete \(Join-Path \$InstallRoot "current"\)/u);
+	for (const required of [
+		"package.json",
+		"app.js",
+		"native-modifiers.js",
+		"native-module-path.js",
+		"native-platform.js",
+	]) {
+		assert.ok(health.includes(`"${required}"`), `the Windows health check must require ${required}`);
+	}
+	for (const required of ["builtin", "node_modules"]) {
+		assert.ok(health.includes(`"${required}"`), `the Windows health check must require the ${required} directory`);
+	}
+	assert.match(health, /Join-Path \$BinDir "atomic\.cmd"/u);
+	assert.match(health, /ReadAllText\(\$shimItem\.FullName\) -ceq \$ExpectedShimContent/u);
+	assert.doesNotMatch(health, /&\s+\$|Invoke-WebRequest|Move-Item|Remove-Item/u, "the health check must be read-only");
+});
+
 test("Windows installer streams the archive with a progress bar and keeps smoke-check output off the console", () => {
 	const source = installerSource();
 	const bytes = readFileSync(installerPath);
@@ -398,8 +468,8 @@ test("Windows installer pins the requested ref and refuses an unusable PATH entr
 	assert.match(source, /\$binDirHasPathSeparator = \$binDir\.Contains\(";"\)/u);
 	assert.equal(
 		(source.match(/if \(-not \$binDirHasPathSeparator -and -not \(Test-AtomicPathContains/gu) ?? []).length,
-		2,
-		"both PATH mutations are not guarded by the separator check",
+		4,
+		"every PATH mutation, in the skip repair and in the transaction, must be guarded by the separator check",
 	);
 	assert.match(source, /cannot be represented as one Windows PATH entry/u);
 	assert.match(source, /Choose a semicolon-free ATOMIC_BIN_DIR to add Atomic to PATH\./u);
@@ -407,7 +477,7 @@ test("Windows installer pins the requested ref and refuses an unusable PATH entr
 	assert.ok(successOutput >= 0, "success output does not start with the installed launcher path");
 	const separatorBranch = source.indexOf("if ($binDirHasPathSeparator) {", successOutput);
 	assert.ok(separatorBranch >= 0, "success output does not branch on the separator case");
-	const pathUpdateBranch = source.indexOf("elseif ($transaction.UserPathChangeIntended) {", separatorBranch);
+	const pathUpdateBranch = source.indexOf("elseif ($UserPathAdded) {", separatorBranch);
 	assert.ok(pathUpdateBranch > separatorBranch, "the User PATH line is not gated on an actual PATH change");
 	assert.match(
 		source.slice(pathUpdateBranch, source.indexOf("}", pathUpdateBranch)),
@@ -574,7 +644,7 @@ test("Windows installer records move intent and idempotently rolls back from cat
 	);
 	const catchBlock = source.slice(
 		source.indexOf("    catch {", finalSmoke),
-		source.indexOf("    Write-Output", finalSmoke),
+		source.indexOf("    Write-AtomicInstallSummary", finalSmoke),
 	);
 	assert.match(catchBlock, /if \(-not \$transactionCommitted\)[\s\S]+Invoke-AtomicTransactionRollback/u);
 	assert.equal((catchBlock.match(/Invoke-AtomicTransactionRollback/gu) ?? []).length, 1);
@@ -697,7 +767,9 @@ test("Windows installer removes its temporary download directory with bounded ve
 	assert.match(source, /catch \{\r?\n\s+\$primaryError = \$_\r?\n\s+throw \$primaryError\r?\n\}/u);
 	assert.doesNotMatch(source, /Remove-Item -LiteralPath \$tempDir/u, "the suppressed temp deletion is still present");
 
-	const cleanup = source.slice(source.indexOf("finally {", source.indexOf('Write-Output "Installed to $shimPath"')));
+	const cleanup = source.slice(
+		source.indexOf("finally {", source.indexOf("Write-AtomicInstallSummary $transaction.UserPathChangeIntended")),
+	);
 	assert.match(
 		cleanup,
 		/if \(\$null -ne \$tempDir -and \(Test-Path -LiteralPath \$tempDir\)\) \{\r?\n\s+try \{\r?\n\s+Remove-AtomicTemporaryDirectory \$tempDir \$tempCleanupRetryLimit \$tempCleanupRetryDelayMilliseconds\r?\n\s+\}\r?\n\s+catch \{\r?\n\s+\$tempCleanupError = \$_/u,
@@ -1120,6 +1192,283 @@ for (const engine of powershellEngines) {
 	);
 }
 
+// One real PowerShell child runs the full installer through a dozen skip, repair and force cases against
+// symbolic-link stand-ins for the junctions, so it only runs where the installer's native-path layout can
+// be faked; Windows PowerShell 5.1 covers the real junction fixture scenarios below.
+const REAL_POWERSHELL_SKIP_PROBE_TIMEOUT_MS = 120_000;
+const skipProbeHarness = String.raw`
+param(
+    [Parameter(Mandatory=$true)][string]$InstallerPath,
+    [Parameter(Mandatory=$true)][string]$Workspace
+)
+
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+Set-StrictMode -Version Latest
+
+$env:PROCESSOR_ARCHITEW6432 = "AMD64"
+$env:PROCESSOR_ARCHITECTURE = "AMD64"
+$env:NO_COLOR = "1"
+$env:ATOMIC_VERSION = $null
+$env:ATOMIC_FORCE_INSTALL = $null
+$env:GITHUB_TOKEN = $null
+$env:GH_TOKEN = $null
+$expectedShim = "@echo off" + [char]13 + [char]10 + '"%~dp0atomic-current\atomic.exe" %*' + [char]13 + [char]10 + "exit /b %ERRORLEVEL%" + [char]13 + [char]10
+
+$global:caseIndex = 0
+$global:latestTag = "2.0.0"
+$global:requests = New-Object System.Collections.ArrayList
+$global:installRoot = $null
+$global:binDir = $null
+
+function Invoke-WebRequest {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][string]$Uri,
+        [string]$OutFile,
+        [hashtable]$Headers,
+        [switch]$UseBasicParsing,
+        [int]$MaximumRedirection
+    )
+    [void]$global:requests.Add($Uri)
+    if ($Uri -eq "https://github.com/bastani-inc/atomic/releases/latest") {
+        return [pscustomobject]@{
+            Headers = @{ Location = "/bastani-inc/atomic/releases/tag/" + $global:latestTag }
+            BaseResponse = [pscustomobject]@{ ResponseUri = [Uri]"https://github.com/bastani-inc/atomic/releases/latest" }
+        }
+    }
+    if ($Uri -match '/repos/bastani-inc/atomic/releases/tags/([^/]+)$') {
+        return [pscustomobject]@{ Content = ('{"tag_name":"' + [Uri]::UnescapeDataString($Matches[1]) + '"}'); Headers = @{} }
+    }
+    if ($Uri -match '/releases/download/') {
+        throw "DOWNLOAD_ATTEMPTED:$Uri"
+    }
+    throw "Unexpected probe request: $Uri"
+}
+
+function Add-Type {
+    [CmdletBinding()]
+    param([string]$AssemblyName)
+    throw "System.Net.Http is unavailable in this probe."
+}
+
+function New-Space {
+    $global:caseIndex++
+    $root = Join-Path $Workspace ("case-" + $global:caseIndex)
+    $global:installRoot = Join-Path $root "install root"
+    $global:binDir = Join-Path $root "bin root"
+    $env:ATOMIC_INSTALL_DIR = $global:installRoot
+    $env:ATOMIC_BIN_DIR = $global:binDir
+    $env:ATOMIC_FORCE_INSTALL = $null
+    $env:Path = $null
+    $global:latestTag = "2.0.0"
+}
+
+function New-HealthyInstall {
+    param([string]$Tag, [string]$BinDirectory = $global:binDir)
+    $versionPath = Join-Path (Join-Path $global:installRoot "versions") $Tag
+    New-Item -ItemType Directory -Path $versionPath, $BinDirectory -Force | Out-Null
+    $executable = Join-Path $versionPath "atomic.exe"
+    [IO.File]::WriteAllText($executable, "#!/bin/sh" + [char]10 + "echo $Tag" + [char]10)
+    & chmod +x $executable
+    foreach ($companionFile in @("package.json", "app.js", "native-modifiers.js", "native-module-path.js", "native-platform.js")) {
+        [IO.File]::WriteAllText((Join-Path $versionPath $companionFile), "fixture " + $companionFile)
+    }
+    New-Item -ItemType Directory -Path (Join-Path $versionPath "builtin"), (Join-Path $versionPath "node_modules") -Force | Out-Null
+    New-Item -ItemType SymbolicLink -Path (Join-Path $global:installRoot "current") -Target $versionPath | Out-Null
+    New-Item -ItemType SymbolicLink -Path (Join-Path $BinDirectory "atomic-current") -Target $versionPath | Out-Null
+    [IO.File]::WriteAllText((Join-Path $BinDirectory "atomic.cmd"), $expectedShim)
+    return $versionPath
+}
+
+function Invoke-Installer {
+    param([hashtable]$Parameters = @{})
+    $global:requests.Clear()
+    $failure = $null
+    $text = ""
+    try { $text = (& $InstallerPath @Parameters *>&1 | Out-String) }
+    catch { $failure = $_ }
+    $downloaded = $null -ne $failure -and $failure.Exception.Message -match 'DOWNLOAD_ATTEMPTED'
+    if ($null -ne $failure -and -not $downloaded) { throw "installer failed unexpectedly: $($failure.Exception.Message)" }
+    return [pscustomobject]@{ Text = $text; Downloaded = $downloaded }
+}
+
+function Assert-Probe {
+    param([bool]$Condition, [string]$Message)
+    if (-not $Condition) { throw "Probe assertion failed: $Message" }
+}
+
+function Assert-Skipped {
+    param($Result, [string]$Tag, [string]$Label)
+    Assert-Probe (-not $Result.Downloaded) "$Label downloaded instead of skipping"
+    Assert-Probe ($Result.Text -match ("atomic " + [regex]::Escape($Tag) + " is already installed; skipping download \(use -Force to reinstall\)")) "$Label did not print the skip message: $($Result.Text)"
+    Assert-Probe ($Result.Text -match ('(?m)^Installed to ' + [regex]::Escape((Join-Path $global:binDir "atomic.cmd")) + '\s*$')) "$Label did not keep the Installed to line: $($Result.Text)"
+    Assert-Probe ($Result.Text -match 'For more information visit') "$Label dropped the closing line"
+    Assert-Probe ($Result.Text -notmatch 'Downloading|Verified SHA256') "$Label printed install progress"
+    $artifactRequests = @($global:requests | Where-Object { $_ -match '/releases/download/|SHA256SUMS|\.zip$' })
+    Assert-Probe ($artifactRequests.Count -eq 0) "$Label requested release artifacts: $($artifactRequests -join ', ')"
+}
+
+function Get-InstallSnapshot {
+    $entries = @(Get-ChildItem -LiteralPath $global:installRoot -Recurse -Force | ForEach-Object { $_.FullName + "|" + $_.LastWriteTimeUtc.Ticks })
+    $entries += @(Get-ChildItem -LiteralPath $global:binDir -Force | ForEach-Object { $_.FullName + "|" + $_.LastWriteTimeUtc.Ticks })
+    return ($entries | Sort-Object) -join "|"
+}
+
+# Same requested version, healthy: skipped, state untouched, only the tag lookup is requested.
+New-Space
+$versionPath = New-HealthyInstall "1.0.0"
+Set-Content -LiteralPath (Join-Path $versionPath "sentinel.txt") -Value "survives" -NoNewline
+$before = Get-InstallSnapshot
+$result = Invoke-Installer @{ Ref = "1.0.0" }
+Assert-Skipped $result "1.0.0" "requested version"
+Assert-Probe (@($global:requests | Where-Object { $_ -match '/releases/tags/1\.0\.0$' }).Count -eq 1) "the requested tag was not resolved"
+Assert-Probe ((Get-InstallSnapshot) -ceq $before) "a skipped rerun changed the install"
+Assert-Probe (Test-Path -LiteralPath (Join-Path $versionPath "sentinel.txt")) "a skipped rerun removed the version payload"
+Assert-Probe ($env:Path -split [IO.Path]::PathSeparator -contains $global:binDir) "a skipped rerun did not repair the current session PATH"
+
+# ATOMIC_VERSION behaves like -Ref.
+$env:ATOMIC_VERSION = "1.0.0"
+Assert-Skipped (Invoke-Installer) "1.0.0" "ATOMIC_VERSION"
+$env:ATOMIC_VERSION = $null
+
+# No version requested: the resolved latest release is compared, through the redirect and without the API.
+New-Space
+$null = New-HealthyInstall "2.0.0"
+$result = Invoke-Installer
+Assert-Skipped $result "2.0.0" "latest release"
+Assert-Probe (@($global:requests | Where-Object { $_ -eq "https://github.com/bastani-inc/atomic/releases/latest" }).Count -eq 1) "the latest redirect was not resolved"
+Assert-Probe (@($global:requests | Where-Object { $_ -match '^https://api\.github\.com/' }).Count -eq 0) "the latest skip queried the API"
+
+# A newer latest than the installed version installs.
+$global:latestTag = "2.1.0"
+Assert-Probe ((Invoke-Installer).Downloaded) "a newer latest release did not download"
+$global:latestTag = "2.0.0"
+
+# A different requested version installs.
+Assert-Probe ((Invoke-Installer @{ Ref = "1.0.0" }).Downloaded) "a different requested version did not download"
+
+# -Force and ATOMIC_FORCE_INSTALL=1 reinstall a healthy install; other values do not force.
+Assert-Probe ((Invoke-Installer @{ Ref = "2.0.0"; Force = $true }).Downloaded) "-Force did not reinstall"
+$env:ATOMIC_FORCE_INSTALL = "1"
+Assert-Probe ((Invoke-Installer @{ Ref = "2.0.0" }).Downloaded) "ATOMIC_FORCE_INSTALL=1 did not reinstall"
+$env:ATOMIC_FORCE_INSTALL = "0"
+Assert-Skipped (Invoke-Installer @{ Ref = "2.0.0" }) "2.0.0" "ATOMIC_FORCE_INSTALL=0"
+$env:ATOMIC_FORCE_INSTALL = $null
+
+# Every unhealthy shape of the same version is repaired by a download instead of skipped.
+$brokenInstalls = @(
+    @{ Label = "missing shim"; Break = { Remove-Item -LiteralPath (Join-Path $global:binDir "atomic.cmd") } },
+    @{ Label = "shim with other content"; Break = { [IO.File]::WriteAllText((Join-Path $global:binDir "atomic.cmd"), "@echo off" + [char]13 + [char]10) } },
+    @{ Label = "missing atomic-current"; Break = { Remove-Item -LiteralPath (Join-Path $global:binDir "atomic-current") } },
+    @{ Label = "atomic-current aimed at another directory"; Break = {
+        $pointer = Join-Path $global:binDir "atomic-current"
+        $elsewhere = Join-Path $global:binDir "elsewhere"
+        New-Item -ItemType Directory -Path $elsewhere | Out-Null
+        Remove-Item -LiteralPath $pointer
+        New-Item -ItemType SymbolicLink -Path $pointer -Target $elsewhere | Out-Null } },
+    @{ Label = "missing current"; Break = { Remove-Item -LiteralPath (Join-Path $global:installRoot "current") } },
+    @{ Label = "missing payload executable"; Break = { Remove-Item -LiteralPath (Join-Path (Join-Path $global:installRoot "current") "atomic.exe") } },
+    @{ Label = "payload executable that fails"; Break = {
+        $executable = Join-Path (Join-Path $global:installRoot "current") "atomic.exe"
+        [IO.File]::WriteAllText($executable, "#!/bin/sh" + [char]10 + "exit 9" + [char]10) } },
+    @{ Label = "missing package.json"; Break = { Remove-Item -LiteralPath (Join-Path (Join-Path $global:installRoot "current") "package.json") } },
+    @{ Label = "missing app.js"; Break = { Remove-Item -LiteralPath (Join-Path (Join-Path $global:installRoot "current") "app.js") } },
+    @{ Label = "missing native-modifiers.js"; Break = { Remove-Item -LiteralPath (Join-Path (Join-Path $global:installRoot "current") "native-modifiers.js") } },
+    @{ Label = "missing native-module-path.js"; Break = { Remove-Item -LiteralPath (Join-Path (Join-Path $global:installRoot "current") "native-module-path.js") } },
+    @{ Label = "missing native-platform.js"; Break = { Remove-Item -LiteralPath (Join-Path (Join-Path $global:installRoot "current") "native-platform.js") } },
+    @{ Label = "missing builtin directory"; Break = { Remove-Item -LiteralPath (Join-Path (Join-Path $global:installRoot "current") "builtin") -Recurse } },
+    @{ Label = "missing node_modules directory"; Break = { Remove-Item -LiteralPath (Join-Path (Join-Path $global:installRoot "current") "node_modules") -Recurse } },
+    @{ Label = "current and atomic-current aimed at a foreign versions directory"; Break = {
+        $foreignRoot = Join-Path (Join-Path $Workspace ("foreign-" + $global:caseIndex)) "versions"
+        $foreignVersion = Join-Path $foreignRoot "1.0.0"
+        New-Item -ItemType Directory -Path $foreignRoot -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path (Join-Path $global:installRoot "versions") "1.0.0") -Destination $foreignVersion -Recurse
+        & chmod +x (Join-Path $foreignVersion "atomic.exe")
+        foreach ($pointer in @((Join-Path $global:installRoot "current"), (Join-Path $global:binDir "atomic-current"))) {
+            Remove-Item -LiteralPath $pointer
+            New-Item -ItemType SymbolicLink -Path $pointer -Target $foreignVersion | Out-Null
+        } } }
+)
+foreach ($broken in $brokenInstalls) {
+    New-Space
+    $null = New-HealthyInstall "1.0.0"
+    & $broken.Break
+    Assert-Probe ((Invoke-Installer @{ Ref = "1.0.0" }).Downloaded) ("an install with a " + $broken.Label + " was skipped")
+}
+
+# An install root reached through a link is the same physical directory, so a healthy install still skips.
+New-Space
+$linkedInstallRoot = $global:installRoot
+$realInstallRoot = Join-Path (Split-Path $linkedInstallRoot -Parent) "real install root"
+New-Item -ItemType Directory -Path $realInstallRoot -Force | Out-Null
+New-Item -ItemType SymbolicLink -Path $linkedInstallRoot -Target $realInstallRoot | Out-Null
+$null = New-HealthyInstall "1.0.0"
+Assert-Skipped (Invoke-Installer @{ Ref = "1.0.0" }) "1.0.0" "install root reached through a link"
+
+# A bin directory that cannot be one PATH entry still skips, prints direct-run guidance, and leaves PATH alone.
+New-Space
+$semicolonBin = Join-Path (Split-Path $global:binDir -Parent) "semi;bin"
+$env:ATOMIC_BIN_DIR = $semicolonBin
+$global:binDir = $semicolonBin
+$null = New-HealthyInstall "1.0.0" $semicolonBin
+$result = Invoke-Installer @{ Ref = "1.0.0" }
+Assert-Skipped $result "1.0.0" "semicolon bin directory"
+Assert-Probe ($result.Text -match 'cannot be represented as one Windows PATH entry') "the semicolon limitation was not reported"
+Assert-Probe ($result.Text -match 'Run Atomic directly') "direct-run guidance was not printed"
+Assert-Probe ($result.Text -notmatch 'to your User PATH') "a semicolon bin directory claimed a PATH update"
+Assert-Probe ([string]::IsNullOrEmpty($env:Path)) "a semicolon bin directory changed the session PATH"
+
+# -Help documents the escape hatch and never reaches the network.
+$global:requests.Clear()
+$help = (& $InstallerPath -Help *>&1 | Out-String)
+Assert-Probe ($help -match 'install\.ps1 \[-Ref <tag>\] \[-Force\] \[-Help\]') "-Help usage omits -Force"
+Assert-Probe ($help -match '-Force\s+Reinstall even when .*already installed') "-Help does not describe -Force"
+Assert-Probe ($help -match 'ATOMIC_FORCE_INSTALL\s+Set to 1 to behave like -Force') "-Help does not describe ATOMIC_FORCE_INSTALL"
+Assert-Probe ($global:requests.Count -eq 0) "-Help performed a request"
+
+Write-Output "SKIP_PROBE_OK"
+`;
+
+const skipProbeTest = process.platform === "win32" ? test.skip : test;
+if (powershellEngines.length === 0) {
+	skipProbeTest.skip("available PowerShell engines skip the download for a healthy install", () => {});
+}
+for (const engine of powershellEngines) {
+	skipProbeTest(
+		`${engine.label} skips the download for a healthy install and repairs every unhealthy one`,
+		() => {
+			const workspace = mkdtempSync(join(tmpdir(), "atomic-ps-skip-"));
+			const probePath = join(workspace, "skip-probe.ps1");
+			writeFileSync(probePath, skipProbeHarness);
+			try {
+				const result = spawnSyncCollect(
+					[
+						engine.executable,
+						"-NoLogo",
+						"-NoProfile",
+						"-NonInteractive",
+						"-ExecutionPolicy",
+						"Bypass",
+						"-File",
+						probePath,
+						"-InstallerPath",
+						installerPath,
+						"-Workspace",
+						workspace,
+					],
+					{ timeout: REAL_POWERSHELL_SKIP_PROBE_TIMEOUT_MS },
+				);
+				assert.equal(result.exitCode, 0, `${result.stdout.toString()}${result.stderr.toString()}`);
+				assert.match(result.stdout.toString(), /SKIP_PROBE_OK/u);
+			} finally {
+				rmSync(workspace, { recursive: true, force: true });
+			}
+		},
+		REAL_POWERSHELL_SKIP_PROBE_TIMEOUT_MS,
+	);
+}
+
 interface AsyncProcessResult {
 	exitCode: number | null;
 	stdout: string;
@@ -1436,6 +1785,12 @@ function New-FixtureRelease {
     Copy-Item -LiteralPath $fixtureExecutable -Destination (Join-Path $payloadDir "atomic.exe")
     Set-Content -LiteralPath (Join-Path $payloadDir "version.txt") -Value $Tag -Encoding ASCII -NoNewline
     Set-Content -LiteralPath (Join-Path $payloadDir "nested\full-payload.txt") -Value ("payload-" + $Tag) -Encoding ASCII -NoNewline
+    New-Item -ItemType Directory -Path (Join-Path $payloadDir "builtin"), (Join-Path $payloadDir "node_modules") -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $payloadDir "builtin\payload.txt") -Value ("builtin-" + $Tag) -Encoding ASCII -NoNewline
+    Set-Content -LiteralPath (Join-Path $payloadDir "node_modules\payload.txt") -Value ("modules-" + $Tag) -Encoding ASCII -NoNewline
+    foreach ($companionFile in @("package.json", "app.js", "native-modifiers.js", "native-module-path.js", "native-platform.js")) {
+        Set-Content -LiteralPath (Join-Path $payloadDir $companionFile) -Value ("fixture-" + $companionFile + "-" + $Tag) -Encoding ASCII -NoNewline
+    }
     New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
 
     $rows = @()
@@ -1767,7 +2122,7 @@ function global:Move-Item {
 $environmentNames = @(
     "ATOMIC_INSTALL_DIR", "ATOMIC_BIN_DIR", "ATOMIC_VERSION", "GITHUB_TOKEN", "GH_TOKEN",
     "PROCESSOR_ARCHITEW6432", "PROCESSOR_ARCHITECTURE", "TEMP", "TMP", "SystemTemp", "PATHEXT",
-    "ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION"
+    "ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION", "ATOMIC_FORCE_INSTALL"
 )
 $originalEnvironment = @{}
 foreach ($name in $environmentNames) {
@@ -1840,12 +2195,17 @@ try {
         $env:GITHUB_TOKEN = $null
         $env:GH_TOKEN = "gh-token"
         $env:ATOMIC_VERSION = "1.0.0"
+        $skipRequestStart = $global:AtomicFixtureRequests.Count
         $reinstallOutput = & $InstallerPath | Out-String
-        Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $versionOne "stale.txt"))) "same-version reinstall was not clean"
-        Assert-Fixture ($reinstallOutput -match ('(?m)^Installed to ' + [regex]::Escape($shim) + '\s*$')) "same-version reinstall did not report the installed launcher path"
-        Assert-Fixture ($reinstallOutput -notmatch 'to your User PATH') "same-version reinstall claimed a User PATH update although the entry already existed"
+        Assert-Fixture (Test-Path -LiteralPath (Join-Path $versionOne "stale.txt")) "a healthy same-version rerun was not skipped"
+        Assert-Fixture ($reinstallOutput -match ('(?m)^Installed to ' + [regex]::Escape($shim) + '\s*$')) "same-version rerun did not report the installed launcher path"
+        Assert-Fixture ($reinstallOutput -notmatch 'to your User PATH') "same-version rerun claimed a User PATH update although the entry already existed"
+        Assert-Fixture (@($global:AtomicFixtureRequests | Select-Object -Skip $skipRequestStart | Where-Object { $_.Uri -match '/releases/download/' }).Count -eq 0) "a healthy same-version rerun still downloaded release assets"
         $fallbackApiRequests = @($global:AtomicFixtureRequests | Where-Object { $_.Uri -match '/releases/tags/1\.0\.0$' })
         Assert-Fixture ($fallbackApiRequests[$fallbackApiRequests.Count - 1].Authorization -eq "Bearer gh-token") "GH_TOKEN was not used when GITHUB_TOKEN was unset"
+        $forcedOutput = & $InstallerPath -Force | Out-String
+        Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $versionOne "stale.txt"))) "forced same-version reinstall was not clean"
+        Assert-Fixture ($forcedOutput -match ('(?m)^Installed to ' + [regex]::Escape($shim) + '\s*$')) "forced reinstall did not report the installed launcher path"
 
         $env:PROCESSOR_ARCHITEW6432 = $null
         $env:PROCESSOR_ARCHITECTURE = "ARM64"
@@ -2587,6 +2947,147 @@ try {
         Assert-Fixture ($resolvedExit -eq 0 -and $resolvedOutput -eq "1.0.0") "custom PATHEXT did not resolve atomic.cmd ahead of atomic.exe: $resolvedOutput"
         Assert-NoTransactionResidue $installRoot $binDir
     }
+    elseif ($Scenario -eq "skip-installed") {
+        $env:PROCESSOR_ARCHITEW6432 = "AMD64"
+        $env:PROCESSOR_ARCHITECTURE = "AMD64"
+        $current = Join-Path $installRoot "current"
+        $atomicCurrent = Join-Path $binDir "atomic-current"
+        $shim = Join-Path $binDir "atomic.cmd"
+        $versionOne = Join-Path $installRoot "versions\1.0.0"
+        $versionTwo = Join-Path $installRoot "versions\2.0.0"
+
+        function Get-DownloadRequestCount {
+            param([int]$Since)
+            return @($global:AtomicFixtureRequests | Select-Object -Skip $Since | Where-Object { $_.Uri -match '/releases/download/' }).Count
+        }
+
+        function Assert-ShimRuns {
+            param([string]$Version, [string]$Label)
+            $probe = Invoke-FixtureShim $shim "--version"
+            Assert-Fixture ($probe.ExitCode -eq 0 -and $probe.Output -eq $Version) "$Label left a shim that does not run $Version"
+        }
+
+        function Remove-FixtureJunction {
+            param([string]$Path)
+            [IO.Directory]::Delete($Path)
+        }
+
+        function Get-FixtureLinkTarget {
+            param([string]$Path)
+            $target = @((Get-Item -LiteralPath $Path -Force).Target)[0]
+            return [string]$target
+        }
+
+        & $InstallerPath -Ref "1.0.0" | Out-Null
+        Set-Content -LiteralPath (Join-Path $versionOne "sentinel.txt") -Value "survives" -NoNewline
+        $currentTarget = Get-FixtureLinkTarget $current
+        $atomicCurrentTarget = Get-FixtureLinkTarget $atomicCurrent
+        $shimBytes = [IO.File]::ReadAllBytes($shim)
+
+        $mark = $global:AtomicFixtureRequests.Count
+        $skipOutput = & $InstallerPath -Ref "1.0.0" | Out-String
+        Assert-Fixture ($skipOutput -match ('(?m)^Installed to ' + [regex]::Escape($shim) + '\s*$')) "the skip did not keep the Installed to line"
+        Assert-Fixture ($skipOutput -notmatch 'to your User PATH') "the skip claimed a User PATH update although the entry existed"
+        Assert-Fixture ((Get-DownloadRequestCount $mark) -eq 0) "the skip requested release assets"
+        Assert-Fixture (@($global:AtomicFixtureRequests | Select-Object -Skip $mark | Where-Object { $_.Uri -match '/releases/tags/1\.0\.0$' }).Count -eq 1) "the skip did not resolve the requested tag"
+        Assert-Fixture (Test-Path -LiteralPath (Join-Path $versionOne "sentinel.txt")) "the skip replaced the installed version"
+        Assert-Fixture ((Get-FixtureLinkTarget $current) -ceq $currentTarget) "the skip repointed current"
+        Assert-Fixture ((Get-FixtureLinkTarget $atomicCurrent) -ceq $atomicCurrentTarget) "the skip repointed atomic-current"
+        Assert-Fixture ([Convert]::ToBase64String([IO.File]::ReadAllBytes($shim)) -ceq [Convert]::ToBase64String($shimBytes)) "the skip rewrote the shim"
+        Assert-NoTransactionResidue $installRoot $binDir
+
+        [Environment]::SetEnvironmentVariable("Path", "C:\AtomicSkipUserPath", "User")
+        $env:Path = "C:\AtomicSkipProcessPath"
+        $mark = $global:AtomicFixtureRequests.Count
+        $pathRepairOutput = & $InstallerPath -Ref "1.0.0" | Out-String
+        Assert-Fixture ((Get-DownloadRequestCount $mark) -eq 0) "the PATH repair requested release assets"
+        Assert-Fixture (Test-Path -LiteralPath (Join-Path $versionOne "sentinel.txt")) "the PATH repair replaced the installed version"
+        Assert-Fixture ((Get-ExactPathEntryCount ([Environment]::GetEnvironmentVariable("Path", "User")) $binDir) -eq 1) "a skipped rerun did not restore the missing User PATH entry"
+        Assert-Fixture ([Environment]::GetEnvironmentVariable("Path", "User") -like "C:\AtomicSkipUserPath;*") "the User PATH repair dropped existing entries"
+        Assert-Fixture ((Get-ExactPathEntryCount $env:Path $binDir) -eq 1) "a skipped rerun did not restore the missing process PATH entry"
+        Assert-Fixture ($pathRepairOutput -match ('(?m)^Added ' + [regex]::Escape($binDir) + ' to your User PATH; open a new terminal to use atomic\.\s*$')) "the User PATH repair was not reported"
+        $mark = $global:AtomicFixtureRequests.Count
+        $settledOutput = & $InstallerPath -Ref "1.0.0" | Out-String
+        Assert-Fixture ($settledOutput -notmatch 'to your User PATH') "a second skipped rerun repeated the User PATH repair"
+        Assert-Fixture ((Get-ExactPathEntryCount ([Environment]::GetEnvironmentVariable("Path", "User")) $binDir) -eq 1) "a second skipped rerun duplicated the User PATH entry"
+
+        & $InstallerPath -Ref "2.0.0" | Out-Null
+        $env:ATOMIC_VERSION = $null
+        $mark = $global:AtomicFixtureRequests.Count
+        $latestOutput = & $InstallerPath | Out-String
+        Assert-Fixture ((Get-DownloadRequestCount $mark) -eq 0) "a healthy latest install requested release assets"
+        Assert-Fixture (@($global:AtomicFixtureRequests | Select-Object -Skip $mark | Where-Object { $_.Uri -eq 'https://github.com/bastani-inc/atomic/releases/latest' }).Count -eq 1) "the latest skip did not resolve the latest release"
+        Assert-Fixture ($latestOutput -match ('(?m)^Installed to ' + [regex]::Escape($shim) + '\s*$')) "the latest skip did not keep the Installed to line"
+
+        & $InstallerPath -Ref "1.0.0" | Out-Null
+        Assert-Fixture ((Get-Content -LiteralPath (Join-Path $current "version.txt") -Raw) -eq "1.0.0") "switching back to 1.0.0 did not repoint current"
+
+        $repairs = @(
+            @{ Label = "a missing shim"; Break = { Remove-Item -LiteralPath $shim -Force } },
+            @{ Label = "a shim with other content"; Break = { Set-Content -LiteralPath $shim -Value "@echo off" -Encoding ASCII } },
+            @{ Label = "a missing atomic-current junction"; Break = { Remove-FixtureJunction $atomicCurrent } },
+            @{ Label = "an atomic-current junction aimed at another version"; Break = {
+                Remove-FixtureJunction $atomicCurrent
+                New-Item -ItemType Junction -Path $atomicCurrent -Target $versionTwo | Out-Null } },
+            @{ Label = "a missing current junction"; Break = { Remove-FixtureJunction $current } },
+            @{ Label = "a missing payload executable"; Break = { Remove-Item -LiteralPath (Join-Path $versionOne "atomic.exe") -Force } },
+            @{ Label = "a missing package.json"; Remove = "package.json" },
+            @{ Label = "a missing app.js"; Remove = "app.js" },
+            @{ Label = "a missing native-modifiers.js"; Remove = "native-modifiers.js" },
+            @{ Label = "a missing native-module-path.js"; Remove = "native-module-path.js" },
+            @{ Label = "a missing native-platform.js"; Remove = "native-platform.js" },
+            @{ Label = "a missing builtin directory"; Remove = "builtin" },
+            @{ Label = "a missing node_modules directory"; Remove = "node_modules" },
+            @{ Label = "current and atomic-current aimed at a foreign versions directory"; Break = {
+                $foreignVersion = Join-Path $workspace "foreign-install\versions\1.0.0"
+                New-Item -ItemType Directory -Path (Split-Path -Parent $foreignVersion) -Force | Out-Null
+                Copy-Item -LiteralPath $versionOne -Destination $foreignVersion -Recurse
+                Set-Content -LiteralPath (Join-Path $foreignVersion "foreign-marker.txt") -Value "foreign" -NoNewline
+                Remove-FixtureJunction $current
+                Remove-FixtureJunction $atomicCurrent
+                New-Item -ItemType Junction -Path $current -Target $foreignVersion | Out-Null
+                New-Item -ItemType Junction -Path $atomicCurrent -Target $foreignVersion | Out-Null } }
+        )
+        foreach ($repair in $repairs) {
+            if ($repair.ContainsKey("Remove")) {
+                Remove-Item -LiteralPath (Join-Path $versionOne $repair.Remove) -Recurse -Force
+            }
+            else {
+                & $repair.Break
+            }
+            $mark = $global:AtomicFixtureRequests.Count
+            & $InstallerPath -Ref "1.0.0" | Out-Null
+            Assert-Fixture ((Get-DownloadRequestCount $mark) -eq 2) ($repair.Label + " was skipped instead of repaired")
+            Assert-Fixture ((Get-Content -LiteralPath (Join-Path $current "version.txt") -Raw) -eq "1.0.0") ($repair.Label + " left current unrepaired")
+            Assert-Fixture ((Get-Content -LiteralPath (Join-Path $atomicCurrent "version.txt") -Raw) -eq "1.0.0") ($repair.Label + " left atomic-current unrepaired")
+            Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $current "foreign-marker.txt"))) ($repair.Label + " left current inside a foreign directory")
+            Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $atomicCurrent "foreign-marker.txt"))) ($repair.Label + " left atomic-current inside a foreign directory")
+            foreach ($requiredPayloadFile in @("package.json", "app.js", "native-modifiers.js", "native-module-path.js", "native-platform.js")) {
+                Assert-Fixture (Test-Path -LiteralPath (Join-Path $current $requiredPayloadFile) -PathType Leaf) ($repair.Label + " left $requiredPayloadFile missing")
+            }
+            foreach ($requiredPayloadDirectory in @("builtin", "node_modules")) {
+                Assert-Fixture (Test-Path -LiteralPath (Join-Path $current $requiredPayloadDirectory) -PathType Container) ($repair.Label + " left $requiredPayloadDirectory missing")
+            }
+            Assert-ShimRuns "1.0.0" $repair.Label
+            Assert-NoTransactionResidue $installRoot $binDir
+        }
+        Assert-Fixture (Test-Path -LiteralPath (Join-Path $workspace "foreign-install\versions\1.0.0\foreign-marker.txt")) "repairing a foreign current junction deleted the foreign directory"
+
+        Set-Content -LiteralPath (Join-Path $versionOne "sentinel.txt") -Value "replaced by force" -NoNewline
+        $mark = $global:AtomicFixtureRequests.Count
+        & $InstallerPath -Ref "1.0.0" -Force | Out-Null
+        Assert-Fixture ((Get-DownloadRequestCount $mark) -eq 2) "-Force did not download the release"
+        Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $versionOne "sentinel.txt"))) "-Force did not replace the installed version"
+
+        Set-Content -LiteralPath (Join-Path $versionOne "sentinel.txt") -Value "replaced by environment force" -NoNewline
+        $env:ATOMIC_FORCE_INSTALL = "1"
+        $mark = $global:AtomicFixtureRequests.Count
+        & $InstallerPath -Ref "1.0.0" | Out-Null
+        $env:ATOMIC_FORCE_INSTALL = $null
+        Assert-Fixture ((Get-DownloadRequestCount $mark) -eq 2) "ATOMIC_FORCE_INSTALL=1 did not download the release"
+        Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $versionOne "sentinel.txt"))) "ATOMIC_FORCE_INSTALL=1 did not replace the installed version"
+        Assert-ShimRuns "1.0.0" "the forced reinstall"
+    }
     elseif ($Scenario -eq "backup-cleanup") {
         $env:PROCESSOR_ARCHITEW6432 = "AMD64"
         $env:PROCESSOR_ARCHITECTURE = "AMD64"
@@ -2597,7 +3098,7 @@ try {
         $global:AtomicFixtureWarnings.Clear()
         $global:AtomicFixtureBackupRemovalAttempts = 0
         $global:AtomicFixtureBackupLockMode = "one-shot"
-        & $InstallerPath -Ref "1.0.0" | Out-Null
+        & $InstallerPath -Ref "1.0.0" -Force | Out-Null
         $global:AtomicFixtureBackupLockMode = $null
         Assert-Fixture ($global:AtomicFixtureBackupRemovalAttempts -ge 2) "a real briefly locked version backup did not force a removal retry ($($global:AtomicFixtureBackupRemovalAttempts) removal calls)"
         Assert-Fixture ($null -eq $global:AtomicFixtureBackupLockStream) "the one-shot backup handle was never released"
@@ -2609,7 +3110,7 @@ try {
         $global:AtomicFixtureWarnings.Clear()
         $global:AtomicFixtureBackupRemovalAttempts = 0
         $global:AtomicFixtureBackupLockMode = "sticky"
-        & $InstallerPath -Ref "1.0.0" | Out-Null
+        & $InstallerPath -Ref "1.0.0" -Force | Out-Null
         $global:AtomicFixtureBackupLockMode = $null
         Assert-Fixture ($global:AtomicFixtureBackupRemovalAttempts -ge 2) "an exhausted backup removal did not retry ($($global:AtomicFixtureBackupRemovalAttempts) removal calls)"
         Assert-Fixture (Test-Path -LiteralPath (Join-Path $binDir "atomic.cmd")) "an exhausted backup removal discarded a completed install"
@@ -2907,7 +3408,7 @@ function global:Move-Item {
 }
 
 try {
-    & $InstallerPath -Ref "2.0.0" | Out-Null
+    & $InstallerPath -Ref "2.0.0" -Force | Out-Null
     throw "Installer unexpectedly completed before Ctrl+C"
 }
 finally {
@@ -3183,10 +3684,9 @@ test("Windows PowerShell 5.1 fixtures keep the archive download on the recorded 
 	assert.match(fixtureHarness, /the archive download did not attempt the HttpClient stream before falling back/u);
 	assert.match(fixtureHarness, /first install did not report the installed launcher path/u);
 	assert.match(fixtureHarness, /first install did not report the User PATH update/u);
-	assert.match(
-		fixtureHarness,
-		/same-version reinstall claimed a User PATH update although the entry already existed/u,
-	);
+	assert.match(fixtureHarness, /same-version rerun claimed a User PATH update although the entry already existed/u);
+	assert.match(fixtureHarness, /a healthy same-version rerun still downloaded release assets/u);
+	assert.match(fixtureHarness, /forced same-version reinstall was not clean/u);
 	assert.match(fixtureHarness, /semicolon bin directory did not report the installed launcher path/u);
 	assert.match(fixtureHarness, /\$installOutput -notmatch 'to your User PATH'/u);
 });
@@ -3389,6 +3889,7 @@ function runPowerShellFixture(
 		| "semicolon-bin"
 		| "shadowed-shim"
 		| "custom-pathext"
+		| "skip-installed"
 		| "backup-cleanup"
 		| "temp-cleanup",
 ): string {
@@ -3520,6 +4021,14 @@ powershellTest("PowerShell 5.1 fixture refuses same-stem launchers that PATHEXT 
 powershellTest("PowerShell 5.1 fixture honors custom PATHEXT order when .CMD precedes .EXE", () => {
 	runPowerShellFixture("custom-pathext");
 });
+
+powershellTest(
+	"PowerShell 5.1 fixture skips a healthy install, repairs the User PATH, and reinstalls unhealthy or forced ones",
+	() => {
+		runPowerShellFixture("skip-installed");
+	},
+);
+
 powershellTest("PowerShell 5.1 fixture retries a briefly locked version backup and leaves no residue", () => {
 	runPowerShellFixture("backup-cleanup");
 });

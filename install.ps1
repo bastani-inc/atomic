@@ -7,6 +7,7 @@
 & {
 param(
     [string]$Ref,
+    [switch]$Force,
     [switch]$Help
 )
 
@@ -18,14 +19,20 @@ $helpText = @'
 Atomic release archive installer for Windows PowerShell 5.1+
 
 Usage:
-  install.ps1 [-Ref <tag>] [-Help]
+  install.ps1 [-Ref <tag>] [-Force] [-Help]
 
 Options:
   -Ref <tag>  Install the exact GitHub release tag. This overrides ATOMIC_VERSION.
+  -Force      Reinstall even when the requested version is already installed and healthy.
   -Help       Show this help and exit.
+
+An existing healthy install of the requested release (or of the latest release
+when none is requested) is left untouched and nothing is downloaded.
 
 Environment:
   ATOMIC_VERSION      Exact release tag when -Ref is not supplied.
+  ATOMIC_FORCE_INSTALL
+                      Set to 1 to behave like -Force.
   ATOMIC_INSTALL_DIR  Installation root.
   ATOMIC_BIN_DIR      Directory containing the atomic.cmd shim.
   GITHUB_TOKEN        Optional GitHub API token (preferred over GH_TOKEN).
@@ -166,6 +173,62 @@ function Get-AtomicInstalledVersion {
     catch {
         return $null
     }
+}
+
+function Get-AtomicComparablePath {
+    param([string]$Path)
+
+    return (Get-AtomicPhysicalPath $Path).TrimEnd([char[]]@('\', '/'))
+}
+
+function Test-AtomicInstalledPayloadComplete {
+    param([string]$CurrentPath)
+
+    foreach ($requiredFile in @("package.json", "app.js", "native-modifiers.js", "native-module-path.js", "native-platform.js")) {
+        if (-not (Test-Path -LiteralPath (Join-Path $CurrentPath $requiredFile) -PathType Leaf)) {
+            return $false
+        }
+    }
+    foreach ($requiredDirectory in @("builtin", "node_modules")) {
+        if (-not (Test-Path -LiteralPath (Join-Path $CurrentPath $requiredDirectory) -PathType Container)) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Test-AtomicInstallIntact {
+    param(
+        [AllowNull()][string]$InstalledVersion,
+        [string]$ReleaseTag,
+        [string]$InstallRoot,
+        [string]$BinDir,
+        [string]$ExpectedShimContent
+    )
+
+    if ($InstalledVersion -cne $ReleaseTag) {
+        return $false
+    }
+    $currentTarget = Get-AtomicReparseTarget (Get-AtomicDirectoryEntry (Join-Path $InstallRoot "current"))
+    $atomicCurrentTarget = Get-AtomicReparseTarget (Get-AtomicDirectoryEntry (Join-Path $BinDir "atomic-current"))
+    if ([string]::IsNullOrWhiteSpace($currentTarget) -or [string]::IsNullOrWhiteSpace($atomicCurrentTarget)) {
+        return $false
+    }
+    if ($currentTarget -ine $atomicCurrentTarget) {
+        return $false
+    }
+    $expectedVersionPath = Join-Path (Join-Path $InstallRoot "versions") ([Uri]::EscapeDataString($ReleaseTag))
+    if ((Get-AtomicComparablePath $currentTarget) -ine (Get-AtomicComparablePath $expectedVersionPath)) {
+        return $false
+    }
+    if (-not (Test-AtomicInstalledPayloadComplete (Join-Path $InstallRoot "current"))) {
+        return $false
+    }
+    $shimItem = Get-AtomicDirectoryEntry (Join-Path $BinDir "atomic.cmd")
+    if ($null -eq $shimItem -or $shimItem.PSIsContainer) {
+        return $false
+    }
+    return [IO.File]::ReadAllText($shimItem.FullName) -ceq $ExpectedShimContent
 }
 
 function Get-AtomicFileSha256 {
@@ -1019,6 +1082,56 @@ function Remove-AtomicTransactionBackups {
     }
 }
 
+function Add-AtomicBinDirToPath {
+    param([string]$BinDir)
+
+    $userPathChanged = $false
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if (-not $binDirHasPathSeparator -and -not (Test-AtomicPathContains $userPath $BinDir)) {
+        $newUserPath = if ([string]::IsNullOrWhiteSpace($userPath)) { $BinDir } else { "$userPath;$BinDir" }
+        [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
+        $userPathChanged = $true
+    }
+    if (-not $binDirHasPathSeparator -and -not (Test-AtomicPathContains $env:Path $BinDir)) {
+        $env:Path = if ([string]::IsNullOrWhiteSpace($env:Path)) { $BinDir } else { "$env:Path;$BinDir" }
+    }
+    return $userPathChanged
+}
+
+function Write-AtomicInstallSummary {
+    param([bool]$UserPathAdded)
+
+    Write-Output "Installed to $shimPath"
+    if ($useUnicodeGlyphs) {
+        Write-Host ""
+        foreach ($bannerLine in (Get-AtomicBannerLines)) {
+            Write-Host $bannerLine
+        }
+    }
+    if (-not $plainOutput) {
+        Write-Host ""
+        Write-Host "To start:"
+        Write-Host ""
+        Write-Host "cd <project>" -NoNewline
+        Write-AtomicMuted "  # Open directory"
+        Write-Host "atomic" -NoNewline
+        Write-AtomicMuted "        # Run command"
+        Write-Host ""
+    }
+    if ($binDirHasPathSeparator) {
+        Write-Output "ATOMIC_BIN_DIR contains ';' and cannot be represented as one Windows PATH entry."
+        Write-Output "Run Atomic directly: `"$shimPath`""
+        Write-Output "Choose a semicolon-free ATOMIC_BIN_DIR to add Atomic to PATH."
+    }
+    elseif ($UserPathAdded) {
+        Write-Output "Added $binDir to your User PATH; open a new terminal to use atomic."
+    }
+    if (-not $plainOutput -and ($binDirHasPathSeparator -or $UserPathAdded)) {
+        Write-Host ""
+    }
+    Write-AtomicMuted "For more information visit https://docs.bastani.ai/quickstart"
+}
+
 $tempDir = $null
 $versionStagePath = $null
 $currentNextPath = $null
@@ -1086,6 +1199,7 @@ foreach ($ownedInstallPath in $ownedInstallPaths) {
 $previousSecurityProtocol = [Net.ServicePointManager]::SecurityProtocol
 try {
     [Net.ServicePointManager]::SecurityProtocol = $previousSecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+$forceInstall = $Force.IsPresent -or $env:ATOMIC_FORCE_INSTALL -eq "1"
 $requestedRef = $null
 if ($PSBoundParameters.ContainsKey("Ref")) {
     if ([string]::IsNullOrWhiteSpace($Ref)) {
@@ -1104,6 +1218,7 @@ if (-not [string]::IsNullOrWhiteSpace($requestedRef) -and -not (Test-AtomicRelea
 $binDirHasPathSeparator = $binDir.Contains(";")
 $atomicCurrentPath = Join-Path $binDir "atomic-current"
 $shimPath = Join-Path $binDir "atomic.cmd"
+$shimContent = "@echo off`r`n`"%~dp0atomic-current\atomic.exe`" %*`r`nexit /b %ERRORLEVEL%`r`n"
 $existingShimItem = Get-AtomicDirectoryEntry $shimPath
 if ($null -ne $existingShimItem -and $existingShimItem.PSIsContainer) {
     throw "ATOMIC_BIN_DIR contains an unexpected atomic.cmd directory; refusing to replace it."
@@ -1174,8 +1289,14 @@ $releaseBase = "https://github.com/bastani-inc/atomic/releases/download/$encoded
 
 $platformLabel = ($assetName -replace '^atomic-', '') -replace '\.zip$', ''
 Write-AtomicLabeled "Installing atomic version: " $releaseTag " ($platformLabel)"
-$installedVersion = Get-AtomicInstalledVersion (Join-Path $installRoot "current\atomic.exe")
+$installedVersion = Get-AtomicInstalledVersion (Join-Path (Join-Path $installRoot "current") "atomic.exe")
 if (-not [string]::IsNullOrWhiteSpace($installedVersion)) {
+    if (-not $forceInstall -and (Test-AtomicInstallIntact $installedVersion $releaseTag $installRoot $binDir $shimContent)) {
+        Write-AtomicMuted "atomic $releaseTag is already installed; skipping download (use -Force to reinstall)"
+        $userPathAdded = Add-AtomicBinDirToPath $binDir
+        Write-AtomicInstallSummary $userPathAdded
+        return
+    }
     if ($installedVersion -ceq $releaseTag) {
         Write-AtomicLabeled "Version " $releaseTag " already installed"
     }
@@ -1310,7 +1431,6 @@ try {
 
         New-Item -ItemType Directory -Path $binDir -Force | Out-Null
         New-Item -ItemType Junction -Path $atomicCurrentNextPath -Target $versionPath | Out-Null
-        $shimContent = "@echo off`r`n`"%~dp0atomic-current\atomic.exe`" %*`r`nexit /b %ERRORLEVEL%`r`n"
         Set-Content -LiteralPath $shimNextPath -Value $shimContent -Encoding ASCII -NoNewline
 
         $previousAtomicCurrentItem = Get-AtomicDirectoryEntry $atomicCurrentPath
@@ -1356,35 +1476,7 @@ try {
         throw $commitError
     }
 
-    Write-Output "Installed to $shimPath"
-    if ($useUnicodeGlyphs) {
-        Write-Host ""
-        foreach ($bannerLine in (Get-AtomicBannerLines)) {
-            Write-Host $bannerLine
-        }
-    }
-    if (-not $plainOutput) {
-        Write-Host ""
-        Write-Host "To start:"
-        Write-Host ""
-        Write-Host "cd <project>" -NoNewline
-        Write-AtomicMuted "  # Open directory"
-        Write-Host "atomic" -NoNewline
-        Write-AtomicMuted "        # Run command"
-        Write-Host ""
-    }
-    if ($binDirHasPathSeparator) {
-        Write-Output "ATOMIC_BIN_DIR contains ';' and cannot be represented as one Windows PATH entry."
-        Write-Output "Run Atomic directly: `"$shimPath`""
-        Write-Output "Choose a semicolon-free ATOMIC_BIN_DIR to add Atomic to PATH."
-    }
-    elseif ($transaction.UserPathChangeIntended) {
-        Write-Output "Added $binDir to your User PATH; open a new terminal to use atomic."
-    }
-    if (-not $plainOutput -and ($binDirHasPathSeparator -or $transaction.UserPathChangeIntended)) {
-        Write-Host ""
-    }
-    Write-AtomicMuted "For more information visit https://docs.bastani.ai/quickstart"
+    Write-AtomicInstallSummary $transaction.UserPathChangeIntended
 }
 catch {
     $primaryError = $_

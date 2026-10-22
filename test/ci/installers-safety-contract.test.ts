@@ -360,7 +360,7 @@ test("PowerShell rolls back uncommitted move intents from finally and cleans cre
 		const move = powershell.indexOf("Move-Item", intent);
 		assert.ok(intent >= 0 && move > intent, `${name} intent must precede its move`);
 	}
-	const successOutput = powershell.indexOf('    Write-Output "Installed to $shimPath"');
+	const successOutput = powershell.indexOf("    Write-AtomicInstallSummary $transaction.UserPathChangeIntended");
 	const transactionCatch = powershell.lastIndexOf("    catch {", successOutput);
 	assert.ok(transactionCatch >= 0 && successOutput > transactionCatch);
 	assert.match(powershell.slice(transactionCatch, successOutput), /Invoke-AtomicTransactionRollback \$transaction/u);
@@ -437,7 +437,7 @@ test("Windows temporary download directories are removed with bounded verified r
 		"the bounded removal helper must only be used for the installer-owned temp directory",
 	);
 
-	const successOutput = powershell.indexOf('    Write-Output "Installed to $shimPath"');
+	const successOutput = powershell.indexOf("    Write-AtomicInstallSummary $transaction.UserPathChangeIntended");
 	const finallyBlock = powershell.slice(powershell.indexOf("finally {", successOutput));
 	const rollback = finallyBlock.indexOf("Invoke-AtomicTransactionRollback");
 	const tempCleanup = finallyBlock.indexOf("Remove-AtomicTemporaryDirectory $tempDir", rollback);
