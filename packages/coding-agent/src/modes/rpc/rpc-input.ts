@@ -1,7 +1,7 @@
 import { waitForRawStdoutBackpressure } from "../../core/output-guard.ts";
 import type { RpcCommandHandler } from "./rpc-command-handler.ts";
 import type { RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
-import { isRpcExtensionUIResponse } from "./rpc-input-scheduler.ts";
+import { isRpcExtensionUIResponse, isRpcInterruptCommand } from "./rpc-input-scheduler.ts";
 import { createRpcErrorResponse, formatRpcErrorMessage, type RpcOutput } from "./rpc-responses.ts";
 import type { RpcCommand } from "./rpc-types.ts";
 
@@ -33,6 +33,18 @@ function getCommandIdentity(command: unknown): CommandIdentity {
 	return { id, type };
 }
 
+function cancelsPendingCommand(interrupt: RpcCommand, pending: RpcCommand): boolean {
+	if (interrupt.type === "abort") return pending.type === "prompt";
+	if (interrupt.type === "abort_compaction") return pending.type === "compact";
+	if (interrupt.type === "abort_bash") {
+		return (
+			(pending.type === "bash" || pending.type === "user_bash") &&
+			(interrupt.requestId === undefined || interrupt.requestId === pending.id)
+		);
+	}
+	return false;
+}
+
 export function createRpcInputLineHandler({
 	output,
 	pendingExtensionRequests,
@@ -41,6 +53,7 @@ export function createRpcInputLineHandler({
 	handleInteractiveEngineLine,
 	announceRequestAccepted,
 }: RpcInputLineHandlerOptions): (line: string) => Promise<void> {
+	const pendingAdmissions = new Set<{ command: RpcCommand; cancelled: boolean }>();
 	return async (line: string): Promise<void> => {
 		if (handleInteractiveEngineLine?.(line)) return;
 		let parsed: unknown;
@@ -65,15 +78,22 @@ export function createRpcInputLineHandler({
 
 		const command = parsed as RpcCommand;
 		try {
-			// Ownership boundary: flush the admission frame BEFORE the handler can
-			// touch the shell, an extension, or the queue. A command that runs to
-			// completion without output would otherwise be indistinguishable from
-			// one the child never received, and the host would offer the user's
-			// text back for a second run.
 			const identity = getCommandIdentity(command);
+			for (const pending of pendingAdmissions) {
+				if (cancelsPendingCommand(command, pending.command)) pending.cancelled = true;
+			}
 			if (announceRequestAccepted && identity.id !== undefined) {
 				announceRequestAccepted(identity.id, identity.type);
-				await waitForRawStdoutBackpressure();
+				if (!isRpcInterruptCommand(identity.type)) {
+					const pending = { command, cancelled: false };
+					pendingAdmissions.add(pending);
+					try {
+						await waitForRawStdoutBackpressure();
+					} finally {
+						pendingAdmissions.delete(pending);
+					}
+					if (pending.cancelled) throw new Error("Request cancelled before execution");
+				}
 			}
 			const response = await handleCommand(command);
 			if (response) {
