@@ -523,3 +523,56 @@ test("shutdown ignores a later death entirely", async () => {
 	assert.equal(h.restarts, 0);
 	assert.equal(h.controller.needsExplicitTermination(), false);
 });
+
+test("controls rejected during recovery cannot arm termination against a healthy replacement (#3865)", async () => {
+	let finish!: () => void;
+	const h = harness(
+		() =>
+			new Promise<void>((resolve) => {
+				finish = resolve;
+			}),
+	);
+	h.controller.handleGenerationEnded(ended());
+	await assert.rejects(
+		h.controller.trackControlRequest(async () => {
+			throw new Error("Client not started");
+		}),
+	);
+	finish();
+	await sleep(0);
+	assert.equal(h.controller.needsExplicitTermination(), false);
+});
+
+test("one acknowledged control does not hide another stalled control (#3865)", async () => {
+	let finish!: () => void;
+	const h = harness(async () => {});
+	const pending = h.controller.trackControlRequest(
+		() =>
+			new Promise<void>((resolve) => {
+				finish = resolve;
+			}),
+	);
+	await h.controller.trackControlRequest(async () => {});
+	h.advance(ENGINE_UNRESPONSIVE_MS);
+	h.controller.clearUnresponsive();
+	assert.equal(h.controller.needsExplicitTermination(), true);
+	finish();
+	await pending;
+	assert.equal(h.controller.needsExplicitTermination(), false);
+});
+
+test("a retired control's late failure cannot poison its replacement (#3865)", async () => {
+	let fail!: (error: Error) => void;
+	const h = harness(async () => {});
+	const pending = h.controller.trackControlRequest(
+		() =>
+			new Promise<void>((_resolve, reject) => {
+				fail = reject;
+			}),
+	);
+	h.controller.handleGenerationEnded(ended());
+	await sleep(0);
+	fail(new Error("Retired engine stopped"));
+	await assert.rejects(pending);
+	assert.equal(h.controller.needsExplicitTermination(), false);
+});

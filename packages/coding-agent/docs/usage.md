@@ -110,7 +110,7 @@ Both interrupts hold a queued message only while it is still waiting in the queu
 
 Both abort routes ask the agent to stop cooperatively. Escape waits as long as the agent needs, and neither route terminates the engine during normal cancellation.
 
-Ctrl+C also provides a recovery path. It reaches Atomic even when an extension's custom UI owns the screen, closing that UI if it does not handle the key. If the engine stops answering entirely, Ctrl+C replaces it. This also covers a replacement that hangs during startup or fails to start.
+Ctrl+C also provides a recovery path. It reaches Atomic even when an extension's custom UI owns the screen, closing that UI if it does not handle the key. If the engine stops answering, a queue clear or abort remains unanswered for over one second, or either operation fails, Ctrl+C replaces the engine. This also covers a replacement that hangs during startup or fails to start. Recovery is explicit: a stalled control does not restart the engine on its own. Replacing the engine interrupts its running workflows and tools; inspect workflow status before resuming work.
 
 If a message could not be sent, Atomic restores it to the editor exactly as typed, including pasted content. It appears above anything typed while the send was pending, separated by a blank line, together with later queued messages in their original order. Atomic does not also show a red error. See [Keybindings](/keybindings#application).
 

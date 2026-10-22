@@ -18,6 +18,10 @@ const CONCURRENT_COMMANDS: ReadonlySet<string> = new Set([
 	"start_pending_recovery",
 ]);
 
+export function isRpcInterruptCommand(type: string): boolean {
+	return INTERRUPT_COMMANDS.has(type);
+}
+
 export function isRpcExtensionUIResponse(value: unknown): value is RpcExtensionUIResponse {
 	return (
 		typeof value === "object" &&
@@ -49,7 +53,7 @@ export function isConcurrentRpcControlLine(line: string): boolean {
 		value !== null &&
 		"type" in value &&
 		typeof value.type === "string" &&
-		(INTERRUPT_COMMANDS.has(value.type) || CONCURRENT_COMMANDS.has(value.type))
+		(isRpcInterruptCommand(value.type) || CONCURRENT_COMMANDS.has(value.type))
 	);
 }
 

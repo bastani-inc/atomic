@@ -1,7 +1,7 @@
 import { waitForRawStdoutBackpressure } from "../../core/output-guard.ts";
 import type { RpcCommandHandler } from "./rpc-command-handler.ts";
 import type { RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
-import { isRpcExtensionUIResponse } from "./rpc-input-scheduler.ts";
+import { isRpcExtensionUIResponse, isRpcInterruptCommand } from "./rpc-input-scheduler.ts";
 import { createRpcErrorResponse, formatRpcErrorMessage, type RpcOutput } from "./rpc-responses.ts";
 import type { RpcCommand } from "./rpc-types.ts";
 
@@ -65,15 +65,10 @@ export function createRpcInputLineHandler({
 
 		const command = parsed as RpcCommand;
 		try {
-			// Ownership boundary: flush the admission frame BEFORE the handler can
-			// touch the shell, an extension, or the queue. A command that runs to
-			// completion without output would otherwise be indistinguishable from
-			// one the child never received, and the host would offer the user's
-			// text back for a second run.
 			const identity = getCommandIdentity(command);
 			if (announceRequestAccepted && identity.id !== undefined) {
 				announceRequestAccepted(identity.id, identity.type);
-				await waitForRawStdoutBackpressure();
+				if (!isRpcInterruptCommand(identity.type)) await waitForRawStdoutBackpressure();
 			}
 			const response = await handleCommand(command);
 			if (response) {

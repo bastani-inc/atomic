@@ -814,13 +814,15 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					this.followUpMessages = [];
 					this.dispatchBestEffort(
 						"clear queue",
-						this.client.requestInternal({ type: "clear_queue" }).then(
-							() => this.settleQueueClear(pendingClear, true),
-							(error: Error) => {
-								this.settleQueueClear(pendingClear, false);
-								throw error;
-							},
-						),
+						this.health
+							.trackControlRequest(() => this.client.requestInternal({ type: "clear_queue" }))
+							.then(
+								() => this.settleQueueClear(pendingClear, true),
+								(error: Error) => {
+									this.settleQueueClear(pendingClear, false);
+									throw error;
+								},
+							),
 					);
 					return queued;
 				},
@@ -924,12 +926,14 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	 */
 	private async abortAndRecover(): Promise<void> {
 		this.promptCancellationEpoch += 1;
-		await this.queuePause.settleBeforeAbort();
 		this.health.markCooperativeAbortStarted();
 		try {
-			await this.client.abort();
-		} finally {
+			await this.health.trackControlRequest(async () => {
+				await this.queuePause.settleBeforeAbort();
+				await this.client.abort();
+			});
 			this.health.markCooperativeAbortSettled();
+		} finally {
 			this.engineCallbackActive = false;
 		}
 	}

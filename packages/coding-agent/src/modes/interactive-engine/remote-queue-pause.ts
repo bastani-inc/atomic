@@ -38,6 +38,6 @@ export class RemoteQueuePause {
 	}
 
 	async settleBeforeAbort(): Promise<void> {
-		if (this.pauseRequest) await Promise.race([this.pauseRequest, sleep(100)]);
+		if (this.pauseRequest) await Promise.race([this.pauseRequest.catch(() => {}), sleep(100)]);
 	}
 }
