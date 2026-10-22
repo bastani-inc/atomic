@@ -22,6 +22,9 @@ let refuseHealth = false;
 
 let healthRequests = 0;
 let sendFrames = 0;
+let holdHealth = false;
+const heldHealth: (() => void)[] = [];
+const healthWaiters: (() => void)[] = [];
 beforeAll(async () => {
 	server = net.createServer((socket) => {
 		sockets.add(socket);
@@ -34,6 +37,12 @@ beforeAll(async () => {
 					if (typeof message !== "object" || message === null || Array.isArray(message)) return;
 					if (message.type === "register")
 						writeMessage(socket, { type: "registered", sessionId: "silent-client" });
+					if (message.type === "list_groups" && holdHealth) {
+						heldHealth.push(() =>
+							writeMessage(socket, { type: "groups", requestId: message.requestId, groups: [] }),
+						);
+						for (const waiter of healthWaiters.splice(0)) waiter();
+					}
 					if (message.type === "list_groups" && answerHealth) {
 						writeMessage(socket, { type: "groups", requestId: message.requestId, groups: [] });
 					}
@@ -57,6 +66,9 @@ afterEach(async () => {
 	refuseHealth = false;
 	healthRequests = 0;
 	sendFrames = 0;
+	holdHealth = false;
+	heldHealth.length = 0;
+	healthWaiters.length = 0;
 });
 
 afterAll(async () => {
@@ -67,6 +79,11 @@ afterAll(async () => {
 	else process.env.PI_CODING_AGENT_DIR = previousPiAgentDir;
 	removeTempDirectory(agentDir);
 });
+
+async function heldHealthRequest(): Promise<() => void> {
+	while (heldHealth.length === 0) await new Promise<void>((resolve) => healthWaiters.push(resolve));
+	return heldHealth.shift()!;
+}
 
 async function connect() {
 	const client = new IntercomClient();
@@ -124,7 +141,7 @@ test("a refusal received during a health check stays non-recoverable (#3862)", a
 });
 
 test("identical explicit-ID sends keep sharing one result while the timeout health check is pending (#3862)", async () => {
-	answerHealth = true;
+	holdHealth = true;
 	const client = await connect();
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 	try {
@@ -132,10 +149,11 @@ test("identical explicit-ID sends keep sharing one result while the timeout heal
 		const first = client.send("peer", options);
 		const outcome = assert.rejects(first, /Send timeout/u);
 		await vi.advanceTimersByTimeAsync(10_000);
+		const releaseFirst = await heldHealthRequest();
 		const duplicate = client.send("peer", options);
 		assert.equal(duplicate, first);
 		await assert.rejects(client.send("other-peer", options), /already pending with a different target or payload/u);
-		await vi.advanceTimersByTimeAsync(1);
+		releaseFirst();
 		await outcome;
 		assert.equal(sendFrames, 1);
 		assert.equal(client.isConnected(), true);
@@ -143,8 +161,10 @@ test("identical explicit-ID sends keep sharing one result while the timeout heal
 		assert.notEqual(retry, first);
 		const retryOutcome = assert.rejects(retry, /Send timeout/u);
 		await vi.advanceTimersByTimeAsync(10_000);
-		await vi.advanceTimersByTimeAsync(1);
+		(await heldHealthRequest())();
 		await retryOutcome;
+		assert.equal(sendFrames, 2);
+		assert.equal(client.isConnected(), true);
 	} finally {
 		vi.useRealTimers();
 	}
