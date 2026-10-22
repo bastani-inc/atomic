@@ -11,8 +11,11 @@ import {
 } from "../types.js";
 import { type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
+import { applyPoolSession, type PoolMutation, validatePoolMutation } from "./pool-mutations.js";
 import { type Lease, RUN_EVENT_TYPES, type RunJournal, StaleLeaseError } from "./types.js";
 import { journalCounter, serializeJson, validateText } from "./values.js";
+
+export type { PoolMutation } from "./pool-mutations.js";
 
 type Transaction = SqlPoolStorage["transaction"];
 type JournalTables = SqlPoolStorage["tables"];
@@ -48,6 +51,11 @@ type WorkRow = SqliteRow & {
 	fingerprint: string;
 };
 type WorkLease = Pick<PoolWork, "id" | "generation" | "worker" | "epoch">;
+export interface PoolCommitReceipt {
+	readonly seq: number;
+	readonly at: number;
+	readonly lastSeq?: number;
+}
 function fromRow(row: WorkRow): PoolWork {
 	return {
 		...JSON.parse(row.descriptor),
@@ -112,6 +120,9 @@ export class SqlPoolQueue {
 				);
 				CREATE INDEX IF NOT EXISTS ${pool.work}_ready ON ${pool.work}(root, state, ready_at);
 				CREATE INDEX IF NOT EXISTS ${pool.work}_expiry ON ${pool.work}(state, expires_at);
+				CREATE TABLE IF NOT EXISTS ${pool.journal.runs}_pool_session_owners(
+					session TEXT PRIMARY KEY, work TEXT NOT NULL REFERENCES ${pool.work}(id) ON DELETE CASCADE, replay_key TEXT NOT NULL
+				);
 				CREATE UNIQUE INDEX IF NOT EXISTS ${pool.work}_scope ON ${pool.work}(root, json_extract(descriptor, '$.scope'));
 				CREATE UNIQUE INDEX IF NOT EXISTS ${pool.work}_child ON ${pool.work}(root, json_extract(descriptor, '$.childRunId'));
 				CREATE TABLE IF NOT EXISTS ${pool.operations}(
@@ -218,6 +229,12 @@ export class SqlPoolQueue {
 				if (previous.fingerprint !== fingerprint) throw new Error("Pool boundary identity conflict");
 				return fromRow(previous);
 			}
+			const siblings = await tx.all<SqliteRow & { scope: string }>(
+				`SELECT json_extract(descriptor, '$.scope') AS scope FROM ${this.work} WHERE root = ?`,
+				lease.runId,
+			);
+			if (siblings.some((item) => scope.startsWith(`${item.scope}:`) || item.scope.startsWith(`${scope}:`)))
+				throw new Error("Pool work scopes overlap");
 			const id = randomUUID();
 			await tx.run(
 				`INSERT INTO ${this.work}(id, root, boundary, descriptor, fingerprint, ready_at) VALUES (?, ?, ?, ?, ?, ?)`,
@@ -327,6 +344,83 @@ export class SqlPoolQueue {
 			await tx.run(
 				`INSERT INTO ${this.operations} VALUES (?, ?, ?, ?, ?)`,
 				row.id,
+				token.generation,
+				operationId,
+				request,
+				JSON.stringify(receipt),
+			);
+			return receipt;
+		});
+	}
+	async commit(
+		lease: Lease,
+		token: WorkLease,
+		operationId: string,
+		mutation: PoolMutation,
+	): Promise<PoolCommitReceipt> {
+		lease = snapshotLease(lease);
+		token = { ...token };
+		validateText("key", operationId);
+		assertWorkflowSerializableObject(mutation, "Pool mutation");
+		const request = serializeJson({ epoch: token.epoch, worker: token.worker, mutation });
+		mutation = JSON.parse(request).mutation as PoolMutation;
+		return this.transaction(async (tx) => {
+			const { now, status } = await this.authority(tx, lease);
+			const row = await this.current(tx, lease, token);
+			if (row.epoch !== lease.epoch || row.expires_at < now) throw new Error("Stale work lease");
+			const previous = await tx.get<SqliteRow & { request: string; receipt: string }>(
+				`SELECT * FROM ${this.operations} WHERE work = ? AND generation = ? AND operation = ?`,
+				token.id,
+				token.generation,
+				operationId,
+			);
+			if (previous) {
+				if (previous.request !== request) throw new Error("Pool operation identity conflict");
+				return JSON.parse(previous.receipt) as PoolCommitReceipt;
+			}
+			if (status !== "running") throw new Error("Pool root is not running");
+			const checkpoint = mutation.checkpoint;
+			await validatePoolMutation(tx, this.journal, lease.runId, fromRow(row), mutation);
+			if (checkpoint.completedAt > now) throw new Error("Pool checkpoint timestamp is in the future");
+			assertWorkflowSerializableObject(checkpoint, "Pool checkpoint");
+			const key = JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, checkpoint.kind, checkpoint.checkpointId]);
+			const payload = serializeJson(checkpoint);
+			const existing = await tx.get<SqliteRow & { seq: number; at: number; payload: string }>(
+				`SELECT seq, at, payload FROM ${this.journal.events} WHERE run_id = ? AND key = ?`,
+				lease.runId,
+				key,
+			);
+			if (existing && existing.payload !== payload) throw new Error("Pool checkpoint identity conflict");
+			if (existing && mutation.kind !== "checkpoint") throw new Error("Pool session checkpoint identity conflict");
+			const lastSeq =
+				mutation.kind === "checkpoint"
+					? undefined
+					: await applyPoolSession(tx, `${this.journal.runs}_pool_`, row.id, mutation);
+			const latest = await tx.get<SqliteRow & { seq: number }>(
+				`SELECT COALESCE(MAX(seq), 0) AS seq FROM ${this.journal.events} WHERE run_id = ?`,
+				lease.runId,
+			);
+			const receipt = existing
+				? { seq: Number(existing.seq), at: Number(existing.at) }
+				: {
+						seq: journalCounter(lease.runId, "seq", Number(latest!.seq) + 1, "overflow"),
+						at: now,
+						...(lastSeq === undefined ? {} : { lastSeq }),
+					};
+			if (!existing)
+				await tx.run(
+					`INSERT INTO ${this.journal.events} VALUES (?, ?, ?, ?, ?, ?, ?)`,
+					lease.runId,
+					receipt.seq,
+					lease.epoch,
+					key,
+					RUN_EVENT_TYPES.checkpointRecorded,
+					payload,
+					now,
+				);
+			await tx.run(
+				`INSERT INTO ${this.operations} VALUES (?, ?, ?, ?, ?)`,
+				token.id,
 				token.generation,
 				operationId,
 				request,
