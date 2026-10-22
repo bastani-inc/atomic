@@ -11,7 +11,7 @@ import {
 	replacePendingStageMessagesForRun,
 	type WorkflowRegistrationInput,
 } from "../backend.js";
-import { DurableNestedTopologyError } from "../boundary-topology.js";
+import { DurableNestedTopologyError, validateCheckpointInvocationFingerprint } from "../boundary-topology.js";
 import { registerExecutionStorages } from "../execution-context-boundary.js";
 import {
 	inactivePromptReservationToken,
@@ -262,7 +262,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		const event = entry.event as BackendEvent;
 		if (event.type === E.checkpointRecorded) {
 			const checkpoint = event.payload;
-			this.validateCheckpoint(checkpoint);
+			validateCheckpointInvocationFingerprint(checkpoint);
 			this.projection.recordCheckpoint(checkpoint);
 		} else if (event.type === E.messageSettled) {
 			void this.projection.archivePendingStageMessage(entry.runId, event.payload.message);
@@ -442,14 +442,6 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			this.sequences.has(input.workflowId) ? E.statusChanged : E.runStarted,
 		);
 	}
-	private validateCheckpoint(checkpoint: DurableCheckpoint): void {
-		if (
-			checkpoint.kind === "stage" &&
-			checkpoint.topology?.boundary !== undefined &&
-			typeof checkpoint.topology.boundary.invocationFingerprint !== "string"
-		)
-			throw new DurableNestedTopologyError(`missing invocation fingerprint at ${checkpoint.checkpointId}`);
-	}
 	commitCheckpoint(checkpoint: DurableCheckpoint, options?: { readonly signal?: AbortSignal }): Promise<void> {
 		if (options?.signal?.aborted)
 			return Promise.reject(
@@ -461,7 +453,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		return this.serialize(checkpoint.workflowId, () => this.checkpoint(checkpoint));
 	}
 	private *checkpoint(checkpoint: DurableCheckpoint): Operation<void> {
-		this.validateCheckpoint(checkpoint);
+		validateCheckpointInvocationFingerprint(checkpoint);
 		if (!(yield* this.current(checkpoint.workflowId))) return;
 		yield* this.append(
 			checkpoint.workflowId,

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Api, AssistantMessage, Model, Provider } from "@bastani/pi-ai";
+import type { Api, AssistantMessage, AssistantMessageEvent, Model, Provider } from "@bastani/pi-ai";
 import { createAssistantMessageEventStream } from "@bastani/pi-ai/compat";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
@@ -131,20 +131,37 @@ test("HTTP admission gates inner provider retries and records each 429 once (#38
 	assert.equal(calls, 2);
 });
 
-test("aborting budget admission does not dispatch or consume a request (#3864)", async () => {
-	let calls = 0;
-	const { runtime, model } = await runtimeFixture("abort-budget", () => calls++);
-	configureProviderRequestBudget(model.provider, { maxRequests: 1, intervalMs: 60_000 });
-	assert.equal((await runtime.completeSimple(model, { messages: [] })).stopReason, "stop");
-	const controller = new AbortController();
-	const pending = runtime.completeSimple(model, { messages: [] }, { signal: controller.signal });
-	await vi.advanceTimersByTimeAsync(0);
-	assert.equal(calls, 1);
-	controller.abort(new Error("cancel queued request"));
-	assert.equal((await pending).errorMessage, "cancel queued request");
-	assert.equal(calls, 1);
-	configureProviderRequestBudget(model.provider, undefined);
-});
+test.each(["stream", "streamSimple"] as const)(
+	"aborting budget admission preserves aborted %s events (#3864)",
+	async (method) => {
+		let calls = 0;
+		const { runtime, model } = await runtimeFixture("abort-budget", () => calls++);
+		configureProviderRequestBudget(model.provider, { maxRequests: 1, intervalMs: 60_000 });
+		try {
+			assert.equal((await runtime.completeSimple(model, { messages: [] })).stopReason, "stop");
+			const controller = new AbortController();
+			const stream = runtime[method](model, { messages: [] }, { signal: controller.signal });
+			const events: AssistantMessageEvent[] = [];
+			const collected = (async () => {
+				for await (const event of stream) events.push(event);
+			})();
+			const pending = stream.result();
+			await vi.advanceTimersByTimeAsync(0);
+			assert.equal(calls, 1);
+			controller.abort(new Error("cancel queued request"));
+			const result = await pending;
+			await collected;
+			assert.equal(result.errorMessage, "cancel queued request");
+			assert.equal(result.stopReason, "aborted");
+			const terminal = events.at(-1);
+			assert.equal(terminal?.type, "error");
+			assert.equal(terminal?.type === "error" && terminal.reason, "aborted");
+			assert.equal(calls, 1);
+		} finally {
+			configureProviderRequestBudget(model.provider, undefined);
+		}
+	},
+);
 
 test("shared transports keep concurrent stream failure observations separate (#3864)", async () => {
 	const { model: base } = await runtimeFixture("concurrent-http-observation", () => {});

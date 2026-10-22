@@ -17,9 +17,11 @@ import {
 } from "./socket-writes.js";
 import { isSocketAnswering } from "./socket-liveness.js";
 import { acquireSocketReplacementLock } from "./socket-replacement-lock.js";
+import { startBrokerWatchdog } from "./watchdog.js";
 import {
 	getBrokerDeliveredMessagesPath,
 	getBrokerPidPath,
+	getBrokerWatchdogLogPath,
 	getBrokerSocketPath,
 	getBrokerSocketReplacementLockPath,
 	getIntercomDirPath,
@@ -86,6 +88,8 @@ import {
 
 const INTERCOM_DIR = getIntercomDirPath();
 const SOCKET_PATH = getBrokerSocketPath();
+const BROKER_IDLE_TIMEOUT_MS = 5_000;
+const UNCLASSIFIED_CONNECTION_RECHECK_MS = 100;
 const PID_PATH = getBrokerPidPath();
 const SOCKET_REPLACEMENT_LOCK_PATH = getBrokerSocketReplacementLockPath();
 
@@ -302,7 +306,9 @@ function isWorkflowPossibleStageAnnouncements(
 
 class IntercomBroker {
   private sessions = new Map<string, ConnectedSession>();
+  private unclassifiedConnections = new Map<net.Socket, number>();
   private server: net.Server;
+  private readonly instanceId = randomUUID();
   private shutdownTimer: NodeJS.Timeout | null = null;
   private boundSocketInode: number | undefined;
   private lastConnectionAt = performance.now();
@@ -356,6 +362,7 @@ class IntercomBroker {
       releaseReplacementLock();
       writeFileSync(PID_PATH, String(process.pid));
       console.log(`Intercom broker started (pid: ${process.pid})`);
+      startBrokerWatchdog(SOCKET_PATH, this.instanceId, getBrokerWatchdogLogPath());
       this.lastConnectionAt = performance.now();
       this.scheduleShutdownCheck();
       if (this.boundSocketInode !== undefined) this.watchSocketOwnership();
@@ -415,11 +422,18 @@ class IntercomBroker {
 
   private handleConnection(socket: net.Socket): void {
     let sessionId: string | null = null;
-    this.lastConnectionAt = performance.now();
-    this.restartShutdownCheck();
+    this.unclassifiedConnections.set(socket, performance.now());
+    const recordActivity = () => {
+      this.lastConnectionAt = performance.now();
+      this.restartShutdownCheck();
+    };
 
     const reader = createMessageReader((msg) => {
       if (socket.destroyed || socket.writableEnded) return;
+      if (this.unclassifiedConnections.delete(socket)) {
+        const health = typeof msg === "object" && msg !== null && !Array.isArray(msg) && msg.type === "health";
+        if (!health) recordActivity();
+      }
       this.handleMessage(socket, msg, sessionId, (id) => {
         sessionId = id;
       });
@@ -441,6 +455,7 @@ class IntercomBroker {
     // is lost. disconnectSession is idempotent, so 'end', 'error' and 'close'
     // may each fire without duplicating the departure broadcast.
     const retire = () => {
+      if (this.unclassifiedConnections.delete(socket)) recordActivity();
       const departing = sessionId;
       if (departing === null) return;
       sessionId = null;
@@ -464,17 +479,24 @@ class IntercomBroker {
     });
   }
 
-  private scheduleShutdownCheck(): void {
+  private scheduleShutdownCheck(delayMs = BROKER_IDLE_TIMEOUT_MS): void {
     if (this.shutdownTimer) return;
 
     this.shutdownTimer = setTimeout(() => {
       this.shutdownTimer = null;
       if (this.sessions.size === 0) {
+        const now = performance.now();
+        const awaitingFirstFrame = [...this.unclassifiedConnections.values()]
+          .some((acceptedAt) => now - acceptedAt < BROKER_IDLE_TIMEOUT_MS);
+        if (awaitingFirstFrame) {
+          this.scheduleShutdownCheck(UNCLASSIFIED_CONNECTION_RECHECK_MS);
+          return;
+        }
         const idleMs = Math.round(performance.now() - this.lastConnectionAt);
         console.log(`No sessions connected for ${idleMs}ms since the last connection, shutting down`);
         this.shutdown();
       }
-    }, 5000);
+    }, delayMs);
   }
 
   private restartShutdownCheck(): void {
@@ -1472,6 +1494,14 @@ class IntercomBroker {
     }
 
     const clientMessage = msg;
+
+    if (clientMessage.type === "health") {
+      if (typeof clientMessage.requestId !== "string" || clientMessage.requestId.length > 128) {
+        throw new Error("Invalid health request");
+      }
+      writeMessageIfOpen(socket, { type: "health", requestId: clientMessage.requestId, instanceId: this.instanceId });
+      return;
+    }
 
     if (currentId === null && clientMessage.type !== "register") {
       throw new Error(`Received ${clientMessage.type} before register`);

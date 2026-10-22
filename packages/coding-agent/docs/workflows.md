@@ -73,7 +73,7 @@ For authored graphs, design elapsed time using [runtime-aware scheduling and est
 
 Workflow model chains skip accounts that are cooling down after a 429. If all eligible candidates are cooling down, the stage waits for the earliest reset instead of exhausting the chain. Atomic honors `Retry-After` seconds or HTTP dates when the provider exposes them, otherwise it uses exponential backoff with jitter, up to 60 seconds. A longer server deadline is still respected.
 
-`retry.enabled` and `retry.maxRetries` in [settings](settings.md) bound retries for each candidate. Disabling retries still allows an unused fallback, but does not retry a failed candidate. Waits count toward the workflow and structured-output time limits, and pause, quit, and cancellation remain available.
+`retry.enabled` and `retry.maxRetries` in [settings](settings.md) bound retries for each candidate, including retries made within its session. Falling back does not grant the same candidate a fresh retry allowance. Disabling retries still allows an unused fallback, but does not retry a failed candidate. Waits count toward the workflow and structured-output time limits, and pause, quit, and cancellation remain available.
 
 The model-facing `workflow status` listing identifies stages waiting on a cooldown. Stage details and task results include `rateLimits`, with the configured provider ID, `rateLimitCount`, `cooldownUntil`, and `waitingUntil` while the fallback scheduler waits. Deadlines are Unix timestamps in milliseconds. Counts are shared across the process, not summed per stage.
 

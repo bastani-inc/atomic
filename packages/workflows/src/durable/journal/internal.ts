@@ -1,3 +1,4 @@
+import type { SqliteExecutor } from "@bastani/atomic/storage";
 import type { RunJournal } from "./types.js";
 
 export const JOURNAL_READ_PAGE_SIZE = 256;
@@ -25,4 +26,19 @@ export function registerRunJournalVersions(journal: RunJournal, versions: RunJou
 /** Change tracking for a journal that registered it; other journals are re-read in full. */
 export function runJournalVersions(journal: RunJournal): RunJournalVersions | undefined {
 	return versionReaders.get(journal);
+}
+
+export interface SqlPoolStorage {
+	transaction<T>(body: (tx: SqliteExecutor) => Promise<T>): Promise<T>;
+	readonly tables: Readonly<{ runs: string; events: string; leases: string }>;
+}
+
+const poolStorage = new WeakMap<RunJournal, SqlPoolStorage>();
+
+export function registerSqlPoolStorage(journal: RunJournal, storage: SqlPoolStorage): void {
+	poolStorage.set(journal, storage);
+}
+
+export function sqlPoolStorage(journal: RunJournal): SqlPoolStorage | undefined {
+	return poolStorage.get(journal);
 }

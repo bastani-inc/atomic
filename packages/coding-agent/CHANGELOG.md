@@ -21,7 +21,7 @@
 - `pi.exec()` now reports why a command could not be started (for example `ENOENT` for a missing executable) in `stderr` instead of returning an empty `stderr` with exit code 1 ([pi #11085](https://github.com/earendil-works/pi/issues/11085))
 - `/resume` search matches the session name, summary, id, messages and working directory separately. A name match ranks first, then text found in the id, summary, messages or directory, then characters scattered through the name, summary or directory. Matches deep in a long transcript are no longer ranked last, and scattered characters in session ids or message text no longer produce noise matches ([pi #11220](https://github.com/earendil-works/pi/issues/11220))
 - Updated the bundled `ip-address` dependency to 10.7.4, which fixes a quadratic-time zone-identifier match in IPv6 address parsing that a single long string could use to stall the process ([GHSA-rxp7-6hxx-x8q5](https://github.com/advisories/GHSA-rxp7-6hxx-x8q5))
-- Provider request-budget waits no longer consume OpenAI, Anthropic, Mistral, or explicit Codex SSE HTTP timeouts, and successive Anthropic federation-authenticated requests keep reusing their cached token ([#3864](https://github.com/bastani-inc/atomic/issues/3864)).
+- Provider request-budget waits no longer consume OpenAI, Anthropic, Mistral, or explicit Codex SSE HTTP timeouts, and successive Anthropic federation-authenticated requests keep reusing their cached token. Cancelling a queued model request reports an aborted result without dispatching it ([#3864](https://github.com/bastani-inc/atomic/issues/3864)).
 
 ## [0.9.41] - 2026-10-22
 

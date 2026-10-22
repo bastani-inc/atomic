@@ -5,6 +5,12 @@ export { buildSendSignature } from "./send-signature.js";
 const DEFAULT_GENERATION_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_MAX_GENERATIONS = 10_000;
 
+export class PendingSendTimeoutError extends Error {
+  constructor() {
+    super("Send timeout");
+  }
+}
+
 export interface SendOptionsLike extends LogicalSendOptions {}
 
 export interface SendResultLike {
@@ -29,6 +35,7 @@ interface OwnedPendingSend extends PendingSendAttempt {
   resolve(result: SendResultLike): void;
   reject(error: Error): void;
   timer?: ReturnType<typeof setTimeout>;
+  timedOut?: boolean;
 }
 
 export interface PendingSendAcquisition {
@@ -106,7 +113,7 @@ export class PendingSendRegistry {
       generation,
     };
     attempt.timer = setTimeout(() => {
-      this.reject(attempt, new Error("Send timeout"));
+      this.expire(attempt);
     }, timeoutMs);
     this.attempts.set(messageId, attempt);
     return { attempt, owner: true };
@@ -114,7 +121,7 @@ export class PendingSendRegistry {
 
   resolve(messageId: string, attemptId: string, result: SendResultLike): boolean {
     const attempt = this.attempts.get(messageId);
-    if (!attempt || attempt.attemptId !== attemptId) return false;
+    if (!attempt || attempt.timedOut || attempt.attemptId !== attemptId) return false;
     this.attempts.delete(messageId);
     if (attempt.timer) clearTimeout(attempt.timer);
     this.touchGeneration(attempt);
@@ -128,10 +135,10 @@ export class PendingSendRegistry {
    */
   extend(messageId: string, attemptId: string | undefined, timeoutMs: number): boolean {
     const attempt = this.attempts.get(messageId);
-    if (!attempt || (attemptId === undefined ? !attempt.legacyEligible : attempt.attemptId !== attemptId)) return false;
+    if (!attempt || attempt.timedOut || (attemptId === undefined ? !attempt.legacyEligible : attempt.attemptId !== attemptId)) return false;
     if (attempt.timer) clearTimeout(attempt.timer);
     attempt.timer = setTimeout(() => {
-      this.reject(attempt, new Error("Send timeout"));
+      this.expire(attempt);
     }, timeoutMs);
     return true;
   }
@@ -139,8 +146,23 @@ export class PendingSendRegistry {
   /** Resolve a pre-attemptId response only for an ID's first active generation. */
   resolveLegacy(messageId: string, result: SendResultLike): boolean {
     const attempt = this.attempts.get(messageId);
-    if (!attempt?.legacyEligible) return false;
+    if (!attempt?.legacyEligible || attempt.timedOut) return false;
     return this.resolve(messageId, attempt.attemptId, result);
+  }
+
+  private expire(attempt: OwnedPendingSend): void {
+    if (this.attempts.get(attempt.messageId) !== attempt) return;
+    attempt.timedOut = true;
+    attempt.timer = undefined;
+    attempt.reject(new PendingSendTimeoutError());
+  }
+
+  release(attempt: PendingSendAttempt): boolean {
+    const current = this.attempts.get(attempt.messageId);
+    if (current !== attempt || !current.timedOut) return false;
+    this.attempts.delete(attempt.messageId);
+    this.touchGeneration(current);
+    return true;
   }
 
   reject(attempt: PendingSendAttempt, error: Error): boolean {

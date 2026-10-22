@@ -272,13 +272,21 @@ export function getBrokerSpawnOptions(
 }
 
 /**
- * Truncate (or create) the broker log so each spawn starts from a bounded, current file. Returns false when a
+ * Preserve a bounded previous log across truncation. Returns false when a
  * Windows broker that is still starting holds the log through its launcher's stderr redirect.
  */
 function resetBrokerLog(logPath: string = BROKER_LOG): boolean {
   ensurePrivateDirectory(dirname(logPath));
   try {
+    const previous = readBrokerLogTail(logPath);
     closeSync(openSync(logPath, "w"));
+    if (previous.length > 0) {
+      try {
+        const previousPath = `${logPath}.previous`;
+        writeFileSync(previousPath, Buffer.from(previous).subarray(-BROKER_LOG_TAIL_BYTES), { mode: 0o600 });
+        if (process.platform !== "win32") chmodSync(previousPath, 0o600);
+      } catch {}
+    }
     return true;
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
@@ -327,6 +335,7 @@ export async function spawnBrokerIfNeeded(
   brokerCommand: string,
   brokerArgs: string[],
   readyTimeoutMs: number = BROKER_READY_TIMEOUT_MS,
+  extensionDir: string = EXTENSION_DIR,
 ): Promise<void> {
   ensurePrivateDirectory(INTERCOM_DIR);
 
@@ -346,8 +355,8 @@ export async function spawnBrokerIfNeeded(
       return;
     }
 
-    const brokerPath = resolveBrokerEntrypoint(EXTENSION_DIR);
-    const launch = getBrokerLaunchSpec(brokerPath, brokerCommand, brokerArgs);
+    const brokerPath = resolveBrokerEntrypoint(extensionDir);
+    const launch = getBrokerLaunchSpec(brokerPath, brokerCommand, brokerArgs, extensionDir);
     if (launch.kind === "windows-launcher") {
       writeWindowsHiddenLauncher(launch.launcherCommandLine, launch.launcherPath);
     }
@@ -362,7 +371,7 @@ export async function spawnBrokerIfNeeded(
     const logFd = launch.kind === "direct" ? openSync(BROKER_LOG, "a") : undefined;
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(launch.command, launch.args, getBrokerSpawnOptions(EXTENSION_DIR, logFd ?? "ignore"));
+      child = spawn(launch.command, launch.args, getBrokerSpawnOptions(extensionDir, logFd ?? "ignore"));
     } finally {
       if (logFd !== undefined) closeSync(logFd);
     }

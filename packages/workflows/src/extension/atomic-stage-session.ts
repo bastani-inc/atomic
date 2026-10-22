@@ -7,6 +7,7 @@ import type {
 	SubagentChildPolicy,
 } from "@bastani/atomic";
 import type { StageSessionRuntime } from "../runs/foreground/stage-runner.js";
+import { ConcurrencyLimiter } from "../runs/shared/concurrency.js";
 import type { StageStartupPhase } from "../shared/stage-startup.js";
 
 export interface PiSdkSettingsManager {
@@ -49,7 +50,7 @@ export type AtomicCreateAgentSessionOptions = Omit<
 export interface PrepareAtomicStageSessionOptions {
 	resourceLoaderInheritanceSnapshot?: DefaultResourceLoaderInheritanceSnapshot;
 	onSettingsManager?: (settingsManager: PiSdkSettingsManager) => void;
-	/** Cancellation is cooperative; an active reload keeps the queue until it settles. */
+	/** Cancellation is cooperative; an active reload keeps its slot until it settles. */
 	signal?: AbortSignal;
 	onStartupPhase?: (phase: StageStartupPhase) => void;
 }
@@ -157,18 +158,16 @@ function stageBuiltinPackagePaths(
 		});
 }
 
-let workflowStageResourceReloadQueue: Promise<void> = Promise.resolve();
+const workflowStageResourceReloads = new ConcurrencyLimiter(4);
 
 async function reloadWorkflowStageResources(
 	resourceLoader: PiSdkResourceLoader,
 	options: PrepareAtomicStageSessionOptions,
 ): Promise<void> {
 	options.onStartupPhase?.("reload-queued");
-	const queuedReload = workflowStageResourceReloadQueue.then(() => {
+	await workflowStageResourceReloads.run(async () => {
 		options.signal?.throwIfAborted();
 		options.onStartupPhase?.("reload-active");
-		return resourceLoader.reload();
-	});
-	workflowStageResourceReloadQueue = queuedReload.catch(() => undefined);
-	return queuedReload;
+		await resourceLoader.reload();
+	}, options.signal);
 }

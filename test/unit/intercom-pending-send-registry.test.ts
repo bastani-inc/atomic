@@ -80,11 +80,18 @@ describe("PendingSendRegistry", () => {
 		assert.deepEqual(await current.attempt.promise, { id: "message-1", delivered: true });
 	});
 
-	test("timeout cleanup is attempt-safe when an ID is reused", async () => {
+	test("timeout cleanup is attempt-safe when an ID is reused after release (#3862)", async () => {
 		const registry = new PendingSendRegistry();
 		const expired = registry.acquire("message-1", signature(), 5);
 		await assert.rejects(expired.attempt.promise, /Send timeout/);
 
+		assert.equal(
+			registry.acquire("message-1", signature(), 1_000).attempt,
+			expired.attempt,
+			"a timed-out send stays reserved until released (#3862)",
+		);
+		assert.equal(registry.release(expired.attempt), true);
+		assert.equal(registry.release(expired.attempt), false);
 		const current = registry.acquire("message-1", signature(), 1_000);
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		assert.equal(

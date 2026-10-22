@@ -311,6 +311,29 @@ export class ModelRuntimeStreaming {
 						}
 					}
 				} catch (error) {
+					if (!deliveredContent && options?.signal?.aborted) {
+						const aborted: AssistantMessage = {
+							role: "assistant",
+							api: prepared.model.api,
+							provider: prepared.model.provider,
+							model: prepared.model.id,
+							content: [],
+							usage: {
+								input: 0,
+								output: 0,
+								cacheRead: 0,
+								cacheWrite: 0,
+								totalTokens: 0,
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+							},
+							stopReason: "aborted",
+							errorMessage: error instanceof Error ? error.message : String(error),
+							timestamp: Date.now(),
+						};
+						yield* pending;
+						yield { type: "error", reason: "aborted", error: aborted };
+						return;
+					}
 					if (
 						deliveredContent ||
 						attempt !== 0 ||

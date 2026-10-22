@@ -1341,12 +1341,14 @@ describe("createStageContext — empty completions on schema-backed stages (#316
 		assert.equal(promptsByModel.has("openai/fallback"), false);
 	});
 
-	test("a provider failure during a corrective prompt re-sends the original stage prompt to the new session (#3323)", async () => {
+	test("a provider failure during a corrective prompt re-sends the original stage prompt to the fallback session (#3323, #3864)", async () => {
 		const promptsBySession: string[][] = [];
+		const modelsBySession: string[] = [];
 		let createOptions: StageSessionCreateOptions | undefined;
 		const agentSession: AgentSessionAdapter = {
 			async create(options) {
 				createOptions = options;
+				modelsBySession.push(modelOf(options));
 				const prompts: string[] = [];
 				const sessionIndex = promptsBySession.push(prompts) - 1;
 				const messages = [] as AgentSession["messages"];
@@ -1374,12 +1376,13 @@ describe("createStageContext — empty completions on schema-backed stages (#316
 		const ctx = createStageContext(
 			makeOpts({
 				adapters: { agentSession },
-				stageOptions: { model: "anthropic/primary", schema: SCHEMA },
+				stageOptions: { model: "anthropic/primary", fallbackModels: ["openai/fallback"], schema: SCHEMA },
 			}),
 		) as InternalStageContext;
 
 		assert.deepEqual(await ctx.prompt("Write a 500+ character essay about X"), { ok: true });
 		assert.equal(promptsBySession.length, 2);
+		assert.deepEqual(modelsBySession, ["anthropic/primary", "openai/fallback"]);
 		assert.equal(promptsBySession[0]?.[0], "Write a 500+ character essay about X");
 		assert.match(promptsBySession[0]?.[1] ?? "", /^The previous response failed/);
 		// The new session never saw the task, so its first user message must carry

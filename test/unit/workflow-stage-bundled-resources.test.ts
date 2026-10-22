@@ -32,6 +32,7 @@ import {
 	prepareAtomicStageSessionOptions,
 } from "../../packages/workflows/src/extension/wiring.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
+import { writeFileEnsuringDir } from "../helpers/runtime.js";
 import { toolContext } from "../helpers/tool-context.js";
 
 const REAL_WORKFLOW_STAGE_RESOURCE_TIMEOUT_MS = 120_000;
@@ -120,6 +121,7 @@ async function createWorkflowStageSession(options: {
 	readonly model?: Model<Api>;
 	readonly modelRuntime?: CreateAgentSessionOptions["modelRuntime"];
 	readonly builtinPackageNames?: readonly string[];
+	readonly sdk?: PiCodingAgentSdk;
 }) {
 	const model = options.model ?? getModel("anthropic", "claude-sonnet-4-5");
 	assert.notEqual(model, undefined);
@@ -147,7 +149,7 @@ async function createWorkflowStageSession(options: {
 			...(options.modelRuntime === undefined ? {} : { modelRuntime: options.modelRuntime }),
 			orchestrationContext,
 		},
-		makeSdk(options.agentDir, options.builtinPackageNames),
+		options.sdk ?? makeSdk(options.agentDir, options.builtinPackageNames),
 	);
 	if (sessionOptions === undefined) {
 		throw new Error("prepareAtomicStageSessionOptions returned undefined.");
@@ -287,6 +289,80 @@ describe("workflow stage bundled resources", () => {
 				}
 			} finally {
 				restoreEnv(snapshot);
+			}
+		},
+		REAL_WORKFLOW_STAGE_RESOURCE_TIMEOUT_MS,
+	);
+
+	test(
+		"overlapping stage reloads isolate worktree extensions and preserve builtin tools and environment (#3861)",
+		async () => {
+			const environment = { ...process.env };
+			const root = tempDir("atomic-workflow-overlap-");
+			const agentDir = join(root, "agent");
+			const sdk = makeSdk(agentDir, ["subagents", "intercom", "mcp", "web-access"]);
+			let active = 0;
+			let peak = 0;
+			sdk.DefaultResourceLoader = class extends StageDefaultResourceLoader {
+				async reload(...args: Parameters<DefaultResourceLoader["reload"]>) {
+					active++;
+					peak = Math.max(peak, active);
+					try {
+						await super.reload(...args);
+						assert.deepEqual(this.getExtensions().errors, []);
+					} finally {
+						active--;
+					}
+				}
+			};
+			const worktrees = Array.from({ length: 4 }, (_, id) => ({
+				cwd: join(root, `worktree-${id}`),
+				toolName: `worktree_probe_${id}`,
+			}));
+			for (const { cwd, toolName } of worktrees) {
+				await writeFileEnsuringDir(
+					join(cwd, ".atomic", "extensions", "probe.ts"),
+					[
+						'import type { ExtensionAPI } from "@bastani/atomic";',
+						'import { Type } from "@sinclair/typebox";',
+						"export default function (pi: ExtensionAPI) {",
+						`  pi.registerTool({ name: ${JSON.stringify(toolName)}, label: "Worktree probe",`,
+						'    description: "Worktree-local tool", parameters: Type.Object({}),',
+						`    async execute() { return { content: [{ type: "text", text: ${JSON.stringify(cwd)} }], details: {} }; }`,
+						"  });",
+						"}",
+					].join("\n"),
+				);
+			}
+			const modelRuntimes = await Promise.all(
+				worktrees.map(() =>
+					ModelRuntime.create({ credentials: AuthStorage.inMemory(), modelsPath: null, allowModelNetwork: false }),
+				),
+			);
+			const creations = await Promise.allSettled(
+				worktrees.map(({ cwd }, index) =>
+					createWorkflowStageSession({ cwd, agentDir, modelRuntime: modelRuntimes[index]!, sdk }),
+				),
+			);
+			try {
+				assert.equal(peak, 4, "real DefaultResourceLoader reloads must overlap across worktrees");
+				assert.equal(active, 0);
+				for (const [index, creation] of creations.entries()) {
+					if (creation.status !== "fulfilled") throw creation.reason;
+					const tools = creation.value.session.getAllTools().map((tool) => tool.name);
+					for (const builtin of ["subagent", "intercom", "web_search"]) assert.ok(tools.includes(builtin));
+					assert.deepEqual(
+						tools.filter((name) => name.startsWith("worktree_probe_")),
+						[worktrees[index]!.toolName],
+					);
+				}
+				assert.deepEqual({ ...process.env }, environment);
+			} finally {
+				await Promise.all(
+					creations.map((creation) =>
+						creation.status === "fulfilled" ? creation.value.session.dispose() : undefined,
+					),
+				);
 			}
 		},
 		REAL_WORKFLOW_STAGE_RESOURCE_TIMEOUT_MS,

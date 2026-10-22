@@ -300,6 +300,7 @@ export class StageSessionController {
 	private structuredOutputExecutionFailureValue: string | undefined;
 	private structuredOutputCycleAttemptMark: number | undefined;
 	private unsubscribeTerminateWatcher: (() => void) | undefined;
+	private sessionInternalRetries = 0;
 	private unresolvedContextOverflowMessage: string | undefined;
 	private generationSealed = false;
 	private disposed = false;
@@ -1062,6 +1063,7 @@ export class StageSessionController {
 	 * pause/re-prompts, and recording never re-read a later index.
 	 */
 	private beginAttemptUsage(session: StageSessionRuntime): void {
+		this.sessionInternalRetries = 0;
 		this.attemptUsageStartIndex = session.messages.length;
 		this.discardedAttemptUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 	}
@@ -1159,7 +1161,8 @@ export class StageSessionController {
 	}
 
 	private recordCandidateFailure(walk: CandidateWalk, index: number, error: unknown): void {
-		const failures = (walk.rateLimitFailures.get(index) ?? 0) + 1;
+		const failures = (walk.rateLimitFailures.get(index) ?? 0) + 1 + this.sessionInternalRetries;
+		this.sessionInternalRetries = 0;
 		const settings = this.retrySettings();
 		const retries = settings?.enabled === false ? 0 : (settings?.maxRetries ?? 2);
 		if (isWorkflowRateLimit(error)) {
@@ -1945,6 +1948,7 @@ export class StageSessionController {
 					void Promise.resolve(onSessionEvent(event)).catch(() => {});
 				} catch {}
 			}
+			if (event.type === "auto_retry_start") this.sessionInternalRetries += 1;
 			if (event.type === "model_fallback_start") applyingFallback = true;
 			// SDK effort-only fallbacks suppress model_changed, but emit thinking_level_changed
 			// after applying both model and effort. Ignore effort changes outside fallback selection.
