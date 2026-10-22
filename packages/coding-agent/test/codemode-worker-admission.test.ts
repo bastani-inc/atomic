@@ -49,6 +49,15 @@ function assertErrorText(result: Awaited<ReturnType<typeof run>>, text: string):
 	assert.ok(result.content.some((block) => block.type === "text" && block.text.includes(text)));
 }
 
+function assertRunningTimeout(result: Awaited<ReturnType<typeof run>>, budgetMs: number): void {
+	assert.equal(result.isError, true);
+	const text = result.content.map((block) => (block.type === "text" ? block.text : "")).join("\n");
+	const reported = /Execution timed out after (\d+) ms/u.exec(text);
+	assert.ok(reported, `expected a running-script timeout, got: ${text}`);
+	assert.ok(Number(reported[1]) > 0 && Number(reported[1]) <= budgetMs);
+	assert.doesNotMatch(text, /while waiting for a free codemode worker|The script did not start/u);
+}
+
 function assertOutputText(result: Awaited<ReturnType<typeof run>>, text: string): void {
 	assert.equal(result.isError, undefined);
 	assert.ok(result.content.some((block) => block.type === "text" && block.text === text));
@@ -56,7 +65,7 @@ function assertOutputText(result: Awaited<ReturnType<typeof run>>, text: string)
 
 describe("codemode worker admission", () => {
 	it.each(["timeout", "abort", "success"] as const)(
-		"holds shared capacity until actual worker exit after %s (earendil-works/pi#10748)",
+		"holds shared capacity until actual worker exit after %s (earendil-works/pi#10748, #3862)",
 		async (how) => {
 			const once = vi.spyOn(Worker.prototype, "once");
 			for (let i = 0; i < 2; i++) {
@@ -78,12 +87,8 @@ describe("codemode worker admission", () => {
 				}
 				const result = await pending;
 				if (how === "success") assert.equal(result.isError, undefined);
-				else {
-					assertErrorText(
-						result,
-						how === "timeout" ? "Execution timed out after 200 ms" : "This operation was aborted",
-					);
-				}
+				else if (how === "timeout") assertRunningTimeout(result, 200);
+				else assertErrorText(result, "This operation was aborted");
 				assert.equal(terminations.size, i + 1);
 			}
 
@@ -174,5 +179,16 @@ describe("codemode worker admission", () => {
 		assert.equal(results.length, 2);
 		await releaseOne();
 		await Promise.all(pending);
+	});
+});
+
+describe("codemode timeout budget after admission (#3862)", () => {
+	it("reports the remaining running-script budget when admission itself took time", async () => {
+		const real = performance.now.bind(performance);
+		let calls = 0;
+		vi.spyOn(performance, "now").mockImplementation(() => real() + 5 * calls++);
+		const result = await run('// @options: {"timeout_ms": 200}\nwhile (true) {}');
+		assertRunningTimeout(result, 200);
+		assert.equal(terminations.size, 1);
 	});
 });

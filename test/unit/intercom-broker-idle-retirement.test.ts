@@ -118,7 +118,7 @@ async function waitRegistered(socket: net.Socket): Promise<void> {
 
 // #2765
 test(
-	"a broker that receives no connection exits within the idle shutdown window",
+	"a broker that receives no client connection exits despite watchdog probes (#3862)",
 	async () => {
 		const agentDir = mkdtempSync(join(tmpdir(), "intercom-idle-none-"));
 		const broker = spawnBroker(agentDir);

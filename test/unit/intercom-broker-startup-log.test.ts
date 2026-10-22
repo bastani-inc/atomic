@@ -37,7 +37,7 @@ import {
 	installBoundedStderr,
 } from "../../packages/intercom/broker/bounded-stderr.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
-import { bunExecutable } from "../helpers/runtime.js";
+import { bunExecutable, removePathSync } from "../helpers/runtime.js";
 
 /** Resolves true once the broker socket accepts a connection. */
 function connectable(socketPath: string): Promise<boolean> {
@@ -273,7 +273,7 @@ describe("broker startup failures name the log", () => {
 		);
 	});
 
-	test("each spawn truncates the log so it stays bounded across restarts", async () => {
+	test("each spawn keeps one bounded previous log instead of erasing it (#3862)", async () => {
 		appendFileSync(logPath, `${"z".repeat(4096)}\n`, "utf8");
 		const marker = `SECOND-MARKER-${Date.now()}`;
 
@@ -287,6 +287,29 @@ describe("broker startup failures name the log", () => {
 		const contents = readFileSync(logPath, "utf8");
 		assert.ok(contents.includes(marker));
 		assert.equal(contents.includes("zzzz"), false);
+		const previous = readFileSync(`${logPath}.previous`, "utf8");
+		assert.ok(previous.includes("zzzz"));
+		assert.ok(Buffer.byteLength(previous) <= spawnModule.BROKER_LOG_TAIL_BYTES);
+	});
+
+	test("an unavailable previous-log path does not prevent broker startup (#3862)", async () => {
+		const previous = `${logPath}.previous`;
+		removePathSync(previous, { recursive: true, force: true });
+		mkdirSync(previous);
+		writeFileSync(logPath, "previous broker diagnosis\n");
+		const marker = "BROKER-STARTED-WITHOUT-BACKUP";
+		try {
+			await assert.rejects(
+				() =>
+					spawnModule.spawnBrokerIfNeeded(process.execPath, [
+						"-e",
+						`console.error(${JSON.stringify(marker)}); process.exit(4);`,
+					]),
+				(error: Error) => error.message.includes(marker),
+			);
+		} finally {
+			removePathSync(previous, { recursive: true, force: true });
+		}
 	});
 
 	test("the readiness timeout error carries the log path and tail", async () => {

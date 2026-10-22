@@ -75,6 +75,10 @@ export function getBrokerLogPath(agentDir: string = getAgentDir()): string {
   return join(getIntercomDirPath(agentDir), "broker.log");
 }
 
+export function getBrokerWatchdogLogPath(agentDir: string = getAgentDir()): string {
+  return join(getIntercomDirPath(agentDir), "broker-watchdog.log");
+}
+
 export function getBrokerSocketPath(
   platform: NodeJS.Platform = process.platform,
   agentDir: string = getAgentDir(),

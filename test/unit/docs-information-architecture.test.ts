@@ -943,7 +943,7 @@ describe("docs references and assets (#2847)", () => {
 		assert.ok(checked > 10, "the prompt sources were scanned, not silently skipped");
 	});
 
-	test("Intercom operations maps observable states to recovery actions", () => {
+	test("Intercom operations maps observable states to recovery actions, including an unresponsive broker (#3862)", () => {
 		const text = readFileSync(join(docsDir, "intercom/operations.md"), "utf8");
 		const h2s = headingsIn(text)
 			.filter((heading) => heading.level === 2)
@@ -986,12 +986,25 @@ describe("docs references and assets (#2847)", () => {
 				"Terminal stage delivery failure",
 				"Destination-side admission failure",
 				"Broker restart or concurrent startup",
+				"Broker accepts connections but stops answering",
 				"Broker does not start",
 				"Half-closed peer or undeliverable send",
 				"Subagent being restored after a restart",
 				"Queued for an offline session",
 			],
 			"the runbook must cover every observable lifecycle state named by the Intercom contracts",
+		);
+		const unresponsive = rows.find((row) => row[0] === "Broker accepts connections but stops answering");
+		assert.ok(unresponsive, "the unresponsive-broker state must be documented (#3862)");
+		assert.match(
+			unresponsive[1] ?? "",
+			/requests time out/u,
+			"the unresponsive broker must name its observable symptom",
+		);
+		assert.match(
+			unresponsive[2] ?? "",
+			/about a minute for automatic broker replacement.*reconnect backoff.*logs below/su,
+			"the unresponsive broker must tell users to wait for replacement, then reconnect, then check logs",
 		);
 		for (const [state, symptom, recovery] of rows) {
 			assert.ok(symptom && symptom.length > 20, `${state} needs an observable symptom`);
