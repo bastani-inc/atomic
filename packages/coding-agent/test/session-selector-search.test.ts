@@ -96,7 +96,10 @@ describe("session selector search", () => {
 		];
 
 		const result1 = filterAndSortSessions(sessions, '"brave"', "relevance");
-		expect(result1.map((s) => s.id)).toEqual(["name", "message"]);
+		assert.deepEqual(
+			result1.map((s) => s.id),
+			["name", "message"],
+		);
 
 		const tieSessions: SessionInfo[] = [
 			makeSession({
@@ -112,7 +115,10 @@ describe("session selector search", () => {
 		];
 
 		const result2 = filterAndSortSessions(tieSessions, '"brave"', "relevance");
-		expect(result2.map((s) => s.id)).toEqual(["newer", "older"]);
+		assert.deepEqual(
+			result2.map((s) => s.id),
+			["newer", "older"],
+		);
 	});
 
 	it("ignores the position of a match in message text (pi #11220)", () => {

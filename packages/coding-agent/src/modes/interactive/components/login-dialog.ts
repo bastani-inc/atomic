@@ -9,7 +9,7 @@ import {
 	TruncatedText,
 	type TUI,
 } from "@earendil-works/pi-tui";
-import { copyToClipboard } from "../../../utils/clipboard.ts";
+import { copyToClipboard } from "../../../utils/clipboard.js";
 import { openBrowser } from "../../../utils/open-browser.ts";
 import { theme } from "../theme/theme.js";
 import { AuthUrlComponent } from "./auth-url.js";
