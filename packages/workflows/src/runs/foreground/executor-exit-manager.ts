@@ -36,6 +36,7 @@ export function createWorkflowExitManager(input: {
 	readonly runId: string;
 	readonly exitScope: symbol;
 	readonly controller: AbortController;
+	readonly onExitSelected?: (signal: WorkflowExitSignal) => void;
 }): WorkflowExitManager {
 	let selectedExit: WorkflowExitSignal | undefined;
 	const exitCleanups = new Map<string, WorkflowExitCleanup>();
@@ -203,6 +204,7 @@ export function createWorkflowExitManager(input: {
 				...(validationError !== undefined ? { validationError } : {}),
 			}),
 		);
+		input.onExitSelected?.(selectedExit);
 		input.controller.abort(selectedExit);
 		runWorkflowExitCleanups(reason);
 		throw selectedExit;

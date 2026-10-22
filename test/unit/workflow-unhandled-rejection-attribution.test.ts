@@ -26,6 +26,8 @@ interface Outcome {
 interface Report {
 	readonly status: string;
 	readonly error?: string;
+	readonly exited?: boolean;
+	readonly exitReason?: string;
 	readonly inspected: { readonly kind: string; readonly status?: string };
 	readonly healthy?: { readonly status: string; readonly error?: string };
 	readonly runs?: ReadonlyArray<{ readonly workflow: string; readonly status: string; readonly error?: string }>;
@@ -50,6 +52,16 @@ function assertContained(outcome: Outcome): Report {
 	const reported = report(outcome);
 	assert.equal(reported.status, "failed");
 	assert.deepEqual(reported.inspected, { kind: "found", status: "failed" });
+	return reported;
+}
+
+function assertExited(outcome: Outcome): Report {
+	assert.equal(outcome.exitCode, 0, `${outcome.stdout}\n${outcome.stderr}`);
+	const reported = report(outcome);
+	assert.equal(reported.status, "completed");
+	assert.equal(reported.exited, true);
+	assert.equal(reported.exitReason, "pool finished early");
+	assert.deepEqual(reported.inspected, { kind: "found", status: "completed" });
 	return reported;
 }
 
@@ -102,6 +114,32 @@ for (const runtime of RUNTIMES) {
 			() => {
 				const reported = assertContained(runFixture(runtime, ["helper-error-after-tool", "rolling"]));
 				assert.match(reported.error ?? "", /helper failed outside the workflow module/);
+			},
+			REAL_CHILD_TIMEOUT_MS,
+		);
+
+		test(
+			"ctx.exit called in a pool fork with a dropped finally promise ends the run as exited, not the process (#3846)",
+			() => {
+				assertExited(runFixture(runtime, ["exit-after-workflow", "rolling"]));
+			},
+			REAL_CHILD_TIMEOUT_MS,
+		);
+
+		test(
+			"a child workflow fork that calls ctx.stage after its parent exited does not end the process (#3846)",
+			() => {
+				const reported = assertExited(runFixture(runtime, ["exit-during-child-fork", "rolling"]));
+				assert.equal(reported.runs?.find((entry) => entry.workflow === "forking-child")?.status, "cancelled");
+			},
+			REAL_CHILD_TIMEOUT_MS,
+		);
+
+		test(
+			"ctx.exit called in a pool fork leaves a concurrent run from the same module untouched (#3846)",
+			() => {
+				const reported = assertExited(runFixture(runtime, ["exit-after-workflow", "rolling", "same-module"]));
+				assert.deepEqual(reported.healthy, { status: "completed" });
 			},
 			REAL_CHILD_TIMEOUT_MS,
 		);
@@ -247,7 +285,7 @@ for (const runtime of RUNTIMES) {
 	});
 }
 
-const [NODE] = RUNTIMES;
+const [NODE, BUN] = RUNTIMES;
 
 describe("workflow unhandled rejection attribution through async context", () => {
 	test(
@@ -269,4 +307,36 @@ describe("workflow unhandled rejection attribution through async context", () =>
 		},
 		REAL_CHILD_TIMEOUT_MS,
 	);
+
+	test(
+		"an error an ended run's fire-and-forget function throws leaves a concurrent run from the same module untouched where async context identifies the run (#3846)",
+		() => {
+			const outcome = runFixture(NODE as Runtime, ["late-author-error", "rolling", "same-module"]);
+			assert.equal(outcome.exitCode, 0, `${outcome.stdout}\n${outcome.stderr}`);
+			assert.deepEqual(report(outcome).healthy, { status: "completed" });
+		},
+		REAL_CHILD_TIMEOUT_MS,
+	);
+});
+
+describe("workflow unhandled rejection attribution when two runs of one module could have thrown the error", () => {
+	for (const [failure, poolStyle] of [
+		["late-author-error", "rolling"],
+		["author-error-after-workflow", "tolerant"],
+	] as const) {
+		test(
+			`an author error from ${failure} fails neither run of the same module and is handed back to the runtime (#3846)`,
+			() => {
+				const outcome = runFixture(
+					BUN as Runtime,
+					[failure, poolStyle, "same-module"],
+					["--unhandled-rejections=warn"],
+				);
+				assert.equal(outcome.exitCode, 0, `${outcome.stdout}\n${outcome.stderr}`);
+				assert.deepEqual(report(outcome).healthy, { status: "completed" });
+				assert.match(outcome.stderr, /author error/);
+			},
+			REAL_CHILD_TIMEOUT_MS,
+		);
+	}
 });

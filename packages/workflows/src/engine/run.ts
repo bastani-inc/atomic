@@ -206,9 +206,16 @@ async function executeRun(
 	const callerSignal = opts.signal;
 	const onCallerAbort = (): void => {
 		workflowObservationRuntime(activeStore).control(runId, "kill");
-		ownController.abort(callerSignal?.reason);
+		const reason = callerSignal?.reason;
+		if (parentWorkflowExitAbortReason(reason) !== undefined) rejectionScope.ignore(reason);
+		ownController.abort(reason);
 	};
-	const exit = createWorkflowExitManager({ runId, exitScope, controller: ownController });
+	const exit = createWorkflowExitManager({
+		runId,
+		exitScope,
+		controller: ownController,
+		onExitSelected: (signal) => rejectionScope.ignore(signal),
+	});
 	// Durable child operations stay on stacked scoped views, while cached graph
 	// reconstruction keeps the physical root backend through arbitrary depth.
 	const sourceBackend = opts.durableBackend;

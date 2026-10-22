@@ -10,6 +10,7 @@ export interface RunRejectionScope {
 	run<T>(callback: () => T): T;
 	contain<T>(promise: Promise<T>, effect?: RejectionEffect): Promise<T>;
 	watch<T>(promise: Promise<T>): Promise<T>;
+	ignore(reason: object): void;
 	settle(): Promise<void>;
 	close(): void;
 }
@@ -36,6 +37,7 @@ interface ScopeState {
 	readonly primitives: Map<Primitive, PrimitiveEntry>;
 	generation: number;
 	live: boolean;
+	sharedSource: boolean;
 }
 
 type Attribution = Map<ScopeState, RejectionEffect>;
@@ -164,12 +166,24 @@ function hasAncestorIn(scope: ScopeState, candidates: ReadonlySet<ScopeState>): 
 	return false;
 }
 
-function liveRunsOfSource(boundary: RejectionBoundary, source: string): Attribution {
+function outermostLiveRuns(boundary: RejectionBoundary, source: string): Set<ScopeState> {
 	const matching = new Set<ScopeState>();
 	for (const scope of boundary.scopes) if (scope.live && scope.source === source) matching.add(scope);
-	const owners: Attribution = new Map();
-	for (const scope of matching) if (!hasAncestorIn(scope, matching)) owners.set(scope, "fail-run");
-	return owners;
+	const outermost = new Set<ScopeState>();
+	for (const scope of matching) if (!hasAncestorIn(scope, matching)) outermost.add(scope);
+	return outermost;
+}
+
+function runOfSource(boundary: RejectionBoundary, source: string): Attribution | undefined {
+	const [only, ...others] = outermostLiveRuns(boundary, source);
+	if (only === undefined) return new Map();
+	if (others.length > 0 || only.sharedSource) return undefined;
+	return new Map([[only, "fail-run"]]);
+}
+
+function markSharedSource(boundary: RejectionBoundary, source: string): void {
+	const runs = outermostLiveRuns(boundary, source);
+	if (runs.size > 1) for (const run of runs) run.sharedSource = true;
 }
 
 function attribute(boundary: RejectionBoundary, reason: unknown): Attribution | undefined {
@@ -179,7 +193,8 @@ function attribute(boundary: RejectionBoundary, reason: unknown): Attribution | 
 	if (scoped !== undefined && boundary.scopes.has(scoped)) return new Map([[scoped, "fail-run"]]);
 	const origin = authoringSource(reason, recognizedSources(boundary));
 	if (origin === undefined) return undefined;
-	return liveRunsOfSource(boundary, origin);
+	if (scoped !== undefined) return new Map([[scoped, "ignore"]]);
+	return runOfSource(boundary, origin);
 }
 
 function unhandledRejectionError(reason: unknown): Error {
@@ -288,9 +303,11 @@ export function openRunRejectionScope(options: RunRejectionScopeOptions): RunRej
 		primitives: new Map(),
 		generation: 0,
 		live: true,
+		sharedSource: false,
 	};
 	boundary.scopes.add(scope);
 	boundary.runs.set(scope.runId, scope);
+	if (scope.source !== undefined) markSharedSource(boundary, scope.source);
 	return {
 		run: (callback) => boundary.store.run(scope, callback),
 		contain: (promise, effect = "fail-run") => {
@@ -302,6 +319,7 @@ export function openRunRejectionScope(options: RunRejectionScopeOptions): RunRej
 				record(boundary, scope, reason, "fail-run");
 				throw reason;
 			}),
+		ignore: (reason) => record(boundary, scope, reason, "ignore"),
 		settle: afterPendingRejectionReports,
 		close: () => {
 			scope.live = false;
@@ -317,11 +335,35 @@ export function openRunRejectionScope(options: RunRejectionScopeOptions): RunRej
 	};
 }
 
+const WATCHED_STAGE_METHODS = [
+	"prompt",
+	"complete",
+	"sendUserMessage",
+	"steer",
+	"followUp",
+	"setModel",
+	"setThinkingLevel",
+	"cycleModel",
+	"cycleThinkingLevel",
+	"navigateTree",
+	"compact",
+	"abort",
+] as const satisfies readonly (keyof StageContext)[];
+
+type WatchedStageMethod = (typeof WATCHED_STAGE_METHODS)[number];
+type StageMethodValue = Awaited<ReturnType<StageContext[WatchedStageMethod]>>;
+
 export function containStageRejections<T extends StageContext>(stage: T, scope: RunRejectionScope): T {
 	const contained = Object.create(stage) as T;
-	Object.defineProperties(contained, {
-		prompt: { value: (...args: Parameters<StageContext["prompt"]>) => scope.watch(stage.prompt(...args)) },
-		complete: { value: (...args: Parameters<StageContext["complete"]>) => scope.watch(stage.complete(...args)) },
-	});
+	const descriptors: PropertyDescriptorMap = {};
+	for (const name of WATCHED_STAGE_METHODS) {
+		descriptors[name] = {
+			value: (...args: Parameters<StageContext[WatchedStageMethod]>) => {
+				const result: Promise<StageMethodValue> | StageMethodValue = Reflect.apply(stage[name], stage, args);
+				return result instanceof Promise ? scope.watch(result) : result;
+			},
+		};
+	}
+	Object.defineProperties(contained, descriptors);
 	return contained;
 }

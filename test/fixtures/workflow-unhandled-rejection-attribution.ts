@@ -67,6 +67,10 @@ const branches: Record<string, Branch> = {
 		await ctx.tool(`first-${index}`, { index }, async () => "first");
 		await failElsewhere("helper");
 	},
+	"exit-after-workflow": async (ctx, index) => {
+		await ctx.workflow(child, { inputs: { topic: `topic-${index}` } });
+		if (index === 1) ctx.exit({ reason: "pool finished early", outputs: {} });
+	},
 	"task-rejects": async (ctx, index) => {
 		await ctx.task(`task-${index}`, { prompt: "do the work" });
 	},
@@ -75,7 +79,13 @@ const branches: Record<string, Branch> = {
 	},
 };
 
-const STANDALONE_MODES = ["late-author-error", "late-author-error-after-grace", "caught-primitive", "author-error-during-child"];
+const STANDALONE_MODES = [
+	"late-author-error",
+	"late-author-error-after-grace",
+	"caught-primitive",
+	"author-error-during-child",
+	"exit-during-child-fork",
+];
 if (branches[failure] === undefined && !STANDALONE_MODES.includes(failure)) throw new Error(`unknown failure mode "${failure}"`);
 const branch: Branch = branches[failure] ?? (async () => {});
 
@@ -159,6 +169,36 @@ const parentOfSlowChild = workflow({
 		return {};
 	},
 });
+const forkingChild = workflow({
+	name: "forking-child",
+	description: "",
+	inputs: {},
+	outputs: {},
+	run: async (ctx) => {
+		const fork = (async () => {
+			await delay(300);
+			ctx.stage("after-parent-exit");
+		})();
+		void fork.finally(() => {});
+		await delay(1000);
+		return {};
+	},
+});
+const exitingParent = workflow({
+	name: "exiting-parent",
+	description: "",
+	inputs: {},
+	outputs: {},
+	run: async (ctx) => {
+		const exiting = (async () => {
+			await delay(100);
+			ctx.exit({ reason: "pool finished early", outputs: {} });
+		})();
+		void exiting.finally(() => {});
+		await ctx.workflow(forkingChild);
+		return {};
+	},
+});
 const healthySameModule = workflow({
 	name: "healthy-same-module",
 	description: "",
@@ -176,12 +216,20 @@ const standalone: Record<string, WorkflowDefinition> = {
 	"late-author-error-after-grace": lateAuthor,
 	"caught-primitive": caughtPrimitive,
 	"author-error-during-child": parentOfSlowChild,
+	"exit-during-child-fork": exitingParent,
 };
 const definition = (standalone[failure] ?? pool) as WorkflowDefinition;
 const companionDefinition = companion === "same-module" ? healthySameModule : healthy;
 
 const options = async () => ({
-	registry: createRegistry([definition, child, slowChild, healthy, healthySameModule] as WorkflowDefinition[]),
+	registry: createRegistry([
+		definition,
+		child,
+		slowChild,
+		forkingChild,
+		healthy,
+		healthySameModule,
+	] as WorkflowDefinition[]),
 	store: createStore(),
 	durableBackend: await createMemoryTestBackend(),
 	adapters: {
@@ -207,12 +255,14 @@ if (failure === "late-author-error-after-grace") {
 	const realNow = Date.now;
 	Date.now = () => realNow() + 60_000;
 }
-await delay(failure.startsWith("late-author-error") ? 400 : 100);
+await delay(failure.startsWith("late-author-error") || failure === "exit-during-child-fork" ? 400 : 100);
 const inspection = await inspectTargetedDurableWorkflow(poolOptions.durableBackend, result.runId);
 console.log(
 	JSON.stringify({
 		status: result.status,
 		error: result.error,
+		exited: result.exited,
+		exitReason: result.exitReason,
 		inspected: inspection.kind === "found" ? { kind: inspection.kind, status: inspection.detail.status } : inspection,
 		healthy: healthyResult === undefined ? undefined : { status: healthyResult.status, error: healthyResult.error },
 		runs: poolOptions.store.runs().map((entry) => ({ workflow: entry.name, status: entry.status, error: entry.error })),

@@ -3,7 +3,7 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { inspectTargetedDurableWorkflow } from "../../packages/workflows/src/durable/targeted-inspection.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import type { WorkflowDefinition, WorkflowRunContext } from "../../packages/workflows/src/shared/types.js";
+import type { StageContext, WorkflowDefinition, WorkflowRunContext } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { healthy } from "./workflow-unhandled-rejection-healthy.js";
@@ -23,16 +23,29 @@ const failingChild = workflow({
 	},
 });
 
-const calls: Record<string, Step> = {
-	task: (ctx) => ctx.task("task-call", { prompt: "do the work" }),
-	"stage-prompt": (ctx) => ctx.stage("stage-call").prompt("do the work"),
-	chain: (ctx) => ctx.chain([{ name: "chain-call", task: "do the work" }]),
-	parallel: (ctx) => ctx.parallel([{ name: "parallel-call", task: "do the work" }]),
-	workflow: (ctx) => ctx.workflow(failingChild),
+const model = {} as Parameters<StageContext["setModel"]>[0];
+
+const calls: Record<string, readonly Step[]> = {
+	task: [(ctx) => ctx.task("task-call", { prompt: "do the work" })],
+	"stage-prompt": [(ctx) => ctx.stage("stage-call").prompt("do the work")],
+	"stage-methods": [
+		(ctx) => ctx.stage("stage-steer").steer("more"),
+		(ctx) => ctx.stage("stage-follow-up").followUp("more"),
+		(ctx) => ctx.stage("stage-send-user-message").sendUserMessage("more"),
+		(ctx) => ctx.stage("stage-set-model").setModel(model),
+		(ctx) => ctx.stage("stage-set-thinking-level").setThinkingLevel("low"),
+		(ctx) => ctx.stage("stage-cycle-model").cycleModel(),
+		(ctx) => Promise.resolve(ctx.stage("stage-cycle-thinking-level").cycleThinkingLevel()),
+		(ctx) => ctx.stage("stage-navigate-tree").navigateTree("entry"),
+		(ctx) => ctx.stage("stage-compact").compact(),
+	],
+	chain: [(ctx) => ctx.chain([{ name: "chain-call", task: "do the work" }])],
+	parallel: [(ctx) => ctx.parallel([{ name: "parallel-call", task: "do the work" }])],
+	workflow: [(ctx) => ctx.workflow(failingChild)],
 };
 
-const step = calls[call];
-if (step === undefined || (disposition !== "dropped" && disposition !== "handled")) {
+const steps = calls[call];
+if (steps === undefined || (disposition !== "dropped" && disposition !== "handled")) {
 	throw new Error(`unknown mode "${disposition}:${call}"`);
 }
 
@@ -42,9 +55,11 @@ const definition = workflow({
 	inputs: {},
 	outputs: {},
 	run: async (ctx) => {
-		if (disposition === "dropped") {
-			void step(ctx);
-		} else {
+		for (const step of steps) {
+			if (disposition === "dropped") {
+				void step(ctx);
+				continue;
+			}
 			try {
 				await step(ctx);
 			} catch (error) {
