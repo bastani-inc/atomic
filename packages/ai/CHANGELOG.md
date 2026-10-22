@@ -6,6 +6,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ### Fixed
 
+- OpenRouter requests through Chat Completions and Anthropic Messages now set `usage.cost.total` to the cost OpenRouter reports, including the upstream inference cost for BYOK requests, and mark it `totalFromProvider: true`. When the response has no valid accounting, the catalog estimate stays. The `input`, `output`, `cacheRead` and `cacheWrite` components remain catalog estimates and may not add up to the total ([pi #9980](https://github.com/earendil-works/pi/issues/9980))
 - Claude models that accept mid-conversation system messages no longer reject a request with a 400 (`role 'system' must precede an 'assistant' message`) when a system update is followed by an assistant reply with nothing to send to Anthropic, such as an empty reply or another model's reasoning-only reply ([pi #11091](https://github.com/earendil-works/pi/issues/11091))
 
 ## [0.9.41] - 2026-10-22

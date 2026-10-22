@@ -41,6 +41,11 @@ import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getIdentityHeaders } from "../utils/identity.ts";
 import { parseStreamingJson, parseToolCallArguments } from "../utils/json-parse.ts";
+import {
+	applyOpenRouterReportedCost,
+	isOpenRouterModel,
+	type OpenRouterUsageAccounting,
+} from "../utils/openrouter-cost.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
@@ -1617,6 +1622,8 @@ function convertTools(
 }
 
 function parseChunkUsage(
+	// OpenRouter adds billing fields to streamed usage at runtime,
+	// although the OpenAI SDK does not type those fields.
 	rawUsage: {
 		prompt_tokens?: number;
 		completion_tokens?: number;
@@ -1656,6 +1663,9 @@ function parseChunkUsage(
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 	};
 	calculateCost(model, usage);
+	if (isOpenRouterModel(model)) {
+		applyOpenRouterReportedCost(usage, rawUsage as typeof rawUsage & OpenRouterUsageAccounting);
+	}
 	return usage;
 }
 
