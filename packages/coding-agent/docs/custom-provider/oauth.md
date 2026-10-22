@@ -156,12 +156,19 @@ interface OAuthLoginCallbacks {
   onAuth(params: { url: string }): void;
 
   // Show device code (for device authorization flow)
-  onDeviceCode(params: { userCode: string; verificationUri: string }): void;
+  onDeviceCode(params: {
+    userCode: string;
+    verificationUri: string;
+    openBrowserOnConfirm?: boolean; // default true
+    copyCodeOnConfirm?: boolean; // default true
+  }): void;
 
   // Prompt user for input (for manual token entry)
   onPrompt(params: { message: string }): Promise<string>;
 }
 ```
+
+In `/login`, press Enter (`tui.select.confirm`) to open the device-login URL and copy the code, or log in manually. Providers can disable either action with `openBrowserOnConfirm: false` or `copyCodeOnConfirm: false` in `onDeviceCode` or native `AuthEvent` notifications.
 
 ### OAuthCredentials
 

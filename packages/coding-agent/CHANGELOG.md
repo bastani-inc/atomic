@@ -9,6 +9,7 @@
 ### Changed
 
 - The standalone `atomic` binaries are now built with Bun 1.4.4, which includes upstream security fixes in the embedded runtime
+- Device-code `/login` flows (Kimi Code, GitHub Copilot, Meta, and extension providers) no longer open the browser on their own. Press Enter to open the verification URL and copy the code, or log in manually. Providers can turn off either action with `openBrowserOnConfirm: false` or `copyCodeOnConfirm: false`. See [Provider OAuth](docs/custom-provider/oauth.md#oauth-support) ([pi #9282](https://github.com/earendil-works/pi/issues/9282))
 
 ### Fixed
 
