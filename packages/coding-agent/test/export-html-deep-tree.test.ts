@@ -23,7 +23,10 @@ interface TreeApi {
 
 function loadTreeApi(html: string): TreeApi {
 	const sessionData = html.match(/<script id="session-data" type="application\/json">([^<]+)<\/script>/)?.[1];
-	const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+	const scripts = html
+		.split("<script>")
+		.slice(1)
+		.map((chunk) => chunk.slice(0, chunk.indexOf("</script>")));
 	const viewer = scripts.pop();
 	if (!sessionData || !viewer) throw new Error("Missing exported session data or viewer script");
 	const context = createContext({

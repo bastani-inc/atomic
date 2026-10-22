@@ -4,7 +4,7 @@
 
 ### Added
 
-- Markdown transformers registered with `pi.registerMarkdownTransformer()` now receive `messageId` and `timestamp` in their context when a message is rendered from the saved session, so an extension can tie its output to a session entry. Both are `undefined` for live messages. See [registerMarkdownTransformer](docs/extensions/api-reference.md#piregistermarkdowntransformertransformer)
+- Markdown transformers registered with `pi.registerMarkdownTransformer()` now receive `messageId` and `timestamp` in their context when a message is rendered from the saved session, so an extension can tie its output to a session entry. Both are `undefined` for live messages. See [registerMarkdownTransformer](docs/extensions/api-reference.md#pi-registermarkdowntransformer-transformer)
 
 ### Fixed
 
