@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Markdown transformers registered with `pi.registerMarkdownTransformer()` now receive `messageId` and `timestamp` in their context when a message is rendered from the saved session, so an extension can tie its output to a session entry. Both are `undefined` for live messages. See [registerMarkdownTransformer](docs/extensions/api-reference.md#piregistermarkdowntransformertransformer)
+
 ### Fixed
 
 - HTML session exports now show the recorded total cost of each response, such as OpenRouter's billed cost, instead of the sum of its catalog-estimated components. Sessions recorded before totals were stored still use the component sum ([pi #9980](https://github.com/earendil-works/pi/issues/9980))

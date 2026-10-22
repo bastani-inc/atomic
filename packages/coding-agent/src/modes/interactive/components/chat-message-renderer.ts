@@ -27,8 +27,12 @@ import { SkillInvocationMessageComponent } from "./skill-invocation-message.ts";
 import { TaskRow } from "./task-row.js";
 import { ToolExecutionComponent } from "./tool-execution.ts";
 import { UserMessageComponent } from "./user-message.ts";
+export interface PersistedMessageMeta {
+	id: string;
+	timestamp: string;
+}
 export type ChatMessageEntry =
-	| { role: "assistant"; kind: "assistant"; message: AssistantMessage }
+	| { role: "assistant"; kind: "assistant"; message: AssistantMessage; messageId?: string; timestamp?: string }
 	| {
 			role: "tool";
 			kind: "task";
@@ -48,7 +52,7 @@ export type ChatMessageEntry =
 			isPartial?: boolean;
 	  }
 	| { role: "tool"; kind: "bashExecution"; message: BashExecutionMessage; isPartial?: boolean }
-	| { role: "user"; kind: "user"; text: string }
+	| { role: "user"; kind: "user"; text: string; messageId?: string; timestamp?: string }
 	| { role: "custom"; kind: "custom"; message: CustomMessage<unknown> }
 	| { role: "summary"; kind: "branchSummary"; message: BranchSummaryMessage }
 	| { role: "system"; kind: "system"; text: string };
@@ -70,14 +74,24 @@ export interface ChatMessageRenderOptions {
 	createToolComponent?: (entry: Extract<ChatMessageEntry, { kind: "tool" }>) => Component;
 	createCustomMessageComponent?: (message: CustomMessage<unknown>) => Component;
 }
-export function chatEntriesFromAgentMessages(messages: readonly AgentMessage[]): ChatMessageEntry[] {
+export function chatEntriesFromAgentMessages(
+	messages: readonly AgentMessage[],
+	messageMeta?: ReadonlyMap<AgentMessage, PersistedMessageMeta>,
+): ChatMessageEntry[] {
 	const entries: ChatMessageEntry[] = [];
 	const pendingTools = new Map<string, Extract<ChatMessageEntry, { kind: "tool" }>>();
 	for (const message of messages) {
 		if (isLegacyCompactionSummaryMessage(message)) continue;
 		switch (message.role) {
 			case "assistant": {
-				entries.push({ role: "assistant", kind: "assistant", message });
+				const meta = messageMeta?.get(message);
+				entries.push({
+					role: "assistant",
+					kind: "assistant",
+					message,
+					messageId: meta?.id,
+					timestamp: meta?.timestamp,
+				});
 				for (const content of message.content) {
 					if (content.type !== "toolCall") continue;
 					const toolEntry: ChatMessageEntry = {
@@ -132,7 +146,9 @@ export function chatEntriesFromAgentMessages(messages: readonly AgentMessage[]):
 			}
 			case "user": {
 				const text = getMessageText(message);
-				if (text) entries.push({ role: "user", kind: "user", text });
+				const meta = messageMeta?.get(message);
+				if (text)
+					entries.push({ role: "user", kind: "user", text, messageId: meta?.id, timestamp: meta?.timestamp });
 				break;
 			}
 			case "bashExecution":
@@ -504,6 +520,8 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 				options.markdownTransformers,
 				options.isStreaming,
 				options.renderLatex,
+				messageEntry.messageId,
+				messageEntry.timestamp,
 			);
 		case "tool": {
 			if (options.createToolComponent) return options.createToolComponent(messageEntry);
@@ -552,6 +570,8 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 				options.outputPad ?? 1,
 				options.markdownTransformers,
 				options.renderLatex,
+				messageEntry.messageId,
+				messageEntry.timestamp,
 			);
 		case "custom": {
 			if (isVerbatimCompactionMessage(messageEntry.message)) {
@@ -601,16 +621,35 @@ function userMessageComponent(
 	outputPad = 1,
 	markdownTransformers: readonly MarkdownTransformer[] = [],
 	renderLatex = true,
+	messageId?: string,
+	timestamp?: string,
 ): Component {
 	const skillBlock = parseSkillBlock(text);
-	if (!skillBlock) return new UserMessageComponent(text, markdownTheme, outputPad, markdownTransformers, renderLatex);
+	if (!skillBlock)
+		return new UserMessageComponent(
+			text,
+			markdownTheme,
+			outputPad,
+			markdownTransformers,
+			renderLatex,
+			messageId,
+			timestamp,
+		);
 	const container = new SkillMessageContainer();
 	const skillComponent = new SkillInvocationMessageComponent(skillBlock, markdownTheme, renderLatex, outputPad);
 	skillComponent.setExpanded(expanded);
 	container.addChild(skillComponent);
 	if (skillBlock.userMessage) {
 		container.addChild(
-			new UserMessageComponent(skillBlock.userMessage, markdownTheme, outputPad, markdownTransformers, renderLatex),
+			new UserMessageComponent(
+				skillBlock.userMessage,
+				markdownTheme,
+				outputPad,
+				markdownTransformers,
+				renderLatex,
+				messageId,
+				timestamp,
+			),
 		);
 	}
 	return container;

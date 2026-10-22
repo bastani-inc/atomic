@@ -800,6 +800,8 @@ The transformer receives the Markdown string and a context with:
 - `messageType` — `"user"`, `"assistant"`, or `"assistant-thinking"`
 - `isStreaming` — `true` for partial assistant updates; `false` for user, finalized assistant, and restored messages
 - `availableWidth` — exact terminal columns available for the transformed Markdown content
+- `messageId` — the session entry id when the message is rendered from the saved session (resume, `/tree`, rebuilds); `undefined` for live messages
+- `timestamp` — the session entry's ISO timestamp under the same conditions; `undefined` for live messages
 
 Return the transformed Markdown:
 

@@ -28,6 +28,7 @@ import {
 	CustomMessageComponent,
 	chatEntriesFromAgentMessages,
 	hasTrustRequiringProjectResources,
+	type PersistedMessageMeta,
 	parseSkillBlock,
 	recordTimeSinceReset,
 	renderChatMessageEntry,
@@ -477,6 +478,7 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 		this.updateEditorBorderColor();
 	}
 	let messageBuffer: AgentMessage[] = [];
+	const messageMeta = new Map<AgentMessage, PersistedMessageMeta>();
 	let firstMessage = true;
 	const flushMessages = (): void => {
 		if (
@@ -487,7 +489,7 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 			messageBuffer = messageBuffer.slice(1);
 		}
 		firstMessage = false;
-		for (const entry of chatEntriesFromAgentMessages(messageBuffer)) {
+		for (const entry of chatEntriesFromAgentMessages(messageBuffer, messageMeta)) {
 			const component = this.addRenderedChatEntry(entry);
 			if (entry.kind === "assistant") addServiceTierWarnings(this, entry.message);
 			if (entry.kind === "tool" && entry.isPartial !== false && component instanceof ToolExecutionComponent) {
@@ -504,7 +506,9 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 			flushMessages();
 			this.addCustomEntryToChat(entry);
 		} else {
-			messageBuffer.push(...sessionEntryToContextMessages(entry));
+			const messages = sessionEntryToContextMessages(entry);
+			for (const message of messages) messageMeta.set(message, { id: entry.id, timestamp: entry.timestamp });
+			messageBuffer.push(...messages);
 			if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage) {
 				flushMessages();
 				const suppressedLiveBoundary =
