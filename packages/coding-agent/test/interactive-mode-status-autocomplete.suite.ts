@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, Model } from "@bastani/pi-ai/compat";
@@ -316,6 +316,71 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 		expect(suggestions?.prefix).toBe('@"task');
 		expect(suggestions?.items.map((item) => item.value)).toEqual(['@"task brief.md"']);
 	});
+
+	const FAKE_FD_HELPER = `
+import { readdirSync } from "node:fs";
+import { join, relative, sep } from "node:path";
+const args = process.argv.slice(2);
+const base = args[args.indexOf("--base-directory") + 1];
+const subjectIsFullPath = args.includes("--full-path");
+let pattern;
+try {
+	pattern = new RegExp(args.at(-1), "i");
+} catch (error) {
+	console.error(error.message);
+	process.exit(1);
+}
+const found = [];
+const walk = (dir) => {
+	for (const entry of readdirSync(dir, { withFileTypes: true })) {
+		const relativePath = relative(base, join(dir, entry.name)).split(sep).join("/");
+		if (pattern.test(subjectIsFullPath ? relativePath : entry.name)) {
+			found.push(entry.isDirectory() ? relativePath + "/" : relativePath);
+		}
+		if (entry.isDirectory()) walk(join(dir, entry.name));
+	}
+};
+walk(base);
+process.stdout.write(found.join("\\n"));
+`;
+
+	function createFakeFd(): string {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-fake-fd-"));
+		tempDirs.push(dir);
+		const helperPath = join(dir, "fd.mjs");
+		const fdPath = join(dir, "fd");
+		writeFileSync(helperPath, FAKE_FD_HELPER);
+		writeFileSync(fdPath, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(helperPath)} "$@"\n`);
+		chmodSync(fdPath, 0o755);
+		return fdPath;
+	}
+
+	test.skipIf(process.platform === "win32")(
+		"completes @ file mentions whose query contains regex metacharacters through fd (#10972)",
+		async () => {
+			const dir = mkdtempSync(join(tmpdir(), "atomic-at-autocomplete-"));
+			tempDirs.push(dir);
+			mkdirSync(join(dir, "pages"));
+			for (const file of ["[id].tsx", "index.tsx", "(group).ts"]) writeFileSync(join(dir, "pages", file), "x");
+			const provider = createAutocompleteProvider(dir, createFakeFd());
+
+			for (const [line, expected] of [
+				["@pages/[", "@pages/[id].tsx"],
+				["@pages/(", "@pages/(group).ts"],
+				["@[id", "@pages/[id].tsx"],
+				["@(group", "@pages/(group).ts"],
+			] as const) {
+				const suggestions = await provider.getSuggestions([line], 0, line.length, {
+					signal: new AbortController().signal,
+				});
+
+				expect(
+					suggestions?.items.map((item) => item.value),
+					line,
+				).toEqual([expected]);
+			}
+		},
+	);
 
 	test("offers every source-qualified collision command from the catalog", async () => {
 		const makeSkill = (filePath: string, scope: "user" | "temporary", bundled: boolean): Skill => ({
