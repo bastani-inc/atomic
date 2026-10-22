@@ -147,6 +147,7 @@ export function validateRunGroups(
 	rootRunId: string,
 	tools: readonly DurableToolCheckpoint[],
 	checkpoints: readonly DurableCheckpoint[],
+	allowPendingChildren = false,
 ): boolean {
 	const toolsFor = (runId: string) =>
 		tools.filter((checkpoint) => (checkpoint.topology?.run?.runId ?? rootRunId) === runId);
@@ -158,6 +159,15 @@ export function validateRunGroups(
 			if (childRunId === undefined) continue;
 			if (childRunId === parentRunId || owners.has(childRunId)) return false;
 			if (!grouped.has(childRunId)) {
+				if (
+					allowPendingChildren &&
+					isPendingChildBoundary(draft, parentRunId, childRunId, rootRunId) &&
+					!childScopedEvidenceExists(checkpoints, draft.replayKey, childRunId)
+				) {
+					syntheticChildIds.add(childRunId);
+					owners.set(childRunId, draft);
+					continue;
+				}
 				if (
 					!isSyntheticExitedChild(draft, parentRunId, childRunId, rootRunId) ||
 					childScopedEvidenceExists(checkpoints, draft.replayKey, childRunId)
@@ -196,6 +206,25 @@ export function validateRunGroups(
 		if (current !== rootRunId) return false;
 	}
 	return true;
+}
+
+/** A started child boundary whose run has not yet written any checkpoint of its own. */
+export function isPendingChildBoundary(
+	draft: StageDraft,
+	parentRunId: string,
+	childRunId: string,
+	rootRunId: string,
+): boolean {
+	const boundary = draft.topology?.boundary;
+	return (
+		workflowChildFromDraft(draft) === undefined &&
+		boundary?.event === "start" &&
+		boundary.status === "running" &&
+		boundary.child.runId === childRunId &&
+		boundary.child.parentRunId === parentRunId &&
+		boundary.child.parentStageId === draft.topology?.stageId &&
+		boundary.child.rootRunId === rootRunId
+	);
 }
 
 export function isSyntheticExitedChild(
