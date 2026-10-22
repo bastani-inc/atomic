@@ -100,7 +100,7 @@ test("HTTP admission gates inner provider retries and records each 429 once (#38
 		return new Response("{}", { status: calls === 1 ? 429 : 200, headers: { "Retry-After": "2" } });
 	}, globalThis.fetch);
 	const admission = await admitProviderStream(model, { fetch: fetcher }, false);
-	await admission.options.fetch!("https://example.invalid");
+	await admission.run(() => admission.options.fetch!("https://example.invalid"));
 	const failure: AssistantMessage = {
 		role: "assistant",
 		api: model.api,
@@ -123,7 +123,7 @@ test("HTTP admission gates inner provider retries and records each 429 once (#38
 	assert.match(failure.errorMessage!, /429/);
 	recordProviderRateLimit(model.provider, new Error(failure.errorMessage, { cause: failure }));
 	assert.equal(providerRateLimitSnapshot(model.provider)?.rateLimitCount, 1);
-	const retry = admission.options.fetch!("https://example.invalid");
+	const retry = admission.run(() => admission.options.fetch!("https://example.invalid"));
 	await vi.advanceTimersByTimeAsync(1999);
 	assert.equal(calls, 1);
 	await vi.advanceTimersByTimeAsync(1);
@@ -144,4 +144,44 @@ test("aborting budget admission does not dispatch or consume a request (#3864)",
 	assert.equal((await pending).errorMessage, "cancel queued request");
 	assert.equal(calls, 1);
 	configureProviderRequestBudget(model.provider, undefined);
+});
+
+test("shared transports keep concurrent stream failure observations separate (#3864)", async () => {
+	const { model: base } = await runtimeFixture("concurrent-http-observation", () => {});
+	const model = { ...base, api: "openai-completions" };
+	let calls = 0;
+	const fetcher: typeof fetch = Object.assign(async () => {
+		calls++;
+		return new Response("{}", { status: calls === 1 ? 429 : 200, headers: { "Retry-After": "1" } });
+	}, globalThis.fetch);
+	const first = await admitProviderStream(model, { fetch: fetcher }, false);
+	const second = await admitProviderStream(model, { fetch: fetcher }, false);
+	await Promise.all([
+		first.run(() => first.options.fetch!("https://example.invalid")),
+		second.run(() => second.options.fetch!("https://example.invalid")),
+	]);
+	const failure: AssistantMessage = {
+		role: "assistant",
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		content: [],
+		stopReason: "error",
+		timestamp: Date.now(),
+		errorMessage: "Server requested retry delay",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+	};
+	const unrelated = { ...failure, errorMessage: "unrelated failure" };
+	first.observeFailure(failure);
+	second.observeFailure(unrelated);
+	assert.match(failure.errorMessage!, /429/);
+	assert.equal(unrelated.errorMessage, "unrelated failure");
+	assert.equal(providerRateLimitSnapshot(model.provider)?.rateLimitCount, 1);
 });

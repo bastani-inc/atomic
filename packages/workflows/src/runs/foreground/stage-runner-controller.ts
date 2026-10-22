@@ -1114,13 +1114,12 @@ export class StageSessionController {
 		snapshot: StageSessionRuntime["messages"],
 		promptText: string,
 		keepPrompt: boolean,
+		discardAttemptTurns = false,
 	): StageSessionRuntime["messages"][number] | undefined {
 		const snapshotMessages = new Set(snapshot);
 		const admitted = session.messages.filter((message) => !snapshotMessages.has(message));
-		// Error assistants the filter below removes still carry real provider
-		// usage; accrue it before the splice so the retry total keeps it.
 		for (const message of admitted) {
-			if (message.role !== "assistant" || message.stopReason !== "error") continue;
+			if (message.role !== "assistant" || (!discardAttemptTurns && message.stopReason !== "error")) continue;
 			this.accrueDiscardedAttemptUsage(message);
 		}
 		const failedAssistantIndex = admitted.findLastIndex(
@@ -1131,7 +1130,8 @@ export class StageSessionController {
 			.findLast((message) => message.role === "user" && stageUserMessageText(message) === promptText);
 		const retainedMessages = admitted.filter((message) => {
 			if (message === promptUser) return keepPrompt;
-			if (message.role === "assistant") return message.stopReason !== "error";
+			if (message.role === "assistant") return !discardAttemptTurns && message.stopReason !== "error";
+			if (message.role === "toolResult" && discardAttemptTurns) return false;
 			return ["user", "toolResult", "custom", "bashExecution", "branchSummary"].includes(message.role);
 		});
 		session.messages.splice(0, session.messages.length, ...snapshot, ...retainedMessages);
@@ -1332,7 +1332,10 @@ export class StageSessionController {
 				const sameCandidateRetryable =
 					isRetryableSameModelFailure(error) && !isUnresolvedContextOverflowFailure(error);
 				recordProviderRateLimit(this.currentProvider(), error);
-				if (this.hasExplicitModelFallbackConfig && isWorkflowRateLimit(error)) throw error;
+				if (this.hasExplicitModelFallbackConfig && isWorkflowRateLimit(error)) {
+					this.restoreSessionMessages(activeSession, messagesBeforeAttempt, nextText, false, true);
+					throw error;
+				}
 				const decision = nextRetryDecision(
 					this.retrySettings(),
 					retryAttempt,
@@ -2052,10 +2055,11 @@ export class StageSessionController {
 		text: string,
 		sdkOptions: PromptOptions | undefined,
 		candidates: readonly WorkflowResolvedModelCandidate[],
+		rateLimitRetries = 0,
 	): Promise<boolean> {
 		if (!this.resumeCurrentSession || this.session === undefined) return false;
 		if (providerCooldownMs(this.currentProvider()) > 0) {
-			const start = this.activeCandidateIndex ?? 0;
+			const start = rateLimitRetries > 0 ? 0 : (this.activeCandidateIndex ?? 0);
 			const index = await this.selectReadyCandidate(candidates, this.candidateWalk(candidates, start), start);
 			if (index === undefined) return true;
 			if (index !== this.activeCandidateIndex) {
@@ -2115,6 +2119,16 @@ export class StageSessionController {
 			if (this.opts.signal?.aborted || !isRetryableModelFailure(err)) {
 				this.modelWarnings.push(...this.pendingFallbackWarnings);
 				this.pendingFallbackWarnings.length = 0;
+				this.notifyModelFallbackMetaChange();
+				throw err;
+			}
+			const settings = this.retrySettings();
+			const maxRateLimitRetries = settings?.enabled === false ? 0 : (settings?.maxRetries ?? 2);
+			if (isWorkflowRateLimit(err) && rateLimitRetries < maxRateLimitRetries) {
+				this.resumeCurrentSession = true;
+				return this.tryResumeCurrentSession(text, sdkOptions, candidates, rateLimitRetries + 1);
+			}
+			if (isWorkflowRateLimit(err) && candidates.length === 1) {
 				this.notifyModelFallbackMetaChange();
 				throw err;
 			}

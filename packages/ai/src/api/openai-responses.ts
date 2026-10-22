@@ -19,6 +19,7 @@ import { headersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getIdentityHeaders } from "../utils/identity.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
+import { admitOpenAIRequests, getFetchAdmission } from "../utils/request-admission.js";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { getDeclaredTools, resolveTranscript, resolveTranscriptTools } from "../utils/transcript.ts";
@@ -440,13 +441,16 @@ function createClient(
 		Object.assign(headers, optionsHeaders);
 	}
 
-	return new RetryHintOpenAI({
-		apiKey,
-		baseURL: model.baseUrl,
-		dangerouslyAllowBrowser: true,
+	return admitOpenAIRequests(
+		new RetryHintOpenAI({
+			apiKey,
+			baseURL: model.baseUrl,
+			dangerouslyAllowBrowser: true,
+			fetch: getFetchAdmission(fetch)?.fetch ?? fetch,
+			defaultHeaders: headers,
+		}),
 		fetch,
-		defaultHeaders: headers,
-	});
+	);
 }
 
 function buildParams(

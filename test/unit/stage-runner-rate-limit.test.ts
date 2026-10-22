@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test, vi } from "vitest";
-import type { AgentSessionAdapter, InternalStageContext } from "./stage-runner-helpers.js";
-import { createStageContext, flushMicrotasks, makeMockSession, makeOpts } from "./stage-runner-helpers.js";
+import type { AgentSessionAdapter, InternalStageContext, StageSessionRuntime } from "./stage-runner-helpers.js";
+import {
+	assistantMessageWithUsage,
+	createStageContext,
+	flushMicrotasks,
+	makeMockSession,
+	makeOpts,
+} from "./stage-runner-helpers.js";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
@@ -386,4 +392,133 @@ test("waiting for the same cooled account preserves a follow-up conversation (#3
 	await vi.advanceTimersByTimeAsync(2000);
 	assert.equal(await pending, "first;second");
 	assert.equal(creates, 1);
+});
+
+test.each([false, true])(
+	"an explicit-model 429 on a follow-up retries the same conversation, tool round=%s (#3864)",
+	async (withToolRound) => {
+		let creates = 0;
+		let throttled = false;
+		const histories: string[][] = [];
+		const transcripts: StageSessionRuntime["messages"][] = [];
+		const ctx = createStageContext(
+			makeOpts({
+				stageOptions: { model: "follow-up-429/model" },
+				adapters: {
+					agentSession: {
+						async create() {
+							creates++;
+							const history: string[] = [];
+							histories.push(history);
+							const messages: StageSessionRuntime["messages"] = [];
+							transcripts.push(messages);
+							return {
+								session: makeMockSession({
+									messages,
+									async prompt(text) {
+										messages.push({ role: "user", content: text, timestamp: Date.now() });
+										if (text === "second" && !throttled) {
+											throttled = true;
+											if (withToolRound) {
+												const assistant = assistantMessageWithUsage("", {
+													input: 1,
+													output: 1,
+													cacheRead: 0,
+													cacheWrite: 0,
+													cost: 0,
+												});
+												assert.ok(assistant.role === "assistant");
+												assistant.content = [
+													{ type: "toolCall", id: "call", name: "lookup", arguments: {} },
+												];
+												messages.push(assistant, {
+													role: "toolResult",
+													toolCallId: "call",
+													toolName: "lookup",
+													content: [{ type: "text", text: "result" }],
+													isError: false,
+													timestamp: Date.now(),
+												});
+											}
+											throw Object.assign(new Error("429 Too Many Requests"), { retryAfterMs: 2000 });
+										}
+										history.push(text, `answer to ${text}`);
+										messages.push(
+											assistantMessageWithUsage(`answer to ${text}`, {
+												input: 0,
+												output: 0,
+												cacheRead: 0,
+												cacheWrite: 0,
+												cost: 0,
+											}),
+										);
+										return `answer to ${text}`;
+									},
+									getLastAssistantText: () => history.at(-1),
+								}).session,
+								settingsManager: { getRetrySettings: () => ({ enabled: true, maxRetries: 1, baseDelayMs: 0 }) },
+							};
+						},
+					},
+				},
+			}),
+		) as InternalStageContext;
+		assert.equal(await ctx.prompt("first"), "answer to first");
+		const pending = ctx.prompt("second");
+		void pending.catch(() => {});
+		try {
+			await vi.advanceTimersByTimeAsync(2000);
+			assert.equal(await pending, "answer to second");
+			assert.equal(creates, 1);
+			assert.deepEqual(histories[0], ["first", "answer to first", "second", "answer to second"]);
+			assert.deepEqual(
+				transcripts[0]!.map((message) => message.role),
+				["user", "assistant", "user", "assistant"],
+			);
+			const firstMessage = transcripts[0]![0]!;
+			assert.ok(firstMessage.role === "user");
+			assert.equal(firstMessage.content, "first");
+		} finally {
+			await ctx.abort();
+			await pending.catch(() => {});
+		}
+	},
+);
+
+test("a rate-limited follow-up exhausts its retry budget without restarting the conversation (#3864)", async () => {
+	let creates = 0;
+	let followUps = 0;
+	const ctx = createStageContext(
+		makeOpts({
+			stageOptions: { model: "exhausted-follow-up/model" },
+			adapters: {
+				agentSession: {
+					async create() {
+						creates++;
+						return {
+							session: makeMockSession({
+								async prompt(text) {
+									if (text === "first") return "ok";
+									followUps++;
+									throw Object.assign(new Error("429 Too Many Requests"), { retryAfterMs: 1000 });
+								},
+							}).session,
+							settingsManager: { getRetrySettings: () => ({ enabled: true, maxRetries: 1, baseDelayMs: 0 }) },
+						};
+					},
+				},
+			},
+		}),
+	) as InternalStageContext;
+	assert.equal(await ctx.prompt("first"), "ok");
+	const pending = ctx.prompt("second");
+	const rejected = assert.rejects(pending, /429/);
+	try {
+		await vi.advanceTimersByTimeAsync(5000);
+		await rejected;
+		assert.equal(followUps, 2);
+		assert.equal(creates, 1);
+	} finally {
+		await ctx.abort();
+	}
 });

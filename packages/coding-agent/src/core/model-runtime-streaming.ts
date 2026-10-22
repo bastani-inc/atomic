@@ -262,7 +262,7 @@ export class ModelRuntimeStreaming {
 					);
 					prepared = { ...prepared, options: admission.options };
 					options?.signal?.throwIfAborted();
-					const source = invoke(prepared);
+					const source = admission.run(() => invoke(prepared));
 					let terminal = false;
 					for await (const event of source) {
 						if (event.type === "error") admission.observeFailure(event.error);

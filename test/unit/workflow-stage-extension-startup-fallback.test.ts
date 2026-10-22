@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { AssistantMessage, Model } from "@bastani/pi-ai";
 import { fauxAssistantMessage, registerFauxProvider } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
+import "../helpers/provider-rate-limit-isolation.js";
 import { test } from "vitest";
 import type { InlineExtension } from "../../packages/coding-agent/src/core/extensions/provider-types.js";
 import { DefaultResourceLoader, SettingsManager } from "../../packages/coding-agent/src/index.js";
