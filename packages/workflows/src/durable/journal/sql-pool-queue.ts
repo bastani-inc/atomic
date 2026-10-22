@@ -4,7 +4,11 @@ import { assertWorkflowSerializableObject } from "../../shared/serializable.js";
 import type { WorkflowSerializableObject } from "../../shared/types.js";
 import { validateCheckpointInvocationFingerprint } from "../boundary-topology.js";
 import { durableHash } from "../durable-hash.js";
-import type { DurableStageCheckpoint } from "../types.js";
+import {
+	DURABLE_BOUNDARY_TOPOLOGY_VERSION,
+	DURABLE_STAGE_TOPOLOGY_VERSION,
+	type DurableStageCheckpoint,
+} from "../types.js";
 import { type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import { type Lease, RUN_EVENT_TYPES, type RunJournal, StaleLeaseError } from "./types.js";
@@ -170,6 +174,11 @@ export class SqlPoolQueue {
 			boundary.workflowId !== lease.runId ||
 			boundary.checkpointId !== `boundary-start:${descriptor.scope}` ||
 			topology?.stageId !== boundaryId ||
+			topology.sourceOrder === undefined ||
+			topology.version !== DURABLE_STAGE_TOPOLOGY_VERSION ||
+			topology.status !== "running" ||
+			topology.boundary?.version !== DURABLE_BOUNDARY_TOPOLOGY_VERSION ||
+			topology.boundary.status !== "running" ||
 			topology.run?.runId !== lease.runId ||
 			topology.boundary?.event !== "start" ||
 			child?.runId !== descriptor.childRunId ||

@@ -3,7 +3,10 @@ import { join } from "node:path";
 import { StorageUnavailableError } from "@bastani/atomic/storage";
 import { test } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
-import { DurableNestedTopologyError } from "../../packages/workflows/src/durable/boundary-topology.js";
+import {
+	DurableNestedTopologyError,
+	prepareDurableChildInvocation,
+} from "../../packages/workflows/src/durable/boundary-topology.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
@@ -111,6 +114,68 @@ test("queue rejects missing invocation fingerprints without publishing a boundar
 			try {
 				assert.deepEqual(await (await openSqlPoolQueue(second)).inspect("root"), [valid]);
 				assert.deepEqual(backend.listCheckpoints("root"), [boundary]);
+			} finally {
+				await backend.close();
+			}
+		} finally {
+			await secondDatabase.close();
+		}
+	} finally {
+		await f.close();
+	}
+});
+
+test.each([
+	["source order", "topology", "sourceOrder", undefined],
+	["topology version", "topology", "version", 2],
+	["topology status", "topology", "status", "completed"],
+	["boundary version", "boundary", "version", 2],
+	["boundary status", "boundary", "status", "completed"],
+])("queue rejects malformed boundary %s before publishing resumable work (#3869)", async (_, target, key, value) => {
+	const f = await fixture();
+	try {
+		await f.journal.append(f.lease, {
+			type: RUN_EVENT_TYPES.runStarted,
+			payload: { workflowId: "root", name: "root", inputs: {}, createdAt: 0, status: "running" },
+		});
+		const pool = await openSqlPoolQueue(f.journal);
+		await pool.initialize(f.lease, 60_000);
+		const malformed = structuredClone(boundary);
+		const topology = target === "topology" ? malformed.topology! : malformed.topology!.boundary!;
+		if (value === undefined) Reflect.deleteProperty(topology, String(key));
+		else Reflect.set(topology, String(key), value);
+		await assert.rejects(pool.enqueue(f.lease, work, malformed), /boundary/i);
+		assert.deepEqual(await pool.inspect("root"), []);
+		assert.equal(
+			await f.journal.readKey(
+				"root",
+				JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, "stage", boundary.checkpointId]),
+			),
+			undefined,
+		);
+		assert.equal(await pool.claim(f.lease, "worker", [work], 60_000), undefined);
+		const valid = await pool.enqueue(f.lease, work, boundary);
+		const secondDatabase = await openNodeSqliteDatabase(f.path);
+		try {
+			const second = await SqlRunJournal.open(secondDatabase);
+			const backend = await JournalDurableBackend.open(second);
+			try {
+				const invocation = prepareDurableChildInvocation({
+					workflowId: "root",
+					rootWorkflowId: "root",
+					backend,
+					replayKey: work.scope,
+					boundaryName: "child",
+					alias: "child",
+					workflow: "child",
+					childRunName: "child",
+					invocationFingerprint: "fingerprint",
+					runTopology: boundary.topology!.run!,
+				});
+				assert.equal(invocation.identity.sourceOrder, 0);
+				assert.equal(invocation.identity.childRunId, work.childRunId);
+				await invocation.recordStart([], 0);
+				assert.deepEqual(await (await openSqlPoolQueue(second)).inspect("root"), [valid]);
 			} finally {
 				await backend.close();
 			}
