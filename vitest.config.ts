@@ -9,7 +9,7 @@ export { TEST_TIMEOUT_MS };
  * `beforeEach` installing a fresh in-memory durable backend, and needs no edit:
  * its `beforeEach` import resolves through the `bun:test` alias.
  */
-const setupFiles = ["./test/setup-workflow-durability.ts"];
+const setupFiles = ["./test/setup-workflow-durability.ts", "./test/helpers/provider-rate-limit-isolation.ts"];
 
 /**
  * Global setups run once per project in the orchestrator process, before any

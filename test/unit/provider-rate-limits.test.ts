@@ -57,3 +57,15 @@ test("a later short retry hint never shortens an account's existing cooldown (#3
 		"rateLimitCount",
 	]);
 });
+
+test("fractional jittered cooldowns round up to a whole millisecond that a millisecond clock can reach (#3864)", () => {
+	vi.spyOn(Math, "random").mockReturnValue(0.0001);
+	const jittered = recordProviderRateLimit("fractional", { status: 429 });
+	assert.equal(jittered, 501);
+	vi.advanceTimersByTime(jittered);
+	assert.equal(providerCooldownMs("fractional"), 0);
+	const hinted = recordProviderRateLimit("fractional-hint", { status: 429, retryAfterMs: 1500.4 });
+	assert.equal(hinted, 1501);
+	vi.advanceTimersByTime(hinted);
+	assert.equal(providerCooldownMs("fractional-hint"), 0);
+});

@@ -19,6 +19,8 @@ import { createStageContext, makeMockSession, makeOpts } from "./stage-runner-he
 const OTHER_MODEL = { ...decisionModel, id: "other", name: "Other" };
 const CURRENT_MODEL_ID = "decision-test/chat";
 const ROUTED_MODEL_ID = "decision-test/other";
+const ROUTER_MODEL = { ...decisionModel, provider: "router-test" };
+const ROUTER_MODEL_ID = "router-test/chat";
 /** Virtual time a bounded outcome may exceed its deadline by (timers armed around it). */
 const DEADLINE_SLACK_MS = 5_000;
 const CONCURRENT_WORKFLOWS = STAGE_ROUTING_CONCURRENCY * 6;
@@ -30,12 +32,19 @@ afterEach(() => {
 });
 
 async function fixture(provider: RoutingProvider, withCurrentModel = true) {
-	const { registry } = await registeredDecisionRuntime(provider.streamSimple);
-	vi.spyOn(registry, "getAvailable").mockReturnValue([decisionModel, OTHER_MODEL]);
+	const { runtime, registry } = await registeredDecisionRuntime(provider.streamSimple);
+	runtime.registerProvider(ROUTER_MODEL.provider, {
+		api: ROUTER_MODEL.api,
+		baseUrl: ROUTER_MODEL.baseUrl,
+		apiKey: "mock-router-secret",
+		models: [ROUTER_MODEL],
+		streamSimple: provider.streamSimple,
+	});
+	vi.spyOn(registry, "getAvailable").mockReturnValue([decisionModel, OTHER_MODEL, ROUTER_MODEL]);
 	const models = workflowModelCatalogFromContext({
 		...(withCurrentModel ? { model: decisionModel } : {}),
 		modelRegistry: registry,
-		getRouterModel: () => CURRENT_MODEL_ID,
+		getRouterModel: () => ROUTER_MODEL_ID,
 	});
 	const admissions: string[] = [];
 	const adapters = {

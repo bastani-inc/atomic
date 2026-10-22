@@ -1,5 +1,5 @@
 import { getProviderRetryAfterMs } from "@bastani/pi-ai/utils/retry-hints";
-import { normalizeModelFailureSignal } from "./model-fallback-failures.js";
+import { normalizeModelFailureSignal } from "./model-fallback-failures.ts";
 
 export interface ProviderRequestBudget {
 	readonly maxRequests: number;
@@ -124,7 +124,7 @@ export function recordProviderRateLimit(provider: string | undefined, error: unk
 	limit.consecutiveLimits += 1;
 	const backoff = Math.min(60_000, 1000 * 2 ** Math.min(limit.consecutiveLimits - 1, 6));
 	const delay = providerRetryHint(error).retryAfterMs ?? backoff * (0.5 + Math.random() * 0.5);
-	limit.cooldownUntil = Math.max(limit.cooldownUntil, Date.now() + Math.max(1, delay));
+	limit.cooldownUntil = Math.max(limit.cooldownUntil, Math.ceil(Date.now() + Math.max(1, delay)));
 	return providerCooldownMs(provider);
 }
 

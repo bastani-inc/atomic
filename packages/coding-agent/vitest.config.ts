@@ -47,6 +47,7 @@ const project = (name: string, include: string[], exclude: string[]) => ({
 		name,
 		globals: true,
 		environment: "node" as const,
+		setupFiles: ["../../test/helpers/provider-rate-limit-isolation.ts"],
 		globalSetup: [
 			"../../test/global-setup-herdr-isolation.ts",
 			"../../test/global-setup-workflow-artifacts.ts",

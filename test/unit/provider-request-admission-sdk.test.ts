@@ -454,7 +454,7 @@ describe.each(headerTimeoutTransports)("$name header timeout admission (#3864)",
 describe("runtime Codex SSE routing keeps admission ahead of the header timeout (#3864)", () => {
 	const intervalMs = 200;
 	const timeoutMs = 20;
-	const codexFastModel: Model<"openai-codex-responses"> = {
+	const codexPriorityModel: Model<"openai-codex-responses"> = {
 		...model,
 		api: "openai-codex-responses",
 		provider: "openai-codex",
@@ -464,7 +464,7 @@ describe("runtime Codex SSE routing keeps admission ahead of the header timeout 
 	};
 
 	beforeEach(() => vi.useRealTimers());
-	afterEach(() => configureProviderRequestBudget(codexFastModel.provider, undefined));
+	afterEach(() => configureProviderRequestBudget(codexPriorityModel.provider, undefined));
 
 	async function createRuntime(): Promise<ModelRuntime> {
 		const runtime = await ModelRuntime.create({
@@ -473,11 +473,11 @@ describe("runtime Codex SSE routing keeps admission ahead of the header timeout 
 			allowModelNetwork: false,
 		});
 		const stream: Provider["stream"] = (_model, requestContext, options: StreamOptions | undefined) =>
-			streamCodex(codexFastModel, requestContext, options ?? {});
+			streamCodex(codexPriorityModel, requestContext, options ?? {});
 		runtime.registerNativeProvider({
-			id: codexFastModel.provider,
+			id: codexPriorityModel.provider,
 			name: "Codex",
-			getModels: () => [codexFastModel],
+			getModels: () => [codexPriorityModel],
 			auth: {
 				apiKey: { name: "fixture", resolve: async () => ({ auth: { apiKey: codexToken }, source: "stored" }) },
 			},
@@ -488,8 +488,8 @@ describe("runtime Codex SSE routing keeps admission ahead of the header timeout 
 	}
 
 	function exhaustBudget(): void {
-		configureProviderRequestBudget(codexFastModel.provider, { maxRequests: 1, intervalMs });
-		assert.equal(tryAdmitProviderRequest(codexFastModel.provider), 0);
+		configureProviderRequestBudget(codexPriorityModel.provider, { maxRequests: 1, intervalMs });
+		assert.equal(tryAdmitProviderRequest(codexPriorityModel.provider), 0);
 	}
 
 	test("dispatches once after the queue wait with routing applied", async () => {
@@ -501,7 +501,7 @@ describe("runtime Codex SSE routing keeps admission ahead of the header timeout 
 			return codexResponse();
 		}, globalThis.fetch);
 		const runtime = await createRuntime();
-		const message = await runtime.completeSimple(codexFastModel, context, {
+		const message = await runtime.completeSimple(codexPriorityModel, context, {
 			fetch: fetcher,
 			transport: "sse",
 			timeoutMs,
@@ -533,7 +533,7 @@ describe("runtime Codex SSE routing keeps admission ahead of the header timeout 
 			return codexResponse();
 		}, globalThis.fetch);
 		const runtime = await createRuntime();
-		const message = await runtime.completeSimple(codexFastModel, context, {
+		const message = await runtime.completeSimple(codexPriorityModel, context, {
 			fetch: fetcher,
 			signal: createSignal(),
 			transport: "sse",
