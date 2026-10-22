@@ -1,6 +1,7 @@
+import assert from "node:assert/strict";
 import type { Usage } from "@bastani/pi-ai/compat";
-import { describe, expect, it } from "vitest";
-import { combineUsage } from "../src/core/usage-totals.ts";
+import { describe, it } from "vitest";
+import { combineUsage } from "../src/core/usage-totals.js";
 
 function usage(total: number, totalFromProvider?: boolean): Usage {
 	return {
@@ -22,9 +23,11 @@ function usage(total: number, totalFromProvider?: boolean): Usage {
 
 describe("combineUsage", () => {
 	it("marks the combined total as provider-reported only when both totals are", () => {
-		expect(combineUsage(usage(1, true), usage(2, true)).cost).toMatchObject({ total: 3, totalFromProvider: true });
-		expect(combineUsage(usage(1, true), usage(2)).cost.totalFromProvider).toBe(false);
-		expect(combineUsage(usage(1), usage(2, true)).cost.totalFromProvider).toBe(false);
-		expect(combineUsage(usage(1), usage(2)).cost.totalFromProvider).toBe(false);
+		const bothFromProvider = combineUsage(usage(1, true), usage(2, true)).cost;
+		assert.equal(bothFromProvider.total, 3);
+		assert.equal(bothFromProvider.totalFromProvider, true);
+		assert.equal(combineUsage(usage(1, true), usage(2)).cost.totalFromProvider, false);
+		assert.equal(combineUsage(usage(1), usage(2, true)).cost.totalFromProvider, false);
+		assert.equal(combineUsage(usage(1), usage(2)).cost.totalFromProvider, false);
 	});
 });
