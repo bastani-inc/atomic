@@ -30,6 +30,8 @@ import { normalizeModelProvider } from "./azure-provider-compat.js";
 import { usesChatGptCodexTransport, withChatGptCodexTransportRouting } from "./fast-model-routing.ts";
 import { installCodexFastRouteWebSocketIdentity } from "./fast-model-routing-transport.ts";
 import type { ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
+import { recordProviderSuccess } from "./provider-rate-limits.js";
+import { admitProviderStream } from "./provider-request-admission.js";
 
 export function mergeHeaders(
 	base: ProviderHeaders | undefined,
@@ -245,6 +247,7 @@ export class ModelRuntimeStreaming {
 		};
 		const retry = (previous: Awaited<ReturnType<typeof prepare>>) =>
 			reprepareCredentials(previous).catch(() => undefined);
+		const ownsTransport = (requestModel: Model<Api>) => this.ownsExtensionTransport(requestModel);
 		const iterate = async function* (): AsyncGenerator<AssistantMessageEvent> {
 			let prepared = await prepare();
 			for (let attempt = 0; attempt < 2; attempt++) {
@@ -252,9 +255,18 @@ export class ModelRuntimeStreaming {
 				let deliveredContent = false;
 				let rejection: AssistantMessageEvent | undefined;
 				try {
+					const admission = await admitProviderStream(
+						prepared.model,
+						prepared.options,
+						ownsTransport(prepared.model),
+					);
+					prepared = { ...prepared, options: admission.options };
+					options?.signal?.throwIfAborted();
 					const source = invoke(prepared);
 					let terminal = false;
 					for await (const event of source) {
+						if (event.type === "error") admission.observeFailure(event.error);
+						if (event.type === "done") recordProviderSuccess(prepared.model.provider);
 						if (event.type === "start") {
 							pending.push(event);
 							continue;
@@ -275,6 +287,9 @@ export class ModelRuntimeStreaming {
 					}
 					if (!rejection && !terminal) {
 						const result = await source.result();
+						if (result.stopReason !== "error" && result.stopReason !== "aborted")
+							recordProviderSuccess(prepared.model.provider);
+						if (result.stopReason === "error") admission.observeFailure(result);
 						const event: AssistantMessageEvent =
 							result.stopReason === "error" || result.stopReason === "aborted"
 								? { type: "error", reason: result.stopReason, error: result }

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Workflow model chains now share provider-account cooldowns after rate limits, honor `Retry-After`, and wait for the earliest eligible account instead of exhausting a cooling chain. Retries remain bounded, waits can be paused or cancelled, and workflow status and task results report provider counts and cooldown deadlines ([#3864](https://github.com/bastani-inc/atomic/issues/3864)).
+
 ## [0.9.41] - 2026-10-22
 
 ### Added

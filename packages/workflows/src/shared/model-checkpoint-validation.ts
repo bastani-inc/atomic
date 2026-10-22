@@ -47,6 +47,31 @@ export function isModelAttempts<T>(value: T): boolean {
 	);
 }
 
+export function isProviderRateLimits(
+	value: unknown,
+): value is readonly import("./types.js").WorkflowProviderRateLimit[] {
+	return (
+		Array.isArray(value) &&
+		value.every((entry) => {
+			if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return false;
+			const record = entry as Record<string, WorkflowSerializableValue>;
+			return (
+				typeof record.provider === "string" &&
+				Object.keys(record).every((key) =>
+					["provider", "rateLimitCount", "cooldownUntil", "waitingUntil"].includes(key),
+				) &&
+				["rateLimitCount", "cooldownUntil"].every(
+					(key) => typeof record[key] === "number" && Number.isFinite(record[key]) && record[key] >= 0,
+				) &&
+				(record.waitingUntil === undefined ||
+					(typeof record.waitingUntil === "number" &&
+						Number.isFinite(record.waitingUntil) &&
+						record.waitingUntil >= 0))
+			);
+		})
+	);
+}
+
 function isReasoningLevel(value: WorkflowSerializableValue): boolean {
 	return (
 		value === "off" ||

@@ -79,6 +79,24 @@ function recordRunningRunWithStages(runId: string): void {
 	});
 }
 
+test("status identifies stages waiting on provider cooldowns with safe counts (#3864)", async () => {
+	const runId = "rate-limit-status";
+	const until = Date.now() + 2000;
+	const rateLimits = [{ provider: "account-a", rateLimitCount: 3, cooldownUntil: until, waitingUntil: until }];
+	store.recordRunStart(makeInflightRun(runId));
+	store.recordStageStart(runId, {
+		id: "limited",
+		name: "limited",
+		status: "running",
+		parentIds: [],
+		toolEvents: [],
+		rateLimits,
+	});
+	const result = await makeToolHandler()({ action: "status" }, {} as never);
+	assert.deepEqual((result as StatusListing).runs[0]?.activeStages[0]?.rateLimits, rateLimits);
+	assert.match(renderWorkflowToolContent(result, { action: "status" }), /cooldown.*account-a.*3/);
+});
+
 describe("workflow tool status run listing", () => {
 	test.sequential("status without runId lists session runs with concise summaries, in-flight first", async () => {
 		const activeId = `status-listing-active-${Date.now()}`;

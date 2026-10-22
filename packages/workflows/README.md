@@ -504,6 +504,16 @@ For authored workflows, choose thinking effort by stage role and failure cost ra
 
 When pi exposes its model registry, workflow runs validate user-specified `model` / `fallbackModels` before starting model-backed work and report all unavailable or ambiguous IDs together. Bare model IDs are accepted only when they resolve uniquely or match the current provider; otherwise use `provider/model`. Fallback attempts may send the same prompt/context to a different provider, so choose fallbacks that fit your cost, privacy, and data-handling requirements.
 
+### Rate-limit-aware fallback
+
+A 429 puts its configured provider account on a cooldown shared by every stage in the process. The chain prefers a ready candidate; when all eligible candidates are cooling down, it waits for the earliest deadline and rechecks. `Retry-After` seconds and HTTP dates take precedence over local exponential backoff with jitter. Local backoff is capped at 60 seconds, but a longer server deadline is respected.
+
+Retries remain bounded by the session's `retry.enabled` and `retry.maxRetries`. Custom adapters without retry settings allow two rate-limit retries per candidate. Pausing, quitting, or cancelling interrupts a cooldown wait. Workflow and structured-output time limits still include time spent waiting.
+
+Stage metadata and task results expose `rateLimits`: configured provider IDs, process-wide `rateLimitCount`, `cooldownUntil`, and `waitingUntil` while the fallback scheduler waits. The model-facing `workflow status` listing names waiting stages and their provider counts. Timestamps use Unix milliseconds; historical records do not restore active cooldowns after restart.
+
+For optional per-provider rolling request budgets, call `configureProviderRequestBudget(provider, { maxRequests, intervalMs })` from `@bastani/atomic` before model work. Pass `undefined` to remove a budget. Budgets apply across model runtimes in the same process. HTTP-based OpenAI, Anthropic, Azure, Mistral, pi-messages, and explicit Codex SSE transports count each HTTP attempt; other transports count stream starts rather than their internal retries. Separate configured provider IDs have independent budgets even when they point to the same account. See [provider rate limits](../coding-agent/docs/workflows.md#provider-rate-limits) for an example and limitations.
+
 ### `createRegistry` — grouping workflows
 
 ```typescript

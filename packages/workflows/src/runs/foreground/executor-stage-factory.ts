@@ -177,6 +177,7 @@ export function createWorkflowStageFactory(input: {
 			else delete stageSnapshot.thinkingLevel;
 			if (meta.attemptedModels !== undefined) stageSnapshot.attemptedModels = meta.attemptedModels;
 			if (meta.modelAttempts !== undefined) stageSnapshot.modelAttempts = meta.modelAttempts;
+			if (meta.rateLimits !== undefined) stageSnapshot.rateLimits = meta.rateLimits;
 			if (meta.routerSelection !== undefined) stageSnapshot.routerSelection = meta.routerSelection;
 			if (meta.warnings !== undefined) {
 				if (meta.warnings.length > 0) stageSnapshot.warnings = meta.warnings;
@@ -418,6 +419,7 @@ export function createWorkflowStageFactory(input: {
 					...(stageSnapshot.sessionId !== undefined ? { sessionId: stageSnapshot.sessionId } : {}),
 					...(stageSnapshot.sessionFile !== undefined ? { sessionFile: stageSnapshot.sessionFile } : {}),
 					...(stageSnapshot.modelAttempts !== undefined ? { modelAttempts: stageSnapshot.modelAttempts } : {}),
+					...(stageSnapshot.rateLimits !== undefined ? { rateLimits: stageSnapshot.rateLimits } : {}),
 					...(stageSnapshot.routerSelection !== undefined
 						? { routerSelection: stageSnapshot.routerSelection }
 						: {}),

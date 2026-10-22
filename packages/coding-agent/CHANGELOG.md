@@ -5,6 +5,7 @@
 ### Added
 
 - Markdown transformers registered with `pi.registerMarkdownTransformer()` now receive `messageId` and `timestamp` in their context when a message is rendered from the saved session, so an extension can tie its output to a session entry. Both are `undefined` for live messages. See [registerMarkdownTransformer](docs/extensions/api-reference.md#pi-registermarkdowntransformer-transformer)
+- Added `configureProviderRequestBudget(provider, { maxRequests, intervalMs })` for process-wide rolling request budgets shared across SDK model runtimes. Model requests also share provider cooldowns after 429 responses. Separate configured provider IDs remain independent ([#3864](https://github.com/bastani-inc/atomic/issues/3864)).
 
 ### Changed
 

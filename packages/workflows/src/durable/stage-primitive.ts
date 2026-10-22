@@ -438,6 +438,9 @@ function completeTaskResult(
 		...(base.modelAttempts !== undefined || checkpoint.modelAttempts !== undefined
 			? { modelAttempts: [...(base.modelAttempts ?? checkpoint.modelAttempts ?? [])] }
 			: {}),
+		...(base.rateLimits !== undefined || checkpoint.rateLimits !== undefined
+			? { rateLimits: [...(base.rateLimits ?? checkpoint.rateLimits ?? [])] }
+			: {}),
 		...((base.routerSelection ?? checkpoint.routerSelection) !== undefined
 			? { routerSelection: base.routerSelection ?? checkpoint.routerSelection }
 			: {}),
@@ -572,6 +575,7 @@ function taskCheckpointMetadata(result: WorkflowTaskResult): Partial<DurableStag
 		...(result.thinkingLevel !== undefined ? { thinkingLevel: result.thinkingLevel } : {}),
 		...(result.attemptedModels !== undefined ? { attemptedModels: [...result.attemptedModels] } : {}),
 		...(result.modelAttempts !== undefined ? { modelAttempts: [...result.modelAttempts] } : {}),
+		...(result.rateLimits !== undefined ? { rateLimits: [...result.rateLimits] } : {}),
 		...(result.routerSelection !== undefined ? { routerSelection: result.routerSelection } : {}),
 		...(result.structured !== undefined ? { structured: result.structured } : {}),
 		...(result.artifacts !== undefined ? { artifacts: [...result.artifacts] } : {}),
@@ -622,6 +626,7 @@ function mergeCheckpointHydrationMetadata(
 		...(replayValueCheckpoint.thinkingLevel === undefined ? metadataValue(checkpoints, "thinkingLevel") : {}),
 		...(replayValueCheckpoint.attemptedModels === undefined ? metadataValue(checkpoints, "attemptedModels") : {}),
 		...(replayValueCheckpoint.modelAttempts === undefined ? metadataValue(checkpoints, "modelAttempts") : {}),
+		...(replayValueCheckpoint.rateLimits === undefined ? metadataValue(checkpoints, "rateLimits") : {}),
 		...(replayValueCheckpoint.routerSelection === undefined ? metadataValue(checkpoints, "routerSelection") : {}),
 		...(replayValueCheckpoint.structured === undefined ? metadataValue(checkpoints, "structured") : {}),
 		...(replayValueCheckpoint.artifacts === undefined ? metadataValue(checkpoints, "artifacts") : {}),
@@ -726,6 +731,7 @@ export function recordCachedStageIntoStore(
 		...(checkpoint?.thinkingLevel !== undefined ? { thinkingLevel: checkpoint.thinkingLevel } : {}),
 		...(checkpoint?.attemptedModels !== undefined ? { attemptedModels: checkpoint.attemptedModels } : {}),
 		...(checkpoint?.modelAttempts !== undefined ? { modelAttempts: checkpoint.modelAttempts } : {}),
+		...(checkpoint?.rateLimits !== undefined ? { rateLimits: checkpoint.rateLimits } : {}),
 		...(checkpoint?.routerSelection !== undefined ? { routerSelection: checkpoint.routerSelection } : {}),
 		...(checkpoint?.structured !== undefined ? { structured: checkpoint.structured } : {}),
 		...(checkpoint?.artifacts !== undefined ? { artifacts: checkpoint.artifacts } : {}),

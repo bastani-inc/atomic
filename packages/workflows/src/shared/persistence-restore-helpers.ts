@@ -1,6 +1,6 @@
 import { Value } from "typebox/value";
 import type { BudgetReport } from "./budget.js";
-import { isModelAttempts, isRouterSelection } from "./model-checkpoint-validation.js";
+import { isModelAttempts, isProviderRateLimits, isRouterSelection } from "./model-checkpoint-validation.js";
 import type { NormalizedSessionEntry as SessionEntry } from "./persistence-restore.js";
 import { workflowSerializableObjectSchema } from "./serializable.js";
 import type { Store } from "./store.js";
@@ -114,6 +114,7 @@ export function _buildStageSnapshots(
 				if (typeof sessionId === "string") snap.sessionId = sessionId;
 				if (typeof sessionFile === "string") snap.sessionFile = sessionFile;
 				if (isModelAttempts(modelAttempts)) snap.modelAttempts = modelAttempts as StageSnapshot["modelAttempts"];
+				if (isProviderRateLimits(entry.payload.rateLimits)) snap.rateLimits = entry.payload.rateLimits;
 				if (isRouterSelection(routerSelection))
 					snap.routerSelection = Object.freeze({
 						...(routerSelection as NonNullable<StageSnapshot["routerSelection"]>),

@@ -152,6 +152,7 @@ export function createReplayStageContext(input: {
 			...(replaySource.thinkingLevel !== undefined ? { thinkingLevel: replaySource.thinkingLevel } : {}),
 			...(replaySource.attemptedModels !== undefined ? { attemptedModels: replaySource.attemptedModels } : {}),
 			...(replaySource.modelAttempts !== undefined ? { modelAttempts: replaySource.modelAttempts } : {}),
+			...(replaySource.rateLimits !== undefined ? { rateLimits: replaySource.rateLimits } : {}),
 			...(replaySource.routerSelection !== undefined ? { routerSelection: replaySource.routerSelection } : {}),
 		}),
 		__requestPause: async () => rejectReplayMutation("pause"),

@@ -35,6 +35,7 @@ export interface StageSendUserMessageOptions {
 export type WorkflowModelValue = NonNullable<CreateAgentSessionOptions["model"]> | string;
 export type WorkflowModelUsage = AuthoringContract.WorkflowModelUsage;
 export type WorkflowModelAttempt = AuthoringContract.WorkflowModelAttempt;
+export type WorkflowProviderRateLimit = AuthoringContract.WorkflowProviderRateLimit;
 export type WorkflowModelFallbackFields = AuthoringContract.WorkflowModelFallbackFields;
 export type WorkflowThinkingLevel = AuthoringContract.WorkflowThinkingLevel;
 

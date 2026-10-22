@@ -97,6 +97,13 @@ export interface WorkflowModelUsage extends WorkflowSerializableObject {
 	readonly turns?: number;
 }
 
+export interface WorkflowProviderRateLimit extends WorkflowSerializableObject {
+	readonly provider: string;
+	readonly rateLimitCount: number;
+	readonly cooldownUntil: number;
+	readonly waitingUntil?: number;
+}
+
 export interface WorkflowModelAttempt extends WorkflowSerializableObject {
 	readonly model: string;
 	readonly success: boolean;
@@ -433,6 +440,7 @@ export interface WorkflowTaskResult extends WorkflowTaskContext {
 	readonly routerSelection?: ModelRouterOutput;
 	readonly attemptedModels?: readonly string[];
 	readonly modelAttempts?: readonly WorkflowModelAttempt[];
+	readonly rateLimits?: readonly WorkflowProviderRateLimit[];
 	readonly warnings?: readonly string[];
 }
 

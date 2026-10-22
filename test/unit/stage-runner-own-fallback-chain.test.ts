@@ -198,6 +198,7 @@ async function runStageAgainstConfiguredChains(
 				entry.type === "thinking_level_change" ? [entry.thinkingLevel] : [],
 			),
 			attemptedModels: stage.__modelFallbackMeta().attemptedModels,
+			rateLimits: stage.__modelFallbackMeta().rateLimits,
 		};
 	} finally {
 		await stage.__dispose();
@@ -206,6 +207,12 @@ async function runStageAgainstConfiguredChains(
 		removeTempDirectory(cwd);
 	}
 }
+
+test("a real stage stream reports one 429 for its configured account (#3864)", async () => {
+	const outcome = await runStageAgainstConfiguredChains("settings");
+	assert.equal(outcome.rateLimits?.find((limit) => limit.provider === ACCOUNTS.stagePrimary)?.rateLimitCount, 1);
+	assert.deepEqual(outcome.requested, [ACCOUNTS.stagePrimary, ACCOUNTS.stageFallback]);
+});
 
 describe("stage sessions advance their own fallback chain, never the configured one", () => {
 	for (const chains of ["settings", "inherited-parent"] as const) {

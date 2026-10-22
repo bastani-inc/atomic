@@ -439,6 +439,7 @@ export interface StageSnapshot {
 	attemptedModels?: readonly string[];
 	/** Per-model fallback attempt outcomes. */
 	modelAttempts?: readonly import("./types.js").WorkflowModelAttempt[];
+	rateLimits?: readonly import("./types.js").WorkflowProviderRateLimit[];
 	routerSelection?: import("@bastani/atomic").ModelRouterOutput;
 	/** Schema-backed task/stage value, when distinct from assistant text. */
 	structured?: WorkflowSerializableValue;
