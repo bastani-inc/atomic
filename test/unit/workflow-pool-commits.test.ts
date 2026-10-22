@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import type { SessionEntry } from "@bastani/atomic";
 import { StorageProvider } from "@bastani/atomic/storage";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { durableWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
-import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
+import {
+	openSqlPoolQueue,
+	type PoolCommitReceipt,
+} from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import type { DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
@@ -84,20 +87,29 @@ async function fixture() {
 	};
 }
 
-test("attempt checkpoints interleave with root writes and retry the original receipt (#3869)", async () => {
+test("intervening attempt checkpoints stay visible across root writes and receipt retries (#3869)", async () => {
 	const f = await fixture();
 	try {
 		const mutation = { kind: "checkpoint" as const, checkpoint };
-		const [receipt] = await Promise.all([
-			f.pool.commit(f.lease, f.attempt, "save", mutation),
-			f.backend.commitCheckpoint({
-				...checkpoint,
-				checkpointId: "root-tool",
-				argsHash: "root-args",
-				output: "root",
-				topology: { ...checkpoint.topology!, run: { runId: "root", runName: "root" } },
-			}),
-		]);
+		let committedReceipt: PoolCommitReceipt | undefined;
+		const append = f.journal.append.bind(f.journal);
+		const interleaved = vi.spyOn(f.journal, "append").mockImplementationOnce(async (...args) => {
+			committedReceipt = await f.pool.commit(f.lease, f.attempt, "save", mutation);
+			return append(...args);
+		});
+		await f.backend.commitCheckpoint({
+			...checkpoint,
+			checkpointId: "root-tool",
+			argsHash: "root-args",
+			output: "root",
+			topology: { ...checkpoint.topology!, run: { runId: "root", runName: "root" } },
+		});
+		assert.equal(interleaved.mock.calls.length, 1);
+		interleaved.mockRestore();
+		assert.deepEqual(f.backend.getToolOutput("root", checkpoint.argsHash), { saved: true });
+		assert.equal(f.backend.getToolOutput("root", "root-args"), "root");
+		const receipt = committedReceipt;
+		assert.ok(receipt);
 		assert.deepEqual(await f.pool.commit(f.lease, f.attempt, "save", mutation), receipt);
 		await assert.rejects(
 			f.pool.commit(f.lease, f.attempt, "save", {
@@ -106,13 +118,13 @@ test("attempt checkpoints interleave with root writes and retry the original rec
 			}),
 			/identity conflict/,
 		);
-		await f.backend.hydrateWorkflow("root");
+		await f.backend.commitWorkflowStatus("root", "running");
 		assert.deepEqual(f.backend.getToolOutput("root", checkpoint.argsHash), { saved: true });
 		assert.equal(f.backend.getToolOutput("root", "root-args"), "root");
 		const entries = [];
 		for await (const entry of f.journal.read("root")) entries.push(entry);
 		assert.equal(entries.filter((entry) => entry.seq === receipt.seq).length, 1);
-		assert.equal(entries.length, 4);
+		assert.equal(entries.length, 5);
 	} finally {
 		await f.close();
 	}
