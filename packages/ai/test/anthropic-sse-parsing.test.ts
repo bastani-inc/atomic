@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import type Anthropic from "@anthropic-ai/sdk";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
@@ -149,6 +150,42 @@ describe("Anthropic raw SSE parsing", () => {
 			"message_stop",
 		]);
 		expect(eventModels).toEqual([model, model, model, model, model, model]);
+	});
+
+	it("uses the total reported by OpenRouter's Anthropic Messages endpoint (pi #9980)", async () => {
+		const events = minimalAnthropicEvents.map((event) => ({ ...event }));
+		const delta = JSON.parse(events[4].data) as {
+			usage: Record<string, unknown>;
+		};
+		// These fields were captured from a production OpenRouter stream even though its
+		// MessagesDeltaEvent OpenAPI schema and the Anthropic SDK omit them.
+		delta.usage = {
+			...delta.usage,
+			cost: 0.004,
+			is_byok: false,
+			cost_details: { upstream_inference_cost: 0.003 },
+		};
+		events[4].data = JSON.stringify(delta);
+
+		const model = {
+			...getModel("openrouter", "anthropic/claude-haiku-4.5"),
+			provider: "openrouter-work",
+		};
+		const result = await streamAnthropic(
+			model,
+			normalizeContext({ messages: [{ role: "user", content: "Hello", timestamp: 1 }] }),
+			{ client: createFakeAnthropicClient(createSseResponse(events)) },
+		).result();
+
+		assert.equal(result.usage.cost.total, 0.004);
+		assert.equal(result.usage.cost.totalFromProvider, true);
+		assert.notEqual(
+			result.usage.cost.input +
+				result.usage.cost.output +
+				result.usage.cost.cacheRead +
+				result.usage.cost.cacheWrite,
+			result.usage.cost.total,
+		);
 	});
 
 	it("keeps signed thinking replayable when a proxy relabels the model", async () => {

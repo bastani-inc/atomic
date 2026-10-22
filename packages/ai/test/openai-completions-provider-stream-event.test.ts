@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { completeSimple } from "../src/compat.ts";
 import type { Model } from "../src/types.ts";
@@ -34,12 +35,12 @@ vi.mock("openai", () => {
 	return { default: FakeOpenAI };
 });
 
-function openRouterModel(): Model<"openai-completions"> {
+function openRouterModel(provider = "openrouter"): Model<"openai-completions"> {
 	return {
 		id: "openrouter/auto",
 		name: "OpenRouter Auto",
 		api: "openai-completions",
-		provider: "openrouter",
+		provider,
 		baseUrl: "https://openrouter.ai/api/v1",
 		reasoning: false,
 		input: ["text"],
@@ -90,5 +91,65 @@ describe("openai-completions provider stream events", () => {
 
 		expect(message.content).toEqual([{ type: "text", text: "hello" }]);
 		expect(events).toEqual([firstChunk, finalChunk]);
+	});
+
+	it("uses OpenRouter's reported total without double-counting non-BYOK upstream cost (pi #9980)", async () => {
+		mockState.chunks = [
+			{
+				id: "chatcmpl-cost",
+				model: "openrouter/auto",
+				choices: [{ index: 0, delta: { content: "done" }, finish_reason: "stop" }],
+				// These billing fields were captured from a production OpenRouter stream
+				// even though the OpenAI SDK omits them from CompletionUsage.
+				usage: {
+					prompt_tokens: 100,
+					completion_tokens: 20,
+					cost: 0.004,
+					is_byok: false,
+					cost_details: { upstream_inference_cost: 0.003 },
+				},
+			},
+		];
+
+		const message = await completeSimple(
+			openRouterModel("openrouter-work"),
+			{ messages: [{ role: "user", content: "hi", timestamp: Date.now() }] },
+			{ apiKey: "test" },
+		);
+
+		assert.deepEqual(message.usage.cost, {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			total: 0.004,
+			totalFromProvider: true,
+		});
+	});
+
+	it("includes upstream inference cost for OpenRouter BYOK requests", async () => {
+		mockState.chunks = [
+			{
+				id: "chatcmpl-byok",
+				model: "openrouter/auto",
+				choices: [{ index: 0, delta: { content: "done" }, finish_reason: "stop" }],
+				usage: {
+					prompt_tokens: 100,
+					completion_tokens: 20,
+					cost: 0.0002,
+					is_byok: true,
+					cost_details: { upstream_inference_cost: 0.003 },
+				},
+			},
+		];
+
+		const message = await completeSimple(
+			openRouterModel(),
+			{ messages: [{ role: "user", content: "hi", timestamp: Date.now() }] },
+			{ apiKey: "test" },
+		);
+
+		assert.ok(Math.abs(message.usage.cost.total - 0.0032) < 1e-10);
+		assert.equal(message.usage.cost.totalFromProvider, true);
 	});
 });
