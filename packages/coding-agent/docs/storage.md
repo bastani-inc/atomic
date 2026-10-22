@@ -33,6 +33,30 @@ Errors are exported classes with typed fields. `StorageUnavailableError` provide
 
 String bindings containing U+0000 are rejected before SQL executes with `StorageInvalidTextError`. Its `parameterIndex` is zero-based and its `reason` is `"nul-character"`. This rule applies to database calls and transaction handles. Store JSON with `JSON.stringify`, which escapes NUL characters, or use `Uint8Array` for binary data containing zero bytes. This validation does not inspect SQL source or SQL-generated values.
 
+## Turso and libSQL
+
+`@bastani/atomic-storage-libsql` is the maintained adapter for Turso and other libSQL databases. It stores sessions, workflow runs, and Intercom's multi-node routing in the database. Install it once per machine, in user scope so Atomic can find it:
+
+```bash
+atomic install npm:@bastani/atomic-storage-libsql
+```
+
+Then select it in `~/.atomic/agent/settings.json`:
+
+```json
+{
+  "storage": {
+    "adapter": "@bastani/atomic-storage-libsql",
+    "options": { "url": "libsql://<db>.turso.io" },
+    "secrets": { "authToken": { "file": "turso-token" } }
+  }
+}
+```
+
+Save the token with `turso db tokens create <db> > turso-token` and keep it readable only by you (`chmod 600`); a trailing newline is ignored. A relative `file` resolves against Atomic home, normally `~/.atomic`. Use `{ "env": "TURSO_TOKEN" }` instead to read it from an environment variable. For a local database file, use a `file:` URL such as `file:/home/me/shared.sqlite` and omit `secrets`. Every machine that uses the same `storage` block shares the same sessions, workflow runs, and Intercom routing; add a `prefix` to keep projects or teams apart. See [Sharing storage across hosts](#sharing-storage-across-hosts).
+
+Like any [adapter](#selecting-an-adapter), it runs with Atomic's privileges. To use a different driver, adapt it with [Bring your own driver](#bring-your-own-driver).
+
 ## Bring your own driver
 
 Atomic does not bundle remote database drivers. Install your chosen SQLite-compatible driver and turn it into a `SqliteDatabase` with `createSqliteDatabase` from `@bastani/atomic/storage`. You supply the driver calls:
@@ -266,7 +290,7 @@ These options come from the process that starts Atomic, so they are not subject 
 
 ## Sharing storage across hosts
 
-By default, sessions and workflow runs live in a local file that serves one machine. To share them across machines, for example several service replicas or a CI fleet, select the same remote SQLite-compatible database on every host through an [adapter](#selecting-an-adapter), such as the libSQL/Turso example above. Installing the adapter as an [Atomic package](#adapters-from-atomic-packages) lets every host use the same `storage` block. Give each project or tenant its own `prefix`. Do not put the local SQLite file on a network filesystem; use a database driver instead.
+By default, sessions and workflow runs live in a local file that serves one machine. To share them across machines, for example several service replicas or a CI fleet, select the same remote SQLite-compatible database on every host through an [adapter](#selecting-an-adapter), such as the [Turso / libSQL package](#turso-and-libsql). Installing the adapter as an [Atomic package](#adapters-from-atomic-packages) lets every host use the same `storage` block. Give each project or tenant its own `prefix`. Do not put the local SQLite file on a network filesystem; use a database driver instead.
 
 With a shared journal:
 
