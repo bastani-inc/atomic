@@ -1,7 +1,7 @@
 import { reportOwnedIntercomDiagnostic } from "./diagnostics.js";
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
 import type { IntercomClient } from "./broker/client.js";
-import type { IntercomConfig } from "./config.ts";
+import type { IntercomConfig } from "./config.js";
 import { buildPresenceIdentity } from "./intercom-utils.js";
 import type { InboundIdleQueue } from "./inbound-idle-queue.js";
 import type { ReplyTracker } from "./reply-tracker.js";
