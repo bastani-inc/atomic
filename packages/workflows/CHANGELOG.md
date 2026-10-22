@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Workflow stages now reload resources up to four at a time per Atomic process instead of one at a time, so a slow reload no longer blocks every other stage at startup. Cancelling a stage waiting for a reload slot removes it from the queue immediately; an active reload retains its slot until it finishes ([#3861](https://github.com/bastani-inc/atomic/issues/3861)).
+
 ## [0.9.41] - 2026-10-22
 
 ### Added

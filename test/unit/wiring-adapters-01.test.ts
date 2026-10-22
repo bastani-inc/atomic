@@ -273,7 +273,7 @@ describe("prepareAtomicStageSessionOptions", () => {
 		assert.equal(reloads.length, 0);
 	});
 
-	test("serializes workflow stage resource reload env isolation", async () => {
+	test("preserves parent environment during overlapping workflow stage resource reloads (#3861)", async () => {
 		const projectDir = join("/tmp", "project");
 		const atomicAgentDir = join("/home", "user", ".atomic", "agent");
 		const envKeys = [
@@ -333,10 +333,9 @@ describe("prepareAtomicStageSessionOptions", () => {
 				PI_SUBAGENT_FANOUT_CHILD: undefined,
 			});
 
-			reloadGates[0]!.release.resolve();
 			await waitUntil(
 				() => reloadGates.length >= 2,
-				"expected the second resource reload to start after the first completes",
+				"expected the second resource reload to start while the first is still active",
 			);
 			assert.deepEqual(Object.fromEntries(reloadGates[1]!.envDuringReload), {
 				ATOMIC_SUBAGENT_CHILD: "1",
@@ -345,6 +344,7 @@ describe("prepareAtomicStageSessionOptions", () => {
 				PI_SUBAGENT_FANOUT_CHILD: undefined,
 			});
 
+			reloadGates[0]!.release.resolve();
 			reloadGates[1]!.release.resolve();
 			const [firstOptions] = await Promise.all([first, second]);
 
