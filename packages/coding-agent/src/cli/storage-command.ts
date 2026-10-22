@@ -8,7 +8,7 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync }
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { APP_NAME } from "../config.js";
 import type { IntercomBrokerControl } from "../core/intercom-broker-control.ts";
-import { resolvePackageStorageAdapter } from "../core/package-manager-storage-adapters.ts";
+import { resolvePackageStorageAdapter } from "../core/package-manager-storage-adapters.js";
 import { SettingsManager } from "../core/settings-manager.ts";
 import type { Settings } from "../core/settings-schema.ts";
 import { validateStoragePrefix } from "../core/storage/prefix.js";
@@ -57,6 +57,16 @@ export type StorageCommand =
 
 export class StorageCommandError extends Error {}
 
+/** Whether a database URL holds the token itself: userinfo, or the `authToken` query parameter libSQL URLs accept. */
+function carriesCredential(url: string): boolean {
+	try {
+		const { username, password, searchParams } = new URL(url);
+		return username !== "" || password !== "" || searchParams.has("authToken");
+	} catch {
+		return false;
+	}
+}
+
 /** Parse the arguments after `storage`. */
 export function parseStorageCommand(args: readonly string[]): StorageCommand {
 	const [command, ...rest] = args;
@@ -96,6 +106,11 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 		if (!/^(libsql|https?|wss?):\/\/[^/]/.test(url) && !url.startsWith("file:")) {
 			throw new StorageCommandError(
 				`Unsupported database URL "${url}". Use a libsql://, https://, wss://, or file: URL.`,
+			);
+		}
+		if (!url.startsWith("file:") && carriesCredential(url)) {
+			throw new StorageCommandError(
+				"The database URL carries a credential (user name, password, or authToken). Pass the token with --token-file instead, so it is kept in a private file and not in settings.",
 			);
 		}
 		const tokenFile = values.get("--token-file");

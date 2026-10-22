@@ -115,6 +115,30 @@ describe("atomic storage and atomic intercom arguments", () => {
 		assert.throws(() => parseStorageCommand(["doctor"]), /Unknown storage command "doctor"/);
 	});
 
+	test("join refuses a database URL that carries the token, so it never reaches settings or the output (#3857)", () => {
+		for (const url of [
+			"libsql://db.example.turso.io?authToken=secret",
+			"libsql://db.example.turso.io/?x=1&authToken=secret",
+			"libsql://user:secret@db.example.turso.io",
+			"https://secret@db.example.turso.io",
+		]) {
+			assert.throws(
+				() => parseStorageCommand(["join", url, "--token-file", "token"]),
+				(error: Error) => {
+					assert.match(error.message, /carries a credential.*--token-file/);
+					assert.doesNotMatch(error.message, /secret/);
+					return true;
+				},
+				url,
+			);
+		}
+		assert.deepEqual(parseStorageCommand(["join", "libsql://db.example.turso.io/?tls=0", "--token-file", "token"]), {
+			kind: "join",
+			url: "libsql://db.example.turso.io/?tls=0",
+			tokenFile: "token",
+		});
+	});
+
 	test("intercom accepts only status and restart (#3857)", async () => {
 		const help = await run((log, error) => runIntercomCommand(["--help"], { agentDir, log, error }));
 		assert.equal(help.code, 0);

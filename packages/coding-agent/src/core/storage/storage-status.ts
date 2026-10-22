@@ -3,7 +3,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { ENV_SESSION_DIR, isBunBinary } from "../../config.js";
 import { resolvePath } from "../../utils/paths.ts";
 import type { BrokerMultiNodeStatus, IntercomBrokerControl } from "../intercom-broker-control.ts";
-import { selectSessionStorage } from "../session-storage.ts";
+import { selectSessionStorage } from "../session-storage.js";
 import { SettingsManager } from "../settings-manager.ts";
 import type { Settings } from "../settings-schema.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "../trust-manager.ts";

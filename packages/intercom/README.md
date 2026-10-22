@@ -389,7 +389,7 @@ When multiple live agent stages share a name, `ask` refuses the ambiguous target
 
 `contact_supervisor` decisions and interviews are deliberately exclusive per child: one supervisor wait may coexist with ordinary peer asks, but a second concurrent supervisor wait receives `Already waiting for a supervisor reply`. Claimed foreground parent handoffs remain first-claim-wins and do not allocate a waiter. Multiple children can contact the same parent independently because inbound asks and handoffs are keyed by child/message identity. Mutual peer asks are supported, but each side must process inbound work to reply; the per-waiter timeout remains the deadlock backstop.
 
-**`status`** — Shows connection status, session ID, every current membership, and the total visible-session count. A `group` filter remains a read-only peek.
+**`status`** — Shows connection status, session ID, every current membership, and the total visible-session count. It also reports the broker's multi-node routing state on a `Multi-node routing:` line: `on (adapter <adapter>, prefix <prefix>)` with the number of other brokers live in the shared database, or why routing is off or unavailable; `details.multiNode` carries the same fields. A broker that predates status reporting shows `unknown`, and `atomic intercom restart` replaces it. A `group` filter remains a read-only peek.
 
 ## Keyboard Shortcuts
 

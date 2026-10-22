@@ -13,15 +13,19 @@ import { runtimeRequestsOf } from "./module-graph-walker.js";
  * transforms, but an eager host-barrel import still instantiates that graph in
  * every worker, even for tests that never use workflows. Follow Vitest aliases
  * as well as relative imports: the old regex missed the @bastani/atomic edge.
+ *
+ * The budget counts eager imports and re-exports. A dynamic `import()` runs only when its code path does, never while
+ * the setup loads, and the storage provider uses them to reach the extension loader and the host package when it
+ * loads an adapter module. Following those edges would count the whole host, which no ceiling can hold.
  */
 const SETUP_FILE = "test/setup-workflow-durability.ts";
-// Preserve the existing ceiling; only imports erased by the configured emit are excluded.
-const MAX_REACHABLE_MODULES = 49;
+// Only imports erased by the configured emit and dynamic imports are excluded.
+const MAX_REACHABLE_MODULES = 38;
 
-function runtimeImports(file: string): string[] {
+function runtimeImports(file: string, eagerOnly = false): string[] {
 	try {
 		return runtimeRequestsOf(file, tsconfig.compilerOptions).flatMap((request) =>
-			request.specifier === undefined ? [] : [request.specifier],
+			request.specifier === undefined || (eagerOnly && request.kind === "dynamic-import") ? [] : [request.specifier],
 		);
 	} catch (cause) {
 		throw new Error(`Cannot inspect runtime imports in ${file}`, { cause });
@@ -46,7 +50,7 @@ function reachableModules(entry: string): Set<string> {
 		const current = pending.pop();
 		if (current === undefined || seen.has(current)) continue;
 		seen.add(current);
-		for (const specifier of runtimeImports(current)) {
+		for (const specifier of runtimeImports(current, true)) {
 			const resolved = resolveImport(current, specifier);
 			if (resolved !== undefined && /\.[cm]?[jt]sx?$/u.test(resolved)) pending.push(resolved);
 		}
@@ -126,7 +130,11 @@ test("the setup graph follows runtime imports and exports but erases type-only e
 			runtimeImports(entry),
 			expected.map((name) => `./${name}.js`),
 		);
-		assert.deepEqual(reachableModules(entry), new Set([entry, ...expected.map((name) => join(root, `${name}.ts`))]));
+		// The budget leaves out `dynamic.js`: it loads on demand, not while the setup loads.
+		assert.deepEqual(
+			reachableModules(entry),
+			new Set([entry, ...expected.filter((name) => name !== "dynamic").map((name) => join(root, `${name}.ts`))]),
+		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

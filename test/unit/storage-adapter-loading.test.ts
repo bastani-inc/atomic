@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	loadStorageAdapter,
@@ -17,9 +18,14 @@ import {
 	writeFileEnsuringDir,
 } from "../helpers/runtime.js";
 
-test("built package adapters share @bastani/atomic and its storage module without an installed copy (#3856)", async () => {
+/**
+ * An adapter outside any installed copy of Atomic, loaded by the built `@bastani/atomic/storage`. Single-file builds
+ * (`ATOMIC_BUNDLED_BUILD=1`, as in the standalone binary) have no host files to alias and resolve both host specifiers
+ * from live virtual modules instead.
+ */
+function loadAdapterWithBuiltHost(env: Record<string, string | undefined>): void {
 	const agentDir = makeTempDirectory("storage-built-host-modules-");
-	await writeFileEnsuringDir(
+	writeFileSync(
 		join(agentDir, "adapter.ts"),
 		[
 			'import * as atomic from "@bastani/atomic";',
@@ -45,12 +51,20 @@ test("built package adapters share @bastani/atomic and its storage module withou
 			assert.equal(adapter.atomic.StorageUnavailableError, storage.StorageUnavailableError);
 		`,
 			],
-			{ cwd: join(moduleDir(import.meta.url), "../../packages/coding-agent") },
+			{ cwd: join(moduleDir(import.meta.url), "../../packages/coding-agent"), env: { ...process.env, ...env } },
 		);
 		assert.equal(result.exitCode, 0, result.stdout.toString() + result.stderr.toString());
 	} finally {
 		removeTempDirectory(agentDir);
 	}
+}
+
+test("built package adapters share @bastani/atomic and its storage module without an installed copy (#3856)", () => {
+	loadAdapterWithBuiltHost({ ATOMIC_BUNDLED_BUILD: undefined });
+});
+
+test("single-file builds give adapters the live host modules through virtual modules, as the standalone binary does (#3856)", () => {
+	loadAdapterWithBuiltHost({ ATOMIC_BUNDLED_BUILD: "1" });
 });
 
 test("the standalone broker loads host modules from the app bundle on first import only (#3856)", async () => {

@@ -77,7 +77,7 @@ atomic storage status
 4. writes only the top-level `storage` key of the global settings, `~/.atomic/agent/settings.json`, with the adapter, the URL, the token file, and the prefix. Every other setting keeps its value;
 5. lists the environment variables and settings that take precedence over the new selection, and says whether the running Intercom broker still uses its previous one.
 
-Nothing is written when the token is empty or the connection fails. When the adapter is not installed, the command prints the `atomic install` command to run first. A `file:` URL needs no `--token-file`. The `libsql://`, `https://`, and `wss://` schemes are accepted.
+Nothing is written when the token is empty or the connection fails. When the adapter is not installed, the command prints the `atomic install` command to run first. A `file:` URL needs no `--token-file`. The `libsql://`, `https://`, and `wss://` schemes are accepted. A URL that contains the token itself, as a user name, a password, or an `authToken` parameter, is refused: pass the token with `--token-file` so it stays out of settings and output.
 
 The running Intercom broker keeps the selection it started with. `atomic intercom restart` replaces it: connected sessions reconnect within a few seconds and start a broker that reads the new selection. See [Running Intercom across machines](/intercom/operations#running-intercom-across-machines).
 
