@@ -4,6 +4,16 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Added
+
+- Added image input to more System One classifiers: `ClassifierContext.images` now also works with Jev and Clef on `cloudflare-workers-ai` and with OpenRouter decision models whose catalog lists image input, next to Jev on `typesafe`. Each service gets its own wire form: TypeSafe `assets` (PNG and JPEG) with the `TypeSafe-Danger-Zone-Images` opt-in header, Clef `images` data URLs (PNG, JPEG, and WebP, at most four), or OpenRouter `image_url` parts in the state. A text-only model's error now names the model: `System One API does not support image input for <model>`.
+- Added `compat` to System One classifier models (`SystemOneCompat`, with `imageInput` and `sendImageOptInHeader`). Built-in catalog entries set it explicitly; models without it detect the form from the provider, `baseUrl`, and model ID.
+- Added the `@cf/cloudflare/clef-omni` and `typesafe/jev-1.14.0` classifier models to `cloudflare-workers-ai`.
+
+### Fixed
+
+- Fixed Cloudflare Workers AI classifier catalog data: Clef Flash now costs $0.038 per million input tokens with a 24,576-token context window, and Jev costs $0.042 per million input tokens instead of being listed as free.
+
 ## [0.9.41-alpha.1] - 2026-10-21
 
 ### Breaking Changes

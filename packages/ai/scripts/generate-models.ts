@@ -2889,7 +2889,8 @@ const TYPESAFE_DANGER_ZONE_OVERRIDES = {
 	input: ["text", "image"],
 	contextWindow: 262000,
 	headers: { "TypeSafe-Danger-Zone-Long-Context": "true", "TypeSafe-Danger-Zone-Images": "true" },
-} satisfies Pick<ClassifierModel<"typesafe-system-one">, "input" | "contextWindow" | "headers">;
+	compat: { imageInput: "assets", sendImageOptInHeader: true },
+} satisfies Pick<ClassifierModel<"typesafe-system-one">, "input" | "contextWindow" | "headers" | "compat">;
 
 async function loadModelsDevClassifierModels(): Promise<ClassifierModel<"typesafe-system-one">[]> {
 	try {
@@ -2947,14 +2948,14 @@ const OPENCODE_CLASSIFIER_MODELS: ClassifierModel<"typesafe-system-one">[] = [
 	},
 ];
 
-// Workers AI has no unauthenticated catalog and models.dev does not list its
-// System One models yet. Cloudflare publishes pricing only in the dashboard.
-// https://developers.cloudflare.com/ai/models/typesafe/jev/
+// Workers AI has no unauthenticated catalog, so its System One models are listed here from
+// Cloudflare's model pages.
 const CLOUDFLARE_WORKERS_AI_CLASSIFIER_MODELS: ClassifierModel<"cloudflare-workers-ai-system-one">[] = [
-	// Cloudflare-hosted Clef decision models. They accept images, but classifier
-	// contexts carry text or JSON state only, so the catalog advertises text.
-	// Pricing: https://developers.cloudflare.com/workers-ai/models/clef/
-	// and https://developers.cloudflare.com/workers-ai/models/clef-flash/
+	// Cloudflare-hosted Clef decision models. They take up to four PNG, JPEG, or WebP images as data URLs.
+	// Clef Omni also takes audio and video, which classifier contexts do not carry.
+	// Pricing and context: https://developers.cloudflare.com/workers-ai/models/clef/,
+	// https://developers.cloudflare.com/workers-ai/models/clef-flash/,
+	// and https://developers.cloudflare.com/workers-ai/models/clef-omni/
 	{
 		type: "classifier",
 		id: "@cf/cloudflare/clef",
@@ -2962,9 +2963,10 @@ const CLOUDFLARE_WORKERS_AI_CLASSIFIER_MODELS: ClassifierModel<"cloudflare-worke
 		api: "cloudflare-workers-ai-system-one",
 		provider: "cloudflare-workers-ai",
 		baseUrl: CLOUDFLARE_WORKERS_AI_REST_BASE_URL,
-		input: ["text"],
+		input: ["text", "image"],
 		cost: { input: 0.24, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 65536,
+		compat: { imageInput: "images" },
 	},
 	{
 		type: "classifier",
@@ -2973,10 +2975,26 @@ const CLOUDFLARE_WORKERS_AI_CLASSIFIER_MODELS: ClassifierModel<"cloudflare-worke
 		api: "cloudflare-workers-ai-system-one",
 		provider: "cloudflare-workers-ai",
 		baseUrl: CLOUDFLARE_WORKERS_AI_REST_BASE_URL,
-		input: ["text"],
-		cost: { input: 0.09, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 65536,
+		input: ["text", "image"],
+		cost: { input: 0.038, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 24576,
+		compat: { imageInput: "images" },
 	},
+	{
+		type: "classifier",
+		id: "@cf/cloudflare/clef-omni",
+		name: "Clef Omni",
+		api: "cloudflare-workers-ai-system-one",
+		provider: "cloudflare-workers-ai",
+		baseUrl: CLOUDFLARE_WORKERS_AI_REST_BASE_URL,
+		input: ["text", "image"],
+		cost: { input: 0.15, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 64000,
+		compat: { imageInput: "images" },
+	},
+	// TypeSafe's Jev models take PNG and JPEG images as System One assets.
+	// https://developers.cloudflare.com/ai/models/typesafe/jev/ (jev-latest)
+	// and https://developers.cloudflare.com/ai/models/typesafe/jev-1.14.0/
 	{
 		type: "classifier",
 		id: "typesafe/jev",
@@ -2984,9 +3002,22 @@ const CLOUDFLARE_WORKERS_AI_CLASSIFIER_MODELS: ClassifierModel<"cloudflare-worke
 		api: "cloudflare-workers-ai-system-one",
 		provider: "cloudflare-workers-ai",
 		baseUrl: CLOUDFLARE_WORKERS_AI_REST_BASE_URL,
-		input: ["text"],
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		input: ["text", "image"],
+		cost: { input: 0.042, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 32000,
+		compat: { imageInput: "assets" },
+	},
+	{
+		type: "classifier",
+		id: "typesafe/jev-1.14.0",
+		name: "Jev 1.14",
+		api: "cloudflare-workers-ai-system-one",
+		provider: "cloudflare-workers-ai",
+		baseUrl: CLOUDFLARE_WORKERS_AI_REST_BASE_URL,
+		input: ["text", "image"],
+		cost: { input: 0.042, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 32000,
+		compat: { imageInput: "assets" },
 	},
 ];
 
