@@ -50,6 +50,7 @@ async function controlHarness(control: (command: RpcCommandBody) => Promise<unkn
 			command.type === "get_available_models"
 				? { models: [], scopedModels: [], customAuthProviders: [] }
 				: control(command),
+		request: control,
 		abort,
 		getCommands: async () => [],
 		stop: async () => {
@@ -133,6 +134,45 @@ test("a failed cooperative abort leaves the host escape hatch armed (#3865)", as
 	assert.equal(runtime.needsExplicitTermination(), true);
 	assert.equal(stops(), 0);
 });
+
+for (const method of ["abortBash", "abortCompaction", "abortRetry"] as const) {
+	test(`a stalled ${method} arms recovery despite heartbeats until acknowledged (#3865)`, async () => {
+		const cancellation = deferred();
+		const { runtime, stops } = await controlHarness(
+			() => cancellation.promise,
+			async () => {},
+		);
+		vi.useFakeTimers({ toFake: ["performance", "setTimeout", "clearTimeout"] });
+		runtime.session[method]();
+		assert.equal(runtime.needsExplicitTermination(), false);
+		await vi.advanceTimersByTimeAsync(ENGINE_UNRESPONSIVE_MS / 2);
+		runtime.session[method]();
+		assert.equal(runtime.needsExplicitTermination(), false);
+		await vi.advanceTimersByTimeAsync(ENGINE_UNRESPONSIVE_MS / 2);
+		runtime.noteEngineHeartbeat();
+		assert.equal(runtime.needsExplicitTermination(), true, "heartbeat must not acknowledge a pending cancellation");
+		assert.equal(stops(), 0, "only the user may terminate a stalled engine");
+		cancellation.resolve();
+		await vi.waitFor(() => assert.equal(runtime.needsExplicitTermination(), false));
+	});
+
+	test(`a rejected ${method} keeps recovery armed despite heartbeats (#3865)`, async () => {
+		const cancellation = deferred();
+		const { runtime, stops } = await controlHarness(
+			() => cancellation.promise,
+			async () => {},
+		);
+		const diagnostics: string[] = [];
+		runtime.onDiagnostic((diagnostic) => diagnostics.push(diagnostic.message));
+		runtime.session[method]();
+		cancellation.reject(new Error("Cancellation transport failed"));
+		await vi.waitFor(() => assert.equal(diagnostics.length, 1));
+		runtime.noteEngineHeartbeat();
+		assert.equal(runtime.needsExplicitTermination(), true);
+		assert.match(diagnostics[0]!, /Cancellation transport failed/);
+		assert.equal(stops(), 0, "a rejected cancellation must not automatically terminate the engine");
+	});
+}
 
 test("an earlier failed queue pause cannot prevent a subsequent abort submission (#3865)", async () => {
 	let aborts = 0;
