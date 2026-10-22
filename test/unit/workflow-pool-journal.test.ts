@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { StorageUnavailableError } from "@bastani/atomic/storage";
 import { test } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import { DurableNestedTopologyError } from "../../packages/workflows/src/durable/boundary-topology.js";
+import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { type Lease, RUN_EVENT_TYPES } from "../../packages/workflows/src/durable/journal/types.js";
@@ -70,6 +72,49 @@ test("child boundary enqueue is atomic, durable and idempotent (#3869)", async (
 			assert.deepEqual(await (await openSqlPoolQueue(second)).inspect("root"), [first]);
 		} finally {
 			await second.close();
+			await secondDatabase.close();
+		}
+	} finally {
+		await f.close();
+	}
+});
+
+test("queue rejects missing invocation fingerprints without publishing a boundary (#3869)", async () => {
+	const f = await fixture();
+	try {
+		await f.journal.append(f.lease, {
+			type: RUN_EVENT_TYPES.runStarted,
+			payload: { workflowId: "root", name: "root", inputs: {}, createdAt: 0, status: "running" },
+		});
+		const pool = await openSqlPoolQueue(f.journal);
+		await pool.initialize(f.lease, 60_000);
+		const malformed = structuredClone(boundary);
+		Reflect.deleteProperty(malformed.topology!.boundary!, "invocationFingerprint");
+		await assert.rejects(pool.enqueue(f.lease, work, malformed), (error: Error) => {
+			assert.ok(error instanceof DurableNestedTopologyError);
+			assert.equal(error.reason, `missing invocation fingerprint at ${boundary.checkpointId}`);
+			return true;
+		});
+		assert.deepEqual(await pool.inspect("root"), []);
+		assert.equal(
+			await f.journal.readKey(
+				"root",
+				JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, "stage", boundary.checkpointId]),
+			),
+			undefined,
+		);
+		const valid = await pool.enqueue(f.lease, work, boundary);
+		const secondDatabase = await openNodeSqliteDatabase(f.path);
+		try {
+			const second = await SqlRunJournal.open(secondDatabase);
+			const backend = await JournalDurableBackend.open(second);
+			try {
+				assert.deepEqual(await (await openSqlPoolQueue(second)).inspect("root"), [valid]);
+				assert.deepEqual(backend.listCheckpoints("root"), [boundary]);
+			} finally {
+				await backend.close();
+			}
+		} finally {
 			await secondDatabase.close();
 		}
 	} finally {

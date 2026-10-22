@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { assertStorageSchemaVersion, type SqliteExecutor, type SqliteRow } from "@bastani/atomic/storage";
 import { assertWorkflowSerializableObject } from "../../shared/serializable.js";
 import type { WorkflowSerializableObject } from "../../shared/types.js";
+import { validateCheckpointInvocationFingerprint } from "../boundary-topology.js";
 import { durableHash } from "../durable-hash.js";
 import type { DurableStageCheckpoint } from "../types.js";
 import { type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
@@ -190,6 +191,7 @@ export class SqlPoolQueue {
 		assertWorkflowSerializableObject(descriptor.inputs, "Pool inputs");
 		assertWorkflowSerializableObject(descriptor.execution, "Pool execution");
 		assertWorkflowSerializableObject(boundary, "Pool boundary");
+		validateCheckpointInvocationFingerprint(boundary);
 		const json = serializeJson({ ...descriptor });
 		const payload = serializeJson(boundary);
 		const fingerprint = durableHash({ descriptor: JSON.parse(json), boundary: JSON.parse(payload) });

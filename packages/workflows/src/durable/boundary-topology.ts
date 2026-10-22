@@ -25,6 +25,15 @@ export class DurableNestedTopologyError extends Error {
 	}
 }
 
+export function validateCheckpointInvocationFingerprint(checkpoint: DurableCheckpoint): void {
+	if (
+		checkpoint.kind === "stage" &&
+		checkpoint.topology?.boundary !== undefined &&
+		typeof checkpoint.topology.boundary.invocationFingerprint !== "string"
+	)
+		throw new DurableNestedTopologyError(`missing invocation fingerprint at ${checkpoint.checkpointId}`);
+}
+
 export interface DurableBoundaryRuntimeIdentity {
 	readonly boundaryId: string;
 	readonly childRunId: string;
