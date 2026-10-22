@@ -34,6 +34,23 @@ const STARTUP_BUDGET_MS = 10_000;
 const SLOW_PROBE_DELAY_MS = 12_000;
 const extensionDir = join(process.cwd(), "packages/intercom");
 
+function captureOutput(streams: readonly (ReadableStream<Uint8Array> | null)[]): () => string {
+	const limit = 8_192;
+	let text = "";
+	for (const stream of streams) {
+		if (stream === null) continue;
+		void (async () => {
+			const reader = stream.getReader();
+			const decoder = new TextDecoder();
+			for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+				if (text.length < limit)
+					text += decoder.decode(chunk.value, { stream: true }).slice(0, limit - text.length);
+			}
+		})().catch(() => {});
+	}
+	return () => text;
+}
+
 async function waitUntil(condition: () => boolean, budgetMs: number): Promise<void> {
 	const deadline = Date.now() + budgetMs;
 	while (!condition()) {
@@ -88,8 +105,14 @@ async function connect(name: string) {
 }
 
 test.each([
-	{ name: "Node", command: process.execPath, args: ["--import"], loader: [getJitiCliPath(extensionDir)] },
-	{ name: "Bun", command: bunExecutable(), args: ["--preload"], loader: [] },
+	{
+		name: "Node",
+		command: process.execPath,
+		args: ["--import"],
+		loader: [getJitiCliPath(extensionDir)],
+		preloadAsPath: false,
+	},
+	{ name: "Bun", command: bunExecutable(), args: ["--preload"], loader: [], preloadAsPath: true },
 ])(
 	"a $name broker with a blocked main thread exits and concurrent reconnects share one replacement (#3862)",
 	async (runtime) => {
@@ -115,15 +138,32 @@ setInterval(() => {
 			[
 				runtime.command,
 				...runtime.args,
-				pathToFileURL(preload).href,
+				runtime.preloadAsPath ? preload : pathToFileURL(preload).href,
 				...runtime.loader,
 				join(extensionDir, "broker/broker.ts"),
 			],
-			{ env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir }, stdout: "ignore", stderr: "ignore" },
+			{ env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir }, stdout: "pipe", stderr: "pipe" },
 		);
 		assert.ok(child.pid !== undefined);
 		ownedPids.add(child.pid);
-		await waitUntil(() => fileExistsSync(getBrokerPidPath()), STARTUP_BUDGET_MS);
+		const output = captureOutput([child.stdout, child.stderr]);
+		let earlyExit: number | undefined;
+		void child.exited.then((code) => {
+			earlyExit = code;
+		});
+		try {
+			await waitUntil(() => fileExistsSync(getBrokerPidPath()) || earlyExit !== undefined, STARTUP_BUDGET_MS);
+		} catch (error) {
+			throw new Error(
+				`${runtime.name} broker did not write its pid file within ${STARTUP_BUDGET_MS}ms (exit: ${earlyExit ?? "still running"}); output:\n${output()}`,
+				{ cause: error },
+			);
+		}
+		assert.equal(
+			earlyExit,
+			undefined,
+			`${runtime.name} broker exited during startup with ${earlyExit}; output:\n${output()}`,
+		);
 		const before = await connect("before-stall");
 		assert.equal((await before.listSessions()).length, 1);
 		await sleep(2_500);

@@ -1280,7 +1280,13 @@ export class IntercomClient extends EventEmitter {
     let result = this.sendResults.get(acquired.attempt.promise);
     if (result === undefined) {
       result = acquired.attempt.promise.catch(async (error: Error) => {
-        if (error instanceof PendingSendTimeoutError) throw await this.requestTimeout(socket, error);
+        if (error instanceof PendingSendTimeoutError) {
+          try {
+            throw await this.requestTimeout(socket, error);
+          } finally {
+            this.pendingSends.release(acquired.attempt);
+          }
+        }
         throw error;
       });
       this.sendResults.set(acquired.attempt.promise, result);
