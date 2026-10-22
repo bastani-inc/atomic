@@ -40,6 +40,6 @@ test("aggregates billed usage across planner retries", async () => {
 		cacheRead: 0,
 		cacheWrite: 0,
 		totalTokens: 330,
-		cost: { input: 0.03, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.03 },
+		cost: { input: 0.03, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.03, totalFromProvider: false },
 	});
 });
