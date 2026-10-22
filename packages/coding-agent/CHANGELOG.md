@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the `grep` tool following ripgrep's `RIPGREP_CONFIG_PATH` whenever it searches with `rg`, such as with `literal: true`, where config options like `--ignore-case` silently changed what the tool returned. The tool now runs `rg --no-config` ([#11203](https://github.com/earendil-works/pi/issues/11203))
+
 ## [0.9.41-alpha.1] - 2026-10-21
 
 ### Breaking Changes

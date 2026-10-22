@@ -342,7 +342,7 @@ export function createGrepToolDefinition(
 							return;
 						}
 
-						const args: string[] = ["--json", "--line-number", "--color=never"];
+						const args: string[] = ["--no-config", "--json", "--line-number", "--color=never"];
 						if (hidden !== false) args.push("--hidden");
 						if (gitignore === false) args.push("--no-ignore");
 						if (ignoreCase) args.push("--ignore-case");
