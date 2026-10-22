@@ -233,4 +233,15 @@ describe("AssistantMessageComponent", () => {
 		const rendered = component.render(100).join("\n");
 		expect(rendered).toContain("Response was truncated before completion.");
 	});
+
+	test("renders a table that follows an unclosed display-math opener (#11159)", () => {
+		initTheme("dark");
+		const text = ["Intro", "", "$$", "", "| A | B |", "|---|---|", "| 1 | 2 |", "", "After"].join("\n");
+		const component = new AssistantMessageComponent(createAssistantMessage([{ type: "text", text }]));
+
+		const lines = component.render(80).map((line) => stripAnsi(line).trim());
+
+		expect(lines).toEqual(expect.arrayContaining(["┌───┬───┐", "│ A │ B │", "├───┼───┤", "│ 1 │ 2 │", "└───┴───┘"]));
+		expect(lines).toContain("After");
+	});
 });
