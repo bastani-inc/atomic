@@ -33,6 +33,7 @@ interface PrimitiveEntry {
 
 interface ScopeState {
 	readonly runId: string;
+	readonly rootRunId: string;
 	readonly source: string | undefined;
 	parent: ScopeState | undefined;
 	fail: (error: object) => void;
@@ -157,22 +158,15 @@ function pruneEndedSources(boundary: RejectionBoundary): void {
 	}
 }
 
-function rootRunId(scope: ScopeState): string {
-	let root = scope;
-	while (root.parent !== undefined) root = root.parent;
-	return root.runId;
-}
-
 function recordEndedRun(boundary: RejectionBoundary, scope: ScopeState): void {
 	if (scope.source === undefined) return;
 	const trees = boundary.ended.get(scope.source) ?? new Map<string, number>();
-	trees.set(rootRunId(scope), Date.now());
+	trees.set(scope.rootRunId, Date.now());
 	boundary.ended.set(scope.source, trees);
 }
 
 function endedInAnotherRunTree(boundary: RejectionBoundary, source: string, live: ScopeState): boolean {
-	const liveRoot = rootRunId(live);
-	for (const endedRoot of boundary.ended.get(source)?.keys() ?? []) if (endedRoot !== liveRoot) return true;
+	for (const endedRoot of boundary.ended.get(source)?.keys() ?? []) if (endedRoot !== live.rootRunId) return true;
 	return false;
 }
 
@@ -364,10 +358,12 @@ export function openRunRejectionScope(options: RunRejectionScopeOptions): RunRej
 	const boundary = sharedBoundary();
 	ensureInstalled(boundary);
 	pruneEndedSources(boundary);
+	const parent = options.parentRunId === undefined ? undefined : boundary.runs.get(options.parentRunId);
 	const scope: ScopeState = {
 		runId: options.runId,
+		rootRunId: parent?.rootRunId ?? options.runId,
 		source: options.source === undefined ? undefined : normalizeStackPath(options.source),
-		parent: options.parentRunId === undefined ? undefined : boundary.runs.get(options.parentRunId),
+		parent,
 		fail: options.fail,
 		primitives: new Map(),
 		generation: 0,
