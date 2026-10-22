@@ -19,7 +19,7 @@ import type {
 	WorkflowProvidedInputsFromSchemas,
 } from "../shared/workflow-authoring-types.js";
 import { DEFAULT_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES } from "../shared/workflow-heartbeat-contract.js";
-import { recordWorkflowSource } from "../shared/workflow-source.js";
+import { isWorkflowRuntimeModule, recordWorkflowSource } from "../shared/workflow-source.js";
 import { normalizeWorkflowName } from "../workflows/identity.js";
 
 export type {
@@ -102,29 +102,32 @@ function isWorkflowAuthoringImplementationFrame(filePath: string): boolean {
 	);
 }
 
-function callerSourcePath(): string | undefined {
-	const stack = new Error().stack;
+type WorkflowEntry = (spec: never) => unknown;
+
+function callerSourcePath(entry: WorkflowEntry): string | undefined {
+	const capture = new Error();
+	Error.captureStackTrace(capture, entry);
+	const stack = capture.stack;
 	if (stack === undefined) return undefined;
 
 	for (const line of stack.split("\n")) {
 		const filePath = stackFilePath(line);
 		if (filePath === undefined) continue;
 		if (isWorkflowAuthoringImplementationFrame(filePath)) continue;
-		return filePath;
+		return isWorkflowRuntimeModule(filePath) ? undefined : filePath;
 	}
 
 	return undefined;
 }
 
-function workflowNameFromCaller(): string | undefined {
-	const filePath = callerSourcePath();
+function workflowNameFromSourcePath(filePath: string | undefined): string | undefined {
 	if (filePath === undefined) return undefined;
 	const base = basename(filePath.replace(/\\/g, "/")).replace(/\.[cm]?[jt]sx?$/, "");
 	return base.length > 0 ? base : undefined;
 }
 
-function resolveWorkflowName(name: string | undefined): string {
-	const resolved = name ?? workflowNameFromCaller();
+function resolveWorkflowName(name: string | undefined, sourcePath: string | undefined): string {
+	const resolved = name ?? workflowNameFromSourcePath(sourcePath);
 	if (resolved === undefined) {
 		throw new TypeError("workflow: name must be provided when caller filename cannot be inferred");
 	}
@@ -178,7 +181,8 @@ export function workflow<
 	}
 	assertWorkflowBudget(spec.budget, "workflow: budget");
 
-	const name = resolveWorkflowName(spec.name);
+	const source = callerSourcePath(workflow);
+	const name = resolveWorkflowName(spec.name, source);
 	const normalizedName = normalizeWorkflowName(name);
 	requireNonEmptyString(normalizedName, "normalized name");
 	const frozenInputs = freezeSchemaMap(spec.inputs ?? ({} as TInputs));
@@ -207,7 +211,6 @@ export function workflow<
 		WorkflowOutputsFromSchemas<TOutputs>,
 		WorkflowProvidedInputsFromSchemas<TInputs>
 	>(definition);
-	const source = callerSourcePath();
 	if (source !== undefined) recordWorkflowSource(branded, source);
 	return Object.freeze(branded) as AuthoredWorkflowDefinition<TInputs, TOutputs>;
 }

@@ -75,7 +75,8 @@ const branches: Record<string, Branch> = {
 	},
 };
 
-if (branches[failure] === undefined && failure !== "late-author-error") throw new Error(`unknown failure mode "${failure}"`);
+const STANDALONE_MODES = ["late-author-error", "late-author-error-after-grace", "caught-primitive", "author-error-during-child"];
+if (branches[failure] === undefined && !STANDALONE_MODES.includes(failure)) throw new Error(`unknown failure mode "${failure}"`);
 const branch: Branch = branches[failure] ?? (async () => {});
 
 const pool = workflow({
@@ -114,6 +115,50 @@ const lateAuthor = workflow({
 		return {};
 	},
 });
+const caughtPrimitive = workflow({
+	name: "caught-primitive",
+	description: "",
+	inputs: {},
+	outputs: {},
+	run: async (ctx) => {
+		try {
+			await ctx.task("caught", { prompt: "do the work" });
+		} catch {}
+		await delay(400);
+		return {};
+	},
+});
+const slowChild = workflow({
+	name: "slow-child",
+	description: "",
+	inputs: {},
+	outputs: {},
+	run: async (ctx) => {
+		await ctx.tool("slow-work", {}, async () => {
+			await delay(600);
+			return "done";
+		});
+		return {};
+	},
+});
+const parentOfSlowChild = workflow({
+	name: "parent-of-slow-child",
+	description: "",
+	inputs: {},
+	outputs: {},
+	run: async (ctx) => {
+		const startChild = async (): Promise<void> => {
+			ctx.workflow(slowChild).catch(() => {});
+			await delay(100);
+			throw new Error("author error while child runs");
+		};
+		const forked = startChild();
+		void forked.finally(() => {});
+		await forked.catch(() => {});
+		await delay(300);
+		return {};
+	},
+});
 const healthySameModule = workflow({
 	name: "healthy-same-module",
 	description: "",
@@ -126,27 +171,43 @@ const healthySameModule = workflow({
 		return {};
 	},
 });
-const definition = failure === "late-author-error" ? lateAuthor : pool;
+const standalone: Record<string, WorkflowDefinition> = {
+	"late-author-error": lateAuthor,
+	"late-author-error-after-grace": lateAuthor,
+	"caught-primitive": caughtPrimitive,
+	"author-error-during-child": parentOfSlowChild,
+};
+const definition = (standalone[failure] ?? pool) as WorkflowDefinition;
 const companionDefinition = companion === "same-module" ? healthySameModule : healthy;
 
 const options = async () => ({
-	registry: createRegistry([definition, child, healthy, healthySameModule] as WorkflowDefinition[]),
+	registry: createRegistry([definition, child, slowChild, healthy, healthySameModule] as WorkflowDefinition[]),
 	store: createStore(),
 	durableBackend: await createMemoryTestBackend(),
 	adapters: {
 		prompt: {
-			prompt: () => failElsewhere("prompt"),
+			prompt: (): Promise<string> =>
+				failure === "caught-primitive" ? Promise.reject("shared-reason") : failElsewhere("prompt"),
 		},
 	},
 });
 
 const poolOptions = await options();
 const healthyOptions = await options();
+if (failure === "caught-primitive") {
+	setTimeout(() => {
+		void Promise.reject("shared-reason");
+	}, 250);
+}
 const poolRun = run(definition, {}, poolOptions);
 const healthyRun = companion === "healthy" || companion === "same-module" ? run(companionDefinition, {}, healthyOptions) : undefined;
 const result = await poolRun;
 const healthyResult = await healthyRun;
-await delay(failure === "late-author-error" ? 400 : 100);
+if (failure === "late-author-error-after-grace") {
+	const realNow = Date.now;
+	Date.now = () => realNow() + 60_000;
+}
+await delay(failure.startsWith("late-author-error") ? 400 : 100);
 const inspection = await inspectTargetedDurableWorkflow(poolOptions.durableBackend, result.runId);
 console.log(
 	JSON.stringify({
@@ -154,6 +215,7 @@ console.log(
 		error: result.error,
 		inspected: inspection.kind === "found" ? { kind: inspection.kind, status: inspection.detail.status } : inspection,
 		healthy: healthyResult === undefined ? undefined : { status: healthyResult.status, error: healthyResult.error },
+		runs: poolOptions.store.runs().map((entry) => ({ workflow: entry.name, status: entry.status, error: entry.error })),
 	}),
 );
 if (companion === "unrelated") {

@@ -28,6 +28,7 @@ interface Report {
 	readonly error?: string;
 	readonly inspected: { readonly kind: string; readonly status?: string };
 	readonly healthy?: { readonly status: string; readonly error?: string };
+	readonly runs?: ReadonlyArray<{ readonly workflow: string; readonly status: string; readonly error?: string }>;
 }
 
 function runFixture(runtime: Runtime, args: readonly string[], runtimeFlags: readonly string[] = []): Outcome {
@@ -128,6 +129,41 @@ for (const runtime of RUNTIMES) {
 			() => {
 				const outcome = runFixture(runtime, ["late-author-error", "rolling"]);
 				assert.equal(outcome.exitCode, 0, `${outcome.stdout}\n${outcome.stderr}`);
+			},
+			REAL_CHILD_TIMEOUT_MS,
+		);
+
+		test(
+			"an error the author throws while child workflows of the same module run fails the parent and cancels the children (#3846)",
+			() => {
+				const reported = assertContained(runFixture(runtime, ["author-error-during-child", "rolling"]));
+				assert.equal(reported.error, "author error while child runs");
+				const parent = reported.runs?.find((entry) => entry.workflow === "parent-of-slow-child");
+				const child = reported.runs?.find((entry) => entry.workflow === "slow-child");
+				assert.equal(parent?.error, "author error while child runs");
+				assert.equal(child?.status, "killed");
+			},
+			REAL_CHILD_TIMEOUT_MS,
+		);
+
+		test(
+			"a primitive reason the author already caught does not fail its run when an unrelated rejection repeats it later (#3846)",
+			() => {
+				const outcome = runFixture(runtime, ["caught-primitive", "rolling"], ["--unhandled-rejections=warn"]);
+				assert.equal(outcome.exitCode, 0, `${outcome.stdout}\n${outcome.stderr}`);
+				assert.equal(report(outcome).status, "completed");
+				assert.match(outcome.stderr, /shared-reason/);
+			},
+			REAL_CHILD_TIMEOUT_MS,
+		);
+
+		test(
+			"an error the author throws after the run ended and its grace period passed ends the process as before (#3846)",
+			() => {
+				const outcome = runFixture(runtime, ["late-author-error-after-grace", "rolling"]);
+				assert.equal(outcome.exitCode, 1, `${outcome.stdout}\n${outcome.stderr}`);
+				assert.match(outcome.stderr, /author error after the run ended/);
+				assert.doesNotMatch(outcome.stderr, /run-rejection-boundary/);
 			},
 			REAL_CHILD_TIMEOUT_MS,
 		);

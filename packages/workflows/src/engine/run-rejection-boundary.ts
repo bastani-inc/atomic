@@ -1,46 +1,60 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { inspect } from "node:util";
-import { isWorkflowRuntimeFrame, normalizeStackPath, parsePromptStackFrame } from "../runs/shared/prompt-callsite.js";
+import { normalizeStackPath, parsePromptStackFrame } from "../runs/shared/prompt-callsite.js";
 import type { StageContext } from "../shared/types.js";
+import { isWorkflowRuntimeModule } from "../shared/workflow-source.js";
 
 export type RejectionEffect = "fail-run" | "ignore";
 
 export interface RunRejectionScope {
 	run<T>(callback: () => T): T;
 	contain<T>(promise: Promise<T>, effect?: RejectionEffect): Promise<T>;
+	watch<T>(promise: Promise<T>): Promise<T>;
 	settle(): Promise<void>;
 	close(): void;
 }
 
 export interface RunRejectionScopeOptions {
+	readonly runId: string;
+	readonly parentRunId?: string;
 	readonly source?: string;
 	readonly fail: (error: object) => void;
 }
 
 type Primitive = string | number | boolean | bigint | symbol | null | undefined;
 
+interface PrimitiveEntry {
+	readonly effect: RejectionEffect;
+	readonly generation: number;
+}
+
 interface ScopeState {
+	readonly runId: string;
 	readonly source: string | undefined;
+	parent: ScopeState | undefined;
 	fail: (error: object) => void;
-	readonly primitives: Map<Primitive, RejectionEffect>;
+	readonly primitives: Map<Primitive, PrimitiveEntry>;
+	generation: number;
 	live: boolean;
 }
 
 type Attribution = Map<ScopeState, RejectionEffect>;
 
 const EVENT = "unhandledRejection";
-const BOUNDARY_KEY = Symbol.for("atomic-workflows/run-rejection-boundary@2");
+const BOUNDARY_KEY = Symbol.for("atomic-workflows/run-rejection-boundary@3");
 const FLAG = "--unhandled-rejections";
 const MAX_CAUSE_DEPTH = 8;
 const MAX_PRIMITIVES_PER_RUN = 64;
+const ENDED_RUN_GRACE_MS = 30_000;
 const NATIVE_REPORTING_MODES: ReadonlySet<string> = new Set(["throw", "warn-with-error-code"]);
 
 interface RejectionBoundary {
-	readonly version: 2;
+	readonly version: 3;
 	readonly store: AsyncLocalStorage<ScopeState>;
 	readonly owners: WeakMap<object, Attribution>;
 	readonly scopes: Set<ScopeState>;
-	readonly sources: Set<string>;
+	readonly runs: Map<string, ScopeState>;
+	readonly ended: Map<string, number>;
 	listener: ((reason: unknown) => void) | undefined;
 }
 
@@ -51,13 +65,14 @@ function boundaryBag(): Record<symbol, RejectionBoundary | undefined> {
 function sharedBoundary(): RejectionBoundary {
 	const bag = boundaryBag();
 	const existing = bag[BOUNDARY_KEY];
-	if (existing !== undefined && existing.version === 2) return existing;
+	if (existing !== undefined && existing.version === 3) return existing;
 	const created: RejectionBoundary = {
-		version: 2,
+		version: 3,
 		store: new AsyncLocalStorage(),
 		owners: new WeakMap(),
 		scopes: new Set(),
-		sources: new Set(),
+		runs: new Map(),
+		ended: new Map(),
 		listener: undefined,
 	};
 	bag[BOUNDARY_KEY] = created;
@@ -98,8 +113,8 @@ function recordedOwners(boundary: RejectionBoundary, reason: unknown): Attributi
 		if (isPrimitive(value)) {
 			if (depth === 0 || (value !== undefined && value !== null)) {
 				for (const scope of boundary.scopes) {
-					const effect = scope.primitives.get(value);
-					if (effect !== undefined) addAttribution(found, scope, effect);
+					const entry = scope.primitives.get(value);
+					if (entry !== undefined) addAttribution(found, scope, entry.effect);
 				}
 			}
 			continue;
@@ -114,18 +129,47 @@ function recordedOwners(boundary: RejectionBoundary, reason: unknown): Attributi
 	return found;
 }
 
+function pruneEndedSources(boundary: RejectionBoundary): void {
+	const now = Date.now();
+	for (const [source, endedAt] of boundary.ended)
+		if (now - endedAt > ENDED_RUN_GRACE_MS) boundary.ended.delete(source);
+}
+
+function recognizedSources(boundary: RejectionBoundary): ReadonlySet<string> {
+	pruneEndedSources(boundary);
+	const sources = new Set(boundary.ended.keys());
+	for (const scope of boundary.scopes) if (scope.live && scope.source !== undefined) sources.add(scope.source);
+	return sources;
+}
+
 function authoringSource(reason: unknown, sources: ReadonlySet<string>): string | undefined {
-	if (!isObject(reason)) return undefined;
+	if (sources.size === 0 || !isObject(reason)) return undefined;
 	const stack = safeField(reason, "stack");
 	if (typeof stack !== "string") return undefined;
 	for (const line of stack.split("\n")) {
 		if (!line.trimStart().startsWith("at ")) continue;
 		const path = parsePromptStackFrame(line)?.normalizedPath;
-		if (path === undefined || /\/node_modules\//.test(path)) continue;
+		if (path === undefined) continue;
+		if (isWorkflowRuntimeModule(path)) return undefined;
+		if (/\/node_modules\//.test(path)) continue;
 		if (sources.has(path)) return path;
-		if (isWorkflowRuntimeFrame(path)) return undefined;
 	}
 	return undefined;
+}
+
+function hasAncestorIn(scope: ScopeState, candidates: ReadonlySet<ScopeState>): boolean {
+	for (let ancestor = scope.parent; ancestor !== undefined; ancestor = ancestor.parent) {
+		if (candidates.has(ancestor)) return true;
+	}
+	return false;
+}
+
+function liveRunsOfSource(boundary: RejectionBoundary, source: string): Attribution {
+	const matching = new Set<ScopeState>();
+	for (const scope of boundary.scopes) if (scope.live && scope.source === source) matching.add(scope);
+	const owners: Attribution = new Map();
+	for (const scope of matching) if (!hasAncestorIn(scope, matching)) owners.set(scope, "fail-run");
+	return owners;
 }
 
 function attribute(boundary: RejectionBoundary, reason: unknown): Attribution | undefined {
@@ -133,11 +177,9 @@ function attribute(boundary: RejectionBoundary, reason: unknown): Attribution | 
 	if (recorded.size > 0) return recorded;
 	const scoped = boundary.store.getStore();
 	if (scoped !== undefined && boundary.scopes.has(scoped)) return new Map([[scoped, "fail-run"]]);
-	const origin = authoringSource(reason, boundary.sources);
+	const origin = authoringSource(reason, recognizedSources(boundary));
 	if (origin === undefined) return undefined;
-	const owners: Attribution = new Map();
-	for (const scope of boundary.scopes) if (scope.source === origin) owners.set(scope, "fail-run");
-	return owners;
+	return liveRunsOfSource(boundary, origin);
 }
 
 function unhandledRejectionError(reason: unknown): Error {
@@ -212,7 +254,12 @@ function recordPrimitive(scope: ScopeState, reason: Primitive, effect: Rejection
 		const oldest = scope.primitives.keys().next();
 		if (!oldest.done) scope.primitives.delete(oldest.value);
 	}
-	scope.primitives.set(reason, strongerEffect(scope.primitives.get(reason), effect));
+	scope.generation += 1;
+	const generation = scope.generation;
+	scope.primitives.set(reason, { effect: strongerEffect(scope.primitives.get(reason)?.effect, effect), generation });
+	void afterPendingRejectionReports().then(() => {
+		if (scope.primitives.get(reason)?.generation === generation) scope.primitives.delete(reason);
+	});
 }
 
 function discardFailure(): void {}
@@ -232,28 +279,39 @@ function afterPendingRejectionReports(): Promise<void> {
 export function openRunRejectionScope(options: RunRejectionScopeOptions): RunRejectionScope {
 	const boundary = sharedBoundary();
 	ensureInstalled(boundary);
-	const source = options.source === undefined ? undefined : normalizeStackPath(options.source);
+	pruneEndedSources(boundary);
 	const scope: ScopeState = {
-		source,
+		runId: options.runId,
+		source: options.source === undefined ? undefined : normalizeStackPath(options.source),
+		parent: options.parentRunId === undefined ? undefined : boundary.runs.get(options.parentRunId),
 		fail: options.fail,
 		primitives: new Map(),
+		generation: 0,
 		live: true,
 	};
 	boundary.scopes.add(scope);
-	if (source !== undefined) boundary.sources.add(source);
+	boundary.runs.set(scope.runId, scope);
 	return {
 		run: (callback) => boundary.store.run(scope, callback),
 		contain: (promise, effect = "fail-run") => {
 			void promise.then(undefined, (reason: unknown) => record(boundary, scope, reason, effect));
 			return promise;
 		},
+		watch: (promise) =>
+			promise.then(undefined, (reason: unknown) => {
+				record(boundary, scope, reason, "fail-run");
+				throw reason;
+			}),
 		settle: afterPendingRejectionReports,
 		close: () => {
 			scope.live = false;
 			scope.fail = discardFailure;
+			if (scope.source !== undefined) boundary.ended.set(scope.source, Date.now());
 			void afterPendingRejectionReports().then(() => {
 				scope.primitives.clear();
+				scope.parent = undefined;
 				boundary.scopes.delete(scope);
+				if (boundary.runs.get(scope.runId) === scope) boundary.runs.delete(scope.runId);
 			});
 		},
 	};
@@ -262,8 +320,8 @@ export function openRunRejectionScope(options: RunRejectionScopeOptions): RunRej
 export function containStageRejections<T extends StageContext>(stage: T, scope: RunRejectionScope): T {
 	const contained = Object.create(stage) as T;
 	Object.defineProperties(contained, {
-		prompt: { value: (...args: Parameters<StageContext["prompt"]>) => scope.contain(stage.prompt(...args)) },
-		complete: { value: (...args: Parameters<StageContext["complete"]>) => scope.contain(stage.complete(...args)) },
+		prompt: { value: (...args: Parameters<StageContext["prompt"]>) => scope.watch(stage.prompt(...args)) },
+		complete: { value: (...args: Parameters<StageContext["complete"]>) => scope.watch(stage.complete(...args)) },
 	});
 	return contained;
 }

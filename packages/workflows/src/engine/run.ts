@@ -820,6 +820,8 @@ async function executeRun(
 	let pausedExit: Promise<never> | undefined;
 	const authoredIn = workflowSource(def);
 	const rejectionScope = openRunRejectionScope({
+		runId,
+		...(opts.parentRun !== undefined ? { parentRunId: opts.parentRun.runId } : {}),
 		...(authoredIn !== undefined ? { source: authoredIn } : {}),
 		fail: (error) => {
 			if (findWorkflowGracefulQuit(error) === undefined) terminalEvents.selectFailure(error);
@@ -856,11 +858,11 @@ async function executeRun(
 				rejectionScope,
 			);
 		},
-		task: (...args) => rejectionScope.contain(gatedTask(...args)),
-		chain: (...args) => rejectionScope.contain(whenRunning(() => chain(...args))),
-		parallel: (...args) => rejectionScope.contain(whenRunning(() => parallel(...args))),
+		task: (...args) => rejectionScope.watch(gatedTask(...args)),
+		chain: (...args) => rejectionScope.watch(whenRunning(() => chain(...args))),
+		parallel: (...args) => rejectionScope.watch(whenRunning(() => parallel(...args))),
 		workflow: (...args) =>
-			rejectionScope.contain(
+			rejectionScope.watch(
 				whenRunning(() => {
 					const pending = durableWorkflow(...args);
 					pendingChildWorkflows.add(pending);
