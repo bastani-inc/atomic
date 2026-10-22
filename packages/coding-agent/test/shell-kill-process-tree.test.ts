@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
-import { killProcessTree } from "../src/utils/shell.ts";
+import { killProcessTree } from "../src/utils/shell.js";
 
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
 
