@@ -6,6 +6,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { StageContext, WorkflowDefinition, WorkflowRunContext } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
+import { failingUi } from "./workflow-unhandled-rejection-foreign.js";
 import { healthy } from "./workflow-unhandled-rejection-healthy.js";
 
 type Step = (ctx: WorkflowRunContext) => Promise<unknown>;
@@ -25,6 +26,7 @@ const failingChild = workflow({
 
 const model = {} as Parameters<StageContext["setModel"]>[0];
 
+
 const calls: Record<string, readonly Step[]> = {
 	task: [(ctx) => ctx.task("task-call", { prompt: "do the work" })],
 	"stage-prompt": [(ctx) => ctx.stage("stage-call").prompt("do the work")],
@@ -42,6 +44,7 @@ const calls: Record<string, readonly Step[]> = {
 	chain: [(ctx) => ctx.chain([{ name: "chain-call", task: "do the work" }])],
 	parallel: [(ctx) => ctx.parallel([{ name: "parallel-call", task: "do the work" }])],
 	workflow: [(ctx) => ctx.workflow(failingChild)],
+	ui: [(ctx) => ctx.ui.confirm("proceed?")],
 };
 
 const steps = calls[call];
@@ -55,6 +58,7 @@ const definition = workflow({
 	inputs: {},
 	outputs: {},
 	run: async (ctx) => {
+		if (call === "ui") await ctx.tool("tracked", {}, async () => "tracked");
 		for (const step of steps) {
 			if (disposition === "dropped") {
 				void step(ctx);
@@ -82,6 +86,7 @@ const options = async () => ({
 			},
 		},
 	},
+	ui: failingUi,
 });
 
 const droppingOptions = await options();

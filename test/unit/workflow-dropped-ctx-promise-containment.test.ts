@@ -29,6 +29,7 @@ const CALLS = [
 	{ call: "chain", label: "ctx.chain", reason: /prompt adapter failed/, rejections: 1 },
 	{ call: "parallel", label: "ctx.parallel", reason: /prompt adapter failed/, rejections: 1 },
 	{ call: "workflow", label: "ctx.workflow", reason: /child workflow body failed/, rejections: 1 },
+	{ call: "ui", label: "ctx.ui.confirm", reason: /ui failed outside the workflow module/, rejections: 1 },
 ] as const;
 
 interface Report {

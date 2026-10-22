@@ -1,16 +1,18 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { inspect } from "node:util";
 import { normalizeStackPath, parsePromptStackFrame } from "../runs/shared/prompt-callsite.js";
-import type { StageContext } from "../shared/types.js";
+import type { StageContext, WorkflowUIContext } from "../shared/types.js";
 import { isWorkflowRuntimeModule } from "../shared/workflow-source.js";
 
 export type RejectionEffect = "fail-run" | "ignore";
+
+export type StopReason = object | string;
 
 export interface RunRejectionScope {
 	run<T>(callback: () => T): T;
 	contain<T>(promise: Promise<T>, effect?: RejectionEffect): Promise<T>;
 	watch<T>(promise: Promise<T>): Promise<T>;
-	ignore(reason: object): void;
+	ignore(reason: StopReason): void;
 	settle(): Promise<void>;
 	close(): void;
 }
@@ -43,20 +45,22 @@ interface ScopeState {
 type Attribution = Map<ScopeState, RejectionEffect>;
 
 const EVENT = "unhandledRejection";
-const BOUNDARY_KEY = Symbol.for("atomic-workflows/run-rejection-boundary@3");
+const BOUNDARY_KEY = Symbol.for("atomic-workflows/run-rejection-boundary@4");
 const FLAG = "--unhandled-rejections";
 const MAX_CAUSE_DEPTH = 8;
 const MAX_PRIMITIVES_PER_RUN = 64;
+const MAX_STOP_STRINGS = 64;
 const ENDED_RUN_GRACE_MS = 30_000;
 const NATIVE_REPORTING_MODES: ReadonlySet<string> = new Set(["throw", "warn-with-error-code"]);
 
 interface RejectionBoundary {
-	readonly version: 3;
+	readonly version: 4;
 	readonly store: AsyncLocalStorage<ScopeState>;
 	readonly owners: WeakMap<object, Attribution>;
 	readonly scopes: Set<ScopeState>;
 	readonly runs: Map<string, ScopeState>;
 	readonly ended: Map<string, number>;
+	readonly stops: Set<string>;
 	listener: ((reason: unknown) => void) | undefined;
 }
 
@@ -67,14 +71,15 @@ function boundaryBag(): Record<symbol, RejectionBoundary | undefined> {
 function sharedBoundary(): RejectionBoundary {
 	const bag = boundaryBag();
 	const existing = bag[BOUNDARY_KEY];
-	if (existing !== undefined && existing.version === 3) return existing;
+	if (existing !== undefined && existing.version === 4) return existing;
 	const created: RejectionBoundary = {
-		version: 3,
+		version: 4,
 		store: new AsyncLocalStorage(),
 		owners: new WeakMap(),
 		scopes: new Set(),
 		runs: new Map(),
 		ended: new Map(),
+		stops: new Set(),
 		listener: undefined,
 	};
 	bag[BOUNDARY_KEY] = created;
@@ -105,8 +110,14 @@ function addAttribution(into: Attribution, scope: ScopeState, effect: RejectionE
 	into.set(scope, strongerEffect(into.get(scope), effect));
 }
 
-function recordedOwners(boundary: RejectionBoundary, reason: unknown): Attribution {
-	const found: Attribution = new Map();
+interface RecordedOwners {
+	readonly owners: Attribution;
+	readonly stopped: boolean;
+}
+
+function recordedOwners(boundary: RejectionBoundary, reason: unknown): RecordedOwners {
+	const owners: Attribution = new Map();
+	let stopped = false;
 	const seen = new Set<object>();
 	const pending: Array<{ readonly value: unknown; readonly depth: number }> = [{ value: reason, depth: 0 }];
 	while (pending.length > 0) {
@@ -116,19 +127,20 @@ function recordedOwners(boundary: RejectionBoundary, reason: unknown): Attributi
 			if (depth === 0 || (value !== undefined && value !== null)) {
 				for (const scope of boundary.scopes) {
 					const entry = scope.primitives.get(value);
-					if (entry !== undefined) addAttribution(found, scope, entry.effect);
+					if (entry !== undefined) addAttribution(owners, scope, entry.effect);
 				}
+				if (typeof value === "string" && boundary.stops.has(value)) stopped = true;
 			}
 			continue;
 		}
 		if (seen.has(value)) continue;
 		seen.add(value);
-		for (const [scope, effect] of boundary.owners.get(value) ?? []) addAttribution(found, scope, effect);
+		for (const [scope, effect] of boundary.owners.get(value) ?? []) addAttribution(owners, scope, effect);
 		pending.push({ value: safeField(value, "cause"), depth: depth + 1 });
 		const errors = safeField(value, "errors");
 		if (Array.isArray(errors)) for (const entry of errors) pending.push({ value: entry, depth: depth + 1 });
 	}
-	return found;
+	return { owners, stopped };
 }
 
 function pruneEndedSources(boundary: RejectionBoundary): void {
@@ -187,8 +199,9 @@ function markSharedSource(boundary: RejectionBoundary, source: string): void {
 }
 
 function attribute(boundary: RejectionBoundary, reason: unknown): Attribution | undefined {
-	const recorded = recordedOwners(boundary, reason);
+	const { owners: recorded, stopped } = recordedOwners(boundary, reason);
 	if (recorded.size > 0) return recorded;
+	if (stopped) return new Map();
 	const scoped = boundary.store.getStore();
 	if (scoped !== undefined && boundary.scopes.has(scoped)) return new Map([[scoped, "fail-run"]]);
 	const origin = authoringSource(reason, recognizedSources(boundary));
@@ -263,6 +276,14 @@ function record(boundary: RejectionBoundary, scope: ScopeState, reason: unknown,
 	else addAttribution(owners, scope, effect);
 }
 
+function recordStop(boundary: RejectionBoundary, reason: string): void {
+	boundary.stops.delete(reason);
+	boundary.stops.add(reason);
+	if (boundary.stops.size <= MAX_STOP_STRINGS) return;
+	const oldest = boundary.stops.values().next();
+	if (!oldest.done) boundary.stops.delete(oldest.value);
+}
+
 function recordPrimitive(scope: ScopeState, reason: Primitive, effect: RejectionEffect): void {
 	if (!scope.live) return;
 	if (scope.primitives.size >= MAX_PRIMITIVES_PER_RUN && !scope.primitives.has(reason)) {
@@ -319,7 +340,10 @@ export function openRunRejectionScope(options: RunRejectionScopeOptions): RunRej
 				record(boundary, scope, reason, "fail-run");
 				throw reason;
 			}),
-		ignore: (reason) => record(boundary, scope, reason, "ignore"),
+		ignore: (reason) => {
+			if (typeof reason === "string") recordStop(boundary, reason);
+			else record(boundary, scope, reason, "ignore");
+		},
 		settle: afterPendingRejectionReports,
 		close: () => {
 			scope.live = false;
@@ -366,4 +390,14 @@ export function containStageRejections<T extends StageContext>(stage: T, scope: 
 	}
 	Object.defineProperties(contained, descriptors);
 	return contained;
+}
+
+export function containUiRejections(ui: WorkflowUIContext, scope: RunRejectionScope): WorkflowUIContext {
+	return {
+		input: (prompt) => scope.watch(ui.input(prompt)),
+		confirm: (message) => scope.watch(ui.confirm(message)),
+		select: (message, options) => scope.watch(ui.select(message, options)),
+		editor: (initial) => scope.watch(ui.editor(initial)),
+		custom: (factory, options) => scope.watch(ui.custom(factory, options)),
+	};
 }

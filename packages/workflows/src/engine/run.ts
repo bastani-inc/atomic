@@ -95,7 +95,7 @@ import {
 	recordDurableActiveStage,
 } from "./run-durable-topology.js";
 import { deferStageUntilRunRelease } from "./run-paused-stage.js";
-import { containStageRejections, openRunRejectionScope } from "./run-rejection-boundary.js";
+import { containStageRejections, containUiRejections, openRunRejectionScope } from "./run-rejection-boundary.js";
 import { classifyReturnedRunStatus } from "./run-returned-status.js";
 import { createRunTerminalEventArbiter } from "./run-terminal-event.js";
 import { finalizeTerminalFailure } from "./run-terminal-failure.js";
@@ -206,9 +206,7 @@ async function executeRun(
 	const callerSignal = opts.signal;
 	const onCallerAbort = (): void => {
 		workflowObservationRuntime(activeStore).control(runId, "kill");
-		const reason = callerSignal?.reason;
-		if (parentWorkflowExitAbortReason(reason) !== undefined) rejectionScope.ignore(reason);
-		ownController.abort(reason);
+		ownController.abort(callerSignal?.reason);
 	};
 	const exit = createWorkflowExitManager({
 		runId,
@@ -834,6 +832,9 @@ async function executeRun(
 			if (findWorkflowGracefulQuit(error) === undefined) terminalEvents.selectFailure(error);
 		},
 	});
+	ownController.signal.addEventListener("abort", () => rejectionScope.ignore(ownController.signal.reason), {
+		once: true,
+	});
 	const ctx: WorkflowRunContext = {
 		inputs: resolvedInputs,
 		runId,
@@ -844,11 +845,13 @@ async function executeRun(
 			if (scheduler.isRunPaused()) {
 				pausedExit ??= whenRunning(async () => exit.exit(options));
 				void pausedExit.catch(() => {});
-				throw new Error("Workflow exit is waiting for explicit resume");
+				const waiting = new Error("Workflow exit is waiting for explicit resume");
+				rejectionScope.ignore(waiting);
+				throw waiting;
 			}
 			return exit.exit(options);
 		},
-		ui,
+		ui: containUiRejections(ui, rejectionScope),
 		stage: (name: string, options?: StageOptions) => {
 			ownController.signal.throwIfAborted();
 			if (!scheduler.isRunPaused()) return containStageRejections(durableStage(name, options), rejectionScope);
