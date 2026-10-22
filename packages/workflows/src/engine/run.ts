@@ -829,7 +829,9 @@ async function executeRun(
 		...(opts.parentRun !== undefined ? { parentRunId: opts.parentRun.runId } : {}),
 		...(authoredIn !== undefined ? { source: authoredIn } : {}),
 		fail: (error) => {
-			if (findWorkflowGracefulQuit(error) === undefined) terminalEvents.selectFailure(error);
+			if (findWorkflowGracefulQuit(error) !== undefined) return;
+			const selected = terminalEvents.selectFailure(error);
+			if (selected.kind === "failure" && !ownController.signal.aborted) ownController.abort(selected.error);
 		},
 	});
 	ownController.signal.addEventListener("abort", () => rejectionScope.ignore(ownController.signal.reason), {

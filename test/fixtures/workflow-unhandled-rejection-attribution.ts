@@ -19,6 +19,7 @@ type Branch = (ctx: WorkflowRunContext, index: number) => Promise<void>;
 const [failure = "", poolStyle = "rolling", companion = "none"] = process.argv.slice(2);
 const POOL_SIZE = 3;
 const ITEMS = 6;
+const SHARED_PROMPT_ERROR = new Error("shared prompt adapter error");
 const missingFile = join(tmpdir(), `workflow-unhandled-rejection-${process.pid}`, "missing.tmp");
 
 const child = workflow({
@@ -85,6 +86,9 @@ const STANDALONE_MODES = [
 	"caught-primitive",
 	"author-error-during-child",
 	"exit-during-child-fork",
+	"dropped-error-while-waiting",
+	"shared-error-dropped",
+	"shared-error-dropped-in-fork",
 ];
 if (branches[failure] === undefined && !STANDALONE_MODES.includes(failure)) throw new Error(`unknown failure mode "${failure}"`);
 const branch: Branch = branches[failure] ?? (async () => {});
@@ -211,7 +215,65 @@ const healthySameModule = workflow({
 		return {};
 	},
 });
+const stalledChild = workflow({
+	name: "stalled-child",
+	description: "",
+	inputs: {},
+	outputs: {},
+	run: async (ctx) => {
+		await ctx.tool("stalled-start", {}, async () => "started");
+		await new Promise<void>((resolve) => setTimeout(resolve, 60_000).unref());
+		return {};
+	},
+});
+const waitingAfterDrop = workflow({
+	name: "waiting-after-drop",
+	description: "",
+	inputs: {},
+	outputs: {},
+	run: async (ctx) => {
+		void (async () => {
+			await ctx.tool("dropped", {}, async (): Promise<string> => {
+				throw new Error("dropped while the body waits");
+			});
+		})();
+		await ctx.workflow(stalledChild);
+		return {};
+	},
+});
+const sharedErrorDropper = workflow({
+	name: "shared-error-dropper",
+	description: "",
+	inputs: {},
+	outputs: {},
+	run: async (ctx) => {
+		if (failure === "shared-error-dropped-in-fork") {
+			void (async () => {
+				await ctx.task("dropped", { prompt: "do the work" });
+			})();
+		} else {
+			void ctx.task("dropped", { prompt: "do the work" });
+		}
+		await delay(400);
+		return {};
+	},
+});
+const sharedErrorCatcher = workflow({
+	name: "shared-error-catcher",
+	description: "",
+	inputs: {},
+	outputs: {},
+	run: async (ctx) => {
+		await ctx.tool("catcher-start", {}, async () => "started");
+		await ctx.task("caught", { prompt: "do the work" }).catch(() => {});
+		await delay(400);
+		return {};
+	},
+});
 const standalone: Record<string, WorkflowDefinition> = {
+	"dropped-error-while-waiting": waitingAfterDrop,
+	"shared-error-dropped": sharedErrorDropper,
+	"shared-error-dropped-in-fork": sharedErrorDropper,
 	"late-author-error": lateAuthor,
 	"late-author-error-after-grace": lateAuthor,
 	"caught-primitive": caughtPrimitive,
@@ -219,7 +281,12 @@ const standalone: Record<string, WorkflowDefinition> = {
 	"exit-during-child-fork": exitingParent,
 };
 const definition = (standalone[failure] ?? pool) as WorkflowDefinition;
-const companionDefinition = companion === "same-module" ? healthySameModule : healthy;
+const companionDefinition =
+	companion === "shared-catcher"
+		? sharedErrorCatcher
+		: companion === "same-module" || companion === "sequential-same-module"
+			? healthySameModule
+			: healthy;
 
 const options = async () => ({
 	registry: createRegistry([
@@ -227,6 +294,8 @@ const options = async () => ({
 		child,
 		slowChild,
 		forkingChild,
+		stalledChild,
+		sharedErrorCatcher,
 		healthy,
 		healthySameModule,
 	] as WorkflowDefinition[]),
@@ -235,7 +304,11 @@ const options = async () => ({
 	adapters: {
 		prompt: {
 			prompt: (): Promise<string> =>
-				failure === "caught-primitive" ? Promise.reject("shared-reason") : failElsewhere("prompt"),
+				failure === "caught-primitive"
+					? Promise.reject("shared-reason")
+					: failure.startsWith("shared-error")
+						? Promise.reject(SHARED_PROMPT_ERROR)
+						: failElsewhere("prompt"),
 		},
 	},
 });
@@ -248,9 +321,11 @@ if (failure === "caught-primitive") {
 	}, 250);
 }
 const poolRun = run(definition, {}, poolOptions);
-const healthyRun = companion === "healthy" || companion === "same-module" ? run(companionDefinition, {}, healthyOptions) : undefined;
+const concurrentCompanion = companion === "healthy" || companion === "same-module" || companion === "shared-catcher";
+const healthyRun = concurrentCompanion ? run(companionDefinition, {}, healthyOptions) : undefined;
 const result = await poolRun;
-const healthyResult = await healthyRun;
+const healthyResult =
+	companion === "sequential-same-module" ? await run(companionDefinition, {}, healthyOptions) : await healthyRun;
 if (failure === "late-author-error-after-grace") {
 	const realNow = Date.now;
 	Date.now = () => realNow() + 60_000;

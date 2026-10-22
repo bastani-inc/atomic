@@ -45,7 +45,7 @@ interface ScopeState {
 type Attribution = Map<ScopeState, RejectionEffect>;
 
 const EVENT = "unhandledRejection";
-const BOUNDARY_KEY = Symbol.for("atomic-workflows/run-rejection-boundary@4");
+const BOUNDARY_KEY = Symbol.for("atomic-workflows/run-rejection-boundary@5");
 const FLAG = "--unhandled-rejections";
 const MAX_CAUSE_DEPTH = 8;
 const MAX_PRIMITIVES_PER_RUN = 64;
@@ -53,15 +53,20 @@ const MAX_STOP_STRINGS = 64;
 const ENDED_RUN_GRACE_MS = 30_000;
 const NATIVE_REPORTING_MODES: ReadonlySet<string> = new Set(["throw", "warn-with-error-code"]);
 
+type RejectionListener = (reason: unknown, promise: Promise<unknown>) => void;
+
+type EndedRunTrees = Map<string, number>;
+
 interface RejectionBoundary {
-	readonly version: 4;
+	readonly version: 5;
 	readonly store: AsyncLocalStorage<ScopeState>;
 	readonly owners: WeakMap<object, Attribution>;
+	readonly promises: WeakMap<Promise<unknown>, ScopeState>;
 	readonly scopes: Set<ScopeState>;
 	readonly runs: Map<string, ScopeState>;
-	readonly ended: Map<string, number>;
+	readonly ended: Map<string, EndedRunTrees>;
 	readonly stops: Set<string>;
-	listener: ((reason: unknown) => void) | undefined;
+	listener: RejectionListener | undefined;
 }
 
 function boundaryBag(): Record<symbol, RejectionBoundary | undefined> {
@@ -71,11 +76,12 @@ function boundaryBag(): Record<symbol, RejectionBoundary | undefined> {
 function sharedBoundary(): RejectionBoundary {
 	const bag = boundaryBag();
 	const existing = bag[BOUNDARY_KEY];
-	if (existing !== undefined && existing.version === 4) return existing;
+	if (existing !== undefined && existing.version === 5) return existing;
 	const created: RejectionBoundary = {
-		version: 4,
+		version: 5,
 		store: new AsyncLocalStorage(),
 		owners: new WeakMap(),
+		promises: new WeakMap(),
 		scopes: new Set(),
 		runs: new Map(),
 		ended: new Map(),
@@ -145,8 +151,29 @@ function recordedOwners(boundary: RejectionBoundary, reason: unknown): RecordedO
 
 function pruneEndedSources(boundary: RejectionBoundary): void {
 	const now = Date.now();
-	for (const [source, endedAt] of boundary.ended)
-		if (now - endedAt > ENDED_RUN_GRACE_MS) boundary.ended.delete(source);
+	for (const [source, trees] of boundary.ended) {
+		for (const [rootRunId, endedAt] of trees) if (now - endedAt > ENDED_RUN_GRACE_MS) trees.delete(rootRunId);
+		if (trees.size === 0) boundary.ended.delete(source);
+	}
+}
+
+function rootRunId(scope: ScopeState): string {
+	let root = scope;
+	while (root.parent !== undefined) root = root.parent;
+	return root.runId;
+}
+
+function recordEndedRun(boundary: RejectionBoundary, scope: ScopeState): void {
+	if (scope.source === undefined) return;
+	const trees = boundary.ended.get(scope.source) ?? new Map<string, number>();
+	trees.set(rootRunId(scope), Date.now());
+	boundary.ended.set(scope.source, trees);
+}
+
+function endedInAnotherRunTree(boundary: RejectionBoundary, source: string, live: ScopeState): boolean {
+	const liveRoot = rootRunId(live);
+	for (const endedRoot of boundary.ended.get(source)?.keys() ?? []) if (endedRoot !== liveRoot) return true;
+	return false;
 }
 
 function recognizedSources(boundary: RejectionBoundary): ReadonlySet<string> {
@@ -190,6 +217,7 @@ function runOfSource(boundary: RejectionBoundary, source: string): Attribution |
 	const [only, ...others] = outermostLiveRuns(boundary, source);
 	if (only === undefined) return new Map();
 	if (others.length > 0 || only.sharedSource) return undefined;
+	if (endedInAnotherRunTree(boundary, source, only)) return undefined;
 	return new Map([[only, "fail-run"]]);
 }
 
@@ -198,11 +226,31 @@ function markSharedSource(boundary: RejectionBoundary, source: string): void {
 	if (runs.size > 1) for (const run of runs) run.sharedSource = true;
 }
 
-function attribute(boundary: RejectionBoundary, reason: unknown): Attribution | undefined {
+function rejectingRun(
+	boundary: RejectionBoundary,
+	recorded: Attribution,
+	promise: Promise<unknown> | undefined,
+	scoped: ScopeState | undefined,
+): ScopeState | undefined {
+	const tracked = promise === undefined ? undefined : boundary.promises.get(promise);
+	if (tracked !== undefined && recorded.has(tracked)) return tracked;
+	if (scoped !== undefined && recorded.has(scoped)) return scoped;
+	return undefined;
+}
+
+function attribute(
+	boundary: RejectionBoundary,
+	reason: unknown,
+	promise: Promise<unknown> | undefined,
+): Attribution | undefined {
 	const { owners: recorded, stopped } = recordedOwners(boundary, reason);
+	const scoped = boundary.store.getStore();
+	if (recorded.size > 1) {
+		const rejecting = rejectingRun(boundary, recorded, promise, scoped);
+		if (rejecting !== undefined) return new Map([[rejecting, recorded.get(rejecting) ?? "fail-run"]]);
+	}
 	if (recorded.size > 0) return recorded;
 	if (stopped) return new Map();
-	const scoped = boundary.store.getStore();
 	if (scoped !== undefined && boundary.scopes.has(scoped)) return new Map([[scoped, "fail-run"]]);
 	const origin = authoringSource(reason, recognizedSources(boundary));
 	if (origin === undefined) return undefined;
@@ -221,7 +269,7 @@ function unhandledRejectionError(reason: unknown): Error {
 }
 
 function unhandledRejectionsMode(): string {
-	const args = [...process.execArgv, ...(process.env.NODE_OPTIONS ?? "").split(/\s+/)];
+	const args = [...(process.env.NODE_OPTIONS ?? "").split(/\s+/), ...process.execArgv];
 	let mode = "throw";
 	for (let index = 0; index < args.length; index += 1) {
 		const arg = args[index] ?? "";
@@ -244,9 +292,9 @@ function surfaceNatively(boundary: RejectionBoundary, reason: unknown): void {
 	});
 }
 
-function onUnhandledRejection(reason: unknown): void {
+function onUnhandledRejection(reason: unknown, promise?: Promise<unknown>): void {
 	const boundary = sharedBoundary();
-	const owners = attribute(boundary, reason);
+	const owners = attribute(boundary, reason, promise);
 	if (owners === undefined) {
 		surfaceNatively(boundary, reason);
 		return;
@@ -332,14 +380,18 @@ export function openRunRejectionScope(options: RunRejectionScopeOptions): RunRej
 	return {
 		run: (callback) => boundary.store.run(scope, callback),
 		contain: (promise, effect = "fail-run") => {
+			boundary.promises.set(promise, scope);
 			void promise.then(undefined, (reason: unknown) => record(boundary, scope, reason, effect));
 			return promise;
 		},
-		watch: (promise) =>
-			promise.then(undefined, (reason: unknown) => {
+		watch: (promise) => {
+			const watched = promise.then(undefined, (reason: unknown) => {
 				record(boundary, scope, reason, "fail-run");
 				throw reason;
-			}),
+			});
+			boundary.promises.set(watched, scope);
+			return watched;
+		},
 		ignore: (reason) => {
 			if (typeof reason === "string") recordStop(boundary, reason);
 			else record(boundary, scope, reason, "ignore");
@@ -348,7 +400,7 @@ export function openRunRejectionScope(options: RunRejectionScopeOptions): RunRej
 		close: () => {
 			scope.live = false;
 			scope.fail = discardFailure;
-			if (scope.source !== undefined) boundary.ended.set(scope.source, Date.now());
+			recordEndedRun(boundary, scope);
 			void afterPendingRejectionReports().then(() => {
 				scope.primitives.clear();
 				scope.parent = undefined;

@@ -33,10 +33,16 @@ interface Report {
 	readonly runs?: ReadonlyArray<{ readonly workflow: string; readonly status: string; readonly error?: string }>;
 }
 
-function runFixture(runtime: Runtime, args: readonly string[], runtimeFlags: readonly string[] = []): Outcome {
+function runFixture(
+	runtime: Runtime,
+	args: readonly string[],
+	runtimeFlags: readonly string[] = [],
+	env: Record<string, string> = {},
+): Outcome {
 	const [executable, ...preload] = runtime.command();
 	const result = spawnSyncCollect([executable as string, ...runtimeFlags, ...preload, FIXTURE, ...args], {
 		cwd: ROOT,
+		env: { ...process.env, ...env },
 		timeout: REAL_CHILD_TIMEOUT_MS,
 	});
 	return { exitCode: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
@@ -185,6 +191,43 @@ for (const runtime of RUNTIMES) {
 		);
 
 		test(
+			"an unhandled rejection fails its run while the body is still waiting on a child workflow (#3846)",
+			() => {
+				const reported = assertContained(runFixture(runtime, ["dropped-error-while-waiting", "rolling"]));
+				assert.equal(reported.error, "dropped while the body waits");
+				assert.equal(reported.runs?.find((entry) => entry.workflow === "stalled-child")?.status, "killed");
+			},
+			REAL_CHILD_TIMEOUT_MS,
+		);
+
+		test(
+			"a shared adapter error one run caught and another dropped fails only the run that dropped it (#3846)",
+			() => {
+				const reported = assertContained(
+					runFixture(runtime, ["shared-error-dropped", "rolling", "shared-catcher"]),
+				);
+				assert.equal(reported.error, "shared prompt adapter error");
+				assert.deepEqual(reported.healthy, { status: "completed" });
+			},
+			REAL_CHILD_TIMEOUT_MS,
+		);
+
+		test(
+			"--unhandled-rejections on the command line wins over NODE_OPTIONS for an unrelated rejection (#3846)",
+			() => {
+				const outcome = runFixture(
+					runtime,
+					["tool-string", "tolerant", "unrelated"],
+					["--unhandled-rejections=throw"],
+					{ NODE_OPTIONS: "--unhandled-rejections=warn" },
+				);
+				assert.equal(outcome.exitCode, 1, `${outcome.stdout}\n${outcome.stderr}`);
+				assert.match(outcome.stderr, /unrelated engine bug/);
+			},
+			REAL_CHILD_TIMEOUT_MS,
+		);
+
+		test(
 			"a primitive reason the author already caught does not fail its run when an unrelated rejection repeats it later (#3846)",
 			() => {
 				const outcome = runFixture(runtime, ["caught-primitive", "rolling"], ["--unhandled-rejections=warn"]);
@@ -309,6 +352,27 @@ describe("workflow unhandled rejection attribution through async context", () =>
 	);
 
 	test(
+		"a shared adapter error one run caught fails only the run whose dropped fork rethrew it where async context identifies the run (#3846)",
+		() => {
+			const reported = assertContained(
+				runFixture(NODE as Runtime, ["shared-error-dropped-in-fork", "rolling", "shared-catcher"]),
+			);
+			assert.deepEqual(reported.healthy, { status: "completed" });
+		},
+		REAL_CHILD_TIMEOUT_MS,
+	);
+
+	test(
+		"an error an ended run's fire-and-forget function throws leaves the next run from the same module untouched where async context identifies the run (#3846)",
+		() => {
+			const outcome = runFixture(NODE as Runtime, ["late-author-error", "rolling", "sequential-same-module"]);
+			assert.equal(outcome.exitCode, 0, `${outcome.stdout}\n${outcome.stderr}`);
+			assert.deepEqual(report(outcome).healthy, { status: "completed" });
+		},
+		REAL_CHILD_TIMEOUT_MS,
+	);
+
+	test(
 		"an error an ended run's fire-and-forget function throws leaves a concurrent run from the same module untouched where async context identifies the run (#3846)",
 		() => {
 			const outcome = runFixture(NODE as Runtime, ["late-author-error", "rolling", "same-module"]);
@@ -320,16 +384,17 @@ describe("workflow unhandled rejection attribution through async context", () =>
 });
 
 describe("workflow unhandled rejection attribution when two runs of one module could have thrown the error", () => {
-	for (const [failure, poolStyle] of [
-		["late-author-error", "rolling"],
-		["author-error-after-workflow", "tolerant"],
+	for (const [failure, poolStyle, companion] of [
+		["late-author-error", "rolling", "same-module"],
+		["author-error-after-workflow", "tolerant", "same-module"],
+		["late-author-error", "rolling", "sequential-same-module"],
 	] as const) {
 		test(
-			`an author error from ${failure} fails neither run of the same module and is handed back to the runtime (#3846)`,
+			`an author error from ${failure} fails neither ${companion === "same-module" ? "run of the same module" : "its run nor the next run of the same module"} and is handed back to the runtime (#3846)`,
 			() => {
 				const outcome = runFixture(
 					BUN as Runtime,
-					[failure, poolStyle, "same-module"],
+					[failure, poolStyle, companion],
 					["--unhandled-rejections=warn"],
 				);
 				assert.equal(outcome.exitCode, 0, `${outcome.stdout}\n${outcome.stderr}`);
