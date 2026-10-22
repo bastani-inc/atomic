@@ -4,6 +4,18 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.41] - 2026-10-22
+
+### Changed
+
+- Workflow route updates cost the Intercom broker far less when many runs are active. The broker now acknowledges each route registration itself instead of the session listing the previous version requested after every update, and each run's route connection retries on its own backoff, with limited concurrency, instead of all of them reconnecting at once. A workflow stage that starts while its run's route connection is waiting to retry waits for that retry rather than failing, and a retry that fails is retried by the stage like any other connection timeout. Mixed versions keep working: with an older broker the session listing is still used, and older sessions work with the new broker.
+
+### Fixed
+
+- `intercom list` with a `group` that names a workflow invocation group you are not a member of no longer reports `No sessions or workflow stages in this group.` The group is visible only to its members, so the peek now says that and tells you to `intercom join` it to see its stages, instead of looking like a run whose stages had all disappeared.
+- Fixed `Intercom event relay failed (atomic:workflow-pending-stage-route): Connection timeout` repeating for every route update when 50 or more workflows ran at once. A broker that is slow to answer a connection is now a recoverable condition that background relays retry quietly. A broker that stays unresponsive for a minute is reported once, and Intercom tool calls you make still report the failure.
+- Fixed a single workflow run's route connection failing to connect and dropping the session's healthy Intercom connection, which re-created every run's connection at the same time.
+
 ## [0.9.41-alpha.1] - 2026-10-21
 
 ### Changed
