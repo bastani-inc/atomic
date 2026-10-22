@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.41-alpha.3] - 2026-10-22
+
+Usage totals now say whether their cost was billed by the provider or estimated.
+
+- **Provider-billed cost flag:** `usage.cost.totalFromProvider` is `true` only when every summed part, including nested tool-call and compaction totals, carries a provider-reported billed cost, and `false` for catalog estimates and older sessions ([#3852](https://github.com/bastani-inc/atomic/pull/3852))
+
 ### Added
 
 - Added `usage.cost.totalFromProvider` to usage totals. Summed usage, including nested tool-call and compaction totals, reports `true` only when every part was a provider-reported billed cost; catalog-estimated and legacy sessions without the field report `false`.
