@@ -6,6 +6,7 @@
 
 - Codemode `models.classify()` now also accepts `images` for TypeSafe's Jev and Cloudflare's Clef models on `cloudflare-workers-ai` and OpenRouter, next to Jev on `typesafe`, and lists Clef Omni and Jev 1.14 on Workers AI. See [Use classifier models](docs/models.md#use-classifier-models).
 - Provider-level `compat` in `models.json` now also applies to classifier models, with the System One fields `imageInput` and `sendImageOptInHeader` for proxies that serve another service's classifiers. Extension classifier models accept `compat` too. See [Models Configuration](docs/models-configuration.md#typesafe-system-one).
+- Added support for the Rex terminal (`TERM_PROGRAM=rex`): OSC 8 hyperlinks, truecolor, and inline images. Links previously fell back to the `text (url)` format ([#11131](https://github.com/earendil-works/pi/issues/11131), [#11150](https://github.com/earendil-works/pi/pull/11150) by [@petrroll](https://github.com/petrroll), [#11183](https://github.com/earendil-works/pi/pull/11183) by [@nihaals](https://github.com/nihaals))
 
 ### Fixed
 
