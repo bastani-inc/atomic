@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Added
+
+- Added `openBrowserOnConfirm` and `copyCodeOnConfirm` to `OAuthDeviceCodeInfo` and the `device_code` `AuthEvent`, so a provider can tell clients whether to offer opening the verification URL and copying the code when the user confirms. Both default to `true` ([pi #9282](https://github.com/earendil-works/pi/issues/9282))
+
 ### Fixed
 
 - OpenRouter requests through Chat Completions and Anthropic Messages now set `usage.cost.total` to the cost OpenRouter reports, including the upstream inference cost for BYOK requests, and mark it `totalFromProvider: true`. When the response has no valid accounting, the catalog estimate stays. The `input`, `output`, `cacheRead` and `cacheWrite` components remain catalog estimates and may not add up to the total ([pi #9980](https://github.com/earendil-works/pi/issues/9980))

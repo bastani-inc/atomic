@@ -39,6 +39,8 @@ OpenRouter opens its browser PKCE flow and asks whether to mint a new API key. C
 
 Kimi Code displays its device URL/code and polls until approval, then refreshes expired tokens automatically.
 
+Device-code logins (Kimi Code, GitHub Copilot, Meta, and extension providers) show the URL and code without opening a browser. Press Enter to open the URL and copy the code, or open it yourself and type the code.
+
 Built-in and extension-provided OAuth work in both direct and isolated sessions. Login completes once credentials are saved; model-catalog refresh runs separately.
 
 Escape or Ctrl+C quietly cancels the matching login, including immediate/pre-device native aborts, and leaves the previously committed credential and catalog unchanged. Provider denial, device expiry, timeout, browser/network/protocol failure, malformed responses, token exchange, and persistence failures remain visible. Atomic claims success when the provider flow and credential persistence complete; it does not wait for model-catalog or ambient-availability refresh work.
