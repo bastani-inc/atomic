@@ -151,14 +151,20 @@ The broker takes its selection from one of two places:
 }
 ```
 
-One broker serves every session in an agent directory and keeps the selection it started with until it exits. After changing the selection, close the Atomic sessions on that machine. The broker exits five seconds after its last session disconnects, and the next session that uses Intercom starts one with the new selection.
+One broker serves every session in an agent directory and keeps the selection it started with until it exits. After changing the selection, run `atomic intercom restart`. It asks the broker to shut down; the sessions connected to it reconnect within a few seconds, and the first one starts a broker with the new selection. The command waits for that broker and prints its multi-node routing state. When no session is connected, the next session that uses Intercom starts the new broker. A broker started by an older Atomic version, which does not answer the request, is stopped with SIGTERM.
+
+`atomic intercom status` shows whether the broker is running, how many sessions it serves, whether it uses the current selection, and its multi-node routing state with the number of other brokers live in the shared database. `atomic storage status` shows the same together with the selection for sessions and workflow runs; see [Checking the selected storage](/storage#checking-the-selected-storage). In a session, `intercom({ action: "status" })` adds a `Multi-node routing:` line, for example `Multi-node routing: on (adapter @bastani/atomic-storage-libsql, prefix none), 1 peer broker live (build-host)`.
+
+Each broker writes its multi-node state to `broker.log` when it starts: `Intercom multi-node routing is on (adapter <adapter>, prefix <prefix>)` once it has opened the shared database, or `Intercom multi-node routing is off: <reason>`. `<adapter>` is `sqlite` for a `path` selection.
 
 Multi-node routing stays off, and Intercom behaves exactly as on a single machine, when the selection is:
 
 - absent, including when only project settings (`.atomic/settings.json`), `sessions.storage`, `workflows.journal`, `ATOMIC_SESSIONS_STORAGE`, or `ATOMIC_WORKFLOWS_JOURNAL` select storage;
 - in memory: `{ "memory": true }` or `{ "path": ":memory:" }`;
 - an adapter that implements only `openSessionStore` or `openRunJournal` and has no `openDatabase`;
-- invalid, for example an `env` secret that is not set in the broker's environment, or an adapter module that cannot be loaded. The broker then writes `Intercom multi-node routing is off: <reason>` to `broker.log`.
+- invalid, for example an `env` secret that is not set in the broker's environment, or an adapter module that cannot be loaded. Sessions warn at startup when the Atomic they run cannot load the adapter.
+
+In each case the broker writes `Intercom multi-node routing is off: <reason>` to `broker.log`.
 
 A `path` selection, including the default storage file, is a local SQLite file. Only brokers on the same machine that open the same file share it. Do not put it on a network filesystem.
 
@@ -207,15 +213,15 @@ When a whole machine or its broker stops, its sessions still look connected for 
 
 **A session on another machine does not appear in `intercom list`.**
 
-- Check that both machines use the same storage selection and the same `prefix`, from settings or from the process that started each broker. A broker started before you changed the selection keeps the old one until it exits.
-- Check `broker.log` on both machines for `Intercom multi-node routing is off: <reason>` or `Intercom multi-node routing is unavailable: <reason>`. An absent, in-memory, or domain-only selection stays off without a message, and a `path` selection reaches only brokers on the same machine.
+- Run `atomic storage status` on both machines. Both must use the same storage selection and the same `prefix`, from settings or from the process that started each broker, and the broker must report `storage: matches the selection above`. A broker started before you changed the selection keeps the old one until `atomic intercom restart` replaces it.
+- Check that each broker reports multi-node routing `on` with the other broker live, in `atomic intercom status` or in `broker.log`. `Intercom multi-node routing is off: <reason>` or `Intercom multi-node routing is unavailable: <reason>` there gives the cause. A `path` selection reaches only brokers on the same machine, and a machine whose broker is not running is not live.
 - A session appears only after it connects to Intercom, which happens lazily. Ask it to use Intercom once, for example `intercom({ action: "status" })`.
 - Both sessions must share a group.
 - When the database is slow to answer, `intercom list` shows only local sessions. Try again.
 
 **A send stays queued.** The recipient is offline. It receives the message when the same Atomic session connects to Intercom again with the same home group, on a machine that uses the same storage and prefix. A session reopened on a machine with a different selection never sees it.
 
-**The database is unavailable.** Messages between sessions on the same machine keep working. A send to a session on another machine fails with `Session not found on this node, and Intercom could not reach the shared storage database to look for it on other nodes. Try again once the database is available.` If the database cannot be opened when the broker starts, the broker logs `Intercom multi-node routing is unavailable: <reason>` and retries after 1 second, doubling up to every 30 seconds. Intercom never falls back to in-memory storage. If sends keep failing after the database is back, close the sessions on that machine so that a new broker starts.
+**The database is unavailable.** Messages between sessions on the same machine keep working. A send to a session on another machine fails with `Session not found on this node, and Intercom could not reach the shared storage database to look for it on other nodes. Try again once the database is available.` If the database cannot be opened when the broker starts, the broker logs `Intercom multi-node routing is unavailable: <reason>` and retries after 1 second, doubling up to every 30 seconds. Intercom never falls back to in-memory storage. If sends keep failing after the database is back, run `atomic intercom restart` so that a new broker starts.
 
 **An ask to a session on another machine never gets an answer.** If that session disconnects before it answers, the asker is not told, and waits until the ask times out after 10 minutes.
 

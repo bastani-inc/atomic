@@ -62,6 +62,29 @@ function stateFromRow(row: StateRow): LeaseState {
 	};
 }
 
+/**
+ * The host names of the brokers whose membership lease is live in `<prefix>intercom_leases`, read without creating
+ * the table: `undefined` when no broker has created it yet. For status reports; brokers use `listLive`.
+ */
+export async function readLiveBrokerNodes(
+	database: SqliteExecutor,
+	prefix: string | undefined,
+	staleAfterMs: number,
+): Promise<string[] | undefined> {
+	const table = `${validateStoragePrefix(prefix)}intercom_leases`;
+	const exists = await database.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", table);
+	if (exists === undefined) return undefined;
+	const rows = await database.all<StateRow>(
+		`SELECT kind, key, holder_id, fencing_token, subject_json, ${AGE} AS age_ms FROM ${table}
+		WHERE kind = 'broker' AND holder_id IS NOT NULL AND ${AGE} <= ? ORDER BY first_acquired_order`,
+		staleAfterMs,
+	);
+	return rows.flatMap((row) => {
+		const { subject } = stateFromRow(row);
+		return subject.kind === "broker" ? [subject.nodeId] : [];
+	});
+}
+
 /** Opens the S1 lease store on the shared database's `<prefix>intercom_leases` table; the database stays open. */
 export async function openSqlBrokerLeaseStore(options: IntercomBrokerStateOptions): Promise<BrokerLeaseStore> {
 	const { database } = options;

@@ -2,7 +2,8 @@ import type { ExtensionAPI } from "@bastani/atomic";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import type { IntercomClient } from "./broker/client.js";
-import type { SessionInfo, SessionDirectory, WorkflowStageRosterEntry, WorkflowFutureStageRosterEntry } from "./types.js";
+import type { BrokerMultiNodeStatus, SessionInfo, SessionDirectory, WorkflowStageRosterEntry, WorkflowFutureStageRosterEntry } from "./types.js";
+import { describeMultiNodeStatus } from "./broker/broker-status.js";
 import { requestParentAskHandoff } from "./parent-ask-handoff.js";
 import type { ReplyWait, ReplyWaitAdmission } from "./reply-waiter.ts";
 import { renderIntercomResult } from "./result-renderers.js";
@@ -47,6 +48,20 @@ function retainInconclusiveRetry(
 		...(retryToken === undefined ? {} : { retryToken }),
 		remainingRetries: reservations.remainingRetries(attempt),
 	};
+}
+
+/** The broker's multi-node routing state for `status`, as one line; a failure to read it never fails `status`. */
+async function multiNodeStatus(client: IntercomClient): Promise<{ line: string; multiNode?: BrokerMultiNodeStatus } | undefined> {
+	if (typeof client.brokerStatus !== "function") return undefined;
+	try {
+		const report = await client.brokerStatus();
+		if (report === undefined) {
+			return { line: "unknown (the running broker predates status reporting; `atomic intercom restart` replaces it)" };
+		}
+		return { line: describeMultiNodeStatus(report.multiNode), multiNode: report.multiNode };
+	} catch (error) {
+		return { line: `unknown (${getErrorMessage(error)})` };
+	}
 }
 
 async function listDirectory(client: IntercomClient, group?: string): Promise<SessionDirectory> {
@@ -1192,10 +1207,12 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             const selectedSection = selectedGroupSessions === undefined
               ? ""
               : `\nSelected group [${selectedGroup}]: ${selectedGroupSessions.length} session(s)`;
+            const multiNode = await multiNodeStatus(connectedClient);
+            const multiNodeSection = multiNode === undefined ? "" : `\nMulti-node routing: ${multiNode.line}`;
             return {
               content: [{
                 type: "text",
-                text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\nGroups: ${ownGroups.join(", ")}\nActive visible sessions: ${sessions.length}${selectedSection}`,
+                text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\nGroups: ${ownGroups.join(", ")}\nActive visible sessions: ${sessions.length}${selectedSection}${multiNodeSection}`,
               }],
               isError: false,
               details: {
@@ -1204,6 +1221,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 ...(selectedGroup === undefined
                   ? {}
                   : { selectedGroup, selectedGroupSessionCount: selectedGroupSessions?.length ?? 0 }),
+                ...(multiNode?.multiNode === undefined ? {} : { multiNode: multiNode.multiNode }),
               },
             };
           } catch (error) {

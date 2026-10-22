@@ -28,7 +28,7 @@ description: The intercom tool contract and every intercom setting.
 | `ask` | Sends a message and blocks until a live recipient replies (10-minute timeout). An ask to a known workflow stage whose session has not initialized is refused with `pending_stage_ask_unsupported` and recommends ordinary `send`; holding a waiter until a stage eventually starts would be unbounded. A live recipient disconnect fails promptly. Parallel children continue in the same execution after a correlated reply; single-child parent handoffs remain unchanged. |
 | `reply` | Replies to the intercom-triggered message of the current turn; otherwise falls back to the single unresolved inbound ask. With multiple pending asks, pass `to` or inspect with `pending` first. |
 | `pending` | Lists unresolved inbound asks with sender, message ID, elapsed time, and a short preview. |
-| `status` | Shows connection status, session ID, every group this session belongs to, and the count of active sessions visible through those memberships. A `group` filter remains a read-only peek. |
+| `status` | Shows connection status, session ID, every group this session belongs to, the count of active sessions visible through those memberships, and the broker's multi-node routing state with the number of other brokers live in the shared database. A `group` filter remains a read-only peek. |
 
 To give two plain chat sessions a private shared membership, have both call:
 

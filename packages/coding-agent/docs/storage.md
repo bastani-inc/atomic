@@ -57,6 +57,44 @@ Save the token with `turso db tokens create <db> > turso-token` and keep it read
 
 Like any [adapter](#selecting-an-adapter), it runs with Atomic's privileges. To use a different driver, adapt it with [Bring your own driver](#bring-your-own-driver).
 
+### Joining a machine to a shared database
+
+Instead of editing settings by hand, install the adapter and join the database:
+
+```bash
+atomic install npm:@bastani/atomic-storage-libsql
+turso db tokens create <db> > ~/turso-token
+atomic storage join libsql://<db>.turso.io --token-file ~/turso-token
+atomic intercom restart
+atomic storage status
+```
+
+`atomic storage join <url> --token-file <path> [--prefix <prefix>]`:
+
+1. reads the token and removes surrounding whitespace; an empty token is an error;
+2. connects with `@bastani/atomic-storage-libsql` and runs `SELECT 1`. It creates no tables and changes no data; sessions, workflow runs, and Intercom brokers create their own tables when they first use the database;
+3. stores the token in `~/.atomic/agent/storage-token` (in the agent directory under `ATOMIC_CODING_AGENT_DIR`), readable only by you (mode 600). Your token file is left as it is, and can be deleted;
+4. writes only the top-level `storage` key of the global settings, `~/.atomic/agent/settings.json`, with the adapter, the URL, the token file, and the prefix. Every other setting keeps its value;
+5. lists the environment variables and settings that take precedence over the new selection, and says whether the running Intercom broker still uses its previous one.
+
+Nothing is written when the token is empty or the connection fails. When the adapter is not installed, the command prints the `atomic install` command to run first. A `file:` URL needs no `--token-file`. The `libsql://`, `https://`, and `wss://` schemes are accepted.
+
+The running Intercom broker keeps the selection it started with. `atomic intercom restart` replaces it: connected sessions reconnect within a few seconds and start a broker that reads the new selection. See [Running Intercom across machines](/intercom/operations#running-intercom-across-machines).
+
+### Checking the selected storage
+
+`atomic storage status` shows, for sessions, workflow runs, and Intercom:
+
+- the selected storage and where the selection comes from: an environment variable, project settings, global settings (`storage`, `sessions.storage`, or `workflows.journal`), or the default. Selections that are set but outranked are listed as `overrides`. See [Selecting storage per process](#selecting-storage-per-process) for the order;
+- whether the adapter loads, and from which installed package;
+- whether the database answers a `SELECT 1`. A local SQLite file that does not exist yet is not created, and no table is created or changed;
+- for Intercom, whether a broker started now would route across machines, and how many brokers are live in the shared database;
+- whether an Intercom broker is running, how many sessions it serves, whether it uses the current selection, and its multi-node routing state.
+
+It also notes project settings that are not applied because the project is not trusted, and a project `storage` setting, which Intercom never uses. Run it in the project directory to see that project's selection. `--json` prints the same report as JSON. The command exits 1 when a selection is invalid, an adapter cannot load, or a database does not answer.
+
+When the shared `storage` selection (global settings, `--storage`, or `ATOMIC_STORAGE`) names an adapter that the running Atomic cannot load, interactive and print sessions warn at startup, naming the adapter and the cause. The Intercom broker would otherwise leave multi-node routing off with only a line in its log.
+
 ## Bring your own driver
 
 Atomic does not bundle remote database drivers. Install your chosen SQLite-compatible driver and turn it into a `SqliteDatabase` with `createSqliteDatabase` from `@bastani/atomic/storage`. You supply the driver calls:
@@ -260,7 +298,7 @@ atomic --mode rpc --storage-file /etc/atomic/storage.json
 
 Nothing is written to settings. A process started without these options keeps using its settings, so an interactive `atomic` and an RPC child started with `ATOMIC_STORAGE` in the same account each keep their own sessions and workflow runs, and `/resume` in each lists only its own store. `--storage` and `--storage-file` cannot be combined. The interactive CLI passes its `--storage` selection to its background engine process. Other processes that Atomic starts inherit the environment variables but not the flag.
 
-The Intercom broker an Atomic process starts uses the same selection for multi-node routing: `--storage`, `--storage-file`, or `ATOMIC_STORAGE` from that process outranks the top-level `storage` setting, and a broker started by a process without them reads settings. One broker serves every session in an agent directory, so it keeps the selection of the process that started it until it exits.
+The Intercom broker an Atomic process starts uses the same selection for multi-node routing: `--storage`, `--storage-file`, or `ATOMIC_STORAGE` from that process outranks the top-level `storage` setting, and a broker started by a process without them reads settings. One broker serves every session in an agent directory, so it keeps the selection of the process that started it until it exits or `atomic intercom restart` replaces it. Project settings never select the broker's storage.
 
 Precedence for each domain, highest first:
 

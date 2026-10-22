@@ -4,6 +4,12 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Added
+
+- `intercom({ action: "status" })` reports the broker's multi-node routing state, for example `Multi-node routing: on (adapter @bastani/atomic-storage-libsql, prefix none), 1 peer broker live (build-host)`, or why it is off or unavailable ([#3857](https://github.com/bastani-inc/atomic/issues/3857))
+- The broker writes a positive line to `broker.log` when it starts: `Intercom multi-node routing is on (adapter <adapter>, prefix <prefix>)`, or `Intercom multi-node routing is off: <reason>`, also for an absent, in-memory, or domain-only selection, so a log without errors is no longer ambiguous ([#3856](https://github.com/bastani-inc/atomic/issues/3856), [#3857](https://github.com/bastani-inc/atomic/issues/3857))
+- The broker answers status and shutdown requests from `atomic storage status`, `atomic intercom status`, and `atomic intercom restart`: its storage selection, sessions, multi-node state, and the other brokers live in the shared database. A restart lets connected sessions reconnect to a broker that reads the current storage selection, without closing them ([#3857](https://github.com/bastani-inc/atomic/issues/3857))
+
 ### Fixed
 
 - Fixed Intercom remaining stuck on a broker that accepts connections but stops answering. New brokers monitor their own request handling and terminate after about a minute of failed health checks so clients can start one replacement. Timed-out client requests also check connection health before entering reconnect recovery, without restarting a responsive broker. Identical in-flight sends keep sharing one result through the health check. A bounded previous broker log and the latest watchdog diagnosis survive replacement ([#3862](https://github.com/bastani-inc/atomic/issues/3862)).
