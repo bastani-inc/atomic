@@ -9,7 +9,12 @@ import {
 	StorageSchemaVersionError,
 	StorageUnavailableError,
 } from "@bastani/atomic/storage";
-import { JOURNAL_READ_PAGE_SIZE, type RunVersion, registerRunJournalVersions } from "./internal.js";
+import {
+	JOURNAL_READ_PAGE_SIZE,
+	type RunVersion,
+	registerRunJournalVersions,
+	registerSqlPoolStorage,
+} from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import { LegacyJournalRuns, latestEventColumns, type RunVersionRow } from "./legacy-journal-tables.js";
 import {
@@ -73,6 +78,10 @@ export class SqlRunJournal implements RunJournal {
 		registerRunJournalVersions(this, {
 			changeToken: () => this.changeToken(),
 			runVersions: () => this.runVersions(),
+		});
+		registerSqlPoolStorage(this, {
+			transaction: (body) => this.operation(() => this.database.transaction(body)),
+			tables: this.tables,
 		});
 	}
 
