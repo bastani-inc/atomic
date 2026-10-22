@@ -130,6 +130,36 @@ test("intervening attempt checkpoints stay visible across root writes and receip
 	}
 });
 
+test("root status snapshots preserve interleaved checkpoint metadata after reopening (#3869)", async () => {
+	const f = await fixture();
+	try {
+		const append = f.journal.append.bind(f.journal);
+		const interleaved = vi.spyOn(f.journal, "append").mockImplementationOnce(async (...args) => {
+			await f.pool.commit(f.lease, f.attempt, "save", { kind: "checkpoint", checkpoint });
+			return append(...args);
+		});
+		try {
+			await f.backend.commitWorkflowStatus("root", "paused");
+		} finally {
+			interleaved.mockRestore();
+		}
+		const expectedCheckpoints = [boundary, checkpoint];
+		assert.deepEqual(f.backend.listCheckpoints("root"), expectedCheckpoints);
+		assert.equal(f.backend.getWorkflow("root")?.status, "paused");
+		assert.equal(f.backend.getWorkflow("root")?.completedCheckpoints, expectedCheckpoints.length);
+		const reopened = await JournalDurableBackend.open(f.journal, { ownsJournal: false });
+		try {
+			assert.deepEqual(reopened.listCheckpoints("root"), expectedCheckpoints);
+			assert.equal(reopened.getWorkflow("root")?.status, "paused");
+			assert.equal(reopened.getWorkflow("root")?.completedCheckpoints, expectedCheckpoints.length);
+		} finally {
+			await reopened.close();
+		}
+	} finally {
+		await f.close();
+	}
+});
+
 test("session transcripts and checkpoints commit atomically and acknowledge once (#3869)", async () => {
 	const f = await fixture();
 	const sessions = await new StorageProvider().openSessionStore(
