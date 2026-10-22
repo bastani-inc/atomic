@@ -11,6 +11,7 @@
 - HTML session exports now show the recorded total cost of each response, such as OpenRouter's billed cost, instead of the sum of its catalog-estimated components. Sessions recorded before totals were stored still use the component sum ([pi #9980](https://github.com/earendil-works/pi/issues/9980))
 - On macOS, cancelling a running bash command no longer lets the next command in a `a; b` sequence start while the shell is being killed: the process group is stopped before it is killed ([pi #11252](https://github.com/earendil-works/pi/issues/11252))
 - HTML session exports, including `atomic --export`, now show the system prompt and available tools from the session's first system message, and later system messages as named prompt-section and tool updates. Sessions without system entries still show the prompt and tools from the agent state ([pi #11261](https://github.com/earendil-works/pi/issues/11261))
+- HTML session exports of very long sessions no longer fail to render the session tree with a call-stack overflow ([pi #11225](https://github.com/earendil-works/pi/issues/11225))
 
 ## [0.9.41] - 2026-10-22
 
