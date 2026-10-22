@@ -330,6 +330,22 @@ test(
 	BROKER_SCENARIO_TIMEOUT_MS,
 );
 
+test("a stale legacy endpoint with a dead PID is stopped, not a restarted broker (#3857)", async () => {
+	const agentDir = agentDirectory("stale-legacy");
+	const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+	await exited(child);
+	writeFileSync(getBrokerPidPath(agentDir), String(child.pid));
+	const server = net.createServer((socket) => socket.on("data", () => socket.destroy()));
+	await new Promise<void>((resolveListening) =>
+		server.listen(getBrokerSocketPath(process.platform, agentDir), resolveListening),
+	);
+	try {
+		assert.deepEqual(await queryIntercomBroker(agentDir), { state: "stopped" });
+	} finally {
+		await new Promise<void>((resolveClosed) => server.close(() => resolveClosed()));
+	}
+});
+
 test(
 	"restart stops a broker that predates broker_status with SIGTERM (#3857)",
 	async () => {

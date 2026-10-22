@@ -33,6 +33,9 @@
 - Provider request-budget waits no longer consume OpenAI, Anthropic, Mistral, or explicit Codex SSE HTTP timeouts, and successive Anthropic federation-authenticated requests keep reusing their cached token. Cancelling a queued model request reports an aborted result without dispatching it ([#3864](https://github.com/bastani-inc/atomic/issues/3864)).
 - Cancelling or clearing queued messages no longer waits for a busy interactive engine to finish draining its output before acting. Cancelled prompts and shell commands waiting to start do not run later when output resumes. If queue clearing or cancellation of chat, shell commands, compaction, or retries stalls or fails, Ctrl+C can still replace the engine even while it continues sending heartbeats, including controls sent while a replacement initializes; an earlier failed queue pause no longer prevents an abort from being sent ([#3865](https://github.com/bastani-inc/atomic/issues/3865))
 - The standalone binary's Intercom broker now runs multi-node routing with a shared `storage` selection and loads storage adapters, as the npm installation does ([#3856](https://github.com/bastani-inc/atomic/issues/3856))
+- `atomic storage join` keeps previous credentials intact when saving settings fails and rejects relative `file:` URLs that would select different databases from different directories. New joins use separate private token files, preserving existing sessions' credentials ([#3857](https://github.com/bastani-inc/atomic/issues/3857))
+- `atomic storage status` reports settings load failures, opens local SQLite files read-only without changing journal mode, and bounds connection cleanup even when a query stalls ([#3856](https://github.com/bastani-inc/atomic/issues/3856))
+- `createSqliteDatabase()` preserves callback and rollback failures when transaction cleanup also fails ([#3856](https://github.com/bastani-inc/atomic/issues/3856))
 
 ## [0.9.41] - 2026-10-22
 

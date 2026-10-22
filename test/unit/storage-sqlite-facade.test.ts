@@ -247,6 +247,45 @@ test("createSqliteDatabase maps driver failures and redacts credentials from dia
 	await assert.rejects(database.exec("SELECT 1"), StoreClosedError);
 });
 
+test("transaction close failure preserves callback and rollback failures (#3856)", async () => {
+	for (const rollbackFails of [false, true]) {
+		const callbackFailure = new Error("callback failed");
+		const closeFailure = new Error("close failed");
+		const database = createSqliteDatabase(
+			scriptedDriver({
+				execute: () => ({ columns: [], rows: [], changes: 0 }),
+				beginTransaction: () => ({
+					execute: () => ({ columns: [], rows: [], changes: 0 }),
+					executeMultiple: () => {},
+					commit: () => {},
+					rollback: () => {
+						if (rollbackFails) throw new Error("rollback failed");
+					},
+					close: async () => {
+						throw closeFailure;
+					},
+				}),
+			}),
+		);
+		try {
+			await assert.rejects(
+				database.transaction(async () => {
+					throw callbackFailure;
+				}),
+				(error: Error) => {
+					if (rollbackFails) {
+						assert.ok(error instanceof StorageRollbackError);
+						assert.equal(error.cause, callbackFailure);
+					} else assert.equal(error, callbackFailure);
+					return true;
+				},
+			);
+		} finally {
+			await database.close();
+		}
+	}
+});
+
 test("redactSecrets removes encoded forms and longer secrets first (#3856)", () => {
 	const redact = redactSecrets(["user", "user-password", "a b/c", "", "\ud800"]);
 	assert.equal(redact("user-password user a b/c a%20b%2Fc"), "[redacted] [redacted] [redacted] [redacted]");

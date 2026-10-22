@@ -202,7 +202,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 
 export async function openNodeSqliteDatabase(
 	path: string,
-	{ busyTimeoutMs = 5000 }: { busyTimeoutMs?: number } = {},
+	{ busyTimeoutMs = 5000, readOnly = false }: { busyTimeoutMs?: number; readOnly?: boolean } = {},
 ): Promise<SqliteDatabase> {
 	const descriptor = { adapter: "node-sqlite", location: path };
 	// Load node:sqlite on first open: importing it prints Node's experimental warning, which every importer of the
@@ -215,10 +215,10 @@ export async function openNodeSqliteDatabase(
 	}
 	let connection: DatabaseSync | undefined;
 	try {
-		if (path !== ":memory:") await mkdir(dirname(path), { recursive: true });
-		connection = new Database(path);
+		if (!readOnly && path !== ":memory:") await mkdir(dirname(path), { recursive: true });
+		connection = new Database(path, { readOnly });
 		connection.exec(`PRAGMA busy_timeout=${busyTimeoutMs}`);
-		connection.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON");
+		if (!readOnly) connection.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON");
 		const location = connection.location();
 		const identity = location === null ? connection : await realpath(location);
 		return new NodeSqliteDatabase(connection, descriptor, true, identity);

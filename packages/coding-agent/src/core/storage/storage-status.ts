@@ -169,7 +169,13 @@ async function probeSelection(
 			return { connection: { status: "skipped", detail: "file not created yet; Atomic creates it on first use" } };
 		}
 		const { openNodeSqliteDatabase } = await import("./node-sqlite.js");
-		return { connection: await roundTrip(() => openNodeSqliteDatabase(selection.path), "SQLite file", inspect) };
+		return {
+			connection: await roundTrip(
+				() => openNodeSqliteDatabase(selection.path, { readOnly: true }),
+				"SQLite file",
+				inspect,
+			),
+		};
 	}
 	const module = selection.module;
 	let adapter: Awaited<ReturnType<typeof loadStorageAdapter>>;
@@ -214,7 +220,7 @@ async function roundTrip(
 		await withTimeout(opened.get("SELECT 1 AS ok"), label);
 		const elapsed = Date.now() - started;
 		// What `inspect` reads is extra detail; the database already answered.
-		await inspect?.(opened).catch(() => {});
+		if (inspect) await withTimeout(inspect(opened), "Inspecting the database").catch(() => {});
 		return {
 			status: "ok",
 			detail: `${opened.descriptor.adapter} ${opened.descriptor.location} answered in ${elapsed} ms`,
@@ -222,7 +228,7 @@ async function roundTrip(
 	} catch (error) {
 		return { status: "failed", detail: errorText(error as Error) };
 	} finally {
-		await database?.close().catch(() => {});
+		if (database) await withTimeout(database.close(), "Closing the database").catch(() => {});
 	}
 }
 
@@ -292,6 +298,12 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 	const { cwd, agentDir } = options;
 	const projectTrusted = projectTrust(cwd, agentDir);
 	const manager = SettingsManager.create(cwd, agentDir, { projectTrusted });
+	const settingsErrors = manager.drainErrors();
+	if (settingsErrors.length > 0) {
+		throw new Error(
+			`Cannot load settings: ${settingsErrors.map(({ scope, error }) => `${scope} settings: ${error.message}`).join("; ")}`,
+		);
+	}
 	const global = manager.getGlobalSettings();
 	const project = manager.getProjectSettings();
 	const merged = manager.getSettings();

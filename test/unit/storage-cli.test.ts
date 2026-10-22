@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
@@ -11,6 +11,7 @@ import {
 	runStorageCommand,
 	STORAGE_TOKEN_FILE,
 } from "../../packages/coding-agent/src/cli/storage-command.js";
+import { FileSettingsStorage } from "../../packages/coding-agent/src/core/settings-storage.js";
 import {
 	checkSharedStorageAdapter,
 	collectStorageStatus,
@@ -47,6 +48,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.restoreAllMocks();
 	vi.unstubAllEnvs();
 	removeTempDirectory(root);
 });
@@ -247,6 +249,27 @@ describe("storage status sources (#3856)", () => {
 });
 
 describe("storage status checks", () => {
+	test("status reports malformed settings instead of silently probing defaults (#3856)", async () => {
+		writeFileSync(join(agentDir, "settings.json"), '{ "storage": ');
+		const result = await storage(["status"]);
+		assert.equal(result.code, 1);
+		assert.match(result.err, /Cannot load.*global.*settings/i);
+		assert.equal(result.out, "");
+	});
+
+	test("status leaves a DELETE-journal SQLite file byte-for-byte unchanged (#3856)", async () => {
+		const { DatabaseSync } = await import("node:sqlite");
+		const path = join(root, "delete-journal.sqlite");
+		const database = new DatabaseSync(path);
+		database.exec("PRAGMA journal_mode=DELETE; CREATE TABLE notes (id INTEGER PRIMARY KEY)");
+		database.close();
+		const before = readFileSync(path);
+		writeSettings({ storage: { path } });
+		const result = await storage(["status"]);
+		assert.equal(result.code, 0, result.err);
+		assert.deepEqual(readFileSync(path), before);
+	});
+
 	test("a local SQLite selection answers a SELECT 1 and keeps its tables unchanged (#3856)", async () => {
 		const path = join(root, "existing.sqlite");
 		const database = await openNodeSqliteDatabase(path);
@@ -356,6 +379,41 @@ describe("atomic storage join with the libSQL package (#3857)", () => {
 		assert.throws(() => statSync(join(agentDir, STORAGE_TOKEN_FILE)), { code: "ENOENT" });
 	});
 
+	test("join rejects relative file URLs before checking or saving them (#3857)", async () => {
+		writeSettings({ packages: [packageRoot] });
+		const before = readFileSync(join(agentDir, "settings.json"), "utf8");
+		const result = await storage(["join", "file:./shared.sqlite"]);
+		assert.equal(result.code, 1);
+		assert.match(result.err, /absolute file: URL/);
+		assert.equal(readFileSync(join(agentDir, "settings.json"), "utf8"), before);
+	});
+
+	test("a settings write failure preserves the previous token and leaves settings intact (#3857)", async () => {
+		writeSettings({
+			packages: [packageRoot],
+			storage: {
+				adapter: LIBSQL_ADAPTER_PACKAGE,
+				options: { url: "file:old.sqlite" },
+				secrets: { authToken: { file: `agent/${STORAGE_TOKEN_FILE}` } },
+			},
+		});
+		const settingsBefore = readFileSync(join(agentDir, "settings.json"), "utf8");
+		const tokenPath = join(agentDir, STORAGE_TOKEN_FILE);
+		writeFileSync(tokenPath, "previous-token", { mode: 0o600 });
+		vi.spyOn(FileSettingsStorage.prototype, "withPrimaryWriteLock").mockImplementation(() => {
+			throw new Error("settings write denied");
+		});
+		const result = await storage(["join", databaseUrl, "--token-file", tokenFile]);
+		assert.equal(result.code, 1);
+		assert.match(result.err, /settings write denied/);
+		assert.equal(readFileSync(join(agentDir, "settings.json"), "utf8"), settingsBefore);
+		assert.equal(readFileSync(tokenPath, "utf8"), "previous-token");
+		assert.deepEqual(
+			readdirSync(agentDir).filter((name) => name.startsWith(STORAGE_TOKEN_FILE)),
+			[STORAGE_TOKEN_FILE],
+		);
+	});
+
 	test(
 		"stores the trimmed token privately, writes only `storage`, creates no tables, and reports overrides",
 		async () => {
@@ -373,16 +431,19 @@ describe("atomic storage join with the libSQL package (#3857)", () => {
 			const result = await storage(["join", databaseUrl, "--token-file", tokenFile, "--prefix", "team_"]);
 			assert.equal(result.code, 0, result.err);
 
-			const tokenPath = join(agentDir, STORAGE_TOKEN_FILE);
+			const saved = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
+			const tokenReference: string = saved.storage.secrets.authToken.file;
+			assert.match(tokenReference, /^agent\/storage-token\.[\da-f-]+$/);
+			const tokenPath = resolve(root, tokenReference);
 			assert.equal(readFileSync(tokenPath, "utf8"), "secret-token");
 			if (process.platform !== "win32") assert.equal(statSync(tokenPath).mode & 0o777, 0o600);
 			assert.equal(readFileSync(tokenFile, "utf8"), "  secret-token\n\n");
-			assert.deepEqual(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")), {
+			assert.deepEqual(saved, {
 				...other,
 				storage: {
 					adapter: LIBSQL_ADAPTER_PACKAGE,
 					options: { url: databaseUrl },
-					secrets: { authToken: { file: `agent/${STORAGE_TOKEN_FILE}` } },
+					secrets: { authToken: { file: tokenReference } },
 					prefix: "team_",
 				},
 			});

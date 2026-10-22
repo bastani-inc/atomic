@@ -4,6 +4,7 @@
  * uses. `atomic storage join` points this machine's global `storage` setting at a shared libSQL / Turso database.
  */
 
+import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { APP_NAME } from "../config.js";
@@ -24,7 +25,7 @@ import {
 
 /** The first-party libSQL / Turso adapter package that `atomic storage join` selects. */
 export const LIBSQL_ADAPTER_PACKAGE = "@bastani/atomic-storage-libsql";
-/** Where `atomic storage join` keeps the database token, in the agent directory. */
+/** Filename prefix for private token files created by `atomic storage join` in the agent directory. */
 export const STORAGE_TOKEN_FILE = "storage-token";
 
 const HELP = `Usage:
@@ -106,6 +107,11 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 		if (!/^(libsql|https?|wss?):\/\/[^/]/.test(url) && !url.startsWith("file:")) {
 			throw new StorageCommandError(
 				`Unsupported database URL "${url}". Use a libsql://, https://, wss://, or file: URL.`,
+			);
+		}
+		if (url.startsWith("file:") && !url.startsWith("file:/")) {
+			throw new StorageCommandError(
+				"Use an absolute file: URL (for example file:///path/to/shared.sqlite), so every working directory uses the same database.",
 			);
 		}
 		if (!url.startsWith("file:") && carriesCredential(url)) {
@@ -308,20 +314,10 @@ async function joinStorage(
 	}
 	log(`Connected to ${command.url}.`);
 
-	const tokenPath = join(agentDir, STORAGE_TOKEN_FILE);
-	if (token !== undefined && tokenSource !== undefined) {
-		if (resolve(tokenSource) === resolve(tokenPath)) {
-			if (readFileSync(tokenPath, "utf8") !== token) {
-				throw new StorageCommandError(
-					`${tokenPath} is where ${APP_NAME} keeps the token; pass a token file from another location so it is not rewritten in place.`,
-				);
-			}
-			chmodSync(tokenPath, 0o600);
-		} else {
-			writePrivateFile(tokenPath, token);
-		}
-		log(`Stored the token in ${tokenPath} (mode 600).`);
-	}
+	// Never replace a credential referenced by the previous selection or an already-running session.
+	// Publishing settings is the commit point; an unsuccessful join removes only its new token file.
+	const tokenPath = join(agentDir, `${STORAGE_TOKEN_FILE}.${randomUUID()}`);
+	if (token !== undefined) writePrivateFile(tokenPath, token);
 
 	const previous = manager.getGlobalSettings().storage;
 	const storage: NonNullable<Settings["storage"]> = {
@@ -332,14 +328,20 @@ async function joinStorage(
 			: { secrets: { authToken: { file: relative(dirname(agentDir), tokenPath).split(sep).join("/") } } }),
 		...(command.prefix === undefined ? {} : { prefix: command.prefix }),
 	};
-	manager.setStorage(storage);
-	await manager.flush();
-	const writeErrors = manager.drainErrors();
-	if (writeErrors.length > 0) {
-		throw new StorageCommandError(
-			`Could not write the global settings: ${writeErrors.map(({ error }) => error.message).join("; ")}`,
-		);
+	try {
+		manager.setStorage(storage);
+		await manager.flush();
+		const writeErrors = manager.drainErrors();
+		if (writeErrors.length > 0) {
+			throw new StorageCommandError(
+				`Could not write the global settings: ${writeErrors.map(({ error }) => error.message).join("; ")}`,
+			);
+		}
+	} catch (error) {
+		if (token !== undefined) rmSync(tokenPath, { force: true });
+		throw error;
 	}
+	if (token !== undefined) log(`Stored the token in ${tokenPath} (mode 600).`);
 	log(`Set \`storage\` in ${join(agentDir, "settings.json")}; other settings are unchanged.`);
 	if (previous !== undefined && JSON.stringify(previous) !== JSON.stringify(storage)) {
 		const described = (() => {

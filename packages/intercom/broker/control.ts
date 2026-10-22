@@ -141,6 +141,8 @@ export async function queryIntercomBroker(
 		return { state: "running", report: reply.report };
 	}
 	const pid = readBrokerPid(agentDir);
+	// Windows can briefly accept a named-pipe connection after its broker has terminated.
+	if (pid !== undefined && !isProcessAlive(pid)) return { state: "stopped" };
 	return pid === undefined ? { state: "legacy" } : { state: "legacy", pid };
 }
 

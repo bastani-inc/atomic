@@ -17,9 +17,18 @@ export interface LibsqlDatabaseOptions {
 /** Credentials a libSQL URL can carry: its userinfo and every `authToken` query value. */
 function urlCredentials(url: string): string[] {
 	const secrets: string[] = [];
-	for (const match of url.matchAll(/[?&]([^=&#]*)=([^&#]*)/g)) {
-		const token = new URLSearchParams(match[0].slice(1)).get("authToken");
-		if (token !== null) secrets.push(match[2] ?? "", token);
+	// Scan each key/value once, including malformed URLs, without retrying a growing suffix at every '?'.
+	for (let index = 0; index < url.length; index++) {
+		if (url[index] !== "?" && url[index] !== "&") continue;
+		const start = ++index;
+		while (index < url.length && !"?&=#".includes(url[index]!)) index++;
+		if (url[index] === "=") {
+			const valueStart = ++index;
+			while (index < url.length && url[index] !== "&" && url[index] !== "#") index++;
+			const token = new URLSearchParams(url.slice(start, index)).get("authToken");
+			if (token !== null) secrets.push(url.slice(valueStart, index), token);
+		}
+		index--;
 	}
 	const userinfo = url.match(/\/\/([^/?#]*)@/)?.[1];
 	if (userinfo !== undefined) secrets.push(...userinfo.split(":"));

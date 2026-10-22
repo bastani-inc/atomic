@@ -193,11 +193,12 @@ class DriverDatabase implements SqliteDatabase {
 			const connection = await this.call(() => this.driver.beginTransaction());
 			const handleQueue = new CallQueue();
 			let active = true;
+			let result: T;
 			const handle = this.createExecutor(connection, (operation) =>
 				active ? handleQueue.push(operation) : Promise.reject(new StorageTransactionClosedError()),
 			);
+			const close = () => this.call(() => connection.close?.());
 			try {
-				let result: T;
 				try {
 					result = await callback(handle);
 				} finally {
@@ -205,17 +206,19 @@ class DriverDatabase implements SqliteDatabase {
 					await handleQueue.drained();
 				}
 				await this.call(() => connection.commit());
-				return result;
 			} catch (cause) {
+				let failure = cause as StorageFailureCause;
 				try {
 					await this.call(() => connection.rollback());
 				} catch (rollbackCause) {
-					throw new StorageRollbackError(cause as StorageFailureCause, rollbackCause as StorageFailureCause);
+					failure = new StorageRollbackError(failure, rollbackCause as StorageFailureCause);
 				}
-				throw cause;
-			} finally {
-				if (connection.close) await this.call(() => connection.close?.());
+				// Cleanup must not replace a callback, commit, or rollback failure.
+				await close().catch(() => {});
+				throw failure;
 			}
+			await close();
+			return result;
 		});
 	}
 

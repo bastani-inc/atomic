@@ -21,7 +21,7 @@ try {
 
 `exec`, `run`, `get`, and `all` return promises. Bind values through positional `?` parameters; `run` returns `{ changes }`, `get` returns a row or `undefined`, and `all` returns an array. Values may be null, number, bigint, string, or Uint8Array. Binary values are copied when the call is made, so reusing a buffer afterward does not change queued work. INTEGER values inside the safe integer range are returned as numbers; larger values are returned as bigints.
 
-The node adapter creates parent directories and enables WAL, full synchronization, and foreign keys. Its busy timeout defaults to 5000 ms; override it with `openNodeSqliteDatabase(path, { busyTimeoutMs: 1000 })`. Use `:memory:` for an ephemeral database.
+The node adapter creates parent directories and enables WAL, full synchronization, and foreign keys. Its busy timeout defaults to 5000 ms; override it with `openNodeSqliteDatabase(path, { busyTimeoutMs: 1000 })`. Use `:memory:` for an ephemeral database. Pass `{ readOnly: true }` to inspect an existing file without creating it or changing its journal mode.
 
 Transactions from separate `openNodeSqliteDatabase` connections to the same file queue asynchronously within one process; symlink paths refer to the same queue. Separate in-memory databases remain independent. SQLite locking and the busy timeout still govern contention from other processes. Wrap a caller-owned connection consistently: its transaction queue is shared by wrappers of that connection, not by other connections to its file.
 
@@ -73,11 +73,11 @@ atomic storage status
 
 1. reads the token and removes surrounding whitespace; an empty token is an error;
 2. connects with `@bastani/atomic-storage-libsql` and runs `SELECT 1`. It creates no tables and changes no data; sessions, workflow runs, and Intercom brokers create their own tables when they first use the database;
-3. stores the token in `~/.atomic/agent/storage-token` (in the agent directory under `ATOMIC_CODING_AGENT_DIR`), readable only by you (mode 600). Your token file is left as it is, and can be deleted;
+3. stores the token in a new `~/.atomic/agent/storage-token.<id>` file (in the agent directory under `ATOMIC_CODING_AGENT_DIR`), readable only by you (mode 600). Your input token file and tokens used by previous selections are left as they are;
 4. writes only the top-level `storage` key of the global settings, `~/.atomic/agent/settings.json`, with the adapter, the URL, the token file, and the prefix. Every other setting keeps its value;
 5. lists the environment variables and settings that take precedence over the new selection, and says whether the running Intercom broker still uses its previous one.
 
-Nothing is written when the token is empty or the connection fails. When the adapter is not installed, the command prints the `atomic install` command to run first. A `file:` URL needs no `--token-file`. The `libsql://`, `https://`, and `wss://` schemes are accepted. A URL that contains the token itself, as a user name, a password, or an `authToken` parameter, is refused: pass the token with `--token-file` so it stays out of settings and output.
+Nothing is written when the token is empty or the connection fails. If saving settings fails, the new token file is removed and the previous token remains untouched. Previous token files are kept after a successful join too, so already-running sessions can continue using them; remove them only after those sessions stop and no settings reference them. When the adapter is not installed, the command prints the `atomic install` command to run first. An absolute `file:` URL, such as `file:///home/me/shared.sqlite`, needs no `--token-file`; relative file URLs are refused so another working directory cannot select a different database. The `libsql://`, `https://`, and `wss://` schemes are accepted. A URL that contains the token itself, as a user name, a password, or an `authToken` parameter, is refused: pass the token with `--token-file` so it stays out of settings and output.
 
 The running Intercom broker keeps the selection it started with. `atomic intercom restart` replaces it: connected sessions reconnect within a few seconds and start a broker that reads the new selection. See [Running Intercom across machines](/intercom/operations#running-intercom-across-machines).
 
@@ -87,11 +87,11 @@ The running Intercom broker keeps the selection it started with. `atomic interco
 
 - the selected storage and where the selection comes from: an environment variable, project settings, global settings (`storage`, `sessions.storage`, or `workflows.journal`), or the default. Selections that are set but outranked are listed as `overrides`. See [Selecting storage per process](#selecting-storage-per-process) for the order;
 - whether the adapter loads, and from which installed package;
-- whether the database answers a `SELECT 1`. A local SQLite file that does not exist yet is not created, and no table is created or changed;
+- whether the database answers a `SELECT 1`. Local SQLite files are opened read-only, without changing journal mode; a file that does not exist yet is not created, and no table is created or changed;
 - for Intercom, whether a broker started now would route across machines, and how many brokers are live in the shared database;
 - whether an Intercom broker is running, how many sessions it serves, whether it uses the current selection, and its multi-node routing state.
 
-It also notes project settings that are not applied because the project is not trusted, and a project `storage` setting, which Intercom never uses. Run it in the project directory to see that project's selection. `--json` prints the same report as JSON. The command exits 1 when a selection is invalid, an adapter cannot load, or a database does not answer.
+It also notes project settings that are not applied because the project is not trusted, and a project `storage` setting, which Intercom never uses. Run it in the project directory to see that project's selection. `--json` prints the same report as JSON. The command reports settings load errors instead of silently checking defaults, and exits 1 when settings cannot load, a selection is invalid, an adapter cannot load, or a database does not answer. Adapter loading, database operations, and connection cleanup each have a 15-second wait limit, so a stalled close cannot leave the command waiting indefinitely.
 
 When the shared `storage` selection (global settings, `--storage`, or `ATOMIC_STORAGE`) names an adapter that the running Atomic cannot load, interactive and print sessions warn at startup, naming the adapter and the cause. The Intercom broker would otherwise leave multi-node routing off with only a line in its log.
 
@@ -135,9 +135,18 @@ export interface LibsqlDatabaseOptions {
 /** Credentials a libSQL URL can carry: its userinfo and every `authToken` query value. */
 function urlCredentials(url: string): string[] {
 	const secrets: string[] = [];
-	for (const match of url.matchAll(/[?&]([^=&#]*)=([^&#]*)/g)) {
-		const token = new URLSearchParams(match[0].slice(1)).get("authToken");
-		if (token !== null) secrets.push(match[2] ?? "", token);
+	// Scan each key/value once, including malformed URLs, without retrying a growing suffix at every '?'.
+	for (let index = 0; index < url.length; index++) {
+		if (url[index] !== "?" && url[index] !== "&") continue;
+		const start = ++index;
+		while (index < url.length && !"?&=#".includes(url[index]!)) index++;
+		if (url[index] === "=") {
+			const valueStart = ++index;
+			while (index < url.length && url[index] !== "&" && url[index] !== "#") index++;
+			const token = new URLSearchParams(url.slice(start, index)).get("authToken");
+			if (token !== null) secrets.push(url.slice(valueStart, index), token);
+		}
+		index--;
 	}
 	const userinfo = url.match(/\/\/([^/?#]*)@/)?.[1];
 	if (userinfo !== undefined) secrets.push(...userinfo.split(":"));
