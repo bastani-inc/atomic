@@ -72,6 +72,7 @@ import type {
 } from "../shared/types.js";
 import type { WorkflowFailure } from "../shared/workflow-failures.js";
 import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
+import { workflowSource } from "../shared/workflow-source.js";
 import { GraphFrontierTracker } from "./graph-inference.js";
 import type { EngineChildRunOptions, EngineStageRuntimeOptions, EngineWorkflowBoundaryOptions } from "./options.js";
 import { createChainPrimitive } from "./primitives/chain.js";
@@ -94,7 +95,7 @@ import {
 	recordDurableActiveStage,
 } from "./run-durable-topology.js";
 import { deferStageUntilRunRelease } from "./run-paused-stage.js";
-import { containRejectionsOf } from "./run-rejection-boundary.js";
+import { containStageRejections, openRunRejectionScope } from "./run-rejection-boundary.js";
 import { classifyReturnedRunStatus } from "./run-returned-status.js";
 import { createRunTerminalEventArbiter } from "./run-terminal-event.js";
 import { finalizeTerminalFailure } from "./run-terminal-failure.js";
@@ -817,10 +818,13 @@ async function executeRun(
 		baseFromPromptNodes: getPromptNodeUi,
 	});
 	let pausedExit: Promise<never> | undefined;
-	const failRunFromUnhandledRejection = (error: object): void => {
-		if (findWorkflowGracefulQuit(error) === undefined) terminalEvents.selectFailure(error);
-	};
-	const ignoreUnhandledRejection = (): void => {};
+	const authoredIn = workflowSource(def);
+	const rejectionScope = openRunRejectionScope({
+		...(authoredIn !== undefined ? { source: authoredIn } : {}),
+		fail: (error) => {
+			if (findWorkflowGracefulQuit(error) === undefined) terminalEvents.selectFailure(error);
+		},
+	});
 	const ctx: WorkflowRunContext = {
 		inputs: resolvedInputs,
 		runId,
@@ -838,22 +842,25 @@ async function executeRun(
 		ui,
 		stage: (name: string, options?: StageOptions) => {
 			ownController.signal.throwIfAborted();
-			if (!scheduler.isRunPaused()) return durableStage(name, options);
+			if (!scheduler.isRunPaused()) return containStageRejections(durableStage(name, options), rejectionScope);
 			// Reserve declaration order now, even if methods are invoked in reverse.
 			const replayKey = stageReplayKeyGenerator(name);
-			return deferStageUntilRunRelease({
-				name,
-				create: () => durableStage(name, options, replayKey),
-				isPaused: scheduler.isRunPaused,
-				waitForRelease: waitForRunRelease,
-				signal: ownController.signal,
-			});
+			return containStageRejections(
+				deferStageUntilRunRelease({
+					name,
+					create: () => durableStage(name, options, replayKey),
+					isPaused: scheduler.isRunPaused,
+					waitForRelease: waitForRunRelease,
+					signal: ownController.signal,
+				}),
+				rejectionScope,
+			);
 		},
-		task: gatedTask,
-		chain: (...args) => whenRunning(() => chain(...args)),
-		parallel: (...args) => whenRunning(() => parallel(...args)),
+		task: (...args) => rejectionScope.contain(gatedTask(...args)),
+		chain: (...args) => rejectionScope.contain(whenRunning(() => chain(...args))),
+		parallel: (...args) => rejectionScope.contain(whenRunning(() => parallel(...args))),
 		workflow: (...args) =>
-			containRejectionsOf(
+			rejectionScope.contain(
 				whenRunning(() => {
 					const pending = durableWorkflow(...args);
 					pendingChildWorkflows.add(pending);
@@ -863,18 +870,14 @@ async function executeRun(
 					void pending.then(settled, settled);
 					return pending;
 				}),
-				failRunFromUnhandledRejection,
 			),
 		tool: (...args) => {
 			// Let the tracker retain its terminal rejection, rather than replaying
 			// a stored drain failure or the run's abort reason to a late caller.
-			if (admittedTools.closed) return containRejectionsOf(tool(...args), ignoreUnhandledRejection);
+			if (admittedTools.closed) return rejectionScope.contain(tool(...args), "ignore");
 			// Wait before admission so pause cannot hold the registration lease
 			// that a subsequent quit needs to drain.
-			return containRejectionsOf(
-				whenRunning(() => tool(...args)),
-				failRunFromUnhandledRejection,
-			);
+			return rejectionScope.contain(whenRunning(() => tool(...args)));
 		},
 		...(opts.models !== undefined ? { models: opts.models } : {}),
 	};
@@ -1037,7 +1040,7 @@ async function executeRun(
 		while (scheduler.isRunPaused()) await waitForRunRelease();
 		ownController.signal.throwIfAborted();
 		const rawResult = await raceAbort(
-			runWorkflowDefinitionCallback(def.name, runId, () => def.run(ctx)),
+			runWorkflowDefinitionCallback(def.name, runId, () => rejectionScope.run(() => def.run(ctx))),
 			ownController.signal,
 		);
 		await drainCachedStagePersistence();
@@ -1046,6 +1049,7 @@ async function executeRun(
 		while (scheduler.isRunPaused()) await waitForRunRelease();
 		if (pausedExit !== undefined) await pausedExit;
 		budget.rethrowIfSystemOwnedStop(runSnapshot.stages.at(-1)?.name ?? startupFrontierStage);
+		await rejectionScope.settle();
 		const normalTerminalEvent = terminalEvents.winner();
 		if (normalTerminalEvent?.kind === "cancellation") {
 			const gracefulQuit = findWorkflowGracefulQuit(normalTerminalEvent.reason);
@@ -1137,6 +1141,9 @@ async function executeRun(
 			return suspendForGracefulQuit(gracefulQuit);
 		}
 		if (ownerClosing && err instanceof Error && isSessionClosedError(err)) return await suspendForClosedSession(err);
+		if (selectedTerminalEvent.kind === "failure" && pendingChildWorkflows.size > 0 && !ownController.signal.aborted) {
+			ownController.abort(err);
+		}
 		await admittedTools.closeAndDrain();
 		// Racing the author body must not race past admitted child teardown and
 		// its boundary checkpoint publication on cancellation.
@@ -1228,6 +1235,7 @@ async function executeRun(
 		});
 		return failed;
 	} finally {
+		rejectionScope.close();
 		callerSignal?.removeEventListener("abort", onCallerAbort);
 		workflowObservationRuntime(activeStore).finishRun(runId);
 		runtimeSettled.resolve();

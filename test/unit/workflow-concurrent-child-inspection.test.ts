@@ -202,6 +202,51 @@ describe("inspecting a run with concurrent branches in flight", () => {
 		if (inspected.kind === "found") assert.equal(inspected.detail.status, "failed");
 	});
 
+	test("a run that fails while its child workflows have not checkpointed yet cancels them and stays inspectable (#3846)", async () => {
+		const backend = await createMemoryTestBackend();
+		const started = startedCounter(POOL_SIZE);
+		const child = workflow({
+			name: "child",
+			description: "",
+			inputs: { topic: Type.String() },
+			outputs: {},
+			run: async () => {
+				started.note();
+				return await new Promise<never>(() => {});
+			},
+		});
+		const parent = workflow({
+			name: "rolling-pool",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				for (let index = 0; index < POOL_SIZE; index++) {
+					ctx.workflow(child, { inputs: { topic: `topic-${index}` } }).catch(() => {});
+				}
+				await started.reached;
+				throw new Error("pool failed before its children checkpointed");
+			},
+		});
+		const result = await run(
+			parent,
+			{},
+			{
+				registry: createRegistry([parent, child] as WorkflowDefinition[]),
+				store: createStore(),
+				durableBackend: backend,
+			},
+		);
+
+		assert.equal(result.status, "failed");
+		assert.match(result.error ?? "", /pool failed before its children checkpointed/);
+		const inspected = await inspectTargetedDurableWorkflow(backend, result.runId);
+		assert.equal(inspected.kind, "found", inspected.kind === "found" ? "" : inspected.message);
+		if (inspected.kind !== "found") return;
+		assert.equal(inspected.detail.status, "failed");
+		assert.ok(inspected.runs.every((candidate) => candidate.status !== "running"));
+	});
+
 	test("a terminal root whose child boundary never reached a terminal record stays malformed (#3846)", async () => {
 		const rootId = testRunId("concurrent-child-terminal-strict");
 		const childId = testRunId("concurrent-child-terminal-strict-child");

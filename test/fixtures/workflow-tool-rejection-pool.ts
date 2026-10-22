@@ -9,6 +9,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
+import { scheduleUnrelatedRejection } from "./workflow-unhandled-rejection-unrelated.js";
 
 const mode = process.argv[2];
 const POOL_SIZE = 5;
@@ -100,6 +101,6 @@ afterRunStopped.resolve();
 await delay(100);
 console.log(JSON.stringify({ status: result.status, error: result.error }));
 if (mode === "unrelated-rejection") {
-	void Promise.reject(new Error("unrelated engine bug"));
+	scheduleUnrelatedRejection();
 	await delay(100);
 }

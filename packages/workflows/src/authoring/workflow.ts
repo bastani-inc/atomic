@@ -19,6 +19,7 @@ import type {
 	WorkflowProvidedInputsFromSchemas,
 } from "../shared/workflow-authoring-types.js";
 import { DEFAULT_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES } from "../shared/workflow-heartbeat-contract.js";
+import { recordWorkflowSource } from "../shared/workflow-source.js";
 import { normalizeWorkflowName } from "../workflows/identity.js";
 
 export type {
@@ -101,7 +102,7 @@ function isWorkflowAuthoringImplementationFrame(filePath: string): boolean {
 	);
 }
 
-function workflowNameFromCaller(): string | undefined {
+function callerSourcePath(): string | undefined {
 	const stack = new Error().stack;
 	if (stack === undefined) return undefined;
 
@@ -109,11 +110,17 @@ function workflowNameFromCaller(): string | undefined {
 		const filePath = stackFilePath(line);
 		if (filePath === undefined) continue;
 		if (isWorkflowAuthoringImplementationFrame(filePath)) continue;
-		const base = basename(filePath.replace(/\\/g, "/")).replace(/\.[cm]?[jt]sx?$/, "");
-		if (base.length > 0) return base;
+		return filePath;
 	}
 
 	return undefined;
+}
+
+function workflowNameFromCaller(): string | undefined {
+	const filePath = callerSourcePath();
+	if (filePath === undefined) return undefined;
+	const base = basename(filePath.replace(/\\/g, "/")).replace(/\.[cm]?[jt]sx?$/, "");
+	return base.length > 0 ? base : undefined;
 }
 
 function resolveWorkflowName(name: string | undefined): string {
@@ -200,5 +207,7 @@ export function workflow<
 		WorkflowOutputsFromSchemas<TOutputs>,
 		WorkflowProvidedInputsFromSchemas<TInputs>
 	>(definition);
+	const source = callerSourcePath();
+	if (source !== undefined) recordWorkflowSource(branded, source);
 	return Object.freeze(branded) as AuthoredWorkflowDefinition<TInputs, TOutputs>;
 }
