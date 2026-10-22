@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { completeSimple } from "../src/compat.ts";
 import type { Model } from "../src/types.ts";
@@ -116,7 +117,7 @@ describe("openai-completions provider stream events", () => {
 			{ apiKey: "test" },
 		);
 
-		expect(message.usage.cost).toEqual({
+		assert.deepEqual(message.usage.cost, {
 			input: 0,
 			output: 0,
 			cacheRead: 0,
@@ -148,7 +149,7 @@ describe("openai-completions provider stream events", () => {
 			{ apiKey: "test" },
 		);
 
-		expect(message.usage.cost.total).toBeCloseTo(0.0032, 10);
-		expect(message.usage.cost.totalFromProvider).toBe(true);
+		assert.ok(Math.abs(message.usage.cost.total - 0.0032) < 1e-10);
+		assert.equal(message.usage.cost.totalFromProvider, true);
 	});
 });

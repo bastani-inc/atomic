@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import type Anthropic from "@anthropic-ai/sdk";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
@@ -176,14 +177,15 @@ describe("Anthropic raw SSE parsing", () => {
 			{ client: createFakeAnthropicClient(createSseResponse(events)) },
 		).result();
 
-		expect(result.usage.cost.total).toBe(0.004);
-		expect(result.usage.cost.totalFromProvider).toBe(true);
-		expect(
+		assert.equal(result.usage.cost.total, 0.004);
+		assert.equal(result.usage.cost.totalFromProvider, true);
+		assert.notEqual(
 			result.usage.cost.input +
 				result.usage.cost.output +
 				result.usage.cost.cacheRead +
 				result.usage.cost.cacheWrite,
-		).not.toBe(result.usage.cost.total);
+			result.usage.cost.total,
+		);
 	});
 
 	it("keeps signed thinking replayable when a proxy relabels the model", async () => {

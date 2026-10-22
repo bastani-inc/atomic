@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import assert from "node:assert/strict";
+import { describe, it } from "vitest";
 import type { Usage } from "../src/types.ts";
 import { applyOpenRouterReportedCost, isOpenRouterModel } from "../src/utils/openrouter-cost.ts";
 
@@ -15,9 +16,9 @@ function usage(total = 1): Usage {
 
 describe("isOpenRouterModel", () => {
 	it("recognizes both the built-in provider and custom providers using OpenRouter's endpoint", () => {
-		expect(isOpenRouterModel({ provider: "openrouter", baseUrl: "https://example.com" })).toBe(true);
-		expect(isOpenRouterModel({ provider: "openrouter-work", baseUrl: "https://openrouter.ai/api/v1" })).toBe(true);
-		expect(isOpenRouterModel({ provider: "custom", baseUrl: "https://example.com/v1" })).toBe(false);
+		assert.equal(isOpenRouterModel({ provider: "openrouter", baseUrl: "https://example.com" }), true);
+		assert.equal(isOpenRouterModel({ provider: "openrouter-work", baseUrl: "https://openrouter.ai/api/v1" }), true);
+		assert.equal(isOpenRouterModel({ provider: "custom", baseUrl: "https://example.com/v1" }), false);
 	});
 });
 
@@ -33,8 +34,8 @@ describe("applyOpenRouterReportedCost", () => {
 				upstream_inference_completions_cost: 0,
 			},
 		});
-		expect(value.cost.total).toBe(0);
-		expect(value.cost.totalFromProvider).toBe(true);
+		assert.equal(value.cost.total, 0);
+		assert.equal(value.cost.totalFromProvider, true);
 	});
 
 	it("adds the upstream inference cost for BYOK requests", () => {
@@ -48,8 +49,8 @@ describe("applyOpenRouterReportedCost", () => {
 				upstream_inference_completions_cost: 0.3,
 			},
 		});
-		expect(value.cost.total).toBe(1);
-		expect(value.cost.totalFromProvider).toBe(true);
+		assert.equal(value.cost.total, 1);
+		assert.equal(value.cost.totalFromProvider, true);
 	});
 
 	it("uses upstream cost components when OpenRouter omits their total", () => {
@@ -63,8 +64,8 @@ describe("applyOpenRouterReportedCost", () => {
 				upstream_inference_completions_cost: 0.3,
 			},
 		});
-		expect(value.cost.total).toBeCloseTo(1);
-		expect(value.cost.totalFromProvider).toBe(true);
+		assert.ok(Math.abs(value.cost.total - 1) < 1e-9);
+		assert.equal(value.cost.totalFromProvider, true);
 	});
 
 	it("keeps the catalog total when OpenRouter's accounting is incomplete", () => {
@@ -72,7 +73,7 @@ describe("applyOpenRouterReportedCost", () => {
 		value.cost.totalFromProvider = false;
 		applyOpenRouterReportedCost(value, { cost: null, is_byok: false, cost_details: null });
 		applyOpenRouterReportedCost(value, { cost: 0.1, is_byok: true, cost_details: null });
-		expect(value.cost.total).toBe(1);
-		expect(value.cost.totalFromProvider).toBe(false);
+		assert.equal(value.cost.total, 1);
+		assert.equal(value.cost.totalFromProvider, false);
 	});
 });
