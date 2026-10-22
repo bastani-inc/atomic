@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "vitest";
 import {
@@ -12,10 +13,11 @@ import {
 	RELEASE_PAYLOAD_PACKAGE_COUNT,
 	verifyReleasePackagesRegistered,
 } from "../../scripts/release-npm-preflight.js";
-import { moduleDir, readTextSync } from "../helpers/runtime.js";
+import { moduleDir, readJson, readTextSync } from "../helpers/runtime.js";
 
 const root = join(moduleDir(import.meta.url), "../..");
 const publishWorkflow = readTextSync(join(root, PUBLISH_WORKFLOW_PATH), "utf8");
+const NATIVE_PLATFORM_PACKAGE_PREFIX = "@bastani/atomic-natives-";
 
 const payload = (names: readonly string[]): string =>
 	`          packages=(${names.join(" ")})\n          for name in "\${packages[@]}"; do\n`;
@@ -49,8 +51,26 @@ describe("scripts/release-npm-preflight.ts", () => {
 			"@bastani/atomic-natives-win32-x64-msvc",
 			"@bastani/atomic-natives",
 			"@bastani/pi-ai",
+			"@bastani/atomic-storage-libsql",
 			"@bastani/atomic",
 		]);
+	});
+
+	test("the publish payload is the platform leaves plus every workspace package that is not private (#3857)", async () => {
+		// A package flagged public but missing from the publisher is never published, and `npm publish` refuses a
+		// private one the publisher names. Both only show up at the end of a release, so pin the pairing here.
+		const publishedWorkspaces: string[] = [];
+		for (const entry of readdirSync(join(root, "packages"), { withFileTypes: true })) {
+			if (!entry.isDirectory()) continue;
+			const manifestPath = join(root, "packages", entry.name, "package.json");
+			if (!existsSync(manifestPath)) continue;
+			const manifest = await readJson<{ name: string; private?: boolean }>(manifestPath);
+			if (manifest.private !== true) publishedWorkspaces.push(manifest.name);
+		}
+		const payloadRoots = parseReleasePayloadPackages(publishWorkflow).filter(
+			(name) => !name.startsWith(NATIVE_PLATFORM_PACKAGE_PREFIX),
+		);
+		assert.deepEqual([...payloadRoots].sort(), publishedWorkspaces.sort());
 	});
 
 	test("a payload array that is missing, doubled, empty, malformed, or duplicated is refused", () => {
@@ -183,7 +203,7 @@ describe("scripts/release-npm-preflight.ts", () => {
 				allowNew: false,
 			}),
 			(error: Error) => {
-				assert.match(error.message, /2 of 11 publish-payload packages are not registered on npm/u);
+				assert.match(error.message, /2 of 12 publish-payload packages are not registered on npm/u);
 				assert.match(error.message, /^ {2}- @bastani\/atomic-natives-win32-arm64-msvc$/mu);
 				assert.match(error.message, /^ {2}- @bastani\/atomic$/mu);
 				assert.match(error.message, /Re-run with --allow-new/u);

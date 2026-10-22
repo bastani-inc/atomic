@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import { test } from "vitest";
 import { getAllBuiltinPackageLocations } from "../../packages/coding-agent/src/core/builtin-packages.js";
 import { EXPECTED_BUILTIN_DIRECTORY_NAMES } from "../../scripts/assert-builtin-set.js";
 import type { CodingAgentShrinkwrap as Shrinkwrap } from "../../scripts/generate-coding-agent-shrinkwrap.mjs";
-import { readJson } from "../helpers/runtime.js";
+import { moduleDir, npmSpawnPrefix, readJson, spawnSyncCollect } from "../helpers/runtime.js";
 
 const ADAPTER_PACKAGE = "@bastani/atomic-storage-libsql";
 const DRIVER_PACKAGE = "@libsql/client";
@@ -48,4 +49,21 @@ test("the libSQL adapter package installs its own driver and takes Atomic as a p
 	assert.ok(adapter.dependencies?.[DRIVER_PACKAGE], "the package installs its own driver");
 	assert.equal(adapter.peerDependencies?.["@bastani/atomic"], "*");
 	assert.equal(adapter.dependencies?.["@bastani/atomic"], undefined);
+});
+
+test("the libSQL adapter publishes as a tarball with its module, docs, and license and no source tree (#3857)", () => {
+	// What `npm pack` selects is exactly what the release pipeline packs and publishes.
+	const result = spawnSyncCollect([...npmSpawnPrefix(), "pack", "--dry-run", "--json", "--ignore-scripts"], {
+		cwd: join(moduleDir(import.meta.url), "../../packages/storage-libsql"),
+	});
+	assert.equal(result.exitCode, 0, result.stderr.toString());
+	const [packed] = JSON.parse(result.stdout.toString()) as { name: string; files: { path: string }[] }[];
+	assert.equal(packed?.name, ADAPTER_PACKAGE);
+	assert.deepEqual(packed?.files.map(({ path }) => path).sort(), [
+		"CHANGELOG.md",
+		"LICENSE",
+		"README.md",
+		"libsql.ts",
+		"package.json",
+	]);
 });

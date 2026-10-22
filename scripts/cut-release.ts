@@ -216,7 +216,7 @@ async function readPublisherAtBase(baseRef: string, baseSha: string): Promise<Re
 /**
  * The registration preflight, run before the first repository mutation.
  *
- * publish.yml publishes ten npm packages from one tag and its own `npm view`
+ * publish.yml publishes its whole npm payload from one tag and its own `npm view`
  * call only skips versions that already exist — a name npm has never seen is
  * discovered at the end of the release, after the tag is pushed and the
  * binaries are built. Checking here costs one concurrent registry round-trip

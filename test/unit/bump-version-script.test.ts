@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	copyFileSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "vitest";
@@ -11,6 +20,8 @@ interface VersionedPackageJson {
 	private?: boolean;
 	dependencies?: Record<string, string>;
 	optionalDependencies?: Record<string, string>;
+	peerDependencies?: Record<string, string>;
+	devDependencies?: Record<string, string>;
 }
 
 interface NpmLockEntry {
@@ -20,6 +31,8 @@ interface NpmLockEntry {
 	resolved?: string;
 	dependencies?: Record<string, string>;
 	optionalDependencies?: Record<string, string>;
+	peerDependencies?: Record<string, string>;
+	devDependencies?: Record<string, string>;
 }
 
 interface NpmLock {
@@ -293,6 +306,58 @@ describe("scripts/bump-version.ts", () => {
 			assert.equal(result.exitCode, 0, result.stderr);
 			assert.equal(readJson(join(root, "package.json")).version, "1.2.3");
 			assert.doesNotMatch(result.stdout, /package-lock\.json/u);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("stamping the repository's own manifests keeps every lock entry in step, including the libSQL adapter (#3857)", () => {
+		// `npm ci` on the tagged release commit refuses a lock whose workspace entries disagree with their
+		// package.json, so a package the stamp, or its dependency ranges, mishandles would break the release.
+		const repository = process.cwd();
+		const root = mkdtempSync(join(tmpdir(), "atomic-bump-version-repository-"));
+		try {
+			copyFileSync(join(repository, "package.json"), join(root, "package.json"));
+			copyFileSync(join(repository, "package-lock.json"), join(root, "package-lock.json"));
+			const directories = readdirSync(join(repository, "packages"), { withFileTypes: true })
+				.filter(
+					(entry) => entry.isDirectory() && existsSync(join(repository, "packages", entry.name, "package.json")),
+				)
+				.map((entry) => entry.name);
+			for (const directory of directories) {
+				mkdirSync(join(root, "packages", directory), { recursive: true });
+				copyFileSync(
+					join(repository, "packages", directory, "package.json"),
+					join(root, "packages", directory, "package.json"),
+				);
+			}
+
+			const result = runBump(root, "1.2.3-alpha.1");
+			assert.equal(result.exitCode, 0, result.stderr);
+
+			const lock = readLock(join(root, "package-lock.json"));
+			for (const directory of directories) {
+				const manifest = readJson(join(root, "packages", directory, "package.json"));
+				const entry = lock.packages[`packages/${directory}`];
+				assert.equal(manifest.version, "1.2.3-alpha.1", directory);
+				assert.equal(entry?.version, manifest.version, directory);
+				for (const section of [
+					"dependencies",
+					"optionalDependencies",
+					"peerDependencies",
+					"devDependencies",
+				] as const) {
+					assert.deepEqual(entry?.[section], manifest[section], `${directory} ${section}`);
+				}
+			}
+
+			// The adapter is stamped like the rest, but it asks nothing of the exact Atomic version and keeps its
+			// own driver pin.
+			const adapter = readJson(join(root, "packages", "storage-libsql", "package.json"));
+			assert.equal(adapter.name, "@bastani/atomic-storage-libsql");
+			assert.equal(adapter.private, undefined);
+			assert.equal(adapter.peerDependencies?.["@bastani/atomic"], "*");
+			assert.equal(adapter.dependencies?.["@libsql/client"], "0.18.0");
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

@@ -286,16 +286,17 @@ async function joinStorage(
 		}
 		if (token.length === 0) throw new StorageCommandError(`The token file ${tokenSource} is empty.`);
 	}
-	if ((await resolvePackageStorageAdapter(LIBSQL_ADAPTER_PACKAGE, agentDir)) === undefined) {
-		throw new StorageCommandError(
-			`The libSQL storage adapter is not installed for ${agentDir}. Install it, then run this command again:\n  ${APP_NAME} install npm:${LIBSQL_ADAPTER_PACKAGE}`,
-		);
-	}
 	const manager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	const settingsErrors = manager.drainErrors().filter(({ scope }) => scope === "global");
 	if (settingsErrors.length > 0) {
 		throw new StorageCommandError(
 			`Cannot update the global settings: ${settingsErrors.map(({ error }) => error.message).join("; ")}. Fix ${join(agentDir, "settings.json")} first.`,
+		);
+	}
+	// An unreadable settings file looks like one with no packages installed, so report it before the adapter lookup.
+	if ((await resolvePackageStorageAdapter(LIBSQL_ADAPTER_PACKAGE, agentDir)) === undefined) {
+		throw new StorageCommandError(
+			`The libSQL storage adapter is not installed for ${agentDir}. Install it, then run this command again:\n  ${APP_NAME} install npm:${LIBSQL_ADAPTER_PACKAGE}`,
 		);
 	}
 	try {

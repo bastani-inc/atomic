@@ -1,6 +1,6 @@
 # CI/CD Pipeline
 
-Atomic publishes `@bastani/atomic` from `packages/coding-agent`, `@bastani/atomic-natives` from `packages/natives`, and `@bastani/pi-ai` from `packages/ai`. The other workspace packages remain private and are bundled into the coding-agent package. The first npm version of `@bastani/pi-ai` must be published by hand so npm trusted publishing can be attached; later tagged releases publish it from `publish.yml`.
+Atomic publishes `@bastani/atomic` from `packages/coding-agent`, `@bastani/atomic-natives` from `packages/natives`, `@bastani/pi-ai` from `packages/ai`, and `@bastani/atomic-storage-libsql` from `packages/storage-libsql`. The other workspace packages remain private and are bundled into the coding-agent package. The libSQL storage adapter is the exception: it is a separate package that users install with `atomic install npm:@bastani/atomic-storage-libsql`, so it is never a dependency of `@bastani/atomic` and never enters its shrinkwrap or binaries. The first npm version of `@bastani/pi-ai` and of `@bastani/atomic-storage-libsql` must be published by hand so npm trusted publishing can be attached; later tagged releases publish them from `publish.yml`.
 
 ## Workflow overview
 
@@ -23,13 +23,13 @@ Release tag push (`0.9.10` or `0.9.10-alpha.1`)
    │  x64/ARM64 legs run embedded PostgreSQL initdb, start, connect, and shutdown
    ├─ build (after native-artifacts, in parallel with the smoke jobs):
    │  shrinkwrap/package validation, target PostgreSQL staging in all eight
-   │  native npm leaves, six non-Windows archives, eleven npm tarballs, and
+   │  native npm leaves, six non-Windows archives, twelve npm tarballs, and
    │  release notes
    ├─ stage-github-release (after build and every smoke job): join the
    │  Windows-built pair, write SHA256SUMS, create a verified draft, and refuse
    │  to change a published release
    ├─ publish-npm: tokenless OIDC publication of the eight native leaves in
-   │  parallel, then natives, pi-ai, and atomic in order, skipping existing versions
+   │  parallel, then natives, pi-ai, the libSQL adapter, and atomic in order, skipping existing versions
    ├─ publish-github-release: undraft only after npm succeeds
    ├─ register-published-version: register the published version with a GitHub OIDC JWT
    └─ cleanup-draft-github-release: delete a draft when later work fails
@@ -643,7 +643,7 @@ After native and smoke jobs pass, `build`:
 3. Hydrates `@bastani/pi-ai` model data from models.dev, then runs `scripts/build-binaries.sh --skip-install --offline-model-data` for all eight archives. The script uses the just-staged `packages/natives/native/*.node` artifacts and does not `npm install` `@bastani/atomic-natives-*@$VERSION` from the registry (those packages are what this release publishes). If a registry install is attempted and fails, restore is `npm ci --ignore-scripts` followed by re-aliasing `@earendil-works/pi-ai` onto `packages/ai` and rebuilding `@bastani/pi-ai`.
    Musl payload assembly downloads pinned Alpine 3.22 `libgcc` and `libstdc++` packages, verifies their SHA256 hashes, copies only the matching runtime libraries under `atomic/lib`, and sets payload-local ELF search paths with `patchelf`.
 4. Validates package identity, versions, public/private metadata, binary entrypoint, workspace dependency ranges, build outputs, eight native modules, and eight exact-version native optional dependencies.
-5. Packs exactly eleven npm tarballs.
+5. Packs exactly twelve npm tarballs.
 6. Builds release notes from every `packages/*/CHANGELOG.md` with `scripts/build-release-notes.ts`. A version summary leads when present, with the merged `###` sections folded under "Full changelog".
 7. Creates `SHA256SUMS` for the eight binary archives.
 8. Uploads the npm tarballs and GitHub Release assets as one same-run artifact.
@@ -668,7 +668,7 @@ After npm succeeds, `publish-github-release` changes the draft to public and set
 
 ## npm publication
 
-The npm job uses environment `npm-publish` with only `contents: read` and `id-token: write`. It runs on GitHub-hosted `ubuntu-latest` because npm trusted publishing and provenance reject self-hosted runners, which Namespace runners are (see [GitHub-hosted exceptions](#github-hosted-exceptions)). It upgrades to an npm version that supports trusted publishing and publishes with provenance. Configure the npm trusted publisher for workflow filename `publish.yml` and environment `npm-publish` on all eleven package names:
+The npm job uses environment `npm-publish` with only `contents: read` and `id-token: write`. It runs on GitHub-hosted `ubuntu-latest` because npm trusted publishing and provenance reject self-hosted runners, which Namespace runners are (see [GitHub-hosted exceptions](#github-hosted-exceptions)). It upgrades to an npm version that supports trusted publishing and publishes with provenance. Configure the npm trusted publisher for workflow filename `publish.yml` and environment `npm-publish` on all twelve package names:
 
 1. `@bastani/atomic-natives-darwin-arm64`
 2. `@bastani/atomic-natives-darwin-x64`
@@ -680,9 +680,19 @@ The npm job uses environment `npm-publish` with only `contents: read` and `id-to
 8. `@bastani/atomic-natives-win32-x64-msvc`
 9. `@bastani/atomic-natives`
 10. `@bastani/pi-ai`
-11. `@bastani/atomic`
+11. `@bastani/atomic-storage-libsql`
+12. `@bastani/atomic`
 
-That order publishes native leaves first, then the native root, then `@bastani/pi-ai`, then the coding agent. A package version already present in the registry is logged and skipped, making recovery idempotent. Stable versions use `latest`; alpha versions use `next`. No static npm credential is configured. The first `@bastani/pi-ai` version cannot use trusted publishing until that package exists on npm.
+That order publishes native leaves first, then the native root, then `@bastani/pi-ai`, then `@bastani/atomic-storage-libsql`, then the coding agent. `@bastani/atomic` stays last so a CLI version appears on npm only after every other package in the payload published. The adapter has no ordering requirement of its own, because its peer dependency on `@bastani/atomic` is optional. A package version already present in the registry is logged and skipped, making recovery idempotent. Stable versions use `latest`; alpha versions use `next`. No static npm credential is configured.
+
+### Registering a new package name
+
+A package name that npm has never seen cannot use trusted publishing, and the [registration preflight](#npm-registration-preflight) refuses to cut a release that includes one. Before the first release that carries `@bastani/atomic-storage-libsql`, a maintainer has to do this outside the repository:
+
+1. Publish a first version of the package by hand from a maintainer account (`npm publish --access public` from the package directory, with the default `latest` dist-tag). Alpha releases publish to `next`, and the install commands in the user docs, such as `atomic install npm:@bastani/atomic-storage-libsql`, resolve `latest`.
+2. In the package's npm settings, add a trusted publisher for repository `bastani-inc/atomic`, workflow filename `publish.yml`, and environment `npm-publish`.
+
+If a release runs before both are done, the cut stops at the preflight (name not registered) or `publish-npm` fails at that package (trusted publisher missing), in either case before `@bastani/atomic` is published. A re-dispatch after the setup skips every version that already published.
 
 ## Published-version registration
 
@@ -717,4 +727,4 @@ Both polling doors run through durable `ctx.tool` nodes, forward their `AbortSig
 3. From a clean checkout, run `bun run scripts/cut-release.ts <version> --base <base> --push`.
 4. Inspect the single `Publish <version>` push run. Do not start a duplicate manual run during normal publication.
 5. If publication recovery is required, manually dispatch `publish.yml` with the original `tag`; set `source_ref` to the exact recovery ref whose package version still matches that tag. If only registration failed, rerun that job on the tag-ref run, or dispatch with `--ref` equal to the tag. A branch-ref dispatch will 401 at registration.
-6. Confirm all eleven npm packages and the public GitHub Release exist with the expected dist-tag and assets.
+6. Confirm all twelve npm packages and the public GitHub Release exist with the expected dist-tag and assets.

@@ -344,6 +344,18 @@ describe("atomic storage join with the libSQL package (#3857)", () => {
 		assert.throws(() => statSync(join(agentDir, STORAGE_TOKEN_FILE)), { code: "ENOENT" });
 	});
 
+	test("a malformed global settings file reports the settings error instead of a missing adapter, and stays as it was (#3857)", async () => {
+		const malformed = '{ "theme": "dark", ';
+		writeFileSync(join(agentDir, "settings.json"), malformed);
+		const result = await storage(["join", databaseUrl, "--token-file", tokenFile]);
+		assert.equal(result.code, 1);
+		assert.match(result.err, /Cannot update the global settings/);
+		assert.match(result.err, /Fix .*settings\.json first/);
+		assert.doesNotMatch(result.err, /not installed/);
+		assert.equal(readFileSync(join(agentDir, "settings.json"), "utf8"), malformed);
+		assert.throws(() => statSync(join(agentDir, STORAGE_TOKEN_FILE)), { code: "ENOENT" });
+	});
+
 	test(
 		"stores the trimmed token privately, writes only `storage`, creates no tables, and reports overrides",
 		async () => {

@@ -1,7 +1,6 @@
 {
   "name": "@bastani/atomic-storage-libsql",
   "version": "0.0.0",
-  "private": true,
   "description": "libSQL / Turso storage adapter for Atomic sessions, workflow journals, and Intercom.",
   "contributors": ["Norin Lavaee", "Alex Lavaee"],
   "license": "MIT",
@@ -11,6 +10,15 @@
   "types": "./libsql.ts",
   "exports": { ".": "./libsql.ts" },
   "files": ["libsql.ts", "README.md", "CHANGELOG.md", "LICENSE"],
+  "publishConfig": { "access": "public" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bastani-inc/atomic.git",
+    "directory": "packages/storage-libsql"
+  },
+  "homepage": "https://github.com/bastani-inc/atomic/tree/main/packages/storage-libsql#readme",
+  "bugs": { "url": "https://github.com/bastani-inc/atomic/issues" },
+  "keywords": ["atomic", "storage", "libsql", "turso", "sqlite", "bastani"],
   "atomic": { "storageAdapters": ["./libsql.ts"] },
   "pi": { "storageAdapters": ["./libsql.ts"] },
   "dependencies": { "@libsql/client": "0.18.0" },
