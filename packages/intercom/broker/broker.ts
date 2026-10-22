@@ -2156,8 +2156,8 @@ class IntercomBroker {
         return opener;
       });
       if (startup.status === "off") {
-        // A standalone binary has no host storage module, and a selection may not resolve to a database: both
-        // leave this broker single-node, exactly as without a shared `storage`.
+        // A selection that does not resolve to a database, or an adapter that cannot load, leaves this broker
+        // single-node, exactly as without a shared `storage`.
         if (startup.error !== undefined) console.error(`Intercom multi-node routing is off: ${startup.reason}`);
         settle("off");
         return;

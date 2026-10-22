@@ -123,6 +123,9 @@ export interface PackageManagerContext {
 	driver?: PackageManagerDriver;
 }
 
+/** The part of a package manager context that locates installed packages. */
+export type PackageLocationContext = Pick<PackageManagerContext, "cwd" | "agentDir">;
+
 export type SourceScope = "user" | "project" | "temporary";
 
 export type NpmSource = {
@@ -164,6 +167,8 @@ export interface PiManifest {
 	workflows?: string[];
 	workflow?: string[];
 	mcpServers?: string | Record<string, McpServerConfig>;
+	/** Storage adapter modules, relative to the package root, that `storage.adapter` can select by package name. */
+	storageAdapters?: string[];
 }
 
 export type ResourceType = "extensions" | "skills" | "prompts" | "themes" | "workflows";

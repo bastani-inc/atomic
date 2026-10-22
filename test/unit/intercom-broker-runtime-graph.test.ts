@@ -69,7 +69,7 @@ describe("intercom broker runtime module graph", () => {
 			edges.map(({ file, request }) => [file, request.kind]),
 			[[brokerEntrypoint, "dynamic-import"]],
 		);
-		// A single-node broker never loads it; a standalone binary without the host package stays single-node.
+		// A single-node broker never loads it; the standalone binary's broker gets the host package from its app bundle.
 		const lazy = walkRuntimeGraph(openBrokerStatePath);
 		assert.deepEqual(describeViolations(lazy.unresolved), []);
 		assert.deepEqual(describeViolations(lazy.dynamic), []);

@@ -9,7 +9,12 @@ import { isOfflineModeEnabled } from "./package-manager-env.ts";
 import { ensureGitIgnore, getGitDependencyInstallArgs, runNpmCommand } from "./package-manager-npm.ts";
 import { getBaseDirsForScope, getGitInstallPath, getGitInstallRoot } from "./package-manager-paths.ts";
 import { withProgress } from "./package-manager-progress.ts";
-import type { GitUpdateTargetInfo, PackageManagerContext, SourceScope } from "./package-manager-types.ts";
+import type {
+	GitUpdateTargetInfo,
+	PackageLocationContext,
+	PackageManagerContext,
+	SourceScope,
+} from "./package-manager-types.ts";
 
 function runGitProcess(
 	context: PackageManagerContext,
@@ -54,7 +59,7 @@ function isSafeGitRef(ref: string): boolean {
 }
 
 export function getExistingGitInstallPath(
-	context: PackageManagerContext,
+	context: PackageLocationContext,
 	source: GitSource,
 	scope: SourceScope,
 ): string | undefined {

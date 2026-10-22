@@ -6,11 +6,15 @@
 
 - Markdown transformers registered with `pi.registerMarkdownTransformer()` now receive `messageId` and `timestamp` in their context when a message is rendered from the saved session, so an extension can tie its output to a session entry. Both are `undefined` for live messages. See [registerMarkdownTransformer](docs/extensions/api-reference.md#pi-registermarkdowntransformer-transformer)
 - Added `configureProviderRequestBudget(provider, { maxRequests, intervalMs })` for process-wide rolling request budgets shared across SDK model runtimes. Model requests also share provider cooldowns after 429 responses. Separate configured provider IDs remain independent ([#3864](https://github.com/bastani-inc/atomic/issues/3864)).
+- Storage adapter modules can import `@bastani/atomic/storage` and `@bastani/atomic` without an installed or linked copy of Atomic. They get the running Atomic's own modules, as extensions do, so Atomic recognizes the storage errors they throw ([#3856](https://github.com/bastani-inc/atomic/issues/3856))
+- `createSqliteDatabase()` in `@bastani/atomic/storage` turns a SQLite-compatible driver's calls into a `SqliteDatabase` that applies the facade rules for you: call-order queueing, transaction handle lifetime, NUL rejection, integer and blob normalization, and typed errors with credentials redacted. `redactSecrets()` builds the credential redactor. The libSQL/Turso example in [Storage](docs/storage.md#bring-your-own-driver) now uses it and is a complete adapter ([#3856](https://github.com/bastani-inc/atomic/issues/3856))
+- Atomic packages can provide storage adapters with a `storageAdapters` manifest entry, and `storage.adapter` can name one by package (`<package>` or `<package>/<name>`), so `atomic install npm:<adapter-package>` installs the adapter together with its driver. See [Adapters from Atomic packages](docs/storage.md#adapters-from-atomic-packages) ([#3856](https://github.com/bastani-inc/atomic/issues/3856))
 
 ### Changed
 
 - The standalone `atomic` binaries are now built with Bun 1.4.4, which includes upstream security fixes in the embedded runtime
 - Device-code `/login` flows (Kimi Code, GitHub Copilot, Meta, and extension providers) no longer open the browser on their own. Press Enter to open the verification URL and copy the code, or log in manually. Providers can turn off either action with `openBrowserOnConfirm: false` or `copyCodeOnConfirm: false`. See [Provider OAuth](docs/custom-provider/oauth.md#oauth-support) ([pi #9282](https://github.com/earendil-works/pi/issues/9282))
+- A `{ "file": ... }` storage secret now drops one trailing line ending (`\n` or `\r\n`), so a token saved with `turso db tokens create <db> > token` works without trimming it first. Other whitespace is still kept ([#3856](https://github.com/bastani-inc/atomic/issues/3856))
 
 ### Fixed
 
@@ -23,6 +27,7 @@
 - Updated the bundled `ip-address` dependency to 10.7.4, which fixes a quadratic-time zone-identifier match in IPv6 address parsing that a single long string could use to stall the process ([GHSA-rxp7-6hxx-x8q5](https://github.com/advisories/GHSA-rxp7-6hxx-x8q5))
 - Provider request-budget waits no longer consume OpenAI, Anthropic, Mistral, or explicit Codex SSE HTTP timeouts, and successive Anthropic federation-authenticated requests keep reusing their cached token. Cancelling a queued model request reports an aborted result without dispatching it ([#3864](https://github.com/bastani-inc/atomic/issues/3864)).
 - Cancelling or clearing queued messages no longer waits for a busy interactive engine to finish draining its output before acting. Cancelled prompts and shell commands waiting to start do not run later when output resumes. If queue clearing or cancellation of chat, shell commands, compaction, or retries stalls or fails, Ctrl+C can still replace the engine even while it continues sending heartbeats, including controls sent while a replacement initializes; an earlier failed queue pause no longer prevents an abort from being sent ([#3865](https://github.com/bastani-inc/atomic/issues/3865))
+- The standalone binary's Intercom broker now runs multi-node routing with a shared `storage` selection and loads storage adapters, as the npm installation does ([#3856](https://github.com/bastani-inc/atomic/issues/3856))
 
 ## [0.9.41] - 2026-10-22
 

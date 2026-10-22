@@ -52,6 +52,21 @@ Entries use the same schema as `mcp.json`, including URL environment-variable in
 
 Contributed servers have the lowest precedence: users can replace or disable one by name in their own MCP configuration, and filter them with `mcpServers` patterns in settings. Project packages contribute servers only in trusted projects. For a server whose configuration is computed at runtime, call [`pi.registerMcpServer()`](/extensions/api-reference#pi-registermcpserver-name-config) from an extension.
 
+### Storage Adapters
+
+A package can provide [storage adapters](/storage#selecting-an-adapter) with `storageAdapters`, a list of adapter module paths relative to the package root. Put the database driver in `dependencies` so `atomic install` installs it with the package, and list `@bastani/atomic` in `peerDependencies`:
+
+```json
+{
+  "name": "@example/atomic-libsql",
+  "dependencies": { "@libsql/client": "0.18.0" },
+  "peerDependencies": { "@bastani/atomic": "*" },
+  "atomic": { "storageAdapters": ["./libsql-adapter.ts"] }
+}
+```
+
+Users select the adapter with the package name, for example `"storage": { "adapter": "@example/atomic-libsql" }`, or with `<package>/<name>` when the package lists several adapters, where `<name>` is the adapter file's name without its extension. Storage adapters are only read from the manifest, never from a convention directory, and only from packages in user settings. See [Adapters from Atomic packages](/storage#adapters-from-atomic-packages).
+
 ### Gallery Metadata
 
 The package gallery currently recognizes legacy `pi-package` metadata, while new Atomic packages should also include `atomic-package`. Add `video` or `image` fields to show a preview:

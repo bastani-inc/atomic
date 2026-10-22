@@ -583,7 +583,7 @@ To keep workflow records only in memory, set `"journal": { "memory": true }`. Do
 
 Project `workflows.journal` and `storage` each replace their global selection as a whole, including options, secrets, and prefix. For example, a project can select `{ "memory": true }` over a global path. Invalid selected settings raise `StorageConfigError` instead of trying a lower-precedence selection. Combining `memory: true` with a non-empty `path` is an error.
 
-To use your own database driver, install an adapter module and select it by module specifier:
+To use your own database driver, install an adapter module, for example as an [Atomic package](/storage#adapters-from-atomic-packages), and select it by package name or module path:
 
 ```json
 {
@@ -596,7 +596,7 @@ To use your own database driver, install an adapter module and select it by modu
 }
 ```
 
-The shared `storage` setting supplies defaults for both sessions and the journal. Use `sessions.storage` or `workflows.journal` for a domain-only override. A shared empty selection uses `~/.atomic/storage.sqlite`. Atomic bundles no remote driver. Adapter modules execute code, so review them before trusting project settings. Secret references accept `{ "env": "VARIABLE" }` or `{ "file": "token.txt" }`; relative secret files resolve against Atomic home and their contents are passed verbatim. See [Storage adapters](/storage#selecting-an-adapter).
+The shared `storage` setting supplies defaults for both sessions and the journal. Use `sessions.storage` or `workflows.journal` for a domain-only override. A shared empty selection uses `~/.atomic/storage.sqlite`. Atomic bundles no remote driver. Adapter modules execute code, so review them before trusting project settings. Secret references accept `{ "env": "VARIABLE" }` or `{ "file": "token.txt" }`; relative secret files resolve against Atomic home, and their contents are passed as written except for one trailing line ending (`\n` or `\r\n`), which is removed. See [Storage adapters](/storage#selecting-an-adapter).
 
 Changing the journal selects a different run history. Preserve the original file to inspect or resume its runs. The default local file needs no separate server; a remote database requires an adapter, and every host that shares runs must select the same database and prefix. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts). If the selected journal cannot be opened or written, the action fails with a typed storage error rather than selecting memory. Restore access to the store and inspect the retained run before retrying. See [Durable workflows](/workflows/operations#durable-workflows-and-cross-session-resume).
 

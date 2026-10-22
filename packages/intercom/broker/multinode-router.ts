@@ -139,9 +139,9 @@ export type MultiNodeStartup<Source> =
 
 /**
  * Decide whether a top-level `storage` value gives this broker a shared database. Multi-node routing is off, and
- * Intercom behaves exactly as a single-node broker, unless it does: also when the host storage module cannot be
- * loaded (a standalone binary) or the selection cannot be resolved to a database. Only a selection that resolved to a
- * database whose connection then fails makes cross-node sends fail explicitly.
+ * Intercom behaves exactly as a single-node broker, unless it does: also when the host storage module or the adapter
+ * cannot be loaded, or the selection cannot be resolved to a database. Only a selection that resolved to a database
+ * whose connection then fails makes cross-node sends fail explicitly.
  */
 export async function resolveMultiNodeStartup<Source>(
 	setting: Record<string, unknown>,

@@ -35,19 +35,114 @@ String bindings containing U+0000 are rejected before SQL executes with `Storage
 
 ## Bring your own driver
 
-Atomic does not bundle remote database drivers. Install your chosen SQLite-compatible driver in your own project and wrap it as a `SqliteDatabase` from `@bastani/atomic/storage`. The interface consists of a diagnostic `descriptor`, async `exec`, `run`, `get`, `all`, `transaction(callback)`, and `close()` methods, with the return values and transaction-handle rules described above.
+Atomic does not bundle remote database drivers. Install your chosen SQLite-compatible driver and turn it into a `SqliteDatabase` with `createSqliteDatabase` from `@bastani/atomic/storage`. You supply the driver calls:
 
-A wrapper must queue database operations in call order, keeping unrelated calls outside active transactions. Reject NUL text with `StorageInvalidTextError`, snapshot binary parameters before queueing, and normalize returned integers and blobs. Use `StorageUnavailableError` for driver failures, preserve callback failures, and report failed rollbacks with `StorageRollbackError`. Expire transaction handles after their callback settles. On close, reject new calls, drain accepted work, and release driver resources. Do not include credentials in diagnostics or fall back to memory after an opening failure.
+- `descriptor`: the diagnostic `{ adapter, location }`. The facade passes `location` through `redact`.
+- `execute(sql, params)`: runs one statement with positional parameters and returns `{ columns, rows, changes }`, where each row lists its values in column order. Return integers as `bigint` to keep large values exact.
+- `executeMultiple(sql)`: runs zero or more statements that take no parameters.
+- `beginTransaction()`: begins a write transaction and returns its own `execute` and `executeMultiple`, plus `commit()`, `rollback()`, and an optional `close()` that releases it afterward.
+- `close()`: releases the connection.
+- `redact(text)`, optional: removes credentials from diagnostic text. `redactSecrets(secrets)` builds one that also removes each secret's URI-encoded and decoded forms, longest first.
+
+Driver calls may return values or promises. The returned facade follows the rules described above: it queues operations in call order and keeps them outside active transactions, snapshots binary parameters when a call is made, rejects NUL text with `StorageInvalidTextError` before SQL runs, returns safe-range integers as numbers and blobs as `Uint8Array` copies, expires transaction handles when their callback settles, and closes the driver once after draining accepted work. A failed driver call rejects with `StorageUnavailableError`, whose `cause` is the driver error with credentials redacted. A failed rollback rejects with `StorageRollbackError`, and callback failures are preserved. Do not fall back to memory after an opening failure.
+
+You can also implement `SqliteDatabase` yourself by following the same rules. Either way, run the [conformance suite](#adapter-conformance) against it.
 
 ### libSQL / Turso example
 
-Install `@libsql/client` separately. Save the complete wrapper below as `storage-libsql-wrapper.ts` in your project. It accepts caller-provided credentials only. For a local file, create its parent directory first; no network or credentials are needed.
+This module is a complete adapter. Install `@libsql/client` where the module can import it, for example as a dependency of an [Atomic package](#adapters-from-atomic-packages). It accepts caller-provided credentials only. For a local file, create its parent directory first; no network or credentials are needed.
+
+{/* custom-driver-example */}
+```ts
+import type { Client, Transaction } from "@libsql/client";
+import {
+	createSqliteDatabase,
+	redactSecrets,
+	type SqliteDatabase,
+	type SqliteDriverExecutor,
+	type StorageAdapterModule,
+	StorageAdapterLoadError,
+	type StorageFailureCause,
+} from "@bastani/atomic/storage";
+
+export interface LibsqlDatabaseOptions {
+	url: string;
+	authToken?: string;
+}
+
+/** Credentials a libSQL URL can carry: its userinfo and every `authToken` query value. */
+function urlCredentials(url: string): string[] {
+	const secrets: string[] = [];
+	for (const match of url.matchAll(/[?&]([^=&#]*)=([^&#]*)/g)) {
+		const token = new URLSearchParams(match[0].slice(1)).get("authToken");
+		if (token !== null) secrets.push(match[2] ?? "", token);
+	}
+	const userinfo = url.match(/\/\/([^/?#]*)@/)?.[1];
+	if (userinfo !== undefined) secrets.push(...userinfo.split(":"));
+	return secrets;
+}
+
+function statements(connection: () => Client | Transaction): SqliteDriverExecutor {
+	return {
+		async execute(sql, params) {
+			const result = await connection().execute({ sql, args: [...params] });
+			return { columns: result.columns, rows: result.rows, changes: result.rowsAffected };
+		},
+		executeMultiple: (sql) => connection().executeMultiple(sql),
+	};
+}
+
+export async function openLibsqlDatabase({ url, authToken }: LibsqlDatabaseOptions): Promise<SqliteDatabase> {
+	let createClient: typeof import("@libsql/client").createClient;
+	try {
+		({ createClient } = await import("@libsql/client"));
+	} catch (cause) {
+		throw new StorageAdapterLoadError("@libsql/client", cause as StorageFailureCause);
+	}
+	let client: Client | undefined;
+	// Create the client inside a driver call, so the facade redacts credentials from its failures.
+	const connection = () => (client ??= createClient({ url, authToken, intMode: "bigint" }));
+	const database = createSqliteDatabase({
+		descriptor: { adapter: "libsql", location: url },
+		redact: redactSecrets([authToken ?? "", ...urlCredentials(url)]),
+		...statements(connection),
+		async beginTransaction() {
+			const transaction = await connection().transaction("write");
+			return {
+				...statements(() => transaction),
+				commit: () => transaction.commit(),
+				rollback: () => transaction.rollback(),
+				close: () => transaction.close(),
+			};
+		},
+		close: () => client?.close(),
+	});
+	try {
+		await database.exec("PRAGMA foreign_keys = ON");
+		return database;
+	} catch (error) {
+		await database.close().catch(() => {});
+		throw error;
+	}
+}
+
+export default {
+	atomicStorageAdapter: 1,
+	openDatabase: (options) =>
+		openLibsqlDatabase({
+			url: String(options.url),
+			authToken: typeof options.authToken === "string" ? options.authToken : undefined,
+		}),
+} satisfies StorageAdapterModule;
+```
+{/* /custom-driver-example */}
+
+Its default export lets settings select it as an [adapter](#selecting-an-adapter). From the SDK, call `openLibsqlDatabase` directly:
 
 ```ts
-import type { SqliteDatabase } from "@bastani/atomic/storage";
-import { openLibsqlDatabase } from "./storage-libsql-wrapper.js";
+import { openLibsqlDatabase } from "./libsql-adapter.js";
 
-const database: SqliteDatabase = await openLibsqlDatabase({ url: "file:./data.sqlite" });
+const database = await openLibsqlDatabase({ url: "file:./data.sqlite" });
 // For Turso instead: { url: "libsql://your-database.turso.io", authToken: token }
 try {
   await database.exec("CREATE TABLE IF NOT EXISTS notes (text TEXT)");
@@ -60,253 +155,28 @@ try {
 }
 ```
 
-Pass the returned facade as SDK `sessionStore: { kind: "database", database, prefix: "project_" }` or workflow `journal: { database, prefix: "project_" }`. Both can use the same facade without closing your database. To select it from settings, expose `openLibsqlDatabase` through an adapter module as described below.
-
-<details>
-<summary>Complete wrapper</summary>
-
-{/* custom-driver-example */}
-```ts
-import type { Client, ResultSet, Row, Transaction } from "@libsql/client";
-import {
-	type SqliteDatabase,
-	type SqliteExecutor,
-	type SqliteRow,
-	type SqliteValue,
-	type StorageDescriptor,
-	StorageAdapterLoadError,
-	StorageError,
-	type StorageFailureCause,
-	StorageInvalidTextError,
-	StorageRollbackError,
-	StorageTransactionClosedError,
-	StorageUnavailableError,
-	StoreClosedError,
-} from "@bastani/atomic/storage";
-
-export interface LibsqlDatabaseOptions {
-	url: string;
-	authToken?: string;
-}
-
-function credentialRedactor(options: LibsqlDatabaseOptions): (text: string) => string {
-	const secrets = [options.authToken ?? ""];
-	for (const match of options.url.matchAll(/[?&]([^=&#]*)=([^&#]*)/g)) {
-		const token = new URLSearchParams(match[0].slice(1)).get("authToken");
-		if (token !== null) secrets.push(match[2] ?? "", token);
-	}
-	const userinfo = options.url.match(/\/\/([^/?#]*)@/)?.[1];
-	if (userinfo !== undefined) secrets.push(...userinfo.split(":"));
-	try {
-		const url = new URL(options.url);
-		secrets.push(url.username, url.password, ...url.searchParams.getAll("authToken"));
-	} catch {}
-	for (const secret of [...secrets]) {
-		try {
-			secrets.push(encodeURIComponent(secret));
-			secrets.push(decodeURIComponent(secret));
-		} catch {}
-	}
-	return (text) =>
-		secrets
-			.filter(Boolean)
-			.sort((first, second) => second.length - first.length)
-			.reduce((value, secret) => value.replaceAll(secret, "[redacted]"), text);
-}
-
-function redactCause(cause: StorageFailureCause, redact: (text: string) => string): StorageFailureCause {
-	if (typeof cause === "string") return redact(cause);
-	if (!(cause instanceof Error)) return cause;
-	const nested = cause.cause as StorageFailureCause;
-	const safeCause = redactCause(nested, redact);
-	const message = redact(cause.message);
-	const stack = cause.stack === undefined ? undefined : redact(cause.stack);
-	if (message === cause.message && stack === cause.stack && safeCause === nested) return cause;
-	const safe = new StorageError(message, { cause: safeCause });
-	safe.stack = stack;
-	return safe;
-}
-
-function normalizeRow(row: Row, columns: readonly string[]): SqliteRow {
-	return Object.fromEntries(
-		columns.map((key, index) => {
-			const value = row[index];
-			return [
-				key,
-				typeof value === "bigint" &&
-				value >= -BigInt(Number.MAX_SAFE_INTEGER) &&
-				value <= BigInt(Number.MAX_SAFE_INTEGER)
-					? Number(value)
-					: value instanceof ArrayBuffer
-						? new Uint8Array(value.slice(0))
-						: value,
-			];
-		}),
-	);
-}
-
-class LibsqlDatabase implements SqliteDatabase {
-	readonly descriptor: StorageDescriptor;
-	private readonly client: Client;
-	private readonly redact: (text: string) => string;
-	private tail: Promise<void> = Promise.resolve();
-	private closing = false;
-	private closePromise?: Promise<void>;
-	private readonly executor: SqliteExecutor;
-
-	constructor(client: Client, descriptor: StorageDescriptor, redact: (text: string) => string) {
-		this.client = client;
-		this.descriptor = descriptor;
-		this.redact = redact;
-		this.executor = this.createExecutor(client, () => true);
-	}
-
-	private async driver<T>(operation: () => T | Promise<T>): Promise<T> {
-		try {
-			return await operation();
-		} catch (cause) {
-			throw new StorageUnavailableError(this.descriptor, redactCause(cause as StorageFailureCause, this.redact));
-		}
-	}
-
-	private createExecutor(connection: Client | Transaction, active: () => boolean): SqliteExecutor {
-		const execute = async <T>(operation: () => Promise<T>, params: readonly SqliteValue[] = []): Promise<T> => {
-			if (!active()) throw new StorageTransactionClosedError();
-			const invalidIndex = params.findIndex((value) => typeof value === "string" && value.includes("\0"));
-			if (invalidIndex !== -1) throw new StorageInvalidTextError(invalidIndex);
-			return this.driver(operation);
-		};
-		const statement = (sql: string, params: readonly SqliteValue[]): Promise<ResultSet> =>
-			connection.execute({
-				sql,
-				args: params.map((value) => (value instanceof Uint8Array ? new Uint8Array(value) : value)),
-			});
-		return {
-			exec: (sql) => execute(() => connection.executeMultiple(sql)),
-			run: (sql, ...params) =>
-				execute(async () => ({ changes: (await statement(sql, params)).rowsAffected }), params),
-			get: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) =>
-				execute(async () => {
-					const result = await statement(sql, params);
-					const row = result.rows[0];
-					return row === undefined ? undefined : (normalizeRow(row, result.columns) as T);
-				}, params),
-			all: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) =>
-				execute(async () => {
-					const result = await statement(sql, params);
-					return result.rows.map((row) => normalizeRow(row, result.columns) as T);
-				}, params),
-		};
-	}
-
-	private enqueue<T>(operation: () => Promise<T>): Promise<T> {
-		if (this.closing) return Promise.reject(new StoreClosedError(this.descriptor));
-		const result = this.tail.then(operation);
-		this.tail = result.then(
-			() => {},
-			() => {},
-		);
-		return result;
-	}
-
-	exec(sql: string): Promise<void> {
-		return this.enqueue(() => this.executor.exec(sql));
-	}
-
-	run(sql: string, ...params: readonly SqliteValue[]) {
-		const bound = params.map((value) => (value instanceof Uint8Array ? new Uint8Array(value) : value));
-		return this.enqueue(() => this.executor.run(sql, ...bound));
-	}
-
-	get<T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]): Promise<T | undefined> {
-		const bound = params.map((value) => (value instanceof Uint8Array ? new Uint8Array(value) : value));
-		return this.enqueue(() => this.executor.get<T>(sql, ...bound));
-	}
-
-	all<T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]): Promise<T[]> {
-		const bound = params.map((value) => (value instanceof Uint8Array ? new Uint8Array(value) : value));
-		return this.enqueue(() => this.executor.all<T>(sql, ...bound));
-	}
-
-	transaction<T>(callback: (transaction: SqliteExecutor) => Promise<T>): Promise<T> {
-		return this.enqueue(async () => {
-			const connection = await this.driver(() => this.client.transaction("write"));
-			let active = true;
-			try {
-				const result = await callback(this.createExecutor(connection, () => active));
-				active = false;
-				await this.driver(() => connection.commit());
-				return result;
-			} catch (cause) {
-				active = false;
-				try {
-					await this.driver(() => connection.rollback());
-				} catch (rollbackCause) {
-					throw new StorageRollbackError(cause as StorageFailureCause, rollbackCause as StorageFailureCause);
-				}
-				throw cause;
-			} finally {
-				await this.driver(() => connection.close());
-			}
-		});
-	}
-
-	close(): Promise<void> {
-		if (!this.closePromise) {
-			this.closing = true;
-			this.closePromise = this.tail.then(() => this.driver(() => this.client.close()));
-		}
-		return this.closePromise;
-	}
-}
-
-export async function openLibsqlDatabase(options: LibsqlDatabaseOptions): Promise<SqliteDatabase> {
-	const config = { url: options.url, authToken: options.authToken };
-	const redact = credentialRedactor(config);
-	const descriptor = { adapter: "libsql", location: redact(config.url) };
-	let createClient: typeof import("@libsql/client").createClient;
-	try {
-		({ createClient } = await import("@libsql/client"));
-	} catch (cause) {
-		throw new StorageAdapterLoadError("@libsql/client", redactCause(cause as StorageFailureCause, redact));
-	}
-	let client: Client | undefined;
-	try {
-		client = createClient({ ...config, intMode: "bigint" });
-		const database = new LibsqlDatabase(client, descriptor, redact);
-		await database.exec("PRAGMA foreign_keys = ON");
-		return database;
-	} catch (cause) {
-		try {
-			client?.close();
-		} catch {}
-		throw new StorageUnavailableError(descriptor, redactCause(cause as StorageFailureCause, redact));
-	}
-}
-```
-{/* /custom-driver-example */}
-
-</details>
+Pass the returned facade as SDK `sessionStore: { kind: "database", database, prefix: "project_" }` or workflow `journal: { database, prefix: "project_" }`. Both can use the same facade without closing your database.
 
 ## Selecting an adapter
 
-Install your driver separately and export a default `StorageAdapterModule` from your module:
+An adapter is a module whose default export is a `StorageAdapterModule`, like the libSQL example above:
 
 ```ts
 import type { StorageAdapterModule } from "@bastani/atomic/storage";
-import { openLibsqlDatabase } from "./storage-libsql-wrapper.js";
 
 export default {
   atomicStorageAdapter: 1,
   async openDatabase(options, context) {
-    return openLibsqlDatabase({ url: String(options.url), authToken: String(options.authToken) });
+    return openMyDatabase({ url: String(options.url), authToken: String(options.authToken) });
   },
 } satisfies StorageAdapterModule;
 ```
 
-Select it with `sessions.storage: { "adapter": "@example/atomic-sqlite" }`, `workflows.journal`, or shared top-level `storage` in [settings](/settings#workflow-storage). SDK sessions accept `sessionStore: { kind: "adapter", module, options, secrets, prefix }`; workflow runs accept `journal: { adapter, options, secrets, prefix }`. Module specifiers resolve from the agent directory, normally `~/.atomic/agent`; absolute module paths also work. Project settings follow the same trust boundary as project extensions. A module executes with Atomic's privileges.
+Select it with `sessions.storage: { "adapter": "./storage/libsql-adapter.ts" }`, `workflows.journal`, or shared top-level `storage` in [settings](/settings#workflow-storage). SDK sessions accept `sessionStore: { kind: "adapter", module, options, secrets, prefix }`; workflow runs accept `journal: { adapter, options, secrets, prefix }`. Relative module paths resolve from the agent directory, normally `~/.atomic/agent`; absolute module paths also work. A package name selects an adapter from an [installed Atomic package](#adapters-from-atomic-packages), or otherwise resolves from the agent directory. Project settings follow the same trust boundary as project extensions. A module executes with Atomic's privileges.
 
-`options` is an object of SQLite scalar values or booleans. In JSON settings use strings, numbers, booleans, or null. `secrets` maps option names to `{ env }` or `{ file }`; resolved values override same-named options without trimming file contents. Keep credentials out of `options` and database descriptors. `context` contains `agentDir`, `domain: "sessions" | "journal" | "intercom"`, and an optional `signal`. Intercom brokers open the top-level `storage` selection with `domain: "intercom"` through `openDatabase`.
+Adapter modules import `@bastani/atomic/storage` and `@bastani/atomic` from the running Atomic, in the npm package and the standalone binary alike, exactly as extensions do. They need no installed or linked copy of Atomic, and Atomic recognizes the storage errors they throw. List `@bastani/atomic` in an adapter package's `peerDependencies`, not its `dependencies`.
+
+`options` is an object of SQLite scalar values or booleans. In JSON settings use strings, numbers, booleans, or null. `secrets` maps option names to `{ env }` or `{ file }`, and resolved values override same-named options. A `{ file }` secret is read as written, except that one trailing line ending (`\n` or `\r\n`) is removed, so a token saved with `turso db tokens create <db> > token` works as is. Other whitespace is kept. Keep credentials out of `options` and database descriptors. `context` contains `agentDir`, `domain: "sessions" | "journal" | "intercom"`, and an optional `signal`. Intercom brokers open the top-level `storage` selection with `domain: "intercom"` through `openDatabase`.
 
 A SQLite adapter implements `openDatabase(options, context): Promise<SqliteDatabase>`. Atomic applies its domain schema and optional table prefix. A full adapter can instead implement `openSessionStore(options, context, storage)` or `openRunJournal(options, context, storage)`; the domain hook takes priority over `openDatabase`. The typed third argument is `{ readonly prefix?: string }`. Domain adapters must honor this prefix to isolate selected stores. A missing domain/database hook raises `StorageConfigError` with reason `"adapter-domain-unsupported"`. Load failures and invalid module contracts raise `StorageAdapterLoadError`; driver opening failures raise `StorageUnavailableError`. None selects memory as a fallback.
 
@@ -317,6 +187,33 @@ One provider shares a database for matching owned SQLite or adapter selections. 
 If opening storage fails and closing its owned database also fails, the original typed opening error is thrown with a `cleanupCause` field containing the cleanup failure. Inspect both errors when diagnosing the failed open.
 
 Factory-created journal headers record a credential-free `storage` descriptor for diagnostics. Full domain adapters are responsible for recording their own safe descriptor. Directly supplied journals and their caller-provided headers are not rewritten.
+
+### Adapters from Atomic packages
+
+An [Atomic package](/packages) can provide storage adapters, so `atomic install` brings an adapter together with its driver and the driver's dependencies. List the adapter modules, relative to the package root, under `storageAdapters` in the package manifest:
+
+```json
+{
+  "name": "@example/atomic-libsql",
+  "dependencies": { "@libsql/client": "0.18.0" },
+  "peerDependencies": { "@bastani/atomic": "*" },
+  "atomic": { "storageAdapters": ["./libsql-adapter.ts"] }
+}
+```
+
+Install it with `atomic install npm:@example/atomic-libsql` and select it by package name:
+
+```json
+{
+  "storage": {
+    "adapter": "@example/atomic-libsql",
+    "options": { "url": "libsql://team.example" },
+    "secrets": { "authToken": { "file": "turso-token" } }
+  }
+}
+```
+
+The package name selects the package's first listed adapter. When a package lists several, select one with `<package>/<name>`, where `<name>` is the adapter file's name without its extension, for example `@example/atomic-libsql/libsql-adapter`. Atomic searches the packages in your user settings, which `atomic install` writes without `-l`; project packages are not searched. When no installed package lists a matching adapter, the name resolves from the agent directory as before.
 
 ## Selecting storage per process
 
@@ -369,7 +266,7 @@ These options come from the process that starts Atomic, so they are not subject 
 
 ## Sharing storage across hosts
 
-By default, sessions and workflow runs live in a local file that serves one machine. To share them across machines, for example several service replicas or a CI fleet, select the same remote SQLite-compatible database on every host through an [adapter](#selecting-an-adapter), such as the libSQL/Turso wrapper above. Give each project or tenant its own `prefix`. Do not put the local SQLite file on a network filesystem; use a database driver instead.
+By default, sessions and workflow runs live in a local file that serves one machine. To share them across machines, for example several service replicas or a CI fleet, select the same remote SQLite-compatible database on every host through an [adapter](#selecting-an-adapter), such as the libSQL/Turso example above. Installing the adapter as an [Atomic package](#adapters-from-atomic-packages) lets every host use the same `storage` block. Give each project or tenant its own `prefix`. Do not put the local SQLite file on a network filesystem; use a database driver instead.
 
 With a shared journal:
 

@@ -18,7 +18,7 @@ import {
 const root = join(moduleDir(import.meta.url), "../..");
 
 test("portable storage modules do not import Node modules", async () => {
-	const pending = ["database", "errors", "prefix", "schema"].map((name) =>
+	const pending = ["database", "errors", "prefix", "schema", "sqlite-facade"].map((name) =>
 		join(root, "packages/coding-agent/src/core/storage", `${name}.ts`),
 	);
 	const visited = new Set<string>();

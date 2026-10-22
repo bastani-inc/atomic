@@ -131,9 +131,9 @@ By default, each machine's broker serves only the sessions on that machine. With
 
 ### Turning it on
 
-Give every machine the same shared top-level `storage` selection, including the same `prefix`. To reach other machines, the selection must be an [adapter](/storage#selecting-an-adapter) whose module implements `openDatabase` and connects to a database that every machine can reach, as described in [Sharing storage across hosts](/storage#sharing-storage-across-hosts). Install the adapter module on every machine.
+Give every machine the same shared top-level `storage` selection, including the same `prefix`. To reach other machines, the selection must be an [adapter](/storage#selecting-an-adapter) whose module implements `openDatabase` and connects to a database that every machine can reach, as described in [Sharing storage across hosts](/storage#sharing-storage-across-hosts). Install the adapter on every machine, for example as an [Atomic package](/storage#adapters-from-atomic-packages) so that `atomic install` also brings its driver.
 
-Multi-node routing needs Atomic installed from npm (`npm install -g @bastani/atomic`). The standalone binary's broker cannot load storage adapters, so routing stays off there even with a shared `storage` selection, and sessions on other machines cannot be reached. Use an npm installation on every machine that should take part.
+Both the npm installation and the standalone binary run multi-node routing and load storage adapters.
 
 The broker takes its selection from one of two places:
 
