@@ -73,6 +73,7 @@ const classifier: ClassifierModel<ClassifierApi> = {
 	provider: "fixture",
 	id: "pair",
 	api: "typesafe-system-one",
+	compat: undefined,
 };
 
 for (const valid of [true, false]) {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
+import { describe, expect, it } from "vitest";
 import { InMemoryCredentialStore } from "../src/auth/credential-store.ts";
 import type { Credential } from "../src/auth/types.ts";
-import { describe, expect, it } from "vitest";
 import { createModels, createProvider, getModelType } from "../src/models.ts";
 import {
 	builtinModels,
@@ -212,7 +212,10 @@ describe("Models with classifier models", () => {
 		}));
 		const models = builtinModels({
 			credentials,
-			authContext: { env: async (name) => (name === "OPENAI_API_KEY" ? "sk-key" : undefined), fileExists: async () => false },
+			authContext: {
+				env: async (name) => (name === "OPENAI_API_KEY" ? "sk-key" : undefined),
+				fileExists: async () => false,
+			},
 		});
 
 		assert.deepEqual(
@@ -252,14 +255,22 @@ describe("Models with classifier models", () => {
 			const models = builtinModels({
 				credentials,
 				authContext: options.env
-					? { env: async (name) => (name === "OPENAI_API_KEY" ? options.env : undefined), fileExists: async () => false }
+					? {
+							env: async (name) => (name === "OPENAI_API_KEY" ? options.env : undefined),
+							fileExists: async () => false,
+						}
 					: noEnv,
 			});
 			return { models, seeded };
 		}
 
 		const apiKey = (key: string): Credential => ({ type: "api_key", key });
-		const oauth: Credential = { type: "oauth", access: "access", refresh: "refresh", expires: Date.now() + 3_600_000 };
+		const oauth: Credential = {
+			type: "oauth",
+			access: "access",
+			refresh: "refresh",
+			expires: Date.now() + 3_600_000,
+		};
 
 		async function availableIds(models: ReturnType<typeof builtinModels>): Promise<string[]> {
 			return (await models.getAvailableOfType("classifier", "openai-decisions")).map((model) => model.id);
@@ -349,11 +360,59 @@ describe("Models with classifier models", () => {
 	it("routes OpenRouter classifier models through the System One API", () => {
 		const models = builtinModels();
 		for (const model of getBuiltinClassifierModels("openrouter")) {
-			expect(model).toMatchObject({ api: "typesafe-system-one", baseUrl: "https://openrouter.ai/api/v1" });
+			expect(model).toMatchObject({
+				api: "typesafe-system-one",
+				baseUrl: "https://openrouter.ai/api/v1",
+				compat: { imageInput: "state-image-urls", sendImageOptInHeader: false },
+			});
 			expect(models.getModel("openrouter", model.id)).toBeUndefined();
 			expect(models.getModelOfType("classifier", "openrouter", model.id)).toEqual(model);
 		}
 	});
+	it("lists the Workers AI classifiers with image input and the image form each service takes", () => {
+		const catalog = getBuiltinClassifierModels("cloudflare-workers-ai").map(
+			({ id, input, cost, contextWindow, compat }) => ({ id, input, cost: cost.input, contextWindow, compat }),
+		);
+		const imageInput = ["text", "image"];
+		expect(catalog).toEqual([
+			{
+				id: "@cf/cloudflare/clef",
+				input: imageInput,
+				cost: 0.24,
+				contextWindow: 65536,
+				compat: { imageInput: "images" },
+			},
+			{
+				id: "@cf/cloudflare/clef-flash",
+				input: imageInput,
+				cost: 0.038,
+				contextWindow: 24576,
+				compat: { imageInput: "images" },
+			},
+			{
+				id: "@cf/cloudflare/clef-omni",
+				input: imageInput,
+				cost: 0.15,
+				contextWindow: 64000,
+				compat: { imageInput: "images" },
+			},
+			{ id: "typesafe/jev", input: imageInput, cost: 0.042, contextWindow: 32000, compat: { imageInput: "assets" } },
+			{
+				id: "typesafe/jev-1.14.0",
+				input: imageInput,
+				cost: 0.042,
+				contextWindow: 32000,
+				compat: { imageInput: "assets" },
+			},
+		]);
+	});
+
+	it("sends the opt-in header with every image request to the direct TypeSafe classifiers", () => {
+		for (const model of getBuiltinClassifierModels("typesafe")) {
+			expect(model.compat).toEqual({ imageInput: "assets", sendImageOptInHeader: true });
+		}
+	});
+
 	it("routes Jev classifiers on Gateway and Zen without exposing them as chat models", () => {
 		const models = builtinModels();
 		const gateway = models.getModelOfType("classifier", "vercel-ai-gateway", "typesafe-ai/jev");

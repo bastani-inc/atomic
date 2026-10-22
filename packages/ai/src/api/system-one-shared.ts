@@ -5,6 +5,8 @@ import type {
 	ClassifierModel,
 	ClassifierOptions,
 	ClassifierResult,
+	ImageContent,
+	SystemOneCompat,
 } from "../types.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { isRecord, parseClassifierUsage, postClassifierRequest, requiredNumber } from "./classifier-shared.ts";
@@ -16,13 +18,40 @@ export interface SystemOneImageAsset {
 	data_base64: string;
 }
 
+/** An image in the state, OpenRouter's form. */
+interface SystemOneImageUrlPart {
+	type: "image_url";
+	image_url: { url: string };
+}
+
 /** TypeSafe System One request body without the transport-specific envelope. */
 export interface SystemOneWireRequest {
-	state: ClassifierContext["state"];
+	/** The context state, or with images in OpenRouter's form a list of image parts followed by the state. */
+	state: unknown;
 	questions: Record<string, unknown>;
 	/** Images keyed by the references listed in `state.images`. */
 	assets?: Record<string, SystemOneImageAsset>;
+	/** Images as data URLs, Clef's extension to System One. */
+	images?: string[];
 }
+
+/**
+ * How a service takes images (`SystemOneCompat.imageInput`):
+ * - `assets`: TypeSafe's `assets` map, keyed by a fresh UUID per image and listed in order under
+ *   `state.images`. PNG and JPEG only.
+ * - `images`: Clef's `images` list of data URLs, which the model reads before the state.
+ *   PNG, JPEG, and WebP, at most four.
+ * - `state-image-urls`: OpenRouter's form, data URL parts placed before the state:
+ *   `state: [{ type: "image_url", image_url: { url } }, state]`. OpenRouter accepts this for every
+ *   model and drops `assets` silently.
+ */
+export type SystemOneImageInput = NonNullable<SystemOneCompat["imageInput"]>;
+
+/** System One compatibility settings with every field resolved. */
+export type ResolvedSystemOneCompat = Required<SystemOneCompat>;
+
+/** TypeSafe's opt-in header for its experimental image input. */
+const IMAGE_OPT_IN_HEADERS = { "TypeSafe-Danger-Zone-Images": "true" };
 
 /** Differences between services that serve System One models. */
 export interface SystemOneTransport {
@@ -30,14 +59,14 @@ export interface SystemOneTransport {
 	api: ClassifierApi;
 	/** Service name used in error messages. */
 	label: string;
+	/** Compatibility settings for models that do not set them in `compat`. */
+	detectCompat(model: ClassifierModel<ClassifierApi>): ResolvedSystemOneCompat;
 	/** Absolute request URL. */
 	url(model: ClassifierModel<ClassifierApi>): URL;
 	/** Wraps the System One request in the service's request envelope. */
 	payload(model: ClassifierModel<ClassifierApi>, request: SystemOneWireRequest): unknown;
 	/** Extracts the System One output, including answers and usage. */
 	output(body: unknown): Record<string, unknown>;
-	/** Whether the service accepts `context.images` as `assets` for this model. Images are rejected when omitted. */
-	acceptsImages?(model: ClassifierModel<ClassifierApi>): boolean;
 }
 
 const IMAGES_STATE_FIELD = "images";
@@ -46,27 +75,59 @@ const IMAGE_FORMATS = new Map<string, SystemOneImageAsset["format"]>([
 	["image/jpeg", "jpg"],
 	["image/jpg", "jpg"],
 ]);
+const DATA_URL_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+/** Clef accepts at most this many images per request. */
+const MAX_DATA_URL_IMAGES = 4;
 
-/** Lists each image once in `assets` under a fresh UUID and writes the UUIDs into `state.images`, in order. */
-function imageAssets(label: string, context: ClassifierContext): Pick<SystemOneWireRequest, "state" | "assets"> {
-	const images = context.images ?? [];
-	if (images.length === 0) return { state: context.state };
-	if (Object.hasOwn(context.state, IMAGES_STATE_FIELD)) {
+function base64Data(image: ImageContent): string {
+	return image.data.replace(/^data:[^,]*,/u, "");
+}
+
+/** Adds the context images to `request` in the service's form. */
+function addImages(
+	label: string,
+	model: ClassifierModel<ClassifierApi>,
+	input: SystemOneImageInput,
+	images: ImageContent[],
+	request: SystemOneWireRequest,
+): void {
+	if (input === "images") {
+		if (images.length > MAX_DATA_URL_IMAGES) {
+			throw new Error(
+				`${label} accepts at most ${MAX_DATA_URL_IMAGES} images for ${model.id}, got ${images.length}`,
+			);
+		}
+		request.images = images.map((image) => {
+			if (!DATA_URL_TYPES.has(image.mimeType)) {
+				throw new Error(`${label} accepts PNG, JPEG, and WebP images for ${model.id}, got ${image.mimeType}`);
+			}
+			return `data:${image.mimeType};base64,${base64Data(image)}`;
+		});
+		return;
+	}
+	if (input === "state-image-urls") {
+		const parts = images.map(
+			(image): SystemOneImageUrlPart => ({
+				type: "image_url",
+				image_url: { url: `data:${image.mimeType};base64,${base64Data(image)}` },
+			}),
+		);
+		request.state = [...parts, request.state];
+		return;
+	}
+	const state = request.state as ClassifierContext["state"];
+	if (Object.hasOwn(state, IMAGES_STATE_FIELD)) {
 		throw new Error(`${label} lists images in state.${IMAGES_STATE_FIELD}; rename that state field to send images`);
 	}
 	const assets: Record<string, SystemOneImageAsset> = {};
 	for (const image of images) {
 		const format = IMAGE_FORMATS.get(image.mimeType.toLowerCase());
 		if (!format) throw new Error(`${label} accepts only PNG or JPEG images, got ${image.mimeType}`);
-		assets[crypto.randomUUID()] = {
-			type: "image",
-			format,
-			data_base64: image.data.replace(/^data:[^,]*,/u, ""),
-		};
+		assets[crypto.randomUUID()] = { type: "image", format, data_base64: base64Data(image) };
 	}
-	return { state: { ...context.state, [IMAGES_STATE_FIELD]: Object.keys(assets) }, assets };
+	request.state = { ...state, [IMAGES_STATE_FIELD]: Object.keys(assets) };
+	request.assets = assets;
 }
-
 
 function unitInterval(label: string, value: unknown, field: string): number {
 	const number = requiredNumber(label, value, field);
@@ -139,22 +200,18 @@ function parseAnswers(label: string, value: unknown, context: ClassifierContext)
 	return Object.fromEntries(answers);
 }
 
-
 /** Maps public `bool` questions to TypeSafe's wire-level `noul` type. */
-function wireRequest(label: string, context: ClassifierContext): SystemOneWireRequest {
-	const { state, assets } = imageAssets(label, context);
+function wireRequest(context: ClassifierContext): SystemOneWireRequest {
 	return {
-		state,
+		state: context.state,
 		questions: Object.fromEntries(
 			Object.entries(context.questions).map(([id, question]) => [
 				id,
 				question.type === "bool" ? { ...question, type: "noul" } : question,
 			]),
 		),
-		...(assets ? { assets } : {}),
 	};
 }
-
 
 /** Runs one System One classification over the given transport. */
 export async function classifySystemOne(
@@ -174,15 +231,24 @@ export async function classifySystemOne(
 
 	try {
 		if (model.api !== transport.api) throw new Error(`Unsupported classifier API: ${model.api}`);
-		if (context.images?.length && !transport.acceptsImages?.(model)) {
-			throw new Error(`${transport.label} does not support image input`);
+		const request = wireRequest(context);
+		let requestOptions = options;
+		if (context.images?.length) {
+			if (!model.input.includes("image")) {
+				throw new Error(`${transport.label} does not support image input for ${model.id}`);
+			}
+			const detected = transport.detectCompat(model);
+			addImages(transport.label, model, model.compat?.imageInput ?? detected.imageInput, context.images, request);
+			if (model.compat?.sendImageOptInHeader ?? detected.sendImageOptInHeader) {
+				requestOptions = { ...options, headers: { ...IMAGE_OPT_IN_HEADERS, ...options?.headers } };
+			}
 		}
 		const body = await postClassifierRequest(
 			transport.label,
 			transport.url(model),
 			model,
-			transport.payload(model, wireRequest(transport.label, context)),
-			options,
+			transport.payload(model, request),
+			requestOptions,
 		);
 		const result = transport.output(body);
 		// Malformed answers may still be billed, so retain usage before parsing them.

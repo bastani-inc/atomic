@@ -1125,6 +1125,27 @@
           "description": "Whether the API adjudicates thinking-block model binding itself, always dropping a block the target model cannot read. When true, an assistant turn produced by a different model on the same provider and API replays its signed thinking and redacted_thinking blocks unchanged instead of being rewritten into plain text.",
           "default": false
         },
+        "imageInput": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "assets"
+            },
+            {
+              "type": "string",
+              "const": "images"
+            },
+            {
+              "type": "string",
+              "const": "state-image-urls"
+            }
+          ],
+          "description": "How the service takes classifier images. \"assets\" sends TypeSafe's assets map (PNG and JPEG) and references the images from the state, as TypeSafe and Jev on Workers AI expect. \"images\" sends Clef's images list of data URLs (PNG, JPEG, and WebP, at most four), as Clef on Workers AI expects. \"state-image-urls\" places image_url parts before the state, as OpenRouter expects; OpenRouter drops assets without an error. Auto-detected from the provider, baseUrl, and model ID. Classifier models read it from the provider-level compat; models and modelOverrides entries apply to chat models only."
+        },
+        "sendImageOptInHeader": {
+          "type": "boolean",
+          "description": "Whether requests with images send the TypeSafe-Danger-Zone-Images: true header, which TypeSafe's own API requires for its experimental image input. Defaults to true for the typesafe-system-one API unless the model is detected as OpenRouter."
+        },
         "supportsGrammarTools": {
           "type": "boolean",
           "description": "Atomic alias for supportsOpenAIGrammarTools. The canonical field wins if both are set."

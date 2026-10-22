@@ -222,6 +222,7 @@ const classifierModel: ClassifierModel<ClassifierApi> = {
 	provider: "fixture",
 	id: "intent",
 	api: "typesafe-system-one",
+	compat: undefined,
 };
 
 function classifierRequest(classify?: ModelRegistry["classify"]) {

@@ -11,9 +11,9 @@
 			"dependencies": {
 				"@bastani/atomic-natives": "0.0.0",
 				"@bastani/pi-ai": "0.0.0",
-				"@earendil-works/pi-agent-core": "1.3.0",
-				"@earendil-works/pi-codemode": "1.3.0",
-				"@earendil-works/pi-tui": "1.3.0",
+				"@earendil-works/pi-agent-core": "1.4.0",
+				"@earendil-works/pi-codemode": "1.4.0",
+				"@earendil-works/pi-tui": "1.4.0",
 				"@modelcontextprotocol/ext-apps": "^1.7.5",
 				"@modelcontextprotocol/sdk": "1.32.1",
 				"@mozilla/readability": "^0.6.0",
@@ -560,7 +560,7 @@
 			"dependencies": {
 				"@anthropic-ai/sdk": "0.129.0",
 				"@aws-sdk/client-bedrock-runtime": "3.1127.0",
-				"@earendil-works/pi-telemetry": "1.3.0",
+				"@earendil-works/pi-telemetry": "1.4.0",
 				"@google/genai": "2.21.0",
 				"@smithy/node-http-handler": "4.12.1",
 				"http-proxy-agent": "9.1.0",
@@ -610,12 +610,12 @@
 			}
 		},
 		"node_modules/@earendil-works/pi-agent-core": {
-			"version": "1.3.0",
-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-1.3.0.tgz",
-			"integrity": "sha512-2jvpxZs47PFD5mSQb/yK0pGHJ5yO7Nu22u9mFjHbSLRgu62vZ9rupimDSIp4arnqOadyv0AWvYHtCSpFoJV7ag==",
+			"version": "1.4.0",
+			"resolved": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-1.4.0.tgz",
+			"integrity": "sha512-PoKY84SKUwnt7S5QBZaGUqfNO1kjP3KHpHUA9QpFTj4cOjaVWMYIcBPJ6FDRCdE8Zen9OSECQUd0uUfVgtSmgA==",
 			"license": "MIT",
 			"dependencies": {
-				"@earendil-works/pi-ai": "1.3.0",
+				"@earendil-works/pi-ai": "1.4.0",
 				"typebox": "1.3.27"
 			},
 			"engines": {
@@ -623,14 +623,14 @@
 			}
 		},
 		"node_modules/@earendil-works/pi-ai": {
-			"version": "1.3.0",
-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-1.3.0.tgz",
-			"integrity": "sha512-KaBI8x7q7sPoFUXICNGD9efHzDG+oRNwVvkA9jdIsSQWH1RjFssOlEGsbLtewUPPgCrvmz0l2KTgSLXTyj3acw==",
+			"version": "1.4.0",
+			"resolved": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-1.4.0.tgz",
+			"integrity": "sha512-hQM/C4+1w8rHYACzDDf+0vQMnEnpzIop1tptIERVgR3ZeT/hHSzBNG8PaWPgxWQjqSeKCyBZSyp8uTT6eKK1pQ==",
 			"license": "MIT",
 			"dependencies": {
 				"@anthropic-ai/sdk": "0.129.0",
 				"@aws-sdk/client-bedrock-runtime": "3.1127.0",
-				"@earendil-works/pi-telemetry": "1.3.0",
+				"@earendil-works/pi-telemetry": "1.4.0",
 				"@google/genai": "2.21.0",
 				"@smithy/node-http-handler": "4.12.1",
 				"http-proxy-agent": "9.1.0",
@@ -670,9 +670,9 @@
 			}
 		},
 		"node_modules/@earendil-works/pi-codemode": {
-			"version": "1.3.0",
-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-codemode/-/pi-codemode-1.3.0.tgz",
-			"integrity": "sha512-2G9tmbsPhgzwfz7cmzJpbLSLqOx3eu22Gbzm+Wc3HqeZMjLQS4F3KfAabozVhv7uEjq3k2O1dZTHmhhWr2xbfQ==",
+			"version": "1.4.0",
+			"resolved": "https://registry.npmjs.org/@earendil-works/pi-codemode/-/pi-codemode-1.4.0.tgz",
+			"integrity": "sha512-23CNAXpS9DuLzPMyYuvrXVVio46x4YhffCgCqaWmF7F5H8PooqjrQvX4ucF6M0BhUd+x2tV6r1J0dv8cCME4Cg==",
 			"license": "MIT",
 			"dependencies": {
 				"quickjs-wasi": "3.6.2"
@@ -682,22 +682,23 @@
 			}
 		},
 		"node_modules/@earendil-works/pi-telemetry": {
-			"version": "1.3.0",
-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-1.3.0.tgz",
-			"integrity": "sha512-ERGZr+aXjNJzoUbB7ZzHVH3g5otzMHjHLs2Fyizm12By5X+gBEhod9cJXFOk13S7M8a29Am+Mq21zm73mRJFLg==",
+			"version": "1.4.0",
+			"resolved": "https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-1.4.0.tgz",
+			"integrity": "sha512-MLIfowwUYIY65jSjMX82paZOrX/NTvLk6D08h+3Jq42a99RzUOewzuCR0zOlPul3D6UBfddat76VT6LvsHEs1w==",
 			"license": "MIT",
 			"engines": {
 				"node": ">=22.19.0"
 			}
 		},
 		"node_modules/@earendil-works/pi-tui": {
-			"version": "1.3.0",
-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-1.3.0.tgz",
-			"integrity": "sha512-AlKvEwEWyVtnuw7SVb4N/mUhlfIohyFslUNWarZVdLHHSdt3ca5EhMLwTzblBpDpaofSz+f+tAHie6CfxVrWKA==",
+			"version": "1.4.0",
+			"resolved": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-1.4.0.tgz",
+			"integrity": "sha512-4obPOjgOD7g4mGSlngIvxyujC1UPdmyI9zdVthbr8GufacFEX+Ce0+scPgHg++k2xj5+QjESM2d5TxvIuzCVmg==",
 			"license": "MIT",
 			"dependencies": {
 				"get-east-asian-width": "1.6.0",
-				"marked": "18.0.11"
+				"marked": "18.0.11",
+				"marked-cjk-friendly": "0.1.2"
 			},
 			"engines": {
 				"node": ">=22.19.0"
@@ -2859,6 +2860,18 @@
 			},
 			"engines": {
 				"node": ">= 20"
+			}
+		},
+		"node_modules/marked-cjk-friendly": {
+			"version": "0.1.2",
+			"resolved": "https://registry.npmjs.org/marked-cjk-friendly/-/marked-cjk-friendly-0.1.2.tgz",
+			"integrity": "sha512-GUj8HjiEbur9yhgUo52FBgKizggF1QtT6gVdrYdWW6ZB4lVVjgS3EyyXPyfyRD0V4ghGRPlO7MO80rgSWbm0eA==",
+			"license": "MIT",
+			"peerDependencies": {
+				"marked": ">=15.0.0"
+			},
+			"engines": {
+				"node": ">=18"
 			}
 		},
 		"node_modules/markit-ai": {

@@ -104,32 +104,25 @@ describe("Cloudflare Workers AI System One", () => {
 		expect(result.answers.department).toMatchObject({ type: "choice", choice: "billing", confidence: 0.8 });
 	});
 
-	it("rejects images and sends no TypeSafe Danger-Zone headers", async () => {
-		const { models, jev } = setup();
-		const headers: Headers[] = [];
-		const fetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
-			headers.push(new Headers(init?.headers));
-			return Response.json(restResponse("Completed"));
-		});
+	it("rejects images for text-only models before sending", async () => {
+		const { jev } = setup();
+		const fetch = vi.fn(async () => Response.json(restResponse("Completed")));
 
-		const textOnly = await models.classify(jev, context, { ...auth, fetch });
-		const withImage = await classify(
-			{ ...jev, input: ["text", "image"] },
+		const result = await classify(
+			{ ...jev, input: ["text"] },
 			{ ...context, images: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] },
 			{ ...auth, fetch },
 		);
 
-		assert.equal(textOnly.stopReason, "stop");
-		assert.equal(headers.length, 1);
-		assert.equal(headers[0]?.has("typesafe-danger-zone-long-context"), false);
-		assert.equal(headers[0]?.has("typesafe-danger-zone-images"), false);
-		assert.equal(withImage.stopReason, "error");
-		assert.equal(withImage.errorMessage, "Cloudflare Workers AI does not support image input");
+		assert.equal(fetch.mock.calls.length, 0);
+		assert.equal(result.stopReason, "error");
+		assert.equal(result.errorMessage, "Cloudflare Workers AI does not support image input for typesafe/jev");
 	});
 
 	it.each([
 		["@cf/cloudflare/clef", 0.24],
-		["@cf/cloudflare/clef-flash", 0.09],
+		["@cf/cloudflare/clef-flash", 0.038],
+		["@cf/cloudflare/clef-omni", 0.15],
 	])("runs %s through /ai/run and parses its direct output", async (id, inputPrice) => {
 		const { models } = setup();
 		const clef = models.getModelOfType("classifier", "cloudflare-workers-ai", id);
@@ -153,6 +146,103 @@ describe("Cloudflare Workers AI System One", () => {
 		expect(result.answers.department).toMatchObject({ type: "choice", choice: "technical", confidence: 0.4538 });
 		expect(result.usage).toMatchObject({ input: 222, output: 0, totalTokens: 222 });
 		expect(result.usage?.cost.input).toBeCloseTo((222 * inputPrice) / 1_000_000);
+	});
+
+	it("sends images to Clef as data URLs, leaving the state as is and sending no opt-in header", async () => {
+		const { models } = setup();
+		const clef = models.getModelOfType("classifier", "cloudflare-workers-ai", "@cf/cloudflare/clef");
+		if (!clef) throw new Error("missing Cloudflare Clef model");
+		const bodies: Array<{ model: string; input: Record<string, unknown> }> = [];
+		const fetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+			bodies.push(JSON.parse(String(init?.body)) as { model: string; input: Record<string, unknown> });
+			return Response.json({ result: clefOutput, success: true, errors: [], messages: [] });
+		});
+
+		const result = await models.classify(
+			clef,
+			{
+				...context,
+				images: [
+					{ type: "image", data: "cG5n", mimeType: "image/png" },
+					{ type: "image", data: "d2VicA==", mimeType: "image/webp" },
+				],
+			},
+			{ ...auth, fetch },
+		);
+
+		assert.equal(result.stopReason, "stop", result.errorMessage);
+		assert.deepEqual(bodies[0]?.input.images, ["data:image/png;base64,cG5n", "data:image/webp;base64,d2VicA=="]);
+		assert.deepEqual(bodies[0]?.input.state, context.state);
+		assert.equal(Object.hasOwn(bodies[0]?.input ?? {}, "assets"), false);
+		assert.equal(new Headers(fetch.mock.calls[0]?.[1]?.headers).has("typesafe-danger-zone-images"), false);
+	});
+
+	it("reads the image form from compat before the model ID", async () => {
+		const { models, jev } = setup();
+		const clef = models.getModelOfType("classifier", "cloudflare-workers-ai", "@cf/cloudflare/clef");
+		assert.deepEqual(clef?.compat, { imageInput: "images" });
+		assert.deepEqual(jev.compat, { imageInput: "assets" });
+		const bodies: Array<{ input: Record<string, unknown> }> = [];
+		const fetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+			bodies.push(JSON.parse(String(init?.body)) as { input: Record<string, unknown> });
+			return Response.json({ result: clefOutput, success: true, errors: [], messages: [] });
+		});
+
+		await models.classify(
+			{ ...jev, id: "@cf/acme/clef-finetune", input: ["text", "image"], compat: { imageInput: "images" } },
+			{ ...context, images: [{ type: "image", data: "cG5n", mimeType: "image/png" }] },
+			{ ...auth, fetch },
+		);
+
+		assert.deepEqual(bodies[0]?.input.images, ["data:image/png;base64,cG5n"]);
+		assert.equal(Object.hasOwn(bodies[0]?.input ?? {}, "assets"), false);
+	});
+
+	it("rejects more than four images for Clef before sending", async () => {
+		const { models } = setup();
+		const clef = models.getModelOfType("classifier", "cloudflare-workers-ai", "@cf/cloudflare/clef-flash");
+		if (!clef) throw new Error("missing Cloudflare Clef Flash model");
+		const fetch = vi.fn(async () => Response.json({ result: clefOutput, success: true }));
+		const image = { type: "image" as const, data: "cG5n", mimeType: "image/png" };
+
+		const result = await models.classify(clef, { ...context, images: Array(5).fill(image) }, { ...auth, fetch });
+
+		assert.equal(fetch.mock.calls.length, 0);
+		assert.equal(result.stopReason, "error");
+		assert.equal(
+			result.errorMessage,
+			"Cloudflare Workers AI accepts at most 4 images for @cf/cloudflare/clef-flash, got 5",
+		);
+	});
+
+	it.each(["typesafe/jev", "typesafe/jev-1.14.0"])("sends images to %s as System One assets", async (id) => {
+		const { models } = setup();
+		const jev = models.getModelOfType("classifier", "cloudflare-workers-ai", id);
+		if (!jev) throw new Error(`missing Cloudflare ${id} model`);
+		const bodies: Array<{
+			model: string;
+			input: { state: Record<string, unknown>; assets: Record<string, unknown> };
+		}> = [];
+		const fetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+			bodies.push(JSON.parse(String(init?.body)) as (typeof bodies)[number]);
+			return Response.json(restResponse("Completed"));
+		});
+
+		const result = await models.classify(
+			jev,
+			{ ...context, images: [{ type: "image", data: "cG5n", mimeType: "image/png" }] },
+			{ ...auth, fetch },
+		);
+
+		assert.equal(result.stopReason, "stop", result.errorMessage);
+		const [reference] = Object.keys(bodies[0]?.input.assets ?? {});
+		assert.ok(reference);
+		assert.equal(bodies[0]?.model, id);
+		assert.deepEqual(bodies[0]?.input.state, { ...context.state, images: [reference] });
+		assert.deepEqual(bodies[0]?.input.assets, { [reference]: { type: "image", format: "png", data_base64: "cG5n" } });
+		const headers = new Headers(fetch.mock.calls[0]?.[1]?.headers);
+		assert.equal(headers.has("typesafe-danger-zone-images"), false);
+		assert.equal(headers.has("typesafe-danger-zone-long-context"), false);
 	});
 
 	it("reports runs that did not complete", async () => {

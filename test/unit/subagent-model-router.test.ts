@@ -140,6 +140,7 @@ test("auto routing admits multimodal-input chat but excludes image and classifie
 		provider: "leaky",
 		id: "judge",
 		api: "typesafe-system-one" as const,
+		compat: undefined,
 	};
 	runtime.registerNativeProvider({
 		...createProvider({

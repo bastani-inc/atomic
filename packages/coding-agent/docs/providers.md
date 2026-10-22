@@ -618,7 +618,7 @@ atomic --provider cloudflare-workers-ai --model "@cf/moonshotai/kimi-k2.6"
 
 Atomic automatically sets `x-session-affinity` for [prefix caching](https://developers.cloudflare.com/workers-ai/features/prompt-caching/) discounts.
 
-Workers AI also lists Cloudflare's Clef (`@cf/cloudflare/clef`) and Clef Flash (`@cf/cloudflare/clef-flash`) as classifiers. They use the same `CLOUDFLARE_API_KEY` and `CLOUDFLARE_ACCOUNT_ID`. Name the exact ID in `routerModel`, `structured_output`, or `generateStructuredOutput()`; like other classifiers they do not appear in `/model` or work with `--model`. See [Structured decisions](/sdk/structured-decisions).
+Workers AI also lists Cloudflare's Clef (`@cf/cloudflare/clef`), Clef Flash (`@cf/cloudflare/clef-flash`), and Clef Omni (`@cf/cloudflare/clef-omni`) and TypeSafe's Jev (`typesafe/jev`, `typesafe/jev-1.14.0`) as classifiers. They use the same `CLOUDFLARE_API_KEY` and `CLOUDFLARE_ACCOUNT_ID`. Name the exact ID in `routerModel`, `structured_output`, or `generateStructuredOutput()`; like other classifiers they do not appear in `/model` or work with `--model`. All of them accept images in `images`: Clef takes up to four PNG, JPEG, or WebP images, and Jev takes PNG or JPEG images. See [Structured decisions](/sdk/structured-decisions).
 
 ### Google Vertex AI
 

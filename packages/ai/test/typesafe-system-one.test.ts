@@ -217,8 +217,8 @@ describe("TypeSafe System One", () => {
 		assert.match(collision.errorMessage ?? "", /rename that state field to send images/u);
 	});
 
-	it.each(["openrouter", "vercel-ai-gateway", "opencode"] as const)(
-		"keeps rejecting images on %s System One models and sends them no Danger-Zone headers",
+	it.each(["vercel-ai-gateway", "opencode"] as const)(
+		"rejects images for text-only %s System One models and sends them no Danger-Zone headers",
 		async (provider) => {
 			const models = builtinModels();
 			const gateway = getBuiltinClassifierModels(provider).find((entry) => entry.api === "typesafe-system-one");
@@ -226,19 +226,104 @@ describe("TypeSafe System One", () => {
 			const { fetch, requests } = capturingFetch(wireAnswers);
 
 			const textOnly = await models.classify(gateway, context, { apiKey: "secret", fetch });
-			const withImage = await classify(
-				{ ...gateway, input: ["text", "image"] },
-				{ ...context, images: [png] },
-				{ apiKey: "secret", fetch },
-			);
+			const withImage = await models.classify(gateway, { ...context, images: [png] }, { apiKey: "secret", fetch });
 
 			assert.equal(textOnly.stopReason, "stop", textOnly.errorMessage);
 			assert.equal(requests.length, 1);
 			for (const header of DANGER_ZONE_HEADERS) assert.equal(requests[0]?.headers[header], undefined);
 			assert.equal(withImage.stopReason, "error");
-			assert.equal(withImage.errorMessage, "System One API does not support image input");
+			assert.equal(withImage.errorMessage, `Model ${provider}/${gateway.id} does not accept image input`);
 		},
 	);
+
+	it("sends the opt-in header only with images, and rejects text-only models before sending", async () => {
+		const { fetch, requests } = capturingFetch(wireAnswers);
+		const imageModel = { ...model, input: ["text", "image"] as ("text" | "image")[] };
+
+		const withImage = await classify(imageModel, { ...context, images: [png] }, { apiKey: "secret", fetch });
+		const withoutImage = await classify(imageModel, context, { apiKey: "secret", fetch });
+		const textOnly = await classify(model, { ...context, images: [png] }, { apiKey: "secret", fetch });
+
+		assert.equal(withImage.stopReason, "stop", withImage.errorMessage);
+		assert.equal(requests[0]?.headers["typesafe-danger-zone-images"], "true");
+		assert.equal(withoutImage.stopReason, "stop", withoutImage.errorMessage);
+		assert.equal(requests[1]?.headers["typesafe-danger-zone-images"], undefined);
+		assert.equal(requests[1]?.body.assets, undefined);
+		assert.equal(requests.length, 2);
+		assert.equal(textOnly.stopReason, "error");
+		assert.equal(textOnly.errorMessage, "System One API does not support image input for jev-latest");
+	});
+
+	it("sends images to OpenRouter as image_url parts in the state, without assets or the opt-in header", async () => {
+		const { fetch, requests } = capturingFetch(wireAnswers);
+		const openRouterModel: ClassifierModel<"typesafe-system-one"> = {
+			...model,
+			id: "typesafe/jev-1.14",
+			provider: "openrouter",
+			baseUrl: "https://openrouter.ai/api/v1",
+			input: ["text", "image"],
+		};
+
+		const result = await classify(openRouterModel, { ...context, images: [png, jpeg] }, { apiKey: "secret", fetch });
+
+		assert.equal(result.stopReason, "stop", result.errorMessage);
+		assert.deepEqual(requests[0]?.body.state, [
+			{ type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgo=" } },
+			{ type: "image_url", image_url: { url: "data:image/jpeg;base64,/9j/4AAQSkZJRg==" } },
+			context.state,
+		]);
+		assert.equal(requests[0]?.body.assets, undefined);
+		assert.equal(requests[0]?.headers["typesafe-danger-zone-images"], undefined);
+	});
+
+	it.each([
+		["OpenRouter behind a proxy", { provider: "openrouter", baseUrl: "https://proxy.example.com/v1" }],
+		["a regional OpenRouter endpoint", { provider: "custom", baseUrl: "https://us.openrouter.ai/api/v1" }],
+		[
+			"a proxy declared through compat",
+			{
+				provider: "custom",
+				baseUrl: "https://proxy.example.com/v1",
+				compat: { imageInput: "state-image-urls" as const, sendImageOptInHeader: false },
+			},
+		],
+	])("sends OpenRouter's image form to %s", async (_name, overrides) => {
+		const { fetch, requests } = capturingFetch(wireAnswers);
+
+		const result = await classify(
+			{ ...model, id: "typesafe/jev-1.14", input: ["text", "image"], ...overrides },
+			{ ...context, images: [png] },
+			{ apiKey: "secret", fetch },
+		);
+
+		assert.equal(result.stopReason, "stop", result.errorMessage);
+		assert.deepEqual(requests[0]?.body.state, [
+			{ type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgo=" } },
+			context.state,
+		]);
+		assert.equal(requests[0]?.body.assets, undefined);
+		assert.equal(requests[0]?.headers["typesafe-danger-zone-images"], undefined);
+	});
+
+	it("lets compat override each detected image setting on its own", async () => {
+		const { fetch, requests } = capturingFetch(wireAnswers);
+
+		await classify(
+			{ ...model, input: ["text", "image"], compat: { sendImageOptInHeader: false } },
+			{ ...context, images: [png] },
+			{ apiKey: "secret", fetch },
+		);
+		await classify(
+			{ ...model, input: ["text", "image"], compat: { imageInput: "state-image-urls" } },
+			{ ...context, images: [png] },
+			{ apiKey: "secret", fetch },
+		);
+
+		assert.notEqual(requests[0]?.body.assets, undefined);
+		assert.equal(requests[0]?.headers["typesafe-danger-zone-images"], undefined);
+		assert.equal(requests[1]?.body.assets, undefined);
+		assert.equal(requests[1]?.headers["typesafe-danger-zone-images"], "true");
+	});
 
 	it("merges headers case-insensitively and supports null suppression", async () => {
 		const requests: Array<Record<string, string>> = [];
@@ -363,5 +448,4 @@ describe("TypeSafe System One", () => {
 			expect(result.answers).toEqual({});
 		}
 	});
-
 });

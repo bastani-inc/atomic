@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- Codemode `models.classify()` now also accepts `images` for TypeSafe's Jev and Cloudflare's Clef models on `cloudflare-workers-ai` and OpenRouter, next to Jev on `typesafe`, and lists Clef Omni and Jev 1.14 on Workers AI. See [Use classifier models](docs/models.md#use-classifier-models).
+- Provider-level `compat` in `models.json` now also applies to classifier models, with the System One fields `imageInput` and `sendImageOptInHeader` for proxies that serve another service's classifiers. Extension classifier models accept `compat` too. See [Models Configuration](docs/models-configuration.md#typesafe-system-one).
+- Added support for the Rex terminal (`TERM_PROGRAM=rex`): OSC 8 hyperlinks, truecolor, and inline images. Links previously fell back to the `text (url)` format ([#11131](https://github.com/earendil-works/pi/issues/11131), [#11150](https://github.com/earendil-works/pi/pull/11150) by [@petrroll](https://github.com/petrroll), [#11183](https://github.com/earendil-works/pi/pull/11183) by [@nihaals](https://github.com/nihaals))
+
+### Fixed
+
+- Fixed Cloudflare Workers AI classifier pricing: Clef Flash costs $0.038 and Jev $0.042 per million input tokens instead of Jev being listed as free.
+- Fixed the `grep` tool following ripgrep's `RIPGREP_CONFIG_PATH` whenever it searches with `rg`, such as with `literal: true`, where config options like `--ignore-case` silently changed what the tool returned. The tool now runs `rg --no-config` ([#11203](https://github.com/earendil-works/pi/issues/11203))
+- Fixed `@` file autocomplete returning no results for queries containing regex metacharacters such as `[` or `(` ([#10972](https://github.com/earendil-works/pi/issues/10972))
+- Fixed an unclosed `$$` display-math block swallowing or corrupting every Markdown table after it ([#11159](https://github.com/earendil-works/pi/issues/11159))
+- Fixed terminal modes (mouse tracking, focus reporting, Kitty keyboard protocol, bracketed paste, alternate screen) staying enabled when the process exits without calling `stop()`. A process `exit` handler now restores them synchronously ([#11170](https://github.com/earendil-works/pi/issues/11170))
+- Fixed Markdown bold and italic not rendering next to CJK punctuation ([#10730](https://github.com/earendil-works/pi/pull/10730) by [@theBucky](https://github.com/theBucky))
+
 ## [0.9.41-alpha.1] - 2026-10-21
 
 ### Breaking Changes
