@@ -126,6 +126,7 @@ export function createWorkflowRouteOwner(cwd: string) {
 			.then(() =>
 				gate.run(async () => {
 					if (state.closed) throw new Error("Workflow Intercom route owner closed");
+					const establishedClient = state.client?.isConnected() ? state.client : undefined;
 					try {
 						const client = await connect(state);
 						await client.registerPendingStageRouteAcknowledged(
@@ -141,8 +142,10 @@ export function createWorkflowRouteOwner(cwd: string) {
 						state.retry = undefined;
 					} catch (error) {
 						const client = state.client;
-						state.client = undefined;
-						await client?.disconnect();
+						if (client !== establishedClient || !client?.isConnected()) {
+							state.client = undefined;
+							await client?.disconnect();
+						}
 						scheduleRetry(state);
 						throw error;
 					}

@@ -754,3 +754,84 @@ function registration(name: string, group: string) {
 		lastActivity: Date.now(),
 	};
 }
+
+test("an established standalone owner keeps stage routes during an acknowledgement timeout (#3863)", async () => {
+	const { createWorkflowRouteOwner } = await import("../../packages/intercom/workflow-route-owner.js");
+	const owner = createWorkflowRouteOwner(repoRoot);
+	const runId = runIdFor("38630001", 1);
+	const group = runGroup(runId);
+	const stage = new IntercomClient();
+	stage.on("error", () => {});
+	openClients.add(stage);
+	try {
+		const initial = routePayload(runId, 1);
+		owner.events.emit("atomic:workflow-pending-stage-route", initial);
+		await initial.completion;
+		await stage.connect({
+			cwd: repoRoot,
+			model: "test-model",
+			pid: process.pid,
+			startedAt: Date.now(),
+			lastActivity: Date.now(),
+			group,
+		});
+		await stage.registerLiveWorkflowStageRoute(runId, ["reviewer-1"], initial.capability);
+		const observer = await connectObserver([group]);
+		let withheld = false;
+		proxy.transformBrokerFrames((frame) => {
+			if (frame.type !== "pending_stage_route_registered" || withheld) return frame;
+			withheld = true;
+			return undefined;
+		});
+		const update = routePayload(runId, 2);
+		owner.events.emit("atomic:workflow-pending-stage-route", update);
+		assert.ok(update.completion);
+		await assert.rejects(update.completion, IntercomBrokerTimeoutError);
+		assert.equal(withheld, true);
+		await stage.registerLiveWorkflowStageRoute(runId, ["reviewer-2"], update.capability);
+		assert.ok(
+			(await observer.listDirectory()).workflowStages.some(
+				(entry) => entry.runId === runId && entry.sessionId === stage.sessionId,
+			),
+		);
+		await waitFor("the standalone owner's publication retry", () =>
+			proxy.toBroker.filter(({ frame }) => frame.type === "register_pending_stage_route" && frame.runId === runId)
+				.length >= 3
+				? true
+				: undefined,
+		);
+		assert.equal(routeRegistersFor(runId), 1, "publication retries reuse the established owner connection");
+	} finally {
+		await owner.closeGroup(group);
+		await stage.disconnect();
+	}
+});
+
+test("a standalone owner replaces an unacknowledged initial connection before retrying (#3863)", async () => {
+	const { createWorkflowRouteOwner } = await import("../../packages/intercom/workflow-route-owner.js");
+	const owner = createWorkflowRouteOwner(repoRoot);
+	const runId = runIdFor("38630002", 1);
+	const group = runGroup(runId);
+	const observer = await connectObserver([group]);
+	let withheld = false;
+	proxy.transformBrokerFrames((frame) => {
+		if (frame.type !== "pending_stage_route_registered" || withheld) return frame;
+		withheld = true;
+		return undefined;
+	});
+	try {
+		const initial = routePayload(runId, 1);
+		owner.events.emit("atomic:workflow-pending-stage-route", initial);
+		assert.ok(initial.completion);
+		await assert.rejects(initial.completion, IntercomBrokerTimeoutError);
+		assert.equal(withheld, true);
+		await waitFor("a replacement standalone owner connection", () =>
+			routeRegistersFor(runId) >= 2 ? true : undefined,
+		);
+		await waitForRoster(observer, [runId]);
+		assert.equal(routeRegistersFor(runId), 2, "the failed initial client is replaced on retry");
+	} finally {
+		await owner.closeGroup(group);
+	}
+	assert.equal((await rosterRunIds(observer)).has(runId), false);
+});

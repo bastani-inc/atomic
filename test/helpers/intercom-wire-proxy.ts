@@ -24,7 +24,7 @@ export class IntercomWireProxy {
 	readonly toBroker: ObservedFrame[] = [];
 	readonly toClients: ObservedFrame[] = [];
 	private holdMatcher: FirstFrameMatcher | undefined;
-	private brokerToClientTransform: ((frame: WireFrame) => WireFrame) | undefined;
+	private brokerToClientTransform: ((frame: WireFrame) => WireFrame | undefined) | undefined;
 	private readonly connections = new Set<ProxyConnection>();
 	private nextConnection = 1;
 	private readonly server = net.createServer((socket) => {
@@ -61,7 +61,7 @@ export class IntercomWireProxy {
 	}
 
 	/** Rewrite frames the broker sends, e.g. to drop a capability an older broker would not advertise. */
-	transformBrokerFrames(transform: ((frame: WireFrame) => WireFrame) | undefined): void {
+	transformBrokerFrames(transform: ((frame: WireFrame) => WireFrame | undefined) | undefined): void {
 		this.brokerToClientTransform = transform;
 	}
 
@@ -83,8 +83,8 @@ export class IntercomWireProxy {
 		return this.holdMatcher?.(first) === true;
 	}
 
-	transformForClient(frame: WireFrame): WireFrame {
-		return this.brokerToClientTransform?.(frame) ?? frame;
+	transformForClient(frame: WireFrame): WireFrame | undefined {
+		return this.brokerToClientTransform ? this.brokerToClientTransform(frame) : frame;
 	}
 
 	forget(connection: ProxyConnection): void {
@@ -152,7 +152,8 @@ class ProxyConnection {
 			(message) => {
 				const frame = message as WireFrame;
 				this.proxy.toClients.push({ connection: this.id, frame });
-				if (!this.client.destroyed) writeMessage(this.client, this.proxy.transformForClient(frame));
+				const transformed = this.proxy.transformForClient(frame);
+				if (!this.client.destroyed && transformed !== undefined) writeMessage(this.client, transformed);
 			},
 			(error) => upstream.destroy(error),
 		);

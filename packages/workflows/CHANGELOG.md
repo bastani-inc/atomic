@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Workflow stages now reload resources up to four at a time per Atomic process instead of one at a time, so a slow reload no longer blocks every other stage at startup. Cancelling a stage waiting for a reload slot removes it from the queue immediately; an active reload retains its slot until it finishes ([#3861](https://github.com/bastani-inc/atomic/issues/3861)).
 - Standalone `run()` now owns Intercom routes for eligible workflow stages until the run settles, so stages can use Intercom without an interactive workflow host ([#3863](https://github.com/bastani-inc/atomic/issues/3863))
+- Standalone `run()` now owns Intercom routes for eligible workflow stages until the run settles, so stages can use Intercom without an interactive workflow host. When a route-update acknowledgement times out, the update retries without disconnecting a healthy owner ([#3863](https://github.com/bastani-inc/atomic/issues/3863))
 
 ## [0.9.41] - 2026-10-22
 
