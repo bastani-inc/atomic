@@ -14,6 +14,7 @@
 - Fixed `@` file autocomplete returning no results for queries containing regex metacharacters such as `[` or `(` ([#10972](https://github.com/earendil-works/pi/issues/10972))
 - Fixed an unclosed `$$` display-math block swallowing or corrupting every Markdown table after it ([#11159](https://github.com/earendil-works/pi/issues/11159))
 - Fixed terminal modes (mouse tracking, focus reporting, Kitty keyboard protocol, bracketed paste, alternate screen) staying enabled when the process exits without calling `stop()`. A process `exit` handler now restores them synchronously ([#11170](https://github.com/earendil-works/pi/issues/11170))
+- Fixed Markdown bold and italic not rendering next to CJK punctuation ([#10730](https://github.com/earendil-works/pi/pull/10730) by [@theBucky](https://github.com/theBucky))
 
 ## [0.9.41-alpha.1] - 2026-10-21
 

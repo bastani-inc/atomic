@@ -244,4 +244,16 @@ describe("AssistantMessageComponent", () => {
 		expect(lines).toEqual(expect.arrayContaining(["┌───┬───┐", "│ A │ B │", "├───┼───┤", "│ 1 │ 2 │", "└───┴───┘"]));
 		expect(lines).toContain("After");
 	});
+
+	test("renders bold emphasis delimited next to CJK punctuation (#10730)", () => {
+		initTheme("dark");
+		const component = new AssistantMessageComponent(
+			createAssistantMessage([{ type: "text", text: "**这是测试。**后面" }]),
+		);
+
+		const rendered = component.render(80).map((line) => stripAnsi(line).trim());
+
+		expect(rendered).toContain("这是测试。后面");
+		expect(rendered.join("\n")).not.toContain("**");
+	});
 });
