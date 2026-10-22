@@ -103,6 +103,8 @@ describe("createAgentSession client identity", () => {
 			requestSessionId?: string;
 			/** Source of an extension loaded from the agent directory. */
 			extensionSource?: string;
+			/** Drive the request through a prompt, so the agent loop adds its own default identity first. */
+			viaAgentLoop?: boolean;
 		} = {},
 	): Promise<SimpleStreamOptions | undefined> {
 		const settingsManager = SettingsManager.create(cwd, agentDir);
@@ -145,6 +147,10 @@ describe("createAgentSession client identity", () => {
 		});
 
 		try {
+			if (options.viaAgentLoop) {
+				await session.prompt("hello");
+				return capturedOptions;
+			}
 			const stream = await session.agent.streamFunction(
 				model,
 				{ messages: [] },
@@ -181,6 +187,21 @@ describe("createAgentSession client identity", () => {
 			"x-opencode-client": "atomic",
 		});
 	});
+
+	it.each([
+		[true, { name: APP_NAME, url: "https://atomic.sh", categories: ["cli-agent"] }],
+		[false, null],
+	])(
+		"replaces the agent loop's default pi attribution with Atomic's identity (telemetry enabled: %s)",
+		async (telemetryEnabled, attribution) => {
+			const options = await captureOptions(createModel("openrouter", "https://openrouter.ai/api/v1"), {
+				telemetryEnabled,
+				viaAgentLoop: true,
+			});
+
+			expect(options?.identity).toEqual({ userAgent: { custom: getPiUserAgent(VERSION) }, attribution });
+		},
+	);
 
 	it("turns attribution off when telemetry is disabled", async () => {
 		const model = createModel("nvidia", "https://integrate.api.nvidia.com/v1");
