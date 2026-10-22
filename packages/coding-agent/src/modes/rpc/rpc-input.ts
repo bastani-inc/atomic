@@ -33,6 +33,18 @@ function getCommandIdentity(command: unknown): CommandIdentity {
 	return { id, type };
 }
 
+function cancelsPendingCommand(interrupt: RpcCommand, pending: RpcCommand): boolean {
+	if (interrupt.type === "abort") return pending.type === "prompt";
+	if (interrupt.type === "abort_compaction") return pending.type === "compact";
+	if (interrupt.type === "abort_bash") {
+		return (
+			(pending.type === "bash" || pending.type === "user_bash") &&
+			(interrupt.requestId === undefined || interrupt.requestId === pending.id)
+		);
+	}
+	return false;
+}
+
 export function createRpcInputLineHandler({
 	output,
 	pendingExtensionRequests,
@@ -41,6 +53,7 @@ export function createRpcInputLineHandler({
 	handleInteractiveEngineLine,
 	announceRequestAccepted,
 }: RpcInputLineHandlerOptions): (line: string) => Promise<void> {
+	const pendingAdmissions = new Set<{ command: RpcCommand; cancelled: boolean }>();
 	return async (line: string): Promise<void> => {
 		if (handleInteractiveEngineLine?.(line)) return;
 		let parsed: unknown;
@@ -66,9 +79,21 @@ export function createRpcInputLineHandler({
 		const command = parsed as RpcCommand;
 		try {
 			const identity = getCommandIdentity(command);
+			for (const pending of pendingAdmissions) {
+				if (cancelsPendingCommand(command, pending.command)) pending.cancelled = true;
+			}
 			if (announceRequestAccepted && identity.id !== undefined) {
 				announceRequestAccepted(identity.id, identity.type);
-				if (!isRpcInterruptCommand(identity.type)) await waitForRawStdoutBackpressure();
+				if (!isRpcInterruptCommand(identity.type)) {
+					const pending = { command, cancelled: false };
+					pendingAdmissions.add(pending);
+					try {
+						await waitForRawStdoutBackpressure();
+					} finally {
+						pendingAdmissions.delete(pending);
+					}
+					if (pending.cancelled) throw new Error("Request cancelled before execution");
+				}
 			}
 			const response = await handleCommand(command);
 			if (response) {

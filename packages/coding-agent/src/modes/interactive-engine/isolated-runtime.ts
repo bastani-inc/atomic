@@ -154,7 +154,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.sessionStats = new EngineSessionStats(client);
 		this.health = new EngineHealthController({
 			stop: () => this.client.stop(),
-			restart: async () => {
+			restart: async (replacementReady) => {
 				this.engineRecoveryFailure = undefined;
 				try {
 					const manager = super.session.sessionManager;
@@ -162,6 +162,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 						cwd: manager.getCwd(),
 						sessionDirectory: manager.getSessionDir() || undefined,
 					});
+					replacementReady();
 					await this.initializeFromEngine();
 				} catch (error) {
 					const failure = markRpcTransportFailure(error);

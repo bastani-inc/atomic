@@ -7,7 +7,7 @@ export interface EngineHealthDeps {
 	/** Terminate the current (or hung replacement) engine child. */
 	stop(): Promise<void>;
 	/** Replace the engine child and reload host state from it. */
-	restart(): Promise<void>;
+	restart(replacementReady: () => void): Promise<void>;
 	/** Drop streaming/compaction/callback activity owned by the dead generation. */
 	clearActivity(): void;
 }
@@ -263,9 +263,15 @@ export class EngineHealthController {
 		// window and let the first Ctrl+C stop a replacement that never misbehaved.
 		// Only this child's own heartbeat, or its own stall, may set it again.
 		this.unresponsive = false;
+		let controlsFenced = false;
+		const fenceRetiredControls = () => {
+			if (controlsFenced || this.stopped || this.attemptId !== id) return;
+			controlsFenced = true;
+			this.resetControls();
+		};
 		const run = this.deps
-			.restart()
-			.then(() => this.resetControls())
+			.restart(fenceRetiredControls)
+			.then(fenceRetiredControls)
 			.catch((error: Error) => {
 				// An attempt the user deliberately stopped, or one cancelled by
 				// disposal, did not fail on its own.

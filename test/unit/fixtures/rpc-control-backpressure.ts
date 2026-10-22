@@ -8,6 +8,7 @@ import {
 import type { RpcCommandHandler } from "../../../packages/coding-agent/src/modes/rpc/rpc-command-handler.js";
 import { createRpcInputLineHandler } from "../../../packages/coding-agent/src/modes/rpc/rpc-input.js";
 import { createRpcSuccessResponse } from "../../../packages/coding-agent/src/modes/rpc/rpc-responses.js";
+import type { RpcCommand } from "../../../packages/coding-agent/src/modes/rpc/rpc-types.js";
 
 const originalWrite = process.stdout.write;
 const writes: string[] = [];
@@ -42,16 +43,36 @@ const handleLine = createRpcInputLineHandler({
 
 const frames = Array.from({ length: 256 }, (_, index) => `${JSON.stringify({ index, output: "x".repeat(4096) })}\n`);
 for (const frame of frames) writeRawStdout(frame);
-const prompt = handleLine('{"type":"prompt","message":"keep this prompt","id":"prompt"}');
-const bash = handleLine('{"type":"bash","command":"echo keep this command","id":"bash"}');
-const controls = ["pause_queued_messages", "resume_queued_messages", "clear_queue", "abort", "abort_bash", "abort_compaction", "abort_retry", "cancel_login_provider"];
-const requests = controls.map((type) => handleLine(JSON.stringify({ type, id: type })));
+const commands: RpcCommand[] = process.argv[2]
+	? JSON.parse(process.argv[2])
+	: [
+			{ type: "prompt", message: "cancel this prompt", id: "prompt" },
+			{ type: "bash", command: "echo cancel this command", id: "bash" },
+			{ type: "user_bash", command: "echo cancel this user command", id: "user_bash" },
+			{ type: "compact", id: "compact" },
+		];
+const controls: RpcCommand[] = process.argv[3]
+	? JSON.parse(process.argv[3])
+	: [
+			{ type: "pause_queued_messages" },
+			{ type: "resume_queued_messages" },
+			{ type: "clear_queue" },
+			{ type: "abort" },
+			{ type: "abort_bash" },
+			{ type: "abort_compaction" },
+			{ type: "abort_retry" },
+			{ type: "cancel_login_provider" },
+		];
+const work = commands.map((command) => handleLine(JSON.stringify(command)));
+const requests = controls.map((command) => handleLine(JSON.stringify({ ...command, id: command.type })));
 await setImmediate();
 const handledBeforeDrain = [...handled];
 draining = true;
 for (const callback of callbacks.splice(0)) callback();
-await Promise.all([prompt, bash, ...requests]);
+await Promise.all([...work, ...requests]);
 await waitForRawStdoutBackpressure();
 restoreStdout();
 process.stdout.write = originalWrite;
-process.stdout.write(`${JSON.stringify({ handledBeforeDrain, handled, preservedFrames: writes.slice(0, frames.length).every((frame, index) => frame === frames[index]), output: writes.slice(frames.length) })}\n`);
+process.stdout.write(
+	`${JSON.stringify({ handledBeforeDrain, handled, preservedFrames: writes.slice(0, frames.length).every((frame, index) => frame === frames[index]), output: writes.slice(frames.length) })}\n`,
+);
