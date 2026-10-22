@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.41-alpha.2] - 2026-10-22
+
 ### Added
 
 - Added image input to more System One classifiers: `ClassifierContext.images` now also works with Jev and Clef on `cloudflare-workers-ai` and with OpenRouter decision models whose catalog lists image input, next to Jev on `typesafe`. Each service gets its own wire form: TypeSafe `assets` (PNG and JPEG) with the `TypeSafe-Danger-Zone-Images` opt-in header, Clef `images` data URLs (PNG, JPEG, and WebP, at most four), or OpenRouter `image_url` parts in the state. A text-only model's error now names the model: `System One API does not support image input for <model>`.
