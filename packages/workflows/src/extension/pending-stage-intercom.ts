@@ -95,7 +95,11 @@ interface PendingStageRouteEvent extends Record<string, unknown> {
 	completion?: Promise<void>;
 }
 
-export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, activeStore: Store): () => void {
+export function registerPendingStageIntercomBridge(
+	pi: WorkflowEventSurface,
+	activeStore: Store,
+	ownsRun: (runId: string) => boolean = () => true,
+): (() => void) & { flush(): Promise<void>; refresh(): void } {
 	let disposed = false;
 	let sweepPromise: Promise<void> = Promise.resolve();
 	const reportWarning = createWorkflowBackgroundWarningReporter(pi);
@@ -142,6 +146,7 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 		const runs = activeStore.runs();
 		const resolveBoundarySegments = createWorkflowBoundarySegmentsResolver(runs);
 		for (const run of runs) {
+			if (!ownsRun(run.id)) continue;
 			const rootRunId = durableRootRunIdForRun(runs, run.id);
 			if (rootRunId === undefined) continue;
 			ownedRunIds.add(run.id);
@@ -261,7 +266,9 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 		}
 		sweepPromise = sweepPromise
 			.then(() =>
-				outsideWorkflowExecutions(() => settleUndeliverablePendingStageMessages(activeStore, notifyUndeliverable)),
+				outsideWorkflowExecutions(() =>
+					settleUndeliverablePendingStageMessages(activeStore, notifyUndeliverable, ownsRun),
+				),
 			)
 			.then(() => undefined)
 			.catch((error: Error) =>
@@ -279,6 +286,7 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 		const runs = activeStore.runs();
 		const parsedTarget = parseWorkflowStageTarget(payload.target);
 		if (parsedTarget === undefined) return;
+		if (!ownsRun(parsedTarget.rootRunId)) return;
 		if (parsedTarget.kind === "path" && isMaterializedNonAgentTarget(runs, parsedTarget)) {
 			payload.handled = true;
 			payload.completion = Promise.resolve({
@@ -374,7 +382,13 @@ export function registerPendingStageIntercomBridge(pi: WorkflowEventSurface, act
 		announcedRoutes.clear();
 	};
 	pi.on?.("session_shutdown", dispose);
-	return dispose;
+	return Object.assign(dispose, {
+		async flush() {
+			await Promise.allSettled(routeCompletions.values());
+			await sweepPromise;
+		},
+		refresh: announceRoutes,
+	});
 }
 
 /**
@@ -1015,8 +1029,9 @@ function needsUndeliverableSettlement(run: ReturnType<Store["runs"]>[number], en
 export async function settleUndeliverablePendingStageMessages(
 	activeStore: Store,
 	notify: (entry: PendingStageMessage, reason: string, notificationId: string) => Promise<boolean>,
+	ownsRun: (runId: string) => boolean = () => true,
 ): Promise<number> {
-	const runs = activeStore.runs();
+	const runs = activeStore.runs().filter((run) => ownsRun(run.id));
 	if (!runs.some((run) => run.pendingStageMessages?.some((entry) => needsUndeliverableSettlement(run, entry)))) {
 		return 0;
 	}

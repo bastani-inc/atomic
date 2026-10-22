@@ -335,6 +335,7 @@ export async function spawnBrokerIfNeeded(
   brokerCommand: string,
   brokerArgs: string[],
   readyTimeoutMs: number = BROKER_READY_TIMEOUT_MS,
+  extensionDir: string = EXTENSION_DIR,
 ): Promise<void> {
   ensurePrivateDirectory(INTERCOM_DIR);
 
@@ -354,8 +355,8 @@ export async function spawnBrokerIfNeeded(
       return;
     }
 
-    const brokerPath = resolveBrokerEntrypoint(EXTENSION_DIR);
-    const launch = getBrokerLaunchSpec(brokerPath, brokerCommand, brokerArgs);
+    const brokerPath = resolveBrokerEntrypoint(extensionDir);
+    const launch = getBrokerLaunchSpec(brokerPath, brokerCommand, brokerArgs, extensionDir);
     if (launch.kind === "windows-launcher") {
       writeWindowsHiddenLauncher(launch.launcherCommandLine, launch.launcherPath);
     }
@@ -370,7 +371,7 @@ export async function spawnBrokerIfNeeded(
     const logFd = launch.kind === "direct" ? openSync(BROKER_LOG, "a") : undefined;
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(launch.command, launch.args, getBrokerSpawnOptions(EXTENSION_DIR, logFd ?? "ignore"));
+      child = spawn(launch.command, launch.args, getBrokerSpawnOptions(extensionDir, logFd ?? "ignore"));
     } finally {
       if (logFd !== undefined) closeSync(logFd);
     }

@@ -41,6 +41,10 @@ export function registerWorkflowPendingStageRouteReadiness(store: Store, ready: 
 	};
 }
 
+export function hasWorkflowPendingStageRouteOwner(store: Store): boolean {
+	return owners.has(store);
+}
+
 /** Snapshot only this run's current publication; future roster updates never extend the wait. */
 export function workflowPendingStageRouteReady(
 	store: Store,
