@@ -18,6 +18,7 @@
 - HTML session exports, including `atomic --export`, now show the system prompt and available tools from the session's first system message, and later system messages as named prompt-section and tool updates. Sessions without system entries still show the prompt and tools from the agent state ([pi #11261](https://github.com/earendil-works/pi/issues/11261))
 - HTML session exports of very long sessions no longer fail to render the session tree with a call-stack overflow ([pi #11225](https://github.com/earendil-works/pi/issues/11225))
 - `pi.exec()` now reports why a command could not be started (for example `ENOENT` for a missing executable) in `stderr` instead of returning an empty `stderr` with exit code 1 ([pi #11085](https://github.com/earendil-works/pi/issues/11085))
+- `/resume` search matches the session name, summary, id, messages and working directory separately. A name match ranks first, then text found in the id, summary, messages or directory, then characters scattered through the name, summary or directory. Matches deep in a long transcript are no longer ranked last, and scattered characters in session ids or message text no longer produce noise matches ([pi #11220](https://github.com/earendil-works/pi/issues/11220))
 
 ## [0.9.41] - 2026-10-22
 

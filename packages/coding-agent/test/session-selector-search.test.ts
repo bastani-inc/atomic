@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { describe, expect, it } from "vitest";
 import type { SessionInfo } from "../src/core/session-manager.ts";
 import { filterAndSortSessions } from "../src/modes/interactive/components/session-selector-search.ts";
@@ -10,6 +11,7 @@ function makeSession(
 		id: overrides.id,
 		cwd: overrides.cwd ?? "",
 		name: overrides.name,
+		summary: overrides.summary,
 		created: overrides.created ?? new Date(0),
 		modified: overrides.modified,
 		messageCount: overrides.messageCount ?? 1,
@@ -81,19 +83,20 @@ describe("session selector search", () => {
 	it("relevance sort orders by score and tie-breaks by modified desc", () => {
 		const sessions: SessionInfo[] = [
 			makeSession({
-				id: "late",
+				id: "message",
 				modified: new Date("2026-01-03T00:00:00.000Z"),
-				allMessagesText: "xxxx brave",
+				allMessagesText: "brave",
 			}),
 			makeSession({
-				id: "early",
+				id: "name",
+				name: "Brave work",
 				modified: new Date("2026-01-01T00:00:00.000Z"),
-				allMessagesText: "brave xxxx",
+				allMessagesText: "xxxx",
 			}),
 		];
 
 		const result1 = filterAndSortSessions(sessions, '"brave"', "relevance");
-		expect(result1.map((s) => s.id)).toEqual(["early", "late"]);
+		expect(result1.map((s) => s.id)).toEqual(["name", "message"]);
 
 		const tieSessions: SessionInfo[] = [
 			makeSession({
@@ -110,6 +113,145 @@ describe("session selector search", () => {
 
 		const result2 = filterAndSortSessions(tieSessions, '"brave"', "relevance");
 		expect(result2.map((s) => s.id)).toEqual(["newer", "older"]);
+	});
+
+	it("ignores the position of a match in message text (pi #11220)", () => {
+		const filler = "lorem ipsum dolor sit amet ".repeat(400);
+		const sessions: SessionInfo[] = [
+			makeSession({
+				id: "early",
+				modified: new Date("2026-01-01T00:00:00.000Z"),
+				allMessagesText: `opus ${filler}`,
+			}),
+			makeSession({
+				id: "deep",
+				modified: new Date("2026-01-02T00:00:00.000Z"),
+				allMessagesText: `${filler} we discussed the opus model`,
+			}),
+			makeSession({
+				id: "scattered",
+				modified: new Date("2026-01-03T00:00:00.000Z"),
+				allMessagesText: filler,
+			}),
+		];
+
+		const result = filterAndSortSessions(sessions, "opus", "relevance");
+		assert.deepEqual(
+			result.map((s) => s.id),
+			["deep", "early"],
+		);
+	});
+
+	it("does not match scattered characters in session ids (pi #11024)", () => {
+		const sessions: SessionInfo[] = [
+			makeSession({
+				id: "019e9024-aaaa-7bbb-8ccc-dddddddddddd",
+				modified: new Date("2026-01-03T00:00:00.000Z"),
+				allMessagesText: "unrelated",
+			}),
+			makeSession({
+				id: "01a1ffff-aaaa-7bbb-8ccc-dddddddddddd",
+				name: "#1024 TDD bare env",
+				modified: new Date("2026-01-01T00:00:00.000Z"),
+				allMessagesText: "unrelated",
+			}),
+		];
+
+		assert.deepEqual(
+			filterAndSortSessions(sessions, "1024", "relevance").map((s) => s.name),
+			["#1024 TDD bare env"],
+		);
+		assert.deepEqual(
+			filterAndSortSessions(sessions, "9024-aa", "relevance").map((s) => s.id),
+			["019e9024-aaaa-7bbb-8ccc-dddddddddddd"],
+		);
+	});
+
+	it("ranks name text, then message text, then scattered name matches", () => {
+		const sessions: SessionInfo[] = [
+			makeSession({
+				id: "scattered-name",
+				name: "c-a-c-h-e notes",
+				modified: new Date("2026-01-04T00:00:00.000Z"),
+				allMessagesText: "unrelated",
+			}),
+			makeSession({
+				id: "message",
+				name: "Other work",
+				modified: new Date("2026-01-03T00:00:00.000Z"),
+				allMessagesText: "A discussion mentioning the cache.",
+			}),
+			makeSession({
+				id: "name",
+				name: "Cache work",
+				modified: new Date("2026-01-01T00:00:00.000Z"),
+				allMessagesText: "Summary",
+			}),
+		];
+
+		assert.deepEqual(
+			filterAndSortSessions(sessions, "cache", "relevance").map((s) => s.id),
+			["name", "message", "scattered-name"],
+		);
+	});
+
+	it("matches each token within a single field", () => {
+		const sessions: SessionInfo[] = [
+			makeSession({
+				id: "split",
+				name: "Fuzzy",
+				modified: new Date("2026-01-01T00:00:00.000Z"),
+				allMessagesText: "search ranking",
+			}),
+		];
+
+		assert.deepEqual(
+			filterAndSortSessions(sessions, "fuzzy ranking", "relevance").map((s) => s.id),
+			["split"],
+		);
+		assert.deepEqual(filterAndSortSessions(sessions, "zzysea", "relevance"), []);
+		assert.deepEqual(filterAndSortSessions(sessions, "re:fuzzy search", "relevance"), []);
+	});
+
+	it("ranks regex name matches first", () => {
+		const sessions: SessionInfo[] = [
+			makeSession({
+				id: "message",
+				modified: new Date("2026-01-02T00:00:00.000Z"),
+				allMessagesText: "brave",
+			}),
+			makeSession({
+				id: "name",
+				name: "Brave",
+				modified: new Date("2026-01-01T00:00:00.000Z"),
+				allMessagesText: "xxxx",
+			}),
+		];
+
+		assert.deepEqual(
+			filterAndSortSessions(sessions, "re:\\bbrave\\b", "relevance").map((s) => s.id),
+			["name", "message"],
+		);
+	});
+
+	it("matches the session summary as text and as a scattered field", () => {
+		const sessions: SessionInfo[] = [
+			makeSession({
+				id: "summary",
+				summary: "Refactor the storage adapters",
+				modified: new Date("2026-01-01T00:00:00.000Z"),
+				allMessagesText: "unrelated",
+			}),
+		];
+
+		assert.deepEqual(
+			filterAndSortSessions(sessions, "storage", "relevance").map((s) => s.id),
+			["summary"],
+		);
+		assert.deepEqual(
+			filterAndSortSessions(sessions, "rfctr", "relevance").map((s) => s.id),
+			["summary"],
+		);
 	});
 
 	it("returns empty list for invalid regex", () => {
