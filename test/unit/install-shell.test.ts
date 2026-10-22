@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
 	chmodSync,
+	cpSync,
 	existsSync,
 	lstatSync,
 	mkdirSync,
@@ -226,6 +227,9 @@ function createArchive(workspace: string, tag: string, asset: string): { path: s
 	const regularFiles = [
 		[join(payload, "package.json"), JSON.stringify({ name: "@bastani/atomic", version: tag })],
 		[join(payload, "app.js"), `fixture-${tag}`],
+		[join(payload, "native-modifiers.js"), `modifiers-${tag}`],
+		[join(payload, "native-module-path.js"), `module-path-${tag}`],
+		[join(payload, "native-platform.js"), `platform-${tag}`],
 		[join(payload, "builtin", "payload.txt"), `builtin-${tag}`],
 		[join(payload, "node_modules", "fixture", "payload.txt"), `modules-${tag}`],
 		[join(payload, "asset.txt"), asset],
@@ -660,6 +664,9 @@ unixTest("shell installer follows the stable redirect, installs the full tar pay
 			"atomic",
 			"package.json",
 			"app.js",
+			"native-modifiers.js",
+			"native-module-path.js",
+			"native-platform.js",
 			"builtin/payload.txt",
 			"node_modules/fixture/payload.txt",
 		]) {
@@ -893,6 +900,15 @@ unixTest("shell installer omits the PATH hint on a skipped rerun only when the l
 	}
 });
 
+const requiredPayloadFiles = [
+	"package.json",
+	"app.js",
+	"native-modifiers.js",
+	"native-module-path.js",
+	"native-platform.js",
+] as const;
+const requiredPayloadDirectories = ["builtin", "node_modules"] as const;
+
 const brokenInstalls: readonly { label: string; break: (fixture: InstallerFixture) => void }[] = [
 	{ label: "a removed launcher", break: (fixture) => rmSync(join(fixture.binDir, "atomic")) },
 	{
@@ -924,6 +940,14 @@ const brokenInstalls: readonly { label: string; break: (fixture: InstallerFixtur
 		break: (fixture) => rmSync(join(versionDirectory(fixture, "1.0.0"), "atomic")),
 	},
 	{ label: "a removed current pointer", break: (fixture) => rmSync(join(fixture.installRoot, "current")) },
+	...requiredPayloadFiles.map((name) => ({
+		label: `a missing ${name}`,
+		break: (fixture: InstallerFixture) => rmSync(join(versionDirectory(fixture, "1.0.0"), name)),
+	})),
+	...requiredPayloadDirectories.map((name) => ({
+		label: `a missing ${name} directory`,
+		break: (fixture: InstallerFixture) => rmSync(join(versionDirectory(fixture, "1.0.0"), name), { recursive: true }),
+	})),
 ];
 
 unixTest("shell installer repairs an unhealthy install of the same version instead of skipping", () => {
@@ -952,6 +976,61 @@ unixTest("shell installer repairs an unhealthy install of the same version inste
 		} finally {
 			fixture.cleanup();
 		}
+	}
+});
+
+unixTest("shell installer reinstalls when current points at a versions directory outside the install root", () => {
+	const fixture = createFixture();
+	try {
+		assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+		const foreignVersion = join(fixture.workspace, "foreign-install", "versions", "1.0.0");
+		mkdirSync(join(fixture.workspace, "foreign-install", "versions"), { recursive: true });
+		cpSync(versionDirectory(fixture, "1.0.0"), foreignVersion, { recursive: true });
+		const foreignMarker = join(foreignVersion, "foreign-marker.txt");
+		writeFileSync(foreignMarker, "owned by another install");
+		rmSync(join(fixture.installRoot, "current"));
+		symlinkSync(foreignVersion, join(fixture.installRoot, "current"));
+		assert.equal(
+			spawnSyncCollect([join(fixture.binDir, "atomic"), "--version"])
+				.stdout.toString()
+				.trim(),
+			"1.0.0",
+		);
+		const offset = requestLogLength(fixture);
+
+		const repair = fixture.run({ args: ["--ref", "1.0.0"] });
+		assertReinstalled(fixture, repair, "1.0.0");
+		assert.equal(
+			realpathSync(join(fixture.installRoot, "current")),
+			realpathSync(versionDirectory(fixture, "1.0.0")),
+			"current must point back into the install root",
+		);
+		assert.ok(existsSync(foreignMarker), "repairing must leave the foreign versions directory alone");
+		assert.match(requestsSince(fixture, offset), /releases\/download\/1\.0\.0\/atomic-linux-x64\.tar\.gz/u);
+
+		assertSkipped(fixture, fixture.run({ args: ["--ref", "1.0.0"] }), "1.0.0");
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+unixTest("shell installer still skips when the install root is reached through a symbolic link", () => {
+	const fixture = createFixture();
+	try {
+		const realRoot = join(fixture.workspace, "real-install-root");
+		const linkedRoot = join(fixture.workspace, "linked-install-root");
+		mkdirSync(realRoot);
+		symlinkSync(realRoot, linkedRoot);
+		const environment = { ATOMIC_INSTALL_DIR: linkedRoot };
+		assertSuccess(fixture.run({ args: ["--ref", "1.0.0"], environment }));
+		assert.ok(existsSync(join(realRoot, "versions", "1.0.0", "atomic")));
+		const offset = requestLogLength(fixture);
+
+		const rerun = fixture.run({ args: ["--ref", "1.0.0"], environment });
+		assertSkipped(fixture, rerun, "1.0.0");
+		assertNoArtifactRequests(requestsSince(fixture, offset));
+	} finally {
+		fixture.cleanup();
 	}
 });
 

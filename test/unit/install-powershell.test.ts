@@ -114,7 +114,7 @@ test("Windows installer skips a healthy install before any download and keeps th
 	);
 
 	const health = source.slice(
-		source.indexOf("function Test-AtomicInstallIntact"),
+		source.indexOf("function Get-AtomicComparablePath"),
 		source.indexOf("function Get-AtomicFileSha256"),
 	);
 	assert.match(health, /\$InstalledVersion -cne \$ReleaseTag/u);
@@ -124,6 +124,25 @@ test("Windows installer skips a healthy install before any download and keeps th
 		/Get-AtomicReparseTarget \(Get-AtomicDirectoryEntry \(Join-Path \$BinDir "atomic-current"\)\)/u,
 	);
 	assert.match(health, /\$currentTarget -ine \$atomicCurrentTarget/u);
+	assert.match(health, /\[Uri\]::EscapeDataString\(\$ReleaseTag\)/u);
+	assert.match(
+		health,
+		/\(Get-AtomicComparablePath \$currentTarget\) -ine \(Get-AtomicComparablePath \$expectedVersionPath\)/u,
+		"current must resolve physically to the install root's versions directory for the release",
+	);
+	assert.match(health, /Test-AtomicInstalledPayloadComplete \(Join-Path \$InstallRoot "current"\)/u);
+	for (const required of [
+		"package.json",
+		"app.js",
+		"native-modifiers.js",
+		"native-module-path.js",
+		"native-platform.js",
+	]) {
+		assert.ok(health.includes(`"${required}"`), `the Windows health check must require ${required}`);
+	}
+	for (const required of ["builtin", "node_modules"]) {
+		assert.ok(health.includes(`"${required}"`), `the Windows health check must require the ${required} directory`);
+	}
 	assert.match(health, /Join-Path \$BinDir "atomic\.cmd"/u);
 	assert.match(health, /ReadAllText\(\$shimItem\.FullName\) -ceq \$ExpectedShimContent/u);
 	assert.doesNotMatch(health, /&\s+\$|Invoke-WebRequest|Move-Item|Remove-Item/u, "the health check must be read-only");
@@ -1252,6 +1271,10 @@ function New-HealthyInstall {
     $executable = Join-Path $versionPath "atomic.exe"
     [IO.File]::WriteAllText($executable, "#!/bin/sh" + [char]10 + "echo $Tag" + [char]10)
     & chmod +x $executable
+    foreach ($companionFile in @("package.json", "app.js", "native-modifiers.js", "native-module-path.js", "native-platform.js")) {
+        [IO.File]::WriteAllText((Join-Path $versionPath $companionFile), "fixture " + $companionFile)
+    }
+    New-Item -ItemType Directory -Path (Join-Path $versionPath "builtin"), (Join-Path $versionPath "node_modules") -Force | Out-Null
     New-Item -ItemType SymbolicLink -Path (Join-Path $global:installRoot "current") -Target $versionPath | Out-Null
     New-Item -ItemType SymbolicLink -Path (Join-Path $BinDirectory "atomic-current") -Target $versionPath | Out-Null
     [IO.File]::WriteAllText((Join-Path $BinDirectory "atomic.cmd"), $expectedShim)
@@ -1348,7 +1371,24 @@ $brokenInstalls = @(
     @{ Label = "missing payload executable"; Break = { Remove-Item -LiteralPath (Join-Path (Join-Path $global:installRoot "current") "atomic.exe") } },
     @{ Label = "payload executable that fails"; Break = {
         $executable = Join-Path (Join-Path $global:installRoot "current") "atomic.exe"
-        [IO.File]::WriteAllText($executable, "#!/bin/sh" + [char]10 + "exit 9" + [char]10) } }
+        [IO.File]::WriteAllText($executable, "#!/bin/sh" + [char]10 + "exit 9" + [char]10) } },
+    @{ Label = "missing package.json"; Break = { Remove-Item -LiteralPath (Join-Path (Join-Path $global:installRoot "current") "package.json") } },
+    @{ Label = "missing app.js"; Break = { Remove-Item -LiteralPath (Join-Path (Join-Path $global:installRoot "current") "app.js") } },
+    @{ Label = "missing native-modifiers.js"; Break = { Remove-Item -LiteralPath (Join-Path (Join-Path $global:installRoot "current") "native-modifiers.js") } },
+    @{ Label = "missing native-module-path.js"; Break = { Remove-Item -LiteralPath (Join-Path (Join-Path $global:installRoot "current") "native-module-path.js") } },
+    @{ Label = "missing native-platform.js"; Break = { Remove-Item -LiteralPath (Join-Path (Join-Path $global:installRoot "current") "native-platform.js") } },
+    @{ Label = "missing builtin directory"; Break = { Remove-Item -LiteralPath (Join-Path (Join-Path $global:installRoot "current") "builtin") -Recurse } },
+    @{ Label = "missing node_modules directory"; Break = { Remove-Item -LiteralPath (Join-Path (Join-Path $global:installRoot "current") "node_modules") -Recurse } },
+    @{ Label = "current and atomic-current aimed at a foreign versions directory"; Break = {
+        $foreignRoot = Join-Path (Join-Path $Workspace ("foreign-" + $global:caseIndex)) "versions"
+        $foreignVersion = Join-Path $foreignRoot "1.0.0"
+        New-Item -ItemType Directory -Path $foreignRoot -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path (Join-Path $global:installRoot "versions") "1.0.0") -Destination $foreignVersion -Recurse
+        & chmod +x (Join-Path $foreignVersion "atomic.exe")
+        foreach ($pointer in @((Join-Path $global:installRoot "current"), (Join-Path $global:binDir "atomic-current"))) {
+            Remove-Item -LiteralPath $pointer
+            New-Item -ItemType SymbolicLink -Path $pointer -Target $foreignVersion | Out-Null
+        } } }
 )
 foreach ($broken in $brokenInstalls) {
     New-Space
@@ -1356,6 +1396,15 @@ foreach ($broken in $brokenInstalls) {
     & $broken.Break
     Assert-Probe ((Invoke-Installer @{ Ref = "1.0.0" }).Downloaded) ("an install with a " + $broken.Label + " was skipped")
 }
+
+# An install root reached through a link is the same physical directory, so a healthy install still skips.
+New-Space
+$linkedInstallRoot = $global:installRoot
+$realInstallRoot = Join-Path (Split-Path $linkedInstallRoot -Parent) "real install root"
+New-Item -ItemType Directory -Path $realInstallRoot -Force | Out-Null
+New-Item -ItemType SymbolicLink -Path $linkedInstallRoot -Target $realInstallRoot | Out-Null
+$null = New-HealthyInstall "1.0.0"
+Assert-Skipped (Invoke-Installer @{ Ref = "1.0.0" }) "1.0.0" "install root reached through a link"
 
 # A bin directory that cannot be one PATH entry still skips, prints direct-run guidance, and leaves PATH alone.
 New-Space
@@ -1736,6 +1785,12 @@ function New-FixtureRelease {
     Copy-Item -LiteralPath $fixtureExecutable -Destination (Join-Path $payloadDir "atomic.exe")
     Set-Content -LiteralPath (Join-Path $payloadDir "version.txt") -Value $Tag -Encoding ASCII -NoNewline
     Set-Content -LiteralPath (Join-Path $payloadDir "nested\full-payload.txt") -Value ("payload-" + $Tag) -Encoding ASCII -NoNewline
+    New-Item -ItemType Directory -Path (Join-Path $payloadDir "builtin"), (Join-Path $payloadDir "node_modules") -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $payloadDir "builtin\payload.txt") -Value ("builtin-" + $Tag) -Encoding ASCII -NoNewline
+    Set-Content -LiteralPath (Join-Path $payloadDir "node_modules\payload.txt") -Value ("modules-" + $Tag) -Encoding ASCII -NoNewline
+    foreach ($companionFile in @("package.json", "app.js", "native-modifiers.js", "native-module-path.js", "native-platform.js")) {
+        Set-Content -LiteralPath (Join-Path $payloadDir $companionFile) -Value ("fixture-" + $companionFile + "-" + $Tag) -Encoding ASCII -NoNewline
+    }
     New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
 
     $rows = @()
@@ -2917,10 +2972,16 @@ try {
             [IO.Directory]::Delete($Path)
         }
 
+        function Get-FixtureLinkTarget {
+            param([string]$Path)
+            $target = @((Get-Item -LiteralPath $Path -Force).Target)[0]
+            return [string]$target
+        }
+
         & $InstallerPath -Ref "1.0.0" | Out-Null
         Set-Content -LiteralPath (Join-Path $versionOne "sentinel.txt") -Value "survives" -NoNewline
-        $currentTarget = (Get-Item -LiteralPath $current -Force).Target
-        $atomicCurrentTarget = (Get-Item -LiteralPath $atomicCurrent -Force).Target
+        $currentTarget = Get-FixtureLinkTarget $current
+        $atomicCurrentTarget = Get-FixtureLinkTarget $atomicCurrent
         $shimBytes = [IO.File]::ReadAllBytes($shim)
 
         $mark = $global:AtomicFixtureRequests.Count
@@ -2930,8 +2991,8 @@ try {
         Assert-Fixture ((Get-DownloadRequestCount $mark) -eq 0) "the skip requested release assets"
         Assert-Fixture (@($global:AtomicFixtureRequests | Select-Object -Skip $mark | Where-Object { $_.Uri -match '/releases/tags/1\.0\.0$' }).Count -eq 1) "the skip did not resolve the requested tag"
         Assert-Fixture (Test-Path -LiteralPath (Join-Path $versionOne "sentinel.txt")) "the skip replaced the installed version"
-        Assert-Fixture ((Get-Item -LiteralPath $current -Force).Target -eq $currentTarget) "the skip repointed current"
-        Assert-Fixture ((Get-Item -LiteralPath $atomicCurrent -Force).Target -eq $atomicCurrentTarget) "the skip repointed atomic-current"
+        Assert-Fixture ((Get-FixtureLinkTarget $current) -ceq $currentTarget) "the skip repointed current"
+        Assert-Fixture ((Get-FixtureLinkTarget $atomicCurrent) -ceq $atomicCurrentTarget) "the skip repointed atomic-current"
         Assert-Fixture ([Convert]::ToBase64String([IO.File]::ReadAllBytes($shim)) -ceq [Convert]::ToBase64String($shimBytes)) "the skip rewrote the shim"
         Assert-NoTransactionResidue $installRoot $binDir
 
@@ -2969,18 +3030,48 @@ try {
                 Remove-FixtureJunction $atomicCurrent
                 New-Item -ItemType Junction -Path $atomicCurrent -Target $versionTwo | Out-Null } },
             @{ Label = "a missing current junction"; Break = { Remove-FixtureJunction $current } },
-            @{ Label = "a missing payload executable"; Break = { Remove-Item -LiteralPath (Join-Path $versionOne "atomic.exe") -Force } }
+            @{ Label = "a missing payload executable"; Break = { Remove-Item -LiteralPath (Join-Path $versionOne "atomic.exe") -Force } },
+            @{ Label = "a missing package.json"; Remove = "package.json" },
+            @{ Label = "a missing app.js"; Remove = "app.js" },
+            @{ Label = "a missing native-modifiers.js"; Remove = "native-modifiers.js" },
+            @{ Label = "a missing native-module-path.js"; Remove = "native-module-path.js" },
+            @{ Label = "a missing native-platform.js"; Remove = "native-platform.js" },
+            @{ Label = "a missing builtin directory"; Remove = "builtin" },
+            @{ Label = "a missing node_modules directory"; Remove = "node_modules" },
+            @{ Label = "current and atomic-current aimed at a foreign versions directory"; Break = {
+                $foreignVersion = Join-Path $workspace "foreign-install\versions\1.0.0"
+                New-Item -ItemType Directory -Path (Split-Path -Parent $foreignVersion) -Force | Out-Null
+                Copy-Item -LiteralPath $versionOne -Destination $foreignVersion -Recurse
+                Set-Content -LiteralPath (Join-Path $foreignVersion "foreign-marker.txt") -Value "foreign" -NoNewline
+                Remove-FixtureJunction $current
+                Remove-FixtureJunction $atomicCurrent
+                New-Item -ItemType Junction -Path $current -Target $foreignVersion | Out-Null
+                New-Item -ItemType Junction -Path $atomicCurrent -Target $foreignVersion | Out-Null } }
         )
         foreach ($repair in $repairs) {
-            & $repair.Break
+            if ($repair.ContainsKey("Remove")) {
+                Remove-Item -LiteralPath (Join-Path $versionOne $repair.Remove) -Recurse -Force
+            }
+            else {
+                & $repair.Break
+            }
             $mark = $global:AtomicFixtureRequests.Count
             & $InstallerPath -Ref "1.0.0" | Out-Null
             Assert-Fixture ((Get-DownloadRequestCount $mark) -eq 2) ($repair.Label + " was skipped instead of repaired")
             Assert-Fixture ((Get-Content -LiteralPath (Join-Path $current "version.txt") -Raw) -eq "1.0.0") ($repair.Label + " left current unrepaired")
             Assert-Fixture ((Get-Content -LiteralPath (Join-Path $atomicCurrent "version.txt") -Raw) -eq "1.0.0") ($repair.Label + " left atomic-current unrepaired")
+            Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $current "foreign-marker.txt"))) ($repair.Label + " left current inside a foreign directory")
+            Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $atomicCurrent "foreign-marker.txt"))) ($repair.Label + " left atomic-current inside a foreign directory")
+            foreach ($requiredPayloadFile in @("package.json", "app.js", "native-modifiers.js", "native-module-path.js", "native-platform.js")) {
+                Assert-Fixture (Test-Path -LiteralPath (Join-Path $current $requiredPayloadFile) -PathType Leaf) ($repair.Label + " left $requiredPayloadFile missing")
+            }
+            foreach ($requiredPayloadDirectory in @("builtin", "node_modules")) {
+                Assert-Fixture (Test-Path -LiteralPath (Join-Path $current $requiredPayloadDirectory) -PathType Container) ($repair.Label + " left $requiredPayloadDirectory missing")
+            }
             Assert-ShimRuns "1.0.0" $repair.Label
             Assert-NoTransactionResidue $installRoot $binDir
         }
+        Assert-Fixture (Test-Path -LiteralPath (Join-Path $workspace "foreign-install\versions\1.0.0\foreign-marker.txt")) "repairing a foreign current junction deleted the foreign directory"
 
         Set-Content -LiteralPath (Join-Path $versionOne "sentinel.txt") -Value "replaced by force" -NoNewline
         $mark = $global:AtomicFixtureRequests.Count

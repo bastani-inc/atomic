@@ -96,6 +96,13 @@ test("installer documentation keeps the literal entry points, knobs, defaults, a
 	assert.match(docs.quickstart, /`--force` on macOS\/Linux or `-Force` on Windows/u);
 	assert.match(docs.windows, /pass `-Force` or set `ATOMIC_FORCE_INSTALL=1` to reinstall anyway/u);
 	assert.match(docs.windows, /restores a missing User PATH entry/u);
+	assert.match(
+		docs.quickstart,
+		/the version directory must still hold the files Atomic needs to start: `package\.json`, `app\.js`/u,
+	);
+	assert.match(docs.quickstart, /`current` that points at a versions directory somewhere else is repaired/u);
+	assert.match(docs.windows, /`current` junction that points outside the install root/u);
+	assert.match(docs.windows, /lost `app\.js` or another startup file/u);
 	assert.match(docs.quickstart, /\*\*Package install:\*\* Node\.js 22\.19 or newer/u);
 	assert.match(docs.quickstart, /payload-local `libgcc` and `libstdc\+\+`/u);
 	assert.match(docs.quickstart, /stock Alpine needs no runtime package install/u);

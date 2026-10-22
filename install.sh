@@ -1158,11 +1158,23 @@ if [ -L "$INSTALL_ROOT/current" ] && [ -d "$INSTALL_ROOT/current" ]; then
     installed_physical=
     installed_encoded=
 fi
+installed_payload_is_complete() {
+    for required_file in package.json app.js native-modifiers.js native-module-path.js native-platform.js; do
+        [ -f "$INSTALL_ROOT/current/$required_file" ] || return 1
+    done
+    for required_directory in builtin node_modules; do
+        [ -d "$INSTALL_ROOT/current/$required_directory" ] || return 1
+    done
+}
+
 installed_launcher_is_healthy() {
     [ -f "$INSTALL_ROOT/current/atomic" ] && [ -x "$INSTALL_ROOT/current/atomic" ] || return 1
     [ -L "$BIN_PATH" ] || return 1
     # shellcheck disable=SC3013 # -ef is the only way to compare symlink targets without readlink
-    [ "$BIN_PATH" -ef "$INSTALL_ROOT/current/atomic" ]
+    [ "$BIN_PATH" -ef "$INSTALL_ROOT/current/atomic" ] || return 1
+    # shellcheck disable=SC3013 # -ef compares the physical directories, so a symlinked install root still matches
+    [ "$INSTALL_ROOT/current" -ef "$INSTALL_ROOT/versions/$RELEASE_TAG_ENCODED" ] || return 1
+    installed_payload_is_complete
 }
 
 if [ -n "$INSTALLED_VERSION" ]; then

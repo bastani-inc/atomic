@@ -175,6 +175,28 @@ function Get-AtomicInstalledVersion {
     }
 }
 
+function Get-AtomicComparablePath {
+    param([string]$Path)
+
+    return (Get-AtomicPhysicalPath $Path).TrimEnd([char[]]@('\', '/'))
+}
+
+function Test-AtomicInstalledPayloadComplete {
+    param([string]$CurrentPath)
+
+    foreach ($requiredFile in @("package.json", "app.js", "native-modifiers.js", "native-module-path.js", "native-platform.js")) {
+        if (-not (Test-Path -LiteralPath (Join-Path $CurrentPath $requiredFile) -PathType Leaf)) {
+            return $false
+        }
+    }
+    foreach ($requiredDirectory in @("builtin", "node_modules")) {
+        if (-not (Test-Path -LiteralPath (Join-Path $CurrentPath $requiredDirectory) -PathType Container)) {
+            return $false
+        }
+    }
+    return $true
+}
+
 function Test-AtomicInstallIntact {
     param(
         [AllowNull()][string]$InstalledVersion,
@@ -193,6 +215,13 @@ function Test-AtomicInstallIntact {
         return $false
     }
     if ($currentTarget -ine $atomicCurrentTarget) {
+        return $false
+    }
+    $expectedVersionPath = Join-Path (Join-Path $InstallRoot "versions") ([Uri]::EscapeDataString($ReleaseTag))
+    if ((Get-AtomicComparablePath $currentTarget) -ine (Get-AtomicComparablePath $expectedVersionPath)) {
+        return $false
+    }
+    if (-not (Test-AtomicInstalledPayloadComplete (Join-Path $InstallRoot "current"))) {
         return $false
     }
     $shimItem = Get-AtomicDirectoryEntry (Join-Path $BinDir "atomic.cmd")
