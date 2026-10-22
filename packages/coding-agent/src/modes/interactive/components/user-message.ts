@@ -16,6 +16,8 @@ export class UserMessageComponent extends Container {
 	private outputPad: number;
 	private markdownTransformers: readonly MarkdownTransformer[];
 	private renderLatex: boolean;
+	private messageId?: string;
+	private timestamp?: string;
 
 	constructor(
 		text: string,
@@ -23,6 +25,8 @@ export class UserMessageComponent extends Container {
 		outputPad = 1,
 		markdownTransformers: readonly MarkdownTransformer[] = [],
 		renderLatex = true,
+		messageId?: string,
+		timestamp?: string,
 	) {
 		super();
 		this.text = text;
@@ -30,6 +34,8 @@ export class UserMessageComponent extends Container {
 		this.outputPad = outputPad;
 		this.markdownTransformers = markdownTransformers;
 		this.renderLatex = renderLatex;
+		this.messageId = messageId;
+		this.timestamp = timestamp;
 		this.rebuild();
 	}
 
@@ -53,7 +59,13 @@ export class UserMessageComponent extends Container {
 				{
 					preserveOrderedListMarkers: true,
 					preserveBackslashEscapes: true,
-					transform: createMarkdownTransform("user", false, this.markdownTransformers),
+					transform: createMarkdownTransform(
+						"user",
+						false,
+						this.markdownTransformers,
+						this.messageId,
+						this.timestamp,
+					),
 					renderLatex: this.renderLatex,
 				},
 			),

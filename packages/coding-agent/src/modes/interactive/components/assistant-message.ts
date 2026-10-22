@@ -22,6 +22,8 @@ export class AssistantMessageComponent extends Container {
 	private hasToolCalls = false;
 	private isStreaming = false;
 	private renderLatex: boolean;
+	private messageId?: string;
+	private timestamp?: string;
 
 	constructor(
 		message?: AssistantMessage,
@@ -33,6 +35,8 @@ export class AssistantMessageComponent extends Container {
 		// ChatSessionHost creates components per render, so it needs the initial stream state.
 		isStreaming = false,
 		renderLatex = true,
+		messageId?: string,
+		timestamp?: string,
 	) {
 		super();
 
@@ -42,6 +46,8 @@ export class AssistantMessageComponent extends Container {
 		this.outputPad = outputPad;
 		this.markdownTransformers = markdownTransformers;
 		this.renderLatex = renderLatex;
+		this.messageId = messageId;
+		this.timestamp = timestamp;
 		// Container for text/thinking content
 		this.contentContainer = new Container();
 		this.addChild(this.contentContainer);
@@ -113,7 +119,13 @@ export class AssistantMessageComponent extends Container {
 				// Set paddingY=0 to avoid extra spacing before tool executions
 				this.contentContainer.addChild(
 					new Markdown(content.text.trim(), this.outputPad, 0, this.markdownTheme, undefined, {
-						transform: createMarkdownTransform("assistant", this.isStreaming, this.markdownTransformers),
+						transform: createMarkdownTransform(
+							"assistant",
+							this.isStreaming,
+							this.markdownTransformers,
+							this.messageId,
+							this.timestamp,
+						),
 						renderLatex: this.renderLatex,
 					}),
 				);
@@ -152,6 +164,8 @@ export class AssistantMessageComponent extends Container {
 									"assistant-thinking",
 									this.isStreaming,
 									this.markdownTransformers,
+									this.messageId,
+									this.timestamp,
 								),
 								renderLatex: this.renderLatex,
 							},

@@ -137,6 +137,7 @@ export {
 	type ChatMessageEntry,
 	type ChatMessageRenderOptions,
 	chatEntriesFromAgentMessages,
+	type PersistedMessageMeta,
 	renderChatMessageEntry,
 } from "./components/chat-message-renderer.ts";
 export { addChatTranscriptEntry } from "./components/chat-transcript.js";
