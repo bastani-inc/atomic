@@ -13,8 +13,7 @@ import { renderRunDetail } from "../../packages/workflows/src/tui/run-detail.js"
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { createStageContext, makeMockSession, makeOpts } from "./stage-runner-helpers.js";
 
-// #3040: exercise production preparation, serialized reload, SDK and binding, not a replacement queue.
-test("cancelled stalled reload and queued sibling settle callers without releasing or bypassing the reload owner", async () => {
+test("cancelled stalled reloads and a queued sibling settle callers without bypassing active owners (#3040, #3861)", async () => {
 	const gate = Promise.withResolvers<void>();
 	let reloads = 0;
 	let creates = 0;
@@ -33,35 +32,43 @@ test("cancelled stalled reload and queued sibling settle callers without releasi
 		},
 	};
 	const adapters = buildRuntimeAdapters({}, { sdk });
-	const a = createStageContext(makeOpts({ adapters, stageId: "a" }));
-	const b = createStageContext(makeOpts({ adapters, stageId: "b" }));
-	const first = a.__ensureSession();
-	const second = b.__ensureSession();
-	let firstSettled = false;
-	let secondSettled = false;
-	const firstFailure = first.catch(() => {
-		firstSettled = true;
-	});
-	const secondFailure = second.catch(() => {
-		secondSettled = true;
-	});
+	const snapshots: Array<StageStartupSnapshot | undefined> = [];
+	const stages = Array.from({ length: 5 }, (_, index) =>
+		createStageContext(
+			makeOpts({
+				adapters,
+				stageId: `stage-${index}`,
+				onStartupChange: (snapshot) => (snapshots[index] = snapshot),
+			}),
+		),
+	);
+	const settled = stages.map(() => false);
+	const failures = stages.map((stage, index) =>
+		stage.__ensureSession().catch(() => {
+			settled[index] = true;
+		}),
+	);
 	try {
 		await new Promise((resolve) => setTimeout(resolve, 20));
-		assert.equal(reloads, 1);
-		await Promise.all([a.abort(), b.abort()]);
+		assert.equal(reloads, 4);
+		await Promise.all(stages.map((stage) => stage.abort()));
 		await new Promise((resolve) => setTimeout(resolve, 20));
-		assert.equal(firstSettled, true, "cancelled startup consumer must settle before the loader does");
-		assert.equal(secondSettled, true, "queued sibling consumer must settle before the loader does");
-		await assert.rejects(a.__ensureSession());
-		assert.equal(reloads, 1, "cancellation must not release the active loader");
+		assert.ok(settled.every(Boolean), "cancelled active and queued consumers must settle before the loaders do");
+		await assert.rejects(stages[0]!.__ensureSession());
+		assert.equal(reloads, 4, "cancellation must not release the active loaders");
+		assert.deepEqual(
+			snapshots.map((snapshot) => snapshot?.ownershipPending),
+			[true, true, true, true, false],
+			"only active reloads retain startup ownership after cancellation",
+		);
 		assert.equal(creates, 0);
 	} finally {
 		gate.resolve();
-		await Promise.all([firstFailure, secondFailure]);
+		await Promise.all(failures);
 		await new Promise((resolve) => setTimeout(resolve, 20));
-		await Promise.all([a.__dispose(), b.__dispose()]);
+		await Promise.all(stages.map((stage) => stage.__dispose()));
 	}
-	assert.equal(reloads, 1, "cancelled sibling must never enter reload even after the old owner settles");
+	assert.equal(reloads, 4, "cancelled sibling must never enter reload even after the old owners settle");
 	assert.equal(creates, 0, "cancelled resource preparation must not create an SDK session");
 });
 
@@ -215,7 +222,7 @@ test("slow startup reports every phase through first dispatch without restarting
 });
 
 // #3040: supported controls and the actual CLI detail renderer, not just an adapter callback.
-test("paused and quit startup stays observable; owner cancellation terminates stalled reviewer siblings", async () => {
+test("paused and quit startup stays observable; owner cancellation terminates stalled reviewer siblings (#3040, #3861)", async () => {
 	const gate = Promise.withResolvers<void>();
 	const entered = Promise.withResolvers<void>();
 	let reloads = 0;
@@ -270,7 +277,7 @@ test("paused and quit startup stays observable; owner cancellation terminates st
 		const before = store.runs().find((r) => r.id === runId)!;
 		assert.deepEqual(
 			before.stages.map((s) => s.startup?.phase),
-			["reload-active", "reload-queued"],
+			["reload-active", "reload-active"],
 		);
 		const detail = inspectRun(runId, deps);
 		assert.ok(detail.ok);
@@ -278,7 +285,7 @@ test("paused and quit startup stays observable; owner cancellation terminates st
 		// Startup diagnostics remain inspectable, but stage rows show only execution status/duration (#3129).
 		assert.deepEqual(
 			detail.detail.stages.map((stage) => stage.startup?.phase),
-			["reload-active", "reload-queued"],
+			["reload-active", "reload-active"],
 		);
 		assert.match(text, /reviewer-a\s+pending/);
 		assert.match(text, /reviewer-b\s+pending/);
@@ -286,7 +293,7 @@ test("paused and quit startup stays observable; owner cancellation terminates st
 		assert.equal((await pauseRun(runId, deps)).ok, true);
 		assert.equal(store.runs().find((r) => r.id === runId)?.status, "paused");
 		assert.equal((await resumeRun(runId, deps)).ok, true);
-		assert.equal(reloads, 1);
+		assert.equal(reloads, 2);
 		assert.equal((await quitRun(runId, deps)).ok, true);
 		assert.equal(store.runs().find((r) => r.id === runId)?.status, "paused");
 		owner.abort(new Error("owner stopped"));
@@ -295,7 +302,7 @@ test("paused and quit startup stays observable; owner cancellation terminates st
 		assert.equal(cancelled.status, "killed");
 		assert.ok(cancelled.stages.every((s) => s.startup?.state === "cancelled"));
 		assert.ok(cancelled.stages.every((s) => s.startup?.ownershipPending === true));
-		assert.equal(reloads, 1);
+		assert.equal(reloads, 2);
 	} finally {
 		owner.abort();
 		gate.resolve();
@@ -303,7 +310,7 @@ test("paused and quit startup stays observable; owner cancellation terminates st
 		await Promise.all(controls.forRun(runId).map((handle) => handle.dispose?.()));
 		await new Promise((resolve) => setTimeout(resolve, 20));
 	}
-	assert.equal(reloads, 1);
+	assert.equal(reloads, 2);
 	assert.ok(
 		store
 			.runs()
