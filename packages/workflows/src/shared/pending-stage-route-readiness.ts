@@ -8,13 +8,15 @@ export interface WorkflowPendingStageRouteReadiness {
 }
 
 type RouteReadiness = (runId: string) => Promise<void> | undefined;
-const owners = new WeakMap<
-	Store,
-	{
-		ready: (runId: string) => WorkflowPendingStageRouteReadiness | undefined;
-		retire: () => void;
-	}
->();
+interface RouteReadinessOwner {
+	ready: (runId: string) => WorkflowPendingStageRouteReadiness | undefined;
+	retire: () => void;
+}
+
+const routeOwnersKey = Symbol.for("atomic-workflows/pending-stage-route-owners@1");
+const processState = globalThis as typeof globalThis & Record<symbol, WeakMap<Store, RouteReadinessOwner> | undefined>;
+const owners = processState[routeOwnersKey] ?? new WeakMap<Store, RouteReadinessOwner>();
+processState[routeOwnersKey] = owners;
 
 /** Private bridge lease: replacement must settle old waiters, never lend them new authority. */
 export function registerWorkflowPendingStageRouteReadiness(store: Store, ready: RouteReadiness): () => void {
