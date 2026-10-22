@@ -807,9 +807,16 @@ jobs:
           done
           packages=(@bastani/atomic-natives-darwin-arm64 @bastani/atomic-natives-darwin-x64 @bastani/atomic-natives-linux-arm64-gnu @bastani/atomic-natives-linux-arm64-musl @bastani/atomic-natives-linux-x64-gnu @bastani/atomic-natives-linux-x64-musl @bastani/atomic-natives-win32-arm64-msvc @bastani/atomic-natives-win32-x64-msvc @bastani/atomic-natives @bastani/pi-ai @bastani/atomic-storage-libsql @bastani/atomic)
           [[ "${#tarballs[@]}" -eq "${#packages[@]}" ]] || { echo "Expected exactly twelve npm packages" >&2; exit 1; }
+          # A package name that has never been published has no npm trusted publisher yet, so an
+          # OIDC publish of it would fail the release. These names publish only once they exist.
+          requires_registered_name=(@bastani/atomic-storage-libsql)
           publish_package() {
             local name=$1
             [[ -n "${tarballs[$name]:-}" ]] || { echo "Missing package $name" >&2; return 1; }
+            if [[ " ${requires_registered_name[*]} " == *" $name "* ]] && ! npm view "$name" name --registry https://registry.npmjs.org >/dev/null 2>&1; then
+              echo "::warning::$name is not registered on npm yet; skipping it. Publish it once by hand and add the trusted publisher (see docs/ci.md)."
+              return 0
+            fi
             if npm view "$name@$VERSION" version --registry https://registry.npmjs.org >/dev/null 2>&1; then
               echo "$name@$VERSION already exists; skipping."
             else

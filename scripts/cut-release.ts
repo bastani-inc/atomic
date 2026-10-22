@@ -231,7 +231,15 @@ async function preflightNpmRegistration(
 			packages: publisher.packages,
 			isRegistered: createNpmRegistrationProbe(publisher.registry),
 			allowNew,
+			deferredUntilRegistered: publisher.deferredUntilRegistered,
 		});
+		if (registration.deferred.length > 0) {
+			console.log(
+				`npm: ${registration.deferred.length} package(s) not registered yet; publish.yml will skip them this release:`,
+			);
+			for (const name of registration.deferred) console.log(`  ~ ${name}`);
+			console.log("");
+		}
 		if (registration.unregistered.length > 0) {
 			console.log(`--allow-new: first publish for ${registration.unregistered.length} package(s):`);
 			for (const name of registration.unregistered) console.log(`  + ${name}`);
@@ -291,7 +299,7 @@ async function main(): Promise<void> {
 	const email =
 		(await $`git -C ${ROOT} config user.email`.nothrow().text()).trim() || "atomic-release@users.noreply.github.com";
 
-	const registered = registration.checked.length - registration.unregistered.length;
+	const registered = registration.checked.length - registration.unregistered.length - registration.deferred.length;
 	console.log(`Cutting release ${version}`);
 	console.log(`  base:   ${baseRef} (${baseSha.slice(0, 9)})`);
 	console.log(

@@ -47,6 +47,7 @@ export const PUBLISHER_NPM_REGISTRY = "https://registry.npmjs.org";
 export const RELEASE_PAYLOAD_PACKAGE_COUNT = 12;
 
 const PACKAGES_ARRAY_RE = /^[ \t]*packages=\(([^)]*)\)[ \t]*$/gmu;
+const DEFERRED_ARRAY_RE = /^[ \t]*requires_registered_name=\(([^)]*)\)[ \t]*$/gmu;
 const PACKAGE_NAME_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u;
 const REGISTRY_FLAG_RE = /--registry[= \t]+([^\s"'|;&]+)/gu;
 
@@ -64,6 +65,8 @@ export type NpmRegistrationProbe = (packageName: string) => Promise<boolean>;
 export interface ReleasePublisher {
 	readonly packages: readonly string[];
 	readonly registry: string;
+	/** Payload names `publish.yml` skips, with a warning, until they exist on npm. */
+	readonly deferredUntilRegistered: readonly string[];
 }
 
 export interface RegistrationPreflightOptions {
@@ -72,12 +75,16 @@ export interface RegistrationPreflightOptions {
 	readonly isRegistered: NpmRegistrationProbe;
 	/** Permit names npm has never seen — a deliberate first publish. */
 	readonly allowNew: boolean;
+	/** Names the publisher skips until registered; unregistered ones are reported, not refused. */
+	readonly deferredUntilRegistered?: readonly string[];
 }
 
 export interface RegistrationPreflightResult {
 	readonly checked: readonly string[];
 	/** Names npm has never seen. Non-empty only when `allowNew` was passed. */
 	readonly unregistered: readonly string[];
+	/** Unregistered names the publisher will skip this release. */
+	readonly deferred: readonly string[];
 }
 
 /** Extract the publish payload from `publish.yml`'s `packages=(…)` array. */
@@ -102,6 +109,33 @@ export function parseReleasePayloadPackages(workflowSource: string): string[] {
 		throw new Error(
 			`${PUBLISH_WORKFLOW_PATH} declares duplicate publish payload packages: ${duplicates.join(", ")}.`,
 		);
+	}
+	return names;
+}
+
+/**
+ * Extract the names `publish.yml` publishes only once they exist on npm.
+ *
+ * A name npm has never seen has no trusted publisher, so publishing it from the
+ * workflow would fail the release. The publisher lists such names in a
+ * `requires_registered_name=(…)` array and skips them with a warning until a
+ * maintainer has published them once; the preflight reads the same array so it
+ * does not refuse a release the publisher would complete.
+ */
+export function parseDeferredUntilRegistered(workflowSource: string, payload: readonly string[]): string[] {
+	const matches = [...workflowSource.matchAll(DEFERRED_ARRAY_RE)];
+	if (matches.length > 1) {
+		throw new Error(
+			`${PUBLISH_WORKFLOW_PATH} must declare at most one \`requires_registered_name=(…)\` array; found ${matches.length}.`,
+		);
+	}
+	const names = (matches[0]?.[1] ?? "").split(/\s+/u).filter((name) => name.length > 0);
+	for (const name of names) {
+		if (!payload.includes(name)) {
+			throw new Error(
+				`${PUBLISH_WORKFLOW_PATH} defers "${name}" until it is registered, but it is not in the publish payload.`,
+			);
+		}
 	}
 	return names;
 }
@@ -145,9 +179,11 @@ export function parsePublisherNpmRegistry(workflowSource: string): string {
 
 /** Read both halves of the publisher's contract out of one `publish.yml` source. */
 export function parseReleasePublisher(workflowSource: string): ReleasePublisher {
+	const packages = parseReleasePayloadPackages(workflowSource);
 	return {
-		packages: parseReleasePayloadPackages(workflowSource),
+		packages,
 		registry: parsePublisherNpmRegistry(workflowSource),
+		deferredUntilRegistered: parseDeferredUntilRegistered(workflowSource, packages),
 	};
 }
 
@@ -224,14 +260,17 @@ export async function verifyReleasePackagesRegistered(
 		packages.map(async (name) => ({ name, registered: await options.isRegistered(name) })),
 	);
 
+	const deferrable = new Set(options.deferredUntilRegistered ?? []);
 	const indeterminate: string[] = [];
 	const unregistered: string[] = [];
+	const deferred: string[] = [];
 	for (const [index, outcome] of outcomes.entries()) {
 		if (outcome.status === "rejected") {
 			const reason = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
 			indeterminate.push(`  - ${packages[index]}: ${reason}`);
 		} else if (!outcome.value.registered) {
-			unregistered.push(outcome.value.name);
+			if (deferrable.has(outcome.value.name)) deferred.push(outcome.value.name);
+			else unregistered.push(outcome.value.name);
 		}
 	}
 
@@ -245,5 +284,5 @@ export async function verifyReleasePackagesRegistered(
 	if (unregistered.length > 0 && !options.allowNew) {
 		throw new Error(describeUnregisteredPackages(unregistered, packages.length));
 	}
-	return { checked: packages, unregistered };
+	return { checked: packages, unregistered, deferred };
 }

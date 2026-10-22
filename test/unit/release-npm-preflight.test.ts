@@ -7,6 +7,7 @@ import {
 	describeUnregisteredPackages,
 	PUBLISH_WORKFLOW_PATH,
 	PUBLISHER_NPM_REGISTRY,
+	parseDeferredUntilRegistered,
 	parsePublisherNpmRegistry,
 	parseReleasePayloadPackages,
 	parseReleasePublisher,
@@ -104,6 +105,7 @@ describe("scripts/release-npm-preflight.ts", () => {
 		assert.deepEqual(parseReleasePublisher(publishes(["@bastani/atomic"], "http://127.0.0.1:4873/")), {
 			packages: ["@bastani/atomic"],
 			registry: "http://127.0.0.1:4873/",
+			deferredUntilRegistered: [],
 		});
 	});
 
@@ -250,5 +252,53 @@ describe("scripts/release-npm-preflight.ts", () => {
 
 	test("one missing package reads as singular", () => {
 		assert.match(describeUnregisteredPackages(["@bastani/atomic"], 10), /1 of 10 publish-payload packages is not/u);
+	});
+
+	test("the libSQL adapter is published only once its npm name exists, so an unregistered name cannot break a release (#3857)", async () => {
+		const publisher = parseReleasePublisher(publishWorkflow);
+		assert.deepEqual(publisher.deferredUntilRegistered, ["@bastani/atomic-storage-libsql"]);
+
+		const registered = new Set(publisher.packages);
+		registered.delete("@bastani/atomic-storage-libsql");
+		const result = await verifyReleasePackagesRegistered({
+			packages: publisher.packages,
+			isRegistered: probeFrom(registered).isRegistered,
+			allowNew: false,
+			deferredUntilRegistered: publisher.deferredUntilRegistered,
+		});
+		assert.deepEqual(result.unregistered, []);
+		assert.deepEqual(result.deferred, ["@bastani/atomic-storage-libsql"]);
+	});
+
+	test("a deferred name that is registered publishes like any other package (#3857)", async () => {
+		const publisher = parseReleasePublisher(publishWorkflow);
+		const result = await verifyReleasePackagesRegistered({
+			packages: publisher.packages,
+			isRegistered: probeFrom(new Set(publisher.packages)).isRegistered,
+			allowNew: false,
+			deferredUntilRegistered: publisher.deferredUntilRegistered,
+		});
+		assert.deepEqual(result.deferred, []);
+		assert.deepEqual(result.unregistered, []);
+	});
+
+	test("deferral covers only the names the publisher lists (#3857)", async () => {
+		await assert.rejects(
+			verifyReleasePackagesRegistered({
+				packages: ["@bastani/atomic", "@bastani/atomic-storage-libsql"],
+				isRegistered: async () => false,
+				allowNew: false,
+				deferredUntilRegistered: ["@bastani/atomic-storage-libsql"],
+			}),
+			/1 of 2 publish-payload packages is not registered on npm:\n {2}- @bastani\/atomic\n/u,
+		);
+	});
+
+	test("a deferred name must be part of the publish payload, and only one deferral array is allowed (#3857)", () => {
+		const source = `${payload(["@bastani/atomic"])}          requires_registered_name=(@bastani/other)\n`;
+		assert.throws(() => parseDeferredUntilRegistered(source, ["@bastani/atomic"]), /not in the publish payload/u);
+		const twice = `          requires_registered_name=(@bastani/atomic)\n          requires_registered_name=(@bastani/atomic)\n`;
+		assert.throws(() => parseDeferredUntilRegistered(twice, ["@bastani/atomic"]), /at most one/u);
+		assert.deepEqual(parseDeferredUntilRegistered(payload(["@bastani/atomic"]), ["@bastani/atomic"]), []);
 	});
 });

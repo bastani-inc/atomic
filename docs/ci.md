@@ -405,7 +405,7 @@ The tag push is the publication signal. Do not bump package versions directly on
 
 Before it touches anything, `scripts/cut-release.ts` asks npm whether every package the publisher publishes already exists. Both halves of the question come from `.github/workflows/publish.yml`, read out of the **release base commit** the cut is about to tag rather than out of the caller's checkout — `--base` names another branch as often as not, and that branch's workflow is the one that will publish. The payload is the `packages=(…)` array, and the registry is the `--registry` the publisher pins on its own npm commands (`https://registry.npmjs.org`). npm's `npm_config_registry` is deliberately ignored: a mirror answering "yes" for a name that does not exist on npmjs would clear a check whose whole job is to predict the publish.
 
-An unregistered name aborts the cut with nothing to unwind — no prune, no worktree, no version stamp, no tag. `publish.yml`'s own `npm view` call is an idempotency check that runs after the binaries are built, so without this preflight a name npm has never seen fails at the very end of a release.
+An unregistered name aborts the cut with nothing to unwind — no prune, no worktree, no version stamp, no tag. The exception is a name in the publisher's `requires_registered_name=(…)` array: the cut lists it as skipped for this release, because `publish.yml` will not try to publish it until it is registered (see [Registering a new package name](#registering-a-new-package-name)). `publish.yml`'s own `npm view` call is an idempotency check that runs after the binaries are built, so without this preflight a name npm has never seen fails at the very end of a release.
 
 A genuine first publish is still possible, but only deliberately:
 
@@ -687,12 +687,14 @@ That order publishes native leaves first, then the native root, then `@bastani/p
 
 ### Registering a new package name
 
-A package name that npm has never seen cannot use trusted publishing, and the [registration preflight](#npm-registration-preflight) refuses to cut a release that includes one. Before the first release that carries `@bastani/atomic-storage-libsql`, a maintainer has to do this outside the repository:
+A package name that npm has never seen cannot use trusted publishing. `publish.yml` lists such names in its `requires_registered_name=(…)` array, currently only `@bastani/atomic-storage-libsql`, and skips them with a workflow warning until the name exists on npm, so a release never fails on them. The [registration preflight](#npm-registration-preflight) reads the same array and reports these names as skipped instead of refusing the cut. Every other payload name still has to be registered.
+
+To start publishing `@bastani/atomic-storage-libsql`, a maintainer does this once, outside the repository:
 
 1. Publish a first version of the package by hand from a maintainer account (`npm publish --access public` from the package directory, with the default `latest` dist-tag). Alpha releases publish to `next`, and the install commands in the user docs, such as `atomic install npm:@bastani/atomic-storage-libsql`, resolve `latest`.
 2. In the package's npm settings, add a trusted publisher for repository `bastani-inc/atomic`, workflow filename `publish.yml`, and environment `npm-publish`.
 
-If a release runs before both are done, the cut stops at the preflight (name not registered) or `publish-npm` fails at that package (trusted publisher missing), in either case before `@bastani/atomic` is published. A re-dispatch after the setup skips every version that already published.
+From the next release on, `publish.yml` publishes it with the rest of the payload. If step 2 is missing, `publish-npm` fails at that package before `@bastani/atomic` is published, and a re-dispatch after the setup skips every version that already published.
 
 ## Published-version registration
 
