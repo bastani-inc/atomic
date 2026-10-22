@@ -49,8 +49,16 @@ test("POSIX installer has valid sh syntax and declares the archive install contr
 
 	const source = readFileSync(installerPath, "utf8");
 	assert.ok(source.startsWith("#!/bin/sh\n"));
-	for (const option of ["--ref <tag>", "--ref=<tag>", "-r <tag>", "--help"]) assert.ok(source.includes(option));
-	for (const variable of ["ATOMIC_INSTALL_DIR", "ATOMIC_BIN_DIR", "ATOMIC_VERSION", "GITHUB_TOKEN", "GH_TOKEN"])
+	for (const option of ["--ref <tag>", "--ref=<tag>", "-r <tag>", "--force", "--help"])
+		assert.ok(source.includes(option));
+	for (const variable of [
+		"ATOMIC_INSTALL_DIR",
+		"ATOMIC_BIN_DIR",
+		"ATOMIC_VERSION",
+		"ATOMIC_FORCE_INSTALL",
+		"GITHUB_TOKEN",
+		"GH_TOKEN",
+	])
 		assert.ok(source.includes(variable));
 	for (const asset of unixAssets) assert.equal(source.split(asset).length - 1, 1, asset);
 	for (const tool of ["curl", "wget", "sha256sum", "shasum", "openssl"])
@@ -706,35 +714,299 @@ unixTest("shell installer follows the stable redirect, installs the full tar pay
 	}
 });
 
-unixTest("shell installer reports the installed version on reinstall and upgrade, and fish gets fish_add_path", () => {
+function requestsSince(fixture: InstallerFixture, offset: number): string {
+	return readFileSync(fixture.requestLog, "utf8").slice(offset);
+}
+
+function requestLogLength(fixture: InstallerFixture): number {
+	return readFileSync(fixture.requestLog, "utf8").length;
+}
+
+function assertNoArtifactRequests(requests: string): void {
+	assert.doesNotMatch(requests, /releases\/download|SHA256SUMS|fake-releases|\.tar\.gz/u, requests);
+}
+
+function versionDirectory(fixture: InstallerFixture, tag: string): string {
+	return join(fixture.installRoot, "versions", tag);
+}
+
+function skipMessage(tag: string): string {
+	return `atomic ${tag} is already installed; skipping download (use --force to reinstall)`;
+}
+
+function markVersionDirectory(fixture: InstallerFixture, tag: string): string {
+	const sentinel = join(versionDirectory(fixture, tag), "sentinel.txt");
+	writeFileSync(sentinel, "survives a skipped rerun only");
+	return sentinel;
+}
+
+function assertSkipped(fixture: InstallerFixture, result: ReturnType<typeof spawnSyncCollect>, tag: string): void {
+	assertSuccess(result);
+	assertPlain(result.stdout.toString());
+	assert.equal(result.stderr.toString(), "");
+	assert.equal(
+		result.stdout.toString().split("\n").slice(0, 3).join("\n"),
+		[
+			`Installing atomic version: ${tag} (linux-x64)`,
+			skipMessage(tag),
+			`Installed to ${join(fixture.binDir, "atomic")}`,
+		].join("\n"),
+	);
+	assert.doesNotMatch(result.stdout.toString(), /Downloading|Verified SHA256/u);
+	assertNoTemporaryState(fixture);
+}
+
+function assertReinstalled(fixture: InstallerFixture, result: ReturnType<typeof spawnSyncCollect>, tag: string): void {
+	assertSuccess(result);
+	assert.doesNotMatch(result.stdout.toString(), /skipping download/u);
+	assert.match(result.stdout.toString(), /\nDownloading atomic-linux-x64\.tar\.gz /u);
+	assert.match(result.stdout.toString(), /\nVerified SHA256, extracted, and checked atomic --version\n/u);
+	assert.equal(currentVersion(fixture), tag);
+	assert.ok(existsSync(join(fixture.installRoot, "current", "atomic")));
+	assert.equal(
+		realpathSync(join(fixture.binDir, "atomic")),
+		realpathSync(join(fixture.installRoot, "current", "atomic")),
+	);
+	assertNoTemporaryState(fixture);
+}
+
+unixTest(
+	"shell installer skips the download when the requested version is already installed, and upgrades otherwise",
+	() => {
+		const fixture = createFixture();
+		try {
+			const first = fixture.run({ args: ["--ref", "1.0.0"] });
+			assertSuccess(first);
+			assert.doesNotMatch(first.stdout.toString(), /Installed version|already installed/u);
+
+			const sentinel = markVersionDirectory(fixture, "1.0.0");
+			const launcherTarget = readlinkSync(join(fixture.binDir, "atomic"));
+			const currentTarget = readlinkSync(join(fixture.installRoot, "current"));
+			const offset = requestLogLength(fixture);
+
+			const rerun = fixture.run({ args: ["--ref", "1.0.0"] });
+			assertSkipped(fixture, rerun, "1.0.0");
+			assert.equal(
+				rerun.stdout.toString(),
+				[
+					"Installing atomic version: 1.0.0 (linux-x64)",
+					skipMessage("1.0.0"),
+					`Installed to ${join(fixture.binDir, "atomic")}`,
+					`Add ${fixture.binDir} to PATH for this shell:`,
+					`  export PATH='${fixture.binDir}':"$PATH"`,
+					"For more information visit https://docs.bastani.ai/quickstart",
+					"",
+				].join("\n"),
+			);
+			assert.ok(existsSync(sentinel), "a skipped rerun must leave the installed version directory untouched");
+			assert.equal(readlinkSync(join(fixture.binDir, "atomic")), launcherTarget);
+			assert.equal(readlinkSync(join(fixture.installRoot, "current")), currentTarget);
+			const requests = requestsSince(fixture, offset);
+			assert.match(
+				requests,
+				/GET https:\/\/api\.github\.com\/repos\/bastani-inc\/atomic\/releases\/tags\/1\.0\.0\n/u,
+			);
+			assertNoArtifactRequests(requests);
+
+			const upgrade = fixture.run({ args: ["--ref", "2.0.0"], environment: { SHELL: "/usr/local/bin/fish" } });
+			assertSuccess(upgrade);
+			assertPlain(upgrade.stdout.toString());
+			assert.match(
+				upgrade.stdout.toString(),
+				/^Installing atomic version: 2\.0\.0 \(linux-x64\)\nInstalled version: 1\.0\.0\nDownloading /u,
+			);
+			assert.doesNotMatch(upgrade.stdout.toString(), /already installed/u);
+			assert.equal(currentVersion(fixture), "2.0.0");
+			const fishHint = `Add ${fixture.binDir} to PATH for this shell:\n  fish_add_path '${fixture.binDir}'\n`;
+			assert.ok(upgrade.stdout.toString().includes(fishHint), upgrade.stdout.toString());
+			assert.doesNotMatch(upgrade.stdout.toString(), /export PATH=/u);
+			assertNoTemporaryState(fixture);
+		} finally {
+			fixture.cleanup();
+		}
+	},
+);
+
+unixTest("shell installer skips the download when the latest release is already installed", () => {
+	for (const downloader of ["curl", "wget"] as const) {
+		const fixture = createFixture();
+		try {
+			assertSuccess(fixture.run({ downloader }));
+			assert.equal(currentVersion(fixture), "2.0.0");
+			const sentinel = markVersionDirectory(fixture, "2.0.0");
+			const offset = requestLogLength(fixture);
+
+			const rerun = fixture.run({ downloader });
+			assertSkipped(fixture, rerun, "2.0.0");
+			assert.ok(existsSync(sentinel));
+			const requests = requestsSince(fixture, offset);
+			assert.match(requests, /(?:GET|HEAD) https:\/\/github\.com\/bastani-inc\/atomic\/releases\/latest\n/u);
+			assertNoArtifactRequests(requests);
+
+			assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+			const upgradeToLatest = fixture.run({ downloader });
+			assertSuccess(upgradeToLatest);
+			assert.match(upgradeToLatest.stdout.toString(), /\nInstalled version: 1\.0\.0\nDownloading /u);
+			assert.equal(currentVersion(fixture), "2.0.0");
+		} finally {
+			fixture.cleanup();
+		}
+	}
+});
+
+unixTest("shell installer skips without touching the release base override or executing the installed binary", () => {
 	const fixture = createFixture();
 	try {
-		const first = fixture.run({ args: ["--ref", "1.0.0"] });
-		assertSuccess(first);
-		assert.doesNotMatch(first.stdout.toString(), /Installed version|already installed/u);
-
-		const reinstall = fixture.run({ args: ["--ref", "1.0.0"] });
-		assertSuccess(reinstall);
-		assertPlain(reinstall.stdout.toString());
-		assert.match(
-			reinstall.stdout.toString(),
-			/^Installing atomic version: 1\.0\.0 \(linux-x64\)\nVersion 1\.0\.0 already installed\nDownloading /u,
-			"a same-version run reports the installed version and still repairs the install",
+		assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+		const executionMarker = join(fixture.workspace, "installed-atomic-ran");
+		writeExecutable(
+			join(versionDirectory(fixture, "1.0.0"), "atomic"),
+			`#!/bin/sh\n: > '${executionMarker}'\nprintf '%s\\n' 1.0.0\n`,
 		);
-		assert.equal(currentVersion(fixture), "1.0.0");
+		const offset = requestLogLength(fixture);
 
-		const upgrade = fixture.run({ args: ["--ref", "2.0.0"], environment: { SHELL: "/usr/local/bin/fish" } });
-		assertSuccess(upgrade);
-		assertPlain(upgrade.stdout.toString());
+		const rerun = fixture.run({
+			args: ["--ref", "1.0.0"],
+			environment: { ATOMIC_RELEASE_BASE_URL: overrideReleaseBase },
+		});
+		assertSkipped(fixture, rerun, "1.0.0");
+		assert.equal(existsSync(executionMarker), false, "the installer must not execute the installed binary to skip");
+		assertNoArtifactRequests(requestsSince(fixture, offset));
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+unixTest("shell installer omits the PATH hint on a skipped rerun only when the launcher directory is on PATH", () => {
+	const fixture = createFixture();
+	try {
+		assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+		const withBinDirOnPath = fixture.run({ args: ["--ref", "1.0.0"], pathEntries: [fixture.binDir] });
+		assertSkipped(fixture, withBinDirOnPath, "1.0.0");
+		assert.doesNotMatch(withBinDirOnPath.stdout.toString(), /to PATH for this shell/u);
 		assert.match(
-			upgrade.stdout.toString(),
-			/^Installing atomic version: 2\.0\.0 \(linux-x64\)\nInstalled version: 1\.0\.0\nDownloading /u,
+			withBinDirOnPath.stdout.toString(),
+			/\nFor more information visit https:\/\/docs\.bastani\.ai\/quickstart\n$/u,
 		);
-		assert.equal(currentVersion(fixture), "2.0.0");
-		const fishHint = `Add ${fixture.binDir} to PATH for this shell:\n  fish_add_path '${fixture.binDir}'\n`;
-		assert.ok(upgrade.stdout.toString().includes(fishHint), upgrade.stdout.toString());
-		assert.doesNotMatch(upgrade.stdout.toString(), /export PATH=/u);
-		assertNoTemporaryState(fixture);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+const brokenInstalls: readonly { label: string; break: (fixture: InstallerFixture) => void }[] = [
+	{ label: "a removed launcher", break: (fixture) => rmSync(join(fixture.binDir, "atomic")) },
+	{
+		label: "a launcher pointing at another file",
+		break: (fixture) => {
+			const otherLauncher = join(fixture.workspace, "other-atomic");
+			writeExecutable(otherLauncher, "#!/bin/sh\nprintf '%s\\n' 1.0.0\n");
+			rmSync(join(fixture.binDir, "atomic"));
+			symlinkSync(otherLauncher, join(fixture.binDir, "atomic"));
+		},
+	},
+	{
+		label: "a launcher that is a regular file",
+		break: (fixture) => {
+			rmSync(join(fixture.binDir, "atomic"));
+			writeExecutable(join(fixture.binDir, "atomic"), "#!/bin/sh\nexit 0\n");
+		},
+	},
+	{
+		label: "a removed version directory",
+		break: (fixture) => rmSync(versionDirectory(fixture, "1.0.0"), { recursive: true }),
+	},
+	{
+		label: "a non-executable payload",
+		break: (fixture) => chmodSync(join(versionDirectory(fixture, "1.0.0"), "atomic"), 0o644),
+	},
+	{
+		label: "a missing payload binary",
+		break: (fixture) => rmSync(join(versionDirectory(fixture, "1.0.0"), "atomic")),
+	},
+	{ label: "a removed current pointer", break: (fixture) => rmSync(join(fixture.installRoot, "current")) },
+];
+
+unixTest("shell installer repairs an unhealthy install of the same version instead of skipping", () => {
+	for (const broken of brokenInstalls) {
+		const fixture = createFixture();
+		try {
+			assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+			broken.break(fixture);
+
+			const repair = fixture.run({ args: ["--ref", "1.0.0"] });
+			assertReinstalled(fixture, repair, "1.0.0");
+			assert.equal(
+				spawnSyncCollect([join(fixture.binDir, "atomic"), "--version"])
+					.stdout.toString()
+					.trim(),
+				"1.0.0",
+				broken.label,
+			);
+
+			const settled = fixture.run({ args: ["--ref", "1.0.0"] });
+			assertSkipped(fixture, settled, "1.0.0");
+		} catch (error) {
+			throw new Error(`${broken.label}: ${error instanceof Error ? error.message : String(error)}`, {
+				cause: error,
+			});
+		} finally {
+			fixture.cleanup();
+		}
+	}
+});
+
+unixTest("shell installer reinstalls a healthy install when --force or ATOMIC_FORCE_INSTALL=1 is set", () => {
+	const forcing: readonly { label: string; options: RunOptions }[] = [
+		{ label: "--force", options: { args: ["--ref", "1.0.0", "--force"] } },
+		{ label: "--force before --ref", options: { args: ["--force", "--ref", "1.0.0"] } },
+		{
+			label: "ATOMIC_FORCE_INSTALL=1",
+			options: { args: ["--ref", "1.0.0"], environment: { ATOMIC_FORCE_INSTALL: "1" } },
+		},
+	];
+	for (const { label, options } of forcing) {
+		const fixture = createFixture();
+		try {
+			assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+			const sentinel = markVersionDirectory(fixture, "1.0.0");
+
+			const forced = fixture.run(options);
+			assertReinstalled(fixture, forced, "1.0.0");
+			assert.match(
+				forced.stdout.toString(),
+				/^Installing atomic version: 1\.0\.0 \(linux-x64\)\nVersion 1\.0\.0 already installed\nDownloading /u,
+				label,
+			);
+			assert.equal(existsSync(sentinel), false, `${label} must replace the installed version directory`);
+		} finally {
+			fixture.cleanup();
+		}
+	}
+
+	const fixture = createFixture();
+	try {
+		assertSuccess(fixture.run({ downloader: "wget" }));
+		const forcedLatest = fixture.run({ downloader: "wget", environment: { ATOMIC_FORCE_INSTALL: "1" } });
+		assertReinstalled(fixture, forcedLatest, "2.0.0");
+		const notForced = fixture.run({ environment: { ATOMIC_FORCE_INSTALL: "0" } });
+		assertSkipped(fixture, notForced, "2.0.0");
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+unixTest("shell installer documents --force and ATOMIC_FORCE_INSTALL in --help", () => {
+	const fixture = createFixture();
+	try {
+		const help = fixture.run({ args: ["--help"] });
+		assertSuccess(help);
+		assert.match(
+			help.stdout.toString(),
+			/install\.sh \[--ref <tag> \| --ref=<tag> \| -r <tag>\] \[--force\] \[--help\]/u,
+		);
+		assert.match(help.stdout.toString(), /^ {2}--force +Reinstall even when .*already installed.*\.$/mu);
+		assert.match(help.stdout.toString(), /^ {2}ATOMIC_FORCE_INSTALL\s+Set to 1 to behave like --force\./mu);
+		assert.equal(readFileSync(fixture.requestLog, "utf8"), "");
 	} finally {
 		fixture.cleanup();
 	}
@@ -1569,34 +1841,42 @@ unixTest("checksum and archive failures preserve an existing install and clean t
 	}
 });
 
-unixTest("same-version reinstall and upgrade are clean, idempotent, and roll back a final launcher failure", () => {
-	const fixture = createFixture();
-	try {
-		assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
-		const versionOne = join(fixture.installRoot, "versions", "1.0.0");
-		writeFileSync(join(versionOne, "stale.txt"), "stale");
-		assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
-		assert.ok(!existsSync(join(versionOne, "stale.txt")));
-		assert.equal(currentVersion(fixture), "1.0.0");
+unixTest(
+	"forced same-version reinstall and upgrade are clean, idempotent, and roll back a final launcher failure",
+	() => {
+		const fixture = createFixture();
+		try {
+			assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+			const versionOne = join(fixture.installRoot, "versions", "1.0.0");
+			writeFileSync(join(versionOne, "stale.txt"), "stale");
+			assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+			assert.ok(
+				existsSync(join(versionOne, "stale.txt")),
+				"an unforced same-version rerun leaves the install alone",
+			);
+			assertSuccess(fixture.run({ args: ["--ref", "1.0.0", "--force"] }));
+			assert.ok(!existsSync(join(versionOne, "stale.txt")));
+			assert.equal(currentVersion(fixture), "1.0.0");
 
-		const failed = fixture.run({
-			args: ["--ref", "2.0.0"],
-			environment: { ATOMIC_FIXTURE_FAIL_FINAL_VERSION: "2.0.0" },
-		});
-		assert.notEqual(failed.exitCode, 0);
-		assert.match(output(failed), /installed atomic --version check failed/u);
-		assert.equal(currentVersion(fixture), "1.0.0");
-		assert.ok(existsSync(join(versionOne, "atomic")));
-		assert.ok(!existsSync(join(fixture.installRoot, "versions", "2.0.0")));
+			const failed = fixture.run({
+				args: ["--ref", "2.0.0"],
+				environment: { ATOMIC_FIXTURE_FAIL_FINAL_VERSION: "2.0.0" },
+			});
+			assert.notEqual(failed.exitCode, 0);
+			assert.match(output(failed), /installed atomic --version check failed/u);
+			assert.equal(currentVersion(fixture), "1.0.0");
+			assert.ok(existsSync(join(versionOne, "atomic")));
+			assert.ok(!existsSync(join(fixture.installRoot, "versions", "2.0.0")));
 
-		assertSuccess(fixture.run({ args: ["--ref", "2.0.0"] }));
-		assert.equal(currentVersion(fixture), "2.0.0");
-		assert.ok(existsSync(join(versionOne, "atomic")), "upgrade should retain older versions");
-		assertNoTemporaryState(fixture);
-	} finally {
-		fixture.cleanup();
-	}
-});
+			assertSuccess(fixture.run({ args: ["--ref", "2.0.0"] }));
+			assert.equal(currentVersion(fixture), "2.0.0");
+			assert.ok(existsSync(join(versionOne, "atomic")), "upgrade should retain older versions");
+			assertNoTemporaryState(fixture);
+		} finally {
+			fixture.cleanup();
+		}
+	},
+);
 
 unixTest("POSIX rollback retries launcher restores and reports retained recovery backups", () => {
 	const retryFixture = createFixture();
@@ -1686,7 +1966,7 @@ unixTest("catchable signals after transaction moves restore the complete previou
 			const versionOne = join(fixture.installRoot, "versions", "1.0.0");
 			writeFileSync(join(versionOne, "preserve.txt"), `${move}-${signal}`);
 			const interrupted = fixture.run({
-				args: ["--ref", "1.0.0"],
+				args: ["--ref", "1.0.0", "--force"],
 				environment: {
 					ATOMIC_FIXTURE_SIGNAL: signal,
 					ATOMIC_FIXTURE_SIGNAL_AFTER_MOVE: move,

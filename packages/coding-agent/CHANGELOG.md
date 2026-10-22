@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `install.sh` and `install.ps1` no longer re-download Atomic when the requested release (or the latest release, when none is requested) is already installed and healthy. They print `atomic <tag> is already installed; skipping download`, keep the `Installed to` line and PATH guidance, and download nothing; on Windows a rerun also restores a missing User PATH entry. A different version, or a missing or broken launcher, `current` pointer, shim, or payload, installs and repairs as before. Pass `--force` (`-Force` on Windows) or set `ATOMIC_FORCE_INSTALL=1` to reinstall anyway.
+
 ## [0.9.41-alpha.2] - 2026-10-22
 
 Workflows that drop a promise stop crashing Atomic, and classifiers can read images.

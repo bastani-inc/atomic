@@ -16,7 +16,7 @@ This path does not require Node.js or a package manager. To pin an exact release
 
 The installer verifies `SHA256SUMS` before changing an existing install. By default, it stores versioned payloads under `%LOCALAPPDATA%\atomic` and places an ASCII-only `atomic.cmd` plus an `atomic-current` junction in `%LOCALAPPDATA%\atomic\bin`. The relative shim supports Unicode install paths and a bin directory elsewhere.
 
-Set `ATOMIC_INSTALL_DIR`, `ATOMIC_BIN_DIR`, or `ATOMIC_VERSION` to override those values. `GITHUB_TOKEN` or `GH_TOKEN` is optional for higher GitHub API limits. Exact pins use Atomic's `MAJOR.MINOR.PATCH` or `MAJOR.MINOR.PATCH-alpha.REVISION` release tag form.
+Set `ATOMIC_INSTALL_DIR`, `ATOMIC_BIN_DIR`, or `ATOMIC_VERSION` to override those values. Rerunning the installer when that release is already installed and healthy skips the download and only restores a missing User PATH entry; pass `-Force` or set `ATOMIC_FORCE_INSTALL=1` to reinstall anyway. A missing or mismatched `atomic.cmd` shim or `atomic-current` junction counts as unhealthy and is repaired by a normal rerun. `GITHUB_TOKEN` or `GH_TOKEN` is optional for higher GitHub API limits. Exact pins use Atomic's `MAJOR.MINOR.PATCH` or `MAJOR.MINOR.PATCH-alpha.REVISION` release tag form.
 
 The installer removes its `atomic-install-*` staging directory before finishing. If cleanup fails, it reports the path and Windows error. An installation failure remains the primary error; incomplete cleanup appears as a warning.
 

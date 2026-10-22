@@ -56,7 +56,7 @@ irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
 
 The installer downloads only the matching GitHub Release archive and `SHA256SUMS`, verifies the checksum, and keeps the complete payload in a versioned directory.
 
-In an interactive terminal it prints the release and platform it is installing, draws a live progress bar with the percentage and megabytes downloaded, confirms each phase on one line, shows the Atomic logo (UTF-8 terminals on macOS/Linux, Windows Terminal on Windows), and ends with a `To start:` block. PATH guidance appears only when the launcher directory is not already on your `PATH`. When an install already exists it prints the installed version, or `Version <tag> already installed`, and still repairs that version in place.
+In an interactive terminal it prints the release and platform it is installing, draws a live progress bar with the percentage and megabytes downloaded, confirms each phase on one line, shows the Atomic logo (UTF-8 terminals on macOS/Linux, Windows Terminal on Windows), and ends with a `To start:` block. PATH guidance appears only when the launcher directory is not already on your `PATH`. When a different version is installed it prints `Installed version: <tag>` before upgrading.
 
 Set `NO_COLOR=1` for plain text instead: no colours, no progress bar, and no logo, with `Downloading <archive> (<size> MB) ... done` in place of the bar. The installer also switches to plain output on its own when standard output is not a terminal, when `CI` is set, or (on macOS/Linux) when `TERM` is `dumb` or unset. Plain mode changes only the presentation; verification, error messages, and exit codes stay the same.
 
@@ -81,6 +81,24 @@ On Windows PowerShell:
 ```
 
 Pins use Atomic's `MAJOR.MINOR.PATCH` or `MAJOR.MINOR.PATCH-alpha.REVISION` release tag form and are honored literally: if GitHub answers with a different release tag, the installer stops before downloading anything rather than installing a version you did not ask for.
+
+#### Rerunning the installer
+
+If the release you ask for (or the latest release, when you pin nothing) is already installed and healthy, the installer prints `atomic <tag> is already installed; skipping download (use --force to reinstall)` and stops there. It still looks up the release tag and prints `Installed to <path>` and any PATH guidance, but it downloads nothing and leaves the installed files alone. On Windows it also adds the bin directory to your User PATH if it went missing.
+
+An install counts as healthy when `current` points at that release's version directory and the launcher resolves to it. On macOS/Linux that means the launcher link resolves to an executable `current/atomic`; the installer never runs the installed binary to decide. On Windows it means `current\atomic.exe --version` reports the release and the `atomic.cmd` shim and `atomic-current` junction match what the installer creates. A different version, or a missing or broken launcher or payload, installs exactly as before and repairs the install.
+
+To reinstall a healthy install anyway, pass `--force` on macOS/Linux or `-Force` on Windows, or set `ATOMIC_FORCE_INSTALL=1`. The environment variable works with `curl ... | sh` and `irm ... | iex`, where you cannot pass a flag:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | sh -s -- --force
+curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | ATOMIC_FORCE_INSTALL=1 sh
+```
+
+```powershell
+$env:ATOMIC_FORCE_INSTALL = "1"; irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1))) -Force
+```
 
 #### ATOMIC_INSTALL_DIR
 
