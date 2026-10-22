@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.41-alpha.3] - 2026-10-22
+
 ### Added
 
 - Added `Usage.cost.totalFromProvider`. It is `true` when `cost.total` is the billed cost reported by the provider and `false` when the total is estimated from the model's catalog rates, as `calculateCost()` and the image generators now record. A missing value, as in sessions recorded before this field existed, means `false`.
