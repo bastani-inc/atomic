@@ -7,7 +7,7 @@ This document covers setup, the local dev loop, testing patterns, and project la
 ## Prerequisites
 
 - **[Node.js](https://nodejs.org) ≥ 22.13** — runs installs, checks, and the vitest suites (`node:sqlite` is unflagged from 22.13)
-- **[Bun](https://bun.sh) ≥ 1.4.3** — type-checks the workspace (`bun check`), compiles release binaries, runs `scripts/*.ts`, and hosts the Bun-based test fixtures
+- **[Bun](https://bun.sh) ≥ 1.4.4** — type-checks the workspace (`bun check`), compiles release binaries, runs `scripts/*.ts`, and hosts the Bun-based test fixtures
 - **[Rust](https://rustup.rs)** (stable, with `cargo`) — builds the `@bastani/atomic-natives` N-API module
 
 This repo runs a hybrid toolchain matching upstream `earendil-works/pi`: **npm** installs, builds, checks, and runs the vitest suites; **Bun** compiles the release binaries, runs `scripts/*.ts`, and hosts the test fixtures that need it. `AGENTS.md` carries the full table. The `@bastani/workflows` workspace package ships raw `.ts` files with no build step; Atomic bundles it into `@bastani/atomic` during the coding-agent build.

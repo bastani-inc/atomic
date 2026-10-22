@@ -22,12 +22,12 @@ function isAtLeast(actual, minimum) {
 
 const versionProbe = spawnSync(bunExecutable, ["--version"], { encoding: "utf8" });
 if (versionProbe.error || versionProbe.status !== 0) {
-	console.error(`bun-typecheck: could not run "${bunExecutable} --version". Install Bun >= 1.4.3.`);
+	console.error(`bun-typecheck: could not run "${bunExecutable} --version". Install Bun >= 1.4.4.`);
 	process.exit(1);
 }
 const bunVersion = versionProbe.stdout.trim();
 if (!isAtLeast(parseVersion(bunVersion), MINIMUM_BUN_WITH_TYPE_CHECKER)) {
-	console.error(`bun-typecheck: Bun ${bunVersion} has no type checker. Install Bun >= 1.4.3.`);
+	console.error(`bun-typecheck: Bun ${bunVersion} has no type checker. Install Bun >= 1.4.4.`);
 	process.exit(1);
 }
 

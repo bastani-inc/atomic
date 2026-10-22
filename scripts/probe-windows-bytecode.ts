@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const WINDOWS_BYTECODE_PROBE_BUN_VERSION = "1.4.3";
+export const WINDOWS_BYTECODE_PROBE_BUN_VERSION = "1.4.4";
 
 export const WINDOWS_BYTECODE_PROBE_TARGETS = [
 	{

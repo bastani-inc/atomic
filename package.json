@@ -4,7 +4,7 @@
   "type": "module",
   "engines": {
     "node": ">=22.19.0",
-    "bun": ">=1.4.3"
+    "bun": ">=1.4.4"
   },
   "contributors": [
     "Norin Lavaee",
@@ -54,6 +54,7 @@
     "yaml": "2.9.0"
   },
   "overrides": {
+    "bun-types": "1.4.4",
     "@types/node": "24.12.4",
     "protobufjs": "7.6.6",
     "brace-expansion": "5.0.12",
