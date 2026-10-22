@@ -2,11 +2,22 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type AssistantMessage, type Model, normalizeContext, type Provider } from "@bastani/pi-ai";
+import {
+	type Api,
+	type AssistantMessage,
+	type Model,
+	normalizeContext,
+	type Provider,
+	type StreamOptions,
+} from "@bastani/pi-ai";
 import { stream as streamAnthropic } from "@bastani/pi-ai/api/anthropic-messages";
+import { stream as streamMistral } from "@bastani/pi-ai/api/mistral-conversations";
+import { stream as streamCodex } from "@bastani/pi-ai/api/openai-codex-responses";
 import { stream as streamOpenAI } from "@bastani/pi-ai/api/openai-completions";
-import { afterEach, beforeEach, test, vi } from "vitest";
+import { createFetchWithAdmission, getFetchAdmission } from "@bastani/pi-ai/utils/request-admission";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
+import { wrapCodexFastRouteFetch } from "../../packages/coding-agent/src/core/fast-model-routing-transport.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import {
 	configureProviderRequestBudget,
@@ -261,4 +272,301 @@ test("cancelling an Anthropic stream does not wait for or cancel its shared fede
 		await Promise.all([leader, follower]);
 		rmSync(directory, { recursive: true, force: true });
 	}
+});
+
+const codexToken = `aaa.${Buffer.from(
+	JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acc_test" } }),
+).toString("base64")}.bbb`;
+
+function mistralResponse(): Response {
+	const event = {
+		id: "mistral-response",
+		model: "test-model",
+		choices: [{ index: 0, finish_reason: "stop", delta: { content: "ok" } }],
+		usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+	};
+	return new Response(`data: ${JSON.stringify(event)}\n\ndata: [DONE]\n\n`, {
+		headers: { "content-type": "text/event-stream" },
+	});
+}
+
+function codexResponse(): Response {
+	const events = [
+		{
+			type: "response.output_item.added",
+			item: { type: "message", id: "msg_1", role: "assistant", status: "in_progress", content: [] },
+		},
+		{ type: "response.content_part.added", part: { type: "output_text", text: "" } },
+		{ type: "response.output_text.delta", delta: "ok" },
+		{
+			type: "response.output_item.done",
+			item: {
+				type: "message",
+				id: "msg_1",
+				role: "assistant",
+				status: "completed",
+				content: [{ type: "output_text", text: "ok" }],
+			},
+		},
+		{
+			type: "response.completed",
+			response: {
+				status: "completed",
+				usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2, input_tokens_details: { cached_tokens: 0 } },
+			},
+		},
+	];
+	return new Response(`${events.map((event) => `data: ${JSON.stringify(event)}`).join("\n\n")}\n\n`, {
+		headers: { "content-type": "text/event-stream" },
+	});
+}
+
+const headerTimeoutTransports = [
+	{
+		name: "mistral-conversations",
+		model: { ...model, api: "mistral-conversations" } satisfies Model<"mistral-conversations">,
+		apiKey: "test-key",
+		options: {},
+		response: mistralResponse,
+		timeout: /Mistral response headers timed out after 20ms/,
+		run: (options: StreamOptions) =>
+			streamMistral({ ...model, api: "mistral-conversations" }, context, options).result(),
+	},
+	{
+		name: "openai-codex-responses (explicit SSE)",
+		model: {
+			...model,
+			api: "openai-codex-responses",
+			provider: "openai-codex-admission",
+			baseUrl: "https://example.invalid/backend-api",
+		} satisfies Model<"openai-codex-responses">,
+		apiKey: codexToken,
+		options: { transport: "sse" },
+		response: codexResponse,
+		timeout: /Codex SSE response headers timed out after 20ms/,
+		run: (options: StreamOptions) =>
+			streamCodex(
+				{
+					...model,
+					api: "openai-codex-responses",
+					provider: "openai-codex-admission",
+					baseUrl: "https://example.invalid/backend-api",
+				},
+				context,
+				options,
+			).result(),
+	},
+] as const;
+
+describe.each(headerTimeoutTransports)("$name header timeout admission (#3864)", (transport) => {
+	const requestModel: Model<Api> = transport.model;
+	const intervalMs = 150;
+	const timeoutMs = 20;
+	const run = (options: StreamOptions): Promise<AssistantMessage> => transport.run(options);
+
+	beforeEach(() => vi.useRealTimers());
+	afterEach(() => configureProviderRequestBudget(requestModel.provider, undefined));
+
+	function queueBehindExhaustedBudget(): void {
+		configureProviderRequestBudget(requestModel.provider, { maxRequests: 1, intervalMs });
+		assert.equal(tryAdmitProviderRequest(requestModel.provider), 0);
+	}
+
+	function hangingFetch(onDispatch: () => void): typeof fetch {
+		return Object.assign(async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+			onDispatch();
+			return new Promise<Response>((_resolve, reject) => {
+				init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+			});
+		}, globalThis.fetch);
+	}
+
+	test("header timeout starts after admission rather than while queued", async () => {
+		queueBehindExhaustedBudget();
+		const start = Date.now();
+		let dispatchedAfterMs: number | undefined;
+		const fetcher: typeof fetch = Object.assign(async () => {
+			dispatchedAfterMs = Date.now() - start;
+			return transport.response();
+		}, globalThis.fetch);
+		const admission = await admitProviderStream(
+			requestModel,
+			{ ...transport.options, apiKey: transport.apiKey, fetch: fetcher, timeoutMs, maxRetries: 0 },
+			false,
+		);
+		const message = await run(admission.options);
+		assert.equal(message.stopReason, "stop", message.errorMessage);
+		assert.ok(dispatchedAfterMs !== undefined && dispatchedAfterMs > timeoutMs * 2);
+	});
+
+	test.each([
+		[
+			"cancellation",
+			() => {
+				const controller = new AbortController();
+				setTimeout(() => controller.abort(), timeoutMs * 2);
+				return controller.signal;
+			},
+		],
+		["a caller deadline", () => AbortSignal.timeout(timeoutMs * 2)],
+	])("%s is honored while queued", async (_name, createSignal) => {
+		queueBehindExhaustedBudget();
+		let dispatches = 0;
+		const admission = await admitProviderStream(
+			requestModel,
+			{
+				...transport.options,
+				apiKey: transport.apiKey,
+				fetch: hangingFetch(() => dispatches++),
+				signal: createSignal(),
+				timeoutMs,
+				maxRetries: 0,
+			},
+			false,
+		);
+		assert.equal((await run(admission.options)).stopReason, "aborted");
+		assert.equal(dispatches, 0);
+	});
+
+	test("header timeout still applies once the request is dispatched", async () => {
+		queueBehindExhaustedBudget();
+		const start = Date.now();
+		let dispatchedAfterMs: number | undefined;
+		const admission = await admitProviderStream(
+			requestModel,
+			{
+				...transport.options,
+				apiKey: transport.apiKey,
+				fetch: hangingFetch(() => {
+					dispatchedAfterMs = Date.now() - start;
+				}),
+				timeoutMs,
+				maxRetries: 0,
+			},
+			false,
+		);
+		const message = await run(admission.options);
+		assert.match(message.errorMessage ?? "", transport.timeout);
+		assert.ok(dispatchedAfterMs !== undefined && dispatchedAfterMs > timeoutMs * 2);
+	});
+});
+
+describe("runtime Codex SSE routing keeps admission ahead of the header timeout (#3864)", () => {
+	const intervalMs = 200;
+	const timeoutMs = 20;
+	const codexFastModel: Model<"openai-codex-responses"> = {
+		...model,
+		api: "openai-codex-responses",
+		provider: "openai-codex",
+		baseUrl: "https://chatgpt.com/backend-api",
+		id: "gpt-5.6-sol-fast",
+		fastRoute: { baseModelId: "gpt-5.6-sol", upstreamModelId: "gpt-5.6-sol", serviceTier: "priority" },
+	};
+
+	beforeEach(() => vi.useRealTimers());
+	afterEach(() => configureProviderRequestBudget(codexFastModel.provider, undefined));
+
+	async function createRuntime(): Promise<ModelRuntime> {
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.inMemory(),
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
+		const stream: Provider["stream"] = (_model, requestContext, options: StreamOptions | undefined) =>
+			streamCodex(codexFastModel, requestContext, options ?? {});
+		runtime.registerNativeProvider({
+			id: codexFastModel.provider,
+			name: "Codex",
+			getModels: () => [codexFastModel],
+			auth: {
+				apiKey: { name: "fixture", resolve: async () => ({ auth: { apiKey: codexToken }, source: "stored" }) },
+			},
+			stream,
+			streamSimple: stream,
+		});
+		return runtime;
+	}
+
+	function exhaustBudget(): void {
+		configureProviderRequestBudget(codexFastModel.provider, { maxRequests: 1, intervalMs });
+		assert.equal(tryAdmitProviderRequest(codexFastModel.provider), 0);
+	}
+
+	test("dispatches once after the queue wait with routing applied", async () => {
+		exhaustBudget();
+		const start = Date.now();
+		const dispatches: { afterMs: number; headers: Headers }[] = [];
+		const fetcher: typeof fetch = Object.assign(async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+			dispatches.push({ afterMs: Date.now() - start, headers: new Headers(init?.headers) });
+			return codexResponse();
+		}, globalThis.fetch);
+		const runtime = await createRuntime();
+		const message = await runtime.completeSimple(codexFastModel, context, {
+			fetch: fetcher,
+			transport: "sse",
+			timeoutMs,
+			maxRetries: 0,
+		});
+		assert.equal(message.stopReason, "stop", message.errorMessage);
+		assert.equal(dispatches.length, 1);
+		assert.ok(dispatches[0]!.afterMs >= intervalMs - timeoutMs);
+		assert.equal(dispatches[0]!.headers.get("originator"), "codex_cli_rs");
+		assert.equal(dispatches[0]!.headers.get("x-codex-routing-hint"), "model=gpt-5.6-sol;tier=priority");
+		assert.equal(dispatches[0]!.headers.get("x-atomic-codex-fast-route"), null);
+	});
+
+	test.each([
+		[
+			"cancellation",
+			() => {
+				const controller = new AbortController();
+				setTimeout(() => controller.abort(), timeoutMs * 2);
+				return controller.signal;
+			},
+		],
+		["a caller deadline", () => AbortSignal.timeout(timeoutMs * 2)],
+	])("%s is honored while queued", async (_name, createSignal) => {
+		exhaustBudget();
+		let dispatches = 0;
+		const fetcher: typeof fetch = Object.assign(async () => {
+			dispatches++;
+			return codexResponse();
+		}, globalThis.fetch);
+		const runtime = await createRuntime();
+		const message = await runtime.completeSimple(codexFastModel, context, {
+			fetch: fetcher,
+			signal: createSignal(),
+			transport: "sse",
+			timeoutMs,
+			maxRetries: 0,
+		});
+		assert.equal(message.stopReason, "aborted");
+		assert.equal(dispatches, 0);
+	});
+});
+
+test("Codex routing wraps an admitted fetch without admitting twice (#3864)", async () => {
+	let admissions = 0;
+	const seen: Headers[] = [];
+	const base: typeof fetch = Object.assign(async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+		seen.push(new Headers(init?.headers));
+		return new Response("ok");
+	}, globalThis.fetch);
+	const admitted = createFetchWithAdmission(base, async () => {
+		admissions++;
+	});
+	const routed = wrapCodexFastRouteFetch(admitted);
+	const admission = getFetchAdmission(routed);
+	assert.ok(admission);
+	await routed("https://chatgpt.com/backend-api/codex/responses", {
+		headers: { "x-atomic-codex-fast-route": "normal" },
+	});
+	assert.equal(admissions, 1);
+	assert.equal(seen[0]!.get("x-atomic-codex-fast-route"), null);
+	assert.equal(getFetchAdmission(admitted)?.fetch, base);
+	await admission.fetch("https://chatgpt.com/backend-api/codex/responses", {
+		headers: { "x-atomic-codex-fast-route": "normal" },
+	});
+	assert.equal(admissions, 1);
+	assert.equal(seen[1]!.get("x-atomic-codex-fast-route"), null);
 });

@@ -19,6 +19,7 @@ import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { getIdentityHeaders } from "../utils/identity.ts";
 import { parseStreamingJson, parseToolCallArguments } from "../utils/json-parse.ts";
+import { admitFetch } from "../utils/request-admission.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
@@ -319,11 +320,12 @@ async function requestMistralStream(
 	// The timeout covers only the wait for response headers. Long streams (e.g. extended thinking)
 	// must not be cut off by a fixed deadline; body stalls are left to the stream idle deadline.
 	const timeoutMs = options?.timeoutMs ?? 60_000;
+	const fetch = await admitFetch(options?.fetch, requestSignal);
 	const headerTimeoutSignal = AbortSignal.timeout(timeoutMs);
 	const combinedSignal = combineAbortSignals([requestSignal, headerTimeoutSignal]);
 	let response: Response;
 	try {
-		response = await (options?.fetch ?? globalThis.fetch)(url, {
+		response = await fetch(url, {
 			method: "POST",
 			headers,
 			body: JSON.stringify(toMistralWirePayload(payload)),

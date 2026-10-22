@@ -522,3 +522,137 @@ test("a rate-limited follow-up exhausts its retry budget without restarting the 
 		await ctx.abort();
 	}
 });
+
+test("a follow-up revisits an earlier account after its cooldown (#3864)", async () => {
+	const calls: string[] = [];
+	const ctx = createStageContext(
+		makeOpts({
+			stageOptions: { model: "follow-up-a/model", fallbackModels: ["follow-up-b/model"] },
+			adapters: {
+				agentSession: {
+					async create(options) {
+						const model = String(options.model);
+						return {
+							session: makeMockSession({
+								async prompt(text) {
+									if (text === "first") return "ok";
+									calls.push(model);
+									if (model === "follow-up-b/model" || calls.length === 1)
+										throw Object.assign(new Error("429 Too Many Requests"), {
+											retryAfterMs: model === "follow-up-a/model" ? 20 : 100,
+										});
+									return "recovered";
+								},
+								getLastAssistantText: () => "recovered",
+							}).session,
+							settingsManager: { getRetrySettings: () => ({ enabled: true, maxRetries: 1, baseDelayMs: 0 }) },
+						};
+					},
+				},
+			},
+		}),
+	) as InternalStageContext;
+	await ctx.prompt("first");
+	const pending = ctx.prompt("second");
+	void pending.catch(() => {});
+	try {
+		await vi.advanceTimersByTimeAsync(0);
+		assert.deepEqual(calls, ["follow-up-a/model", "follow-up-b/model"]);
+		await vi.advanceTimersByTimeAsync(19);
+		assert.equal(calls.length, 2);
+		await vi.advanceTimersByTimeAsync(1);
+		assert.deepEqual(calls, ["follow-up-a/model", "follow-up-b/model", "follow-up-a/model"]);
+		assert.equal(await pending, "recovered");
+	} finally {
+		await ctx.abort();
+		await pending.catch(() => {});
+	}
+});
+
+test("a follow-up keeps each model's retry budget across resumed and fallback sessions (#3864)", async () => {
+	const calls: string[] = [];
+	const ctx = createStageContext(
+		makeOpts({
+			stageOptions: { model: "follow-up-budget/a", fallbackModels: ["follow-up-budget/b"] },
+			adapters: {
+				agentSession: {
+					async create(options) {
+						const model = String(options.model);
+						return {
+							session: makeMockSession({
+								async prompt(text) {
+									if (text === "first") return "ok";
+									calls.push(model);
+									throw Object.assign(new Error("429 Too Many Requests"), { retryAfterMs: 20 });
+								},
+							}).session,
+							settingsManager: { getRetrySettings: () => ({ enabled: true, maxRetries: 1, baseDelayMs: 0 }) },
+						};
+					},
+				},
+			},
+		}),
+	) as InternalStageContext;
+	assert.equal(await ctx.prompt("first"), "ok");
+	const rejected = assert.rejects(ctx.prompt("second"), /429/);
+	try {
+		await vi.advanceTimersByTimeAsync(200);
+		await rejected;
+		assert.equal(calls.filter((model) => model === "follow-up-budget/a").length, 2);
+		assert.equal(calls.filter((model) => model === "follow-up-budget/b").length, 2);
+	} finally {
+		await ctx.abort();
+	}
+});
+
+test("a cooled follow-up on a successful fallback does not reopen rejected earlier models (#3864)", async () => {
+	const calls: string[] = [];
+	const ctx = createStageContext(
+		makeOpts({
+			stageOptions: { model: "rejected-earlier/model", fallbackModels: ["continued-fallback/model"] },
+			adapters: {
+				agentSession: {
+					async create(options) {
+						const model = String(options.model);
+						const history: string[] = [];
+						return {
+							session: makeMockSession({
+								async prompt(text) {
+									calls.push(model);
+									if (model === "rejected-earlier/model") throw new Error("503 service unavailable");
+									history.push(text);
+									return history.join(";");
+								},
+								getLastAssistantText: () => history.join(";"),
+							}).session,
+							settingsManager: { getRetrySettings: () => ({ enabled: true, maxRetries: 0, baseDelayMs: 0 }) },
+						};
+					},
+				},
+			},
+		}),
+	) as InternalStageContext;
+	assert.equal(await ctx.prompt("first"), "first");
+	const seed = limitedContext(
+		"continued-fallback",
+		async () => {
+			throw Object.assign(new Error("429 Too Many Requests"), { retryAfterMs: 2000 });
+		},
+		undefined,
+		0,
+	);
+	await assert.rejects(seed.prompt("seed"), /429/);
+	const pending = ctx.prompt("second");
+	void pending.catch(() => {});
+	try {
+		await vi.advanceTimersByTimeAsync(0);
+		assert.deepEqual(calls, ["rejected-earlier/model", "continued-fallback/model"]);
+		await vi.advanceTimersByTimeAsync(2000);
+		assert.equal(await pending, "first;second");
+		assert.deepEqual(calls, ["rejected-earlier/model", "continued-fallback/model", "continued-fallback/model"]);
+	} finally {
+		await ctx.abort();
+		await seed.abort();
+		await pending.catch(() => {});
+	}
+});

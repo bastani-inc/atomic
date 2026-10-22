@@ -786,14 +786,14 @@ export class StageSessionController {
 		const resumedText = this.pendingCreationResumeMessage;
 		this.pendingCreationResumeMessage = undefined;
 		let promptText = resumedText ?? text;
-		if (await this.tryResumeCurrentSession(promptText, sdkOptions, candidates)) return;
+		const walk = this.candidateWalk(candidates, this.activeCandidateIndex ?? 0);
+		if (await this.tryResumeCurrentSession(promptText, sdkOptions, candidates, walk)) return;
 		// A follow-up written for the conversation it continues (a structured-output
 		// correction) cannot stand alone in a session that never saw the stage
 		// prompt, so every session the walk prompts from here receives the caller's
 		// self-contained text instead (issue #3323).
 		if (resumedText === undefined && newSessionText !== undefined) promptText = newSessionText;
 		let index = this.activeCandidateIndex ?? 0;
-		const walk = this.candidateWalk(candidates, index);
 		while (index < candidates.length) {
 			// Attachment may have acquired the creation walk while shutdown drained.
 			// Join that entire walk, including its failures, rather than accounting
@@ -1156,6 +1156,17 @@ export class StageSessionController {
 			remaining: new Set(candidates.map((_, index) => index).filter((index) => index >= start)),
 			rateLimitFailures: new Map(),
 		};
+	}
+
+	private recordCandidateFailure(walk: CandidateWalk, index: number, error: unknown): void {
+		const failures = (walk.rateLimitFailures.get(index) ?? 0) + 1;
+		const settings = this.retrySettings();
+		const retries = settings?.enabled === false ? 0 : (settings?.maxRetries ?? 2);
+		if (isWorkflowRateLimit(error)) {
+			walk.rateLimitFailures.set(index, failures);
+			if (failures <= retries) return;
+		}
+		walk.remaining.delete(index);
 	}
 
 	private async selectReadyCandidate(
@@ -2055,12 +2066,13 @@ export class StageSessionController {
 		text: string,
 		sdkOptions: PromptOptions | undefined,
 		candidates: readonly WorkflowResolvedModelCandidate[],
-		rateLimitRetries = 0,
+		walk: CandidateWalk,
 	): Promise<boolean> {
 		if (!this.resumeCurrentSession || this.session === undefined) return false;
-		if (providerCooldownMs(this.currentProvider()) > 0) {
-			const start = rateLimitRetries > 0 ? 0 : (this.activeCandidateIndex ?? 0);
-			const index = await this.selectReadyCandidate(candidates, this.candidateWalk(candidates, start), start);
+		const currentIndex = this.activeCandidateIndex ?? 0;
+		if (!walk.remaining.has(currentIndex) || providerCooldownMs(this.currentProvider()) > 0) {
+			const start = walk.rateLimitFailures.has(currentIndex) ? 0 : currentIndex;
+			const index = await this.selectReadyCandidate(candidates, walk, start);
 			if (index === undefined) return true;
 			if (index !== this.activeCandidateIndex) {
 				await this.disposeCurrentSession(index);
@@ -2122,15 +2134,15 @@ export class StageSessionController {
 				this.notifyModelFallbackMetaChange();
 				throw err;
 			}
-			const settings = this.retrySettings();
-			const maxRateLimitRetries = settings?.enabled === false ? 0 : (settings?.maxRetries ?? 2);
-			if (isWorkflowRateLimit(err) && rateLimitRetries < maxRateLimitRetries) {
+			if (isWorkflowRateLimit(err)) {
+				for (let index = 0; index < currentIndex; index++) walk.remaining.add(index);
+				this.recordCandidateFailure(walk, currentIndex, err);
+				if (walk.remaining.size === 0) {
+					this.notifyModelFallbackMetaChange();
+					throw err;
+				}
 				this.resumeCurrentSession = true;
-				return this.tryResumeCurrentSession(text, sdkOptions, candidates, rateLimitRetries + 1);
-			}
-			if (isWorkflowRateLimit(err) && candidates.length === 1) {
-				this.notifyModelFallbackMetaChange();
-				throw err;
+				return this.tryResumeCurrentSession(text, sdkOptions, candidates, walk);
 			}
 			const resumedOverflowNextIndex = nextResumedContextOverflowFallbackIndex(
 				err,
@@ -2142,6 +2154,13 @@ export class StageSessionController {
 				this.pendingFallbackWarnings.length = 0;
 				this.notifyModelFallbackMetaChange();
 				throw err;
+			}
+			if (resumedOverflowNextIndex !== undefined) {
+				for (const index of walk.remaining) {
+					if (index < resumedOverflowNextIndex) walk.remaining.delete(index);
+				}
+			} else {
+				for (let index = 0; index < currentIndex; index++) walk.remaining.add(index);
 			}
 			this.pendingFallbackWarnings.push(
 				resumedOverflowNextIndex === undefined
@@ -2189,11 +2208,7 @@ export class StageSessionController {
 		});
 		let nextIndex: number | undefined = index + 1 < candidates.length ? index + 1 : undefined;
 		if (walk !== undefined) {
-			const failures = (walk.rateLimitFailures.get(index) ?? 0) + 1;
-			const settings = this.retrySettings();
-			const retries = settings?.enabled === false ? 0 : (settings?.maxRetries ?? 2);
-			if (isWorkflowRateLimit(err) && failures <= retries) walk.rateLimitFailures.set(index, failures);
-			else walk.remaining.delete(index);
+			this.recordCandidateFailure(walk, index, err);
 			nextIndex = undefined;
 			if (
 				!this.opts.signal?.aborted &&

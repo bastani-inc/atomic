@@ -27,6 +27,7 @@ import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { getIdentityHeaders } from "../utils/identity.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
+import { admitFetch } from "../utils/request-admission.ts";
 import { createStreamDeadline, type StreamDeadlineHandle, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { getSystemMessageText } from "../utils/text.ts";
 import {
@@ -424,11 +425,12 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 					}
 
 					try {
+						const fetch = await admitFetch(options?.fetch, streamDeadline.signal);
 						const headerTimeoutSignal =
 							httpTimeoutMs !== undefined && httpTimeoutMs > 0 ? AbortSignal.timeout(httpTimeoutMs) : undefined;
 						const combinedSignal = combineAbortSignals([streamDeadline.signal, headerTimeoutSignal]);
 						try {
-							response = await (options?.fetch ?? globalThis.fetch)(resolveCodexUrl(model.baseUrl), {
+							response = await fetch(resolveCodexUrl(model.baseUrl), {
 								method: "POST",
 								headers: requestSseHeaders,
 								body: sseBody,
