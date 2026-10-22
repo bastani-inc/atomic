@@ -833,5 +833,7 @@ test("a standalone owner replaces an unacknowledged initial connection before re
 	} finally {
 		await owner.closeGroup(group);
 	}
-	assert.equal((await rosterRunIds(observer)).has(runId), false);
+	await waitFor("the closed standalone owner's route to leave the broker roster", async () =>
+		(await rosterRunIds(observer)).has(runId) ? undefined : true,
+	);
 });
