@@ -621,7 +621,7 @@ maintains both the pins and the comments.
 `@latest`. The Windows legs build `cargo-xwin` with
 `cargo install cargo-xwin --version 0.23.0 --locked`. Both pins prevent an
 unreviewed build-tool update in a published, provenance-signed native artifact.
-`test.yml` pins `bun-version: 1.4.3` to match `publish.yml`; `latest` cannot be
+`test.yml` pins `bun-version: 1.4.4` to match `publish.yml`; `latest` cannot be
 cached by `setup-bun` and left the suite testing a different Bun from the one
 that builds the shipped artifact.
 
