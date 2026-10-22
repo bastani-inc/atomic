@@ -367,7 +367,7 @@ export class SqlPoolQueue {
 		return this.transaction(async (tx) => {
 			const { now, status } = await this.authority(tx, lease);
 			const row = await this.current(tx, lease, token);
-			if (row.epoch !== lease.epoch || row.expires_at < now) throw new Error("Stale work lease");
+			if (row.epoch !== lease.epoch) throw new Error("Stale work lease");
 			const previous = await tx.get<SqliteRow & { request: string; receipt: string }>(
 				`SELECT * FROM ${this.operations} WHERE work = ? AND generation = ? AND operation = ?`,
 				token.id,
@@ -378,6 +378,7 @@ export class SqlPoolQueue {
 				if (previous.request !== request) throw new Error("Pool operation identity conflict");
 				return JSON.parse(previous.receipt) as PoolCommitReceipt;
 			}
+			if (row.expires_at < now) throw new Error("Stale work lease");
 			if (status !== "running") throw new Error("Pool root is not running");
 			const checkpoint = mutation.checkpoint;
 			await validatePoolMutation(tx, this.journal, lease.runId, fromRow(row), mutation);

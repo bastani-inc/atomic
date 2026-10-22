@@ -201,6 +201,57 @@ test("session transcripts and checkpoints commit atomically and acknowledge once
 	}
 });
 
+test.each(["checkpoint", "session"] as const)(
+	"%s receipt survives lost acknowledgement and same-generation work lease expiry (#3869)",
+	async (kind) => {
+		const f = await fixture();
+		const sessions = await new StorageProvider().openSessionStore(
+			{ kind: "database", database: f.database, prefix: "wf_runs_pool_" },
+			{ agentDir: "/unused", domain: "sessions" },
+		);
+		try {
+			await f.pool.commit(f.lease, f.attempt, "create", createSession);
+			const append = {
+				kind: "session-append" as const,
+				checkpoint: { ...stage, checkpointId: `${work.scope}:session:1` },
+				entries: [{ ...messages[0]!, id: "next", parentId: "message" }],
+				expectSeq: 1,
+			};
+			const mutation = kind === "checkpoint" ? { kind: "checkpoint" as const, checkpoint } : append;
+			const committed = await f.pool.commit(f.lease, f.attempt, "lost-ack", mutation);
+			await f.database.run("UPDATE wf_runs_work SET expires_at = 0 WHERE id = ?", f.attempt.id);
+			const [expired] = await f.pool.inspect("root");
+			assert.equal(expired?.generation, f.attempt.generation);
+			assert.equal(expired?.state, "leased");
+			assert.deepEqual(await f.pool.commit(f.lease, f.attempt, "lost-ack", mutation), committed);
+			const mismatched =
+				mutation.kind === "checkpoint"
+					? { ...mutation, checkpoint: { ...mutation.checkpoint, output: "changed" } }
+					: { ...mutation, entries: [] };
+			await assert.rejects(f.pool.commit(f.lease, f.attempt, "lost-ack", mismatched), /identity conflict/);
+			await assert.rejects(f.pool.commit(f.lease, f.attempt, "new-operation", mutation), /Stale work lease/);
+			await assert.rejects(
+				f.pool.commit(f.lease, { ...f.attempt, worker: "impostor" }, "lost-ack", mutation),
+				/Stale work lease/,
+			);
+			await f.backend.hydrateWorkflow("root");
+			assert.equal(
+				f.backend.listCheckpoints("root").filter((entry) => entry.checkpointId === mutation.checkpoint.checkpointId)
+					.length,
+				1,
+			);
+			assert.deepEqual(
+				(await sessions.load("session")).entries,
+				kind === "checkpoint" ? messages : [...messages, ...append.entries],
+			);
+			if (kind === "session") assert.equal(committed.lastSeq, 2);
+		} finally {
+			await sessions.close();
+			await f.close();
+		}
+	},
+);
+
 test("workers cannot forge root graph ownership or commit non-protocol mutations (#3869)", async () => {
 	const f = await fixture();
 	try {
@@ -263,7 +314,7 @@ test("workers cannot forge root graph ownership or commit non-protocol mutations
 	}
 });
 
-test.each(["generation", "epoch", "expired", "paused"] as const)(
+test.each(["generation", "epoch", "coordinator-expired", "expired", "paused"] as const)(
 	"%s fences checkpoint and session mutations without losing durable state (#3869)",
 	async (fence) => {
 		const f = await fixture();
@@ -285,7 +336,11 @@ test.each(["generation", "epoch", "expired", "paused"] as const)(
 				const next = await f.journal.acquire("root", coordinator.holderId);
 				if (next.status !== "acquired") assert.fail("No replacement coordinator");
 				coordinator = next.lease;
+			} else if (fence === "coordinator-expired") {
+				await f.database.run("UPDATE wf_leases SET renewed_at = 0");
 			} else await f.backend.commitWorkflowStatus("root", "paused");
+			if (fence !== "expired" && fence !== "paused")
+				await assert.rejects(f.pool.commit(coordinator, f.attempt, "create", createSession), /[Ss]tale/);
 			const replacement = { ...stage, checkpointId: `${work.scope}:session:1` };
 			const mutation = {
 				kind: "session-replace" as const,
