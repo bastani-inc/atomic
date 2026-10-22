@@ -116,6 +116,7 @@ describe("Anthropic fast mode", () => {
 		expect(result.usage.cost.input).toBeCloseTo(8, 10);
 		expect(result.usage.cost.output).toBeCloseTo(40, 10);
 		expect(result.usage.cost.total).toBeCloseTo(48, 10);
+		expect(result.usage.cost.totalFromProvider).toBe(false);
 	});
 
 	it("prices at standard rates when the response reports standard speed", async () => {

@@ -112,6 +112,8 @@ function addUsage(total: Usage | undefined, usage: Usage): Usage {
 			cacheRead: (total?.cost.cacheRead ?? 0) + usage.cost.cacheRead,
 			cacheWrite: (total?.cost.cacheWrite ?? 0) + usage.cost.cacheWrite,
 			total: (total?.cost.total ?? 0) + usage.cost.total,
+			totalFromProvider:
+				(total === undefined || total.cost.totalFromProvider === true) && usage.cost.totalFromProvider === true,
 		},
 	};
 }

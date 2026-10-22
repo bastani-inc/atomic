@@ -84,6 +84,7 @@ describe("openrouter images", () => {
 		const output = await generateImages(model, context, { apiKey: "test" });
 		expect(output.stopReason).toBe("stop");
 		expect(output.responseId).toBe("img-1");
+		expect(output.usage?.cost.totalFromProvider).toBe(false);
 		expect(output.output[0]).toMatchObject({ type: "text", text: "Here is your image." });
 		expect(output.output[1]).toMatchObject({ type: "image", mimeType: "image/png", data: "ZmFrZS1wbmc=" });
 

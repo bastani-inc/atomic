@@ -242,6 +242,7 @@ function applyFastModePricing(usage: Usage): void {
 	usage.cost.cacheRead *= FAST_MODE_PRICE_MULTIPLIER;
 	usage.cost.cacheWrite *= FAST_MODE_PRICE_MULTIPLIER;
 	usage.cost.total = usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite;
+	usage.cost.totalFromProvider = false;
 }
 
 /**
@@ -428,6 +429,7 @@ function addEarlierAttemptCosts(
 		output.usage.cost.cacheRead += attemptUsage.cost.cacheRead;
 		output.usage.cost.cacheWrite += attemptUsage.cost.cacheWrite;
 		output.usage.cost.total += attemptUsage.cost.total;
+		output.usage.cost.totalFromProvider = false;
 	}
 }
 
