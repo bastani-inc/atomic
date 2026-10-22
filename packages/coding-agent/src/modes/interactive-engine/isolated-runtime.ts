@@ -154,7 +154,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.sessionStats = new EngineSessionStats(client);
 		this.health = new EngineHealthController({
 			stop: () => this.client.stop(),
-			restart: async () => {
+			restart: async (replacementReady) => {
 				this.engineRecoveryFailure = undefined;
 				try {
 					const manager = super.session.sessionManager;
@@ -162,6 +162,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 						cwd: manager.getCwd(),
 						sessionDirectory: manager.getSessionDir() || undefined,
 					});
+					replacementReady();
 					await this.initializeFromEngine();
 				} catch (error) {
 					const failure = markRpcTransportFailure(error);
@@ -727,11 +728,12 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			abortBash: {
 				configurable: true,
 				value: (id?: string) => {
-					if (id === undefined) this.dispatchBestEffort("abort bash", this.client.abortBash());
-					else {
-						const requestId = this.activeBashRequestIds.get(id);
-						if (requestId) this.dispatchBestEffort("abort bash", this.client.abortBash(requestId));
-					}
+					const requestId = id === undefined ? undefined : this.activeBashRequestIds.get(id);
+					if (id !== undefined && !requestId) return;
+					this.dispatchBestEffort(
+						"abort bash",
+						this.health.trackControlRequest(() => this.client.abortBash(requestId)),
+					);
 				},
 			},
 			compact: { configurable: true, value: () => this.client.compact() },
@@ -740,21 +742,27 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				value: () =>
 					this.dispatchBestEffort(
 						"abort compaction",
-						this.client.requestInternal<void>({ type: "abort_compaction" }),
+						this.health.trackControlRequest(() =>
+							this.client.requestInternal<void>({ type: "abort_compaction" }),
+						),
 					),
 			},
 			abortRetry: {
 				configurable: true,
-				value: () => {
-					const retry = this.client.abortRetry?.();
-					if (retry !== undefined) {
-						this.dispatchBestEffort("abort retry", retry);
-						return;
-					}
-					if (typeof this.client.requestInternal === "function") {
-						this.dispatchBestEffort("abort retry", this.client.requestInternal<void>({ type: "abort_retry" }));
-					}
-				},
+				value: () =>
+					this.dispatchBestEffort(
+						"abort retry",
+						this.health.trackControlRequest(async () => {
+							const retry = this.client.abortRetry?.();
+							if (retry !== undefined) {
+								await retry;
+								return;
+							}
+							if (typeof this.client.requestInternal === "function") {
+								await this.client.requestInternal<void>({ type: "abort_retry" });
+							}
+						}),
+					),
 			},
 			navigateTree: {
 				configurable: true,
@@ -814,13 +822,15 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					this.followUpMessages = [];
 					this.dispatchBestEffort(
 						"clear queue",
-						this.client.requestInternal({ type: "clear_queue" }).then(
-							() => this.settleQueueClear(pendingClear, true),
-							(error: Error) => {
-								this.settleQueueClear(pendingClear, false);
-								throw error;
-							},
-						),
+						this.health
+							.trackControlRequest(() => this.client.requestInternal({ type: "clear_queue" }))
+							.then(
+								() => this.settleQueueClear(pendingClear, true),
+								(error: Error) => {
+									this.settleQueueClear(pendingClear, false);
+									throw error;
+								},
+							),
 					);
 					return queued;
 				},
@@ -924,12 +934,14 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	 */
 	private async abortAndRecover(): Promise<void> {
 		this.promptCancellationEpoch += 1;
-		await this.queuePause.settleBeforeAbort();
 		this.health.markCooperativeAbortStarted();
 		try {
-			await this.client.abort();
-		} finally {
+			await this.health.trackControlRequest(async () => {
+				await this.queuePause.settleBeforeAbort();
+				await this.client.abort();
+			});
 			this.health.markCooperativeAbortSettled();
+		} finally {
 			this.engineCallbackActive = false;
 		}
 	}

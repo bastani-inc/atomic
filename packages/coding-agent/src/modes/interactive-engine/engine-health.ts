@@ -7,7 +7,7 @@ export interface EngineHealthDeps {
 	/** Terminate the current (or hung replacement) engine child. */
 	stop(): Promise<void>;
 	/** Replace the engine child and reload host state from it. */
-	restart(): Promise<void>;
+	restart(replacementReady: () => void): Promise<void>;
 	/** Drop streaming/compaction/callback activity owned by the dead generation. */
 	clearActivity(): void;
 }
@@ -57,6 +57,8 @@ export class EngineHealthController {
 	private pending: ActivityWatchdogDiagnostic[] = [];
 	private unresponsive = false;
 	private abortStartedAt: number | undefined;
+	private readonly pendingControls = new Map<symbol, number>();
+	private controlFailed = false;
 	private attempt: Promise<void> | undefined;
 	/** When the current replacement attempt began; undefined once it settles. */
 	private attemptStartedAt: number | undefined;
@@ -105,13 +107,26 @@ export class EngineHealthController {
 		this.abortStartedAt = undefined;
 	}
 
+	async trackControlRequest<T>(request: () => Promise<T>): Promise<T> {
+		const key = Symbol();
+		this.pendingControls.set(key, this.now());
+		try {
+			return await request();
+		} catch (error) {
+			if (this.pendingControls.has(key)) this.controlFailed = true;
+			throw error;
+		} finally {
+			this.pendingControls.delete(key);
+		}
+	}
+
 	/**
-	 * True only when the engine is provably not answering:
+	 * True when a control failed or the engine is not answering:
 	 *
 	 *  - the heartbeat watchdog declared it unresponsive;
 	 *  - a replacement failed on its own and the host has no engine;
-	 *  - a cooperative abort has been outstanding past the unresponsive threshold
-	 *    (a child whose loop still turns but is deadlocked);
+	 *  - a queue clear or cooperative abort failed or exceeded the unresponsive
+	 *    threshold, even if the child's loop still turns;
 	 *  - a replacement has been waiting for `engine_ready` past that threshold.
 	 *
 	 * The readiness case has no watchdog coverage at all: a child stopped before
@@ -121,8 +136,12 @@ export class EngineHealthController {
 	 * false for a healthy engine so a stray second Ctrl+C cannot replace one.
 	 */
 	needsExplicitTermination(): boolean {
-		if (this.unresponsive || this.replacementNeeded) return true;
-		return this.isOverdue(this.abortStartedAt) || this.isOverdue(this.attemptStartedAt);
+		if (this.unresponsive || this.replacementNeeded || this.controlFailed) return true;
+		return (
+			this.isOverdue(this.abortStartedAt) ||
+			this.isOverdue(this.attemptStartedAt) ||
+			[...this.pendingControls.values()].some((startedAt) => this.isOverdue(startedAt))
+		);
 	}
 
 	private isOverdue(startedAt: number | undefined): boolean {
@@ -146,6 +165,7 @@ export class EngineHealthController {
 		this.stopped = true;
 		this.rescueRequested = false;
 		this.replacementNeeded = false;
+		this.resetControls();
 		this.shutdownPromise = (async () => {
 			await this.stopQuietly();
 			await this.attempt?.catch(() => {});
@@ -155,6 +175,7 @@ export class EngineHealthController {
 	}
 
 	handleGenerationEnded(event: InteractiveEngineGenerationEnded): void {
+		this.resetControls();
 		this.deps.clearActivity();
 		if (event.expected || this.stopped) return;
 		if (this.attempt) {
@@ -182,6 +203,7 @@ export class EngineHealthController {
 		// expected rather than something to report to the user.
 		if (inFlight) this.forceStoppedAttemptId = this.attemptId;
 		const run = (async () => {
+			this.resetControls();
 			this.deps.clearActivity();
 			this.notice(UNRESPONSIVE_ENGINE_NOTICE);
 			await this.stopQuietly();
@@ -241,8 +263,15 @@ export class EngineHealthController {
 		// window and let the first Ctrl+C stop a replacement that never misbehaved.
 		// Only this child's own heartbeat, or its own stall, may set it again.
 		this.unresponsive = false;
+		let controlsFenced = false;
+		const fenceRetiredControls = () => {
+			if (controlsFenced || this.stopped || this.attemptId !== id) return;
+			controlsFenced = true;
+			this.resetControls();
+		};
 		const run = this.deps
-			.restart()
+			.restart(fenceRetiredControls)
+			.then(fenceRetiredControls)
 			.catch((error: Error) => {
 				// An attempt the user deliberately stopped, or one cancelled by
 				// disposal, did not fail on its own.
@@ -265,6 +294,12 @@ export class EngineHealthController {
 			});
 		this.attempt = run;
 		return run;
+	}
+
+	private resetControls(): void {
+		this.pendingControls.clear();
+		this.controlFailed = false;
+		this.abortStartedAt = undefined;
 	}
 
 	private notice(message: string): void {

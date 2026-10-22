@@ -33,7 +33,7 @@ interface Harness {
 	advance(ms: number): void;
 }
 
-function harness(restart: () => Promise<void>): Harness {
+function harness(restart: (replacementReady: () => void) => Promise<void>): Harness {
 	const state = { stops: 0, restarts: 0, activityClears: 0 } as Omit<
 		Harness,
 		"controller" | "diagnostics" | "advance"
@@ -45,9 +45,9 @@ function harness(restart: () => Promise<void>): Harness {
 			stop: async () => {
 				state.stops += 1;
 			},
-			restart: () => {
+			restart: (replacementReady: () => void) => {
 				state.restarts += 1;
-				return restart();
+				return restart(replacementReady);
 			},
 			clearActivity: () => {
 				state.activityClears += 1;
@@ -521,5 +521,157 @@ test("shutdown ignores a later death entirely", async () => {
 	h.controller.handleGenerationEnded(ended({ generation: 2 }));
 	await sleep(5);
 	assert.equal(h.restarts, 0);
+	assert.equal(h.controller.needsExplicitTermination(), false);
+});
+
+test("controls rejected during recovery cannot arm termination against a healthy replacement (#3865)", async () => {
+	let finish!: () => void;
+	const h = harness(
+		() =>
+			new Promise<void>((resolve) => {
+				finish = resolve;
+			}),
+	);
+	h.controller.handleGenerationEnded(ended());
+	await assert.rejects(
+		h.controller.trackControlRequest(async () => {
+			throw new Error("Client not started");
+		}),
+	);
+	finish();
+	await sleep(0);
+	assert.equal(h.controller.needsExplicitTermination(), false);
+});
+
+test("one acknowledged control does not hide another stalled control (#3865)", async () => {
+	let finish!: () => void;
+	const h = harness(async () => {});
+	const pending = h.controller.trackControlRequest(
+		() =>
+			new Promise<void>((resolve) => {
+				finish = resolve;
+			}),
+	);
+	await h.controller.trackControlRequest(async () => {});
+	h.advance(ENGINE_UNRESPONSIVE_MS);
+	h.controller.clearUnresponsive();
+	assert.equal(h.controller.needsExplicitTermination(), true);
+	finish();
+	await pending;
+	assert.equal(h.controller.needsExplicitTermination(), false);
+});
+
+test("a retired control's late failure cannot poison its replacement (#3865)", async () => {
+	let fail!: (error: Error) => void;
+	const h = harness(async () => {});
+	const pending = h.controller.trackControlRequest(
+		() =>
+			new Promise<void>((_resolve, reject) => {
+				fail = reject;
+			}),
+	);
+	h.controller.handleGenerationEnded(ended());
+	await sleep(0);
+	fail(new Error("Retired engine stopped"));
+	await assert.rejects(pending);
+	assert.equal(h.controller.needsExplicitTermination(), false);
+});
+
+test("a replacement's pending control survives restart completion and keeps Ctrl+C armed (#3865)", async () => {
+	let finishRestart!: () => void;
+	let replacementReady!: () => void;
+	const h = harness((ready) => {
+		replacementReady = ready;
+		return new Promise<void>((resolve) => {
+			finishRestart = resolve;
+		});
+	});
+	h.controller.handleGenerationEnded(ended());
+	replacementReady();
+	const pending = h.controller.trackControlRequest(() => new Promise<void>(() => {}));
+	void pending.catch(() => {});
+	finishRestart();
+	await sleep(0);
+	assert.equal(h.controller.isRecovering(), false);
+	assert.equal(h.controller.needsExplicitTermination(), false);
+	h.advance(ENGINE_UNRESPONSIVE_MS);
+	assert.equal(h.controller.needsExplicitTermination(), true);
+});
+
+test("a replacement's control failing after restart completion keeps Ctrl+C armed (#3865)", async () => {
+	let finishRestart!: () => void;
+	let replacementReady!: () => void;
+	let failControl!: (error: Error) => void;
+	const h = harness((ready) => {
+		replacementReady = ready;
+		return new Promise<void>((resolve) => {
+			finishRestart = resolve;
+		});
+	});
+	h.controller.handleGenerationEnded(ended());
+	replacementReady();
+	const control = h.controller.trackControlRequest(
+		() =>
+			new Promise<void>((_resolve, reject) => {
+				failControl = reject;
+			}),
+	);
+	finishRestart();
+	await sleep(0);
+	failControl(new Error("clear_queue timed out"));
+	await assert.rejects(control);
+	assert.equal(h.controller.needsExplicitTermination(), true);
+});
+
+test("a replacement's control failing before restart completion keeps Ctrl+C armed (#3865)", async () => {
+	let finishRestart!: () => void;
+	let replacementReady!: () => void;
+	const h = harness((ready) => {
+		replacementReady = ready;
+		return new Promise<void>((resolve) => {
+			finishRestart = resolve;
+		});
+	});
+	h.controller.handleGenerationEnded(ended());
+	replacementReady();
+	await assert.rejects(
+		h.controller.trackControlRequest(async () => {
+			throw new Error("abort rejected");
+		}),
+	);
+	finishRestart();
+	await sleep(0);
+	assert.equal(h.controller.needsExplicitTermination(), true);
+});
+
+test("controls sent before the replacement is ready stay fenced out after restart completes (#3865)", async () => {
+	let finishRestart!: () => void;
+	let replacementReady!: () => void;
+	let failRetired!: (error: Error) => void;
+	const h = harness((ready) => {
+		replacementReady = ready;
+		return new Promise<void>((resolve) => {
+			finishRestart = resolve;
+		});
+	});
+	h.controller.handleGenerationEnded(ended());
+	await assert.rejects(
+		h.controller.trackControlRequest(async () => {
+			throw new Error("Client not started");
+		}),
+	);
+	const retired = h.controller.trackControlRequest(
+		() =>
+			new Promise<void>((_resolve, reject) => {
+				failRetired = reject;
+			}),
+	);
+	replacementReady();
+	finishRestart();
+	await sleep(0);
+	h.advance(ENGINE_UNRESPONSIVE_MS);
+	assert.equal(h.controller.needsExplicitTermination(), false);
+	failRetired(new Error("Agent process stopped"));
+	await assert.rejects(retired);
 	assert.equal(h.controller.needsExplicitTermination(), false);
 });
