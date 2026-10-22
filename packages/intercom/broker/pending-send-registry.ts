@@ -5,6 +5,12 @@ export { buildSendSignature } from "./send-signature.js";
 const DEFAULT_GENERATION_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_MAX_GENERATIONS = 10_000;
 
+export class PendingSendTimeoutError extends Error {
+  constructor() {
+    super("Send timeout");
+  }
+}
+
 export interface SendOptionsLike extends LogicalSendOptions {}
 
 export interface SendResultLike {
@@ -106,7 +112,7 @@ export class PendingSendRegistry {
       generation,
     };
     attempt.timer = setTimeout(() => {
-      this.reject(attempt, new Error("Send timeout"));
+      this.reject(attempt, new PendingSendTimeoutError());
     }, timeoutMs);
     this.attempts.set(messageId, attempt);
     return { attempt, owner: true };
@@ -131,7 +137,7 @@ export class PendingSendRegistry {
     if (!attempt || (attemptId === undefined ? !attempt.legacyEligible : attempt.attemptId !== attemptId)) return false;
     if (attempt.timer) clearTimeout(attempt.timer);
     attempt.timer = setTimeout(() => {
-      this.reject(attempt, new Error("Send timeout"));
+      this.reject(attempt, new PendingSendTimeoutError());
     }, timeoutMs);
     return true;
   }

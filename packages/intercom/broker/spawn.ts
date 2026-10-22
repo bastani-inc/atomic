@@ -272,13 +272,21 @@ export function getBrokerSpawnOptions(
 }
 
 /**
- * Truncate (or create) the broker log so each spawn starts from a bounded, current file. Returns false when a
+ * Preserve a bounded previous log across truncation. Returns false when a
  * Windows broker that is still starting holds the log through its launcher's stderr redirect.
  */
 function resetBrokerLog(logPath: string = BROKER_LOG): boolean {
   ensurePrivateDirectory(dirname(logPath));
   try {
+    const previous = readBrokerLogTail(logPath);
     closeSync(openSync(logPath, "w"));
+    if (previous.length > 0) {
+      try {
+        const previousPath = `${logPath}.previous`;
+        writeFileSync(previousPath, Buffer.from(previous).subarray(-BROKER_LOG_TAIL_BYTES), { mode: 0o600 });
+        if (process.platform !== "win32") chmodSync(previousPath, 0o600);
+      } catch {}
+    }
     return true;
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;

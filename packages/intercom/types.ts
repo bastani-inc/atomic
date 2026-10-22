@@ -125,6 +125,7 @@ export interface SupervisorRegistration {
 
 
 export type ClientMessage =
+	| { type: "health"; requestId: string }
 	| {
 			type: "register";
 			session: Omit<SessionInfo, "id">;
@@ -228,6 +229,7 @@ export type ClientMessage =
     };
 
 export type BrokerMessage =
+	| { type: "health"; requestId: string; instanceId: string }
 	| {
 			type: "registered";
 			sessionId: string;

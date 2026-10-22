@@ -16,7 +16,7 @@ import type {
 	WorkflowPossibleStageAnnouncement,
 	WorkflowRunParentAnnouncement,
 } from "../types.js";
-import { buildSendSignature, PendingSendRegistry } from "./pending-send-registry.js";
+import { buildSendSignature, PendingSendRegistry, PendingSendTimeoutError } from "./pending-send-registry.js";
 import { readSubagentMessageSource } from "../source-ownership.js";
 import { isMessage, isSessionInfo } from "./client-message-validation.js";
 import { normalizeGroups } from "../group.js";
@@ -181,6 +181,7 @@ export class IntercomClient extends EventEmitter {
   /** Source identity is captured once at connect, never read from env per message. */
   private _messageSource: Message["source"] | undefined;
   private pendingSends = new PendingSendRegistry();
+  private readonly sendResults = new WeakMap<Promise<SendResult>, Promise<SendResult>>();
   private pendingReplyTargets = new Map<string, { messageId: string; bind(sessionId: string): void }>();
   private pendingGroupLists = new Map<string, { resolve: (groups: GroupSummary[]) => void; reject: (error: Error) => void }>();
   private pendingLists = new Map<string, { resolve: (directory: SessionDirectory) => void; reject: (e: Error) => void }>();
@@ -201,6 +202,43 @@ export class IntercomClient extends EventEmitter {
   private pendingRestoringRecipientRequests = new Map<string, { resolve(): void; reject(error: Error): void }>();
   private disconnecting = false;
   private disconnectError: Error | null = null;
+  private healthCheck: { socket: net.Socket; result: Promise<Error | undefined> } | undefined;
+
+  private async requestTimeout(socket: net.Socket, error: Error): Promise<Error> {
+    if (this.socket !== socket || socket.destroyed) return this.disconnectError ?? new IntercomClientDisconnectedError();
+    if (this.healthCheck?.socket !== socket) {
+      const requestId = randomUUID();
+      const result = new Promise<Error | undefined>((resolve) => {
+        const finish = (failure?: Error) => {
+          clearTimeout(timer);
+          this.pendingGroupLists.delete(requestId);
+          resolve(failure);
+        };
+        const timer = setTimeout(() => finish(new IntercomBrokerTimeoutError("Broker health check timed out")), GROUP_REQUEST_TIMEOUT_MS);
+        this.pendingGroupLists.set(requestId, { resolve: () => finish(), reject: finish });
+        try {
+          writeMessage(socket, { type: "list_groups", requestId });
+        } catch (cause) {
+          finish(new IntercomClientDisconnectedError({ cause }));
+        }
+      });
+      this.healthCheck = { socket, result };
+    }
+    const check = this.healthCheck;
+    const failure = await check.result;
+    if (this.healthCheck === check) this.healthCheck = undefined;
+    if (failure === undefined) return error;
+    const reported = failure instanceof IntercomBrokerTimeoutError
+      ? new IntercomBrokerTimeoutError(error.message, { cause: failure })
+      : failure;
+    if (this.socket === socket && !this.disconnecting) {
+      this.disconnectError ??= reported;
+      this.failPending(this.disconnectError);
+      socket.destroy();
+      return this.disconnectError;
+    }
+    return reported;
+  }
 
 	constructor(returnAddress: string = randomUUID(), options: IntercomClientOptions = {}) {
 		super();
@@ -861,7 +899,7 @@ export class IntercomClient extends EventEmitter {
 		const requestId = randomUUID();
 		const timeout = setTimeout(() => {
 			if (!this.pendingLists.delete(requestId)) return;
-			reject(new Error("List sessions timeout"));
+			void this.requestTimeout(socket, new Error("List sessions timeout")).then(reject);
 		}, 5000);
 		this.pendingLists.set(requestId, {
 			resolve: (directory) => {
@@ -893,7 +931,7 @@ export class IntercomClient extends EventEmitter {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         if (!this.pendingGroupLists.delete(requestId)) return;
-        reject(new Error("List groups timeout"));
+        void this.requestTimeout(socket, new Error("List groups timeout")).then(reject);
       }, GROUP_REQUEST_TIMEOUT_MS);
       this.pendingGroupLists.set(requestId, {
         resolve: (groups) => { clearTimeout(timeout); resolve(groups); },
@@ -928,7 +966,7 @@ export class IntercomClient extends EventEmitter {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         if (!this.pendingMemberships.delete(requestId)) return;
-        reject(new Error("Membership update timeout"));
+        void this.requestTimeout(socket, new Error("Membership update timeout")).then(reject);
       }, GROUP_REQUEST_TIMEOUT_MS);
       this.pendingMemberships.set(requestId, {
         resolve: (groups) => { clearTimeout(timeout); resolve(groups); },
@@ -958,7 +996,7 @@ export class IntercomClient extends EventEmitter {
       const requestId = randomUUID();
       const timeout = setTimeout(() => {
         if (!this.pendingSupervisorAuthorizations.delete(requestId)) return;
-        reject(new Error("Supervisor authorization timeout"));
+        void this.requestTimeout(socket, new Error("Supervisor authorization timeout")).then(reject);
       }, 5000);
       this.pendingSupervisorAuthorizations.set(requestId, {
         resolve: (authorization) => { clearTimeout(timeout); resolve(authorization); },
@@ -1020,7 +1058,7 @@ export class IntercomClient extends EventEmitter {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         if (!this.pendingRestoringRecipientRequests.delete(requestId)) return;
-        reject(new Error("Restoring-recipient request timeout"));
+        void this.requestTimeout(socket, new Error("Restoring-recipient request timeout")).then(reject);
       }, RESTORING_RECIPIENT_REQUEST_TIMEOUT_MS);
       this.pendingRestoringRecipientRequests.set(requestId, {
         resolve: () => { clearTimeout(timeout); resolve(); },
@@ -1088,7 +1126,7 @@ export class IntercomClient extends EventEmitter {
 			const requestId = randomUUID();
 			const timeout = setTimeout(() => {
 				if (!this.pendingStageRouteRegistrations.delete(requestId)) return;
-				reject(new IntercomBrokerTimeoutError("Pending-stage route registration timeout"));
+				void this.requestTimeout(socket, new IntercomBrokerTimeoutError("Pending-stage route registration timeout")).then(reject);
 			}, PENDING_STAGE_ROUTE_ACK_TIMEOUT_MS);
 			this.pendingStageRouteRegistrations.set(requestId, {
 				resolve: () => {
@@ -1239,7 +1277,15 @@ export class IntercomClient extends EventEmitter {
     } catch (error) {
       return Promise.reject(toError(error));
     }
-    if (!acquired.owner) return acquired.attempt.promise;
+    let result = this.sendResults.get(acquired.attempt.promise);
+    if (result === undefined) {
+      result = acquired.attempt.promise.catch(async (error: Error) => {
+        if (error instanceof PendingSendTimeoutError) throw await this.requestTimeout(socket, error);
+        throw error;
+      });
+      this.sendResults.set(acquired.attempt.promise, result);
+    }
+    if (!acquired.owner) return result;
     const message: Message = {
       id: messageId,
       timestamp: Date.now(),
@@ -1271,7 +1317,7 @@ export class IntercomClient extends EventEmitter {
     }
     const clearReplyTarget = () => { this.pendingReplyTargets.delete(acquired.attempt.attemptId); };
     void acquired.attempt.promise.then(clearReplyTarget, clearReplyTarget);
-    return acquired.attempt.promise;
+    return result;
   }
   updatePresence(updates: PresenceUpdates): boolean {
     if (this.disconnecting) {
@@ -1306,7 +1352,7 @@ export class IntercomClient extends EventEmitter {
       };
       const timeout = setTimeout(() => {
         if (!this.pendingPresence.delete(requestId)) return;
-        reject(new Error("Presence update timeout"));
+        void this.requestTimeout(socket, new Error("Presence update timeout")).then(reject);
       }, PRESENCE_ACK_TIMEOUT_MS);
       this.pendingPresence.set(requestId, {
         resolve: wrappedResolve,

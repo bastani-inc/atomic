@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Intercom remaining stuck on a broker that accepts connections but stops answering. New brokers monitor their own request handling and terminate after about a minute of failed health checks so clients can start one replacement. Timed-out client requests also check connection health before entering reconnect recovery, without restarting a responsive broker. A bounded previous broker log and the latest watchdog diagnosis survive replacement ([#3862](https://github.com/bastani-inc/atomic/issues/3862)).
+
 ## [0.9.41] - 2026-10-22
 
 ### Changed
