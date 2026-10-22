@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.9.41] - 2026-10-22
+
+### Added
+
+- Added a `resumeInFlight` subagent setting (`"never"`, `"ask"`, or `"auto"`, default `"never"`) for recovery of paused and quit subagents that are awaiting resume. `ask` confirms once, listing each subagent, and `auto` resumes each from its own session, with its completion reaching the session that launched it; `never` leaves them for a manual `resume`. It applies when Atomic starts or a session is resumed, to that session's own subagents, never to workflow-stage children, and an invalid value is reported and treated as `never` ([#3827](https://github.com/bastani-inc/atomic/issues/3827)).
+
+### Changed
+
+- Quitting a subagent now behaves like quitting a workflow. The `quit` and `pause` results say the child is paused · awaiting resume and name `{ action: "resume", id: "<child-id>" }`; the parent's completion notice says the same, with the typed `quit` or `pause` stop reason instead of `parent-handoff` and without "This execution has ended". `{ action: "status", id }` reports a paused or quit child as paused · awaiting resume with its resume call, and `{ action: "status" }` lists every such child, including after Atomic restarts. Launch cards of such children show `‖ Paused · awaiting resume` (or `‖ Quit · paused · awaiting resume`) instead of `(resumable)`.
+
+### Fixed
+
+- A subagent with `model: "auto"` no longer waits indefinitely on a slow routing model. Each routing inference now stops after the `httpIdleTimeoutMs` deadline (10 minutes by default), and the subagent runs on the current chat model when it satisfies the routing constraints ([#3806](https://github.com/bastani-inc/atomic/issues/3806))
+
 ## [0.9.41-alpha.1] - 2026-10-21
 
 ### Added
