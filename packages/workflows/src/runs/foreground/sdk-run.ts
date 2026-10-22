@@ -1,11 +1,14 @@
+import { randomUUID } from "node:crypto";
 import { initializeDurableBackend } from "../../durable/factory.js";
 import { availableRunDurableBackend } from "../../durable/run-owner-backend.js";
 import { availableStoreDurableBackendOverride, bindStoreDurableBackend } from "../../durable/store-backend.js";
 import { run as engineRun } from "../../engine/run.js";
 import { createAgentSessionAdapter } from "../../extension/wiring.js";
 import { store as defaultStore } from "../../shared/store.js";
+import { currentWorkflowStore } from "../../shared/store-factory.js";
 import type { WorkflowDefinition, WorkflowInputValues, WorkflowOutputValues } from "../../shared/types.js";
 import type { RunOpts, RunResult } from "./executor-types.js";
+import { acquireStandaloneIntercom } from "./sdk-intercom.js";
 
 type WorkflowRunInputArgument = Parameters<typeof engineRun>[1];
 
@@ -24,7 +27,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	callerOpts: RunOpts = {},
 ): Promise<RunResult> {
 	const opts = withDefaultAgentSessionAdapter(callerOpts);
-	const store = opts.store ?? defaultStore;
+	const store = opts.store === undefined || opts.store === defaultStore ? currentWorkflowStore() : opts.store;
 	const sourceRunId = opts.continuation?.source.id ?? opts.runId;
 	const ownedBackend = sourceRunId === undefined ? undefined : availableRunDurableBackend(store.runs(), sourceRunId);
 	const preset =
@@ -35,7 +38,13 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	if (opts.journal === undefined && opts.durableBackend === undefined && ownedBackend === undefined) {
 		bindStoreDurableBackend(store, backend);
 	}
-	return await engineRun(def, inputs, { ...opts, store, durableBackend: backend });
+	const runId = opts.runId ?? randomUUID();
+	const releaseIntercom = await acquireStandaloneIntercom(store, runId, opts.cwd ?? process.cwd());
+	try {
+		return await engineRun(def, inputs, { ...opts, runId, store, durableBackend: backend });
+	} finally {
+		await releaseIntercom();
+	}
 }
 
 /** Stage sessions default to in-process Atomic SDK sessions when the caller supplies no session adapter. */
