@@ -5,6 +5,7 @@
 ### Fixed
 
 - HTML session exports now show the recorded total cost of each response, such as OpenRouter's billed cost, instead of the sum of its catalog-estimated components. Sessions recorded before totals were stored still use the component sum ([pi #9980](https://github.com/earendil-works/pi/issues/9980))
+- On macOS, cancelling a running bash command no longer lets the next command in a `a; b` sequence start while the shell is being killed: the process group is stopped before it is killed ([pi #11252](https://github.com/earendil-works/pi/issues/11252))
 
 ## [0.9.41] - 2026-10-22
 
