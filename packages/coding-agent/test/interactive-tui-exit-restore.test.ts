@@ -1,6 +1,7 @@
-import { expect, test } from "vitest";
-import { createFullscreenTui } from "../src/modes/interactive/interactive-tui.ts";
-import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.ts";
+import assert from "node:assert/strict";
+import { test } from "vitest";
+import { createFullscreenTui } from "../src/modes/interactive/interactive-tui.js";
+import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.js";
 
 class ExitRestoreTerminal extends RecordingTerminal {
 	readonly restores: Array<{ before: string; after: string }> = [];
@@ -17,17 +18,17 @@ test("restores the fullscreen terminal modes when the process exits without stop
 	tui.start();
 	const added = process.listeners("exit").filter((listener) => !listenersBefore.has(listener));
 	try {
-		expect(added).toHaveLength(1);
+		assert.equal(added.length, 1);
 		added[0]?.(0);
 
-		expect(terminal.restores).toHaveLength(1);
+		assert.equal(terminal.restores.length, 1);
 		const { before, after } = terminal.restores[0]!;
 		for (const sequence of ["\x1b[?1006l", "\x1b[?1004l", "\x1b[?1003l", "\x1b[?1000l"]) {
-			expect(before).toContain(sequence);
+			assert.ok(before.includes(sequence), `missing ${JSON.stringify(sequence)}`);
 		}
-		expect(after.endsWith("\x1b[?1049l\x1b[?25h")).toBe(true);
+		assert.ok(after.endsWith("\x1b[?1049l\x1b[?25h"));
 	} finally {
 		tui.stop();
 	}
-	expect(process.listeners("exit")).not.toContain(added[0]);
+	assert.ok(!process.listeners("exit").includes(added[0]!));
 });

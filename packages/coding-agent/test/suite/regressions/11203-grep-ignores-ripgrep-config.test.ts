@@ -1,10 +1,11 @@
+import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { spawn } from "child_process";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	ensureTool: vi.fn<(tool: "fd" | "rg") => Promise<string | undefined>>(),
@@ -17,15 +18,15 @@ vi.mock("child_process", async () => {
 	return { ...actual, spawn: mocks.spawn };
 });
 
-vi.mock("../../../src/core/tools/search-native.ts", () => ({
+vi.mock("../../../src/core/tools/search-native.js", () => ({
 	loadNativeSearchBinding: mocks.loadNativeSearchBinding,
 }));
 
-vi.mock("../../../src/utils/tools-manager.ts", () => ({
+vi.mock("../../../src/utils/tools-manager.js", () => ({
 	ensureTool: mocks.ensureTool,
 }));
 
-import { createGrepToolDefinition } from "../../../src/core/tools/grep.ts";
+import { createGrepToolDefinition } from "../../../src/core/tools/grep.js";
 
 const mockedSpawn = vi.mocked(spawn);
 
@@ -59,8 +60,8 @@ describe("issue #11203: grep ignores ripgrep configuration", () => {
 		await createGrepToolDefinition(tempDir).execute("grep-ripgrep-config", { pattern: "a.b" });
 
 		const args = mockedSpawn.mock.calls[0]?.[1] as string[];
-		expect(mocks.ensureTool).toHaveBeenCalledWith("rg");
-		expect(args).toContain("--no-config");
-		expect(args.indexOf("--no-config")).toBeLessThan(args.indexOf("--"));
+		assert.deepEqual(mocks.ensureTool.mock.calls, [["rg"]]);
+		assert.ok(args.includes("--no-config"));
+		assert.ok(args.indexOf("--no-config") < args.indexOf("--"));
 	});
 });

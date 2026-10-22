@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { getCapabilities, resetCapabilitiesCache, setCapabilityOverrides } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
-import { linkPath } from "../src/core/tools/render-utils.ts";
+import { linkPath } from "../src/core/tools/render-utils.js";
 
 const clearedEnvironment = [
 	"TMUX",
