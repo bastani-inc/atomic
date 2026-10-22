@@ -123,6 +123,75 @@ test("independent connections claim once and fence lease renewals and expiry (#3
 	}
 });
 
+test.each(["renew", "expire"] as const)("same-worker generation fences stale %s (#3869)", async (operation) => {
+	const f = await fixture();
+	try {
+		const pool = await openSqlPoolQueue(f.journal);
+		await pool.initialize(f.lease, 60_000);
+		await pool.enqueue(f.lease, work, boundary);
+		const held = await pool.claim(f.lease, "worker", [work], 60_000);
+		assert.ok(held);
+		await f.database.run("UPDATE wf_runs_work SET expires_at = 0 WHERE id = ?", held.id);
+		assert.equal(await pool.expire(f.lease, held), true);
+		const replacement = await pool.claim(f.lease, "worker", [work], 60_000);
+		assert.ok(replacement);
+		assert.equal(replacement.id, held.id);
+		assert.equal(replacement.worker, held.worker);
+		assert.equal(replacement.epoch, held.epoch);
+		assert.equal(replacement.generation, held.generation + 1);
+		await assert.rejects(
+			operation === "renew" ? pool.renew(f.lease, held, "stale", 60_000) : pool.expire(f.lease, held),
+			/Stale work lease/,
+		);
+		assert.deepEqual(await pool.inspect("root"), [replacement]);
+		assert.equal((await pool.renew(f.lease, replacement, "current", 60_000)).generation, replacement.generation);
+		await f.database.run("UPDATE wf_runs_work SET expires_at = 0 WHERE id = ?", replacement.id);
+		assert.equal(await pool.expire(f.lease, replacement), true);
+	} finally {
+		await f.close();
+	}
+});
+
+test.each(["initialize", "enqueue", "claim", "renew", "expire"] as const)(
+	"same-holder coordinator epoch fences stale %s (#3869)",
+	async (operation) => {
+		const f = await fixture();
+		try {
+			const pool = await openSqlPoolQueue(f.journal);
+			await pool.initialize(f.lease, 60_000);
+			await pool.enqueue(f.lease, work, boundary);
+			const held = await pool.claim(f.lease, "worker", [work], 60_000);
+			assert.ok(held);
+			await f.journal.release(f.lease);
+			const reacquired = await f.journal.acquire(f.lease.runId, f.lease.holderId);
+			assert.equal(reacquired.status, "acquired");
+			if (reacquired.status !== "acquired") assert.fail("reacquisition failed");
+			assert.equal(reacquired.lease.holderId, f.lease.holderId);
+			assert.equal(reacquired.lease.epoch, f.lease.epoch + 1);
+			await pool.initialize(reacquired.lease, 60_000);
+			const staleMutations = {
+				initialize: () => pool.initialize(f.lease, 60_000),
+				enqueue: () => pool.enqueue(f.lease, work, boundary),
+				claim: () => pool.claim(f.lease, "worker", [work], 60_000),
+				renew: () => pool.renew(f.lease, held, "stale", 60_000),
+				expire: () => pool.expire(f.lease, held),
+			};
+			await assert.rejects(staleMutations[operation](), /Stale lease/);
+			assert.deepEqual(await pool.inspect("root"), [held]);
+			assert.equal(await pool.expire(reacquired.lease, held), true);
+			const replacement = await pool.claim(reacquired.lease, "worker", [work], 60_000);
+			assert.ok(replacement);
+			assert.equal(replacement.epoch, reacquired.lease.epoch);
+			assert.equal(
+				(await pool.renew(reacquired.lease, replacement, "current", 60_000)).generation,
+				replacement.generation,
+			);
+		} finally {
+			await f.close();
+		}
+	},
+);
+
 test("coordinator expiry and takeover fence every queue mutation; paused roots grant no claims (#3869)", async () => {
 	const f = await fixture();
 	try {
