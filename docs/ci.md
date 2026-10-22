@@ -687,7 +687,7 @@ That order publishes native leaves first, then the native root, then `@bastani/p
 
 ### Registering a new package name
 
-A package name that npm has never seen cannot use trusted publishing. `publish.yml` lists such names in its `requires_registered_name=(…)` array, currently only `@bastani/atomic-storage-libsql`, and skips them with a workflow warning until the name exists on npm, so a release never fails on them. The [registration preflight](#npm-registration-preflight) reads the same array and reports these names as skipped instead of refusing the cut. Every other payload name still has to be registered.
+A package name that npm has never seen cannot use trusted publishing. `publish.yml` lists such names in its `requires_registered_name=(…)` array, currently only `@bastani/atomic-storage-libsql`, and skips them with a workflow warning only after npm confirms a not-found response. Network, rate-limit, server, and other indeterminate errors fail publication before dependent packages are published. The [registration preflight](#npm-registration-preflight) reads the same array and reports confirmed missing names as skipped instead of refusing the cut. Every other payload name still has to be registered.
 
 To start publishing `@bastani/atomic-storage-libsql`, a maintainer does this once, outside the repository:
 

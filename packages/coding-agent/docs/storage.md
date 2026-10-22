@@ -89,7 +89,7 @@ The running Intercom broker keeps the selection it started with. `atomic interco
 
 - the selected storage and where the selection comes from: an environment variable, project settings, global settings (`storage`, `sessions.storage`, or `workflows.journal`), or the default. Selections that are set but outranked are listed as `overrides`. See [Selecting storage per process](#selecting-storage-per-process) for the order;
 - whether the adapter loads, and from which installed package;
-- whether the database answers a `SELECT 1`. Local SQLite files are opened read-only, without changing journal mode; a file that does not exist yet is not created, and no table is created or changed;
+- whether the database answers a `SELECT 1`. Local SQLite files, including adapter `file:` URLs, are checked through a read-only SQLite connection instead of an adapter hook that could create the file. Missing files are reported without creating them; no journal mode or table is changed. Relative adapter `file:` URLs are not probed: use an absolute URL to identify the file unambiguously;
 - for Intercom, whether a broker started now would route across machines, and how many brokers are live in the shared database;
 - whether an Intercom broker is running, how many sessions it serves, whether it uses the current selection, and its multi-node routing state.
 

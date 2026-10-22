@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
@@ -255,6 +255,21 @@ describe("storage status checks", () => {
 		assert.equal(result.code, 1);
 		assert.match(result.err, /Cannot load.*global.*settings/i);
 		assert.equal(result.out, "");
+	});
+
+	test("status never creates a missing libSQL file database (#3856)", async () => {
+		const path = join(root, "missing-libsql.sqlite");
+		writeSettings({
+			packages: [packageRoot],
+			storage: { adapter: LIBSQL_ADAPTER_PACKAGE, options: { url: pathToFileURL(path).href } },
+		});
+		const result = await storage(["status", "--json"]);
+		assert.equal(result.code, 0, result.err);
+		assert.equal(existsSync(path), false);
+		const status: StorageStatus = JSON.parse(result.out);
+		assert.equal(domain(status, "sessions").probe?.adapter?.loaded, true);
+		assert.equal(domain(status, "sessions").probe?.connection.status, "skipped");
+		assert.match(domain(status, "sessions").probe?.connection.detail ?? "", /file not found/);
 	});
 
 	test("status leaves a DELETE-journal SQLite file byte-for-byte unchanged (#3856)", async () => {

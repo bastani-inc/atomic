@@ -813,9 +813,19 @@ jobs:
           publish_package() {
             local name=$1
             [[ -n "${tarballs[$name]:-}" ]] || { echo "Missing package $name" >&2; return 1; }
-            if [[ " ${requires_registered_name[*]} " == *" $name "* ]] && ! npm view "$name" name --registry https://registry.npmjs.org >/dev/null 2>&1; then
-              echo "::warning::$name is not registered on npm yet; skipping it. Publish it once by hand and add the trusted publisher (see docs/ci.md)."
-              return 0
+            if [[ " ${requires_registered_name[*]} " == *" $name "* ]]; then
+              local registration_output registration_status
+              if registration_output=$(npm view "$name" name --registry https://registry.npmjs.org 2>&1); then
+                : # The registered name can be published with its trusted publisher.
+              else
+                registration_status=$?
+                if (( registration_status < 128 )) && grep -Eq 'E404|404 Not Found|is not in this registry' <<< "$registration_output"; then
+                  echo "::warning::$name is not registered on npm yet; skipping it. Publish it once by hand and add the trusted publisher (see docs/ci.md)."
+                  return 0
+                fi
+                echo "Cannot determine whether $name is registered (npm exited $registration_status): $registration_output" >&2
+                return 1
+              fi
             fi
             if npm view "$name@$VERSION" version --registry https://registry.npmjs.org >/dev/null 2>&1; then
               echo "$name@$VERSION already exists; skipping."

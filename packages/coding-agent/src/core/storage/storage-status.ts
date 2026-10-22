@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ENV_SESSION_DIR, isBunBinary } from "../../config.js";
 import { resolvePath } from "../../utils/paths.ts";
 import type { BrokerMultiNodeStatus, IntercomBrokerControl } from "../intercom-broker-control.ts";
@@ -203,6 +204,28 @@ async function probeSelection(
 		options = await resolveAdapterOptions(selection, context);
 	} catch (error) {
 		return { adapter: loaded, connection: { status: "failed", detail: errorText(error as Error) } };
+	}
+	if (typeof options.url === "string" && options.url.startsWith("file:")) {
+		// Normal adapter hooks may create files. Probe local SQLite through the read-only opener instead.
+		if (!options.url.startsWith("file:/")) {
+			return {
+				adapter: loaded,
+				connection: { status: "skipped", detail: "relative file: URL cannot be safely probed" },
+			};
+		}
+		try {
+			const path = fileURLToPath(options.url);
+			if (!existsSync(path)) {
+				return {
+					adapter: loaded,
+					connection: { status: "skipped", detail: "file not found; Atomic creates it on first use" },
+				};
+			}
+			const local = await probeSelection({ kind: "sqlite", path }, context, inspect);
+			return { adapter: loaded, connection: local.connection };
+		} catch (error) {
+			return { adapter: loaded, connection: { status: "failed", detail: errorText(error as Error) } };
+		}
 	}
 	return { adapter: loaded, connection: await roundTrip(() => hook(options, context), "The database", inspect) };
 }
