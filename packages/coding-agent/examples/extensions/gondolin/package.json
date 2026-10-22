@@ -9,7 +9,7 @@
 		"check": "tsc -p ../../../test/tsconfig.remote-examples.json"
 	},
 	"dependencies": {
-		"@earendil-works/gondolin": "0.12.0"
+		"@earendil-works/gondolin": "0.14.0"
 	},
 	"atomic": {
 		"extensions": [
