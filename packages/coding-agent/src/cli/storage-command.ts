@@ -355,12 +355,20 @@ async function joinStorage(
 	}
 
 	const control = await loadControl(options);
-	const collected = await collectStorageStatus({
-		cwd,
-		agentDir,
-		probe: false,
-		...(control instanceof Error ? {} : { control }),
-	});
+	let collected: StorageStatus;
+	try {
+		collected = await collectStorageStatus({
+			cwd,
+			agentDir,
+			probe: false,
+			...(control instanceof Error ? {} : { control }),
+		});
+	} catch (error) {
+		// Settings and the token are already committed; optional diagnostics cannot undo that success.
+		log(`Storage was saved, but could not report overrides: ${errorText(error as Error)}.`);
+		log(`Run \`${APP_NAME} storage status\` after fixing the reported settings error.`);
+		return 0;
+	}
 	const overridden = collected.domains.filter(
 		(domain) => domain.source !== "global settings: storage" && domain.source !== "default",
 	);

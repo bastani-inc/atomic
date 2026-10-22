@@ -36,6 +36,7 @@
 - `atomic storage join` keeps previous credentials intact when saving settings fails and rejects relative `file:` URLs that would select different databases from different directories. New joins use separate private token files, preserving existing sessions' credentials ([#3857](https://github.com/bastani-inc/atomic/issues/3857))
 - `atomic storage status` reports settings load failures, opens local SQLite files read-only without changing journal mode, and bounds connection cleanup even when a query stalls ([#3856](https://github.com/bastani-inc/atomic/issues/3856))
 - `createSqliteDatabase()` preserves callback and rollback failures when transaction cleanup also fails ([#3856](https://github.com/bastani-inc/atomic/issues/3856))
+- A successful `atomic storage join` no longer reports failure when malformed project settings prevent the final override report. It warns that storage was saved and asks you to fix the settings before running status ([#3857](https://github.com/bastani-inc/atomic/issues/3857))
 
 ## [0.9.41] - 2026-10-22
 

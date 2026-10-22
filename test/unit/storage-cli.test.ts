@@ -414,6 +414,18 @@ describe("atomic storage join with the libSQL package (#3857)", () => {
 		);
 	});
 
+	test("join reports success after saving even if project diagnostics cannot load (#3857)", async () => {
+		writeSettings({ packages: [packageRoot] });
+		writeProjectSettings({}, true);
+		writeFileSync(join(project, ".atomic", "settings.json"), '{ "storage": ');
+		const result = await storage(["join", databaseUrl, "--token-file", tokenFile]);
+		assert.equal(result.code, 0, result.err);
+		assert.match(result.out, /saved.*could not report.*project settings/i);
+		const saved = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
+		assert.equal(saved.storage.options.url, databaseUrl);
+		assert.equal(readFileSync(resolve(root, saved.storage.secrets.authToken.file), "utf8"), "secret-token");
+	});
+
 	test(
 		"stores the trimmed token privately, writes only `storage`, creates no tables, and reports overrides",
 		async () => {

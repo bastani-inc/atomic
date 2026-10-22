@@ -79,6 +79,8 @@ atomic storage status
 
 Nothing is written when the token is empty or the connection fails. If saving settings fails, the new token file is removed and the previous token remains untouched. Previous token files are kept after a successful join too, so already-running sessions can continue using them; remove them only after those sessions stop and no settings reference them. When the adapter is not installed, the command prints the `atomic install` command to run first. An absolute `file:` URL, such as `file:///home/me/shared.sqlite`, needs no `--token-file`; relative file URLs are refused so another working directory cannot select a different database. The `libsql://`, `https://`, and `wss://` schemes are accepted. A URL that contains the token itself, as a user name, a password, or an `authToken` parameter, is refused: pass the token with `--token-file` so it stays out of settings and output.
 
+After storage is saved, a problem reading project settings only affects the final override report: the command warns you and still exits successfully. Fix the reported settings error, then run `atomic storage status` to inspect the effective selection.
+
 The running Intercom broker keeps the selection it started with. `atomic intercom restart` replaces it: connected sessions reconnect within a few seconds and start a broker that reads the new selection. See [Running Intercom across machines](/intercom/operations#running-intercom-across-machines).
 
 ### Checking the selected storage
