@@ -584,6 +584,7 @@ describe("openai-responses provider defaults", () => {
 		// Pricing keys on the base model, so gpt-5.5's 2.5x rate survives the rename.
 		expect(result.usage.cost.input).toBe(base.cost.input * 2.5 * tokenScale);
 		expect(result.usage.cost.total).toBe((base.cost.input + base.cost.output) * 2.5 * tokenScale);
+		expect(result.usage.cost.totalFromProvider).toBe(false);
 	});
 
 	it.each(["gpt-6-sol", "gpt-6-luna"] as const)(

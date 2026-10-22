@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `usage.cost.totalFromProvider` to usage totals. Summed usage, including nested tool-call and compaction totals, reports `true` only when every part was a provider-reported billed cost; catalog-estimated and legacy sessions without the field report `false`.
+
 ### Changed
 
 - `install.sh` and `install.ps1` no longer re-download Atomic when the requested release (or the latest release, when none is requested) is already installed and healthy. They print `atomic <tag> is already installed; skipping download`, keep the `Installed to` line and PATH guidance, and download nothing; on Windows a rerun also restores a missing User PATH entry. A different version, or a missing or broken launcher, `current` pointer (including one that points at a versions directory outside the install root), shim, or payload (including a missing `app.js` or other startup file), installs and repairs as before. Pass `--force` (`-Force` on Windows) or set `ATOMIC_FORCE_INSTALL=1` to reinstall anyway.

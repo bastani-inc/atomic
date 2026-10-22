@@ -210,6 +210,7 @@ function scaleUsageCost(usage: Usage, multiplier: number): void {
 	usage.cost.cacheRead *= multiplier;
 	usage.cost.cacheWrite *= multiplier;
 	usage.cost.total = usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite;
+	usage.cost.totalFromProvider = false;
 }
 
 type ServiceTier = NonNullable<ResponsesServiceTier>;
