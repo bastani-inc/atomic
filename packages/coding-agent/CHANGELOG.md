@@ -13,6 +13,7 @@
 - Fixed the `grep` tool following ripgrep's `RIPGREP_CONFIG_PATH` whenever it searches with `rg`, such as with `literal: true`, where config options like `--ignore-case` silently changed what the tool returned. The tool now runs `rg --no-config` ([#11203](https://github.com/earendil-works/pi/issues/11203))
 - Fixed `@` file autocomplete returning no results for queries containing regex metacharacters such as `[` or `(` ([#10972](https://github.com/earendil-works/pi/issues/10972))
 - Fixed an unclosed `$$` display-math block swallowing or corrupting every Markdown table after it ([#11159](https://github.com/earendil-works/pi/issues/11159))
+- Fixed terminal modes (mouse tracking, focus reporting, Kitty keyboard protocol, bracketed paste, alternate screen) staying enabled when the process exits without calling `stop()`. A process `exit` handler now restores them synchronously ([#11170](https://github.com/earendil-works/pi/issues/11170))
 
 ## [0.9.41-alpha.1] - 2026-10-21
 
