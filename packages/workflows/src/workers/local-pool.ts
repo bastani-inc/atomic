@@ -9,6 +9,7 @@ import { openSqlPoolQueue, type PoolWork, type SqlPoolQueue } from "../durable/j
 import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
 import type { Lease } from "../durable/journal/types.js";
 import type { ResolvedInputs, RunOpts, RunResult } from "../runs/foreground/executor-types.js";
+import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../runs/foreground/stage-session-heartbeat.js";
 import type { WorkflowDefinition, WorkflowSerializableObject } from "../shared/types.js";
 import {
 	definitionDigest,
@@ -21,7 +22,7 @@ import type { WorkerRequest } from "./protocol.js";
 
 const WORK_LEASE_MS = 5_000;
 const RECOVERY_INTERVAL_MS = 500;
-const COORDINATOR_LEASE_MS = 30_000;
+const COORDINATOR_LEASE_MS = 3 * STAGE_SESSION_HEARTBEAT_INTERVAL_MS;
 
 export class LocalWorkerPool {
 	private readonly children = new Set<ChildProcess>();
@@ -115,6 +116,7 @@ export class LocalWorkerPool {
 			[JSON.stringify({ journalPath: this.options.journalPath, root, definitions: this.sources })],
 			{ stdio: ["ignore", "ignore", "pipe", "ipc"], execArgv: [] },
 		);
+		const disconnected = new Promise<void>((resolve) => child.once("disconnect", () => resolve()));
 		this.children.add(child);
 		const worker = randomUUID();
 		this.incarnations.set(worker, child);
@@ -140,14 +142,22 @@ export class LocalWorkerPool {
 				clearTimeout(startup);
 				this.incarnations.delete(worker);
 				reject(new Error(`Local worker exited before readiness: ${stderr}`));
-				if (!this.closed && ready) {
-					const exhausted = work ? work.generation >= 3 : ++this.replacements > 3;
-					if (exhausted) this.failure = new Error(`Local worker retry limit: ${stderr}`);
-					else
-						void this.spawn(root).catch((error: Error) => {
-							this.failure = error;
-						});
-				}
+				void disconnected
+					.then(() => serial)
+					.then(async () => {
+						if (this.closed || !ready) return;
+						if (work && (await this.queue!.result(root, work.id))) {
+							work = undefined;
+							this.replacements = 0;
+						}
+						if (this.closed) return;
+						const exhausted = work ? work.generation >= 3 : ++this.replacements > 3;
+						if (exhausted) this.failure = new Error(`Local worker retry limit: ${stderr}`);
+						else await this.spawn(root);
+					})
+					.catch((error: Error) => {
+						if (!this.closed) this.failure = error;
+					});
 			});
 			child.on("message", (message: WorkerRequest) => {
 				const response = serial.then(async () => {
@@ -243,6 +253,7 @@ export class LocalWorkerPool {
 		inputs: ResolvedInputs,
 		options: RunOpts,
 	): Promise<RunResult> {
+		if (options.budget !== undefined) throw new Error("Local workers refuse process-bound override: budget");
 		const index = this.options.definitions.findIndex((binding) => binding.definition === definition);
 		if (index < 0) throw new Error(`Worker definition is not importable: ${definition.name}`);
 		if (!options.parentRun || !options.durableScope)
@@ -288,14 +299,14 @@ export class LocalWorkerPool {
 		);
 		for (;;) {
 			if (this.closed) throw new Error("Local worker pool is closed");
-			if (this.failure) throw this.failure;
 			options.signal?.throwIfAborted();
-			await this.recoverExpired(root);
 			const result = await this.queue!.result(root, work.id);
 			if (result) {
 				await this.backend.hydrateWorkflow(root);
 				return result as unknown as RunResult;
 			}
+			if (this.failure) throw this.failure;
+			await this.recoverExpired(root);
 			await delay(25, undefined, { signal: options.signal });
 		}
 	}

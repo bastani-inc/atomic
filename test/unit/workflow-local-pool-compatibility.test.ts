@@ -86,3 +86,41 @@ test.each(["changed", "closure"])("%s definitions fail before launching workers 
 		removeTempDirectory(directory);
 	}
 });
+
+test("child budget overrides fail before launching workers (#3869)", async () => {
+	const directory = makeTempDirectory("pool-child-budget-");
+	const path = join(directory, "child.ts");
+	await writeFileEnsuringDir(
+		path,
+		`import { workflow } from "@bastani/atomic/workflows";
+	export const child = workflow({ name: "child", description: "", inputs: {}, outputs: {}, async run(ctx) { await ctx.tool("work", {}, async () => 1); return {}; } });`,
+	);
+	const child = await loadWorkerDefinition({ path, exportName: "child", digest: await definitionDigest(path) });
+	const journalPath = join(directory, "journal.sqlite");
+	const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path: journalPath } }));
+	const pool = new LocalWorkerPool(backend, {
+		journalPath,
+		workers: 1,
+		definitions: [{ path, definition: child, exportName: "child" }],
+	});
+	try {
+		const parent = workflow({
+			name: "parent",
+			description: "",
+			inputs: {},
+			outputs: {},
+			async run(ctx) {
+				await ctx.workflow(child, { budget: { maxDurationMs: 50 } });
+				return {};
+			},
+		});
+		const result = await run(parent, {}, { cwd: directory, store: createStore(), durableBackend: backend });
+		assert.equal(result.status, "failed");
+		assert.match(result.error ?? "", /process-bound override: budget/);
+		assert.equal(pool.workerPids.length, 0);
+	} finally {
+		await pool.close();
+		await backend.close();
+		removeTempDirectory(directory);
+	}
+});
