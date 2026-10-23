@@ -42,6 +42,8 @@ const DEFAULT_WORK_LEASE_MS = 30_000;
 const MINIMUM_WORK_LEASE_MS = 2 * WORKER_HEARTBEAT_INTERVAL_MS;
 const CONTROL_ACKNOWLEDGEMENT_TIMEOUT_MS = 5_000;
 const RECOVERY_INTERVAL_MS = 500;
+const ROOT_TICK_INTERVAL_MS = 100;
+const ROOT_STALL_THRESHOLD_MS = 500;
 const COORDINATOR_LEASE_MS = 3 * STAGE_SESSION_HEARTBEAT_INTERVAL_MS;
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
@@ -63,6 +65,9 @@ export class LocalWorkerPool {
 	private nextRecoveryAt = 0;
 	private readonly controlAcks = new Map<string, number>();
 	private readonly lastHeard = new Map<string, number>();
+	private lastTick = performance.now();
+	private respondingSince = performance.now();
+	private readonly ticker = setInterval(() => this.observeResponsiveness(), ROOT_TICK_INTERVAL_MS).unref();
 	private readonly leaseMs: number;
 	private desiredControl?: PoolControl["state"];
 	private root?: string;
@@ -399,6 +404,8 @@ export class LocalWorkerPool {
 						return work;
 					}
 					if (!work) throw new Error("Worker has no active attempt");
+					if (message.kind === "renew" || work.expiresAt - Date.now() < this.leaseMs / 2)
+						work = await queue.extend(lease, work, this.leaseMs);
 					if (message.kind === "activity") return this.handoff?.publish(work, message.runs);
 					if (message.kind === "route") return this.handoff?.route(work, message.runId);
 					if (message.kind === "delivery-ready")
@@ -430,10 +437,7 @@ export class LocalWorkerPool {
 								}),
 						);
 					}
-					if (message.kind === "renew") {
-						work = await queue.extend(lease, work, this.leaseMs);
-						return;
-					}
+					if (message.kind === "renew") return;
 					if (message.kind === "commit") {
 						const receipt = await queue.commit(lease, work, message.operation, message.mutation);
 						this.usageTotal = await this.usageLedger!.total(root);
@@ -492,14 +496,20 @@ export class LocalWorkerPool {
 		});
 		return this.recovering;
 	}
+	private observeResponsiveness(): void {
+		const now = performance.now();
+		if (now - this.lastTick > ROOT_STALL_THRESHOLD_MS) this.respondingSince = now;
+		this.lastTick = now;
+	}
 	private isLive(worker: string, child: ChildProcess): boolean {
+		this.observeResponsiveness();
 		const heard = this.lastHeard.get(worker);
 		return (
 			child.exitCode === null &&
 			child.signalCode === null &&
 			child.connected &&
 			heard !== undefined &&
-			performance.now() - heard < this.leaseMs
+			performance.now() - Math.max(heard, this.respondingSince) < this.leaseMs
 		);
 	}
 	private stop(child: ChildProcess): Promise<void> {
@@ -606,6 +616,7 @@ export class LocalWorkerPool {
 	}
 	private async dispose(): Promise<void> {
 		this.closed = true;
+		clearInterval(this.ticker);
 		this.releaseBinding();
 		if (this.options.rootId === undefined) workflowResourceAdmission.delete(this.backend);
 		let failure: unknown;
