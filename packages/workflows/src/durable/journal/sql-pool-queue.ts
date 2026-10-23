@@ -556,6 +556,18 @@ export class SqlPoolQueue {
 			return true;
 		});
 	}
+	async releasePreviousIncarnations(lease: Lease): Promise<number> {
+		lease = snapshotLease(lease);
+		return this.transaction(async (tx) => {
+			await this.authority(tx, lease);
+			const released = await tx.run(
+				`UPDATE ${this.work} SET state = 'ready', worker = NULL, expires_at = 0 WHERE root = ? AND state = 'leased' AND epoch < ?`,
+				lease.runId,
+				lease.epoch,
+			);
+			return released.changes;
+		});
+	}
 	async inspect(root: string): Promise<readonly PoolWork[]> {
 		return this.transaction(async (tx) =>
 			(await tx.all<WorkRow>(`SELECT * FROM ${this.work} WHERE root = ? ORDER BY ready_at, rowid`, root)).map(

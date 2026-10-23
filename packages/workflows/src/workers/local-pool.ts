@@ -124,6 +124,7 @@ export class LocalWorkerPool {
 		this.lease = { runId: root, holderId: state.holderId, epoch: state.epoch };
 		const queue = await openSqlPoolQueue(this.backend.journal);
 		await queue.initialize(this.lease, COORDINATOR_LEASE_MS);
+		await queue.releasePreviousIncarnations(this.lease);
 		for (;;) {
 			const intended = this.desiredControl ?? "running";
 			await queue.setControl(this.lease, intended);
