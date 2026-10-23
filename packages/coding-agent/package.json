@@ -1,6 +1,6 @@
 {
   "name": "@bastani/atomic",
-  "version": "0.0.0",
+  "version": "0.9.42",
   "description": "Atomic coding agent CLI with read, bash, edit, write tools and session management",
   "type": "module",
   "atomicConfig": {
@@ -89,8 +89,8 @@
     "prepublishOnly": "bun run clean && bun run build && bun run shrinkwrap"
   },
   "dependencies": {
-    "@bastani/atomic-natives": "0.0.0",
-    "@bastani/pi-ai": "0.0.0",
+    "@bastani/atomic-natives": "0.9.42",
+    "@bastani/pi-ai": "0.9.42",
     "@earendil-works/pi-agent-core": "1.4.0",
     "@earendil-works/pi-codemode": "1.4.0",
     "@earendil-works/pi-tui": "1.4.0",
