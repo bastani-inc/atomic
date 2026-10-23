@@ -10,6 +10,8 @@ A headless Node process loads `workers/local-worker-entry.mjs`, then calls the e
 
 Workers poll the supervisor over IPC. The supervisor claims work and applies checkpoint/session operations through the fenced SQL queue. IPC is transport, not completion evidence. The root reads completed results from the SQL result record. Session creation, append and replacement write a stage checkpoint and transcript in the same fenced transaction; no worker transcript is recovered from a JSONL path.
 
+Checkpoint completion timestamps come from the worker's JavaScript clock. The coordinator validates them against both its JavaScript clock and SQLite time, since Windows SQLite time can lag behind JavaScript. Lease fencing, event timestamps and commit receipts still use SQLite time only; the stored checkpoint timestamp remains unchanged for replay.
+
 Worker exit triggers a bounded replacement. Expired work becomes claimable only after the local worker has exited. Each child has a three-attempt limit; successful recovery of one child does not exhaust retries for later children. Replacement workers replay the child from acknowledged checkpoints, including completed stages and nested children. An unfinished agent stage resumes its SQL session. External effects that precede a checkpoint can still repeat.
 
 ## Compatibility boundary

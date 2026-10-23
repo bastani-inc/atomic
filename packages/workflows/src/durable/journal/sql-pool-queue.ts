@@ -392,7 +392,8 @@ export class SqlPoolQueue {
 			if (status !== "running") throw new Error("Pool root is not running");
 			const checkpoint = mutation.checkpoint;
 			await validatePoolMutation(tx, this.journal, lease.runId, fromRow(row), mutation);
-			if (checkpoint.completedAt > now) throw new Error("Pool checkpoint timestamp is in the future");
+			if (checkpoint.completedAt > Math.max(now, Date.now()))
+				throw new Error("Pool checkpoint timestamp is in the future");
 			assertWorkflowSerializableObject(checkpoint, "Pool checkpoint");
 			const key = JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, checkpoint.kind, checkpoint.checkpointId]);
 			const payload = serializeJson(checkpoint);
