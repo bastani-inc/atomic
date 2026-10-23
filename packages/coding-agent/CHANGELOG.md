@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Local workflow worker pools no longer fail with `Local worker startup timed out` when workers are slow to become ready, for example on a workflow journal with a long history. The readiness timeout is now configurable with the `workflows.localWorkers.startupTimeoutMs` setting (30000 ms by default) ([#3887](https://github.com/bastani-inc/atomic/issues/3887))
+
 ## [0.9.42] - 2026-10-23
 
 Sessions, workflow runs, and Intercom can now share one libSQL / Turso database across machines, and provider rate limits are respected across every request in a process.

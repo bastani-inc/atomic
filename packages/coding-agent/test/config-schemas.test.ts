@@ -422,6 +422,21 @@ describe("settings.json schema", () => {
 			assert.equal(validator.Check({ workflows }), false, JSON.stringify(workflows));
 	});
 
+	it("validates the local worker startup timeout setting (#3887)", () => {
+		const validator = Compile(SettingsSchema);
+		const definitions = [{ path: "./child.ts", exportName: "child" }];
+		assert.equal(
+			validator.Check({ workflows: { localWorkers: { count: 2, definitions, startupTimeoutMs: 120_000 } } }),
+			true,
+		);
+		for (const startupTimeoutMs of [0, 1.5, "60s"])
+			assert.equal(
+				validator.Check({ workflows: { localWorkers: { count: 2, definitions, startupTimeoutMs } } }),
+				false,
+				String(startupTimeoutMs),
+			);
+	});
+
 	it("rejects settings values that runtime accessors reject", () => {
 		const validator = Compile(SettingsSchema);
 		const invalidSettings = [

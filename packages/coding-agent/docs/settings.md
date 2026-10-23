@@ -602,6 +602,8 @@ Local worker pools are disabled unless `workflows.localWorkers` is set. With the
 
 `count` is a positive integer. Paths in the settings object resolve against the invocation working directory. Worker settings and entry-module digests are saved with the root; resume refuses changed settings or definitions. The entry-module digest does not include imported dependencies.
 
+`startupTimeoutMs` is how long, in milliseconds, each worker process may take to become ready. It defaults to `30000`. The pool runs children once any worker is ready and fails only when no worker starts. This value is not saved with the root, so changing it does not block a resume. Each worker's standard error is written to `worker-logs/<root run ID>/<worker ID>.log` in the workflow journal's directory, and worker failure messages name that file. See [Worker startup and failures](/workflows/operations#worker-startup-and-failures).
+
 `limits` caps agent sessions and managed tool processes for one root. Session permits cover creation through disposal, including fallback and delegated sessions. Process permits last until confirmed cleanup; yielding an observation wait does not free one. Processes outside Atomic's managed tools are not counted. `host` load and memory thresholds gate launches but do not impose hard OS limits.
 
 `userLimits` counts across runs only when all participating runs use the same canonical local SQLite journal. Set `userDatabase` to that exact path, and pass the admission options to participating non-pooled SDK runs. This coordinates processes for one local user; it is not a tenant isolation boundary.
