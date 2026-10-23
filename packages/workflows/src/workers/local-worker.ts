@@ -308,6 +308,7 @@ export async function runLocalWorker(start: WorkerStart): Promise<void> {
 			} finally {
 				clearInterval(heartbeat);
 				unsubscribe();
+				activeController = undefined;
 			}
 		}
 	} finally {

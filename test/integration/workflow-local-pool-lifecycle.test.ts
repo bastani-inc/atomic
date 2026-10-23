@@ -11,6 +11,7 @@ import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { toolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import type { WorkflowRunContext } from "../../packages/workflows/src/shared/types.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import { makeTempDirectory, removeTempDirectory, sleep, writeFileEnsuringDir } from "../helpers/runtime.js";
@@ -25,7 +26,7 @@ async function waitUntil(predicate: () => Promise<boolean>): Promise<void> {
 	}
 }
 
-async function fixture(root = "root") {
+async function fixture(root = "root", afterChild?: (ctx: WorkflowRunContext) => Promise<void>) {
 	const directory = makeTempDirectory("local-pool-lifecycle-");
 	const path = join(directory, "journal.sqlite");
 	const releasePath = join(directory, "release");
@@ -51,6 +52,7 @@ async function fixture(root = "root") {
 		async run(ctx) {
 			const result = await ctx.workflow(child, { inputs: { releasePath } });
 			assert.equal(result.status, "completed");
+			await afterChild?.(ctx);
 			return {};
 		},
 	});
@@ -179,14 +181,74 @@ test(
 		const f = await fixture();
 		try {
 			const queue = await f.ready();
+			await f.finishing();
 			const [before] = await queue.inspect("root");
 			await toolControlRegistry.runControl("root")!.quit();
 			assert.equal((await f.running).status, "paused");
 			assert.equal(f.pool.workerPids.length, 0);
+			assert.equal(
+				f.store
+					.runs()
+					.find((entry) => entry.parentRunId === f.root)
+					?.toolNodes.find((node) => node.name === "finish")?.status,
+				"cancelled",
+				"the worker publishes graceful tool cancellation before teardown",
+			);
 			const [after] = await queue.inspect("root");
 			assert.equal(after!.id, before!.id);
 			assert.equal(after!.state, "leased");
 		} finally {
+			await f.close();
+		}
+	},
+	LOCAL_WORKER_LIFECYCLE_TIMEOUT_MS,
+);
+
+test(
+	"pooled quit blocks the next local tool before worker cleanup finishes (#3869)",
+	async () => {
+		const childCompleted = Promise.withResolvers<void>();
+		const releaseRoot = Promise.withResolvers<void>();
+		const cleanup = Promise.withResolvers<void>();
+		const toolAttempted = Promise.withResolvers<void>();
+		let toolCalls = 0;
+		const f = await fixture(randomUUID(), async (ctx) => {
+			childCompleted.resolve();
+			await releaseRoot.promise;
+			try {
+				await ctx.tool("local-after-child", {}, async () => ++toolCalls);
+			} finally {
+				toolAttempted.resolve();
+			}
+		});
+		const control = f.pool.control.bind(f.pool);
+		const intercepted = vi.spyOn(f.pool, "control").mockImplementation(async (state) => {
+			if (state === "quit") await cleanup.promise;
+			await control(state);
+		});
+		let quitSettled = false;
+		try {
+			await f.release();
+			await childCompleted.promise;
+			const quitting = toolControlRegistry
+				.runControl(f.root)!
+				.quit()
+				.finally(() => {
+					quitSettled = true;
+				});
+			releaseRoot.resolve();
+			await toolAttempted.promise;
+			assert.equal(toolCalls, 0, "quit closes local tool admission before worker cleanup");
+			assert.notEqual(f.store.runs().find((entry) => entry.id === f.root)?.status, "completed");
+			assert.equal(quitSettled, false, "quit still waits for worker cleanup acknowledgement");
+			cleanup.resolve();
+			await quitting;
+			assert.equal((await f.running).status, "paused", "quit cannot become normal completion");
+			assert.equal(f.pool.workerPids.length, 0);
+		} finally {
+			releaseRoot.resolve();
+			cleanup.resolve();
+			intercepted.mockRestore();
 			await f.close();
 		}
 	},
@@ -320,6 +382,38 @@ test(
 		} finally {
 			releaseCompletion();
 			intercepted.mockRestore();
+			await f.close();
+		}
+	},
+	LOCAL_WORKER_LIFECYCLE_TIMEOUT_MS,
+);
+
+test(
+	"an idle worker acknowledges root quit after completing a child (#3869)",
+	async () => {
+		const IDLE_WORKER_QUIT_ACK_BUDGET_MS = 3_000;
+		const childCompleted = Promise.withResolvers<void>();
+		const releaseRoot = Promise.withResolvers<void>();
+		const f = await fixture(randomUUID(), async () => {
+			childCompleted.resolve();
+			await releaseRoot.promise;
+		});
+		try {
+			await f.release();
+			await childCompleted.promise;
+			const started = performance.now();
+			await toolControlRegistry.runControl(f.root)!.quit();
+			const elapsed = performance.now() - started;
+			assert.ok(
+				elapsed < IDLE_WORKER_QUIT_ACK_BUDGET_MS,
+				`idle-worker quit took ${elapsed}ms instead of acknowledging before the grace period`,
+			);
+			assert.equal((await f.running).status, "paused");
+			assert.equal(f.pool.workerPids.length, 0);
+			const queue = await openSqlPoolQueue(f.journal);
+			assert.equal((await queue.inspect(f.root))[0]?.state, "completed");
+		} finally {
+			releaseRoot.resolve();
 			await f.close();
 		}
 	},

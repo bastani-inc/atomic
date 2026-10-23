@@ -14,7 +14,7 @@ import {
 import { openSqlPoolUsage, type PoolUsage, type SqlPoolUsage } from "../durable/journal/sql-pool-usage.js";
 import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
 import type { Lease } from "../durable/journal/types.js";
-import { WorkflowGracefulQuitError } from "../engine/workflow-tool-abort.js";
+import { findWorkflowGracefulQuit, WorkflowGracefulQuitError } from "../engine/workflow-tool-abort.js";
 import type { ResolvedInputs, RunOpts, RunResult } from "../runs/foreground/executor-types.js";
 import { acquireStandaloneIntercom } from "../runs/foreground/sdk-intercom.js";
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../runs/foreground/stage-session-heartbeat.js";
@@ -406,7 +406,7 @@ export class LocalWorkerPool {
 		try {
 			return await this.dispatch(definition, inputs, options);
 		} catch (error) {
-			await this.close();
+			if (this.desiredControl !== "quit" || !findWorkflowGracefulQuit(error)) await this.close();
 			throw error;
 		}
 	}

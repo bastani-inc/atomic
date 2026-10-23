@@ -911,6 +911,7 @@ async function executeRun(
 	let terminalStatusCommitted = false;
 	let pausePersistence: Promise<void> | undefined;
 	let resumePersistence: Promise<void> | undefined;
+	let quitCleanup: Promise<void> | undefined;
 	let controlSettlements: Promise<void> = Promise.resolve();
 	const pendingControlPersistence = new Set<Promise<void>>();
 	let latestControl = 0;
@@ -1001,16 +1002,14 @@ async function executeRun(
 			return resumePersistence;
 		},
 		quit: () => {
+			ownController.abort(new WorkflowGracefulQuitError(runId, "workflow runtime"));
 			const cleanup = dispatcher?.control?.("quit");
-			if (!cleanup) {
-				ownController.abort(new WorkflowGracefulQuitError(runId, "workflow runtime"));
-				return runtimeSettled.promise;
-			}
+			quitCleanup = cleanup;
+			if (!cleanup) return runtimeSettled.promise;
 			return (async () => {
 				try {
 					await cleanup;
 				} finally {
-					ownController.abort(new WorkflowGracefulQuitError(runId, "workflow runtime"));
 					await runtimeSettled.promise;
 				}
 			})();
@@ -1279,6 +1278,7 @@ async function executeRun(
 	} finally {
 		rejectionScope.close();
 		callerSignal?.removeEventListener("abort", onCallerAbort);
+		await quitCleanup?.catch(() => {});
 		workflowObservationRuntime(activeStore).finishRun(runId);
 		runtimeSettled.resolve();
 		unregisterRunControl();
