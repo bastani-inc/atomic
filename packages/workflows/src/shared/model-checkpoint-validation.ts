@@ -1,4 +1,4 @@
-import type { WorkflowSerializableValue } from "./types.js";
+import type { WorkflowProviderRateLimit, WorkflowSerializableValue } from "./types.js";
 
 export function isRouterSelection<T>(value: T): boolean {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -47,9 +47,7 @@ export function isModelAttempts<T>(value: T): boolean {
 	);
 }
 
-export function isProviderRateLimits(
-	value: unknown,
-): value is readonly import("./types.js").WorkflowProviderRateLimit[] {
+export function isProviderRateLimits<T>(value: T): value is T & readonly WorkflowProviderRateLimit[] {
 	return (
 		Array.isArray(value) &&
 		value.every((entry) => {
