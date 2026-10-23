@@ -143,6 +143,7 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 	);
 	this._taskCompletionOutbox = outbox;
 	const binding = {
+		resourceAdmission: this._resourceAdmission,
 		authorizeLaunch: () => {
 			if (this._disposed || sessionGenerationClosing.has(this) || !admission.isOpen())
 				throw new Error("Task owner is closed");

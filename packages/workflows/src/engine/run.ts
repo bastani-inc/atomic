@@ -73,6 +73,7 @@ import type {
 import type { WorkflowFailure } from "../shared/workflow-failures.js";
 import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
 import { workflowSource } from "../shared/workflow-source.js";
+import { admitWorkflowSessions } from "../workers/admission-binding.js";
 import { childWorkerDispatchers } from "../workers/dispatch.js";
 import { GraphFrontierTracker } from "./graph-inference.js";
 import type { EngineChildRunOptions, EngineStageRuntimeOptions, EngineWorkflowBoundaryOptions } from "./options.js";
@@ -158,7 +159,9 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		bindStoreDurableBackend(activeStore, backend);
 	}
 	const execute = () =>
-		executeRun(def, resolvedInputs, { ...opts, store: activeStore, runId, durableBackend: backend });
+		admitWorkflowSessions(backend, { ...opts, runId }, (admittedOpts) =>
+			executeRun(def, resolvedInputs, { ...admittedOpts, store: activeStore, runId, durableBackend: backend }),
+		);
 	return opts.parentRun === undefined && backend instanceof JournalDurableBackend
 		? await backend.withWorkflowLease(runId, execute)
 		: await execute();
@@ -221,6 +224,7 @@ async function executeRun(
 	const sourceBackend = opts.durableBackend;
 	const backendView: DurableWorkflowBackend = sourceBackend;
 	const rootBackend: DurableWorkflowBackend = opts.durableRootBackend ?? backendView;
+	if (opts.parentRun === undefined) await childWorkerDispatchers.get(rootBackend)?.prepare?.(runId);
 	const durableBackend: DurableWorkflowBackend =
 		opts.durableScope !== undefined ? new ScopedDurableBackend(backendView, opts.durableScope) : backendView;
 	const inheritedElapsedMs =
@@ -339,6 +343,9 @@ async function executeRun(
 		budget: resolvedBudget,
 		usageTree,
 		rootBudget: opts.rootBudget,
+		...(opts.parentRun === undefined
+			? { externalUsage: () => childWorkerDispatchers.get(rootBackend)?.usage?.() }
+			: {}),
 		onWarning: (report) => {
 			activeStore.recordNotice({
 				id: `workflow-budget-warning:${runId}:${report.dimension}`,

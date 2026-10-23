@@ -1,8 +1,10 @@
 import { AsyncResource } from "node:async_hooks";
+import { isDeepStrictEqual } from "node:util";
 import type * as native from "@bastani/atomic-natives";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { createModuleRequire } from "../../utils/module-require.ts";
 import type { AgentSessionEvent } from "../agent-session.js";
+import { currentResourceAdmission } from "../resource-admission-scope.js";
 import type { SessionManager } from "../session-manager.ts";
 import { COMMAND_FOREGROUND_BUDGET_MS } from "./command-output.js";
 import type { TaskCompletionSource } from "./completion-ordering.js";
@@ -64,6 +66,7 @@ export type TrustedTaskHost = {
 	/** The existing host/tool refusal throws here, before native admission. */
 	authorizeCommandLaunch?(intent: C.CommandIntent): void;
 	authorizeLaunch(intent: C.AgentIntent): void;
+	resourceAdmission?: import("../sdk-types.js").ResourceAdmission;
 	onTaskSettled?(ref: C.NativeTaskRef, receipt: C.SettlementReceipt): void;
 	createRunner(context: FakeRunnerContext, intent: C.AgentIntent): FakeExecution;
 };
@@ -75,6 +78,11 @@ type OwnerState = {
 	watches: Set<TaskSubscription>;
 	settledTasks: Set<C.TaskId>;
 	commandAdmissions: Set<Promise<void>>;
+	closing: AbortController;
+	permits: Map<C.TaskId, () => Promise<void>>;
+	releases: Set<Promise<void>>;
+	releaseFailures: Error[];
+	commandStarts: Map<C.OperationId, { intent: C.CommandIntent; result: Promise<C.Result<TaskLease, C.StartFailure>> }>;
 };
 type TaskState = {
 	native: native.TaskLease;
@@ -591,6 +599,11 @@ export class TaskSupervisor {
 					watches: new Set(),
 					settledTasks: new Set(),
 					commandAdmissions: new Set(),
+					closing: new AbortController(),
+					permits: new Map(),
+					releases: new Set(),
+					releaseFailures: [],
+					commandStarts: new Map(),
 				};
 				this.#owners.set(owner, ownerState);
 				this.#ownerIds.set(id, owner);
@@ -610,6 +623,9 @@ export class TaskSupervisor {
 						if (task) this.#task(task).controller.abort(cause);
 					}
 					let failure: Error | undefined;
+					for (const record of projection.tasks) {
+						if (record.cleanup.kind === "reaped") this.#releasePermit(ownerState, record.ref.taskId);
+					}
 					for (const record of projection.tasks) {
 						if (
 							record.execution.kind !== "settled" ||
@@ -637,6 +653,17 @@ export class TaskSupervisor {
 			ownerErrors,
 		);
 	}
+	#releasePermit(state: OwnerState, taskId: C.TaskId): void {
+		const release = state.permits.get(taskId);
+		if (!release) return;
+		state.permits.delete(taskId);
+		const pending: Promise<void> = release()
+			.catch((error) => {
+				state.releaseFailures.push(new Error(rejectionMessage(error)));
+			})
+			.finally(() => state.releases.delete(pending));
+		state.releases.add(pending);
+	}
 	#notifyTaskSettled(state: OwnerState, ref: C.NativeTaskRef, receipt: native.SettlementReceipt): void {
 		if (!state.host.binding.onTaskSettled || state.settledTasks.has(ref.taskId)) return;
 		// Runner outcomes and snapshot recovery share one delivery door. Mark before
@@ -653,16 +680,45 @@ export class TaskSupervisor {
 		owner: OwnerLease,
 		intent: C.CommandIntent,
 		operation: C.OperationId,
+		signal?: AbortSignal,
 	): Promise<C.Result<TaskLease, C.StartFailure>> {
 		const state = this.#owner(owner);
 		state.host.binding.authorizeCommandLaunch?.(intent);
+		const known = state.commandStarts.get(operation);
+		if (known) {
+			if (isDeepStrictEqual(known.intent, intent)) return known.result;
+			return {
+				ok: false,
+				error: { code: "OperationConflict", message: "Operation was started with a different command" },
+			};
+		}
+		const snapshot = structuredClone(intent);
+		const result = this.#launchCommandTask(state, snapshot, operation, signal);
+		state.commandStarts.set(operation, { intent: snapshot, result });
+		const forget = () => {
+			if (state.commandStarts.get(operation)?.result === result) state.commandStarts.delete(operation);
+		};
+		result.then((started) => started.ok || forget(), forget);
+		return result;
+	}
+	async #launchCommandTask(
+		state: OwnerState,
+		intent: C.CommandIntent,
+		operation: C.OperationId,
+		signal?: AbortSignal,
+	): Promise<C.Result<TaskLease, C.StartFailure>> {
 		// Native command setup can be admitted before its task lease is visible in JS.
 		let finishAdmission!: () => void;
 		const admission = new Promise<void>((resolve) => {
 			finishAdmission = resolve;
 		});
 		state.commandAdmissions.add(admission);
+		let release: (() => Promise<void>) | undefined;
 		try {
+			release = await (currentResourceAdmission() ?? state.host.binding.resourceAdmission)?.acquire(
+				"process",
+				signal ? AbortSignal.any([signal, state.closing.signal]) : state.closing.signal,
+			);
 			const admitted = mapped(
 				await this.#native.startCommandTask(state.native, intent, operation),
 				(lease) => lease,
@@ -674,6 +730,10 @@ export class TaskSupervisor {
 			const id = ref.value.taskId as C.TaskId;
 			const existing = state.tasks.get(id);
 			if (existing) return { ok: true, value: existing };
+			if (release) {
+				state.permits.set(id, release);
+				release = undefined;
+			}
 			const task = new TaskCapability();
 			this.#tasks.set(task, {
 				native: admitted.value,
@@ -683,10 +743,21 @@ export class TaskSupervisor {
 				kind: "command",
 			});
 			state.tasks.set(id, task);
+			if (state.permits.has(id)) {
+				for (const watch of state.watches) {
+					watch.drain();
+					if (watch.snapshot.tasks.some((item) => item.ref.taskId === id && item.cleanup.kind === "reaped"))
+						this.#releasePermit(state, id);
+				}
+			}
 			return { ok: true, value: task };
 		} finally {
-			state.commandAdmissions.delete(admission);
-			finishAdmission();
+			try {
+				await release?.();
+			} finally {
+				state.commandAdmissions.delete(admission);
+				finishAdmission();
+			}
 		}
 	}
 	/** Caller must hold launch authorization closed while this snapshot drains. */
@@ -967,6 +1038,7 @@ export class TaskSupervisor {
 		cause: C.OwnerCloseCause,
 	): Promise<C.Result<C.OwnerCloseReceipt, C.CloseError>> {
 		const state = this.#owner(owner);
+		state.closing.abort(new Error("Task owner is closed"));
 		const closing = this.#native.closeTaskOwner(state.native, cause);
 		for (const task of state.tasks.values()) this.#task(task).controller.abort("owner-close");
 		const result = mapped(
@@ -989,6 +1061,12 @@ export class TaskSupervisor {
 				watch.drain();
 				watch.dispose(false);
 			}
+		if (result.ok) {
+			for (const taskId of [...state.permits.keys()]) this.#releasePermit(state, taskId);
+			await Promise.all([...state.releases]);
+			const failure = state.releaseFailures.shift();
+			if (failure) throw failure;
+		}
 		return result;
 	}
 	/**

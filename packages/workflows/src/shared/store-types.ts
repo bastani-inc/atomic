@@ -30,6 +30,7 @@ export type RunBudgetUsageBaseline = RunMeterCounters & { readonly cost: number 
 export type RunBudgetAccountingState = Readonly<Record<"tokens" | "cost", number>> & {
 	readonly baseline: RunBudgetUsageBaseline;
 	readonly perCounter: RunMeterCounters;
+	readonly externalBaseline?: RunBudgetUsageBaseline;
 };
 export interface RunBudgetState
 	extends Partial<Record<"warned" | "wrapUpDelivered" | "wrapUpCompleted" | "systemOwnedStop", boolean>> {

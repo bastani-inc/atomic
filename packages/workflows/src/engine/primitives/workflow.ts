@@ -63,9 +63,9 @@ export function createChildWorkflowRunner(input: {
 			throw new Error(workflowDefinitionRequirementMessage("ctx.workflow(definition)", child));
 		const childName = child.normalizedName;
 		const boundaryName = options.stageName ?? `workflow:${childName}`;
-		if (runtime.budget.enabled) await runtime.budget.stopAtBoundaryAsync(boundaryName);
 		const boundaryReplayKey = input.nextWorkflowBoundaryReplayKey(boundaryName);
 		const durableInvocation = input.consumeDurableInvocation?.();
+		if (runtime.budget.enabled) await runtime.budget.stopAtBoundaryAsync(boundaryName);
 		const boundary = runtime.spawnStage(boundaryName, {
 			kind: "workflow-boundary",
 			replayKey: boundaryReplayKey,

@@ -5,7 +5,12 @@ import {
 	enforceUsageBudget,
 } from "../shared/budget.js";
 import { meter_run, type RunMeters, type RunUsageTree } from "../shared/budget-meter.js";
-import type { RunBudgetAccountingState, RunBudgetState, RunSnapshot } from "../shared/store-types.js";
+import type {
+	RunBudgetAccountingState,
+	RunBudgetState,
+	RunBudgetUsageBaseline,
+	RunSnapshot,
+} from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import type { WorkflowModelUsage } from "../shared/types.js";
 export const BUDGET_WRAP_UP_PROMPT =
@@ -83,6 +88,7 @@ export function createRunBudgetController(input: {
 	readonly usageTree?: () => RunUsageTree;
 	readonly onWarning?: (report: BudgetReport) => void;
 	readonly rootBudget?: RunBudgetController;
+	readonly externalUsage?: () => RunBudgetUsageBaseline | undefined;
 }) {
 	const { run, budget } = input;
 	const ownEnabled = budget.maxDurationMs > 0 || budget.maxTokens > 0 || budget.maxCost > 0;
@@ -95,6 +101,10 @@ export function createRunBudgetController(input: {
 		previousAccounting && usageEnabled ? meter_run(input.usageTree?.() ?? { run }, Date.now()) : undefined;
 	const initialAccounting = initial === undefined ? undefined : { ...initial.perCounter, cost: initial.cost };
 	let baseline = mapFields(usageFields, (field) => initialAccounting?.[field] ?? 0);
+	let externalBaseline: RunBudgetUsageBaseline = {
+		...mapFields(usageFields),
+		...previousAccounting?.externalBaseline,
+	};
 	let charged: RunBudgetAccountingState = {
 		baseline,
 		tokens: previousAccounting?.tokens ?? 0,
@@ -114,11 +124,18 @@ export function createRunBudgetController(input: {
 		const current = { ...meters.perCounter, cost: meters.cost };
 		const delta = mapFields(usageFields, (field) => Math.max(0, current[field] - baseline[field]));
 		baseline = mapFields(usageFields, (field) => Math.max(baseline[field], current[field]));
+		const external = input.externalUsage?.();
+		if (external !== undefined) {
+			const growth = mapFields(usageFields, (field) => Math.max(0, external[field] - externalBaseline[field]));
+			externalBaseline = mapFields(usageFields, (field) => Math.max(externalBaseline[field], external[field]));
+			for (const field of usageFields) delta[field] += growth[field];
+		}
 		charged = {
 			baseline,
 			tokens: charged.tokens + delta.input + delta.output,
 			cost: charged.cost + delta.cost,
 			perCounter: mapFields(counterFields, (field) => charged.perCounter[field] + delta[field]),
+			...(external !== undefined || previousAccounting?.externalBaseline !== undefined ? { externalBaseline } : {}),
 		};
 		updateState({ accounting: charged });
 		return Object.assign(meters, { tokens: charged.tokens, cost: charged.cost, perCounter: charged.perCounter });

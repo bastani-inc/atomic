@@ -57,6 +57,8 @@ export function inheritChildSessionOptions(
 	return {
 		...parent,
 		...definedOptions(child),
+		resourceAdmission: parent.resourceAdmission ?? child.resourceAdmission,
+		resourceAdmissionSignal: child.resourceAdmissionSignal,
 		cwd: resolve(parent.cwd!, child.cwd ?? child.sessionManager?.getCwd() ?? "."),
 		builtins,
 		tools,

@@ -1101,6 +1101,7 @@ export class SubagentControlRuntime {
 							...inherited,
 							customTools: admitted.policy.customTools ?? inherited.customTools,
 							resourceLoader,
+							resourceAdmissionSignal: AbortSignal.any([signals.abort, signals.interrupt]),
 							subagentPolicy: {
 								...admitted.policy,
 								executionEnded: executionEnded.signal,

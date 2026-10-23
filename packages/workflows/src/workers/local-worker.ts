@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
+import { type ResourceAdmission, withResourceAdmission } from "@bastani/atomic";
 import { StorageProvider } from "@bastani/atomic/storage";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
@@ -10,9 +11,12 @@ import { run } from "../engine/run.js";
 import { createAgentSessionAdapter } from "../extension/wiring.js";
 import type { RunOpts } from "../runs/foreground/executor-types.js";
 import { createStore } from "../shared/store.js";
+import { admittedSessionAdapter } from "./admission-binding.js";
 import { loadWorkerDefinition } from "./definitions.js";
 import type { WorkerReply, WorkerRequest, WorkerStart } from "./protocol.js";
+import { SqlResourceAdmission } from "./resource-admission.js";
 import { workerSessionStore } from "./session-store.js";
+import { collectWorkerUsage } from "./usage-accounting.js";
 
 type Request = WorkerRequest extends infer T ? (T extends WorkerRequest ? Omit<T, "id"> : never) : never;
 
@@ -121,33 +125,62 @@ export async function runLocalWorker(start: WorkerStart): Promise<void> {
 			if (index < 0) throw new Error("Worker definition compatibility error");
 			await reader.hydrateWorkflow(start.root);
 			const controller = new AbortController();
+			const store = createStore();
+			const admission = start.admission
+				? await SqlResourceAdmission.open(journal, {
+						...start.admission,
+						root: start.root,
+						holder: work.worker!,
+						attempt: work,
+					})
+				: undefined;
+			const adapter = createAgentSessionAdapter({ cwd: String(work.execution.cwd) });
+			const resourceAdmission: ResourceAdmission = {
+				async acquire(kind, signal) {
+					await request({ kind: "budget" });
+					return admission ? admission.acquire(kind, signal) : async () => {};
+				},
+			};
+			const admitted = admittedSessionAdapter(adapter, resourceAdmission);
+			let pulse: Promise<void> | undefined;
 			const heartbeat = setInterval(() => {
-				void request({ kind: "renew" }).catch((error: Error) => {
-					controller.abort(error);
-					process.exitCode = 1;
-				});
+				pulse ??= (async () => {
+					await request({ kind: "renew" });
+					await request({ kind: "usage", reports: collectWorkerUsage(store.runs()) });
+				})()
+					.catch((error: Error) => {
+						controller.abort(error);
+						process.exitCode = 1;
+					})
+					.finally(() => {
+						pulse = undefined;
+					});
 			}, 1000);
 			try {
-				const store = createStore();
-				const result = await run(definitions[index]!, work.inputs, {
-					...(work.execution as RunOpts),
-					runId: work.childRunId,
-					durableBackend: backend,
-					durableRootBackend: backend,
-					durableScope: { rootWorkflowId: start.root, scopePrefix: work.scope },
-					signal: controller.signal,
-					store,
-					adapters: {
-						agentSession: createAgentSessionAdapter({ cwd: String(work.execution.cwd) }),
-						sessionStore: workerSessionStore({
-							reader: sessions,
-							backend: reader,
-							store,
-							root: start.root,
-							commit,
-						}),
-					},
-				});
+				const result = await withResourceAdmission(resourceAdmission, () =>
+					run(definitions[index]!, work.inputs, {
+						...(work.execution as RunOpts),
+						runId: work.childRunId,
+						durableBackend: backend,
+						durableRootBackend: backend,
+						durableScope: { rootWorkflowId: start.root, scopePrefix: work.scope },
+						signal: controller.signal,
+						store,
+						adapters: {
+							agentSession: admitted,
+							sessionStore: workerSessionStore({
+								reader: sessions,
+								backend: reader,
+								store,
+								root: start.root,
+								commit,
+							}),
+						},
+					}),
+				);
+				clearInterval(heartbeat);
+				await pulse;
+				await request({ kind: "usage", reports: collectWorkerUsage(store.runs()) });
 				await request({ kind: "complete", result });
 			} finally {
 				clearInterval(heartbeat);

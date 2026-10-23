@@ -162,6 +162,30 @@ const { session } = await createAgentSession({
 });
 ```
 
+### Shared resource admission
+
+SDK hosts can pass `resourceAdmission` to `createAgentSession()` to share their own capacity policy across sessions and managed shell commands:
+
+```typescript
+import type { ResourceAdmission } from "@bastani/atomic";
+
+const resourceAdmission: ResourceAdmission = {
+  async acquire(kind, signal) {
+    const permit = await capacity.acquire(kind, { signal });
+    return async () => permit.release();
+  },
+};
+const { session } = await createAgentSession({ resourceAdmission });
+```
+
+`capacity` is your host's admission service. `kind` is `"session"` or `"process"`. Make acquisition cancellation-aware and the returned release function idempotent. `resourceAdmissionSignal` cancels a wait for session capacity; children inherit the admission service, not that signal. Pass the same service whenever your runtime factory creates a replacement session.
+
+A session holds its permit until clean disposal. A managed command holds its permit through background execution and confirmed process cleanup, even after an observation wait returns. Failed launches release their permits after rollback. Cleanup failures keep capacity reserved; inspect and resolve them instead of recycling a slot on a timer. Arbitrary processes created outside Atomic's managed command APIs are not counted.
+
+Your admission service must reconcile abandoned holders after a host crash. Atomic does not treat lease expiry as cleanup proof or clear a service's retained permits automatically. Keep enough capacity for simultaneously live parents, delegated children, and replacements: parents keep their slots while awaiting children, so a cap filled entirely by waiting parents can stall delegation. Cancel or dispose the waiting work to recover; do not bypass the cap.
+
+Use `withResourceAdmission(resourceAdmission, async () => { ... })` to apply a service to SDK sessions and managed commands launched within an asynchronous operation, including commands using an existing task owner. An explicit session service wins for that session; commands in the operation use its scoped service.
+
 ### Session storage
 
 `createAgentSession()` persists sessions in `~/.atomic/workflows/journal.sqlite` by default, sharing the file with workflow runs under separate `session_` and `wf_` table prefixes. Pass `sessionStore` to choose storage explicitly:
