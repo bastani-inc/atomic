@@ -196,13 +196,13 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 
 	static async open<Journal extends RunJournal>(
 		journal: Journal,
-		options: { ownsJournal?: boolean } = {},
+		options: { ownsJournal?: boolean; runs?: readonly string[] } = {},
 	): Promise<JournalDurableBackend<Journal>> {
 		let backend: JournalDurableBackend<Journal> | undefined;
 		try {
 			backend = new JournalDurableBackend(journal, undefined, options.ownsJournal ?? true);
-			for (const run of await journal.listRuns())
-				for await (const entry of journal.read(run.runId)) backend.fold(entry);
+			for (const runId of options.runs ?? (await journal.listRuns()).map((run) => run.runId))
+				for await (const entry of journal.read(runId)) backend.fold(entry);
 			return backend;
 		} catch (error) {
 			if (backend === undefined) {
@@ -752,6 +752,9 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	async hydrateWorkflow(runId: string): Promise<void> {
 		await this.serialize(runId, () => this.rebuild(runId), false);
 	}
+	async catchUpWorkflow(runId: string): Promise<void> {
+		await this.serialize(runId, () => this.extend(runId), false);
+	}
 	/**
 	 * Brings every run up to date for the resume catalog. With a versioned journal an unchanged store is
 	 * detected from one token read, and otherwise only runs whose latest event moved are read: appended
@@ -781,7 +784,12 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	private *catchUp(runId: string, version: RunVersion | undefined): Operation<void> {
 		const folded = this.sequences.get(runId) ?? 0;
 		if (version !== undefined && version.seq === folded && version.at === (this.foldedAt.get(runId) ?? 0)) return;
-		if (version !== undefined && folded > 0 && version.seq > folded) {
+		if (version !== undefined && folded > 0 && version.seq > folded) return yield* this.extend(runId);
+		yield* this.rebuild(runId);
+	}
+	private *extend(runId: string): Operation<void> {
+		const folded = this.sequences.get(runId) ?? 0;
+		if (folded > 0) {
 			const entries = yield* this.entries(runId, folded);
 			if (entries[0]?.seq === folded && entries[0].at === this.foldedAt.get(runId)) {
 				for (const entry of entries) this.fold(entry);

@@ -559,6 +559,12 @@
                     "additionalProperties": false
                   },
                   "description": "Importable child workflow definitions workers may run."
+                },
+                "startupTimeoutMs": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 2147483647,
+                  "description": "Milliseconds each worker process may take to become ready. Default: 30000."
                 }
               },
               "additionalProperties": false

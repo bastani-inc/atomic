@@ -875,13 +875,21 @@ Local workers are opt-in. With no `localWorkers` setting or `RunOpts.localWorker
 
 The root workflow remains in its original process and owns the run graph, run controls, journal writes and Intercom routes. It can be an inline closure. Only an entire first-level `ctx.workflow(child)` subtree can move to a local worker. Nested workflows stay on that worker. Independent stage placement is not supported. Register every worker-eligible child definition by its module path and export name. The worker loads the module again in its own process, so the definition must be importable rather than a closure. Missing or incompatible definitions fail the run; Atomic does not fall back to local execution.
 
-Worker definitions are loaded in the SDK with `loadWorkerWorkflow(absolutePath, exportName)`, then passed to `ctx.workflow(...)`. The SDK also accepts `RunOpts.localWorkers`; the settings form applies to CLI launches. Paths in worker settings resolve against the invocation working directory. `RunOpts.localWorkers` paths resolve against `cwd` (or the current working directory when omitted). On resume, Atomic checks the saved worker options and definition entry-module digests. A changed definition or worker configuration is refused. The digest covers the entry file, not its imported dependency graph.
+Worker definitions are loaded in the SDK with `loadWorkerWorkflow(absolutePath, exportName)`, then passed to `ctx.workflow(...)`. The SDK also accepts `RunOpts.localWorkers`; the settings form applies to CLI launches. Paths in worker settings resolve against the invocation working directory. `RunOpts.localWorkers` paths resolve against `cwd` (or the current working directory when omitted). On resume, Atomic checks the saved worker options (`count` and `definitions`) and definition entry-module digests. A changed definition or worker configuration is refused. The digest covers the entry file, not its imported dependency graph.
 
 Pools require the default-prefix local SQLite workflow journal. Memory, remote, custom-prefix, and custom journals cannot host workers. Start a new run to opt in; an existing unpooled run cannot change placement on resume. If new global worker settings prevent an older run from resuming, disable those settings for that resume.
 
 The supported placement is multiple local processes on Linux or macOS. Windows and any host without native process identity and boot identity refuse activation with an error. This is a containment requirement: lease expiry does not prove that an old process stopped. Remote hosts and network workers are not supported.
 
 The root's existing `/workflow status`, `/workflow stages`, steering, pause, quit, and resume controls still address one root. A worker failure can replay an unfinished child from its last committed checkpoint. This is at-least-once recovery. An external effect that happens before its checkpoint can happen again; use stable logical idempotency keys for effects that must not duplicate.
+
+### Worker startup and failures
+
+Each worker process must report that it is ready within `localWorkers.startupTimeoutMs` milliseconds, 30000 by default. When a pool starts, it runs children as soon as one worker is ready. A worker that exits or times out during that startup is left out of the pool, and the run fails only when no worker starts. A replacement worker that cannot start fails the run. `startupTimeoutMs` is not saved with the root, so you can change it before resuming.
+
+A worker that exits or is killed while it runs a child does not stop the root. The root fences that worker's attempt and replays the child from its last committed checkpoint on a replacement worker, up to three attempts per child.
+
+Each worker writes its standard error to `worker-logs/<root run ID>/<worker ID>.log` in the directory that holds the workflow journal. With the default journal, that is `~/.atomic/workflows/worker-logs/`. Characters in the root run ID that are unsafe in a file name are percent-encoded. The errors `Local worker exited before readiness`, `Local worker startup timed out after … ms`, and `Local worker retry limit` name the log file and include the end of the worker's output. Atomic keeps the logs of workers that fail. It deletes the logs of workers that are still running when the pool shuts down normally.
 
 ### Worker resource limits
 

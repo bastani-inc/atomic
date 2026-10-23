@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- A local workflow worker that dies while the root still owes it replies no longer crashes the root with `Error: write EPIPE`. The root fences that worker's attempt and replays the child from its last committed checkpoint on a replacement worker ([#3887](https://github.com/bastani-inc/atomic/issues/3887))
+- Each local worker's standard error is now kept in `worker-logs/<root run ID>/<worker ID>.log` in the workflow journal's directory, and the `Local worker exited before readiness`, `Local worker startup timed out` and `Local worker retry limit` errors name that file and include the end of the worker's output. Logs of workers that are still running when the pool shuts down normally are removed ([#3887](https://github.com/bastani-inc/atomic/issues/3887))
+- Local worker pools no longer fail with `Local worker startup timed out` on a workflow journal with a long history. Workers no longer read every run in the journal before reporting ready, the pool starts running children once one worker is ready and fails only when none starts, and the readiness timeout can be raised with `localWorkers.startupTimeoutMs` (30000 ms by default). The timeout is not saved with the root, so it can change between resumes ([#3887](https://github.com/bastani-inc/atomic/issues/3887))
+- Local workers bring their view of the root up to date by reading only the journal events added since their last read, instead of re-reading the root's whole history after every checkpoint and claim ([#3887](https://github.com/bastani-inc/atomic/issues/3887))
+
 ## [0.9.42] - 2026-10-23
 
 ### Added

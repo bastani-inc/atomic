@@ -1,6 +1,8 @@
 import { type ChildProcess, fork } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
+import { createWriteStream } from "node:fs";
+import { mkdir, rm, rmdir } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { isBunBinary } from "@bastani/atomic";
@@ -38,10 +40,21 @@ const INTERNAL_WORKFLOW_WORKER_ARG = "--internal-workflow-worker";
 const WORK_LEASE_MS = 5_000;
 const RECOVERY_INTERVAL_MS = 500;
 const COORDINATOR_LEASE_MS = 3 * STAGE_SESSION_HEARTBEAT_INTERVAL_MS;
+const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const STDERR_TAIL_CHARACTERS = 8192;
+const STDERR_DRAIN_GRACE_MS = 1_000;
+
+function workerLogDirectory(journalPath: string, root: string): string {
+	return join(dirname(resolve(journalPath)), "worker-logs", encodeURIComponent(root).replaceAll(".", "%2E"));
+}
 
 export class LocalWorkerPool {
 	private readonly children = new Set<ChildProcess>();
 	private readonly incarnations = new Map<string, ChildProcess>();
+	private readonly readyWorkers = new Set<string>();
+	private readonly logs = new Map<ChildProcess, string>();
+	private logDirectory?: string;
 	private readonly cleanups = new Set<Promise<void>>();
 	private recovering?: Promise<void>;
 	private nextRecoveryAt = 0;
@@ -72,9 +85,17 @@ export class LocalWorkerPool {
 			readonly workers: number;
 			readonly definitions: readonly WorkerDefinitionBinding[];
 			readonly admission?: AdmissionConfiguration;
+			readonly startupTimeoutMs?: number;
 		},
 	) {
 		if (!Number.isSafeInteger(options.workers) || options.workers < 1) throw new Error("Invalid local worker count");
+		if (
+			options.startupTimeoutMs !== undefined &&
+			(!Number.isSafeInteger(options.startupTimeoutMs) ||
+				options.startupTimeoutMs < 1 ||
+				options.startupTimeoutMs > MAX_TIMER_DELAY_MS)
+		)
+			throw new Error("Invalid local worker startup timeout");
 		this.releaseBinding = bindChildWorkerDispatcher(backend, this, options.rootId);
 		if (options.admission && options.rootId === undefined) workflowResourceAdmission.set(backend, options.admission);
 	}
@@ -116,9 +137,7 @@ export class LocalWorkerPool {
 			if (!this.queue || !this.lease) return;
 			const control = await this.queue.setControl(this.lease, state);
 			const deadline = Date.now() + WORK_LEASE_MS;
-			while (
-				[...this.incarnations.keys()].some((worker) => (this.controlAcks.get(worker) ?? -1) < control.revision)
-			) {
+			while ([...this.readyWorkers].some((worker) => (this.controlAcks.get(worker) ?? -1) < control.revision)) {
 				if (this.desiredControl !== state) return;
 				if (Date.now() >= deadline) {
 					if (state === "quit") break;
@@ -193,7 +212,14 @@ export class LocalWorkerPool {
 				root,
 				holder: "coordinator",
 			});
-		await Promise.all(Array.from({ length: this.options.workers }, () => this.spawn(root)));
+		this.logDirectory = workerLogDirectory(this.options.journalPath, root);
+		await mkdir(this.logDirectory, { recursive: true }).catch(() => undefined);
+		const workers = Array.from({ length: this.options.workers }, () => this.spawn(root));
+		try {
+			await Promise.any(workers);
+		} catch (error) {
+			throw (error as AggregateError).errors[0];
+		}
 	}
 	private spawn(root: string): Promise<void> {
 		if (this.closed) return Promise.reject(new Error("Local worker pool is closed"));
@@ -219,25 +245,63 @@ export class LocalWorkerPool {
 		let serial: Promise<void> = Promise.resolve();
 		let work: PoolWork | undefined;
 		const deliveries = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
+		const logPath = join(this.logDirectory!, `${worker}.log`);
+		this.logs.set(child, logPath);
+		let logFailure: string | undefined;
+		const log = createWriteStream(logPath, { flags: "a" });
+		log.on("error", (error) => {
+			logFailure = error.message;
+		});
 		let stderr = "";
 		child.stderr?.on("data", (chunk: Buffer) => {
-			stderr = (stderr + chunk.toString()).slice(-8192);
+			stderr = (stderr + chunk.toString()).slice(-STDERR_TAIL_CHARACTERS);
 		});
+		child.stderr?.on("error", (error) => {
+			logFailure ??= error.message;
+			log.end();
+		});
+		child.stderr?.pipe(log);
+		const diagnosed = (summary: string) =>
+			new Error(
+				`${summary} (worker stderr log: ${logFailure === undefined ? logPath : `unavailable, ${logFailure}`})${stderr ? `: ${stderr}` : ""}`,
+			);
+		const startupTimeoutMs = this.options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
+		let timedOut = false;
+		let terminated = false;
+		const terminate = () => {
+			if (terminated) return;
+			terminated = true;
+			child.kill("SIGKILL");
+		};
+		const replied = (error: Error | null) => {
+			if (error) terminate();
+		};
 		return new Promise((resolve, reject) => {
 			const startup = setTimeout(() => {
-				this.failure = new Error("Local worker startup timed out");
-				reject(this.failure);
-				child.kill("SIGKILL");
-			}, 30_000);
-			child.once("error", (error) => {
+				timedOut = true;
+				terminate();
+			}, startupTimeoutMs);
+			child.on("error", (error) => {
 				clearTimeout(startup);
 				reject(error);
+				terminate();
 			});
+			const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
 			child.once("exit", () => {
+				void Promise.race([closed, delay(STDERR_DRAIN_GRACE_MS)]).then(() =>
+					reject(
+						diagnosed(
+							timedOut
+								? `Local worker startup timed out after ${startupTimeoutMs} ms`
+								: "Local worker exited before readiness",
+						),
+					),
+				);
 				this.children.delete(child);
+				this.logs.delete(child);
 				clearTimeout(startup);
 				this.incarnations.delete(worker);
-				reject(new Error(`Local worker exited before readiness: ${stderr}`));
+				this.readyWorkers.delete(worker);
 				this.controlAcks.delete(worker);
 				if (work) this.handoff?.fence(work);
 				for (const delivery of deliveries.values())
@@ -262,7 +326,7 @@ export class LocalWorkerPool {
 						}
 						if (this.closed) return;
 						const exhausted = work ? work.generation >= 3 : ++this.replacements > 3;
-						if (exhausted) this.failure = new Error(`Local worker retry limit: ${stderr}`);
+						if (exhausted) this.failure = diagnosed("Local worker retry limit");
 						else await this.spawn(root);
 					})
 					.catch((error: Error) => {
@@ -281,7 +345,9 @@ export class LocalWorkerPool {
 				}
 				const response = serial.then(async () => {
 					if (message.kind === "ready") {
+						if (terminated) return;
 						ready = true;
+						this.readyWorkers.add(worker);
 						clearTimeout(startup);
 						resolve();
 						return;
@@ -375,12 +441,8 @@ export class LocalWorkerPool {
 						() => {},
 					);
 				void response.then(
-					(value) => {
-						if (child.connected) child.send({ id: message.id, value });
-					},
-					(error: Error) => {
-						if (child.connected) child.send({ id: message.id, error: error.message });
-					},
+					(value) => child.send({ id: message.id, value }, replied),
+					(error: Error) => child.send({ id: message.id, error: error.message }, replied),
 				);
 			});
 		});
@@ -510,13 +572,22 @@ export class LocalWorkerPool {
 		this.releaseBinding();
 		if (this.options.rootId === undefined) workflowResourceAdmission.delete(this.backend);
 		let failure: unknown;
+		let stopping: { readonly child: ChildProcess; readonly log?: string }[] = [];
 		try {
 			await this.recovering?.catch(() => {});
-			await Promise.all([...this.children].map((child) => this.stop(child)));
+			stopping = [...this.children].map((child) => ({ child, log: this.logs.get(child) }));
+			await Promise.all(stopping.map(({ child }) => this.stop(child)));
 			await Promise.all([...this.cleanups]);
 			if (this.cleanupFailure) throw this.cleanupFailure;
 		} catch (error) {
 			failure = error;
+		}
+		if (failure === undefined) {
+			const stopped = stopping.flatMap(({ child, log }) =>
+				log !== undefined && (child.exitCode !== null || child.signalCode !== null) ? [log] : [],
+			);
+			await Promise.all(stopped.map((log) => rm(log, { force: true }).catch(() => {})));
+			if (this.logDirectory !== undefined) await rmdir(this.logDirectory).catch(() => {});
 		}
 		try {
 			await this.releaseRoutes?.();

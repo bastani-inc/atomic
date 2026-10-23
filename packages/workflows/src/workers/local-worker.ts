@@ -72,7 +72,7 @@ export async function runLocalWorker(start: WorkerStart): Promise<void> {
 			return typeof value === "function" ? value.bind(target) : value;
 		},
 	});
-	const reader = await JournalDurableBackend.open(readOnlyJournal);
+	const reader = await JournalDurableBackend.open(readOnlyJournal, { runs: [] });
 	const sessions = await new StorageProvider().openSessionStore(
 		{ kind: "sqlite", path: start.journalPath, prefix: `${sqlPoolStorage(journal)!.tables.runs}_pool_` },
 		{ agentDir: "", domain: "sessions" },
@@ -83,7 +83,7 @@ export async function runLocalWorker(start: WorkerStart): Promise<void> {
 			operation: randomUUID(),
 			mutation,
 		})) as unknown as PoolCommitReceipt;
-		await reader.hydrateWorkflow(start.root);
+		await reader.catchUpWorkflow(start.root);
 		return receipt;
 	};
 	const reads = new Set([
@@ -165,6 +165,7 @@ export async function runLocalWorker(start: WorkerStart): Promise<void> {
 				await delay(25);
 				continue;
 			}
+			await reader.catchUpWorkflow(start.root);
 			const work = (await request({ kind: "claim" })) as PoolWork | undefined;
 			if (!work) {
 				await delay(25 + Math.random() * 25);
@@ -174,7 +175,7 @@ export async function runLocalWorker(start: WorkerStart): Promise<void> {
 				(source) => `${source.path}#${source.exportName}` === work.definition && source.digest === work.digest,
 			);
 			if (index < 0) throw new Error("Worker definition compatibility error");
-			await reader.hydrateWorkflow(start.root);
+			await reader.catchUpWorkflow(start.root);
 			const controller = new AbortController();
 			activeController = controller;
 			const store = createStore();

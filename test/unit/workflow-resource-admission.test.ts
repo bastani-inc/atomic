@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { join } from "node:path";
 import { test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
@@ -225,3 +227,32 @@ test("a confirmed host reboot releases orphan process permits but expiry alone c
 		await f.close();
 	}
 });
+
+test.skipIf(process.platform === "win32")(
+	"pool admission without limits still holds a worker's live process group until it stops (#3887)",
+	async () => {
+		const f = await fixture();
+		const group = spawn("sleep", ["60"], { detached: true, stdio: "ignore" });
+		const exited = once(group, "exit");
+		try {
+			const admission = await SqlResourceAdmission.open(f.journals[0]!, { root: "root", holder: "worker" });
+			const release = await admission.acquire("process");
+			assert.ok(release.bindProcess, "a limit-less permit still binds the launched process group");
+			await release.bindProcess({ kind: "unix-process-group", id: group.pid! });
+			assert.equal(await admission.releaseStoppedSessions("worker"), 1, "a live group is quarantined");
+			process.kill(-group.pid!, "SIGKILL");
+			await exited;
+			await admission.reconcile();
+			assert.deepEqual(
+				(await admission.inspect()).map((row) => [row.state, row.reason]),
+				[["released", "process group cleanup confirmed"]],
+			);
+		} finally {
+			if (group.exitCode === null && group.signalCode === null) {
+				group.kill("SIGKILL");
+				await exited;
+			}
+			await f.close();
+		}
+	},
+);

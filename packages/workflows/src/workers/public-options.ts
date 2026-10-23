@@ -8,6 +8,7 @@ export interface WorkflowAdmissionOptions {
 export interface LocalWorkerOptions {
 	readonly count: number;
 	readonly definitions: readonly { readonly path: string; readonly exportName: string }[];
+	readonly startupTimeoutMs?: number;
 }
 
 export interface WorkflowExecutionResources {

@@ -187,3 +187,29 @@ test.skipIf(process.platform === "win32")(
 		}
 	},
 );
+
+test.skipIf(process.platform === "win32")(
+	"the worker startup timeout is validated and can change when a root resumes (#3887)",
+	async () => {
+		const directory = makeTempDirectory("pool-resume-startup-timeout-");
+		const journal = await resolveRunJournal({ journal: { path: join(directory, "journal.sqlite") } });
+		const backend = await JournalDurableBackend.open(journal);
+		const options = { runId: "root", durableBackend: backend, store: createStore() };
+		try {
+			for (const startupTimeoutMs of [0, 2_147_483_648])
+				await assert.rejects(
+					run(definition, {}, { ...options, localWorkers: { count: 1, definitions: [], startupTimeoutMs } }),
+					/startup timeout/,
+				);
+			assert.equal((await journal.listRuns()).length, 0);
+			for (const startupTimeoutMs of [1_000, 2_000, undefined]) {
+				const localWorkers = { count: 1, definitions: [], startupTimeoutMs };
+				assert.equal((await run(definition, {}, { ...options, localWorkers })).status, "completed");
+			}
+			assert.deepEqual(backend.getWorkflow("root")?.resources?.localWorkers, { count: 1, definitions: [] });
+		} finally {
+			await backend.close();
+			removeTempDirectory(directory);
+		}
+	},
+);
