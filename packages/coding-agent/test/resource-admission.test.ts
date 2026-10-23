@@ -125,7 +125,8 @@ async function open(root: string, options: CreateAgentSessionOptions = {}): Prom
 	return session;
 }
 
-const holdCommand = process.platform === "win32" ? "$null = [Console]::ReadLine()" : "read value";
+const nodePath = process.execPath.replaceAll("\\", "/");
+const holdCommand = `"${nodePath}" -e "process.stdin.once('data',function(){process.exit(0)})"`;
 
 test("a session holds one session permit from creation until confirmed disposal (#3869)", async () => {
 	const admission = new FakeAdmission();

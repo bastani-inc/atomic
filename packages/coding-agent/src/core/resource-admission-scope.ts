@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { ResourceAdmission } from "./sdk-types.js";
+import type { ResourceAdmission } from "./sdk-types.ts";
 
 const scope = new AsyncLocalStorage<ResourceAdmission>();
 

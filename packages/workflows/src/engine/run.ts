@@ -224,7 +224,8 @@ async function executeRun(
 	const sourceBackend = opts.durableBackend;
 	const backendView: DurableWorkflowBackend = sourceBackend;
 	const rootBackend: DurableWorkflowBackend = opts.durableRootBackend ?? backendView;
-	if (opts.parentRun === undefined) await childWorkerDispatchers.get(rootBackend)?.prepare?.(runId);
+	const dispatcher = opts.parentRun === undefined ? childWorkerDispatchers.get(rootBackend) : undefined;
+	if (dispatcher?.prepare !== undefined) await dispatcher.prepare(runId);
 	const durableBackend: DurableWorkflowBackend =
 		opts.durableScope !== undefined ? new ScopedDurableBackend(backendView, opts.durableScope) : backendView;
 	const inheritedElapsedMs =

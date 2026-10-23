@@ -4,8 +4,8 @@ import type * as native from "@bastani/atomic-natives";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { createModuleRequire } from "../../utils/module-require.ts";
 import type { AgentSessionEvent } from "../agent-session.js";
-import { currentResourceAdmission } from "../resource-admission-scope.js";
-import type { ResourcePermit } from "../sdk-types.js";
+import { currentResourceAdmission } from "../resource-admission-scope.ts";
+import type { ResourcePermit } from "../sdk-types.ts";
 import type { SessionManager } from "../session-manager.ts";
 import { COMMAND_FOREGROUND_BUDGET_MS } from "./command-output.js";
 import type { TaskCompletionSource } from "./completion-ordering.js";
@@ -67,7 +67,7 @@ export type TrustedTaskHost = {
 	/** The existing host/tool refusal throws here, before native admission. */
 	authorizeCommandLaunch?(intent: C.CommandIntent): void;
 	authorizeLaunch(intent: C.AgentIntent): void;
-	resourceAdmission?: import("../sdk-types.js").ResourceAdmission;
+	resourceAdmission?: import("../sdk-types.ts").ResourceAdmission;
 	onTaskSettled?(ref: C.NativeTaskRef, receipt: C.SettlementReceipt): void;
 	createRunner(context: FakeRunnerContext, intent: C.AgentIntent): FakeExecution;
 };

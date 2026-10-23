@@ -236,7 +236,7 @@ class AgentSessionBase {
 	protected _subagentMessageAdmission: WorkflowStageAdmissionBoundary | undefined;
 	protected _agentTaskHost: import("./tasks/agent-adapter.js").AgentTaskHost | undefined;
 	protected _parentCommandTaskOwner: import("./tasks/child-command-owner.js").ChildCommandTaskOwner | undefined;
-	protected _resourceAdmission: import("./sdk-types.js").ResourceAdmission | undefined;
+	protected _resourceAdmission: import("./sdk-types.ts").ResourceAdmission | undefined;
 	protected _childTaskWaits = new ChildTaskWaits();
 	protected _taskCompletionOutbox: import("./tasks/completion.js").TaskCompletionOutbox | undefined;
 	protected _taskAdmission: WorkflowStageAdmissionBoundary | undefined;
