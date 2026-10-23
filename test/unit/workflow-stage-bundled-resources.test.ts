@@ -417,7 +417,14 @@ describe("workflow stage bundled resources", () => {
 		const agentDir = join(cwd, "agent");
 		mkdirSync(agentDir, { recursive: true });
 		try {
-			const { session } = await createWorkflowStageSession({ cwd, agentDir });
+			// Admission uses the in-process test child, not Intercom. Supervisor authorization
+			// otherwise starts a real detached broker before admission and makes this test
+			// depend on OS process startup under concurrent suite load.
+			const { session } = await createWorkflowStageSession({
+				cwd,
+				agentDir,
+				excludedTools: ["intercom", "contact_supervisor"],
+			});
 			try {
 				await session.bindExtensions({});
 				const tool = session.getToolDefinition("subagent");
@@ -442,7 +449,7 @@ describe("workflow stage bundled resources", () => {
 				const response = details.taskResponse;
 				assert.ok(
 					response?.kind === "admitted" && response.observation.kind === "settled",
-					`the stage tool must admit and settle the in-process child: ${JSON.stringify(response)}`,
+					`the stage tool must admit and settle the in-process child: ${JSON.stringify(result)}`,
 				);
 				const settled = response.observation.result;
 				assert.equal(settled.kind, "completed", "the stage tool must return the in-process child result");
