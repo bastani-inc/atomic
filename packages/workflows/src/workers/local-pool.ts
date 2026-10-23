@@ -41,7 +41,9 @@ const WORK_LEASE_MS = 5_000;
 const RECOVERY_INTERVAL_MS = 500;
 const COORDINATOR_LEASE_MS = 3 * STAGE_SESSION_HEARTBEAT_INTERVAL_MS;
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const STDERR_TAIL_CHARACTERS = 8192;
+const STDERR_DRAIN_GRACE_MS = 1_000;
 
 function workerLogDirectory(journalPath: string, root: string): string {
 	return join(dirname(resolve(journalPath)), "worker-logs", encodeURIComponent(root).replaceAll(".", "%2E"));
@@ -89,7 +91,9 @@ export class LocalWorkerPool {
 		if (!Number.isSafeInteger(options.workers) || options.workers < 1) throw new Error("Invalid local worker count");
 		if (
 			options.startupTimeoutMs !== undefined &&
-			(!Number.isSafeInteger(options.startupTimeoutMs) || options.startupTimeoutMs < 1)
+			(!Number.isSafeInteger(options.startupTimeoutMs) ||
+				options.startupTimeoutMs < 1 ||
+				options.startupTimeoutMs > MAX_TIMER_DELAY_MS)
 		)
 			throw new Error("Invalid local worker startup timeout");
 		this.releaseBinding = bindChildWorkerDispatcher(backend, this, options.rootId);
@@ -252,6 +256,10 @@ export class LocalWorkerPool {
 		child.stderr?.on("data", (chunk: Buffer) => {
 			stderr = (stderr + chunk.toString()).slice(-STDERR_TAIL_CHARACTERS);
 		});
+		child.stderr?.on("error", (error) => {
+			logFailure ??= error.message;
+			log.end();
+		});
 		child.stderr?.pipe(log);
 		const diagnosed = (summary: string) =>
 			new Error(
@@ -278,16 +286,17 @@ export class LocalWorkerPool {
 				reject(error);
 				terminate();
 			});
-			child.once("close", () =>
-				reject(
-					diagnosed(
-						timedOut
-							? `Local worker startup timed out after ${startupTimeoutMs} ms`
-							: "Local worker exited before readiness",
-					),
-				),
-			);
+			const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
 			child.once("exit", () => {
+				void Promise.race([closed, delay(STDERR_DRAIN_GRACE_MS)]).then(() =>
+					reject(
+						diagnosed(
+							timedOut
+								? `Local worker startup timed out after ${startupTimeoutMs} ms`
+								: "Local worker exited before readiness",
+						),
+					),
+				);
 				this.children.delete(child);
 				this.logs.delete(child);
 				clearTimeout(startup);

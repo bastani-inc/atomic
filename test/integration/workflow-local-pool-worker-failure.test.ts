@@ -27,6 +27,7 @@ const WORKER_FAILURE_ROOT_TIMEOUT_MS = 150_000;
 const ROOT_PROCESS_TIMEOUT_MS = 120_000;
 const LOCAL_WORKER_STARTUP_TEST_TIMEOUT_MS = 120_000;
 const CONFIGURED_STARTUP_TIMEOUT_MS = 500;
+const DESCENDANT_STDERR_HOLD_MS = 60_000;
 const STARTUP_STDERR = "pool startup fixture stderr (#3887)";
 const ROOT = "pool-startup-root";
 const rootFixture = fileURLToPath(new URL("../fixtures/pool-worker-failure-root.mjs", import.meta.url));
@@ -101,7 +102,7 @@ test.skipIf(process.platform === "win32")(
 
 interface StartupPoolOptions {
 	readonly workers: number;
-	readonly mode?: "exit" | "hang-first" | "hang-all";
+	readonly mode?: "exit" | "exit-with-descendant" | "hang-first" | "hang-all";
 	readonly startupTimeoutMs?: number;
 	readonly beforeRun?: (journalPath: string) => Promise<void>;
 }
@@ -173,6 +174,25 @@ test.skipIf(process.platform === "win32")(
 			const log = namedWorkerLog(directory, result.error);
 			assert.ok((await readText(log)).includes(STARTUP_STDERR));
 		} finally {
+			removeTempDirectory(directory);
+		}
+	},
+	LOCAL_WORKER_STARTUP_TEST_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"startup fails when a worker exits while a descendant still holds its stderr (#3887)",
+	async () => {
+		const directory = makeTempDirectory("pool-startup-descendant-");
+		try {
+			const started = performance.now();
+			const { result } = await runStartupPool(directory, { workers: 1, mode: "exit-with-descendant" });
+			assert.ok(performance.now() - started < DESCENDANT_STDERR_HOLD_MS, "startup settled while stderr stayed open");
+			assert.equal(result.status, "failed", JSON.stringify(result));
+			assert.match(result.error ?? "", /Local worker exited before readiness/);
+		} finally {
+			const descendant = Number(readTextSync(join(directory, "descendant"), "utf8"));
+			if (descendant > 0) process.kill(descendant, "SIGKILL");
 			removeTempDirectory(directory);
 		}
 	},

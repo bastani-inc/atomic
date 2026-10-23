@@ -395,6 +395,7 @@ const WorkflowsSettingsSchema = Type.Union(
 						startupTimeoutMs: Type.Optional(
 							Type.Integer({
 								minimum: 1,
+								maximum: 2_147_483_647,
 								description: "Milliseconds each worker process may take to become ready. Default: 30000.",
 							}),
 						),
