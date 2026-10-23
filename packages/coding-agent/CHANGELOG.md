@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added `WorkflowInfrastructureError` and `isRetryableWorkflowError` to `@bastani/atomic/workflows`, so workflows can tell local worker pool and runtime faults (which are safe to retry) from failures of a child workflow's own logic ([#3889](https://github.com/bastani-inc/atomic/issues/3889))
 - Added the `workflows.localWorkers.leaseMs` setting: how long, in milliseconds, a local workflow worker that is still running but has stopped responding keeps its child before the child is replayed on another worker (30000 by default, at least 2000) ([#3888](https://github.com/bastani-inc/atomic/issues/3888))
 
 ### Fixed

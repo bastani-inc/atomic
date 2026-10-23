@@ -24,6 +24,7 @@ import { acquireStandaloneIntercom } from "../runs/foreground/sdk-intercom.js";
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../runs/foreground/stage-session-heartbeat.js";
 import type { Store } from "../shared/store.js";
 import type { WorkflowDefinition, WorkflowSerializableObject } from "../shared/types.js";
+import { asWorkflowInfrastructureError } from "../shared/workflow-infrastructure-error.js";
 import { workflowResourceAdmission } from "./admission-binding.js";
 import {
 	definitionDigest,
@@ -489,7 +490,14 @@ export class LocalWorkerPool {
 					});
 					continue;
 				}
-				if (child) await this.stop(child);
+				if (
+					child &&
+					!(await this.stop(child).then(
+						() => true,
+						() => false,
+					))
+				)
+					continue;
 				await this.queue!.expire(this.lease!, work);
 			}
 		})().finally(() => {
@@ -530,8 +538,12 @@ export class LocalWorkerPool {
 		try {
 			return await this.dispatch(definition, inputs, options);
 		} catch (error) {
-			if (this.desiredControl !== "quit" || !findWorkflowGracefulQuit(error)) await this.close();
-			throw error;
+			try {
+				if (this.desiredControl !== "quit" || !findWorkflowGracefulQuit(error)) await this.close();
+			} catch (closeError) {
+				throw asWorkflowInfrastructureError(closeError) ?? closeError;
+			}
+			throw asWorkflowInfrastructureError(error) ?? error;
 		}
 	}
 	private async dispatch(
