@@ -551,3 +551,29 @@ test("nested boundary commits remain replayable and reject malformed ownership (
 		await f.close();
 	}
 });
+
+test("completed child result survives a lost acknowledgement and fences later writes (#3869)", async () => {
+	const f = await fixture();
+	try {
+		await f.pool.commit(f.lease, f.attempt, "saved", { kind: "checkpoint", checkpoint });
+		const result = {
+			runId: work.childRunId,
+			status: "completed",
+			result: { saved: true },
+			stages: [],
+			toolNodes: [],
+		};
+		await f.pool.complete(f.lease, f.attempt, result);
+		await f.pool.complete(f.lease, f.attempt, result);
+		assert.deepEqual(await f.pool.result("root", f.attempt.id), result);
+		assert.equal((await f.pool.inspect("root"))[0]!.state, "completed");
+		assert.equal(await f.pool.claim(f.lease, "another", [work], 60_000), undefined);
+		await assert.rejects(
+			f.pool.commit(f.lease, f.attempt, "late", { kind: "checkpoint", checkpoint }),
+			/Stale work lease/,
+		);
+		await assert.rejects(f.pool.complete(f.lease, f.attempt, { ...result, status: "failed" }), /identity conflict/);
+	} finally {
+		await f.close();
+	}
+});

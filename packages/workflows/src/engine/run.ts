@@ -73,6 +73,7 @@ import type {
 import type { WorkflowFailure } from "../shared/workflow-failures.js";
 import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
 import { workflowSource } from "../shared/workflow-source.js";
+import { childWorkerDispatchers } from "../workers/dispatch.js";
 import { GraphFrontierTracker } from "./graph-inference.js";
 import type { EngineChildRunOptions, EngineStageRuntimeOptions, EngineWorkflowBoundaryOptions } from "./options.js";
 import { createChainPrimitive } from "./primitives/chain.js";
@@ -152,6 +153,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 				availableStoreDurableBackendOverride(activeStore))
 			: undefined);
 	const backend = preset ?? (await initializeDurableBackend({ journal: opts.journal, cwd: opts.cwd }));
+	if (opts.parentRun === undefined) childWorkerDispatchers.get(backend)?.validateOptions(opts);
 	if (opts.parentRun === undefined && opts.journal === undefined && opts.durableBackend === undefined) {
 		bindStoreDurableBackend(activeStore, backend);
 	}

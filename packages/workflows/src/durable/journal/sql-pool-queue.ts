@@ -31,7 +31,7 @@ export interface PoolWorkDescriptor {
 }
 export interface PoolWork extends PoolWorkDescriptor {
 	readonly id: string;
-	readonly state: "ready" | "leased";
+	readonly state: "ready" | "leased" | "completed";
 	readonly generation: number;
 	readonly worker: string | null;
 	readonly epoch: number;
@@ -128,6 +128,9 @@ export class SqlPoolQueue {
 				CREATE TABLE IF NOT EXISTS ${pool.operations}(
 					work TEXT NOT NULL REFERENCES ${pool.work}(id) ON DELETE CASCADE,
 					generation INTEGER NOT NULL, operation TEXT NOT NULL, request TEXT NOT NULL, receipt TEXT NOT NULL, PRIMARY KEY(work, generation, operation)
+				);
+				CREATE TABLE IF NOT EXISTS ${pool.work}_results(
+					work TEXT PRIMARY KEY REFERENCES ${pool.work}(id) ON DELETE CASCADE, result TEXT NOT NULL
 				);
 			`);
 		});
@@ -249,16 +252,23 @@ export class SqlPoolQueue {
 				`SELECT COALESCE(MAX(seq), 0) AS seq FROM ${this.journal.events} WHERE run_id = ?`,
 				lease.runId,
 			);
-			await tx.run(
-				`INSERT INTO ${this.journal.events} VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			const existing = await tx.get(
+				`SELECT payload FROM ${this.journal.events} WHERE run_id = ? AND key = ?`,
 				lease.runId,
-				journalCounter(lease.runId, "seq", Number(seq!.seq) + 1, "overflow"),
-				lease.epoch,
 				key,
-				RUN_EVENT_TYPES.checkpointRecorded,
-				payload,
-				now,
 			);
+			if (existing && existing.payload !== payload) throw new Error("Pool boundary identity conflict");
+			if (!existing)
+				await tx.run(
+					`INSERT INTO ${this.journal.events} VALUES (?, ?, ?, ?, ?, ?, ?)`,
+					lease.runId,
+					journalCounter(lease.runId, "seq", Number(seq!.seq) + 1, "overflow"),
+					lease.epoch,
+					key,
+					RUN_EVENT_TYPES.checkpointRecorded,
+					payload,
+					now,
+				);
 			return fromRow((await tx.get<WorkRow>(`SELECT * FROM ${this.work} WHERE id = ?`, id))!);
 		});
 	}
@@ -299,10 +309,10 @@ export class SqlPoolQueue {
 			return fromRow((await tx.get<WorkRow>(`SELECT * FROM ${this.work} WHERE id = ?`, row.id))!);
 		});
 	}
-	private async current(tx: SqliteExecutor, lease: Lease, token: WorkLease): Promise<WorkRow> {
+	private async current(tx: SqliteExecutor, lease: Lease, token: WorkLease, allowCompleted = false): Promise<WorkRow> {
 		const row = await tx.get<WorkRow>(`SELECT * FROM ${this.work} WHERE id = ? AND root = ?`, token.id, lease.runId);
 		if (
-			row?.state !== "leased" ||
+			(row?.state !== "leased" && !(allowCompleted && row?.state === "completed")) ||
 			row.epoch !== token.epoch ||
 			row.generation !== token.generation ||
 			row.worker !== token.worker
@@ -428,6 +438,36 @@ export class SqlPoolQueue {
 				JSON.stringify(receipt),
 			);
 			return receipt;
+		});
+	}
+	async complete(lease: Lease, token: WorkLease, result: WorkflowSerializableObject): Promise<void> {
+		lease = snapshotLease(lease);
+		token = { ...token };
+		assertWorkflowSerializableObject(result, "Pool result");
+		const payload = serializeJson(result);
+		await this.transaction(async (tx) => {
+			const { now, status } = await this.authority(tx, lease);
+			const row = await this.current(tx, lease, token, true);
+			if (row.epoch !== lease.epoch) throw new Error("Stale work lease");
+			if (row.state === "completed") {
+				const previous = await tx.get(`SELECT result FROM ${this.work}_results WHERE work = ?`, token.id);
+				if (previous?.result !== payload) throw new Error("Pool result identity conflict");
+				return;
+			}
+			if (row.expires_at < now || status !== "running") throw new Error("Stale work lease");
+			if (JSON.parse(payload).runId !== fromRow(row).childRunId) throw new Error("Pool result identity mismatch");
+			await tx.run(`INSERT INTO ${this.work}_results VALUES (?, ?)`, token.id, payload);
+			await tx.run(`UPDATE ${this.work} SET state = 'completed' WHERE id = ?`, token.id);
+		});
+	}
+	async result(root: string, id: string): Promise<WorkflowSerializableObject | undefined> {
+		return this.transaction(async (tx) => {
+			const row = await tx.get(
+				`SELECT r.result FROM ${this.work}_results r JOIN ${this.work} w ON w.id = r.work WHERE w.root = ? AND w.id = ?`,
+				root,
+				id,
+			);
+			return row ? (JSON.parse(String(row.result)) as WorkflowSerializableObject) : undefined;
 		});
 	}
 	async expire(lease: Lease, token: WorkLease): Promise<boolean> {

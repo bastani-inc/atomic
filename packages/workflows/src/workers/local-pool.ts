@@ -1,0 +1,299 @@
+import { type ChildProcess, fork } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
+import { sqlPoolStorage } from "../durable/journal/internal.js";
+import type { JournalDurableBackend } from "../durable/journal/journal-backend.js";
+import { openSqlPoolQueue, type PoolWork, type SqlPoolQueue } from "../durable/journal/sql-pool-queue.js";
+import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
+import type { Lease } from "../durable/journal/types.js";
+import type { ResolvedInputs, RunOpts, RunResult } from "../runs/foreground/executor-types.js";
+import type { WorkflowDefinition, WorkflowSerializableObject } from "../shared/types.js";
+import {
+	definitionDigest,
+	type WorkerDefinitionBinding,
+	type WorkerDefinitionSource,
+	workerDefinitionSources,
+} from "./definitions.js";
+import { childWorkerDispatchers } from "./dispatch.js";
+import type { WorkerRequest } from "./protocol.js";
+
+const WORK_LEASE_MS = 5_000;
+const COORDINATOR_LEASE_MS = 30_000;
+
+export class LocalWorkerPool {
+	private readonly children = new Set<ChildProcess>();
+	private readonly incarnations = new Map<string, ChildProcess>();
+	private recovering: Promise<void> = Promise.resolve();
+	private sources: WorkerDefinitionSource[] = [];
+	private queue?: SqlPoolQueue;
+	private lease?: Lease;
+	private starting?: Promise<void>;
+	private failure?: Error;
+	private closed = false;
+	private replacements = 0;
+	constructor(
+		private readonly backend: JournalDurableBackend,
+		private readonly options: {
+			readonly journalPath: string;
+			readonly workers: number;
+			readonly definitions: readonly WorkerDefinitionBinding[];
+		},
+	) {
+		if (!Number.isSafeInteger(options.workers) || options.workers < 1) throw new Error("Invalid local worker count");
+		if (childWorkerDispatchers.has(backend)) throw new Error("Local worker pool already attached");
+		childWorkerDispatchers.set(backend, this);
+	}
+	get workerPids(): number[] {
+		return [...this.children].flatMap((child) => (child.pid === undefined ? [] : [child.pid]));
+	}
+	validateOptions(options: RunOpts): void {
+		for (const key of [
+			"adapters",
+			"ui",
+			"persistence",
+			"mcp",
+			"cancellation",
+			"overlay",
+			"models",
+			"registry",
+			"stageControlRegistry",
+			"toolControlRegistry",
+			"stageUiBroker",
+			"toolAdmissionBoundary",
+			"onStageStart",
+			"onStageEnd",
+			"onStageSession",
+			"onStageSessionEvent",
+			"confirmStageReadiness",
+			"budget",
+			"rootBudget",
+		] as const)
+			if (options[key] !== undefined) throw new Error(`Local workers refuse process-bound override: ${key}`);
+	}
+	private async start(root: string): Promise<void> {
+		if (this.closed) throw new Error("Local worker pool is closed");
+		if (
+			!(this.backend.journal instanceof SqlRunJournal) ||
+			resolve(this.options.journalPath) !== resolve(this.backend.journal.path) ||
+			sqlPoolStorage(this.backend.journal)?.tables.runs !== "wf_runs"
+		)
+			throw new Error("Local workers require the same default-prefix SQLite journal");
+		this.sources = await Promise.all(
+			this.options.definitions.map(async (binding) => {
+				const source = {
+					path: binding.path,
+					exportName: binding.exportName,
+					digest: await definitionDigest(binding.path),
+				};
+				const loaded = workerDefinitionSources.get(binding.definition);
+				if (
+					!loaded ||
+					loaded.path !== source.path ||
+					loaded.exportName !== source.exportName ||
+					loaded.digest !== source.digest
+				)
+					throw new Error(`Worker definition is not importable: ${binding.exportName}`);
+				return source;
+			}),
+		);
+		const state = await this.backend.journal.leaseState(root);
+		if (!state || state.holderId !== this.backend.holderId)
+			throw new Error("Local worker pool requires the root owner");
+		this.lease = { runId: root, holderId: state.holderId, epoch: state.epoch };
+		this.queue = await openSqlPoolQueue(this.backend.journal);
+		await this.queue.initialize(this.lease, COORDINATOR_LEASE_MS);
+		await Promise.all(Array.from({ length: this.options.workers }, () => this.spawn(root)));
+	}
+	private spawn(root: string): Promise<void> {
+		if (this.closed) return Promise.reject(new Error("Local worker pool is closed"));
+		const child = fork(
+			fileURLToPath(new URL("./local-worker-entry.mjs", import.meta.url)),
+			[JSON.stringify({ journalPath: this.options.journalPath, root, definitions: this.sources })],
+			{ stdio: ["ignore", "ignore", "pipe", "ipc"], execArgv: [] },
+		);
+		this.children.add(child);
+		const worker = randomUUID();
+		this.incarnations.set(worker, child);
+		let ready = false;
+		let serial: Promise<void> = Promise.resolve();
+		let work: PoolWork | undefined;
+		let stderr = "";
+		child.stderr?.on("data", (chunk: Buffer) => {
+			stderr = (stderr + chunk.toString()).slice(-8192);
+		});
+		return new Promise((resolve, reject) => {
+			const startup = setTimeout(() => {
+				this.failure = new Error("Local worker startup timed out");
+				reject(this.failure);
+				child.kill("SIGKILL");
+			}, 30_000);
+			child.once("error", (error) => {
+				clearTimeout(startup);
+				reject(error);
+			});
+			child.once("exit", () => {
+				this.children.delete(child);
+				clearTimeout(startup);
+				this.incarnations.delete(worker);
+				reject(new Error(`Local worker exited before readiness: ${stderr}`));
+				if (!this.closed && ready) {
+					const exhausted = work ? work.generation >= 3 : ++this.replacements > 3;
+					if (exhausted) this.failure = new Error(`Local worker retry limit: ${stderr}`);
+					else
+						void this.spawn(root).catch((error: Error) => {
+							this.failure = error;
+						});
+				}
+			});
+			child.on("message", (message: WorkerRequest) => {
+				const response = serial.then(async () => {
+					if (message.kind === "ready") {
+						ready = true;
+						clearTimeout(startup);
+						resolve();
+						return;
+					}
+					await this.starting;
+					const queue = this.queue!;
+					const lease = this.lease!;
+					if (message.kind === "claim") {
+						if (work) throw new Error("Worker already holds an attempt");
+						await this.recoverExpired(root);
+						work = await queue.claim(
+							lease,
+							worker,
+							this.sources.map((source) => ({
+								definition: `${source.path}#${source.exportName}`,
+								digest: source.digest,
+							})),
+							WORK_LEASE_MS,
+						);
+						return work;
+					}
+					if (!work) throw new Error("Worker has no active attempt");
+					if (message.kind === "renew") {
+						work = await queue.renew(lease, work, randomUUID(), WORK_LEASE_MS);
+						return;
+					}
+					if (message.kind === "commit") {
+						return queue.commit(lease, work, message.operation, message.mutation);
+					}
+					if (message.kind !== "complete") throw new Error("Invalid worker operation");
+					await queue.complete(lease, work, message.result as unknown as WorkflowSerializableObject);
+					this.replacements = 0;
+					work = undefined;
+				});
+				serial = response.then(
+					() => {},
+					() => {},
+				);
+				void response.then(
+					(value) => {
+						if (child.connected) child.send({ id: message.id, value });
+					},
+					(error: Error) => {
+						if (child.connected) child.send({ id: message.id, error: error.message });
+					},
+				);
+			});
+		});
+	}
+	private recoverExpired(root: string): Promise<void> {
+		const recovery = this.recovering.then(async () => {
+			for (const work of await this.queue!.inspect(root)) {
+				if (work.state !== "leased" || work.expiresAt >= Date.now()) continue;
+				const child = work.worker === null ? undefined : this.incarnations.get(work.worker);
+				if (child) await this.stop(child);
+				await this.queue!.expire(this.lease!, work);
+			}
+		});
+		this.recovering = recovery.catch(() => {});
+		return recovery;
+	}
+	private stop(child: ChildProcess): Promise<void> {
+		if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+		return new Promise((resolve, reject) => {
+			const timeout = setTimeout(() => reject(new Error("Local worker cleanup was not confirmed")), 5_000);
+			child.once("exit", () => {
+				clearTimeout(timeout);
+				resolve();
+			});
+			child.kill("SIGKILL");
+		});
+	}
+	async run(definition: WorkflowDefinition, inputs: ResolvedInputs, options: RunOpts): Promise<RunResult> {
+		try {
+			return await this.dispatch(definition, inputs, options);
+		} catch (error) {
+			await this.close();
+			throw error;
+		}
+	}
+	private async dispatch(
+		definition: WorkflowDefinition,
+		inputs: ResolvedInputs,
+		options: RunOpts,
+	): Promise<RunResult> {
+		const index = this.options.definitions.findIndex((binding) => binding.definition === definition);
+		if (index < 0) throw new Error(`Worker definition is not importable: ${definition.name}`);
+		if (!options.parentRun || !options.durableScope)
+			throw new Error("Local workers require a durable child boundary");
+		const root = options.parentRun.rootRunId;
+		this.starting ??= this.start(root);
+		await this.starting;
+		if (this.lease!.runId !== root) throw new Error("Local worker pool belongs to another root");
+		const source = this.sources[index]!;
+		if ((await definitionDigest(source.path)) !== source.digest)
+			throw new Error("Worker definition compatibility error");
+		await this.backend.hydrateWorkflow(root);
+		const boundary = this.backend
+			.listCheckpoints(root)
+			.find(
+				(entry) =>
+					entry.kind === "stage" &&
+					entry.topology?.boundary?.event === "start" &&
+					entry.topology.stageId === options.parentRun!.stageId,
+			);
+		if (boundary?.kind !== "stage") throw new Error("Missing durable child boundary");
+		const execution = JSON.parse(
+			JSON.stringify({
+				cwd: options.cwd,
+				depth: options.depth,
+				parentRun: options.parentRun,
+				config: options.config,
+				executionMode: options.executionMode,
+			}),
+		) as WorkflowSerializableObject;
+		const work = await this.queue!.enqueue(
+			this.lease!,
+			{
+				boundaryId: options.parentRun.stageId,
+				childRunId: options.runId!,
+				scope: options.durableScope.scopePrefix,
+				definition: `${source.path}#${source.exportName}`,
+				digest: source.digest,
+				inputs,
+				execution,
+			},
+			boundary,
+		);
+		for (;;) {
+			if (this.closed) throw new Error("Local worker pool is closed");
+			if (this.failure) throw this.failure;
+			options.signal?.throwIfAborted();
+			const result = await this.queue!.result(root, work.id);
+			if (result) {
+				await this.backend.hydrateWorkflow(root);
+				return result as unknown as RunResult;
+			}
+			await delay(25, undefined, { signal: options.signal });
+		}
+	}
+	async close(): Promise<void> {
+		this.closed = true;
+		childWorkerDispatchers.delete(this.backend);
+		await Promise.all([...this.children].map((child) => this.stop(child)));
+	}
+}
