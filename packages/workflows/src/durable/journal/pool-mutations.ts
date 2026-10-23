@@ -65,11 +65,7 @@ export async function validatePoolMutation(
 	);
 	const records = rows.map((row) => JSON.parse(String(row.payload)) as DurableCheckpoint);
 	const stages = records.filter((entry): entry is DurableStageCheckpoint => entry.kind === "stage");
-	const topology =
-		checkpoint.topology ??
-		(checkpoint.kind === "stage"
-			? stages.find((entry) => entry.replayKey === checkpoint.replayKey && entry.topology?.run)?.topology
-			: undefined);
+	const topology = checkpoint.topology;
 	const run = topology?.run;
 	if (!topology || !run || run.rootRunId !== root || run.runId === root)
 		throw new Error("Pool topology scope mismatch");

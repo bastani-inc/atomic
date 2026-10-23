@@ -4,7 +4,10 @@ import type { SessionEntry } from "@bastani/atomic";
 import { StorageProvider } from "@bastani/atomic/storage";
 import { test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
-import { durableWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
+import {
+	completedWorkflowRunSnapshots,
+	durableWorkflowRunSnapshots,
+} from "../../packages/workflows/src/durable/completed-catalog.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import {
 	openSqlPoolQueue,
@@ -197,6 +200,87 @@ test("session transcripts and checkpoints commit atomically and acknowledge once
 		assert.deepEqual((await sessions.load("session")).entries, [...entries, ...append.entries]);
 	} finally {
 		await sessions.close();
+		await f.close();
+	}
+});
+
+test("session continuations require explicit topology and recover both run graphs after reopening (#3869)", async () => {
+	const f = await fixture();
+	try {
+		await f.pool.commit(f.lease, f.attempt, "create", createSession);
+		const append = {
+			kind: "session-append" as const,
+			checkpoint: { ...stage, checkpointId: `${work.scope}:session:1`, completedAt: 1 },
+			entries: [{ ...messages[0]!, id: "continued", parentId: "message" }],
+			expectSeq: 1,
+		};
+		const { topology: _topology, ...withoutTopology } = append.checkpoint;
+		await assert.rejects(
+			f.pool.commit(f.lease, f.attempt, "continue", { ...append, checkpoint: withoutTopology }),
+			/Pool topology scope mismatch/,
+		);
+		const receipt = await f.pool.commit(f.lease, f.attempt, "continue", append);
+		assert.equal(receipt.lastSeq, 2);
+		await f.pool.commit(f.lease, f.attempt, "stage-complete", {
+			kind: "checkpoint",
+			checkpoint: {
+				...stage,
+				checkpointId: `${work.scope}:stage:complete`,
+				completedAt: 2,
+				output: { done: true },
+				topology: { ...stage.topology, status: "completed" },
+			},
+		});
+		const database = await openNodeSqliteDatabase(f.path);
+		const journal = await SqlRunJournal.open(database);
+		const projection = await JournalDurableBackend.open(journal, { ownsJournal: false });
+		const sessions = await new StorageProvider().openSessionStore(
+			{ kind: "database", database, prefix: "wf_runs_pool_" },
+			{ agentDir: "/new/scratch", domain: "sessions" },
+		);
+		try {
+			const peer = await openSqlPoolQueue(journal);
+			assert.deepEqual(await peer.commit(f.lease, f.attempt, "continue", append), receipt);
+			assert.deepEqual((await sessions.load("session")).entries, [...messages, ...append.entries]);
+			const expectedRuns = ["root", work.childRunId].sort();
+			assert.deepEqual(
+				durableWorkflowRunSnapshots(projection, projection.getWorkflow("root")!)
+					.map((snapshot) => snapshot.id)
+					.sort(),
+				expectedRuns,
+			);
+			await f.backend.commitCheckpoint({
+				...boundary,
+				checkpointId: `boundary-complete:${work.scope}`,
+				completedAt: 3,
+				output: {
+					workflow: "child",
+					runId: work.childRunId,
+					status: "completed",
+					exited: false,
+					outputs: { done: true },
+				},
+				topology: {
+					...boundary.topology!,
+					status: "completed",
+					boundary: { ...boundary.topology!.boundary!, event: "terminal", status: "completed" },
+				},
+			});
+			await f.backend.commitWorkflowStatus("root", "completed");
+			await projection.hydrateWorkflow("root");
+			const [entry] = projection.listCompletedWorkflows();
+			assert.ok(entry);
+			assert.deepEqual(
+				(await completedWorkflowRunSnapshots(projection, entry, sessions)).map((snapshot) => snapshot.id).sort(),
+				expectedRuns,
+			);
+		} finally {
+			await sessions.close();
+			await projection.close();
+			await journal.close();
+			await database.close();
+		}
+	} finally {
 		await f.close();
 	}
 });
