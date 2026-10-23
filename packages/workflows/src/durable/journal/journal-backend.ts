@@ -390,6 +390,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		const lease = yield* this.ownership(runId);
 		try {
 			const outcome = yield* invoke(() => this.journal.append(lease, event, options));
+			const nextSeq = (this.sequences.get(runId) ?? 0) + 1;
+			if (outcome.entry.seq > nextSeq) {
+				for (const entry of yield* this.entries(runId, nextSeq)) this.fold(entry);
+			}
 			this.fold(outcome.entry);
 		} catch (error) {
 			if (error instanceof Error) throw yield* this.mapOwnership(error, runId);

@@ -385,7 +385,11 @@ class JournalProjection {
 	}
 	applyWorkflowSnapshot(handle: DurableWorkflowHandle): void {
 		if (!this.workflows.has(handle.workflowId)) this.registerWorkflow(handle, true);
-		this.workflows.get(handle.workflowId)!.handle = handle;
+		const record = this.workflows.get(handle.workflowId)!;
+		record.handle = {
+			...handle,
+			completedCheckpoints: Math.max(handle.completedCheckpoints, record.checkpoints.size),
+		};
 	}
 
 	async archivePendingStageMessage(workflowId: string, entry: PendingStageMessage): Promise<void> {
