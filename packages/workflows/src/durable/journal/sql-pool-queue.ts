@@ -96,7 +96,8 @@ export class SqlPoolQueue {
 	private readonly operations: string;
 	private readonly transaction: Transaction;
 	private readonly journal: JournalTables;
-	private constructor(transaction: Transaction, journal: JournalTables) {
+	private constructor(private readonly storage: SqlPoolStorage) {
+		const { transaction, tables: journal } = storage;
 		this.transaction = transaction;
 		this.journal = journal;
 		this.meta = `${journal.runs}_pool_meta`;
@@ -104,9 +105,10 @@ export class SqlPoolQueue {
 		this.work = `${journal.runs}_work`;
 		this.operations = `${journal.runs}_pool_operations`;
 	}
-	static async open(transaction: Transaction, journal: JournalTables): Promise<SqlPoolQueue> {
-		const pool = new SqlPoolQueue(transaction, journal);
-		await transaction(async (tx) => {
+	static async open(storage: SqlPoolStorage): Promise<SqlPoolQueue> {
+		const journal = storage.tables;
+		const pool = new SqlPoolQueue(storage);
+		await storage.transaction(async (tx) => {
 			if ((await tx.get("PRAGMA foreign_keys"))?.foreign_keys !== 1)
 				throw new Error("Pool requires SQLite foreign keys");
 			await tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.meta}(version INTEGER NOT NULL)`);
@@ -211,6 +213,26 @@ export class SqlPoolQueue {
 			return { state, revision: Number(row.revision) };
 		});
 	}
+	withCurrentAppend<T>(
+		lease: Lease,
+		token: WorkLease,
+		assertSession: () => void,
+		action: () => Promise<T>,
+	): Promise<T> {
+		lease = snapshotLease(lease);
+		token = { ...token };
+		return this.storage.withAppendGuard(async (tx, runId) => {
+			if (runId !== lease.runId) throw new Error("Pool delivery cannot write another root");
+			const { now } = await this.authority(tx, lease).catch((error: Error) => {
+				if (error instanceof StaleLeaseError) throw new Error("Stale pool coordinator authority", { cause: error });
+				throw error;
+			});
+			const row = await this.current(tx, lease, token);
+			if (row.epoch !== lease.epoch || row.expires_at < now) throw new Error("Stale work lease");
+			assertSession();
+		}, action);
+	}
+
 	async assertCurrent(lease: Lease, token: WorkLease): Promise<void> {
 		await this.transaction(async (tx) => {
 			const { now } = await this.authority(tx, lease);
@@ -546,5 +568,5 @@ export class SqlPoolQueue {
 export function openSqlPoolQueue(journal: RunJournal): Promise<SqlPoolQueue> {
 	const storage = sqlPoolStorage(journal);
 	if (!storage) return Promise.reject(new Error("Worker pool requires a SQL run journal"));
-	return SqlPoolQueue.open(storage.transaction, storage.tables);
+	return SqlPoolQueue.open(storage);
 }

@@ -34,6 +34,7 @@ export class PoolStageHandoff {
 	private readonly attempts = new Map<string, Attempt>();
 	private readonly owners = new Map<string, string>();
 	private readonly publications = new Map<string, Promise<void>>();
+	private readonly drains = new Map<string, Promise<void>>();
 
 	constructor(
 		private readonly backend: JournalDurableBackend,
@@ -65,7 +66,7 @@ export class PoolStageHandoff {
 	async ready(work: PoolWork, runId: string, stageId: string, stageName: string, sessionId?: string): Promise<void> {
 		const attempt = await this.begin(work);
 		this.requireOwned(attempt, runId);
-		await this.delivery(attempt, runId, stageId, stageName).ready(sessionId);
+		await this.delivery(attempt, work, runId, stageId, stageName).ready(sessionId);
 	}
 
 	async deliver(
@@ -81,13 +82,29 @@ export class PoolStageHandoff {
 		const stage = JSON.stringify([runId, stageId]);
 		if (attempt.sessions.get(stage) !== recipient.sessionId)
 			throw new Error(`Session ${recipient.sessionId} is not the published session of stage ${stageId}`);
-		await this.delivery(attempt, runId, stageId, stageName).deliverPending(async (from, message) => {
-			await transport(from, message);
-			await this.queue.assertCurrent(this.lease, work);
+		const assertSession = () => {
 			if (this.attempts.get(work.id) !== attempt || attempt.fenced) throw new Error(STALE);
 			if (attempt.sessions.get(stage) !== recipient.sessionId)
 				throw new Error(`Stage session ${recipient.sessionId} was replaced before it acknowledged delivery`);
-		}, recipient);
+		};
+		const previous = this.drains.get(stage) ?? Promise.resolve();
+		const drain = previous
+			.catch(() => undefined)
+			.then(async () => {
+				await this.queue.assertCurrent(this.lease, work);
+				assertSession();
+				await this.delivery(attempt, work, runId, stageId, stageName).deliverPending(async (from, message) => {
+					await transport(from, message);
+					await this.queue.assertCurrent(this.lease, work);
+					assertSession();
+				}, recipient);
+			});
+		this.drains.set(stage, drain);
+		try {
+			await drain;
+		} finally {
+			if (this.drains.get(stage) === drain) this.drains.delete(stage);
+		}
 	}
 
 	async complete(work: Pick<PoolWork, "id" | "childRunId">): Promise<void> {
@@ -169,6 +186,10 @@ export class PoolStageHandoff {
 			this.owners.set(run.id, work.id);
 			for (const stage of run.stages) {
 				const key = JSON.stringify([run.id, stage.id]);
+				if (attempt.sessions.get(key) !== stage.sessionId) {
+					attempt.deliveries.get(key)?.fail(new Error(`Stage session ${attempt.sessions.get(key)} was replaced`));
+					attempt.deliveries.delete(key);
+				}
 				if (stage.sessionId === undefined) attempt.sessions.delete(key);
 				else attempt.sessions.set(key, stage.sessionId);
 			}
@@ -239,6 +260,7 @@ export class PoolStageHandoff {
 	}
 
 	private release(attempt: Attempt): void {
+		for (const delivery of attempt.deliveries.values()) delivery.fail(new Error(STALE));
 		attempt.deliveries.clear();
 		attempt.sessions.clear();
 		for (const id of attempt.runs) rotateWorkflowPendingStageRouteCapability(this.store, id);
@@ -260,11 +282,29 @@ export class PoolStageHandoff {
 		if (!attempt.runs.has(runId)) throw outside(runId);
 	}
 
-	private delivery(attempt: Attempt, runId: string, stageId: string, stageName: string): PendingDelivery {
+	private delivery(
+		attempt: Attempt,
+		work: PoolWork,
+		runId: string,
+		stageId: string,
+		stageName: string,
+	): PendingDelivery {
 		const key = JSON.stringify([runId, stageId]);
 		let delivery = attempt.deliveries.get(key);
 		if (delivery === undefined) {
-			delivery = createWorkflowPendingStageDelivery(this.store, runId, stageId, stageName);
+			const sessionId = attempt.sessions.get(key);
+			delivery = createWorkflowPendingStageDelivery(this.store, runId, stageId, stageName, (action) =>
+				this.queue.withCurrentAppend(
+					this.lease,
+					work,
+					() => {
+						if (this.attempts.get(work.id) !== attempt || attempt.fenced) throw new Error(STALE);
+						if (attempt.sessions.get(key) !== sessionId)
+							throw new Error(`Stage session ${sessionId} was replaced before it acknowledged delivery`);
+					},
+					action,
+				),
+			);
 			attempt.deliveries.set(key, delivery);
 		}
 		return delivery;

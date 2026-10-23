@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
 	assertStorageSchemaVersion,
 	renderStorageIdentifiers,
@@ -11,6 +12,7 @@ import {
 } from "@bastani/atomic/storage";
 import {
 	JOURNAL_READ_PAGE_SIZE,
+	type JournalAppendGuard,
 	type RunVersion,
 	registerRunJournalVersions,
 	registerSqlPoolStorage,
@@ -70,6 +72,7 @@ export class SqlRunJournal implements RunJournal {
 	private readonly database: SqliteDatabase;
 	private readonly tables: Tables;
 	private readonly legacy: LegacyJournalRuns | undefined;
+	private readonly appendGuard = new AsyncLocalStorage<JournalAppendGuard>();
 
 	private constructor(database: SqliteDatabase, tables: Tables, legacy: LegacyJournalRuns | undefined) {
 		this.database = database;
@@ -81,6 +84,7 @@ export class SqlRunJournal implements RunJournal {
 		});
 		registerSqlPoolStorage(this, {
 			transaction: (body) => this.operation(() => this.database.transaction(body)),
+			withAppendGuard: (guard, action) => this.appendGuard.run(guard, action),
 			tables: this.tables,
 		});
 	}
@@ -408,6 +412,12 @@ export class SqlRunJournal implements RunJournal {
 		const expected = options?.expectSeq;
 		const type = event.type;
 		const payload = this.snapshotJson(event.payload);
+		const guard =
+			type === RUN_EVENT_TYPES.messageQueued ||
+			type === RUN_EVENT_TYPES.messageDelivered ||
+			type === RUN_EVENT_TYPES.messageSettled
+				? this.appendGuard.getStore()
+				: undefined;
 		const status =
 			type === RUN_EVENT_TYPES.statusChanged && !(payload instanceof StorageUnavailableError)
 				? (JSON.parse(payload) as { status: string }).status
@@ -417,6 +427,7 @@ export class SqlRunJournal implements RunJournal {
 		return this.operation(() =>
 			this.database.transaction(async (tx) => {
 				await this.checkLease(tx, owned);
+				await guard?.(tx, owned.runId);
 				if (key !== undefined) {
 					const row = await tx.get<EventRow>(
 						`SELECT * FROM ${this.tables.events} WHERE ${c.runId} = ? AND ${c.key} = ?`,
@@ -446,6 +457,7 @@ export class SqlRunJournal implements RunJournal {
 					owned.runId,
 					seq,
 				);
+				await guard?.(tx, owned.runId);
 				return { status: "appended", entry: entryFromRow(row!) };
 			}),
 		);
