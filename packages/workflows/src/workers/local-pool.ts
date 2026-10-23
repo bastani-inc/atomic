@@ -494,10 +494,20 @@ export class LocalWorkerPool {
 		this.closed = true;
 		childWorkerDispatchers.delete(this.backend);
 		workflowResourceAdmission.delete(this.backend);
-		await this.recovering?.catch(() => {});
-		await Promise.all([...this.children].map((child) => this.stop(child)));
-		await Promise.all([...this.cleanups]);
-		if (this.cleanupFailure) throw this.cleanupFailure;
-		await this.releaseRoutes?.();
+		let failure: unknown;
+		try {
+			await this.recovering?.catch(() => {});
+			await Promise.all([...this.children].map((child) => this.stop(child)));
+			await Promise.all([...this.cleanups]);
+			if (this.cleanupFailure) throw this.cleanupFailure;
+		} catch (error) {
+			failure = error;
+		}
+		try {
+			await this.releaseRoutes?.();
+		} catch (error) {
+			failure ??= error;
+		}
+		if (failure !== undefined) throw failure;
 	}
 }

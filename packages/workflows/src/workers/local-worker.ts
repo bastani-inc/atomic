@@ -179,11 +179,25 @@ export async function runLocalWorker(start: WorkerStart): Promise<void> {
 			activeController = controller;
 			const store = createStore();
 			currentStore = store;
-			let publication: Promise<WorkerReply["value"]> = Promise.resolve(undefined);
+			let publication: Promise<void> | undefined;
+			let activityDirty = false;
 			const publish = () => {
-				const runs = structuredClone(store.runs());
-				publication = publication.then(() => request({ kind: "activity", runs }));
-				void publication.catch((error: Error) => controller.abort(error));
+				activityDirty = true;
+				if (publication !== undefined) return;
+				const current = (async () => {
+					while (activityDirty) {
+						activityDirty = false;
+						await request({ kind: "activity", runs: structuredClone(store.runs()) });
+					}
+				})();
+				publication = current;
+				const settle = () => {
+					if (publication === current) publication = undefined;
+				};
+				current.then(settle, (error: Error) => {
+					settle();
+					controller.abort(error);
+				});
 			};
 			const unsubscribe = store.subscribeInvalidation(publish);
 			const admission = start.admission
@@ -243,26 +257,33 @@ export async function runLocalWorker(start: WorkerStart): Promise<void> {
 				await awaitAdmission(signal);
 				await admission?.validate(signal);
 			});
-			let pulse: Promise<void> | undefined;
+			let renewal: Promise<void> | undefined;
+			let report: Promise<void> | undefined;
 			let controlPulse: Promise<void> | undefined;
+			const failPulse = (error: Error) => {
+				controller.abort(error);
+				process.exitCode = 1;
+			};
 			const heartbeat = setInterval(() => {
-				pulse ??= (async () => {
-					await request({ kind: "renew" });
+				renewal ??= request({ kind: "renew" })
+					.then(() => {})
+					.catch(failPulse)
+					.finally(() => {
+						renewal = undefined;
+					});
+				controlPulse ??= observeControl()
+					.catch((error: Error) => controller.abort(error))
+					.finally(() => {
+						controlPulse = undefined;
+					});
+				report ??= (async () => {
 					publish();
 					await publication;
-					controlPulse ??= observeControl()
-						.catch((error: Error) => controller.abort(error))
-						.finally(() => {
-							controlPulse = undefined;
-						});
 					await request({ kind: "usage", reports: collectWorkerUsage(store.runs()) });
 				})()
-					.catch((error: Error) => {
-						controller.abort(error);
-						process.exitCode = 1;
-					})
+					.catch(failPulse)
 					.finally(() => {
-						pulse = undefined;
+						report = undefined;
 					});
 			}, 1000);
 			try {
@@ -295,7 +316,8 @@ export async function runLocalWorker(start: WorkerStart): Promise<void> {
 					}),
 				);
 				clearInterval(heartbeat);
-				await pulse;
+				await renewal;
+				await report;
 				await controlPulse;
 				await publication;
 				await request({ kind: "usage", reports: collectWorkerUsage(store.runs()) });

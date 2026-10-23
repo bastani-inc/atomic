@@ -202,6 +202,42 @@ test("a message queued while publication waits for its fence is not overwritten 
 	}
 });
 
+test("a worker publication while a message persists keeps the accepted message visible and durable (#3869)", async () => {
+	const f = await fixture();
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	let queueing: Promise<void> | undefined;
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("stage")])]);
+		const persist = f.backend.persistPendingStageMessages.bind(f.backend);
+		vi.spyOn(f.backend, "persistPendingStageMessages").mockImplementationOnce(async (...args) => {
+			const persisted = await persist(...args);
+			entered.resolve();
+			await release.promise;
+			return persisted;
+		});
+		queueing = f.queueDirect("stage", "during-persistence");
+		await entered.promise;
+		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		release.resolve();
+		await queueing;
+		assert.deepEqual(
+			f.store.pendingStageMessagesFor(descriptor.childRunId, "stage").map((entry) => entry.message.id),
+			["during-persistence"],
+		);
+		await f.queueDirect("stage", "after-publication");
+		assert.deepEqual(
+			pendingStageMessagesForDurableRun(f.backend, descriptor.childRunId, ROOT).map((entry) => entry.message.id),
+			["during-persistence", "after-publication"],
+		);
+	} finally {
+		release.resolve();
+		await queueing;
+		vi.restoreAllMocks();
+		await f.close();
+	}
+});
+
 test("publication labels stages with their worker attempt and marks root progress only for real changes (#3869)", async () => {
 	const f = await fixture();
 	try {

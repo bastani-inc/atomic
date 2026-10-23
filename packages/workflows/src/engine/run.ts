@@ -989,6 +989,7 @@ async function executeRun(
 				await pausePersistence?.catch(() => {});
 				if (generation !== pauseGeneration) throw new WorkflowRunControlError(runId, "running", "superseded");
 				await persistRunControl("running");
+				if (generation !== pauseGeneration) throw new WorkflowRunControlError(runId, "running", "superseded");
 				await dispatcher?.control?.("running");
 				ownController.signal.throwIfAborted();
 				if (generation !== pauseGeneration) throw new WorkflowRunControlError(runId, "running", "superseded");

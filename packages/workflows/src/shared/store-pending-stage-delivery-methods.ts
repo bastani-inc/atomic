@@ -72,10 +72,13 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 				);
 				if (result.ok && !result.deduplicated) {
 					const messages = await persistTransition(backend, input.runId, result.messages, context);
-					run.pendingStageMessages = [...messages];
+					const live = context.findRun(input.runId) ?? run;
+					live.pendingStageMessages = [...messages];
 					context.bumpAndNotify();
 				}
-				return result.ok ? { ...result, messages: run.pendingStageMessages ?? [] } : result;
+				return result.ok
+					? { ...result, messages: (context.findRun(input.runId) ?? run).pendingStageMessages ?? [] }
+					: result;
 			});
 		},
 
@@ -148,7 +151,8 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 				);
 				if (next === current) return false;
 				const messages = await persistTransition(backend, runId, next, context);
-				run.pendingStageMessages = [...messages];
+				const live = context.findRun(runId) ?? run;
+				live.pendingStageMessages = [...messages];
 				context.bumpAndNotify();
 				return true;
 			});
@@ -175,7 +179,8 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 				);
 				if (next === current) return false;
 				const messages = await persistTransition(backend, runId, next, context);
-				run.pendingStageMessages = [...messages];
+				const live = context.findRun(runId) ?? run;
+				live.pendingStageMessages = [...messages];
 				context.bumpAndNotify();
 				return true;
 			});
@@ -203,7 +208,8 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 				);
 				if (next === current) return false;
 				const messages = await persistTransition(backend, runId, next, context);
-				run.pendingStageMessages = [...messages];
+				const live = context.findRun(runId) ?? run;
+				live.pendingStageMessages = [...messages];
 				context.bumpAndNotify();
 				return true;
 			});
@@ -228,10 +234,13 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 				);
 				if (result.ok && !result.deduplicated) {
 					const messages = await persistTransition(backend, input.runId, result.messages, context);
-					run.pendingStageMessages = [...messages];
+					const live = context.findRun(input.runId) ?? run;
+					live.pendingStageMessages = [...messages];
 					context.bumpAndNotify();
 				}
-				return result.ok ? { ...result, messages: run.pendingStageMessages ?? [] } : result;
+				return result.ok
+					? { ...result, messages: (context.findRun(input.runId) ?? run).pendingStageMessages ?? [] }
+					: result;
 			});
 		},
 
@@ -288,7 +297,8 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 				);
 				if (next === current) return false;
 				const messages = await persistTransition(backend, runId, next, context);
-				run.pendingStageMessages = [...messages];
+				const live = context.findRun(runId) ?? run;
+				live.pendingStageMessages = [...messages];
 				context.bumpAndNotify();
 				return true;
 			});
@@ -308,7 +318,8 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 				const next = settleStickyPendingStageMessageDelivered(current, runId, messageId, settledAt);
 				if (next === current) return false;
 				const messages = await persistTransition(backend, runId, next, context);
-				run.pendingStageMessages = [...messages];
+				const live = context.findRun(runId) ?? run;
+				live.pendingStageMessages = [...messages];
 				context.bumpAndNotify();
 				return true;
 			});
