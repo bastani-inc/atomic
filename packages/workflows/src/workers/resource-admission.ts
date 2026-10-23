@@ -3,7 +3,7 @@ import { realpath } from "node:fs/promises";
 import { cpus, freemem, loadavg } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ResourcePermit, ResourceProcessIdentity } from "@bastani/atomic";
-import type { SqliteRow } from "@bastani/atomic/storage";
+import type { SqliteExecutor, SqliteRow } from "@bastani/atomic/storage";
 import { type SqlPoolStorage, sqlPoolStorage } from "../durable/journal/internal.js";
 import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
 import type { RunJournal } from "../durable/journal/types.js";
@@ -137,6 +137,26 @@ export class SqlResourceAdmission {
 			if (sample.load > host.maxLoadPerCpu) return "host load";
 		}
 	}
+	private async assertCurrentAttempt(tx: SqliteExecutor): Promise<void> {
+		const { root, attempt } = this.options;
+		if (!attempt) return;
+		const work = await tx.get(
+			`SELECT 1 AS valid FROM ${this.storage.tables.runs}_work w JOIN ${this.storage.tables.leases} l ON l.run_id = w.root
+			JOIN ${this.storage.tables.runs}_pool p ON p.root = w.root JOIN ${this.storage.tables.runs} r ON r.run_id = w.root
+			WHERE w.id = ? AND w.root = ? AND w.generation = ? AND w.epoch = ? AND w.state = 'leased' AND r.status = 'running'
+			AND w.expires_at >= CAST(unixepoch('subsec') * 1000 AS INTEGER)
+			AND l.epoch = w.epoch AND l.renewed_at + p.timeout >= CAST(unixepoch('subsec') * 1000 AS INTEGER)`,
+			attempt.id,
+			root,
+			attempt.generation,
+			attempt.epoch,
+		);
+		if (!work) throw new Error("Stale resource admission attempt");
+	}
+	async validate(signal?: AbortSignal): Promise<void> {
+		signal?.throwIfAborted();
+		await this.storage.transaction((tx) => this.assertCurrentAttempt(tx));
+	}
 	async acquire(
 		kind: Resource,
 		signal?: AbortSignal,
@@ -207,21 +227,8 @@ export class SqlResourceAdmission {
 						OWNER_LEASE_MS,
 						this.owner,
 					);
-					const { root, attempt } = this.options;
-					if (attempt) {
-						const work = await tx.get(
-							`SELECT 1 AS valid FROM ${this.storage.tables.runs}_work w JOIN ${this.storage.tables.leases} l ON l.run_id = w.root
-							JOIN ${this.storage.tables.runs}_pool p ON p.root = w.root JOIN ${this.storage.tables.runs} r ON r.run_id = w.root
-							WHERE w.id = ? AND w.root = ? AND w.generation = ? AND w.epoch = ? AND w.state = 'leased' AND r.status = 'running'
-							AND w.expires_at >= CAST(unixepoch('subsec') * 1000 AS INTEGER)
-							AND l.epoch = w.epoch AND l.renewed_at + p.timeout >= CAST(unixepoch('subsec') * 1000 AS INTEGER)`,
-							attempt.id,
-							root,
-							attempt.generation,
-							attempt.epoch,
-						);
-						if (!work) throw new Error("Stale resource admission attempt");
-					}
+					const { root } = this.options;
+					await this.assertCurrentAttempt(tx);
 					let reason = hostReason;
 					for (const scope of [`root:${root}`, "user"]) {
 						const row = await tx.get(`SELECT config FROM ${this.configuration} WHERE scope = ?`, scope);

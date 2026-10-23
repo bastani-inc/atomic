@@ -25,7 +25,7 @@ export function poolStageUsageKey(runId: string, stageId: string): string {
 export function poolCheckpointUsage(checkpoint: DurableCheckpoint): { key: string; usage: PoolUsage } | undefined {
 	if (
 		checkpoint.kind !== "stage" ||
-		!("output" in checkpoint) ||
+		(!("output" in checkpoint) && checkpoint.topology?.status !== "failed") ||
 		!checkpoint.modelAttempts?.length ||
 		!checkpoint.topology?.run
 	)

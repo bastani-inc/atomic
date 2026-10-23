@@ -141,7 +141,10 @@ export async function runLocalWorker(start: WorkerStart): Promise<void> {
 					return admission ? admission.acquire(kind, signal, requestOptions) : async () => {};
 				},
 			};
-			const admitted = admittedSessionAdapter(adapter, resourceAdmission);
+			const admitted = admittedSessionAdapter(adapter, resourceAdmission, async (signal) => {
+				await request({ kind: "budget" });
+				await admission?.validate(signal);
+			});
 			let pulse: Promise<void> | undefined;
 			const heartbeat = setInterval(() => {
 				pulse ??= (async () => {
