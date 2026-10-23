@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 import { TestSqliteDatabase } from "../../packages/coding-agent/test/helpers/sqlite.js";
+import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { loadWorkerWorkflow, run, workflow } from "../../packages/workflows/src/index.js";
 import {
 	decodeStream,
@@ -254,6 +256,8 @@ test.runIf(process.platform === "win32")(
 	"the public worker opt-in refuses Windows before registering a root or launching a worker (#3869)",
 	async () => {
 		const directory = makeTempDirectory("public-pool-windows-");
+		const journal = await resolveRunJournal({ journal: { path: join(directory, "journal.sqlite") } });
+		const backend = await JournalDurableBackend.open(journal);
 		try {
 			const child = await loadWorkerWorkflow(childPath, "child");
 			const parent = workflow({
@@ -273,7 +277,7 @@ test.runIf(process.platform === "win32")(
 					{
 						runId: ROOT,
 						cwd: directory,
-						journal: { path: join(directory, "journal.sqlite") },
+						durableBackend: backend,
 						localWorkers: { count: 1, definitions: [{ path: childPath, exportName: "child" }] },
 					},
 				),
@@ -286,6 +290,7 @@ test.runIf(process.platform === "win32")(
 				0,
 			);
 		} finally {
+			await backend.close();
 			removeTempDirectory(directory);
 		}
 	},

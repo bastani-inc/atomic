@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { test } from "vitest";
+import {
+	assertWorkerCompletedUnderRoot,
+	PACKAGED_WORKER_TIMEOUT_MS,
+	runPackagedWorkerRoot,
+	stageChildWorkflow,
+} from "../helpers/packaged-worker.js";
 import {
 	bunExecutable,
 	copyFileSync,
@@ -78,7 +84,7 @@ function nativeBindings(): string[] {
 }
 
 binaryTest(
-	"a compiled launcher serves the packaged worker entry over IPC and refuses misuse (#3869)",
+	"a compiled launcher serves the packaged worker entry over IPC, completes authored child work under the original root and refuses misuse (#3869)",
 	() => {
 		const root = makeTempDirectory("binary-worker-");
 		try {
@@ -98,9 +104,22 @@ binaryTest(
 			});
 			assert.notEqual(extraArgument.exitCode, 0);
 			assert.match(extraArgument.stderr.toString(), /exactly one JSON argument/u);
+
+			assert.deepEqual(readdirSync(join(root, "builtin", "workflows", "src")), ["local-worker-entry.mjs"]);
+			const work = join(root, "work");
+			makeDirectorySync(work, { recursive: true });
+			const token = "compiled-launcher";
+			const output = runPackagedWorkerRoot({
+				sdkBundle: join(packageDir, "dist", "builtin", "workflows", "src", "index.js"),
+				directory: work,
+				childPath: stageChildWorkflow(work),
+				token,
+				launcher,
+			});
+			assertWorkerCompletedUnderRoot(work, output, token);
 		} finally {
 			removeTempDirectory(root);
 		}
 	},
-	NATIVE_LAUNCHER_TIMEOUT_MS * 3,
+	NATIVE_LAUNCHER_TIMEOUT_MS * 3 + PACKAGED_WORKER_TIMEOUT_MS,
 );

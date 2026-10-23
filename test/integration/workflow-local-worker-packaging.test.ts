@@ -1,12 +1,26 @@
 import assert from "node:assert/strict";
 import { fork } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { test } from "vitest";
 import { WORKFLOWS_LOCAL_WORKER_ENTRIES } from "../../packages/coding-agent/src/core/builtin-install-layout.ts";
-import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
+import {
+	assertWorkerCompletedUnderRoot,
+	PACKAGED_WORKER_TIMEOUT_MS,
+	runPackagedWorkerRoot,
+	stageChildWorkflow,
+} from "../helpers/packaged-worker.js";
+import {
+	copyFileSync,
+	makeDirectorySync,
+	makeTempDirectory,
+	moduleDir,
+	removeTempDirectory,
+	symlinkSync,
+} from "../helpers/runtime.js";
 
-const workflowsDist = resolve(moduleDir(import.meta.url), "../../packages/coding-agent/dist/builtin/workflows");
+const repoRoot = resolve(moduleDir(import.meta.url), "../..");
+const workflowsDist = resolve(repoRoot, "packages/coding-agent/dist/builtin/workflows");
 const WORKER_READY_TIMEOUT_MS = 60_000;
 
 const requireBuild = process.env.ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE === "1";
@@ -58,4 +72,37 @@ packaged(
 		}
 	},
 	WORKER_READY_TIMEOUT_MS + 10_000,
+);
+
+const packagedWork =
+	built && process.platform !== "win32"
+		? test.each([...WORKFLOWS_LOCAL_WORKER_ENTRIES])
+		: test.skip.each([...WORKFLOWS_LOCAL_WORKER_ENTRIES]);
+
+packagedWork(
+	"packaged local worker entry %s completes authored child work under the original root without workflow sources (#3869)",
+	(entry) => {
+		const directory = makeTempDirectory("packaged-worker-work-");
+		try {
+			const staged = join(directory, "package");
+			makeDirectorySync(staged, { recursive: true });
+			copyFileSync(join(workflowsDist, "src", "index.js"), join(staged, "sdk.mjs"));
+			copyFileSync(join(workflowsDist, entry), join(staged, "local-worker-entry.mjs"));
+			symlinkSync(join(repoRoot, "node_modules"), join(staged, "node_modules"), "dir");
+			assert.deepEqual(readdirSync(staged).sort(), ["local-worker-entry.mjs", "node_modules", "sdk.mjs"]);
+			const work = join(directory, "work");
+			makeDirectorySync(work, { recursive: true });
+			const token = `packaged-${entry}`;
+			const output = runPackagedWorkerRoot({
+				sdkBundle: join(staged, "sdk.mjs"),
+				directory: work,
+				childPath: stageChildWorkflow(work),
+				token,
+			});
+			assertWorkerCompletedUnderRoot(work, output, token);
+		} finally {
+			removeTempDirectory(directory);
+		}
+	},
+	PACKAGED_WORKER_TIMEOUT_MS + 30_000,
 );
