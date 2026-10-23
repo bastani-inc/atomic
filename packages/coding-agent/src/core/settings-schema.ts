@@ -399,6 +399,14 @@ const WorkflowsSettingsSchema = Type.Union(
 								description: "Milliseconds each worker process may take to become ready. Default: 30000.",
 							}),
 						),
+						leaseMs: Type.Optional(
+							Type.Integer({
+								minimum: 2000,
+								maximum: 2_147_483_647,
+								description:
+									"Milliseconds a live worker that has stopped responding keeps its child before the child is replayed elsewhere. Default: 30000.",
+							}),
+						),
 					},
 					{ additionalProperties: false },
 				),

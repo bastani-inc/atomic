@@ -73,6 +73,7 @@ export async function activatePublicPool(
 	const localWorkers = options.localWorkers && {
 		...options.localWorkers,
 		startupTimeoutMs: undefined,
+		leaseMs: undefined,
 		definitions: options.localWorkers.definitions.map((source) => ({ ...source, path: resolve(cwd, source.path) })),
 	};
 	const admission = options.admission && {
@@ -110,6 +111,7 @@ export async function activatePublicPool(
 		definitions,
 		admission: resources.admission ?? {},
 		startupTimeoutMs: options.localWorkers?.startupTimeoutMs,
+		leaseMs: options.localWorkers?.leaseMs,
 	});
 	try {
 		pool.validateOptions(options);

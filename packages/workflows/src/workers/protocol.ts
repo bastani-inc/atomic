@@ -7,6 +7,8 @@ import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
 import type { AdmissionConfiguration } from "./resource-admission.js";
 
+export const WORKER_HEARTBEAT_INTERVAL_MS = 1_000;
+
 export type WorkerStageDelivery = NonNullable<
 	NonNullable<CreateAgentSessionOptions["orchestrationContext"]>["pendingStageDelivery"]
 >;

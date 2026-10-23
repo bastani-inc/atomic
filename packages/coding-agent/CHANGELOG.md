@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the `workflows.localWorkers.leaseMs` setting: how long, in milliseconds, a local workflow worker that is still running but has stopped responding keeps its child before the child is replayed on another worker (30000 by default, at least 2000) ([#3888](https://github.com/bastani-inc/atomic/issues/3888))
+
 ### Fixed
 
 - Local workflow worker pools no longer fail with `Local worker startup timed out` when workers are slow to become ready, for example on a workflow journal with a long history. The readiness timeout is now configurable with the `workflows.localWorkers.startupTimeoutMs` setting (30000 ms by default) ([#3887](https://github.com/bastani-inc/atomic/issues/3887))

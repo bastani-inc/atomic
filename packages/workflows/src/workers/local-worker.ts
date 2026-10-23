@@ -17,7 +17,14 @@ import type { AgentSessionAdapter } from "../runs/foreground/stage-runner.js";
 import { createStore } from "../shared/store.js";
 import { admittedSessionAdapter } from "./admission-binding.js";
 import { loadWorkerDefinition } from "./definitions.js";
-import type { WorkerDeliver, WorkerReply, WorkerRequest, WorkerStageDelivery, WorkerStart } from "./protocol.js";
+import {
+	WORKER_HEARTBEAT_INTERVAL_MS,
+	type WorkerDeliver,
+	type WorkerReply,
+	type WorkerRequest,
+	type WorkerStageDelivery,
+	type WorkerStart,
+} from "./protocol.js";
 import { SqlResourceAdmission } from "./resource-admission.js";
 import { workerSessionStore } from "./session-store.js";
 import { collectWorkerUsage } from "./usage-accounting.js";
@@ -286,7 +293,7 @@ export async function runLocalWorker(start: WorkerStart): Promise<void> {
 					.finally(() => {
 						report = undefined;
 					});
-			}, 1000);
+			}, WORKER_HEARTBEAT_INTERVAL_MS);
 			try {
 				await observeControl();
 				while (((await request({ kind: "control" })) as PoolControl).state !== "running") {

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Local worker leases now follow worker liveness. A worker that is still running and responding keeps its child even when the root is too busy to process its heartbeats in time, so a slow root no longer fences healthy workers with `Stale work lease`. A worker that has stopped responding is fenced after `localWorkers.leaseMs` milliseconds, which defaults to 30000 instead of the previous fixed 5000 ([#3888](https://github.com/bastani-inc/atomic/issues/3888))
+
 ### Fixed
 
 - A local workflow worker that dies while the root still owes it replies no longer crashes the root with `Error: write EPIPE`. The root fences that worker's attempt and replays the child from its last committed checkpoint on a replacement worker ([#3887](https://github.com/bastani-inc/atomic/issues/3887))
