@@ -44,7 +44,7 @@ test.skipIf(process.platform === "win32")(
 			const crashedStderr = readStreamText(crashed.stderr);
 			const deadline = Date.now() + ROOT_PROCESS_TIMEOUT_MS;
 			while (startedWorkers(directory).length < CHILDREN) {
-				assert.ok(Date.now() < deadline, await crashedStderr);
+				if (Date.now() >= deadline) assert.fail(await crashedStderr);
 				await sleep(50);
 			}
 			const deadWorkers = startedWorkers(directory);
