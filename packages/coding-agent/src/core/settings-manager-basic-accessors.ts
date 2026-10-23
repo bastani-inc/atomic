@@ -5,7 +5,7 @@ import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 import { SettingsManager } from "./settings-manager-core.ts";
 import { settingsInternals } from "./settings-manager-internals.ts";
 import { resolveDefaultTools } from "./settings-merge.js";
-import type { Settings } from "./settings-schema.js";
+import type { Settings } from "./settings-schema.ts";
 import type {
 	CompactionModelOverride,
 	CompactionSettings,

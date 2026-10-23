@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { getBuiltinPackageLocations } from "./builtin-packages.js";
+import { getBuiltinPackageLocations } from "./builtin-packages.ts";
 import type { SqliteExecutor } from "./storage/database.js";
 
 /**

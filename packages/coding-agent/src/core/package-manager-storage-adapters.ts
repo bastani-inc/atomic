@@ -1,13 +1,13 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, resolve } from "node:path";
-import { stripBom } from "../utils/text.js";
-import { getExistingGitInstallPath } from "./package-manager-git.js";
-import { getManifestFromPackageJson } from "./package-manager-manifest.js";
-import { getManagedNpmInstallPath } from "./package-manager-npm.js";
-import { getBaseDirsForScope, resolvePathFromBase } from "./package-manager-paths.js";
-import { parseSource } from "./package-manager-source.js";
-import type { PackageLocationContext } from "./package-manager-types.js";
+import { stripBom } from "../utils/text.ts";
+import { getExistingGitInstallPath } from "./package-manager-git.ts";
+import { getManifestFromPackageJson } from "./package-manager-manifest.ts";
+import { getManagedNpmInstallPath } from "./package-manager-npm.ts";
+import { getBaseDirsForScope, resolvePathFromBase } from "./package-manager-paths.ts";
+import { parseSource } from "./package-manager-source.ts";
+import type { PackageLocationContext } from "./package-manager-types.ts";
 
 /** Splits a bare module specifier into its package name and the adapter name after it, if any. */
 function parsePackageSpecifier(specifier: string): { name: string; adapter?: string } | undefined {

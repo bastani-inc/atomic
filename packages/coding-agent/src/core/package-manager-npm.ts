@@ -14,7 +14,7 @@ import type {
 	PackageLocationContext,
 	PackageManagerContext,
 	SourceScope,
-} from "./package-manager-types.js";
+} from "./package-manager-types.ts";
 
 export function getNpmCommand(context: PackageManagerContext): { command: string; args: string[] } {
 	const configuredCommand = context.settingsManager.getNpmCommand();
