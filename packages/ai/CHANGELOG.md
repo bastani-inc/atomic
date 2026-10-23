@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.42-alpha.1] - 2026-10-23
+
 ### Added
 
 - Added `openBrowserOnConfirm` and `copyCodeOnConfirm` to `OAuthDeviceCodeInfo` and the `device_code` `AuthEvent`, so a provider can tell clients whether to offer opening the verification URL and copying the code when the user confirms. Both default to `true` ([pi #9282](https://github.com/earendil-works/pi/issues/9282))

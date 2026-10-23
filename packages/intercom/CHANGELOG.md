@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.42-alpha.1] - 2026-10-23
+
 ### Added
 
 - `intercom({ action: "status" })` reports the broker's multi-node routing state, for example `Multi-node routing: on (adapter @bastani/atomic-storage-libsql, prefix none), 1 peer broker live (build-host)`, or why it is off or unavailable ([#3857](https://github.com/bastani-inc/atomic/issues/3857))
