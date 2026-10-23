@@ -1,27 +1,20 @@
-import type { Client, Transaction } from "@libsql/client";
-import {
-	createSqliteDatabase,
-	redactSecrets,
-	type SqliteDatabase,
-	type SqliteDriverExecutor,
-	type StorageAdapterModule,
-	StorageAdapterLoadError,
-	type StorageFailureCause,
-} from "@bastani/atomic/storage";
+// @ts-check
+import { createSqliteDatabase, redactSecrets, StorageAdapterLoadError } from "@bastani/atomic/storage";
 
-export interface LibsqlDatabaseOptions {
-	url: string;
-	authToken?: string;
-}
+/** @typedef {{ url: string, authToken?: string }} LibsqlDatabaseOptions */
 
-/** Credentials a libSQL URL can carry: its userinfo and every `authToken` query value. */
-function urlCredentials(url: string): string[] {
-	const secrets: string[] = [];
+/**
+ * Credentials a libSQL URL can carry: its userinfo and every `authToken` query value.
+ * @param {string} url
+ * @returns {string[]}
+ */
+function urlCredentials(url) {
+	const secrets = [];
 	// Scan each key/value once, including malformed URLs, without retrying a growing suffix at every '?'.
 	for (let index = 0; index < url.length; index++) {
 		if (url[index] !== "?" && url[index] !== "&") continue;
 		const start = ++index;
-		while (index < url.length && !"?&=#".includes(url[index]!)) index++;
+		while (index < url.length && !"?&=#".includes(url[index])) index++;
 		if (url[index] === "=") {
 			const valueStart = ++index;
 			while (index < url.length && url[index] !== "&" && url[index] !== "#") index++;
@@ -35,7 +28,11 @@ function urlCredentials(url: string): string[] {
 	return secrets;
 }
 
-function statements(connection: () => Client | Transaction): SqliteDriverExecutor {
+/**
+ * @param {() => import("@libsql/client").Client | import("@libsql/client").Transaction} connection
+ * @returns {import("@bastani/atomic/storage").SqliteDriverExecutor}
+ */
+function statements(connection) {
 	return {
 		async execute(sql, params) {
 			const result = await connection().execute({ sql, args: [...params] });
@@ -45,14 +42,20 @@ function statements(connection: () => Client | Transaction): SqliteDriverExecuto
 	};
 }
 
-export async function openLibsqlDatabase({ url, authToken }: LibsqlDatabaseOptions): Promise<SqliteDatabase> {
-	let createClient: typeof import("@libsql/client").createClient;
+/**
+ * @param {LibsqlDatabaseOptions} options
+ * @returns {Promise<import("@bastani/atomic/storage").SqliteDatabase>}
+ */
+export async function openLibsqlDatabase({ url, authToken }) {
+	/** @type {typeof import("@libsql/client").createClient} */
+	let createClient;
 	try {
 		({ createClient } = await import("@libsql/client"));
 	} catch (cause) {
-		throw new StorageAdapterLoadError("@libsql/client", cause as StorageFailureCause);
+		throw new StorageAdapterLoadError("@libsql/client", /** @type {import("@bastani/atomic/storage").StorageFailureCause} */ (cause));
 	}
-	let client: Client | undefined;
+	/** @type {import("@libsql/client").Client | undefined} */
+	let client;
 	// Create the client inside a driver call, so the facade redacts credentials from its failures.
 	const connection = () => (client ??= createClient({ url, authToken, intMode: "bigint" }));
 	const database = createSqliteDatabase({
@@ -79,7 +82,8 @@ export async function openLibsqlDatabase({ url, authToken }: LibsqlDatabaseOptio
 	}
 }
 
-export default {
+/** @satisfies {import("@bastani/atomic/storage").StorageAdapterModule} */
+const adapter = {
 	atomicStorageAdapter: 1,
 	openDatabase(options) {
 		if (typeof options.url !== "string" || options.url === "") {
@@ -90,4 +94,5 @@ export default {
 			authToken: typeof options.authToken === "string" ? options.authToken : undefined,
 		});
 	},
-} satisfies StorageAdapterModule;
+};
+export default adapter;

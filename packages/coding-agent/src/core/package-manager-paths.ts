@@ -3,7 +3,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { APP_NAME, CONFIG_DIR_NAME, getAgentDir, getAgentDirs, getProjectConfigDirs } from "../config.js";
 import { resolvePath } from "../utils/paths.ts";
-import type { PackageLocationContext, SourceScope } from "./package-manager-types.ts";
+import type { PackageLocationContext, SourceScope } from "./package-manager-types.js";
 
 export function getHomeDir(): string {
 	return process.env.HOME || homedir();

@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createSessionCwdMatcher } from "../../utils/canonical-path.ts";
 import type { SqliteDatabase, SqliteValue, StorageDescriptor } from "./database.js";
 import {
@@ -114,10 +114,18 @@ export async function loadStorageAdapter(module: string, context: StorageOpenCon
 		const loader = await createHostModuleJiti(
 			pathToFileURL(join(context.agentDir, "storage-adapter.js")).href,
 			await getStorageAdapterHostModules(),
-			{ interopDefault: true },
+			// JS adapters must also pass through virtual host modules, not native-import a second host copy.
+			{ interopDefault: true, tryNative: false },
 		);
 		const specifier = (await resolvePackageStorageAdapter(module, context.agentDir)) ?? module;
-		const adapter = await loader.import<StorageAdapterModule>(specifier, { default: true });
+		const location = loader.esmResolve(specifier);
+		const filename = location.startsWith("file:") ? fileURLToPath(location) : location;
+		// jiti's async JS fast path uses native import even with tryNative:false. Force only JS entrypoints
+		// through its transform so their host imports use the live virtual modules, just like TS adapters.
+		const loaded = /\.[cm]?js$/.test(filename)
+			? await loader.evalModule(await readFile(filename, "utf8"), { filename, async: true, forceTranspile: true })
+			: await loader.import<StorageAdapterModule>(specifier, { default: true });
+		const adapter = ((loaded as { default?: StorageAdapterModule })?.default ?? loaded) as StorageAdapterModule;
 		if (
 			adapter === null ||
 			typeof adapter !== "object" ||

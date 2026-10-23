@@ -12,7 +12,7 @@ This repo is the private `atomic-monorepo` npm workspace. It currently houses:
 - `@bastani/intercom` in `packages/intercom` — builtin coordination channel for parent/child and cross-session agent communication.
 - `@bastani/atomic-storage-libsql` in `packages/storage-libsql` — the libSQL / Turso storage adapter. It is a separate package that users install with `atomic install npm:@bastani/atomic-storage-libsql`; `publish.yml` publishes it with the other npm packages, and it is never a dependency of `@bastani/atomic`, in its shrinkwrap, or in `dist/builtin`.
 
-Companion packages under `packages/*` ship as **raw TypeScript** (no compile step). They are bundled into `@bastani/atomic` at build time rather than published independently, except `@bastani/atomic-storage-libsql`, which is published on its own. The coding-agent package follows upstream pi's compiled-package layout.
+Companion packages under `packages/*` ship as **raw TypeScript** (no compile step). They are bundled into `@bastani/atomic` at build time rather than published independently, except `@bastani/atomic-storage-libsql`, which is published on its own as JSDoc-checked plain ESM JavaScript with a declaration file so plain Node SDK imports work. It also has no compile step. The coding-agent package follows upstream pi's compiled-package layout.
 
 ## Tech Stack
 

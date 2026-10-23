@@ -14,7 +14,7 @@ import type {
 	PackageLocationContext,
 	PackageManagerContext,
 	SourceScope,
-} from "./package-manager-types.ts";
+} from "./package-manager-types.js";
 
 function runGitProcess(
 	context: PackageManagerContext,

@@ -8,7 +8,7 @@ import {
 	INTERNAL_INTERCOM_BROKER_ARG,
 	importInternalIntercomBroker,
 	installBrokerHostModules,
-} from "./internal-intercom-broker.ts";
+} from "./internal-intercom-broker.js";
 
 markLifecycleTiming("process-entry");
 

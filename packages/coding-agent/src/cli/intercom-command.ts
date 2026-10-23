@@ -4,7 +4,7 @@
  */
 
 import { APP_NAME } from "../config.js";
-import type { BrokerQuery, IntercomBrokerControl } from "../core/intercom-broker-control.ts";
+import type { BrokerQuery, IntercomBrokerControl } from "../core/intercom-broker-control.js";
 
 const HELP = `Usage:
   ${APP_NAME} intercom status
@@ -68,7 +68,7 @@ export async function runIntercomCommand(args: readonly string[], options: Inter
 		let control: IntercomBrokerControl;
 		if (options.loadControl) control = await options.loadControl();
 		else {
-			const { loadIntercomBrokerControl } = await import("../core/intercom-broker-control.ts");
+			const { loadIntercomBrokerControl } = await import("../core/intercom-broker-control.js");
 			control = await loadIntercomBrokerControl();
 		}
 		const { agentDir } = options;

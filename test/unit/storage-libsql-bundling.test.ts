@@ -1,10 +1,18 @@
 import assert from "node:assert/strict";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "vitest";
 import { getAllBuiltinPackageLocations } from "../../packages/coding-agent/src/core/builtin-packages.js";
 import { EXPECTED_BUILTIN_DIRECTORY_NAMES } from "../../scripts/assert-builtin-set.js";
 import type { CodingAgentShrinkwrap as Shrinkwrap } from "../../scripts/generate-coding-agent-shrinkwrap.mjs";
-import { moduleDir, npmSpawnPrefix, readJson, spawnSyncCollect } from "../helpers/runtime.js";
+import {
+	makeTempDirectory,
+	moduleDir,
+	npmSpawnPrefix,
+	readJson,
+	removeTempDirectory,
+	spawnSyncCollect,
+} from "../helpers/runtime.js";
 
 const ADAPTER_PACKAGE = "@bastani/atomic-storage-libsql";
 const DRIVER_PACKAGE = "@libsql/client";
@@ -63,7 +71,59 @@ test("the libSQL adapter publishes as a tarball with its module, docs, and licen
 		"CHANGELOG.md",
 		"LICENSE",
 		"README.md",
-		"libsql.ts",
+		"libsql.d.ts",
+		"libsql.js",
 		"package.json",
 	]);
 });
+
+/** Packing the real npm artifact and launching its plain-Node consumer. */
+const PACKED_ADAPTER_TIMEOUT_MS = 120_000;
+test(
+	"the packed libSQL adapter imports in plain Node outside the workspace (#3857)",
+	() => {
+		const root = join(moduleDir(import.meta.url), "../..");
+		const directory = makeTempDirectory("libsql-packed-import-");
+		try {
+			const packed = spawnSyncCollect(
+				[...npmSpawnPrefix(), "pack", "--json", "--ignore-scripts", "--pack-destination", directory],
+				{ cwd: join(root, "packages/storage-libsql") },
+			);
+			assert.equal(packed.exitCode, 0, packed.stderr.toString());
+			const [{ filename }] = JSON.parse(packed.stdout.toString()) as { filename: string }[];
+			const packageDir = join(directory, "node_modules", ADAPTER_PACKAGE);
+			mkdirSync(packageDir, { recursive: true });
+			const extracted = spawnSyncCollect([
+				"tar",
+				"-xf",
+				join(directory, filename!),
+				"-C",
+				packageDir,
+				"--strip-components=1",
+			]);
+			assert.equal(extracted.exitCode, 0, extracted.stderr.toString());
+			mkdirSync(join(directory, "node_modules/@libsql"), { recursive: true });
+			const linkType = process.platform === "win32" ? "junction" : "dir";
+			symlinkSync(
+				join(root, "node_modules/@libsql/client"),
+				join(directory, "node_modules/@libsql/client"),
+				linkType,
+			);
+			symlinkSync(join(root, "packages/coding-agent"), join(directory, "node_modules/@bastani/atomic"), linkType);
+			writeFileSync(
+				join(directory, "smoke.mjs"),
+				`import assert from "node:assert/strict";
+import adapter, { openLibsqlDatabase } from "${ADAPTER_PACKAGE}";
+assert.equal(typeof openLibsqlDatabase, "function");
+assert.equal(adapter.atomicStorageAdapter, 1);
+assert.equal(typeof adapter.openDatabase, "function");
+`,
+			);
+			const consumer = spawnSyncCollect([process.execPath, "smoke.mjs"], { cwd: directory });
+			assert.equal(consumer.exitCode, 0, consumer.stderr.toString());
+		} finally {
+			removeTempDirectory(directory);
+		}
+	},
+	PACKED_ADAPTER_TIMEOUT_MS,
+);

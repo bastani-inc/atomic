@@ -339,13 +339,13 @@ export async function main(argv: string[], options?: MainOptions) {
 		return;
 	}
 	if (args[0] === "storage") {
-		const { runStorageCommand } = await import("./cli/storage-command.ts");
+		const { runStorageCommand } = await import("./cli/storage-command.js");
 		process.exitCode = await runStorageCommand(args.slice(1), { cwd, agentDir });
 		await exitAfterCommand();
 		return;
 	}
 	if (args[0] === "intercom") {
-		const { runIntercomCommand } = await import("./cli/intercom-command.ts");
+		const { runIntercomCommand } = await import("./cli/intercom-command.js");
 		process.exitCode = await runIntercomCommand(args.slice(1), { agentDir });
 		await exitAfterCommand();
 		return;
@@ -511,7 +511,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	const sharedStorageWarning =
 		engineEnv.child !== "1" &&
 		(processSharedStorageSelection() !== undefined || (globalStorage !== undefined && "adapter" in globalStorage))
-			? import("./core/storage/storage-status.ts")
+			? import("./core/storage/storage-status.js")
 					.then(({ checkSharedStorageAdapter }) => checkSharedStorageAdapter(agentDir, globalStorage))
 					.catch(() => undefined)
 			: undefined;

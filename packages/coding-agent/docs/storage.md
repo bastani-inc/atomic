@@ -57,6 +57,8 @@ Save the token with `turso db tokens create <db> > turso-token` and keep it read
 
 Like any [adapter](#selecting-an-adapter), it runs with Atomic's privileges. To use a different driver, adapt it with [Bring your own driver](#bring-your-own-driver).
 
+SDK callers can import `openLibsqlDatabase` from `@bastani/atomic-storage-libsql` directly. The package ships plain ESM JavaScript and TypeScript declarations, so supported Node versions need no TypeScript loader.
+
 ### Joining a machine to a shared database
 
 Instead of editing settings by hand, install the adapter and join the database:

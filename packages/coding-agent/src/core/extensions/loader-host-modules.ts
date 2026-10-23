@@ -153,5 +153,5 @@ export async function getWorkflowHostModules(): Promise<
 export async function getStorageAdapterHostModules(): Promise<Record<string, object>> {
 	const storage = await import("../storage/index.js");
 	if (!(isBunBinary || isBundledBuild)) return { "@bastani/atomic/storage": storage };
-	return { "@bastani/atomic": await import("../../index.ts"), "@bastani/atomic/storage": storage };
+	return { "@bastani/atomic": await import("../../index.js"), "@bastani/atomic/storage": storage };
 }

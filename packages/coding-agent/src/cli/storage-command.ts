@@ -8,10 +8,10 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { APP_NAME } from "../config.js";
-import type { IntercomBrokerControl } from "../core/intercom-broker-control.ts";
+import type { IntercomBrokerControl } from "../core/intercom-broker-control.js";
 import { resolvePackageStorageAdapter } from "../core/package-manager-storage-adapters.js";
-import { SettingsManager } from "../core/settings-manager.ts";
-import type { Settings } from "../core/settings-schema.ts";
+import { SettingsManager } from "../core/settings-manager.js";
+import type { Settings } from "../core/settings-schema.js";
 import { validateStoragePrefix } from "../core/storage/prefix.js";
 import { loadStorageAdapter } from "../core/storage/provider.js";
 import { selectStorage } from "../core/storage/selection.js";
@@ -21,7 +21,7 @@ import {
 	describeStorageError,
 	describeStorageSelection,
 	type StorageStatus,
-} from "../core/storage/storage-status.ts";
+} from "../core/storage/storage-status.js";
 
 /** The first-party libSQL / Turso adapter package that `atomic storage join` selects. */
 export const LIBSQL_ADAPTER_PACKAGE = "@bastani/atomic-storage-libsql";
@@ -148,7 +148,7 @@ const errorText = describeStorageError;
 async function loadControl(options: StorageCommandOptions): Promise<IntercomBrokerControl | Error> {
 	try {
 		if (options.loadControl) return await options.loadControl();
-		const { loadIntercomBrokerControl } = await import("../core/intercom-broker-control.ts");
+		const { loadIntercomBrokerControl } = await import("../core/intercom-broker-control.js");
 		return await loadIntercomBrokerControl();
 	} catch (error) {
 		return error instanceof Error ? error : new Error(String(error));

@@ -117,7 +117,7 @@ registerBrokerLeaseStoreConformance(test, "package-selected libSQL adapter inter
 
 test("the package's first listed adapter is the one selected by package name (#3857)", async () => {
 	const manifest = (await import("../../packages/storage-libsql/package.json", { with: { type: "json" } })).default;
-	assert.deepEqual(manifest.atomic.storageAdapters, ["./libsql.ts"]);
+	assert.deepEqual(manifest.atomic.storageAdapters, ["./libsql.js"]);
 	assert.deepEqual(manifest.pi.storageAdapters, manifest.atomic.storageAdapters);
 	const byName = await loadStorageAdapter(`${PACKAGE_NAME}/libsql`, {
 		agentDir: await agentDirectory,

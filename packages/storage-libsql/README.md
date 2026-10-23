@@ -46,6 +46,8 @@ const database = await openLibsqlDatabase({ url: "libsql://<db>.turso.io", authT
 
 The returned `SqliteDatabase` can be passed as SDK `sessionStore: { kind: "database", database }` or workflow `journal: { database }`.
 
+The package ships plain ESM JavaScript with TypeScript declarations. This import works in supported Node versions without a TypeScript loader.
+
 ## License
 
 MIT
