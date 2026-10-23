@@ -37,6 +37,7 @@
 - `atomic storage status` reports settings load failures, opens local SQLite files (including adapter `file:` URLs) read-only without creating missing databases or changing journal mode, and bounds connection cleanup even when a query stalls ([#3856](https://github.com/bastani-inc/atomic/issues/3856))
 - `createSqliteDatabase()` preserves callback and rollback failures when transaction cleanup also fails ([#3856](https://github.com/bastani-inc/atomic/issues/3856))
 - A successful `atomic storage join` no longer reports failure when malformed project settings prevent the final override report. It warns that storage was saved and asks you to fix the settings before running status ([#3857](https://github.com/bastani-inc/atomic/issues/3857))
+- Package-name storage adapters now honor packages listed in legacy global settings, while explicit agent directories remain isolated. `atomic storage join` also rejects credentials embedded in `file:` URLs before printing or saving them ([#3857](https://github.com/bastani-inc/atomic/issues/3857))
 
 ## [0.9.41] - 2026-10-22
 

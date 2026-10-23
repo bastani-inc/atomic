@@ -405,6 +405,43 @@ describe("atomic storage join with the libSQL package (#3857)", () => {
 		assert.equal(readFileSync(join(agentDir, "settings.json"), "utf8"), before);
 	});
 
+	test("join finds legacy global adapter packages without leaking them into explicit agent directories (#3857)", async () => {
+		vi.stubEnv("HOME", root);
+		vi.stubEnv("USERPROFILE", root);
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", undefined);
+		vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+		agentDir = join(root, ".atomic", "agent");
+		mkdirSync(agentDir, { recursive: true });
+		const legacyAgentDir = join(root, ".pi", "agent");
+		mkdirSync(legacyAgentDir, { recursive: true });
+		writeFileSync(join(legacyAgentDir, "settings.json"), JSON.stringify({ packages: [packageRoot] }));
+		writeSettings({ theme: "dark" });
+		const result = await storage(["join", databaseUrl, "--token-file", tokenFile]);
+		assert.equal(result.code, 0, result.err);
+		const saved = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
+		assert.equal(saved.storage.adapter, LIBSQL_ADAPTER_PACKAGE);
+		assert.equal(saved.theme, "dark");
+		agentDir = join(root, "isolated-agent");
+		mkdirSync(agentDir);
+		const isolated = await storage(["join", databaseUrl, "--token-file", tokenFile]);
+		assert.equal(isolated.code, 1);
+		assert.match(isolated.err, /adapter is not installed/);
+	});
+
+	test("join refuses credentials in file URLs without printing or saving them (#3857)", async () => {
+		writeSettings({ packages: [packageRoot] });
+		const before = readFileSync(join(agentDir, "settings.json"), "utf8");
+		const result = await storage(["join", `${databaseUrl}?authToken=file-url-secret`]);
+		assert.equal(result.code, 1);
+		assert.match(result.err, /carries a credential/);
+		assert.doesNotMatch(`${result.out}\n${result.err}`, /file-url-secret/);
+		assert.equal(readFileSync(join(agentDir, "settings.json"), "utf8"), before);
+		assert.deepEqual(
+			readdirSync(agentDir).filter((name) => name.startsWith(STORAGE_TOKEN_FILE)),
+			[],
+		);
+	});
+
 	test("a settings write failure preserves the previous token and leaves settings intact (#3857)", async () => {
 		writeSettings({
 			packages: [packageRoot],

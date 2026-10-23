@@ -8,6 +8,7 @@ import { getManagedNpmInstallPath } from "./package-manager-npm.ts";
 import { getBaseDirsForScope, resolvePathFromBase } from "./package-manager-paths.ts";
 import { parseSource } from "./package-manager-source.ts";
 import type { PackageLocationContext } from "./package-manager-types.ts";
+import { SettingsManager } from "./settings-manager.ts";
 
 /** Splits a bare module specifier into its package name and the adapter name after it, if any. */
 function parsePackageSpecifier(specifier: string): { name: string; adapter?: string } | undefined {
@@ -50,9 +51,7 @@ function installedPackageRoot(context: PackageLocationContext, source: string, n
 export async function resolvePackageStorageAdapter(specifier: string, agentDir: string): Promise<string | undefined> {
 	const requested = parsePackageSpecifier(specifier);
 	if (!requested) return undefined;
-	const settings = (await readJson(join(agentDir, "settings.json"))) as
-		| { packages?: readonly (string | { readonly source?: string } | null)[] }
-		| undefined;
+	const settings = SettingsManager.create(agentDir, agentDir, { projectTrusted: false }).getGlobalSettings();
 	if (!Array.isArray(settings?.packages)) return undefined;
 	const context: PackageLocationContext = { cwd: agentDir, agentDir };
 	for (const entry of settings.packages) {

@@ -288,7 +288,7 @@ Install it with `atomic install npm:@example/atomic-libsql` and select it by pac
 }
 ```
 
-The package name selects the package's first listed adapter. When a package lists several, select one with `<package>/<name>`, where `<name>` is the adapter file's name without its extension, for example `@example/atomic-libsql/libsql-adapter`. Atomic searches the packages in your user settings, which `atomic install` writes without `-l`; project packages are not searched. When no installed package lists a matching adapter, the name resolves from the agent directory as before.
+The package name selects the package's first listed adapter. When a package lists several, select one with `<package>/<name>`, where `<name>` is the adapter file's name without its extension, for example `@example/atomic-libsql/libsql-adapter`. Atomic searches the packages in your effective global settings, including legacy `~/.pi/agent/settings.json` settings where applicable; an explicit agent directory does not inherit packages from another home. `atomic install` writes user settings without `-l`; project packages are not searched. When no installed package lists a matching adapter, the name resolves from the agent directory as before.
 
 ## Selecting storage per process
 

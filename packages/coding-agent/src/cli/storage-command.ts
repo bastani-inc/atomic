@@ -114,7 +114,7 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 				"Use an absolute file: URL (for example file:///path/to/shared.sqlite), so every working directory uses the same database.",
 			);
 		}
-		if (!url.startsWith("file:") && carriesCredential(url)) {
+		if (carriesCredential(url)) {
 			throw new StorageCommandError(
 				"The database URL carries a credential (user name, password, or authToken). Pass the token with --token-file instead, so it is kept in a private file and not in settings.",
 			);
