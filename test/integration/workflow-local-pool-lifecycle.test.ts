@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, vi } from "vitest";
@@ -8,6 +9,7 @@ import { JournalDurableBackend } from "../../packages/workflows/src/durable/jour
 import { openSqlPoolQueue, SqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
+import { toolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
@@ -23,7 +25,7 @@ async function waitUntil(predicate: () => Promise<boolean>): Promise<void> {
 	}
 }
 
-async function fixture() {
+async function fixture(root = "root") {
 	const directory = makeTempDirectory("local-pool-lifecycle-");
 	const path = join(directory, "journal.sqlite");
 	const releasePath = join(directory, "release");
@@ -52,43 +54,208 @@ async function fixture() {
 			return {};
 		},
 	});
+	const store = createStore();
 	const running = run(
 		parent,
 		{},
 		{
-			runId: "root",
+			runId: root,
 			cwd: directory,
-			store: createStore(),
+			store,
 			durableBackend: backend,
 			signal: AbortSignal.timeout(90_000),
 		},
 	);
 	return {
+		root,
+		directory,
+		path,
+		childPath,
+		child,
+		parent,
 		database,
 		journal,
 		backend,
 		pool,
 		running,
+		store,
+		async finishing() {
+			await waitUntil(async () =>
+				store
+					.runs()
+					.some(
+						(entry) =>
+							entry.parentRunId === root &&
+							entry.toolNodes.some((node) => node.name === "finish" && node.status === "running"),
+					),
+			);
+		},
 		async ready() {
 			await waitUntil(async () => {
-				await backend.hydrateWorkflow("root");
-				return backend
-					.listCheckpoints("root")
-					.some((entry) => entry.kind === "tool" && entry.name === "checkpoint");
+				await backend.hydrateWorkflow(root);
+				return backend.listCheckpoints(root).some((entry) => entry.kind === "tool" && entry.name === "checkpoint");
 			});
 			return openSqlPoolQueue(journal);
 		},
 		release: () => writeFileEnsuringDir(releasePath, "ready"),
-		async close() {
+		async shutdown() {
 			await pool.close();
 			await running;
 			await backend.close();
 			await journal.close();
 			await database.close();
+		},
+		async close() {
+			await this.shutdown();
 			removeTempDirectory(directory);
 		},
 	};
 }
+
+test(
+	"root pause and resume reach workers without losing committed results (#3869)",
+	async () => {
+		const f = await fixture();
+		try {
+			const queue = await f.ready();
+			await toolControlRegistry.runControl("root")!.pause();
+			const leaseState = (await f.journal.leaseState("root"))!;
+			const lease = { runId: "root", holderId: leaseState.holderId!, epoch: leaseState.epoch };
+			assert.equal((await queue.control(lease)).state, "paused");
+			const [before] = await queue.inspect("root");
+			await toolControlRegistry.runControl("root")!.resume();
+			assert.equal((await queue.control(lease)).state, "running");
+			await f.release();
+			assert.equal((await f.running).status, "completed");
+			const [after] = await queue.inspect("root");
+			assert.equal(after!.id, before!.id);
+			assert.equal(after!.generation, before!.generation);
+			assert.equal(after!.state, "completed");
+		} finally {
+			if (toolControlRegistry.runControl("root")?.paused) await toolControlRegistry.runControl("root")!.resume();
+			await f.release();
+			await f.close();
+		}
+	},
+	LOCAL_WORKER_LIFECYCLE_TIMEOUT_MS,
+);
+test(
+	"a worker tool finishing while the root is paused commits its checkpoint without a new attempt (#3869)",
+	async () => {
+		const f = await fixture();
+		try {
+			const queue = await f.ready();
+			await f.finishing();
+			const [before] = await queue.inspect("root");
+			await toolControlRegistry.runControl("root")!.pause();
+			assert.equal((await f.journal.getRun("root"))?.status, "paused");
+			await f.release();
+			await waitUntil(async () => {
+				await f.backend.hydrateWorkflow("root");
+				return f.backend.listCheckpoints("root").some((entry) => entry.kind === "tool" && entry.name === "finish");
+			});
+			const [paused] = await queue.inspect("root");
+			assert.equal(paused!.id, before!.id);
+			assert.equal(paused!.generation, before!.generation);
+			assert.equal(f.pool.workerPids.length, 1);
+			await toolControlRegistry.runControl("root")!.resume();
+			const result = await f.running;
+			assert.equal(result.status, "completed", JSON.stringify(result));
+			const [after] = await queue.inspect("root");
+			assert.equal(after!.id, before!.id);
+			assert.equal(after!.generation, before!.generation);
+			assert.equal(after!.state, "completed");
+		} finally {
+			if (toolControlRegistry.runControl("root")?.paused) await toolControlRegistry.runControl("root")!.resume();
+			await f.release();
+			await f.close();
+		}
+	},
+	LOCAL_WORKER_LIFECYCLE_TIMEOUT_MS,
+);
+test(
+	"root quit waits for worker teardown and retains resumable work (#3869)",
+	async () => {
+		const f = await fixture();
+		try {
+			const queue = await f.ready();
+			const [before] = await queue.inspect("root");
+			await toolControlRegistry.runControl("root")!.quit();
+			assert.equal((await f.running).status, "paused");
+			assert.equal(f.pool.workerPids.length, 0);
+			const [after] = await queue.inspect("root");
+			assert.equal(after!.id, before!.id);
+			assert.equal(after!.state, "leased");
+		} finally {
+			await f.close();
+		}
+	},
+	LOCAL_WORKER_LIFECYCLE_TIMEOUT_MS,
+);
+
+test(
+	"a root quit and restarted on the same journal finishes the retained work with its checkpoint intact (#3869)",
+	async () => {
+		const f = await fixture(randomUUID());
+		let restarted: { close(): Promise<void> } | undefined;
+		let originalClosed = false;
+		try {
+			const queue = await f.ready();
+			await f.finishing();
+			const firstPid = f.pool.workerPids[0]!;
+			const [before] = await queue.inspect(f.root);
+			await toolControlRegistry.runControl(f.root)!.quit();
+			assert.equal((await f.running).status, "paused");
+			await f.shutdown();
+			originalClosed = true;
+			const database = await openNodeSqliteDatabase(f.path);
+			const journal = await SqlRunJournal.open(database);
+			const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
+			const pool = new LocalWorkerPool(backend, {
+				journalPath: f.path,
+				workers: 1,
+				definitions: [{ definition: f.child, path: f.childPath, exportName: "child" }],
+			});
+			restarted = {
+				async close() {
+					await pool.close();
+					await backend.close();
+					await journal.close();
+					await database.close();
+				},
+			};
+			await writeFileEnsuringDir(join(f.directory, "release"), "ready");
+			const result = await run(
+				f.parent,
+				{},
+				{
+					runId: f.root,
+					cwd: f.directory,
+					store: createStore(),
+					durableBackend: backend,
+					signal: AbortSignal.timeout(90_000),
+				},
+			);
+			assert.equal(result.status, "completed", JSON.stringify(result));
+			const recovered = await openSqlPoolQueue(journal);
+			const [after] = await recovered.inspect(f.root);
+			assert.equal(after!.id, before!.id);
+			assert.equal(after!.state, "completed");
+			const outputs = ((await recovered.result(f.root, after!.id)) as { result: Record<string, number> }).result;
+			assert.equal(outputs.firstPid, firstPid);
+			assert.notEqual(outputs.finalPid, firstPid);
+		} finally {
+			if (!originalClosed) {
+				if (toolControlRegistry.runControl(f.root)?.paused) await toolControlRegistry.runControl(f.root)!.resume();
+				await f.release();
+				await f.shutdown();
+			}
+			await restarted?.close();
+			removeTempDirectory(f.directory);
+		}
+	},
+	LOCAL_WORKER_LIFECYCLE_TIMEOUT_MS,
+);
 
 test(
 	"worker commits survive a root heartbeat delayed beyond its interval (#3869)",

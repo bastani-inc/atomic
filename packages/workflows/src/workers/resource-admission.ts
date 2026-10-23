@@ -143,7 +143,7 @@ export class SqlResourceAdmission {
 		const work = await tx.get(
 			`SELECT 1 AS valid FROM ${this.storage.tables.runs}_work w JOIN ${this.storage.tables.leases} l ON l.run_id = w.root
 			JOIN ${this.storage.tables.runs}_pool p ON p.root = w.root JOIN ${this.storage.tables.runs} r ON r.run_id = w.root
-			WHERE w.id = ? AND w.root = ? AND w.generation = ? AND w.epoch = ? AND w.state = 'leased' AND r.status = 'running'
+			WHERE w.id = ? AND w.root = ? AND w.generation = ? AND w.epoch = ? AND w.state = 'leased' AND r.status IN ('running', 'paused')
 			AND w.expires_at >= CAST(unixepoch('subsec') * 1000 AS INTEGER)
 			AND l.epoch = w.epoch AND l.renewed_at + p.timeout >= CAST(unixepoch('subsec') * 1000 AS INTEGER)`,
 			attempt.id,
@@ -230,6 +230,11 @@ export class SqlResourceAdmission {
 					const { root } = this.options;
 					await this.assertCurrentAttempt(tx);
 					let reason = hostReason;
+					const controls = `${this.storage.tables.runs}_pool_control`;
+					if (await tx.get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", controls)) {
+						const control = await tx.get(`SELECT state FROM ${controls} WHERE root = ?`, root);
+						if (control && control.state !== "running") reason ??= `root ${control.state}`;
+					}
 					for (const scope of [`root:${root}`, "user"]) {
 						const row = await tx.get(`SELECT config FROM ${this.configuration} WHERE scope = ?`, scope);
 						const limit = row ? (JSON.parse(String(row.config)) as Limits)[kind] : undefined;

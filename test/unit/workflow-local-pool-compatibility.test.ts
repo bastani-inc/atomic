@@ -5,10 +5,29 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
+import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
+import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
+
+test("root-local control registries are accepted for pooled resume (#3869)", async () => {
+	const journal = await resolveRunJournal({ journal: { memory: true } });
+	const backend = await JournalDurableBackend.open(journal);
+	const pool = new LocalWorkerPool(backend, { journalPath: "/unused", workers: 1, definitions: [] });
+	try {
+		assert.doesNotThrow(() =>
+			pool.validateOptions({
+				cancellation: createCancellationRegistry(),
+				toolControlRegistry: createToolControlRegistry(),
+			}),
+		);
+	} finally {
+		await pool.close();
+		await backend.close();
+	}
+});
 
 test("process-bound overrides fail before root registration or worker launch (#3869)", async () => {
 	const journal = await resolveRunJournal({ journal: { memory: true } });

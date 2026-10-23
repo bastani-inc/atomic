@@ -207,6 +207,7 @@ function renderStagesToolContent(result: Extract<WorkflowToolResult, { action: "
 	result.stages.forEach((stage, index) => {
 		lines.push(`[${index + 1}] ${stage.name} (${stage.id}) ${stage.status}`);
 		if (stage.startup) lines.push(formatStageStartup(stage.startup));
+		if (stage.workerExecution) lines.push(`workerExecution: ${JSON.stringify(stage.workerExecution)}`);
 		if (stage.sessionId) lines.push(`sessionId: ${stage.sessionId}`);
 		if (stage.sessionFile) lines.push(`sessionFile: ${stage.sessionFile}`);
 		if (stage.sessionFile) lines.push(`sessionFileJson: ${JSON.stringify(stage.sessionFile)}`);

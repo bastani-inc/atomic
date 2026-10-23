@@ -16,6 +16,7 @@ export type WorkflowStageSummary = {
 	inputRequest?: StageSnapshot["inputRequest"];
 	promptFootprint?: StageSnapshot["promptFootprint"];
 	startup?: StageSnapshot["startup"];
+	workerExecution?: StageSnapshot["workerExecution"];
 };
 
 export type WorkflowTranscriptEntry = {
@@ -49,6 +50,7 @@ export function summarizeStage(stage: StageSnapshot): WorkflowStageSummary {
 		name: stage.name,
 		status: stage.status,
 		...(stage.startup === undefined ? {} : { startup: { ...stage.startup } }),
+		...(stage.workerExecution === undefined ? {} : { workerExecution: { ...stage.workerExecution } }),
 		sessionId: stage.sessionId,
 		sessionFile: stage.sessionFile,
 		transcriptPath: stage.sessionFile,

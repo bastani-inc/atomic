@@ -343,6 +343,12 @@ export interface StageSnapshot {
 	readonly id: string;
 	readonly name: string;
 	status: StageStatus;
+	workerExecution?: {
+		readonly worker: string;
+		readonly generation: number;
+		readonly renewedAt: number;
+		readonly expiresAt: number;
+	};
 	/**
 	 * Parent stage ids. Treat as immutable from consumer code; the executor may
 	 * replace the frozen array before a stage starts when late topology inference

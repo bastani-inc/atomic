@@ -39,6 +39,51 @@ async function fixture() {
 	};
 }
 
+test("pool control revisions survive recovery and close admission without deleting work (#3869)", async () => {
+	const f = await fixture();
+	try {
+		const pool = await openSqlPoolQueue(f.journal);
+		await pool.initialize(f.lease, 60_000);
+		const queued = await pool.enqueue(f.lease, work, boundary);
+		const paused = await pool.setControl(f.lease, "paused");
+		assert.equal(paused.revision, 1);
+		assert.equal(await pool.claim(f.lease, "worker", [work], 60_000), undefined);
+		const recovered = await openSqlPoolQueue(f.journal);
+		assert.deepEqual(await recovered.control(f.lease), paused);
+		assert.deepEqual(await recovered.inspect("root"), [queued]);
+		await recovered.setControl(f.lease, "running");
+		const claimed = (await recovered.claim(f.lease, "worker", [work], 60_000))!;
+		await recovered.assertCurrent(f.lease, claimed);
+		await assert.rejects(recovered.assertCurrent(f.lease, { ...claimed, generation: 0 }), /Stale work/);
+		const quit = await recovered.setControl(f.lease, "quit");
+		assert.equal(quit.revision, 3);
+		assert.equal((await recovered.inspect("root"))[0]?.id, queued.id);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a paused root accepts attempt completion only under a persisted pause (#3869)", async () => {
+	const f = await fixture();
+	try {
+		const pool = await openSqlPoolQueue(f.journal);
+		await pool.initialize(f.lease, 60_000);
+		await pool.enqueue(f.lease, work, boundary);
+		const held = (await pool.claim(f.lease, "worker", [work], 60_000))!;
+		const result = { runId: work.childRunId, status: "completed" };
+		await f.journal.append(f.lease, { type: RUN_EVENT_TYPES.statusChanged, payload: { status: "paused" } });
+		await assert.rejects(pool.complete(f.lease, held, result), /Stale work lease/);
+		await pool.setControl(f.lease, "running");
+		await assert.rejects(pool.complete(f.lease, held, result), /Stale work lease/);
+		await pool.setControl(f.lease, "paused");
+		await pool.complete(f.lease, held, result);
+		assert.equal((await pool.inspect("root"))[0]?.state, "completed");
+		assert.deepEqual(await pool.result("root", held.id), result);
+	} finally {
+		await f.close();
+	}
+});
+
 test("child boundary enqueue is atomic, durable and idempotent (#3869)", async () => {
 	const f = await fixture();
 	try {

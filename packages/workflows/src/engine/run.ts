@@ -225,7 +225,8 @@ async function executeRun(
 	const backendView: DurableWorkflowBackend = sourceBackend;
 	const rootBackend: DurableWorkflowBackend = opts.durableRootBackend ?? backendView;
 	const dispatcher = opts.parentRun === undefined ? childWorkerDispatchers.get(rootBackend) : undefined;
-	if (dispatcher?.prepare !== undefined) await dispatcher.prepare(runId);
+	const poolPreparation = dispatcher?.prepare?.(runId, activeStore);
+	poolPreparation?.catch(() => {});
 	const durableBackend: DurableWorkflowBackend =
 		opts.durableScope !== undefined ? new ScopedDurableBackend(backendView, opts.durableScope) : backendView;
 	const inheritedElapsedMs =
@@ -972,8 +973,12 @@ async function executeRun(
 			ownController.signal.throwIfAborted();
 			pauseGeneration++;
 			scheduler.pauseRun();
-			activeStore.recordRunPaused(runId, undefined, { resumable: true });
-			pausePersistence = persistRunControl("paused");
+			if (!dispatcher?.control) activeStore.recordRunPaused(runId, undefined, { resumable: true });
+			pausePersistence = (async () => {
+				await dispatcher?.control?.("paused");
+				if (dispatcher?.control) activeStore.recordRunPaused(runId, undefined, { resumable: true });
+				await persistRunControl("paused");
+			})();
 			return pausePersistence;
 		},
 		resume: () => {
@@ -985,6 +990,7 @@ async function executeRun(
 				await pausePersistence?.catch(() => {});
 				if (generation !== pauseGeneration) throw new WorkflowRunControlError(runId, "running", "superseded");
 				await persistRunControl("running");
+				await dispatcher?.control?.("running");
 				ownController.signal.throwIfAborted();
 				if (generation !== pauseGeneration) throw new WorkflowRunControlError(runId, "running", "superseded");
 				activeStore.recordRunResumed(runId, undefined, { source: "run_control" });
@@ -995,8 +1001,19 @@ async function executeRun(
 			return resumePersistence;
 		},
 		quit: () => {
-			ownController.abort(new WorkflowGracefulQuitError(runId, "workflow runtime"));
-			return runtimeSettled.promise;
+			const cleanup = dispatcher?.control?.("quit");
+			if (!cleanup) {
+				ownController.abort(new WorkflowGracefulQuitError(runId, "workflow runtime"));
+				return runtimeSettled.promise;
+			}
+			return (async () => {
+				try {
+					await cleanup;
+				} finally {
+					ownController.abort(new WorkflowGracefulQuitError(runId, "workflow runtime"));
+					await runtimeSettled.promise;
+				}
+			})();
 		},
 	});
 	terminalEvents.register();
@@ -1030,6 +1047,7 @@ async function executeRun(
 			});
 		}
 		if (opts.deferWorkflowStart === true) await raceAbort(nextEventLoopTurn(), ownController.signal);
+		if (poolPreparation !== undefined) await raceAbort(poolPreparation, ownController.signal);
 		while (scheduler.isRunPaused()) await waitForRunRelease();
 		ownController.signal.throwIfAborted();
 		if (opts.parentRun === undefined) {

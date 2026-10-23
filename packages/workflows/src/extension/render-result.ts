@@ -137,6 +137,7 @@ type StageListItem = {
 	inputRequest?: StageInputRequest;
 	promptFootprint?: PendingPrompt;
 	startup?: StageSnapshot["startup"];
+	workerExecution?: StageSnapshot["workerExecution"];
 };
 type StageListResult = { action: "stages"; runId: string; filter: string; stages: StageListItem[]; error?: string };
 type StageDetailItem = StageSnapshot & { transcriptPath?: string };
