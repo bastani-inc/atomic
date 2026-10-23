@@ -707,6 +707,96 @@ test("a route waiting on its run's retry settles when the run's route is replace
 	});
 });
 
+test("two routes published back to back after a capability rotation both register and nothing is reported (#3887)", async () => {
+	const runId = runIdFor("38870001", 0);
+	const diagnostics = vi.spyOn(console, "error").mockImplementation(() => {});
+	const observer = await connectObserver([runGroup(runId)]);
+	const host = createHost();
+
+	await withHost(host, async () => {
+		await host.publishRoute(runId, 1, `before-rotation-${runId}`);
+		const rotated = `after-rotation-${runId}`;
+		const first = host.publishRoute(runId, 2, rotated);
+		const latest = host.publishRoute(runId, 3, rotated);
+
+		const outcomes = await Promise.all([settleWithinBound(first), settleWithinBound(latest)]);
+
+		assert.deepEqual(
+			outcomes.map(({ status }) => status),
+			["fulfilled", "fulfilled"],
+			"both publications of the rotated route are served by one connection",
+		);
+		assert.deepEqual(relayDiagnostics(diagnostics), []);
+		const roster = (await observer.listDirectory()).workflowStages;
+		assert.deepEqual(
+			roster.filter((stage) => stage.runId === runId).map((stage) => stage.target),
+			[`${runGroup(runId)}/reviewer-3`],
+			"the broker holds the roster the run published last, not an earlier one",
+		);
+	});
+});
+
+test("a route still connecting when its capability rotates is superseded without a relay failure (#3887)", async () => {
+	const runId = runIdFor("38870002", 0);
+	const diagnostics = vi.spyOn(console, "error").mockImplementation(() => {});
+	const observer = await connectObserver([runGroup(runId)]);
+	const host = createHost();
+	proxy.hold((first) => first.type === "register" && String(first.returnAddress).endsWith(`${ROUTE_PREFIX}${runId}`));
+
+	await withHost(host, async () => {
+		const retired = host.publishRoute(runId, 1, `retired-${runId}`);
+		await waitFor("the retired route's handshake", () => (proxy.heldConnections() >= 1 ? true : undefined));
+		const current = host.publishRoute(runId, 2, `current-${runId}`);
+		proxy.release();
+
+		const [retiredOutcome, currentOutcome] = await Promise.all([
+			settleWithinBound(retired),
+			settleWithinBound(current),
+		]);
+
+		assert.ok(
+			retiredOutcome.status === "rejected" && isRecoverableIntercomDisconnect(retiredOutcome.reason),
+			"the retired capability's publication ends as a superseded route, not as a failure",
+		);
+		assert.equal(currentOutcome.status, "fulfilled");
+		assert.deepEqual(relayDiagnostics(diagnostics), []);
+		const roster = (await observer.listDirectory()).workflowStages;
+		assert.deepEqual(
+			roster.filter((stage) => stage.runId === runId).map((stage) => stage.target),
+			[`${runGroup(runId)}/reviewer-2`],
+		);
+	});
+});
+
+test("a route connect abandoned because the session shut down is still reported (#3887)", async () => {
+	const runId = runIdFor("38870003", 0);
+	const diagnostics = vi.spyOn(console, "error").mockImplementation(() => {});
+	await connectObserver([runGroup(runId)]);
+	const host = createHost();
+	proxy.hold((first) => first.type === "register" && String(first.returnAddress).endsWith(`${ROUTE_PREFIX}${runId}`));
+	await host.start();
+	let shutDown = false;
+	try {
+		const abandoned = host.publishRoute(runId, 1);
+		await waitFor("the route's handshake", () => (proxy.heldConnections() >= 1 ? true : undefined));
+		const shutdown = host.shutdown();
+		shutDown = true;
+		proxy.release();
+
+		const outcome = await settleWithinBound(abandoned);
+		await shutdown;
+
+		assert.ok(outcome.status === "rejected");
+		assert.equal(outcome.reason.message, "Intercom runtime no longer active");
+		assert.equal(isRecoverableIntercomDisconnect(outcome.reason), false);
+		assert.deepEqual(relayDiagnostics(diagnostics), [
+			"Intercom event relay failed (atomic:workflow-pending-stage-route):",
+		]);
+	} finally {
+		if (!shutDown) await host.shutdown();
+	}
+});
+
 test("a failed scheduled retry reaches a waiting stage as a retryable failure unless it is a real one", () => {
 	const timeout = new IntercomBrokerTimeoutError("Connection timeout");
 	assert.equal(scheduledRetryFailure(timeout), timeout, "a broker timeout is already what a stage retries");

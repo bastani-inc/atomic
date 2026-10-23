@@ -925,6 +925,17 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       pi.events.emit(PENDING_STAGE_ROUTE_REVOKED_EVENT, { runId, capability: state.route.capability });
     });
   }
+  async function retirePendingStageRouteClient(state: PendingStageRouteClientState): Promise<void> {
+    try { await state.promise; } catch {}
+    if (state.client) {
+      try { await state.client.disconnect(); } catch {}
+    }
+  }
+  function supersededPendingStageRouteError(context: ExtensionContext, generation: number): Error {
+    return getLiveContext(context, generation)
+      ? new IntercomClientDisconnectedError()
+      : new Error("Intercom runtime no longer active");
+  }
   async function ensurePendingStageRouteClient(
     runId: string,
     route: PendingStageRouteRegistration,
@@ -935,13 +946,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     if (!contextAtStart) throw new Error("Intercom runtime not initialized");
 
     let existing = pendingStageRouteClients.get(runId);
+    let retired: Promise<void> | undefined;
     if (existing && !samePendingStageRoute(existing.route, route)) {
       pendingStageRouteClients.delete(runId);
       endPendingStageRouteBackoff(existing, new IntercomClientDisconnectedError());
-      try { await existing.promise; } catch {}
-      if (existing.client) {
-        try { await existing.client.disconnect(); } catch {}
-      }
+      retired = retirePendingStageRouteClient(existing);
       existing = undefined;
     }
     const state: PendingStageRouteClientState = existing ?? {
@@ -977,9 +986,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 	// the timer owns the retry, which registers this latest route, so the update waits for it.
 	if (state.reconnectTimer !== null && options.bypassBackoff !== true) return state.retryWaiters.join();
 
-    const promise = routeClientConnectGate.run(async () => {
+    const connect = () => routeClientConnectGate.run(async () => {
       if (!pendingStageRouteClientIsCurrent(runId, state, contextAtStart, generationAtStart)) {
-        throw new Error("Intercom runtime no longer active");
+        throw supersededPendingStageRouteError(contextAtStart, generationAtStart);
       }
       await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs);
 		const routeReturnAddress = `${currentSessionId}:pending-stage-route:${runId}`;
@@ -996,7 +1005,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       );
       if (!pendingStageRouteClientIsCurrent(runId, state, contextAtStart, generationAtStart)) {
         await nextClient.disconnect();
-        throw new Error("Intercom runtime no longer active");
+        throw supersededPendingStageRouteError(contextAtStart, generationAtStart);
       }
       await nextClient.registerPendingStageRouteAcknowledged(
         runId,
@@ -1009,11 +1018,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       );
       if (!pendingStageRouteClientIsCurrent(runId, state, contextAtStart, generationAtStart)) {
         await nextClient.disconnect();
-        throw new Error("Intercom runtime no longer active");
+        throw supersededPendingStageRouteError(contextAtStart, generationAtStart);
       }
       state.reconnectAttempt = 0;
       endPendingStageRouteBackoff(state);
     });
+    const promise = retired === undefined ? connect() : retired.then(connect);
     state.promise = promise;
     try {
       await promise;

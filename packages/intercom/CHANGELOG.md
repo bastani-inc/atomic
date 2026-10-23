@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `Intercom event relay failed (atomic:workflow-pending-stage-route): Intercom runtime no longer active` appearing in the session after a local workflow worker died and its child was replayed. Route updates that arrive while a run's previous route connection is still closing or opening, as they do when the run's route is replaced, no longer race each other: the newest route is registered over one connection and an update the replacement made obsolete ends quietly. A route connection abandoned because the session itself shut down is still reported ([#3887](https://github.com/bastani-inc/atomic/issues/3887))
+
 ## [0.9.42] - 2026-10-23
 
 ### Added
