@@ -9,15 +9,15 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import { run } from "../../packages/workflows/src/engine/run.js";
+import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import {
 	workflowStageResult,
 	workflowStagesResult,
 } from "../../packages/workflows/src/extension/workflow-tool-inspection.js";
 import { statusRuns } from "../../packages/workflows/src/runs/background/status.js";
+import { run } from "../../packages/workflows/src/runs/foreground/sdk-run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
-import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
+import { loadWorkerWorkflow } from "../../packages/workflows/src/workers/definitions.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 import { testRunId } from "../helpers/run-id.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
@@ -31,8 +31,8 @@ async function until(condition: () => Promise<boolean>) {
 	}
 }
 
-test(
-	"one root delivers direct and sticky steering after worker replacement (#3869)",
+test.skipIf(process.platform === "win32")(
+	"public SDK root delivers direct and sticky steering after worker replacement and pause (#3869)",
 	async () => {
 		const directory = makeTempDirectory("pool-intercom-");
 		const broker = new IntercomBrokerFixture(join(directory, "agent"));
@@ -53,16 +53,8 @@ test(
 		const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
 		await database.exec("CREATE TABLE test_pool_gate(released INTEGER); INSERT INTO test_pool_gate VALUES (0)");
 		const childPath = fileURLToPath(new URL("../fixtures/pool-intercom-child.ts", import.meta.url));
-		const child = await loadWorkerDefinition({
-			path: childPath,
-			exportName: "child",
-			digest: await definitionDigest(childPath),
-		});
-		const pool = new LocalWorkerPool(backend, {
-			journalPath: path,
-			workers: 2,
-			definitions: [{ definition: child, path: childPath, exportName: "child" }],
-		});
+		const child = await loadWorkerWorkflow(childPath, "child");
+		const controls = createToolControlRegistry();
 		const store = createStore();
 		const root = testRunId("pool-intercom");
 		const controller = new AbortController();
@@ -96,13 +88,24 @@ test(
 					},
 				}),
 				{},
-				{ runId: root, cwd: directory, store, durableBackend: backend, signal: controller.signal },
+				{
+					runId: root,
+					cwd: directory,
+					store,
+					durableBackend: backend,
+					signal: controller.signal,
+					toolControlRegistry: controls,
+					localWorkers: { count: 2, definitions: [{ path: childPath, exportName: "child" }] },
+				},
 			);
 			await until(
 				async () =>
 					(await client.listDirectory()).workflowStages.filter((stage) => stage.stageName === "agent").length ===
 					2,
 			);
+			await controls.runControl(root)!.pause();
+			assert.equal((await journal.getRun(root))!.status, "paused");
+			await controls.runControl(root)!.resume();
 			const stages = (await client.listDirectory()).workflowStages.filter((stage) => stage.stageName === "agent");
 			const target = stages[0]!;
 			const direct = await client.send(`workflow:${root}/${target.runId}/${target.stageId}`, {
@@ -152,7 +155,6 @@ test(
 		} finally {
 			controller.abort();
 			await database.run("UPDATE test_pool_gate SET released = 1");
-			await pool.close();
 			await execution;
 			await client.disconnect();
 			await backend.close();

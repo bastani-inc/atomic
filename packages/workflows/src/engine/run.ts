@@ -74,7 +74,8 @@ import type { WorkflowFailure } from "../shared/workflow-failures.js";
 import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
 import { workflowSource } from "../shared/workflow-source.js";
 import { admitWorkflowSessions } from "../workers/admission-binding.js";
-import { childWorkerDispatchers } from "../workers/dispatch.js";
+import { childWorkerDispatcher } from "../workers/dispatch.js";
+import { activatePublicPool, restoreWorkerOptions } from "../workers/public-pool.js";
 import { GraphFrontierTracker } from "./graph-inference.js";
 import type { EngineChildRunOptions, EngineStageRuntimeOptions, EngineWorkflowBoundaryOptions } from "./options.js";
 import { createChainPrimitive } from "./primitives/chain.js";
@@ -154,17 +155,33 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 				availableStoreDurableBackendOverride(activeStore))
 			: undefined);
 	const backend = preset ?? (await initializeDurableBackend({ journal: opts.journal, cwd: opts.cwd }));
-	if (opts.parentRun === undefined) childWorkerDispatchers.get(backend)?.validateOptions(opts);
-	if (opts.parentRun === undefined && opts.journal === undefined && opts.durableBackend === undefined) {
-		bindStoreDurableBackend(activeStore, backend);
+	const publicResources =
+		opts.parentRun === undefined &&
+		(opts.localWorkers || opts.admission || backend.getWorkflow(opts.continuation?.source.id ?? runId)?.resources);
+	if (publicResources) opts = await restoreWorkerOptions(backend, { ...opts, runId });
+	const publicPool = publicResources ? await activatePublicPool(backend, opts) : undefined;
+	try {
+		if (opts.effectiveResources)
+			opts = {
+				...opts,
+				localWorkers: opts.effectiveResources.localWorkers,
+				admission: opts.effectiveResources.admission,
+			};
+		if (publicPool && !opts.admission) opts = { ...opts, admission: {} };
+		if (opts.parentRun === undefined) childWorkerDispatcher(backend, runId)?.validateOptions(opts);
+		if (opts.parentRun === undefined && opts.journal === undefined && opts.durableBackend === undefined) {
+			bindStoreDurableBackend(activeStore, backend);
+		}
+		const execute = () =>
+			admitWorkflowSessions(backend, { ...opts, runId }, (admittedOpts) =>
+				executeRun(def, resolvedInputs, { ...admittedOpts, store: activeStore, runId, durableBackend: backend }),
+			);
+		return opts.parentRun === undefined && backend instanceof JournalDurableBackend
+			? await backend.withWorkflowLease(runId, execute)
+			: await execute();
+	} finally {
+		await publicPool?.close();
 	}
-	const execute = () =>
-		admitWorkflowSessions(backend, { ...opts, runId }, (admittedOpts) =>
-			executeRun(def, resolvedInputs, { ...admittedOpts, store: activeStore, runId, durableBackend: backend }),
-		);
-	return opts.parentRun === undefined && backend instanceof JournalDurableBackend
-		? await backend.withWorkflowLease(runId, execute)
-		: await execute();
 }
 
 async function executeRun(
@@ -224,7 +241,7 @@ async function executeRun(
 	const sourceBackend = opts.durableBackend;
 	const backendView: DurableWorkflowBackend = sourceBackend;
 	const rootBackend: DurableWorkflowBackend = opts.durableRootBackend ?? backendView;
-	const dispatcher = opts.parentRun === undefined ? childWorkerDispatchers.get(rootBackend) : undefined;
+	const dispatcher = opts.parentRun === undefined ? childWorkerDispatcher(rootBackend, runId) : undefined;
 	const durableBackend: DurableWorkflowBackend =
 		opts.durableScope !== undefined ? new ScopedDurableBackend(backendView, opts.durableScope) : backendView;
 	const inheritedElapsedMs =
@@ -344,7 +361,7 @@ async function executeRun(
 		usageTree,
 		rootBudget: opts.rootBudget,
 		...(opts.parentRun === undefined
-			? { externalUsage: () => childWorkerDispatchers.get(rootBackend)?.usage?.() }
+			? { externalUsage: () => childWorkerDispatcher(rootBackend, runId)?.usage?.() }
 			: {}),
 		onWarning: (report) => {
 			activeStore.recordNotice({
@@ -614,6 +631,7 @@ async function executeRun(
 		isChildRun: opts.parentRun !== undefined,
 		continuationSourceId: opts.continuation?.source.id,
 		...(persistedPossibleStages === undefined ? {} : { possibleStages: persistedPossibleStages }),
+		resources: opts.effectiveResources,
 	});
 	const { tool, admittedTools, assertFrontierConsumed, abandonInFlightAsCancelled, observedQuitCancellation } =
 		createTrackedToolPrimitive({

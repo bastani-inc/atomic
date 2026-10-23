@@ -6,9 +6,9 @@ import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/sto
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
-import { run } from "../../packages/workflows/src/engine/run.js";
+import { run as engineRun } from "../../packages/workflows/src/engine/run.js";
+import { run } from "../../packages/workflows/src/runs/foreground/sdk-run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { workflowResourceAdmission } from "../../packages/workflows/src/workers/admission-binding.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import { SqlResourceAdmission } from "../../packages/workflows/src/workers/resource-admission.js";
@@ -16,8 +16,8 @@ import { poolStageOptions } from "../fixtures/pool-stage-options.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const LOCAL_WORKER_ADMISSION_TIMEOUT_MS = 120_000;
-test.each([false, true])(
-	"three workers and local sessions share two permits, with a non-pooled root=%s (#3869)",
+test.skipIf(process.platform === "win32").each([false, true])(
+	"public worker and non-pooled sessions share two permits, cross-run=%s (#3869)",
 	async (crossRun) => {
 		const directory = makeTempDirectory("pool-admission-");
 		const path = join(directory, "journal.sqlite");
@@ -28,7 +28,6 @@ test.each([false, true])(
 			limits: { session: 2 },
 			...(crossRun ? { userLimits: { session: 2 }, userDatabase: path } : {}),
 		};
-		if (crossRun) workflowResourceAdmission.set(ordinary, config);
 		const db = await openNodeSqliteDatabase(path);
 		const admission = await SqlResourceAdmission.open(journal, {
 			root: "root",
@@ -45,12 +44,7 @@ test.each([false, true])(
 			exportName: "child",
 			digest: await definitionDigest(childPath),
 		});
-		const pool = new LocalWorkerPool(backend, {
-			journalPath: path,
-			workers: 3,
-			definitions: [{ definition: child, path: childPath, exportName: "child" }],
-			admission: config,
-		});
+		const localWorkers = { count: 3, definitions: [{ path: childPath, exportName: "child" }] };
 		try {
 			const parent = workflow({
 				name: "admitted-root",
@@ -90,13 +84,27 @@ test.each([false, true])(
 				run(
 					parent,
 					{},
-					{ runId: "root", cwd: directory, store, durableBackend: backend, budget: { maxTokens: 100 } },
+					{
+						runId: "root",
+						cwd: directory,
+						store,
+						durableBackend: backend,
+						budget: { maxTokens: 100 },
+						localWorkers,
+						admission: config,
+					},
 				),
 				crossRun
 					? run(
 							ordinaryRun,
 							{},
-							{ runId: "ordinary", cwd: directory, store: createStore(), durableBackend: ordinary },
+							{
+								runId: "ordinary",
+								cwd: directory,
+								store: createStore(),
+								durableBackend: ordinary,
+								admission: config,
+							},
 						)
 					: undefined,
 			]);
@@ -108,7 +116,6 @@ test.each([false, true])(
 			assert.equal(store.runs().find((entry) => entry.id === "root")?.budgetState?.accounting?.tokens, 8);
 			assert.equal((await admission.inspect()).filter((row) => row.state === "granted").length, 0);
 		} finally {
-			await pool.close();
 			await backend.close();
 			await ordinary.close();
 			await db.close();
@@ -155,7 +162,7 @@ test.skipIf(process.platform === "win32")(
 					return {};
 				},
 			});
-			const result = await run(
+			const result = await engineRun(
 				parent,
 				{},
 				{ runId: "root", cwd: directory, store: createStore(), durableBackend: backend },

@@ -7,6 +7,7 @@ import { createAgentSessionAdapter } from "../../extension/wiring.js";
 import { store as defaultStore } from "../../shared/store.js";
 import { currentWorkflowStore } from "../../shared/store-factory.js";
 import type { WorkflowDefinition, WorkflowInputValues, WorkflowOutputValues } from "../../shared/types.js";
+import { restoreWorkerOptions } from "../../workers/public-pool.js";
 import type { RunOpts, RunResult } from "./executor-types.js";
 import { acquireStandaloneIntercom } from "./sdk-intercom.js";
 
@@ -26,7 +27,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	inputs: WorkflowRunInputArgument,
 	callerOpts: RunOpts = {},
 ): Promise<RunResult> {
-	const opts = withDefaultAgentSessionAdapter(callerOpts);
+	let opts = callerOpts;
 	const store = opts.store === undefined || opts.store === defaultStore ? currentWorkflowStore() : opts.store;
 	const sourceRunId = opts.continuation?.source.id ?? opts.runId;
 	const ownedBackend = sourceRunId === undefined ? undefined : availableRunDurableBackend(store.runs(), sourceRunId);
@@ -39,6 +40,10 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		bindStoreDurableBackend(store, backend);
 	}
 	const runId = opts.runId ?? randomUUID();
+	if (sourceRunId !== undefined || opts.localWorkers || opts.admission) {
+		opts = await restoreWorkerOptions(backend, { ...opts, runId });
+	}
+	opts = withDefaultAgentSessionAdapter(opts);
 	const releaseIntercom = await acquireStandaloneIntercom(store, runId, opts.cwd ?? process.cwd());
 	try {
 		return await engineRun(def, inputs, { ...opts, runId, store, durableBackend: backend });
@@ -49,7 +54,8 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 
 /** Stage sessions default to in-process Atomic SDK sessions when the caller supplies no session adapter. */
 function withDefaultAgentSessionAdapter(opts: RunOpts): RunOpts {
-	if (opts.adapters?.agentSession !== undefined || opts.adapters?.prompt !== undefined) return opts;
+	if (opts.localWorkers || opts.adapters?.agentSession !== undefined || opts.adapters?.prompt !== undefined)
+		return opts;
 	return {
 		...opts,
 		adapters: {

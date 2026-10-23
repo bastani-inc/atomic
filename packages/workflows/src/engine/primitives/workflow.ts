@@ -21,7 +21,7 @@ import type {
 	WorkflowRunChildArgs,
 	WorkflowRunChildOptions,
 } from "../../shared/types.js";
-import { childWorkerDispatchers } from "../../workers/dispatch.js";
+import { childWorkerDispatcher } from "../../workers/dispatch.js";
 import type { EngineRuntime } from "../runtime.js";
 import {
 	findWorkflowGracefulQuit,
@@ -121,7 +121,7 @@ export function createChildWorkflowRunner(input: {
 			// promise creation, with no await in between, so cleanup can await teardown.
 			const dispatcher =
 				runtime.parentRootRunId === undefined && runtime.childRunOptions.durableRootBackend
-					? childWorkerDispatchers.get(runtime.childRunOptions.durableRootBackend)
+					? childWorkerDispatcher(runtime.childRunOptions.durableRootBackend, runtime.runId)
 					: undefined;
 			const runChild = dispatcher === undefined ? input.runWorkflow : dispatcher.run.bind(dispatcher);
 			const childRunPromise = runChild(child, childInputs, {

@@ -230,6 +230,8 @@ export declare function run<
 	inputs: Readonly<NoInfer<WorkflowRunInputArgument<TRunInputs>>>,
 	opts?: RunOpts,
 ): Promise<RunResult<TOutputs>>;
+export declare function loadWorkerWorkflow(path: string, exportName?: string): Promise<AnyWorkflowDefinition>;
+export type { LocalWorkerOptions, WorkflowAdmissionOptions } from "./workers/public-options.js";
 /**
  * Build the default stage-session adapter: each stage runs an in-process Atomic
  * `createAgentSession` session. `baseOptions` apply to every stage; stage options

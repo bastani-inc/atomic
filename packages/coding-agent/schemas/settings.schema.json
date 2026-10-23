@@ -527,11 +527,97 @@
             },
             "journal": {
               "$ref": "#/$defs/StorageSelection"
+            },
+            "localWorkers": {
+              "type": "object",
+              "required": [
+                "count",
+                "definitions"
+              ],
+              "properties": {
+                "count": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Number of local worker processes."
+                },
+                "definitions": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "path",
+                      "exportName"
+                    ],
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      },
+                      "exportName": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "description": "Importable child workflow definitions workers may run."
+                }
+              },
+              "additionalProperties": false
+            },
+            "admission": {
+              "type": "object",
+              "properties": {
+                "limits": {
+                  "type": "object",
+                  "properties": {
+                    "session": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "process": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "userLimits": {
+                  "type": "object",
+                  "properties": {
+                    "session": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "process": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "userDatabase": {
+                  "type": "string"
+                },
+                "host": {
+                  "type": "object",
+                  "properties": {
+                    "maxLoadPerCpu": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "minFreeMemoryBytes": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
             }
           }
         }
       ],
-      "description": "Local workflow paths, or an object with \"paths\" and \"journal\" storage settings."
+      "description": "Local workflow paths, or an object with \"paths\", \"journal\" storage, \"localWorkers\" and \"admission\" settings."
     },
     "enableSkillCommands": {
       "type": "boolean",

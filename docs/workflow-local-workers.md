@@ -1,6 +1,8 @@
-# Internal local workflow workers
+# Local workflow workers
 
-Issue #3869 is being implemented in six slices. This document describes the internal execution path through slice 5. There is no CLI, settings or public SDK option to enable it. Normal workflow execution does not create a pool or start polling workers.
+Issue #3869 enables an explicit public opt-in to local workers through SDK options and workflow settings. Without `localWorkers`, ordinary runs create no pool tables, worker processes, or polling loops. The public usage boundary is documented in the [workflow operations guide](../packages/coding-agent/docs/workflows/operations.md#local-workflow-workers).
+
+Placement is limited to local Linux and macOS processes with native process identity and boot identity. Windows and hosts without those identities refuse activation, even when no process admission limit is configured. This prevents treating an expired lease as proof that an old process tree stopped. Remote workers are not supported.
 
 ## Execution and persistence
 
@@ -20,7 +22,7 @@ Worker exit triggers a bounded replacement. Expired work becomes claimable only 
 
 The internal inventory accepts definitions loaded through the shared workflow-module loader, with an absolute module path, export name and SHA-256 content digest. Unregistered closures, changed entry modules and process-bound run adapter overrides fail before a worker starts. Child invocation budget overrides are also rejected before enqueueing; they are not silently dropped. The entry-module digest is not a deployment system or a transitive dependency snapshot. All workers still use the coordinator's local installation and filesystem.
 
-This path accepts the default-prefix local SQL journal only. Admission and budget accounting are shared with the root. Remote workers and the public activation contract remain out of scope. Callers of the internal supervisor must close it after the root settles.
+This path accepts the default-prefix local SQL journal only. Admission and budget accounting are shared with the root. The root persists effective worker and admission settings and refuses changed settings or entry-module digests during resume. The digest covers only the worker entry file, not imported dependencies.
 
 ## Control and routing
 
@@ -47,4 +49,14 @@ The root reconstructs committed child checkpoints and pending messages from the 
 - `test/integration/workflow-local-worker-heartbeat.test.ts` holds activity acknowledgements while a real worker produces tool updates, checks continued renewals and control polling, and verifies coalesced publication retains the final state.
 - `test/unit/workflow-pool-dispose-routes.test.ts` verifies failed session cleanup still releases root routes and reports the cleanup error.
 
-User guides and the package changelog are unchanged because this internal path is not available to users yet.
+## Public placement and admission
+
+The public SDK accepts `RunOpts.localWorkers: { count, definitions: [{ path, exportName }] }` and optional `RunOpts.admission`. The SDK helper `loadWorkerWorkflow(absolutePath, exportName = "default")` loads an importable child definition for `ctx.workflow(child)`. A root can remain an inline closure, but each eligible child definition needs an importable path and export inventory. Only the complete first-level child subtree runs on a worker; nested children remain there. Missing or incompatible definitions fail instead of falling back to local execution. Independent stage placement is not supported.
+
+The CLI reads the same keys from `workflows` settings. Settings and entry-module digests are retained with the root. Settings paths resolve against the invocation working directory; SDK paths resolve against `cwd`. Arbitrary SDK process-bound adapters, UI, persistence, and related runtime overrides are rejected before worker launch. CLI host bindings stay in the root process; worker stages create their own sessions.
+
+Resource limits count agent sessions from creation through disposal, including fallback and delegated sessions, and Atomic-managed tool processes until cleanup is confirmed. Yielding an observation does not free a process permit. Arbitrary subprocesses outside managed Atomic APIs are not counted. Host load and free-memory thresholds are launch gates, not hard OS limits. Optional user-wide limits require all participating roots to use the same canonical local SQLite path. This is local-user coordination, not multi-tenant isolation.
+
+Recovery is at least once: committed checkpoints prevent repetition of completed work, but external effects performed before a checkpoint may run again. Use stable logical idempotency keys where duplicate effects matter. Root status, stages, steering, pause, quit, and resume still operate on one root identity.
+
+The worker entrypoint ships in installed workflow bundles. The standalone launcher handles its internal worker mode before loading the normal CLI, supplies the same host modules as the app bundle, and refuses startup without an IPC channel.

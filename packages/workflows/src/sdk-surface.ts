@@ -66,6 +66,8 @@ export {
 	DEFAULT_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES,
 	WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
 } from "./shared/workflow-heartbeat-contract.js";
+export { loadWorkerWorkflow } from "./workers/definitions.js";
+export type { LocalWorkerOptions, WorkflowAdmissionOptions } from "./workers/public-options.js";
 export { normalizeWorkflowName, workflowNamesEqual } from "./workflows/identity.js";
 export type { WorkflowRegistry } from "./workflows/registry.js";
 export { createRegistry } from "./workflows/registry.js";

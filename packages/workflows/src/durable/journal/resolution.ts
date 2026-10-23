@@ -14,7 +14,13 @@ import type { RunJournal } from "./types.js";
 
 export type { RunJournalOption };
 export interface RunJournalSettings {
-	workflows?: string[] | { journal?: StorageSettingsSelection };
+	workflows?:
+		| string[]
+		| {
+				journal?: StorageSettingsSelection;
+				localWorkers?: import("../../workers/public-options.js").LocalWorkerOptions;
+				admission?: import("../../workers/public-options.js").WorkflowAdmissionOptions;
+		  };
 	storage?: StorageSettingsSelection;
 }
 

@@ -89,7 +89,7 @@ export async function admitWorkflowSessions(
 	callback: (options: RunOpts) => Promise<import("../runs/foreground/executor-types.js").RunResult>,
 ): Promise<import("../runs/foreground/executor-types.js").RunResult> {
 	const rootBackend = opts.durableRootBackend ?? backend;
-	const config = workflowResourceAdmission.get(rootBackend);
+	const config = opts.admission ?? workflowResourceAdmission.get(rootBackend);
 	if (!config) return callback(opts);
 	if (!(rootBackend instanceof JournalDurableBackend))
 		throw new Error("Resource admission requires a journal backend");

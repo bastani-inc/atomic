@@ -37,6 +37,8 @@ import type {
 	WorkflowPersistencePort,
 	WorkflowRuntimeConfig,
 } from "../shared/types.js";
+import { hostWorkerBindings } from "../workers/host-options.js";
+import { withWorkerSettings } from "../workers/public-pool.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import { createRegistry } from "../workflows/registry.js";
 import { dispatch } from "./dispatcher.js";
@@ -224,23 +226,27 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 
 	function runOptions(policy?: WorkflowExecutionPolicy): RunOpts {
 		const defaultSessionDir = resolveDefaultStageSessionDir?.();
-		return {
-			adapters,
-			store: activeStore,
-			durableBackend: backendRef.current,
-			cancellation,
-			stageControlRegistry,
-			toolControlRegistry,
-			stageUiBroker,
-			persistence,
-			mcp,
-			config,
-			models,
-			...(defaultSessionDir !== undefined ? { defaultSessionDir } : {}),
-			...(policy !== undefined ? { executionMode: policy.mode } : {}),
-			registry,
-			cwd: runtimeCwd,
-		};
+		return withWorkerSettings(
+			{
+				adapters,
+				store: activeStore,
+				durableBackend: backendRef.current,
+				cancellation,
+				stageControlRegistry,
+				toolControlRegistry,
+				stageUiBroker,
+				persistence,
+				mcp,
+				config,
+				models,
+				...(defaultSessionDir !== undefined ? { defaultSessionDir } : {}),
+				...(policy !== undefined ? { executionMode: policy.mode } : {}),
+				registry,
+				cwd: runtimeCwd,
+				[hostWorkerBindings]: true,
+			},
+			opts.resolveJournalSettings?.(),
+		);
 	}
 
 	function matchesResumeStageIdentifier(stage: RunSnapshot["stages"][number], identifier: string): boolean {
@@ -413,6 +419,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			return dispatch(args, {
 				registry,
 				durableBackend: backend,
+				...withWorkerSettings({}, opts.resolveJournalSettings?.()),
 				adapters,
 				store: activeStore,
 				cancellation,

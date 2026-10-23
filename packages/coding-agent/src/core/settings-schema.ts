@@ -370,16 +370,56 @@ export const SessionStorageSelectionSchema = Type.Union([
 	Type.Object({ dir: Type.String() }, { additionalProperties: false }),
 ]);
 
+const ResourceLimitsSchema = Type.Object(
+	{
+		session: Type.Optional(Type.Integer({ minimum: 1 })),
+		process: Type.Optional(Type.Integer({ minimum: 1 })),
+	},
+	{ additionalProperties: false },
+);
+
 const WorkflowsSettingsSchema = Type.Union(
 	[
 		StringArraySchema,
 		Type.Object({
 			paths: Type.Optional(Type.Array(Type.String(), { description: "Workflow resource paths." })),
 			journal: Type.Optional(StorageSelectionSchema),
+			localWorkers: Type.Optional(
+				Type.Object(
+					{
+						count: Type.Integer({ minimum: 1, description: "Number of local worker processes." }),
+						definitions: Type.Array(
+							Type.Object({ path: Type.String(), exportName: Type.String() }, { additionalProperties: false }),
+							{ description: "Importable child workflow definitions workers may run." },
+						),
+					},
+					{ additionalProperties: false },
+				),
+			),
+			admission: Type.Optional(
+				Type.Object(
+					{
+						limits: Type.Optional(ResourceLimitsSchema),
+						userLimits: Type.Optional(ResourceLimitsSchema),
+						userDatabase: Type.Optional(Type.String()),
+						host: Type.Optional(
+							Type.Object(
+								{
+									maxLoadPerCpu: Type.Optional(Type.Number({ minimum: 0 })),
+									minFreeMemoryBytes: Type.Optional(Type.Number({ minimum: 0 })),
+								},
+								{ additionalProperties: false },
+							),
+						),
+					},
+					{ additionalProperties: false },
+				),
+			),
 		}),
 	],
 	{
-		description: 'Local workflow paths, or an object with "paths" and "journal" storage settings.',
+		description:
+			'Local workflow paths, or an object with "paths", "journal" storage, "localWorkers" and "admission" settings.',
 	},
 );
 
