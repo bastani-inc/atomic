@@ -336,6 +336,40 @@ test.each(["checkpoint", "session"] as const)(
 	},
 );
 
+test("worker clock skew preserves checkpoints and receipts without extending leases (#3869)", async () => {
+	const f = await fixture();
+	const coordinatorNow = Date.now() + 60_000;
+	const completedAt = coordinatorNow + 20;
+	const clock = vi.spyOn(Date, "now").mockReturnValue(coordinatorNow);
+	try {
+		const mutation = { kind: "checkpoint" as const, checkpoint: { ...checkpoint, completedAt } };
+		const receipt = await f.pool.commit(f.lease, f.attempt, "save", mutation);
+		assert.ok(receipt.at < completedAt);
+		assert.deepEqual(await f.pool.commit(f.lease, f.attempt, "save", mutation), receipt);
+		await f.backend.hydrateWorkflow("root");
+		assert.equal(f.backend.getToolCheckpoint("root", checkpoint.argsHash)?.completedAt, completedAt);
+		await assert.rejects(
+			f.pool.commit(f.lease, f.attempt, "future", {
+				...mutation,
+				checkpoint: { ...mutation.checkpoint, completedAt: coordinatorNow + 60_000 },
+			}),
+			/Pool checkpoint timestamp is in the future/,
+		);
+		await f.database.run("UPDATE wf_runs_work SET expires_at = 0 WHERE id = ?", f.attempt.id);
+		await assert.rejects(f.pool.commit(f.lease, f.attempt, "late", mutation), /Stale work lease/);
+		await assert.rejects(
+			f.pool.commit(f.lease, f.attempt, "save", {
+				...mutation,
+				checkpoint: { ...mutation.checkpoint, completedAt: completedAt + 1 },
+			}),
+			/identity conflict/,
+		);
+	} finally {
+		clock.mockRestore();
+		await f.close();
+	}
+});
+
 test("workers cannot forge root graph ownership or commit non-protocol mutations (#3869)", async () => {
 	const f = await fixture();
 	try {
@@ -547,6 +581,32 @@ test("nested boundary commits remain replayable and reject malformed ownership (
 			}),
 			/scope/,
 		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("completed child result survives a lost acknowledgement and fences later writes (#3869)", async () => {
+	const f = await fixture();
+	try {
+		await f.pool.commit(f.lease, f.attempt, "saved", { kind: "checkpoint", checkpoint });
+		const result = {
+			runId: work.childRunId,
+			status: "completed",
+			result: { saved: true },
+			stages: [],
+			toolNodes: [],
+		};
+		await f.pool.complete(f.lease, f.attempt, result);
+		await f.pool.complete(f.lease, f.attempt, result);
+		assert.deepEqual(await f.pool.result("root", f.attempt.id), result);
+		assert.equal((await f.pool.inspect("root"))[0]!.state, "completed");
+		assert.equal(await f.pool.claim(f.lease, "another", [work], 60_000), undefined);
+		await assert.rejects(
+			f.pool.commit(f.lease, f.attempt, "late", { kind: "checkpoint", checkpoint }),
+			/Stale work lease/,
+		);
+		await assert.rejects(f.pool.complete(f.lease, f.attempt, { ...result, status: "failed" }), /identity conflict/);
 	} finally {
 		await f.close();
 	}
