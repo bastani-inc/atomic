@@ -23,12 +23,10 @@ const FAULT_PATTERNS: readonly (readonly [RegExp, WorkflowInfrastructureFault])[
 export class WorkflowInfrastructureError extends Error {
 	override readonly name = WORKFLOW_INFRASTRUCTURE_ERROR_NAME;
 	readonly retryable = true;
-	constructor(
-		readonly code: WorkflowInfrastructureFault,
-		message: string,
-		options?: ErrorOptions,
-	) {
+	readonly code: WorkflowInfrastructureFault;
+	constructor(code: WorkflowInfrastructureFault, message: string, options?: ErrorOptions) {
 		super(message, options);
+		this.code = code;
 	}
 }
 
