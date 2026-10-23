@@ -1,12 +1,14 @@
 import { EventEmitter } from "events";
 import net from "net";
 import { randomUUID } from "crypto";
-import { writeMessage, createMessageReader } from "./framing.js";
+import { writeMessage, createMessageReader, type JsonWireValue } from "./framing.js";
+import { isBrokerStatusReport } from "./broker-status.js";
 import { getBrokerSocketPath } from "./paths.js";
 import type {
 	SessionInfo,
 	Message,
 	Attachment,
+	BrokerStatusReport,
 	GroupSummary,
 	SupervisorRegistration,
 	SessionDirectory,
@@ -175,6 +177,7 @@ export class IntercomClient extends EventEmitter {
 	private brokerAcknowledgesReceipt = false;
 	/** The broker of the current registration answers a pending-stage route registration that carries a `requestId`. */
 	private brokerAcknowledgesPendingStageRoutes = false;
+	private brokerAnswersStatus = false;
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
   private _supervisorSessionId: string | null = null;
@@ -191,6 +194,7 @@ export class IntercomClient extends EventEmitter {
     groups?: string[];
   }>();
   private pendingMemberships = new Map<string, { resolve: (groups: string[]) => void; reject: (error: Error) => void }>();
+  private pendingBrokerStatus = new Map<string, { resolve: (report: BrokerStatusReport) => void; reject: (error: Error) => void }>();
   private _groups = normalizeGroups();
   private pendingLiveWorkflowStageRoutes = new Map<string, { resolve(): void; reject(error: Error): void }>();
   private pendingStageRouteRegistrations = new Map<string, { resolve(): void; reject(error: Error): void }>();
@@ -259,6 +263,7 @@ export class IntercomClient extends EventEmitter {
     for (const pending of this.pendingMemberships.values()) pending.reject(error);
     for (const pending of this.pendingLiveWorkflowStageRoutes.values()) pending.reject(error);
     for (const pending of this.pendingStageRouteRegistrations.values()) pending.reject(error);
+    for (const pending of this.pendingBrokerStatus.values()) pending.reject(error);
     this.pendingLists.clear();
     this.pendingGroupLists.clear();
     this.pendingSupervisorAuthorizations.clear();
@@ -267,6 +272,7 @@ export class IntercomClient extends EventEmitter {
     this.pendingMemberships.clear();
     this.pendingLiveWorkflowStageRoutes.clear();
     this.pendingStageRouteRegistrations.clear();
+    this.pendingBrokerStatus.clear();
   }
 
 
@@ -370,6 +376,7 @@ export class IntercomClient extends EventEmitter {
         this._supervisorSessionId = null;
         this.brokerAcknowledgesReceipt = false;
         this.brokerAcknowledgesPendingStageRoutes = false;
+        this.brokerAnswersStatus = false;
         this._messageSource = undefined;
         this.disconnectError = null;
         if (connectionEstablished && !wasDisconnecting) {
@@ -478,7 +485,8 @@ export class IntercomClient extends EventEmitter {
         if (typeof brokerMessage.sessionId !== "string"
           || (brokerMessage.supervisorSessionId !== undefined && typeof brokerMessage.supervisorSessionId !== "string")
           || (brokerMessage.acknowledgesReceipt !== undefined && brokerMessage.acknowledgesReceipt !== true)
-          || (brokerMessage.acknowledgesPendingStageRoutes !== undefined && brokerMessage.acknowledgesPendingStageRoutes !== true)) {
+          || (brokerMessage.acknowledgesPendingStageRoutes !== undefined && brokerMessage.acknowledgesPendingStageRoutes !== true)
+          || (brokerMessage.brokerStatus !== undefined && brokerMessage.brokerStatus !== true)) {
           throw new Error("Invalid registered message");
         }
 
@@ -492,6 +500,7 @@ export class IntercomClient extends EventEmitter {
         // #3761: a broker from before receipts never echoes the capability and drops a client that sends `received`.
         this.brokerAcknowledgesReceipt = this.acknowledgesReceipt && brokerMessage.acknowledgesReceipt === true;
         this.brokerAcknowledgesPendingStageRoutes = brokerMessage.acknowledgesPendingStageRoutes === true;
+        this.brokerAnswersStatus = brokerMessage.brokerStatus === true;
         this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
         break;
       }
@@ -575,6 +584,16 @@ export class IntercomClient extends EventEmitter {
         if (!pending) return;
         this.pendingGroupLists.delete(requestId);
         pending.resolve(groups as GroupSummary[]);
+        break;
+      }
+      case "broker_status": {
+        const { requestId } = brokerMessage;
+        const report = brokerMessage.report as JsonWireValue | undefined;
+        if (typeof requestId !== "string" || !isBrokerStatusReport(report)) throw new Error("Invalid broker_status message");
+        const pending = this.pendingBrokerStatus.get(requestId);
+        if (!pending) return;
+        this.pendingBrokerStatus.delete(requestId);
+        pending.resolve(report);
         break;
       }
       case "supervisor_authorized": {
@@ -942,6 +961,35 @@ export class IntercomClient extends EventEmitter {
       } catch (error) {
         clearTimeout(timeout);
         this.pendingGroupLists.delete(requestId);
+        reject(toError(error));
+      }
+    });
+  }
+
+  /** The broker's own status, including multi-node routing; `undefined` from a broker older than `broker_status`. */
+  brokerStatus(): Promise<BrokerStatusReport | undefined> {
+    let socket: net.Socket;
+    try {
+      socket = this.requireActiveSocket();
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
+    if (!this.brokerAnswersStatus) return Promise.resolve(undefined);
+    const requestId = randomUUID();
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (!this.pendingBrokerStatus.delete(requestId)) return;
+        reject(new Error("Broker status timeout"));
+      }, GROUP_REQUEST_TIMEOUT_MS);
+      this.pendingBrokerStatus.set(requestId, {
+        resolve: (report) => { clearTimeout(timeout); resolve(report); },
+        reject: (error) => { clearTimeout(timeout); reject(error); },
+      });
+      try {
+        writeMessage(socket, { type: "broker_status", requestId });
+      } catch (error) {
+        clearTimeout(timeout);
+        this.pendingBrokerStatus.delete(requestId);
         reject(toError(error));
       }
     });

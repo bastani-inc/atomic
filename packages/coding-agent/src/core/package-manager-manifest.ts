@@ -5,7 +5,15 @@ import { stripBom } from "../utils/text.ts";
 import type { McpServerConfig } from "./mcp-servers.ts";
 import type { PiManifest, ResourceType } from "./package-manager-types.ts";
 
-const MANIFEST_ENTRY_FIELDS = ["extensions", "skills", "prompts", "themes", "workflows", "workflow"] as const;
+const MANIFEST_ENTRY_FIELDS = [
+	"extensions",
+	"skills",
+	"prompts",
+	"themes",
+	"workflows",
+	"workflow",
+	"storageAdapters",
+] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);

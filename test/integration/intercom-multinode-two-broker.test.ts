@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { PendingRecoveryDelivery } from "@bastani/atomic";
 import { afterAll, beforeAll, beforeEach, test, vi } from "vitest";
 import type { SendResult } from "../../packages/intercom/broker/client.js";
+import { queryIntercomBroker } from "../../packages/intercom/broker/control.js";
 import {
 	BROKER_LEASE_STALE_AFTER_MS,
 	OUTBOX_BACKUP_POLL_INTERVAL_MS,
@@ -131,6 +132,23 @@ test(
 		assert.ok((await onA.client.listSessions()).some((session) => session.id === onA.sessionId));
 		await harness.startBroker("b");
 		assert.equal(harness.isBrokerRunning("b"), true);
+	},
+	REAL_BROKERS_HOOK_TIMEOUT_MS,
+);
+
+test(
+	"a restarted two-broker fixture waits for shared routing to open (#3857)",
+	async () => {
+		const delayed = await TwoBrokerHarness.start({ databaseCallDelayMs: 20 });
+		try {
+			await delayed.stopBroker("b", "SIGTERM");
+			await delayed.startBroker("b");
+			const status = await queryIntercomBroker(delayed.agentDir("b"));
+			assert.ok(status.state === "running");
+			assert.equal(status.report.multiNode.status, "on");
+		} finally {
+			await delayed.cleanup();
+		}
 	},
 	REAL_BROKERS_HOOK_TIMEOUT_MS,
 );

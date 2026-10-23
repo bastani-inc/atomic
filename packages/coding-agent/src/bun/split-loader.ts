@@ -4,7 +4,11 @@ import { pathToFileURL } from "node:url";
 import { markLifecycleTiming } from "../core/lifecycle-timings.ts";
 import { ATOMIC_AI_AGENT } from "../utils/agent-attribution.ts";
 import { stripBom } from "../utils/text.ts";
-import { INTERNAL_INTERCOM_BROKER_ARG, importInternalIntercomBroker } from "./internal-intercom-broker.ts";
+import {
+	INTERNAL_INTERCOM_BROKER_ARG,
+	importInternalIntercomBroker,
+	installBrokerHostModules,
+} from "./internal-intercom-broker.js";
 
 markLifecycleTiming("process-entry");
 
@@ -16,6 +20,7 @@ process.env.AI_AGENT = ATOMIC_AI_AGENT;
 process.emitWarning = (() => {}) as typeof process.emitWarning;
 
 const args = process.argv.slice(2);
+const appPath = join(dirname(process.execPath), "app.js");
 
 function readVersion(): string {
 	try {
@@ -32,6 +37,7 @@ if (args[0] === INTERNAL_INTERCOM_BROKER_ARG) {
 		console.error(`Atomic startup error: ${INTERNAL_INTERCOM_BROKER_ARG} requires exactly one broker module path`);
 		process.exit(1);
 	}
+	installBrokerHostModules(appPath);
 	void importInternalIntercomBroker(args[1]).catch((error: Error) => {
 		console.error(`Atomic startup error: ${error.message}`);
 		process.exit(1);
@@ -42,7 +48,6 @@ if (args[0] === INTERNAL_INTERCOM_BROKER_ARG) {
 		process.exit(0);
 	}
 
-	const appPath = join(dirname(process.execPath), "app.js");
 	if (!existsSync(appPath)) {
 		console.error(`Atomic startup error: missing app bundle at ${appPath}`);
 		process.exit(1);

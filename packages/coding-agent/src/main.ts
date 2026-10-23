@@ -67,6 +67,7 @@ import { deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import {
 	hasProcessStorageSelection,
+	processSharedStorageSelection,
 	selectProcessStorage,
 	setCliStorageSelection,
 } from "./core/storage/process-selection.js";
@@ -337,6 +338,18 @@ export async function main(argv: string[], options?: MainOptions) {
 		await drainProcessStdio();
 		return;
 	}
+	if (args[0] === "storage") {
+		const { runStorageCommand } = await import("./cli/storage-command.js");
+		process.exitCode = await runStorageCommand(args.slice(1), { cwd, agentDir });
+		await exitAfterCommand();
+		return;
+	}
+	if (args[0] === "intercom") {
+		const { runIntercomCommand } = await import("./cli/intercom-command.js");
+		process.exitCode = await runIntercomCommand(args.slice(1), { agentDir });
+		await exitAfterCommand();
+		return;
+	}
 	const parsed = parseArgs(args);
 	if (engineEnv.child === "1" && engineEnv.apiKey) parsed.apiKey = engineEnv.apiKey;
 	if (parsed.diagnostics.length > 0) {
@@ -492,6 +505,16 @@ export async function main(argv: string[], options?: MainOptions) {
 	// starts and is never subject to project trust.
 	setCliStorageSelection(parsed.storage, cwd);
 	selectProcessStorage("journal", agentDir, cwd);
+	// The Intercom broker loads the shared storage adapter in its own process and only logs a failure, so a session
+	// warns when this executable cannot load it. Load-only, concurrent with startup; the engine child leaves it to its host.
+	const globalStorage = bootstrapSettingsManager.getGlobalSettings().storage;
+	const sharedStorageWarning =
+		engineEnv.child !== "1" &&
+		(processSharedStorageSelection() !== undefined || (globalStorage !== undefined && "adapter" in globalStorage))
+			? import("./core/storage/storage-status.js")
+					.then(({ checkSharedStorageAdapter }) => checkSharedStorageAdapter(agentDir, globalStorage))
+					.catch(() => undefined)
+			: undefined;
 
 	// Decide the final runtime cwd before creating cwd-bound runtime services.
 	// --session and --resume may select a session from another project, so project-local
@@ -930,7 +953,12 @@ export async function main(argv: string[], options?: MainOptions) {
 
 	const scopedModels = [...session.scopedModels];
 	time("resolveModelScope");
-	const startupDiagnostics = deduplicateDiagnostics([...startupSettingsDiagnostics, ...runtime.diagnostics]);
+	const storageWarning = await sharedStorageWarning;
+	const startupDiagnostics = deduplicateDiagnostics([
+		...startupSettingsDiagnostics,
+		...runtime.diagnostics,
+		...(storageWarning === undefined ? [] : [{ type: "warning" as const, message: storageWarning }]),
+	]);
 	const hasRuntimeErrors = runtime.diagnostics.some((diagnostic) => diagnostic.type === "error");
 	if (appMode !== "interactive" || hasRuntimeErrors) reportDiagnostics(startupDiagnostics);
 	if (hasRuntimeErrors) {

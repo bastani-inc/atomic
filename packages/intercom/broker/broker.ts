@@ -26,10 +26,12 @@ import {
 	getBrokerSocketReplacementLockPath,
 	getIntercomDirPath,
 } from "./paths.js";
+import { describeSharedStorage, sharedStorageDigest, sharedStorageSettingSource } from "./shared-storage-setting.js";
 import type {
 	SessionInfo,
 	Message,
 	BrokerMessage,
+	BrokerStatusReport,
 	SupervisorRegistration,
 	WorkflowStageRosterAnnouncement,
 	WorkflowStageRosterEntry,
@@ -98,6 +100,13 @@ const LISTEN_ATTEMPTS = 5;
 const LISTEN_RETRY_DELAY_MS = 100;
 const SOCKET_OWNERSHIP_CHECK_MS = 1_000;
 const MULTI_NODE_CLOSE_BOUND_MS = 2_000;
+const NO_SHARED_STORAGE_REASON = "no shared storage selection (top-level `storage` in global settings, or ATOMIC_STORAGE)";
+/** The off reasons `resolveBrokerStateSource` reports without an error, as the log and `broker_status` state them. */
+const MULTI_NODE_OFF_REASONS: Readonly<Record<string, string>> = {
+  "no-storage": "the shared storage selection names no database",
+  memory: "the shared storage selection is in memory",
+  "domain-only-adapter": "the storage adapter has no openDatabase hook",
+};
 
 function exitBecauseLiveBrokerOwnsSocket(): never {
   console.error(`Intercom broker not started: a live broker already answers on ${SOCKET_PATH}`);
@@ -334,6 +343,8 @@ class IntercomBroker {
     this.sharedStorageSetting === undefined ? undefined : (request) => this.routeRemoteSend(request);
   private multiNode: MultiNodeRouter | undefined;
   private multiNodeStatus: "starting" | "on" | "off" | "unavailable" = "off";
+  /** Why multi-node routing is off or unavailable, for `broker_status` and the log. */
+  private multiNodeReason: string | undefined = NO_SHARED_STORAGE_REASON;
   private multiNodeFirstAttempt: Promise<void> = Promise.resolve();
   private shuttingDown = false;
 
@@ -346,6 +357,7 @@ class IntercomBroker {
   start(): void {
     this.listen(1);
     if (this.sharedStorageSetting !== undefined) this.startMultiNode(this.sharedStorageSetting);
+    else console.error(`Intercom multi-node routing is off: ${NO_SHARED_STORAGE_REASON}`);
     process.on("SIGTERM", () => this.shutdown());
     process.on("SIGINT", () => this.shutdown());
   }
@@ -1503,6 +1515,19 @@ class IntercomBroker {
       return;
     }
 
+    // Control requests need no registration: `atomic intercom restart` and `atomic storage status` send them.
+    if (clientMessage.type === "broker_status" || clientMessage.type === "shutdown") {
+      if (typeof clientMessage.requestId !== "string") throw new Error(`Invalid ${clientMessage.type} message`);
+      const requestId = clientMessage.requestId;
+      if (clientMessage.type === "broker_status") {
+        void this.statusReport().then((report) => writeMessageIfOpen(socket, { type: "broker_status", requestId, report }));
+        return;
+      }
+      console.error("Intercom broker shutting down on request, so its sessions reconnect to a new broker");
+      writeMessageWithOutcome(socket, { type: "shutdown_ack", requestId }, () => this.shutdown());
+      return;
+    }
+
     if (currentId === null && clientMessage.type !== "register") {
       throw new Error(`Received ${clientMessage.type} before register`);
     }
@@ -1597,6 +1622,7 @@ class IntercomBroker {
             ...(supervisorId ? { supervisorSessionId: supervisorId } : {}),
             ...(clientMessage.acknowledgesReceipt === true ? { acknowledgesReceipt: true as const } : {}),
             acknowledgesPendingStageRoutes: true as const,
+            brokerStatus: true as const,
           });
           if (isAgentRecipient(info)) this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
           // #3761: messages written to this recipient's previous connection that it never confirmed saving go out again.
@@ -2127,12 +2153,32 @@ class IntercomBroker {
     });
   }
 
+  /** This broker's `broker_status` report: its storage selection's digest, multi-node state and live peers. */
+  private async statusReport(): Promise<BrokerStatusReport> {
+    const setting = this.sharedStorageSetting;
+    const peers = this.multiNodeStatus === "on" ? await this.multiNode?.peerBrokers() : undefined;
+    return {
+      pid: process.pid,
+      sessions: this.sessions.size,
+      ...(setting === undefined
+        ? {}
+        : { storage: { digest: sharedStorageDigest(setting), source: sharedStorageSettingSource() } }),
+      multiNode: {
+        status: this.multiNodeStatus,
+        ...(this.multiNodeReason === undefined ? {} : { reason: this.multiNodeReason }),
+        ...(setting === undefined ? {} : describeSharedStorage(setting)),
+        ...(peers === undefined ? {} : { peers }),
+      },
+    };
+  }
+
   /**
    * The shared state is loaded lazily, so a single-node broker never loads the host storage layer. A database that
    * cannot be opened is retried with exponential backoff; meanwhile local delivery continues.
    */
-  private startMultiNode(setting: Record<string, unknown>): void {
+  private startMultiNode(setting: Record<string, JsonWireValue>): void {
     this.multiNodeStatus = "starting";
+    this.multiNodeReason = undefined;
     let settleFirstAttempt: () => void = () => {};
     this.multiNodeFirstAttempt = new Promise<void>((resolve) => {
       settleFirstAttempt = resolve;
@@ -2142,7 +2188,8 @@ class IntercomBroker {
       settleFirstAttempt();
     };
     const report = (error: unknown): void => {
-      console.error(`Intercom multi-node routing is unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      this.multiNodeReason = error instanceof Error ? error.message : String(error);
+      console.error(`Intercom multi-node routing is unavailable: ${this.multiNodeReason}`);
     };
     void (async () => {
       const startup = await resolveMultiNodeStartup(setting, dirname(INTERCOM_DIR), async () => {
@@ -2156,9 +2203,10 @@ class IntercomBroker {
         return opener;
       });
       if (startup.status === "off") {
-        // A standalone binary has no host storage module, and a selection may not resolve to a database: both
-        // leave this broker single-node, exactly as without a shared `storage`.
-        if (startup.error !== undefined) console.error(`Intercom multi-node routing is off: ${startup.reason}`);
+        // A selection that does not resolve to a database, or an adapter that cannot load, leaves this broker
+        // single-node, exactly as without a shared `storage`.
+        this.multiNodeReason = startup.error === undefined ? (MULTI_NODE_OFF_REASONS[startup.reason] ?? startup.reason) : startup.reason;
+        console.error(`Intercom multi-node routing is off: ${this.multiNodeReason}`);
         settle("off");
         return;
       }
@@ -2201,6 +2249,9 @@ class IntercomBroker {
             }
           }
           if (this.shuttingDown) await this.multiNode.close().catch(() => {});
+          this.multiNodeReason = undefined;
+          const { adapter, prefix } = describeSharedStorage(setting);
+          console.error(`Intercom multi-node routing is on (adapter ${adapter}, prefix ${prefix ?? "none"})`);
           settle("on");
           return;
         } catch (error) {

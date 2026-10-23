@@ -500,6 +500,25 @@ function getAliases(): Record<string, string> {
 	return _aliases;
 }
 
+/**
+ * A jiti loader that resolves host package specifiers the way extensions see them: `virtualModules` share live host
+ * instances, and outside single-file builds every other host specifier aliases to the installed host files.
+ */
+export async function createHostModuleJiti(
+	id: string,
+	virtualModules: Record<string, object>,
+	options: Parameters<typeof createJiti>[1] = {},
+): Promise<ReturnType<typeof createJiti>> {
+	const isSingleFileBuild = isBunBinary || isBundledBuild;
+	const createJitiImpl = await getCreateJiti();
+	return createJitiImpl(id, {
+		...options,
+		// Single-file builds have no host files to alias, so every import must reach the virtual modules.
+		...(isSingleFileBuild ? { tryNative: false } : { alias: getAliases() }),
+		virtualModules,
+	});
+}
+
 export const extensionLoaderTestHooks = {
 	loadVirtualModules,
 	getAliases,

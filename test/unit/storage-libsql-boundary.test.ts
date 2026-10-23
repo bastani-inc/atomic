@@ -3,12 +3,29 @@ import { inspect } from "node:util";
 import type { Config } from "@libsql/client";
 import { afterEach, test, vi } from "vitest";
 import { StorageError, StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
-import { openLibsqlDatabase } from "../fixtures/storage-libsql-wrapper.js";
+import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 
 afterEach(() => {
 	vi.doUnmock("@libsql/client");
 	vi.unstubAllEnvs();
 	vi.restoreAllMocks();
+});
+
+test("libSQL bounds credential scanning for adversarial malformed URLs (#3857)", async () => {
+	const url = `&${'?"'.repeat(100_000)}&authToken=adversarial-secret`;
+	vi.doMock("@libsql/client", () => ({
+		createClient: () => {
+			throw new StorageError("adversarial-secret");
+		},
+	}));
+	const started = performance.now();
+	await assert.rejects(openLibsqlDatabase({ url }), (error: Error) => {
+		assert.ok(error instanceof StorageUnavailableError);
+		assert.equal(error.location.includes("adversarial-secret"), false);
+		return true;
+	});
+	// Linear scanning takes milliseconds; allow a second of headroom without accepting quadratic work.
+	assert.ok(performance.now() - started < 1000, "credential scanning exceeded 1 s");
 });
 
 test("libSQL passes caller credentials verbatim and redacts nested driver failures", async () => {
@@ -87,6 +104,20 @@ test("libSQL redacts auth tokens in malformed URLs without changing caller input
 		assert.ok(error instanceof StorageUnavailableError);
 		assert.equal(error.location, "not a url?authToken=[redacted]");
 		assert.equal(inspect(error, { depth: null }).includes("fixture-malformed-token"), false);
+		return true;
+	});
+});
+
+test("libSQL redacts question marks inside credential values (#3857)", async () => {
+	vi.doMock("@libsql/client", () => ({
+		createClient: () => {
+			throw new Error("fixture?secret");
+		},
+	}));
+	await assert.rejects(openLibsqlDatabase({ url: "file:/missing?authToken=fixture?secret" }), (error: Error) => {
+		assert.ok(error instanceof StorageUnavailableError);
+		assert.equal(error.location, "file:/missing?authToken=[redacted]");
+		assert.equal(inspect(error, { depth: null }).includes("?secret"), false);
 		return true;
 	});
 });

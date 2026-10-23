@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "vitest";
 import {
@@ -6,16 +7,18 @@ import {
 	describeUnregisteredPackages,
 	PUBLISH_WORKFLOW_PATH,
 	PUBLISHER_NPM_REGISTRY,
+	parseDeferredUntilRegistered,
 	parsePublisherNpmRegistry,
 	parseReleasePayloadPackages,
 	parseReleasePublisher,
 	RELEASE_PAYLOAD_PACKAGE_COUNT,
 	verifyReleasePackagesRegistered,
 } from "../../scripts/release-npm-preflight.js";
-import { moduleDir, readTextSync } from "../helpers/runtime.js";
+import { moduleDir, readJson, readTextSync } from "../helpers/runtime.js";
 
 const root = join(moduleDir(import.meta.url), "../..");
 const publishWorkflow = readTextSync(join(root, PUBLISH_WORKFLOW_PATH), "utf8");
+const NATIVE_PLATFORM_PACKAGE_PREFIX = "@bastani/atomic-natives-";
 
 const payload = (names: readonly string[]): string =>
 	`          packages=(${names.join(" ")})\n          for name in "\${packages[@]}"; do\n`;
@@ -49,8 +52,26 @@ describe("scripts/release-npm-preflight.ts", () => {
 			"@bastani/atomic-natives-win32-x64-msvc",
 			"@bastani/atomic-natives",
 			"@bastani/pi-ai",
+			"@bastani/atomic-storage-libsql",
 			"@bastani/atomic",
 		]);
+	});
+
+	test("the publish payload is the platform leaves plus every workspace package that is not private (#3857)", async () => {
+		// A package flagged public but missing from the publisher is never published, and `npm publish` refuses a
+		// private one the publisher names. Both only show up at the end of a release, so pin the pairing here.
+		const publishedWorkspaces: string[] = [];
+		for (const entry of readdirSync(join(root, "packages"), { withFileTypes: true })) {
+			if (!entry.isDirectory()) continue;
+			const manifestPath = join(root, "packages", entry.name, "package.json");
+			if (!existsSync(manifestPath)) continue;
+			const manifest = await readJson<{ name: string; private?: boolean }>(manifestPath);
+			if (manifest.private !== true) publishedWorkspaces.push(manifest.name);
+		}
+		const payloadRoots = parseReleasePayloadPackages(publishWorkflow).filter(
+			(name) => !name.startsWith(NATIVE_PLATFORM_PACKAGE_PREFIX),
+		);
+		assert.deepEqual([...payloadRoots].sort(), publishedWorkspaces.sort());
 	});
 
 	test("a payload array that is missing, doubled, empty, malformed, or duplicated is refused", () => {
@@ -84,6 +105,7 @@ describe("scripts/release-npm-preflight.ts", () => {
 		assert.deepEqual(parseReleasePublisher(publishes(["@bastani/atomic"], "http://127.0.0.1:4873/")), {
 			packages: ["@bastani/atomic"],
 			registry: "http://127.0.0.1:4873/",
+			deferredUntilRegistered: [],
 		});
 	});
 
@@ -183,7 +205,7 @@ describe("scripts/release-npm-preflight.ts", () => {
 				allowNew: false,
 			}),
 			(error: Error) => {
-				assert.match(error.message, /2 of 11 publish-payload packages are not registered on npm/u);
+				assert.match(error.message, /2 of 12 publish-payload packages are not registered on npm/u);
 				assert.match(error.message, /^ {2}- @bastani\/atomic-natives-win32-arm64-msvc$/mu);
 				assert.match(error.message, /^ {2}- @bastani\/atomic$/mu);
 				assert.match(error.message, /Re-run with --allow-new/u);
@@ -230,5 +252,53 @@ describe("scripts/release-npm-preflight.ts", () => {
 
 	test("one missing package reads as singular", () => {
 		assert.match(describeUnregisteredPackages(["@bastani/atomic"], 10), /1 of 10 publish-payload packages is not/u);
+	});
+
+	test("the libSQL adapter is published only once its npm name exists, so an unregistered name cannot break a release (#3857)", async () => {
+		const publisher = parseReleasePublisher(publishWorkflow);
+		assert.deepEqual(publisher.deferredUntilRegistered, ["@bastani/atomic-storage-libsql"]);
+
+		const registered = new Set(publisher.packages);
+		registered.delete("@bastani/atomic-storage-libsql");
+		const result = await verifyReleasePackagesRegistered({
+			packages: publisher.packages,
+			isRegistered: probeFrom(registered).isRegistered,
+			allowNew: false,
+			deferredUntilRegistered: publisher.deferredUntilRegistered,
+		});
+		assert.deepEqual(result.unregistered, []);
+		assert.deepEqual(result.deferred, ["@bastani/atomic-storage-libsql"]);
+	});
+
+	test("a deferred name that is registered publishes like any other package (#3857)", async () => {
+		const publisher = parseReleasePublisher(publishWorkflow);
+		const result = await verifyReleasePackagesRegistered({
+			packages: publisher.packages,
+			isRegistered: probeFrom(new Set(publisher.packages)).isRegistered,
+			allowNew: false,
+			deferredUntilRegistered: publisher.deferredUntilRegistered,
+		});
+		assert.deepEqual(result.deferred, []);
+		assert.deepEqual(result.unregistered, []);
+	});
+
+	test("deferral covers only the names the publisher lists (#3857)", async () => {
+		await assert.rejects(
+			verifyReleasePackagesRegistered({
+				packages: ["@bastani/atomic", "@bastani/atomic-storage-libsql"],
+				isRegistered: async () => false,
+				allowNew: false,
+				deferredUntilRegistered: ["@bastani/atomic-storage-libsql"],
+			}),
+			/1 of 2 publish-payload packages is not registered on npm:\n {2}- @bastani\/atomic\n/u,
+		);
+	});
+
+	test("a deferred name must be part of the publish payload, and only one deferral array is allowed (#3857)", () => {
+		const source = `${payload(["@bastani/atomic"])}          requires_registered_name=(@bastani/other)\n`;
+		assert.throws(() => parseDeferredUntilRegistered(source, ["@bastani/atomic"]), /not in the publish payload/u);
+		const twice = `          requires_registered_name=(@bastani/atomic)\n          requires_registered_name=(@bastani/atomic)\n`;
+		assert.throws(() => parseDeferredUntilRegistered(twice, ["@bastani/atomic"]), /at most one/u);
+		assert.deepEqual(parseDeferredUntilRegistered(payload(["@bastani/atomic"]), ["@bastani/atomic"]), []);
 	});
 });

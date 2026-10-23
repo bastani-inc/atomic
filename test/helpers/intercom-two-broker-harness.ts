@@ -10,6 +10,7 @@ import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storag
 import { loadStorageAdapter } from "../../packages/coding-agent/src/core/storage/provider.js";
 import { selectStorage } from "../../packages/coding-agent/src/core/storage/selection.js";
 import type { IntercomClient } from "../../packages/intercom/broker/client.js";
+import { queryIntercomBroker } from "../../packages/intercom/broker/control.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { getJitiCliPath } from "../../packages/intercom/broker/spawn.js";
 import type { Message, SessionInfo, SupervisorRegistration } from "../../packages/intercom/types.js";
@@ -157,6 +158,7 @@ export class TwoBrokerHarness {
 	private constructor(
 		readonly root: string,
 		nodes: Record<BrokerNode, NodeState>,
+		private readonly gatedStorageOpening?: BrokerNode,
 	) {
 		this.sharedDatabasePath = join(root, "shared.sqlite");
 		this.nodes = nodes;
@@ -179,7 +181,7 @@ export class TwoBrokerHarness {
 				broker: undefined,
 			};
 		}
-		const harness = new TwoBrokerHarness(root, nodes);
+		const harness = new TwoBrokerHarness(root, nodes, options.gatedStorageOpening);
 		try {
 			for (const node of BROKER_NODES) await harness.startBroker(node);
 			harness.advertised = await harness.probeMultiNodeRouting();
@@ -239,6 +241,19 @@ export class TwoBrokerHarness {
 			{ timeout: BROKER_READY_TIMEOUT_MS, interval: 20 },
 		);
 		await this.connect(node, `harness-keeper-${node}-${randomUUID().slice(0, 8)}`);
+		// A listening socket and a locally registered keeper do not imply shared routing is ready.
+		// Gated-startup scenarios deliberately exercise local clients before storage opens.
+		if (node !== this.gatedStorageOpening) {
+			await vi.waitFor(
+				async () => {
+					const status = await queryIntercomBroker(state.fixture.agentDir);
+					if (status.state !== "running" || status.report.multiNode.status !== "on") {
+						throw new Error(`broker ${node} has not opened multi-node routing`);
+					}
+				},
+				{ timeout: BROKER_READY_TIMEOUT_MS, interval: 20 },
+			);
+		}
 	}
 
 	/** SIGKILL is a crash (leases and claims stay behind); SIGTERM is an orderly shutdown. */

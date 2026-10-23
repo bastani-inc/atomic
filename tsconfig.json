@@ -14,6 +14,7 @@
         "allowImportingTsExtensions": true,
         "allowArbitraryExtensions": true,
         "noEmit": true,
+        "allowJs": true,
         "resolveJsonModule": true,
         "isolatedModules": true,
         "verbatimModuleSyntax": true,
@@ -41,6 +42,7 @@
     },
     "include": [
         "packages/coding-agent/src/**/*.d.ts",
+        "packages/storage-libsql/*.js",
         "packages/workflows/**/*",
         "test/**/*",
         "examples/**/*",

@@ -551,7 +551,7 @@ test("multi-node routing stays off when the host storage module cannot load or t
 	try {
 		const adapter = join(moduleDir(import.meta.url), "../fixtures/storage-adapter.ts");
 		const setting = { adapter, options: { path: join(agentDir, "db.sqlite") }, prefix: "mn_" };
-		// A standalone binary: `open-broker-state.ts` cannot import `@bastani/atomic/storage`.
+		// A host without the storage module: `open-broker-state.ts` cannot import `@bastani/atomic/storage`.
 		const missingHost = await resolveMultiNodeStartup(setting, agentDir, () =>
 			Promise.reject(new Error("Cannot find package '@bastani/atomic'")),
 		);

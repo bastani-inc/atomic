@@ -323,7 +323,9 @@ ${chalk.bold("Commands:")}
   ${APP_NAME} config [-l]               Open resource TUI (Tab switches global/project scope)
   ${APP_NAME} auth <command>            Print credentials or check provider readiness
   ${APP_NAME} mcp <command>             Configure MCP servers, check connections, and sign in
-  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/config/auth/mcp
+  ${APP_NAME} storage <command>         Show storage selections and connectivity, or join a shared database
+  ${APP_NAME} intercom <command>        Show or restart this machine's Intercom broker
+  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/config/auth/mcp/storage/intercom
 
 ${chalk.bold("Options:")}
   --provider <name>              Provider to search for --model (requires --model)

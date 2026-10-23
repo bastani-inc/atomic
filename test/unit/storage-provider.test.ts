@@ -45,7 +45,7 @@ test("provider shares a persistent database across domain prefixes until both st
 	}
 });
 
-test("module adapter resolves secrets verbatim and shares one connection between domain stores", async () => {
+test("module adapter resolves secrets and shares one connection between domain stores", async () => {
 	const root = makeTempDirectory("storage-adapter-");
 	const provider = new StorageProvider({ memory: () => new MemoryRunJournal(), sql: SqlRunJournal.open });
 	const path = join(root, "adapter.sqlite");
@@ -71,7 +71,7 @@ test("module adapter resolves secrets verbatim and shares one connection between
 			assert.equal(rows.length, 1);
 			assert.deepEqual(JSON.parse(String(rows[0]!.options)), {
 				...selection.options,
-				token: " secret with newline\n",
+				token: " secret with newline",
 				environment: process.env.PATH,
 				["__proto__"]: process.env.PATH,
 			});

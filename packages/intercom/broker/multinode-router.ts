@@ -1,7 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
-import { join } from "node:path";
 import { normalizeGroup } from "../group.js";
 import { isAgentRecipient, NON_AGENT_RECIPIENT_REFUSAL, TERMINAL_CHILD_ASK_REFUSAL } from "../recipient-purpose.js";
 import { DELIVERED_MESSAGE_TTL_MS, RECIPIENT_RECEIPT_TIMEOUT_MS } from "../retry-policy.js";
@@ -34,7 +32,6 @@ import {
 	type RestoringReservationLease,
 	reservationKeyFor,
 } from "./multinode-state-store.js";
-import { BROKER_STORAGE_ENV } from "./paths.js";
 import type { PendingQuestionIndex } from "./pending-question-index.js";
 import { UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
 import { RESTORING_RECIPIENT_HOLD_MS, restoringRecipientRetryReason } from "./restoring-recipients.js";
@@ -48,6 +45,8 @@ import {
 import type { BrokerOutboundFrame } from "./socket-writes.js";
 import type { SupervisorChannelCache } from "./supervisor-channel.js";
 import type { WakeUpBus, WakeUpEvent, WakeUpSubscription } from "./wake-up-bus.js";
+
+export { readSharedStorageSetting } from "./shared-storage-setting.js";
 
 /**
  * Multi-node S5 (specs/2026-10-19-intercom-multi-node.md §4–§8, §14): routes sends to sessions hosted by other
@@ -91,39 +90,6 @@ const MAX_SUPERSEDED_HOPS = 8;
 export const KNOWN_SESSION_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 const TARGET_GROUP_REFUSAL = "Target session is in a different intercom group";
 
-/**
- * The raw shared `storage` selection, read without the host package so the broker stays self-contained: the
- * selection the launching process handed this broker in `ATOMIC_STORAGE` (its `--storage`, `--storage-file` or own
- * `ATOMIC_STORAGE`), otherwise the top-level `storage` value of the agent directory's settings. Relative paths in
- * either resolve against the agent directory's parent, as for sessions and the journal. `undefined` leaves
- * multi-node routing off: no selection, a per-process selection that is not a JSON object (the launching process
- * validated it; settings are never consulted instead), and the selections the storage layer reads as in-memory
- * (`memory: true` without a path, or `path: ":memory:"`), which no other broker can share. `path: ""` is not one of
- * them: it selects the default storage file.
- */
-export function readSharedStorageSetting(
-	agentDir: string,
-	env: NodeJS.ProcessEnv = process.env,
-): Record<string, unknown> | undefined {
-	const processSelection = env[BROKER_STORAGE_ENV];
-	let parsed: unknown;
-	try {
-		parsed =
-			processSelection === undefined || processSelection.length === 0
-				? (JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")) as Record<string, unknown>).storage
-				: JSON.parse(processSelection);
-	} catch {
-		return undefined;
-	}
-	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
-	const selection = parsed as Record<string, unknown>;
-	if (selection.adapter === undefined) {
-		if (selection.memory === true && !selection.path) return undefined;
-		if (selection.path === ":memory:") return undefined;
-	}
-	return selection;
-}
-
 /** What the broker uses of `open-broker-state.ts`, which it loads lazily (replaceable in tests). */
 export interface BrokerStateOpener<Source> {
 	resolveBrokerStateSource(
@@ -139,9 +105,9 @@ export type MultiNodeStartup<Source> =
 
 /**
  * Decide whether a top-level `storage` value gives this broker a shared database. Multi-node routing is off, and
- * Intercom behaves exactly as a single-node broker, unless it does: also when the host storage module cannot be
- * loaded (a standalone binary) or the selection cannot be resolved to a database. Only a selection that resolved to a
- * database whose connection then fails makes cross-node sends fail explicitly.
+ * Intercom behaves exactly as a single-node broker, unless it does: also when the host storage module or the adapter
+ * cannot be loaded, or the selection cannot be resolved to a database. Only a selection that resolved to a database
+ * whose connection then fails makes cross-node sends fail explicitly.
  */
 export async function resolveMultiNodeStartup<Source>(
 	setting: Record<string, unknown>,
@@ -485,6 +451,33 @@ export class MultiNodeRouter {
 					clearTimeout(bound);
 					this.report(error);
 					resolve(new Map());
+				},
+			);
+		});
+	}
+
+	/**
+	 * The host names of the other brokers whose membership lease is live, for status reports. `undefined` when the
+	 * database fails or does not answer within `REMOTE_SESSIONS_BOUND_MS`.
+	 */
+	peerBrokers(): Promise<string[] | undefined> {
+		if (this.closed) return Promise.resolve(undefined);
+		return new Promise((resolve) => {
+			const bound = setTimeout(() => resolve(undefined), REMOTE_SESSIONS_BOUND_MS);
+			bound.unref?.();
+			void this.state.leases.listLive("broker", BROKER_LEASE_STALE_AFTER_MS).then(
+				(live) => {
+					clearTimeout(bound);
+					resolve(
+						live.flatMap((lease) =>
+							lease.subject.kind === "broker" && lease.holderId !== this.brokerId ? [lease.subject.nodeId] : [],
+						),
+					);
+				},
+				(error: Error) => {
+					clearTimeout(bound);
+					this.report(error);
+					resolve(undefined);
 				},
 			);
 		});

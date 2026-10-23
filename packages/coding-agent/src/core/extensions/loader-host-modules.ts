@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { getPackageDir, isBunBinary } from "../../config.js";
+import { getPackageDir, isBunBinary, isBundledBuild } from "../../config.js";
 import { createModuleRequire } from "../../utils/module-require.ts";
 
 let virtualModules: Record<string, object> | null = null;
@@ -143,4 +143,15 @@ export async function getWorkflowHostModules(): Promise<
 		"@bastani/pi-ai": piAi,
 		"@bastani/pi-ai/providers/all": providers,
 	};
+}
+
+/**
+ * Live host modules for storage adapter modules. Outside single-file builds `@bastani/atomic` resolves lazily through
+ * the extension aliases instead, so a process that needs only storage, such as the Intercom broker, never evaluates
+ * the whole host package.
+ */
+export async function getStorageAdapterHostModules(): Promise<Record<string, object>> {
+	const storage = await import("../storage/index.js");
+	if (!(isBunBinary || isBundledBuild)) return { "@bastani/atomic/storage": storage };
+	return { "@bastani/atomic": await import("../../index.ts"), "@bastani/atomic/storage": storage };
 }

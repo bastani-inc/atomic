@@ -90,6 +90,23 @@ Once the complete credential reaches stdout, the command has succeeded. If the s
 
 `auth check --credentials --json` may instead write a credential-free JSON status object on a non-zero check result. See [Security](/security#credential-export) before wiring this into a script.
 
+## Storage and Intercom Commands
+
+```bash
+atomic storage status [--json]                                       # Selection, source, adapter and connection per domain
+atomic storage join <url> [--token-file <path>] [--prefix <prefix>]  # Use a shared libSQL / Turso database
+atomic intercom status                                               # This machine's Intercom broker and multi-node state
+atomic intercom restart                                              # Replace the broker so it reads the current selection
+```
+
+`atomic storage status` reports, for sessions, workflow runs, and Intercom, the selected storage, where the selection comes from (an environment variable, project or global settings, or the default) and the outranked selections, whether the adapter loads, and whether the database answers a `SELECT 1`. It also shows the running Intercom broker: whether it uses the current selection, its multi-node routing state, and the other brokers live in the shared database. It creates and changes nothing, and exits `1` when a selection is invalid, an adapter cannot load, or a database does not answer.
+
+`atomic storage join` checks the token and the connection with `@bastani/atomic-storage-libsql`, stores the trimmed token in a new `storage-token.<id>` file in the agent directory with mode 600, writes only the global `storage` setting, and lists the environment variables and settings that override it. Previous token files are never overwritten; a settings-write failure removes only the new token. It creates no tables. `--token-file` is required except for absolute `file:` URLs; relative file URLs and URLs that contain the token itself (a user name, a password, or an `authToken` parameter) are refused. When the package is not installed, it prints the install command. See [Storage](/storage#joining-a-machine-to-a-shared-database).
+
+`atomic intercom restart` asks the broker to shut down (an older broker gets SIGTERM), waits for it to exit, and then for a reconnecting session to start a new broker, whose state it prints. Without connected sessions, the next session that uses Intercom starts one.
+
+See [Joining a machine to a shared database](/storage#joining-a-machine-to-a-shared-database) and [Running Intercom across machines](/intercom/operations#running-intercom-across-machines).
+
 ## Modes
 
 | Flag | Description |

@@ -93,6 +93,28 @@ export interface GroupSummary {
 	member: boolean;
 }
 
+/** A broker's multi-node routing state, as `broker_status` reports it. */
+export interface BrokerMultiNodeStatus {
+	status: "off" | "starting" | "on" | "unavailable";
+	/** Why routing is off or unavailable. */
+	reason?: string;
+	/** The shared selection's adapter module, or `sqlite` for a `path` selection. */
+	adapter?: string;
+	prefix?: string;
+	/** Host names of the other brokers whose membership lease is live, while routing is on. */
+	peers?: string[];
+}
+
+/** What a broker reports about itself; read before registering by `atomic intercom restart` and `atomic storage status`. */
+export interface BrokerStatusReport {
+	pid: number;
+	/** Sessions connected to this broker. */
+	sessions: number;
+	/** The shared storage selection the broker read, as a digest of its JSON, and where it read it; absent without one. */
+	storage?: { digest: string; source: "env" | "settings" };
+	multiNode: BrokerMultiNodeStatus;
+}
+
 export interface Message {
   id: string;
   timestamp: number;
@@ -226,7 +248,11 @@ export type ClientMessage =
       /** Legacy single-group membership; accepted alongside `groups` for compatibility. */
       group?: string;
       requestId?: string;
-    };
+    }
+	/** Allowed before `register`: the broker's own status. */
+	| { type: "broker_status"; requestId: string }
+	/** Allowed before `register`: shut the broker down; its sessions reconnect to a new broker. */
+	| { type: "shutdown"; requestId: string };
 
 export type BrokerMessage =
 	| { type: "health"; requestId: string; instanceId: string }
@@ -238,6 +264,8 @@ export type BrokerMessage =
 			acknowledgesReceipt?: true;
 			/** This broker acknowledges a `register_pending_stage_route` that carries a `requestId`; absent on older brokers. */
 			acknowledgesPendingStageRoutes?: true;
+			/** This broker answers `broker_status`; absent on older brokers, which drop a client that sends it. */
+			brokerStatus?: true;
 	  }
   | { type: "registration_failed"; reason: string; code?: LiveWorkflowStageRouteRefusalCode }
   | { type: "question_target"; messageId: string; attemptId: string; sessionId: string }
@@ -274,4 +302,6 @@ export type BrokerMessage =
 	/** #3760: the send is held for a subagent that is being restored; wait up to `timeoutMs` for its outcome. */
 	| { type: "send_held"; messageId: string; attemptId?: string; timeoutMs: number }
 	| { type: "restoring_recipient_ack"; requestId: string; error?: string }
-	| { type: "delivery_failed"; messageId: string; reason: string; reasonCode?: "message_id_conflict" | "session_not_found"; attemptId?: string };
+	| { type: "delivery_failed"; messageId: string; reason: string; reasonCode?: "message_id_conflict" | "session_not_found"; attemptId?: string }
+	| { type: "broker_status"; requestId: string; report: BrokerStatusReport }
+	| { type: "shutdown_ack"; requestId: string };

@@ -47,6 +47,22 @@ describe("parseArgs", () => {
 			}
 		});
 
+		test("lists the storage and intercom commands (#3857)", () => {
+			const output = vi.spyOn(console, "log").mockImplementation(() => {});
+			try {
+				printHelp();
+				const help = output.mock.calls.map(([text]) => String(text)).join("\n");
+				assert.match(
+					help,
+					/storage <command>\s+Show storage selections and connectivity, or join a shared database/,
+				);
+				assert.match(help, /intercom <command>\s+Show or restart this machine's Intercom broker/);
+				assert.match(help, /<command> --help\s+Show help for .*\/storage\/intercom/);
+			} finally {
+				output.mockRestore();
+			}
+		});
+
 		test("parses --help flag", () => {
 			const result = parseArgs(["--help"]);
 			expect(result.help).toBe(true);

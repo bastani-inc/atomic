@@ -8,7 +8,13 @@ import { runCommand, runCommandCapture, runCommandSync } from "./package-manager
 import { NETWORK_TIMEOUT_MS } from "./package-manager-constants.ts";
 import { isOfflineModeEnabled } from "./package-manager-env.ts";
 import { getNpmInstallRoot } from "./package-manager-paths.ts";
-import type { InstalledSourceScope, NpmSource, PackageManagerContext, SourceScope } from "./package-manager-types.ts";
+import type {
+	InstalledSourceScope,
+	NpmSource,
+	PackageLocationContext,
+	PackageManagerContext,
+	SourceScope,
+} from "./package-manager-types.ts";
 
 export function getNpmCommand(context: PackageManagerContext): { command: string; args: string[] } {
 	const configuredCommand = context.settingsManager.getNpmCommand();
@@ -163,7 +169,7 @@ export function ensureGitIgnore(dir: string): void {
 }
 
 export function getManagedNpmInstallPath(
-	context: PackageManagerContext,
+	context: PackageLocationContext,
 	source: NpmSource,
 	scope: SourceScope,
 ): string {

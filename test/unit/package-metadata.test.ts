@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { subset as semverSubset } from "semver";
 import { globSync } from "tinyglobby";
 import { describe, test } from "vitest";
@@ -31,6 +31,7 @@ interface PackageDependencySections {
 interface WorkspacePackageJson extends PackageDependencySections {
 	version: string;
 	private?: boolean;
+	repository?: { type?: string; url?: string; directory?: string };
 }
 
 interface WorkspacePackage {
@@ -83,7 +84,12 @@ const ATOMIC_RUNTIME_DEPENDENCIES: DependencyMap = {
 	...atomicPackageJson.optionalDependencies,
 };
 
-const PUBLISHABLE_WORKSPACE_PACKAGES = new Set(["@bastani/atomic", "@bastani/atomic-natives", "@bastani/pi-ai"]);
+const PUBLISHABLE_WORKSPACE_PACKAGES = new Set([
+	"@bastani/atomic",
+	"@bastani/atomic-natives",
+	"@bastani/atomic-storage-libsql",
+	"@bastani/pi-ai",
+]);
 
 function markdownFiles(dir: string): string[] {
 	return readdirSync(dir)
@@ -133,11 +139,36 @@ describe("package metadata", () => {
 		assert.equal(Object.hasOwn(atomicPackageJson, "private"), false);
 
 		for (const { manifestPath, packageJson } of packages) {
-			if (PUBLISHABLE_WORKSPACE_PACKAGES.has(packageJson.name)) continue;
+			if (PUBLISHABLE_WORKSPACE_PACKAGES.has(packageJson.name)) {
+				assert.notEqual(
+					packageJson.private,
+					true,
+					`${manifestPath} is published by publish.yml and cannot be private`,
+				);
+				continue;
+			}
 			assert.equal(
 				packageJson.private,
 				true,
 				`${manifestPath} must remain private because it is bundled into @bastani/atomic`,
+			);
+		}
+	});
+
+	test("published workspace packages name this repository, which npm provenance publishing requires (#3857)", async () => {
+		const published = (await workspacePackages()).filter(({ packageJson }) =>
+			PUBLISHABLE_WORKSPACE_PACKAGES.has(packageJson.name),
+		);
+		assert.equal(published.length, PUBLISHABLE_WORKSPACE_PACKAGES.size);
+		for (const { manifestPath, packageJson } of published) {
+			assert.deepEqual(
+				packageJson.repository,
+				{
+					type: "git",
+					url: "git+https://github.com/bastani-inc/atomic.git",
+					directory: dirname(manifestPath).replaceAll("\\", "/"),
+				},
+				`${manifestPath} must point at its directory in the repository that publishes it`,
 			);
 		}
 	});

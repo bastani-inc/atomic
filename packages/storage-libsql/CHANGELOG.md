@@ -1,0 +1,12 @@
+# Changelog
+
+## [Unreleased]
+
+### Added
+
+- First-party libSQL / Turso storage adapter for sessions, workflow journals, and Intercom, published to npm as `@bastani/atomic-storage-libsql` with each Atomic release. Install it with `atomic install npm:@bastani/atomic-storage-libsql` and select it with `"storage": { "adapter": "@bastani/atomic-storage-libsql", "options": { "url": "libsql://<db>.turso.io" }, "secrets": { "authToken": { "file": "..." } } }` ([#3857](https://github.com/bastani-inc/atomic/issues/3857))
+
+### Fixed
+
+- Credential redaction scans malformed URLs in linear time, preventing long adversarial URLs from stalling database setup ([#3857](https://github.com/bastani-inc/atomic/issues/3857))
+- The installed SDK entry now works in plain Node without a TypeScript loader. The package ships ESM JavaScript and TypeScript declarations, with no build step ([#3857](https://github.com/bastani-inc/atomic/issues/3857))

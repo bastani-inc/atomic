@@ -12,7 +12,7 @@ const output = join(tmpdir(), `atomic-cli-oauth-${process.pid}.cjs`);
 afterEach(() => rmSync(output, { force: true }));
 
 describe("standalone Bun OAuth registration", () => {
-	it("statically bundles every interactive OAuth adapter before CLI startup", async () => {
+	it("statically bundles every interactive OAuth adapter before CLI startup (#3857)", async () => {
 		const build = spawnSync(
 			"bun",
 			["build", entrypoint, "--target=bun", "--format=cjs", "--external", "mupdf", `--outfile=${output}`],
@@ -25,7 +25,7 @@ describe("standalone Bun OAuth registration", () => {
 		}
 		const source = readFileSync(entrypoint, "utf8");
 		const registerAt = source.indexOf("registerBunOAuthFlows();");
-		const startupAt = source.indexOf('import("./register-bedrock.ts")');
+		const startupAt = source.indexOf('import("./register-bedrock.js")');
 		expect(registerAt).toBeGreaterThanOrEqual(0);
 		expect(startupAt).toBeGreaterThan(registerAt);
 	});

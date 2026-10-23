@@ -5,6 +5,7 @@ import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 import { SettingsManager } from "./settings-manager-core.ts";
 import { settingsInternals } from "./settings-manager-internals.ts";
 import { resolveDefaultTools } from "./settings-merge.js";
+import type { Settings } from "./settings-schema.ts";
 import type {
 	CompactionModelOverride,
 	CompactionSettings,
@@ -63,6 +64,8 @@ interface SettingsManagerBasicAccessors {
 	setCacheWarmingMode(mode: CacheWarmingMode): void;
 	getLastChangelogVersion(): string | undefined;
 	setLastChangelogVersion(version: string): void;
+	/** Replace the global top-level `storage` selection; other settings keep their values. */
+	setStorage(storage: Settings["storage"]): void;
 	getFirstRunOnboardingStartedVersion(): string | undefined;
 	setFirstRunOnboardingStartedVersion(version: string): void;
 	getOnboardedVersion(): string | undefined;
@@ -167,6 +170,13 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		const state = settingsInternals(this);
 		state.globalSettings.lastChangelogVersion = version;
 		state.markModified("lastChangelogVersion");
+		state.save();
+	},
+
+	setStorage(storage) {
+		const state = settingsInternals(this);
+		state.globalSettings.storage = storage;
+		state.markModified("storage");
 		state.save();
 	},
 

@@ -1,7 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
-import { createJiti } from "jiti";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createSessionCwdMatcher } from "../../utils/canonical-path.ts";
 import type { SqliteDatabase, SqliteValue, StorageDescriptor } from "./database.js";
 import {
@@ -98,12 +97,35 @@ export function storageSelectionKey(selection: StorageSelection, agentDir?: stri
 	return JSON.stringify(selection);
 }
 
+/**
+ * Loads an adapter module the way the extension loader loads extensions: `@bastani/atomic/storage` (and
+ * `@bastani/atomic`) resolve to this host's own modules, so adapters need no installed copy of Atomic and share its
+ * error classes. A package name selects an adapter listed by an installed Atomic package; other specifiers, and
+ * package names no installed package lists, resolve from the agent directory.
+ */
 export async function loadStorageAdapter(module: string, context: StorageOpenContext): Promise<StorageAdapterModule> {
 	try {
-		const loader = createJiti(pathToFileURL(join(context.agentDir, "storage-adapter.js")).href, {
-			interopDefault: true,
-		});
-		const adapter = await loader.import<StorageAdapterModule>(module, { default: true });
+		const [{ createHostModuleJiti }, { getStorageAdapterHostModules }, { resolvePackageStorageAdapter }] =
+			await Promise.all([
+				import("../extensions/loader-virtual-modules.js"),
+				import("../extensions/loader-host-modules.js"),
+				import("../package-manager-storage-adapters.js"),
+			]);
+		const loader = await createHostModuleJiti(
+			pathToFileURL(join(context.agentDir, "storage-adapter.js")).href,
+			await getStorageAdapterHostModules(),
+			// JS adapters must also pass through virtual host modules, not native-import a second host copy.
+			{ interopDefault: true, tryNative: false },
+		);
+		const specifier = (await resolvePackageStorageAdapter(module, context.agentDir)) ?? module;
+		const location = loader.esmResolve(specifier);
+		const filename = location.startsWith("file:") ? fileURLToPath(location) : location;
+		// jiti's async JS fast path uses native import even with tryNative:false. Force only JS entrypoints
+		// through its transform so their host imports use the live virtual modules, just like TS adapters.
+		const loaded = /\.[cm]?js$/.test(filename)
+			? await loader.evalModule(await readFile(filename, "utf8"), { filename, async: true, forceTranspile: true })
+			: await loader.import<StorageAdapterModule>(specifier, { default: true });
+		const adapter = ((loaded as { default?: StorageAdapterModule })?.default ?? loaded) as StorageAdapterModule;
 		if (
 			adapter === null ||
 			typeof adapter !== "object" ||
@@ -133,14 +155,16 @@ export async function resolveAdapterOptions(
 			if (environment === undefined) throw new StorageConfigError("sdk", `secrets.${name}`, "secret-env-missing");
 			value = environment;
 		} else {
+			let text: string;
 			try {
-				value = await readFile(isAbsolute(ref.file) ? ref.file : join(dirname(context.agentDir), ref.file), "utf8");
+				text = await readFile(isAbsolute(ref.file) ? ref.file : join(dirname(context.agentDir), ref.file), "utf8");
 			} catch (cause) {
 				throw new StorageUnavailableError(
 					{ adapter: selection.module, location: ref.file },
 					cause as StorageFailureCause,
 				);
 			}
+			value = text.endsWith("\r\n") ? text.slice(0, -2) : text.endsWith("\n") ? text.slice(0, -1) : text;
 		}
 		Object.defineProperty(options, name, { value, enumerable: true, writable: true, configurable: true });
 	}

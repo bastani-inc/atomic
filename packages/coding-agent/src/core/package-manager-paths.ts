@@ -3,7 +3,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { APP_NAME, CONFIG_DIR_NAME, getAgentDir, getAgentDirs, getProjectConfigDirs } from "../config.js";
 import { resolvePath } from "../utils/paths.ts";
-import type { PackageManagerContext, SourceScope } from "./package-manager-types.ts";
+import type { PackageLocationContext, SourceScope } from "./package-manager-types.ts";
 
 export function getHomeDir(): string {
 	return process.env.HOME || homedir();
@@ -17,7 +17,7 @@ export function getTemporaryDir(prefix: string, suffix?: string, ref?: string): 
 	return join(tmpdir(), `${APP_NAME}-extensions`, prefix, hash, suffix ?? "");
 }
 
-export function getBaseDirsForScope(context: PackageManagerContext, scope: SourceScope): string[] {
+export function getBaseDirsForScope(context: PackageLocationContext, scope: SourceScope): string[] {
 	if (scope === "project") {
 		return getProjectConfigDirs(context.cwd);
 	}
@@ -27,11 +27,11 @@ export function getBaseDirsForScope(context: PackageManagerContext, scope: Sourc
 	return [context.cwd];
 }
 
-export function getBaseDirForScope(context: PackageManagerContext, scope: SourceScope): string {
+export function getBaseDirForScope(context: PackageLocationContext, scope: SourceScope): string {
 	return getBaseDirsForScope(context, scope)[0]!;
 }
 
-export function resolveManagerPath(context: PackageManagerContext, input: string): string {
+export function resolveManagerPath(context: PackageLocationContext, input: string): string {
 	return resolvePath(input, context.cwd, { homeDir: getHomeDir(), trim: true });
 }
 
@@ -39,7 +39,7 @@ export function resolvePathFromBase(input: string, baseDir: string): string {
 	return resolvePath(input, baseDir, { homeDir: getHomeDir(), trim: true });
 }
 
-export function getNpmInstallRoot(context: PackageManagerContext, scope: SourceScope, temporary: boolean): string {
+export function getNpmInstallRoot(context: PackageLocationContext, scope: SourceScope, temporary: boolean): string {
 	if (temporary) {
 		return getTemporaryDir("npm");
 	}
@@ -50,7 +50,7 @@ export function getNpmInstallRoot(context: PackageManagerContext, scope: SourceS
 }
 
 export function getGitInstallPath(
-	context: PackageManagerContext,
+	context: PackageLocationContext,
 	source: { host: string; path: string; ref?: string },
 	scope: SourceScope,
 ): string {
@@ -64,7 +64,7 @@ export function getGitInstallPath(
 	return join(context.agentDir, "git", source.host, source.path);
 }
 
-export function getGitInstallRoot(context: PackageManagerContext, scope: SourceScope): string | undefined {
+export function getGitInstallRoot(context: PackageLocationContext, scope: SourceScope): string | undefined {
 	if (scope === "temporary") {
 		return undefined;
 	}
