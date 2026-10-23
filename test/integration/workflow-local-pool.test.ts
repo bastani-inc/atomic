@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import type { ForkOptions } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test } from "vitest";
+import { beforeAll, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
@@ -9,10 +10,35 @@ import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { fileExists, makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const LOCAL_WORKER_PROCESS_TIMEOUT_MS = 120_000;
 const STALLED_WORKER_RECOVERY_TIMEOUT_MS = 30_000;
+
+// Keep the real coordinator, fork and IPC, but run the shipped worker rather than
+// cold-transpiling its entire source graph through jiti on every replacement.
+vi.mock("node:child_process", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:child_process")>();
+	const { fileURLToPath } = await import("node:url");
+	const sourceEntry = fileURLToPath(
+		new URL("../../packages/workflows/src/workers/local-worker-entry.mjs", import.meta.url),
+	);
+	const packagedEntry = fileURLToPath(
+		new URL("../../packages/coding-agent/dist/builtin/workflows/src/local-worker-entry.mjs", import.meta.url),
+	);
+	return {
+		...actual,
+		fork: (modulePath: string | URL, args: readonly string[], options: ForkOptions) =>
+			actual.fork(modulePath === sourceEntry ? packagedEntry : modulePath, args, options),
+	};
+});
+
+beforeAll(async () => {
+	const workerEntry = fileURLToPath(
+		new URL("../../packages/coding-agent/dist/builtin/workflows/src/local-worker-entry.mjs", import.meta.url),
+	);
+	assert.ok(await fileExists(workerEntry), "packaged worker missing; run npm run build first");
+});
 
 test.each([
 	{ crash: false, during: false },
