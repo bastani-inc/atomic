@@ -7,6 +7,7 @@ import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { getIdentityHeaders } from "../utils/identity.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
+import { admitOpenAIRequests, getFetchAdmission } from "../utils/request-admission.js";
 import { getDeclaredTools, resolveTranscript, resolveTranscriptTools } from "../utils/transcript.ts";
 import { type AzureEndpointOptions, resolveAzureConfig, resolveDeploymentName } from "./azure-openai-config.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
@@ -19,7 +20,14 @@ import {
 } from "./openai-responses-shared.ts";
 import { buildBaseOptions, resolveSamplingParams } from "./simple-options.ts";
 
-const AZURE_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-api", "openai-codex", "opencode", "azure", "azure-openai-responses"]);
+const AZURE_TOOL_CALL_PROVIDERS = new Set([
+	"openai",
+	"openai-api",
+	"openai-codex",
+	"opencode",
+	"azure",
+	"azure-openai-responses",
+]);
 // OpenAI Responses rejects max_output_tokens below 16: https://github.com/earendil-works/pi/issues/6265
 const OPENAI_RESPONSES_MIN_OUTPUT_TOKENS = 16;
 
@@ -166,14 +174,17 @@ function createClient(model: Model<"azure-openai-responses">, apiKey: string, op
 
 	const { baseUrl, apiVersion } = resolveAzureConfig(model, options);
 
-	return new AzureOpenAI({
-		apiKey,
-		apiVersion,
-		dangerouslyAllowBrowser: true,
-		fetch: options?.fetch,
-		defaultHeaders: headers,
-		baseURL: baseUrl,
-	});
+	return admitOpenAIRequests(
+		new AzureOpenAI({
+			apiKey,
+			apiVersion,
+			dangerouslyAllowBrowser: true,
+			fetch: getFetchAdmission(options?.fetch)?.fetch ?? options?.fetch,
+			defaultHeaders: headers,
+			baseURL: baseUrl,
+		}),
+		options?.fetch,
+	);
 }
 
 function buildParams(

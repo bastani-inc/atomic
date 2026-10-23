@@ -56,6 +56,7 @@ export interface WorkflowStatusActiveStage {
 	readonly stageId: string;
 	readonly name: string;
 	readonly status: StageStatus;
+	readonly rateLimits?: StageSnapshot["rateLimits"];
 }
 
 /** One stage (or run-level) pending human-input descriptor. */
@@ -273,6 +274,7 @@ export function summarizeRunSnapshot(
 			stageId: stage.id,
 			name: stage.name,
 			status: stage.status,
+			...(stage.rateLimits !== undefined ? { rateLimits: stage.rateLimits } : {}),
 		})),
 		pendingStages: pendingWorkflowStageStatuses(run, options?.owningRunStatus, options?.resolveBoundarySegments),
 		deliveryStates: stickyStageDeliveryStatuses(options?.allRuns ?? [run], run.id, options?.durableBackend),

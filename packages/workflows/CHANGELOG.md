@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Workflow model chains now share provider-account cooldowns after rate limits, honor `Retry-After`, and wait for the earliest eligible account instead of exhausting a cooling chain. Retries remain bounded, including retries within each session; waits can be paused or cancelled, and workflow status and task results report provider counts and cooldown deadlines. Retrying a follow-up on the same model preserves its conversation history. Follow-ups keep each model's retry allowance across account switches and can return to an earlier account when its cooldown expires ([#3864](https://github.com/bastani-inc/atomic/issues/3864)).
 - Workflow stages now reload resources up to four at a time per Atomic process instead of one at a time, so a slow reload no longer blocks every other stage at startup. Cancelling a stage waiting for a reload slot removes it from the queue immediately; an active reload retains its slot until it finishes ([#3861](https://github.com/bastani-inc/atomic/issues/3861)).
 - Standalone `run()` now owns Intercom routes for eligible workflow stages until the run settles, so stages can use Intercom without an interactive workflow host. An installed SDK reuses an Intercom owner the extension bundle already registered for the store instead of starting a second one. When a route-update acknowledgement times out, the update retries without disconnecting a healthy owner ([#3863](https://github.com/bastani-inc/atomic/issues/3863))
 

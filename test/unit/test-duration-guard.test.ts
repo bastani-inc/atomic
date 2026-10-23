@@ -275,7 +275,8 @@ test("repository declarations resolve to their real budgets", async () => {
 
 test("the real sequential workflow reload declaration keeps its explicit timeout budget", () => {
 	const file = "test/unit/workflow-run-state-real-reload.test.ts";
-	const name = "user-global agent launch keeps its real publish watcher through resource and installed full reload";
+	const name =
+		"user-global agent launch keeps its real publish watcher through resource and installed full reload (#3864)";
 	const scored = evaluateDurations(
 		report([{ file, tests: [{ title: name, status: "passed", duration: 21_611 }] }]),
 		30_000,

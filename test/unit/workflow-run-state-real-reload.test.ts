@@ -549,7 +549,7 @@ test(
 );
 
 test.sequential(
-	"user-global agent launch keeps its real publish watcher through resource and installed full reload",
+	"user-global agent launch keeps its real publish watcher through resource and installed full reload (#3864)",
 	async () => {
 		const root = mkdtempSync(join(tmpdir(), "atomic-global-reload-"));
 		const agentDir = join(root, "agent");

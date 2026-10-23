@@ -101,6 +101,7 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 				...(stageMeta.thinkingLevel !== undefined ? { thinkingLevel: stageMeta.thinkingLevel } : {}),
 				...(stageMeta.attemptedModels !== undefined ? { attemptedModels: stageMeta.attemptedModels } : {}),
 				...(stageMeta.modelAttempts !== undefined ? { modelAttempts: stageMeta.modelAttempts } : {}),
+				...(stageMeta.rateLimits !== undefined ? { rateLimits: stageMeta.rateLimits } : {}),
 				...(stageMeta.routerSelection !== undefined ? { routerSelection: stageMeta.routerSelection } : {}),
 				...(stageMeta.warnings !== undefined ? { warnings: stageMeta.warnings } : {}),
 			};

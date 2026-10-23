@@ -1,4 +1,4 @@
-import Anthropic, { type ClientOptions } from "@anthropic-ai/sdk";
+import Anthropic, { type ClientOptions, type Middleware } from "@anthropic-ai/sdk";
 import type {
 	BetaTool,
 	BetaCacheControlEphemeral as CacheControlEphemeral,
@@ -35,6 +35,7 @@ import type {
 	ToolResultMessage,
 	Usage,
 } from "../types.ts";
+import { raceWithAbortSignal } from "../utils/abort.js";
 import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { assertSupportedDocumentMimeType } from "../utils/document-input.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
@@ -48,6 +49,7 @@ import {
 } from "../utils/openrouter-cost.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
+import { getFetchAdmission } from "../utils/request-admission.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
@@ -57,7 +59,6 @@ import {
 	resolveTranscript,
 	type TranscriptContext,
 } from "../utils/transcript.ts";
-
 import {
 	ANTHROPIC_STRICT_JSON_SCHEMA_PROFILE,
 	getJsonSchemaToolParameters,
@@ -555,6 +556,32 @@ function assertRequestAuth(provider: string, apiKey: string | undefined, headers
  * also resolve and exchange SDK credentials behind Atomic's auth resolver.
  */
 class AtomicAnthropic extends Anthropic {
+	private readonly admission: ReturnType<typeof getFetchAdmission>;
+
+	constructor(options: ClientOptions) {
+		const admission = getFetchAdmission(options.fetch);
+		const tokenAdmission: Middleware = async (request, next, context) => {
+			if (!context.options) await admission?.beforeRequest(request.signal ?? undefined);
+			return next(request);
+		};
+		super({
+			...options,
+			fetch: admission?.fetch ?? options.fetch,
+			middleware: admission ? [tokenAdmission, ...(options.middleware ?? [])] : options.middleware,
+		});
+		this.admission = admission;
+	}
+
+	protected override authHeaders(...args: Parameters<Anthropic["authHeaders"]>): ReturnType<Anthropic["authHeaders"]> {
+		const result = super.authHeaders(...args);
+		const signal = args[0].signal;
+		return signal ? raceWithAbortSignal(result, signal) : result;
+	}
+
+	protected override async prepareRequest(...args: Parameters<Anthropic["prepareRequest"]>): Promise<void> {
+		await super.prepareRequest(...args);
+		await this.admission?.beforeRequest(args[0].signal ?? undefined);
+	}
 	protected override _shouldResolveDefaultCredentials(): boolean {
 		return false;
 	}
@@ -1412,7 +1439,7 @@ function createClient(
 			});
 			federationClient = { key, fetch, client };
 		}
-		return { client: federationClient.client.withOptions({ defaultHeaders }), isOAuthToken: false };
+		return { client: federationClient.client.withOptions({ defaultHeaders, fetch }), isOAuthToken: false };
 	}
 
 	const client = new AtomicAnthropic({

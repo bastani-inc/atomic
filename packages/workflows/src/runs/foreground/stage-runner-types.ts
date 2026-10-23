@@ -127,6 +127,7 @@ export interface StageModelFallbackMeta {
 	readonly routerSelection?: import("@bastani/atomic").ModelRouterOutput;
 	readonly attemptedModels?: readonly string[];
 	readonly modelAttempts?: readonly WorkflowModelAttempt[];
+	readonly rateLimits?: readonly import("../../shared/types.js").WorkflowProviderRateLimit[];
 	readonly warnings?: readonly string[];
 }
 

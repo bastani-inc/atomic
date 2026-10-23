@@ -436,6 +436,8 @@ function getAliases(): Record<string, string> {
 	const piAiOpenRouterEntry = resolveWorkspaceOrImport("ai/dist/providers/openrouter.js", "@bastani/pi-ai");
 	const piAiProviderEnvEntry = resolveWorkspaceOrImport("ai/dist/utils/provider-env.js", "@bastani/pi-ai");
 	const piAiRetryEntry = resolveWorkspaceOrImport("ai/dist/utils/retry.js", "@bastani/pi-ai");
+	const piAiRequestAdmissionEntry = resolveWorkspaceOrImport("ai/dist/utils/request-admission.js", "@bastani/pi-ai");
+	const piAiRetryHintsEntry = resolveWorkspaceOrImport("ai/dist/utils/retry-hints.js", "@bastani/pi-ai");
 	const piAiCompatSchemaEntry = resolveWorkspaceOrImport("ai/dist/providers/compat-schema.js", "@bastani/pi-ai");
 	const piAiModelSchemaEntry = resolveWorkspaceOrImport("ai/dist/providers/model-schema.js", "@bastani/pi-ai");
 	const piAiOauthPageEntry = resolveWorkspaceOrImport("ai/dist/utils/oauth-page.js", "@bastani/pi-ai");
@@ -464,6 +466,8 @@ function getAliases(): Record<string, string> {
 		"@bastani/pi-ai/providers/model-schema": piAiModelSchemaEntry,
 		"@bastani/pi-ai/utils/provider-env": piAiProviderEnvEntry,
 		"@bastani/pi-ai/utils/oauth-page": piAiOauthPageEntry,
+		"@bastani/pi-ai/utils/request-admission": piAiRequestAdmissionEntry,
+		"@bastani/pi-ai/utils/retry-hints": piAiRetryHintsEntry,
 		"@bastani/pi-ai/utils/retry": piAiRetryEntry,
 		"@bastani/pi-ai/compat": piAiEntry,
 		"@bastani/pi-ai/api/cloudflare-gateway-binding": piAiGatewayBindingEntry,

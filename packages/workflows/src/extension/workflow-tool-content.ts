@@ -64,7 +64,15 @@ function statusRunHint(run: WorkflowRunStatusSummary): string | undefined {
 	} else if (run.status === "paused") {
 		primary = "awaiting resume";
 	} else if (run.activeStages.length > 0) {
-		primary = `stage: ${run.activeStages.map((stage) => stage.name).join(", ")}`;
+		primary = `stage: ${run.activeStages
+			.map((stage) => {
+				const waiting = stage.rateLimits?.filter((limit) => limit.waitingUntil !== undefined) ?? [];
+				const hint = waiting
+					.map((limit) => `cooldown ${limit.provider}, ${limit.rateLimitCount} rate limits`)
+					.join("; ");
+				return hint ? `${stage.name} (${hint})` : stage.name;
+			})
+			.join(", ")}`;
 	}
 	if (primary !== undefined) return [primary, budgetHint, toolHint].filter((part) => part !== undefined).join(" · ");
 	if (budgetHint !== undefined) return toolHint === undefined ? budgetHint : `${budgetHint} · ${toolHint}`;

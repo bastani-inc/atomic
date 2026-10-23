@@ -269,6 +269,7 @@ export interface DurableStageCheckpoint {
 	readonly thinkingLevel?: string;
 	readonly attemptedModels?: readonly string[];
 	readonly modelAttempts?: readonly WorkflowModelAttempt[];
+	readonly rateLimits?: readonly import("../shared/types.js").WorkflowProviderRateLimit[];
 	readonly routerSelection?: import("@bastani/atomic").ModelRouterOutput;
 	/** Schema-backed task value; independent of assistant text. */
 	readonly structured?: WorkflowSerializableValue;

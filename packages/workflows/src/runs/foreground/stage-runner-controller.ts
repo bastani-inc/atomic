@@ -38,6 +38,14 @@ import {
 	type WorkflowResolvedScopedModel,
 	workflowModelId,
 } from "../shared/model-fallback.js";
+import {
+	isWorkflowRateLimit,
+	providerCooldownMs,
+	providerRateLimitSnapshot,
+	recordProviderRateLimit,
+	workflowProviderId,
+	workflowRetryHint,
+} from "../shared/provider-rate-limits.js";
 import { nextRetryDecision, sleepOrAbort } from "../shared/retry.js";
 import { isWorkflowPendingStageDeliveryFailure } from "./pending-stage-delivery.js";
 import { StageDeliveryActivity, type StageDeliveryActivityListener } from "./stage-delivery-activity.js";
@@ -103,6 +111,11 @@ export const WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE = "atomic:workflow-stage-close
  * ends for good later.
  */
 export const WORKFLOW_STAGE_END_CHILDREN_STATE = "atomic:workflow-stage-end-children";
+
+interface CandidateWalk {
+	readonly remaining: Set<number>;
+	readonly rateLimitFailures: Map<number, number>;
+}
 
 type RetryPauseResume = NonNullable<ReturnType<StageSessionPause["currentResume"]>>;
 
@@ -287,6 +300,7 @@ export class StageSessionController {
 	private structuredOutputExecutionFailureValue: string | undefined;
 	private structuredOutputCycleAttemptMark: number | undefined;
 	private unsubscribeTerminateWatcher: (() => void) | undefined;
+	private sessionInternalRetries = 0;
 	private unresolvedContextOverflowMessage: string | undefined;
 	private generationSealed = false;
 	private disposed = false;
@@ -309,6 +323,8 @@ export class StageSessionController {
 	private sharedOrchestrationContext: CreateAgentSessionOptions["orchestrationContext"];
 	private resumeCurrentSession = false;
 	private readonly modelAttempts: WorkflowModelAttempt[] = [];
+	private readonly rateLimitProviders = new Set<string>();
+	private rateLimitWait: { provider: string; until: number } | undefined;
 	private readonly modelWarnings: string[] = [];
 	private readonly pendingFallbackWarnings: string[] = [];
 	private readonly modelCatalog: WorkflowModelCatalogPort | undefined;
@@ -771,7 +787,8 @@ export class StageSessionController {
 		const resumedText = this.pendingCreationResumeMessage;
 		this.pendingCreationResumeMessage = undefined;
 		let promptText = resumedText ?? text;
-		if (await this.tryResumeCurrentSession(promptText, sdkOptions, candidates)) return;
+		const walk = this.candidateWalk(candidates, this.activeCandidateIndex ?? 0);
+		if (await this.tryResumeCurrentSession(promptText, sdkOptions, candidates, walk)) return;
 		// A follow-up written for the conversation it continues (a structured-output
 		// correction) cannot stand alone in a session that never saw the stage
 		// prompt, so every session the walk prompts from here receives the caller's
@@ -793,8 +810,15 @@ export class StageSessionController {
 				promptText = this.pendingCreationResumeMessage ?? promptText;
 				this.pendingCreationResumeMessage = undefined;
 			}
+			const readyIndex = await this.selectReadyCandidate(candidates, walk, index);
+			if (readyIndex === undefined) return;
+			index = readyIndex;
+			promptText = this.pendingCreationResumeMessage ?? promptText;
+			this.pendingCreationResumeMessage = undefined;
 			const candidate = candidates[index]!;
 			try {
+				if (this.session !== undefined && this.activeCandidateIndex !== index)
+					await this.disposeCurrentSession(index);
 				const created =
 					this.session && this.activeCandidateIndex === index
 						? this.session
@@ -828,13 +852,13 @@ export class StageSessionController {
 				this.recordSuccessfulAttempt(candidate);
 				return;
 			} catch (err) {
-				const failure = await this.handleCandidateFailure(err, candidate, candidates, index);
+				const failure = await this.handleCandidateFailure(err, candidate, candidates, index, walk);
 				if (failure === "handled") return;
 				if (failure === "throw") {
 					this.settleStartup(true);
 					throw err;
 				}
-				index += 1;
+				index = this.activeCandidateIndex ?? index + 1;
 			}
 		}
 	}
@@ -846,12 +870,24 @@ export class StageSessionController {
 			this.selectedModel ??
 			workflowModelId(this.session?.model);
 		const thinkingLevel = this.session?.thinkingLevel ?? this.pendingThinkingLevel;
+		const rateLimits = [...this.rateLimitProviders].flatMap((provider) => {
+			const snapshot = providerRateLimitSnapshot(provider);
+			return snapshot === undefined
+				? []
+				: [
+						{
+							...snapshot,
+							...(this.rateLimitWait?.provider === provider ? { waitingUntil: this.rateLimitWait.until } : {}),
+						},
+					];
+		});
 		return {
 			...(this.modelRoute ? { routerSelection: this.modelRoute.routerSelection } : {}),
 			...(model !== undefined ? { model } : {}),
 			...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
 			...(attemptedModels.length > 0 ? { attemptedModels } : {}),
 			...(this.modelAttempts.length > 0 ? { modelAttempts: [...this.modelAttempts] } : {}),
+			...(rateLimits.length > 0 ? { rateLimits } : {}),
 			...(this.modelWarnings.length > 0 ? { warnings: [...this.modelWarnings] } : {}),
 		};
 	}
@@ -1027,6 +1063,7 @@ export class StageSessionController {
 	 * pause/re-prompts, and recording never re-read a later index.
 	 */
 	private beginAttemptUsage(session: StageSessionRuntime): void {
+		this.sessionInternalRetries = 0;
 		this.attemptUsageStartIndex = session.messages.length;
 		this.discardedAttemptUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 	}
@@ -1079,13 +1116,12 @@ export class StageSessionController {
 		snapshot: StageSessionRuntime["messages"],
 		promptText: string,
 		keepPrompt: boolean,
+		discardAttemptTurns = false,
 	): StageSessionRuntime["messages"][number] | undefined {
 		const snapshotMessages = new Set(snapshot);
 		const admitted = session.messages.filter((message) => !snapshotMessages.has(message));
-		// Error assistants the filter below removes still carry real provider
-		// usage; accrue it before the splice so the retry total keeps it.
 		for (const message of admitted) {
-			if (message.role !== "assistant" || message.stopReason !== "error") continue;
+			if (message.role !== "assistant" || (!discardAttemptTurns && message.stopReason !== "error")) continue;
 			this.accrueDiscardedAttemptUsage(message);
 		}
 		const failedAssistantIndex = admitted.findLastIndex(
@@ -1096,7 +1132,8 @@ export class StageSessionController {
 			.findLast((message) => message.role === "user" && stageUserMessageText(message) === promptText);
 		const retainedMessages = admitted.filter((message) => {
 			if (message === promptUser) return keepPrompt;
-			if (message.role === "assistant") return message.stopReason !== "error";
+			if (message.role === "assistant") return !discardAttemptTurns && message.stopReason !== "error";
+			if (message.role === "toolResult" && discardAttemptTurns) return false;
 			return ["user", "toolResult", "custom", "bashExecution", "branchSummary"].includes(message.role);
 		});
 		session.messages.splice(0, session.messages.length, ...snapshot, ...retainedMessages);
@@ -1112,6 +1149,84 @@ export class StageSessionController {
 		const index = session.messages.indexOf(retained);
 		if (index >= 0) session.messages.splice(index, 1);
 	}
+	private candidateWalk(candidates: readonly WorkflowResolvedModelCandidate[], start: number): CandidateWalk {
+		for (const candidate of candidates) {
+			const provider = workflowProviderId(candidate.value);
+			if (provider !== undefined) this.rateLimitProviders.add(provider);
+		}
+		return {
+			remaining: new Set(candidates.map((_, index) => index).filter((index) => index >= start)),
+			rateLimitFailures: new Map(),
+		};
+	}
+
+	private recordCandidateFailure(walk: CandidateWalk, index: number, error: unknown): void {
+		const failures = (walk.rateLimitFailures.get(index) ?? 0) + 1 + this.sessionInternalRetries;
+		this.sessionInternalRetries = 0;
+		const settings = this.retrySettings();
+		const retries = settings?.enabled === false ? 0 : (settings?.maxRetries ?? 2);
+		if (isWorkflowRateLimit(error)) {
+			walk.rateLimitFailures.set(index, failures);
+			if (failures <= retries) return;
+		}
+		walk.remaining.delete(index);
+	}
+
+	private async selectReadyCandidate(
+		candidates: readonly WorkflowResolvedModelCandidate[],
+		walk: CandidateWalk,
+		start: number,
+	): Promise<number | undefined> {
+		while (walk.remaining.size > 0) {
+			this.opts.signal?.throwIfAborted();
+			let earliest: { index: number; delay: number } | undefined;
+			for (let offset = 0; offset < candidates.length; offset += 1) {
+				const index = (start + offset) % candidates.length;
+				if (!walk.remaining.has(index)) continue;
+				const candidate = candidates[index]!;
+				const delay = providerCooldownMs(workflowProviderId(candidate.value));
+				if (delay === 0) return index;
+				if (earliest === undefined || delay < earliest.delay) earliest = { index, delay };
+			}
+			if (earliest === undefined) return undefined;
+			try {
+				await this.sleepForRateLimit(workflowProviderId(candidates[earliest.index]!.value), earliest.delay);
+			} catch (error) {
+				if (!(error instanceof ThrownErrorRetryPaused)) throw error;
+				const resumed = await error.resume;
+				await resumed.runnerOwnedDeliverySettlement;
+				if (resumed.message === undefined) return undefined;
+				this.pendingCreationResumeMessage = resumed.message;
+			}
+		}
+		return undefined;
+	}
+
+	private currentProvider(): string | undefined {
+		return workflowProviderId(this.session?.model ?? this.selectedModel ?? this.effectiveStageOptions?.model);
+	}
+
+	private async sleepForRateLimit(provider: string | undefined, delay: number): Promise<void> {
+		if (provider !== undefined) this.rateLimitProviders.add(provider);
+		const wait = provider === undefined ? undefined : { provider, until: Date.now() + delay };
+		this.rateLimitWait = wait;
+		this.notifyModelFallbackMetaChange();
+		try {
+			await this.sleepForThrownErrorRetry(Math.min(delay, 60_000), { controller: new AbortController() });
+		} finally {
+			if (this.rateLimitWait === wait) this.rateLimitWait = undefined;
+			this.notifyModelFallbackMetaChange();
+		}
+	}
+
+	private async waitForProvider(provider: string | undefined): Promise<void> {
+		let delay = providerCooldownMs(provider);
+		while (delay > 0) {
+			await this.sleepForRateLimit(provider, delay);
+			delay = providerCooldownMs(provider);
+		}
+	}
+
 	private async sleepForThrownErrorRetry(delayMs: number, state: ThrownErrorRetryState): Promise<void> {
 		this.thrownErrorRetryStates.add(state);
 		const currentResume = this.pauseControl.currentResume();
@@ -1147,6 +1262,7 @@ export class StageSessionController {
 		const state: ThrownErrorRetryState = { controller: new AbortController() };
 		this.thrownErrorRetryStates.add(state);
 		try {
+			await this.waitForProvider(this.currentProvider());
 			await continuationSession._runAgentContinue();
 		} catch (error) {
 			const resume = state.pauseResume ?? this.pauseControl.currentResume();
@@ -1207,6 +1323,12 @@ export class StageSessionController {
 					retryAdmittedPrompt = false;
 				}
 				const result = await this.promptWithPauseResume(activeSession, nextText, sdkOptions);
+				const terminalFailure = latestTerminalAssistantFailureSince(
+					activeSession.messages,
+					result.terminalScanStartIndex,
+				);
+				if (terminalFailure !== undefined && isWorkflowRateLimit(terminalFailure))
+					throw new WorkflowPromptModelFailure(terminalFailure);
 				return {
 					terminalScanStartIndex: terminalScanStartIndex ?? result.terminalScanStartIndex,
 				};
@@ -1223,7 +1345,17 @@ export class StageSessionController {
 				const retryableFailure = isRetryableModelFailure(error);
 				const sameCandidateRetryable =
 					isRetryableSameModelFailure(error) && !isUnresolvedContextOverflowFailure(error);
-				const decision = nextRetryDecision(this.retrySettings(), retryAttempt, sameCandidateRetryable);
+				recordProviderRateLimit(this.currentProvider(), error);
+				if (this.hasExplicitModelFallbackConfig && isWorkflowRateLimit(error)) {
+					this.restoreSessionMessages(activeSession, messagesBeforeAttempt, nextText, false, true);
+					throw error;
+				}
+				const decision = nextRetryDecision(
+					this.retrySettings(),
+					retryAttempt,
+					sameCandidateRetryable,
+					workflowRetryHint(error),
+				);
 				const continuationSession = retryableAgentSession(activeSession);
 				const admittedMessages = activeSession.messages.length > messagesBeforeAttempt.length;
 				const willRetry =
@@ -1415,7 +1547,13 @@ export class StageSessionController {
 		let index = startIndex;
 		let pendingFailure = initialFailure;
 		let lastError: unknown = initialFailure?.error;
+		const walk = this.candidateWalk(candidates, startIndex);
 		while (index < candidates.length) {
+			if (pendingFailure === undefined) {
+				const readyIndex = await this.selectReadyCandidate(candidates, walk, index);
+				if (readyIndex === undefined) throw new StageSessionCreationCancelled();
+				index = readyIndex;
+			}
 			const candidate = candidates[index]!;
 			this.activeCandidateIndex = index;
 			this.selectedModel = candidate.id;
@@ -1440,8 +1578,10 @@ export class StageSessionController {
 				if (error instanceof StageSessionCreationCancelled) throw error;
 				pendingFailure = undefined;
 				lastError = error;
-				if ((await this.handleCandidateFailure(error, candidate, candidates, index)) !== "retry") throw error;
-				index += 1;
+				const failure = await this.handleCandidateFailure(error, candidate, candidates, index, walk);
+				if (failure === "handled") throw new StageSessionCreationCancelled();
+				if (failure !== "retry") throw error;
+				index = this.activeCandidateIndex ?? index + 1;
 			}
 		}
 		throw lastError ?? new Error(`atomic-workflows: stage "${this.opts.stageName}" has no usable model candidate`);
@@ -1536,7 +1676,14 @@ export class StageSessionController {
 				// independent of what the shared model-failure classifier makes of it.
 				const decision = isWorkflowPendingStageDeliveryFailure(error)
 					? undefined
-					: nextRetryDecision(this.retrySettings(), retryAttempt, isRetryableSameCandidateFailure(error));
+					: nextRetryDecision(
+							this.retrySettings(),
+							retryAttempt,
+							isRetryableSameCandidateFailure(error),
+							workflowRetryHint(error),
+						);
+				recordProviderRateLimit(workflowProviderId(candidate?.value ?? candidate?.id), error);
+				if (candidate !== undefined && isWorkflowRateLimit(error)) throw error;
 				if (
 					decision === undefined ||
 					this.disposed ||
@@ -1801,6 +1948,7 @@ export class StageSessionController {
 					void Promise.resolve(onSessionEvent(event)).catch(() => {});
 				} catch {}
 			}
+			if (event.type === "auto_retry_start") this.sessionInternalRetries += 1;
 			if (event.type === "model_fallback_start") applyingFallback = true;
 			// SDK effort-only fallbacks suppress model_changed, but emit thinking_level_changed
 			// after applying both model and effort. Ignore effort changes outside fallback selection.
@@ -1886,6 +2034,7 @@ export class StageSessionController {
 				this.reportStartupPhase("first-dispatch");
 				// A live resume loops here without returning through the outer retry guard.
 				this.checkedSession(activeSession);
+				await this.waitForProvider(this.currentProvider());
 				await activeSession.prompt(nextText, sdkOptions);
 				const pendingPauseAfterPrompt = this.pauseControl.currentResume();
 				if (pendingPauseAfterPrompt) {
@@ -1900,7 +2049,8 @@ export class StageSessionController {
 				this.throwIfEmptyCompletion(activeSession, promptStartIndex);
 				return { terminalScanStartIndex: promptStartIndex };
 			} catch (err) {
-				const pendingPauseAfterThrow = this.pauseControl.currentResume();
+				const pendingPauseAfterThrow =
+					err instanceof ThrownErrorRetryPaused ? err.resume : this.pauseControl.currentResume();
 				if (pendingPauseAfterThrow) {
 					const resumed = await pendingPauseAfterThrow;
 					await resumed.runnerOwnedDeliverySettlement;
@@ -1920,8 +2070,21 @@ export class StageSessionController {
 		text: string,
 		sdkOptions: PromptOptions | undefined,
 		candidates: readonly WorkflowResolvedModelCandidate[],
+		walk: CandidateWalk,
 	): Promise<boolean> {
 		if (!this.resumeCurrentSession || this.session === undefined) return false;
+		const currentIndex = this.activeCandidateIndex ?? 0;
+		if (!walk.remaining.has(currentIndex) || providerCooldownMs(this.currentProvider()) > 0) {
+			const start = walk.rateLimitFailures.has(currentIndex) ? 0 : currentIndex;
+			const index = await this.selectReadyCandidate(candidates, walk, start);
+			if (index === undefined) return true;
+			if (index !== this.activeCandidateIndex) {
+				await this.disposeCurrentSession(index);
+				return false;
+			}
+			text = this.pendingCreationResumeMessage ?? text;
+			this.pendingCreationResumeMessage = undefined;
+		}
 		this.resumeCurrentSession = false;
 		const resumedSession = this.session;
 		const resumedLabel = this.selectedModel ?? workflowModelId(resumedSession.model) ?? candidates[0]!.id;
@@ -1975,6 +2138,16 @@ export class StageSessionController {
 				this.notifyModelFallbackMetaChange();
 				throw err;
 			}
+			if (isWorkflowRateLimit(err)) {
+				for (let index = 0; index < currentIndex; index++) walk.remaining.add(index);
+				this.recordCandidateFailure(walk, currentIndex, err);
+				if (walk.remaining.size === 0) {
+					this.notifyModelFallbackMetaChange();
+					throw err;
+				}
+				this.resumeCurrentSession = true;
+				return this.tryResumeCurrentSession(text, sdkOptions, candidates, walk);
+			}
 			const resumedOverflowNextIndex = nextResumedContextOverflowFallbackIndex(
 				err,
 				this.activeCandidateIndex,
@@ -1986,6 +2159,13 @@ export class StageSessionController {
 				this.notifyModelFallbackMetaChange();
 				throw err;
 			}
+			if (resumedOverflowNextIndex !== undefined) {
+				for (const index of walk.remaining) {
+					if (index < resumedOverflowNextIndex) walk.remaining.delete(index);
+				}
+			} else {
+				for (let index = 0; index < currentIndex; index++) walk.remaining.add(index);
+			}
 			this.pendingFallbackWarnings.push(
 				resumedOverflowNextIndex === undefined
 					? `[fallback] resume on ${resumedLabel} failed: ${message}. Restarting fallback from ${candidateLabel(candidates[0]!)}.`
@@ -1996,11 +2176,19 @@ export class StageSessionController {
 		}
 	}
 
+	private async settleFailedCandidate(): Promise<void> {
+		this.modelWarnings.push(...this.pendingFallbackWarnings);
+		this.pendingFallbackWarnings.length = 0;
+		this.notifyModelFallbackMetaChange();
+		await this.replacement.disposeRetired();
+	}
+
 	private async handleCandidateFailure(
 		err: unknown,
 		candidate: WorkflowResolvedModelCandidate,
 		candidates: readonly WorkflowResolvedModelCandidate[],
 		index: number,
+		walk?: CandidateWalk,
 	): Promise<"handled" | "retry" | "throw"> {
 		if (err instanceof StageSessionBindingCleanupFailure) throw err;
 		const message = errorMessage(err);
@@ -2022,26 +2210,43 @@ export class StageSessionController {
 			...(usage === undefined ? {} : { usage }),
 			error: message,
 		});
+		let nextIndex: number | undefined = index + 1 < candidates.length ? index + 1 : undefined;
+		if (walk !== undefined) {
+			this.recordCandidateFailure(walk, index, err);
+			nextIndex = undefined;
+			if (
+				!this.opts.signal?.aborted &&
+				!this.startupWait.signal.aborted &&
+				!terminalStageDelivery &&
+				mayAdvanceToNextCandidate(err)
+			) {
+				try {
+					nextIndex = await this.selectReadyCandidate(candidates, walk, index + 1);
+				} catch (error) {
+					await this.settleFailedCandidate();
+					throw error;
+				}
+				if (nextIndex === undefined && walk.remaining.size > 0) {
+					await this.settleFailedCandidate();
+					return "handled";
+				}
+			}
+		}
 		if (
 			this.opts.signal?.aborted ||
 			this.startupWait.signal.aborted ||
 			terminalStageDelivery ||
 			!mayAdvanceToNextCandidate(err) ||
-			index === candidates.length - 1
+			nextIndex === undefined
 		) {
-			this.modelWarnings.push(...this.pendingFallbackWarnings);
-			this.pendingFallbackWarnings.length = 0;
-			this.notifyModelFallbackMetaChange();
-			// No successor will adopt the session retired for this candidate, so close
-			// it before the stage settles rather than leave its store open.
-			await this.replacement.disposeRetired();
+			await this.settleFailedCandidate();
 			return "throw";
 		}
-		const nextCandidate = candidates[index + 1]!;
+		const nextCandidate = candidates[nextIndex]!;
 		this.pendingFallbackWarnings.push(
 			`[fallback] ${candidateLabel(candidate)} failed: ${message}. Retrying with ${candidateLabel(nextCandidate)}.`,
 		);
-		await this.disposeCurrentSession(index + 1);
+		await this.disposeCurrentSession(nextIndex);
 		return "retry";
 	}
 

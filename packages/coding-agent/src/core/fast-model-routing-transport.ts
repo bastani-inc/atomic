@@ -1,3 +1,5 @@
+import { wrapFetchPreservingAdmission } from "@bastani/pi-ai/utils/request-admission";
+
 export const CODEX_FAST_ROUTE_ORIGINATOR = "codex_cli_rs";
 export const CODEX_FAST_ROUTE_HEADER = "x-codex-routing-hint";
 const CODEX_FAST_ROUTE_REQUEST_MARKER_HEADER = "x-atomic-codex-fast-route";
@@ -77,7 +79,7 @@ export function forceCodexFastRouteOriginator(
 	return headers;
 }
 
-export function wrapCodexFastRouteFetch(fetchImplementation: typeof globalThis.fetch): typeof globalThis.fetch {
+function routeCodexFastRouteFetch(fetchImplementation: typeof globalThis.fetch): typeof globalThis.fetch {
 	return new Proxy(fetchImplementation, {
 		apply(target, thisArg, args: Parameters<typeof globalThis.fetch>) {
 			const [input, init] = args;
@@ -91,6 +93,10 @@ export function wrapCodexFastRouteFetch(fetchImplementation: typeof globalThis.f
 			]);
 		},
 	});
+}
+
+export function wrapCodexFastRouteFetch(fetchImplementation: typeof globalThis.fetch): typeof globalThis.fetch {
+	return wrapFetchPreservingAdmission(fetchImplementation, routeCodexFastRouteFetch);
 }
 
 function findWebSocketOptionsIndex(args: readonly unknown[]): number | undefined {

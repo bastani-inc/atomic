@@ -313,6 +313,17 @@ export type {
 	ResolvedResource,
 } from "./core/package-manager.ts";
 export { DefaultPackageManager } from "./core/package-manager.ts";
+export {
+	configureProviderRequestBudget,
+	isProviderRateLimit,
+	type ProviderRateLimitSnapshot,
+	type ProviderRequestBudget,
+	providerCooldownMs,
+	providerIdForModel,
+	providerRateLimitSnapshot,
+	providerRetryHint,
+	recordProviderRateLimit,
+} from "./core/provider-rate-limits.js";
 export type {
 	DefaultResourceLoaderInheritanceSnapshot,
 	ResourceCollision,

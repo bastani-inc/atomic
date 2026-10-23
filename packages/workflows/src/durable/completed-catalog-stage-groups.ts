@@ -26,6 +26,7 @@ export interface StageDraft {
 	readonly thinkingLevel?: string;
 	readonly attemptedModels?: readonly string[];
 	readonly modelAttempts?: DurableStageCheckpoint["modelAttempts"];
+	readonly rateLimits?: DurableStageCheckpoint["rateLimits"];
 	readonly routerSelection?: DurableStageCheckpoint["routerSelection"];
 	readonly topology?: DurableStageCheckpoint["topology"];
 }
@@ -359,6 +360,7 @@ export function mergeStageDraft(
 		...valueOrExisting("thinkingLevel", checkpoint, existing),
 		...valueOrExisting("attemptedModels", checkpoint, existing),
 		...valueOrExisting("modelAttempts", checkpoint, existing),
+		...valueOrExisting("rateLimits", checkpoint, existing),
 		...valueOrExisting("routerSelection", checkpoint, existing),
 		// A task result can settle after its stage checkpoint with only the
 		// envelope's synthetic root topology. It must not erase owning-run identity.

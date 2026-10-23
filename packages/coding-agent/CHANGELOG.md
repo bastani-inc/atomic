@@ -5,6 +5,7 @@
 ### Added
 
 - Markdown transformers registered with `pi.registerMarkdownTransformer()` now receive `messageId` and `timestamp` in their context when a message is rendered from the saved session, so an extension can tie its output to a session entry. Both are `undefined` for live messages. See [registerMarkdownTransformer](docs/extensions/api-reference.md#pi-registermarkdowntransformer-transformer)
+- Added `configureProviderRequestBudget(provider, { maxRequests, intervalMs })` for process-wide rolling request budgets shared across SDK model runtimes. Model requests also share provider cooldowns after 429 responses. Separate configured provider IDs remain independent ([#3864](https://github.com/bastani-inc/atomic/issues/3864)).
 
 ### Changed
 
@@ -20,6 +21,7 @@
 - `pi.exec()` now reports why a command could not be started (for example `ENOENT` for a missing executable) in `stderr` instead of returning an empty `stderr` with exit code 1 ([pi #11085](https://github.com/earendil-works/pi/issues/11085))
 - `/resume` search matches the session name, summary, id, messages and working directory separately. A name match ranks first, then text found in the id, summary, messages or directory, then characters scattered through the name, summary or directory. Matches deep in a long transcript are no longer ranked last, and scattered characters in session ids or message text no longer produce noise matches ([pi #11220](https://github.com/earendil-works/pi/issues/11220))
 - Updated the bundled `ip-address` dependency to 10.7.4, which fixes a quadratic-time zone-identifier match in IPv6 address parsing that a single long string could use to stall the process ([GHSA-rxp7-6hxx-x8q5](https://github.com/advisories/GHSA-rxp7-6hxx-x8q5))
+- Provider request-budget waits no longer consume OpenAI, Anthropic, Mistral, or explicit Codex SSE HTTP timeouts, and successive Anthropic federation-authenticated requests keep reusing their cached token. Cancelling a queued model request reports an aborted result without dispatching it ([#3864](https://github.com/bastani-inc/atomic/issues/3864)).
 - Cancelling or clearing queued messages no longer waits for a busy interactive engine to finish draining its output before acting. Cancelled prompts and shell commands waiting to start do not run later when output resumes. If queue clearing or cancellation of chat, shell commands, compaction, or retries stalls or fails, Ctrl+C can still replace the engine even while it continues sending heartbeats, including controls sent while a replacement initializes; an earlier failed queue pause no longer prevents an abort from being sent ([#3865](https://github.com/bastani-inc/atomic/issues/3865))
 
 ## [0.9.41] - 2026-10-22

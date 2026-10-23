@@ -98,6 +98,7 @@ export type {
 	WorkflowParallelOptions,
 	WorkflowPersistencePort,
 	WorkflowProgressSummary,
+	WorkflowProviderRateLimit,
 	WorkflowRunChildArgs,
 	WorkflowRunChildOptions,
 	WorkflowRunChildOptionsArgument,

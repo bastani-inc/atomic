@@ -225,7 +225,7 @@ describe("executor.run", () => {
 		assert.equal(replayed.replayedFromStageId, completed.id);
 	});
 
-	test("rate-limited fallback attempts are recorded on the active-blocked stage snapshot", async () => {
+	test("rate-limited fallback attempts are recorded on the active-blocked stage snapshot (#3864)", async () => {
 		const def = workflow({
 			name: "failed-fallback-metadata",
 			description: "",
@@ -253,10 +253,13 @@ describe("executor.run", () => {
 							const modelValue = (options as { readonly model?: string }).model;
 							const model = typeof modelValue === "string" ? modelValue : "object-model";
 							return {
-								...mockSession(),
-								async prompt() {
-									throw new Error(`${model} rate limit exceeded`);
+								session: {
+									...mockSession(),
+									async prompt() {
+										throw Object.assign(new Error(`${model} rate limit exceeded`), { retryAfterMs: 5 });
+									},
 								},
+								settingsManager: { getRetrySettings: () => ({ enabled: true, maxRetries: 1, baseDelayMs: 0 }) },
 							};
 						},
 					},
@@ -269,10 +272,13 @@ describe("executor.run", () => {
 		assert.equal(result.stages[0]?.status, "failed");
 		assert.equal(result.stages[0]?.failureDisposition, "active_blocked");
 		assert.equal(result.stages[0]?.failureRecoverability, "recoverable");
-		assert.deepEqual(result.stages[0]?.attemptedModels, ["anthropic/primary", "openai/fallback"]);
+		const attempted = result.stages[0]?.attemptedModels ?? [];
+		assert.equal(attempted.length, 4);
+		assert.equal(attempted.filter((model) => model === "anthropic/primary").length, 2);
+		assert.equal(attempted.filter((model) => model === "openai/fallback").length, 2);
 		assert.deepEqual(
 			result.stages[0]?.modelAttempts?.map((attempt) => attempt.success),
-			[false, false],
+			[false, false, false, false],
 		);
 	});
 
