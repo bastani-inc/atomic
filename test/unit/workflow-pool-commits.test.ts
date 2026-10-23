@@ -336,10 +336,11 @@ test.each(["checkpoint", "session"] as const)(
 	},
 );
 
-test("local worker timestamps ahead of SQLite remain replayable without extending leases (#3869)", async () => {
+test("worker clock skew preserves checkpoints and receipts without extending leases (#3869)", async () => {
 	const f = await fixture();
-	const completedAt = Date.now() + 60_000;
-	const clock = vi.spyOn(Date, "now").mockReturnValue(completedAt);
+	const coordinatorNow = Date.now() + 60_000;
+	const completedAt = coordinatorNow + 20;
+	const clock = vi.spyOn(Date, "now").mockReturnValue(coordinatorNow);
 	try {
 		const mutation = { kind: "checkpoint" as const, checkpoint: { ...checkpoint, completedAt } };
 		const receipt = await f.pool.commit(f.lease, f.attempt, "save", mutation);
@@ -350,7 +351,7 @@ test("local worker timestamps ahead of SQLite remain replayable without extendin
 		await assert.rejects(
 			f.pool.commit(f.lease, f.attempt, "future", {
 				...mutation,
-				checkpoint: { ...mutation.checkpoint, completedAt: completedAt + 1 },
+				checkpoint: { ...mutation.checkpoint, completedAt: coordinatorNow + 60_000 },
 			}),
 			/Pool checkpoint timestamp is in the future/,
 		);

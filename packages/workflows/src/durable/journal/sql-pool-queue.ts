@@ -20,6 +20,7 @@ export type { PoolMutation } from "./pool-mutations.js";
 type Transaction = SqlPoolStorage["transaction"];
 type JournalTables = SqlPoolStorage["tables"];
 const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
+const MAX_WORKER_CLOCK_SKEW_MS = 1_000;
 export interface PoolWorkDescriptor {
 	readonly boundaryId: string;
 	readonly childRunId: string;
@@ -392,7 +393,7 @@ export class SqlPoolQueue {
 			if (status !== "running") throw new Error("Pool root is not running");
 			const checkpoint = mutation.checkpoint;
 			await validatePoolMutation(tx, this.journal, lease.runId, fromRow(row), mutation);
-			if (checkpoint.completedAt > Math.max(now, Date.now()))
+			if (checkpoint.completedAt > Math.max(now, Date.now()) + MAX_WORKER_CLOCK_SKEW_MS)
 				throw new Error("Pool checkpoint timestamp is in the future");
 			assertWorkflowSerializableObject(checkpoint, "Pool checkpoint");
 			const key = JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, checkpoint.kind, checkpoint.checkpointId]);
