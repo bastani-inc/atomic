@@ -225,8 +225,6 @@ async function executeRun(
 	const backendView: DurableWorkflowBackend = sourceBackend;
 	const rootBackend: DurableWorkflowBackend = opts.durableRootBackend ?? backendView;
 	const dispatcher = opts.parentRun === undefined ? childWorkerDispatchers.get(rootBackend) : undefined;
-	const poolPreparation = dispatcher?.prepare?.(runId, activeStore);
-	poolPreparation?.catch(() => {});
 	const durableBackend: DurableWorkflowBackend =
 		opts.durableScope !== undefined ? new ScopedDurableBackend(backendView, opts.durableScope) : backendView;
 	const inheritedElapsedMs =
@@ -1046,7 +1044,6 @@ async function executeRun(
 			});
 		}
 		if (opts.deferWorkflowStart === true) await raceAbort(nextEventLoopTurn(), ownController.signal);
-		if (poolPreparation !== undefined) await raceAbort(poolPreparation, ownController.signal);
 		while (scheduler.isRunPaused()) await waitForRunRelease();
 		ownController.signal.throwIfAborted();
 		if (opts.parentRun === undefined) {
@@ -1066,6 +1063,8 @@ async function executeRun(
 			}
 		}
 		durableRootAdmitted = true;
+		if (dispatcher?.prepare !== undefined)
+			await raceAbort(dispatcher.prepare(runId, activeStore), ownController.signal);
 		activeStore.recordRunExecutionState(runId, {
 			phase: "executing",
 			lastProgressAt: Date.now(),

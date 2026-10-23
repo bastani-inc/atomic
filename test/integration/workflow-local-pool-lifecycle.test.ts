@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createAgentSession, SessionManager } from "@bastani/atomic";
 import { test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import { TaskSupervisor } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
+import { executeSupervisedCommand } from "../../packages/coding-agent/src/core/tools/bash-pty-native.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlPoolQueue, SqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
@@ -14,6 +17,11 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowRunContext } from "../../packages/workflows/src/shared/types.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
+import {
+	type AdmissionConfiguration,
+	SqlResourceAdmission,
+} from "../../packages/workflows/src/workers/resource-admission.js";
+import { poolStageOptions } from "../fixtures/pool-stage-options.js";
 import { makeTempDirectory, removeTempDirectory, sleep, writeFileEnsuringDir } from "../helpers/runtime.js";
 
 const LOCAL_WORKER_LIFECYCLE_TIMEOUT_MS = 120_000;
@@ -26,7 +34,11 @@ async function waitUntil(predicate: () => Promise<boolean>): Promise<void> {
 	}
 }
 
-async function fixture(root = "root", afterChild?: (ctx: WorkflowRunContext) => Promise<void>) {
+async function fixture(
+	root = "root",
+	afterChild?: (ctx: WorkflowRunContext) => Promise<void>,
+	options: { beforeChild?: () => Promise<void>; admission?: AdmissionConfiguration } = {},
+) {
 	const directory = makeTempDirectory("local-pool-lifecycle-");
 	const path = join(directory, "journal.sqlite");
 	const releasePath = join(directory, "release");
@@ -43,6 +55,7 @@ async function fixture(root = "root", afterChild?: (ctx: WorkflowRunContext) => 
 		journalPath: path,
 		workers: 1,
 		definitions: [{ definition: child, path: childPath, exportName: "child" }],
+		admission: options.admission,
 	});
 	const parent = workflow({
 		name: "pool-lifecycle-root",
@@ -50,6 +63,7 @@ async function fixture(root = "root", afterChild?: (ctx: WorkflowRunContext) => 
 		inputs: {},
 		outputs: {},
 		async run(ctx) {
+			await options.beforeChild?.();
 			const result = await ctx.workflow(child, { inputs: { releasePath } });
 			assert.equal(result.status, "completed");
 			await afterChild?.(ctx);
@@ -415,6 +429,159 @@ test(
 		} finally {
 			releaseRoot.resolve();
 			await f.close();
+		}
+	},
+	LOCAL_WORKER_LIFECYCLE_TIMEOUT_MS,
+);
+
+test.each([
+	{ state: "quit", cached: true },
+	{ state: "paused", cached: true },
+	{ state: "quit", cached: false },
+	{ state: "paused", cached: false },
+] as const)(
+	"explicit restart from $state admits local resources before child dispatch, cached=$cached (#3869)",
+	async ({ state, cached }) => {
+		const completed = Promise.withResolvers<void>();
+		const releaseRoot = Promise.withResolvers<void>();
+		let resuming = false;
+		let localWorkCompleted = false;
+		const admission = { limits: { session: 2, process: 1 } };
+		const f = await fixture(
+			randomUUID(),
+			async () => {
+				if (!resuming) {
+					completed.resolve();
+					await releaseRoot.promise;
+				}
+			},
+			{
+				admission,
+				async beforeChild() {
+					if (!resuming) return;
+					assert.equal(restartedPool!.workerPids.length, 0, "root resources precede worker dispatch");
+					const options = await poolStageOptions(f.directory, false, 0);
+					const { session } = await createAgentSession({
+						...options,
+						sessionManager: SessionManager.inMemory(f.directory),
+						resourceAdmissionSignal: AbortSignal.timeout(15_000),
+					});
+					try {
+						const { session: delegated } = await createAgentSession({
+							...options,
+							...session.extensionRunner.createContext().getChildSessionOptions!({ cwd: f.directory }),
+							sessionManager: SessionManager.inMemory(f.directory),
+							resourceAdmissionSignal: AbortSignal.timeout(15_000),
+						});
+						await delegated.dispose();
+						const supervisor = new TaskSupervisor();
+						const scope = { kind: "session" as const, sessionId: session.sessionId };
+						const host = supervisor.bindHostSession({
+							scope,
+							tasks: { wait: { kind: "until-settled" } },
+							authorizeLaunch() {},
+							createRunner() {
+								throw new Error("not an agent");
+							},
+						});
+						const opened = supervisor.openTaskOwner(host, scope);
+						assert.ok(opened.ok);
+						try {
+							const result = await executeSupervisedCommand(
+								"echo resumed",
+								f.directory,
+								{
+									taskOwner: { supervisor, owner: opened.value },
+									onData() {},
+									signal: AbortSignal.timeout(15_000),
+								},
+								false,
+							);
+							assert.equal(result.exitCode, 0);
+						} finally {
+							assert.ok((await supervisor.closeTaskOwner(opened.value, "session-close")).ok);
+						}
+						localWorkCompleted = true;
+					} finally {
+						await session.dispose();
+					}
+				},
+			},
+		);
+		let restartedPool: LocalWorkerPool | undefined;
+		let restarted: { close(): Promise<void> } | undefined;
+		let originalClosed = false;
+		try {
+			if (cached) {
+				await f.release();
+				await completed.promise;
+			} else {
+				await f.ready();
+				await f.finishing();
+			}
+			const queue = await openSqlPoolQueue(f.journal);
+			const before = await queue.inspect(f.root);
+			await toolControlRegistry.runControl(f.root)!.quit();
+			assert.equal((await f.running).status, "paused");
+			if (state === "paused") {
+				await f.backend.commitWorkflowStatus(f.root, "paused");
+				const owned = (await f.journal.leaseState(f.root))!;
+				await queue.setControl({ runId: f.root, holderId: owned.holderId!, epoch: owned.epoch }, "paused");
+			}
+			await f.shutdown();
+			originalClosed = true;
+			resuming = true;
+			await f.release();
+			const database = await openNodeSqliteDatabase(f.path);
+			const journal = await SqlRunJournal.open(database);
+			const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
+			const pool = new LocalWorkerPool(backend, {
+				journalPath: f.path,
+				workers: 1,
+				admission,
+				definitions: [{ definition: f.child, path: f.childPath, exportName: "child" }],
+			});
+			restartedPool = pool;
+			restarted = {
+				async close() {
+					await pool.close();
+					await backend.close();
+					await journal.close();
+					await database.close();
+				},
+			};
+			const result = await run(
+				f.parent,
+				{},
+				{
+					runId: f.root,
+					cwd: f.directory,
+					store: createStore(),
+					durableBackend: backend,
+					signal: AbortSignal.timeout(30_000),
+				},
+			);
+			assert.equal(result.status, "completed", JSON.stringify(result));
+			assert.equal(localWorkCompleted, true);
+			const observer = await SqlResourceAdmission.open(journal, { ...admission, root: f.root, holder: "observer" });
+			const permits = await observer.inspect();
+			assert.equal(permits.filter((permit) => permit.kind === "session").length, 2);
+			assert.equal(permits.filter((permit) => permit.kind === "process").length, 1);
+			assert.ok(permits.every((permit) => permit.state === "released"));
+			const [after] = await (await openSqlPoolQueue(journal)).inspect(f.root);
+			assert.equal(after!.id, before[0]!.id);
+			assert.equal(after!.state, "completed");
+			if (cached) {
+				assert.equal(pool.workerPids.length, 0, "cached child replay must not launch workers");
+				assert.deepEqual(after, before[0]);
+			} else {
+				assert.ok(after!.generation > before[0]!.generation);
+			}
+		} finally {
+			releaseRoot.resolve();
+			if (!originalClosed) await f.shutdown();
+			await restarted?.close();
+			removeTempDirectory(f.directory);
 		}
 	},
 	LOCAL_WORKER_LIFECYCLE_TIMEOUT_MS,

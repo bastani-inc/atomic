@@ -857,6 +857,82 @@ test("a sticky root broadcast reaches the replacement worker's stage session (#3
 	}
 });
 
+test("a fresh coordinator restores pending stage messages, receipts and control intent (#3869)", async () => {
+	const f = await fixture();
+	let recovered: JournalDurableBackend | undefined;
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueDirect("stage", "pending-direct");
+		await f.queueBroadcast("sticky");
+		await f.handoff.deliver(
+			f.first,
+			descriptor.childRunId,
+			"stage",
+			"stage",
+			{ sessionId: "session-a", receivedMessageIds: [] },
+			async () => {},
+		);
+		await f.queueDirect("stage", "after-delivery");
+		await f.queue.setControl(f.lease, "paused");
+		await f.backend.close();
+		recovered = await JournalDurableBackend.open(f.backend.journal, { ownsJournal: false });
+		await recovered.hydrateWorkflow(ROOT);
+		const acquired = await recovered.journal.acquire(ROOT, recovered.holderId);
+		assert.equal(acquired.status, "acquired");
+		if (acquired.status !== "acquired") assert.fail("no recovered root lease");
+		const lease = acquired.lease;
+		const queue = await openSqlPoolQueue(recovered.journal);
+		await queue.initialize(lease, 60_000);
+		assert.equal((await queue.control(lease)).state, "paused");
+		assert.equal(await queue.expire(lease, f.first), true);
+		assert.equal(await queue.claim(lease, "worker-two", [descriptor], 60_000), undefined);
+		await queue.setControl(lease, "running");
+		const next = await queue.claim(lease, "worker-two", [descriptor], 60_000);
+		assert.ok(next);
+		const store = createStore();
+		const root = {
+			...f.store.runs().find((run) => run.id === ROOT)!,
+			pendingStageMessages: [...pendingStageMessagesForDurableRun(recovered, ROOT, ROOT)],
+		};
+		bindRunDurableBackend(root, recovered);
+		bindStoreDurableBackend(store, recovered);
+		store.recordRunStart(root);
+		const handoff = new PoolStageHandoff(recovered, store, queue, lease);
+		await handoff.publish(next, [childRun([stage("stage", { sessionId: "session-b" })])]);
+		const received: string[] = [];
+		await handoff.deliver(
+			next,
+			descriptor.childRunId,
+			"stage",
+			"stage",
+			{ sessionId: "session-b", receivedMessageIds: [] },
+			async (_from, delivered) => {
+				received.push(delivered.id);
+			},
+		);
+		assert.deepEqual(received.sort(), ["after-delivery", "sticky"]);
+		assert.equal(store.pendingStageMessagesFor(descriptor.childRunId, "stage").length, 0);
+		const sticky = pendingStageMessagesForDurableRun(recovered, ROOT, ROOT)[0]!;
+		assert.equal(
+			await recovered.hasPendingStageDeliveryReceipt(ROOT, sticky.id, {
+				runId: descriptor.childRunId,
+				stageId: "stage",
+				sessionId: "session-a",
+				admission: "context",
+			}),
+			true,
+		);
+		assert.deepEqual(
+			sticky.deliveries?.map((entry) => entry.sessionId),
+			["session-b"],
+		);
+		await recovered.journal.release(lease);
+	} finally {
+		await recovered?.close();
+		await f.close();
+	}
+});
+
 test("completing the work ends projections a replaying successor never republished, only from durable records (#3869)", async () => {
 	const f = await fixture();
 	try {

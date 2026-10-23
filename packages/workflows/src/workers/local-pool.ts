@@ -44,6 +44,7 @@ export class LocalWorkerPool {
 	private nextRecoveryAt = 0;
 	private readonly controlAcks = new Map<string, number>();
 	private desiredControl?: PoolControl["state"];
+	private root?: string;
 	private store?: Store;
 	private handoff?: PoolStageHandoff;
 	private releaseRoutes?: () => Promise<void>;
@@ -80,9 +81,30 @@ export class LocalWorkerPool {
 		return this.usageTotal;
 	}
 	async prepare(root: string, store?: Store): Promise<void> {
+		if (this.closed) throw new Error("Local worker pool is closed");
+		if (
+			!(this.backend.journal instanceof SqlRunJournal) ||
+			resolve(this.options.journalPath) !== resolve(this.backend.journal.path) ||
+			sqlPoolStorage(this.backend.journal)?.tables.runs !== "wf_runs"
+		)
+			throw new Error("Local workers require the same default-prefix SQLite journal");
+		if (this.root !== undefined && this.root !== root) throw new Error("Local worker pool belongs to another root");
+		this.root = root;
 		if (store) this.store = store;
 		this.usageLedger ??= await openSqlPoolUsage(this.backend.journal);
 		this.usageTotal = await this.usageLedger.total(root);
+		const state = await this.backend.journal.leaseState(root);
+		if (!state || state.holderId !== this.backend.holderId)
+			throw new Error("Local worker pool requires the root owner");
+		this.lease = { runId: root, holderId: state.holderId, epoch: state.epoch };
+		const queue = await openSqlPoolQueue(this.backend.journal);
+		await queue.initialize(this.lease, COORDINATOR_LEASE_MS);
+		for (;;) {
+			const intended = this.desiredControl ?? "running";
+			await queue.setControl(this.lease, intended);
+			if (intended === (this.desiredControl ?? "running")) break;
+		}
+		this.queue = queue;
 	}
 	async control(state: PoolControl["state"]): Promise<void> {
 		this.desiredControl = state;
@@ -127,12 +149,8 @@ export class LocalWorkerPool {
 	}
 	private async start(root: string): Promise<void> {
 		if (this.closed) throw new Error("Local worker pool is closed");
-		if (
-			!(this.backend.journal instanceof SqlRunJournal) ||
-			resolve(this.options.journalPath) !== resolve(this.backend.journal.path) ||
-			sqlPoolStorage(this.backend.journal)?.tables.runs !== "wf_runs"
-		)
-			throw new Error("Local workers require the same default-prefix SQLite journal");
+		if (!this.queue || !this.lease || this.lease.runId !== root)
+			throw new Error("Local worker pool requires root preparation");
 		this.sources = await Promise.all(
 			this.options.definitions.map(async (binding) => {
 				const source = {
@@ -151,19 +169,6 @@ export class LocalWorkerPool {
 				return source;
 			}),
 		);
-		const state = await this.backend.journal.leaseState(root);
-		if (!state || state.holderId !== this.backend.holderId)
-			throw new Error("Local worker pool requires the root owner");
-		this.lease = { runId: root, holderId: state.holderId, epoch: state.epoch };
-		const queue = await openSqlPoolQueue(this.backend.journal);
-		await queue.initialize(this.lease, COORDINATOR_LEASE_MS);
-		for (;;) {
-			const intended = this.desiredControl ?? "running";
-			await queue.setControl(this.lease, intended);
-			if (intended === (this.desiredControl ?? "running")) break;
-		}
-		this.queue = queue;
-		await this.prepare(root);
 		if (this.store) {
 			this.releaseRoutes = await acquireStandaloneIntercom(
 				this.store,
