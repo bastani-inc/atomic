@@ -364,10 +364,12 @@ describe("atomic storage join with the libSQL package (#3857)", () => {
 		await removeLibsqlDirectory(databaseDirectory);
 	});
 
-	async function tables(): Promise<unknown[]> {
+	async function tables(): Promise<{ name: string }[]> {
 		const database = await openNodeSqliteDatabase(join(databaseDirectory, "shared.sqlite"));
 		try {
-			return await database.all("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name");
+			return await database.all<{ name: string }>(
+				"SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
+			);
 		} finally {
 			await database.close();
 		}

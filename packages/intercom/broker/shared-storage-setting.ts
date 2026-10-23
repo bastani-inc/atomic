@@ -17,19 +17,19 @@ import { BROKER_STORAGE_ENV } from "./paths.js";
 export function readSharedStorageSetting(
 	agentDir: string,
 	env: NodeJS.ProcessEnv = process.env,
-): Record<string, unknown> | undefined {
+): Record<string, JsonWireValue> | undefined {
 	const processSelection = env[BROKER_STORAGE_ENV];
-	let parsed: unknown;
+	let parsed: JsonWireValue | undefined;
 	try {
 		parsed =
 			processSelection === undefined || processSelection.length === 0
-				? (JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")) as Record<string, unknown>).storage
+				? (JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")) as { storage?: JsonWireValue }).storage
 				: JSON.parse(processSelection);
 	} catch {
 		return undefined;
 	}
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
-	const selection = parsed as Record<string, unknown>;
+	const selection = parsed;
 	if (selection.adapter === undefined) {
 		if (selection.memory === true && !selection.path) return undefined;
 		if (selection.path === ":memory:") return undefined;
@@ -49,12 +49,12 @@ function sortedKeys(_key: string, value: JsonWireValue): JsonWireValue {
 }
 
 /** Identifies a shared selection independently of key order, without revealing it: two brokers agree when it matches. */
-export function sharedStorageDigest(setting: Readonly<Record<string, unknown>>): string {
+export function sharedStorageDigest(setting: Readonly<Record<string, JsonWireValue>>): string {
 	return createHash("sha256").update(JSON.stringify(setting, sortedKeys)).digest("hex");
 }
 
 /** The adapter (`sqlite` for a `path` selection) and table prefix a shared selection names, for logs and status. */
-export function describeSharedStorage(setting: Readonly<Record<string, unknown>>): { adapter: string; prefix?: string } {
+export function describeSharedStorage(setting: Readonly<Record<string, JsonWireValue>>): { adapter: string; prefix?: string } {
 	const adapter = typeof setting.adapter === "string" ? setting.adapter : "sqlite";
 	return typeof setting.prefix === "string" && setting.prefix.length > 0 ? { adapter, prefix: setting.prefix } : { adapter };
 }

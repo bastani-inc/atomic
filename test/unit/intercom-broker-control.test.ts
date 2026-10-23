@@ -18,6 +18,7 @@ import { getJitiCliPath } from "../../packages/intercom/broker/spawn.js";
 import { registerIntercomTool } from "../../packages/intercom/intercom-tool.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import { ReplyWaiterRegistry } from "../../packages/intercom/reply-waiter.js";
+import type { BrokerMultiNodeStatus } from "../../packages/intercom/types.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 
 /**
@@ -247,7 +248,11 @@ describe("brokers sharing a SQLite selection", () => {
 						signal: undefined,
 						update: undefined,
 						ctx: object,
-					): Promise<{ content: Array<{ text: string }>; isError: boolean; details?: Record<string, unknown> }>;
+					): Promise<{
+						content: Array<{ text: string }>;
+						isError: boolean;
+						details?: { multiNode?: BrokerMultiNodeStatus };
+					}>;
 				};
 				let tool: Tool | undefined;
 				const replies = new ReplyWaiterRegistry();
@@ -280,7 +285,7 @@ describe("brokers sharing a SQLite selection", () => {
 					status.content[0]?.text ?? "",
 					/Multi-node routing: on \(adapter sqlite, prefix t_\), 1 peer broker live/,
 				);
-				assert.equal((status.details?.multiNode as { status?: string } | undefined)?.status, "on");
+				assert.equal(status.details?.multiNode?.status, "on");
 			} finally {
 				await client.disconnect();
 			}

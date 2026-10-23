@@ -2176,7 +2176,7 @@ class IntercomBroker {
    * The shared state is loaded lazily, so a single-node broker never loads the host storage layer. A database that
    * cannot be opened is retried with exponential backoff; meanwhile local delivery continues.
    */
-  private startMultiNode(setting: Record<string, unknown>): void {
+  private startMultiNode(setting: Record<string, JsonWireValue>): void {
     this.multiNodeStatus = "starting";
     this.multiNodeReason = undefined;
     let settleFirstAttempt: () => void = () => {};
