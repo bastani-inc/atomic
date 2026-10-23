@@ -39,3 +39,16 @@ export const child = workflow({
 		return { firstPid, finalPid, stagePid, leafPid: nested.outputs.pid! };
 	},
 });
+
+export const stalledChild = workflow({
+	name: "stalled-pool-child",
+	description: "Stops renewing after a committed checkpoint",
+	inputs: {},
+	outputs: { firstPid: Type.Number(), finalPid: Type.Number() },
+	async run(ctx) {
+		const firstPid = await ctx.tool("checkpoint", {}, async () => process.pid);
+		if (firstPid === process.pid) process.kill(process.pid, "SIGSTOP");
+		const finalPid = await ctx.tool("finish", {}, async () => process.pid);
+		return { firstPid, finalPid };
+	},
+});

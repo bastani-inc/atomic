@@ -12,6 +12,7 @@ import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const LOCAL_WORKER_PROCESS_TIMEOUT_MS = 120_000;
+const STALLED_WORKER_RECOVERY_TIMEOUT_MS = 30_000;
 
 test.each([
 	{ crash: false, during: false },
@@ -149,6 +150,67 @@ test.each([
 				assert.ok(leaf.checkpointId.startsWith(`${nested.topology!.boundary!.replayScope}:`));
 				assert.equal(leaf.topology?.run?.parentStageId, nested.topology!.stageId);
 			}
+		} finally {
+			await pool.close();
+			await backend.close();
+			removeTempDirectory(directory);
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a stalled sole worker is replaced and replays its committed checkpoint (#3869)",
+	async () => {
+		const directory = makeTempDirectory("stalled-local-pool-");
+		const path = join(directory, "journal.sqlite");
+		const journal = await resolveRunJournal({ journal: { path } });
+		const backend = await JournalDurableBackend.open(journal);
+		const childPath = fileURLToPath(new URL("../fixtures/pool-child.ts", import.meta.url));
+		const child = await loadWorkerDefinition({
+			path: childPath,
+			exportName: "stalledChild",
+			digest: await definitionDigest(childPath),
+		});
+		const pool = new LocalWorkerPool(backend, {
+			journalPath: path,
+			workers: 1,
+			definitions: [{ definition: child, path: childPath, exportName: "stalledChild" }],
+		});
+		try {
+			const parent = workflow({
+				name: "stalled-pool-root",
+				description: "",
+				inputs: {},
+				outputs: {},
+				async run(ctx) {
+					const result = await ctx.workflow(child);
+					assert.equal(result.status, "completed");
+					assert.notEqual(result.outputs.firstPid, result.outputs.finalPid);
+					assert.deepEqual(pool.workerPids, [result.outputs.finalPid]);
+					return {};
+				},
+			});
+			const result = await run(
+				parent,
+				{},
+				{
+					runId: "stalled-pool-root",
+					cwd: directory,
+					store: createStore(),
+					durableBackend: backend,
+					signal: AbortSignal.timeout(STALLED_WORKER_RECOVERY_TIMEOUT_MS),
+				},
+			);
+			assert.equal(result.status, "completed", JSON.stringify(result));
+			await backend.hydrateWorkflow("stalled-pool-root");
+			const toolNames = backend
+				.listCheckpoints("stalled-pool-root")
+				.flatMap((entry) =>
+					entry.kind === "tool" && (entry.name === "checkpoint" || entry.name === "finish") ? [entry.name] : [],
+				);
+			assert.deepEqual(toolNames, ["checkpoint", "finish"]);
+			assert.equal((await journal.listRuns()).length, 1);
 		} finally {
 			await pool.close();
 			await backend.close();

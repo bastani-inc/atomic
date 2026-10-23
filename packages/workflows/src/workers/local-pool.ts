@@ -20,12 +20,14 @@ import { childWorkerDispatchers } from "./dispatch.js";
 import type { WorkerRequest } from "./protocol.js";
 
 const WORK_LEASE_MS = 5_000;
+const RECOVERY_INTERVAL_MS = 500;
 const COORDINATOR_LEASE_MS = 30_000;
 
 export class LocalWorkerPool {
 	private readonly children = new Set<ChildProcess>();
 	private readonly incarnations = new Map<string, ChildProcess>();
-	private recovering: Promise<void> = Promise.resolve();
+	private recovering?: Promise<void>;
+	private nextRecoveryAt = 0;
 	private sources: WorkerDefinitionSource[] = [];
 	private queue?: SqlPoolQueue;
 	private lease?: Lease;
@@ -201,16 +203,21 @@ export class LocalWorkerPool {
 		});
 	}
 	private recoverExpired(root: string): Promise<void> {
-		const recovery = this.recovering.then(async () => {
+		if (this.recovering) return this.recovering;
+		if (this.closed || performance.now() < this.nextRecoveryAt) return Promise.resolve();
+		this.recovering = (async () => {
+			const expiredBefore = Date.now();
 			for (const work of await this.queue!.inspect(root)) {
-				if (work.state !== "leased" || work.expiresAt >= Date.now()) continue;
+				if (work.state !== "leased" || work.expiresAt >= expiredBefore) continue;
 				const child = work.worker === null ? undefined : this.incarnations.get(work.worker);
 				if (child) await this.stop(child);
 				await this.queue!.expire(this.lease!, work);
 			}
+		})().finally(() => {
+			this.recovering = undefined;
+			this.nextRecoveryAt = performance.now() + RECOVERY_INTERVAL_MS;
 		});
-		this.recovering = recovery.catch(() => {});
-		return recovery;
+		return this.recovering;
 	}
 	private stop(child: ChildProcess): Promise<void> {
 		if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
@@ -283,6 +290,7 @@ export class LocalWorkerPool {
 			if (this.closed) throw new Error("Local worker pool is closed");
 			if (this.failure) throw this.failure;
 			options.signal?.throwIfAborted();
+			await this.recoverExpired(root);
 			const result = await this.queue!.result(root, work.id);
 			if (result) {
 				await this.backend.hydrateWorkflow(root);
@@ -294,6 +302,7 @@ export class LocalWorkerPool {
 	async close(): Promise<void> {
 		this.closed = true;
 		childWorkerDispatchers.delete(this.backend);
+		await this.recovering?.catch(() => {});
 		await Promise.all([...this.children].map((child) => this.stop(child)));
 	}
 }
