@@ -52,10 +52,8 @@ test(
 			assert.equal(result.status, "completed", JSON.stringify(result));
 			const ledger = await (await openSqlPoolUsage(journal)).total("root");
 			assert.equal(ledger.input + ledger.output, 2);
-			assert.deepEqual(
-				store.runs().map((entry) => entry.id),
-				["root"],
-			);
+			assert.equal(store.runs().length, 2);
+			assert.equal(store.runs().filter((entry) => entry.parentRunId === "root").length, 1);
 			assert.equal(store.runs().find((entry) => entry.id === "root")?.budgetState?.accounting?.tokens, 2);
 			await pool.close();
 			const database = await openNodeSqliteDatabase(path);

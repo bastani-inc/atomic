@@ -69,11 +69,8 @@ test.each([
 					return {};
 				},
 			});
-			const result = await run(
-				parent,
-				{},
-				{ runId: "pool-root", cwd: directory, store: createStore(), durableBackend: backend },
-			);
+			const store = createStore();
+			const result = await run(parent, {}, { runId: "pool-root", cwd: directory, store, durableBackend: backend });
 			assert.equal(result.status, "completed", JSON.stringify(result));
 			assert.equal(pool.workerPids.length, 2);
 			assert.equal(new Set(pool.workerPids).size, 2);
@@ -87,6 +84,10 @@ test.each([
 					entry.topology.run?.runId === "pool-root",
 			);
 			assert.equal(starts.length, crash && !during ? 5 : 2);
+			const workerRuns = store.runs().filter((snapshot) => snapshot.parentRunId === "pool-root");
+			assert.equal(workerRuns.length, starts.length);
+			assert.ok(workerRuns.every((snapshot) => snapshot.stages.some((stage) => stage.name === "agent")));
+			assert.equal(store.activeRunId(), null);
 			assert.deepEqual(
 				starts.map((entry) => (entry.kind === "stage" ? entry.topology?.sourceOrder : -1)).sort(),
 				crash && !during ? [0, 1, 2, 3, 4] : [0, 1],

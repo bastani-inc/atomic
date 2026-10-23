@@ -22,6 +22,10 @@ type Transaction = SqlPoolStorage["transaction"];
 type JournalTables = SqlPoolStorage["tables"];
 const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 const MAX_WORKER_CLOCK_SKEW_MS = 1_000;
+export interface PoolControl {
+	readonly state: "running" | "paused" | "quit";
+	readonly revision: number;
+}
 export interface PoolWorkDescriptor {
 	readonly boundaryId: string;
 	readonly childRunId: string;
@@ -92,7 +96,8 @@ export class SqlPoolQueue {
 	private readonly operations: string;
 	private readonly transaction: Transaction;
 	private readonly journal: JournalTables;
-	private constructor(transaction: Transaction, journal: JournalTables) {
+	private constructor(private readonly storage: SqlPoolStorage) {
+		const { transaction, tables: journal } = storage;
 		this.transaction = transaction;
 		this.journal = journal;
 		this.meta = `${journal.runs}_pool_meta`;
@@ -100,9 +105,10 @@ export class SqlPoolQueue {
 		this.work = `${journal.runs}_work`;
 		this.operations = `${journal.runs}_pool_operations`;
 	}
-	static async open(transaction: Transaction, journal: JournalTables): Promise<SqlPoolQueue> {
-		const pool = new SqlPoolQueue(transaction, journal);
-		await transaction(async (tx) => {
+	static async open(storage: SqlPoolStorage): Promise<SqlPoolQueue> {
+		const journal = storage.tables;
+		const pool = new SqlPoolQueue(storage);
+		await storage.transaction(async (tx) => {
 			if ((await tx.get("PRAGMA foreign_keys"))?.foreign_keys !== 1)
 				throw new Error("Pool requires SQLite foreign keys");
 			await tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.meta}(version INTEGER NOT NULL)`);
@@ -135,6 +141,10 @@ export class SqlPoolQueue {
 					work TEXT PRIMARY KEY REFERENCES ${pool.work}(id) ON DELETE CASCADE, result TEXT NOT NULL
 				);
 			`);
+			await tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.roots}_control(
+				root TEXT PRIMARY KEY REFERENCES ${pool.roots}(root) ON DELETE CASCADE,
+				state TEXT NOT NULL DEFAULT 'running', revision INTEGER NOT NULL DEFAULT 0
+			)`);
 			await tx.exec(poolUsageSchema(journal.runs));
 		});
 		return pool;
@@ -179,6 +189,55 @@ export class SqlPoolQueue {
 			);
 			const row = await tx.get(`SELECT timeout FROM ${this.roots} WHERE root = ?`, lease.runId);
 			if (row?.timeout !== coordinatorTimeoutMs) throw new Error("Pool configuration is immutable");
+		});
+	}
+	async control(lease: Lease): Promise<PoolControl> {
+		return this.transaction(async (tx) => {
+			await this.authority(tx, lease);
+			const row = await tx.get(`SELECT state, revision FROM ${this.roots}_control WHERE root = ?`, lease.runId);
+			return row
+				? { state: row.state as PoolControl["state"], revision: Number(row.revision) }
+				: { state: "running", revision: 0 };
+		});
+	}
+	async setControl(lease: Lease, state: PoolControl["state"]): Promise<PoolControl> {
+		return this.transaction(async (tx) => {
+			await this.authority(tx, lease);
+			await tx.run(
+				`INSERT INTO ${this.roots}_control(root, state, revision) VALUES (?, ?, 1)
+				ON CONFLICT(root) DO UPDATE SET state = excluded.state, revision = revision + (state != excluded.state)`,
+				lease.runId,
+				state,
+			);
+			const row = (await tx.get(`SELECT revision FROM ${this.roots}_control WHERE root = ?`, lease.runId))!;
+			return { state, revision: Number(row.revision) };
+		});
+	}
+	withCurrentAppend<T>(
+		lease: Lease,
+		token: WorkLease,
+		assertSession: () => void,
+		action: () => Promise<T>,
+	): Promise<T> {
+		lease = snapshotLease(lease);
+		token = { ...token };
+		return this.storage.withAppendGuard(async (tx, runId) => {
+			if (runId !== lease.runId) throw new Error("Pool delivery cannot write another root");
+			const { now } = await this.authority(tx, lease).catch((error: Error) => {
+				if (error instanceof StaleLeaseError) throw new Error("Stale pool coordinator authority", { cause: error });
+				throw error;
+			});
+			const row = await this.current(tx, lease, token);
+			if (row.epoch !== lease.epoch || row.expires_at < now) throw new Error("Stale work lease");
+			assertSession();
+		}, action);
+	}
+
+	async assertCurrent(lease: Lease, token: WorkLease): Promise<void> {
+		await this.transaction(async (tx) => {
+			const { now } = await this.authority(tx, lease);
+			const row = await this.current(tx, lease, token);
+			if (row.epoch !== lease.epoch || row.expires_at < now) throw new Error("Stale work lease");
 		});
 	}
 	async enqueue(lease: Lease, descriptor: PoolWorkDescriptor, boundary: DurableStageCheckpoint): Promise<PoolWork> {
@@ -290,6 +349,8 @@ export class SqlPoolQueue {
 			.join(" OR ");
 		return this.transaction(async (tx) => {
 			const { now, status } = await this.authority(tx, lease);
+			const control = await tx.get(`SELECT state FROM ${this.roots}_control WHERE root = ?`, lease.runId);
+			if (control && control.state !== "running") return undefined;
 			if (status !== "running" || compatibleDefinitions.length === 0) return undefined;
 			const row = await tx.get<WorkRow>(
 				`SELECT * FROM ${this.work} WHERE root = ? AND state = 'ready' AND ready_at <= ? AND (${compatible}) ORDER BY ready_at, rowid LIMIT 1`,
@@ -311,6 +372,12 @@ export class SqlPoolQueue {
 			);
 			return fromRow((await tx.get<WorkRow>(`SELECT * FROM ${this.work} WHERE id = ?`, row.id))!);
 		});
+	}
+	private async admitsAttemptWrites(tx: SqliteExecutor, lease: Lease, status: string): Promise<boolean> {
+		if (status === "running") return true;
+		if (status !== "paused") return false;
+		const control = await tx.get(`SELECT state FROM ${this.roots}_control WHERE root = ?`, lease.runId);
+		return control?.state === "paused";
 	}
 	private async current(tx: SqliteExecutor, lease: Lease, token: WorkLease, allowCompleted = false): Promise<WorkRow> {
 		const row = await tx.get<WorkRow>(`SELECT * FROM ${this.work} WHERE id = ? AND root = ?`, token.id, lease.runId);
@@ -392,7 +459,7 @@ export class SqlPoolQueue {
 				return JSON.parse(previous.receipt) as PoolCommitReceipt;
 			}
 			if (row.expires_at < now) throw new Error("Stale work lease");
-			if (status !== "running") throw new Error("Pool root is not running");
+			if (!(await this.admitsAttemptWrites(tx, lease, status))) throw new Error("Pool root is not running");
 			const checkpoint = mutation.checkpoint;
 			await validatePoolMutation(tx, this.journal, lease.runId, fromRow(row), mutation);
 			if (checkpoint.completedAt > Math.max(now, Date.now()) + MAX_WORKER_CLOCK_SKEW_MS)
@@ -461,7 +528,8 @@ export class SqlPoolQueue {
 				if (previous?.result !== payload) throw new Error("Pool result identity conflict");
 				return;
 			}
-			if (row.expires_at < now || status !== "running") throw new Error("Stale work lease");
+			if (row.expires_at < now || !(await this.admitsAttemptWrites(tx, lease, status)))
+				throw new Error("Stale work lease");
 			if (JSON.parse(payload).runId !== fromRow(row).childRunId) throw new Error("Pool result identity mismatch");
 			await tx.run(`INSERT INTO ${this.work}_results VALUES (?, ?)`, token.id, payload);
 			await tx.run(`UPDATE ${this.work} SET state = 'completed' WHERE id = ?`, token.id);
@@ -500,5 +568,5 @@ export class SqlPoolQueue {
 export function openSqlPoolQueue(journal: RunJournal): Promise<SqlPoolQueue> {
 	const storage = sqlPoolStorage(journal);
 	if (!storage) return Promise.reject(new Error("Worker pool requires a SQL run journal"));
-	return SqlPoolQueue.open(storage.transaction, storage.tables);
+	return SqlPoolQueue.open(storage);
 }

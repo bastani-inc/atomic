@@ -225,7 +225,6 @@ async function executeRun(
 	const backendView: DurableWorkflowBackend = sourceBackend;
 	const rootBackend: DurableWorkflowBackend = opts.durableRootBackend ?? backendView;
 	const dispatcher = opts.parentRun === undefined ? childWorkerDispatchers.get(rootBackend) : undefined;
-	if (dispatcher?.prepare !== undefined) await dispatcher.prepare(runId);
 	const durableBackend: DurableWorkflowBackend =
 		opts.durableScope !== undefined ? new ScopedDurableBackend(backendView, opts.durableScope) : backendView;
 	const inheritedElapsedMs =
@@ -910,6 +909,7 @@ async function executeRun(
 	let terminalStatusCommitted = false;
 	let pausePersistence: Promise<void> | undefined;
 	let resumePersistence: Promise<void> | undefined;
+	let quitCleanup: Promise<void> | undefined;
 	let controlSettlements: Promise<void> = Promise.resolve();
 	const pendingControlPersistence = new Set<Promise<void>>();
 	let latestControl = 0;
@@ -972,8 +972,12 @@ async function executeRun(
 			ownController.signal.throwIfAborted();
 			pauseGeneration++;
 			scheduler.pauseRun();
-			activeStore.recordRunPaused(runId, undefined, { resumable: true });
-			pausePersistence = persistRunControl("paused");
+			if (!dispatcher?.control) activeStore.recordRunPaused(runId, undefined, { resumable: true });
+			pausePersistence = (async () => {
+				await dispatcher?.control?.("paused");
+				if (dispatcher?.control) activeStore.recordRunPaused(runId, undefined, { resumable: true });
+				await persistRunControl("paused");
+			})();
 			return pausePersistence;
 		},
 		resume: () => {
@@ -985,6 +989,8 @@ async function executeRun(
 				await pausePersistence?.catch(() => {});
 				if (generation !== pauseGeneration) throw new WorkflowRunControlError(runId, "running", "superseded");
 				await persistRunControl("running");
+				if (generation !== pauseGeneration) throw new WorkflowRunControlError(runId, "running", "superseded");
+				await dispatcher?.control?.("running");
 				ownController.signal.throwIfAborted();
 				if (generation !== pauseGeneration) throw new WorkflowRunControlError(runId, "running", "superseded");
 				activeStore.recordRunResumed(runId, undefined, { source: "run_control" });
@@ -996,7 +1002,16 @@ async function executeRun(
 		},
 		quit: () => {
 			ownController.abort(new WorkflowGracefulQuitError(runId, "workflow runtime"));
-			return runtimeSettled.promise;
+			const cleanup = dispatcher?.control?.("quit");
+			quitCleanup = cleanup;
+			if (!cleanup) return runtimeSettled.promise;
+			return (async () => {
+				try {
+					await cleanup;
+				} finally {
+					await runtimeSettled.promise;
+				}
+			})();
 		},
 	});
 	terminalEvents.register();
@@ -1049,6 +1064,8 @@ async function executeRun(
 			}
 		}
 		durableRootAdmitted = true;
+		if (dispatcher?.prepare !== undefined)
+			await raceAbort(dispatcher.prepare(runId, activeStore), ownController.signal);
 		activeStore.recordRunExecutionState(runId, {
 			phase: "executing",
 			lastProgressAt: Date.now(),
@@ -1261,6 +1278,7 @@ async function executeRun(
 	} finally {
 		rejectionScope.close();
 		callerSignal?.removeEventListener("abort", onCallerAbort);
+		await quitCleanup?.catch(() => {});
 		workflowObservationRuntime(activeStore).finishRun(runId);
 		runtimeSettled.resolve();
 		unregisterRunControl();

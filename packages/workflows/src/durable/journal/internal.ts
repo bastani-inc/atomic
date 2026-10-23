@@ -28,8 +28,11 @@ export function runJournalVersions(journal: RunJournal): RunJournalVersions | un
 	return versionReaders.get(journal);
 }
 
+export type JournalAppendGuard = (tx: SqliteExecutor, runId: string) => Promise<void>;
+
 export interface SqlPoolStorage {
 	transaction<T>(body: (tx: SqliteExecutor) => Promise<T>): Promise<T>;
+	withAppendGuard<T>(guard: JournalAppendGuard, action: () => Promise<T>): Promise<T>;
 	readonly tables: Readonly<{ runs: string; events: string; leases: string }>;
 }
 

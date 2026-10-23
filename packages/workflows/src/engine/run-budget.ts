@@ -80,6 +80,12 @@ const withFrontier = (
 	);
 const usageFields = ["input", "output", "cacheRead", "cacheWrite", "cost"] as const,
 	counterFields = ["input", "output", "cacheRead", "cacheWrite"] as const;
+const withoutWorkerUsage = (tree: RunUsageTree): RunUsageTree => {
+	const run = "run" in tree ? tree.run : tree;
+	const local = { ...run, stages: run.stages.filter((stage) => stage.workerExecution === undefined) };
+	const children = tree.children?.map(withoutWorkerUsage);
+	return children === undefined ? { run: local } : { run: local, children };
+};
 const mapFields = <F extends string>(fields: readonly F[], fn: (field: F) => number = () => 0): Record<F, number> =>
 	Object.fromEntries(fields.map((field) => [field, fn(field)])) as Record<F, number>;
 export function createRunBudgetController(input: {
@@ -91,14 +97,14 @@ export function createRunBudgetController(input: {
 	readonly externalUsage?: () => RunBudgetUsageBaseline | undefined;
 }) {
 	const { run, budget } = input;
+	const localUsageTree = (): RunUsageTree => withoutWorkerUsage(input.usageTree?.() ?? { run });
 	const ownEnabled = budget.maxDurationMs > 0 || budget.maxTokens > 0 || budget.maxCost > 0;
 	const usageEnabled = budget.maxTokens > 0 || budget.maxCost > 0;
 	const root = input.rootBudget?.enabled === true ? input.rootBudget : undefined;
 	const enabled = ownEnabled || root !== undefined;
 	let state: RunBudgetState | undefined = run.budgetState === undefined ? undefined : { ...run.budgetState };
 	const previousAccounting = state?.accounting;
-	const initial =
-		previousAccounting && usageEnabled ? meter_run(input.usageTree?.() ?? { run }, Date.now()) : undefined;
+	const initial = previousAccounting && usageEnabled ? meter_run(localUsageTree(), Date.now()) : undefined;
 	const initialAccounting = initial === undefined ? undefined : { ...initial.perCounter, cost: initial.cost };
 	let baseline = mapFields(usageFields, (field) => initialAccounting?.[field] ?? 0);
 	let externalBaseline: RunBudgetUsageBaseline = {
@@ -143,7 +149,7 @@ export function createRunBudgetController(input: {
 	const measure = (): RunMeters => {
 		const durationMs = elapsedRunMs(run);
 		if (!usageEnabled) return { durationMs, tokens: 0, cost: 0, perCounter: mapFields(counterFields) };
-		return { ...accountUsage(meter_run(input.usageTree?.() ?? { run }, Date.now())), durationMs };
+		return { ...accountUsage(meter_run(localUsageTree(), Date.now())), durationMs };
 	};
 	const warningWasSent = (report: BudgetReport): boolean =>
 		report.dimension === "duration" ? state?.warned === true : state?.warnings?.[report.dimension] !== undefined;

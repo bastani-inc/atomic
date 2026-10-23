@@ -1,6 +1,6 @@
 # Internal local workflow workers
 
-Issue #3869 is being implemented in six slices. This document describes the internal execution path added in slice 3. There is no CLI, settings or public SDK option to enable it. Normal workflow execution does not create a pool or start polling workers.
+Issue #3869 is being implemented in six slices. This document describes the internal execution path through slice 5. There is no CLI, settings or public SDK option to enable it. Normal workflow execution does not create a pool or start polling workers.
 
 ## Execution and persistence
 
@@ -20,13 +20,31 @@ Worker exit triggers a bounded replacement. Expired work becomes claimable only 
 
 The internal inventory accepts definitions loaded through the shared workflow-module loader, with an absolute module path, export name and SHA-256 content digest. Unregistered closures, changed entry modules and process-bound run adapter overrides fail before a worker starts. Child invocation budget overrides are also rejected before enqueueing; they are not silently dropped. The entry-module digest is not a deployment system or a transitive dependency snapshot. All workers still use the coordinator's local installation and filesystem.
 
-This slice accepts the default-prefix local SQL journal only. It does not expose admission limits, shared budgets, root control propagation, Intercom handoff, remote workers or process-tree containment. Those remain later slices and are why production activation stays closed. Callers of the internal supervisor must close it after the root settles.
+This path accepts the default-prefix local SQL journal only. Admission and budget accounting are shared with the root. Remote workers and the public activation contract remain out of scope. Callers of the internal supervisor must close it after the root settles.
+
+## Control and routing
+
+Root control is registered before asynchronous pool preparation. Pause, resume and quit intent has a durable revision. Claims and resource grants check that intent; workers acknowledge revisions after applying the existing scheduler and stage controls. Pause waits for worker acknowledgements before publishing the root as paused. Quit gives workers a bounded chance to suspend and dispose their sessions, then confirms local process cleanup or reports unresolved cleanup. Explicit resume reopens admission without changing queued work identities or completed child results.
+
+Resume checks for a newer pause after durable persistence, before reopening pool admission. Pool shutdown releases Intercom routes even when worker or session cleanup fails, while still reporting the cleanup error.
+
+Worker activity updates the existing root store, including nested parent edges and worker lease diagnostics on stages. Workers do not register additional durable roots. The root's Intercom route owner announces worker stages and supplies their current route capabilities. Replacement rotates those capabilities. Pending direct messages, sticky broadcasts and delivery receipts use the existing root-owned durable queue. A worker never writes the root message ledger directly.
+
+Worker activity publication keeps one request in flight and coalesces later invalidations into the latest snapshot. Lease renewal and control polling do not wait for activity acknowledgements. Pending-message transitions apply persisted messages to the current run snapshot, including when worker publication replaces it during persistence.
+
+The root records a receipt only after transport acknowledgement or confirmed context admission. Each receipt append validates the work lease in the same SQL transaction as the write and checks the published session before the transaction returns. A concurrent replacement either precedes that validation and rejects the receipt, or follows the receipt's transaction ordering. Successor delivery waits for the old drain to release its message claim. Session replacement rejects old readiness requests and discards the failed delivery object. A temporary coordinator heartbeat lag refuses receipt commits without retiring the root's journal backend.
+
+The root reconstructs committed child checkpoints and pending messages from the journal. Uncheckpointed worker activity is observational and may disappear on recovery. Recovery still provides at-least-once execution, not exactly-once external effects.
 
 ## Verification
 
 - `test/integration/workflow-local-pool.test.ts` runs a root and two real workers, uses a SQL checkpoint barrier to prove fan-out, executes normal Atomic stages with an offline fixture provider, and checks scoped topology. Crash cases prove completed tool/stage/nested outputs are replayed, unfinished stages resume the same SQL session, and four successive child recoveries do not exhaust a pool-wide counter.
-- `test/integration/workflow-local-pool-lifecycle.test.ts` checks delayed root-heartbeat headroom and a final-attempt worker exit while its durable completion is pending.
+- `test/integration/workflow-local-pool-lifecycle.test.ts` checks delayed root-heartbeat headroom, pause/resume/quit, recovery, and a final-attempt worker exit while its durable completion is pending.
 - `test/unit/workflow-local-pool-compatibility.test.ts` checks entry-module changes and process-bound run overrides before launch.
 - `test/unit/workflow-pool-commits.test.ts` checks durable child completion receipts, including a lost acknowledgement and rejected late writes.
+- `test/integration/workflow-pool-intercom.test.ts` sends direct and sticky messages through a real local broker to two workers, replaces one worker before delivery, and verifies both messages enter the intended stage context.
+- `test/unit/workflow-pool-stage-handoff.test.ts` checks scoped publication, capability rotation, stale-session acknowledgement rejection and reuse of durable pending messages. Deterministic barriers replace workers or sessions after transport validation but before receipt persistence, and fence an attempt after its receipt insert to verify transaction rollback. Direct and sticky delivery both cover receipts for messages already admitted to context.
+- `test/integration/workflow-local-worker-heartbeat.test.ts` holds activity acknowledgements while a real worker produces tool updates, checks continued renewals and control polling, and verifies coalesced publication retains the final state.
+- `test/unit/workflow-pool-dispose-routes.test.ts` verifies failed session cleanup still releases root routes and reports the cleanup error.
 
 User guides and the package changelog are unchanged because this internal path is not available to users yet.

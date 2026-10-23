@@ -35,6 +35,39 @@ async function waitForReason(admission: SqlResourceAdmission, reason: string): P
 	}
 }
 
+test("persisted pause closes root and worker resource grants before root status changes (#3869)", async () => {
+	const f = await fixture();
+	try {
+		const journal = f.journals[0]!;
+		await journal.createRun({ runId: "root", name: "root", cwd: "", createdAt: 0, status: "running" });
+		const acquired = await journal.acquire("root", "coordinator");
+		assert.equal(acquired.status, "acquired");
+		if (acquired.status !== "acquired") assert.fail("no lease");
+		const queue = await openSqlPoolQueue(journal);
+		await queue.initialize(acquired.lease, 60_000);
+		const item = poolWorkFixture();
+		await queue.enqueue(acquired.lease, item.work, item.boundary);
+		const work = (await queue.claim(acquired.lease, "worker", [item.work], 60_000))!;
+		await queue.setControl(acquired.lease, "paused");
+		for (const attempt of [undefined, work]) {
+			const admission = await SqlResourceAdmission.open(f.journals[1]!, {
+				root: "root",
+				holder: "worker",
+				attempt,
+				limits: { session: 2 },
+			});
+			const pending = admission.acquire("session");
+			await waitForReason(admission, "root paused");
+			assert.equal((await admission.inspect()).filter((row) => row.state === "granted").length, 0);
+			await queue.setControl(acquired.lease, "running");
+			await (await pending)();
+			await queue.setControl(acquired.lease, "paused");
+		}
+	} finally {
+		await f.close();
+	}
+});
+
 test("independent connections share root/user caps and FIFO cancellation (#3869)", async () => {
 	const f = await fixture();
 	try {

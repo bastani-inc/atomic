@@ -7,6 +7,7 @@ type WorkflowPendingStageDeliver = Parameters<WorkflowPendingStageDelivery["deli
 type WorkflowPendingStageRecipient = Parameters<WorkflowPendingStageDelivery["deliverPending"]>[1];
 type WorkflowPendingStageSender = Parameters<WorkflowPendingStageDeliver>[0];
 type WorkflowPendingStageMessage = Parameters<WorkflowPendingStageDeliver>[1];
+type PendingStageDeliveryCommit = <T>(action: () => Promise<T>) => Promise<T>;
 
 import { durableBackendForRun, durableRootRunIdForRun } from "../../durable/run-owner-backend.js";
 import { requireStoreDurableBackend } from "../../durable/store-backend.js";
@@ -75,6 +76,7 @@ export function createWorkflowPendingStageDelivery(
 	runId: string,
 	stageId: string,
 	stageName: string,
+	commit: PendingStageDeliveryCommit = (action) => action(),
 ): WorkflowPendingStageDelivery {
 	let resolveReady: (() => void) | undefined;
 	let rejectReady: ((error: Error) => void) | undefined;
@@ -113,7 +115,15 @@ export function createWorkflowPendingStageDelivery(
 			// replay silent, which is the whole point of the terminal signal.
 			if (terminalError !== undefined) return Promise.resolve();
 			drainError = undefined;
-			const attempt = deliverPendingStageMessages(activeStore, runId, stageId, stageName, deliver, recipient);
+			const attempt = deliverPendingStageMessages(
+				activeStore,
+				runId,
+				stageId,
+				stageName,
+				deliver,
+				commit,
+				recipient,
+			);
 			const drain = attempt.then(
 				() => {
 					resolveReady?.();
@@ -204,6 +214,7 @@ async function deliverPendingStageMessages(
 	stageId: string,
 	stageName: string,
 	deliver: (from: WorkflowPendingStageSender, message: WorkflowPendingStageMessage) => void | Promise<void>,
+	commit: PendingStageDeliveryCommit,
 	recipient?: WorkflowPendingStageRecipient,
 ): Promise<void> {
 	const stickyEntries = stickyPendingStageEntriesForStage(activeStore, runId, stageId, stageName, recipient);
@@ -254,12 +265,14 @@ async function deliverPendingStageMessages(
 					})
 				) {
 					if (entryBackend !== undefined) {
-						await activeStore.recordPendingStageMessageDeliveries(
-							entry.runId,
-							entry.id,
-							[],
-							new Date().toISOString(),
-							entryBackend,
+						await commit(() =>
+							activeStore.recordPendingStageMessageDeliveries(
+								entry.runId,
+								entry.id,
+								[],
+								new Date().toISOString(),
+								entryBackend,
+							),
 						);
 					}
 					continue;
@@ -277,21 +290,23 @@ async function deliverPendingStageMessages(
 					);
 				}
 				if (
-					!(await activeStore.recordPendingStageMessageDeliveries(
-						entry.runId,
-						entry.id,
-						[
-							{
-								runId,
-								stageId,
-								...(stageName === stageId ? {} : { stageName }),
-								...(recipient === undefined
-									? {}
-									: { sessionId: recipient.sessionId, admission: "context" as const }),
-							},
-						],
-						new Date().toISOString(),
-						entryBackend,
+					!(await commit(() =>
+						activeStore.recordPendingStageMessageDeliveries(
+							entry.runId,
+							entry.id,
+							[
+								{
+									runId,
+									stageId,
+									...(stageName === stageId ? {} : { stageName }),
+									...(recipient === undefined
+										? {}
+										: { sessionId: recipient.sessionId, admission: "context" as const }),
+								},
+							],
+							new Date().toISOString(),
+							entryBackend,
+						),
 					))
 				) {
 					throw new Error(`atomic-workflows: pending-stage message ${entry.id} changed during delivery`);
@@ -299,12 +314,14 @@ async function deliverPendingStageMessages(
 				continue;
 			}
 			if (
-				!(await activeStore.markPendingStageMessageDelivered(
-					runId,
-					entry.stageKey,
-					entry.id,
-					new Date().toISOString(),
-					backend,
+				!(await commit(() =>
+					activeStore.markPendingStageMessageDelivered(
+						runId,
+						entry.stageKey,
+						entry.id,
+						new Date().toISOString(),
+						backend,
+					),
 				))
 			) {
 				throw new Error(`atomic-workflows: pending-stage message ${entry.id} changed during delivery`);
