@@ -1,4 +1,4 @@
-import type { SqliteDatabase } from "@bastani/atomic/storage";
+import type { AdapterOptions, SqliteDatabase } from "@bastani/atomic/storage";
 
 export interface LibsqlDatabaseOptions {
 	url: string;
@@ -9,6 +9,6 @@ export function openLibsqlDatabase(options: LibsqlDatabaseOptions): Promise<Sqli
 
 declare const adapter: {
 	atomicStorageAdapter: 1;
-	openDatabase(options: Record<string, unknown>): Promise<SqliteDatabase>;
+	openDatabase(options: AdapterOptions): Promise<SqliteDatabase>;
 };
 export default adapter;
