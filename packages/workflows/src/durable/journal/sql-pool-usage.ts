@@ -1,14 +1,20 @@
 import type { SqliteExecutor } from "@bastani/atomic/storage";
 import { type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
+import {
+	POOL_USAGE_FIELDS as FIELDS,
+	type PoolUsage,
+	poolUsageSchema,
+	poolUsageTable,
+	upsertPoolUsage,
+} from "./pool-stage-usage.js";
 import { openSqlPoolQueue } from "./sql-pool-queue.js";
 import { type Lease, type RunJournal, StaleLeaseError } from "./types.js";
 import { validateText } from "./values.js";
 
 const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
-const FIELDS = ["input", "output", "cacheRead", "cacheWrite", "cost"] as const;
 
-export type PoolUsage = Readonly<Record<(typeof FIELDS)[number], number>>;
+export type { PoolUsage };
 export interface PoolUsageReport {
 	readonly key: string;
 	readonly usage: PoolUsage;
@@ -19,8 +25,6 @@ type UsageToken = {
 	readonly worker: string | null;
 	readonly epoch: number;
 };
-
-const COLUMNS = FIELDS.map((field) => field.toLowerCase()).join(", ");
 
 function validate(report: PoolUsageReport): void {
 	validateText("key", report.key);
@@ -38,23 +42,14 @@ export class SqlPoolUsage {
 		private readonly transaction: SqlPoolStorage["transaction"],
 		private readonly journal: SqlPoolStorage["tables"],
 	) {
-		this.table = `${journal.runs}_pool_usage`;
+		this.table = poolUsageTable(journal.runs);
 	}
 	static async open(
 		transaction: SqlPoolStorage["transaction"],
 		journal: SqlPoolStorage["tables"],
 	): Promise<SqlPoolUsage> {
 		const usage = new SqlPoolUsage(transaction, journal);
-		await transaction((tx) =>
-			tx.exec(`
-				CREATE TABLE IF NOT EXISTS ${usage.table}(
-					work TEXT NOT NULL REFERENCES ${journal.runs}_work(id) ON DELETE CASCADE,
-					generation INTEGER NOT NULL, key TEXT NOT NULL,
-					input REAL NOT NULL, output REAL NOT NULL, cacheread REAL NOT NULL, cachewrite REAL NOT NULL, cost REAL NOT NULL,
-					PRIMARY KEY(work, generation, key)
-				)
-			`),
-		);
+		await transaction((tx) => tx.exec(poolUsageSchema(journal.runs)));
 		return usage;
 	}
 	private async totalIn(tx: SqliteExecutor, root: string): Promise<PoolUsage> {
@@ -99,17 +94,7 @@ export class SqlPoolUsage {
 			)
 				throw new Error("Stale work lease");
 			for (const { key, usage } of snapshot)
-				await tx.run(
-					`INSERT INTO ${this.table}(work, generation, key, ${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-					 ON CONFLICT(work, generation, key) DO UPDATE SET ${FIELDS.map((field) => {
-							const column = field.toLowerCase();
-							return `${column} = MAX(${this.table}.${column}, excluded.${column})`;
-						}).join(", ")}`,
-					token.id,
-					token.generation,
-					key,
-					...FIELDS.map((field) => usage[field]),
-				);
+				await upsertPoolUsage(tx, this.journal.runs, token.id, token.generation, key, usage);
 			return this.totalIn(tx, lease.runId);
 		});
 	}

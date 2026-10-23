@@ -5,6 +5,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { createModuleRequire } from "../../utils/module-require.ts";
 import type { AgentSessionEvent } from "../agent-session.js";
 import { currentResourceAdmission } from "../resource-admission-scope.js";
+import type { ResourcePermit } from "../sdk-types.js";
 import type { SessionManager } from "../session-manager.ts";
 import { COMMAND_FOREGROUND_BUDGET_MS } from "./command-output.js";
 import type { TaskCompletionSource } from "./completion-ordering.js";
@@ -79,7 +80,7 @@ type OwnerState = {
 	settledTasks: Set<C.TaskId>;
 	commandAdmissions: Set<Promise<void>>;
 	closing: AbortController;
-	permits: Map<C.TaskId, () => Promise<void>>;
+	permits: Map<C.TaskId, ResourcePermit>;
 	releases: Set<Promise<void>>;
 	releaseFailures: Error[];
 	commandStarts: Map<C.OperationId, { intent: C.CommandIntent; result: Promise<C.Result<TaskLease, C.StartFailure>> }>;
@@ -713,23 +714,44 @@ export class TaskSupervisor {
 			finishAdmission = resolve;
 		});
 		state.commandAdmissions.add(admission);
-		let release: (() => Promise<void>) | undefined;
+		let release: ResourcePermit | undefined;
 		try {
 			release = await (currentResourceAdmission() ?? state.host.binding.resourceAdmission)?.acquire(
 				"process",
 				signal ? AbortSignal.any([signal, state.closing.signal]) : state.closing.signal,
 			);
-			const admitted = mapped(
-				await this.#native.startCommandTask(state.native, intent, operation),
-				(lease) => lease,
-				startErrors,
-			);
+			let started: Awaited<ReturnType<native.TaskSupervisor["startCommandTask"]>>;
+			try {
+				started = await this.#native.startCommandTask(state.native, intent, operation);
+			} catch (error) {
+				release = undefined;
+				throw new Error(`Command cleanup unconfirmed; process permit retained: ${rejectionMessage(error)}`, {
+					cause: error,
+				});
+			}
+			if (!started.ok && !startErrors.some((code) => code === started.error.code)) {
+				release = undefined;
+				throw new Error(
+					`Command cleanup unconfirmed; process permit retained: ${started.error.code}: ${started.error.message}`,
+				);
+			}
+			const admitted = mapped(started, (lease) => lease, startErrors);
 			if (!admitted.ok) return admitted;
 			const ref = this.#native.taskReference(admitted.value);
 			if (!ref.ok) throw new Error(ref.error.message);
 			const id = ref.value.taskId as C.TaskId;
 			const existing = state.tasks.get(id);
 			if (existing) return { ok: true, value: existing };
+			let bindFailure: Error | undefined;
+			if (release?.bindProcess) {
+				try {
+					const group = this.#native.taskProcessGroup(admitted.value);
+					if (!group.ok) throw new Error(group.error.message);
+					if (group.value !== null) await release.bindProcess({ kind: "unix-process-group", id: group.value });
+				} catch (error) {
+					bindFailure = new Error(rejectionMessage(error));
+				}
+			}
 			if (release) {
 				state.permits.set(id, release);
 				release = undefined;
@@ -743,6 +765,10 @@ export class TaskSupervisor {
 				kind: "command",
 			});
 			state.tasks.set(id, task);
+			if (bindFailure) {
+				await this.cancelTask(task, "owner-close").catch(() => undefined);
+				throw bindFailure;
+			}
 			if (state.permits.has(id)) {
 				for (const watch of state.watches) {
 					watch.drain();

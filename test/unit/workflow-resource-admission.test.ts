@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+import * as admissionHost from "../../packages/workflows/src/workers/admission-host.js";
 import { SqlResourceAdmission } from "../../packages/workflows/src/workers/resource-admission.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -163,6 +164,31 @@ test("FIFO grants follow tickets and stopped waiters never reacquire (#3869)", a
 		await releaseNext();
 		assert.equal((await other.inspect()).filter((row) => row.state === "granted").length, 0);
 	} finally {
+		await f.close();
+	}
+});
+
+test("a confirmed host reboot releases orphan process permits but expiry alone cannot (#3869)", async () => {
+	const f = await fixture();
+	const boot = vi.spyOn(admissionHost, "admissionBootIdentity").mockResolvedValue("old-boot");
+	try {
+		const before = await SqlResourceAdmission.open(f.journals[0]!, {
+			root: "root",
+			holder: "before",
+			limits: { process: 1 },
+		});
+		await before.acquire("process");
+		boot.mockResolvedValue("new-boot");
+		const after = await SqlResourceAdmission.open(f.journals[1]!, {
+			root: "root",
+			holder: "after",
+			limits: { process: 1 },
+		});
+		assert.equal((await after.inspect()).filter((row) => row.state === "granted").length, 0);
+		const release = await after.acquire("process", AbortSignal.timeout(1000));
+		await release();
+	} finally {
+		boot.mockRestore();
 		await f.close();
 	}
 });

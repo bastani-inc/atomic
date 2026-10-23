@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import { poolStageUsageKey } from "../../packages/workflows/src/durable/journal/pool-stage-usage.js";
 import { createRunBudgetController } from "../../packages/workflows/src/engine/run-budget.js";
 import { resolve_budget } from "../../packages/workflows/src/shared/budget.js";
 import { restoreBudgetState } from "../../packages/workflows/src/shared/persistence-restore-helpers.js";
@@ -34,15 +35,15 @@ function stage(name: string, modelUsage: WorkflowModelUsage, replayed = false): 
 	};
 }
 
-test("worker usage reports count each run once and skip replayed stages (#3869)", () => {
+test("worker usage reports one entry per non-replayed stage under its stable stage key (#3869)", () => {
 	const child = budgetRun({
 		id: "child",
 		stages: [stage("a", { input: 10, output: 5, cost: 0.5 }), stage("cached", { input: 999 }, true)],
 	});
 	const nested = budgetRun({ id: "nested", stages: [stage("b", { input: 3, cacheRead: 2 })] });
 	assert.deepEqual(collectWorkerUsage([child, nested]), [
-		{ key: "child", usage: usage(10, 5, 0.5) },
-		{ key: "nested", usage: { ...usage(3), cacheRead: 2 } },
+		{ key: poolStageUsageKey("child", "a"), usage: usage(10, 5, 0.5) },
+		{ key: poolStageUsageKey("nested", "b"), usage: { ...usage(3), cacheRead: 2 } },
 	]);
 });
 

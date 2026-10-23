@@ -136,9 +136,9 @@ export async function runLocalWorker(start: WorkerStart): Promise<void> {
 				: undefined;
 			const adapter = createAgentSessionAdapter({ cwd: String(work.execution.cwd) });
 			const resourceAdmission: ResourceAdmission = {
-				async acquire(kind, signal) {
+				async acquire(kind, signal, requestOptions) {
 					await request({ kind: "budget" });
-					return admission ? admission.acquire(kind, signal) : async () => {};
+					return admission ? admission.acquire(kind, signal, requestOptions) : async () => {};
 				},
 			};
 			const admitted = admittedSessionAdapter(adapter, resourceAdmission);

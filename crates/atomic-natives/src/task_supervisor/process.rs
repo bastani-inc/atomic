@@ -121,6 +121,8 @@ pub(super) struct CommandTask {
 	finished: AtomicBool,
 	#[cfg(unix)]
 	retained: Mutex<Option<FailedProcess>>,
+	#[cfg(unix)]
+	process_group: std::sync::atomic::AtomicI32,
 	#[cfg(all(test, unix))]
 	kill_error: std::sync::atomic::AtomicI32,
 	#[cfg(all(test, unix))]
@@ -277,6 +279,8 @@ impl Actor {
 			finished: AtomicBool::new(false),
 			#[cfg(unix)]
 			retained: Mutex::new(None),
+			#[cfg(unix)]
+			process_group: std::sync::atomic::AtomicI32::new(0),
 			#[cfg(all(test, unix))]
 			kill_error: std::sync::atomic::AtomicI32::new(0),
 			#[cfg(all(test, unix))]
@@ -461,6 +465,7 @@ impl Actor {
 			},
 		};
 		let pid = child.id() as libc::pid_t;
+		command.process_group.store(pid, Ordering::Release);
 		{
 			let mut state = self.state.lock().unwrap();
 			let (oi, ti) = state.runner(self.id, &runner.cap).unwrap();
@@ -801,7 +806,8 @@ fn child_exited_without_reaping(pid: libc::pid_t) -> io::Result<bool> {
 	if result < 0 {
 		return Err(io::Error::last_os_error());
 	}
-	Ok(unsafe { info.si_pid() } != 0)
+	Ok(unsafe { info.si_pid() } != 0
+		&& matches!(info.si_code, libc::CLD_EXITED | libc::CLD_KILLED | libc::CLD_DUMPED))
 }
 
 const COMMAND_LIVE_BYTES: usize = 1_048_576;
@@ -1446,6 +1452,50 @@ mod tests {
 	#[test]
 	fn externally_terminated_group_waits_for_unreaped_member() {
 		assert_external_termination_cleanup(true);
+	}
+	#[cfg(unix)]
+	#[test]
+	fn stopped_command_group_is_not_treated_as_exited_3869() {
+		let (actor, owner) = command_owner();
+		let path =
+			std::env::temp_dir().join(format!("atomic-stopped-{}-{}", std::process::id(), actor.id));
+		actor
+			.start_command(
+				&owner,
+				pipe_intent(&format!("echo $$ > '{}'; exec sleep 30", path.display())),
+				"stopped".into(),
+			)
+			.unwrap();
+		let pid: libc::pid_t = wait_for_file(&path).trim().parse().unwrap();
+		std::fs::remove_file(path).unwrap();
+		assert_eq!(unsafe { libc::kill(-pid, libc::SIGSTOP) }, 0);
+		std::thread::sleep(PROCESS_TERM_GRACE * 2);
+		let task = &actor.snapshot(&owner).unwrap().tasks[0];
+		assert!(matches!(task.execution, Execution::Running {}), "{:?}", task.execution);
+		assert!(matches!(task.cleanup, Cleanup::Active {}));
+		assert_eq!(unsafe { libc::kill(-pid, 0) }, 0, "a stopped group is still alive");
+		unsafe { libc::kill(-pid, libc::SIGCONT) };
+		actor.shutdown();
+	}
+	#[cfg(unix)]
+	#[test]
+	fn started_command_exposes_its_process_group_for_identity_only() {
+		let (actor, owner) = command_owner();
+		let path =
+			std::env::temp_dir().join(format!("atomic-group-{}-{}", std::process::id(), actor.id));
+		let lease = actor
+			.start_command(
+				&owner,
+				pipe_intent(&format!("echo $$ > '{}'; exec sleep 30", path.display())),
+				"group".into(),
+			)
+			.unwrap();
+		let pid: libc::pid_t = wait_for_file(&path).trim().parse().unwrap();
+		std::fs::remove_file(path).unwrap();
+		assert_eq!(actor.process_group(&lease).unwrap(), Some(pid));
+		assert_eq!(unsafe { libc::getpgid(pid) }, pid);
+		actor.shutdown();
+		assert_eq!(actor.process_group(&lease).unwrap(), Some(pid), "the identity outlives cleanup");
 	}
 	#[cfg(target_os = "macos")]
 	#[test]

@@ -6,7 +6,13 @@ import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
 import { createAgentSession, withResourceAdmission } from "../src/core/sdk.js";
-import type { CreateAgentSessionOptions, ResourceAdmission } from "../src/core/sdk-types.js";
+import type {
+	CreateAgentSessionOptions,
+	ResourceAdmission,
+	ResourceAdmissionRequest,
+	ResourcePermit,
+	ResourceProcessIdentity,
+} from "../src/core/sdk-types.js";
 import { ownedSessionManagerStores } from "../src/core/session-lifecycle-work.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
@@ -18,26 +24,50 @@ import { createTestResourceLoader } from "./utilities.js";
 
 type Kind = "session" | "process";
 
+function groupAlive(identity: ResourceProcessIdentity): boolean {
+	try {
+		process.kill(-identity.id, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 class FakeAdmission implements ResourceAdmission {
 	readonly held: Record<Kind, number> = { session: 0, process: 0 };
 	readonly releaseCalls: Kind[] = [];
 	readonly acquired: Kind[] = [];
+	readonly requests: Array<ResourceAdmissionRequest | undefined> = [];
+	readonly bound: ResourceProcessIdentity[] = [];
+	readonly aliveAtRelease: boolean[] = [];
+	bindFailure: Error | undefined;
 	private readonly waiters: Array<{ kind: Kind; grant: () => void }> = [];
 	constructor(private readonly caps: Partial<Record<Kind, number>> = {}) {}
-	acquire(kind: Kind, signal?: AbortSignal): Promise<() => Promise<void>> {
+	acquire(kind: Kind, signal?: AbortSignal, request?: ResourceAdmissionRequest): Promise<ResourcePermit> {
+		this.requests.push(request);
 		if (signal?.aborted) return Promise.reject(signal.reason);
+		if (request?.delegated && this.held[kind] >= (this.caps[kind] ?? Number.POSITIVE_INFINITY))
+			return Promise.reject(new Error(`no ${kind} headroom for a delegated launch`));
 		return new Promise((resolve, reject) => {
 			const grant = () => {
 				this.held[kind]++;
 				this.acquired.push(kind);
 				let released = false;
-				resolve(async () => {
+				let identity: ResourceProcessIdentity | undefined;
+				const permit: ResourcePermit = async () => {
 					this.releaseCalls.push(kind);
 					if (released) return;
 					released = true;
+					if (identity) this.aliveAtRelease.push(groupAlive(identity));
 					this.held[kind]--;
 					this.drain();
-				});
+				};
+				permit.bindProcess = async (bound) => {
+					identity = bound;
+					if (this.bindFailure) throw this.bindFailure;
+					this.bound.push(bound);
+				};
+				resolve(permit);
 			};
 			const waiter = { kind, grant };
 			if (this.held[kind] < (this.caps[kind] ?? Number.POSITIVE_INFINITY)) grant();
@@ -157,9 +187,49 @@ test("delegated child sessions and their commands draw on the parent's admission
 
 	const child = await open(root, { ...inherited, sessionManager: SessionManager.inMemory(root) });
 	assert.equal(admission.held.session, 2);
+	assert.deepEqual(admission.requests, [undefined, { delegated: true }]);
 
 	await child.dispose();
 	assert.equal(admission.held.session, 1);
+});
+
+const NO_HEADROOM = /no session headroom for a delegated launch/;
+
+function delegatedOptions(parent: AgentSession, root: string): CreateAgentSessionOptions {
+	return {
+		...parent.extensionRunner.createContext().getChildSessionOptions!({ cwd: root }),
+		sessionManager: SessionManager.inMemory(root),
+		// Without a rejection the launch would wait on its parent forever; bound the red run.
+		resourceAdmissionSignal: AbortSignal.timeout(500),
+	};
+}
+
+test("a delegated child is rejected instead of waiting on the single permit its parent holds (#3869)", async () => {
+	const admission = new FakeAdmission({ session: 1 });
+	const root = tempRoot();
+	const parent = await open(root, { resourceAdmission: admission });
+
+	await assert.rejects(createAgentSession(sessionOptions(root, delegatedOptions(parent, root))), NO_HEADROOM);
+
+	assert.deepEqual(admission.requests, [undefined, { delegated: true }]);
+	assert.equal(admission.held.session, 1, "the cap is never exceeded");
+	assert.deepEqual(admission.acquired, ["session"]);
+});
+
+test("delegated children are rejected when parents hold every permit of a larger cap (#3869)", async () => {
+	const admission = new FakeAdmission({ session: 2 });
+	const root = tempRoot();
+	const first = await open(root, { resourceAdmission: admission });
+	await open(root, { resourceAdmission: admission });
+
+	await assert.rejects(createAgentSession(sessionOptions(root, delegatedOptions(first, root))), NO_HEADROOM);
+	assert.equal(admission.held.session, 2, "the cap is never exceeded");
+
+	const direct = createAgentSession(
+		sessionOptions(root, { resourceAdmission: admission, resourceAdmissionSignal: AbortSignal.timeout(100) }),
+	);
+	await assert.rejects(direct, (error: Error) => !NO_HEADROOM.test(error.message));
+	assert.equal(admission.requests.at(-1), undefined, "an independent launch keeps waiting for capacity");
 });
 
 test("a background command keeps its process permit until native cleanup reaps it (#3869)", async () => {
@@ -210,6 +280,62 @@ test("closing the owner releases a still-running command's permit once its proce
 		["process"],
 	);
 });
+
+test.skipIf(process.platform === "win32")(
+	"a command's permit is bound to its process group before the launch returns (#3869)",
+	async () => {
+		const admission = new FakeAdmission();
+		const session = await open(tempRoot(), { resourceAdmission: admission });
+		const bash = session.agent.state.tools.find((item) => item.name === "bash")!;
+
+		await bash.execute("launch", { command: `${holdCommand}; exit 0`, wait: { kind: "background" }, timeout: 30 });
+
+		assert.equal(admission.bound.length, 1);
+		const [identity] = admission.bound;
+		assert.equal(identity!.kind, "unix-process-group");
+		assert.ok(Number.isSafeInteger(identity!.id) && identity!.id > 0);
+		assert.ok(groupAlive(identity!), "the identity names the live command group");
+		assert.equal(admission.held.process, 1);
+
+		await session.dispose();
+		assert.deepEqual(admission.aliveAtRelease, [false], "release follows confirmed group cleanup");
+		assert.equal(admission.held.process, 0);
+	},
+);
+
+test.skipIf(process.platform === "win32")(
+	"a failed process binding cancels the command and releases only after its group is gone (#3869)",
+	async () => {
+		const admission = new FakeAdmission();
+		admission.bindFailure = new Error("binding unavailable");
+		const root = tempRoot();
+		const session = await open(root, { resourceAdmission: admission });
+		const { supervisor, owner } = session.getAgentTaskHost().ownerBinding;
+
+		await assert.rejects(
+			supervisor.startCommandTask(
+				owner,
+				{
+					kind: "command",
+					command: `${holdCommand}; exit 0`,
+					description: "unbound",
+					cwd: root,
+					env: {},
+					terminal: { kind: "pipe" },
+				},
+				crypto.randomUUID() as OperationId,
+			),
+			/binding unavailable/,
+		);
+
+		await vi.waitFor(() => assert.equal(admission.held.process, 0), { timeout: 10000 });
+		assert.deepEqual(admission.aliveAtRelease, [false]);
+		assert.deepEqual(
+			admission.releaseCalls.filter((kind) => kind === "process"),
+			["process"],
+		);
+	},
+);
 
 test("a command that fails to spawn releases its permit immediately (#3869)", async () => {
 	const admission = new FakeAdmission();
@@ -426,6 +552,60 @@ test("a command reaped before its permit is registered still releases the permit
 		admission.releaseCalls.filter((kind) => kind === "process"),
 		["process"],
 	);
+});
+
+test.each(["cleanup", "transport"])(
+	"a native launch with unconfirmed %s keeps the process permit held (#3869)",
+	async (failure) => {
+		const admission = new FakeAdmission();
+		const root = tempRoot();
+		const session = await open(root, { resourceAdmission: admission });
+		const { supervisor, owner } = session.getAgentTaskHost().ownerBinding;
+		const binding = createRequire(import.meta.url)(
+			"@bastani/atomic-natives",
+		) as typeof import("@bastani/atomic-natives");
+		const spy = vi.spyOn(binding.TaskSupervisor.prototype, "startCommandTask").mockImplementation(async () => {
+			if (failure === "transport") throw new Error("lost launch response");
+			return { ok: false, error: { code: "CleanupFailed", message: "group not confirmed gone" } };
+		});
+		cleanups.push(() => spy.mockRestore());
+
+		await assert.rejects(
+			supervisor.startCommandTask(owner, holdIntent(root, "unconfirmed"), crypto.randomUUID() as OperationId),
+			failure === "transport"
+				? /lost launch response/
+				: /cleanup unconfirmed.*CleanupFailed: group not confirmed gone/,
+		);
+
+		assert.equal(admission.held.process, 1, "an unconfirmed cleanup keeps the capacity charged");
+		assert.deepEqual(
+			admission.releaseCalls.filter((kind) => kind === "process"),
+			[],
+		);
+	},
+);
+
+test("a native launch that fails to spawn still releases the process permit (#3869)", async () => {
+	const admission = new FakeAdmission();
+	const root = tempRoot();
+	const session = await open(root, { resourceAdmission: admission });
+	const { supervisor, owner } = session.getAgentTaskHost().ownerBinding;
+	const binding = createRequire(import.meta.url)(
+		"@bastani/atomic-natives",
+	) as typeof import("@bastani/atomic-natives");
+	const spy = vi
+		.spyOn(binding.TaskSupervisor.prototype, "startCommandTask")
+		.mockResolvedValue({ ok: false, error: { code: "SpawnFailed", message: "no such shell" } });
+	cleanups.push(() => spy.mockRestore());
+
+	const started = await supervisor.startCommandTask(
+		owner,
+		holdIntent(root, "refused"),
+		crypto.randomUUID() as OperationId,
+	);
+
+	assert.equal(started.ok, false);
+	assert.equal(admission.held.process, 0);
 });
 
 test("a rejected session acquire closes the session store it was handed and holds no permit (#3869)", async () => {

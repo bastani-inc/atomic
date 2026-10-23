@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- On macOS, paused managed commands no longer get mistaken for exited commands and terminated before they can resume ([#3869](https://github.com/bastani-inc/atomic/issues/3869)).
+
 ## [0.9.41] - 2026-10-22
 
 ### Added

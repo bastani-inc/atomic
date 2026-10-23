@@ -170,7 +170,12 @@ SDK hosts can pass `resourceAdmission` to `createAgentSession()` to share their 
 import type { ResourceAdmission } from "@bastani/atomic";
 
 const resourceAdmission: ResourceAdmission = {
-  async acquire(kind, signal) {
+  async acquire(kind, signal, request) {
+    if (request?.delegated) {
+      const permit = capacity.tryAcquire(kind);
+      if (!permit) throw new Error("No capacity left for a delegated child session");
+      return async () => permit.release();
+    }
     const permit = await capacity.acquire(kind, { signal });
     return async () => permit.release();
   },
@@ -182,7 +187,11 @@ const { session } = await createAgentSession({ resourceAdmission });
 
 A session holds its permit until clean disposal. A managed command holds its permit through background execution and confirmed process cleanup, even after an observation wait returns. Failed launches release their permits after rollback. Cleanup failures keep capacity reserved; inspect and resolve them instead of recycling a slot on a timer. Arbitrary processes created outside Atomic's managed command APIs are not counted.
 
-Your admission service must reconcile abandoned holders after a host crash. Atomic does not treat lease expiry as cleanup proof or clear a service's retained permits automatically. Keep enough capacity for simultaneously live parents, delegated children, and replacements: parents keep their slots while awaiting children, so a cap filled entirely by waiting parents can stall delegation. Cancel or dispose the waiting work to recover; do not bypass the cap.
+Your admission service must reconcile abandoned holders after a host crash. Atomic does not treat lease expiry as cleanup proof or clear a service's retained permits automatically.
+
+On Unix, Atomic calls `permit.bindProcess({ kind: "unix-process-group", id })` on a process permit once the command's process group exists and before the launch returns, if the permit provides it. Persist the identity with the permit so a replacement host can check whether the group is still alive before it frees the capacity. The identity only names the group and gives no right to signal it. Windows commands report no identity, so keep those permits reserved until normal cleanup confirms them. If `bindProcess` rejects, Atomic cancels the command, fails the launch, and releases the permit only after cleanup is confirmed.
+
+A parent session keeps its permit while it waits for a child, so a child that queued for a permit could wait on its own parent. Atomic marks child sessions (subagents and other sessions built from `getChildSessionOptions()`) with `request.delegated`. For those requests, grant a permit immediately or throw. Never queue them or exceed the cap. A cap of one, or a cap filled by parents, therefore rejects delegation with your error instead of stalling. Set the cap above the number of parents that can be live at once if you need children to run.
 
 Use `withResourceAdmission(resourceAdmission, async () => { ... })` to apply a service to SDK sessions and managed commands launched within an asynchronous operation, including commands using an existing task owner. An explicit session service wins for that session; commands in the operation use its scoped service.
 

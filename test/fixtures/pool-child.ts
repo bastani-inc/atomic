@@ -52,3 +52,35 @@ export const stalledChild = workflow({
 		return { firstPid, finalPid };
 	},
 });
+
+function withholdUsageReports() {
+	const send = process.send?.bind(process);
+	if (!send) throw new Error("Usage report barrier requires a worker IPC channel");
+	process.send = ((message: { kind?: string; id?: number }, ...rest: unknown[]) => {
+		if (message?.kind !== "usage") return (send as (...args: unknown[]) => boolean)(message, ...rest);
+		const callback = rest.find((entry) => typeof entry === "function") as ((error: null) => void) | undefined;
+		queueMicrotask(() => {
+			callback?.(null);
+			process.emit("message", { id: message.id, value: undefined } as never, undefined as never);
+		});
+		return true;
+	}) as typeof process.send;
+}
+
+export const billedCrashChild = workflow({
+	name: "billed-crash-child",
+	description: "Dies after a billed stage checkpoint commits; the first process never delivers a usage report",
+	inputs: {},
+	outputs: { firstPid: Type.Number(), finalPid: Type.Number() },
+	async run(ctx) {
+		const firstPid = await ctx.tool("checkpoint", {}, async () => process.pid);
+		if (firstPid === process.pid) withholdUsageReports();
+		const stage = ctx.stage("agent", await poolStageOptions(ctx.cwd ?? process.cwd(), false, firstPid) as never);
+		await stage.complete("Reply with your PID.");
+		const finalPid = await ctx.tool("finish", {}, async () => {
+			if (firstPid === process.pid) process.kill(process.pid, "SIGKILL");
+			return process.pid;
+		});
+		return { firstPid, finalPid };
+	},
+});

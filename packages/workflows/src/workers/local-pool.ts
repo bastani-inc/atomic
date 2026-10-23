@@ -234,7 +234,9 @@ export class LocalWorkerPool {
 						return;
 					}
 					if (message.kind === "commit") {
-						return queue.commit(lease, work, message.operation, message.mutation);
+						const receipt = await queue.commit(lease, work, message.operation, message.mutation);
+						this.usageTotal = await this.usageLedger!.total(root);
+						return receipt;
 					}
 					if (message.kind === "usage") {
 						this.usageTotal = await this.usageLedger!.report(lease, work, message.reports);
@@ -270,6 +272,7 @@ export class LocalWorkerPool {
 		if (this.recovering) return this.recovering;
 		if (this.closed || performance.now() < this.nextRecoveryAt) return Promise.resolve();
 		this.recovering = (async () => {
+			await this.admission?.reconcile();
 			const expiredBefore = Date.now();
 			for (const work of await this.queue!.inspect(root)) {
 				if (work.state !== "leased" || work.expiresAt >= expiredBefore) continue;

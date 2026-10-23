@@ -9,10 +9,12 @@ import {
 	durableWorkflowRunSnapshots,
 } from "../../packages/workflows/src/durable/completed-catalog.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import { poolStageUsageKey } from "../../packages/workflows/src/durable/journal/pool-stage-usage.js";
 import {
 	openSqlPoolQueue,
 	type PoolCommitReceipt,
 } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
+import { openSqlPoolUsage } from "../../packages/workflows/src/durable/journal/sql-pool-usage.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import type { DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
@@ -607,6 +609,43 @@ test("completed child result survives a lost acknowledgement and fences later wr
 			/Stale work lease/,
 		);
 		await assert.rejects(f.pool.complete(f.lease, f.attempt, { ...result, status: "failed" }), /identity conflict/);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a billed stage checkpoint charges its usage with the commit, once, without any usage report (#3869)", async () => {
+	const f = await fixture();
+	try {
+		const usage = { input: 7, output: 3, cacheRead: 0, cacheWrite: 0, cost: 0.5 };
+		const { sessionId: _session, ...unsessioned } = stage;
+		const billed = {
+			...unsessioned,
+			checkpointId: `${work.scope}:session:billed`,
+			output: "done",
+			modelAttempts: [{ model: "fixture", success: true, usage }],
+		};
+		const mutation = { kind: "checkpoint" as const, checkpoint: billed };
+		const ledger = await openSqlPoolUsage(f.journal);
+		await f.pool.commit(f.lease, f.attempt, "billed", mutation);
+		assert.deepEqual(await ledger.total("root"), usage);
+		await f.pool.commit(f.lease, f.attempt, "billed", mutation);
+		assert.deepEqual(await ledger.total("root"), usage, "a retried commit does not recharge");
+		assert.deepEqual(
+			await ledger.report(f.lease, f.attempt, [{ key: poolStageUsageKey(run.runId, "stage"), usage }]),
+			usage,
+			"the late heartbeat report for the same stage does not double-charge",
+		);
+		await f.database.run("UPDATE wf_runs_work SET expires_at = 0 WHERE id = ?", f.attempt.id);
+		assert.equal(await f.pool.expire(f.lease, f.attempt), true);
+		const replacement = await f.pool.claim(f.lease, "replacement", [work], 60_000);
+		assert.ok(replacement);
+		await f.pool.commit(f.lease, replacement, "billed-again", mutation);
+		assert.deepEqual(
+			await ledger.total("root"),
+			usage,
+			"a replacement recommitting the checkpoint does not recharge",
+		);
 	} finally {
 		await f.close();
 	}

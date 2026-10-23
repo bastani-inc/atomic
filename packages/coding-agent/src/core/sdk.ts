@@ -69,6 +69,9 @@ export type {
 	CreateAgentSessionOptions,
 	CreateAgentSessionResult,
 	ResourceAdmission,
+	ResourceAdmissionRequest,
+	ResourcePermit,
+	ResourceProcessIdentity,
 } from "./sdk-types.ts";
 
 // Preserve the pre-0.81 fallback for extensions that construct Agent instances
@@ -164,7 +167,11 @@ function createScopedSession(
 				if (options.sessionManager) ownedSessionManagerStores.delete(options.sessionManager);
 				const admission = options.resourceAdmission ?? currentResourceAdmission();
 				try {
-					acquisition.release = await admission?.acquire("session", options.resourceAdmissionSignal);
+					acquisition.release = await admission?.acquire(
+						"session",
+						options.resourceAdmissionSignal,
+						options.resourceAdmissionDelegated ? { delegated: true } : undefined,
+					);
 					return await constructAgentSession(
 						{
 							...options,

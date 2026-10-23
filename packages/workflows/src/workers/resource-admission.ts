@@ -2,11 +2,16 @@ import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { cpus, freemem, loadavg } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
+import type { ResourcePermit, ResourceProcessIdentity } from "@bastani/atomic";
 import type { SqliteRow } from "@bastani/atomic/storage";
 import { type SqlPoolStorage, sqlPoolStorage } from "../durable/journal/internal.js";
 import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
 import type { RunJournal } from "../durable/journal/types.js";
+import { admissionBootIdentity, admissionHost, admissionProcessStopped } from "./admission-host.js";
 
+const OWNER_LEASE_MS = 30_000;
+
+type OwnerRow = SqliteRow & { id: string; host: string; boot: string | null; pid: number; expires_at: number };
 type Resource = "session" | "process";
 type Limits = Partial<Record<Resource, number>>;
 export interface AdmissionConfiguration {
@@ -28,17 +33,24 @@ type PermitRow = SqliteRow & {
 	kind: Resource;
 	state: string;
 	reason: string | null;
+	owner: string | null;
+	attempt: string | null;
+	process_identity: string | null;
 };
 
 export class SqlResourceAdmission {
 	private readonly permits: string;
 	private readonly configuration: string;
+	private readonly owners: string;
+	private readonly owner = randomUUID();
+	private nextReconciliation = 0;
 	private constructor(
 		private readonly storage: SqlPoolStorage,
 		private readonly options: AdmissionOptions,
 	) {
 		this.permits = `${storage.tables.runs}_resource_permits`;
 		this.configuration = `${storage.tables.runs}_resource_limits`;
+		this.owners = `${storage.tables.runs}_resource_owners`;
 	}
 	static async open(journal: RunJournal, options: AdmissionOptions): Promise<SqlResourceAdmission> {
 		const storage = sqlPoolStorage(journal);
@@ -61,11 +73,27 @@ export class SqlResourceAdmission {
 			...structuredClone({ ...options, sampleHost: undefined }),
 			sampleHost: options.sampleHost,
 		});
+		const boot = await admissionBootIdentity();
 		await storage.transaction(async (tx) => {
 			await tx.exec(`CREATE TABLE IF NOT EXISTS ${admission.configuration}(scope TEXT PRIMARY KEY, config TEXT NOT NULL);
 				CREATE TABLE IF NOT EXISTS ${admission.permits}(ticket INTEGER PRIMARY KEY AUTOINCREMENT, operation TEXT UNIQUE NOT NULL,
-				root TEXT NOT NULL, holder TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, reason TEXT);
-				CREATE INDEX IF NOT EXISTS ${admission.permits}_active ON ${admission.permits}(kind, state, root);`);
+				root TEXT NOT NULL, holder TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, reason TEXT, owner TEXT, attempt TEXT, process_identity TEXT);
+				CREATE INDEX IF NOT EXISTS ${admission.permits}_active ON ${admission.permits}(kind, state, root);
+				CREATE TABLE IF NOT EXISTS ${admission.owners}(id TEXT PRIMARY KEY, host TEXT NOT NULL, pid INTEGER NOT NULL, expires_at INTEGER NOT NULL, boot TEXT);`);
+			const columns = await tx.all(`PRAGMA table_info(${admission.permits})`);
+			for (const column of ["owner", "attempt", "process_identity"])
+				if (!columns.some((entry) => entry.name === column))
+					await tx.exec(`ALTER TABLE ${admission.permits} ADD COLUMN ${column} TEXT`);
+			if (!(await tx.all(`PRAGMA table_info(${admission.owners})`)).some((entry) => entry.name === "boot"))
+				await tx.exec(`ALTER TABLE ${admission.owners} ADD COLUMN boot TEXT`);
+			await tx.run(
+				`INSERT INTO ${admission.owners}(id, host, pid, expires_at, boot) VALUES (?, ?, ?, CAST(unixepoch('subsec') * 1000 AS INTEGER) + ?, ?)`,
+				admission.owner,
+				admissionHost,
+				process.pid,
+				OWNER_LEASE_MS,
+				boot,
+			);
 			for (const [scope, limits] of [
 				[`root:${options.root}`, options.limits],
 				["user", options.userLimits],
@@ -90,6 +118,7 @@ export class SqlResourceAdmission {
 					throw new Error("Conflicting resource admission configuration");
 			}
 		});
+		await admission.reconcile();
 		return admission;
 	}
 	private hostReason(): string | undefined {
@@ -108,7 +137,11 @@ export class SqlResourceAdmission {
 			if (sample.load > host.maxLoadPerCpu) return "host load";
 		}
 	}
-	async acquire(kind: Resource, signal?: AbortSignal): Promise<() => Promise<void>> {
+	async acquire(
+		kind: Resource,
+		signal?: AbortSignal,
+		request?: { readonly delegated?: boolean },
+	): Promise<ResourcePermit> {
 		signal?.throwIfAborted();
 		const operation = randomUUID();
 		const release = (reason = "resource cleanup confirmed") =>
@@ -119,20 +152,61 @@ export class SqlResourceAdmission {
 					operation,
 				);
 			});
+		release.bindProcess = async (identity: ResourceProcessIdentity) => {
+			if (
+				kind !== "process" ||
+				identity.kind !== "unix-process-group" ||
+				!Number.isSafeInteger(identity.id) ||
+				identity.id <= 0
+			)
+				throw new Error("Invalid resource process identity");
+			const encoded = JSON.stringify({ kind: identity.kind, id: identity.id });
+			await this.storage.transaction(async (tx) => {
+				const updated = await tx.run(
+					`UPDATE ${this.permits} SET process_identity = ? WHERE operation = ? AND state = 'granted' AND (process_identity IS NULL OR process_identity = ?)`,
+					encoded,
+					operation,
+					encoded,
+				);
+				if (updated.changes !== 1) throw new Error("Resource process permit is no longer held");
+			});
+		};
 		await this.storage.transaction(async (tx) => {
 			await tx.run(
-				`INSERT INTO ${this.permits}(operation, root, holder, kind, state) VALUES (?, ?, ?, ?, 'waiting')`,
+				`UPDATE ${this.owners} SET expires_at = CAST(unixepoch('subsec') * 1000 AS INTEGER) + ? WHERE id = ?`,
+				OWNER_LEASE_MS,
+				this.owner,
+			);
+			await tx.run(
+				`INSERT INTO ${this.permits}(operation, root, holder, kind, state, owner, attempt) VALUES (?, ?, ?, ?, 'waiting', ?, ?)`,
 				operation,
 				this.options.root,
 				this.options.holder,
 				kind,
+				this.owner,
+				this.options.attempt
+					? JSON.stringify({
+							id: this.options.attempt.id,
+							generation: this.options.attempt.generation,
+							epoch: this.options.attempt.epoch,
+						})
+					: null,
 			);
 		});
 		try {
 			for (;;) {
 				signal?.throwIfAborted();
+				if (performance.now() >= this.nextReconciliation) {
+					await this.reconcile();
+					this.nextReconciliation = performance.now() + 1000;
+				}
 				const hostReason = this.hostReason();
 				const granted = await this.storage.transaction(async (tx) => {
+					await tx.run(
+						`UPDATE ${this.owners} SET expires_at = CAST(unixepoch('subsec') * 1000 AS INTEGER) + ? WHERE id = ?`,
+						OWNER_LEASE_MS,
+						this.owner,
+					);
 					const { root, attempt } = this.options;
 					if (attempt) {
 						const work = await tx.get(
@@ -166,6 +240,8 @@ export class SqlResourceAdmission {
 						);
 						if (Number(count?.count) >= limit || older) reason ??= `${scope} ${kind}`;
 					}
+					if (reason && request?.delegated)
+						throw new Error(`Delegated session cannot be admitted without capacity headroom: ${reason}`);
 					const updated = await tx.run(
 						`UPDATE ${this.permits} SET state = ?, reason = ? WHERE operation = ? AND state = 'waiting'`,
 						reason ? "waiting" : "granted",
@@ -187,13 +263,78 @@ export class SqlResourceAdmission {
 			throw error;
 		}
 	}
+	async reconcile(): Promise<void> {
+		const boot = await admissionBootIdentity();
+		await this.storage.transaction(async (tx) => {
+			const owners = await tx.all<OwnerRow>(
+				`SELECT DISTINCT o.* FROM ${this.owners} o JOIN ${this.permits} p ON p.owner = o.id WHERE p.state != 'released'`,
+			);
+			for (const owner of owners) {
+				const rebooted = owner.host === admissionHost && !!boot && !!owner.boot && boot !== owner.boot;
+				const stopped = rebooted || (owner.host === admissionHost && admissionProcessStopped(owner.pid));
+				await tx.run(
+					`UPDATE ${this.permits} SET state = 'released', reason = 'abandoned waiter fenced' WHERE owner = ? AND state = 'waiting' AND (? OR EXISTS (SELECT 1 FROM ${this.owners} WHERE id = ? AND expires_at < CAST(unixepoch('subsec') * 1000 AS INTEGER)))`,
+					owner.id,
+					stopped ? 1 : 0,
+					owner.id,
+				);
+				if (rebooted) {
+					await tx.run(
+						`UPDATE ${this.permits} SET state = 'released', reason = 'host reboot confirmed' WHERE owner = ? AND state = 'granted'`,
+						owner.id,
+					);
+				} else if (stopped) {
+					await tx.run(
+						`UPDATE ${this.permits} SET state = 'released', reason = 'owner death confirmed' WHERE owner = ? AND kind = 'session' AND state = 'granted'`,
+						owner.id,
+					);
+					await tx.run(
+						`UPDATE ${this.permits} SET reason = 'cleanup unconfirmed' WHERE owner = ? AND kind = 'process' AND state = 'granted'`,
+						owner.id,
+					);
+				} else {
+					await tx.run(
+						`UPDATE ${this.permits} SET reason = 'owner expired; cleanup unconfirmed' WHERE owner = ? AND state = 'granted' AND EXISTS (SELECT 1 FROM ${this.owners} WHERE id = ? AND expires_at < CAST(unixepoch('subsec') * 1000 AS INTEGER))`,
+						owner.id,
+						owner.id,
+					);
+				}
+				if (owner.host === admissionHost && process.platform !== "win32") {
+					const processes = await tx.all<PermitRow>(
+						`SELECT * FROM ${this.permits} WHERE owner = ? AND kind = 'process' AND state = 'granted' AND process_identity IS NOT NULL`,
+						owner.id,
+					);
+					for (const permit of processes) {
+						const identity = JSON.parse(permit.process_identity!) as ResourceProcessIdentity;
+						if (
+							identity.kind === "unix-process-group" &&
+							Number.isSafeInteger(identity.id) &&
+							identity.id > 0 &&
+							admissionProcessStopped(-identity.id)
+						)
+							await tx.run(
+								`UPDATE ${this.permits} SET state = 'released', reason = 'process group cleanup confirmed' WHERE operation = ? AND state = 'granted'`,
+								permit.operation,
+							);
+					}
+				}
+			}
+			await tx.run(
+				`UPDATE ${this.permits} SET state = 'released', reason = 'legacy waiter fenced' WHERE owner IS NULL AND state = 'waiting'`,
+			);
+			await tx.run(
+				`UPDATE ${this.permits} SET reason = 'owner identity unavailable; cleanup unconfirmed' WHERE owner IS NULL AND state = 'granted'`,
+			);
+		});
+	}
 	async inspect(): Promise<PermitRow[]> {
 		return this.storage.transaction((tx) => tx.all<PermitRow>(`SELECT * FROM ${this.permits} ORDER BY ticket`));
 	}
 	async releaseStoppedSessions(holder: string): Promise<number> {
+		await this.reconcile();
 		return this.storage.transaction(async (tx) => {
 			await tx.run(
-				`UPDATE ${this.permits} SET state = 'released', reason = 'worker exit confirmed' WHERE root = ? AND holder = ? AND (kind = 'session' OR state = 'waiting')`,
+				`UPDATE ${this.permits} SET state = 'released', reason = 'worker exit confirmed' WHERE root = ? AND holder = ? AND state != 'released' AND (kind = 'session' OR state = 'waiting')`,
 				this.options.root,
 				holder,
 			);
