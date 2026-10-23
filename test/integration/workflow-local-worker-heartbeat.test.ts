@@ -10,7 +10,7 @@ import type { PoolWork } from "../../packages/workflows/src/durable/journal/sql-
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { definitionDigest } from "../../packages/workflows/src/workers/definitions.js";
 import type { WorkerRequest } from "../../packages/workflows/src/workers/protocol.js";
-import { makeTempDirectory, removeTempDirectory, sleep, writeTextSync } from "../helpers/runtime.js";
+import { fileExists, makeTempDirectory, removeTempDirectory, sleep, writeTextSync } from "../helpers/runtime.js";
 
 const HEARTBEATS_WHILE_ACTIVITY_IS_HELD = 3;
 const HEARTBEAT_OBSERVATION_TIMEOUT_MS = 12_000;
@@ -22,6 +22,11 @@ const COALESCED_ACTIVITY_REQUESTS_AFTER_RELEASE = 3;
 test(
 	"a held activity acknowledgement does not stop renewals or control polls and coalesces later activity (#3869)",
 	async () => {
+		// Exercise the shipped worker, not a cold jiti transpilation of the entire source graph.
+		const workerEntry = fileURLToPath(
+			new URL("../../packages/coding-agent/dist/builtin/workflows/src/local-worker-entry.mjs", import.meta.url),
+		);
+		assert.ok(await fileExists(workerEntry), "packaged worker missing; run npm run build first");
 		const directory = makeTempDirectory("local-worker-heartbeat-");
 		const path = join(directory, "journal.sqlite");
 		const releasePath = join(directory, "release");
@@ -60,7 +65,7 @@ test(
 			let claimed = false;
 			let released = false;
 			worker = fork(
-				fileURLToPath(new URL("../../packages/workflows/src/workers/local-worker-entry.mjs", import.meta.url)),
+				workerEntry,
 				[
 					JSON.stringify({
 						journalPath: path,
@@ -100,7 +105,11 @@ test(
 				() => count("commit") >= TOOL_CALLS_WHILE_ACTIVITY_IS_HELD && held.length > 0,
 				HEARTBEAT_OBSERVATION_TIMEOUT_MS,
 			);
-			assert.ok(held.length > 0, `the worker published no activity: ${stderr}`);
+			assert.ok(
+				held.length > 0,
+				`the worker published no activity (requests: ${requests.map((request) => request.kind).join(", ")}; exit: ${worker.exitCode}): ${stderr}`,
+			);
+			assert.ok(count("commit") >= TOOL_CALLS_WHILE_ACTIVITY_IS_HELD, "tool calls continue while activity is held");
 			const renewalsBefore = count("renew");
 			const controlsBefore = count("control");
 			await until(
