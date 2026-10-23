@@ -249,6 +249,7 @@ export async function executeSupervisedCommand(
 			...(options.timeout === undefined ? {} : { executionTimeoutMs: options.timeout * 1000 }),
 		},
 		crypto.randomUUID() as OperationId,
+		options.signal,
 	);
 	if (!started.ok) throw new Error(`${started.error.code}: ${started.error.message}`);
 	const task = started.value;

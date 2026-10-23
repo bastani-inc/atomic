@@ -12,6 +12,7 @@ import {
 import { type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import { applyPoolSession, type PoolMutation, validatePoolMutation } from "./pool-mutations.js";
+import { poolCheckpointUsage, poolUsageSchema, upsertPoolUsage } from "./pool-stage-usage.js";
 import { type Lease, RUN_EVENT_TYPES, type RunJournal, StaleLeaseError } from "./types.js";
 import { journalCounter, serializeJson, validateText } from "./values.js";
 
@@ -134,6 +135,7 @@ export class SqlPoolQueue {
 					work TEXT PRIMARY KEY REFERENCES ${pool.work}(id) ON DELETE CASCADE, result TEXT NOT NULL
 				);
 			`);
+			await tx.exec(poolUsageSchema(journal.runs));
 		});
 		return pool;
 	}
@@ -431,6 +433,9 @@ export class SqlPoolQueue {
 					payload,
 					now,
 				);
+			const billed = poolCheckpointUsage(checkpoint);
+			if (billed && !existing)
+				await upsertPoolUsage(tx, this.journal.runs, row.id, token.generation, billed.key, billed.usage);
 			await tx.run(
 				`INSERT INTO ${this.operations} VALUES (?, ?, ?, ?, ?)`,
 				token.id,

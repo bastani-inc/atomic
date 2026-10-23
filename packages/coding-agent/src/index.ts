@@ -378,6 +378,10 @@ export {
 	type MessageStartEvent,
 	type MessageUpdateEvent,
 	type PromptTemplate,
+	type ResourceAdmission,
+	type ResourceAdmissionRequest,
+	type ResourcePermit,
+	type ResourceProcessIdentity,
 	STRUCTURED_OUTPUT_TOOL_NAME,
 	type StructuredOutputCapture,
 	type StructuredOutputFileCapture,
@@ -385,6 +389,7 @@ export {
 	type ToolExecutionEndEvent,
 	type ToolExecutionStartEvent,
 	type ToolExecutionUpdateEvent,
+	withResourceAdmission,
 } from "./core/sdk.ts";
 export {
 	type BranchSummaryEntry,

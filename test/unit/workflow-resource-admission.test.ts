@@ -1,0 +1,194 @@
+import assert from "node:assert/strict";
+import { join } from "node:path";
+import { test, vi } from "vitest";
+import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
+import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+import * as admissionHost from "../../packages/workflows/src/workers/admission-host.js";
+import { SqlResourceAdmission } from "../../packages/workflows/src/workers/resource-admission.js";
+import { poolWorkFixture } from "../helpers/pool-journal.js";
+import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+
+async function fixture() {
+	const directory = makeTempDirectory("resource-admission-");
+	const path = join(directory, "journal.sqlite");
+	const databases = await Promise.all([openNodeSqliteDatabase(path), openNodeSqliteDatabase(path)]);
+	const journals = await Promise.all(databases.map((database) => SqlRunJournal.open(database)));
+	return {
+		path,
+		journals,
+		databases,
+		async close() {
+			for (const journal of journals) await journal.close();
+			for (const database of databases) await database.close();
+			removeTempDirectory(directory);
+		},
+	};
+}
+
+const ADMISSION_OBSERVATION_TIMEOUT_MS = 5_000;
+async function waitForReason(admission: SqlResourceAdmission, reason: string): Promise<void> {
+	const signal = AbortSignal.timeout(ADMISSION_OBSERVATION_TIMEOUT_MS);
+	while (!(await admission.inspect()).some((row) => row.state === "waiting" && row.reason === reason)) {
+		signal.throwIfAborted();
+		await new Promise((resolve) => setImmediate(resolve));
+	}
+}
+
+test("independent connections share root/user caps and FIFO cancellation (#3869)", async () => {
+	const f = await fixture();
+	try {
+		const options = { root: "root", limits: { session: 2 }, userLimits: { session: 2 }, userDatabase: f.path };
+		const first = await SqlResourceAdmission.open(f.journals[0]!, { ...options, holder: "local" });
+		const worker = await SqlResourceAdmission.open(f.journals[1]!, { ...options, holder: "worker" });
+		const other = await SqlResourceAdmission.open(f.journals[1]!, {
+			...options,
+			root: "ordinary",
+			holder: "ordinary",
+		});
+		const release1 = await first.acquire("session");
+		const release2 = await worker.acquire("session");
+		const cancel = new AbortController();
+		const cancelled = worker.acquire("session", cancel.signal);
+		await waitForReason(worker, "root:root session");
+		cancel.abort(new Error("cancelled waiter"));
+		await assert.rejects(cancelled, /cancelled waiter/);
+		let granted = false;
+		const waiting = other.acquire("session").then((release) => {
+			granted = true;
+			return release;
+		});
+		await waitForReason(other, "user session");
+		assert.equal(granted, false);
+		assert.equal((await first.inspect()).filter((row) => row.state === "granted").length, 2);
+		await release1();
+		const release3 = await waiting;
+		assert.equal((await first.inspect()).filter((row) => row.state === "granted").length, 2);
+		await Promise.all([release2(), release2(), release3()]);
+		assert.equal((await first.inspect()).filter((row) => row.state === "granted").length, 0);
+		await assert.rejects(
+			SqlResourceAdmission.open(f.journals[0]!, { ...options, holder: "bad", userDatabase: "elsewhere" }),
+			/canonical/,
+		);
+		await assert.rejects(
+			SqlResourceAdmission.open(f.journals[0]!, { ...options, holder: "bad", userLimits: { session: 3 } }),
+			/configuration/,
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("host gates persist a reason and cleanup, not elapsed leases, releases resources (#3869)", async () => {
+	const f = await fixture();
+	try {
+		let memory = 0;
+		const admission = await SqlResourceAdmission.open(f.journals[0]!, {
+			root: "root",
+			holder: "worker",
+			limits: { session: 1, process: 1 },
+			host: { minFreeMemoryBytes: 100 },
+			sampleHost: () => ({ freeMemoryBytes: memory, load: 0 }),
+		});
+		const pending = admission.acquire("process");
+		await waitForReason(admission, "host memory");
+		memory = 1000;
+		const release = await pending;
+		await admission.releaseStoppedSessions("worker");
+		assert.equal((await admission.inspect()).filter((row) => row.state === "granted").length, 1);
+		await release();
+		await release();
+		assert.equal((await admission.inspect()).filter((row) => row.state === "granted").length, 0);
+	} finally {
+		await f.close();
+	}
+});
+
+test("expired work retains live resources and fenced waiters cannot relaunch (#3869)", async () => {
+	const f = await fixture();
+	try {
+		const journal = f.journals[0]!;
+		await journal.createRun({ runId: "root", name: "root", cwd: "", createdAt: 0, status: "running" });
+		const acquired = await journal.acquire("root", "coordinator");
+		assert.equal(acquired.status, "acquired");
+		if (acquired.status !== "acquired") assert.fail("no lease");
+		const pool = await openSqlPoolQueue(journal);
+		await pool.initialize(acquired.lease, 60_000);
+		const fixture = poolWorkFixture();
+		await pool.enqueue(acquired.lease, fixture.work, fixture.boundary);
+		const work = await pool.claim(acquired.lease, "worker", [fixture.work], 60_000);
+		assert.ok(work);
+		const admission = await SqlResourceAdmission.open(journal, {
+			root: "root",
+			holder: "worker",
+			attempt: work,
+			limits: { process: 1 },
+		});
+		const release = await admission.acquire("process");
+		await f.databases[0]!.run("UPDATE wf_runs_work SET expires_at = 0 WHERE id = ?", work.id);
+		await assert.rejects(admission.acquire("session"), /Stale/);
+		await pool.expire(acquired.lease, work);
+		assert.equal((await admission.inspect()).filter((row) => row.state === "granted").length, 1);
+		await admission.releaseStoppedSessions("worker");
+		assert.equal((await admission.inspect()).filter((row) => row.state === "granted").length, 1);
+		await release();
+	} finally {
+		await f.close();
+	}
+});
+
+test("FIFO grants follow tickets and stopped waiters never reacquire (#3869)", async () => {
+	const f = await fixture();
+	try {
+		const admission = await SqlResourceAdmission.open(f.journals[0]!, {
+			root: "root",
+			holder: "worker",
+			limits: { session: 1 },
+		});
+		const release = await admission.acquire("session");
+		const next = admission.acquire("session");
+		await waitForReason(admission, "root:root session");
+		const other = await SqlResourceAdmission.open(f.journals[1]!, {
+			root: "root",
+			holder: "other",
+			limits: { session: 1 },
+		});
+		const last = other.acquire("session");
+		await waitForReason(other, "root:root session");
+		await release();
+		const releaseNext = await next;
+		assert.equal((await other.inspect()).filter((row) => row.state === "waiting").length, 1);
+		const rejected = assert.rejects(last, /holder was stopped/);
+		await other.releaseStoppedSessions("other");
+		await rejected;
+		await releaseNext();
+		assert.equal((await other.inspect()).filter((row) => row.state === "granted").length, 0);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a confirmed host reboot releases orphan process permits but expiry alone cannot (#3869)", async () => {
+	const f = await fixture();
+	const boot = vi.spyOn(admissionHost, "admissionBootIdentity").mockResolvedValue("old-boot");
+	try {
+		const before = await SqlResourceAdmission.open(f.journals[0]!, {
+			root: "root",
+			holder: "before",
+			limits: { process: 1 },
+		});
+		await before.acquire("process");
+		boot.mockResolvedValue("new-boot");
+		const after = await SqlResourceAdmission.open(f.journals[1]!, {
+			root: "root",
+			holder: "after",
+			limits: { process: 1 },
+		});
+		assert.equal((await after.inspect()).filter((row) => row.state === "granted").length, 0);
+		const release = await after.acquire("process", AbortSignal.timeout(1000));
+		await release();
+	} finally {
+		boot.mockRestore();
+		await f.close();
+	}
+});

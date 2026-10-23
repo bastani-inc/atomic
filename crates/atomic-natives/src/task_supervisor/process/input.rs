@@ -155,6 +155,19 @@ impl Actor {
 		*command.resize.lock().unwrap() = Some((columns, rows));
 		Ok(())
 	}
+	pub(in crate::task_supervisor) fn process_group(&self, task: &TaskLease) -> Door<Option<i32>> {
+		let command = self.command_resource(task)?;
+		#[cfg(unix)]
+		{
+			let group = command.process_group.load(Ordering::Acquire);
+			Ok((group > 0).then_some(group))
+		}
+		#[cfg(not(unix))]
+		{
+			let _ = command;
+			Ok(None)
+		}
+	}
 	pub(super) fn command_resource(&self, task: &TaskLease) -> Door<Arc<CommandTask>> {
 		let state = self.state.lock().unwrap();
 		let (oi, ti) = state.task(self.id, &task.cap, "UnknownTask")?;

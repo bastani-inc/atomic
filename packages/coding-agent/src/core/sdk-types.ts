@@ -111,10 +111,34 @@ export interface CreateAgentSessionOptions {
 	 * parent's child-session options, so child background shells appear in the parent's `/tasks`.
 	 */
 	parentCommandTaskOwner?: import("./tasks/child-command-owner.js").ChildCommandTaskOwner;
+	resourceAdmission?: ResourceAdmission;
+	resourceAdmissionSignal?: AbortSignal;
+	resourceAdmissionDelegated?: boolean;
 	/** Transform the fully constructed base system prompt at session construction. */
 	systemPromptTransform?: (prompt: string) => string;
 	/** Filter inherited session messages before they enter the new AgentSession. */
 	initialContextTransform?: (messages: AgentMessage[]) => AgentMessage[];
+}
+
+export interface ResourceAdmissionRequest {
+	readonly delegated?: boolean;
+}
+
+export interface ResourceProcessIdentity {
+	readonly kind: "unix-process-group";
+	readonly id: number;
+}
+
+export type ResourcePermit = (() => Promise<void>) & {
+	bindProcess?: (identity: ResourceProcessIdentity) => Promise<void>;
+};
+
+export interface ResourceAdmission {
+	acquire(
+		kind: "session" | "process",
+		signal?: AbortSignal,
+		request?: ResourceAdmissionRequest,
+	): Promise<ResourcePermit>;
 }
 
 /** Result from createAgentSession */

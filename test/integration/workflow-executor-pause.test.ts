@@ -89,6 +89,42 @@ for (const phase of ["before-turn", "executing"] as const) {
 	});
 }
 
+test("runDetached registers run control before returning so an immediate pause is honored (#3869)", async () => {
+	const backend = await JournalTestBackend.create();
+	setDurableBackend(backend);
+	const release = Promise.withResolvers<void>();
+	let effects = 0;
+	const definition = workflow({
+		name: "durable-immediate-pause",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await release.promise;
+			await ctx.tool("once", {}, async () => {
+				effects++;
+				return "done";
+			});
+			return {};
+		},
+	});
+	const { runId } = runDetached(definition, {}, { store });
+	const job = jobTracker.get(runId)!;
+	try {
+		assert.ok(toolControlRegistry.runControl(runId), "run control must be registered synchronously");
+		const paused = await workflowPauseAction({ action: "pause", runId });
+		assert.ok(paused.action === "pause");
+		assert.equal(paused.status, "paused");
+		release.resolve();
+		await turn();
+		assert.equal(effects, 0);
+	} finally {
+		release.resolve();
+		job.controller.abort();
+		await job.promise;
+	}
+});
+
 test("already-live children stay held after rejected journal resume persistence (#2885)", async () => {
 	let failResume = false;
 	const failure = new StorageUnavailableError(

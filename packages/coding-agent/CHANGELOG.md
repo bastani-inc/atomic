@@ -14,6 +14,7 @@
 - `atomic storage join <url> --token-file <path>` joins this machine to a shared libSQL / Turso database in one step: it checks the token and the connection, stores the trimmed token in the agent directory with mode 600, writes only the global `storage` setting, creates no tables, and lists the environment variables and settings that override the new selection. It refuses a URL that carries the token itself, so a credential never reaches settings or output. When `@bastani/atomic-storage-libsql` is not installed, it prints the install command. See [Joining a machine to a shared database](docs/storage.md#joining-a-machine-to-a-shared-database) ([#3857](https://github.com/bastani-inc/atomic/issues/3857))
 - `atomic intercom restart` replaces the running Intercom broker so it reads a changed storage selection; connected sessions reconnect to the new broker. `atomic intercom status` shows the broker, whether it uses the current selection, and its multi-node routing state ([#3857](https://github.com/bastani-inc/atomic/issues/3857))
 - Interactive and print sessions warn at startup when the shared `storage` selection names an adapter that the running Atomic cannot load, naming the adapter and the cause, instead of Intercom multi-node routing staying off silently ([#3857](https://github.com/bastani-inc/atomic/issues/3857))
+- SDK hosts can share admission limits through `resourceAdmission` and `withResourceAdmission()`. Session and managed-command permits remain held until cleanup, including background commands. Delegated sessions inherit the same service and request immediate admission or rejection rather than waiting on a permit held by their parent. See [Shared resource admission](docs/sdk.md#shared-resource-admission) ([#3869](https://github.com/bastani-inc/atomic/issues/3869)).
 
 ### Changed
 
@@ -38,6 +39,7 @@
 - `createSqliteDatabase()` preserves callback and rollback failures when transaction cleanup also fails ([#3856](https://github.com/bastani-inc/atomic/issues/3856))
 - A successful `atomic storage join` no longer reports failure when malformed project settings prevent the final override report. It warns that storage was saved and asks you to fix the settings before running status ([#3857](https://github.com/bastani-inc/atomic/issues/3857))
 - Package-name storage adapters now honor packages listed in legacy global settings, while explicit agent directories remain isolated. `atomic storage join` also rejects credentials embedded in `file:` URLs before printing or saving them ([#3857](https://github.com/bastani-inc/atomic/issues/3857))
+- On macOS, pausing a managed command no longer causes it to be reported as completed and terminated ([#3869](https://github.com/bastani-inc/atomic/issues/3869)).
 
 ## [0.9.41] - 2026-10-22
 

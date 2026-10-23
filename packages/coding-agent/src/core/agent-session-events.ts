@@ -40,6 +40,7 @@ import {
 	drainSessionReload,
 	drainSessionWork,
 	hasCallingSessionWork,
+	ownedSessionPermits,
 	ownedSessionStores,
 } from "./session-lifecycle-work.ts";
 import { assertSettingsWrites, ownedSettingsManagers } from "./settings-write-ownership.ts";
@@ -650,6 +651,9 @@ export function closeAgentSession(
 			ownedSessionStores.delete(session);
 			await store?.close();
 		});
+		const permit = ownedSessionPermits.get(session);
+		ownedSessionPermits.delete(session);
+		if (!errors.length) await attempt("admission", () => permit?.());
 		if (errors.length)
 			throw Object.assign(new AggregateError(errors, "Session shutdown failed"), { code: "ShutdownFailed" });
 	});

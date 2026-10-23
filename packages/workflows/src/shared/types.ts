@@ -258,6 +258,7 @@ export interface StageExecutionMeta {
 	startupSignal?: AbortSignal;
 	/** Controller-selected fallback, not an explicitly authored primary model. */
 	isFallbackAttempt?: boolean;
+	replacesSession?: object;
 }
 
 export interface CompleteStageOpts extends WorkflowModelFallbackFields {

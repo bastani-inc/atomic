@@ -174,6 +174,7 @@ export interface AgentSessionConfig {
 	subagentPolicy?: SubagentChildPolicy;
 	/** Parent-issued shell task owner for an in-process subagent child. */
 	parentCommandTaskOwner?: import("./tasks/child-command-owner.js").ChildCommandTaskOwner;
+	resourceAdmission?: import("./sdk-types.ts").ResourceAdmission;
 	systemPromptTransform?: (prompt: string) => string;
 	/**
 	 * Transform the canonical session projection whenever it becomes the finalized

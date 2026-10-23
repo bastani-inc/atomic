@@ -641,6 +641,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_workflowStageAdmission: import("./workflow-stage-admission.ts").WorkflowStageAdmissionBoundary | undefined;
 	_agentTaskHost: import("./tasks/agent-adapter.js").AgentTaskHost | undefined;
 	_parentCommandTaskOwner: import("./tasks/child-command-owner.js").ChildCommandTaskOwner | undefined;
+	_resourceAdmission: import("./sdk-types.ts").ResourceAdmission | undefined;
 	_childTaskWaits: import("./tasks/child-command-owner.js").ChildTaskWaits;
 	_taskCompletionOutbox: import("./tasks/completion.js").TaskCompletionOutbox | undefined;
 	_taskAdmission: import("./workflow-stage-admission.ts").WorkflowStageAdmissionBoundary | undefined;

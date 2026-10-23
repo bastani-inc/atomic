@@ -254,7 +254,21 @@ export function restoreBudgetState(value: unknown): RunBudgetState | undefined {
 		requiredNumbers(accountingValue, ["tokens", "cost"]) &&
 		requiredNumbers(accountingValue.baseline, ["input", "output", "cacheRead", "cacheWrite", "cost"]) &&
 		requiredNumbers(accountingValue.perCounter, ["input", "output", "cacheRead", "cacheWrite"])
-			? (accountingValue as RunBudgetState["accounting"])
+			? ({
+					baseline: accountingValue.baseline,
+					tokens: accountingValue.tokens,
+					cost: accountingValue.cost,
+					perCounter: accountingValue.perCounter,
+					...(requiredNumbers(accountingValue.externalBaseline, [
+						"input",
+						"output",
+						"cacheRead",
+						"cacheWrite",
+						"cost",
+					])
+						? { externalBaseline: accountingValue.externalBaseline }
+						: {}),
+				} as RunBudgetState["accounting"])
 			: undefined;
 	const state = {
 		...(duration !== undefined ? { duration } : {}),

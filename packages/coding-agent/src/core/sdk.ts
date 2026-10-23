@@ -36,11 +36,13 @@ import { ModelRuntime } from "./model-runtime.js";
 import { type ModelRuntimeSimpleStreamOptions, mergeHeaders } from "./model-runtime-streaming.ts";
 import { sanitizeOpenAIResponsesPayload } from "./openai-responses-payload-sanitizer.ts";
 import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
+import { currentResourceAdmission } from "./resource-admission-scope.ts";
 import { canCloneDefaultResourceDiscovery, DefaultResourceLoader } from "./resource-loader.ts";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-types.ts";
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
 import {
 	ownedSessionManagerStores,
+	ownedSessionPermits,
 	ownedSessionStores,
 	sessionGenerationClosing,
 	sessionLifetime,
@@ -60,8 +62,17 @@ import { createToolNameMatcher } from "./tool-selection.ts";
 import { allToolNames, getDefaultToolNames } from "./tools/index.js";
 
 export type { ModelFallbackReason } from "./model-resolver-types.ts";
+export { withResourceAdmission } from "./resource-admission-scope.ts";
 export * from "./sdk-exports.ts";
-export type { AtomicBuiltin, CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-types.ts";
+export type {
+	AtomicBuiltin,
+	CreateAgentSessionOptions,
+	CreateAgentSessionResult,
+	ResourceAdmission,
+	ResourceAdmissionRequest,
+	ResourcePermit,
+	ResourceProcessIdentity,
+} from "./sdk-types.ts";
 
 // Preserve the pre-0.81 fallback for extensions that construct Agent instances
 // or invoke low-level agent loops without supplying streamFn.
@@ -150,13 +161,23 @@ function createScopedSession(
 		const result = await factoryAcquisitions.run(
 			{ pending: new Map(), replacement: context.replacement },
 			async () => {
-				const acquisition: { store?: SessionStore } = {
+				const acquisition: { store?: SessionStore; release?: () => Promise<void> } = {
 					store: options.sessionManager ? ownedSessionManagerStores.get(options.sessionManager) : undefined,
 				};
 				if (options.sessionManager) ownedSessionManagerStores.delete(options.sessionManager);
+				const admission = options.resourceAdmission ?? currentResourceAdmission();
 				try {
+					acquisition.release = await admission?.acquire(
+						"session",
+						options.resourceAdmissionSignal,
+						options.resourceAdmissionDelegated ? { delegated: true } : undefined,
+					);
 					return await constructAgentSession(
-						{ ...options, extensionBindings: options.extensionBindings ?? context.bindings },
+						{
+							...options,
+							extensionBindings: options.extensionBindings ?? context.bindings,
+							resourceAdmission: admission,
+						},
 						deferStart,
 						persistInitialState,
 						acquisition,
@@ -170,6 +191,7 @@ function createScopedSession(
 							failures.push(cause);
 						}
 					}
+					if (!failures.length) await acquisition.release?.();
 					throw factoryRollbackError(error, failures);
 				}
 			},
@@ -183,7 +205,7 @@ async function constructAgentSession(
 	options: CreateAgentSessionOptions,
 	deferStart: boolean,
 	persistInitialState: boolean,
-	acquisition: { store?: SessionStore },
+	acquisition: { store?: SessionStore; release?: () => Promise<void> },
 ): Promise<CreateAgentSessionResult> {
 	const cwd = resolvePath(options.cwd ?? options.sessionManager?.getCwd() ?? process.cwd());
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
@@ -683,6 +705,7 @@ async function constructAgentSession(
 						customTools: options.customTools,
 						extensionBindings: session.extensionRunner.getChildHostBindings(),
 						parentCommandTaskOwner: childCommandTaskOwner,
+						resourceAdmission: options.resourceAdmission,
 					},
 					child,
 					session.getAllTools().map((tool) => tool.name),
@@ -704,6 +727,7 @@ async function constructAgentSession(
 			orchestrationContext: options.orchestrationContext,
 			subagentPolicy,
 			parentCommandTaskOwner: options.parentCommandTaskOwner,
+			resourceAdmission: options.resourceAdmission,
 			systemPromptTransform: options.systemPromptTransform,
 			contextProjectionTransform: options.initialContextTransform,
 		});
@@ -742,6 +766,10 @@ async function constructAgentSession(
 	if (acquisition.store) {
 		ownedSessionStores.set(session, acquisition.store);
 		acquisition.store = undefined;
+	}
+	if (acquisition.release) {
+		ownedSessionPermits.set(session, acquisition.release);
+		acquisition.release = undefined;
 	}
 	try {
 		// Omitted factories may share the selected runtime: release their acquisitions,

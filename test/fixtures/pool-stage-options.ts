@@ -1,13 +1,14 @@
 import { AuthStorage, ModelRuntime, SettingsManager } from "@bastani/atomic";
 import { createAssistantMessageEventStream } from "@bastani/pi-ai";
 
-export async function poolStageOptions(cwd: string, crashDuring: boolean, firstPid: number) {
+export async function poolStageOptions(cwd: string, crashDuring: boolean, firstPid: number, pauseDuring = false) {
 	const modelRuntime = await ModelRuntime.create({ credentials: AuthStorage.inMemory(), modelsPath: null, allowModelNetwork: false });
 	modelRuntime.registerProvider("pool-fixture", {
 		api: "openai-completions", baseUrl: "https://example.invalid", apiKey: "fixture",
 		models: [{ id: "fixture", name: "Fixture", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],
 		streamSimple(model) {
 			if (crashDuring && firstPid === process.pid) process.kill(process.pid, "SIGKILL");
+			if (pauseDuring && firstPid === process.pid) process.kill(process.pid, "SIGSTOP");
 			const stream = createAssistantMessageEventStream();
 			stream.push({ type: "done", reason: "stop", message: {
 				role: "assistant", api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(),
