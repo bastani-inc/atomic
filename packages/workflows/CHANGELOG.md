@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.42-alpha.1] - 2026-10-23
+
 ### Added
 
 - Local workflow pools can be enabled per run through SDK options or workflow settings, with root and optional user-wide admission limits. A root stays local while registered child workflow subtrees run in local worker processes; unsupported process containment and incompatible worker definitions fail closed ([#3869](https://github.com/bastani-inc/atomic/issues/3869)).
