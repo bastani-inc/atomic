@@ -307,6 +307,8 @@ export interface RunOpts {
 	/** Per-run budget override. Each field resolves over definition and config values. */
 	readonly budget?: WorkflowBudget;
 	readonly journal?: RunJournalOption;
+	readonly localWorkers?: import("../workers/public-options.js").LocalWorkerOptions;
+	readonly admission?: import("../workers/public-options.js").WorkflowAdmissionOptions;
 	readonly models?: WorkflowModelCatalogPort;
 	readonly registry?: object;
 	readonly depth?: number;

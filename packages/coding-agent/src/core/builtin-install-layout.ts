@@ -21,6 +21,15 @@ export const INSTALLED_EXTENSION_ENTRIES = {
 } as const satisfies Record<BuiltinPackageDirName, string>;
 
 export const WORKFLOWS_SDK_BUNDLE_ENTRY = "src/index.js";
+/**
+ * Local worker entrypoints beside the two workflow bundles. Each bundle forks
+ * `./local-worker-entry.mjs` relative to its own `import.meta.url`, so the
+ * extension bundle and the SDK bundle each need a runnable sibling.
+ */
+export const WORKFLOWS_LOCAL_WORKER_ENTRIES = [
+	"src/extension/local-worker-entry.mjs",
+	"src/local-worker-entry.mjs",
+] as const;
 export const INTERCOM_BROKER_BUNDLE_ENTRY = "broker/broker.bundle.mjs";
 
 export function requiredEntriesForBuiltin(dirName: BuiltinPackageDirName): readonly string[] {

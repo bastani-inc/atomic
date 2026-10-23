@@ -44,6 +44,7 @@ export interface DurableWorkflowHandle {
 	readonly status: DurableWorkflowStatus;
 	/** Original invocation cwd used to resolve repo-relative workflow defaults on resume. */
 	readonly invocationCwd?: string;
+	readonly resources?: import("../workers/public-options.js").WorkflowExecutionResources;
 	/** Who launched this workflow, when the launcher was attributable. */
 	readonly origin?: WorkflowActor;
 	readonly modelOwner?: string;
@@ -322,6 +323,7 @@ export interface DurableWorkflowMetadata {
 	/** Author-supplied reason from ctx.exit(), when present. */
 	readonly exitReason?: string;
 	readonly invocationCwd?: string;
+	readonly resources?: import("../workers/public-options.js").WorkflowExecutionResources;
 	readonly origin?: WorkflowActor;
 	readonly modelOwner?: string;
 	readonly releasedModelOwner?: string;

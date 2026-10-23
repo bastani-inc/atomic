@@ -11,6 +11,7 @@ export function durableRootRegistrationForRun(args: {
 	readonly isChildRun: boolean;
 	readonly continuationSourceId: string | undefined;
 	readonly possibleStages?: readonly string[];
+	readonly resources?: import("../workers/public-options.js").WorkflowExecutionResources;
 }): WorkflowRegistrationInput | undefined {
 	if (args.isChildRun || args.continuationSourceId === args.runId) return undefined;
 	return {
@@ -23,6 +24,7 @@ export function durableRootRegistrationForRun(args: {
 		resumable: true,
 		...(args.hasPersistence ? { sessionFile: undefined } : {}),
 		...(args.possibleStages !== undefined ? { possibleStages: args.possibleStages } : {}),
+		...(args.resources !== undefined ? { resources: args.resources } : {}),
 	};
 }
 

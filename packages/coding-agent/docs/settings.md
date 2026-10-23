@@ -577,6 +577,37 @@ Workflow runs use a SQLite journal, by default the local file `~/.atomic/workflo
 }
 ```
 
+#### Local worker pools
+
+Local worker pools are disabled unless `workflows.localWorkers` is set. With the option omitted, Atomic creates no worker tables, processes, or polling loops. A worker definition must be importable from its module path and export name. Only first-level `ctx.workflow(...)` child subtrees run in the pool; a root closure stays in the main process, and nested children stay on their assigned worker.
+
+```json
+{
+  "workflows": {
+    "localWorkers": {
+      "count": 4,
+      "definitions": [
+        { "path": "./workflows/research.ts", "exportName": "research" }
+      ]
+    },
+    "admission": {
+      "limits": { "session": 4, "process": 8 },
+      "userLimits": { "session": 8, "process": 16 },
+      "userDatabase": "/Users/alex/.atomic/workflows/journal.sqlite",
+      "host": { "maxLoadPerCpu": 2, "minFreeMemoryBytes": 2147483648 }
+    }
+  }
+}
+```
+
+`count` is a positive integer. Paths in the settings object resolve against the invocation working directory. Worker settings and entry-module digests are saved with the root; resume refuses changed settings or definitions. The entry-module digest does not include imported dependencies.
+
+`limits` caps agent sessions and managed tool processes for one root. Session permits cover creation through disposal, including fallback and delegated sessions. Process permits last until confirmed cleanup; yielding an observation wait does not free one. Processes outside Atomic's managed tools are not counted. `host` load and memory thresholds gate launches but do not impose hard OS limits.
+
+`userLimits` counts across runs only when all participating runs use the same canonical local SQLite journal. Set `userDatabase` to that exact path, and pass the admission options to participating non-pooled SDK runs. This coordinates processes for one local user; it is not a tenant isolation boundary.
+
+Workers require native process and boot identity and are currently supported only on Linux and macOS. Windows and hosts without those identities refuse activation, even if no process cap is configured. Remote workers are not supported. SDK callers cannot combine the pool with process-bound adapters, UI, persistence, or similar overrides. An unregistered or non-importable child fails; Atomic does not execute it locally as a fallback. Recovery may repeat external effects that occurred after a checkpoint, so use stable idempotency keys for operations that must not be repeated.
+
 Relative settings paths resolve against the Atomic home directory, normally `~/.atomic`, not the project directory. Precedence is SDK `RunOpts.journal` (or `createAgentSession({ journal })` for a session's `workflow` tool), `--storage` or `--storage-file`, `ATOMIC_WORKFLOWS_JOURNAL` or non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, `ATOMIC_STORAGE`, `workflows.journal`, shared top-level `storage`, then the default journal file. An empty environment variable is ignored. SDK sessions read `workflows.journal` from the settings they were given, so `SettingsManager.inMemory(...)` selects a journal per session. A present empty journal block selects the journal default rather than inheriting shared storage. See [Selecting storage per process](/storage#selecting-storage-per-process).
 
 To keep workflow records only in memory, set `"journal": { "memory": true }`. Do not combine `memory: true` with a non-empty `path`. Memory must be selected explicitly and cannot recover runs after the process exits; an environment path still takes precedence over this setting.

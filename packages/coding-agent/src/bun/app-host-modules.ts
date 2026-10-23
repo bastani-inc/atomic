@@ -1,5 +1,11 @@
-/** The host modules the app bundle shares with the Intercom broker the standalone launcher runs. */
-export type AppHostModuleSpecifier = "@bastani/atomic" | "@bastani/atomic/storage";
+/** The host modules the app bundle shares with the Intercom broker and workflow workers the standalone launcher runs. */
+export type AppHostModuleSpecifier =
+	| "@bastani/atomic"
+	| "@bastani/atomic/storage"
+	| "@bastani/atomic-natives"
+	| "typebox"
+	| "typebox/compile"
+	| "typebox/value";
 
 export interface AppHostModules {
 	loadHostModule(specifier: AppHostModuleSpecifier): Promise<object>;

@@ -21,6 +21,7 @@ import type {
 	WorkflowRuntimeConfig,
 	WorkflowUIAdapter,
 } from "../../shared/types.js";
+import { hostWorkerBindings } from "../../workers/host-options.js";
 import type { WorkflowRegistry } from "../../workflows/registry.js";
 import type { CancellationRegistry } from "../background/cancellation-registry.js";
 import type { GitWorktreeSetupCache } from "../shared/worktree.js";
@@ -62,6 +63,8 @@ export interface RunOpts
 		| "ui"
 	> {
 	adapters?: StageAdapters;
+	effectiveResources?: import("../../workers/public-options.js").WorkflowExecutionResources;
+	[hostWorkerBindings]?: true;
 	/** Invocation working directory exposed to workflow definitions as ctx.cwd. */
 	cwd?: string;
 	/** HIL adapter injected by the pi runtime or test harness. */

@@ -9,6 +9,7 @@ import {
 	importInternalIntercomBroker,
 	installBrokerHostModules,
 } from "./internal-intercom-broker.js";
+import { INTERNAL_WORKFLOW_WORKER_ARG, importInternalWorkflowWorker } from "./internal-workflow-worker.js";
 
 markLifecycleTiming("process-entry");
 
@@ -39,6 +40,11 @@ if (args[0] === INTERNAL_INTERCOM_BROKER_ARG) {
 	}
 	installBrokerHostModules(appPath);
 	void importInternalIntercomBroker(args[1]).catch((error: Error) => {
+		console.error(`Atomic startup error: ${error.message}`);
+		process.exit(1);
+	});
+} else if (args[0] === INTERNAL_WORKFLOW_WORKER_ARG) {
+	void importInternalWorkflowWorker(args, appPath).catch((error: Error) => {
 		console.error(`Atomic startup error: ${error.message}`);
 		process.exit(1);
 	});

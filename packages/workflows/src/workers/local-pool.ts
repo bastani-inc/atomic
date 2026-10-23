@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { isBunBinary } from "@bastani/atomic";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
 import type { JournalDurableBackend } from "../durable/journal/journal-backend.js";
 import {
@@ -27,11 +28,13 @@ import {
 	type WorkerDefinitionSource,
 	workerDefinitionSources,
 } from "./definitions.js";
-import { childWorkerDispatchers } from "./dispatch.js";
+import { bindChildWorkerDispatcher } from "./dispatch.js";
+import { hostWorkerBindings } from "./host-options.js";
 import type { WorkerRequest } from "./protocol.js";
 import { type AdmissionConfiguration, SqlResourceAdmission } from "./resource-admission.js";
 import { PoolStageHandoff } from "./stage-handoff.js";
 
+const INTERNAL_WORKFLOW_WORKER_ARG = "--internal-workflow-worker";
 const WORK_LEASE_MS = 5_000;
 const RECOVERY_INTERVAL_MS = 500;
 const COORDINATOR_LEASE_MS = 3 * STAGE_SESSION_HEARTBEAT_INTERVAL_MS;
@@ -60,19 +63,20 @@ export class LocalWorkerPool {
 	private failure?: Error;
 	private closed = false;
 	private replacements = 0;
+	private readonly releaseBinding: () => void;
 	constructor(
 		private readonly backend: JournalDurableBackend,
 		private readonly options: {
 			readonly journalPath: string;
+			readonly rootId?: string;
 			readonly workers: number;
 			readonly definitions: readonly WorkerDefinitionBinding[];
 			readonly admission?: AdmissionConfiguration;
 		},
 	) {
 		if (!Number.isSafeInteger(options.workers) || options.workers < 1) throw new Error("Invalid local worker count");
-		if (childWorkerDispatchers.has(backend)) throw new Error("Local worker pool already attached");
-		childWorkerDispatchers.set(backend, this);
-		if (options.admission) workflowResourceAdmission.set(backend, options.admission);
+		this.releaseBinding = bindChildWorkerDispatcher(backend, this, options.rootId);
+		if (options.admission && options.rootId === undefined) workflowResourceAdmission.set(backend, options.admission);
 	}
 	get workerPids(): number[] {
 		return [...this.children].flatMap((child) => (child.pid === undefined ? [] : [child.pid]));
@@ -127,6 +131,7 @@ export class LocalWorkerPool {
 		}
 	}
 	validateOptions(options: RunOpts): void {
+		if (options[hostWorkerBindings]) return;
 		for (const key of [
 			"adapters",
 			"ui",
@@ -193,7 +198,9 @@ export class LocalWorkerPool {
 	private spawn(root: string): Promise<void> {
 		if (this.closed) return Promise.reject(new Error("Local worker pool is closed"));
 		const child = fork(
-			fileURLToPath(new URL("./local-worker-entry.mjs", import.meta.url)),
+			isBunBinary
+				? INTERNAL_WORKFLOW_WORKER_ARG
+				: fileURLToPath(new URL("./local-worker-entry.mjs", import.meta.url)),
 			[
 				JSON.stringify({
 					journalPath: this.options.journalPath,
@@ -421,7 +428,15 @@ export class LocalWorkerPool {
 		options: RunOpts,
 	): Promise<RunResult> {
 		if (options.budget !== undefined) throw new Error("Local workers refuse process-bound override: budget");
-		const index = this.options.definitions.findIndex((binding) => binding.definition === definition);
+		const source = workerDefinitionSources.get(definition);
+		const index = this.options.definitions.findIndex(
+			(binding) =>
+				binding.definition === definition ||
+				(source !== undefined &&
+					source.path === binding.path &&
+					source.exportName === binding.exportName &&
+					source.digest === workerDefinitionSources.get(binding.definition)?.digest),
+		);
 		if (index < 0) throw new Error(`Worker definition is not importable: ${definition.name}`);
 		if (!options.parentRun || !options.durableScope)
 			throw new Error("Local workers require a durable child boundary");
@@ -430,8 +445,8 @@ export class LocalWorkerPool {
 		this.starting ??= this.start(root);
 		await this.starting;
 		if (this.lease!.runId !== root) throw new Error("Local worker pool belongs to another root");
-		const source = this.sources[index]!;
-		if ((await definitionDigest(source.path)) !== source.digest)
+		const selectedSource = this.sources[index]!;
+		if ((await definitionDigest(selectedSource.path)) !== selectedSource.digest)
 			throw new Error("Worker definition compatibility error");
 		await this.backend.hydrateWorkflow(root);
 		const boundary = this.backend
@@ -458,8 +473,8 @@ export class LocalWorkerPool {
 				boundaryId: options.parentRun.stageId,
 				childRunId: options.runId!,
 				scope: options.durableScope.scopePrefix,
-				definition: `${source.path}#${source.exportName}`,
-				digest: source.digest,
+				definition: `${selectedSource.path}#${selectedSource.exportName}`,
+				digest: selectedSource.digest,
 				inputs,
 				execution,
 			},
@@ -492,8 +507,8 @@ export class LocalWorkerPool {
 	}
 	private async dispose(): Promise<void> {
 		this.closed = true;
-		childWorkerDispatchers.delete(this.backend);
-		workflowResourceAdmission.delete(this.backend);
+		this.releaseBinding();
+		if (this.options.rootId === undefined) workflowResourceAdmission.delete(this.backend);
 		let failure: unknown;
 		try {
 			await this.recovering?.catch(() => {});

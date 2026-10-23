@@ -852,6 +852,47 @@ After accepting startup recovery, inspect the original run ID with `/workflow st
 
 Invalid JSON or invalid shapes produce `CONFIG_INVALID` diagnostics. Missing config files are ignored.
 
+## Local workflow workers
+
+Local workers are opt-in. With no `localWorkers` setting or `RunOpts.localWorkers` option, Atomic does not create pool tables, worker processes, or worker polling loops. Enable a pool only for wide fan-out where running child workflows in separate processes is useful.
+
+```json
+{
+  "workflows": {
+    "localWorkers": {
+      "count": 4,
+      "definitions": [
+        { "path": "./workflows/research.ts", "exportName": "research" }
+      ]
+    },
+    "admission": {
+      "limits": { "session": 4, "process": 8 },
+      "host": { "maxLoadPerCpu": 2, "minFreeMemoryBytes": 2147483648 }
+    }
+  }
+}
+```
+
+The root workflow remains in its original process and owns the run graph, run controls, journal writes and Intercom routes. It can be an inline closure. Only an entire first-level `ctx.workflow(child)` subtree can move to a local worker. Nested workflows stay on that worker. Independent stage placement is not supported. Register every worker-eligible child definition by its module path and export name. The worker loads the module again in its own process, so the definition must be importable rather than a closure. Missing or incompatible definitions fail the run; Atomic does not fall back to local execution.
+
+Worker definitions are loaded in the SDK with `loadWorkerWorkflow(absolutePath, exportName)`, then passed to `ctx.workflow(...)`. The SDK also accepts `RunOpts.localWorkers`; the settings form applies to CLI launches. Paths in worker settings resolve against the invocation working directory. `RunOpts.localWorkers` paths resolve against `cwd` (or the current working directory when omitted). On resume, Atomic checks the saved worker options and definition entry-module digests. A changed definition or worker configuration is refused. The digest covers the entry file, not its imported dependency graph.
+
+Pools require the default-prefix local SQLite workflow journal. Memory, remote, custom-prefix, and custom journals cannot host workers. Start a new run to opt in; an existing unpooled run cannot change placement on resume. If new global worker settings prevent an older run from resuming, disable those settings for that resume.
+
+The supported placement is multiple local processes on Linux or macOS. Windows and any host without native process identity and boot identity refuse activation with an error. This is a containment requirement: lease expiry does not prove that an old process stopped. Remote hosts and network workers are not supported.
+
+The root's existing `/workflow status`, `/workflow stages`, steering, pause, quit, and resume controls still address one root. A worker failure can replay an unfinished child from its last committed checkpoint. This is at-least-once recovery. An external effect that happens before its checkpoint can happen again; use stable logical idempotency keys for effects that must not duplicate.
+
+### Worker resource limits
+
+`admission.limits` caps concurrent agent sessions and managed tool processes for one root. A session permit covers creation through disposal, including fallback and delegated sessions. A process permit remains held until the Atomic-managed process is confirmed stopped; yielding an observation wait does not release it. Processes launched outside Atomic's managed tools are not counted. The worker count is a placement limit, separate from these resource caps.
+
+`admission.host` adds launch gates for load per CPU and free memory. These measurements are advisory; they are not operating-system resource ceilings.
+
+`admission.userLimits` applies the selected session or process limit across runs that use a single canonical local SQLite journal path. Set `userDatabase` to that same path. A conflicting journal selection or unsupported storage fails clearly instead of claiming a cross-run limit that cannot be enforced. This is local-user coordination, not a multi-tenant security boundary. Include the admission option on participating non-pooled SDK runs if they should share the user-wide limit.
+
+Pooled SDK runs reject process-bound adapter, UI, persistence and similar runtime overrides before launch. CLI-owned host bindings remain local to the root; workers construct their own stage sessions.
+
 ## Settings
 
 Settings can list package sources directly:

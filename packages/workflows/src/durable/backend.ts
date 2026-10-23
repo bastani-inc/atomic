@@ -314,6 +314,7 @@ class JournalProjection {
 			createdAt: handle.createdAt,
 			status: handle.status,
 			transitionClaimId: handle.transitionClaimId ?? existing?.handle.transitionClaimId,
+			resources: handle.resources ?? existing?.handle.resources,
 			...(handle.invocationCwd !== undefined
 				? { invocationCwd: handle.invocationCwd }
 				: existing?.handle.invocationCwd !== undefined
@@ -645,6 +646,7 @@ class JournalProjection {
 			pendingPrompts: h.pendingPrompts,
 			pendingStageMessages: h.pendingStageMessages ?? [],
 			...(h.possibleStages !== undefined ? { possibleStages: h.possibleStages } : {}),
+			...(h.resources !== undefined ? { resources: h.resources } : {}),
 			...(h.ownerExecutorId !== undefined ? { ownerExecutorId: h.ownerExecutorId } : {}),
 			...(h.sessionFile !== undefined ? { sessionFile: h.sessionFile } : {}),
 			...(h.label !== undefined ? { label: h.label } : {}),

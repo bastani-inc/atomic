@@ -14,6 +14,7 @@ import { createRequire } from "node:module";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import {
 	INSTALLED_EXTENSION_ENTRIES,
+	WORKFLOWS_LOCAL_WORKER_ENTRIES,
 	WORKFLOWS_SDK_BUNDLE_ENTRY,
 	type BuiltinPackageDirName,
 } from "../src/core/builtin-install-layout.ts";
@@ -124,6 +125,7 @@ const INSTALLED_KEEP_PREFIXES: Record<BuiltinPackageDirName, readonly string[]> 
 		"LICENSE",
 		INSTALLED_EXTENSION_ENTRIES.workflows,
 		WORKFLOWS_SDK_BUNDLE_ENTRY,
+		...WORKFLOWS_LOCAL_WORKER_ENTRIES,
 		workflowsAuthoringDeclaration,
 		"src/shared/authoring-contract.d.ts",
 		"skills/",
@@ -294,6 +296,26 @@ async function bundleEntrypoint(entry: string, outfile: string, label: string): 
 	console.log(`Bundled ${label} -> ${relative(distDir, outfile)}`);
 }
 
+async function bundleLocalWorkerEntries(): Promise<void> {
+	const workersDir = join(workflowsDistDir, "src", "workers");
+	const generatedEntry = join(workersDir, "local-worker-bundle-entry.ts");
+	writeFileSync(
+		generatedEntry,
+		'import { runLocalWorker } from "./local-worker.js";\nawait runLocalWorker(JSON.parse(process.argv[2] as string));\n',
+		"utf-8",
+	);
+	try {
+		const [first, ...rest] = WORKFLOWS_LOCAL_WORKER_ENTRIES.map((entry) => join(workflowsDistDir, entry));
+		await bundleEntrypoint(generatedEntry, first as string, "@bastani/workflows local worker");
+		for (const outfile of rest) {
+			mkdirSync(dirname(outfile), { recursive: true });
+			cpSync(first as string, outfile);
+		}
+	} finally {
+		rmSync(generatedEntry, { force: true });
+	}
+}
+
 async function bundleWorkflowBuiltins(): Promise<void> {
 	const builtinDir = join(workflowsDistDir, "builtin");
 	const names = ["index", ...listWorkflowBuiltinNames()];
@@ -442,6 +464,7 @@ await bundleEntrypoint(
 	join(workflowsDistDir, WORKFLOWS_SDK_BUNDLE_ENTRY),
 	"@bastani/workflows SDK",
 );
+await bundleLocalWorkerEntries();
 
 await bundleWorkflowBuiltins();
 await bundleEntrypoint(

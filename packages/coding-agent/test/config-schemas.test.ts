@@ -392,6 +392,36 @@ describe("settings.json schema", () => {
 		assert.equal(validator.Check({ compaction: { compression_ratio: 1 } }), false);
 	});
 
+	it("validates public workflow worker and admission settings (#3869)", () => {
+		const validator = Compile(SettingsSchema);
+		const definitions = [{ path: "./child.ts", exportName: "child" }];
+		assert.equal(
+			validator.Check({
+				workflows: {
+					localWorkers: { count: 2, definitions },
+					admission: {
+						limits: { session: 2, process: 4 },
+						userLimits: { session: 3 },
+						userDatabase: "/tmp/journal.sqlite",
+						host: { maxLoadPerCpu: 0, minFreeMemoryBytes: 1024 },
+					},
+				},
+			}),
+			true,
+		);
+		for (const workflows of [
+			{ localWorkers: { count: 0, definitions } },
+			{ localWorkers: { count: 1.5, definitions } },
+			{ localWorkers: { count: 1 } },
+			{ localWorkers: { count: 1, definitions: [{ path: "./child.ts" }] } },
+			{ admission: { limits: { session: 0 } } },
+			{ admission: { userLimits: { process: 1.5 } } },
+			{ admission: { host: { maxLoadPerCpu: -1 } } },
+			{ admission: { host: { minFreeMemoryBytes: -1 } } },
+		])
+			assert.equal(validator.Check({ workflows }), false, JSON.stringify(workflows));
+	});
+
 	it("rejects settings values that runtime accessors reject", () => {
 		const validator = Compile(SettingsSchema);
 		const invalidSettings = [

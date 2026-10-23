@@ -28,6 +28,7 @@ import {
 	type WorkflowPersistencePort,
 	type WorkflowRuntimeConfig,
 } from "../shared/types.js";
+import { hostWorkerBindings } from "../workers/host-options.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import type { WorkflowToolArgs } from "./index.js";
 import type { WorkflowInputEntry, WorkflowToolResult } from "./render-result.js";
@@ -64,6 +65,8 @@ async function discardUnadmittedRun(runId: string, activeStore: Store): Promise<
 
 export interface DispatcherOpts {
 	durableBackend?: DurableWorkflowBackend;
+	localWorkers?: import("../workers/public-options.js").LocalWorkerOptions;
+	admission?: import("../workers/public-options.js").WorkflowAdmissionOptions;
 	/** Registry of compiled workflow definitions. */
 	registry: WorkflowRegistry;
 	/** Stage adapters forwarded to the executor (prompt/complete). */
@@ -222,6 +225,9 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 			let launch: ReturnType<typeof launchDetachedUntilStartup>;
 			try {
 				launch = launchDetachedUntilStartup(def, inputs, {
+					[hostWorkerBindings]: true,
+					localWorkers: opts.localWorkers,
+					admission: opts.admission,
 					registry: opts.registry,
 					adapters: opts.adapters,
 					store: opts.store,

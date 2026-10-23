@@ -47,6 +47,7 @@
   ],
   "files": [
     "src/**/*.ts",
+    "src/**/*.mjs",
     "builtin/**/*.ts",
     "builtin/**/*.d.ts",
     "skills/**/*",
@@ -82,11 +83,15 @@
   },
   "peerDependencies": {
     "@bastani/atomic": "*",
+    "@bastani/atomic-natives": "*",
     "@earendil-works/pi-tui": "^1.4.0",
     "typebox": "*"
   },
   "peerDependenciesMeta": {
     "@bastani/atomic": {
+      "optional": true
+    },
+    "@bastani/atomic-natives": {
       "optional": true
     },
     "@earendil-works/pi-tui": {

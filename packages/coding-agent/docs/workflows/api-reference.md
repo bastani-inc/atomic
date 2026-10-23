@@ -1213,6 +1213,50 @@ export default workflow({
 });
 ```
 
+### `loadWorkerWorkflow(path, exportName?)`
+
+```typescript
+function loadWorkerWorkflow(path: string, exportName?: string): Promise<AnyWorkflowDefinition>;
+```
+
+Loads and records a workflow definition from an absolute module path for use as a local worker child. The export name defaults to `"default"`. Pass the returned definition to `ctx.workflow(child, ...)` and list the same path/export pair in the root's `localWorkers.definitions`. The root itself may remain an inline closure. Worker definitions must be importable; a closure cannot cross the process boundary. The saved compatibility digest covers the entry module only, not its imported modules.
+
+```ts
+import { loadWorkerWorkflow, run, workflow } from "@bastani/atomic/workflows";
+
+const research = await loadWorkerWorkflow(`${process.cwd()}/workflows/research.ts`, "research");
+const root = workflow({
+  name: "research-pool",
+  description: "Run independent research tasks on local workers.",
+  inputs: {},
+  outputs: {},
+  async run(ctx) {
+    await Promise.all(["one", "two"].map((topic) => ctx.workflow(research, { inputs: { topic } })));
+    return {};
+  },
+});
+
+await run(root, {}, {
+  cwd: process.cwd(),
+  localWorkers: { count: 2, definitions: [{ path: `${process.cwd()}/workflows/research.ts`, exportName: "research" }] },
+  admission: { limits: { session: 2, process: 4 } },
+});
+```
+
+Only first-level child workflow subtrees are placed on workers. Nested children stay on their assigned worker. Stage placement is not distributed independently. If a child is absent from the inventory or cannot be imported, the run fails before executing it; there is no local fallback.
+
+#### Local worker options
+
+`RunOpts.localWorkers` enables a local process pool for this root. `count` must be a positive integer. `definitions` lists `{ path, exportName }` entries. The definitions are loaded in each worker from the local filesystem. `RunOpts.admission` accepts `limits` for one root, `userLimits` across runs, a `userDatabase` canonical local SQLite path, and optional host thresholds `maxLoadPerCpu` and `minFreeMemoryBytes`.
+
+The option is off by default. Without it, Atomic creates no pool tables, worker processes, or polling loops. CLI users can set the same options under `workflows.localWorkers` and `workflows.admission` in settings. Settings paths resolve against the invocation working directory; SDK paths resolve against `cwd` (or the current directory). Effective settings and definition entry-module digests are persisted with the root and checked on resume. Changing them fails compatibility checks instead of silently changing placement.
+
+Workers are supported only on Linux and macOS hosts with native process identity and boot identity. Windows and hosts without those capabilities refuse activation, including when no process cap is configured. Remote hosts are not supported. Pooled SDK runs reject process-bound adapters, UI, persistence, and similar runtime overrides before worker launch. The CLI keeps its host-specific bindings at the root and gives worker sessions their own adapters.
+
+Admission limits count actual resources: a session from creation through disposal, including fallback and delegated sessions, and a managed tool process until confirmed cleanup. Yielding an observation wait does not free a process permit. Subprocesses started outside Atomic's managed APIs are not counted. Host load and free-memory thresholds are launch gates, not hard OS limits. `userLimits` are reliable only when every participating run uses the configured canonical database path; they are local-user coordination, not a tenant security boundary.
+
+Worker recovery replays unfinished child work from committed checkpoints, so external effects before the latest checkpoint may run again. Use stable logical idempotency keys where duplicate effects matter.
+
 Programmatic callers import `run` and call `run(definition, inputs)` with an exported definition and validated inputs. Use `createRegistry()` when an integration needs to register, merge, or look up several definitions before selecting one to run. The extension also registers the `/workflow` commands and the `workflow` tool for named execution, discovery, inspection, messaging, run control, and reload.
 
 ### `workflow(spec)`
@@ -1364,6 +1408,8 @@ interface RunOpts {
   readonly deferWorkflowStart?: boolean;
   readonly config?: WorkflowRuntimeConfig;
   readonly journal?: RunJournalOption;
+  readonly localWorkers?: LocalWorkerOptions;
+  readonly admission?: WorkflowAdmissionOptions;
   readonly models?: WorkflowModelCatalogPort;
   readonly registry?: WorkflowRegistry;
   readonly depth?: number;
@@ -1386,6 +1432,8 @@ interface RunOpts {
 ```
 
 Supplies runtime adapters, execution policy, persistence, MCP, cancellation, graph/store integration, continuation metadata, and lifecycle callbacks to `run(...)`. Every field is optional.
+
+`LocalWorkerOptions` is `{ count: number, definitions: { path: string, exportName: string }[] }`, where `count` is a positive integer. `WorkflowAdmissionOptions` contains optional root `limits`, user-wide `userLimits`, `userDatabase`, and host thresholds. `limits` and `userLimits` accept `session` and `process` counts.
 
 `onStageSessionEvent` streams every agent-session event from each stage (for example `message_update`, `tool_execution_start`, and `tool_execution_end`), tagged with the stage's `runId` and `stageId`. `AgentSessionEvent` is exported by `@bastani/atomic`. The stream continues when a fallback model replaces a stage's session. Stages in nested `ctx.workflow(...)` runs report the child run's `runId`. Exceptions thrown by the listener, and rejections from an async listener, are ignored and do not affect the stage.
 
