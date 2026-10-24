@@ -607,6 +607,7 @@ export class LocalWorkerPool {
 		for (;;) {
 			options.signal?.throwIfAborted();
 			if (this.closed) {
+				if (this.failure) throw this.failure;
 				if (this.desiredControl === "quit") throw new WorkflowGracefulQuitError(root, "worker pool teardown");
 				throw new Error("Local worker pool is closed");
 			}

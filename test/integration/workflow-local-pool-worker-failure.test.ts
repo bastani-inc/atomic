@@ -278,7 +278,7 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
-	"a pool fault it cannot absorb reaches ctx.workflow as a typed retryable error (#3889)",
+	"a pool fault it cannot absorb reaches every waiting ctx.workflow as a typed retryable error (#3889)",
 	async () => {
 		const directory = makeTempDirectory("pool-typed-fault-");
 		const path = join(directory, "journal.sqlite");
@@ -291,21 +291,18 @@ test.skipIf(process.platform === "win32")(
 		});
 		const pool = new LocalWorkerPool(backend, {
 			journalPath: path,
-			workers: 1,
+			workers: 2,
 			definitions: [{ definition: child, path: childPath, exportName: "crashingChild" }],
 		});
-		let caught: unknown;
+		const caught: unknown[] = [];
 		const parent = workflow({
 			name: "pool-typed-fault-root",
 			description: "",
 			inputs: {},
 			outputs: {},
 			async run(ctx) {
-				try {
-					await ctx.workflow(child);
-				} catch (error) {
-					caught = error;
-				}
+				const settled = await Promise.allSettled([ctx.workflow(child), ctx.workflow(child)]);
+				for (const outcome of settled) if (outcome.status === "rejected") caught.push(outcome.reason);
 				return {};
 			},
 		});
@@ -315,10 +312,13 @@ test.skipIf(process.platform === "win32")(
 				{},
 				{ runId: "pool-typed-fault-root", cwd: directory, store: createStore(), durableBackend: backend },
 			);
-			assert.ok(isRetryableWorkflowError(caught), String(caught));
-			assert.ok(caught instanceof WorkflowInfrastructureError);
-			assert.equal(caught.code, "worker_retry_limit");
-			assert.match(caught.message, /Local worker retry limit/);
+			assert.equal(caught.length, 2, "both concurrent children fail");
+			for (const error of caught) {
+				assert.ok(isRetryableWorkflowError(error), String(error));
+				assert.ok(error instanceof WorkflowInfrastructureError);
+				assert.equal(error.code, "worker_retry_limit");
+				assert.match(error.message, /Local worker retry limit/);
+			}
 		} finally {
 			await pool.close().catch(() => {});
 			await backend.close();
