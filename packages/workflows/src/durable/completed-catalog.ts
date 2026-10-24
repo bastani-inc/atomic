@@ -436,9 +436,9 @@ function runSnapshotsFromCheckpoints(
 		if (!grouped.has(runId)) grouped.set(runId, []);
 	}
 	for (const group of grouped.values()) group.sort(compareDraftSourceOrder);
-	const groupedCount = grouped.size;
-	retainReachableRunGroups(grouped, rootRunId);
-	if (policy.failOnUnreachable && grouped.size !== groupedCount) return [];
+	// Groups under a failed or skipped boundary are pruned like a finished root does; any other dropped group
+	// means an active graph is incomplete.
+	if (!retainReachableRunGroups(grouped, rootRunId) && policy.failOnUnreachable) return [];
 	if (!validateRunGroups(grouped, rootRunId, toolCheckpoints, checkpoints, policy.retainActive)) return [];
 	const syntheticChildren: Array<{
 		readonly parentRunId: string;
