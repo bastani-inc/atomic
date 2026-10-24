@@ -329,7 +329,10 @@ class AgentSessionBase {
 			// #3919: a fresh stage is live before its runner dispatches the stage prompt. Turn-starting
 			// input that arrives in that gap is startup context for the prompt's turn, not a turn of its own.
 			this._workflowStageAwaitingFirstPrompt =
-				stageContext !== undefined && !this.sessionManager.getBranch().some((entry) => entry.type === "message");
+				stageContext !== undefined &&
+				!this.sessionManager
+					.getBranch()
+					.some((entry) => entry.type === "message" || entry.type === "custom_message" || entry.type === "custom");
 			if (stageContext) {
 				this._workflowStageAdmission?.bindTaskIdentity(
 					this.sessionManager.getSessionId(),

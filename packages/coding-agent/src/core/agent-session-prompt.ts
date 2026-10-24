@@ -426,6 +426,8 @@ export async function _runAgentPrompt(
 		);
 		return;
 	}
+	// Any run that starts ends the gap before a fresh stage's first prompt (#3919).
+	this._workflowStageAwaitingFirstPrompt = false;
 	if (this._activePromptCount === 0 && !this.isStreaming) this._agentRunAbortRequested = false;
 	const startingMessages = Array.isArray(messages) ? messages : [messages];
 	const customMessage = !prepared

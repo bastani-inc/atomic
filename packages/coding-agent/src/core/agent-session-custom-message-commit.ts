@@ -8,6 +8,7 @@ import {
 } from "./agent-session-persistent-custom-messages.ts";
 import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.js";
 import type { CustomMessage } from "./messages.ts";
+import { TASK_COMPLETION_MESSAGE_TYPE } from "./tasks/completion.ts";
 
 async function appendDurableStageAdmission<T>(session: AgentSession, message: CustomMessage<T>): Promise<void> {
 	await session._appendCustomMessage(message);
@@ -36,10 +37,21 @@ async function commitPriorityMessage(session: AgentSession, message: CustomMessa
 	}
 }
 
-/** #3919: before a fresh stage's own prompt starts its first run, turn-starting input is that run's startup context. */
-function holdsForFirstStagePrompt(session: AgentSession, options: SendMessageOptions | undefined): boolean {
+/**
+ * #3919: before a fresh stage's own prompt is submitted, turn-starting input is that prompt's startup context.
+ * Once the prompt is in preflight, a run has started, or queued input is paused, the ordinary admission paths
+ * own ordering. The stage's own task completions follow its own work, so they never precede its prompt.
+ */
+function holdsForFirstStagePrompt<T>(
+	session: AgentSession,
+	message: CustomMessage<T>,
+	options: SendMessageOptions | undefined,
+): boolean {
 	return (
 		session._workflowStageAwaitingFirstPrompt &&
+		session._activePromptCount === 0 &&
+		!session._queuedMessagesPaused &&
+		message.customType !== TASK_COMPLETION_MESSAGE_TYPE &&
 		options?.triggerTurn === true &&
 		options.excludeFromContext !== true &&
 		options.deliverAs !== "nextTurn"
@@ -55,7 +67,7 @@ export async function commitAdmittedCustomMessage<T>(
 	const owner = resolveWorkflowStageDeliveryTarget(session);
 	if (owner !== session) return commitAdmittedCustomMessage(owner, appMessage, options);
 	const self = session;
-	if (holdsForFirstStagePrompt(self, options)) {
+	if (holdsForFirstStagePrompt(self, appMessage, options)) {
 		await appendDurableStageAdmission(self, appMessage);
 		return;
 	}
@@ -173,7 +185,7 @@ export async function commitAdmittedCustomMessages<T>(
 	const owner = resolveWorkflowStageDeliveryTarget(session);
 	if (owner !== session) return commitAdmittedCustomMessages(owner, appMessages, options);
 	const self = session;
-	if (holdsForFirstStagePrompt(self, options)) {
+	if (appMessages.every((item) => holdsForFirstStagePrompt(self, item, options))) {
 		for (const item of appMessages) await appendDurableStageAdmission(self, item);
 		return;
 	}
