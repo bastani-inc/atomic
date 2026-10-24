@@ -2,12 +2,13 @@
 
 ## [Unreleased]
 
-### Fixed
-
-- The standalone binary resolves its builtin packages only from the `builtin/` directory beside the executable, so the Intercom broker starts for pooled workflow stages even when the build tree still exists on the host ([#3917](https://github.com/bastani-inc/atomic/issues/3917))
 ### Changed
 
 - Intercom `send` and `ask` take a `delivery` option, and the default is now `"steer"`: a message to a working subagent or live workflow stage arrives after the recipient's current tool calls finish instead of cancelling its work, so peers in a swarm no longer abort each other's long-running tool calls. `"followUp"` waits until the recipient finishes and stops. `"interrupt"` keeps the previous behavior of cancelling the recipient's current model call or tool call, and is now opt-in ([#3921](https://github.com/bastani-inc/atomic/issues/3921))
+
+### Fixed
+
+- The standalone binary resolves its builtin packages only from the `builtin/` directory beside the executable, so the Intercom broker starts for pooled workflow stages even when the build tree still exists on the host ([#3917](https://github.com/bastani-inc/atomic/issues/3917))
 
 ## [0.9.44-alpha.1] - 2026-10-24
 
