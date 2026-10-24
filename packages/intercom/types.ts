@@ -267,7 +267,7 @@ export type BrokerMessage =
 			/** This broker answers `broker_status`; absent on older brokers, which drop a client that sends it. */
 			brokerStatus?: true;
 	  }
-  | { type: "registration_failed"; reason: string; code?: LiveWorkflowStageRouteRefusalCode }
+  | { type: "registration_failed"; reason: string; code?: LiveWorkflowStageRouteRefusalCode; requestId?: string }
   | { type: "question_target"; messageId: string; attemptId: string; sessionId: string }
  | { type: "sessions"; requestId: string; sessions: SessionInfo[]; workflowStages?: WorkflowStageRosterEntry[]; workflowFutureStages?: WorkflowFutureStageRosterEntry[]; restricted?: true }
 	| { type: "groups"; requestId: string; groups: GroupSummary[] }

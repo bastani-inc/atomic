@@ -18,8 +18,10 @@ import {
 } from "./session-recovery.js";
 import { APP_NAME, type ExtensionAPI, type ExtensionContext, type SessionEntry, sessionScopedExtensionState } from "@bastani/atomic";
 import { appendFileSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 import {
 	IntercomClient,
+	IntercomPendingStageRouteRefusedError,
 	type PendingStageMessageRequest,
 	type PendingStageMessageResult,
 	type PendingStageNotificationRequest,
@@ -74,6 +76,7 @@ import { normalizeGroup, normalizeGroups, resolveHomeGroup } from "./group.js";
 import { clearRuntimeIntercomGroup, setRuntimeIntercomGroup } from "./runtime-group.js";
 import { jitteredReconnectDelayMs, reconnectDelayMs } from "./reconnect-backoff.js";
 import { IntercomClientDisconnectedError } from "./recoverable-disconnect.js";
+import { isOwnerMissingRefusal, LIVE_ROUTE_OWNER_WAIT_MS, liveRouteOwnerRetryDelayMs } from "./live-route-refusal.js";
 import { RouteRetryWaiters, scheduledRetryFailure } from "./route-retry-waiters.js";
 import { createConcurrencyGate, ROUTE_CLIENT_CONNECT_CONCURRENCY } from "./route-connect-gate.js";
 import { isReleasedStageAnnouncement, RELEASED_STAGE_EVENT, ReleasedStagePeers } from "./released-stage-peers.js";
@@ -120,6 +123,20 @@ interface PendingStageRouteClientState {
   reconnectAttempt: number;
 	/** Route publications waiting for `reconnectTimer`'s retry; it registers the latest route. */
 	readonly retryWaiters: RouteRetryWaiters;
+	/**
+	 * The broker refused this run's route, so it has a connection of its own and cannot end its group's. It stays there
+	 * once registered, until the run is retired: back on the group's connection, a later refusal would end that again.
+	 */
+	isolated: boolean;
+}
+
+/**
+ * The broker connection that carries the pending-stage routes of every run in one invocation group (#3904), keyed by
+ * the group. A run whose route the broker refused registers over a connection of its own, keyed by the run.
+ */
+interface PendingStageRouteConnection {
+  client: IntercomClient | null;
+  promise: Promise<IntercomClient> | null;
 }
 
 interface PendingStageMessageEvent extends PendingStageMessageRequest {
@@ -229,6 +246,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   const inboundDeliveries = new InboundMessageAdmission();
   const pendingStageRoutes = new Map<string, PendingStageRouteRegistration>();
   const pendingStageRouteClients = new Map<string, PendingStageRouteClientState>();
+  // #3904: the routes of every run in one invocation group share one connection, not one per run.
+  const pendingStageRouteConnections = new Map<string, PendingStageRouteConnection>();
   const routeClientConnectGate = createConcurrencyGate(ROUTE_CLIENT_CONNECT_CONCURRENCY);
   const supervisorAuthorizations = new SupervisorAuthorizationRegistry();
   const releasedStagePeers = new ReleasedStagePeers({
@@ -891,44 +910,107 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       );
     }, jitteredReconnectDelayMs(state.reconnectAttempt));
   }
-  function attachPendingStageRouteClientHandlers(
-    runId: string,
-    state: PendingStageRouteClientState,
+  /** Runs whose route the connection's client currently carries. */
+  function pendingStageRouteRunsOn(nextClient: IntercomClient): Array<[string, PendingStageRouteClientState]> {
+    return [...pendingStageRouteClients].filter(([, state]) => state.client === nextClient);
+  }
+  function attachPendingStageRouteConnectionHandlers(
+    connection: PendingStageRouteConnection,
     nextClient: IntercomClient,
   ): void {
     nextClient.on("pending_stage_message", (request: PendingStageMessageRequest) => {
-      handlePendingStageMessage(
-        nextClient,
-        request,
-        () => state.client === nextClient && pendingStageRouteClientIsCurrent(runId, state),
-      );
+      handlePendingStageMessage(nextClient, request, () => {
+        const state = pendingStageRouteClients.get(request.runId);
+        return state?.client === nextClient && pendingStageRouteClientIsCurrent(request.runId, state);
+      });
     });
     nextClient.on("disconnected", () => {
-      if (state.client !== nextClient) return;
-      state.client = null;
-      schedulePendingStageRouteReconnect(runId, state);
+      if (connection.client === nextClient) connection.client = null;
+      // Every run the connection carried lost its route; each recovers on its own backoff.
+      for (const [runId, state] of pendingStageRouteRunsOn(nextClient)) {
+        state.client = null;
+        schedulePendingStageRouteReconnect(runId, state);
+      }
     });
     nextClient.on("error", () => {
       // Route-owner reconnect logic runs from the disconnect path.
     });
     nextClient.on("sticky_live_delivered", (notice: StickyLiveDeliveredNotice) => {
-      if (state.client === nextClient) relayStickyLiveDelivered(notice);
+      if (connection.client === nextClient) relayStickyLiveDelivered(notice);
     });
     // #3760: the process that resumed this dormant route's interrupted run owns its routes now.
     nextClient.on("pending_stage_route_revoked", (notice: { runId: string }) => {
-      if (notice.runId !== runId || state.client !== nextClient) return;
+      const state = pendingStageRouteClients.get(notice.runId);
+      if (state === undefined || state.client !== nextClient) return;
       state.client = null;
       endPendingStageRouteBackoff(state, new IntercomClientDisconnectedError());
-      if (pendingStageRouteClients.get(runId) === state) pendingStageRouteClients.delete(runId);
-      if (samePendingStageRoute(pendingStageRoutes.get(runId), state.route)) pendingStageRoutes.delete(runId);
-      void nextClient.disconnect().catch(() => {});
-      pi.events.emit(PENDING_STAGE_ROUTE_REVOKED_EVENT, { runId, capability: state.route.capability });
+      pendingStageRouteClients.delete(notice.runId);
+      if (samePendingStageRoute(pendingStageRoutes.get(notice.runId), state.route)) pendingStageRoutes.delete(notice.runId);
+      // The broker moved only this run's route; other runs keep the connection.
+      if (pendingStageRouteRunsOn(nextClient).length === 0) closePendingStageRouteConnection(nextClient);
+      pi.events.emit(PENDING_STAGE_ROUTE_REVOKED_EVENT, { runId: notice.runId, capability: state.route.capability });
     });
+  }
+  function closePendingStageRouteConnection(nextClient: IntercomClient): void {
+    for (const [key, connection] of pendingStageRouteConnections) {
+      if (connection.client !== nextClient) continue;
+      connection.client = null;
+      if (connection.promise === null) pendingStageRouteConnections.delete(key);
+    }
+    void nextClient.disconnect().catch(() => {});
+  }
+  /** The route connection `key` names in `group`, opened through the connect gate when it is not up. */
+  function connectPendingStageRouteConnection(key: string, group: string): Promise<IntercomClient> {
+    let connection = pendingStageRouteConnections.get(key);
+    if (connection === undefined) {
+      connection = { client: null, promise: null };
+      pendingStageRouteConnections.set(key, connection);
+    }
+    if (connection.client?.isConnected()) return Promise.resolve(connection.client);
+    if (connection.promise !== null) return connection.promise;
+    const owner = connection;
+    const promise = routeClientConnectGate
+      .run(async () => {
+        await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs);
+        if (pendingStageRouteConnections.get(key) !== owner) throw new IntercomClientDisconnectedError();
+        const routeReturnAddress = `${currentSessionId}:pending-stage-route:${key}`;
+        const nextClient = new IntercomClient(routeReturnAddress, {
+          connectTimeoutMs: testOverrides.connectTimeoutMs?.(routeReturnAddress),
+        });
+        owner.client = nextClient;
+        attachPendingStageRouteConnectionHandlers(owner, nextClient);
+        try {
+          await nextClient.connect(
+            { ...buildRegistration(), recipientPurpose: "control", name: undefined, groups: [group], group },
+            undefined,
+            undefined,
+            readSubagentMessageSource(runtimeContext?.subagentPolicy),
+          );
+        } catch (error) {
+          if (owner.client === nextClient) owner.client = null;
+          try { await nextClient.disconnect(); } catch {}
+          throw error;
+        }
+        return nextClient;
+      })
+      .finally(() => {
+        if (owner.promise === promise) owner.promise = null;
+      });
+    owner.promise = promise;
+    return promise;
   }
   async function retirePendingStageRouteClient(state: PendingStageRouteClientState): Promise<void> {
     try { await state.promise; } catch {}
-    if (state.client) {
-      try { await state.client.disconnect(); } catch {}
+    const retiredClient = state.client;
+    state.client = null;
+    if (retiredClient === null) return;
+    // A replacement in the same group registers over the same connection; only one nothing uses any more closes.
+    const group = normalizeGroup(state.route.group);
+    const groupInUse = [...pendingStageRoutes.values()].some(
+      (route) => !registersOnMainClient(route) && normalizeGroup(route.group) === group,
+    );
+    if ((state.isolated || !groupInUse) && pendingStageRouteRunsOn(retiredClient).length === 0) {
+      closePendingStageRouteConnection(retiredClient);
     }
   }
   function supersededPendingStageRouteError(context: ExtensionContext, generation: number): Error {
@@ -947,6 +1029,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 
     let existing = pendingStageRouteClients.get(runId);
     let retired: Promise<void> | undefined;
+    // A refused run keeps its own connection when it publishes a new capability in the same group.
+    const isolated = existing?.isolated === true && normalizeGroup(existing.route.group) === normalizeGroup(route.group);
     if (existing && !samePendingStageRoute(existing.route, route)) {
       pendingStageRouteClients.delete(runId);
       endPendingStageRouteBackoff(existing, new IntercomClientDisconnectedError());
@@ -960,6 +1044,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       reconnectTimer: null,
       reconnectAttempt: 0,
       retryWaiters: new RouteRetryWaiters(),
+      isolated,
     };
     if (!existing) pendingStageRouteClients.set(runId, state);
     // The run's own retries register what the run publishes now, not what it first published.
@@ -967,15 +1052,20 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 	if (state.client?.isConnected()) {
 		// Route completion must observe broker processing, not merely enqueue a write.
 		// A list on another session's socket can overtake this roster update.
-		await state.client.registerPendingStageRouteAcknowledged(
-			runId,
-			normalizeGroup(route.group),
-			route.capability,
-			route.stages,
-			route.possibleStages,
-			route.parent,
-			route.dormant === true,
-		);
+		await state.client
+			.registerPendingStageRouteAcknowledged(
+				runId,
+				normalizeGroup(route.group),
+				route.capability,
+				route.stages,
+				route.possibleStages,
+				route.parent,
+				route.dormant === true,
+			)
+			.catch((error: Error) => {
+				if (error instanceof IntercomPendingStageRouteRefusedError) state.isolated = true;
+				throw error;
+			});
 		return;
 	}
 	if (state.promise) {
@@ -986,27 +1076,16 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 	// the timer owns the retry, which registers this latest route, so the update waits for it.
 	if (state.reconnectTimer !== null && options.bypassBackoff !== true) return state.retryWaiters.join();
 
-    const connect = () => routeClientConnectGate.run(async () => {
+    const connect = async () => {
       if (!pendingStageRouteClientIsCurrent(runId, state, contextAtStart, generationAtStart)) {
         throw supersededPendingStageRouteError(contextAtStart, generationAtStart);
       }
-      await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs);
-		const routeReturnAddress = `${currentSessionId}:pending-stage-route:${runId}`;
-		const nextClient = new IntercomClient(routeReturnAddress, {
-			connectTimeoutMs: testOverrides.connectTimeoutMs?.(routeReturnAddress),
-		});
+      const group = normalizeGroup(route.group);
+      const nextClient = await connectPendingStageRouteConnection(state.isolated ? runId : group, group);
+      if (!pendingStageRouteClientIsCurrent(runId, state, contextAtStart, generationAtStart)) {
+        throw supersededPendingStageRouteError(contextAtStart, generationAtStart);
+      }
       state.client = nextClient;
-      attachPendingStageRouteClientHandlers(runId, state, nextClient);
-      await nextClient.connect(
-        { ...buildRegistration(), recipientPurpose: "control", name: undefined, groups: [normalizeGroup(route.group)], group: normalizeGroup(route.group) },
-        undefined,
-        undefined,
-        readSubagentMessageSource(runtimeContext?.subagentPolicy),
-      );
-      if (!pendingStageRouteClientIsCurrent(runId, state, contextAtStart, generationAtStart)) {
-        await nextClient.disconnect();
-        throw supersededPendingStageRouteError(contextAtStart, generationAtStart);
-      }
       await nextClient.registerPendingStageRouteAcknowledged(
         runId,
         normalizeGroup(route.group),
@@ -1017,22 +1096,20 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         route.dormant === true,
       );
       if (!pendingStageRouteClientIsCurrent(runId, state, contextAtStart, generationAtStart)) {
-        await nextClient.disconnect();
         throw supersededPendingStageRouteError(contextAtStart, generationAtStart);
       }
       state.reconnectAttempt = 0;
       endPendingStageRouteBackoff(state);
-    });
+    };
     const promise = retired === undefined ? connect() : retired.then(connect);
     state.promise = promise;
     try {
       await promise;
     } catch (error) {
-      const failedClient = state.client;
+      // The group's connection stays up for the runs it still carries; a dead one recovers through its own disconnect.
+      // A refusal ended it, so the refused run retries alone and cannot end it again.
+      if (error instanceof IntercomPendingStageRouteRefusedError) state.isolated = true;
       state.client = null;
-      if (failedClient) {
-        try { await failedClient.disconnect(); } catch {}
-      }
       if (state.promise === promise) state.promise = null;
       schedulePendingStageRouteReconnect(runId, state);
       throw toError(error);
@@ -1043,12 +1120,18 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   async function disconnectPendingStageRouteClients(): Promise<void> {
     const states = [...pendingStageRouteClients.values()];
     pendingStageRouteClients.clear();
+    const connections = [...pendingStageRouteConnections.values()];
+    pendingStageRouteConnections.clear();
     for (const state of states) {
       endPendingStageRouteBackoff(state, new IntercomClientDisconnectedError());
       try { await state.promise; } catch {}
-      if (!state.client) continue;
-      try { await state.client.disconnect(); } catch {}
       state.client = null;
+    }
+    for (const connection of connections) {
+      try { await connection.promise; } catch {}
+      if (!connection.client) continue;
+      try { await connection.client.disconnect(); } catch {}
+      connection.client = null;
     }
   }
   async function registerPendingStageRoute(
@@ -1120,83 +1203,101 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const nextReconnectPromise = (async () => {
       let connectFailed = false;
       await ownershipRecorded.promise;
+      const ownerWaitDeadline = Date.now() + LIVE_ROUTE_OWNER_WAIT_MS;
+      try {
+        for (let ownerWait = 0; ; ownerWait += 1) {
 		const nextClient = new IntercomClient(sessionIdAtStart, {
 			preferredSessionId,
 			acknowledgesReceipt: true,
 			connectTimeoutMs: testOverrides.connectTimeoutMs?.(sessionIdAtStart),
 		});
-      client = nextClient;
-      attachClientHandlers(nextClient);
-      try {
-        await testOverrides.beforeConnectAttempt?.(reason);
-        await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs);
-        const childMetadata = currentChildOrchestratorMetadata();
-        // Snapshot after startup awaits: execution may have ended while disconnected.
-        // connect writes registration synchronously, so no abort can interleave before that write.
-        await nextClient.connect(
-          buildRegistration(),
-          childMetadata?.supervisor,
-          supervisorAuthorizations.ownerToken,
-          readSubagentMessageSource(runtimeContext?.subagentPolicy),
-          // Origin controls workflow authority, not membership or child inheritance.
-          resolveSessionHomeGroup(),
-        );
-        clientRegistrationGroup = resolveSessionHomeGroup();
-        // Termination may have won while registration was in flight.
-        if (replyCapability() === "terminal") nextClient.updatePresence({ replyCapability: "terminal" });
-        await supervisorAuthorizations.restore(nextClient);
-        for (const [runId, route] of pendingStageRoutes) {
-          if (registersOnMainClient(route)) {
-            await registerPendingStageRoute(nextClient, runId, route);
-            continue;
-          }
-          // A run's own connection recovers on that run's own backoff; it must not decide this client's fate.
-          void ensurePendingStageRouteClient(runId, { ...route, group: normalizeGroup(route.group) }).catch(() => {});
-        }
-        const orchestration = contextAtStart.orchestrationContext;
-        if (orchestration?.kind === "workflow-stage" && orchestration.pendingStageDelivery !== undefined) {
-          // A stage name containing "/" or "*" is not a canonical path segment; register the
-          // always-valid stage-id key so the stage stays live-addressable without tripping the
-          // broker's single-segment key validation.
-          const liveStageKeys = [orchestration.workflowStageId, orchestration.workflowStageName].filter(
-            (stageKey) => !stageKey.includes("/") && !stageKey.includes("*"),
-          );
-          if (liveStageKeys.length > 0) {
-            await nextClient.registerLiveWorkflowStageRoute(
-              orchestration.workflowRunId,
-              liveStageKeys,
-              orchestration.pendingStageDelivery.routeCapability,
+          client = nextClient;
+          attachClientHandlers(nextClient);
+          try {
+            await testOverrides.beforeConnectAttempt?.(reason);
+            await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs);
+            const childMetadata = currentChildOrchestratorMetadata();
+            // Snapshot after startup awaits: execution may have ended while disconnected.
+            // connect writes registration synchronously, so no abort can interleave before that write.
+            await nextClient.connect(
+              buildRegistration(),
+              childMetadata?.supervisor,
+              supervisorAuthorizations.ownerToken,
+              readSubagentMessageSource(runtimeContext?.subagentPolicy),
+              // Origin controls workflow authority, not membership or child inheritance.
+              resolveSessionHomeGroup(),
             );
+            clientRegistrationGroup = resolveSessionHomeGroup();
+            // Termination may have won while registration was in flight.
+            if (replyCapability() === "terminal") nextClient.updatePresence({ replyCapability: "terminal" });
+            await supervisorAuthorizations.restore(nextClient);
+            for (const [runId, route] of pendingStageRoutes) {
+              if (registersOnMainClient(route)) {
+                await registerPendingStageRoute(nextClient, runId, route);
+                continue;
+              }
+              // A run's own connection recovers on that run's own backoff; it must not decide this client's fate.
+              void ensurePendingStageRouteClient(runId, { ...route, group: normalizeGroup(route.group) }).catch(() => {});
+            }
+            const orchestration = contextAtStart.orchestrationContext;
+            if (orchestration?.kind === "workflow-stage" && orchestration.pendingStageDelivery !== undefined) {
+              // A stage name containing "/" or "*" is not a canonical path segment; register the
+              // always-valid stage-id key so the stage stays live-addressable without tripping the
+              // broker's single-segment key validation.
+              const liveStageKeys = [orchestration.workflowStageId, orchestration.workflowStageName].filter(
+                (stageKey) => !stageKey.includes("/") && !stageKey.includes("*"),
+              );
+              if (liveStageKeys.length > 0) {
+                await nextClient.registerLiveWorkflowStageRoute(
+                  orchestration.workflowRunId,
+                  liveStageKeys,
+                  orchestration.pendingStageDelivery.routeCapability,
+                );
+              }
+            }
+            if (!getLiveContext(contextAtStart, generationAtStart)) {
+              await nextClient.disconnect();
+              throw new Error("Intercom runtime no longer active");
+            }
+            client = nextClient;
+            if (nextClient.sessionId) {
+              process.env[INTERCOM_SESSION_ID_ENV] = nextClient.sessionId;
+            }
+            reconnectAttempt = 0;
+            if (nextClient.sessionId && nextClient.sessionId !== preferredSessionId) {
+              await recordIntercomSessionIdentity(sessionIdAtStart, nextClient.sessionId);
+            }
+            return nextClient;
+          } catch (error) {
+            if (client === nextClient) {
+              client = null;
+              clientRegistrationGroup = null;
+            }
+            // A step after `connect()` succeeded — supervisor-authorization restore, pending-route
+            // re-registration, live stage-route registration — leaves `nextClient` registered at the
+            // broker. Dropping the reference without closing the socket leaves a phantom roster row
+            // that the retry then duplicates: the broker still answers `delivered: true` for it while
+            // `attachClientHandlers` swallows the message on `client === nextClient`. This is the
+            // ordering `ensurePendingStageRouteClient` already uses. `connectFailed` is set before the
+            // `finally` runs, so it reschedules however this disconnect behaves.
+            try { await nextClient.disconnect(); } catch {}
+            // #3904: the run's owner registers its route on its own connection, which can still be
+            // connecting, backing off or re-registering after a reconnect when the stage starts. The
+            // stage waits for that owner on a fresh connection instead of failing every Intercom call.
+            if (
+              isOwnerMissingRefusal(error) &&
+              Date.now() < ownerWaitDeadline &&
+              !disposed &&
+              !shuttingDown &&
+              getLiveContext(contextAtStart, generationAtStart)
+            ) {
+              await delay(liveRouteOwnerRetryDelayMs(ownerWait));
+              continue;
+            }
+            connectFailed = true;
+            throw toError(error);
           }
         }
-        if (!getLiveContext(contextAtStart, generationAtStart)) {
-          await nextClient.disconnect();
-          throw new Error("Intercom runtime no longer active");
-        }
-        client = nextClient;
-        if (nextClient.sessionId) {
-          process.env[INTERCOM_SESSION_ID_ENV] = nextClient.sessionId;
-        }
-        reconnectAttempt = 0;
-        if (nextClient.sessionId && nextClient.sessionId !== preferredSessionId) {
-          await recordIntercomSessionIdentity(sessionIdAtStart, nextClient.sessionId);
-        }
-        return nextClient;
-      } catch (error) {
-        if (client === nextClient) {
-          client = null;
-          clientRegistrationGroup = null;
-        }
-        connectFailed = true;
-        // A step after `connect()` succeeded — supervisor-authorization restore, pending-route
-        // re-registration, live stage-route registration — leaves `nextClient` registered at the
-        // broker. Dropping the reference without closing the socket leaves a phantom roster row
-        // that the retry then duplicates: the broker still answers `delivered: true` for it while
-        // `attachClientHandlers` swallows the message on `client === nextClient`. This is the
-        // ordering `ensurePendingStageRouteClient` already uses. `connectFailed` is set above, so
-        // the `finally` reschedules however this disconnect behaves.
-        try { await nextClient.disconnect(); } catch {}
-        throw toError(error);
       } finally {
         if (reconnectPromiseGeneration === generationAtStart) {
           reconnectPromise = null;

@@ -168,6 +168,14 @@ function isWorkflowStageRosterEntries(value: unknown): value is WorkflowStageRos
 	);
 }
 
+/** The broker refused this pending-stage route registration itself, not the connection it was sent on (#3904). */
+export class IntercomPendingStageRouteRefusedError extends Error {
+	constructor(reason: string) {
+		super(reason);
+		this.name = "IntercomPendingStageRouteRefusedError";
+	}
+}
+
 export class IntercomClient extends EventEmitter {
 	private readonly returnAddress: string;
 	private readonly preferredSessionId: string | undefined;
@@ -528,6 +536,12 @@ export class IntercomClient extends EventEmitter {
         // disconnect cause, settle outstanding work with it, and destroy the socket
         // so no new work is accepted while we wait for the peer FIN. `onClose`
         // still owns session/socket teardown and the `disconnected` emission.
+        const refusedRouteId = typeof brokerMessage.requestId === "string" ? brokerMessage.requestId : "";
+        const refusedRoute = this.pendingStageRouteRegistrations.get(refusedRouteId);
+        if (refusedRoute !== undefined) {
+          this.pendingStageRouteRegistrations.delete(refusedRouteId);
+          refusedRoute.reject(new IntercomPendingStageRouteRefusedError(brokerMessage.reason));
+        }
         this.disconnectError ??= refusal;
         this.failPending(this.disconnectError);
         this.socket?.destroy();
