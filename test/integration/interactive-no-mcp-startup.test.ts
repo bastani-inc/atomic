@@ -22,9 +22,10 @@ const TMUX_AVAILABLE = (() => {
 		return false;
 	}
 })();
-const CLI_STARTUP_STEP_TIMEOUT_MS = 120_000;
+const CLI_SCENARIO_TIMEOUT_MS = 120_000;
 const CLI_EXIT_TIMEOUT_MS = 60_000;
-const REAL_INTERACTIVE_STARTUP_TIMEOUT_MS = 3 * (CLI_STARTUP_STEP_TIMEOUT_MS + CLI_EXIT_TIMEOUT_MS);
+const SCENARIO_OVERHEAD_MS = 10_000;
+const REAL_INTERACTIVE_STARTUP_TIMEOUT_MS = 3 * (CLI_SCENARIO_TIMEOUT_MS + CLI_EXIT_TIMEOUT_MS + SCENARIO_OVERHEAD_MS);
 const SLOW_EXTENSION_SHUTDOWN_MS = 1_000;
 const POLL_INTERVAL_MS = 50;
 
@@ -97,8 +98,7 @@ export default function(pi) {
 			return result.stdout.toString().trim();
 		};
 		const hasContent = async (path: string) => (await fileExists(path)) && (await readText(path)).length > 0;
-		const waitUntil = async (ready: () => boolean | Promise<boolean>, timeoutMs: number): Promise<boolean> => {
-			const deadline = Date.now() + timeoutMs;
+		const waitUntil = async (ready: () => boolean | Promise<boolean>, deadline: number): Promise<boolean> => {
 			while (!(await ready())) {
 				if (Date.now() >= deadline) return false;
 				await sleep(POLL_INTERVAL_MS);
@@ -158,18 +158,19 @@ export default function(pi) {
 				);
 				let serverPid: number | undefined;
 				let scenarioObserved = false;
+				const scenarioDeadline = Date.now() + CLI_SCENARIO_TIMEOUT_MS;
 				try {
-					await waitUntil(() => hasContent(snapshotPath), CLI_STARTUP_STEP_TIMEOUT_MS);
+					await waitUntil(() => hasContent(snapshotPath), scenarioDeadline);
 					assert.ok(await hasContent(snapshotPath), tmux("capture-pane", "-p", "-t", name));
 					const snapshot = await readJson<StartupSnapshot>(snapshotPath);
 					tmux("send-keys", "-t", name, "-l", "/startup-ready");
 					await waitUntil(
 						() => /^❯ \/startup-ready\s*$/m.test(tmux("capture-pane", "-p", "-t", name)),
-						CLI_STARTUP_STEP_TIMEOUT_MS,
+						scenarioDeadline,
 					);
 					assert.match(tmux("capture-pane", "-p", "-t", name), /^❯ \/startup-ready\s*$/m);
 					tmux("send-keys", "-t", name, "Enter");
-					await waitUntil(() => hasContent(`${snapshotPath}.ready`), CLI_STARTUP_STEP_TIMEOUT_MS);
+					await waitUntil(() => hasContent(`${snapshotPath}.ready`), scenarioDeadline);
 					assert.ok(
 						await hasContent(`${snapshotPath}.ready`),
 						`${name}: engine startup-ready command must complete before exit (#10249)`,
@@ -183,15 +184,12 @@ export default function(pi) {
 						!disabled && !pending,
 						JSON.stringify(snapshot),
 					);
-					if (!disabled) await waitUntil(() => hasContent(serverMarker), CLI_STARTUP_STEP_TIMEOUT_MS);
+					if (!disabled) await waitUntil(() => hasContent(serverMarker), scenarioDeadline);
 					assert.equal(await hasContent(serverMarker), !disabled, "--no-mcp must not start the server");
 					if (!disabled) serverPid = Number(await readText(serverMarker));
 					if (pending) {
 						tmux("send-keys", "-t", name, "-l", "/mcp");
-						await waitUntil(
-							() => /^❯ \/mcp\s*$/m.test(tmux("capture-pane", "-p", "-t", name)),
-							CLI_STARTUP_STEP_TIMEOUT_MS,
-						);
+						await waitUntil(() => /^❯ \/mcp\s*$/m.test(tmux("capture-pane", "-p", "-t", name)), scenarioDeadline);
 						assert.match(tmux("capture-pane", "-p", "-t", name), /^❯ \/mcp\s*$/m);
 						tmux("send-keys", "-t", name, "Enter");
 						const managerTitle = /^\s*MCP servers\s*$/m;
@@ -200,7 +198,7 @@ export default function(pi) {
 						await waitUntil(() => {
 							pane = tmux("capture-pane", "-p", "-t", name);
 							return managerTitle.test(pane) && serverRow.test(pane);
-						}, CLI_STARTUP_STEP_TIMEOUT_MS);
+						}, scenarioDeadline);
 						assert.match(pane, managerTitle);
 						assert.match(pane, serverRow);
 						assert.ok(pane.includes("connecting"), pane);
@@ -208,7 +206,7 @@ export default function(pi) {
 						await waitUntil(() => {
 							pane = tmux("capture-pane", "-p", "-t", name);
 							return !managerTitle.test(pane) && /^❯\s*$/m.test(pane);
-						}, CLI_STARTUP_STEP_TIMEOUT_MS);
+						}, scenarioDeadline);
 						assert.ok(!managerTitle.test(pane), pane);
 						assert.match(pane, /^❯\s*$/m);
 					}
@@ -219,7 +217,7 @@ export default function(pi) {
 							const sessionGone = () =>
 								spawnSyncCollect(["tmux", "-S", socket, "has-session", "-t", name]).exitCode !== 0;
 							tmux("send-keys", "-t", name, "C-d");
-							await waitUntil(sessionGone, CLI_EXIT_TIMEOUT_MS);
+							await waitUntil(sessionGone, Date.now() + CLI_EXIT_TIMEOUT_MS);
 							assert.ok(sessionGone(), `${name}: CLI must exit after Ctrl+D`);
 							if (serverPid) {
 								const pid = serverPid;
