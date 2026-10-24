@@ -24,6 +24,7 @@ test.each(["kimi-code-plan-cn", "kimi-for-coding"])(
 							name: "kimi-for-coding",
 							tool_call: true,
 							reasoning: true,
+							reasoning_options: [{ type: "effort", values: ["none", "low", "high", "max"] }],
 							modalities: { input: ["text", "image", "video"] },
 							limit: { context: 1048576, output: 32768 },
 							cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },

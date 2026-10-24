@@ -19,6 +19,7 @@ type GeneratedModel = {
 	api: string;
 	baseUrl: string;
 	compat?: {
+		supportsReasoningEffort?: boolean;
 		supportsMidConvoEffort?: boolean;
 		supportsMidConvoSystemMessages?: boolean;
 		supportsMidConvoToolAdditions?: boolean;
@@ -194,15 +195,18 @@ test("routes eligible OpenRouter Claude models through anthropic-messages", () =
 	assert.equal(openrouter["openai/gpt-5"].api, "openai-completions");
 });
 
+const kimiEffort = [{ type: "effort", values: ["none", "low", "high", "max"] }];
+
 test.each(["kimi-code-plan-global", "kimi-code-plan-cn", "kimi-for-coding"])(
 	"routes Kimi Coding models from the %s catalog source through Chat Completions (#10720)",
 	(source) => {
 		const catalog = {
 			[source]: {
 				models: {
-					"kimi-for-coding": { id: "kimi-for-coding", ...toolCapable },
-					"kimi-for-coding-highspeed": { id: "kimi-for-coding-highspeed", ...toolCapable },
-					k3: { id: "k3", ...toolCapable },
+					// models.dev lists effort options for K3-style models only, which marks them K3-style.
+					"kimi-for-coding": { id: "kimi-for-coding", ...toolCapable, reasoning_options: kimiEffort },
+					"kimi-for-coding-highspeed": { id: "kimi-for-coding-highspeed", ...toolCapable, reasoning_options: [] },
+					k3: { id: "k3", ...toolCapable, reasoning_options: kimiEffort },
 					"no-tools": { id: "no-tools", ...toolCapable, tool_call: false },
 				},
 			},
@@ -225,6 +229,35 @@ test.each(["kimi-code-plan-global", "kimi-code-plan-cn", "kimi-for-coding"])(
 		assert.equal(models["kimi-for-coding-highspeed"].compat?.supportsMidConvoToolAdditions, undefined);
 	},
 );
+
+test("treats Kimi K3.1 Pro models as Kimi K3 family (port pi 1de2d7ad)", () => {
+	const k31Effort = [{ type: "effort", values: ["low", "high", "max"] }];
+	const catalog = {
+		moonshotai: {
+			models: {
+				"kimi-k3.1-pro": {
+					id: "kimi-k3.1-pro",
+					...toolCapable,
+					cost: { input: 2, output: 10, cache_read: 0.2, cache_write: 2 },
+				},
+				"kimi-k2.6": { id: "kimi-k2.6", ...toolCapable },
+			},
+		},
+		"kimi-code-plan-global": {
+			models: {
+				"k3.1-pro": { id: "k3.1-pro", ...toolCapable, cost: { input: 0, output: 0 }, reasoning_options: k31Effort },
+			},
+		},
+	};
+	const { moonshotai, "kimi-coding": kimiCoding } = generateProviderCatalogs(catalog, ["moonshotai", "kimi-coding"]);
+
+	assert.equal(moonshotai["kimi-k3.1-pro"].compat?.supportsReasoningEffort, true);
+	assert.equal(moonshotai["kimi-k3.1-pro"].compat?.supportsMidConvoToolAdditions, true);
+	assert.equal(moonshotai["kimi-k3.1-pro"].cost.cacheWrite, 0);
+	assert.equal(moonshotai["kimi-k2.6"].compat?.supportsReasoningEffort, false);
+	assert.equal(kimiCoding["k3.1-pro"].compat?.supportsReasoningEffort, true);
+	assert.deepEqual(kimiCoding["k3.1-pro"].cost, { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 0 });
+});
 
 test("retains models.dev tiers and base rates across provider catalogs", () => {
 	const cost = {
