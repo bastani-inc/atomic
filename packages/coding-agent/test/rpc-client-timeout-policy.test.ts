@@ -29,10 +29,12 @@ process.stdin.once("data", () => { process.exit(37); });
 process.stdin.resume();
 `;
 
-// A child that answers `pause_queued_messages` at once but answers
-// `resume_queued_messages` only after a delay, modelling an engine whose resume
-// handler awaits an admitted recovery turn that outlasts the request deadline.
+// A child that answers `resume_queued_messages` only after a delay, modelling an
+// engine whose resume handler awaits an admitted recovery turn that outlasts the
+// request deadline. The deadline is derived from the delay so the invariant
+// (deadline < delay) holds by construction.
 const DELAYED_RESUME_MS = 300;
+const RESUME_REQUEST_DEADLINE_MS = DELAYED_RESUME_MS / 6;
 const DELAYED_RESUME_CHILD = `
 let buffered = "";
 const respond = (frame) => process.stdout.write(JSON.stringify(frame) + "\\n");
@@ -45,7 +47,6 @@ process.stdin.on("data", (chunk) => {
 		if (!line.trim()) continue;
 		const command = JSON.parse(line);
 		const response = { id: command.id, type: "response", command: command.type, success: true };
-		if (command.type === "pause_queued_messages") respond(response);
 		if (command.type === "resume_queued_messages") {
 			setTimeout(() => respond({ ...response, data: { released: true } }), ${DELAYED_RESUME_MS});
 		}
@@ -122,12 +123,16 @@ describe("RpcClient request timeout policy", () => {
 	test("waits for a queue resume that outlasts the deadline and clears the paused state (#3493)", async () => {
 		const client = new RpcClient({
 			cliPath: writeChildScript(DELAYED_RESUME_CHILD),
-			requestTimeoutMs: DELAYED_RESUME_MS / 6,
+			requestTimeoutMs: RESUME_REQUEST_DEADLINE_MS,
 		});
 		await client.start();
 		try {
+			// Enter the paused state without sending `pause_queued_messages`. That
+			// request is deadline-bounded, so under load its acknowledgement could
+			// miss the deliberately tiny deadline and fail this test for a reason
+			// unrelated to the resume exemption it exists to cover.
 			const queuePause = new RemoteQueuePause(client);
-			queuePause.pause();
+			queuePause.synchronize(true);
 			expect(queuePause.isPaused).toBe(true);
 
 			await expect(queuePause.resume()).resolves.toBe(true);
