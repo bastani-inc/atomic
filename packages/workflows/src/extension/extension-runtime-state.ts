@@ -388,6 +388,11 @@ export function createWorkflowExtensionRuntimeState(
 			if (targeted !== undefined) return targeted.call(runtimeRef.current, workflowIds);
 			return runtimeRef.current.prepareDurableResumable();
 		},
+		get prepareDurableCatalog() {
+			const runtime = runtimeRef.current;
+			const catalog = runtime.prepareDurableCatalog;
+			return catalog === undefined ? undefined : () => catalog.call(runtime);
+		},
 		prepareCompletedDurable() {
 			return runtimeRef.current.prepareCompletedDurable?.() ?? Promise.resolve([]);
 		},

@@ -1,12 +1,32 @@
 import type { SqliteExecutor } from "@bastani/atomic/storage";
-import type { RunJournal } from "./types.js";
+import { type JournalEntry, RUN_EVENT_TYPES, type RunJournal } from "./types.js";
 
 export const JOURNAL_READ_PAGE_SIZE = 256;
+
+/** Event types the durable backend folds without replacing the run's handle; every other event carries it. */
+export const NON_SNAPSHOT_EVENT_TYPES = [
+	RUN_EVENT_TYPES.checkpointRecorded,
+	RUN_EVENT_TYPES.messageSettled,
+	RUN_EVENT_TYPES.messageDelivered,
+] as const;
 
 /** A run's latest event. A run whose history was deleted and recorded again ends with a different event. */
 export interface RunVersion {
 	readonly seq: number;
 	readonly at: number;
+}
+
+/**
+ * A run's latest snapshot event (one carrying the run's handle) and the checkpoints recorded after it: enough to
+ * list the run in a catalog without reading its history.
+ */
+export interface RunSnapshotTail {
+	/** The run's latest event of any type. */
+	readonly version: RunVersion;
+	readonly snapshot: JournalEntry;
+	readonly laterCheckpoints: number;
+	/** `completedAt` of the last of `laterCheckpoints`. */
+	readonly lastCheckpointAt?: number;
 }
 
 /** Lets a durable backend re-read only the runs that changed; kept off the public journal shape. */
@@ -15,6 +35,8 @@ export interface RunJournalVersions {
 	changeToken(): Promise<string>;
 	/** Every listed run with its latest event; a run with no events has version `{ seq: 0, at: 0 }`. */
 	runVersions(): Promise<ReadonlyMap<string, RunVersion>>;
+	/** Undefined for a run with no snapshot event. */
+	snapshotTail(runId: string): Promise<RunSnapshotTail | undefined>;
 }
 
 const versionReaders = new WeakMap<RunJournal, RunJournalVersions>();
