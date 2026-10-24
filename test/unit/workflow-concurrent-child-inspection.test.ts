@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { durableNestedRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
 import { inspectTargetedDurableWorkflow } from "../../packages/workflows/src/durable/targeted-inspection.js";
+import type { DurableCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
@@ -293,5 +295,125 @@ describe("inspecting a run with concurrent branches in flight", () => {
 
 		const inspected = await inspectTargetedDurableWorkflow(backend, rootId);
 		assert.equal(inspected.kind, "malformed");
+	});
+});
+
+describe("inspecting a running root after one of its children settled unsuccessfully", () => {
+	async function rootWithSettledChild() {
+		const backend = await createMemoryTestBackend();
+		const gate = Promise.withResolvers<void>();
+		const held = Promise.withResolvers<void>();
+		const settled = startedCounter(2);
+		const child = workflow({
+			name: "child",
+			description: "",
+			inputs: { outcome: Type.String() },
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.tool("child-work", { outcome: ctx.inputs.outcome }, async () => {
+					if (ctx.inputs.outcome !== "hold") return "done";
+					held.resolve();
+					await gate.promise;
+					return "done";
+				});
+				if (ctx.inputs.outcome === "fail") throw new Error("child failed after checkpointing");
+				return {};
+			},
+		});
+		const rootId = testRunId("settled-child-inspection");
+		const parent = workflow({
+			name: "tolerant-root",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await Promise.allSettled(
+					["fail", "finish", "hold"].map((outcome) =>
+						ctx.workflow(child, { inputs: { outcome } }).finally(() => {
+							if (outcome !== "hold") settled.note();
+						}),
+					),
+				);
+				return {};
+			},
+		});
+		const pending = run(
+			parent,
+			{},
+			{
+				runId: rootId,
+				registry: createRegistry([parent, child] as WorkflowDefinition[]),
+				store: createStore(),
+				durableBackend: backend,
+			},
+		);
+		await Promise.all([held.promise, settled.reached]);
+		return { backend, rootId, pending, release: () => gate.resolve() };
+	}
+
+	function assertSettledChildPruned(
+		inspected: Awaited<ReturnType<typeof inspectTargetedDurableWorkflow>>,
+		rootId: string,
+		status: string,
+	): void {
+		assert.equal(inspected.kind, "found", inspected.kind === "found" ? "" : inspected.message);
+		if (inspected.kind !== "found") return;
+		const root = inspected.runs.find((candidate) => candidate.id === rootId);
+		assert.deepEqual(root?.stages.map((stage) => stage.status).sort(), ["completed", "running", status].sort());
+		assert.deepEqual(
+			inspected.runs
+				.filter((candidate) => candidate.parentRunId === rootId)
+				.map((candidate) => candidate.status)
+				.sort(),
+			["completed", "running"],
+		);
+	}
+
+	test("a failed child that checkpointed keeps a running root inspectable and its completed sibling replayable (#3903)", async () => {
+		const { backend, rootId, pending, release } = await rootWithSettledChild();
+		try {
+			assertSettledChildPruned(await inspectTargetedDurableWorkflow(backend, rootId), rootId, "failed");
+			assert.deepEqual(
+				durableNestedRunSnapshots(backend, rootId)
+					.map((candidate) => candidate.status)
+					.sort(),
+				["completed", "running"],
+				"resume replays the completed sibling from these snapshots",
+			);
+		} finally {
+			release();
+		}
+		assert.equal((await pending).status, "completed");
+	});
+
+	test("a skipped child that checkpointed keeps a running root inspectable (#3903)", async () => {
+		const { backend, rootId, pending, release } = await rootWithSettledChild();
+		const skipped = await createMemoryTestBackend();
+		try {
+			const handle = backend.getWorkflow(rootId)!;
+			await skipped.commitWorkflowRegistration({
+				workflowId: rootId,
+				name: handle.name,
+				inputs: {},
+				createdAt: handle.createdAt,
+				status: "running",
+			});
+			for (const checkpoint of backend.listCheckpoints(rootId)) {
+				const boundary = checkpoint.kind === "stage" ? checkpoint.topology?.boundary : undefined;
+				if (checkpoint.kind !== "stage" || boundary?.event !== "terminal" || boundary.status !== "failed") {
+					await skipped.commitCheckpoint(checkpoint);
+					continue;
+				}
+				const rewritten: DurableCheckpoint = {
+					...checkpoint,
+					topology: { ...checkpoint.topology!, status: "skipped", boundary: { ...boundary, status: "skipped" } },
+				};
+				await skipped.commitCheckpoint(rewritten);
+			}
+			assertSettledChildPruned(await inspectTargetedDurableWorkflow(skipped, rootId), rootId, "skipped");
+		} finally {
+			release();
+		}
+		assert.equal((await pending).status, "completed");
 	});
 });

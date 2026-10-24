@@ -16,6 +16,7 @@ import {
 } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { openSqlPoolUsage } from "../../packages/workflows/src/durable/journal/sql-pool-usage.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+import { RUN_EVENT_TYPES } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -53,6 +54,10 @@ const messages: SessionEntry[] = [
 	},
 ];
 const createSession = { kind: "session-create" as const, checkpoint: stage, header, entries: messages };
+
+async function journalEventCount(database: { get: (sql: string) => Promise<Record<string, unknown> | undefined> }) {
+	return Number((await database.get("SELECT COUNT(*) AS count FROM wf_events"))?.count);
+}
 
 async function fixture() {
 	const directory = makeTempDirectory("pool-commits-");
@@ -179,7 +184,7 @@ test("session transcripts and checkpoints commit atomically and acknowledge once
 		assert.deepEqual((await sessions.load("session")).entries, entries);
 		const append = {
 			kind: "session-append" as const,
-			checkpoint: { ...stage, checkpointId: `${work.scope}:session:1` },
+			sessionId: "session",
 			entries: [{ ...entries[0]!, id: "next", parentId: "message" }],
 			expectSeq: 1,
 		};
@@ -191,36 +196,40 @@ test("session transcripts and checkpoints commit atomically and acknowledge once
 			(error: Error) => error.cause instanceof Error && error.cause.message === "receipt failure",
 		);
 		assert.equal((await sessions.load("session")).lastSeq, 1);
-		await f.backend.hydrateWorkflow("root");
-		assert.equal(
-			f.backend.listCheckpoints("root").some((c) => c.checkpointId === append.checkpoint.checkpointId),
-			false,
-		);
 		await f.database.exec("DROP TRIGGER fail_receipt");
+		const events = await journalEventCount(f.database);
 		const receipt = await f.pool.commit(f.lease, f.attempt, "append", append);
 		assert.deepEqual(await f.pool.commit(f.lease, f.attempt, "append", append), receipt);
 		assert.deepEqual((await sessions.load("session")).entries, [...entries, ...append.entries]);
+		assert.equal(receipt.lastSeq, 2);
+		assert.equal(await journalEventCount(f.database), events, "an append journals no checkpoint (#3903)");
 	} finally {
 		await sessions.close();
 		await f.close();
 	}
 });
 
-test("session continuations require explicit topology and recover both run graphs after reopening (#3869)", async () => {
+test("session replacements require explicit topology, appends need none, and both run graphs recover after reopening (#3869)", async () => {
 	const f = await fixture();
 	try {
 		await f.pool.commit(f.lease, f.attempt, "create", createSession);
+		const { topology: _topology, ...withoutTopology } = stage;
+		await assert.rejects(
+			f.pool.commit(f.lease, f.attempt, "replace", {
+				kind: "session-replace",
+				checkpoint: { ...withoutTopology, checkpointId: `${work.scope}:session:1`, completedAt: 1 },
+				header,
+				entries: messages,
+				expectSeq: 1,
+			}),
+			/Pool topology scope mismatch/,
+		);
 		const append = {
 			kind: "session-append" as const,
-			checkpoint: { ...stage, checkpointId: `${work.scope}:session:1`, completedAt: 1 },
+			sessionId: "session",
 			entries: [{ ...messages[0]!, id: "continued", parentId: "message" }],
 			expectSeq: 1,
 		};
-		const { topology: _topology, ...withoutTopology } = append.checkpoint;
-		await assert.rejects(
-			f.pool.commit(f.lease, f.attempt, "continue", { ...append, checkpoint: withoutTopology }),
-			/Pool topology scope mismatch/,
-		);
 		const receipt = await f.pool.commit(f.lease, f.attempt, "continue", append);
 		assert.equal(receipt.lastSeq, 2);
 		await f.pool.commit(f.lease, f.attempt, "stage-complete", {
@@ -299,7 +308,7 @@ test.each(["checkpoint", "session"] as const)(
 			await f.pool.commit(f.lease, f.attempt, "create", createSession);
 			const append = {
 				kind: "session-append" as const,
-				checkpoint: { ...stage, checkpointId: `${work.scope}:session:1` },
+				sessionId: "session",
 				entries: [{ ...messages[0]!, id: "next", parentId: "message" }],
 				expectSeq: 1,
 			};
@@ -321,11 +330,12 @@ test.each(["checkpoint", "session"] as const)(
 				/Stale work lease/,
 			);
 			await f.backend.hydrateWorkflow("root");
-			assert.equal(
-				f.backend.listCheckpoints("root").filter((entry) => entry.checkpointId === mutation.checkpoint.checkpointId)
-					.length,
-				1,
-			);
+			if (mutation.kind === "checkpoint")
+				assert.equal(
+					f.backend.listCheckpoints("root").filter((entry) => entry.checkpointId === checkpoint.checkpointId)
+						.length,
+					1,
+				);
 			assert.deepEqual(
 				(await sessions.load("session")).entries,
 				kind === "checkpoint" ? messages : [...messages, ...append.entries],
@@ -489,6 +499,77 @@ test.each(["generation", "epoch", "coordinator-expired", "expired", "paused"] as
 	},
 );
 
+test("session appends journal no checkpoint and keep only a request digest, however large the entries (#3903)", async () => {
+	const f = await fixture();
+	const sessions = await new StorageProvider().openSessionStore(
+		{ kind: "database", database: f.database, prefix: "wf_runs_pool_" },
+		{ agentDir: "/unused", domain: "sessions" },
+	);
+	try {
+		await f.pool.commit(f.lease, f.attempt, "create", createSession);
+		const events = await journalEventCount(f.database);
+		const large = "x".repeat(128 * 1024);
+		let parentId = "message";
+		for (let index = 0; index < 20; index++) {
+			const entry: SessionEntry = {
+				type: "message",
+				id: `entry-${index}`,
+				parentId,
+				timestamp: header.createdAt,
+				message: { role: "user", content: index % 5 === 0 ? large : `entry ${index}`, timestamp: index + 2 },
+			};
+			const receipt = await f.pool.commit(f.lease, f.attempt, `append-${index}`, {
+				kind: "session-append",
+				sessionId: "session",
+				entries: [entry],
+				expectSeq: index + 1,
+			});
+			assert.equal(receipt.lastSeq, index + 2);
+			parentId = entry.id;
+		}
+		assert.equal((await sessions.load("session")).entries.length, 21);
+		assert.equal(await journalEventCount(f.database), events);
+		const operations = await f.database.all(
+			"SELECT length(request) AS request, length(receipt) AS receipt FROM wf_runs_pool_operations",
+		);
+		assert.equal(operations.length, 21);
+		assert.ok(
+			operations.every((row) => Number(row.request) === 64 && Number(row.receipt) < 128),
+			JSON.stringify(operations),
+		);
+	} finally {
+		await sessions.close();
+		await f.close();
+	}
+});
+
+test("a session append is refused for a session another work item created (#3903)", async () => {
+	const f = await fixture();
+	const sessions = await new StorageProvider().openSessionStore(
+		{ kind: "database", database: f.database, prefix: "wf_runs_pool_" },
+		{ agentDir: "/unused", domain: "sessions" },
+	);
+	try {
+		await f.pool.commit(f.lease, f.attempt, "create", createSession);
+		const other = poolWorkFixture("other", "other-child", "workflow:other:0");
+		await f.pool.enqueue(f.lease, other.work, other.boundary);
+		const intruder = await f.pool.claim(f.lease, "intruder", [other.work], 60_000);
+		assert.equal(intruder?.childRunId, other.work.childRunId);
+		const append = {
+			kind: "session-append" as const,
+			sessionId: "session",
+			entries: [{ ...messages[0]!, id: "forged", parentId: "message" }],
+			expectSeq: 1,
+		};
+		await assert.rejects(f.pool.commit(f.lease, intruder!, "forged", append), /Pool session scope mismatch/);
+		assert.deepEqual((await sessions.load("session")).entries, messages);
+		assert.equal((await f.pool.commit(f.lease, f.attempt, "owned", append)).lastSeq, 2);
+	} finally {
+		await sessions.close();
+		await f.close();
+	}
+});
+
 test("database reopen recovers attempts, receipts, sessions and results without the scratch directory (#3869)", async () => {
 	const f = await fixture();
 	try {
@@ -521,15 +602,12 @@ test("database reopen recovers attempts, receipts, sessions and results without 
 			assert.deepEqual(await peer.commit(takeover.lease, next, "save", { kind: "checkpoint", checkpoint }), saved);
 			const append = {
 				kind: "session-append" as const,
-				checkpoint: { ...stage, checkpointId: `${work.scope}:session:1` },
+				sessionId: "session",
 				entries: [{ ...messages[0]!, id: "continued", parentId: "message" }],
 				expectSeq: 1,
 			};
 			await assert.rejects(
-				peer.commit(takeover.lease, next, "wrong-session", {
-					...append,
-					checkpoint: { ...append.checkpoint, replayKey: `${work.scope}:other-stage` },
-				}),
+				peer.commit(takeover.lease, next, "wrong-session", { ...append, sessionId: "unowned-session" }),
 				/scope/,
 			);
 			assert.equal((await peer.commit(takeover.lease, next, "continue", append)).lastSeq, 2);
@@ -541,6 +619,109 @@ test("database reopen recovers attempts, receipts, sessions and results without 
 			await database.close();
 		}
 	} finally {
+		await f.close();
+	}
+});
+
+test("a version 1 pool journal migrates: renewal rows go, requests become digests, and its sessions stay inspectable and resumable (#3903)", async () => {
+	const f = await fixture();
+	const sessions = await new StorageProvider().openSessionStore(
+		{ kind: "database", database: f.database, prefix: "wf_runs_pool_" },
+		{ agentDir: "/unused", domain: "sessions" },
+	);
+	try {
+		// Rows exactly as version 1 wrote them: every commit kept its full request for retry identity, every append
+		// journaled its own `:session:` stage checkpoint, and every heartbeat renewal kept the whole work as a receipt.
+		const created = await f.pool.commit(f.lease, f.attempt, "create", createSession);
+		await f.database.run(
+			"UPDATE wf_runs_pool_operations SET request = ? WHERE operation = 'create'",
+			JSON.stringify({ epoch: f.attempt.epoch, worker: f.attempt.worker, mutation: createSession }),
+		);
+		const v1Append = {
+			kind: "session-append",
+			checkpoint: { ...stage, checkpointId: `${work.scope}:session:1`, completedAt: 1 },
+			entries: [{ ...messages[0]!, id: "v1-append", parentId: "message" }],
+			expectSeq: 1,
+		};
+		assert.equal((await sessions.append("session", v1Append.entries, { expectSeq: 1 })).lastSeq, 2);
+		const seq =
+			Number((await f.database.get("SELECT MAX(seq) AS seq FROM wf_events WHERE run_id = 'root'"))?.seq) + 1;
+		await f.database.run(
+			"INSERT INTO wf_events VALUES (?, ?, ?, ?, ?, ?, ?)",
+			"root",
+			seq,
+			f.lease.epoch,
+			JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, "stage", v1Append.checkpoint.checkpointId]),
+			RUN_EVENT_TYPES.checkpointRecorded,
+			JSON.stringify(v1Append.checkpoint),
+			2,
+		);
+		await f.database.run(
+			"INSERT INTO wf_runs_pool_operations VALUES (?, ?, ?, ?, ?)",
+			f.attempt.id,
+			f.attempt.generation,
+			"v1-append",
+			JSON.stringify({ epoch: f.attempt.epoch, worker: f.attempt.worker, mutation: v1Append }),
+			JSON.stringify({ seq, at: 2, lastSeq: 2 }),
+		);
+		for (let beat = 0; beat < 100; beat++)
+			await f.database.run(
+				"INSERT INTO wf_runs_pool_operations VALUES (?, ?, ?, ?, ?)",
+				f.attempt.id,
+				f.attempt.generation,
+				`heartbeat-${beat}`,
+				JSON.stringify([f.attempt.epoch, f.attempt.generation, f.attempt.worker, 5_000]),
+				JSON.stringify(f.attempt),
+			);
+		await f.database.run("UPDATE wf_runs_pool_meta SET version = 1");
+
+		const database = await openNodeSqliteDatabase(f.path);
+		const journal = await SqlRunJournal.open(database);
+		const resumed = await openSqlPoolQueue(journal);
+		const projection = await JournalDurableBackend.open(journal, { ownsJournal: false });
+		try {
+			assert.equal((await database.get("SELECT version FROM wf_runs_pool_meta"))?.version, 2);
+			const operations = await database.all("SELECT operation, request FROM wf_runs_pool_operations ORDER BY rowid");
+			assert.deepEqual(
+				operations.map((row) => row.operation),
+				["create", "v1-append"],
+			);
+			assert.ok(operations.every((row) => /^[0-9a-f]{64}$/.test(String(row.request))));
+			assert.deepEqual(await resumed.commit(f.lease, f.attempt, "create", createSession), created);
+			await assert.rejects(
+				resumed.commit(f.lease, f.attempt, "create", { ...createSession, entries: [] }),
+				/identity conflict/,
+			);
+
+			const handle = projection.getWorkflow("root")!;
+			const child = durableWorkflowRunSnapshots(projection, handle).find((snapshot) => snapshot.id === run.runId);
+			assert.equal(child?.stages[0]?.sessionId, "session");
+			assert.equal(projection.getStageSession("root", stage.replayKey)?.sessionId, "session");
+
+			await database.run("UPDATE wf_leases SET renewed_at = 0");
+			const takeover = await journal.takeoverExpired("root", "replacement-coordinator", 60_000);
+			if (takeover.status !== "acquired") assert.fail("No takeover");
+			assert.equal(await resumed.releasePreviousIncarnations(takeover.lease), 1);
+			const next = await resumed.claim(takeover.lease, "replacement-worker", [work], 60_000);
+			assert.equal(next?.generation, f.attempt.generation + 1);
+			const append = {
+				kind: "session-append" as const,
+				sessionId: "session",
+				entries: [{ ...messages[0]!, id: "v2-append", parentId: "v1-append" }],
+				expectSeq: 2,
+			};
+			assert.equal((await resumed.commit(takeover.lease, next!, "continue", append)).lastSeq, 3);
+			assert.deepEqual(
+				(await sessions.load("session")).entries.map((entry) => entry.id),
+				["message", "v1-append", "v2-append"],
+			);
+		} finally {
+			await projection.close();
+			await journal.close();
+			await database.close();
+		}
+	} finally {
+		await sessions.close();
 		await f.close();
 	}
 });

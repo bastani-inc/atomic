@@ -8,30 +8,41 @@ import type { SqlPoolStorage } from "./internal.js";
 import type { PoolWork } from "./sql-pool-queue.js";
 import { RUN_EVENT_TYPES } from "./types.js";
 
+/** Creating or replacing a pool session binds it to its stage with one checkpoint. */
 export type PoolSessionMutation = {
 	readonly checkpoint: DurableStageCheckpoint;
 	readonly entries: Parameters<SessionStore["create"]>[1];
 } & (
 	| { readonly kind: "session-create"; readonly header: Parameters<SessionStore["create"]>[0] }
-	| { readonly kind: "session-append"; readonly expectSeq: number }
 	| {
 			readonly kind: "session-replace";
 			readonly header: Parameters<SessionStore["create"]>[0];
 			readonly expectSeq: number;
 	  }
 );
-export type PoolMutation =
+/**
+ * Appending to a pool session journals no checkpoint: the session's owner row, written when it was created, binds
+ * it to the work and stage, so an append carries only the entries.
+ */
+export interface PoolSessionAppend {
+	readonly kind: "session-append";
+	readonly sessionId: string;
+	readonly entries: Parameters<SessionStore["append"]>[1];
+	readonly expectSeq: number;
+}
+export type PoolCheckpointMutation =
 	| { readonly kind: "checkpoint"; readonly checkpoint: DurableCheckpoint }
 	| PoolSessionMutation;
+export type PoolMutation = PoolCheckpointMutation | PoolSessionAppend;
 
 export async function validatePoolMutation(
 	tx: SqliteExecutor,
 	journal: SqlPoolStorage["tables"],
 	root: string,
 	work: PoolWork,
-	mutation: PoolMutation,
+	mutation: PoolCheckpointMutation,
 ): Promise<void> {
-	if (!["checkpoint", "session-create", "session-append", "session-replace"].includes(mutation.kind))
+	if (!["checkpoint", "session-create", "session-replace"].includes(mutation.kind))
 		throw new Error("Invalid pool mutation");
 	const checkpoint = mutation.checkpoint;
 	const prefix = `${work.scope}:`;
@@ -158,12 +169,21 @@ export async function applyPoolSession(
 	tx: SqliteExecutor,
 	prefix: string,
 	workId: string,
-	mutation: PoolSessionMutation,
+	mutation: PoolSessionMutation | PoolSessionAppend,
 ): Promise<number> {
+	const owners = `${prefix}session_owners`;
+	if (mutation.kind === "session-append") {
+		if (typeof mutation.sessionId !== "string" || mutation.sessionId === "")
+			throw new Error("Pool sessions require database identity");
+		const owner = await tx.get(`SELECT work FROM ${owners} WHERE session = ?`, mutation.sessionId);
+		if (owner?.work !== workId) throw new Error("Pool session scope mismatch");
+		return withSessionStore(tx, prefix, (store) =>
+			store.append(mutation.sessionId, mutation.entries, { expectSeq: mutation.expectSeq }),
+		);
+	}
 	const { sessionId, replayKey } = mutation.checkpoint;
 	if (!sessionId || mutation.checkpoint.sessionFile !== undefined)
 		throw new Error("Pool sessions require database identity");
-	const owners = `${prefix}session_owners`;
 	if (mutation.kind === "session-create") {
 		if (mutation.header.id !== sessionId) throw new Error("Pool session identity mismatch");
 		await tx.run(`INSERT INTO ${owners} VALUES (?, ?, ?)`, sessionId, workId, replayKey);
@@ -171,15 +191,21 @@ export async function applyPoolSession(
 		const owner = await tx.get(`SELECT work, replay_key FROM ${owners} WHERE session = ?`, sessionId);
 		if (owner?.work !== workId || owner.replay_key !== replayKey) throw new Error("Pool session scope mismatch");
 	}
+	return withSessionStore(tx, prefix, (store) =>
+		mutation.kind === "session-create"
+			? store.create(mutation.header, mutation.entries)
+			: store.replace(sessionId, mutation.header, mutation.entries, { expectSeq: mutation.expectSeq }),
+	);
+}
+
+async function withSessionStore(
+	tx: SqliteExecutor,
+	prefix: string,
+	write: (store: SessionStore) => Promise<{ readonly lastSeq: number }>,
+): Promise<number> {
 	const store = await sessionStore(tx, prefix);
 	try {
-		const result =
-			mutation.kind === "session-create"
-				? await store.create(mutation.header, mutation.entries)
-				: mutation.kind === "session-append"
-					? await store.append(sessionId, mutation.entries, { expectSeq: mutation.expectSeq })
-					: await store.replace(sessionId, mutation.header, mutation.entries, { expectSeq: mutation.expectSeq });
-		return result.lastSeq;
+		return (await write(store)).lastSeq;
 	} finally {
 		await store.close();
 	}

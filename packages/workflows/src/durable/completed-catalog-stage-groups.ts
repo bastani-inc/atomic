@@ -270,20 +270,39 @@ export function childScopedEvidenceExists(
 	});
 }
 
-export function retainReachableRunGroups(grouped: Map<string, StageDraft[]>, rootRunId: string): void {
+/**
+ * Drop run groups the root cannot reach through live child links. Returns false when a dropped group is not
+ * owned by a reachable failed or skipped boundary (or nested under one): only those settled subtrees are pruned
+ * by design; any other unreachable group means the checkpoint graph is incomplete.
+ */
+export function retainReachableRunGroups(grouped: Map<string, StageDraft[]>, rootRunId: string): boolean {
 	const reachable = new Set([rootRunId]);
-	const pending = [rootRunId];
+	const settled = new Set<string>();
+	const pending: Array<{ readonly runId: string; readonly live: boolean }> = [{ runId: rootRunId, live: true }];
 	while (pending.length > 0) {
-		const drafts = grouped.get(pending.pop()!);
+		const { runId, live } = pending.pop()!;
+		const drafts = grouped.get(runId);
 		if (drafts === undefined) continue;
 		for (const draft of drafts) {
-			const childRunId = childRunIdFromDraft(draft);
-			if (childRunId === undefined || reachable.has(childRunId) || !grouped.has(childRunId)) continue;
-			reachable.add(childRunId);
-			pending.push(childRunId);
+			const childRunId = workflowChildFromDraft(draft)?.runId ?? draft.topology?.boundary?.child.runId;
+			if (childRunId === undefined || !grouped.has(childRunId)) continue;
+			if (live && childRunIdFromDraft(draft) !== undefined) {
+				if (reachable.has(childRunId)) continue;
+				reachable.add(childRunId);
+				pending.push({ runId: childRunId, live: true });
+			} else if (!settled.has(childRunId)) {
+				settled.add(childRunId);
+				pending.push({ runId: childRunId, live: false });
+			}
 		}
 	}
-	for (const runId of grouped.keys()) if (!reachable.has(runId)) grouped.delete(runId);
+	let complete = true;
+	for (const runId of grouped.keys()) {
+		if (reachable.has(runId)) continue;
+		if (!settled.has(runId)) complete = false;
+		grouped.delete(runId);
+	}
+	return complete;
 }
 
 export function childRunIdFromDraft(draft: StageDraft): string | undefined {

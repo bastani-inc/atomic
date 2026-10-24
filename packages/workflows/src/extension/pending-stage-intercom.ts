@@ -2,6 +2,7 @@ import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { outsideWorkflowExecutions } from "../durable/execution-context-boundary.js";
 import { durableBackendForRun, durableRootRunIdForRun } from "../durable/run-owner-backend.js";
 import { availableStoreDurableBackend, requireStoreDurableBackend } from "../durable/store-backend.js";
+import { externalRunRouteOwner, registerPendingStageMessageRouter } from "../shared/external-run-routes.js";
 import { workflowInvocationIntercomGroup, workflowInvocationOwnsGroup } from "../shared/intercom-group.js";
 import { workflowPendingStageRouteCapability } from "../shared/pending-stage-route-capability.js";
 import { registerWorkflowPendingStageRouteReadiness } from "../shared/pending-stage-route-readiness.js";
@@ -23,6 +24,7 @@ import type {
 	PendingStickyStageMessageInput,
 	StageSnapshot,
 } from "../shared/store-types.js";
+import { reciprocalWorkflowRootRunId } from "../shared/workflow-run-ownership.js";
 import {
 	matchStagePathSegments,
 	splitStagePathSegments,
@@ -120,6 +122,9 @@ export function registerPendingStageIntercomBridge(
 			notificationId,
 			reason,
 		};
+		// A pooled run's route lives in its pool coordinator; only that route can notify the sender.
+		const external = externalRunRouteOwner(activeStore, entry.runId);
+		if (external !== undefined) return external.notifyUndeliverable(payload);
 		pi.events?.emit?.(PENDING_STAGE_UNDELIVERABLE_EVENT, payload);
 		return payload.handled && (await payload.completion) === true;
 	};
@@ -144,13 +149,23 @@ export function registerPendingStageIntercomBridge(
 		if (disposed) return;
 		const ownedRunIds = new Set<string>();
 		const runs = activeStore.runs();
+		const runById = new Map(runs.map((run) => [run.id, run]));
+		const childrenByBoundary = new Map<string, ReturnType<Store["runs"]>[number][]>();
+		for (const run of runs) {
+			if (run.parentRunId === undefined || run.parentStageId === undefined) continue;
+			const key = JSON.stringify([run.parentRunId, run.parentStageId]);
+			const children = childrenByBoundary.get(key) ?? [];
+			children.push(run);
+			childrenByBoundary.set(key, children);
+		}
 		const resolveBoundarySegments = createWorkflowBoundarySegmentsResolver(runs);
 		for (const run of runs) {
-			if (!ownsRun(run.id)) continue;
-			const rootRunId = durableRootRunIdForRun(runs, run.id);
+			// Externally routed (pooled) runs are announced by their coordinator, never from here.
+			if (externalRunRouteOwner(activeStore, run.id) !== undefined || !ownsRun(run.id)) continue;
+			const rootRunId = reciprocalWorkflowRootRunId(runById, run.id);
 			if (rootRunId === undefined) continue;
 			ownedRunIds.add(run.id);
-			const parentRun = runs.find((candidate) => candidate.id === run.parentRunId);
+			const parentRun = run.parentRunId === undefined ? undefined : runById.get(run.parentRunId);
 			const boundary = parentRun?.stages.find((stage) => stage.id === run.parentStageId);
 			const parent =
 				parentRun === undefined || boundary === undefined
@@ -158,7 +173,7 @@ export function registerPendingStageIntercomBridge(
 					: {
 							runId: parentRun.id,
 							stageKeys: [boundary.id, boundary.name].filter(
-								(key) => resolveChildRun(runs, parentRun, key)?.id === run.id,
+								(key) => resolveIndexedChildRun(childrenByBoundary, parentRun, key)?.id === run.id,
 							),
 						};
 			const announcement: PendingStageRouteEvent = {
@@ -362,17 +377,24 @@ export function registerPendingStageIntercomBridge(
 			stage.pendingStageDeliveryAvailable === true,
 		);
 	};
-	const subscription = pi.events?.on?.(PENDING_STAGE_MESSAGE_EVENT, (payload) =>
-		outsideWorkflowExecutions(() => routePendingStageMessage(payload)),
-	);
-	const stickySubscription = pi.events?.on?.(STICKY_LIVE_DELIVERED_EVENT, (payload) => {
+	const routeStickyLiveDelivered = (payload: unknown): void => {
 		if (disposed || !isStickyLiveDeliveredEvent(payload) || payload.handled) return;
 		payload.handled = true;
 		payload.completion = outsideWorkflowExecutions(() => recordConfirmedStickyDeliveries(activeStore, payload));
+	};
+	const subscription = pi.events?.on?.(PENDING_STAGE_MESSAGE_EVENT, (payload) =>
+		outsideWorkflowExecutions(() => routePendingStageMessage(payload)),
+	);
+	const stickySubscription = pi.events?.on?.(STICKY_LIVE_DELIVERED_EVENT, routeStickyLiveDelivered);
+	// Messages that reach an externally owned (pooled) run's route are routed through this store's bridge.
+	const disposeRouter = registerPendingStageMessageRouter(activeStore, {
+		route: (payload) => outsideWorkflowExecutions(() => routePendingStageMessage(payload)),
+		sticky: routeStickyLiveDelivered,
 	});
 	const dispose = (): void => {
 		disposed = true;
 		disposeReadiness();
+		disposeRouter();
 		routeCompletions.clear();
 		unsubscribeStore();
 		if (typeof subscription === "function") subscription();
@@ -566,6 +588,21 @@ function isMaterializedNonAgentTarget(runs: ReturnType<Store["runs"]>, target: W
 	// Multiple genuine matches are ambiguous, not evidence of a non-agent target.
 	if (matches.some((stage) => !isNonAgentStage(stage))) return false;
 	return nonAgentNodes(run).some((node) => node.id === stageKey || node.name === stageKey);
+}
+
+/** `resolveChildRun` over a precomputed `[parentRunId, parentStageId]` index of child runs. */
+function resolveIndexedChildRun(
+	childrenByBoundary: ReadonlyMap<string, readonly ReturnType<Store["runs"]>[number][]>,
+	parent: ReturnType<Store["runs"]>[number],
+	segment: string,
+): ReturnType<Store["runs"]>[number] | undefined {
+	const boundariesById = parent.stages.filter((stage) => stage.id === segment);
+	const boundaries =
+		boundariesById.length > 0 ? boundariesById : parent.stages.filter((stage) => stage.name === segment);
+	const children = boundaries.flatMap(
+		(boundary) => childrenByBoundary.get(JSON.stringify([parent.id, boundary.id])) ?? [],
+	);
+	return children.length === 1 ? children[0] : undefined;
 }
 
 function resolveChildRun(

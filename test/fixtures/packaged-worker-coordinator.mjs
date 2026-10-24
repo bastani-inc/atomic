@@ -15,10 +15,10 @@ const parent = workflow({
 	name: "packaged-worker-root",
 	description: "Runs one child on a packaged local worker",
 	inputs: {},
-	outputs: { pid: Type.Number(), token: Type.String() },
+	outputs: { pid: Type.Number(), parentPid: Type.Number(), token: Type.String() },
 	async run(ctx) {
 		const result = await ctx.workflow(child, { inputs: { token } });
-		return { pid: result.outputs.pid, token: result.outputs.token };
+		return { pid: result.outputs.pid, parentPid: result.outputs.parentPid, token: result.outputs.token };
 	},
 });
 
@@ -39,7 +39,7 @@ try {
 			status: result.status,
 			outputs: result.result ?? null,
 			error: result.error ?? null,
-			coordinatorPid: process.pid,
+			rootPid: process.pid,
 		}),
 	);
 	process.exit(result.status === "completed" ? 0 : 1);

@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Running many local workers at once no longer freezes the interactive TUI. A local worker pool now runs its workers under a separate pool coordinator process, which handles worker messages, heartbeats, pool journal writes and the Intercom routes of pooled children. The root process only receives periodic progress summaries. If the coordinator process dies, its workers exit with it and `ctx.workflow(child)` throws a retryable `WorkflowInfrastructureError` with code `worker_lost` and the message `Local worker pool coordinator exited (…)` ([#3903](https://github.com/bastani-inc/atomic/issues/3903))
+- Local worker heartbeats and session appends no longer grow the workflow journal on every renewal or entry. Lease renewals update the child's work entry in place instead of adding a row, and session appends no longer repeat the stage checkpoint and the full request with each entry. The first time a pool opens an existing journal, it removes the stored renewal rows and keeps only a digest of each recorded pool request; older runs stay readable and resumable ([#3903](https://github.com/bastani-inc/atomic/issues/3903))
+- `/workflow status` no longer reports `durable checkpoint topology is malformed or incomplete` for a running or crashed root, for example one that was killed, whose child workflow had failed or been skipped while the root kept going. Resuming such a root also replays its completed children from their checkpoints again instead of failing ([#3903](https://github.com/bastani-inc/atomic/issues/3903))
+
 ## [0.9.43] - 2026-10-24
 
 ### Added

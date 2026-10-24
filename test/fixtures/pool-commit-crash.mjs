@@ -182,7 +182,7 @@ try {
 			);
 			const append = {
 				kind: "session-append",
-				checkpoint: { ...stage, checkpointId: `${work.scope}:session:1` },
+				sessionId: "session",
 				entries: [{ ...messages[0], id: "continued", parentId: "message" }],
 				expectSeq: 1,
 			};

@@ -13,7 +13,13 @@ for (const state of ["paused", "quit"] as const) {
 		const path = join(directory, "journal.sqlite");
 		const journal = await resolveRunJournal({ journal: { path } });
 		const backend = await JournalDurableBackend.open(journal);
-		const pool = new LocalWorkerPool(backend, { journalPath: path, workers: 1, definitions: [] });
+		// Preparation runs in the coordinator; keep it in this process to hold its control write.
+		const pool = new LocalWorkerPool(backend, {
+			journalPath: path,
+			workers: 1,
+			definitions: [],
+			coordinator: "in-process",
+		});
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
 		let preparing: Promise<void> | undefined;

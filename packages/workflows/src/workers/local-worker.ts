@@ -16,6 +16,7 @@ import { createStageControlRegistry } from "../runs/foreground/stage-control-reg
 import type { AgentSessionAdapter } from "../runs/foreground/stage-runner.js";
 import { createStore } from "../shared/store.js";
 import { admittedSessionAdapter } from "./admission-binding.js";
+import { POOL_COORDINATOR_ROLE, type PoolCoordinatorStart } from "./coordinator-protocol.js";
 import { loadWorkerDefinition } from "./definitions.js";
 import {
 	WORKER_HEARTBEAT_INTERVAL_MS,
@@ -31,7 +32,17 @@ import { collectWorkerUsage } from "./usage-accounting.js";
 
 type Request = WorkerRequest extends infer T ? (T extends WorkerRequest ? Omit<T, "id"> : never) : never;
 
-export async function runLocalWorker(start: WorkerStart): Promise<void> {
+/** Entry of every local worker process; the same module also runs a pool's coordinator. */
+export async function runLocalWorker(start: WorkerStart | PoolCoordinatorStart): Promise<void> {
+	if ("role" in start && start.role === POOL_COORDINATOR_ROLE) {
+		const { runPoolCoordinator } = await import("./pool-coordinator.js");
+		runPoolCoordinator();
+		return;
+	}
+	await runWorker(start as WorkerStart);
+}
+
+async function runWorker(start: WorkerStart): Promise<void> {
 	let sequence = 0;
 	const pending = new Map<
 		number,
