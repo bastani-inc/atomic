@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Added
+
+- Assistant messages from the `pi-messages` API now carry `responseModel`, the concrete model the server reports on its terminal `done` or `error` event, so clients of virtual models can see which model answered ([pi #11265](https://github.com/earendil-works/pi/pull/11265))
+
 ## [0.9.42] - 2026-10-23
 
 ### Added
