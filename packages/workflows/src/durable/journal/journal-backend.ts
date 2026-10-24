@@ -36,6 +36,12 @@ import {
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import { MemoryRunJournal } from "./memory-run-journal.js";
 import {
+	decodePendingStageDeliveries,
+	encodePendingStageDeliveries,
+	hasPendingStageDeliveryDelta,
+	type JournalPendingStageMessage,
+} from "./pending-delivery-delta.js";
+import {
 	RUN_EVENT_TYPES as E,
 	JournalCasConflictError,
 	type JournalEntry,
@@ -89,6 +95,13 @@ type BackendEvent =
 			typeof E.runStarted | typeof E.statusChanged | typeof E.messageQueued | typeof E.summaryRecorded,
 			DurableWorkflowHandle
 	  >;
+
+function snapshotNeedsHistory(tail: RunSnapshotTail): boolean {
+	const event = tail.snapshot.event;
+	if (event.type !== E.messageQueued) return false;
+	const payload = event.payload as { readonly pendingStageMessages?: readonly JournalPendingStageMessage[] };
+	return hasPendingStageDeliveryDelta(payload.pendingStageMessages);
+}
 
 function* invoke<T>(action: () => Promise<T>): Operation<T> {
 	try {
@@ -292,8 +305,17 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 				new PromptReservationState(event.payload.handle.pendingPrompts, event.payload.prompts),
 			);
 		} else {
-			const handle = event.payload;
 			const previous = this.projection.getWorkflow(entry.runId);
+			const handle =
+				event.type === E.messageQueued && hasPendingStageDeliveryDelta(event.payload.pendingStageMessages)
+					? {
+							...event.payload,
+							pendingStageMessages: decodePendingStageDeliveries(
+								previous?.pendingStageMessages ?? [],
+								event.payload.pendingStageMessages ?? [],
+							),
+						}
+					: event.payload;
 			this.projection.applyWorkflowSnapshot(handle);
 			if (event.type === E.runStarted || previous?.pendingPrompts !== handle.pendingPrompts)
 				this.prompts.delete(entry.runId);
@@ -682,18 +704,31 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		if (!handle) return false;
 		for (const message of messages)
 			if (message.runId !== logicalRunId) throw new JournalMessageScopeError(logicalRunId, message.runId);
-		yield* this.snapshot(
-			{
-				...handle,
-				pendingStageMessages: replacePendingStageMessagesForRun(
-					handle.pendingStageMessages ?? [],
-					logicalRunId,
-					messages,
-				),
-				updatedAt: Math.max(Date.now(), handle.updatedAt + 1),
-			},
-			E.messageQueued,
-		);
+		const next: DurableWorkflowHandle = {
+			...handle,
+			pendingStageMessages: replacePendingStageMessagesForRun(
+				handle.pendingStageMessages ?? [],
+				logicalRunId,
+				messages,
+			),
+			updatedAt: Math.max(Date.now(), handle.updatedAt + 1),
+		};
+		// Write sticky deliveries as a change to the folded entries; the expected sequence pins that base.
+		const encoded = encodePendingStageDeliveries(handle.pendingStageMessages ?? [], next.pendingStageMessages ?? []);
+		const base = this.sequences.get(runId);
+		if (encoded !== undefined && base !== undefined) {
+			try {
+				yield* this.append(
+					runId,
+					{ type: E.messageQueued, payload: { ...next, pendingStageMessages: encoded } as typeof next },
+					{ expectSeq: base },
+				);
+				return true;
+			} catch (error) {
+				if (!(error instanceof JournalCasConflictError)) throw error;
+			}
+		}
+		yield* this.snapshot(next, E.messageQueued);
 		return true;
 	}
 	async archivePendingStageMessage(runId: string, message: PendingStageMessage): Promise<void> {
@@ -818,7 +853,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			const summarized = this.summarized.get(runId);
 			if (summarized !== undefined && summarized.seq === version.seq && summarized.at === version.at) return;
 			const tail = yield* invoke(() => journal.snapshotTail(runId));
-			if (tail !== undefined) return this.summarize(runId, tail);
+			// A snapshot holding delivery changes needs the events before it, so the run is read in full.
+			if (tail !== undefined && !snapshotNeedsHistory(tail)) return this.summarize(runId, tail);
 			if (summarized === undefined && version.seq === 0) return;
 			return yield* this.rebuild(runId);
 		}

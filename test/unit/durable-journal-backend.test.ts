@@ -638,6 +638,70 @@ test("pending messages, settlement and delivery accounting survive reopen withou
 	assert.equal(await resumed.readPendingStageMessageDeliveryCount("run", message.id), 2);
 });
 
+test("sticky delivery records append O(change) journal bytes and reopen to the same deliveries", async () => {
+	const path = database();
+	const backend = await open(path);
+	await register(backend);
+	const sticky = (id: string): PendingStageMessage => ({
+		id,
+		runId: "run",
+		stageKey: "workflow:run/child-*/**",
+		targetPath: "workflow:run/child-*/**",
+		from: { id: "sender" },
+		message: { id, timestamp: 1, content: { text: `hello from ${id}` } },
+		queuedAt: "2026-10-24T20:59:42.835Z",
+		admissionOrder: 1,
+		status: "queued",
+		sticky: true,
+		deliveries: [],
+		deliveryCount: 0,
+	});
+	let messages: PendingStageMessage[] = ["a", "b", "c", "d"].map(sticky);
+	let added = 0;
+	let headers = 0;
+	for (let stage = 0; stage < 61; stage++) {
+		messages = messages.map((entry) => {
+			const deliveries = [
+				...(entry.deliveries ?? []),
+				{
+					runId: `child-${stage}`,
+					stageId: `stage-${stage}-0123456789abcdef0123456789abcdef`,
+					stageName: "stage-a",
+					sessionId: `session-${stage}-0123456789abcdef0123456789abcdef`,
+					admission: "transport" as const,
+					deliveredAt: "2026-10-24T20:59:49.769Z",
+				},
+			];
+			// Compaction drops the deliveries of finished stages from the live entry.
+			return {
+				...entry,
+				deliveries: stage % 10 === 9 ? deliveries.filter((_, index) => index % 2 === 0) : deliveries,
+				deliveryCount: (entry.deliveryCount ?? 0) + 1,
+			};
+		});
+		added += messages.reduce((sum, entry) => sum + JSON.stringify(entry.deliveries!.at(-1)).length, 0);
+		headers += JSON.stringify(messages.map((entry) => ({ ...entry, deliveries: [] }))).length;
+		assert.equal(await backend.persistPendingStageMessages("run", messages), true);
+	}
+	const queued = (await entries(backend.journal)).filter(
+		(entry) => entry.event.type === RUN_EVENT_TYPES.messageQueued,
+	);
+	const written = queued.reduce((sum, entry) => sum + JSON.stringify(entry.event.payload).length, 0);
+	// Each record adds one delivery per message: the journal should grow by that change, not by every live delivery.
+	const bound = 2 * (added + headers);
+	assert.ok(written < bound, `wrote ${written} bytes of queued snapshots; linear bound ${bound}`);
+	assert.deepEqual(backend.getWorkflow("run")?.pendingStageMessages, messages);
+	await backend.close();
+	// The resume catalog lists a run from its latest snapshot without folding its history.
+	const listed = await JournalDurableBackend.open(await openSqlRunJournal(path), { runs: [] });
+	opened.push(listed);
+	await listed.prepareWorkflowCatalog();
+	assert.deepEqual(listed.getWorkflow("run")?.pendingStageMessages, messages);
+	const resumed = await open(path);
+	await resumed.hydrateWorkflow("run");
+	assert.deepEqual(resumed.getWorkflow("run")?.pendingStageMessages, messages);
+});
+
 test("additive checkpoints propagate typed counter violations instead of hiding them", async () => {
 	const journal = await openSqlRunJournal(database());
 	let fail = false;
