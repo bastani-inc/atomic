@@ -140,27 +140,39 @@ function runSessionProcess(args: string[]): RestartProcessResult {
 	return JSON.parse(line.slice("RESTART RESULT ".length)) as RestartProcessResult;
 }
 
-test("a parent session resumed in a fresh process gets new completion ids for repeated task ids (#3908)", () => {
-	const root = makeTempDirectory("atomic-completion-restart-");
-	try {
-		const dir = join(root, "sessions");
-		const first = runSessionProcess(["--root", root, "--dir", dir]);
-		const second = runSessionProcess(["--root", root, "--dir", dir, "--file", first.sessionFile]);
+// Two fresh Node processes each transpile and load the coding-agent source through jiti
+// before starting a session (~3.5 s each warm on Linux, ~7 s each cold); Windows CI took
+// 30.3 s for the pair. The cost is process startup, not the completion logic under test.
+const FRESH_PROCESS_RESTART_TIMEOUT_MS = 90_000;
 
-		// Each process restarts its task counters, so the resumed session reuses task ids.
-		assert.equal(first.taskIds.length, 3);
-		assert.deepEqual(second.taskIds, first.taskIds);
-		for (const run of [first, second]) {
-			for (const taskId of run.taskIds) {
-				assert.equal(run.notices.filter((notice) => notice.taskId === taskId).length, 1, `notice for ${taskId}`);
+test(
+	"a parent session resumed in a fresh process gets new completion ids for repeated task ids (#3908)",
+	() => {
+		const root = makeTempDirectory("atomic-completion-restart-");
+		try {
+			const dir = join(root, "sessions");
+			const first = runSessionProcess(["--root", root, "--dir", dir]);
+			const second = runSessionProcess(["--root", root, "--dir", dir, "--file", first.sessionFile]);
+
+			// Each process restarts its task counters, so the resumed session reuses task ids.
+			assert.equal(first.taskIds.length, 3);
+			assert.deepEqual(second.taskIds, first.taskIds);
+			for (const run of [first, second]) {
+				for (const taskId of run.taskIds) {
+					assert.equal(run.notices.filter((notice) => notice.taskId === taskId).length, 1, `notice for ${taskId}`);
+				}
+				assert.equal(run.notices.length, run.taskIds.length);
 			}
-			assert.equal(run.notices.length, run.taskIds.length);
+			const firstIds = new Set(first.notices.map((notice) => notice.completionId));
+			for (const notice of second.notices) {
+				assert.ok(
+					!firstIds.has(notice.completionId),
+					`completion id ${notice.completionId} repeated after restart`,
+				);
+			}
+		} finally {
+			rmSync(root, { recursive: true, force: true });
 		}
-		const firstIds = new Set(first.notices.map((notice) => notice.completionId));
-		for (const notice of second.notices) {
-			assert.ok(!firstIds.has(notice.completionId), `completion id ${notice.completionId} repeated after restart`);
-		}
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
-});
+	},
+	FRESH_PROCESS_RESTART_TIMEOUT_MS,
+);
