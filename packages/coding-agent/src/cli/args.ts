@@ -370,7 +370,7 @@ ${chalk.bold("Options:")}
   --use-theme <name[/name]>      Set the interactive theme for this run without saving it
   --no-themes                    Disable theme discovery and loading
   --no-context-files, -nc        Disable context-file discovery and loading
-  --export <file>                Export session file to HTML and exit
+  --export <file> [output]       Export session file to HTML and exit
   --list-models [search]         List available models (with optional fuzzy search)
   --verbose                      Force verbose startup (overrides quietStartup setting)
   --approve, -a                  Trust project-local files for this run

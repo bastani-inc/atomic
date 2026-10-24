@@ -171,7 +171,7 @@ describe("Anthropic thinking disable payload", () => {
 		expect(payload.thinking?.type).not.toBe("disabled");
 		expect(payload.thinking?.budget_tokens).toBeUndefined();
 		// Managed effort transports keep a stable top-level effort and append the active marker.
-		expect(payload.output_config).toEqual({ effort: "high" });
+		expect(payload.output_config).toEqual({ effort: "low" });
 		expect(payload.messages.at(-1)).toEqual({ role: "system", content: [], output_config: { effort: "high" } });
 	});
 
@@ -193,7 +193,7 @@ describe("Anthropic thinking disable payload", () => {
 		const payload = await capturePayload(getModel("anthropic", "claude-fable-5-1"), { reasoning });
 
 		expect(payload.thinking).toMatchObject({ type: "adaptive", display: "summarized" });
-		expect(payload.output_config).toEqual({ effort: "high" });
+		expect(payload.output_config).toEqual({ effort: "low" });
 		expect(payload.messages.at(-1)).toEqual({ role: "system", content: [], output_config: { effort } });
 	});
 });

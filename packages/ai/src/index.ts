@@ -55,6 +55,7 @@ export * from "./utils/json-parse.ts";
 export * from "./utils/overflow.ts";
 export * from "./utils/retry.ts";
 export * from "./utils/stream-deadline.ts";
+export * from "./utils/streaming-json.ts";
 export { contentText, getSystemMessageText, renderSystemMessageUpdate } from "./utils/text.ts";
 export * from "./utils/transcript.ts";
 export * from "./utils/typebox-helpers.ts";

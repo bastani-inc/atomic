@@ -18,6 +18,7 @@ import {
 	OAuthIssuerMismatchError,
 	type OAuthTokens,
 	registerClient,
+	startAuthorization,
 } from "../../src/extensions/mcp/client/oauth/index.js";
 import { closeServers, listen, readBody } from "./helpers.js";
 
@@ -522,6 +523,40 @@ describe("MCP OAuth", () => {
 			response.end();
 		});
 		await assert.rejects(discoverAuthorizationServerMetadata(origin), OAuthIssuerMismatchError);
+	});
+
+	it("rejects non-HTTP authorization endpoints, which the platform URL handler would launch", async () => {
+		const endpoints = ["file://attacker.example/share/x.exe", "search-ms:query=x", "ms-msdt:/id"];
+		let endpoint = "";
+		const origin = await listen(async (_request, response, serverOrigin) => {
+			response.setHeader("content-type", "application/json");
+			response.end(
+				JSON.stringify({
+					issuer: serverOrigin,
+					authorization_endpoint: endpoint,
+					token_endpoint: `${serverOrigin}/token`,
+					response_types_supported: ["code"],
+				}),
+			);
+		});
+		for (const value of endpoints) {
+			endpoint = value;
+			await assert.rejects(discoverAuthorizationServerMetadata(origin), /Invalid authorization endpoint/);
+			const metadata = {
+				issuer: origin,
+				authorization_endpoint: value,
+				token_endpoint: `${origin}/token`,
+				response_types_supported: ["code"],
+			};
+			await assert.rejects(
+				startAuthorization(origin, {
+					metadata,
+					clientInformation: { client_id: "client" },
+					redirectUrl: "http://127.0.0.1/callback",
+				}),
+				/Invalid authorization endpoint/,
+			);
+		}
 	});
 
 	it("uses a configured authorization server metadata document as is (#10172)", async () => {

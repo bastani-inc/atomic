@@ -116,6 +116,7 @@ describe("pi-messages", () => {
 					reason: "toolUse",
 					usage,
 					responseId: "resp_1",
+					responseModel: "claude-opus-5-5",
 					providerThinkingLevel: "high",
 				},
 			],
@@ -145,6 +146,7 @@ describe("pi-messages", () => {
 		expect(message.responseId).toBe("resp_1");
 		expect(message.providerThinkingLevel).toBe("high");
 		expect(message.model).toBe("auto");
+		expect(message.responseModel).toBe("claude-opus-5-5");
 		expect(message.provider).toBe("radius");
 		expect(message.content).toEqual([
 			{ type: "text", text: "Hello", textSignature: undefined },
@@ -201,6 +203,7 @@ describe("pi-messages", () => {
 		expect(eventModels).toEqual(wireEvents.map(() => model));
 		expect(message.stopReason).toBe("stop");
 		expect(message.responseId).toBe("resp_1");
+		expect(message).not.toHaveProperty("responseModel");
 		expect(message.content).toEqual([{ type: "text", text: "Hello", textSignature: undefined }]);
 	});
 
@@ -245,7 +248,16 @@ describe("pi-messages", () => {
 
 	it("propagates server-sent error events", async () => {
 		const { baseUrl } = await startServer({
-			events: [{ type: "start" }, { type: "error", reason: "error", usage, errorMessage: "Upstream failed" }],
+			events: [
+				{ type: "start" },
+				{
+					type: "error",
+					reason: "error",
+					usage,
+					errorMessage: "Upstream failed",
+					responseModel: "claude-opus-5-5",
+				},
+			],
 		});
 		const model = createModel(baseUrl);
 
@@ -254,6 +266,7 @@ describe("pi-messages", () => {
 		expect(message.stopReason).toBe("error");
 		expect(message.errorMessage).toBe("Upstream failed");
 		expect(message.usage).toEqual(usage);
+		expect(message.responseModel).toBe("claude-opus-5-5");
 	});
 
 	it("errors when no API key is provided", async () => {

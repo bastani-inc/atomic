@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { setKeybindings, type TUI } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
@@ -56,6 +57,32 @@ describe("model selector", () => {
 		selector.handleInput("\x1b[B");
 		expect(getModelRow("current-model")).toBe(`  ✓ current-model [${currentModel.provider}]`);
 		expect(getModelRow("browsed-model")).toBe(`→   browsed-model [${currentModel.provider}]`);
+		selector.dispose();
+	});
+
+	it("shows model names that differ from the ID (pi #5916)", async () => {
+		harness = await createHarness({
+			models: [
+				{ id: "minimax/minimax-m3", name: "MiniMax M3 [parasail]" },
+				{ id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" },
+			],
+		});
+		const provider = harness.getModel("minimax/minimax-m3")!.provider;
+		const selector = new ModelSelectorComponent(
+			createFakeTui(),
+			undefined,
+			harness.settingsManager,
+			harness.session.modelRuntime,
+			[],
+			() => {},
+			() => {},
+		);
+
+		const rows = stripAnsi(selector.render(120).join("\n"))
+			.split("\n")
+			.map((line) => line.slice(4).trimEnd());
+		assert.ok(rows.includes(`minimax/minimax-m3 (MiniMax M3 [parasail]) [${provider}]`));
+		assert.ok(rows.includes(`claude-sonnet-4-5 [${provider}]`));
 		selector.dispose();
 	});
 

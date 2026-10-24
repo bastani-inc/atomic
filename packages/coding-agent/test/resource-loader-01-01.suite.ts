@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI } from "../src/core/extensions/types.ts";
 import type { ResolvedResource } from "../src/core/package-manager.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
@@ -24,6 +24,7 @@ describe("DefaultResourceLoader", () => {
 	});
 
 	afterEach(() => {
+		vi.unstubAllEnvs();
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
@@ -79,6 +80,92 @@ describe("DefaultResourceLoader", () => {
 						'Host-provided extension packages must be declared in peerDependencies with a "*" range, not dependencies: @bastani/atomic, @earendil-works/pi-coding-agent. Installed copies can bypass the extension loader and create duplicate runtime modules.',
 				},
 			]);
+		});
+
+		it("warns and keeps loading when a configured package cannot be installed (pi #11088)", async () => {
+			vi.stubEnv("ATOMIC_OFFLINE", "");
+			vi.stubEnv("PI_OFFLINE", "");
+			const loader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				settingsManager: SettingsManager.inMemory({
+					packages: ["npm:broken-package"],
+					// Any non-zero exit stands in for an npm install that cannot reach the registry.
+					npmCommand: [process.execPath, "-e", "process.exit(1)"],
+				}),
+			});
+
+			await loader.reload();
+
+			const warnings = loader.getExtensions().warnings ?? [];
+			assert.equal(warnings.length, 1);
+			assert.equal(warnings[0].path, "npm:broken-package");
+			assert.match(warnings[0].warning, /^failed to install \(.*failed with code 1\)\./);
+			assert.ok(
+				warnings[0].warning.includes('Run "atomic remove npm:broken-package" to remove it from settings.json.'),
+			);
+		});
+
+		it("points temporary extension sources at the source instead of atomic remove (pi #11088)", async () => {
+			vi.stubEnv("ATOMIC_OFFLINE", "");
+			vi.stubEnv("PI_OFFLINE", "");
+			const loader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				additionalExtensionPaths: ["npm:broken-package"],
+				settingsManager: SettingsManager.inMemory({
+					npmCommand: [process.execPath, "-e", "process.exit(1)"],
+				}),
+			});
+
+			await loader.reload();
+
+			const warnings = loader.getExtensions().warnings ?? [];
+			assert.equal(warnings.length, 1);
+			assert.equal(warnings[0].path, "npm:broken-package");
+			assert.ok(warnings[0].warning.includes("Check the source and try again."));
+			assert.ok(!warnings[0].warning.includes("atomic remove"));
+		});
+
+		it("points project extension packages at atomic remove --local (pi #11088)", async () => {
+			vi.stubEnv("ATOMIC_OFFLINE", "");
+			vi.stubEnv("PI_OFFLINE", "");
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({ npmCommand: [process.execPath, "-e", "process.exit(1)"] }),
+			);
+			mkdirSync(join(cwd, ".atomic"), { recursive: true });
+			writeFileSync(join(cwd, ".atomic", "settings.json"), JSON.stringify({ packages: ["npm:broken-package"] }));
+			const loader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				settingsManager: SettingsManager.create(cwd, agentDir, { projectTrusted: true }),
+			});
+
+			await loader.reload();
+
+			const warnings = loader.getExtensions().warnings ?? [];
+			assert.equal(warnings.length, 1);
+			assert.ok(warnings[0].warning.includes('Run "atomic remove npm:broken-package --local"'));
+		});
+
+		it("warns once about a failing install when project trust is resolved (pi #11088)", async () => {
+			vi.stubEnv("ATOMIC_OFFLINE", "");
+			vi.stubEnv("PI_OFFLINE", "");
+			const loader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				settingsManager: SettingsManager.inMemory({
+					packages: ["npm:broken-package"],
+					npmCommand: [process.execPath, "-e", "process.exit(1)"],
+				}),
+			});
+
+			await loader.reload({ resolveProjectTrust: async () => false });
+
+			const warnings = loader.getExtensions().warnings ?? [];
+			assert.equal(warnings.length, 1);
+			assert.equal(warnings[0].path, "npm:broken-package");
 		});
 
 		it("should fail when an extension package manifest cannot be parsed", async () => {

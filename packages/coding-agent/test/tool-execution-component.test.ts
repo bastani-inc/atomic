@@ -594,6 +594,61 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered).toContain("two");
 		expect(rendered).not.toContain("two\n\n");
 	});
+
+	// pi #9265: every argument delta re-ran the call renderer; a streamed `write` re-highlighted its whole content each time.
+	test("renders streamed partial arguments once per frame, with the latest arguments (pi #9265)", () => {
+		const write = createWriteToolDefinition(process.cwd());
+		let renderCalls = 0;
+		const counted: typeof write = {
+			...write,
+			renderCall: (...args) => {
+				renderCalls++;
+				return write.renderCall!(...args);
+			},
+		};
+		let renderRequests = 0;
+		const tui = { requestRender: () => renderRequests++ } as unknown as TUI;
+		const component = new ToolExecutionComponent("write", "tool-9", {}, {}, counted, tui, ".");
+		const lines = Array.from({ length: 200 }, (_, index) => `const line${index} = ${index};`);
+		const callsBefore = renderCalls;
+		let content = "";
+		for (const line of lines) {
+			content += `${line}\n`;
+			component.updateArgs({ path: "src/file.ts", content });
+		}
+		assert.equal(renderCalls, callsBefore);
+		assert.ok(renderRequests > 0);
+
+		const streamed = stripAnsi(component.render(120).join("\n"));
+		assert.equal(renderCalls - callsBefore, 1);
+		// The same preview as rendering the final arguments directly.
+		const direct = new ToolExecutionComponent(
+			"write",
+			"tool-10",
+			{ path: "src/file.ts", content },
+			{},
+			write,
+			tui,
+			".",
+		);
+		assert.equal(streamed, stripAnsi(direct.render(120).join("\n")));
+
+		// More deltas before the next frame: one more renderer run, which shows them all.
+		component.updateArgs({ path: "src/file.ts", content: `${content}const tail = 1;\n` });
+		const final = { path: "src/file.ts", content: `${content}const tail = 2;\n` };
+		component.updateArgs(final);
+		const next = stripAnsi(component.render(120).join("\n"));
+		assert.equal(renderCalls - callsBefore, 2);
+		assert.ok(next.includes("201 total"));
+		assert.equal(
+			next,
+			stripAnsi(new ToolExecutionComponent("write", "t", final, {}, write, tui, ".").render(120).join("\n")),
+		);
+		// Rendering again without new arguments does not run the renderer.
+		component.render(120);
+		assert.equal(renderCalls - callsBefore, 2);
+	});
+
 	test("trims trailing blank display lines from read results", () => {
 		const component = new ToolExecutionComponent(
 			"read",

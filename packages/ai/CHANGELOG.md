@@ -4,6 +4,27 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `appendGrammarToolInputJsonDelta()` (`api/constrained-sampling`) takes the input delta instead of the whole input so far and no longer closes the input; close it with the new `closeGrammarToolInputJson()` ([pi #9265](https://github.com/earendil-works/pi/issues/9265))
+
+### Added
+
+- Assistant messages from the `pi-messages` API now carry `responseModel`, the concrete model the server reports on its terminal `done` or `error` event, so clients of virtual models can see which model answered ([pi #11265](https://github.com/earendil-works/pi/pull/11265))
+- Added `StreamingJsonParser`, an incremental, tolerant parser for JSON text that arrives in pieces (each piece is read once; snapshots of the partial value never change once returned), and `ToolCallArgumentsStream`, which every provider now uses for streamed tool-call arguments; `StreamingJsonParser.append()` also returns the changes each piece made (`JsonChange`), for writers that keep their own copy ([pi #9265](https://github.com/earendil-works/pi/issues/9265))
+
+### Changed
+
+- The faux provider streams partial tool-call arguments, so `toolcall_delta` partials show growing arguments as real providers do ([pi #9265](https://github.com/earendil-works/pi/issues/9265))
+
+### Fixed
+
+- Claude models with mid-conversation effort no longer fail with `Invalid effort level` on accounts whose organization caps effort below `high`, even at `low` or `medium` thinking: the fixed top-level effort is now `low`, and the per-message effort markers still set the level for each reply ([pi #10063](https://github.com/earendil-works/pi/issues/10063))
+- The faux provider no longer counts newly cached prompt tokens both as `input` and as `cacheWrite` when it simulates prompt caching for a `sessionId`. Every prompt token now goes to either `cacheRead` or `cacheWrite`, and `input` is 0 ([pi f3fa8bd9](https://github.com/earendil-works/pi/commit/f3fa8bd92430a2bf443681027a01c58586f35464))
+- Gemini tool schemas sent through `parametersJsonSchema` now express string and number `const` values as single-value `enum`s, which Gemini honors (it ignores `const`). Only schema-bearing keywords are rewritten, so literal data under `default`, `examples`, `enum`, `const` and custom keywords, and property names such as `__proto__`, are sent unchanged ([pi 7314819f](https://github.com/earendil-works/pi/commit/7314819f0fe30fa616f32fa3a1fc8d1a856a1446), [pi #11308](https://github.com/earendil-works/pi/issues/11308))
+- Kimi K3.1 Pro and K3.1 Pro Highspeed on Kimi Coding, Moonshot, and OpenCode Go no longer use Kimi K2 request settings. They now send `reasoning_effort` (low/high/max), return earlier reasoning, accept tools added mid-conversation, and report Moonshot rates on Kimi Coding; OpenRouter and Vercel AI Gateway clamp their output limit like Kimi K3. Kimi Coding `k3-256k` now reports Kimi K3 rates ([pi 1de2d7ad](https://github.com/earendil-works/pi/commit/1de2d7adeacfd1b065d9df091997d44c43120ade))
+- Streamed tool-call arguments are no longer re-parsed in full on every delta, which made CPU time and memory grow quadratically with the size of a tool call (a 90 KB `write` on Anthropic peaked at about 140 MB of heap; a 500 KB one took minutes). Every provider and the pi-messages client now read each delta once, and keep their stream state (`partialJson`, `partialArgs`, `index`, `customInput`, `streamIndex`, Bedrock's encrypted reasoning bytes) off the content blocks, so it no longer reaches partial messages or transcripts of failed streams. Grammar (custom) tool input streaming no longer copies the whole input on every delta, and truncated provider error bodies and pi-messages diagnostics no longer keep the whole text they were cut from alive ([pi #9265](https://github.com/earendil-works/pi/issues/9265))
+
 ## [0.9.42] - 2026-10-23
 
 ### Added

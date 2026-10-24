@@ -111,6 +111,7 @@ export function filterBorrowedProjectLocalResources(paths: ResolvedPaths, truste
 		themes: filterResources(paths.themes),
 		workflows: filterResources(paths.workflows),
 		mcpServers: filterResources(paths.mcpServers),
+		installFailures: paths.installFailures,
 	};
 }
 

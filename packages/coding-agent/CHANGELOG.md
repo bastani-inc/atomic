@@ -2,9 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- `/model` and `/scoped-models` now show a model's name next to its ID when the name adds words the ID lacks, such as a renamed `models.json` override ([pi #5916](https://github.com/earendil-works/pi/issues/5916), [pi #11347](https://github.com/earendil-works/pi/pull/11347))
+
 ### Fixed
 
 - Fixed background subagent and shell completion notices never reaching the parent conversation after the session was restarted or resumed in a new process: the new process numbers its tasks from the start again, so a completion matched an earlier one already acknowledged in the session history and was silently dropped. Each completion now carries an identity unique to its process generation, and every settled task still delivers exactly one notice ([#3908](https://github.com/bastani-inc/atomic/issues/3908))
+- Atomic now starts when a package configured in `settings.json` fails to install (for example when npm cannot reach the registry), instead of crashing with an uncaught error. It skips that package, warns with the `atomic remove` command that drops it (`--local` for project packages), and tries again on the next start or `/reload`. `--help`, `--list-models` and `atomic config` show the warning too ([pi #11088](https://github.com/earendil-works/pi/issues/11088))
+- `pi.exec()` no longer corrupts multi-byte UTF-8 characters split across output chunks, which came back as `�` replacement characters ([pi #11312](https://github.com/earendil-works/pi/issues/11312))
+- Automatic `fd` and `rg` downloads no longer fetch x86-64 binaries on ARM32 and other architectures without a prebuilt release. Atomic now warns and recommends installing the tool with the system package manager ([pi #11209](https://github.com/earendil-works/pi/issues/11209))
+- Streamed tool calls no longer re-run their call renderer on every argument delta; the interactive mode renders the latest arguments once per frame, so a large streamed `write` no longer re-highlights its whole content per delta ([pi #9265](https://github.com/earendil-works/pi/issues/9265))
 
 ## [0.9.43] - 2026-10-24
 

@@ -17,4 +17,19 @@ describe("execCommand", () => {
 
 		assert.deepEqual(result, { stdout: "", stderr: "", code: 1, killed: false });
 	});
+
+	it("decodes UTF-8 characters split across output chunks (pi #11312)", async () => {
+		const script = `
+			const bytes = Buffer.from("你好");
+			process.stdout.write(bytes.subarray(0, 1));
+			process.stderr.write(bytes.subarray(0, 1));
+			setTimeout(() => {
+				process.stdout.write(bytes.subarray(1));
+				process.stderr.write(bytes.subarray(1));
+			}, 100);
+		`;
+		const result = await execCommand(process.execPath, ["-e", script], process.cwd());
+
+		assert.deepEqual(result, { stdout: "你好", stderr: "你好", code: 0, killed: false });
+	});
 });

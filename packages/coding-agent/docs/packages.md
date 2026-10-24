@@ -67,6 +67,8 @@ Atomic updates only installations it can verify are writable and managed by the 
 
 By default, `install` and `remove` write to user settings (`~/.atomic/agent/settings.json`). Use `-l` to write to project settings (`.atomic/settings.json`; legacy `.pi/settings.json` is also read) instead. Project settings can be shared with your team, and Atomic installs any missing packages automatically on startup after the project is trusted.
 
+If a configured package fails to install at startup, for example because npm cannot reach the registry, Atomic warns about it, skips that package's resources, and keeps running. The warning names the `atomic remove` command that drops the package from settings. Atomic tries to install it again on the next start or `/reload`. `atomic install` and `atomic update --extensions` still report the failure and exit non-zero.
+
 To try a package without installing it, use `--extension` or `-e`. This installs to a temporary directory for the current run only:
 
 ```bash

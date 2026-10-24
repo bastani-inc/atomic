@@ -46,6 +46,7 @@ describe("managed tool downloads", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 		vi.unstubAllEnvs();
+		vi.unstubAllGlobals();
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
@@ -201,6 +202,25 @@ describe("managed tool downloads", () => {
 		]);
 		expect(consoleLog).not.toHaveBeenCalled();
 		expect(consoleError).not.toHaveBeenCalled();
+	});
+
+	it.each(["arm", "ia32"] as const)("does not download x86-64 binaries on %s (pi #11209)", async (architecture) => {
+		mocks.platform.mockReturnValue("linux");
+		mocks.arch.mockReturnValue(architecture);
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+		const statuses: import("../src/utils/tools-manager.js").ToolStatus[] = [];
+
+		const result = await ensureTool("rg", (status) => statuses.push(status));
+
+		assert.equal(result, undefined);
+		assert.equal(fetchMock.mock.calls.length, 0);
+		assert.deepEqual(statuses, [
+			{
+				type: "warning",
+				message: `ripgrep not found. Automatic download is not supported on linux/${architecture}. Install ripgrep with your system package manager.`,
+			},
+		]);
 	});
 
 	it("no longer contains any console write, silent flag or not", () => {

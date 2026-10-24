@@ -25,6 +25,7 @@ import { dedupePackages, getPackageIdentity, getPackageSourceString, parseSource
 import type {
 	MissingSourceAction,
 	PackageFilter,
+	PackageInstallFailure,
 	PackageManagerContext,
 	PathMetadata,
 	ResolvedPaths,
@@ -61,7 +62,9 @@ export async function resolvePackages(
 	}
 
 	const packageSources = dedupePackages(context, allPackages);
-	await resolvePackageSources(context, packageSources, accumulator, onMissing, { settingsField: "packages" });
+	const installFailures = await resolvePackageSources(context, packageSources, accumulator, onMissing, {
+		settingsField: "packages",
+	});
 
 	const globalBaseDir = context.agentDir;
 	const projectBaseDir = join(context.cwd, CONFIG_DIR_NAME);
@@ -116,7 +119,7 @@ export async function resolvePackages(
 			projectEnabled ?? isEnabledByOverrides(path, globalSettings.extensions ?? [], globalBaseDir),
 		);
 	}
-	return toResolvedPaths(accumulator);
+	return { ...toResolvedPaths(accumulator), installFailures };
 }
 
 async function resolveConfiguredLocalEntries(
@@ -172,10 +175,10 @@ export async function resolveExtensionSources(
 			);
 		} else packageSources.push({ pkg: source, scope });
 	}
-	await resolvePackageSources(context, packageSources, accumulator, undefined, {
+	const installFailures = await resolvePackageSources(context, packageSources, accumulator, undefined, {
 		includeProjectLocalResources: options?.includeProjectLocalResources === true,
 	});
-	return toResolvedPaths(accumulator);
+	return { ...toResolvedPaths(accumulator), installFailures };
 }
 
 async function resolvePackageSources(
@@ -184,7 +187,8 @@ async function resolvePackageSources(
 	accumulator: ResourceAccumulator,
 	onMissing?: (source: string) => Promise<MissingSourceAction>,
 	options?: { includeProjectLocalResources?: boolean; settingsField?: "packages" },
-): Promise<void> {
+): Promise<PackageInstallFailure[]> {
+	const installFailures: PackageInstallFailure[] = [];
 	for (const { pkg, scope } of sources) {
 		const sourceStr = getPackageSourceString(pkg);
 		const filter = typeof pkg === "object" ? pkg : undefined;
@@ -223,17 +227,25 @@ async function resolvePackageSources(
 
 		const installMissing = async (): Promise<boolean> => {
 			if (isOfflineModeEnabled()) return false;
-			if (!onMissing) {
+			if (onMissing) {
+				const action = await onMissing(sourceStr);
+				if (action === "skip") return false;
+				if (action === "error") throw new Error(`Missing source: ${sourceStr}`);
+			}
+			// A source that cannot be installed (no network, missing package, failing git prepare step)
+			// must not abort startup. Skip its resources, like offline mode does, and report the failure.
+			try {
 				if (context.driver) await context.driver.installParsedSource(parsed, resolvedScope);
 				else await installParsedSource(context, parsed, resolvedScope);
 				return true;
+			} catch (error) {
+				installFailures.push({
+					source: resolvedSource,
+					scope: resolvedScope,
+					message: error instanceof Error ? error.message : String(error),
+				});
+				return false;
 			}
-			const action = await onMissing(sourceStr);
-			if (action === "skip") return false;
-			if (action === "error") throw new Error(`Missing source: ${sourceStr}`);
-			if (context.driver) await context.driver.installParsedSource(parsed, resolvedScope);
-			else await installParsedSource(context, parsed, resolvedScope);
-			return true;
 		};
 
 		if (parsed.type === "npm") {
@@ -268,6 +280,7 @@ async function resolvePackageSources(
 		metadata.packageRoot = installedPath;
 		await collectPackageResources(installedPath, accumulator, filter, metadata);
 	}
+	return installFailures;
 }
 
 function findAutoloadDeltaBase(

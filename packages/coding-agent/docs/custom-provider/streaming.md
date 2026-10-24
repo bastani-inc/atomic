@@ -39,6 +39,7 @@ import {
   createAssistantMessageEventStream,
   getCurrentSystemPrompt,
   getCurrentTools,
+  ToolCallArgumentsStream,
 } from "@bastani/pi-ai";
 
 function streamMyProvider(
@@ -163,7 +164,7 @@ stream.push({ type: "text_end", contentIndex, content: block.text, partial: outp
 
 ### Tool Calls
 
-Tool calls require accumulating JSON and parsing:
+Tool calls stream their arguments as JSON text. `ToolCallArgumentsStream` from `@bastani/pi-ai` reads each delta once and returns the arguments parsed so far, so large tool calls do not re-parse the whole text on every delta:
 
 ```typescript
 // Start tool call
@@ -175,21 +176,15 @@ output.content.push({
 });
 stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
 
-// Accumulate JSON
-let partialJson = "";
-partialJson += jsonDelta;
-try {
-  block.arguments = JSON.parse(partialJson);
-} catch {}
+const args = new ToolCallArgumentsStream();
+
+// Each JSON delta
+block.arguments = args.append(jsonDelta);
 stream.push({ type: "toolcall_delta", contentIndex, delta: jsonDelta, partial: output });
 
-// Complete
-stream.push({
-  type: "toolcall_end",
-  contentIndex,
-  toolCall: { type: "toolCall", id, name, arguments: block.arguments },
-  partial: output
-});
+// Complete: one full parse; malformed arguments are reported in `argumentsError`
+Object.assign(block, args.finish());
+stream.push({ type: "toolcall_end", contentIndex, toolCall: block, partial: output });
 ```
 
 ### Usage and Cost

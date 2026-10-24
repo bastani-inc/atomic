@@ -22,7 +22,11 @@ import {
 } from "./resource-loader-context-files.ts";
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import { discoverAppendSystemPromptFile, discoverSystemPromptFile } from "./resource-loader-discovery.ts";
-import { collectExtensionPackageWarnings, mergeExtensionWarnings } from "./resource-loader-extension-warnings.ts";
+import {
+	collectExtensionPackageWarnings,
+	collectPackageInstallWarnings,
+	mergeExtensionWarnings,
+} from "./resource-loader-extension-warnings.ts";
 import {
 	loadExtensionFactories,
 	loadExtensionPaths,
@@ -167,13 +171,17 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 		state.disabledBuiltinExtensions,
 	);
 	const packageWarnings = collectExtensionPackageWarnings(extensionPaths, metadataByPath);
+	const installWarnings = collectPackageInstallWarnings(
+		resolvedPaths.installFailures,
+		cliExtensionPaths.installFailures,
+	);
 	const extensionsResult = await loadExtensionPaths(
 		loader,
 		extensionPaths,
 		workflowResourceProvider,
 		inheritanceSnapshotProvider,
 	);
-	mergeExtensionWarnings(extensionsResult, packageWarnings);
+	mergeExtensionWarnings(extensionsResult, [...installWarnings, ...packageWarnings]);
 	const inlineExtensions = await loadExtensionFactories(
 		loader,
 		extensionsResult.runtime,
@@ -351,6 +359,10 @@ export async function prepareDefaultResourceLoaderReload(
 
 		const inheritanceSnapshotProvider = createInheritanceSnapshotProvider(loader);
 		const packageWarnings = collectExtensionPackageWarnings(extensionPaths, metadataByPath);
+		const installWarnings = collectPackageInstallWarnings(
+			resolvedPaths.installFailures,
+			cliExtensionPaths.installFailures,
+		);
 		const extensionsResult: LoadExtensionsResult = options?.deferExtensions
 			? { extensions: [], errors: [], runtime: createExtensionRuntime() }
 			: await loadFinalExtensionSet(
@@ -360,7 +372,7 @@ export async function prepareDefaultResourceLoaderReload(
 					workflowResourceProvider,
 					inheritanceSnapshotProvider,
 				);
-		if (!options?.deferExtensions) mergeExtensionWarnings(extensionsResult, packageWarnings);
+		if (!options?.deferExtensions) mergeExtensionWarnings(extensionsResult, [...installWarnings, ...packageWarnings]);
 		const mandatoryExtensionPaths = new Set(
 			getMandatoryBuiltinExtensionPaths().map((path) =>
 				resolvePath(path, state.cwd, { normalizeUnicodeSpaces: true }),

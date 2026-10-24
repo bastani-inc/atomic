@@ -91,6 +91,46 @@ describe("DefaultPackageManager", () => {
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
+	describe("package install failures", () => {
+		it("skips a package source that fails to install and reports it (pi #11088)", async () => {
+			settingsManager.setProjectPackages(["npm:broken-package"]);
+			const installParsedSource = vi
+				.spyOn(packageManager as any, "installParsedSource")
+				.mockRejectedValue(new Error("npm install broken-package failed with code 1"));
+
+			const result = await packageManager.resolve();
+
+			assert.equal(installParsedSource.mock.calls.length, 1);
+			assert.deepEqual(result.installFailures, [
+				{
+					source: "npm:broken-package",
+					scope: "project",
+					message: "npm install broken-package failed with code 1",
+				},
+			]);
+			assert.deepEqual(result.extensions, []);
+		});
+
+		it("does not report install failures for sources that are skipped (pi #11088)", async () => {
+			settingsManager.setProjectPackages(["npm:missing-package"]);
+			const installParsedSource = vi.spyOn(packageManager as any, "installParsedSource");
+
+			const result = await packageManager.resolve(async () => "skip");
+
+			assert.equal(installParsedSource.mock.calls.length, 0);
+			assert.deepEqual(result.installFailures, []);
+		});
+
+		it("keeps a missing source an error when the caller asks for one (pi #11088)", async () => {
+			settingsManager.setProjectPackages(["npm:missing-package"]);
+
+			await assert.rejects(
+				packageManager.resolve(async () => "error"),
+				/Missing source: npm:missing-package/,
+			);
+		});
+	});
+
 	describe("offline mode and network timeouts", () => {
 		it("should skip installing missing package sources when offline", async () => {
 			process.env.ATOMIC_OFFLINE = "1";

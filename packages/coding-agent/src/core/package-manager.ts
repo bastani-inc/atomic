@@ -56,6 +56,7 @@ import type { PackageSource } from "./settings-manager.ts";
 export type {
 	ConfiguredPackage,
 	MissingSourceAction,
+	PackageInstallFailure,
 	PackageManager,
 	PackageManagerOptions,
 	PackageUpdate,
