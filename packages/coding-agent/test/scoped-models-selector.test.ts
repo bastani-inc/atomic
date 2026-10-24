@@ -61,6 +61,20 @@ describe("scoped models selector", () => {
 		return selector;
 	}
 
+	it("shows model names that differ from the ID (pi #5916)", async () => {
+		const selector = await createSelector([
+			{ id: "model-a", name: "Model A", enabled: true },
+			{ id: "model-b", name: "Renamed B", enabled: true },
+		]);
+		const provider = harness!.models[0].provider;
+
+		const rows = stripAnsi(selector.render(120).join("\n"))
+			.split("\n")
+			.map((line) => line.slice(4).trimEnd());
+		assert.ok(rows.includes(`model-a [${provider}]`));
+		assert.ok(rows.includes(`model-b (Renamed B) [${provider}]`));
+	});
+
 	it.each(["model-b", "model"])("keeps the model selected when reordering with filter %s (#3657)", async (query) => {
 		harness = await createHarness({
 			models: [

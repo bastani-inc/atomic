@@ -13,7 +13,7 @@ import { boundedInteractiveModelRefresh } from "../../../core/bounded-model-refr
 import type { ModelRuntime } from "../../../core/model-runtime.js";
 import type { SettingsManager } from "../../../core/settings-manager.ts";
 import { refreshModelCatalogs } from "../model-catalog-refresh.ts";
-import { getModelSelectorSearchText } from "../model-search.ts";
+import { getDistinctModelName, getModelSelectorSearchText } from "../model-search.ts";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint } from "./keybinding-hints.js";
@@ -280,8 +280,10 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			const cursor = isSelected ? theme.fg("accent", "→ ") : "  ";
 			const currentMarker = isCurrent ? theme.fg("accent", "✓ ") : "  ";
 			const modelText = isSelected ? theme.fg("accent", item.id) : item.id;
+			const name = getDistinctModelName({ id: item.id, name: item.model.name });
+			const nameText = name ? theme.fg("muted", ` (${name})`) : "";
 			const providerBadge = theme.fg("muted", `[${item.provider}]`);
-			const line = `${cursor}${currentMarker}${modelText} ${providerBadge}${defaultBadge}`;
+			const line = `${cursor}${currentMarker}${modelText}${nameText} ${providerBadge}${defaultBadge}`;
 
 			this.listContainer.addChild(new Text(line, 0, 0));
 		}

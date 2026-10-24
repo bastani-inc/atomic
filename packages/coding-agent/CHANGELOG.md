@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `/model` and `/scoped-models` now show a model's name next to its ID when the name adds words the ID lacks, such as a renamed `models.json` override ([pi #5916](https://github.com/earendil-works/pi/issues/5916), [pi #11347](https://github.com/earendil-works/pi/pull/11347))
+
 ### Fixed
 
 - Fixed background subagent and shell completion notices never reaching the parent conversation after the session was restarted or resumed in a new process: the new process numbers its tasks from the start again, so a completion matched an earlier one already acknowledged in the session history and was silently dropped. Each completion now carries an identity unique to its process generation, and every settled task still delivers exactly one notice ([#3908](https://github.com/bastani-inc/atomic/issues/3908))
