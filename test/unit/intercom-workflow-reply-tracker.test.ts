@@ -56,6 +56,7 @@ test("model-fallback sessions share Intercom reply correlation for the stage gen
 	const fallback = bindWorkflowReplyTracker(context, new ReplyTracker());
 	assert.equal(fallback, primary);
 	fallback.beginTurn();
+	fallback.admitTurnMessage(message.id);
 	assert.equal(fallback.resolveReplyTarget({}).message.id, message.id);
 	assert.equal(preserveWorkflowReplyTracker(context), true);
 
@@ -78,6 +79,7 @@ test("explicit reply targets fail closed without redirecting the active ordinary
 	const context = tracker.recordIncomingMessage(sender, { ...message, id: "plain", expectsReply: false });
 	tracker.queueTurnContext(context);
 	tracker.beginTurn();
+	tracker.admitTurnMessage("plain");
 	tracker.recordIncomingMessage(sender, message);
 	for (const replyTo of ["stale-thread", ""]) {
 		assert.throws(() => tracker.resolveReplyTarget({ replyTo }), /No .*reply context/);
@@ -122,6 +124,8 @@ test("markReplied removes an exact ask from queued turn contexts", () => {
 	tracker.queueTurnContext(second);
 	tracker.markReplied("message-2");
 	tracker.beginTurn(2);
+	tracker.admitTurnMessage("message-2");
+	tracker.admitTurnMessage("message-1");
 	assert.equal(tracker.resolveReplyTarget({}, 2), first);
 	tracker.markReplied("message-1");
 	tracker.endTurn();

@@ -179,7 +179,8 @@ function intercomMessageId(customType: unknown, details: unknown): string | unde
   return typeof id === "string" ? id : undefined;
 }
 
-function admittedIntercomMessageId(message: unknown, ctx: ExtensionContext): string | undefined {
+/** The intercom message a model-context message admits: the message itself, or the card a protected reconciliation points at. */
+export function admittedIntercomMessageId(message: unknown, ctx: Pick<ExtensionContext, "sessionManager">): string | undefined {
   const custom = message as { role?: unknown; customType?: unknown; details?: { protectedReconciliationOf?: unknown } };
   if (custom?.role !== "custom") return undefined;
   if (custom.customType !== PROTECTED_RECONCILIATION_CUSTOM_TYPE) return intercomMessageId(custom.customType, custom.details);

@@ -29,6 +29,7 @@ test("duplicate broker delivery cannot enqueue a second reply turn context", () 
 	}
 
 	tracker.beginTurn();
+	tracker.admitTurnMessage("message-1");
 	assert.equal(tracker.resolveReplyTarget({}).message.id, "message-1");
 	tracker.endTurn();
 	tracker.beginTurn();

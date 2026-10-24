@@ -182,6 +182,17 @@ function extensionFixture(
 	const recordInjected = (messages: readonly InjectedMessage[], options: InjectedMessageOptions | undefined): void => {
 		injectedMessages.push(...messages);
 		injectedOptions.push(...messages.map(() => options));
+		// An idle session starts a turn for a triggering delivery, commits each custom message to model
+		// context, and emits message_start for it; that is where Intercom binds the reply context.
+		if (context.isIdle()) {
+			const emit = (name: string, event: object): void => {
+				for (const handler of lifecycleHandlers.get(name) ?? []) void handler(event as never, context);
+			};
+			if (options?.triggerTurn === true)
+				emit("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() });
+			for (const message of messages)
+				emit("message_start", { type: "message_start", message: { role: "custom", ...message } });
+		}
 		resolveInjectedWaiters();
 	};
 	const admitInjected = async (
