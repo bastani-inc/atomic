@@ -43,7 +43,7 @@ test("busy stage sessions commit visible subagent completions and parent turns b
 		const prompt = harness.session.prompt("start busy turn");
 		await startedTool;
 		const host = harness.session.getAgentTaskHost();
-		const completions: string[] = [];
+		const taskIds: string[] = [];
 		const gates: PromiseWithResolvers<TaskResult>[] = [];
 		for (let index = 0; index < 3; index++) {
 			const gate = Promise.withResolvers<TaskResult>();
@@ -54,7 +54,7 @@ test("busy stage sessions commit visible subagent completions and parent turns b
 				() => ({ result: gate.promise, cleanup: Promise.resolve({ kind: "reaped" as const }) }),
 			);
 			assert.ok(started.ok);
-			completions.push(`completion-${started.value.taskId}`);
+			taskIds.push(started.value.taskId);
 			await host.observeAgentLaunch(started.value.taskId, { kind: "background" });
 		}
 		const notices: Promise<void>[] = [];
@@ -76,10 +76,20 @@ test("busy stage sessions commit visible subagent completions and parent turns b
 				harness.sessionManager
 					.getEntries()
 					.filter((entry) => entry.type === "custom" && entry.customType === "task-completion-ack").length,
-				completions.length,
+				taskIds.length,
 			),
 		);
 		const entries = harness.sessionManager.getEntries();
+		const completions = taskIds.map((taskId) => {
+			const intent = entries.find(
+				(entry) =>
+					entry.type === "custom" &&
+					entry.customType === "task-completion-intent" &&
+					(entry.data as { taskId: string }).taskId === taskId,
+			);
+			assert.ok(intent?.type === "custom");
+			return (intent.data as { completionId: string }).completionId;
+		});
 		for (const completionId of completions) {
 			const intentIndex = entries.findIndex(
 				(entry) =>

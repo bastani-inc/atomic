@@ -9,6 +9,7 @@ for (const restored of [false, true]) {
 	test(`${restored ? "restored idle stage completions are shown after resume recovery without a parent turn or blocking subsequent notices (#3427, #3760)" : "live idle stage completions trigger parent turns without blocking subsequent notices (#3427)"}`, async () => {
 		const manager = SessionManager.inMemory();
 		let completionId = "idle-restored-completion";
+		let liveTaskId: string | undefined;
 		if (restored) {
 			await manager.appendCustomEntry("task-completion-intent", {
 				completionId,
@@ -43,13 +44,21 @@ for (const restored of [false, true]) {
 					() => ({ result: gate.promise, cleanup: Promise.resolve({ kind: "reaped" as const }) }),
 				);
 				assert.ok(started.ok);
-				completionId = `completion-${started.value.taskId}`;
 				await host.observeAgentLaunch(started.value.taskId, { kind: "background" });
 				gate.resolve({ kind: "failed", code: "fixture", message: "idle done" });
 				await host.waitForTask(started.value.taskId);
+				liveTaskId = started.value.taskId;
 			}
 			await vi.waitFor(() => {
 				const entries = manager.getEntries();
+				const liveIntent = entries.find(
+					(entry) =>
+						entry.type === "custom" &&
+						entry.customType === "task-completion-intent" &&
+						(entry.data as { taskId: string }).taskId === liveTaskId,
+				);
+				if (liveIntent?.type === "custom")
+					completionId = (liveIntent.data as { completionId: string }).completionId;
 				const intent = entries.findIndex(
 					(entry) =>
 						entry.type === "custom" &&

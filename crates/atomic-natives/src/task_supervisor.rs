@@ -153,6 +153,21 @@ struct State {
 	evicted_through: u64,
 	subscriptions: BTreeMap<u64, Subscription>,
 	next_subscription: u64,
+	/// Distinguishes this environment from every earlier process. Owner and task numbers
+	/// restart in each process, but completion ids are persisted in session history that
+	/// outlives it, so they must not repeat an earlier process's ids.
+	incarnation: String,
+}
+/// A random token unique to one native environment; time and process id if randomness fails.
+fn environment_incarnation() -> String {
+	let mut random = [0u8; 16];
+	if getrandom::fill(&mut random).is_err() {
+		let nanos = std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.map_or(0, |elapsed| elapsed.as_nanos());
+		random = (nanos ^ (u128::from(std::process::id()) << 96)).to_be_bytes();
+	}
+	format!("{:032x}", u128::from_be_bytes(random))
 }
 struct Actor {
 	id: u64,
@@ -165,7 +180,7 @@ impl Actor {
 		static NEXT: AtomicU64 = AtomicU64::new(1);
 		Arc::new(Self {
 			id: NEXT.fetch_add(1, Ordering::Relaxed),
-			state: Mutex::new(State::default()),
+			state: Mutex::new(State { incarnation: environment_incarnation(), ..State::default() }),
 			changed: napi::tokio::sync::Notify::new(),
 			subscription_tasks: Mutex::new(Vec::new()),
 		})
