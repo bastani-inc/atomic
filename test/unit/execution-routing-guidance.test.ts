@@ -995,5 +995,12 @@ describe("peer-to-peer agent coordination guidance", () => {
 			assert.doesNotMatch(text, /do not coordinate spontaneously/i);
 			assert.doesNotMatch(text, /bound the exchange/i);
 		});
+		test(`${surface} guidance scales the swarm to hundreds or thousands of self-organizing agents`, () => {
+			assert.match(
+				text,
+				/for very complex work or when the user asks for heavy parallelism, run hundreds or thousands of agents/,
+			);
+			assert.match(text, /self-organize into teams .*child workflows\) and coordinate peer-to-peer/);
+		});
 	}
 });

@@ -277,6 +277,7 @@ How a swarm works:
 - `contact_supervisor` is for supervisor decisions; explicit user approval gates and authorization for destructive or external actions still apply.
 - Inside a workflow, `send` to a known pending sibling queues until it starts, and `ask` to a completed sibling that retains a valid conversation reopens it for a post-mortem turn. Named stage subgroups isolate their members from sibling subgroups.
 - Peer asks and one blocking supervisor request may wait concurrently in the same child; mutual asks work when both sides process inbound work.
+- Scale with the task. For very complex work or requested heavy parallelism, hundreds or thousands of agents self-organize into teams (named groups, per-stage subagent sets, child workflows) and coordinate peer-to-peer like an organization. Groups have no member limit; team members reach their lead with `contact_supervisor`, and leads talk to each other in their shared group.
 
 ## Key Differences
 

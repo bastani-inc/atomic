@@ -128,6 +128,19 @@ subagent({
 });
 ```
 
+### Scaling a swarm
+
+Swarm size scales with the task. For very complex work, or when you ask for heavy parallelism, the agent can run hundreds or thousands of agents. They organize themselves into teams and coordinate peer-to-peer, like an organization, and useful behavior emerges from their exchanges rather than from one central plan.
+
+These are the limits that apply:
+
+- **Children per parallel set.** One set holds up to `parallel.maxTasks` children (default 50, no hard cap). `parallel.concurrency` (default 3) and `parallel.runningCapacity` (default 4) bound how many run at once per parent. Raise all three, as shown in [Context and execution modes](#context-and-execution-modes).
+- **Nesting.** Subagent delegation is one level deep and cannot be configured: a child cannot call `subagent`. To nest teams, start them from workflow stages. Each stage can launch its own parallel set, and `ctx.workflow(...)` nests child workflows up to the workflow `maxDepth` (default 4, configurable).
+- **Workflow fan-out.** `ctx.parallel(...)` has no task-count limit. The workflow `defaultConcurrency` setting (default 3) or a per-call `concurrency` bounds how many stages run at once. Set `workflows.localWorkers` to run first-level child workflows in a pool of worker processes. See [Workflow configuration](/workflows/operations#workflow-configuration) and [Local workflow workers](/workflows/operations#local-workflow-workers).
+- **Teams.** Intercom groups have no member limit. Give each team its own `group` so its members coordinate internally. Team members reach their lead with `contact_supervisor`, the lead steers them, and the leads, as stages of one workflow, talk to each other in the invocation group.
+
+For example, 20 parallel workflow stages that each launch 50 children form a swarm of 1,000 agents. Running them all at once needs a stage concurrency of 20 and a subagent `concurrency` and `runningCapacity` of 50. Beyond these settings, the practical ceiling is your provider rate limits, machine memory, and any workflow admission limits you set.
+
 ### Single-child handoff
 
 A claimed parent-targeted blocking request ends a single child and returns its question, attachments, agent identity, and `[TASK_CONTEXT]` through the parent's `subagent` call. Start a fresh child with the answer and handoff. In parallel runs and collected sibling launches, the requesting child instead stays alive and continues its ongoing execution after receiving the supervisor's reply.
