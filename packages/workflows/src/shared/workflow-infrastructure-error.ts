@@ -14,7 +14,7 @@ const FAULT_PATTERNS: readonly (readonly [RegExp, WorkflowInfrastructureFault])[
 	[/Local worker (?:process )?cleanup (?:was not confirmed|unconfirmed)/, "worker_cleanup_unconfirmed"],
 	[/Local worker retry limit/, "worker_retry_limit"],
 	[/Local worker (?:startup timed out|exited before readiness)/, "worker_startup_failed"],
-	[/Worker exited before delivery acknowledgement/, "worker_lost"],
+	[/Worker exited before delivery acknowledgement|Local worker pool coordinator exited/, "worker_lost"],
 	[/Stale work lease/, "stale_work_lease"],
 	[/Intercom runtime no longer active/, "intercom_unavailable"],
 	[/Storage unavailable/, "storage_unavailable"],

@@ -13,6 +13,7 @@ test("pool and runtime faults classify as typed retryable errors (#3889)", () =>
 		"Local worker retry limit (worker stderr log: /tmp/w.log)": "worker_retry_limit",
 		"Local worker startup timed out after 500 ms": "worker_startup_failed",
 		"Worker exited before delivery acknowledgement": "worker_lost",
+		"Local worker pool coordinator exited (SIGKILL)": "worker_lost",
 		"Stale work lease": "stale_work_lease",
 		"Intercom runtime no longer active": "intercom_unavailable",
 		"Storage unavailable: node-sqlite at /tmp/journal.sqlite": "storage_unavailable",
