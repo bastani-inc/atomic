@@ -479,7 +479,17 @@ async function watchHealthyRoutesBesideARefusedRun(
 	}
 }
 
-test("a standalone owner keeps every healthy run's route while another run of its group is refused (#3904)", async () => {
+/** An older broker never advertises the in-place refusal, so a refusal still ends the connection it arrived on. */
+function emulateBrokerThatEndsConnectionOnRefusal(): void {
+	proxy.transformBrokerFrames((frame) => {
+		if (frame.type !== "registered") return frame;
+		const { refusesPendingStageRoutesInPlace: _advertised, ...legacy } = frame;
+		return legacy as WireFrame;
+	});
+}
+
+test("a standalone owner isolates a refused run when an older broker ends the group's connection (#3904, #3906)", async () => {
+	emulateBrokerThatEndsConnectionOnRefusal();
 	const { createWorkflowRouteOwner } = await import("../../packages/intercom/workflow-route-owner.js");
 	const owner = createWorkflowRouteOwner(repoRoot);
 	const scope = "39040003";
@@ -496,7 +506,8 @@ test("a standalone owner keeps every healthy run's route while another run of it
 	await waitForOwnRouteConnectionsToClose(scope);
 });
 
-test("a host keeps every healthy run's route while another run of its group is refused (#3904)", async () => {
+test("a host isolates a refused run when an older broker ends the group's connection (#3904, #3906)", async () => {
+	emulateBrokerThatEndsConnectionOnRefusal();
 	const host = createHost();
 	const scope = "39040004";
 	await withHost(host, () =>
@@ -505,6 +516,140 @@ test("a host keeps every healthy run's route while another run of its group is r
 		),
 	);
 	await waitForOwnRouteConnectionsToClose(scope);
+});
+
+/**
+ * A broker that refuses a route in place answers only the refused run and keeps the group's connection: healthy
+ * routes stay in every roster sample from before the first refusal on, the shared connection never registers again,
+ * no run gets a connection of its own, and the refused run retries over the shared connection on its own backoff.
+ */
+async function watchHealthyRoutesBesideARefusedRouteKeptInPlace(
+	scope: string,
+	publish: (runId: string, capability: string | undefined, group: string) => Promise<void>,
+): Promise<void> {
+	const healthy = Array.from({ length: HEALTHY_RUN_COUNT }, (_, index) => runIdFor(scope, index));
+	const refused = Array.from({ length: REFUSED_RUN_COUNT }, (_, index) => runIdFor(scope, HEALTHY_RUN_COUNT + index));
+	const group = runGroup(healthy[0]!);
+	const observer = await connectObserver([group]);
+	const foreign = new IntercomClient(`route-burst-foreign-${++hostCounter}`);
+	foreign.on("error", () => {});
+	openClients.add(foreign);
+	await foreign.connect(registration(`route-burst-foreign-${hostCounter}`, group));
+	for (const runId of refused) await foreign.registerPendingStageRouteAcknowledged(runId, group, "foreign-capability");
+	const sharedRegisters = (): number =>
+		proxy.toBroker.filter(
+			({ frame }) => frame.type === "register" && String(frame.returnAddress).endsWith(`${ROUTE_PREFIX}${group}`),
+		).length;
+	const attempts = (runId: string): number =>
+		proxy.toBroker.filter(({ frame }) => frame.type === "register_pending_stage_route" && frame.runId === runId)
+			.length;
+	const ownConnectionsBefore = proxy.toBroker.filter(({ frame }) => isOwnRouteConnectionRegister(scope, frame)).length;
+	try {
+		await Promise.all(healthy.map((runId) => publish(runId, undefined, group)));
+		await waitForRoster(observer, healthy);
+		const sharedRegistersBefore = sharedRegisters();
+		let samples = 0;
+		let samplesMissingHealthy = 0;
+		let sampling = true;
+		const sampler = (async () => {
+			while (sampling) {
+				const roster = await rosterRunIds(observer);
+				samples += 1;
+				if (!healthy.every((runId) => roster.has(runId))) samplesMissingHealthy += 1;
+				await sleep(ROSTER_SAMPLE_MS);
+			}
+		})();
+		const refusalFramesBefore = proxy.toClients.length;
+		try {
+			for (const runId of refused) {
+				const refusal = await publish(runId, "refused-capability", group).then(
+					() => undefined,
+					(error: Error) => error,
+				);
+				assert.ok(refusal instanceof Error, "the refused run's publication must fail");
+				assert.equal(refusal.message, "Pending-stage route is not authorized");
+			}
+			const attemptsBefore = new Map(refused.map((runId) => [runId, attempts(runId)]));
+			await waitFor(`${REFUSED_RUN_RETRIES} more attempts of each refused run`, () =>
+				refused.every((runId) => attempts(runId) >= attemptsBefore.get(runId)! + REFUSED_RUN_RETRIES)
+					? true
+					: undefined,
+			);
+		} finally {
+			sampling = false;
+			await sampler;
+		}
+
+		assert.ok(samples > 0);
+		assert.equal(
+			samplesMissingHealthy,
+			0,
+			`healthy routes were missing from ${samplesMissingHealthy} of ${samples} roster samples`,
+		);
+		assert.equal(sharedRegisters(), sharedRegistersBefore, "a refusal must not end the group's connection");
+		const refusals = proxy.toClients.slice(refusalFramesBefore).map(({ frame }) => frame);
+		assert.equal(
+			refusals.filter((frame) => frame.type === "registration_failed").length,
+			0,
+			"a route refused in place is not answered with a connection-ending registration_failed",
+		);
+		const routeLevel = refusals.filter((frame) => frame.type === "pending_stage_route_refused");
+		assert.ok(routeLevel.length >= REFUSED_RUN_COUNT * (1 + REFUSED_RUN_RETRIES));
+		const refusedRequestIds = new Set(
+			proxy.toBroker
+				.filter(
+					({ frame }) => frame.type === "register_pending_stage_route" && refused.includes(String(frame.runId)),
+				)
+				.map(({ frame }) => frame.requestId),
+		);
+		for (const frame of routeLevel) {
+			assert.ok(
+				refused.includes(String(frame.runId)),
+				"only the refused run is answered with a route-level failure",
+			);
+			assert.ok(refusedRequestIds.has(frame.requestId), "the failure names the refused registration");
+			assert.equal(frame.code, "not_authorized");
+		}
+
+		// Once the other session leaves, the refused run registers over the group's connection after all.
+		await foreign.disconnect();
+		for (const runId of refused) await publish(runId, "refused-capability-resumed", group);
+		await waitForRoster(observer, [...healthy, ...refused]);
+		assert.equal(sharedRegisters(), sharedRegistersBefore, "no route reconnects at any point");
+		assert.equal(
+			proxy.toBroker.filter(({ frame }) => isOwnRouteConnectionRegister(scope, frame)).length,
+			ownConnectionsBefore,
+			"no run needs a connection of its own",
+		);
+	} finally {
+		await foreign.disconnect();
+	}
+}
+
+test("a standalone owner keeps the group's connection and every healthy route when the broker refuses one run in place (#3906)", async () => {
+	const { createWorkflowRouteOwner } = await import("../../packages/intercom/workflow-route-owner.js");
+	const owner = createWorkflowRouteOwner(repoRoot);
+	const scope = "39060001";
+	try {
+		await watchHealthyRoutesBesideARefusedRouteKeptInPlace(scope, (runId, capability, group) => {
+			const route = routePayload(runId, 1, capability, group);
+			owner.events.emit("atomic:workflow-pending-stage-route", route);
+			assert.ok(route.completion);
+			return route.completion;
+		});
+	} finally {
+		await owner.closeGroup(runGroup(runIdFor(scope, 0)));
+	}
+});
+
+test("a host keeps the group's connection and every healthy route when the broker refuses one run in place (#3906)", async () => {
+	const host = createHost();
+	const scope = "39060002";
+	await withHost(host, () =>
+		watchHealthyRoutesBesideARefusedRouteKeptInPlace(scope, (runId, capability, group) =>
+			host.publishRoute(runId, 1, capability, group),
+		),
+	);
 });
 
 test("a burst of route updates from many runs reaches the broker without a session listing per update", async () => {

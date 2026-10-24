@@ -17,6 +17,7 @@ import type {
 	WorkflowFutureStageRosterEntry,
 	WorkflowPossibleStageAnnouncement,
 	WorkflowRunParentAnnouncement,
+	PendingStageRouteRefusalCode,
 } from "../types.js";
 import { buildSendSignature, PendingSendRegistry, PendingSendTimeoutError } from "./pending-send-registry.js";
 import { readSubagentMessageSource } from "../source-ownership.js";
@@ -61,6 +62,11 @@ export interface IntercomClientOptions {
 	readonly acknowledgesReceipt?: true;
 	/** Registration answer bound for `connect()`; defaults to `BROKER_CONNECT_TIMEOUT_MS`. */
 	readonly connectTimeoutMs?: number;
+	/**
+	 * #3906: this connection carries the pending-stage routes of many runs, so it asks a broker that supports it to
+	 * refuse one run's route on its own and keep the connection open for the others.
+	 */
+	readonly multiplexesPendingStageRoutes?: true;
 }
 
 export interface SendResult {
@@ -170,11 +176,25 @@ function isWorkflowStageRosterEntries(value: unknown): value is WorkflowStageRos
 
 /** The broker refused this pending-stage route registration itself, not the connection it was sent on (#3904). */
 export class IntercomPendingStageRouteRefusedError extends Error {
-	constructor(reason: string) {
+	/**
+	 * #3906: the broker answered this refusal on its own and kept the connection, with the route of every other run on
+	 * it. When false, the broker (an older one) ended the connection with the refusal.
+	 */
+	readonly connectionKept: boolean;
+	readonly code: PendingStageRouteRefusalCode | undefined;
+	constructor(reason: string, refusal: { readonly connectionKept: boolean; readonly code?: PendingStageRouteRefusalCode } = { connectionKept: false }) {
 		super(reason);
 		this.name = "IntercomPendingStageRouteRefusedError";
+		this.connectionKept = refusal.connectionKept;
+		this.code = refusal.code;
 	}
 }
+
+const PENDING_STAGE_ROUTE_REFUSAL_CODES: ReadonlySet<string> = new Set<PendingStageRouteRefusalCode>([
+	"not_authorized",
+	"invalid_stage_roster",
+	"invalid_possible_stage_roster",
+]);
 
 export class IntercomClient extends EventEmitter {
 	private readonly returnAddress: string;
@@ -185,6 +205,9 @@ export class IntercomClient extends EventEmitter {
 	private brokerAcknowledgesReceipt = false;
 	/** The broker of the current registration answers a pending-stage route registration that carries a `requestId`. */
 	private brokerAcknowledgesPendingStageRoutes = false;
+	private readonly multiplexesPendingStageRoutes: boolean;
+	/** #3906: the broker of the current registration refuses a pending-stage route without ending the connection. */
+	private brokerRefusesPendingStageRoutesInPlace = false;
 	private brokerAnswersStatus = false;
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
@@ -259,6 +282,7 @@ export class IntercomClient extends EventEmitter {
 		this.preferredSessionId = options.preferredSessionId;
 		this.acknowledgesReceipt = options.acknowledgesReceipt === true;
 		this.connectTimeoutMs = options.connectTimeoutMs ?? BROKER_CONNECT_TIMEOUT_MS;
+		this.multiplexesPendingStageRoutes = options.multiplexesPendingStageRoutes === true;
 	}
 
   private failPending(error: Error): void {
@@ -384,6 +408,7 @@ export class IntercomClient extends EventEmitter {
         this._supervisorSessionId = null;
         this.brokerAcknowledgesReceipt = false;
         this.brokerAcknowledgesPendingStageRoutes = false;
+        this.brokerRefusesPendingStageRoutesInPlace = false;
         this.brokerAnswersStatus = false;
         this._messageSource = undefined;
         this.disconnectError = null;
@@ -494,6 +519,7 @@ export class IntercomClient extends EventEmitter {
           || (brokerMessage.supervisorSessionId !== undefined && typeof brokerMessage.supervisorSessionId !== "string")
           || (brokerMessage.acknowledgesReceipt !== undefined && brokerMessage.acknowledgesReceipt !== true)
           || (brokerMessage.acknowledgesPendingStageRoutes !== undefined && brokerMessage.acknowledgesPendingStageRoutes !== true)
+          || (brokerMessage.refusesPendingStageRoutesInPlace !== undefined && brokerMessage.refusesPendingStageRoutesInPlace !== true)
           || (brokerMessage.brokerStatus !== undefined && brokerMessage.brokerStatus !== true)) {
           throw new Error("Invalid registered message");
         }
@@ -508,6 +534,7 @@ export class IntercomClient extends EventEmitter {
         // #3761: a broker from before receipts never echoes the capability and drops a client that sends `received`.
         this.brokerAcknowledgesReceipt = this.acknowledgesReceipt && brokerMessage.acknowledgesReceipt === true;
         this.brokerAcknowledgesPendingStageRoutes = brokerMessage.acknowledgesPendingStageRoutes === true;
+        this.brokerRefusesPendingStageRoutesInPlace = brokerMessage.refusesPendingStageRoutesInPlace === true;
         this.brokerAnswersStatus = brokerMessage.brokerStatus === true;
         this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
         break;
@@ -693,6 +720,27 @@ export class IntercomClient extends EventEmitter {
 			this.emit("pending_stage_route_revoked", { runId });
 			break;
 		}
+      case "pending_stage_route_refused": {
+        const { requestId, runId, code, reason } = brokerMessage;
+        if (
+          typeof requestId !== "string" ||
+          typeof runId !== "string" ||
+          typeof reason !== "string" ||
+          typeof code !== "string"
+        ) {
+          throw new Error("Invalid pending-stage route refusal");
+        }
+        const pending = this.pendingStageRouteRegistrations.get(requestId);
+        if (!pending) return;
+        this.pendingStageRouteRegistrations.delete(requestId);
+        pending.reject(
+          new IntercomPendingStageRouteRefusedError(reason, {
+            connectionKept: true,
+            ...(PENDING_STAGE_ROUTE_REFUSAL_CODES.has(code) ? { code: code as PendingStageRouteRefusalCode } : {}),
+          }),
+        );
+        break;
+      }
       case "pending_stage_route_registered": {
         const { requestId } = brokerMessage;
         if (typeof requestId !== "string") throw new Error("Invalid pending-stage route registration acknowledgement");
@@ -1211,6 +1259,9 @@ export class IntercomClient extends EventEmitter {
 					possibleStages,
 					...(parent === undefined ? {} : { parent }),
 					...(dormant === true ? { dormant: true as const } : {}),
+					...(this.multiplexesPendingStageRoutes && this.brokerRefusesPendingStageRoutesInPlace
+						? { refusalKeepsConnection: true as const }
+						: {}),
 				});
 			} catch (error) {
 				clearTimeout(timeout);

@@ -38,6 +38,7 @@ import type {
 	WorkflowPossibleStageAnnouncement,
 	WorkflowFutureStageRosterEntry,
 	WorkflowRunParentAnnouncement,
+	PendingStageRouteRefusalCode,
 } from "../types.js";
 import {
 	formatWorkflowStageTarget,
@@ -1622,6 +1623,7 @@ class IntercomBroker {
             ...(supervisorId ? { supervisorSessionId: supervisorId } : {}),
             ...(clientMessage.acknowledgesReceipt === true ? { acknowledgesReceipt: true as const } : {}),
             acknowledgesPendingStageRoutes: true as const,
+            refusesPendingStageRoutesInPlace: true as const,
             brokerStatus: true as const,
           });
           if (isAgentRecipient(info)) this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
@@ -1833,13 +1835,27 @@ class IntercomBroker {
             writeMessageIfOpen(socket, { type: "pending_stage_route_registered", requestId: routeRequestId });
           }
         };
+        // #3906: a client whose connection carries the routes of many runs asks for a refusal of one of them to be
+        // answered on its own. Authorization is the same either way; only whether the refusal ends the connection differs.
+        const refusesInPlace = routeRequestId !== undefined && clientMessage.refusalKeepsConnection === true;
         // #3904: the refusal names the registration it answers, so a connection carrying many runs' routes knows which one.
-        const refuseRoute = (reason: string): void => {
+        const refuseRoute = (code: PendingStageRouteRefusalCode, reason: string): void => {
+          if (refusesInPlace) {
+            writeMessageIfOpen(socket, {
+              type: "pending_stage_route_refused",
+              requestId: routeRequestId,
+              runId: clientMessage.runId,
+              code,
+              reason,
+            });
+            return;
+          }
           writeMessageIfOpen(socket, {
             type: "registration_failed",
             reason,
             ...(routeRequestId === undefined ? {} : { requestId: routeRequestId }),
           });
+          this.endRefusedConnection(socket, currentId, setId);
         };
         const owner = this.sessions.get(currentId);
         const existing = this.pendingStageRoutes.get(clientMessage.runId);
@@ -1868,8 +1884,7 @@ class IntercomBroker {
             (activeExisting.group !== ownerGroup ||
               (activeExisting.capability !== clientMessage.capability && activeExisting.sessionId !== currentId)))
         ) {
-          refuseRoute("Pending-stage route is not authorized");
-          this.endRefusedConnection(socket, currentId, setId);
+          refuseRoute("not_authorized", "Pending-stage route is not authorized");
           return;
         }
         if (
@@ -1881,8 +1896,7 @@ class IntercomBroker {
           ) ||
             !clientMessage.stages.every((stage) => invocationOwnsGroup(ownerGroup, stage.group)))
         ) {
-          refuseRoute("Invalid workflow-stage roster");
-          this.endRefusedConnection(socket, currentId, setId);
+          refuseRoute("invalid_stage_roster", "Invalid workflow-stage roster");
           return;
         }
         if (
@@ -1893,8 +1907,7 @@ class IntercomBroker {
             normalizeGroup(clientMessage.group),
           )
         ) {
-          refuseRoute("Invalid workflow possible-stage roster");
-          this.endRefusedConnection(socket, currentId, setId);
+          refuseRoute("invalid_possible_stage_roster", "Invalid workflow possible-stage roster");
           return;
         }
         // D7 (slice 4): presence replaces, absence keeps — a terminal root publishes `[]`

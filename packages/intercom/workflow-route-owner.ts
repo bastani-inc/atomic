@@ -151,7 +151,9 @@ export function createWorkflowRouteOwner(cwd: string) {
 			if (extensionDir === undefined) throw new Error("Intercom builtin package is unavailable");
 			await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs, undefined, extensionDir);
 			if (connections.get(connection.key) !== connection) throw closedError();
-			const client = new IntercomClient(`${id}:pending-stage-route:${connection.key}`);
+			const client = new IntercomClient(`${id}:pending-stage-route:${connection.key}`, {
+				multiplexesPendingStageRoutes: true,
+			});
 			connection.client = client;
 			connection.acknowledged = false;
 			client.on("error", () => {});
@@ -229,10 +231,17 @@ export function createWorkflowRouteOwner(cwd: string) {
 					state.retry = undefined;
 					settle(state, true);
 				} catch (error) {
+					if (error instanceof IntercomPendingStageRouteRefusedError && error.connectionKept) {
+						// #3906: the broker refused only this run and kept the connection with every other run's route,
+						// so the run retries on its own backoff over the same connection.
+						scheduleRetry(state);
+						throw error;
+					}
 					// An established connection keeps its routes through one failed update; one that never
 					// had a route acknowledged, or that is gone, is replaced.
 					if (error instanceof IntercomPendingStageRouteRefusedError && !state.isolated && isCurrent(state)) {
-						// The refusal ended the group's connection; the run retries alone so it cannot end it again.
+						// An older broker ended the group's connection with the refusal; the run retries alone so it
+						// cannot end it again.
 						detach(state);
 						state.isolated = true;
 						connectionOf(state);
