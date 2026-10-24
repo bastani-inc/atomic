@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The standalone binary resolves its builtin packages only from the `builtin/` directory beside the executable, so the Intercom broker starts for pooled workflow stages even when the build tree still exists on the host ([#3917](https://github.com/bastani-inc/atomic/issues/3917))
+
 ## [0.9.44-alpha.1] - 2026-10-24
 
 Large agent swarms and local workflow fan-outs now run without freezing the TUI or losing their Intercom routes, and background completion notices survive a restart.

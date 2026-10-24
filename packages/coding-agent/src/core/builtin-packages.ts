@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { getPackageDir } from "../config.js";
+import { getPackageDir, isBunBinary } from "../config.js";
 import { moduleDirFromMetaUrl } from "../utils/split-launcher.ts";
 import { stripBom } from "../utils/text.ts";
 import { type BuiltinPackageDirName, requiredEntriesForBuiltin } from "./builtin-install-layout.ts";
@@ -15,7 +15,8 @@ interface BuiltinPackageDescriptor {
 }
 
 interface BuiltinPackageCandidateContext {
-	readonly here: string;
+	/** Module directory; undefined in a compiled binary, whose bundled module URL is a build-time path. */
+	readonly here: string | undefined;
 	readonly packageDir: string;
 	readonly isSourceCheckout: boolean;
 }
@@ -48,7 +49,10 @@ const BUILTIN_PACKAGES: readonly BuiltinPackageDescriptor[] = WORKSPACE_BUILTINS
 		requiredEntries: requiredEntriesForBuiltin(spec.distDirName),
 		sourceCandidates: ({ here, packageDir, isSourceCheckout }) =>
 			isSourceCheckout
-				? [join(packageDir, "..", spec.workspaceDirName), join(here, "..", "..", "..", spec.workspaceDirName)]
+				? [
+						join(packageDir, "..", spec.workspaceDirName),
+						...(here === undefined ? [] : [join(here, "..", "..", "..", spec.workspaceDirName)]),
+					]
 				: [],
 	}),
 );
@@ -89,24 +93,21 @@ function firstExistingPackageDir(candidates: string[], descriptor: BuiltinPackag
 function distCandidates(context: BuiltinPackageCandidateContext, descriptor: BuiltinPackageDescriptor): string[] {
 	const { here, packageDir } = context;
 	return [
-		join(here, "..", "builtin", descriptor.distDirName),
+		...(here === undefined ? [] : [join(here, "..", "builtin", descriptor.distDirName)]),
 		join(packageDir, "builtin", descriptor.distDirName),
 		join(packageDir, "dist", "builtin", descriptor.distDirName),
 	];
 }
 function getBuiltinPackageCandidateContext(): BuiltinPackageCandidateContext {
 	const packageDir = getPackageDir();
-	// In the split launcher the bundled import.meta.url is a foreign-OS build
-	// path; fall back to the package dir (the executable dir), where `builtin/`
-	// sits, so distCandidates still resolves.
-	const context: BuiltinPackageCandidateContext = {
-		here: moduleDirFromMetaUrl(import.meta.url),
-		packageDir,
-		isSourceCheckout: false,
-	};
+	// A compiled binary's app.js keeps the build machine's module URL. Where that
+	// build tree still exists it would win over the shipped `builtin/` beside the
+	// executable, so binaries resolve builtins from the package dir only (#3917).
+	const here = isBunBinary ? undefined : moduleDirFromMetaUrl(import.meta.url);
 	return {
-		...context,
-		isSourceCheckout: existsSync(join(context.packageDir, "src", "main.ts")),
+		here,
+		packageDir,
+		isSourceCheckout: existsSync(join(packageDir, "src", "main.ts")),
 	};
 }
 
