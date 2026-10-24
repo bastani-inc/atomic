@@ -51,6 +51,12 @@ const STALL_THRESHOLD_MS = 500;
 const COORDINATOR_LEASE_MS = 3 * STAGE_SESSION_HEARTBEAT_INTERVAL_MS;
 const STDERR_TAIL_CHARACTERS = 8192;
 const STDERR_DRAIN_GRACE_MS = 1_000;
+/**
+ * Longest a starting stage waits for the broker to hold its run's route before it starts anyway.
+ * It covers the route owner's reconnect backoff and its connect and acknowledgement timeouts; past
+ * it, the stage's own Intercom keeps waiting for the owner.
+ */
+const ROUTE_REGISTRATION_WAIT_MS = 120_000;
 const PENDING_STAGE_MESSAGE_EVENT = "atomic:workflow-pending-stage-message";
 const STICKY_LIVE_DELIVERED_EVENT = "atomic:workflow-sticky-live-delivered";
 const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
@@ -214,8 +220,17 @@ class PooledRoutes {
 	async route(work: PoolWork, runId: string): Promise<string> {
 		this.requireOwned(work, runId);
 		const readiness = workflowPendingStageRouteReady(this.mirror, runId);
-		await readiness?.completion;
+		// A publication that failed is retried by the route owner; the stage waits for that retry below.
+		await readiness?.completion.catch(() => {});
 		readiness?.assertCurrent();
+		// #3904: a stage starts only once the broker holds its run's route, including a route the owner
+		// is registering again after its connection dropped since an earlier acknowledgement.
+		const waiting = new AbortController();
+		await Promise.race([
+			this.owner.registered(runId),
+			delay(ROUTE_REGISTRATION_WAIT_MS, undefined, { signal: waiting.signal, ref: false }).catch(() => {}),
+		]);
+		waiting.abort();
 		this.requireOwned(work, runId);
 		return workflowPendingStageRouteCapability(this.mirror, runId);
 	}
