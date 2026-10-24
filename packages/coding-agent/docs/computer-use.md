@@ -343,7 +343,7 @@ Prefer Herdr for interactive terminal work on macOS, Linux, and Windows, subject
 
 ### Setup and a dedicated pane
 
-Check `herdr --version` and `herdr --help`. Install missing Herdr using its [official installation guide](https://github.com/herdrdev/herdr/tree/v0.9.0#install) when permitted. macOS supports `brew install herdr`; macOS/Linux and Windows also have official shell and PowerShell installers. Inspect downloaded scripts before executing them.
+Check `herdr --version` and `herdr --help`. Install missing Herdr using its [official installation guide](https://github.com/herdrdev/herdr/tree/v0.9.5#install) when permitted. macOS supports `brew install herdr`; macOS/Linux and Windows also have official shell and PowerShell installers. Inspect downloaded scripts before executing them.
 
 Once inside an eligible managed pane, check `herdr status` for client/server compatibility. Do not stop or replace an active server just to obtain a new feature. Atomic's automatic status reporting is documented separately in [Herdr integration](/herdr).
 
