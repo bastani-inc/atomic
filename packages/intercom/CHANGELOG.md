@@ -11,6 +11,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 ### Fixed
 
 - An implicit Intercom `reply` no longer answers a message the agent has not seen yet. Before, a queued message (for example a `"followUp"` ask that arrived while a tool ran) could become the reply target as soon as any new turn started, including the continuation after that tool call, so the reply reached the wrong sender or thread. A message now becomes the reply target only when it enters the agent's context ([#3921](https://github.com/bastani-inc/atomic/issues/3921), follow-up to [#3924](https://github.com/bastani-inc/atomic/pull/3924))
+- Intercom loaded through its lazy entry point now sees when an inbound message enters the agent's context, so that message becomes the reply target, and every ask that enters the context in the same turn (for example several `"followUp"` asks delivered together) can still be answered with an implicit `reply` after the first one is answered ([#3921](https://github.com/bastani-inc/atomic/issues/3921))
 
 ## [0.9.44-alpha.1] - 2026-10-24
 

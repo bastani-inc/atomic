@@ -646,6 +646,12 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		const heavy = loadedHeavy?.heavy;
 		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "agent_end", event, ctx));
 	});
+	// The heavy lifecycle binds a reply context when its intercom message enters the model's context.
+	pi.on("message_start", async (event, ctx) => {
+		if (activeLease.retired) return;
+		const heavy = loadedHeavy?.heavy;
+		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "message_start", event, ctx));
+	});
 	pi.on("tool_execution_start", async (event, ctx) => {
 		if (activeLease.retired) return;
 		activeLifecycle.activeTools.set(event.toolCallId, { event, ctx });

@@ -888,3 +888,72 @@ for (const kind of ["child", "workflow-stage"] as const) {
 		}
 	});
 }
+
+// Greptile 4368756044: with followUpMode "all", followUp asks A and B enter the model together.
+// A is the turn's reply target, and B is seen too, so after answering A an implicit reply resolves to B.
+for (const kind of ["child", "workflow-stage"] as const) {
+	test(`followUp asks admitted together in one ${kind} turn both become visible reply candidates`, async () => {
+		const trackers = new Set<ReplyTracker>();
+		const queueTurnContext = ReplyTracker.prototype.queueTurnContext;
+		const spy = vi.spyOn(ReplyTracker.prototype, "queueTurnContext").mockImplementation(function (
+			this: ReplyTracker,
+			context,
+		) {
+			trackers.add(this);
+			queueTurnContext.call(this, context);
+		});
+		const peerA: SessionInfo = { ...peer, id: "peer-a", name: "peer-a" };
+		const peerB: SessionInfo = { ...peer, id: "peer-b", name: "peer-b" };
+		const record = { calls: 0, completed: 0 } as { calls: number; signal?: AbortSignal; completed: number };
+		const work = cancellableTool(record);
+		const h = await receiver(kind, [work.tool]);
+		h.session.setFollowUpMode("all");
+		const routed: Array<{ visible: string[]; first: string; afterFirst: string }> = [];
+		const resolveImplicit = (tracker: ReplyTracker): string => {
+			try {
+				return tracker.resolveReplyTarget({}).message.id;
+			} catch {
+				return "none";
+			}
+		};
+		const dispatches = createDispatchCounter([
+			() => fauxAssistantMessage(fauxToolCall("long_work", {}), { stopReason: "toolUse" }),
+			() => fauxAssistantMessage("continued after the tool"),
+			(context) => {
+				const tracker = [...trackers][0]!;
+				const visible = ["ASK-A", "ASK-B"].filter((text) =>
+					context.messages.some((m) => getMessageText(m).includes(text)),
+				);
+				const first = resolveImplicit(tracker);
+				if (first !== "none") tracker.markReplied(first);
+				routed.push({ visible, first, afterFirst: resolveImplicit(tracker) });
+				return fauxAssistantMessage("answered both");
+			},
+		]);
+		h.setResponses(dispatches.steps(6));
+		const execution = h.session.prompt("original task");
+		try {
+			await work.started.promise;
+			await h.deliver({ ...queuedMessage("ask-a", "ask", "ASK-A"), delivery: "followUp" }, peerA);
+			await h.deliver({ ...queuedMessage("ask-b", "ask", "ASK-B"), delivery: "followUp" }, peerB);
+			await vi.waitFor(
+				() =>
+					assert.equal(
+						h.sessionManager
+							.getEntries()
+							.filter((e) => e.type === "custom_message" && e.customType === "intercom_message").length,
+						2,
+					),
+				{ timeout: 5000 },
+			);
+			work.cleanup.resolve();
+			await execution;
+			await vi.waitFor(() => assert.equal(routed.length, 1));
+			assert.deepEqual(routed, [{ visible: ["ASK-A", "ASK-B"], first: "ask-a", afterFirst: "ask-b" }]);
+		} finally {
+			spy.mockRestore();
+			work.cleanup.resolve();
+			await h.close(execution);
+		}
+	});
+}

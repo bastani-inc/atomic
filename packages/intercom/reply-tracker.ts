@@ -47,12 +47,12 @@ export class ReplyTracker {
   }
 
   /**
-   * An inbound message entered this turn's model context. Steer, followUp, and interrupt
-   * deliveries reach turns out of arrival order, so the first admitted message with a queued
-   * context becomes the turn's reply target.
+   * An inbound message entered this turn's model context, so the model has seen it and it leaves
+   * the queue. Steer, followUp, and interrupt deliveries reach turns out of arrival order, so the
+   * first admitted message with a queued context becomes the turn's reply target; later messages
+   * admitted in the same turn (followUpMode "all") stay eligible for the implicit fallback.
    */
   admitTurnMessage(messageId: string): void {
-    if (this.turnContextAdmitted) return;
     if (this.currentTurnContext?.message.id === messageId) {
       this.turnContextAdmitted = true;
       return;
@@ -60,6 +60,7 @@ export class ReplyTracker {
     const index = this.pendingTurnContexts.findIndex((context) => context.message.id === messageId);
     if (index < 0) return;
     const [admitted] = this.pendingTurnContexts.splice(index, 1);
+    if (this.turnContextAdmitted) return;
     this.currentTurnContext = admitted!;
     this.turnContextAdmitted = true;
   }

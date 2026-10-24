@@ -1,6 +1,6 @@
 import type {
   AgentEndEvent, AgentStartEvent, ExtensionAPI, ExtensionContext, ExtensionHandler,
-  MessageRenderer, ModelSelectEvent, RegisteredCommand, SessionShutdownEvent,
+  MessageRenderer, MessageStartEvent, ModelSelectEvent, RegisteredCommand, SessionShutdownEvent,
   SessionStartEvent, ToolDefinition, ToolExecutionEndEvent, ToolExecutionStartEvent,
   TurnEndEvent, TurnStartEvent,
 } from "@bastani/atomic";
@@ -22,6 +22,7 @@ export type ForwardedEventMap = {
   tool_execution_start: ToolExecutionStartEvent;
   tool_execution_end: ToolExecutionEndEvent;
   model_select: ModelSelectEvent;
+  message_start: MessageStartEvent;
 };
 type LazyLifecycleEvent = keyof ForwardedEventMap;
 type ForwardedHandler<K extends LazyLifecycleEvent> = ExtensionHandler<ForwardedEventMap[K]>;
@@ -39,7 +40,7 @@ export type CapturedHeavy = {
 export function createForwardedHandlerMap(): ForwardedHandlerMap {
   return {
     session_start: [], session_shutdown: [], turn_start: [], turn_end: [], agent_start: [],
-    agent_end: [], tool_execution_start: [], tool_execution_end: [], model_select: [],
+    agent_end: [], tool_execution_start: [], tool_execution_end: [], model_select: [], message_start: [],
   };
 }
 
@@ -57,7 +58,8 @@ function captureForwardedHandler(captured: CapturedHeavy, event: LazyLifecycleEv
     case "agent_end": addHandler(captured, event, handler as ForwardedHandler<"agent_end">); return;
     case "tool_execution_start": addHandler(captured, event, handler as ForwardedHandler<"tool_execution_start">); return;
     case "tool_execution_end": addHandler(captured, event, handler as ForwardedHandler<"tool_execution_end">); return;
-    case "model_select": addHandler(captured, event, handler as ForwardedHandler<"model_select">);
+    case "model_select": addHandler(captured, event, handler as ForwardedHandler<"model_select">); return;
+    case "message_start": addHandler(captured, event, handler as ForwardedHandler<"message_start">);
   }
 }
 
