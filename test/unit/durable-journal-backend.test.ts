@@ -638,7 +638,7 @@ test("pending messages, settlement and delivery accounting survive reopen withou
 	assert.equal(await resumed.readPendingStageMessageDeliveryCount("run", message.id), 2);
 });
 
-test("sticky delivery records append O(change) journal bytes and reopen to the same deliveries", async () => {
+test("sticky delivery records append O(change) journal bytes and reopen to the same deliveries (#3920)", async () => {
 	const path = database();
 	const backend = await open(path);
 	await register(backend);
