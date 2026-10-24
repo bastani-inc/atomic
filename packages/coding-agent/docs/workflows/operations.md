@@ -814,7 +814,7 @@ Example config:
     "team": { "path": "./workflows/team.ts" },
     "shared": { "path": "/shared/team/workflows" }
   },
-  "defaultConcurrency": 3,
+  "defaultConcurrency": 1000,
   "maxDepth": 4,
   "budget": { "maxDurationMs": 0, "maxTokens": 0, "maxCost": 0, "warnAtPercent": 80 },
   "persistRuns": true,
@@ -834,7 +834,7 @@ Runtime config defaults:
 
 | Key | Default | Purpose |
 |-----|---------|---------|
-| `defaultConcurrency` | `3` | Default stage concurrency and concurrency for authored `ctx.parallel(...)` execution |
+| `defaultConcurrency` | `1000` | Default stage concurrency and concurrency for authored `ctx.parallel(...)` execution |
 | `maxDepth` | `4` | Maximum workflow nesting depth |
 | `budget` | `{ maxDurationMs: 0, maxTokens: 0, maxCost: 0, warnAtPercent: 80 }` | Default per-run budget declaration; `0` disables a dimension; warnings default to `80` percent |
 | `persistRuns` | `true` | Persist run metadata for status/resume/history |

@@ -54,7 +54,7 @@ export interface WorkflowExtensionConfig {
 	readonly budget?: WorkflowBudget;
 	/** Maximum workflow recursion depth. Default: 4. */
 	readonly maxDepth?: number;
-	/** Default stage concurrency. Default: 3. */
+	/** Default stage concurrency. Default: 1000. */
 	readonly defaultConcurrency?: number;
 	/** Persist runs via pi appendEntry. Default: true. */
 	readonly persistRuns?: boolean;
@@ -180,7 +180,7 @@ function mergeConfigs(base: WorkflowExtensionConfig, override: WorkflowExtension
  */
 export const WORKFLOW_CONFIG_DEFAULTS = {
 	maxDepth: 4,
-	defaultConcurrency: 3,
+	defaultConcurrency: 1000,
 	persistRuns: true,
 	statusFile: false,
 	resumeInFlight: "never" as const,

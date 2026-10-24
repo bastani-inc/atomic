@@ -80,8 +80,8 @@ export class ConcurrencyLimiter {
 
 /**
  * Create a per-run ConcurrencyLimiter from a resolved config value.
- * Falls back to the library default (3) when `defaultConcurrency` is absent.
+ * Falls back to the library default (1000) when `defaultConcurrency` is absent.
  */
 export function createRunLimiter(defaultConcurrency?: number): ConcurrencyLimiter {
-	return new ConcurrencyLimiter(defaultConcurrency ?? 3);
+	return new ConcurrencyLimiter(defaultConcurrency ?? 1000);
 }
