@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.9.44-alpha.1] - 2026-10-24
+
+Large agent swarms and local workflow fan-outs now run without freezing the TUI or losing their Intercom routes, and background completion notices survive a restart.
+
+- **A responsive TUI under heavy fan-out:** local worker pools run under their own coordinator process, journals no longer grow on every heartbeat, and `/workflow status` and resume handle roots whose children failed or were skipped ([#3905](https://github.com/bastani-inc/atomic/pull/3905))
+- **Intercom that keeps working during fan-out:** pooled stages wait for their run's route instead of failing with `Live workflow-stage route has no registered workflow owner`, all runs of one invocation share one broker connection, and a refused route no longer drops the other runs' routes ([#3907](https://github.com/bastani-inc/atomic/pull/3907), [#3915](https://github.com/bastani-inc/atomic/pull/3915))
+- **Peer-to-peer swarms by default:** subagents and workflow stages talk to each other directly, subagent `parallel.*` limits and workflow `defaultConcurrency` default to 1000, and workflow `maxDepth` now defaults to 3; set them lower to throttle ([#3912](https://github.com/bastani-inc/atomic/pull/3912))
+- **Completion notices after a restart:** background subagent and shell completions reach the parent conversation after a session resumes in a new process ([#3909](https://github.com/bastani-inc/atomic/pull/3909))
+- **Faster large tool calls:** streamed tool-call arguments are parsed once per delta, so large `write` calls no longer cost quadratic CPU and memory or re-render on every delta ([#3910](https://github.com/bastani-inc/atomic/pull/3910))
+- **Sturdier startup and providers:** Atomic starts when a configured package fails to install, Claude effort limits, Kimi K3.1 Pro, and Gemini `const` schemas work, and MCP sign-in accepts only `http:` and `https:` OAuth URLs ([#3910](https://github.com/bastani-inc/atomic/pull/3910))
+- **Cua Driver approves its own permission prompts on macOS:** the agent clicks Cua Driver's Accessibility and Screen Recording prompts itself when VNC credentials are available; set `ATOMIC_CUA_AUTO_APPROVE=0` to keep asking you ([#3911](https://github.com/bastani-inc/atomic/pull/3911))
+
+**Breaking change:** `appendGrammarToolInputJsonDelta()` in `@bastani/pi-ai` now takes only the new input delta and no longer closes the input; call `closeGrammarToolInputJson()` when the input is complete ([#3910](https://github.com/bastani-inc/atomic/pull/3910))
+
 ### Added
 
 - `/model` and `/scoped-models` now show a model's name next to its ID when the name adds words the ID lacks, such as a renamed `models.json` override ([pi #5916](https://github.com/earendil-works/pi/issues/5916), [pi #11347](https://github.com/earendil-works/pi/pull/11347))

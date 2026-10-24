@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.44-alpha.1] - 2026-10-24
+
 ### Changed
 
 - **Security policy change:** on macOS, the agent now approves Cua Driver's own Accessibility and Screen Recording permission prompts itself by default, without asking, by clicking them through the host's VNC or Screen Sharing server when credentials for it are available (for example `CUA_VNC_SERVER` and `CUA_VNC_PASSWORD`). It reports each approval and when it happened, never approves any other permission or another app's dialog, and types a password only when you supplied one. Set `ATOMIC_CUA_AUTO_APPROVE=0` to turn this off and have the agent ask you to grant the permissions, as before.

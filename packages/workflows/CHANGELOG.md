@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.44-alpha.1] - 2026-10-24
+
 ### Changed
 
 - Workflow stages now default to peer-to-peer (swarm) exchange with no limits on communication between agents: stages coordinate with each other directly instead of relaying through the supervisor, and each stage still returns its own structured result. Workflow guidance now scales swarms to hundreds or thousands of agents for very complex work or requested heavy parallelism, organized into named subgroups, per-stage subagent sets and child workflows. The `defaultConcurrency` setting, which bounds how many workflow stages and `ctx.parallel(...)` tasks run at once when no per-call `concurrency` is given, now defaults to 1000 instead of 3; set it lower to limit concurrency.

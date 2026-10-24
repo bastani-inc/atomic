@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.44-alpha.1] - 2026-10-24
+
 ### Changed
 
 - The `intercom` skill now presents unlimited peer-to-peer (swarm) coordination as the default, with a broadcast example and guidance for agents to discover and talk to peers proactively. It also covers scaling a swarm to hundreds or thousands of agents organized into teams.
