@@ -917,7 +917,8 @@ async function runQueuedInput(session: AgentSession): Promise<void> {
 	}
 }
 
-function deliverQueuedInputIfIdle(session: AgentSession, options?: { userSubmission?: boolean }): void {
+/** Drain input queued after the run's last drain, deferring until an open run settles. */
+export function deliverQueuedInputIfIdle(session: AgentSession, options?: { userSubmission?: boolean }): void {
 	const deliver = async (): Promise<void> => {
 		if (options?.userSubmission && !session.isStreaming && !session._queuedMessagesPaused) {
 			session._agentRunAbortRequested = false;

@@ -10,6 +10,7 @@
 
 - The standalone binary resolves its builtin packages only from the `builtin/` directory beside the executable, so the Intercom broker starts for pooled workflow stages even when the build tree still exists on the host ([#3917](https://github.com/bastani-inc/atomic/issues/3917))
 - Fixed workflow stages failing with `Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.` when an Intercom message, such as a sibling's send or a sticky `workflow:<rootRunId>/**` broadcast, reached the stage after it went live but before the workflow sent the stage's own prompt. The message started a turn of its own and the stage prompt was rejected. Messages that arrive before the stage prompt now become context for the stage's first turn, and the stage prompt always starts that turn ([#3919](https://github.com/bastani-inc/atomic/issues/3919))
+- Background subagent completions that arrive while the parent session is finishing a turn now always get their reply turn, so exiting or disposing a session saved to a file no longer fails with `Cannot dispose a session with a queued protected reconciliation` ([#3925](https://github.com/bastani-inc/atomic/issues/3925))
 
 ## [0.9.44-alpha.1] - 2026-10-24
 
