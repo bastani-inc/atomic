@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
 import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
 import { test, vi } from "vitest";
 import type { AgentSessionInternalSurface } from "../../packages/coding-agent/src/core/agent-session-methods.js";
@@ -6,6 +8,7 @@ import { replaceSessionTaskOwner } from "../../packages/coding-agent/src/core/ag
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { OperationId, TaskResult } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { createHarness, type Harness } from "../../packages/coding-agent/test/suite/harness.js";
+import { makeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
 
 function ownerIdOf(harness: Harness): string {
 	const watched = harness.session.getAgentTaskHost().watchOwnerTasks();
@@ -113,5 +116,51 @@ test("a restarted owner that reuses earlier task numbers still delivers every co
 		await assertOneNoticeEach(harness, taskIds);
 	} finally {
 		await harness.cleanup();
+	}
+});
+
+interface RestartProcessResult {
+	sessionFile: string;
+	taskIds: string[];
+	notices: { taskId: string; completionId: string }[];
+}
+
+function runSessionProcess(args: string[]): RestartProcessResult {
+	const result = spawnSyncCollect([
+		process.execPath,
+		"--import",
+		"jiti/register",
+		"test/fixtures/subagent-completion-restart-process.ts",
+		...args,
+	]);
+	const stdout = result.stdout.toString();
+	assert.equal(result.exitCode, 0, `${stdout}\n${result.stderr.toString()}`);
+	const line = stdout.split("\n").find((candidate) => candidate.startsWith("RESTART RESULT "));
+	assert.ok(line, stdout);
+	return JSON.parse(line.slice("RESTART RESULT ".length)) as RestartProcessResult;
+}
+
+test("a parent session resumed in a fresh process gets new completion ids for repeated task ids (#3908)", () => {
+	const root = makeTempDirectory("atomic-completion-restart-");
+	try {
+		const dir = join(root, "sessions");
+		const first = runSessionProcess(["--root", root, "--dir", dir]);
+		const second = runSessionProcess(["--root", root, "--dir", dir, "--file", first.sessionFile]);
+
+		// Each process restarts its task counters, so the resumed session reuses task ids.
+		assert.equal(first.taskIds.length, 3);
+		assert.deepEqual(second.taskIds, first.taskIds);
+		for (const run of [first, second]) {
+			for (const taskId of run.taskIds) {
+				assert.equal(run.notices.filter((notice) => notice.taskId === taskId).length, 1, `notice for ${taskId}`);
+			}
+			assert.equal(run.notices.length, run.taskIds.length);
+		}
+		const firstIds = new Set(first.notices.map((notice) => notice.completionId));
+		for (const notice of second.notices) {
+			assert.ok(!firstIds.has(notice.completionId), `completion id ${notice.completionId} repeated after restart`);
+		}
+	} finally {
+		rmSync(root, { recursive: true, force: true });
 	}
 });
