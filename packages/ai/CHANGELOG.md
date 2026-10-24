@@ -8,6 +8,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 - Assistant messages from the `pi-messages` API now carry `responseModel`, the concrete model the server reports on its terminal `done` or `error` event, so clients of virtual models can see which model answered ([pi #11265](https://github.com/earendil-works/pi/pull/11265))
 
+### Fixed
+
+- Claude models with mid-conversation effort no longer fail with `Invalid effort level` on accounts whose organization caps effort below `high`, even at `low` or `medium` thinking: the fixed top-level effort is now `low`, and the per-message effort markers still set the level for each reply ([pi #10063](https://github.com/earendil-works/pi/issues/10063))
+
 ## [0.9.42] - 2026-10-23
 
 ### Added

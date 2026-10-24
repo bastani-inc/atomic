@@ -245,7 +245,7 @@ describe("Fable 5.1 prefix-mismatch handling", () => {
 		expect(payload.thinking?.type).toBe("adaptive");
 		expect(payload.thinking?.display).toBe("summarized");
 		expect(payload.thinking?.budget_tokens).toBeUndefined();
-		expect(payload.output_config).toEqual({ effort: "high" });
+		expect(payload.output_config).toEqual({ effort: "low" });
 	});
 
 	it.each(["low", "medium", "high", "xhigh", "max"] as const)(
@@ -254,7 +254,7 @@ describe("Fable 5.1 prefix-mismatch handling", () => {
 			const { payload } = await capturePayloadAndHeaders(getModel("anthropic", "claude-fable-5-1"), { reasoning });
 
 			expect(payload.thinking?.block_binding).toEqual({ prefix_mismatch_behavior: "drop_block" });
-			expect(payload.output_config).toEqual({ effort: "high" });
+			expect(payload.output_config).toEqual({ effort: "low" });
 			expect(payload.messages.at(-1)).toEqual({ role: "system", content: [], output_config: { effort: reasoning } });
 		},
 	);

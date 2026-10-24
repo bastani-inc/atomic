@@ -1609,14 +1609,16 @@ function buildParams(
 	}
 
 	// Managed effort models always use adaptive thinking. Their per-turn markers
-	// carry the actual effort; the top-level high value deliberately stays stable.
+	// carry the actual effort for every reply.
 	if (effortMessages) {
 		params.thinking = {
 			type: "adaptive",
 			display: options?.thinkingDisplay ?? "summarized",
 			block_binding: { prefix_mismatch_behavior: "drop_block" },
 		} as unknown as NonNullable<MessageCreateParamsStreaming["thinking"]>;
-		params.output_config = { effort: "high" };
+		// The top-level effort is part of the cached prompt, so it stays fixed. It is "low" because
+		// organizations can cap effort and reject requests containing any level above the cap.
+		params.output_config = { effort: "low" };
 	} else if (model.reasoning) {
 		if (options?.thinkingEnabled) {
 			// Default to "summarized" so Opus 4.7 and Mythos Preview behave like
