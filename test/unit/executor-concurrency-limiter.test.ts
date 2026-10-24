@@ -1,4 +1,6 @@
 import { describe } from "vitest";
+import { WORKFLOW_CONFIG_DEFAULTS } from "../../packages/workflows/src/extension/config-loader.js";
+import { createRunLimiter } from "../../packages/workflows/src/runs/shared/concurrency.js";
 import {
 	assert,
 	createStore,
@@ -119,12 +121,12 @@ describe("executor.run — concurrency limiter", () => {
 		assert.ok(maxActive >= 1);
 	});
 
-	test("default concurrency (4) allows ≤4 concurrent stages", async () => {
+	test("defaultConcurrency=4 allows ≤4 concurrent stages", async () => {
 		let active = 0;
 		let maxActive = 0;
 
 		const def = workflow({
-			name: "conc-default-wf",
+			name: "conc-4-wf",
 			description: "",
 			inputs: {},
 			outputs: {},
@@ -138,7 +140,13 @@ describe("executor.run — concurrency limiter", () => {
 			def,
 			{},
 			{
-				// no config — should default to 4
+				config: {
+					defaultConcurrency: 4,
+					maxDepth: 10,
+					persistRuns: false,
+					statusFile: false,
+					resumeInFlight: "never",
+				},
 				store: createStore(),
 				adapters: {
 					prompt: {
@@ -156,6 +164,53 @@ describe("executor.run — concurrency limiter", () => {
 
 		assert.equal(result.status, "completed");
 		assert.ok(maxActive <= 4);
+	});
+
+	test("unconfigured default concurrency (1000) does not cap small fan-outs", async () => {
+		assert.equal(createRunLimiter().limit, 1000);
+		assert.equal(WORKFLOW_CONFIG_DEFAULTS.defaultConcurrency, 1000);
+
+		let active = 0;
+		let maxActive = 0;
+		let releaseAll!: () => void;
+		const gate = new Promise<void>((r) => {
+			releaseAll = r;
+		});
+
+		const def = workflow({
+			name: "conc-default-wf",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await Promise.all(["s1", "s2", "s3", "s4", "s5", "s6"].map((n) => ctx.stage(n).prompt(n)));
+				return {};
+			},
+		});
+
+		const result = await run(
+			def,
+			{},
+			{
+				// no config — library default applies
+				store: createStore(),
+				adapters: {
+					prompt: {
+						prompt: async (text) => {
+							active++;
+							maxActive = Math.max(maxActive, active);
+							if (active === 6) releaseAll();
+							await Promise.race([gate, new Promise<void>((r) => setTimeout(r, 500))]);
+							active--;
+							return text;
+						},
+					},
+				},
+			},
+		);
+
+		assert.equal(result.status, "completed");
+		assert.equal(maxActive, 6);
 	});
 
 	test("concurrency limiter releases on stage failure", async () => {

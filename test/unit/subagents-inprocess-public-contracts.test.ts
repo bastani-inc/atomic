@@ -113,7 +113,7 @@ function executor(
 			getSessionName: () => "parent",
 		} as unknown as ExecutorDeps["pi"],
 		state: currentState,
-		config: { parallel: { concurrency: 4, maxTasks: 50 } },
+		config: { parallel: { concurrency: 4, maxTasks: 50, runningCapacity: 4 } },
 		tempArtifactsDir: join(cwd, "artifacts"),
 		getSubagentSessionRoot: () => join(cwd, "sessions"),
 		expandTilde: (value) => value,

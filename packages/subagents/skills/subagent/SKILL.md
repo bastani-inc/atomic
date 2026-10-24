@@ -317,14 +317,15 @@ For supervisor requests, prefer `contact_supervisor`; use generic `intercom` tow
 
 ### Peer coordination
 
-Coordination is not only vertical. Children launched in the same parallel set, or in the same explicit `group`, share one Intercom group, and workflow stages share their invocation group. Any of them can run `intercom({ action: "list" })`, see live siblings, and `send` or `ask` them directly. `contact_supervisor` is reserved for the supervisor; everything peer-to-peer goes through ordinary `intercom`.
+Default to peer-to-peer (swarm) coordination. There are no limits on communication between agents; it is encouraged whenever you need to. The supervisor is not a message relay: relaying adds latency, loses detail, and bloats the supervisor's context, while direct exchange converges faster. Children launched in the same parallel set, or in the same explicit `group`, share one Intercom group, and workflow stages share their invocation group. Any of them can run `intercom({ action: "list" })`, see live siblings, and `send` or `ask` them directly. `contact_supervisor` is reserved for the supervisor; everything peer-to-peer goes through ordinary `intercom`.
 
-Use peer messaging when a sibling is the better source than the supervisor:
+Use peer messaging whenever a sibling is the better source than the supervisor:
 
 - **Debate**: a reviewer challenges another reviewer's blocking finding with concrete evidence; each still returns its own verdict (see the constructive-quorum pattern in `/skill:intercom`).
 - **Connect**: a locator hands file paths and line ranges straight to the analyzer working the same question instead of round-tripping through the parent.
 - **Learn**: a worker asks the sibling that already reproduced the bug for the exact command and environment rather than rediscovering it.
 - **Coordinate**: parallel writers claim ownership of shared files, serialize expensive suites or builds, and announce when a shared step is done.
+- **Broadcast and hand off**: share a confirmed finding with every sibling at once, or pass work along a chain of siblings without a parent hop.
 
 ```typescript
 // In a child: find who else is in the group, then talk to them
@@ -333,9 +334,11 @@ intercom({ action: "send", to: "worker-2", message: "I own src/api/*; leave thos
 intercom({ action: "ask", to: "reviewer-1", message: "You flagged the retry loop as unbounded. I read a max of 5 attempts at client.ts:88 — what did you see?" })
 ```
 
-Peer asks and one blocking supervisor request may wait concurrently in the same child; a peer reply returns to the asking child with its context intact. Mutual asks work as long as both sides process inbound work. Keep exchanges bounded and evidence-driven, do not defer to a peer's conclusion without inspecting the evidence, and still return your own complete result. Peer messages do not replace the supervisor for scope, product, or architecture decisions.
+Peer asks and one blocking supervisor request may wait concurrently in the same child; a peer reply returns to the asking child with its context intact. Mutual asks work as long as both sides process inbound work. Decide on evidence rather than deferring to a peer's conclusion, and still return your own complete result. `contact_supervisor` is for supervisor decisions; explicit user approval gates and authorization for destructive or external actions still apply.
 
-To enable this from the parent, launch related work as one parallel set (or an explicit `group`) and say in each task prompt who the peers are and what they should exchange; children do not coordinate spontaneously without that instruction. Use `group: true` to give one parallel set its own private group, or a named group to let later launches join the same conversation.
+Children coordinate spontaneously: they discover peers with `list` and talk to them without waiting for the parent to name them. Launch related work as one parallel set (or an explicit `group`) so the children share a group. Use `group: true` to give one parallel set its own private group, or a named group to let later launches join the same conversation.
+
+Scale the swarm with the task. For very complex work or requested heavy parallelism, run hundreds or thousands of agents that self-organize into teams and coordinate peer-to-peer like an organization. A child cannot call `subagent`, so nest teams through workflow stages (each runs its own parallel set) and child workflows up to `maxDepth`. `parallel.maxTasks`, `parallel.concurrency` and `parallel.runningCapacity` each default to 1000; to run more than 1000 children at once, raise all three; see the Scaling a swarm section of the user subagents guide.
 
 If intercom messages do not show up, check the bridge from the intercom side with `intercom({ action: "status" })`.
 
@@ -465,7 +468,7 @@ Give subagents specific tasks rather than vague mandates.
 
 All builtin specialists can use Intercom when permitted by the parent. Use `contact_supervisor` for parent decisions when the active bridge supplies it. Resolve known scope, product, and architecture questions before launching any writer. If the parent realizes mid-run that the scope is wrong, steer a reachable child, or `quit` it and `resume` it later with a corrected `message`.
 
-When several children work related angles, tell them to use ordinary `intercom` with each other for findings, ownership, and challenges so the parent is not the bottleneck for information that a sibling already holds. See [Peer coordination](#peer-coordination).
+When several children work related angles, they use ordinary `intercom` with each other for findings, ownership, and challenges so the parent is not the bottleneck for information that a sibling already holds. See [Peer coordination](#peer-coordination).
 
 ### Intervene only on clear control signals
 

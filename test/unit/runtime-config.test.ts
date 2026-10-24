@@ -181,8 +181,8 @@ describe("WorkflowRuntimeConfig — WORKFLOW_CONFIG_DEFAULTS alignment", () => {
 			statusFile: WORKFLOW_CONFIG_DEFAULTS.statusFile,
 			resumeInFlight: WORKFLOW_CONFIG_DEFAULTS.resumeInFlight,
 		};
-		assert.equal(config.maxDepth, 4);
-		assert.equal(config.defaultConcurrency, 3);
+		assert.equal(config.maxDepth, 3);
+		assert.equal(config.defaultConcurrency, 1000);
 		assert.equal(config.persistRuns, true);
 		assert.equal(config.statusFile, false);
 		assert.equal(config.resumeInFlight, "never");

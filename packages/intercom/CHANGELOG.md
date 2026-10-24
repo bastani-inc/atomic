@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Changed
+
+- The `intercom` skill now presents unlimited peer-to-peer (swarm) coordination as the default, with a broadcast example and guidance for agents to discover and talk to peers proactively. It also covers scaling a swarm to hundreds or thousands of agents organized into teams.
+
 ### Fixed
 
 - Workflow stages that start while their run's Intercom route is still registering, or is registering again after its connection dropped, no longer fail every Intercom call with `Live workflow-stage route has no registered workflow owner`. The stage waits for the route to come back before it uses Intercom, instead of giving up after a few quick retries ([#3904](https://github.com/bastani-inc/atomic/issues/3904))

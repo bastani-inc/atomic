@@ -234,7 +234,7 @@ The child can use one dedicated coordination tool:
 
 Child-side routine completion handoffs are still not expected. In parallel runs, blocking `contact_supervisor` decisions/interviews and parent-targeted `intercom.ask` wait only in the requesting child. The supervisor replies through Intercom to the exact question; the same child continues with its original context and run identity. Sends and progress updates return without a reply.
 
-Children can also talk to each other. Children launched in one parallel set (or with the same explicit `group`) share an Intercom group, and children launched from a workflow stage inherit that stage's invocation group. `intercom({ action: "list" })` shows live siblings, and ordinary `send`/`ask` reaches them directly: a locator hands paths to an analyzer, writers agree on file ownership or who runs a shared suite, a debugger reuses a sibling's reproduction, or one reviewer challenges another's finding before each returns its own verdict. `contact_supervisor` stays reserved for the supervisor. Peers do not coordinate spontaneously, so name the peers and the expected, bounded exchange in each task prompt. Peer asks and one blocking supervisor request may wait concurrently in the same child.
+Children can also talk to each other. Children launched in one parallel set (or with the same explicit `group`) share an Intercom group, and children launched from a workflow stage inherit that stage's invocation group. `intercom({ action: "list" })` shows live siblings, and ordinary `send`/`ask` reaches them directly: a locator hands paths to an analyzer, writers agree on file ownership or who runs a shared suite, a debugger reuses a sibling's reproduction, or one reviewer challenges another's finding before each returns its own verdict. `contact_supervisor` stays reserved for the supervisor. Peer-to-peer (swarm) exchange is the default, and the supervisor is not a message relay. There are no limits on communication between agents; it is encouraged whenever you need to. Children coordinate spontaneously and each still returns its own result. For very complex work or requested heavy parallelism, swarms scale to hundreds or thousands of agents organized into teams; see [Scaling a swarm](../coding-agent/docs/subagents.md#scaling-a-swarm) for the limits. Peer asks and one blocking supervisor request may wait concurrently in the same child.
 
 An exact-child probe/commit handshake may release parallel foreground observations, including queued slots, so the parent can respond. It does not end any execution or spend a running concurrency slot. Active siblings keep working, queued siblings start once capacity becomes available, and worktrees remain until their owners finish. Do not relaunch children to answer an ask. Targeted `pause`/`quit`, explicit batch cancellation, and owner closure remain separate controls.
 
@@ -542,7 +542,7 @@ Agent definitions are not loaded into context by default. Management actions let
 | `skill` | `string \| string[] \| false` | agent default | Override skills or disable all. |
 | `model` | string | agent default | Override model. |
 | `tasks` | array | - | Top-level parallel tasks. Supports `agent`, `task`, `cwd`, `count`, `output`, `outputMode`, `reads`, `progress`, `skill`, and `model`. |
-| `concurrency` | number | config or `3` | Top-level parallel concurrency. |
+| `concurrency` | number | config or `1000` | Top-level parallel concurrency. |
 | `worktree` | boolean | false | Create isolated git worktrees for parallel tasks. |
 | `context` | `fresh \| fork` | agent default or `fresh` | `fork` creates real branched sessions from the parent leaf. Packaged `worker` defaults to `fork`; every other builtin runs fresh. |
 | `agentScope` | `user \| project \| both` | `both` | Agent discovery scope. Project wins on collisions. |
@@ -607,16 +607,16 @@ Subagent configuration controls discovery, parallel limits, session storage, con
 ```json
 {
   "parallel": {
-    "maxTasks": 100,
-    "concurrency": 100,
-    "runningCapacity": 100
+    "maxTasks": 2000,
+    "concurrency": 2000,
+    "runningCapacity": 2000
   }
 }
 ```
 
-- `maxTasks` defaults to `50` and limits tasks per parallel set after `count` expansion. There is no hard upper cap.
-- `concurrency` defaults to `3` and limits how many children are dispatched at once. Per-call `concurrency` takes precedence.
-- `runningCapacity` defaults to `4` and limits simultaneously running child turns per parent. To run N children at once, raise both `concurrency` and `runningCapacity` to N, and set `maxTasks` to at least N.
+- `maxTasks` defaults to `1000` and limits tasks per parallel set after `count` expansion. There is no hard upper cap.
+- `concurrency` defaults to `1000` and limits how many children are dispatched at once. Per-call `concurrency` takes precedence.
+- `runningCapacity` defaults to `1000` and limits simultaneously running child turns per parent. To run more than 1000 children at once, raise `concurrency`, `runningCapacity` and `maxTasks` together.
 
 Running capacity is selected when a parent's first child is created. Restart Atomic after changing this setting to apply the new capacity.
 

@@ -134,7 +134,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	if (!isWorkflowDefinition(def))
 		throw new Error(workflowDefinitionRequirementMessage("run(definition, inputs)", def));
 	const depth = opts.depth ?? 0;
-	const maxDepth = opts.config?.maxDepth ?? 4;
+	const maxDepth = opts.config?.maxDepth ?? 3;
 	if (depth >= maxDepth) {
 		return {
 			runId: opts.runId ?? crypto.randomUUID(),

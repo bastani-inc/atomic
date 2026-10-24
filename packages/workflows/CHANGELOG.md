@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Workflow stages now default to peer-to-peer (swarm) exchange with no limits on communication between agents: stages coordinate with each other directly instead of relaying through the supervisor, and each stage still returns its own structured result. Workflow guidance now scales swarms to hundreds or thousands of agents for very complex work or requested heavy parallelism, organized into named subgroups, per-stage subagent sets and child workflows. The `defaultConcurrency` setting, which bounds how many workflow stages and `ctx.parallel(...)` tasks run at once when no per-call `concurrency` is given, now defaults to 1000 instead of 3; set it lower to limit concurrency.
+- The `maxDepth` setting, which limits how many workflow levels `ctx.workflow(...)` can nest, now defaults to 3 instead of 4. Set it higher in the workflow config to allow deeper nesting.
+
 ### Fixed
 
 - Running many local workers at once no longer freezes the interactive TUI. A local worker pool now runs its workers under a separate pool coordinator process, which handles worker messages, heartbeats, pool journal writes and the Intercom routes of pooled children. The root process only receives periodic progress summaries. If the coordinator process dies, its workers exit with it and `ctx.workflow(child)` throws a retryable `WorkflowInfrastructureError` with code `worker_lost` and the message `Local worker pool coordinator exited (…)` ([#3903](https://github.com/bastani-inc/atomic/issues/3903))
