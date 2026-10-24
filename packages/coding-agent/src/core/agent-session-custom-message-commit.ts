@@ -8,7 +8,7 @@ import {
 } from "./agent-session-persistent-custom-messages.ts";
 import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.js";
 import type { CustomMessage } from "./messages.ts";
-import { TASK_COMPLETION_MESSAGE_TYPE } from "./tasks/completion.ts";
+import { TASK_COMPLETION_MESSAGE_TYPE } from "./tasks/completion.js";
 
 async function appendDurableStageAdmission<T>(session: AgentSession, message: CustomMessage<T>): Promise<void> {
 	await session._appendCustomMessage(message);
@@ -58,6 +58,22 @@ function holdsForFirstStagePrompt<T>(
 	);
 }
 
+/**
+ * #3919: once the stage prompt is submitted but before it owns a run (its input hooks), a turn-starting
+ * message must not start a competing turn. It queues behind the pending prompt; interrupts keep their own path.
+ */
+function queuesBehindFirstStagePrompt(session: AgentSession, options: SendMessageOptions | undefined): boolean {
+	return (
+		session._workflowStageAwaitingFirstPrompt &&
+		session._activePromptCount > 0 &&
+		!session._queuedMessagesPaused &&
+		options?.triggerTurn === true &&
+		options.excludeFromContext !== true &&
+		options.deliverAs !== "nextTurn" &&
+		options.deliverAs !== "interrupt"
+	);
+}
+
 /** Commit one delivery whose source generation already granted admission. */
 export async function commitAdmittedCustomMessage<T>(
 	session: AgentSession,
@@ -75,6 +91,12 @@ export async function commitAdmittedCustomMessage<T>(
 		options?.persistWhenStreaming === true &&
 		options.excludeFromContext !== true &&
 		(options.triggerTurn === true || options.stageAdmissionKey !== undefined);
+	if (queuesBehindFirstStagePrompt(self, options)) {
+		const delivery = options?.deliverAs === "followUp" ? "followUp" : "steer";
+		if (useProtectedReconciliation) await queueProtectedStreamingCustomMessage(self, appMessage, delivery);
+		else self._queueAgentMessage(appMessage, delivery);
+		return;
+	}
 	if (
 		useProtectedReconciliation &&
 		options?.triggerTurn &&
@@ -192,6 +214,11 @@ export async function commitAdmittedCustomMessages<T>(
 	const useProtectedReconciliation =
 		options?.persistWhenStreaming === true && options.triggerTurn === true && options.excludeFromContext !== true;
 	const delivery = options?.deliverAs === "followUp" ? "followUp" : "steer";
+	if (queuesBehindFirstStagePrompt(self, options)) {
+		if (useProtectedReconciliation) await queueProtectedStreamingCustomMessages(self, appMessages, delivery);
+		else for (const item of appMessages) self._queueAgentMessage(item, delivery);
+		return;
+	}
 	if (options?.deliverAs === "nextTurn") {
 		self._pendingNextTurnMessages.push(...appMessages);
 	} else if (

@@ -131,7 +131,10 @@ async function admittedPrompt(this: AgentSession, text: string, options?: Prompt
 			this._activePromptCount === 1 &&
 			!this.isStreaming &&
 			!this._queuedMessagesPaused &&
-			(this._priorityInterruptPending || boundary?.hasMessageDeliveries())
+			(this._priorityInterruptPending ||
+				boundary?.hasMessageDeliveries() ||
+				// #3919: input queued behind a stage prompt that its input hook consumed still needs its turn.
+				(this._workflowStageAwaitingFirstPrompt && this.agent.hasQueuedMessages()))
 		) {
 			// A command/input hook may consume the original prompt during preflight.
 			// Its owner still owes independently admitted priority input a reply; drain

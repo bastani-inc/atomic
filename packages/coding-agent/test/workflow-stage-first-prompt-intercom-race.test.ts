@@ -97,3 +97,47 @@ test("issue #3919: an intercom send arriving while the stage prompt is being sen
 		await harness.cleanup();
 	}
 });
+
+for (const handled of [false, true]) {
+	test(`issue #3919: an ordinary intercom send arriving during the stage prompt's input hooks does not start a competing turn (input ${handled ? "handled" : "continued"})`, async () => {
+		const requests: TranscriptContext[] = [];
+		let sent = false;
+		const harness = await createHarness({
+			orchestrationContext: stageContext(),
+			extensionFactories: [
+				(pi) => {
+					pi.on("input", async () => {
+						if (sent) return { action: "continue" as const };
+						sent = true;
+						await pi.sendMessage(peerMessage("sibling trigger hello"), peerOptions("d"));
+						return { action: handled ? ("handled" as const) : ("continue" as const) };
+					});
+				},
+			],
+		});
+		try {
+			const respond = (context: TranscriptContext) => {
+				requests.push(context);
+				return fauxAssistantMessage("stage done");
+			};
+			harness.setResponses([respond, respond, respond]);
+
+			await harness.session.prompt("stage task prompt");
+			await harness.session.agent.waitForIdle();
+
+			assert.ok(sent);
+			assert.ok(requests.length >= 1);
+			assert.equal(
+				requestTexts(requests[0]!).some((text) => text.includes("stage task prompt")),
+				!handled,
+				"the first turn carries the stage prompt unless its input hook consumed it",
+			);
+			assert.ok(
+				requests.some((request) => requestTexts(request).some((text) => text.includes("sibling trigger hello"))),
+				"the mid-prompt message is not dropped",
+			);
+		} finally {
+			await harness.cleanup();
+		}
+	});
+}
