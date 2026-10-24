@@ -14,6 +14,7 @@ import { fileExists, makeTempDirectory, removeTempDirectory } from "../helpers/r
 
 const LOCAL_WORKER_PROCESS_TIMEOUT_MS = 120_000;
 const STALLED_WORKER_RECOVERY_TIMEOUT_MS = 30_000;
+const STALLED_WORKER_LEASE_MS = 2_000;
 
 // Keep the real coordinator, fork and IPC, but run the shipped worker rather than
 // cold-transpiling its entire source graph through jiti on every replacement.
@@ -202,6 +203,7 @@ test.skipIf(process.platform === "win32")(
 		const pool = new LocalWorkerPool(backend, {
 			journalPath: path,
 			workers: 1,
+			leaseMs: STALLED_WORKER_LEASE_MS,
 			definitions: [{ definition: child, path: childPath, exportName: "stalledChild" }],
 		});
 		try {

@@ -437,6 +437,18 @@ describe("settings.json schema", () => {
 			);
 	});
 
+	it("validates the local worker lease setting (#3888)", () => {
+		const validator = Compile(SettingsSchema);
+		const definitions = [{ path: "./child.ts", exportName: "child" }];
+		assert.equal(validator.Check({ workflows: { localWorkers: { count: 2, definitions, leaseMs: 60_000 } } }), true);
+		for (const leaseMs of [0, 1_999, 2_000.5, 2_147_483_648, "30s"])
+			assert.equal(
+				validator.Check({ workflows: { localWorkers: { count: 2, definitions, leaseMs } } }),
+				false,
+				String(leaseMs),
+			);
+	});
+
 	it("rejects settings values that runtime accessors reject", () => {
 		const validator = Compile(SettingsSchema);
 		const invalidSettings = [

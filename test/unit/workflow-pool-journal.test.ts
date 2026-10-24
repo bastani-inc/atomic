@@ -443,3 +443,26 @@ test("a new coordinator epoch releases every attempt leased by the previous inca
 		await f.close();
 	}
 });
+
+test("extending a live worker's lease survives a coordinator stall past expiry but not reassignment (#3888)", async () => {
+	const f = await fixture();
+	try {
+		const pool = await openSqlPoolQueue(f.journal);
+		await pool.initialize(f.lease, 60_000);
+		await pool.enqueue(f.lease, work, boundary);
+		const held = (await pool.claim(f.lease, "live-worker", [work], 60_000))!;
+		await f.database.run("UPDATE wf_runs_work SET expires_at = 1");
+		const extended = await pool.extend(f.lease, held, 60_000);
+		assert.equal(extended.generation, held.generation);
+		assert.equal(extended.expiresAt - extended.renewedAt, 60_000);
+		assert.equal(await pool.expire(f.lease, held), false);
+		await f.database.run("UPDATE wf_runs_work SET expires_at = 1");
+		assert.equal(await pool.expire(f.lease, held), true);
+		await assert.rejects(pool.extend(f.lease, held, 60_000), /Stale work lease/);
+		const replacement = (await pool.claim(f.lease, "replacement", [work], 60_000))!;
+		await assert.rejects(pool.extend(f.lease, held, 60_000), /Stale work lease/);
+		assert.equal((await pool.extend(f.lease, replacement, 60_000)).worker, "replacement");
+	} finally {
+		await f.close();
+	}
+});

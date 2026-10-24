@@ -22,6 +22,7 @@ type Transaction = SqlPoolStorage["transaction"];
 type JournalTables = SqlPoolStorage["tables"];
 const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 const MAX_WORKER_CLOCK_SKEW_MS = 1_000;
+export const STALE_WORK_LEASE = "Stale work lease";
 export interface PoolControl {
 	readonly state: "running" | "paused" | "quit";
 	readonly revision: number;
@@ -228,7 +229,7 @@ export class SqlPoolQueue {
 				throw error;
 			});
 			const row = await this.current(tx, lease, token);
-			if (row.epoch !== lease.epoch || row.expires_at < now) throw new Error("Stale work lease");
+			if (row.epoch !== lease.epoch || row.expires_at < now) throw new Error(STALE_WORK_LEASE);
 			assertSession();
 		}, action);
 	}
@@ -237,7 +238,7 @@ export class SqlPoolQueue {
 		await this.transaction(async (tx) => {
 			const { now } = await this.authority(tx, lease);
 			const row = await this.current(tx, lease, token);
-			if (row.epoch !== lease.epoch || row.expires_at < now) throw new Error("Stale work lease");
+			if (row.epoch !== lease.epoch || row.expires_at < now) throw new Error(STALE_WORK_LEASE);
 		});
 	}
 	async enqueue(lease: Lease, descriptor: PoolWorkDescriptor, boundary: DurableStageCheckpoint): Promise<PoolWork> {
@@ -387,7 +388,7 @@ export class SqlPoolQueue {
 			row.generation !== token.generation ||
 			row.worker !== token.worker
 		)
-			throw new Error("Stale work lease");
+			throw new Error(STALE_WORK_LEASE);
 		return row;
 	}
 	async renew(lease: Lease, token: WorkLease, operationId: string, durationMs: number): Promise<PoolWork> {
@@ -399,7 +400,7 @@ export class SqlPoolQueue {
 		return this.transaction(async (tx) => {
 			const { now } = await this.authority(tx, lease);
 			const row = await this.current(tx, lease, token);
-			if (row.epoch !== lease.epoch || row.expires_at < now) throw new Error("Stale work lease");
+			if (row.epoch !== lease.epoch || row.expires_at < now) throw new Error(STALE_WORK_LEASE);
 			const previous = await tx.get<SqliteRow & { request: string; receipt: string }>(
 				`SELECT * FROM ${this.operations} WHERE work = ? AND generation = ? AND operation = ?`,
 				token.id,
@@ -447,7 +448,7 @@ export class SqlPoolQueue {
 		return this.transaction(async (tx) => {
 			const { now, status } = await this.authority(tx, lease);
 			const row = await this.current(tx, lease, token);
-			if (row.epoch !== lease.epoch) throw new Error("Stale work lease");
+			if (row.epoch !== lease.epoch) throw new Error(STALE_WORK_LEASE);
 			const previous = await tx.get<SqliteRow & { request: string; receipt: string }>(
 				`SELECT * FROM ${this.operations} WHERE work = ? AND generation = ? AND operation = ?`,
 				token.id,
@@ -458,7 +459,7 @@ export class SqlPoolQueue {
 				if (previous.request !== request) throw new Error("Pool operation identity conflict");
 				return JSON.parse(previous.receipt) as PoolCommitReceipt;
 			}
-			if (row.expires_at < now) throw new Error("Stale work lease");
+			if (row.expires_at < now) throw new Error(STALE_WORK_LEASE);
 			if (!(await this.admitsAttemptWrites(tx, lease, status))) throw new Error("Pool root is not running");
 			const checkpoint = mutation.checkpoint;
 			await validatePoolMutation(tx, this.journal, lease.runId, fromRow(row), mutation);
@@ -522,14 +523,14 @@ export class SqlPoolQueue {
 		await this.transaction(async (tx) => {
 			const { now, status } = await this.authority(tx, lease);
 			const row = await this.current(tx, lease, token, true);
-			if (row.epoch !== lease.epoch) throw new Error("Stale work lease");
+			if (row.epoch !== lease.epoch) throw new Error(STALE_WORK_LEASE);
 			if (row.state === "completed") {
 				const previous = await tx.get(`SELECT result FROM ${this.work}_results WHERE work = ?`, token.id);
 				if (previous?.result !== payload) throw new Error("Pool result identity conflict");
 				return;
 			}
 			if (row.expires_at < now || !(await this.admitsAttemptWrites(tx, lease, status)))
-				throw new Error("Stale work lease");
+				throw new Error(STALE_WORK_LEASE);
 			if (JSON.parse(payload).runId !== fromRow(row).childRunId) throw new Error("Pool result identity mismatch");
 			await tx.run(`INSERT INTO ${this.work}_results VALUES (?, ?)`, token.id, payload);
 			await tx.run(`UPDATE ${this.work} SET state = 'completed' WHERE id = ?`, token.id);
@@ -552,6 +553,40 @@ export class SqlPoolQueue {
 			const { now } = await this.authority(tx, lease);
 			const row = await this.current(tx, lease, token);
 			if (row.epoch === lease.epoch && row.expires_at >= now) return false;
+			await tx.run(`UPDATE ${this.work} SET state = 'ready', worker = NULL, expires_at = 0 WHERE id = ?`, row.id);
+			return true;
+		});
+	}
+	async extend(lease: Lease, token: WorkLease, durationMs: number): Promise<PoolWork> {
+		positive(durationMs);
+		lease = snapshotLease(lease);
+		token = { ...token };
+		return this.transaction(async (tx) => {
+			const { now } = await this.authority(tx, lease);
+			const row = await this.current(tx, lease, token);
+			if (row.epoch !== lease.epoch) throw new Error(STALE_WORK_LEASE);
+			const expiresAt = Math.max(Number(row.expires_at), expiry(now, durationMs));
+			await tx.run(`UPDATE ${this.work} SET expires_at = ?, renewed_at = ? WHERE id = ?`, expiresAt, now, row.id);
+			return { ...fromRow(row), expiresAt, renewedAt: now };
+		});
+	}
+	async releaseExited(lease: Lease, token: WorkLease): Promise<boolean> {
+		lease = snapshotLease(lease);
+		token = { ...token };
+		return this.transaction(async (tx) => {
+			await this.authority(tx, lease);
+			const row = await tx.get<WorkRow>(
+				`SELECT * FROM ${this.work} WHERE id = ? AND root = ?`,
+				token.id,
+				lease.runId,
+			);
+			if (
+				row?.state !== "leased" ||
+				row.generation !== token.generation ||
+				row.worker !== token.worker ||
+				row.epoch !== token.epoch
+			)
+				return false;
 			await tx.run(`UPDATE ${this.work} SET state = 'ready', worker = NULL, expires_at = 0 WHERE id = ?`, row.id);
 			return true;
 		});

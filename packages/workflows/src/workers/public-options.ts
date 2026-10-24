@@ -9,6 +9,7 @@ export interface LocalWorkerOptions {
 	readonly count: number;
 	readonly definitions: readonly { readonly path: string; readonly exportName: string }[];
 	readonly startupTimeoutMs?: number;
+	readonly leaseMs?: number;
 }
 
 export interface WorkflowExecutionResources {

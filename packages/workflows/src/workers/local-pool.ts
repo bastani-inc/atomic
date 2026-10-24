@@ -13,6 +13,7 @@ import {
 	type PoolControl,
 	type PoolWork,
 	type SqlPoolQueue,
+	STALE_WORK_LEASE,
 } from "../durable/journal/sql-pool-queue.js";
 import { openSqlPoolUsage, type PoolUsage, type SqlPoolUsage } from "../durable/journal/sql-pool-usage.js";
 import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
@@ -32,13 +33,17 @@ import {
 } from "./definitions.js";
 import { bindChildWorkerDispatcher } from "./dispatch.js";
 import { hostWorkerBindings } from "./host-options.js";
-import type { WorkerRequest } from "./protocol.js";
+import { WORKER_HEARTBEAT_INTERVAL_MS, type WorkerRequest } from "./protocol.js";
 import { type AdmissionConfiguration, SqlResourceAdmission } from "./resource-admission.js";
 import { PoolStageHandoff } from "./stage-handoff.js";
 
 const INTERNAL_WORKFLOW_WORKER_ARG = "--internal-workflow-worker";
-const WORK_LEASE_MS = 5_000;
+const DEFAULT_WORK_LEASE_MS = 30_000;
+const MINIMUM_WORK_LEASE_MS = 2 * WORKER_HEARTBEAT_INTERVAL_MS;
+const CONTROL_ACKNOWLEDGEMENT_TIMEOUT_MS = 5_000;
 const RECOVERY_INTERVAL_MS = 500;
+const ROOT_TICK_INTERVAL_MS = 100;
+const ROOT_STALL_THRESHOLD_MS = 500;
 const COORDINATOR_LEASE_MS = 3 * STAGE_SESSION_HEARTBEAT_INTERVAL_MS;
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
@@ -59,6 +64,11 @@ export class LocalWorkerPool {
 	private recovering?: Promise<void>;
 	private nextRecoveryAt = 0;
 	private readonly controlAcks = new Map<string, number>();
+	private readonly lastHeard = new Map<string, { readonly at: number; readonly rootStalled: number }>();
+	private lastTick = performance.now();
+	private rootStalledMs = 0;
+	private readonly ticker: NodeJS.Timeout;
+	private readonly leaseMs: number;
 	private desiredControl?: PoolControl["state"];
 	private root?: string;
 	private store?: Store;
@@ -86,6 +96,7 @@ export class LocalWorkerPool {
 			readonly definitions: readonly WorkerDefinitionBinding[];
 			readonly admission?: AdmissionConfiguration;
 			readonly startupTimeoutMs?: number;
+			readonly leaseMs?: number;
 		},
 	) {
 		if (!Number.isSafeInteger(options.workers) || options.workers < 1) throw new Error("Invalid local worker count");
@@ -96,8 +107,19 @@ export class LocalWorkerPool {
 				options.startupTimeoutMs > MAX_TIMER_DELAY_MS)
 		)
 			throw new Error("Invalid local worker startup timeout");
+		if (
+			options.leaseMs !== undefined &&
+			(!Number.isSafeInteger(options.leaseMs) ||
+				options.leaseMs < MINIMUM_WORK_LEASE_MS ||
+				options.leaseMs > MAX_TIMER_DELAY_MS)
+		)
+			throw new Error(
+				`Invalid local worker lease: must be an integer from ${MINIMUM_WORK_LEASE_MS} to ${MAX_TIMER_DELAY_MS} ms`,
+			);
+		this.leaseMs = options.leaseMs ?? DEFAULT_WORK_LEASE_MS;
 		this.releaseBinding = bindChildWorkerDispatcher(backend, this, options.rootId);
 		if (options.admission && options.rootId === undefined) workflowResourceAdmission.set(backend, options.admission);
+		this.ticker = setInterval(() => this.observeResponsiveness(), ROOT_TICK_INTERVAL_MS).unref();
 	}
 	get workerPids(): number[] {
 		return [...this.children].flatMap((child) => (child.pid === undefined ? [] : [child.pid]));
@@ -137,7 +159,7 @@ export class LocalWorkerPool {
 		try {
 			if (!this.queue || !this.lease) return;
 			const control = await this.queue.setControl(this.lease, state);
-			const deadline = Date.now() + WORK_LEASE_MS;
+			const deadline = Date.now() + CONTROL_ACKNOWLEDGEMENT_TIMEOUT_MS;
 			while ([...this.readyWorkers].some((worker) => (this.controlAcks.get(worker) ?? -1) < control.revision)) {
 				if (this.desiredControl !== state) return;
 				if (Date.now() >= deadline) {
@@ -304,6 +326,7 @@ export class LocalWorkerPool {
 				this.incarnations.delete(worker);
 				this.readyWorkers.delete(worker);
 				this.controlAcks.delete(worker);
+				this.lastHeard.delete(worker);
 				if (work) this.handoff?.fence(work);
 				for (const delivery of deliveries.values())
 					delivery.reject(new Error("Worker exited before delivery acknowledgement"));
@@ -326,6 +349,7 @@ export class LocalWorkerPool {
 							this.replacements = 0;
 						}
 						if (this.closed) return;
+						if (work) await this.queue!.releaseExited(this.lease!, work);
 						const exhausted = work ? work.generation >= 3 : ++this.replacements > 3;
 						if (exhausted) this.failure = diagnosed("Local worker retry limit");
 						else await this.spawn(root);
@@ -337,6 +361,8 @@ export class LocalWorkerPool {
 				void cleanup.finally(() => this.cleanups.delete(cleanup));
 			});
 			child.on("message", (message: WorkerRequest) => {
+				this.observeResponsiveness();
+				this.lastHeard.set(worker, { at: performance.now(), rootStalled: this.rootStalledMs });
 				if (message.kind === "delivery-ack") {
 					const pending = deliveries.get(message.deliveryId);
 					deliveries.delete(message.deliveryId);
@@ -375,11 +401,13 @@ export class LocalWorkerPool {
 								definition: `${source.path}#${source.exportName}`,
 								digest: source.digest,
 							})),
-							WORK_LEASE_MS,
+							this.leaseMs,
 						);
 						return work;
 					}
 					if (!work) throw new Error("Worker has no active attempt");
+					if (message.kind === "renew" || work.expiresAt - Date.now() < this.leaseMs / 2)
+						work = await queue.extend(lease, work, this.leaseMs);
 					if (message.kind === "activity") return this.handoff?.publish(work, message.runs);
 					if (message.kind === "route") return this.handoff?.route(work, message.runId);
 					if (message.kind === "delivery-ready")
@@ -411,10 +439,7 @@ export class LocalWorkerPool {
 								}),
 						);
 					}
-					if (message.kind === "renew") {
-						work = await queue.renew(lease, work, randomUUID(), WORK_LEASE_MS);
-						return;
-					}
+					if (message.kind === "renew") return;
 					if (message.kind === "commit") {
 						const receipt = await queue.commit(lease, work, message.operation, message.mutation);
 						this.usageTotal = await this.usageLedger!.total(root);
@@ -452,11 +477,18 @@ export class LocalWorkerPool {
 		if (this.recovering) return this.recovering;
 		if (this.closed || performance.now() < this.nextRecoveryAt) return Promise.resolve();
 		this.recovering = (async () => {
+			await new Promise<void>((resolve) => setImmediate(resolve));
 			await this.admission?.reconcile();
 			const expiredBefore = Date.now();
 			for (const work of await this.queue!.inspect(root)) {
 				if (work.state !== "leased" || work.expiresAt >= expiredBefore) continue;
 				const child = work.worker === null ? undefined : this.incarnations.get(work.worker);
+				if (child && work.worker !== null && this.isLive(work.worker, child)) {
+					await this.queue!.extend(this.lease!, work, this.leaseMs).catch((error: Error) => {
+						if (error.message !== STALE_WORK_LEASE) throw error;
+					});
+					continue;
+				}
 				if (child) await this.stop(child);
 				await this.queue!.expire(this.lease!, work);
 			}
@@ -465,6 +497,23 @@ export class LocalWorkerPool {
 			this.nextRecoveryAt = performance.now() + RECOVERY_INTERVAL_MS;
 		});
 		return this.recovering;
+	}
+	private observeResponsiveness(): void {
+		const now = performance.now();
+		const gap = now - this.lastTick;
+		if (gap > ROOT_STALL_THRESHOLD_MS) this.rootStalledMs += gap - ROOT_TICK_INTERVAL_MS;
+		this.lastTick = now;
+	}
+	private isLive(worker: string, child: ChildProcess): boolean {
+		this.observeResponsiveness();
+		const heard = this.lastHeard.get(worker);
+		return (
+			child.exitCode === null &&
+			child.signalCode === null &&
+			child.connected &&
+			heard !== undefined &&
+			performance.now() - heard.at - (this.rootStalledMs - heard.rootStalled) < this.leaseMs
+		);
 	}
 	private stop(child: ChildProcess): Promise<void> {
 		if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
@@ -570,6 +619,7 @@ export class LocalWorkerPool {
 	}
 	private async dispose(): Promise<void> {
 		this.closed = true;
+		clearInterval(this.ticker);
 		this.releaseBinding();
 		if (this.options.rootId === undefined) workflowResourceAdmission.delete(this.backend);
 		let failure: unknown;
