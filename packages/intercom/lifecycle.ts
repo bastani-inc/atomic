@@ -148,6 +148,15 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
     deps.syncPresenceIdentity(ctx.sessionManager.getSessionId());
     activeReplyTracker().beginTurn();
   });
+  // Bind the reply target when an inbound message enters the model's context, not when it
+  // arrived: steer, followUp, and interrupt deliveries reach turns out of arrival order (#3921).
+  // While the agent streams, the host shows the intercom card at admission and feeds the model
+  // a hidden reconciliation that points back at that card's entry.
+  pi.on("message_start", (event, ctx) => {
+    if (!deps.getLiveContext(ctx)) return;
+    const id = admittedIntercomMessageId(event.message, ctx);
+    if (id !== undefined) activeReplyTracker().admitTurnMessage(id);
+  });
   pi.on("model_select", (event, ctx) => {
     if (!deps.getLiveContext(ctx)) return;
     deps.setCurrentModel(event.model.id);
@@ -160,4 +169,22 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
       });
     }
   });
+}
+
+const PROTECTED_RECONCILIATION_CUSTOM_TYPE = "atomic:protected-streaming-reconciliation";
+
+function intercomMessageId(customType: unknown, details: unknown): string | undefined {
+  if (customType !== "intercom_message" || details === null || typeof details !== "object") return undefined;
+  const id = (details as { message?: { id?: unknown } }).message?.id;
+  return typeof id === "string" ? id : undefined;
+}
+
+function admittedIntercomMessageId(message: unknown, ctx: ExtensionContext): string | undefined {
+  const custom = message as { role?: unknown; customType?: unknown; details?: { protectedReconciliationOf?: unknown } };
+  if (custom?.role !== "custom") return undefined;
+  if (custom.customType !== PROTECTED_RECONCILIATION_CUSTOM_TYPE) return intercomMessageId(custom.customType, custom.details);
+  const intentEntryId = custom.details?.protectedReconciliationOf;
+  if (typeof intentEntryId !== "string") return undefined;
+  const intent = ctx.sessionManager.getEntries().find((entry) => entry.id === intentEntryId);
+  return intent?.type === "custom_message" ? intercomMessageId(intent.customType, intent.details) : undefined;
 }
