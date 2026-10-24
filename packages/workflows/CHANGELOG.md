@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Workflow stages now default to peer-to-peer (swarm) exchange with no limits on communication between agents: stages coordinate with each other directly instead of relaying through the supervisor, and each stage still returns its own structured result.
+
 ### Fixed
 
 - Running many local workers at once no longer freezes the interactive TUI. A local worker pool now runs its workers under a separate pool coordinator process, which handles worker messages, heartbeats, pool journal writes and the Intercom routes of pooled children. The root process only receives periodic progress summaries. If the coordinator process dies, its workers exit with it and `ctx.workflow(child)` throws a retryable `WorkflowInfrastructureError` with code `worker_lost` and the message `Local worker pool coordinator exited (…)` ([#3903](https://github.com/bastani-inc/atomic/issues/3903))

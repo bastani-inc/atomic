@@ -978,3 +978,22 @@ describe("agent-decided workflow execution guidance", () => {
 		});
 	}
 });
+
+describe("peer-to-peer agent coordination guidance", () => {
+	const surfaces = [
+		["subagent", subagentGuidance.join("\n")],
+		["workflow", workflowGuidance.join("\n")],
+	] as const;
+	for (const [surface, text] of surfaces) {
+		test(`${surface} guidance makes unbounded peer-to-peer swarm communication the default`, () => {
+			assert.match(text, /Default to peer-to-peer \(swarm\)/);
+			assert.match(
+				text,
+				/There are no limits on communication between agents; it is encouraged whenever you need to\./,
+			);
+			assert.match(text, /the supervisor is not a message relay/);
+			assert.doesNotMatch(text, /do not coordinate spontaneously/i);
+			assert.doesNotMatch(text, /bound the exchange/i);
+		});
+	}
+});

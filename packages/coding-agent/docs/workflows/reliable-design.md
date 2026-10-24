@@ -1325,14 +1325,30 @@ Constructive quorum relies on existing Intercom mechanics: every workflow invoca
 
 #### Peer coordination between stages
 
-Quorum is one instance of a general capability: stages in the same invocation are peers, not only targets for the supervisor to steer. A live stage can `intercom({ action: "list" })` its siblings and `send`/`ask` them directly to debate a finding with evidence, hand off file paths and reproductions, claim shared files or an expensive suite or build, or learn what a sibling already verified. A `send` to a known pending sibling queues until that stage starts, and an `ask` to a completed sibling that retains a valid conversation reopens it for a post-mortem turn. Delegated subagents inside a stage inherit the same group, so a stage's children can talk to each other and to sibling stages. Named subgroups (`group: "name"` or `group: true`) isolate their members from sibling subgroups while the invocation context keeps directional control over them.
+Quorum is one instance of a general capability, and peer-to-peer (swarm) exchange is the default. There are no limits on communication between agents; it is encouraged whenever you need to. The supervisor is not a message relay: relaying adds latency, loses detail, and fills its context, while stages that exchange evidence directly converge faster. Stages in the same invocation are peers, not only targets for the supervisor to steer. A live stage can `intercom({ action: "list" })` its siblings and `send`/`ask` them directly to debate a finding with evidence, hand off file paths and reproductions, claim shared files or an expensive suite or build, or learn what a sibling already verified. A `send` to a known pending sibling queues until that stage starts, and an `ask` to a completed sibling that retains a valid conversation reopens it for a post-mortem turn. Delegated subagents inside a stage inherit the same group, so a stage's children can talk to each other and to sibling stages. Named subgroups (`group: "name"` or `group: true`) isolate their members from sibling subgroups while the invocation context keeps directional control over them.
 
-Design peer exchange the way you design any other handoff:
+How stages work as a swarm:
 
-- Stages do not coordinate spontaneously. Say in each prompt who the peers are (or the `list` pattern that finds them) and what they exchange.
-- Bound it: one evidence round, one ownership claim per shared step, one ask per fact. An unbounded conversation between parallel stages burns budget and blurs who decided what.
+- Stages coordinate spontaneously. They discover peers with `list` and broadcast findings, claim shared files or an expensive step, ask and answer each other, hand work along a chain, and debate for as long as it is useful.
 - Keep every stage's output its own. A peer's claim is evidence to inspect, not a verdict to copy; each stage still returns its own structured result to the reducer or downstream stage.
-- Peer messages are activity inside already-running stages, not graph edges. They never replace `previous`, artifacts, or declared outputs for durable handoffs, and scope or acceptance decisions stay with a supervisor or a `ctx.ui` gate.
+- Peer messages are activity inside already-running stages, not graph edges. They never replace `previous`, artifacts, or declared outputs for durable handoffs. Explicit user approval gates and authorization for destructive or external actions still apply.
+
+A minimal swarm: three parallel investigators share findings directly, and the workflow collects each stage's own result.
+
+```typescript
+const swarm = [
+  "Your sibling stages investigate other angles of the same failure.",
+  "Run intercom list to find them and talk to them as much as you need: share findings,",
+  "claim any shared suite before running it, ask instead of guessing, and debate disagreements.",
+  "Then return your own findings.",
+].join("\n");
+
+const results = await ctx.parallel([
+  { name: "logs", prompt: `Trace the timeout through the service logs.\n${swarm}` },
+  { name: "code", prompt: `Trace the timeout through the retry code.\n${swarm}` },
+  { name: "repro", prompt: `Build a minimal reproduction of the timeout.\n${swarm}` },
+]);
+```
 
 #### Pattern diagrams
 

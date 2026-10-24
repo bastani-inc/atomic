@@ -213,7 +213,9 @@ intercom({
 | **Peer challenge** | Sibling uses `ask` | One reviewer or worker questions another's finding with evidence; each still returns its own verdict. |
 | **Ownership claim** | Sibling uses `send` | Parallel writers divide files or serialize a shared suite, build, or migration. |
 
-Coordination is not only vertical. Subagents launched together and workflow stages in one invocation share an Intercom group, so they can list each other and message directly to debate, connect, learn, and coordinate as peers. `contact_supervisor` is only for the supervisor. See [Peer coordination](/subagents#peer-coordination) for how to enable it from the launching prompt.
+| **Broadcast** | Sibling uses `send` to a group pattern | One agent shares a confirmed finding with every live sibling at once. |
+
+Peer-to-peer (swarm) is the default. There are no limits on communication between agents; it is encouraged whenever you need to. Subagents launched together and workflow stages in one invocation share an Intercom group, so they list each other and message directly to debate, connect, learn, and self-organize. The supervisor is not a message relay: routing through it adds latency, drops detail, and fills its context. `contact_supervisor` is only for supervisor decisions. See [Peer coordination](/subagents#peer-coordination) for an example.
 
 The bundled `intercom` skill (`/skill:intercom`) has copy-paste ready patterns for planner-worker delegation, status checks, natural replies, broadcasting to multiple workers, attachments, handling subagent escalations on the orchestrator side, and peer coordination between subagents and workflow stages.
 
