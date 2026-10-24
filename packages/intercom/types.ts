@@ -221,6 +221,12 @@ export type ClientMessage =
 		parent?: WorkflowRunParentAnnouncement;
 		/** Interrupted run queued by its restarted owner before resume; yields to the process that resumes it (#3760). */
 		dormant?: true;
+		/**
+		 * #3906: the connection carries the routes of many runs, so a refusal of this one is answered with
+		 * `pending_stage_route_refused` and leaves the connection open. Honoured only with a `requestId`, and sent only to
+		 * a broker that advertised `refusesPendingStageRoutesInPlace`; an older broker ignores it and ends the connection.
+		 */
+		refusalKeepsConnection?: true;
 	}
   | {
       type: "register_live_workflow_stage_route";
@@ -254,6 +260,9 @@ export type ClientMessage =
 	/** Allowed before `register`: shut the broker down; its sessions reconnect to a new broker. */
 	| { type: "shutdown"; requestId: string };
 
+/** Why the broker refused a pending-stage route registration (#3906). Authorization decides these, not the client. */
+export type PendingStageRouteRefusalCode = "not_authorized" | "invalid_stage_roster" | "invalid_possible_stage_roster";
+
 export type BrokerMessage =
 	| { type: "health"; requestId: string; instanceId: string }
 	| {
@@ -264,6 +273,8 @@ export type BrokerMessage =
 			acknowledgesReceipt?: true;
 			/** This broker acknowledges a `register_pending_stage_route` that carries a `requestId`; absent on older brokers. */
 			acknowledgesPendingStageRoutes?: true;
+			/** #3906: this broker honours `refusalKeepsConnection`; absent on older brokers, which end the connection. */
+			refusesPendingStageRoutesInPlace?: true;
 			/** This broker answers `broker_status`; absent on older brokers, which drop a client that sends it. */
 			brokerStatus?: true;
 	  }
@@ -288,6 +299,14 @@ export type BrokerMessage =
 	  }
   | { type: "live_workflow_stage_route_registered"; requestId: string }
 	| { type: "pending_stage_route_registered"; requestId: string }
+	/** #3906: the registration `requestId` of run `runId` was refused; the connection and its other routes are kept. */
+	| {
+			type: "pending_stage_route_refused";
+			requestId: string;
+			runId: string;
+			code: PendingStageRouteRefusalCode;
+			reason: string;
+	  }
 	/** A dormant route's run was resumed by another process, which now owns the run's routes (#3760). */
 	| { type: "pending_stage_route_revoked"; runId: string }
   | { type: "presence_update"; session: SessionInfo }

@@ -976,6 +976,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         const routeReturnAddress = `${currentSessionId}:pending-stage-route:${key}`;
         const nextClient = new IntercomClient(routeReturnAddress, {
           connectTimeoutMs: testOverrides.connectTimeoutMs?.(routeReturnAddress),
+          multiplexesPendingStageRoutes: true,
         });
         owner.client = nextClient;
         attachPendingStageRouteConnectionHandlers(owner, nextClient);
@@ -1063,7 +1064,14 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 				route.dormant === true,
 			)
 			.catch((error: Error) => {
-				if (error instanceof IntercomPendingStageRouteRefusedError) state.isolated = true;
+				if (error instanceof IntercomPendingStageRouteRefusedError) {
+					if (!error.connectionKept) state.isolated = true;
+					// #3906: the broker refused only this run and kept the connection; the run retries on its own backoff.
+					else if (state.client !== null) {
+						state.client = null;
+						schedulePendingStageRouteReconnect(runId, state);
+					}
+				}
 				throw error;
 			});
 		return;
@@ -1107,8 +1115,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       await promise;
     } catch (error) {
       // The group's connection stays up for the runs it still carries; a dead one recovers through its own disconnect.
-      // A refusal ended it, so the refused run retries alone and cannot end it again.
-      if (error instanceof IntercomPendingStageRouteRefusedError) state.isolated = true;
+      // An older broker's refusal ended it, so the refused run retries alone and cannot end it again. A broker that
+      // refuses in place (#3906) kept it, and the run retries over it on its own backoff.
+      if (error instanceof IntercomPendingStageRouteRefusedError && !error.connectionKept) state.isolated = true;
       state.client = null;
       if (state.promise === promise) state.promise = null;
       schedulePendingStageRouteReconnect(runId, state);
