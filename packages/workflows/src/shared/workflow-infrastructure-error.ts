@@ -41,7 +41,7 @@ function isInfrastructureError(value: unknown): value is WorkflowInfrastructureE
 	);
 }
 
-export function isRetryableWorkflowError(error: unknown): error is WorkflowInfrastructureError {
+export function isRetryableWorkflowError(error: unknown): boolean {
 	let current = error;
 	for (let depth = 0; depth < MAX_CAUSE_DEPTH && current !== undefined && current !== null; depth++) {
 		if (isInfrastructureError(current)) return true;

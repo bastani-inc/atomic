@@ -21,10 +21,6 @@ import type {
 	WorkflowRunChildArgs,
 	WorkflowRunChildOptions,
 } from "../../shared/types.js";
-import {
-	WorkflowInfrastructureError,
-	workflowInfrastructureFault,
-} from "../../shared/workflow-infrastructure-error.js";
 import { childWorkerDispatcher } from "../../workers/dispatch.js";
 import type { EngineRuntime } from "../runtime.js";
 import {
@@ -170,10 +166,7 @@ export function createChildWorkflowRunner(input: {
 					...(failedChildStage?.failureKind !== undefined ? { code: failedChildStage.failureKind } : {}),
 					...(failedChildStage?.failureMessage !== undefined ? { message: failedChildStage.failureMessage } : {}),
 				};
-				const fault = workflowInfrastructureFault(childRun.error ?? failedChildStage?.failureMessage ?? "");
-				throw fault === undefined
-					? new Error(message, { cause })
-					: new WorkflowInfrastructureError(fault, message, { cause });
+				throw new Error(message, { cause });
 			}
 
 			const outputs = selectWorkflowOutputs(child, childRun.result);

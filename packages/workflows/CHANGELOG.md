@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- `ctx.workflow(child)` now throws a `WorkflowInfrastructureError` with `retryable: true` and a fault `code` when a child fails because of the local worker pool or its runtime (for example `Local worker retry limit`, `Local worker cleanup was not confirmed`, `Stale work lease`, `Intercom runtime no longer active` or `Storage unavailable`), and `isRetryableWorkflowError(error)` recognizes it anywhere in an error's `cause` chain. Failures of a child's own logic keep throwing a plain `Error` ([#3889](https://github.com/bastani-inc/atomic/issues/3889))
+- `ctx.workflow(child)` now throws a `WorkflowInfrastructureError` with `retryable: true` and a fault `code` when the local worker pool cannot run a child because of a fault in the pool or its runtime (for example `Local worker retry limit`, `Local worker cleanup was not confirmed`, `Stale work lease`, `Intercom runtime no longer active` or `Storage unavailable`), and `isRetryableWorkflowError(error)` recognizes it anywhere in an error's `cause` chain. Failures of a child's own logic keep throwing a plain `Error` ([#3889](https://github.com/bastani-inc/atomic/issues/3889))
 
 ### Changed
 
