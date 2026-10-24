@@ -39,7 +39,7 @@
     "@biomejs/biome": "2.5.8",
     "@j178/prek": "0.5.5",
     "@libsql/client": "0.18.0",
-    "@types/bun": "1.4.3",
+    "@types/bun": "1.4.4",
     "@types/tar-stream": "3.1.5",
     "@xterm/headless": "6.0.0",
     "acorn": "8.19.0",
@@ -54,7 +54,6 @@
     "yaml": "2.9.0"
   },
   "overrides": {
-    "bun-types": "1.4.4",
     "@types/node": "24.12.4",
     "protobufjs": "7.6.6",
     "brace-expansion": "5.0.12",
