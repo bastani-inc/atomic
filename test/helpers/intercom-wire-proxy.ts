@@ -65,6 +65,18 @@ export class IntercomWireProxy {
 		this.brokerToClientTransform = transform;
 	}
 
+	/** Close every connection whose first frame matches, as a broker or client dropping it would. */
+	disconnect(matches: FirstFrameMatcher): number {
+		let closed = 0;
+		for (const connection of this.connections) {
+			const first = connection.firstFrame();
+			if (first === undefined || !matches(first)) continue;
+			connection.destroy();
+			closed += 1;
+		}
+		return closed;
+	}
+
 	heldConnections(): number {
 		let held = 0;
 		for (const connection of this.connections) if (connection.isHeld()) held += 1;
@@ -97,6 +109,7 @@ class ProxyConnection {
 	private buffered: Buffer[] = [];
 	private heldFrames: WireFrame[] = [];
 	private upstream: net.Socket | undefined;
+	private first: WireFrame | undefined;
 
 	constructor(
 		private readonly id: number,
@@ -114,6 +127,10 @@ class ProxyConnection {
 		});
 		client.on("close", () => this.destroy());
 		client.on("error", () => {});
+	}
+
+	firstFrame(): WireFrame | undefined {
+		return this.first;
 	}
 
 	isHeld(): boolean {
@@ -135,6 +152,7 @@ class ProxyConnection {
 	}
 
 	private observe(frame: WireFrame): void {
+		this.first ??= frame;
 		if (this.state === "undecided") {
 			if (this.proxy.matchesHold(frame)) this.state = "held";
 			else this.startForwarding();
