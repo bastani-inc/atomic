@@ -1110,15 +1110,40 @@ function deliveryDelta(
 	return drop.length === 0 ? { add } : { drop, add };
 }
 
+type PendingStageField = keyof PendingStageMessage;
+/** The fields a pending-stage entry may omit, the only ones a patch can remove. */
+type OptionalPendingStageField = {
+	[K in PendingStageField]-?: undefined extends PendingStageMessage[K] ? K : never;
+}[PendingStageField];
+type MutablePendingStageMessage = { -readonly [K in keyof PendingStageMessage]: PendingStageMessage[K] };
+type PendingStageMessageFields = { -readonly [K in PendingStageField]?: PendingStageMessage[K] };
+
 /**
  * An entry written as a change to the previous entry at index `patch`: the fields it sets and removes, and
  * its deliveries as a change to that entry's deliveries.
  */
 interface PatchedPendingStageMessage {
 	readonly patch: number;
-	readonly set?: Readonly<Record<string, unknown>>;
-	readonly unset?: readonly string[];
+	readonly set?: Readonly<PendingStageMessageFields>;
+	readonly unset?: readonly OptionalPendingStageField[];
 	readonly deliveryDelta?: PendingStageDeliveryDelta;
+}
+
+function pendingStageFields(message: PendingStageMessage): PendingStageField[] {
+	return Object.keys(message) as PendingStageField[];
+}
+
+function copyField<K extends PendingStageField>(
+	target: PendingStageMessageFields,
+	source: PendingStageMessage,
+	key: K,
+): void {
+	target[key] = source[key];
+}
+
+/** Whether `key` is absent from `message`; an absent field is necessarily optional. */
+function isRemovedField(message: PendingStageMessage, key: PendingStageField): key is OptionalPendingStageField {
+	return message[key] === undefined;
 }
 
 /**
@@ -1149,13 +1174,13 @@ function patchEntry(
 	base: PendingStageMessage,
 	message: PendingStageMessage,
 ): PatchedPendingStageMessage {
-	const before = base as unknown as Readonly<Record<string, unknown>>;
-	const after = message as unknown as Readonly<Record<string, unknown>>;
-	const set: Record<string, unknown> = {};
-	const unset = Object.keys(before).filter((key) => after[key] === undefined && before[key] !== undefined);
-	for (const [key, value] of Object.entries(after)) {
-		if (value === undefined || key === "deliveries") continue;
-		if (JSON.stringify(value) !== JSON.stringify(before[key])) set[key] = value;
+	const set: PendingStageMessageFields = {};
+	const unset = pendingStageFields(base).filter(
+		(key): key is OptionalPendingStageField => base[key] !== undefined && isRemovedField(message, key),
+	);
+	for (const key of pendingStageFields(message)) {
+		if (message[key] === undefined || key === "deliveries") continue;
+		if (JSON.stringify(message[key]) !== JSON.stringify(base[key])) copyField(set, message, key);
 	}
 	let delta: PendingStageDeliveryDelta | undefined;
 	if (message.deliveries !== undefined) {
@@ -1221,14 +1246,14 @@ function decodePendingStageList(
 			for (let index = start; index < start + count; index++) result.push(base(index));
 		} else if (typeof (item as Partial<PatchedPendingStageMessage>).patch === "number") {
 			const { patch, set, unset, deliveryDelta: delta } = item as PatchedPendingStageMessage;
-			const entry: Record<string, unknown> = { ...base(patch), ...set };
+			const entry: MutablePendingStageMessage = { ...base(patch), ...set };
 			for (const key of unset ?? []) delete entry[key];
 			if (delta !== undefined) {
 				const dropped = new Set(delta.drop ?? []);
 				const deliveries = base(patch).deliveries ?? [];
 				entry.deliveries = [...deliveries.filter((_, index) => !dropped.has(index)), ...delta.add];
 			}
-			result.push(entry as unknown as PendingStageMessage);
+			result.push(entry);
 		} else result.push(item as PendingStageMessage);
 	}
 	return result;

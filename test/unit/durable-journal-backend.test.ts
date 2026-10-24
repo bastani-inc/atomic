@@ -761,6 +761,50 @@ test("pending pattern sends and status changes append O(change) journal bytes as
 	assert.deepEqual(resumed.getWorkflow("run")?.pendingStageMessages, messages);
 });
 
+test("pending entries that drop optional fields write unset patches that replay to the live list (#3929)", async () => {
+	const path = database();
+	const backend = await open(path);
+	await register(backend);
+	const entry = (index: number): PendingStageMessage => ({
+		id: `message-${index}`,
+		runId: "run",
+		stageKey: "workflow:run/**",
+		targetPath: "workflow:run/**",
+		notInKnownSet: true,
+		from: { id: `sender-${index}`, name: `sender-${index}`, cwd: "/repo", groups: ["workflow:run"] },
+		message: { id: `message-${index}`, timestamp: index, content: { text: `a long enough message body ${index}` } },
+		queuedAt: "2026-10-24T23:26:06.916Z",
+		admissionOrder: index,
+		status: "queued",
+		sticky: true,
+		deliveries: [{ runId: "run", stageId: `stage-${index}`, deliveredAt: "2026-10-24T23:26:07.000Z" }],
+		deliveryCount: 1,
+	});
+	const initial = [entry(0), entry(1), entry(2)];
+	assert.equal(await backend.persistPendingStageMessages("run", initial), true);
+	const { deliveries: _deliveries, notInKnownSet: _known, ...cleared } = initial[1]!;
+	const messages = [initial[0]!, { ...cleared, deliveryCount: 0 }, initial[2]!];
+	assert.equal(await backend.persistPendingStageMessages("run", messages), true);
+	const latest = (await entries(backend.journal)).at(-1)!;
+	assert.equal(latest.event.type, RUN_EVENT_TYPES.messageQueued);
+	const change = (latest.event.payload as { pendingStageMessageChange?: readonly unknown[] })
+		.pendingStageMessageChange;
+	assert.deepEqual(change, [
+		[0, 1],
+		{ patch: 1, set: { deliveryCount: 0 }, unset: ["notInKnownSet", "deliveries"] },
+		[2, 1],
+	]);
+	assert.deepEqual(backend.getWorkflow("run")?.pendingStageMessages, messages);
+	await backend.close();
+	const listed = await JournalDurableBackend.open(await openSqlRunJournal(path), { runs: [] });
+	opened.push(listed);
+	await listed.prepareWorkflowCatalog();
+	assert.deepEqual(listed.getWorkflow("run")?.pendingStageMessages, messages);
+	const resumed = await open(path);
+	await resumed.hydrateWorkflow("run");
+	assert.deepEqual(resumed.getWorkflow("run")?.pendingStageMessages, messages);
+});
+
 test("additive checkpoints propagate typed counter violations instead of hiding them", async () => {
 	const journal = await openSqlRunJournal(database());
 	let fail = false;
