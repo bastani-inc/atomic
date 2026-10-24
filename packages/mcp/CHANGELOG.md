@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.44-alpha.1] - 2026-10-24
+
 ### Fixed
 
 - MCP sign-in now accepts only `http:` and `https:` authorization endpoints and other OAuth metadata URLs. Before, a malicious MCP server could supply a `file:` or custom protocol authorization endpoint (for example `search-ms:`), which the platform URL handler would launch on sign-in ([pi 9ffd27cf](https://github.com/earendil-works/pi/commit/9ffd27cfaaeed5c1ecf9369f393c3222975729b4))
