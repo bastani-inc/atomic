@@ -37,7 +37,11 @@ async function waitUntil(predicate: () => Promise<boolean>): Promise<void> {
 async function fixture(
 	root = "root",
 	afterChild?: (ctx: WorkflowRunContext) => Promise<void>,
-	options: { beforeChild?: () => Promise<void>; admission?: AdmissionConfiguration } = {},
+	options: {
+		beforeChild?: () => Promise<void>;
+		admission?: AdmissionConfiguration;
+		coordinator?: "in-process";
+	} = {},
 ) {
 	const directory = makeTempDirectory("local-pool-lifecycle-");
 	const path = join(directory, "journal.sqlite");
@@ -56,6 +60,7 @@ async function fixture(
 		workers: 1,
 		definitions: [{ definition: child, path: childPath, exportName: "child" }],
 		admission: options.admission,
+		coordinator: options.coordinator,
 	});
 	const parent = workflow({
 		name: "pool-lifecycle-root",
@@ -355,7 +360,8 @@ test(
 test(
 	"a final-attempt worker death cannot hide its pending durable completion (#3869)",
 	async () => {
-		const f = await fixture();
+		// The completion this test holds is written by the coordinator; keep it in this process to intercept it.
+		const f = await fixture("root", undefined, { coordinator: "in-process" });
 		let releaseCompletion = () => {};
 		const completionGate = new Promise<void>((resolve) => {
 			releaseCompletion = resolve;

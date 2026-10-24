@@ -39,6 +39,7 @@ type RunStoreMethods = Pick<
 	| "graphSnapshot"
 	| "subscribe"
 	| "subscribeInvalidation"
+	| "batch"
 >;
 
 export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
@@ -346,6 +347,10 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 		subscribeInvalidation(fn: () => void): () => void {
 			state.invalidationListeners.add(fn);
 			return () => state.invalidationListeners.delete(fn);
+		},
+
+		batch<T>(update: () => T): T {
+			return context.batch(update);
 		},
 	};
 }

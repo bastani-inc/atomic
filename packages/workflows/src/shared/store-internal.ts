@@ -59,6 +59,8 @@ export interface StoreContext {
 	snapshot(): StoreSnapshot;
 	graphSnapshot(): StoreSnapshot;
 	notify(): void;
+	/** Runs `update` with every invalidation it causes coalesced into one notification at its end. */
+	batch<T>(update: () => T): T;
 	bumpAndNotify(): void;
 	findRun(runId: string): RunSnapshot | undefined;
 	findStage(run: RunSnapshot, stageId: string): StageSnapshot | undefined;
@@ -162,7 +164,14 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 		return cachedGraphSnapshot;
 	}
 
+	let batchDepth = 0;
+	let batchedNotification = false;
+
 	function notify(): void {
+		if (batchDepth > 0) {
+			batchedNotification = true;
+			return;
+		}
 		observation.capture();
 		for (const fn of state.invalidationListeners) {
 			try {
@@ -186,6 +195,19 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 	function bumpAndNotify(): void {
 		state.version++;
 		notify();
+	}
+
+	function batch<T>(update: () => T): T {
+		batchDepth++;
+		try {
+			return update();
+		} finally {
+			batchDepth--;
+			if (batchDepth === 0 && batchedNotification) {
+				batchedNotification = false;
+				notify();
+			}
+		}
 	}
 
 	function findRun(runId: string): RunSnapshot | undefined {
@@ -247,6 +269,7 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 		snapshot,
 		graphSnapshot,
 		notify,
+		batch,
 		bumpAndNotify,
 		findRun,
 		findStage,

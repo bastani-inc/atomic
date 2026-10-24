@@ -1,8 +1,5 @@
 import { type ChildProcess, fork } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { createWriteStream } from "node:fs";
-import { mkdir, rm, rmdir } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { isBunBinary } from "@bastani/atomic";
@@ -15,17 +12,34 @@ import {
 	type SqlPoolQueue,
 	STALE_WORK_LEASE,
 } from "../durable/journal/sql-pool-queue.js";
-import { openSqlPoolUsage, type PoolUsage, type SqlPoolUsage } from "../durable/journal/sql-pool-usage.js";
+import type { PoolUsage } from "../durable/journal/sql-pool-usage.js";
 import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
 import type { Lease } from "../durable/journal/types.js";
 import { findWorkflowGracefulQuit, WorkflowGracefulQuitError } from "../engine/workflow-tool-abort.js";
 import type { ResolvedInputs, RunOpts, RunResult } from "../runs/foreground/executor-types.js";
 import { acquireStandaloneIntercom } from "../runs/foreground/sdk-intercom.js";
-import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../runs/foreground/stage-session-heartbeat.js";
+import {
+	claimExternalRunRoute,
+	type ExternalRunRouteOwner,
+	pendingStageMessageRouter,
+} from "../shared/external-run-routes.js";
 import type { Store } from "../shared/store.js";
 import type { WorkflowDefinition, WorkflowSerializableObject } from "../shared/types.js";
 import { asWorkflowInfrastructureError } from "../shared/workflow-infrastructure-error.js";
 import { workflowResourceAdmission } from "./admission-binding.js";
+import {
+	type CoordinatorCommandBody,
+	type CoordinatorEvent,
+	type CoordinatorInbound,
+	type CoordinatorNotice,
+	type CoordinatorPort,
+	type CoordinatorRequestBody,
+	POOL_COORDINATOR_ROLE,
+	POOL_SUMMARY_INTERVAL_MS,
+	type PoolActivityEntry,
+	type PoolRootProjection,
+	type PoolWorkToken,
+} from "./coordinator-protocol.js";
 import {
 	definitionDigest,
 	type WorkerDefinitionBinding,
@@ -34,41 +48,152 @@ import {
 } from "./definitions.js";
 import { bindChildWorkerDispatcher } from "./dispatch.js";
 import { hostWorkerBindings } from "./host-options.js";
-import { WORKER_HEARTBEAT_INTERVAL_MS, type WorkerRequest } from "./protocol.js";
-import { type AdmissionConfiguration, SqlResourceAdmission } from "./resource-admission.js";
-import { PoolStageHandoff } from "./stage-handoff.js";
+import { PoolCoordinator, projectRootRun } from "./pool-coordinator.js";
+import { WORKER_HEARTBEAT_INTERVAL_MS } from "./protocol.js";
+import type { AdmissionConfiguration } from "./resource-admission.js";
+import { PoolStageHandoff, type PoolStageQueue } from "./stage-handoff.js";
 
 const INTERNAL_WORKFLOW_WORKER_ARG = "--internal-workflow-worker";
 const DEFAULT_WORK_LEASE_MS = 30_000;
 const MINIMUM_WORK_LEASE_MS = 2 * WORKER_HEARTBEAT_INTERVAL_MS;
-const CONTROL_ACKNOWLEDGEMENT_TIMEOUT_MS = 5_000;
-const RECOVERY_INTERVAL_MS = 500;
-const ROOT_TICK_INTERVAL_MS = 100;
-const ROOT_STALL_THRESHOLD_MS = 500;
-const COORDINATOR_LEASE_MS = 3 * STAGE_SESSION_HEARTBEAT_INTERVAL_MS;
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
-const STDERR_TAIL_CHARACTERS = 8192;
-const STDERR_DRAIN_GRACE_MS = 1_000;
+const COORDINATOR_STDERR_TAIL_CHARACTERS = 8192;
+const COORDINATOR_EXIT_GRACE_MS = 5_000;
 
-function workerLogDirectory(journalPath: string, root: string): string {
-	return join(dirname(resolve(journalPath)), "worker-logs", encodeURIComponent(root).replaceAll(".", "%2E"));
+type MainPort = CoordinatorPort<CoordinatorInbound, CoordinatorEvent>;
+
+interface Coordinator {
+	readonly port: MainPort;
+	readonly pid?: number;
 }
 
+/** The shipped worker module; it also runs the pool coordinator. */
+function defaultWorkerEntry(): string {
+	return isBunBinary
+		? INTERNAL_WORKFLOW_WORKER_ARG
+		: fileURLToPath(new URL("./local-worker-entry.mjs", import.meta.url));
+}
+
+/** The coordinator child process, forked like a worker with a coordinator start descriptor. */
+function launchCoordinatorProcess(): Coordinator {
+	const child: ChildProcess = fork(defaultWorkerEntry(), [JSON.stringify({ role: POOL_COORDINATOR_ROLE })], {
+		stdio: ["ignore", "ignore", "pipe", "ipc"],
+		execArgv: [],
+	});
+	let stderr = "";
+	child.stderr?.on("data", (chunk: Buffer) => {
+		stderr = (stderr + chunk.toString()).slice(-COORDINATOR_STDERR_TAIL_CHARACTERS);
+	});
+	const listeners: ((reason: Error) => void)[] = [];
+	let lostReason: Error | undefined;
+	const lose = (reason: Error) => {
+		if (lostReason !== undefined) return;
+		lostReason = reason;
+		for (const listener of listeners) listener(reason);
+	};
+	const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+	child.on("error", lose);
+	child.once("exit", (code, signal) =>
+		lose(
+			new Error(
+				`Local worker pool coordinator exited (${signal ?? `code ${code}`})${stderr ? `: ${stderr.trim()}` : ""}`,
+			),
+		),
+	);
+	return {
+		pid: child.pid,
+		port: {
+			send(message) {
+				if (lostReason !== undefined || !child.connected) return;
+				child.send(message, (error) => {
+					if (error) lose(error);
+				});
+			},
+			onMessage(listener) {
+				child.on("message", (message) => listener(message as CoordinatorEvent));
+			},
+			onClose(listener) {
+				if (lostReason !== undefined) listener(lostReason);
+				else listeners.push(listener);
+			},
+			async close() {
+				// The coordinator exits when its channel closes; a stuck one is killed after a grace period.
+				if (child.connected) child.disconnect();
+				if (child.exitCode !== null || child.signalCode !== null) return;
+				const timedOut = await Promise.race([exited.then(() => false), delay(COORDINATOR_EXIT_GRACE_MS, true)]);
+				if (timedOut) {
+					child.kill("SIGKILL");
+					await exited;
+				}
+			},
+		},
+	};
+}
+
+/**
+ * Tests only: the coordinator in this process, behind the same message boundary with every
+ * message serialized as IPC would. Production pools always launch the coordinator process.
+ */
+function launchCoordinatorInProcess(): Coordinator {
+	const mainListeners: ((message: CoordinatorEvent) => void)[] = [];
+	const coordinatorListeners: ((message: CoordinatorInbound) => void)[] = [];
+	const copy = <T>(message: T): T => JSON.parse(JSON.stringify(message)) as T;
+	const coordinator = new PoolCoordinator({
+		send(message) {
+			const copied = copy(message);
+			setImmediate(() => {
+				for (const listener of mainListeners) listener(copied);
+			});
+		},
+		onMessage(listener) {
+			coordinatorListeners.push(listener);
+		},
+		onClose() {},
+		async close() {},
+	});
+	return {
+		pid: process.pid,
+		port: {
+			send(message) {
+				const copied = copy(message);
+				setImmediate(() => {
+					for (const listener of coordinatorListeners) listener(copied);
+				});
+			},
+			onMessage(listener) {
+				mainListeners.push(listener);
+			},
+			onClose() {},
+			async close() {
+				void coordinator.shutdown();
+			},
+		},
+	};
+}
+
+/**
+ * Root-side handle of a local worker pool.
+ *
+ * Every per-worker concern runs in the pool's coordinator process (`pool-coordinator.ts`):
+ * worker processes and their IPC, pool journal writes, lease heartbeats and recovery, and
+ * the Intercom routes of pooled runs. This side, on the root's main thread, enqueues
+ * children, waits for their results, forwards control and budget decisions, and applies the
+ * coordinator's activity summaries to the root's store in one batched update each, at most
+ * every {@link POOL_SUMMARY_INTERVAL_MS}.
+ */
 export class LocalWorkerPool {
-	private readonly children = new Set<ChildProcess>();
-	private readonly incarnations = new Map<string, ChildProcess>();
-	private readonly readyWorkers = new Set<string>();
-	private readonly logs = new Map<ChildProcess, string>();
-	private logDirectory?: string;
-	private readonly cleanups = new Set<Promise<void>>();
-	private recovering?: Promise<void>;
-	private nextRecoveryAt = 0;
-	private readonly controlAcks = new Map<string, number>();
-	private readonly lastHeard = new Map<string, { readonly at: number; readonly rootStalled: number }>();
-	private lastTick = performance.now();
-	private rootStalledMs = 0;
-	private readonly ticker: NodeJS.Timeout;
+	private readonly pids = new Set<number>();
+	private coordinator?: Coordinator;
+	private readonly commands = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+	private commandSequence = 0;
+	private inbound: Promise<void> = Promise.resolve();
+	private readonly works = new Map<string, PoolWork>();
+	private readonly attempts = new Map<string, PoolWorkToken & { fenced: boolean }>();
+	private readonly results = new Map<string, WorkflowSerializableObject>();
+	private changed = Promise.withResolvers<void>();
+	private waiting = 0;
+	private ticker?: NodeJS.Timeout;
 	private readonly leaseMs: number;
 	private desiredControl?: PoolControl["state"];
 	private root?: string;
@@ -78,15 +203,13 @@ export class LocalWorkerPool {
 	private sources: WorkerDefinitionSource[] = [];
 	private queue?: SqlPoolQueue;
 	private lease?: Lease;
-	private admission?: SqlResourceAdmission;
-	private usageLedger?: SqlPoolUsage;
 	private usageTotal?: PoolUsage;
 	private rootBudget?: RunOpts["rootBudget"];
+	private budgetBlocked = false;
+	private rootSignature?: string;
 	private starting?: Promise<void>;
-	private cleanupFailure?: Error;
 	private failure?: Error;
 	private closed = false;
-	private replacements = 0;
 	private readonly releaseBinding: () => void;
 	constructor(
 		private readonly backend: JournalDurableBackend,
@@ -103,6 +226,11 @@ export class LocalWorkerPool {
 			 * Load tests use it to run protocol-level stub workers; public options never set it.
 			 */
 			readonly workerEntry?: string;
+			/**
+			 * Internal, tests only: run the coordinator in this process, behind the same serialized
+			 * message boundary, so a test can intercept coordinator-side calls. Public options never set it.
+			 */
+			readonly coordinator?: "in-process";
 		},
 	) {
 		if (!Number.isSafeInteger(options.workers) || options.workers < 1) throw new Error("Invalid local worker count");
@@ -125,10 +253,13 @@ export class LocalWorkerPool {
 		this.leaseMs = options.leaseMs ?? DEFAULT_WORK_LEASE_MS;
 		this.releaseBinding = bindChildWorkerDispatcher(backend, this, options.rootId);
 		if (options.admission && options.rootId === undefined) workflowResourceAdmission.set(backend, options.admission);
-		this.ticker = setInterval(() => this.observeResponsiveness(), ROOT_TICK_INTERVAL_MS).unref();
 	}
 	get workerPids(): number[] {
-		return [...this.children].flatMap((child) => (child.pid === undefined ? [] : [child.pid]));
+		return [...this.pids];
+	}
+	/** Process id of the pool's coordinator once it runs; the workers are its children. */
+	get coordinatorPid(): number | undefined {
+		return this.coordinator?.pid;
 	}
 	usage(): PoolUsage | undefined {
 		return this.usageTotal;
@@ -144,36 +275,34 @@ export class LocalWorkerPool {
 		if (this.root !== undefined && this.root !== root) throw new Error("Local worker pool belongs to another root");
 		this.root = root;
 		if (store) this.store = store;
-		this.usageLedger ??= await openSqlPoolUsage(this.backend.journal);
-		this.usageTotal = await this.usageLedger.total(root);
 		const state = await this.backend.journal.leaseState(root);
 		if (!state || state.holderId !== this.backend.holderId)
 			throw new Error("Local worker pool requires the root owner");
 		this.lease = { runId: root, holderId: state.holderId, epoch: state.epoch };
-		const queue = await openSqlPoolQueue(this.backend.journal);
-		await queue.initialize(this.lease, COORDINATOR_LEASE_MS);
-		await queue.releasePreviousIncarnations(this.lease);
-		for (;;) {
-			const intended = this.desiredControl ?? "running";
-			await queue.setControl(this.lease, intended);
-			if (intended === (this.desiredControl ?? "running")) break;
-		}
-		this.queue = queue;
+		const workerEntry =
+			this.options.workerEntry ??
+			(isBunBinary || this.options.coordinator === "in-process" ? defaultWorkerEntry() : undefined);
+		this.usageTotal = (await this.command({
+			kind: "prepare",
+			root,
+			lease: this.lease,
+			options: {
+				journalPath: this.options.journalPath,
+				workers: this.options.workers,
+				leaseMs: this.leaseMs,
+				startupTimeoutMs: this.options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS,
+				...(this.options.admission === undefined ? {} : { admission: this.options.admission }),
+				...(workerEntry === undefined ? {} : { workerEntry }),
+			},
+			...(this.desiredControl === undefined ? {} : { control: this.desiredControl }),
+		})) as PoolUsage;
+		// Read only: a delivery receipt checks its work lease inside the root's own journal append.
+		this.queue ??= await openSqlPoolQueue(this.backend.journal);
 	}
 	async control(state: PoolControl["state"]): Promise<void> {
 		this.desiredControl = state;
 		try {
-			if (!this.queue || !this.lease) return;
-			const control = await this.queue.setControl(this.lease, state);
-			const deadline = Date.now() + CONTROL_ACKNOWLEDGEMENT_TIMEOUT_MS;
-			while ([...this.readyWorkers].some((worker) => (this.controlAcks.get(worker) ?? -1) < control.revision)) {
-				if (this.desiredControl !== state) return;
-				if (Date.now() >= deadline) {
-					if (state === "quit") break;
-					throw new Error("Worker control acknowledgement unresolved");
-				}
-				await delay(25);
-			}
+			if (this.coordinator !== undefined) await this.command({ kind: "control", state });
 		} finally {
 			if (state === "quit") await this.close();
 		}
@@ -222,323 +351,69 @@ export class LocalWorkerPool {
 				return source;
 			}),
 		);
-		if (this.store) {
-			this.releaseRoutes = await acquireStandaloneIntercom(
-				this.store,
-				root,
-				String(this.backend.getWorkflow(root)?.invocationCwd ?? process.cwd()),
-			);
+		const cwd = String(this.backend.getWorkflow(root)?.invocationCwd ?? process.cwd());
+		const store = this.store;
+		if (store) {
+			// The root's own route stays here; pooled runs are announced by the coordinator.
+			this.releaseRoutes = await acquireStandaloneIntercom(store, root, cwd);
 			if (this.closed) {
 				await this.releaseRoutes();
 				this.releaseRoutes = undefined;
 				throw new Error("Local worker pool is closed");
 			}
-			this.handoff = new PoolStageHandoff(this.backend, this.store, this.queue, this.lease);
-		}
-		if (this.options.admission)
-			this.admission = await SqlResourceAdmission.open(this.backend.journal, {
-				...this.options.admission,
-				root,
-				holder: "coordinator",
-			});
-		this.logDirectory = workerLogDirectory(this.options.journalPath, root);
-		await mkdir(this.logDirectory, { recursive: true }).catch(() => undefined);
-		const workers = Array.from({ length: this.options.workers }, () => this.spawn(root));
-		try {
-			await Promise.any(workers);
-		} catch (error) {
-			throw (error as AggregateError).errors[0];
-		}
-	}
-	private spawn(root: string): Promise<void> {
-		if (this.closed) return Promise.reject(new Error("Local worker pool is closed"));
-		const child = fork(
-			this.options.workerEntry ??
-				(isBunBinary
-					? INTERNAL_WORKFLOW_WORKER_ARG
-					: fileURLToPath(new URL("./local-worker-entry.mjs", import.meta.url))),
-			[
-				JSON.stringify({
-					journalPath: this.options.journalPath,
-					root,
-					definitions: this.sources,
-					admission: this.options.admission,
-				}),
-			],
-			{ stdio: ["ignore", "ignore", "pipe", "ipc"], execArgv: [] },
-		);
-		const disconnected = new Promise<void>((resolve) => child.once("disconnect", () => resolve()));
-		this.children.add(child);
-		const worker = randomUUID();
-		this.incarnations.set(worker, child);
-		let ready = false;
-		let serial: Promise<void> = Promise.resolve();
-		let work: PoolWork | undefined;
-		const deliveries = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
-		const logPath = join(this.logDirectory!, `${worker}.log`);
-		this.logs.set(child, logPath);
-		let logFailure: string | undefined;
-		const log = createWriteStream(logPath, { flags: "a" });
-		log.on("error", (error) => {
-			logFailure = error.message;
-		});
-		let stderr = "";
-		child.stderr?.on("data", (chunk: Buffer) => {
-			stderr = (stderr + chunk.toString()).slice(-STDERR_TAIL_CHARACTERS);
-		});
-		child.stderr?.on("error", (error) => {
-			logFailure ??= error.message;
-			log.end();
-		});
-		child.stderr?.pipe(log);
-		const diagnosed = (summary: string) =>
-			new Error(
-				`${summary} (worker stderr log: ${logFailure === undefined ? logPath : `unavailable, ${logFailure}`})${stderr ? `: ${stderr}` : ""}`,
+			const routeOwner: ExternalRunRouteOwner = {
+				notifyUndeliverable: async (payload) =>
+					!this.closed && (await this.command({ kind: "undeliverable", payload })) === true,
+			};
+			this.handoff = new PoolStageHandoff(this.backend, store, this.queueView(), this.lease, (runId) =>
+				claimExternalRunRoute(store, runId, routeOwner),
 			);
-		const startupTimeoutMs = this.options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
-		let timedOut = false;
-		let terminated = false;
-		const terminate = () => {
-			if (terminated) return;
-			terminated = true;
-			child.kill("SIGKILL");
-		};
-		const replied = (error: Error | null) => {
-			if (error) terminate();
-		};
-		return new Promise((resolve, reject) => {
-			const startup = setTimeout(() => {
-				timedOut = true;
-				terminate();
-			}, startupTimeoutMs);
-			child.on("error", (error) => {
-				clearTimeout(startup);
-				reject(error);
-				terminate();
-			});
-			const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
-			child.once("exit", () => {
-				void Promise.race([closed, delay(STDERR_DRAIN_GRACE_MS)]).then(() =>
-					reject(
-						diagnosed(
-							timedOut
-								? `Local worker startup timed out after ${startupTimeoutMs} ms`
-								: "Local worker exited before readiness",
-						),
-					),
-				);
-				this.children.delete(child);
-				this.logs.delete(child);
-				clearTimeout(startup);
-				this.incarnations.delete(worker);
-				this.readyWorkers.delete(worker);
-				this.controlAcks.delete(worker);
-				this.lastHeard.delete(worker);
-				if (work) this.handoff?.fence(work);
-				for (const delivery of deliveries.values())
-					delivery.reject(new Error("Worker exited before delivery acknowledgement"));
-				deliveries.clear();
-				const cleanup = disconnected
-					.then(() => serial)
-					.then(async () => {
-						try {
-							if (await this.admission?.releaseStoppedSessions(worker))
-								throw new Error("Local worker process cleanup unconfirmed; permits quarantined");
-						} catch (error) {
-							this.cleanupFailure = error instanceof Error ? error : new Error(String(error));
-							throw this.cleanupFailure;
-						}
-					})
-					.then(async () => {
-						if (this.closed || !ready || this.desiredControl === "quit") return;
-						if (work && (await this.queue!.result(root, work.id))) {
-							work = undefined;
-							this.replacements = 0;
-						}
-						if (this.closed) return;
-						if (work) await this.queue!.releaseExited(this.lease!, work);
-						const exhausted = work ? work.generation >= 3 : ++this.replacements > 3;
-						if (exhausted) this.failure = diagnosed("Local worker retry limit");
-						else await this.spawn(root);
-					})
-					.catch((error: Error) => {
-						this.failure = error;
-					});
-				this.cleanups.add(cleanup);
-				void cleanup.finally(() => this.cleanups.delete(cleanup));
-			});
-			child.on("message", (message: WorkerRequest) => {
-				this.observeResponsiveness();
-				this.lastHeard.set(worker, { at: performance.now(), rootStalled: this.rootStalledMs });
-				if (message.kind === "delivery-ack") {
-					const pending = deliveries.get(message.deliveryId);
-					deliveries.delete(message.deliveryId);
-					if (message.error) pending?.reject(new Error(message.error));
-					else pending?.resolve();
-					return;
-				}
-				const response = serial.then(async () => {
-					if (message.kind === "ready") {
-						if (terminated) return;
-						ready = true;
-						this.readyWorkers.add(worker);
-						clearTimeout(startup);
-						resolve();
-						return;
-					}
-					await this.starting;
-					const queue = this.queue!;
-					const lease = this.lease!;
-					if (message.kind === "control") return queue.control(lease);
-					if (message.kind === "controlled") {
-						const control = await queue.control(lease);
-						if (message.revision > control.revision) throw new Error("Unknown control revision");
-						this.controlAcks.set(worker, Math.max(this.controlAcks.get(worker) ?? -1, message.revision));
-						return;
-					}
-					if (message.kind === "claim") {
-						if (work) throw new Error("Worker already holds an attempt");
-						const decision = this.rootBudget?.checkpoint();
-						if (decision?.kind === "exhausted" || decision?.kind === "wrap_up") return;
-						await this.recoverExpired(root);
-						work = await queue.claim(
-							lease,
-							worker,
-							this.sources.map((source) => ({
-								definition: `${source.path}#${source.exportName}`,
-								digest: source.digest,
-							})),
-							this.leaseMs,
-						);
-						return work;
-					}
-					if (!work) throw new Error("Worker has no active attempt");
-					if (message.kind === "renew" || work.expiresAt - Date.now() < this.leaseMs / 2)
-						work = await queue.extend(lease, work, this.leaseMs);
-					if (message.kind === "activity") return this.handoff?.publish(work, message.runs);
-					if (message.kind === "route") return this.handoff?.route(work, message.runId);
-					if (message.kind === "delivery-ready")
-						return this.handoff?.ready(
-							work,
-							message.runId,
-							message.stageId,
-							message.stageName,
-							message.sessionId,
-						);
-					if (message.kind === "delivery") {
-						if (!message.recipient) throw new Error("Worker delivery requires a session identity");
-						return this.handoff?.deliver(
-							work,
-							message.runId,
-							message.stageId,
-							message.stageName,
-							message.recipient,
-							(from, payload) =>
-								new Promise<void>((resolve, reject) => {
-									const id = randomUUID();
-									deliveries.set(id, { resolve, reject });
-									child.send({ id: message.id, delivery: { id, from, message: payload } }, (error) => {
-										if (error) {
-											deliveries.delete(id);
-											reject(error);
-										}
-									});
-								}),
-						);
-					}
-					if (message.kind === "renew") return;
-					if (message.kind === "commit") {
-						const receipt = await queue.commit(lease, work, message.operation, message.mutation);
-						this.usageTotal = await this.usageLedger!.total(root);
-						return receipt;
-					}
-					if (message.kind === "usage") {
-						this.usageTotal = await this.usageLedger!.report(lease, work, message.reports);
-						return;
-					}
-					if (message.kind === "budget") {
-						await queue.assertCurrent(lease, work);
-						const decision = this.rootBudget?.checkpoint();
-						if (decision?.kind === "exhausted" || decision?.kind === "wrap_up")
-							throw new Error("Root workflow budget exhausted");
-						return queue.control(lease);
-					}
-					if (message.kind !== "complete") throw new Error("Invalid worker operation");
-					await queue.complete(lease, work, message.result as unknown as WorkflowSerializableObject);
-					this.replacements = 0;
-					work = undefined;
-				});
-				if (message.kind !== "delivery" && message.kind !== "delivery-ready")
-					serial = response.then(
-						() => {},
-						() => {},
-					);
-				void response.then(
-					(value) => child.send({ id: message.id, value }, replied),
-					(error: Error) => child.send({ id: message.id, error: error.message }, replied),
-				);
-			});
+		}
+		await this.command({
+			kind: "start",
+			sources: this.sources,
+			cwd,
+			publish: store !== undefined,
+			...this.rootRun(),
 		});
 	}
-	private recoverExpired(root: string): Promise<void> {
-		if (this.recovering) return this.recovering;
-		if (this.closed || performance.now() < this.nextRecoveryAt) return Promise.resolve();
-		this.recovering = (async () => {
-			await new Promise<void>((resolve) => setImmediate(resolve));
-			await this.admission?.reconcile();
-			const expiredBefore = Date.now();
-			for (const work of await this.queue!.inspect(root)) {
-				if (work.state !== "leased" || work.expiresAt >= expiredBefore) continue;
-				const child = work.worker === null ? undefined : this.incarnations.get(work.worker);
-				if (child && work.worker !== null && this.isLive(work.worker, child)) {
-					await this.queue!.extend(this.lease!, work, this.leaseMs).catch((error: Error) => {
-						if (error.message !== STALE_WORK_LEASE) throw error;
-					});
-					continue;
-				}
+	/** Lease checks for the handoff, answered from the coordinator's in-order attempt and fence events. */
+	private queueView(): PoolStageQueue {
+		return {
+			assertCurrent: async (_lease, work) => {
+				const current = this.attempts.get(work.id);
 				if (
-					child &&
-					!(await this.stop(child).then(
-						() => true,
-						() => false,
-					))
+					current === undefined ||
+					current.fenced ||
+					current.generation !== work.generation ||
+					current.worker !== work.worker ||
+					current.epoch !== work.epoch
 				)
-					continue;
-				await this.queue!.expire(this.lease!, work);
-			}
-		})().finally(() => {
-			this.recovering = undefined;
-			this.nextRecoveryAt = performance.now() + RECOVERY_INTERVAL_MS;
-		});
-		return this.recovering;
+					throw new Error(STALE_WORK_LEASE);
+			},
+			withCurrentAppend: (lease, work, assertSession, action) =>
+				this.queue!.withCurrentAppend(lease, work, assertSession, action),
+			result: async (root, id) => this.results.get(id) ?? this.queue!.result(root, id),
+		};
 	}
-	private observeResponsiveness(): void {
-		const now = performance.now();
-		const gap = now - this.lastTick;
-		if (gap > ROOT_STALL_THRESHOLD_MS) this.rootStalledMs += gap - ROOT_TICK_INTERVAL_MS;
-		this.lastTick = now;
+	private rootProjection(): PoolRootProjection | undefined {
+		const run = this.store?.runs().find((candidate) => candidate.id === this.root);
+		return run === undefined ? undefined : projectRootRun(run);
 	}
-	private isLive(worker: string, child: ChildProcess): boolean {
-		this.observeResponsiveness();
-		const heard = this.lastHeard.get(worker);
-		return (
-			child.exitCode === null &&
-			child.signalCode === null &&
-			child.connected &&
-			heard !== undefined &&
-			performance.now() - heard.at - (this.rootStalledMs - heard.rootStalled) < this.leaseMs
-		);
+	private rootRun(): { readonly rootRun?: PoolRootProjection } {
+		const rootRun = this.rootProjection();
+		if (rootRun === undefined) return {};
+		this.rootSignature = JSON.stringify(rootRun);
+		return { rootRun };
 	}
-	private stop(child: ChildProcess): Promise<void> {
-		if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
-		return new Promise((resolve, reject) => {
-			const timeout = setTimeout(() => reject(new Error("Local worker cleanup was not confirmed")), 5_000);
-			child.once("exit", () => {
-				clearTimeout(timeout);
-				resolve();
-			});
-			child.kill("SIGKILL");
-		});
+	/** Keeps the coordinator's view of the root's boundaries current, at the summary rate. */
+	private refreshRootRun(): void {
+		const rootRun = this.rootProjection();
+		if (rootRun === undefined) return;
+		const signature = JSON.stringify(rootRun);
+		if (signature === this.rootSignature) return;
+		this.rootSignature = signature;
+		this.notice({ kind: "root", rootRun });
 	}
 	async run(definition: WorkflowDefinition, inputs: ResolvedInputs, options: RunOpts): Promise<RunResult> {
 		try {
@@ -578,7 +453,7 @@ export class LocalWorkerPool {
 		const selectedSource = this.sources[index]!;
 		if ((await definitionDigest(selectedSource.path)) !== selectedSource.digest)
 			throw new Error("Worker definition compatibility error");
-		await this.backend.hydrateWorkflow(root);
+		await this.backend.catchUpWorkflow(root);
 		const boundary = this.backend
 			.listCheckpoints(root)
 			.find(
@@ -597,9 +472,10 @@ export class LocalWorkerPool {
 				executionMode: options.executionMode,
 			}),
 		) as WorkflowSerializableObject;
-		const work = await this.queue!.enqueue(
-			this.lease!,
-			{
+		this.evaluateBudget();
+		const enqueued = (await this.command({
+			kind: "enqueue",
+			descriptor: {
 				boundaryId: options.parentRun.stageId,
 				childRunId: options.runId!,
 				scope: options.durableScope.scopePrefix,
@@ -609,27 +485,213 @@ export class LocalWorkerPool {
 				execution,
 			},
 			boundary,
-		);
-		for (;;) {
-			options.signal?.throwIfAborted();
-			if (this.closed) {
+			...this.rootRun(),
+		})) as { readonly work: PoolWork; readonly result?: WorkflowSerializableObject };
+		const work = enqueued.work;
+		this.works.set(work.id, work);
+		if (enqueued.result !== undefined && !this.results.has(work.id)) this.results.set(work.id, enqueued.result);
+		this.waiting++;
+		this.ticker ??= setInterval(() => {
+			this.evaluateBudget();
+			this.signalChange();
+		}, POOL_SUMMARY_INTERVAL_MS);
+		try {
+			for (;;) {
+				options.signal?.throwIfAborted();
+				if (this.closed) {
+					if (this.failure) throw this.failure;
+					if (this.desiredControl === "quit") throw new WorkflowGracefulQuitError(root, "worker pool teardown");
+					throw new Error("Local worker pool is closed");
+				}
+				const result = this.results.get(work.id);
+				if (result) {
+					await this.inbound;
+					await this.backend.catchUpWorkflow(root);
+					await this.handoff?.complete(work);
+					return result as unknown as RunResult;
+				}
 				if (this.failure) throw this.failure;
-				if (this.desiredControl === "quit") throw new WorkflowGracefulQuitError(root, "worker pool teardown");
-				throw new Error("Local worker pool is closed");
+				if (this.budgetBlocked) await this.rootBudget!.stopAtBoundaryAsync(definition.name);
+				await this.nextChange(options.signal);
 			}
-			const result = await this.queue!.result(root, work.id);
-			if (result) {
-				await this.backend.hydrateWorkflow(root);
-				await this.handoff?.complete(work);
-				return result as unknown as RunResult;
+		} finally {
+			if (--this.waiting === 0) {
+				clearInterval(this.ticker);
+				this.ticker = undefined;
 			}
-			if (this.failure) throw this.failure;
-			const decision = this.rootBudget?.checkpoint();
-			if (decision?.kind === "exhausted" || decision?.kind === "wrap_up")
-				await this.rootBudget!.stopAtBoundaryAsync(definition.name);
-			await this.recoverExpired(root);
-			await delay(25, undefined, { signal: options.signal });
 		}
+	}
+	/** One budget decision for every waiting child; the coordinator refuses claims while it blocks. */
+	private evaluateBudget(): void {
+		const decision = this.rootBudget?.checkpoint();
+		const blocked = decision?.kind === "exhausted" || decision?.kind === "wrap_up";
+		if (blocked === this.budgetBlocked) return;
+		this.budgetBlocked = blocked;
+		this.notice({ kind: "budget", blocked });
+	}
+	private signalChange(): void {
+		const changed = this.changed;
+		this.changed = Promise.withResolvers<void>();
+		changed.resolve();
+	}
+	private nextChange(signal: AbortSignal | undefined): Promise<void> {
+		const changed = this.changed.promise;
+		if (signal === undefined) return changed;
+		return new Promise<void>((resolve, reject) => {
+			const abort = () => reject(signal.reason);
+			signal.addEventListener("abort", abort, { once: true });
+			void changed.then(() => {
+				signal.removeEventListener("abort", abort);
+				resolve();
+			});
+		});
+	}
+	private connect(): Coordinator {
+		if (this.coordinator !== undefined) return this.coordinator;
+		const coordinator =
+			this.options.coordinator === "in-process" ? launchCoordinatorInProcess() : launchCoordinatorProcess();
+		this.coordinator = coordinator;
+		coordinator.port.onMessage((event) => {
+			// Every event, replies included, is applied in the order the coordinator sent it.
+			this.inbound = this.inbound.then(() => this.receive(event)).catch(() => {});
+		});
+		coordinator.port.onClose((reason) => {
+			this.inbound = this.inbound.then(() => this.lost(reason));
+		});
+		return coordinator;
+	}
+	private lost(reason: Error): void {
+		this.pids.clear();
+		if (!this.closed) this.failure ??= reason;
+		for (const pending of this.commands.values())
+			pending.reject(this.closed ? new Error("Local worker pool is closed") : reason);
+		this.commands.clear();
+		this.signalChange();
+	}
+	private command(body: CoordinatorCommandBody): Promise<unknown> {
+		const coordinator = this.connect();
+		const id = ++this.commandSequence;
+		return new Promise((resolve, reject) => {
+			this.commands.set(id, { resolve, reject });
+			coordinator.port.send({ ...body, id });
+		});
+	}
+	private notice(notice: CoordinatorNotice): void {
+		this.coordinator?.port.send(notice);
+	}
+	private async receive(event: CoordinatorEvent): Promise<void> {
+		switch (event.kind) {
+			case "reply": {
+				const pending = this.commands.get(event.id);
+				this.commands.delete(event.id);
+				if (event.error !== undefined) pending?.reject(new Error(event.error));
+				else pending?.resolve(event.value);
+				return;
+			}
+			case "activity":
+				return this.applyActivity(event.batch, event.entries, event.usage);
+			case "spawned":
+				this.pids.add(event.pid);
+				return;
+			case "exited":
+				this.pids.delete(event.pid);
+				return;
+			case "fence": {
+				const current = this.attempts.get(event.work.id);
+				if (current?.generation === event.work.generation) current.fenced = true;
+				this.handoff?.fence(event.work);
+				return;
+			}
+			case "result":
+				if (event.usage !== undefined) this.usageTotal = event.usage;
+				this.results.set(event.workId, event.result);
+				this.signalChange();
+				return;
+			case "failure":
+				this.failure ??= new Error(event.error);
+				this.signalChange();
+				return;
+			case "request":
+				// Started in order and answered whenever they finish: a delivery waits on its worker.
+				void this.serve(event.id, event.request);
+				return;
+		}
+	}
+	private async applyActivity(
+		batch: number,
+		entries: readonly PoolActivityEntry[],
+		usage: PoolUsage | undefined,
+	): Promise<void> {
+		if (usage !== undefined) this.usageTotal = usage;
+		const rejected: { workId: string; generation: number; error: string }[] = [];
+		const handoff = this.handoff;
+		if (handoff !== undefined) {
+			const publications = entries.flatMap((entry) => {
+				const work = this.track(entry.work);
+				if (work !== undefined) return [{ work, runs: entry.runs }];
+				rejected.push({ workId: entry.work.id, generation: entry.work.generation, error: STALE_WORK_LEASE });
+				return [];
+			});
+			const outcomes = await handoff.publishBatch(publications);
+			outcomes.forEach((error, index) => {
+				const { work } = publications[index]!;
+				if (error !== undefined)
+					rejected.push({ workId: work.id, generation: work.generation, error: error.message });
+			});
+		}
+		this.notice({ kind: "published", batch, rejected });
+		this.refreshRootRun();
+	}
+	/** The full work of an attempt token, recording the attempt as current when it is newer. */
+	private track(attempt: PoolWorkToken): PoolWork | undefined {
+		const work = this.works.get(attempt.id);
+		if (work === undefined) return undefined;
+		const current = this.attempts.get(attempt.id);
+		if (current === undefined || attempt.generation > current.generation)
+			this.attempts.set(attempt.id, { ...attempt, fenced: false });
+		return { ...work, ...attempt, state: "leased" };
+	}
+	private async serve(id: number, request: CoordinatorRequestBody): Promise<void> {
+		try {
+			const value = await this.answer(id, request);
+			this.coordinator?.port.send({ kind: "request-reply", id, ...(value === undefined ? {} : { value }) });
+		} catch (error) {
+			this.coordinator?.port.send({
+				kind: "request-reply",
+				id,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+	private async answer(id: number, request: CoordinatorRequestBody): Promise<unknown> {
+		if (request.kind === "pending-stage-message" || request.kind === "sticky-live-delivered") {
+			const router = this.store === undefined ? undefined : pendingStageMessageRouter(this.store);
+			const event: Record<string, unknown> & { handled: boolean; completion?: Promise<unknown> } = {
+				...request.payload,
+				handled: false,
+			};
+			if (request.kind === "pending-stage-message") router?.route(event);
+			else router?.sticky(event);
+			if (event.handled && event.completion !== undefined) return await event.completion;
+			return request.kind === "pending-stage-message"
+				? { outcome: "refused", reason: "Session not found" }
+				: undefined;
+		}
+		const handoff = this.handoff;
+		const work = this.track(request.work);
+		if (handoff === undefined || work === undefined) throw new Error(STALE_WORK_LEASE);
+		if (request.kind === "ready")
+			return handoff.ready(work, request.runId, request.stageId, request.stageName, request.sessionId);
+		return handoff.deliver(
+			work,
+			request.runId,
+			request.stageId,
+			request.stageName,
+			request.recipient,
+			async (from, message) => {
+				await this.command({ kind: "transport", request: id, from, message });
+			},
+		);
 	}
 	private closing?: Promise<void>;
 	close(): Promise<void> {
@@ -639,25 +701,21 @@ export class LocalWorkerPool {
 	private async dispose(): Promise<void> {
 		this.closed = true;
 		clearInterval(this.ticker);
+		this.ticker = undefined;
 		this.releaseBinding();
 		if (this.options.rootId === undefined) workflowResourceAdmission.delete(this.backend);
+		this.signalChange();
 		let failure: unknown;
-		let stopping: { readonly child: ChildProcess; readonly log?: string }[] = [];
-		try {
-			await this.recovering?.catch(() => {});
-			stopping = [...this.children].map((child) => ({ child, log: this.logs.get(child) }));
-			await Promise.all(stopping.map(({ child }) => this.stop(child)));
-			await Promise.all([...this.cleanups]);
-			if (this.cleanupFailure) throw this.cleanupFailure;
-		} catch (error) {
-			failure = error;
-		}
-		if (failure === undefined) {
-			const stopped = stopping.flatMap(({ child, log }) =>
-				log !== undefined && (child.exitCode !== null || child.signalCode !== null) ? [log] : [],
-			);
-			await Promise.all(stopped.map((log) => rm(log, { force: true }).catch(() => {})));
-			if (this.logDirectory !== undefined) await rmdir(this.logDirectory).catch(() => {});
+		const coordinator = this.coordinator;
+		if (coordinator !== undefined) {
+			try {
+				await this.command({ kind: "close" });
+			} catch (error) {
+				failure = error;
+			}
+			await this.inbound;
+			await coordinator.port.close();
+			this.pids.clear();
 		}
 		try {
 			await this.releaseRoutes?.();

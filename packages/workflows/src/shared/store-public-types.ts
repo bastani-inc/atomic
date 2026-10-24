@@ -352,4 +352,6 @@ export interface Store {
 	subscribe(fn: (snap: StoreSnapshot) => void): () => void;
 	/** Subscribe synchronously to store invalidation without constructing a full snapshot. */
 	subscribeInvalidation(fn: () => void): () => void;
+	/** Apply several mutations with one invalidation: subscribers are notified once, after `update` returns. */
+	batch<T>(update: () => T): T;
 }

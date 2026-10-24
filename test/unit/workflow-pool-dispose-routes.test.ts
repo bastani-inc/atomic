@@ -40,6 +40,8 @@ test("a failed worker cleanup still releases the root's Intercom routes and repo
 		workers: 1,
 		definitions: [{ definition: child, path: childPath, exportName: "child" }],
 		admission: { limits: { session: 1 } },
+		// The worker cleanup this test fails runs in the coordinator; keep it in this process to intercept it.
+		coordinator: "in-process",
 	});
 	try {
 		const result = await run(

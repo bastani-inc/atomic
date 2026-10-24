@@ -20,6 +20,14 @@ type PendingRecipient = NonNullable<Parameters<PendingDelivery["deliverPending"]
 
 export type PoolStageTransport = (...args: Parameters<PendingDeliver>) => Promise<void>;
 
+/** The work-lease checks the handoff needs; a coordinator-driven pool answers them from its own attempt state. */
+export type PoolStageQueue = Pick<SqlPoolQueue, "assertCurrent" | "withCurrentAppend" | "result">;
+
+export interface PoolStagePublication {
+	readonly work: PoolWork;
+	readonly runs: readonly RunSnapshot[];
+}
+
 interface Attempt {
 	readonly generation: number;
 	readonly runs: Set<string>;
@@ -39,19 +47,47 @@ export class PoolStageHandoff {
 	constructor(
 		private readonly backend: JournalDurableBackend,
 		private readonly store: Store,
-		private readonly queue: SqlPoolQueue,
+		private readonly queue: PoolStageQueue,
 		private readonly lease: Lease,
+		/** Called for every accepted run before it reaches the store, e.g. to route it elsewhere. */
+		private readonly claimRun?: (runId: string) => void,
 	) {}
 
 	publish(work: PoolWork, runs: readonly RunSnapshot[]): Promise<void> {
 		const previous = this.publications.get(work.id) ?? Promise.resolve();
-		const publication = previous.catch(() => undefined).then(() => this.apply(work, runs));
+		const publication = previous
+			.catch(() => undefined)
+			.then(async () => {
+				const commit = await this.prepare(work, runs);
+				this.store.batch(commit);
+			});
 		const settled = publication.catch(() => undefined);
 		this.publications.set(work.id, settled);
 		void settled.then(() => {
 			if (this.publications.get(work.id) === settled) this.publications.delete(work.id);
 		});
 		return publication;
+	}
+
+	/**
+	 * Publish the latest activity of several attempts with one store invalidation, in order.
+	 * Returns each publication's rejection, or undefined for an accepted one.
+	 */
+	async publishBatch(publications: readonly PoolStagePublication[]): Promise<(Error | undefined)[]> {
+		const prepared: ((() => void) | Error)[] = [];
+		for (const { work, runs } of publications)
+			prepared.push(await this.prepare(work, runs).catch((error: Error) => error));
+		return this.store.batch(() =>
+			prepared.map((commit) => {
+				if (commit instanceof Error) return commit;
+				try {
+					commit();
+					return undefined;
+				} catch (error) {
+					return error instanceof Error ? error : new Error(String(error));
+				}
+			}),
+		);
 	}
 
 	async route(work: PoolWork, runId: string): Promise<string> {
@@ -111,7 +147,7 @@ export class PoolStageHandoff {
 		const root = this.lease.runId;
 		const result = (await this.queue.result(root, work.id)) as RunResult | undefined;
 		if (result === undefined) return;
-		await this.backend.hydrateWorkflow(root);
+		await this.backend.catchUpWorkflow(root);
 		const terminals = new Map<string, { status: RunSnapshot["status"]; outputs: RunSnapshot["result"] }>();
 		for (const checkpoint of this.backend.listCheckpoints(root)) {
 			const boundary = checkpoint.kind === "stage" ? checkpoint.topology?.boundary : undefined;
@@ -120,6 +156,14 @@ export class PoolStageHandoff {
 			if (child?.runId === boundary.child.runId)
 				terminals.set(child.runId, { status: child.status, outputs: child.outputs });
 		}
+		this.store.batch(() => this.settle(work, result, terminals));
+	}
+
+	private settle(
+		work: Pick<PoolWork, "id" | "childRunId">,
+		result: RunResult,
+		terminals: ReadonlyMap<string, { status: RunSnapshot["status"]; outputs: RunSnapshot["result"] }>,
+	): void {
 		for (const run of this.store.runs()) {
 			if (run.endedAt !== undefined || this.owners.get(run.id) !== work.id) continue;
 			if (run.id === work.childRunId) {
@@ -143,27 +187,42 @@ export class PoolStageHandoff {
 		const current = this.attempts.get(work.id);
 		if (current !== undefined && current.generation > work.generation) return;
 		const attempt = current?.generation === work.generation ? current : this.start(work, current);
-		this.release(attempt);
+		this.store.batch(() => this.release(attempt));
 		attempt.fenced = true;
 	}
 
-	private async apply(work: PoolWork, runs: readonly RunSnapshot[]): Promise<void> {
+	/** Validates a publication and returns the store update that applies it; the update re-checks ownership. */
+	private async prepare(work: PoolWork, runs: readonly RunSnapshot[]): Promise<() => void> {
 		const subtree = this.subtree(work, runs);
 		const root = this.lease.runId;
-		const known = new Map(this.store.runs().map((run) => [run.id, run]));
-		for (const run of subtree) {
-			const existing = known.get(run.id);
-			const owner = this.owners.get(run.id);
-			if (
-				(owner !== undefined && owner !== work.id) ||
-				(owner === undefined &&
-					existing !== undefined &&
-					(existing.parentRunId !== run.parentRunId || existing.parentStageId !== run.parentStageId))
-			)
-				throw outside(run.id);
-		}
-		if (subtree.some((run) => known.get(run.id) === undefined)) await this.backend.hydrateWorkflow(root);
+		const owned = (known: ReadonlyMap<string, RunSnapshot>) => {
+			for (const run of subtree) {
+				const existing = known.get(run.id);
+				const owner = this.owners.get(run.id);
+				if (
+					(owner !== undefined && owner !== work.id) ||
+					(owner === undefined &&
+						existing !== undefined &&
+						(existing.parentRunId !== run.parentRunId || existing.parentStageId !== run.parentStageId))
+				)
+					throw outside(run.id);
+			}
+		};
+		const before = new Map(this.store.runs().map((run) => [run.id, run]));
+		owned(before);
+		if (subtree.some((run) => before.get(run.id) === undefined)) await this.backend.catchUpWorkflow(root);
 		await this.queue.assertCurrent(this.lease, work);
+		return () => this.commit(work, subtree, owned);
+	}
+
+	private commit(
+		work: PoolWork,
+		subtree: readonly RunSnapshot[],
+		owned: (known: ReadonlyMap<string, RunSnapshot>) => void,
+	): void {
+		const root = this.lease.runId;
+		const known = new Map(this.store.runs().map((run) => [run.id, run]));
+		owned(known);
 		const attempt = this.enter(work);
 		const execution = {
 			worker: work.worker ?? "",
@@ -175,12 +234,13 @@ export class PoolStageHandoff {
 			...run,
 			rootRunId: root,
 			pendingStageMessages: [
-				...(this.store.runs().find((current) => current.id === run.id)?.pendingStageMessages ??
+				...(known.get(run.id)?.pendingStageMessages ??
 					pendingStageMessagesForDurableRun(this.backend, run.id, root)),
 			],
 			stages: run.stages.map((stage) => ({ ...stage, workerExecution: execution })),
 		}));
 		const changed = published.some((run) => activity(known.get(run.id)) !== activity(run));
+		for (const run of published) this.claimRun?.(run.id);
 		for (const run of published) {
 			attempt.runs.add(run.id);
 			this.owners.set(run.id, work.id);
