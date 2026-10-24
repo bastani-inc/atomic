@@ -379,6 +379,134 @@ test("a standalone owner registers the routes of every run in one invocation gro
 	}
 });
 
+const HEALTHY_RUN_COUNT = 5;
+/** Runs whose route the broker refuses; only these may get a route connection of their own. */
+const REFUSED_RUN_COUNT = 1;
+/** The refused runs' further attempts the healthy routes are watched through, each over its run's own backoff. */
+const REFUSED_RUN_RETRIES = 2;
+const ROSTER_SAMPLE_MS = 50;
+
+/** A route-owner connection of one run of `scope`, as opposed to the one its invocation group shares. */
+function isOwnRouteConnectionRegister(scope: string, frame: WireFrame): boolean {
+	return frame.type === "register" && String(frame.returnAddress).includes(`${ROUTE_PREFIX}${scope}-`);
+}
+
+function openOwnRouteConnections(scope: string): number {
+	return proxy.openConnections((first) => isOwnRouteConnectionRegister(scope, first));
+}
+
+async function waitForOwnRouteConnectionsToClose(scope: string): Promise<void> {
+	await waitFor("every run's own route connection to close", () =>
+		openOwnRouteConnections(scope) === 0 ? true : undefined,
+	);
+}
+
+/**
+ * The refused runs of group `group` are owned by another live session under another capability, so the broker
+ * refuses every registration of them the owner under test makes until that session leaves. `publish` registers a
+ * route through that owner.
+ */
+async function watchHealthyRoutesBesideARefusedRun(
+	scope: string,
+	publish: (runId: string, capability: string | undefined, group: string) => Promise<void>,
+): Promise<void> {
+	const healthy = Array.from({ length: HEALTHY_RUN_COUNT }, (_, index) => runIdFor(scope, index));
+	const refused = Array.from({ length: REFUSED_RUN_COUNT }, (_, index) => runIdFor(scope, HEALTHY_RUN_COUNT + index));
+	const group = runGroup(healthy[0]!);
+	const observer = await connectObserver([group]);
+	const foreign = new IntercomClient(`route-burst-foreign-${++hostCounter}`);
+	foreign.on("error", () => {});
+	openClients.add(foreign);
+	await foreign.connect(registration(`route-burst-foreign-${hostCounter}`, group));
+	for (const runId of refused) await foreign.registerPendingStageRouteAcknowledged(runId, group, "foreign-capability");
+	try {
+		await Promise.all(healthy.map((runId) => publish(runId, undefined, group)));
+		await waitForRoster(observer, healthy);
+
+		for (const runId of refused) {
+			await assert.rejects(publish(runId, "refused-capability", group), /Pending-stage route is not authorized/);
+		}
+		await waitForRoster(observer, healthy);
+		const sharedRegisters = (): number =>
+			proxy.toBroker.filter(
+				({ frame }) => frame.type === "register" && String(frame.returnAddress).endsWith(`${ROUTE_PREFIX}${group}`),
+			).length;
+		const attempts = (runId: string): number =>
+			proxy.toBroker.filter(({ frame }) => frame.type === "register_pending_stage_route" && frame.runId === runId)
+				.length;
+		const sharedRegistersBefore = sharedRegisters();
+		const attemptsBefore = new Map(refused.map((runId) => [runId, attempts(runId)]));
+		let samples = 0;
+		let samplesMissingHealthy = 0;
+		await waitFor(`${REFUSED_RUN_RETRIES} more attempts of each refused run`, async () => {
+			const roster = await rosterRunIds(observer);
+			samples += 1;
+			if (!healthy.every((runId) => roster.has(runId))) samplesMissingHealthy += 1;
+			await sleep(ROSTER_SAMPLE_MS);
+			return refused.every((runId) => attempts(runId) >= attemptsBefore.get(runId)! + REFUSED_RUN_RETRIES)
+				? true
+				: undefined;
+		});
+
+		assert.equal(
+			samplesMissingHealthy,
+			0,
+			`healthy routes were missing from ${samplesMissingHealthy} of ${samples} roster samples`,
+		);
+		assert.equal(sharedRegisters(), sharedRegistersBefore, "the refused run must not end the group's connection");
+
+		// Once the other session leaves, a refused run registers over its own connection and stays there.
+		await foreign.disconnect();
+		for (const runId of refused) await publish(runId, "refused-capability-resumed", group);
+		await waitForRoster(observer, [...healthy, ...refused]);
+		await waitFor(`${REFUSED_RUN_COUNT} runs on connections of their own`, () =>
+			openOwnRouteConnections(scope) === REFUSED_RUN_COUNT ? true : undefined,
+		);
+		assert.equal(
+			sharedRegisters(),
+			sharedRegistersBefore,
+			"a registered refused run must not rejoin the group's connection",
+		);
+		const runsWithOwnConnection = new Set(
+			proxy.toBroker
+				.filter(({ frame }) => isOwnRouteConnectionRegister(scope, frame))
+				.map(({ frame }) => String(frame.returnAddress).split(ROUTE_PREFIX)[1]),
+		);
+		assert.equal(runsWithOwnConnection.size, REFUSED_RUN_COUNT, "only a refused run may get a connection of its own");
+		assert.deepEqual([...runsWithOwnConnection].sort(), [...refused].sort());
+	} finally {
+		await foreign.disconnect();
+	}
+}
+
+test("a standalone owner keeps every healthy run's route while another run of its group is refused (#3904)", async () => {
+	const { createWorkflowRouteOwner } = await import("../../packages/intercom/workflow-route-owner.js");
+	const owner = createWorkflowRouteOwner(repoRoot);
+	const scope = "39040003";
+	try {
+		await watchHealthyRoutesBesideARefusedRun(scope, (runId, capability, group) => {
+			const route = routePayload(runId, 1, capability, group);
+			owner.events.emit("atomic:workflow-pending-stage-route", route);
+			assert.ok(route.completion);
+			return route.completion;
+		});
+	} finally {
+		await owner.closeGroup(runGroup(runIdFor(scope, 0)));
+	}
+	await waitForOwnRouteConnectionsToClose(scope);
+});
+
+test("a host keeps every healthy run's route while another run of its group is refused (#3904)", async () => {
+	const host = createHost();
+	const scope = "39040004";
+	await withHost(host, () =>
+		watchHealthyRoutesBesideARefusedRun(scope, (runId, capability, group) =>
+			host.publishRoute(runId, 1, capability, group),
+		),
+	);
+	await waitForOwnRouteConnectionsToClose(scope);
+});
+
 test("a burst of route updates from many runs reaches the broker without a session listing per update", async () => {
 	const scope = "11110001";
 	const runIds = Array.from({ length: RUN_COUNT }, (_, index) => runIdFor(scope, index));

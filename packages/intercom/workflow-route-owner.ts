@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createEventBus, getBuiltinPackagePaths } from "@bastani/atomic";
 import {
 	IntercomClient,
+	IntercomPendingStageRouteRefusedError,
 	type PendingStageMessageRequest,
 	type PendingStageMessageResult,
 	type StickyLiveDeliveredNotice,
@@ -30,13 +31,22 @@ interface RouteState {
 	tail: Promise<void>;
 	retry?: ReturnType<typeof setTimeout>;
 	attempt: number;
-	/** The broker acknowledged this run's route on its group's current connection. */
+	/** The broker acknowledged this run's route on its connection's current client. */
 	registered: boolean;
+	/**
+	 * The broker refused this run's route, so it has a connection of its own and cannot end its group's. It stays there
+	 * once registered, until the run is retired: back on the group's connection, a later refusal would end that again.
+	 */
+	isolated: boolean;
 	readonly waiters: Set<(registered: boolean) => void>;
 }
 
-/** One broker connection per invocation group, shared by the routes of every run in it (#3904). */
-interface GroupConnection {
+/**
+ * One broker connection per invocation group, shared by the routes of every run in it (#3904), keyed by the group.
+ * A run whose route the broker refused registers over a connection of its own, keyed by the run.
+ */
+interface RouteConnection {
+	readonly key: string;
 	readonly group: string;
 	client?: IntercomClient;
 	connecting?: Promise<IntercomClient>;
@@ -71,17 +81,30 @@ export function createWorkflowRouteOwner(cwd: string) {
 	const config = loadConfig();
 	const id = randomUUID();
 	const routes = new Map<string, RouteState>();
-	const groups = new Map<string, GroupConnection>();
+	const connections = new Map<string, RouteConnection>();
 
 	const isCurrent = (state: RouteState): boolean => routes.get(state.route.runId) === state;
+	const connectionKey = (state: RouteState): string => (state.isolated ? state.route.runId : state.route.group);
 
-	function groupConnection(group: string): GroupConnection {
-		let connection = groups.get(group);
+	function connectionOf(state: RouteState): RouteConnection {
+		const key = connectionKey(state);
+		let connection = connections.get(key);
 		if (connection === undefined) {
-			connection = { group, acknowledged: false, routes: new Map() };
-			groups.set(group, connection);
+			connection = { key, group: state.route.group, acknowledged: false, routes: new Map() };
+			connections.set(key, connection);
 		}
+		connection.routes.set(state.route.runId, state);
 		return connection;
+	}
+
+	/** Leaves the run's connection; a run's own connection closes with it. */
+	function detach(state: RouteState): void {
+		const key = connectionKey(state);
+		const connection = connections.get(key);
+		connection?.routes.delete(state.route.runId);
+		if (!state.isolated || connection === undefined) return;
+		connections.delete(key);
+		void connection.client?.disconnect().catch(() => {});
 	}
 
 	function settle(state: RouteState, registered: boolean): void {
@@ -104,7 +127,7 @@ export function createWorkflowRouteOwner(cwd: string) {
 	}
 
 	/** The broker dropped every route this client owned; each run registers again over the next one. */
-	function drop(connection: GroupConnection, client: IntercomClient): void {
+	function drop(connection: RouteConnection, client: IntercomClient): void {
 		if (connection.client === client) {
 			connection.client = undefined;
 			connection.acknowledged = false;
@@ -116,7 +139,7 @@ export function createWorkflowRouteOwner(cwd: string) {
 		void client.disconnect().catch(() => {});
 	}
 
-	function connect(connection: GroupConnection): Promise<IntercomClient> {
+	function connect(connection: RouteConnection): Promise<IntercomClient> {
 		if (connection.client?.isConnected()) return Promise.resolve(connection.client);
 		connection.connecting ??= (async () => {
 			const [extensionDir] = getBuiltinPackagePaths({
@@ -127,8 +150,8 @@ export function createWorkflowRouteOwner(cwd: string) {
 			});
 			if (extensionDir === undefined) throw new Error("Intercom builtin package is unavailable");
 			await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs, undefined, extensionDir);
-			if (groups.get(connection.group) !== connection) throw closedError();
-			const client = new IntercomClient(`${id}:pending-stage-route:${connection.group}`);
+			if (connections.get(connection.key) !== connection) throw closedError();
+			const client = new IntercomClient(`${id}:pending-stage-route:${connection.key}`);
 			connection.client = client;
 			connection.acknowledged = false;
 			client.on("error", () => {});
@@ -161,7 +184,7 @@ export function createWorkflowRouteOwner(cwd: string) {
 					groups: [connection.group],
 					recipientPurpose: "control",
 				});
-				if (groups.get(connection.group) !== connection) throw closedError();
+				if (connections.get(connection.key) !== connection) throw closedError();
 			} catch (error) {
 				drop(connection, client);
 				throw error;
@@ -185,7 +208,7 @@ export function createWorkflowRouteOwner(cwd: string) {
 			.catch(() => {})
 			.then(async () => {
 				if (!isCurrent(state)) throw closedError();
-				const connection = groupConnection(route.group);
+				const connection = connectionOf(state);
 				const established =
 					connection.acknowledged && connection.client?.isConnected() ? connection.client : undefined;
 				let client: IntercomClient | undefined;
@@ -208,6 +231,12 @@ export function createWorkflowRouteOwner(cwd: string) {
 				} catch (error) {
 					// An established connection keeps its routes through one failed update; one that never
 					// had a route acknowledged, or that is gone, is replaced.
+					if (error instanceof IntercomPendingStageRouteRefusedError && !state.isolated && isCurrent(state)) {
+						// The refusal ended the group's connection; the run retries alone so it cannot end it again.
+						detach(state);
+						state.isolated = true;
+						connectionOf(state);
+					}
 					if (client !== undefined && (client !== established || !client.isConnected())) drop(connection, client);
 					scheduleRetry(state);
 					throw error;
@@ -222,14 +251,15 @@ export function createWorkflowRouteOwner(cwd: string) {
 		const route = payload as Route;
 		let state = routes.get(route.runId);
 		if (state === undefined) {
-			state = { route, tail: Promise.resolve(), attempt: 0, registered: false, waiters: new Set() };
+			state = { route, tail: Promise.resolve(), attempt: 0, registered: false, isolated: false, waiters: new Set() };
 			routes.set(route.runId, state);
 		} else if (state.route.group !== route.group) {
-			groups.get(state.route.group)?.routes.delete(route.runId);
+			detach(state);
+			state.isolated = false;
 			settle(state, false);
 		}
 		state.route = route;
-		groupConnection(route.group).routes.set(route.runId, state);
+		connectionOf(state);
 		route.completion = publish(state, route);
 	});
 	events.on("atomic:workflow-pending-stage-undeliverable", (payload) => {
@@ -239,7 +269,7 @@ export function createWorkflowRouteOwner(cwd: string) {
 		event.handled = true;
 		event.completion = (async () => {
 			await publish(state, state.route);
-			const client = groups.get(state.route.group)?.client;
+			const client = connections.get(connectionKey(state))?.client;
 			if (client === undefined || !client.isConnected()) return false;
 			const text = `Pending workflow stage could not receive intercom message: ${event.reason}`;
 			const result = await client.sendPendingStageNotification(
@@ -267,20 +297,26 @@ export function createWorkflowRouteOwner(cwd: string) {
 			return new Promise((resolve) => state.waiters.add(resolve));
 		},
 		async closeGroup(group: string): Promise<void> {
-			const connection = groups.get(group);
-			groups.delete(group);
 			const closing = [...routes.values()].filter((state) => state.route.group === group);
-			connection?.routes.clear();
+			const closingConnections = [...connections.values()].filter((connection) => connection.group === group);
+			for (const connection of closingConnections) {
+				connections.delete(connection.key);
+				connection.routes.clear();
+			}
 			for (const state of closing) {
 				routes.delete(state.route.runId);
 				clearTimeout(state.retry);
 				state.retry = undefined;
 				settle(state, false);
 			}
-			await connection?.client?.disconnect();
-			await connection?.connecting?.catch(() => {});
+			await Promise.all(
+				closingConnections.map(async (connection) => {
+					await connection.client?.disconnect();
+					await connection.connecting?.catch(() => {});
+				}),
+			);
 			await Promise.all(closing.map((state) => state.tail.catch(() => {})));
-			await connection?.client?.disconnect();
+			await Promise.all(closingConnections.map((connection) => connection.client?.disconnect()));
 		},
 	};
 }

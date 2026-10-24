@@ -1833,6 +1833,14 @@ class IntercomBroker {
             writeMessageIfOpen(socket, { type: "pending_stage_route_registered", requestId: routeRequestId });
           }
         };
+        // #3904: the refusal names the registration it answers, so a connection carrying many runs' routes knows which one.
+        const refuseRoute = (reason: string): void => {
+          writeMessageIfOpen(socket, {
+            type: "registration_failed",
+            reason,
+            ...(routeRequestId === undefined ? {} : { requestId: routeRequestId }),
+          });
+        };
         const owner = this.sessions.get(currentId);
         const existing = this.pendingStageRoutes.get(clientMessage.runId);
         const ownerGroup = normalizeGroup(owner?.registrationGroup);
@@ -1860,7 +1868,7 @@ class IntercomBroker {
             (activeExisting.group !== ownerGroup ||
               (activeExisting.capability !== clientMessage.capability && activeExisting.sessionId !== currentId)))
         ) {
-          writeMessageIfOpen(socket, { type: "registration_failed", reason: "Pending-stage route is not authorized" });
+          refuseRoute("Pending-stage route is not authorized");
           this.endRefusedConnection(socket, currentId, setId);
           return;
         }
@@ -1873,7 +1881,7 @@ class IntercomBroker {
           ) ||
             !clientMessage.stages.every((stage) => invocationOwnsGroup(ownerGroup, stage.group)))
         ) {
-          writeMessageIfOpen(socket, { type: "registration_failed", reason: "Invalid workflow-stage roster" });
+          refuseRoute("Invalid workflow-stage roster");
           this.endRefusedConnection(socket, currentId, setId);
           return;
         }
@@ -1885,7 +1893,7 @@ class IntercomBroker {
             normalizeGroup(clientMessage.group),
           )
         ) {
-          writeMessageIfOpen(socket, { type: "registration_failed", reason: "Invalid workflow possible-stage roster" });
+          refuseRoute("Invalid workflow possible-stage roster");
           this.endRefusedConnection(socket, currentId, setId);
           return;
         }

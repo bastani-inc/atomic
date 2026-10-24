@@ -83,6 +83,16 @@ export class IntercomWireProxy {
 		return held;
 	}
 
+	/** Connections still open whose first frame matches. */
+	openConnections(matches: FirstFrameMatcher): number {
+		let open = 0;
+		for (const connection of this.connections) {
+			const first = connection.firstFrame();
+			if (first !== undefined && matches(first)) open += 1;
+		}
+		return open;
+	}
+
 	countToBroker(type: string): number {
 		return this.toBroker.filter(({ frame }) => frame.type === type).length;
 	}

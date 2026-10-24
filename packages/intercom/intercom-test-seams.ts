@@ -13,7 +13,8 @@ export interface IntercomExtensionTestOverrides {
   beforeConnectAttempt?: (reason: IntercomConnectReason) => void | Promise<void>;
   /**
    * Bound on how long a connection attempt waits for the broker to answer `register`, chosen per client by its
-   * return address (the session id for the main client, `<session>:pending-stage-route:<group>` for the routes of an invocation group).
+   * return address (the session id for the main client, `<session>:pending-stage-route:<group>` for the routes of an invocation group,
+   * `<session>:pending-stage-route:<run>` for a run whose route the broker refused).
    * Returning `undefined` keeps the production bound, which is how a test makes one connection time out quickly.
    */
   connectTimeoutMs?: (returnAddress: string) => number | undefined;
