@@ -134,12 +134,12 @@ Swarm size scales with the task. For very complex work, or when you ask for heav
 
 These are the limits that apply:
 
-- **Children per parallel set.** One set holds up to `parallel.maxTasks` children (default 50, no hard cap). `parallel.concurrency` (default 3) and `parallel.runningCapacity` (default 4) bound how many run at once per parent. Raise all three, as shown in [Context and execution modes](#context-and-execution-modes).
+- **Children per parallel set.** One set holds up to `parallel.maxTasks` children (default 1000, no hard cap). `parallel.concurrency` and `parallel.runningCapacity` (each default 1000) bound how many run at once per parent. For more than 1000, raise all three, as shown in [Context and execution modes](#context-and-execution-modes).
 - **Nesting.** Subagent delegation is one level deep and cannot be configured: a child cannot call `subagent`. To nest teams, start them from workflow stages. Each stage can launch its own parallel set, and `ctx.workflow(...)` nests child workflows up to the workflow `maxDepth` (default 4, configurable).
 - **Workflow fan-out.** `ctx.parallel(...)` has no task-count limit. The workflow `defaultConcurrency` setting (default 3) or a per-call `concurrency` bounds how many stages run at once. Set `workflows.localWorkers` to run first-level child workflows in a pool of worker processes. See [Workflow configuration](/workflows/operations#workflow-configuration) and [Local workflow workers](/workflows/operations#local-workflow-workers).
 - **Teams.** Intercom groups have no member limit. Give each team its own `group` so its members coordinate internally. Team members reach their lead with `contact_supervisor`, the lead steers them, and the leads, as stages of one workflow, talk to each other in the invocation group.
 
-For example, 20 parallel workflow stages that each launch 50 children form a swarm of 1,000 agents. Running them all at once needs a stage concurrency of 20 and a subagent `concurrency` and `runningCapacity` of 50. Beyond these settings, the practical ceiling is your provider rate limits, machine memory, and any workflow admission limits you set.
+For example, 20 parallel workflow stages that each launch 50 children form a swarm of 1,000 agents. Running them all at once needs a stage concurrency of 20; the subagent defaults already allow 1000 running children per parent. Beyond these settings, the practical ceiling is your provider rate limits, machine memory, and any workflow admission limits you set.
 
 ### Single-child handoff
 
@@ -318,18 +318,18 @@ Fresh children inherit the invoking session's SDK configuration, resource-discov
 
 Top-level parallel calls apply these settings from `~/.atomic/agent/extensions/subagent/config.json` after expanding each task's optional `count`:
 
-- `parallel.maxTasks` defaults to 50 and limits the number of tasks in a parallel set. There is no hard upper cap; raise or lower it as needed.
-- `parallel.concurrency` defaults to 3 and limits how many children are dispatched at once. Per-call `concurrency` takes precedence.
-- `parallel.runningCapacity` defaults to 4 and limits simultaneously running child turns per parent.
+- `parallel.maxTasks` defaults to 1000 and limits the number of tasks in a parallel set. There is no hard upper cap; raise or lower it as needed.
+- `parallel.concurrency` defaults to 1000 and limits how many children are dispatched at once. Per-call `concurrency` takes precedence.
+- `parallel.runningCapacity` defaults to 1000 and limits simultaneously running child turns per parent.
 
-To run up to 100 children at once, raise both concurrency and running capacity as well as the task limit:
+To run more than 1000 children at once, raise concurrency and running capacity as well as the task limit:
 
 ```json
 {
   "parallel": {
-    "maxTasks": 100,
-    "concurrency": 100,
-    "runningCapacity": 100
+    "maxTasks": 2000,
+    "concurrency": 2000,
+    "runningCapacity": 2000
   }
 }
 ```

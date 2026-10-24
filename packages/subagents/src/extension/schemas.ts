@@ -192,7 +192,7 @@ export const SubagentParams = Type.Object(
 			Type.Integer({
 				minimum: 1,
 				description:
-					"Top-level PARALLEL mode only: max concurrent tasks. Defaults to config.parallel.concurrency or 3.",
+					"Top-level PARALLEL mode only: max concurrent tasks. Defaults to config.parallel.concurrency or 1000.",
 			}),
 		),
 		group: Type.Optional(GroupSchema),

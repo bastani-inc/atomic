@@ -607,16 +607,16 @@ Subagent configuration controls discovery, parallel limits, session storage, con
 ```json
 {
   "parallel": {
-    "maxTasks": 100,
-    "concurrency": 100,
-    "runningCapacity": 100
+    "maxTasks": 2000,
+    "concurrency": 2000,
+    "runningCapacity": 2000
   }
 }
 ```
 
-- `maxTasks` defaults to `50` and limits tasks per parallel set after `count` expansion. There is no hard upper cap.
-- `concurrency` defaults to `3` and limits how many children are dispatched at once. Per-call `concurrency` takes precedence.
-- `runningCapacity` defaults to `4` and limits simultaneously running child turns per parent. To run N children at once, raise both `concurrency` and `runningCapacity` to N, and set `maxTasks` to at least N.
+- `maxTasks` defaults to `1000` and limits tasks per parallel set after `count` expansion. There is no hard upper cap.
+- `concurrency` defaults to `1000` and limits how many children are dispatched at once. Per-call `concurrency` takes precedence.
+- `runningCapacity` defaults to `1000` and limits simultaneously running child turns per parent. To run more than 1000 children at once, raise `concurrency`, `runningCapacity` and `maxTasks` together.
 
 Running capacity is selected when a parent's first child is created. Restart Atomic after changing this setting to apply the new capacity.
 
