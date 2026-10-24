@@ -6,12 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Local worker leases now follow worker liveness. A worker that is still running and responding keeps its child even when the root is too busy to process its heartbeats in time, so a slow root no longer fences healthy workers with `Stale work lease`. A worker that has stopped responding is fenced after `localWorkers.leaseMs` milliseconds, which defaults to 30000 instead of the previous fixed 5000 ([#3888](https://github.com/bastani-inc/atomic/issues/3888))
+
 ### Fixed
 
 - A local workflow worker that dies while the root still owes it replies no longer crashes the root with `Error: write EPIPE`. The root fences that worker's attempt and replays the child from its last committed checkpoint on a replacement worker ([#3887](https://github.com/bastani-inc/atomic/issues/3887))
 - Each local worker's standard error is now kept in `worker-logs/<root run ID>/<worker ID>.log` in the workflow journal's directory, and the `Local worker exited before readiness`, `Local worker startup timed out` and `Local worker retry limit` errors name that file and include the end of the worker's output. Logs of workers that are still running when the pool shuts down normally are removed ([#3887](https://github.com/bastani-inc/atomic/issues/3887))
 - Local worker pools no longer fail with `Local worker startup timed out` on a workflow journal with a long history. Workers no longer read every run in the journal before reporting ready, the pool starts running children once one worker is ready and fails only when none starts, and the readiness timeout can be raised with `localWorkers.startupTimeoutMs` (30000 ms by default). The timeout is not saved with the root, so it can change between resumes ([#3887](https://github.com/bastani-inc/atomic/issues/3887))
 - Local workers bring their view of the root up to date by reading only the journal events added since their last read, instead of re-reading the root's whole history after every checkpoint and claim ([#3887](https://github.com/bastani-inc/atomic/issues/3887))
+- Resuming a pooled root after its host process crashed no longer leaves children leased to workers that died with it. The resumed root releases those attempts as soon as it starts its new pool, and their children are replayed from their last committed checkpoints on the new workers ([#3890](https://github.com/bastani-inc/atomic/issues/3890))
 - Opening or resuming a session with a large workflow journal no longer shows a blank screen and then crashes with `JavaScript heap out of memory`. Sessions, `/workflow status` and the `/workflow resume` picker now read each run's latest state instead of every event in the journal, and load a run's full history only when that run is resumed, recovered, inspected or opened ([#3892](https://github.com/bastani-inc/atomic/issues/3892))
 
 ## [0.9.42] - 2026-10-23

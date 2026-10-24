@@ -418,3 +418,51 @@ test("queue rejects missing initialization and mismatched child boundaries (#386
 		await f.close();
 	}
 });
+
+test("a new coordinator epoch releases every attempt leased by the previous incarnation (#3890)", async () => {
+	const f = await fixture();
+	try {
+		const pool = await openSqlPoolQueue(f.journal);
+		await pool.initialize(f.lease, 60_000);
+		await pool.enqueue(f.lease, work, boundary);
+		const held = (await pool.claim(f.lease, "dead-worker", [work], 60_000))!;
+		await f.database.run("UPDATE wf_leases SET renewed_at = 0");
+		const takeover = await f.journal.takeoverExpired("root", "resumed-coordinator", 60_000);
+		if (takeover.status !== "acquired") assert.fail("takeover failed");
+		assert.equal(await pool.releasePreviousIncarnations(f.lease).catch(() => "fenced"), "fenced");
+		assert.equal(await pool.releasePreviousIncarnations(takeover.lease), 1);
+		const [released] = await pool.inspect("root");
+		assert.equal(released?.state, "ready");
+		assert.equal(released?.worker, null);
+		await assert.rejects(pool.renew(takeover.lease, held, "late", 60_000), /Stale work lease/);
+		const next = await pool.claim(takeover.lease, "resumed-worker", [work], 60_000);
+		assert.equal(next?.epoch, takeover.lease.epoch);
+		assert.equal(next?.generation, held.generation + 1);
+		assert.equal(await pool.releasePreviousIncarnations(takeover.lease), 0);
+	} finally {
+		await f.close();
+	}
+});
+
+test("extending a live worker's lease survives a coordinator stall past expiry but not reassignment (#3888)", async () => {
+	const f = await fixture();
+	try {
+		const pool = await openSqlPoolQueue(f.journal);
+		await pool.initialize(f.lease, 60_000);
+		await pool.enqueue(f.lease, work, boundary);
+		const held = (await pool.claim(f.lease, "live-worker", [work], 60_000))!;
+		await f.database.run("UPDATE wf_runs_work SET expires_at = 1");
+		const extended = await pool.extend(f.lease, held, 60_000);
+		assert.equal(extended.generation, held.generation);
+		assert.equal(extended.expiresAt - extended.renewedAt, 60_000);
+		assert.equal(await pool.expire(f.lease, held), false);
+		await f.database.run("UPDATE wf_runs_work SET expires_at = 1");
+		assert.equal(await pool.expire(f.lease, held), true);
+		await assert.rejects(pool.extend(f.lease, held, 60_000), /Stale work lease/);
+		const replacement = (await pool.claim(f.lease, "replacement", [work], 60_000))!;
+		await assert.rejects(pool.extend(f.lease, held, 60_000), /Stale work lease/);
+		assert.equal((await pool.extend(f.lease, replacement, 60_000)).worker, "replacement");
+	} finally {
+		await f.close();
+	}
+});

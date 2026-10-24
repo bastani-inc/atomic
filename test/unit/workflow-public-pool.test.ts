@@ -213,3 +213,29 @@ test.skipIf(process.platform === "win32")(
 		}
 	},
 );
+
+test.skipIf(process.platform === "win32")(
+	"the worker lease is validated and can change when a root resumes (#3888)",
+	async () => {
+		const directory = makeTempDirectory("pool-resume-lease-");
+		const journal = await resolveRunJournal({ journal: { path: join(directory, "journal.sqlite") } });
+		const backend = await JournalDurableBackend.open(journal);
+		const options = { runId: "root", durableBackend: backend, store: createStore() };
+		try {
+			for (const leaseMs of [0, 1_999, 2_500.5, 2_147_483_648])
+				await assert.rejects(
+					run(definition, {}, { ...options, localWorkers: { count: 1, definitions: [], leaseMs } }),
+					/Invalid local worker lease/,
+				);
+			assert.equal((await journal.listRuns()).length, 0);
+			for (const leaseMs of [2_000, 120_000, undefined]) {
+				const localWorkers = { count: 1, definitions: [], leaseMs };
+				assert.equal((await run(definition, {}, { ...options, localWorkers })).status, "completed");
+			}
+			assert.deepEqual(backend.getWorkflow("root")?.resources?.localWorkers, { count: 1, definitions: [] });
+		} finally {
+			await backend.close();
+			removeTempDirectory(directory);
+		}
+	},
+);
