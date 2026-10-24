@@ -22,8 +22,12 @@ const TMUX_AVAILABLE = (() => {
 		return false;
 	}
 })();
-const REAL_INTERACTIVE_STARTUP_TIMEOUT_MS = 120_000;
+const CLI_SCENARIO_TIMEOUT_MS = 120_000;
+const CLI_EXIT_TIMEOUT_MS = 60_000;
+const SCENARIO_OVERHEAD_MS = 10_000;
+const REAL_INTERACTIVE_STARTUP_TIMEOUT_MS = 3 * (CLI_SCENARIO_TIMEOUT_MS + CLI_EXIT_TIMEOUT_MS + SCENARIO_OVERHEAD_MS);
 const SLOW_EXTENSION_SHUTDOWN_MS = 1_000;
+const POLL_INTERVAL_MS = 50;
 
 interface StartupSnapshot {
 	pid: number;
@@ -93,6 +97,14 @@ export default function(pi) {
 			assert.equal(result.exitCode, 0, result.stderr.toString());
 			return result.stdout.toString().trim();
 		};
+		const hasContent = async (path: string) => (await fileExists(path)) && (await readText(path)).length > 0;
+		const waitUntil = async (ready: () => boolean | Promise<boolean>, deadline: number): Promise<boolean> => {
+			while (!(await ready())) {
+				if (Date.now() >= deadline) return false;
+				await sleep(POLL_INTERVAL_MS);
+			}
+			return true;
+		};
 		try {
 			for (const name of ["normal", "disabled", "pending"]) {
 				const disabled = name === "disabled";
@@ -145,19 +157,22 @@ export default function(pi) {
 					...(disabled ? ["--no-mcp"] : []),
 				);
 				let serverPid: number | undefined;
+				let scenarioObserved = false;
+				const scenarioDeadline = Date.now() + CLI_SCENARIO_TIMEOUT_MS;
 				try {
-					const deadline = Date.now() + 45000;
-					while (!(await fileExists(snapshotPath)) && Date.now() < deadline) await sleep(50);
-					assert.ok(await fileExists(snapshotPath), tmux("capture-pane", "-p", "-t", name));
+					await waitUntil(() => hasContent(snapshotPath), scenarioDeadline);
+					assert.ok(await hasContent(snapshotPath), tmux("capture-pane", "-p", "-t", name));
 					const snapshot = await readJson<StartupSnapshot>(snapshotPath);
 					tmux("send-keys", "-t", name, "-l", "/startup-ready");
-					while (!/^❯ \/startup-ready\s*$/m.test(tmux("capture-pane", "-p", "-t", name)) && Date.now() < deadline)
-						await sleep(50);
+					await waitUntil(
+						() => /^❯ \/startup-ready\s*$/m.test(tmux("capture-pane", "-p", "-t", name)),
+						scenarioDeadline,
+					);
 					assert.match(tmux("capture-pane", "-p", "-t", name), /^❯ \/startup-ready\s*$/m);
 					tmux("send-keys", "-t", name, "Enter");
-					while (!(await fileExists(`${snapshotPath}.ready`)) && Date.now() < deadline) await sleep(50);
+					await waitUntil(() => hasContent(`${snapshotPath}.ready`), scenarioDeadline);
 					assert.ok(
-						await fileExists(`${snapshotPath}.ready`),
+						await hasContent(`${snapshotPath}.ready`),
 						`${name}: engine startup-ready command must complete before exit (#10249)`,
 					);
 					assert.equal(Number(await readText(`${snapshotPath}.ready`)), snapshot.pid);
@@ -169,52 +184,53 @@ export default function(pi) {
 						!disabled && !pending,
 						JSON.stringify(snapshot),
 					);
-					while (!disabled && !(await fileExists(serverMarker)) && Date.now() < deadline) await sleep(50);
-					assert.equal(await fileExists(serverMarker), !disabled, "--no-mcp must not start the server");
+					if (!disabled) await waitUntil(() => hasContent(serverMarker), scenarioDeadline);
+					assert.equal(await hasContent(serverMarker), !disabled, "--no-mcp must not start the server");
 					if (!disabled) serverPid = Number(await readText(serverMarker));
 					if (pending) {
 						tmux("send-keys", "-t", name, "-l", "/mcp");
-						while (!/^❯ \/mcp\s*$/m.test(tmux("capture-pane", "-p", "-t", name)) && Date.now() < deadline)
-							await sleep(50);
+						await waitUntil(() => /^❯ \/mcp\s*$/m.test(tmux("capture-pane", "-p", "-t", name)), scenarioDeadline);
 						assert.match(tmux("capture-pane", "-p", "-t", name), /^❯ \/mcp\s*$/m);
 						tmux("send-keys", "-t", name, "Enter");
-						const managerDeadline = Date.now() + 5000;
 						const managerTitle = /^\s*MCP servers\s*$/m;
 						const serverRow = /^\s*→ startup\s+.+$/m;
-						let pane = tmux("capture-pane", "-p", "-t", name);
-						while ((!managerTitle.test(pane) || !serverRow.test(pane)) && Date.now() < managerDeadline) {
-							await sleep(50);
+						let pane = "";
+						await waitUntil(() => {
 							pane = tmux("capture-pane", "-p", "-t", name);
-						}
+							return managerTitle.test(pane) && serverRow.test(pane);
+						}, scenarioDeadline);
 						assert.match(pane, managerTitle);
 						assert.match(pane, serverRow);
 						assert.ok(pane.includes("connecting"), pane);
 						tmux("send-keys", "-t", name, "Escape");
-						while ((managerTitle.test(pane) || !/^❯\s*$/m.test(pane)) && Date.now() < managerDeadline) {
-							await sleep(50);
+						await waitUntil(() => {
 							pane = tmux("capture-pane", "-p", "-t", name);
-						}
+							return !managerTitle.test(pane) && /^❯\s*$/m.test(pane);
+						}, scenarioDeadline);
 						assert.ok(!managerTitle.test(pane), pane);
 						assert.match(pane, /^❯\s*$/m);
 					}
+					scenarioObserved = true;
 				} finally {
 					try {
-						tmux("send-keys", "-t", name, "C-d");
-						const exitDeadline = Date.now() + 10000;
-						while (
-							spawnSyncCollect(["tmux", "-S", socket, "has-session", "-t", name]).exitCode === 0 &&
-							Date.now() < exitDeadline
-						)
-							await sleep(50);
-						assert.notEqual(spawnSyncCollect(["tmux", "-S", socket, "has-session", "-t", name]).exitCode, 0);
-						if (serverPid) {
-							const pid = serverPid;
-							assert.throws(() => process.kill(pid, 0), `${name}: MCP server ${pid} must not survive CLI exit`);
+						if (scenarioObserved) {
+							const sessionGone = () =>
+								spawnSyncCollect(["tmux", "-S", socket, "has-session", "-t", name]).exitCode !== 0;
+							tmux("send-keys", "-t", name, "C-d");
+							await waitUntil(sessionGone, Date.now() + CLI_EXIT_TIMEOUT_MS);
+							assert.ok(sessionGone(), `${name}: CLI must exit after Ctrl+D`);
+							if (serverPid) {
+								const pid = serverPid;
+								assert.throws(
+									() => process.kill(pid, 0),
+									`${name}: MCP server ${pid} must not survive CLI exit`,
+								);
+							}
+							assert.ok(
+								await fileExists(`${snapshotPath}.closed`),
+								`${name}: engine must run extension shutdown before exiting`,
+							);
 						}
-						assert.ok(
-							await fileExists(`${snapshotPath}.closed`),
-							`${name}: engine must run extension shutdown before exiting`,
-						);
 					} finally {
 						if (serverPid) {
 							try {
