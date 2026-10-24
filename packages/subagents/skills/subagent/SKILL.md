@@ -338,7 +338,7 @@ Peer asks and one blocking supervisor request may wait concurrently in the same 
 
 Children coordinate spontaneously: they discover peers with `list` and talk to them without waiting for the parent to name them. Launch related work as one parallel set (or an explicit `group`) so the children share a group. Use `group: true` to give one parallel set its own private group, or a named group to let later launches join the same conversation.
 
-Scale the swarm with the task. For very complex work or requested heavy parallelism, run hundreds or thousands of agents that self-organize into teams and coordinate peer-to-peer like an organization. A child cannot call `subagent`, so nest teams through workflow stages (each runs its own parallel set) and child workflows up to `maxDepth`. Raise `parallel.maxTasks` (each defaults to 1000) for sets wider than 1000; see the Scaling a swarm section of the user subagents guide.
+Scale the swarm with the task. For very complex work or requested heavy parallelism, run hundreds or thousands of agents that self-organize into teams and coordinate peer-to-peer like an organization. A child cannot call `subagent`, so nest teams through workflow stages (each runs its own parallel set) and child workflows up to `maxDepth`. `parallel.maxTasks`, `parallel.concurrency` and `parallel.runningCapacity` each default to 1000; to run more than 1000 children at once, raise all three; see the Scaling a swarm section of the user subagents guide.
 
 If intercom messages do not show up, check the bridge from the intercom side with `intercom({ action: "status" })`.
 
