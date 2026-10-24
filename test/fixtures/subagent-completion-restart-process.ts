@@ -56,7 +56,6 @@ try {
 	process.stdout.write(
 		`RESTART RESULT ${JSON.stringify({ sessionFile: manager.getSessionFile(), taskIds, notices: notices() })}\n`,
 	);
-	await harness.session.prompt("acknowledged");
 } finally {
 	await harness.cleanup();
 }

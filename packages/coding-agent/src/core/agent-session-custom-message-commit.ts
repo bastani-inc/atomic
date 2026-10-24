@@ -6,6 +6,7 @@ import {
 	queueProtectedStreamingCustomMessages,
 	triggerProtectedStreamingCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
+import { deliverQueuedInputIfIdle } from "./agent-session-prompt.ts";
 import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.js";
 import type { CustomMessage } from "./messages.ts";
 import { TASK_COMPLETION_MESSAGE_TYPE } from "./tasks/completion.js";
@@ -145,6 +146,8 @@ export async function commitAdmittedCustomMessage<T>(
 			appMessage,
 			options?.deliverAs === "followUp" ? "followUp" : "steer",
 		);
+		// The durable card append can yield past the run's last queue drain.
+		if (!self.isStreaming) deliverQueuedInputIfIdle(self);
 	} else if ((self.isStreaming || self._isPreparingRun) && options?.persistWhenStreaming === true) {
 		await appendDurableStageAdmission(self, appMessage);
 	} else if ((self.isStreaming || self._isPreparingRun) && options?.triggerTurn !== false) {
@@ -247,6 +250,7 @@ export async function commitAdmittedCustomMessages<T>(
 		self._pendingCustomMessages.push(...appMessages);
 	} else if ((self.isStreaming || self._isPreparingRun) && useProtectedReconciliation) {
 		await queueProtectedStreamingCustomMessages(self, appMessages, delivery);
+		if (!self.isStreaming) deliverQueuedInputIfIdle(self);
 	} else if ((self.isStreaming || self._isPreparingRun) && options?.persistWhenStreaming === true) {
 		for (const item of appMessages) await self._appendCustomMessage(item);
 	} else if ((self.isStreaming || self._isPreparingRun) && options?.triggerTurn !== false) {
