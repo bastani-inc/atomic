@@ -310,6 +310,8 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		}
 
 		this._isPreparingRun = "user";
+		// From here, input arriving during preparation queues behind this run (#3919).
+		this._workflowStageAwaitingFirstPrompt = false;
 		preparingRun = true;
 		// Check if we need to compact before sending (catches aborted responses)
 		const lastAssistant = this._findLastAssistantMessage();

@@ -234,6 +234,8 @@ class AgentSessionBase {
 	protected _tempStorageLease: ProtectedPathLease | undefined;
 	protected _workflowStageAdmission: WorkflowStageAdmissionBoundary | undefined;
 	protected _subagentMessageAdmission: WorkflowStageAdmissionBoundary | undefined;
+	/** A fresh workflow stage whose own prompt has not started its first run (#3919). */
+	protected _workflowStageAwaitingFirstPrompt = false;
 	protected _agentTaskHost: import("./tasks/agent-adapter.js").AgentTaskHost | undefined;
 	protected _parentCommandTaskOwner: import("./tasks/child-command-owner.js").ChildCommandTaskOwner | undefined;
 	protected _resourceAdmission: import("./sdk-types.ts").ResourceAdmission | undefined;
@@ -324,6 +326,10 @@ class AgentSessionBase {
 			this._workflowStageAdmission =
 				stageContext?.messageAdmission?.boundary ??
 				(stageContext ? WorkflowStageAdmissionBoundary.restore(this.sessionManager.getBranch()) : undefined);
+			// #3919: a fresh stage is live before its runner dispatches the stage prompt. Turn-starting
+			// input that arrives in that gap is startup context for the prompt's turn, not a turn of its own.
+			this._workflowStageAwaitingFirstPrompt =
+				stageContext !== undefined && !this.sessionManager.getBranch().some((entry) => entry.type === "message");
 			if (stageContext) {
 				this._workflowStageAdmission?.bindTaskIdentity(
 					this.sessionManager.getSessionId(),

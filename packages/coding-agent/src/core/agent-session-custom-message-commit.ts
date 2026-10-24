@@ -36,6 +36,16 @@ async function commitPriorityMessage(session: AgentSession, message: CustomMessa
 	}
 }
 
+/** #3919: before a fresh stage's own prompt starts its first run, turn-starting input is that run's startup context. */
+function holdsForFirstStagePrompt(session: AgentSession, options: SendMessageOptions | undefined): boolean {
+	return (
+		session._workflowStageAwaitingFirstPrompt &&
+		options?.triggerTurn === true &&
+		options.excludeFromContext !== true &&
+		options.deliverAs !== "nextTurn"
+	);
+}
+
 /** Commit one delivery whose source generation already granted admission. */
 export async function commitAdmittedCustomMessage<T>(
 	session: AgentSession,
@@ -45,6 +55,10 @@ export async function commitAdmittedCustomMessage<T>(
 	const owner = resolveWorkflowStageDeliveryTarget(session);
 	if (owner !== session) return commitAdmittedCustomMessage(owner, appMessage, options);
 	const self = session;
+	if (holdsForFirstStagePrompt(self, options)) {
+		await appendDurableStageAdmission(self, appMessage);
+		return;
+	}
 	const useProtectedReconciliation =
 		options?.persistWhenStreaming === true &&
 		options.excludeFromContext !== true &&
@@ -159,6 +173,10 @@ export async function commitAdmittedCustomMessages<T>(
 	const owner = resolveWorkflowStageDeliveryTarget(session);
 	if (owner !== session) return commitAdmittedCustomMessages(owner, appMessages, options);
 	const self = session;
+	if (holdsForFirstStagePrompt(self, options)) {
+		for (const item of appMessages) await appendDurableStageAdmission(self, item);
+		return;
+	}
 	const useProtectedReconciliation =
 		options?.persistWhenStreaming === true && options.triggerTurn === true && options.excludeFromContext !== true;
 	const delivery = options?.deliverAs === "followUp" ? "followUp" : "steer";

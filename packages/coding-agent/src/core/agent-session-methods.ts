@@ -639,6 +639,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_lastAssistantMessage: AssistantMessage | undefined;
 	_tempStorageLease: import("./tools/session-temp-dir.ts").ProtectedPathLease | undefined;
 	_workflowStageAdmission: import("./workflow-stage-admission.ts").WorkflowStageAdmissionBoundary | undefined;
+	_workflowStageAwaitingFirstPrompt: boolean;
 	_agentTaskHost: import("./tasks/agent-adapter.js").AgentTaskHost | undefined;
 	_parentCommandTaskOwner: import("./tasks/child-command-owner.js").ChildCommandTaskOwner | undefined;
 	_resourceAdmission: import("./sdk-types.ts").ResourceAdmission | undefined;
