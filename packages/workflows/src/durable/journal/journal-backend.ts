@@ -27,6 +27,10 @@ import type {
 	DurableWorkflowStatus,
 } from "../types.js";
 import {
+	decodePendingStageDeliveries,
+	encodePendingStageDeliveries,
+	hasPendingStageDeliveryDelta,
+	type JournalPendingStageMessage,
 	type NON_SNAPSHOT_EVENT_TYPES,
 	type RunJournalVersions,
 	type RunSnapshotTail,
@@ -35,12 +39,6 @@ import {
 } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import { MemoryRunJournal } from "./memory-run-journal.js";
-import {
-	decodePendingStageDeliveries,
-	encodePendingStageDeliveries,
-	hasPendingStageDeliveryDelta,
-	type JournalPendingStageMessage,
-} from "./pending-delivery-delta.js";
 import {
 	RUN_EVENT_TYPES as E,
 	JournalCasConflictError,
