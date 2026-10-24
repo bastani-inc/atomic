@@ -1437,6 +1437,19 @@ Supplies runtime adapters, execution policy, persistence, MCP, cancellation, gra
 
 `LocalWorkerOptions` is `{ count: number, definitions: { path: string, exportName: string }[], startupTimeoutMs?: number, leaseMs?: number }`, where `count` and `startupTimeoutMs` are positive integers and `leaseMs` is an integer of at least `2000`. `WorkflowAdmissionOptions` contains optional root `limits`, user-wide `userLimits`, `userDatabase`, and host thresholds. `limits` and `userLimits` accept `session` and `process` counts.
 
+`ctx.workflow(child)` throws `WorkflowInfrastructureError` when the local worker pool cannot run a child because of a fault in the pool or the runtime around it. A failure of the child's own logic is never reported this way. The pool first replays an unfinished child from its last checkpoint on a replacement worker (up to three attempts), and throws only when it cannot absorb the fault. The error has `retryable: true` and a `code` naming the fault: `worker_lost`, `worker_cleanup_unconfirmed`, `worker_retry_limit`, `worker_startup_failed`, `stale_work_lease`, `intercom_unavailable`, or `storage_unavailable`. `isRetryableWorkflowError(error)` returns `true` when the error, or any error in its `cause` chain, is a `WorkflowInfrastructureError`:
+
+```ts
+import { isRetryableWorkflowError } from "@bastani/atomic/workflows";
+
+try {
+  await ctx.workflow(child, { inputs });
+} catch (error) {
+  if (!isRetryableWorkflowError(error)) throw error;
+  requeue(inputs);
+}
+```
+
 `onStageSessionEvent` streams every agent-session event from each stage (for example `message_update`, `tool_execution_start`, and `tool_execution_end`), tagged with the stage's `runId` and `stageId`. `AgentSessionEvent` is exported by `@bastani/atomic`. The stream continues when a fallback model replaces a stage's session. Stages in nested `ctx.workflow(...)` runs report the child run's `runId`. Exceptions thrown by the listener, and rejections from an async listener, are ignored and do not affect the stage.
 
 The public authoring declaration intentionally excludes runtime-only executor fields such as `defaultSessionDir`, `gitWorktreeSetupCache`, `durableBackend`, `durableScope`, and `onStageSession`.

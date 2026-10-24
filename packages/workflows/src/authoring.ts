@@ -230,6 +230,8 @@ export declare function run<
 	inputs: Readonly<NoInfer<WorkflowRunInputArgument<TRunInputs>>>,
 	opts?: RunOpts,
 ): Promise<RunResult<TOutputs>>;
+export type { WorkflowInfrastructureFault } from "./shared/workflow-infrastructure-error.js";
+export { isRetryableWorkflowError, WorkflowInfrastructureError } from "./shared/workflow-infrastructure-error.js";
 export declare function loadWorkerWorkflow(path: string, exportName?: string): Promise<AnyWorkflowDefinition>;
 export type { LocalWorkerOptions, WorkflowAdmissionOptions } from "./workers/public-options.js";
 /**

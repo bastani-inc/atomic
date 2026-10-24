@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `ctx.workflow(child)` now throws a `WorkflowInfrastructureError` with `retryable: true` and a fault `code` when the local worker pool cannot run a child because of a fault in the pool or its runtime (for example `Local worker retry limit`, `Local worker cleanup was not confirmed`, `Stale work lease`, `Intercom runtime no longer active` or `Storage unavailable`), and `isRetryableWorkflowError(error)` recognizes it anywhere in an error's `cause` chain. Failures of a child's own logic keep throwing a plain `Error` ([#3889](https://github.com/bastani-inc/atomic/issues/3889))
+
 ### Changed
 
 - Local worker leases now follow worker liveness. A worker that is still running and responding keeps its child even when the root is too busy to process its heartbeats in time, so a slow root no longer fences healthy workers with `Stale work lease`. A worker that has stopped responding is fenced after `localWorkers.leaseMs` milliseconds, which defaults to 30000 instead of the previous fixed 5000 ([#3888](https://github.com/bastani-inc/atomic/issues/3888))
@@ -18,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Local workers bring their view of the root up to date by reading only the journal events added since their last read, instead of re-reading the root's whole history after every checkpoint and claim ([#3887](https://github.com/bastani-inc/atomic/issues/3887))
 - Resuming a pooled root after its host process crashed no longer leaves children leased to workers that died with it. The resumed root releases those attempts as soon as it starts its new pool, and their children are replayed from their last committed checkpoints on the new workers ([#3890](https://github.com/bastani-inc/atomic/issues/3890))
 - Opening or resuming a session with a large workflow journal no longer shows a blank screen and then crashes with `JavaScript heap out of memory`. Sessions, `/workflow status` and the `/workflow resume` picker now read each run's latest state instead of every event in the journal, and load a run's full history only when that run is resumed, recovered, inspected or opened ([#3892](https://github.com/bastani-inc/atomic/issues/3892))
+- A local worker whose process exit cannot be confirmed during lease recovery no longer fails every child waiting on the pool with `Local worker cleanup was not confirmed`. The pool keeps the attempt fenced and retries recovery until the worker exits ([#3889](https://github.com/bastani-inc/atomic/issues/3889))
 
 ## [0.9.42] - 2026-10-23
 

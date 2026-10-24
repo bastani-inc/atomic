@@ -161,17 +161,12 @@ export function createChildWorkflowRunner(input: {
 				(childRun.status === "failed" && childRun.exited !== true)
 			) {
 				const failedChildStage = childRun.stages.find((stage) => stage.failureKind !== undefined);
-				throw new Error(
-					`atomic-workflows: child workflow "${childName}" (${child.name}) failed with status ${childRun.status}${childRun.error !== undefined ? `: ${childRun.error}` : ""}`,
-					{
-						cause: {
-							...(failedChildStage?.failureKind !== undefined ? { code: failedChildStage.failureKind } : {}),
-							...(failedChildStage?.failureMessage !== undefined
-								? { message: failedChildStage.failureMessage }
-								: {}),
-						},
-					},
-				);
+				const message = `atomic-workflows: child workflow "${childName}" (${child.name}) failed with status ${childRun.status}${childRun.error !== undefined ? `: ${childRun.error}` : ""}`;
+				const cause = {
+					...(failedChildStage?.failureKind !== undefined ? { code: failedChildStage.failureKind } : {}),
+					...(failedChildStage?.failureMessage !== undefined ? { message: failedChildStage.failureMessage } : {}),
+				};
+				throw new Error(message, { cause });
 			}
 
 			const outputs = selectWorkflowOutputs(child, childRun.result);

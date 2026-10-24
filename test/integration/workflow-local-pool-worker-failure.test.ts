@@ -8,6 +8,7 @@ import { JournalDurableBackend } from "../../packages/workflows/src/durable/jour
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import type { RunResult } from "../../packages/workflows/src/runs/foreground/executor-types.js";
+import { isRetryableWorkflowError, WorkflowInfrastructureError } from "../../packages/workflows/src/sdk-surface.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
@@ -274,4 +275,55 @@ test.skipIf(process.platform === "win32")(
 		}
 	},
 	LOCAL_WORKER_STARTUP_TEST_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a pool fault it cannot absorb reaches every waiting ctx.workflow as a typed retryable error (#3889)",
+	async () => {
+		const directory = makeTempDirectory("pool-typed-fault-");
+		const path = join(directory, "journal.sqlite");
+		const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
+		const childPath = fileURLToPath(new URL("../fixtures/pool-crashing-child.ts", import.meta.url));
+		const child = await loadWorkerDefinition({
+			path: childPath,
+			exportName: "crashingChild",
+			digest: await definitionDigest(childPath),
+		});
+		const pool = new LocalWorkerPool(backend, {
+			journalPath: path,
+			workers: 2,
+			definitions: [{ definition: child, path: childPath, exportName: "crashingChild" }],
+		});
+		const caught: unknown[] = [];
+		const parent = workflow({
+			name: "pool-typed-fault-root",
+			description: "",
+			inputs: {},
+			outputs: {},
+			async run(ctx) {
+				const settled = await Promise.allSettled([ctx.workflow(child), ctx.workflow(child)]);
+				for (const outcome of settled) if (outcome.status === "rejected") caught.push(outcome.reason);
+				return {};
+			},
+		});
+		try {
+			await run(
+				parent,
+				{},
+				{ runId: "pool-typed-fault-root", cwd: directory, store: createStore(), durableBackend: backend },
+			);
+			assert.equal(caught.length, 2, "both concurrent children fail");
+			for (const error of caught) {
+				assert.ok(isRetryableWorkflowError(error), String(error));
+				assert.ok(error instanceof WorkflowInfrastructureError);
+				assert.equal(error.code, "worker_retry_limit");
+				assert.match(error.message, /Local worker retry limit/);
+			}
+		} finally {
+			await pool.close().catch(() => {});
+			await backend.close();
+			removeTempDirectory(directory);
+		}
+	},
+	WORKER_FAILURE_ROOT_TIMEOUT_MS,
 );
