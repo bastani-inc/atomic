@@ -106,7 +106,7 @@ workflow({
 
 When neither `enabled` nor `delivery` is set, direct `parallel` runs default to `control-and-result` when Intercom is available; otherwise delivery is off. Treat Intercom payloads from direct runs as user-visible workflow output.
 
-Live workflow stages process incoming messages as priority input, cancelling the current model call or cancellable tool first. A child's message releases its parent's foreground wait without cancelling the child. Admission failures return an actionable error to a blocking asker instead of waiting ten minutes. Claimed single-child parent handoffs still end that child.
+Live workflow stages receive incoming messages according to the sender's `delivery` option: `"steer"` (default) after the current tool calls finish, `"followUp"` after the stage's agent stops, and `"interrupt"` by cancelling its current model call or cancellable tool first. See [Intercom](/intercom) for when to use each. A child's message releases its parent's foreground wait without cancelling the child. Admission failures return an actionable error to a blocking asker instead of waiting ten minutes. Claimed single-child parent handoffs still end that child.
 
 ### Subagent Control Notices
 

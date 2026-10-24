@@ -115,11 +115,19 @@ export interface BrokerStatusReport {
 	multiNode: BrokerMultiNodeStatus;
 }
 
+export type IntercomDeliveryMode = "steer" | "followUp" | "interrupt";
+
 export interface Message {
   id: string;
   timestamp: number;
   replyTo?: string;
   expectsReply?: boolean;
+  /**
+   * How a busy recipient receives this message. `steer` (default when absent) queues it until the current turn's tool
+   * calls finish, never cancelling in-flight work. `followUp` waits until the recipient's agent finishes and stops.
+   * `interrupt` cancels the current model call or cancellable tool call and handles the message next.
+   */
+  delivery?: IntercomDeliveryMode;
   /** Correlated delivery refusal: settles a waiting ask, otherwise surfaces as send feedback. */
   replyError?: string;
   source?: {

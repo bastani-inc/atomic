@@ -27,6 +27,7 @@ const sender: SessionInfo = {
 const amendment: Message = {
 	id: "active-amendment",
 	timestamp: 1,
+	delivery: "interrupt",
 	content: { text: "  /keep-this-literal\nSTEERING-NONCE  " },
 };
 

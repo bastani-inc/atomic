@@ -22,6 +22,12 @@ export function isMessage(value: unknown): value is Message {
   if (typeof message.id !== "string" || typeof message.timestamp !== "number") return false;
   if (message.replyTo !== undefined && typeof message.replyTo !== "string") return false;
   if (message.expectsReply !== undefined && typeof message.expectsReply !== "boolean") return false;
+  if (
+    message.delivery !== undefined
+    && message.delivery !== "steer"
+    && message.delivery !== "followUp"
+    && message.delivery !== "interrupt"
+  ) return false;
   if (message.replyError !== undefined && typeof message.replyError !== "string") return false;
   if (message.source !== undefined && !isMessageSource(message.source)) return false;
   if (typeof message.content !== "object" || message.content === null) return false;

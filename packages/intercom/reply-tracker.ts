@@ -12,6 +12,7 @@ export class ReplyTracker {
   private readonly pendingAsks = new Map<string, IntercomContext>();
   private readonly pendingTurnContexts: IntercomContext[] = [];
   private currentTurnContext: IntercomContext | null = null;
+  private turnContextAdmitted = false;
 
   constructor(private readonly askTimeoutMs = ASK_REPLY_TIMEOUT_MS) {}
 
@@ -38,6 +39,26 @@ export class ReplyTracker {
   beginTurn(now = Date.now()): void {
     this.pruneExpired(now);
     this.currentTurnContext = this.pendingTurnContexts.shift() ?? null;
+    this.turnContextAdmitted = false;
+  }
+
+  /**
+   * An inbound message entered this turn's model context. Steer, followUp, and interrupt
+   * deliveries reach turns out of arrival order, so the first admitted message with a queued
+   * context becomes the turn's reply target; any context `beginTurn` took early goes back.
+   */
+  admitTurnMessage(messageId: string): void {
+    if (this.turnContextAdmitted) return;
+    if (this.currentTurnContext?.message.id === messageId) {
+      this.turnContextAdmitted = true;
+      return;
+    }
+    const index = this.pendingTurnContexts.findIndex((context) => context.message.id === messageId);
+    if (index < 0) return;
+    const [admitted] = this.pendingTurnContexts.splice(index, 1);
+    if (this.currentTurnContext) this.pendingTurnContexts.unshift(this.currentTurnContext);
+    this.currentTurnContext = admitted!;
+    this.turnContextAdmitted = true;
   }
 
   endTurn(): void {

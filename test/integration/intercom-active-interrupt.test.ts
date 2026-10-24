@@ -9,6 +9,7 @@ import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/
 import { createHarness, getMessageText, type HarnessOptions } from "../../packages/coding-agent/test/suite/harness.js";
 import intercomHeavy from "../../packages/intercom/index-heavy.js";
 import type { IntercomExtensionTestOverrides } from "../../packages/intercom/intercom-test-seams.js";
+import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
 import { createDispatchCounter } from "../helpers/intercom-interrupt-probe.js";
 
@@ -25,7 +26,19 @@ const peer: SessionInfo = {
 	startedAt: 1,
 	lastActivity: 1,
 };
+/** Sender-requested priority input: `delivery: "interrupt"` cancels the receiver's active work. */
 function message(id: string, action: Action, text = `PRIORITY-${id}`): Message {
+	return {
+		id,
+		timestamp: Date.now(),
+		delivery: "interrupt",
+		content: { text },
+		...(action === "ask" ? { expectsReply: true } : {}),
+	};
+}
+
+/** No `delivery` field: the default queued steer. */
+function queuedMessage(id: string, action: Action, text: string): Message {
 	return { id, timestamp: Date.now(), content: { text }, ...(action === "ask" ? { expectsReply: true } : {}) };
 }
 
@@ -82,7 +95,7 @@ async function receiver(
 		ended,
 		boundary,
 		context: ctx,
-		deliver: (entry: Message) => inbound(ctx, peer, entry),
+		deliver: (entry: Message, from: SessionInfo = peer) => inbound(ctx, from, entry),
 		async close(execution: Promise<void>) {
 			ended.abort();
 			void h.session.abort().catch(() => {});
@@ -133,11 +146,11 @@ function cancellableTool(record: { calls: number; signal?: AbortSignal; complete
 	};
 }
 
-// Amended 2x2 matrix: both actions and both receivers cancel supported active
-// work immediately and continue the same task/stage with the message.
+// Amended 2x2 matrix: with an explicit `delivery: "interrupt"`, both actions and both receivers
+// cancel supported active work immediately and continue the same task/stage with the message.
 for (const kind of ["child", "workflow-stage"] as const) {
 	for (const action of ["send", "ask"] as const) {
-		test(`${action} to an active ${kind} cancels its long-running tool and continues the original task`, async () => {
+		test(`${action} with delivery interrupt to an active ${kind} cancels its long-running tool and continues the original task`, async () => {
 			const record = { calls: 0, completed: 0 } as { calls: number; signal?: AbortSignal; completed: number };
 			const work = cancellableTool(record);
 			const h = await receiver(kind, [work.tool]);
@@ -664,3 +677,151 @@ test("a terminal workflow generation does not reopen for priority input", async 
 		await h.close(execution);
 	}
 });
+
+// Sender-chosen delivery without interrupt, e.g. peer-to-peer swarm messaging: the
+// in-flight tool call always completes. The default steer is handled right after the
+// tool's turn; followUp waits until the agent would otherwise stop.
+for (const kind of ["child", "workflow-stage"] as const) {
+	for (const action of ["send", "ask"] as const) {
+		for (const delivery of [undefined, "followUp"] as const) {
+			const mode = delivery ?? "default steer";
+			test(`${mode} ${action} to an active ${kind} lets its long-running tool finish and is delivered afterwards (#3921)`, async () => {
+				const record = { calls: 0, completed: 0 } as { calls: number; signal?: AbortSignal; completed: number };
+				const work = cancellableTool(record);
+				const h = await receiver(kind, [work.tool]);
+				const seenAtDispatch: number[] = [];
+				const sees = (context: { messages: object[] }) =>
+					context.messages.some((m) => getMessageText(m).includes("PEER-"));
+				const dispatches = createDispatchCounter([
+					() => fauxAssistantMessage(fauxToolCall("long_work", {}), { stopReason: "toolUse" }),
+					(context) => {
+						if (sees(context)) seenAtDispatch.push(2);
+						return fauxAssistantMessage("finished the task");
+					},
+					(context) => {
+						if (sees(context)) seenAtDispatch.push(3);
+						return fauxAssistantMessage("handled follow-up");
+					},
+				]);
+				h.setResponses(dispatches.steps(5));
+				const execution = h.session.prompt("original task");
+				try {
+					await work.started.promise;
+					await h.deliver({
+						...queuedMessage(`peer-${kind}-${action}-${mode}`, action, `PEER-${kind}-${action}`),
+						...(delivery === undefined ? {} : { delivery }),
+					});
+					await vi.waitFor(() =>
+						assert.equal(
+							h.sessionManager
+								.getEntries()
+								.filter((e) => e.type === "custom_message" && e.customType === "intercom_message").length,
+							1,
+							"the message is saved while the tool runs",
+						),
+					);
+					await new Promise((resolve) => setTimeout(resolve, 50));
+					assert.equal(record.signal?.aborted, false, "the message must not cancel the running tool");
+					work.cleanup.resolve();
+					await execution;
+					assert.equal(record.calls, 1);
+					assert.equal(record.completed, 1, "the tool call completes naturally");
+					assert.equal(dispatches.counts.aborted, 0, "no model dispatch is cancelled");
+					if (delivery === "followUp") {
+						assert.deepEqual(seenAtDispatch, [3], "followUp waits until the agent finished and stopped");
+						assert.equal(getMessageText(h.session.messages.at(-1)), "handled follow-up");
+					} else {
+						assert.deepEqual(seenAtDispatch, [2], "steer is delivered right after the tool call's turn");
+						assert.equal(getMessageText(h.session.messages.at(-1)), "finished the task");
+					}
+				} finally {
+					work.cleanup.resolve();
+					await h.close(execution);
+				}
+			});
+		}
+	}
+}
+
+// #3921 review: a followUp ask A that arrives before a steer (or interrupt) ask B reaches the
+// model after B. Each turn's implicit reply must answer the ask the model actually sees.
+for (const kind of ["child", "workflow-stage"] as const) {
+	for (const second of ["steer", "interrupt"] as const) {
+		test(`followUp ask then ${second} ask to an active ${kind}: each implicit reply reaches the visible asker (#3921)`, async () => {
+			const trackers = new Set<ReplyTracker>();
+			const queueTurnContext = ReplyTracker.prototype.queueTurnContext;
+			const spy = vi.spyOn(ReplyTracker.prototype, "queueTurnContext").mockImplementation(function (
+				this: ReplyTracker,
+				context,
+			) {
+				trackers.add(this);
+				queueTurnContext.call(this, context);
+			});
+			const peerA: SessionInfo = { ...peer, id: "peer-a", name: "peer-a" };
+			const peerB: SessionInfo = { ...peer, id: "peer-b", name: "peer-b" };
+			const record = { calls: 0, completed: 0 } as { calls: number; signal?: AbortSignal; completed: number };
+			const work = cancellableTool(record);
+			const h = await receiver(kind, [work.tool]);
+			const routed: Array<{ visible: string[]; replyTo: string; to: string }> = [];
+			const observe = (context: { messages: object[] }, text: string) => {
+				const visible = ["ASK-A", "ASK-B"].filter((marker) =>
+					context.messages.some((m) => getMessageText(m).includes(marker)),
+				);
+				assert.equal(trackers.size, 1);
+				const tracker = [...trackers][0]!;
+				const target = tracker.resolveReplyTarget({});
+				routed.push({ visible, replyTo: target.message.id, to: target.from.id });
+				tracker.markReplied(target.message.id);
+				return fauxAssistantMessage(text);
+			};
+			const dispatches = createDispatchCounter([
+				() => fauxAssistantMessage(fauxToolCall("long_work", {}), { stopReason: "toolUse" }),
+				(context) => observe(context, "answered B"),
+				(context) => observe(context, "answered A"),
+			]);
+			h.setResponses(dispatches.steps(6));
+			const execution = h.session.prompt("original task");
+			try {
+				await work.started.promise;
+				await h.deliver(
+					{
+						...queuedMessage("ask-a", "ask", "ASK-A"),
+						delivery: "followUp",
+					},
+					peerA,
+				);
+				await vi.waitFor(() =>
+					assert.equal(
+						h.sessionManager
+							.getEntries()
+							.filter((e) => e.type === "custom_message" && e.customType === "intercom_message").length,
+						1,
+					),
+				);
+				const askB = queuedMessage("ask-b", "ask", "ASK-B");
+				void h.deliver(second === "interrupt" ? { ...askB, delivery: "interrupt" } : askB, peerB);
+				if (second === "steer") {
+					await vi.waitFor(() =>
+						assert.equal(
+							h.sessionManager
+								.getEntries()
+								.filter((e) => e.type === "custom_message" && e.customType === "intercom_message").length,
+							2,
+						),
+					);
+					work.cleanup.resolve();
+				}
+				await execution;
+				await vi.waitFor(() => assert.equal(routed.length, 2));
+				assert.deepEqual(routed, [
+					{ visible: ["ASK-B"], replyTo: "ask-b", to: "peer-b" },
+					{ visible: ["ASK-A", "ASK-B"], replyTo: "ask-a", to: "peer-a" },
+				]);
+			} finally {
+				spy.mockRestore();
+				work.cleanup.resolve();
+				await h.close(execution);
+			}
+		});
+	}
+}

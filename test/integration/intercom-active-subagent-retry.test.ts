@@ -74,7 +74,7 @@ async function endpoint(kind: "child" | "workflow-stage" = "child") {
 	};
 }
 function message(id: string): Message {
-	return { id, timestamp: Date.now(), content: { text: `RETRY-${id}` } };
+	return { id, timestamp: Date.now(), delivery: "interrupt", content: { text: `RETRY-${id}` } };
 }
 
 // R2: FIFO belongs to the logical inbound operation, including retry delays.

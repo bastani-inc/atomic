@@ -583,10 +583,15 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       liveContext,
       (admissionBarrier) => {
         replyTracker.queueTurnContext(replyContext);
-        // Peer ask/send is priority input: cancel the receiver's supported active
-        // operation and continue the same task/stage with the message.
+        // The sender chooses delivery. The default steer lands after the in-flight
+        // tool calls and never cancels the receiver's work; followUp waits until the
+        // agent stops; only an explicit interrupt cancels the supported active
+        // operation and continues the same task/stage with the message.
+        const delivery = message.delivery === "interrupt"
+          ? "interrupt"
+          : message.delivery === "followUp" ? "triggerFollowUp" : "trigger";
         return retryStableDelivery({
-          deliver: () => sendIncomingMessage(entry, "interrupt", messageGeneration, false, undefined, admissionBarrier),
+          deliver: () => sendIncomingMessage(entry, delivery, messageGeneration, false, undefined, admissionBarrier),
           isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)) &&
             liveContext.subagentPolicy?.executionEnded?.aborted !== true &&
             liveContext.subagentPolicy?.messageAdmission?.isOpen() !== false,
