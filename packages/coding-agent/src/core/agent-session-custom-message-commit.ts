@@ -8,6 +8,7 @@ import {
 } from "./agent-session-persistent-custom-messages.ts";
 import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.js";
 import type { CustomMessage } from "./messages.ts";
+import { TASK_COMPLETION_MESSAGE_TYPE } from "./tasks/completion.js";
 
 async function appendDurableStageAdmission<T>(session: AgentSession, message: CustomMessage<T>): Promise<void> {
 	await session._appendCustomMessage(message);
@@ -36,6 +37,43 @@ async function commitPriorityMessage(session: AgentSession, message: CustomMessa
 	}
 }
 
+/**
+ * #3919: before a fresh stage's own prompt is submitted, turn-starting input is that prompt's startup context.
+ * Once the prompt is in preflight, a run has started, or queued input is paused, the ordinary admission paths
+ * own ordering. The stage's own task completions follow its own work, so they never precede its prompt.
+ */
+function holdsForFirstStagePrompt<T>(
+	session: AgentSession,
+	message: CustomMessage<T>,
+	options: SendMessageOptions | undefined,
+): boolean {
+	return (
+		session._workflowStageAwaitingFirstPrompt &&
+		session._activePromptCount === 0 &&
+		!session._queuedMessagesPaused &&
+		message.customType !== TASK_COMPLETION_MESSAGE_TYPE &&
+		options?.triggerTurn === true &&
+		options.excludeFromContext !== true &&
+		options.deliverAs !== "nextTurn"
+	);
+}
+
+/**
+ * #3919: once the stage prompt is submitted but before it owns a run (its input hooks), a turn-starting
+ * message must not start a competing turn. It queues behind the pending prompt; interrupts keep their own path.
+ */
+function queuesBehindFirstStagePrompt(session: AgentSession, options: SendMessageOptions | undefined): boolean {
+	return (
+		session._workflowStageAwaitingFirstPrompt &&
+		session._activePromptCount > 0 &&
+		!session._queuedMessagesPaused &&
+		options?.triggerTurn === true &&
+		options.excludeFromContext !== true &&
+		options.deliverAs !== "nextTurn" &&
+		options.deliverAs !== "interrupt"
+	);
+}
+
 /** Commit one delivery whose source generation already granted admission. */
 export async function commitAdmittedCustomMessage<T>(
 	session: AgentSession,
@@ -45,10 +83,20 @@ export async function commitAdmittedCustomMessage<T>(
 	const owner = resolveWorkflowStageDeliveryTarget(session);
 	if (owner !== session) return commitAdmittedCustomMessage(owner, appMessage, options);
 	const self = session;
+	if (holdsForFirstStagePrompt(self, appMessage, options)) {
+		await appendDurableStageAdmission(self, appMessage);
+		return;
+	}
 	const useProtectedReconciliation =
 		options?.persistWhenStreaming === true &&
 		options.excludeFromContext !== true &&
 		(options.triggerTurn === true || options.stageAdmissionKey !== undefined);
+	if (queuesBehindFirstStagePrompt(self, options)) {
+		const delivery = options?.deliverAs === "followUp" ? "followUp" : "steer";
+		if (useProtectedReconciliation) await queueProtectedStreamingCustomMessage(self, appMessage, delivery);
+		else self._queueAgentMessage(appMessage, delivery);
+		return;
+	}
 	if (
 		useProtectedReconciliation &&
 		options?.triggerTurn &&
@@ -159,9 +207,18 @@ export async function commitAdmittedCustomMessages<T>(
 	const owner = resolveWorkflowStageDeliveryTarget(session);
 	if (owner !== session) return commitAdmittedCustomMessages(owner, appMessages, options);
 	const self = session;
+	if (appMessages.every((item) => holdsForFirstStagePrompt(self, item, options))) {
+		for (const item of appMessages) await appendDurableStageAdmission(self, item);
+		return;
+	}
 	const useProtectedReconciliation =
 		options?.persistWhenStreaming === true && options.triggerTurn === true && options.excludeFromContext !== true;
 	const delivery = options?.deliverAs === "followUp" ? "followUp" : "steer";
+	if (queuesBehindFirstStagePrompt(self, options)) {
+		if (useProtectedReconciliation) await queueProtectedStreamingCustomMessages(self, appMessages, delivery);
+		else for (const item of appMessages) self._queueAgentMessage(item, delivery);
+		return;
+	}
 	if (options?.deliverAs === "nextTurn") {
 		self._pendingNextTurnMessages.push(...appMessages);
 	} else if (

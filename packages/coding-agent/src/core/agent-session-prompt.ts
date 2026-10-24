@@ -131,7 +131,10 @@ async function admittedPrompt(this: AgentSession, text: string, options?: Prompt
 			this._activePromptCount === 1 &&
 			!this.isStreaming &&
 			!this._queuedMessagesPaused &&
-			(this._priorityInterruptPending || boundary?.hasMessageDeliveries())
+			(this._priorityInterruptPending ||
+				boundary?.hasMessageDeliveries() ||
+				// #3919: input queued behind a stage prompt that its input hook consumed still needs its turn.
+				(this._workflowStageAwaitingFirstPrompt && this.agent.hasQueuedMessages()))
 		) {
 			// A command/input hook may consume the original prompt during preflight.
 			// Its owner still owes independently admitted priority input a reply; drain
@@ -310,6 +313,8 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		}
 
 		this._isPreparingRun = "user";
+		// From here, input arriving during preparation queues behind this run (#3919).
+		this._workflowStageAwaitingFirstPrompt = false;
 		preparingRun = true;
 		// Check if we need to compact before sending (catches aborted responses)
 		const lastAssistant = this._findLastAssistantMessage();
@@ -424,6 +429,8 @@ export async function _runAgentPrompt(
 		);
 		return;
 	}
+	// Any run that starts ends the gap before a fresh stage's first prompt (#3919).
+	this._workflowStageAwaitingFirstPrompt = false;
 	if (this._activePromptCount === 0 && !this.isStreaming) this._agentRunAbortRequested = false;
 	const startingMessages = Array.isArray(messages) ? messages : [messages];
 	const customMessage = !prepared
