@@ -90,6 +90,13 @@ type BackendEvent =
 			DurableWorkflowHandle
 	  >;
 
+function snapshotNeedsHistory(tail: RunSnapshotTail): boolean {
+	const event = tail.snapshot.event;
+	if (event.type !== E.messageQueued) return false;
+	const payload = event.payload as { readonly pendingStageMessages?: readonly JournalPendingStageMessage[] };
+	return hasPendingStageDeliveryDelta(payload.pendingStageMessages);
+}
+
 function* invoke<T>(action: () => Promise<T>): Operation<T> {
 	try {
 		const result = action();
@@ -292,8 +299,17 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 				new PromptReservationState(event.payload.handle.pendingPrompts, event.payload.prompts),
 			);
 		} else {
-			const handle = event.payload;
 			const previous = this.projection.getWorkflow(entry.runId);
+			const handle =
+				event.type === E.messageQueued && hasPendingStageDeliveryDelta(event.payload.pendingStageMessages)
+					? {
+							...event.payload,
+							pendingStageMessages: decodePendingStageDeliveries(
+								previous?.pendingStageMessages ?? [],
+								event.payload.pendingStageMessages ?? [],
+							),
+						}
+					: event.payload;
 			this.projection.applyWorkflowSnapshot(handle);
 			if (event.type === E.runStarted || previous?.pendingPrompts !== handle.pendingPrompts)
 				this.prompts.delete(entry.runId);
@@ -682,18 +698,31 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		if (!handle) return false;
 		for (const message of messages)
 			if (message.runId !== logicalRunId) throw new JournalMessageScopeError(logicalRunId, message.runId);
-		yield* this.snapshot(
-			{
-				...handle,
-				pendingStageMessages: replacePendingStageMessagesForRun(
-					handle.pendingStageMessages ?? [],
-					logicalRunId,
-					messages,
-				),
-				updatedAt: Math.max(Date.now(), handle.updatedAt + 1),
-			},
-			E.messageQueued,
-		);
+		const next: DurableWorkflowHandle = {
+			...handle,
+			pendingStageMessages: replacePendingStageMessagesForRun(
+				handle.pendingStageMessages ?? [],
+				logicalRunId,
+				messages,
+			),
+			updatedAt: Math.max(Date.now(), handle.updatedAt + 1),
+		};
+		// Write sticky deliveries as a change to the folded entries; the expected sequence pins that base.
+		const encoded = encodePendingStageDeliveries(handle.pendingStageMessages ?? [], next.pendingStageMessages ?? []);
+		const base = this.sequences.get(runId);
+		if (encoded !== undefined && base !== undefined) {
+			try {
+				yield* this.append(
+					runId,
+					{ type: E.messageQueued, payload: { ...next, pendingStageMessages: encoded } as typeof next },
+					{ expectSeq: base },
+				);
+				return true;
+			} catch (error) {
+				if (!(error instanceof JournalCasConflictError)) throw error;
+			}
+		}
+		yield* this.snapshot(next, E.messageQueued);
 		return true;
 	}
 	async archivePendingStageMessage(runId: string, message: PendingStageMessage): Promise<void> {
@@ -818,7 +847,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			const summarized = this.summarized.get(runId);
 			if (summarized !== undefined && summarized.seq === version.seq && summarized.at === version.at) return;
 			const tail = yield* invoke(() => journal.snapshotTail(runId));
-			if (tail !== undefined) return this.summarize(runId, tail);
+			// A snapshot holding delivery changes needs the events before it, so the run is read in full.
+			if (tail !== undefined && !snapshotNeedsHistory(tail)) return this.summarize(runId, tail);
 			if (summarized === undefined && version.seq === 0) return;
 			return yield* this.rebuild(runId);
 		}
@@ -1010,4 +1040,94 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			if (this.ownsJournal) await execute(invoke(() => this.journal.close()));
 		}
 	}
+}
+
+/**
+ * A sticky entry's deliveries written as a change to the same entry in the run's previous event: drop these
+ * indexes of the previous deliveries, then append `add`. Recording a delivery then costs the delivery, not
+ * every live delivery again (#3920).
+ */
+interface PendingStageDeliveryDelta {
+	readonly drop?: readonly number[];
+	readonly add: readonly PendingStageMessageDelivery[];
+}
+type DeltaEncodedMessage = Omit<PendingStageMessage, "deliveries"> & {
+	readonly deliveryDelta: PendingStageDeliveryDelta;
+};
+type JournalPendingStageMessage = PendingStageMessage | DeltaEncodedMessage;
+
+function identity(message: Pick<PendingStageMessage, "runId" | "id">): string {
+	return JSON.stringify([message.runId, message.id]);
+}
+
+/** Entries whose identity occurs once; a duplicated identity cannot name its base unambiguously. */
+function uniqueByIdentity<Message extends Pick<PendingStageMessage, "runId" | "id">>(
+	messages: readonly Message[],
+): Map<string, Message> {
+	const result = new Map<string, Message>();
+	const repeated = new Set<string>();
+	for (const message of messages) {
+		const key = identity(message);
+		if (result.has(key)) repeated.add(key);
+		result.set(key, message);
+	}
+	for (const key of repeated) result.delete(key);
+	return result;
+}
+
+function isDeltaEncoded(message: JournalPendingStageMessage): message is DeltaEncodedMessage {
+	return (message as Partial<DeltaEncodedMessage>).deliveryDelta !== undefined;
+}
+
+/**
+ * Encode `next` against `previous`, the pending entries the run's journal holds before this event. Returns
+ * undefined when no entry is smaller as a change, so the event keeps the full entries.
+ */
+function encodePendingStageDeliveries(
+	previous: readonly PendingStageMessage[],
+	next: readonly PendingStageMessage[],
+): readonly JournalPendingStageMessage[] | undefined {
+	const bases = uniqueByIdentity(previous);
+	const nextIdentities = uniqueByIdentity(next);
+	let encodedAny = false;
+	const encoded = next.map((message): JournalPendingStageMessage => {
+		const base = bases.get(identity(message))?.deliveries;
+		const deliveries = message.deliveries;
+		if (base === undefined || deliveries === undefined || !nextIdentities.has(identity(message))) return message;
+		const drop: number[] = [];
+		let kept = 0;
+		base.forEach((delivery, index) => {
+			if (kept < deliveries.length && JSON.stringify(delivery) === JSON.stringify(deliveries[kept])) kept++;
+			else drop.push(index);
+		});
+		const add = deliveries.slice(kept);
+		if (drop.length + add.length >= deliveries.length) return message;
+		encodedAny = true;
+		const { deliveries: _full, ...rest } = message;
+		return { ...rest, deliveryDelta: drop.length === 0 ? { add } : { drop, add } };
+	});
+	return encodedAny ? encoded : undefined;
+}
+
+/** Rebuild full entries from an event's entries and the run's entries before that event. */
+function decodePendingStageDeliveries(
+	previous: readonly PendingStageMessage[],
+	messages: readonly JournalPendingStageMessage[],
+): readonly PendingStageMessage[] {
+	if (!messages.some(isDeltaEncoded)) return messages as readonly PendingStageMessage[];
+	const bases = uniqueByIdentity(previous);
+	return messages.map((message) => {
+		if (!isDeltaEncoded(message)) return message;
+		const base = bases.get(identity(message))?.deliveries;
+		if (base === undefined)
+			throw new Error(`atomic-workflows: journal delivery change for ${identity(message)} has no base entry`);
+		const { deliveryDelta, ...rest } = message;
+		const dropped = new Set(deliveryDelta.drop ?? []);
+		return { ...rest, deliveries: [...base.filter((_, index) => !dropped.has(index)), ...deliveryDelta.add] };
+	});
+}
+
+/** Whether an event's entries need the run's earlier events to be read. */
+function hasPendingStageDeliveryDelta(messages: readonly JournalPendingStageMessage[] | undefined): boolean {
+	return messages?.some(isDeltaEncoded) === true;
 }
