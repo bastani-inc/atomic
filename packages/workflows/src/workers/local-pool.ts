@@ -98,6 +98,11 @@ export class LocalWorkerPool {
 			readonly admission?: AdmissionConfiguration;
 			readonly startupTimeoutMs?: number;
 			readonly leaseMs?: number;
+			/**
+			 * Internal: module path forked for each worker instead of the shipped worker entry.
+			 * Load tests use it to run protocol-level stub workers; public options never set it.
+			 */
+			readonly workerEntry?: string;
 		},
 	) {
 		if (!Number.isSafeInteger(options.workers) || options.workers < 1) throw new Error("Invalid local worker count");
@@ -248,9 +253,10 @@ export class LocalWorkerPool {
 	private spawn(root: string): Promise<void> {
 		if (this.closed) return Promise.reject(new Error("Local worker pool is closed"));
 		const child = fork(
-			isBunBinary
-				? INTERNAL_WORKFLOW_WORKER_ARG
-				: fileURLToPath(new URL("./local-worker-entry.mjs", import.meta.url)),
+			this.options.workerEntry ??
+				(isBunBinary
+					? INTERNAL_WORKFLOW_WORKER_ARG
+					: fileURLToPath(new URL("./local-worker-entry.mjs", import.meta.url))),
 			[
 				JSON.stringify({
 					journalPath: this.options.journalPath,
