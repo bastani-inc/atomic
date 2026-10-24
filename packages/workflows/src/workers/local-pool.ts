@@ -64,10 +64,10 @@ export class LocalWorkerPool {
 	private recovering?: Promise<void>;
 	private nextRecoveryAt = 0;
 	private readonly controlAcks = new Map<string, number>();
-	private readonly lastHeard = new Map<string, number>();
+	private readonly lastHeard = new Map<string, { readonly at: number; readonly rootStalled: number }>();
 	private lastTick = performance.now();
-	private respondingSince = performance.now();
-	private readonly ticker = setInterval(() => this.observeResponsiveness(), ROOT_TICK_INTERVAL_MS).unref();
+	private rootStalledMs = 0;
+	private readonly ticker: NodeJS.Timeout;
 	private readonly leaseMs: number;
 	private desiredControl?: PoolControl["state"];
 	private root?: string;
@@ -119,6 +119,7 @@ export class LocalWorkerPool {
 		this.leaseMs = options.leaseMs ?? DEFAULT_WORK_LEASE_MS;
 		this.releaseBinding = bindChildWorkerDispatcher(backend, this, options.rootId);
 		if (options.admission && options.rootId === undefined) workflowResourceAdmission.set(backend, options.admission);
+		this.ticker = setInterval(() => this.observeResponsiveness(), ROOT_TICK_INTERVAL_MS).unref();
 	}
 	get workerPids(): number[] {
 		return [...this.children].flatMap((child) => (child.pid === undefined ? [] : [child.pid]));
@@ -360,7 +361,8 @@ export class LocalWorkerPool {
 				void cleanup.finally(() => this.cleanups.delete(cleanup));
 			});
 			child.on("message", (message: WorkerRequest) => {
-				this.lastHeard.set(worker, performance.now());
+				this.observeResponsiveness();
+				this.lastHeard.set(worker, { at: performance.now(), rootStalled: this.rootStalledMs });
 				if (message.kind === "delivery-ack") {
 					const pending = deliveries.get(message.deliveryId);
 					deliveries.delete(message.deliveryId);
@@ -498,7 +500,8 @@ export class LocalWorkerPool {
 	}
 	private observeResponsiveness(): void {
 		const now = performance.now();
-		if (now - this.lastTick > ROOT_STALL_THRESHOLD_MS) this.respondingSince = now;
+		const gap = now - this.lastTick;
+		if (gap > ROOT_STALL_THRESHOLD_MS) this.rootStalledMs += gap - ROOT_TICK_INTERVAL_MS;
 		this.lastTick = now;
 	}
 	private isLive(worker: string, child: ChildProcess): boolean {
@@ -509,7 +512,7 @@ export class LocalWorkerPool {
 			child.signalCode === null &&
 			child.connected &&
 			heard !== undefined &&
-			performance.now() - Math.max(heard, this.respondingSince) < this.leaseMs
+			performance.now() - heard.at - (this.rootStalledMs - heard.rootStalled) < this.leaseMs
 		);
 	}
 	private stop(child: ChildProcess): Promise<void> {

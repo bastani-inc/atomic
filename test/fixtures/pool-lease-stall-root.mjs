@@ -3,7 +3,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createJiti } from "jiti";
 
-const [directory, leaseMs, stallMs] = process.argv.slice(2);
+const [directory, leaseMs, stallMs, mode = "live"] = process.argv.slice(2);
+const stopped = mode === "stopped";
+const REPEATED_STALL_PERIOD_MS = 1_000;
 const jiti = createJiti(import.meta.url, { fsCache: false });
 const load = (relative) => jiti.import(fileURLToPath(new URL(relative, import.meta.url)));
 const { workflow } = await load("../../packages/workflows/src/authoring/workflow.ts");
@@ -15,8 +17,8 @@ const { definitionDigest, loadWorkerDefinition } = await load("../../packages/wo
 const { LocalWorkerPool } = await load("../../packages/workflows/src/workers/local-pool.ts");
 
 const path = join(directory, "journal.sqlite");
-const childPath = fileURLToPath(new URL("./pool-resume-child.ts", import.meta.url));
-const exportName = "resumedChild";
+const childPath = fileURLToPath(new URL(stopped ? "./pool-child.ts" : "./pool-resume-child.ts", import.meta.url));
+const exportName = stopped ? "stalledChild" : "resumedChild";
 const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
 const child = await loadWorkerDefinition({ path: childPath, exportName, digest: await definitionDigest(childPath) });
 const pool = new LocalWorkerPool(backend, {
@@ -26,13 +28,18 @@ const pool = new LocalWorkerPool(backend, {
 	definitions: [{ definition: child, path: childPath, exportName }],
 });
 
-const stall = setInterval(() => {
-	if (!readdirSync(directory).some((name) => name.startsWith("started-"))) return;
-	clearInterval(stall);
-	const until = Date.now() + Number(stallMs);
+const busy = (ms) => {
+	const until = Date.now() + ms;
 	while (Date.now() < until) {}
-	writeFileSync(join(directory, "release"), "");
-}, 20);
+};
+const stall = stopped
+	? setInterval(() => busy(Number(stallMs)), REPEATED_STALL_PERIOD_MS)
+	: setInterval(() => {
+			if (!readdirSync(directory).some((name) => name.startsWith("started-"))) return;
+			clearInterval(stall);
+			busy(Number(stallMs));
+			writeFileSync(join(directory, "release"), "");
+		}, 20);
 
 const children = [];
 const parent = workflow({
@@ -41,7 +48,7 @@ const parent = workflow({
 	inputs: {},
 	outputs: {},
 	async run(ctx) {
-		const result = await ctx.workflow(child, { inputs: { directory, index: 0 } });
+		const result = await ctx.workflow(child, stopped ? {} : { inputs: { directory, index: 0 } });
 		children.push({ status: result.status, ...result.outputs });
 		return {};
 	},

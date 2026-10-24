@@ -104,3 +104,35 @@ test.skipIf(process.platform === "win32")(
 	},
 	LEASE_STALL_TIMEOUT_MS,
 );
+
+const REPEATED_ROOT_STALL_MS = 600;
+
+test.skipIf(process.platform === "win32")(
+	"repeated root stalls do not keep a stopped worker's child from being replaced (#3888)",
+	async () => {
+		const directory = makeTempDirectory("pool-lease-repeated-stall-");
+		try {
+			const root = spawnProcess(
+				[
+					process.execPath,
+					stallFixture,
+					directory,
+					String(STALL_TEST_LEASE_MS),
+					String(REPEATED_ROOT_STALL_MS),
+					"stopped",
+				],
+				{ cwd: directory, stdout: "ignore", stderr: "pipe", timeout: ROOT_PROCESS_TIMEOUT_MS },
+			);
+			const stderr = readStreamText(root.stderr);
+			assert.equal(await root.exited, 0, await stderr);
+			const outcome = await readJson<ResumeOutcome>(join(directory, "outcome.json"));
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
+			const [child] = outcome.children;
+			assert.equal(child?.status, "completed");
+			assert.notEqual(child.finalPid, child.firstPid, "a replacement worker finished the stopped worker's child");
+		} finally {
+			removeTempDirectory(directory);
+		}
+	},
+	LEASE_STALL_TIMEOUT_MS,
+);
