@@ -304,6 +304,7 @@ export {
 	type ModelRuntimeAuthOverrides,
 } from "./core/model-runtime.js";
 export type {
+	PackageInstallFailure,
 	PackageManager,
 	PathMetadata,
 	ProgressCallback,

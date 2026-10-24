@@ -23,6 +23,7 @@ import { ModelRuntime } from "./core/model-runtime.js";
 import { DefaultPackageManager } from "./core/package-manager.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
 import { DefaultResourceLoader } from "./core/resource-loader.ts";
+import { formatPackageInstallWarning } from "./core/resource-loader-extension-warnings.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "./core/trust-manager.ts";
 import {
@@ -273,6 +274,12 @@ export async function handleConfigCommand(
 	const project = settingsManager.isProjectTrusted()
 		? await new DefaultPackageManager({ cwd, agentDir, settingsManager, builtinExtensions }).resolve()
 		: global;
+	const installWarnings = new Set(
+		[...(global.installFailures ?? []), ...(project.installFailures ?? [])].map(formatPackageInstallWarning),
+	);
+	for (const warning of installWarnings) {
+		console.error(chalk.yellow(`Warning: ${warning}`));
+	}
 	await selectConfig({
 		resolvedPaths: { global, project },
 		settingsManager,

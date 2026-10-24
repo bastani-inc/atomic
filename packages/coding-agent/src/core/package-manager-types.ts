@@ -37,6 +37,15 @@ export interface ResolvedPaths {
 	themes: ResolvedResource[];
 	workflows: ResolvedResource[];
 	mcpServers: ResolvedMcpServer[];
+	/** Configured packages that were skipped because installing them failed. */
+	installFailures?: PackageInstallFailure[];
+}
+
+/** A configured package that could not be installed while resolving resources. */
+export interface PackageInstallFailure {
+	source: string;
+	scope: SourceScope;
+	message: string;
 }
 
 export type MissingSourceAction = "install" | "skip" | "error";

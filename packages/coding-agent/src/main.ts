@@ -48,6 +48,7 @@ import {
 } from "./core/agent-session-services.ts";
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage, ReadOnlyAuthStorage } from "./core/auth-storage.ts";
+import type { LoadExtensionsResult } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { limitMandatoryIntercomToTool } from "./core/mandatory-resource-loader.ts";
 import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "./core/model-refresh-timeout.ts";
@@ -130,6 +131,19 @@ import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.
 export type { AppMode } from "./main-app-mode.ts";
 export { resolveExcludedToolsForAppMode } from "./main-app-mode.ts";
 export type { MainOptions } from "./main-types.ts";
+
+function collectExtensionLoadDiagnostics(extensions: LoadExtensionsResult): AgentSessionRuntimeDiagnostic[] {
+	return [
+		...extensions.errors.map(({ path, error }) => ({
+			type: "error" as const,
+			message: `Failed to load extension "${path}": ${error}`,
+		})),
+		...(extensions.warnings ?? []).map(({ path, warning }) => ({
+			type: "warning" as const,
+			message: `Extension package "${path}": ${warning}`,
+		})),
+	];
+}
 
 function authCheckErrorMessage(error: unknown): string {
 	// Provider and credential-store errors can quote a live credential. Model
@@ -488,8 +502,15 @@ export async function main(argv: string[], options?: MainOptions) {
 				extensionFactories,
 			},
 		});
-		const { modelRuntime, resourceLoader } = await completeServices();
-		reportDiagnostics(startupSettingsDiagnostics);
+		const { modelRuntime, resourceLoader, diagnostics } = await completeServices();
+		// Report extension warnings such as a configured package that failed to install, as normal startup does.
+		reportDiagnostics(
+			deduplicateDiagnostics([
+				...startupSettingsDiagnostics,
+				...diagnostics,
+				...collectExtensionLoadDiagnostics(resourceLoader.getExtensions()),
+			]),
+		);
 		if (shouldRestoreStdoutForMetadata) restoreStdout();
 		if (parsed.help) {
 			printHelp(
@@ -742,14 +763,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			const diagnostics: AgentSessionRuntimeDiagnostic[] = [
 				...services.diagnostics,
 				...collectSettingsDiagnostics(settingsManager, "runtime creation"),
-				...resourceLoader.getExtensions().errors.map(({ path, error }) => ({
-					type: "error" as const,
-					message: `Failed to load extension "${path}": ${error}`,
-				})),
-				...(resourceLoader.getExtensions().warnings ?? []).map(({ path, warning }) => ({
-					type: "warning" as const,
-					message: `Extension package "${path}": ${warning}`,
-				})),
+				...collectExtensionLoadDiagnostics(resourceLoader.getExtensions()),
 			];
 			const modelPatterns = isolateInteractiveHost
 				? undefined

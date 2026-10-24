@@ -1,8 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { APP_NAME } from "../config.ts";
 import { stripBom } from "../utils/text.ts";
 import type { LoadExtensionsResult } from "./extensions/types.ts";
-import type { PathMetadata } from "./package-manager.ts";
+import type { PackageInstallFailure, PathMetadata } from "./package-manager.ts";
 
 export type ExtensionPackageWarning = { path: string; warning: string };
 
@@ -53,6 +54,28 @@ function readManifestDependencies(packageJsonPath: string): Record<string, strin
 	const dependencies = manifest.dependencies;
 	if (typeof dependencies !== "object" || dependencies === null || Array.isArray(dependencies)) return undefined;
 	return dependencies as Record<string, string>;
+}
+
+/** Describe a package that was skipped because it could not be installed, including how to drop it. */
+function describePackageInstallFailure(failure: PackageInstallFailure): string {
+	const hint =
+		failure.scope === "temporary"
+			? "Check the source and try again."
+			: `Run "${APP_NAME} remove ${failure.source}${failure.scope === "project" ? " --local" : ""}" to remove it from settings.json.`;
+	return `failed to install (${failure.message}). ${hint}`;
+}
+
+/** One-line startup warning for a package that could not be installed. */
+export function formatPackageInstallWarning(failure: PackageInstallFailure): string {
+	return `Extension package "${failure.source}": ${describePackageInstallFailure(failure)}`;
+}
+
+export function collectPackageInstallWarnings(
+	...failures: Array<PackageInstallFailure[] | undefined>
+): ExtensionPackageWarning[] {
+	return failures.flatMap((entries) =>
+		(entries ?? []).map((failure) => ({ path: failure.source, warning: describePackageInstallFailure(failure) })),
+	);
 }
 
 export function mergeExtensionWarnings(result: LoadExtensionsResult, warnings: ExtensionPackageWarning[]): void {
