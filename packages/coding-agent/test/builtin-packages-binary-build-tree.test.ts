@@ -3,8 +3,8 @@ import { cpSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, test, vi } from "vitest";
-import { resolveBrokerEntrypoint } from "../../intercom/broker/spawn.ts";
-import { validateInternalIntercomBrokerPath } from "../src/bun/internal-intercom-broker.ts";
+import { resolveBrokerEntrypoint } from "../../intercom/broker/spawn.js";
+import { validateInternalIntercomBrokerPath } from "../src/bun/internal-intercom-broker.js";
 
 // A compiled binary's app.js keeps the build machine's module URL. Recreate a host where
 // that build tree still exists beside the shipped executable directory.
@@ -28,15 +28,15 @@ vi.mock("../src/config.js", async (importOriginal) => ({
 	isBunBinary: true,
 	getPackageDir: () => executableDir,
 }));
-vi.mock("../src/utils/split-launcher.ts", async (importOriginal) => ({
-	...(await importOriginal<typeof import("../src/utils/split-launcher.ts")>()),
+vi.mock("../src/utils/split-launcher.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../src/utils/split-launcher.js")>()),
 	moduleDirFromMetaUrl: () => join(buildTree, "core"),
 }));
 
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
 test("a compiled binary starts the Intercom broker from its shipped builtin, not a surviving build tree (#3917)", async () => {
-	const { getBuiltinPackagePaths } = await import("../src/core/builtin-packages.ts");
+	const { getBuiltinPackagePaths } = await import("../src/core/builtin-packages.js");
 	const [intercomDir] = getBuiltinPackagePaths({
 		workflows: false,
 		subagents: false,
