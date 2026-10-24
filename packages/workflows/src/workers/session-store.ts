@@ -14,11 +14,9 @@ export function workerSessionStore(input: {
 	readonly root: string;
 	readonly commit: (mutation: PoolMutation) => Promise<{ readonly lastSeq?: number }>;
 }): SessionStore {
-	const checkpoint = async (
-		id: string,
-		header?: Parameters<SessionStore["create"]>[0],
-	): Promise<DurableStageCheckpoint> => {
-		const owner = (header ?? (await input.reader.readHeader(id)))?.workflow;
+	/** Binds a created or replaced session to its stage; appends need no checkpoint. */
+	const checkpoint = (id: string, header: Parameters<SessionStore["create"]>[0]): DurableStageCheckpoint => {
+		const owner = header.workflow;
 		const run = input.store.runs().find((run) => run.id === owner?.runId);
 		const stage = run?.stages.find((stage) => stage.id === owner?.stageId);
 		if (!run || !stage?.replayKey) throw new Error("Pool session has no active stage");
@@ -47,13 +45,13 @@ export function workerSessionStore(input: {
 	return {
 		descriptor: input.reader.descriptor,
 		create: async (header, entries) =>
-			write({ kind: "session-create", checkpoint: await checkpoint(header.id, header), header, entries }),
+			write({ kind: "session-create", checkpoint: checkpoint(header.id, header), header, entries }),
 		append: async (id, entries, options) =>
-			write({ kind: "session-append", checkpoint: await checkpoint(id), entries, expectSeq: options.expectSeq }),
+			write({ kind: "session-append", sessionId: id, entries, expectSeq: options.expectSeq }),
 		replace: async (id, header, entries, options) =>
 			write({
 				kind: "session-replace",
-				checkpoint: await checkpoint(id, header),
+				checkpoint: checkpoint(id, header),
 				header,
 				entries,
 				expectSeq: options.expectSeq,

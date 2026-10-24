@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { assertStorageSchemaVersion, type SqliteExecutor, type SqliteRow } from "@bastani/atomic/storage";
 import { assertWorkflowSerializableObject } from "../../shared/serializable.js";
 import type { WorkflowSerializableObject } from "../../shared/types.js";
@@ -11,7 +11,13 @@ import {
 } from "../types.js";
 import { type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
-import { applyPoolSession, type PoolMutation, validatePoolMutation } from "./pool-mutations.js";
+import {
+	applyPoolSession,
+	type PoolCheckpointMutation,
+	type PoolMutation,
+	type PoolSessionAppend,
+	validatePoolMutation,
+} from "./pool-mutations.js";
 import { poolCheckpointUsage, poolUsageSchema, upsertPoolUsage } from "./pool-stage-usage.js";
 import { type Lease, RUN_EVENT_TYPES, type RunJournal, StaleLeaseError } from "./types.js";
 import { journalCounter, serializeJson, validateText } from "./values.js";
@@ -22,7 +28,14 @@ type Transaction = SqlPoolStorage["transaction"];
 type JournalTables = SqlPoolStorage["tables"];
 const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 const MAX_WORKER_CLOCK_SKEW_MS = 1_000;
+/** Version 2 keeps no lease renewal rows and stores a digest, not the full request, per pool operation. */
+const POOL_SCHEMA_VERSION = 2;
 export const STALE_WORK_LEASE = "Stale work lease";
+
+/** A retried operation must repeat its request exactly; its digest is enough to prove that. */
+function requestIdentity(request: string): string {
+	return createHash("sha256").update(request).digest("hex");
+}
 export interface PoolControl {
 	readonly state: "running" | "paused" | "quit";
 	readonly revision: number;
@@ -59,7 +72,8 @@ type WorkRow = SqliteRow & {
 };
 type WorkLease = Pick<PoolWork, "id" | "generation" | "worker" | "epoch">;
 export interface PoolCommitReceipt {
-	readonly seq: number;
+	/** Journal sequence of the recorded checkpoint; absent for a session append, which journals none. */
+	readonly seq?: number;
 	readonly at: number;
 	readonly lastSeq?: number;
 }
@@ -115,8 +129,9 @@ export class SqlPoolQueue {
 			await tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.meta}(version INTEGER NOT NULL)`);
 			const versions = await tx.all(`SELECT version FROM ${pool.meta}`);
 			if (versions.length > 1) throw new Error("Corrupt pool schema metadata");
-			if (versions.length === 0) await tx.run(`INSERT INTO ${pool.meta} VALUES (1)`);
-			else assertStorageSchemaVersion("journal", versions[0]!.version!, 1);
+			const version = versions[0]?.version;
+			if (version === undefined) await tx.run(`INSERT INTO ${pool.meta} VALUES (?)`, POOL_SCHEMA_VERSION);
+			else if (version !== 1) assertStorageSchemaVersion("journal", version, POOL_SCHEMA_VERSION);
 			await tx.exec(`
 				CREATE TABLE IF NOT EXISTS ${pool.roots}(root TEXT PRIMARY KEY REFERENCES ${journal.runs}(run_id) ON DELETE CASCADE, timeout INTEGER NOT NULL);
 				CREATE TABLE IF NOT EXISTS ${pool.work}(
@@ -147,8 +162,32 @@ export class SqlPoolQueue {
 				state TEXT NOT NULL DEFAULT 'running', revision INTEGER NOT NULL DEFAULT 0
 			)`);
 			await tx.exec(poolUsageSchema(journal.runs));
+			if (version === 1) await pool.migrateFromVersion1(tx);
 		});
 		return pool;
+	}
+	/**
+	 * Version 1 stored every lease renewal as an operation row whose receipt was the full work descriptor, and every
+	 * commit's full request (entries included) for retry identity. Renewals need no row at all, and a retry only needs
+	 * the request's digest, so drop the renewal rows and keep a digest of each remaining request.
+	 */
+	private async migrateFromVersion1(tx: SqliteExecutor): Promise<void> {
+		await tx.run(`DELETE FROM ${this.operations} WHERE substr(request, 1, 1) = '['`);
+		for (let after = 0; ; ) {
+			const rows = await tx.all<SqliteRow & { rowid: number; request: string }>(
+				`SELECT rowid, request FROM ${this.operations} WHERE rowid > ? ORDER BY rowid LIMIT 256`,
+				after,
+			);
+			if (rows.length === 0) break;
+			for (const row of rows)
+				await tx.run(
+					`UPDATE ${this.operations} SET request = ? WHERE rowid = ?`,
+					requestIdentity(String(row.request)),
+					row.rowid,
+				);
+			after = Number(rows.at(-1)!.rowid);
+		}
+		await tx.run(`UPDATE ${this.meta} SET version = ?`, POOL_SCHEMA_VERSION);
 	}
 	private async authority(
 		tx: SqliteExecutor,
@@ -391,46 +430,18 @@ export class SqlPoolQueue {
 			throw new Error(STALE_WORK_LEASE);
 		return row;
 	}
-	async renew(lease: Lease, token: WorkLease, operationId: string, durationMs: number): Promise<PoolWork> {
+	/** Extend a held attempt's lease. Only the work row changes: a renewal leaves no operation record behind. */
+	async renew(lease: Lease, token: WorkLease, durationMs: number): Promise<PoolWork> {
 		positive(durationMs);
 		lease = snapshotLease(lease);
 		token = { ...token };
-		validateText("key", operationId);
-		const request = JSON.stringify([token.epoch, token.generation, token.worker, durationMs]);
 		return this.transaction(async (tx) => {
 			const { now } = await this.authority(tx, lease);
 			const row = await this.current(tx, lease, token);
 			if (row.epoch !== lease.epoch || row.expires_at < now) throw new Error(STALE_WORK_LEASE);
-			const previous = await tx.get<SqliteRow & { request: string; receipt: string }>(
-				`SELECT * FROM ${this.operations} WHERE work = ? AND generation = ? AND operation = ?`,
-				token.id,
-				token.generation,
-				operationId,
-			);
-			if (previous) {
-				if (previous.request !== request) throw new Error("Pool operation identity conflict");
-				return JSON.parse(previous.receipt) as PoolWork;
-			}
-			const receipt = {
-				...fromRow(row),
-				expiresAt: Math.max(Number(row.expires_at), expiry(now, durationMs)),
-				renewedAt: now,
-			};
-			await tx.run(
-				`UPDATE ${this.work} SET expires_at = ?, renewed_at = ? WHERE id = ?`,
-				receipt.expiresAt,
-				now,
-				row.id,
-			);
-			await tx.run(
-				`INSERT INTO ${this.operations} VALUES (?, ?, ?, ?, ?)`,
-				row.id,
-				token.generation,
-				operationId,
-				request,
-				JSON.stringify(receipt),
-			);
-			return receipt;
+			const expiresAt = Math.max(Number(row.expires_at), expiry(now, durationMs));
+			await tx.run(`UPDATE ${this.work} SET expires_at = ?, renewed_at = ? WHERE id = ?`, expiresAt, now, row.id);
+			return { ...fromRow(row), expiresAt, renewedAt: now };
 		});
 	}
 	async commit(
@@ -444,6 +455,7 @@ export class SqlPoolQueue {
 		validateText("key", operationId);
 		assertWorkflowSerializableObject(mutation, "Pool mutation");
 		const request = serializeJson({ epoch: token.epoch, worker: token.worker, mutation });
+		const identity = requestIdentity(request);
 		mutation = JSON.parse(request).mutation as PoolMutation;
 		return this.transaction(async (tx) => {
 			const { now, status } = await this.authority(tx, lease);
@@ -456,64 +468,86 @@ export class SqlPoolQueue {
 				operationId,
 			);
 			if (previous) {
-				if (previous.request !== request) throw new Error("Pool operation identity conflict");
+				if (previous.request !== identity) throw new Error("Pool operation identity conflict");
 				return JSON.parse(previous.receipt) as PoolCommitReceipt;
 			}
 			if (row.expires_at < now) throw new Error(STALE_WORK_LEASE);
 			if (!(await this.admitsAttemptWrites(tx, lease, status))) throw new Error("Pool root is not running");
-			const checkpoint = mutation.checkpoint;
-			await validatePoolMutation(tx, this.journal, lease.runId, fromRow(row), mutation);
-			if (checkpoint.completedAt > Math.max(now, Date.now()) + MAX_WORKER_CLOCK_SKEW_MS)
-				throw new Error("Pool checkpoint timestamp is in the future");
-			assertWorkflowSerializableObject(checkpoint, "Pool checkpoint");
-			const key = JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, checkpoint.kind, checkpoint.checkpointId]);
-			const payload = serializeJson(checkpoint);
-			const existing = await tx.get<SqliteRow & { seq: number; at: number; payload: string }>(
-				`SELECT seq, at, payload FROM ${this.journal.events} WHERE run_id = ? AND key = ?`,
-				lease.runId,
-				key,
-			);
-			if (existing && existing.payload !== payload) throw new Error("Pool checkpoint identity conflict");
-			if (existing && mutation.kind !== "checkpoint") throw new Error("Pool session checkpoint identity conflict");
-			const lastSeq =
-				mutation.kind === "checkpoint"
-					? undefined
-					: await applyPoolSession(tx, `${this.journal.runs}_pool_`, row.id, mutation);
-			const latest = await tx.get<SqliteRow & { seq: number }>(
-				`SELECT COALESCE(MAX(seq), 0) AS seq FROM ${this.journal.events} WHERE run_id = ?`,
-				lease.runId,
-			);
-			const receipt = existing
-				? { seq: Number(existing.seq), at: Number(existing.at) }
-				: {
-						seq: journalCounter(lease.runId, "seq", Number(latest!.seq) + 1, "overflow"),
-						at: now,
-						...(lastSeq === undefined ? {} : { lastSeq }),
-					};
-			if (!existing)
-				await tx.run(
-					`INSERT INTO ${this.journal.events} VALUES (?, ?, ?, ?, ?, ?, ?)`,
-					lease.runId,
-					receipt.seq,
-					lease.epoch,
-					key,
-					RUN_EVENT_TYPES.checkpointRecorded,
-					payload,
-					now,
-				);
-			const billed = poolCheckpointUsage(checkpoint);
-			if (billed && !existing)
-				await upsertPoolUsage(tx, this.journal.runs, row.id, token.generation, billed.key, billed.usage);
+			const receipt =
+				mutation.kind === "session-append"
+					? await this.appendSession(tx, row, mutation, now)
+					: await this.recordCheckpoint(tx, lease, token, row, mutation, now);
 			await tx.run(
 				`INSERT INTO ${this.operations} VALUES (?, ?, ?, ?, ?)`,
 				token.id,
 				token.generation,
 				operationId,
-				request,
+				identity,
 				JSON.stringify(receipt),
 			);
 			return receipt;
 		});
+	}
+	private async appendSession(
+		tx: SqliteExecutor,
+		row: WorkRow,
+		mutation: PoolSessionAppend,
+		now: number,
+	): Promise<PoolCommitReceipt> {
+		return { at: now, lastSeq: await applyPoolSession(tx, `${this.journal.runs}_pool_`, row.id, mutation) };
+	}
+	private async recordCheckpoint(
+		tx: SqliteExecutor,
+		lease: Lease,
+		token: WorkLease,
+		row: WorkRow,
+		mutation: PoolCheckpointMutation,
+		now: number,
+	): Promise<PoolCommitReceipt> {
+		const checkpoint = mutation.checkpoint;
+		await validatePoolMutation(tx, this.journal, lease.runId, fromRow(row), mutation);
+		if (checkpoint.completedAt > Math.max(now, Date.now()) + MAX_WORKER_CLOCK_SKEW_MS)
+			throw new Error("Pool checkpoint timestamp is in the future");
+		assertWorkflowSerializableObject(checkpoint, "Pool checkpoint");
+		const key = JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, checkpoint.kind, checkpoint.checkpointId]);
+		const payload = serializeJson(checkpoint);
+		const existing = await tx.get<SqliteRow & { seq: number; at: number; payload: string }>(
+			`SELECT seq, at, payload FROM ${this.journal.events} WHERE run_id = ? AND key = ?`,
+			lease.runId,
+			key,
+		);
+		if (existing && existing.payload !== payload) throw new Error("Pool checkpoint identity conflict");
+		if (existing && mutation.kind !== "checkpoint") throw new Error("Pool session checkpoint identity conflict");
+		const lastSeq =
+			mutation.kind === "checkpoint"
+				? undefined
+				: await applyPoolSession(tx, `${this.journal.runs}_pool_`, row.id, mutation);
+		const latest = await tx.get<SqliteRow & { seq: number }>(
+			`SELECT COALESCE(MAX(seq), 0) AS seq FROM ${this.journal.events} WHERE run_id = ?`,
+			lease.runId,
+		);
+		const receipt = existing
+			? { seq: Number(existing.seq), at: Number(existing.at) }
+			: {
+					seq: journalCounter(lease.runId, "seq", Number(latest!.seq) + 1, "overflow"),
+					at: now,
+					...(lastSeq === undefined ? {} : { lastSeq }),
+				};
+		if (!existing)
+			await tx.run(
+				`INSERT INTO ${this.journal.events} VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				lease.runId,
+				receipt.seq,
+				lease.epoch,
+				key,
+				RUN_EVENT_TYPES.checkpointRecorded,
+				payload,
+				now,
+			);
+		const billed = poolCheckpointUsage(checkpoint);
+		if (billed && !existing)
+			await upsertPoolUsage(tx, this.journal.runs, row.id, token.generation, billed.key, billed.usage);
+		return receipt;
 	}
 	async complete(lease: Lease, token: WorkLease, result: WorkflowSerializableObject): Promise<void> {
 		lease = snapshotLease(lease);
