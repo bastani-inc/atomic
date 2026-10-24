@@ -1350,7 +1350,7 @@ const results = await ctx.parallel([
 ]);
 ```
 
-Swarm size scales with the task. For very complex work, or when the user asks for heavy parallelism, fan out to hundreds or thousands of agents: wide `ctx.parallel(...)` stages, a subagent parallel set inside each stage, and child workflows via `ctx.workflow(...)` (optionally on `workflows.localWorkers`). Give each team a named subgroup so its members coordinate internally while the team leads, as sibling stages, coordinate in the invocation group. Up to 1000 stages run at once by default; lower `defaultConcurrency` or pass `concurrency` to run fewer; `maxDepth` (default 4) bounds child-workflow nesting, and subagent children cannot delegate further. See [Scaling a swarm](/subagents#scaling-a-swarm) for every limit.
+Swarm size scales with the task. For very complex work, or when the user asks for heavy parallelism, fan out to hundreds or thousands of agents: wide `ctx.parallel(...)` stages, a subagent parallel set inside each stage, and child workflows via `ctx.workflow(...)` (optionally on `workflows.localWorkers`). Give each team a named subgroup so its members coordinate internally while the team leads, as sibling stages, coordinate in the invocation group. Up to 1000 stages run at once by default; lower `defaultConcurrency` or pass `concurrency` to run fewer; `maxDepth` (default 3) bounds child-workflow nesting, and subagent children cannot delegate further. See [Scaling a swarm](/subagents#scaling-a-swarm) for every limit.
 
 #### Pattern diagrams
 

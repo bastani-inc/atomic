@@ -179,7 +179,7 @@ function mergeConfigs(base: WorkflowExtensionConfig, override: WorkflowExtension
  * Canonical default values for all WorkflowExtensionConfig tunables.
  */
 export const WORKFLOW_CONFIG_DEFAULTS = {
-	maxDepth: 4,
+	maxDepth: 3,
 	defaultConcurrency: 1000,
 	persistRuns: true,
 	statusFile: false,

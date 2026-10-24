@@ -1000,7 +1000,7 @@ A child exposes only outputs declared in `outputs` and returned from `run` or su
 
 Missing required outputs, schema type mismatches, and non-JSON-serializable returned values fail normal child completion before the parent continues; child `ctx.exit({ outputs })` allows missing required outputs but still validates every provided key and sets `child.exited === true` so parent code must handle the partial shape.
 
-Pass only imported workflow definitions to `ctx.workflow(...)`, not registry names or paths. Missing modules or invalid exports fail discovery. Nested children count against `maxDepth`, default `4` total workflow levels.
+Pass only imported workflow definitions to `ctx.workflow(...)`, not registry names or paths. Missing modules or invalid exports fail discovery. Nested children count against `maxDepth`, default `3` total workflow levels.
 
 A missing, empty, or invalid child graph retains a boundary summary rather than displaying unrelated nodes. Failed or skipped boundaries also retain summaries. Use `stageName` for a concise custom boundary label.
 

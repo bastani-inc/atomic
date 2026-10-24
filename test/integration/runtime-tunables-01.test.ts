@@ -150,7 +150,7 @@ describe("runtime tunables — maxDepth", () => {
 			},
 		);
 		assert.equal(result.status, "failed");
-		assert.equal(result.error, "atomic-workflows: maxDepth exceeded (max 4)");
+		assert.equal(result.error, "atomic-workflows: maxDepth exceeded (max 3)");
 	});
 	test("failed result carries non-empty runId", async () => {
 		const wf = workflow({

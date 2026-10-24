@@ -39,8 +39,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeWorkflowName } from "../workflows/identity.js";
 
-/** Mirror of the engine's child-nesting default (`engine/run.ts` `opts.config?.maxDepth ?? 4`). */
-const DEFAULT_MAX_DEPTH = 4;
+/** Mirror of the engine's child-nesting default (`engine/run.ts` `opts.config?.maxDepth ?? 3`). */
+const DEFAULT_MAX_DEPTH = 3;
 
 /** Builtin barrel specifiers whose named exports resolve into the package's own builtin directory. */
 const BUILTIN_BARREL_SPECIFIERS: ReadonlySet<string> = new Set(["@bastani/atomic/workflows/builtin"]);
