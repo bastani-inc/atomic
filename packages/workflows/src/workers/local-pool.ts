@@ -185,6 +185,7 @@ function launchCoordinatorInProcess(): Coordinator {
 export class LocalWorkerPool {
 	private readonly pids = new Set<number>();
 	private coordinator?: Coordinator;
+	private coordinatorLost?: Error;
 	private readonly commands = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 	private commandSequence = 0;
 	private inbound: Promise<void> = Promise.resolve();
@@ -494,7 +495,7 @@ export class LocalWorkerPool {
 		this.ticker ??= setInterval(() => {
 			this.evaluateBudget();
 			this.signalChange();
-		}, POOL_SUMMARY_INTERVAL_MS);
+		}, POOL_SUMMARY_INTERVAL_MS).unref();
 		try {
 			for (;;) {
 				options.signal?.throwIfAborted();
@@ -556,6 +557,7 @@ export class LocalWorkerPool {
 			this.inbound = this.inbound.then(() => this.receive(event)).catch(() => {});
 		});
 		coordinator.port.onClose((reason) => {
+			this.coordinatorLost = reason;
 			this.inbound = this.inbound.then(() => this.lost(reason));
 		});
 		return coordinator;
@@ -563,13 +565,13 @@ export class LocalWorkerPool {
 	private lost(reason: Error): void {
 		this.pids.clear();
 		if (!this.closed) this.failure ??= reason;
-		for (const pending of this.commands.values())
-			pending.reject(this.closed ? new Error("Local worker pool is closed") : reason);
+		for (const pending of this.commands.values()) pending.reject(reason);
 		this.commands.clear();
 		this.signalChange();
 	}
 	private command(body: CoordinatorCommandBody): Promise<unknown> {
 		const coordinator = this.connect();
+		if (this.coordinatorLost !== undefined) return Promise.reject(this.coordinatorLost);
 		const id = ++this.commandSequence;
 		return new Promise((resolve, reject) => {
 			this.commands.set(id, { resolve, reject });
@@ -708,10 +710,13 @@ export class LocalWorkerPool {
 		let failure: unknown;
 		const coordinator = this.coordinator;
 		if (coordinator !== undefined) {
-			try {
-				await this.command({ kind: "close" });
-			} catch (error) {
-				failure = error;
+			// A coordinator that is already gone has nothing left to close; its loss is the pool's failure.
+			if (this.coordinatorLost === undefined) {
+				try {
+					await this.command({ kind: "close" });
+				} catch (error) {
+					failure = error;
+				}
 			}
 			await this.inbound;
 			await coordinator.port.close();
