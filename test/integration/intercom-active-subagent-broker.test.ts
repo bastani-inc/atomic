@@ -115,6 +115,7 @@ async function endpoint(name: string, child = false, tools: AgentTool[] = [], op
 			replyTo?: string;
 			group?: string;
 			attachments?: Attachment[];
+			delivery?: "steer" | "followUp" | "interrupt";
 		},
 		signal?: AbortSignal,
 	): Promise<AgentToolResult<unknown> & { isError?: boolean }> =>
@@ -179,7 +180,7 @@ test("public same-group asks interrupt a busy child and correlate concurrent rep
 	try {
 		await started.promise;
 		const first = peer.execute(
-			{ action: "ask", to: child.id, message: "  FIRST-QUESTION\n", attachments },
+			{ action: "ask", to: child.id, message: "  FIRST-QUESTION\n", attachments, delivery: "interrupt" },
 			asks.signal,
 		);
 		await vi.waitFor(() =>
@@ -188,7 +189,10 @@ test("public same-group asks interrupt a busy child and correlate concurrent rep
 				1,
 			),
 		);
-		const second = peer.execute({ action: "ask", to: child.id, message: "SECOND-QUESTION" }, asks.signal);
+		const second = peer.execute(
+			{ action: "ask", to: child.id, message: "SECOND-QUESTION", delivery: "interrupt" },
+			asks.signal,
+		);
 		await vi.waitFor(() =>
 			assert.equal(
 				child.session.messages.filter((message) => getMessageText(message).includes("SECOND-QUESTION")).length,
@@ -846,7 +850,7 @@ test("simultaneous public parent send and child priority interrupt preserve the 
 		const original = ownerSnapshot(parent).tasks[0].ref;
 		const sent = await Promise.all([
 			peer.execute({ action: "send", to: parent.id, message: "PARENT-ONLY" }),
-			peer.execute({ action: "send", to: child.id, message: "CHILD-ONLY" }),
+			peer.execute({ action: "send", to: child.id, message: "CHILD-ONLY", delivery: "interrupt" }),
 		]);
 		assert.ok(sent.every((result) => result.isError !== true));
 		await vi.waitFor(() => {

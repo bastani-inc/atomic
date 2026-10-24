@@ -3,7 +3,11 @@ import { type InboundMessageEntry, mayStartTurn, maySupplyReplyContext } from ".
 import type { IntercomContext } from "./reply-tracker.js";
 import type { Message } from "./types.js";
 
-export type IncomingMessageDelivery = "trigger" | "interrupt" | "followUp" | "prelude";
+/**
+ * `trigger` steers (or starts a turn when idle); `triggerFollowUp` waits for the agent to stop (or starts a turn when
+ * idle); `interrupt` cancels active work; `followUp` and `prelude` never start a turn by themselves.
+ */
+export type IncomingMessageDelivery = "trigger" | "triggerFollowUp" | "interrupt" | "followUp" | "prelude";
 export type IncomingMessageSender = (
   entry: InboundMessageEntry,
   delivery: IncomingMessageDelivery,
@@ -25,8 +29,9 @@ export function createIncomingMessageSender(input: {
       return Promise.reject(new Error("Intercom session retired before inbound delivery"));
     }
     // #3761: a history-only card is written without a turn and never becomes a reply target, whatever was requested.
-    const delivery = (requested === "trigger" || requested === "interrupt") && !mayStartTurn(entry) ? "prelude" : requested;
-    if ((delivery === "trigger" || delivery === "interrupt") && trackReplyContext && maySupplyReplyContext(entry)) {
+    const startsTurn = requested === "trigger" || requested === "triggerFollowUp" || requested === "interrupt";
+    const delivery = startsTurn && !mayStartTurn(entry) ? "prelude" : requested;
+    if ((delivery === "trigger" || delivery === "triggerFollowUp" || delivery === "interrupt") && trackReplyContext && maySupplyReplyContext(entry)) {
       input.queueTurnContext(turnContext ?? { from: entry.from, message: entry.message, receivedAt: Date.now() });
     }
     const baseOptions = {
@@ -38,6 +43,8 @@ export function createIncomingMessageSender(input: {
       ? { ...baseOptions, triggerTurn: true, deliverAs: "interrupt" } as const
       : delivery === "trigger"
       ? { ...baseOptions, triggerTurn: true } as const
+      : delivery === "triggerFollowUp"
+      ? { ...baseOptions, triggerTurn: true, deliverAs: "followUp" } as const
       : delivery === "followUp" ? { ...baseOptions, deliverAs: "followUp" } as const : baseOptions;
     return Promise.resolve(input.pi.sendMessage(buildIncomingCustomMessage(entry), options));
   };

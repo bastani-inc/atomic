@@ -25,7 +25,19 @@ const peer: SessionInfo = {
 	startedAt: 1,
 	lastActivity: 1,
 };
+/** Sender-requested priority input: `delivery: "interrupt"` cancels the receiver's active work. */
 function message(id: string, action: Action, text = `PRIORITY-${id}`): Message {
+	return {
+		id,
+		timestamp: Date.now(),
+		delivery: "interrupt",
+		content: { text },
+		...(action === "ask" ? { expectsReply: true } : {}),
+	};
+}
+
+/** No `delivery` field: the default queued steer. */
+function queuedMessage(id: string, action: Action, text: string): Message {
 	return { id, timestamp: Date.now(), content: { text }, ...(action === "ask" ? { expectsReply: true } : {}) };
 }
 
@@ -133,11 +145,11 @@ function cancellableTool(record: { calls: number; signal?: AbortSignal; complete
 	};
 }
 
-// Amended 2x2 matrix: both actions and both receivers cancel supported active
-// work immediately and continue the same task/stage with the message.
+// Amended 2x2 matrix: with an explicit `delivery: "interrupt"`, both actions and both receivers
+// cancel supported active work immediately and continue the same task/stage with the message.
 for (const kind of ["child", "workflow-stage"] as const) {
 	for (const action of ["send", "ask"] as const) {
-		test(`${action} to an active ${kind} cancels its long-running tool and continues the original task`, async () => {
+		test(`${action} with delivery interrupt to an active ${kind} cancels its long-running tool and continues the original task`, async () => {
 			const record = { calls: 0, completed: 0 } as { calls: number; signal?: AbortSignal; completed: number };
 			const work = cancellableTool(record);
 			const h = await receiver(kind, [work.tool]);
@@ -664,3 +676,68 @@ test("a terminal workflow generation does not reopen for priority input", async 
 		await h.close(execution);
 	}
 });
+
+// Sender-chosen delivery without interrupt, e.g. peer-to-peer swarm messaging: the
+// in-flight tool call always completes. The default steer is handled right after the
+// tool's turn; followUp waits until the agent would otherwise stop.
+for (const kind of ["child", "workflow-stage"] as const) {
+	for (const action of ["send", "ask"] as const) {
+		for (const delivery of [undefined, "followUp"] as const) {
+			const mode = delivery ?? "default steer";
+			test(`${mode} ${action} to an active ${kind} lets its long-running tool finish and is delivered afterwards`, async () => {
+				const record = { calls: 0, completed: 0 } as { calls: number; signal?: AbortSignal; completed: number };
+				const work = cancellableTool(record);
+				const h = await receiver(kind, [work.tool]);
+				const seenAtDispatch: number[] = [];
+				const sees = (context: { messages: object[] }) =>
+					context.messages.some((m) => getMessageText(m).includes("PEER-"));
+				const dispatches = createDispatchCounter([
+					() => fauxAssistantMessage(fauxToolCall("long_work", {}), { stopReason: "toolUse" }),
+					(context) => {
+						if (sees(context)) seenAtDispatch.push(2);
+						return fauxAssistantMessage("finished the task");
+					},
+					(context) => {
+						if (sees(context)) seenAtDispatch.push(3);
+						return fauxAssistantMessage("handled follow-up");
+					},
+				]);
+				h.setResponses(dispatches.steps(5));
+				const execution = h.session.prompt("original task");
+				try {
+					await work.started.promise;
+					await h.deliver({
+						...queuedMessage(`peer-${kind}-${action}-${mode}`, action, `PEER-${kind}-${action}`),
+						...(delivery === undefined ? {} : { delivery }),
+					});
+					await vi.waitFor(() =>
+						assert.equal(
+							h.sessionManager
+								.getEntries()
+								.filter((e) => e.type === "custom_message" && e.customType === "intercom_message").length,
+							1,
+							"the message is saved while the tool runs",
+						),
+					);
+					await new Promise((resolve) => setTimeout(resolve, 50));
+					assert.equal(record.signal?.aborted, false, "the message must not cancel the running tool");
+					work.cleanup.resolve();
+					await execution;
+					assert.equal(record.calls, 1);
+					assert.equal(record.completed, 1, "the tool call completes naturally");
+					assert.equal(dispatches.counts.aborted, 0, "no model dispatch is cancelled");
+					if (delivery === "followUp") {
+						assert.deepEqual(seenAtDispatch, [3], "followUp waits until the agent finished and stopped");
+						assert.equal(getMessageText(h.session.messages.at(-1)), "handled follow-up");
+					} else {
+						assert.deepEqual(seenAtDispatch, [2], "steer is delivered right after the tool call's turn");
+						assert.equal(getMessageText(h.session.messages.at(-1)), "finished the task");
+					}
+				} finally {
+					work.cleanup.resolve();
+					await h.close(execution);
+				}
+			});
+		}
+	}
+}

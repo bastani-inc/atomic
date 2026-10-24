@@ -1,10 +1,11 @@
-import type { Attachment, Message } from "../types.js";
+import type { Attachment, IntercomDeliveryMode, Message } from "../types.js";
 
 export interface LogicalSendOptions {
   text: string;
   attachments?: Attachment[];
   replyTo?: string;
   expectsReply?: boolean;
+  delivery?: IntercomDeliveryMode;
   replyError?: string;
 }
 
@@ -28,6 +29,7 @@ export function buildSendSignature(to: string, options: LogicalSendOptions): str
     replyTo: options.replyTo ?? null,
     expectsReply: options.expectsReply ?? false,
     replyError: options.replyError ?? null,
+    ...(options.delivery === undefined || options.delivery === "steer" ? {} : { delivery: options.delivery }),
   });
 }
 
@@ -37,6 +39,7 @@ export function buildMessageSendSignature(to: string, message: Message, senderId
 		attachments: message.content.attachments,
 		replyTo: message.replyTo,
 		expectsReply: message.expectsReply,
+		delivery: message.delivery,
 		replyError: message.replyError,
 	});
 	if (senderId === undefined && message.source === undefined) return logicalSignature;

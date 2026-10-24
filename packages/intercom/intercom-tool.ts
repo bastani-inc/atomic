@@ -225,6 +225,10 @@ A valid target outside the known set queues speculatively with a \`notInKnownSet
 undeliverable at terminal only if never delivered. Use \`ask\` only for a live, reply-capable target.
 Stage paths win over same-named owned subgroups for send/ask; \`list\` with \`group\` continues to
 select the group.
+Choose \`delivery\` per send/ask by urgency. The default "steer" arrives after the recipient's current
+tool calls finish and never cancels its work. Use "interrupt" when it must stop now (an urgent correction
+or a stop order); it cancels the current model call or tool call. Use "followUp" when the message can wait
+until the recipient finishes (low priority, "after you're done"). An idle recipient starts a turn.
 For send/ask/reply, Intercom retries recoverable disconnects internally up to three times with the same operation identity. Each new tool call is a new operation. If recovery ends with an unknown delivery outcome, do not repeat it automatically.
 
 Usage:
@@ -236,6 +240,7 @@ Usage:
   intercom({ action: "leave" })                   → Return to your resolved home group
   intercom({ action: "send", to: "session-name", message: "..." })  → Send message (shared group only)
   intercom({ action: "ask", to: "session-name", message: "..." })   → Ask and wait for reply
+  intercom({ action: "send", to: "session-name", message: "...", delivery: "interrupt" }) → Cancel the recipient's current work
   intercom({ action: "reply", message: "..." })                      → Reply to the active or exact pending ask
   intercom({ action: "pending" })                                      → List unresolved inbound asks
   intercom({ action: "status" })                  → Show connection status and all your groups
@@ -261,6 +266,9 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
         content: Type.String(),
         language: Type.Optional(Type.String()),
       }))),
+      delivery: Type.Optional(Type.Union([Type.Literal("steer"), Type.Literal("followUp"), Type.Literal("interrupt")], {
+        description: "For 'send'/'ask'; choose per message by urgency. 'steer' (default): arrives after the recipient's current tool calls, never cancelling work. 'interrupt': the recipient must stop now (urgent correction, stop order); cancels its current model call or tool call. 'followUp': can wait until the recipient finishes (low priority, after you're done).",
+      })),
       replyTo: Type.Optional(Type.String({
         description: "Exact pending-ask message ID or unique 8-hex UUID prefix; disambiguates concurrent asks, including asks from one sender",
       })),
@@ -279,6 +287,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
       }
       const toolSessionId = ctx.sessionManager.getSessionId();
       const { action, to, message, replyTo, group } = params;
+      const deliveryOption = params.delivery === undefined || params.delivery === "steer" ? {} : { delivery: params.delivery };
       const attachments = params.attachments?.map((attachment) => ({ ...attachment }));
       const executeAttempt = async (retryToken: string | undefined, _signal?: AbortSignal): Promise<IntercomAttemptResult> => {
       if (retryToken !== undefined) {
@@ -606,6 +615,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               text: message,
               attachments,
               replyTo,
+              ...deliveryOption,
             });
 
             if (result.queued === true) {
@@ -876,6 +886,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               attachments,
               replyTo,
               expectsReply: true,
+              ...deliveryOption,
               // The broker names the recipient it authorized to answer, so its reply is matched to this ask: the
               // session behind a canonical path, a target the listing could not resolve (such as a peer's own
               // session id, #3760), or a recipient that reconnected under a new session id before confirming (#3761).

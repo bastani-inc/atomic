@@ -18,6 +18,7 @@ import type {
 	WorkflowPossibleStageAnnouncement,
 	WorkflowRunParentAnnouncement,
 	PendingStageRouteRefusalCode,
+	IntercomDeliveryMode,
 } from "../types.js";
 import { buildSendSignature, PendingSendRegistry, PendingSendTimeoutError } from "./pending-send-registry.js";
 import { readSubagentMessageSource } from "../source-ownership.js";
@@ -43,6 +44,8 @@ export interface SendOptions {
   attachments?: Attachment[];
   replyTo?: string;
   expectsReply?: boolean;
+  /** How a busy recipient receives the message; absent means `steer`. */
+  delivery?: IntercomDeliveryMode;
   replyError?: string;
   messageId?: string;
   /** Internal caller-issued target identity; transport still uses the `to` argument. */
@@ -1410,6 +1413,7 @@ export class IntercomClient extends EventEmitter {
       timestamp: Date.now(),
       replyTo: options.replyTo,
       expectsReply: options.expectsReply,
+      ...(options.delivery === undefined || options.delivery === "steer" ? {} : { delivery: options.delivery }),
       replyError: options.replyError,
       source: this._messageSource,
       content: { text: options.text, attachments: options.attachments },

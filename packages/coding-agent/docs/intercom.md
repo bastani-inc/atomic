@@ -130,7 +130,17 @@ See auth.ts:142-156.
 
 The reply hint (enabled by default) points to `intercom({ action: "reply", ... })`, so recipients never need raw sender or `replyTo` IDs. Idle recipients get a new turn immediately; busy interactive recipients receive the message once they go idle. The recipient saves each message to its session as soon as it arrives, and the sender sees `delivered` only after that save. If the recipient closes or crashes before it shows a saved message, resuming that session with `atomic --session <id>` or `/resume` shows the message then, once, in arrival order, if its sender is still connected. A message from a sender that is gone is added once, in full, to the session history without starting a turn, and the recovery notice says the sender is gone. A reply already returned to a waiting `ask`, or a message the recipient refused, is not shown again when the session reopens. If Intercom cannot be reached when the session reopens, or the sender is a background subagent that was relaunched but has not reconnected yet, the message is deferred: it starts no turn, the notice says so, and the next reopen of the session decides again. Sessions started with `--no-session` are not saved, so their messages are not recovered. Attachment content is included in the agent-visible body, and messages are rendered inline and stored in Atomic session history.
 
-Working subagents and live workflow stages process `send` and `ask` as priority input. The current model call or cancellable tool is cancelled, then the message is handled in the same task and session. Tools that ignore cancellation finish first; completed side effects are not undone or replayed.
+Working subagents and live workflow stages handle incoming `send` and `ask` messages in the same task and session, according to the sender's `delivery` option:
+
+| `delivery` | When a busy recipient gets it | Use it for |
+|---|---|---|
+| `"steer"` (default) | After its current tool calls finish. Its work is never cancelled. | Ordinary coordination, findings, and updates |
+| `"followUp"` | Only after it finishes and stops | Low-priority notes, or anything meant for "after you're done" |
+| `"interrupt"` | Immediately. Its current model call or cancellable tool call is cancelled, then the message is handled next. | An urgent correction or a stop order |
+
+The sender chooses `delivery` for each message; override the default by urgency. It applies to every sender, including peers, the supervisor, and you. An idle recipient starts a turn for any mode.
+
+For example, `intercom({ action: "send", to: "worker", message: "Stop; the spec changed", delivery: "interrupt" })` stops the worker's current tool call. With `"interrupt"`, tools that ignore cancellation finish first, and completed side effects are not undone or replayed.
 
 This works for foreground and background children. Startup messages join the original task, multiple messages keep arrival order, and asks retain their reply thread. Subagent `pause` and `quit`, owner cancellation, host stop, and terminal children or closed stages take precedence over later input. Use an exact child name or full session ID from `intercom list`, not a workflow-stage path.
 
