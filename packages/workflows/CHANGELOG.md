@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.44-alpha.2] - 2026-10-24
+
+### Fixed
+
+- A sticky Intercom broadcast, such as `workflow:<rootRunId>/**`, that reaches many workflow stages no longer makes the workflow journal grow quadratically. Recording one more delivery used to rewrite every stage's deliveries in the run's queued-message event; each event now stores only the deliveries that changed since the run's previous event. In a 160-worker run this shrinks those events from about 160 MB to about 9 MB. Journals written by earlier versions read and resume unchanged ([#3920](https://github.com/bastani-inc/atomic/issues/3920))
+
 ## [0.9.44-alpha.1] - 2026-10-24
 
 ### Changed

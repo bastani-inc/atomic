@@ -2,9 +2,15 @@
 
 ## [Unreleased]
 
-### Changed
+## [0.9.44-alpha.2] - 2026-10-24
 
-- Intercom `send` and `ask` take a `delivery` option, and the default is now `"steer"`: a message to a working subagent or live workflow stage arrives after the recipient's current tool calls finish instead of cancelling its work, so peers in a swarm no longer abort each other's long-running tool calls. `"followUp"` waits until the recipient finishes and stops. `"interrupt"` keeps the previous behavior of cancelling the recipient's current model call or tool call, and is now opt-in ([#3921](https://github.com/bastani-inc/atomic/issues/3921))
+Workflow swarms now message each other without cancelling each other's work, and stages, replies and session exits behave reliably under fan-out.
+
+- **Messages no longer cancel a peer's work:** Intercom `send` and `ask` now default to `"steer"`, so a message reaches a busy subagent or workflow stage after its current tool calls finish; pass `delivery: "followUp"` to wait until it stops, or `"interrupt"` for the old cancelling behavior ([#3921](https://github.com/bastani-inc/atomic/issues/3921), [#3924](https://github.com/bastani-inc/atomic/pull/3924))
+- **Replies reach the right sender:** an implicit Intercom `reply` answers only messages the agent has actually seen, and every ask delivered in the same turn can still be answered ([#3921](https://github.com/bastani-inc/atomic/issues/3921), [#3927](https://github.com/bastani-inc/atomic/pull/3927))
+- **Workflow stages start reliably:** a message that reaches a stage before its own prompt becomes context for the first turn instead of failing the stage with `Agent is already processing` ([#3919](https://github.com/bastani-inc/atomic/issues/3919), [#3923](https://github.com/bastani-inc/atomic/pull/3923))
+- **Smaller journals under broadcast:** sticky broadcasts to many stages record only what changed, so the workflow journal grows linearly instead of quadratically ([#3920](https://github.com/bastani-inc/atomic/issues/3920), [#3922](https://github.com/bastani-inc/atomic/pull/3922))
+- **Clean exits and binary startup:** closing a session while background subagents finish no longer fails with `Cannot dispose a session with a queued protected reconciliation`, and the standalone binary starts the Intercom broker for pooled stages even when a build tree exists on the host ([#3925](https://github.com/bastani-inc/atomic/issues/3925), [#3926](https://github.com/bastani-inc/atomic/pull/3926), [#3917](https://github.com/bastani-inc/atomic/issues/3917), [#3918](https://github.com/bastani-inc/atomic/pull/3918))
 
 ### Fixed
 
