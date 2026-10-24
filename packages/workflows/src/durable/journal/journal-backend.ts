@@ -26,7 +26,13 @@ import type {
 	DurableWorkflowHandle,
 	DurableWorkflowStatus,
 } from "../types.js";
-import { type RunVersion, runJournalVersions } from "./internal.js";
+import {
+	type NON_SNAPSHOT_EVENT_TYPES,
+	type RunJournalVersions,
+	type RunSnapshotTail,
+	type RunVersion,
+	runJournalVersions,
+} from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import { MemoryRunJournal } from "./memory-run-journal.js";
 import {
@@ -166,6 +172,11 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	private readonly sequences = new Map<string, number>();
 	/** `at` of the event folded at `sequences`, so a run whose history was replaced is rebuilt, not extended. */
 	private readonly foldedAt = new Map<string, number>();
+	/**
+	 * Runs whose handle came from their latest snapshot event without folding their history, with the journal
+	 * version that snapshot was read at. Their checkpoints are read when the run is hydrated.
+	 */
+	private readonly summarized = new Map<string, RunVersion>();
 	/** Journal change token at the last complete catalog hydration. */
 	private catalogToken: string | undefined;
 	private readonly leases = new Map<string, Lease>();
@@ -302,6 +313,24 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		this.sequences.set(entry.runId, entry.seq);
 		this.foldedAt.set(entry.runId, entry.at);
 	}
+	/**
+	 * Record a run's handle from its latest snapshot without folding its history. Each snapshot already counts
+	 * the checkpoints before it, so the ones recorded after it are added and the last of them sets `updatedAt`,
+	 * as folding them does. The run's checkpoints, prompt reservations and receipts are read when it is hydrated.
+	 */
+	private summarize(runId: string, tail: RunSnapshotTail): void {
+		const event = tail.snapshot.event as Exclude<BackendEvent, { type: (typeof NON_SNAPSHOT_EVENT_TYPES)[number] }>;
+		const handle =
+			event.type === E.promptAsked || event.type === E.promptReleased ? event.payload.handle : event.payload;
+		void this.projection.deleteWorkflow(runId);
+		this.prompts.delete(runId);
+		this.projection.applyWorkflowSnapshot({
+			...handle,
+			completedCheckpoints: handle.completedCheckpoints + tail.laterCheckpoints,
+			...(tail.lastCheckpointAt === undefined ? {} : { updatedAt: tail.lastCheckpointAt }),
+		});
+		this.summarized.set(runId, tail.version);
+	}
 
 	private *entries(runId: string, fromSeq?: number): Operation<readonly JournalEntry[]> {
 		return yield* invoke(async () => {
@@ -315,6 +344,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		void this.projection.deleteWorkflow(runId);
 		this.sequences.delete(runId);
 		this.foldedAt.delete(runId);
+		this.summarized.delete(runId);
 		this.prompts.delete(runId);
 		for (const entry of entries) this.fold(entry);
 	}
@@ -758,8 +788,9 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	/**
 	 * Brings every run up to date for the resume catalog. With a versioned journal an unchanged store is
 	 * detected from one token read, and otherwise only runs whose latest event moved are read: appended
-	 * events are folded onto the cached projection and a run whose history was replaced or removed is
-	 * rebuilt. Ownership is never cached here; resume checks the lease when an entry is selected.
+	 * events are folded onto a hydrated run, a run that is not hydrated is summarized again from its latest
+	 * snapshot, and a run whose history was replaced or removed is rebuilt. Ownership is never cached here;
+	 * resume checks the lease when an entry is selected.
 	 */
 	hydrateResumableWorkflows(): Promise<void> {
 		return this.serialize(this.catalogQueue, () =>
@@ -775,14 +806,22 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 				const token = await journal.changeToken();
 				if (token === this.catalogToken) return;
 				const versions = await journal.runVersions();
-				for (const runId of new Set([...this.sequences.keys(), ...versions.keys()]))
-					await this.serialize(runId, () => this.catchUp(runId, versions.get(runId)), false);
+				for (const runId of new Set([...this.sequences.keys(), ...this.summarized.keys(), ...versions.keys()]))
+					await this.serialize(runId, () => this.catchUp(runId, versions.get(runId), journal), false);
 				this.catalogToken = token;
 			}),
 		);
 	}
-	private *catchUp(runId: string, version: RunVersion | undefined): Operation<void> {
+	private *catchUp(runId: string, version: RunVersion | undefined, journal: RunJournalVersions): Operation<void> {
 		const folded = this.sequences.get(runId) ?? 0;
+		if (folded === 0 && version !== undefined) {
+			const summarized = this.summarized.get(runId);
+			if (summarized !== undefined && summarized.seq === version.seq && summarized.at === version.at) return;
+			const tail = yield* invoke(() => journal.snapshotTail(runId));
+			if (tail !== undefined) return this.summarize(runId, tail);
+			if (summarized === undefined && version.seq === 0) return;
+			return yield* this.rebuild(runId);
+		}
 		if (version !== undefined && version.seq === folded && version.at === (this.foldedAt.get(runId) ?? 0)) return;
 		if (version !== undefined && folded > 0 && version.seq > folded) return yield* this.extend(runId);
 		yield* this.rebuild(runId);
@@ -815,6 +854,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		this.leases.delete(runId);
 		this.sequences.delete(runId);
 		this.foldedAt.delete(runId);
+		this.summarized.delete(runId);
 		this.prompts.delete(runId);
 		void this.projection.deleteWorkflow(runId);
 	}

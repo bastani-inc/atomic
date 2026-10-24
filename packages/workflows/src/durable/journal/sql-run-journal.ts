@@ -13,6 +13,8 @@ import {
 import {
 	JOURNAL_READ_PAGE_SIZE,
 	type JournalAppendGuard,
+	NON_SNAPSHOT_EVENT_TYPES,
+	type RunSnapshotTail,
 	type RunVersion,
 	registerRunJournalVersions,
 	registerSqlPoolStorage,
@@ -49,9 +51,16 @@ export { JOURNAL_READ_PAGE_SIZE } from "./internal.js";
 
 type Tables = Readonly<Record<keyof typeof JOURNAL_TABLES, string>>;
 type EventRow = SqliteRow & JournalEventRow;
+type SnapshotTailRow = EventRow & {
+	latest_seq: number;
+	latest_at: number;
+	later_checkpoints: number;
+	last_checkpoint_at: number | null;
+};
 type LeaseRow = SqliteRow & JournalLeaseRow & { [c.renewedAt]: number };
 type HeaderRow = SqliteRow & { [c.headerJson]: string; [c.status]: string };
 const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
+const EVENT_COLUMNS = [c.runId, c.seq, c.epoch, c.key, c.type, c.payload, c.at] as const;
 
 function entryFromRow(row: EventRow): JournalEntry {
 	const key = row[c.key];
@@ -81,6 +90,7 @@ export class SqlRunJournal implements RunJournal {
 		registerRunJournalVersions(this, {
 			changeToken: () => this.changeToken(),
 			runVersions: () => this.runVersions(),
+			snapshotTail: (runId) => this.snapshotTail(runId),
 		});
 		registerSqlPoolStorage(this, {
 			transaction: (body) => this.operation(() => this.database.transaction(body)),
@@ -238,6 +248,39 @@ export class SqlRunJournal implements RunJournal {
 					{ seq: journalCounter(row[c.runId], "seq", row[c.seq]), at: Number(row[c.at]) },
 				]),
 			);
+		});
+	}
+
+	/**
+	 * The latest snapshot event is found by walking the run's `(run_id, seq)` key back from its last event, so
+	 * only the events after it are visited and only its payload is read.
+	 */
+	private async snapshotTail(runId: string): Promise<RunSnapshotTail | undefined> {
+		this.assertOpen();
+		validateText("runId", runId);
+		return this.operation(async () => {
+			const events = (await this.isUnconvertedLegacyRun(runId)) ? JOURNAL_TABLES.events : this.tables.events;
+			const later = `FROM ${events} AS later WHERE later.${c.runId} = snapshot.${c.runId} AND later.${c.seq} > snapshot.${c.seq} AND later.${c.type} = ?`;
+			const row = await this.database.get<SnapshotTailRow>(
+				`SELECT ${EVENT_COLUMNS.map((column) => `snapshot.${column}`).join(", ")},
+					latest.${c.seq} AS latest_seq, latest.${c.at} AS latest_at,
+					(SELECT count(*) ${later}) AS later_checkpoints,
+					(SELECT json_extract(later.${c.payload}, '$.completedAt') ${later} ORDER BY later.${c.seq} DESC LIMIT 1) AS last_checkpoint_at
+				FROM (SELECT ${c.seq}, ${c.at} FROM ${events} WHERE ${c.runId} = ? ORDER BY ${c.seq} DESC LIMIT 1) AS latest,
+					(SELECT ${EVENT_COLUMNS.join(", ")} FROM ${events} WHERE ${c.runId} = ? AND ${c.type} NOT IN (${NON_SNAPSHOT_EVENT_TYPES.map(() => "?").join(", ")}) ORDER BY ${c.seq} DESC LIMIT 1) AS snapshot`,
+				RUN_EVENT_TYPES.checkpointRecorded,
+				RUN_EVENT_TYPES.checkpointRecorded,
+				runId,
+				runId,
+				...NON_SNAPSHOT_EVENT_TYPES,
+			);
+			if (row === undefined) return undefined;
+			return {
+				version: { seq: journalCounter(runId, "seq", row.latest_seq), at: Number(row.latest_at) },
+				snapshot: entryFromRow(row),
+				laterCheckpoints: Number(row.later_checkpoints),
+				...(row.last_checkpoint_at === null ? {} : { lastCheckpointAt: Number(row.last_checkpoint_at) }),
+			};
 		});
 	}
 

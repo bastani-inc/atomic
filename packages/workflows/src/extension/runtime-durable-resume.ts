@@ -222,6 +222,8 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 				try {
 					await backend.hydrateResumableWorkflows();
 					await hydrateStoredWorkflowCandidates(backend);
+					// The catalog lists a run from its latest snapshot; checking that it opens reads its checkpoints (#3892).
+					for (const entry of backend.listCompletedWorkflows()) await backend.hydrateWorkflow(entry.workflowId);
 					return await listOpenableCompletedWorkflows(backend, deps.adapters?.sessionStore);
 				} finally {
 					purgeSuppressedWorkflowRuns(backend, deps.store, deps.toolControlRegistry);
@@ -232,8 +234,11 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			const finish = workflowObservationRuntime(deps.store).beginRecovery();
 			try {
 				const backend = selectedBackend(workflowId);
-				const entry = resolveCatalogEntry(workflowId, catalog ?? []);
-				const handle = backend.getWorkflow(entry?.workflowId ?? workflowId);
+				const entry = resolveCatalogEntry(workflowId, catalog ?? backend.listCompletedWorkflows());
+				const id = entry?.workflowId ?? workflowId;
+				// The catalog lists a run from its latest snapshot; opening it reads its checkpoints (#3892).
+				if (entry !== undefined || isFullRunId(workflowId)) await backend.hydrateWorkflow(id);
+				const handle = backend.getWorkflow(id);
 				return await openCompletedSnapshot(
 					workflowId,
 					{

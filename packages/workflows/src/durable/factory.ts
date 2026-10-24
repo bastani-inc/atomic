@@ -70,8 +70,15 @@ export async function initializeDurableBackend(options: DurableBackendOptions = 
 	const existing = selected.get(key);
 	const entry: SelectedDurableBackend = existing ?? {
 		ready: openSelectedRunJournal(selection, agentDir)
-			.then((journal) => JournalDurableBackend.open(journal, { ownsJournal }))
-			.then((opened) => {
+			.then((journal) => JournalDurableBackend.open(journal, { ownsJournal, runs: [] }))
+			.then(async (opened) => {
+				// Every run is listed from its latest snapshot; a run's history is folded only when it is needed (#3892).
+				try {
+					await opened.hydrateResumableWorkflows();
+				} catch (error) {
+					await opened.close();
+					throw error;
+				}
 				if (ownsJournal) opened.closeOnProcessExit();
 				entry.close = () => opened.close();
 				return opened;
