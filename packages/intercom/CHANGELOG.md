@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- Workflow route owners now register the routes of every run in a workflow invocation over one broker connection instead of opening one connection per run. All child runs of one root share that connection, whatever the fan-out size, so a large fan-out of child workflows no longer builds a connection backlog at the broker, and a run whose route moves to a new capability keeps the connection the other runs use ([#3904](https://github.com/bastani-inc/atomic/issues/3904))
+
 ## [0.9.43] - 2026-10-24
 
 ### Fixed

@@ -492,7 +492,8 @@ test("separately built SDK and extension bundles share one Intercom route owner 
 			proxy.toBroker
 				.filter(
 					({ frame }) =>
-						frame.type === "register" && String(frame.returnAddress).endsWith(`:pending-stage-route:${runId}`),
+						frame.type === "register" &&
+						String(frame.returnAddress).endsWith(`:pending-stage-route:workflow:${runId}`),
 				)
 				.map(({ frame }) => String(frame.returnAddress)),
 		);

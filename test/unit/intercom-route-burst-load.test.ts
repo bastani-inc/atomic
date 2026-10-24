@@ -150,8 +150,7 @@ function runGroup(runId: string): string {
 	return `workflow:${runId}`;
 }
 
-function routePayload(runId: string, round: number, capability = `capability-${runId}`) {
-	const group = runGroup(runId);
+function routePayload(runId: string, round: number, capability = `capability-${runId}`, group = runGroup(runId)) {
 	return {
 		runId,
 		group,
@@ -241,8 +240,8 @@ function createHost(connectTimeoutMs: (returnAddress: string) => number | undefi
 		start: () => fire("session_start", { type: "session_start", reason: "startup" }),
 		shutdown: () => fire("session_shutdown", { type: "session_shutdown", reason: "quit" }),
 		/** Publish one run's route the way the workflows bridge does, and hand back what it awaits. */
-		publishRoute(runId: string, round: number, capability?: string): Promise<void> {
-			const payload = routePayload(runId, round, capability);
+		publishRoute(runId: string, round: number, capability?: string, group?: string): Promise<void> {
+			const payload = routePayload(runId, round, capability, group);
 			pi.events.emit("atomic:workflow-pending-stage-route", payload);
 			assert.ok(payload.completion, "the Intercom relay must claim every route event");
 			return payload.completion;
@@ -318,7 +317,8 @@ async function settleWithinBound(completion: Promise<void>): Promise<PromiseSett
 
 function routeRegistersFor(runId: string): number {
 	return proxy.toBroker.filter(
-		({ frame }) => frame.type === "register" && String(frame.returnAddress).endsWith(`${ROUTE_PREFIX}${runId}`),
+		({ frame }) =>
+			frame.type === "register" && String(frame.returnAddress).endsWith(`${ROUTE_PREFIX}${runGroup(runId)}`),
 	).length;
 }
 
@@ -330,6 +330,54 @@ function mainRegisters(host: Host): number {
 	return proxy.toBroker.filter(({ frame }) => frame.type === "register" && frame.returnAddress === host.sessionId)
 		.length;
 }
+
+test("the routes of every run in one invocation group share one broker connection (#3904)", async () => {
+	const scope = "39040001";
+	const runIds = Array.from({ length: RUN_COUNT }, (_, index) => runIdFor(scope, index));
+	const group = runGroup(runIds[0]!);
+	const observer = await connectObserver([group]);
+	const host = createHost();
+	const framesBefore = proxy.toBroker.length;
+
+	await withHost(host, async () => {
+		await Promise.all(runIds.map((runId) => host.publishRoute(runId, 1, undefined, group)));
+		await waitForRoster(observer, runIds);
+		const routeConnections = proxy.toBroker.slice(framesBefore).filter(({ frame }) => isRouteClientRegister(frame));
+		assert.equal(
+			routeConnections.length,
+			1,
+			`${RUN_COUNT} runs registered over ${routeConnections.length} connections`,
+		);
+	});
+});
+
+test("a standalone owner registers the routes of every run in one invocation group over one connection (#3904)", async () => {
+	const { createWorkflowRouteOwner } = await import("../../packages/intercom/workflow-route-owner.js");
+	const owner = createWorkflowRouteOwner(repoRoot);
+	const scope = "39040002";
+	const runIds = Array.from({ length: RUN_COUNT }, (_, index) => runIdFor(scope, index));
+	const group = runGroup(runIds[0]!);
+	const observer = await connectObserver([group]);
+	const framesBefore = proxy.toBroker.length;
+	try {
+		await Promise.all(
+			runIds.map((runId) => {
+				const route = routePayload(runId, 1, undefined, group);
+				owner.events.emit("atomic:workflow-pending-stage-route", route);
+				return route.completion;
+			}),
+		);
+		await waitForRoster(observer, runIds);
+		const routeConnections = proxy.toBroker.slice(framesBefore).filter(({ frame }) => isRouteClientRegister(frame));
+		assert.equal(
+			routeConnections.length,
+			1,
+			`${RUN_COUNT} runs registered over ${routeConnections.length} connections`,
+		);
+	} finally {
+		await owner.closeGroup(group);
+	}
+});
 
 test("a burst of route updates from many runs reaches the broker without a session listing per update", async () => {
 	const scope = "11110001";
@@ -423,10 +471,11 @@ test("one run's route connection failing leaves the healthy main connection in p
 	const diagnostics = vi.spyOn(console, "error").mockImplementation(() => {});
 	const observer = await connectObserver(runIds.map(runGroup));
 	const host = createHost((returnAddress) =>
-		returnAddress.endsWith(`${ROUTE_PREFIX}${failingRun}`) ? STALLED_CONNECT_TIMEOUT_MS : undefined,
+		returnAddress.endsWith(`${ROUTE_PREFIX}${runGroup(failingRun)}`) ? STALLED_CONNECT_TIMEOUT_MS : undefined,
 	);
 	proxy.hold(
-		(first) => first.type === "register" && String(first.returnAddress).endsWith(`${ROUTE_PREFIX}${failingRun}`),
+		(first) =>
+			first.type === "register" && String(first.returnAddress).endsWith(`${ROUTE_PREFIX}${runGroup(failingRun)}`),
 	);
 
 	await withHost(host, async () => {
@@ -585,9 +634,11 @@ async function withRunInBackoff<T>(
 	const observer = await connectObserver([runGroup(runId)]);
 	let stalled = true;
 	const host = createHost((returnAddress) =>
-		stalled && returnAddress.endsWith(`${ROUTE_PREFIX}${runId}`) ? STALLED_CONNECT_TIMEOUT_MS : undefined,
+		stalled && returnAddress.endsWith(`${ROUTE_PREFIX}${runGroup(runId)}`) ? STALLED_CONNECT_TIMEOUT_MS : undefined,
 	);
-	proxy.hold((first) => first.type === "register" && String(first.returnAddress).endsWith(`${ROUTE_PREFIX}${runId}`));
+	proxy.hold(
+		(first) => first.type === "register" && String(first.returnAddress).endsWith(`${ROUTE_PREFIX}${runGroup(runId)}`),
+	);
 	await host.start();
 	try {
 		const first = await settleWithinBound(host.publishRoute(runId, 1));
@@ -671,9 +722,11 @@ test("a route waiting on its run's retry settles when the session shuts down", a
 	const diagnostics = vi.spyOn(console, "error").mockImplementation(() => {});
 	await connectObserver([runGroup(runId)]);
 	const host = createHost((returnAddress) =>
-		returnAddress.endsWith(`${ROUTE_PREFIX}${runId}`) ? STALLED_CONNECT_TIMEOUT_MS : undefined,
+		returnAddress.endsWith(`${ROUTE_PREFIX}${runGroup(runId)}`) ? STALLED_CONNECT_TIMEOUT_MS : undefined,
 	);
-	proxy.hold((first) => first.type === "register" && String(first.returnAddress).endsWith(`${ROUTE_PREFIX}${runId}`));
+	proxy.hold(
+		(first) => first.type === "register" && String(first.returnAddress).endsWith(`${ROUTE_PREFIX}${runGroup(runId)}`),
+	);
 	await host.start();
 	let shutDown = false;
 	try {
@@ -741,7 +794,9 @@ test("a route still connecting when its capability rotates is superseded without
 	const diagnostics = vi.spyOn(console, "error").mockImplementation(() => {});
 	const observer = await connectObserver([runGroup(runId)]);
 	const host = createHost();
-	proxy.hold((first) => first.type === "register" && String(first.returnAddress).endsWith(`${ROUTE_PREFIX}${runId}`));
+	proxy.hold(
+		(first) => first.type === "register" && String(first.returnAddress).endsWith(`${ROUTE_PREFIX}${runGroup(runId)}`),
+	);
 
 	await withHost(host, async () => {
 		const retired = host.publishRoute(runId, 1, `retired-${runId}`);
@@ -773,7 +828,9 @@ test("a route connect abandoned because the session shut down is still reported 
 	const diagnostics = vi.spyOn(console, "error").mockImplementation(() => {});
 	await connectObserver([runGroup(runId)]);
 	const host = createHost();
-	proxy.hold((first) => first.type === "register" && String(first.returnAddress).endsWith(`${ROUTE_PREFIX}${runId}`));
+	proxy.hold(
+		(first) => first.type === "register" && String(first.returnAddress).endsWith(`${ROUTE_PREFIX}${runGroup(runId)}`),
+	);
 	await host.start();
 	let shutDown = false;
 	try {

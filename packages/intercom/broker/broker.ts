@@ -1851,11 +1851,14 @@ class IntercomBroker {
             ? liveExisting
             : undefined;
         const activeExisting = yieldedDormant === undefined ? liveExisting : undefined;
+        // #3904: the owning session may move its own route to a new capability. One connection carries
+        // the routes of many runs, so refusing a rotation would end the connection and drop all of them.
         if (
           owner === undefined ||
           normalizeGroup(clientMessage.group) !== ownerGroup ||
           (activeExisting !== undefined &&
-            (activeExisting.capability !== clientMessage.capability || activeExisting.group !== ownerGroup))
+            (activeExisting.group !== ownerGroup ||
+              (activeExisting.capability !== clientMessage.capability && activeExisting.sessionId !== currentId)))
         ) {
           writeMessageIfOpen(socket, { type: "registration_failed", reason: "Pending-stage route is not authorized" });
           this.endRefusedConnection(socket, currentId, setId);
