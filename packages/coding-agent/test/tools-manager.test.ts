@@ -209,7 +209,7 @@ describe("managed tool downloads", () => {
 		mocks.arch.mockReturnValue(architecture);
 		const fetchMock = vi.fn();
 		vi.stubGlobal("fetch", fetchMock);
-		const statuses: import("../src/utils/tools-manager.ts").ToolStatus[] = [];
+		const statuses: import("../src/utils/tools-manager.js").ToolStatus[] = [];
 
 		const result = await ensureTool("rg", (status) => statuses.push(status));
 

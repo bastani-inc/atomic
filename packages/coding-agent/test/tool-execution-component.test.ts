@@ -616,11 +616,11 @@ describe("ToolExecutionComponent parity", () => {
 			content += `${line}\n`;
 			component.updateArgs({ path: "src/file.ts", content });
 		}
-		expect(renderCalls).toBe(callsBefore);
-		expect(renderRequests).toBeGreaterThan(0);
+		assert.equal(renderCalls, callsBefore);
+		assert.ok(renderRequests > 0);
 
 		const streamed = stripAnsi(component.render(120).join("\n"));
-		expect(renderCalls - callsBefore).toBe(1);
+		assert.equal(renderCalls - callsBefore, 1);
 		// The same preview as rendering the final arguments directly.
 		const direct = new ToolExecutionComponent(
 			"write",
@@ -631,21 +631,22 @@ describe("ToolExecutionComponent parity", () => {
 			tui,
 			".",
 		);
-		expect(streamed).toBe(stripAnsi(direct.render(120).join("\n")));
+		assert.equal(streamed, stripAnsi(direct.render(120).join("\n")));
 
 		// More deltas before the next frame: one more renderer run, which shows them all.
 		component.updateArgs({ path: "src/file.ts", content: `${content}const tail = 1;\n` });
 		const final = { path: "src/file.ts", content: `${content}const tail = 2;\n` };
 		component.updateArgs(final);
 		const next = stripAnsi(component.render(120).join("\n"));
-		expect(renderCalls - callsBefore).toBe(2);
-		expect(next).toContain("201 total");
-		expect(next).toBe(
+		assert.equal(renderCalls - callsBefore, 2);
+		assert.ok(next.includes("201 total"));
+		assert.equal(
+			next,
 			stripAnsi(new ToolExecutionComponent("write", "t", final, {}, write, tui, ".").render(120).join("\n")),
 		);
 		// Rendering again without new arguments does not run the renderer.
 		component.render(120);
-		expect(renderCalls - callsBefore).toBe(2);
+		assert.equal(renderCalls - callsBefore, 2);
 	});
 
 	test("trims trailing blank display lines from read results", () => {

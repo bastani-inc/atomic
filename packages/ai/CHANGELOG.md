@@ -11,7 +11,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 ### Added
 
 - Assistant messages from the `pi-messages` API now carry `responseModel`, the concrete model the server reports on its terminal `done` or `error` event, so clients of virtual models can see which model answered ([pi #11265](https://github.com/earendil-works/pi/pull/11265))
-- Added `StreamingJsonParser`, an incremental, tolerant parser for JSON text that arrives in pieces (each piece is read once; snapshots of the partial value never change once returned), and `ToolCallArgumentsStream`, which every provider now uses for streamed tool-call arguments; its `append()` also returns the changes each piece made (`JsonChange`), for writers that keep their own copy ([pi #9265](https://github.com/earendil-works/pi/issues/9265))
+- Added `StreamingJsonParser`, an incremental, tolerant parser for JSON text that arrives in pieces (each piece is read once; snapshots of the partial value never change once returned), and `ToolCallArgumentsStream`, which every provider now uses for streamed tool-call arguments; `StreamingJsonParser.append()` also returns the changes each piece made (`JsonChange`), for writers that keep their own copy ([pi #9265](https://github.com/earendil-works/pi/issues/9265))
 
 ### Changed
 
