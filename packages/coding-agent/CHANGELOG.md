@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed background subagent and shell completion notices never reaching the parent conversation after the session was restarted or resumed in a new process: the new process numbers its tasks from the start again, so a completion matched an earlier one already acknowledged in the session history and was silently dropped. Each completion now carries an identity unique to its process generation, and every settled task still delivers exactly one notice ([#3908](https://github.com/bastani-inc/atomic/issues/3908))
+
 ## [0.9.43] - 2026-10-24
 
 Local workflow worker pools now survive slow, busy, and crashed workers, and large workflow journals open without running out of memory.

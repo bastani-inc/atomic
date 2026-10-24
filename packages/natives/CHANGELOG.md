@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Task completion ids now include a token unique to the native environment, so a restarted process that numbers its tasks from the start again no longer repeats completion ids already recorded in an earlier process's session history ([#3908](https://github.com/bastani-inc/atomic/issues/3908)).
+
 ## [0.9.42] - 2026-10-23
 
 ### Fixed

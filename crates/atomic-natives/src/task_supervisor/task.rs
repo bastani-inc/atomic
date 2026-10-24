@@ -769,7 +769,7 @@ impl State {
 			Some(reference.task_id.clone()),
 			TaskEvent::HostObservationChanged { reference: reference.clone(), observation },
 		);
-		let completion_id = format!("completion-{}", reference.task_id);
+		let completion_id = format!("completion-{}-{}", reference.task_id, self.incarnation);
 		let cursor = self.emit(
 			oi,
 			Some(reference.task_id.clone()),
