@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Security policy change:** on macOS, the agent now approves Cua Driver's own Accessibility and Screen Recording permission prompts itself by default, without asking, by clicking them through the host's VNC or Screen Sharing server when credentials for it are available (for example `CUA_VNC_SERVER` and `CUA_VNC_PASSWORD`). It reports each approval and when it happened, never approves any other permission or another app's dialog, and types a password only when you supplied one. Set `ATOMIC_CUA_AUTO_APPROVE=0` to turn this off and have the agent ask you to grant the permissions, as before.
+- Updated the bundled Cua Driver skill to upstream `cua-driver-rs-v0.38.0`. Refusals, `unverifiable` actions and `suspected_noop` results now come with a `hint` and a safe `next_call` to try, and three single actions in a row suggest batching with `run_steps`. Steps inside `run_steps` and `run_script` skip most of the cursor glide and window watch on macOS. The macOS guide adds installing and updating the driver and granting its permissions with an MDM profile on managed Macs. It also covers `invoke_menu` refusing unless the requested window is key, background `<select>` menus in Chrome and Electron via `set_value`, Electron drags, and handing a URL to a specific Windows browser with `additional_arguments`.
+
 ## [0.9.41] - 2026-10-22
 
 ### Added
