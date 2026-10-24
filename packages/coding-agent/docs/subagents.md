@@ -108,9 +108,38 @@ Completed, failed, interrupted, and cancelled noninteractive children cannot ans
 
 ### Peer coordination
 
-Children do not have to route everything through the supervisor. Children launched in one parallel set, or with the same explicit `group`, share an Intercom group, and children launched by a workflow stage inherit that stage's invocation group. A child can run `intercom({ action: "list" })` to see live siblings and use ordinary `send` or `ask` with them directly: a locator hands file paths to the analyzer, two writers agree who owns which files or who runs the shared test suite, a debugger reuses a sibling's verified reproduction, or one reviewer challenges another's finding with evidence before each returns its own verdict. `contact_supervisor` stays reserved for supervisor decisions, and ordinary Intercom group restrictions still apply.
+Peer-to-peer (swarm) coordination is the default. There are no limits on communication between agents; it is encouraged whenever you need to. The supervisor is not a message relay: relaying adds latency, loses detail, and fills the supervisor's context, while children that talk directly converge faster. Children launched in one parallel set, or with the same explicit `group`, share an Intercom group, and children launched by a workflow stage inherit that stage's invocation group. A child can run `intercom({ action: "list" })` to see live siblings and use ordinary `send` or `ask` with them directly: a locator hands file paths to the analyzer, two writers agree who owns which files or who runs the shared test suite, a debugger reuses a sibling's verified reproduction, or one reviewer challenges another's finding with evidence before each returns its own verdict. `contact_supervisor` stays reserved for supervisor decisions, and ordinary Intercom group restrictions still apply.
 
-Peers do not coordinate spontaneously. When related work runs in parallel, name the peers and the expected exchange in each task prompt, keep it bounded, and require each child to return its own complete result rather than deferring to a sibling. Scope, product, and architecture decisions still go to the supervisor. Peer asks and one blocking supervisor request can wait concurrently in the same child; mutual asks work as long as both children process inbound work. The `intercom` skill (`/skill:intercom`) has copy-paste peer patterns.
+Children coordinate spontaneously: they discover peers with `list`, broadcast findings, claim shared files or expensive steps, ask and answer each other, hand work along a chain, and debate as much as is useful, then each returns its own complete result rather than deferring to a sibling. Explicit user approval gates and authorization for destructive or external actions still apply. Peer asks and one blocking supervisor request can wait concurrently in the same child; mutual asks work as long as both children process inbound work. The `intercom` skill (`/skill:intercom`) has copy-paste peer patterns.
+
+For example, three reviewers launched as one parallel set work as a swarm, and the parent reads their three final results:
+
+```typescript
+const peerRules =
+  "Your siblings review the same diff. Run intercom list to find them, share every confirmed finding, " +
+  "ask them whatever you need, and debate disagreements with evidence. Then return your own structured verdict.";
+
+subagent({
+  tasks: [
+    { agent: "reviewer", task: `Review correctness of the auth changes. ${peerRules}` },
+    { agent: "reviewer", task: `Review security of the auth changes. ${peerRules}` },
+    { agent: "reviewer", task: `Review test coverage of the auth changes. ${peerRules}` },
+  ],
+});
+```
+
+### Scaling a swarm
+
+Swarm size scales with the task. For very complex work, or when you ask for heavy parallelism, the agent can run hundreds or thousands of agents. They organize themselves into teams and coordinate peer-to-peer, like an organization, and useful behavior emerges from their exchanges rather than from one central plan.
+
+These are the limits that apply:
+
+- **Children per parallel set.** One set holds up to `parallel.maxTasks` children (default 1000, no hard cap). `parallel.concurrency` and `parallel.runningCapacity` (each default 1000) bound how many run at once per parent. For more than 1000, raise all three, as shown in [Context and execution modes](#context-and-execution-modes).
+- **Nesting.** Subagent delegation is one level deep and cannot be configured: a child cannot call `subagent`. To nest teams, start them from workflow stages. Each stage can launch its own parallel set, and `ctx.workflow(...)` nests child workflows up to the workflow `maxDepth` (default 3, configurable).
+- **Workflow fan-out.** `ctx.parallel(...)` has no task-count limit. The workflow `defaultConcurrency` setting (default 1000) or a per-call `concurrency` bounds how many stages run at once. Set `workflows.localWorkers` to run first-level child workflows in a pool of worker processes. See [Workflow configuration](/workflows/operations#workflow-configuration) and [Local workflow workers](/workflows/operations#local-workflow-workers).
+- **Teams.** Intercom groups have no member limit. Give each team its own `group` so its members coordinate internally. Team members reach their lead with `contact_supervisor`, the lead steers them, and the leads, as stages of one workflow, talk to each other in the invocation group.
+
+For example, 20 parallel workflow stages that each launch 50 children form a swarm of 1,000 agents. The workflow and subagent defaults already run them all at once: up to 1000 stages and 1000 running children per parent. Lower `defaultConcurrency` or a per-call `concurrency` to run fewer stages at a time. Beyond these settings, the practical ceiling is your provider rate limits, machine memory, and any workflow admission limits you set.
 
 ### Single-child handoff
 
@@ -289,18 +318,18 @@ Fresh children inherit the invoking session's SDK configuration, resource-discov
 
 Top-level parallel calls apply these settings from `~/.atomic/agent/extensions/subagent/config.json` after expanding each task's optional `count`:
 
-- `parallel.maxTasks` defaults to 50 and limits the number of tasks in a parallel set. There is no hard upper cap; raise or lower it as needed.
-- `parallel.concurrency` defaults to 3 and limits how many children are dispatched at once. Per-call `concurrency` takes precedence.
-- `parallel.runningCapacity` defaults to 4 and limits simultaneously running child turns per parent.
+- `parallel.maxTasks` defaults to 1000 and limits the number of tasks in a parallel set. There is no hard upper cap; raise or lower it as needed.
+- `parallel.concurrency` defaults to 1000 and limits how many children are dispatched at once. Per-call `concurrency` takes precedence.
+- `parallel.runningCapacity` defaults to 1000 and limits simultaneously running child turns per parent.
 
-To run up to 100 children at once, raise both concurrency and running capacity as well as the task limit:
+To run more than 1000 children at once, raise concurrency and running capacity as well as the task limit:
 
 ```json
 {
   "parallel": {
-    "maxTasks": 100,
-    "concurrency": 100,
-    "runningCapacity": 100
+    "maxTasks": 2000,
+    "concurrency": 2000,
+    "runningCapacity": 2000
   }
 }
 ```

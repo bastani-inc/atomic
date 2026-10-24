@@ -130,7 +130,7 @@ describe("maxDepth enforcement — executor.run", () => {
 		);
 
 		assert.equal(result.status, "failed");
-		assert.equal(result.error, "atomic-workflows: maxDepth exceeded (max 4)");
+		assert.equal(result.error, "atomic-workflows: maxDepth exceeded (max 3)");
 	});
 
 	test("failed runId is non-empty string", async () => {
@@ -184,7 +184,7 @@ describe("maxDepth enforcement — executor.run", () => {
 		assert.equal(depthOne.error, "atomic-workflows: maxDepth exceeded (max 1)");
 	});
 
-	test("maxDepth 4 (default value) allows depth 3, blocks depth 4", async () => {
+	test("maxDepth 4 (explicit) allows depth 3, blocks depth 4", async () => {
 		const config: WorkflowRuntimeConfig = { ...configMaxDepth2, maxDepth: 4 };
 		const wf = makeWf("md4-wf");
 

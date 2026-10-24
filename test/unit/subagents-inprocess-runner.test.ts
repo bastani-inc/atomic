@@ -27,6 +27,7 @@ import {
 	SubagentControlRuntime,
 } from "../../packages/subagents/src/runs/inprocess/runner.ts";
 import { DEFAULT_ARTIFACT_CONFIG } from "../../packages/subagents/src/shared/types.ts";
+import { DEFAULT_RUNNING_CAPACITY } from "../../packages/subagents/src/shared/types-runtime.ts";
 import { resultStatusLine } from "../../packages/subagents/src/tui/render-status-progress.js";
 
 const LIVE_CHILD_RESOURCE_RELOAD_TIMEOUT_MS = 120_000;
@@ -48,12 +49,12 @@ function sampleSpec(cwd: string): ChildSpec {
 	return { taskName: "analysis", task: "inspect the fixture", agent: sampleAgent(), cwd };
 }
 
-test("configured running capacity admits that many concurrent child turns and defaults to four", async () => {
+test("configured running capacity admits that many concurrent child turns and defaults to 1000", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-capacity-"));
 	clearSubagentControls();
 	try {
 		for (const capacity of [undefined, 6]) {
-			const runId = `capacity-parent-${capacity ?? 4}`;
+			const runId = `capacity-parent-${capacity ?? DEFAULT_RUNNING_CAPACITY}`;
 			const seeded = await runSingleInProcess(root, sampleAgent(), "inspect fixture", {
 				runId,
 				runningCapacity: capacity,
@@ -64,13 +65,13 @@ test("configured running capacity admits that many concurrent child turns and de
 			const control = findSubagentControl(runId);
 			assert.ok(control);
 			const tokens: number[] = [];
-			for (let index = 0; index <= (capacity ?? 4); index++) {
+			for (let index = 0; index <= (capacity ?? DEFAULT_RUNNING_CAPACITY); index++) {
 				const admitted = control.admitChildSession(sampleSpec(root));
 				assert.ok(admitted.admitted);
 				const attempt: ReturnType<NativeSubagentControl["beginChildAttempt"]> = control.native.beginChildAttempt(
 					admitted.admitted.identity.path,
 				);
-				if (index < (capacity ?? 4)) {
+				if (index < (capacity ?? DEFAULT_RUNNING_CAPACITY)) {
 					assert.ok(attempt.token);
 					tokens.push(attempt.token);
 				} else {

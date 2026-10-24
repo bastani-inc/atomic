@@ -183,13 +183,13 @@ describe("createRunLimiter", () => {
 		assert.equal(lim.limit, 8);
 	});
 
-	test("defaults to 3 when no value provided", () => {
+	test("defaults to 1000 when no value provided", () => {
 		const lim = createRunLimiter();
-		assert.equal(lim.limit, 3);
+		assert.equal(lim.limit, 1000);
 	});
 
-	test("defaults to 3 when undefined", () => {
+	test("defaults to 1000 when undefined", () => {
 		const lim = createRunLimiter(undefined);
-		assert.equal(lim.limit, 3);
+		assert.equal(lim.limit, 1000);
 	});
 });

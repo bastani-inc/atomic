@@ -802,7 +802,7 @@ readonly concurrency?: number;
 readonly failFast?: boolean;
 ```
 
-`WorkflowParallelOptions` uses `concurrency` to bound active tasks in an authored `ctx.parallel(...)`. When omitted, the runtime uses the workflow's `defaultConcurrency` setting, which defaults to `3`; explicit configuration and per-call concurrency remain honored. Parallel execution is fail-fast unless `failFast` is explicitly `false`.
+`WorkflowParallelOptions` uses `concurrency` to bound active tasks in an authored `ctx.parallel(...)`. When omitted, the runtime uses the workflow's `defaultConcurrency` setting, which defaults to `1000`; explicit configuration and per-call concurrency remain honored. Parallel execution is fail-fast unless `failFast` is explicitly `false`.
 
 With `failFast: false`, every step settles before the call rejects. When any step failed, the rejection is usually an `AggregateError` whose `errors` hold the step failures and whose `partialResults` holds one entry per step, in step order: the task result for each step that completed, and `undefined` for a step that failed or did not run. Two rejections are not wrapped and have no `partialResults`: a workflow exit, and a `WorkflowBudgetExceededError` when every failed step exhausted a budget. Check for `partialResults` and rethrow anything else unchanged:
 

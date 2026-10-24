@@ -234,12 +234,12 @@ describe("recent upstream subagent syncs", () => {
 	});
 
 	test("defaults the top-level parallel task maximum to 50 and honors configured limits", () => {
-		assert.equal(resolveTopLevelParallelMaxTasks(undefined), 50);
+		assert.equal(resolveTopLevelParallelMaxTasks(undefined), 1000);
 		assert.equal(resolveTopLevelParallelMaxTasks(12), 12);
 		assert.equal(resolveTopLevelParallelMaxTasks(100), 100);
 		assert.equal(resolveTopLevelParallelMaxTasks("100"), 100);
 		for (const invalid of [0, -1, 1.5, NaN, "abc", null]) {
-			assert.equal(resolveTopLevelParallelMaxTasks(invalid), 50);
+			assert.equal(resolveTopLevelParallelMaxTasks(invalid), 1000);
 		}
 	});
 
