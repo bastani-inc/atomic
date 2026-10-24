@@ -138,6 +138,8 @@ async function perform(work) {
 	}, config.heartbeatMs);
 
 	await request({ kind: "activity", runs: [snapshot()] });
+	// A test that holds route registration learns from this log when every stage is waiting for its route.
+	if (config.routeLog) appendFileSync(config.routeLog, `${run.runId}\n`);
 	const capability = await request({ kind: "route", runId: run.runId });
 	if (typeof capability !== "string") throw new Error("Root pending-stage route is unavailable");
 	await runStage({ runId: run.runId, stageId, stageName: "agent", sessionId, capability });

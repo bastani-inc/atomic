@@ -742,7 +742,10 @@ export class PoolCoordinator {
 					else pending?.resolve();
 					return;
 				}
-				const response = serial.then(async () => {
+				// A route's registration wait can outlast a reconnect; it settles outside the worker's serial chain so
+				// the worker's control polls, acknowledgements and lease renewals are answered meanwhile.
+				let routeReady: Promise<string> | undefined;
+				const handled = serial.then(async () => {
 					if (message.kind === "ready") {
 						if (terminated) return;
 						ready = true;
@@ -787,7 +790,8 @@ export class PoolCoordinator {
 						if (this.routes === undefined) return undefined;
 						await this.flush();
 						this.assertPublished(work);
-						return this.routes.route(work, message.runId);
+						routeReady = this.routes.route(work, message.runId);
+						return;
 					}
 					if (message.kind === "delivery-ready") {
 						if (!this.publishing) return;
@@ -850,8 +854,9 @@ export class PoolCoordinator {
 					slot.work = undefined;
 					await this.sendResult(work.id);
 				});
+				const response = handled.then((value) => routeReady ?? value);
 				if (message.kind !== "delivery" && message.kind !== "delivery-ready")
-					serial = response.then(
+					serial = handled.then(
 						() => {},
 						() => {},
 					);

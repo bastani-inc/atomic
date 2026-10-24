@@ -16,12 +16,16 @@
  * every route-owner connection just before it starts a stage. No stage may fail an Intercom
  * call because its run's pending-stage route owner is not registered with the broker.
  *
+ * While a stage waits for its route owner to register, the worker that runs it must still answer pause and
+ * resume: a second test holds the coordinator's route registration and pauses the pool.
+ *
  * Run alone:
  *
  *   npx vitest --run --project integration test/integration/workflow-pool-intercom-owner.test.ts
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { mkdirSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -211,7 +215,7 @@ interface StageOutcome {
 }
 
 /** Starts one pooled stage with the real Intercom extension and calls status, list and send at once. */
-async function runStage(stage: PooledStage): Promise<StageOutcome> {
+async function runStage(stage: PooledStage, group = ROOT_GROUP): Promise<StageOutcome> {
 	const failures: string[] = [];
 	const delivery: StageDelivery = {
 		routeCapability: stage.capability,
@@ -227,7 +231,7 @@ async function runStage(stage: PooledStage): Promise<StageOutcome> {
 		},
 	};
 	const host = hostSession(stage.sessionId, {
-		intercomGroup: ROOT_GROUP,
+		intercomGroup: group,
 		kind: "workflow-stage",
 		workflowRunId: stage.runId,
 		workflowStageId: stage.stageId,
@@ -259,11 +263,11 @@ async function runStage(stage: PooledStage): Promise<StageOutcome> {
 }
 
 /** A broker in its own directory, reached only through a proxy on the clients' broker socket. */
-async function startProxiedBroker() {
+async function startProxiedBroker(brokerDirectory = brokerAgentDir) {
 	const intercomPath = fileURLToPath(new URL("../../packages/intercom", import.meta.url));
-	const brokerSocket = getBrokerSocketPath(process.platform, brokerAgentDir);
+	const brokerSocket = getBrokerSocketPath(process.platform, brokerDirectory);
 	const broker = spawn(process.execPath, [getJitiCliPath(intercomPath), join(intercomPath, "broker/broker.ts")], {
-		env: { ...process.env, ATOMIC_CODING_AGENT_DIR: brokerAgentDir },
+		env: { ...process.env, ATOMIC_CODING_AGENT_DIR: brokerDirectory },
 		stdio: "ignore",
 	});
 	const stop = async () => {
@@ -452,6 +456,147 @@ test.skipIf(process.platform === "win32")(
 			assert.equal(outcomes.filter((entry) => entry.delivered).length, CHILDREN);
 			assert.deepEqual(outcome, { status: "completed", error: undefined });
 		} finally {
+			await pool.close();
+			await backend.close();
+			disposeBridge();
+			await root.shutdown().catch(() => {});
+			await peer.disconnect().catch(() => {});
+			await new Promise<void>((resolve) => stages.close(() => resolve()));
+			await broker.stop();
+		}
+	},
+	FANOUT_TEST_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a pooled worker waiting for its run's route registration still acknowledges pause promptly (#3904)",
+	async () => {
+		const children = 2;
+		const rootRunId = testRunId("pool-intercom-owner-pause-root");
+		const rootGroup = `workflow:${rootRunId}`;
+		const rootSessionId = testRunId("pool-intercom-owner-pause-root-session");
+		const testDirectory = join(directory, "pause");
+		mkdirSync(testDirectory, { recursive: true });
+		const broker = await startProxiedBroker(join(directory, "pause-broker"));
+		// The pool coordinator's route owner cannot register while held, so every pooled stage waits for its route.
+		broker.proxy.hold(
+			(first) =>
+				first.type === "register" &&
+				String(first.returnAddress).includes(ROUTE_OWNER_RETURN_ADDRESS) &&
+				!String(first.returnAddress).startsWith(rootSessionId),
+		);
+		const path = join(testDirectory, "journal.sqlite");
+		const stageSocket = join(testDirectory, "stages.sock");
+		const failureLog = join(testDirectory, "stub-failures.log");
+		const routeLog = join(testDirectory, "route-requests.log");
+		writeTextSync(
+			join(testDirectory, "fanout-config.json"),
+			JSON.stringify({ stageSocket, failureLog, routeLog, heartbeatMs: 100 }),
+		);
+
+		const outcomes: StageOutcome[] = [];
+		const stageRuns = new Set<Promise<void>>();
+		let stagesStarted = 0;
+		const stages = net.createServer((socket) => {
+			let buffer = "";
+			socket.setEncoding("utf8");
+			socket.on("data", (chunk: string) => {
+				buffer += chunk;
+				const end = buffer.indexOf("\n");
+				if (end < 0) return;
+				const stage = JSON.parse(buffer.slice(0, end)) as PooledStage;
+				buffer = "";
+				stagesStarted++;
+				const stageRun = runStage(stage, rootGroup).then((outcome) => {
+					outcomes.push(outcome);
+					socket.end(`${JSON.stringify({ done: true })}\n`);
+				});
+				stageRuns.add(stageRun);
+			});
+		});
+		await new Promise<void>((resolve) => stages.listen(stageSocket, resolve));
+
+		const peer = new IntercomClient("pause-peer");
+		await peer.connect({
+			name: PEER_NAME,
+			cwd: testDirectory,
+			model: "fixture-model",
+			pid: process.pid,
+			startedAt: Date.now(),
+			lastActivity: Date.now(),
+			group: rootGroup,
+			groups: [rootGroup],
+		});
+		const store = createStore();
+		const root = hostSession(rootSessionId, { intercomGroup: "default" });
+		intercom(root.pi as never);
+		const disposeBridge = registerPendingStageIntercomBridge({ events: root.pi.events }, store);
+		await root.start();
+
+		const journal = await resolveRunJournal({ journal: { path } });
+		const backend = await JournalDurableBackend.open(journal);
+		const childPath = fileURLToPath(new URL("../fixtures/pool-intercom-fanout-child.ts", import.meta.url));
+		const child = await loadWorkerDefinition({
+			path: childPath,
+			exportName: "child",
+			digest: await definitionDigest(childPath),
+		});
+		const pool = new LocalWorkerPool(backend, {
+			journalPath: path,
+			workers: children,
+			definitions: [{ definition: child, path: childPath, exportName: "child" }],
+			startupTimeoutMs: WORKER_STARTUP_TIMEOUT_MS,
+			workerEntry: fileURLToPath(new URL("../fixtures/pool-intercom-stub-worker.mjs", import.meta.url)),
+		});
+		const parent = workflow({
+			name: "pool-intercom-owner-pause-root",
+			description: "",
+			inputs: {},
+			outputs: {},
+			async run(ctx) {
+				await Promise.all(
+					Array.from({ length: children }, (_, index) => ctx.workflow(child, { inputs: { index } })),
+				);
+				return {};
+			},
+		});
+		const execution = run(parent, {}, { runId: rootRunId, cwd: testDirectory, store, durableBackend: backend }).then(
+			(result) => ({ status: result.status, error: result.error }),
+			(error: Error) => ({ status: "rejected", error: error.message }),
+		);
+		try {
+			const deadline = performance.now() + WORKER_STARTUP_TIMEOUT_MS;
+			const routeRequests = () =>
+				fileExistsSync(routeLog) ? readTextSync(routeLog, "utf8").split("\n").filter(Boolean).length : 0;
+			while (routeRequests() < children) {
+				assert.ok(performance.now() < deadline, "pooled stages did not request their routes");
+				await sleep(25);
+			}
+			// Let the route requests reach the coordinator and start waiting on the held registration.
+			await sleep(500);
+			assert.equal(stagesStarted, 0, "a stage started before its run's route owner was registered");
+
+			const pausing = performance.now();
+			await pool.control("paused");
+			const pauseMs = performance.now() - pausing;
+			assert.ok(pauseMs < 2_500, `pause took ${Math.round(pauseMs)} ms while route registration was held`);
+			assert.equal(stagesStarted, 0, "a stage started before its run's route owner was registered");
+
+			await pool.control("running");
+			broker.proxy.release();
+			const outcome = await execution;
+			await Promise.all(stageRuns);
+			assert.deepEqual(outcome, { status: "completed", error: undefined });
+			assert.equal(outcomes.length, children);
+			assert.deepEqual(
+				outcomes.flatMap((entry) => entry.failures),
+				[],
+			);
+			assert.equal(fileExistsSync(failureLog), false);
+		} finally {
+			broker.proxy.release();
+			await pool.control("running").catch(() => {});
+			await execution;
 			await pool.close();
 			await backend.close();
 			disposeBridge();
