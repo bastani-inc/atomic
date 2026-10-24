@@ -270,7 +270,7 @@ async function perform(work) {
 							timestamp: now,
 						}),
 					];
-		const receipt = await commit({ kind: "session-append", checkpoint: stageCheckpoint(), entries, expectSeq: lastSeq });
+		const receipt = await commit({ kind: "session-append", sessionId, entries, expectSeq: lastSeq });
 		lastSeq = receipt.lastSeq;
 		usage.input += 900;
 		usage.output += 300;
