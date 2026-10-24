@@ -12,6 +12,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 - Claude models with mid-conversation effort no longer fail with `Invalid effort level` on accounts whose organization caps effort below `high`, even at `low` or `medium` thinking: the fixed top-level effort is now `low`, and the per-message effort markers still set the level for each reply ([pi #10063](https://github.com/earendil-works/pi/issues/10063))
 - The faux provider no longer counts newly cached prompt tokens both as `input` and as `cacheWrite` when it simulates prompt caching for a `sessionId`. Every prompt token now goes to either `cacheRead` or `cacheWrite`, and `input` is 0 ([pi f3fa8bd9](https://github.com/earendil-works/pi/commit/f3fa8bd92430a2bf443681027a01c58586f35464))
+- Gemini tool schemas sent through `parametersJsonSchema` now express string and number `const` values as single-value `enum`s, which Gemini honors (it ignores `const`). Only schema-bearing keywords are rewritten, so literal data under `default`, `examples`, `enum`, `const` and custom keywords, and property names such as `__proto__`, are sent unchanged ([pi 7314819f](https://github.com/earendil-works/pi/commit/7314819f0fe30fa616f32fa3a1fc8d1a856a1446), [pi #11308](https://github.com/earendil-works/pi/issues/11308))
 
 ## [0.9.42] - 2026-10-23
 
