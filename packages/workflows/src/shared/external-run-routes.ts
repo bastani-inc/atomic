@@ -33,14 +33,25 @@ const processState = globalThis as typeof globalThis & Record<symbol, Registry |
 const registry: Registry = processState[registryKey] ?? { owners: new WeakMap(), routers: new WeakMap() };
 processState[registryKey] = registry;
 
-/** Marks `runId` as announced by `owner`; the store's bridge stops announcing it. */
-export function claimExternalRunRoute(store: Store, runId: string, owner: ExternalRunRouteOwner): void {
+/**
+ * Marks `runId` as announced by `owner`; the store's bridge stops announcing it.
+ *
+ * The returned release drops the claim if `owner` still holds it, so an owner that shuts down
+ * is not kept reachable by a longer-lived store, and never removes a later owner's claim.
+ */
+export function claimExternalRunRoute(store: Store, runId: string, owner: ExternalRunRouteOwner): () => void {
 	let owners = registry.owners.get(store);
 	if (owners === undefined) {
 		owners = new Map();
 		registry.owners.set(store, owners);
 	}
 	owners.set(runId, owner);
+	return () => {
+		const current = registry.owners.get(store);
+		if (current?.get(runId) !== owner) return;
+		current.delete(runId);
+		if (current.size === 0) registry.owners.delete(store);
+	};
 }
 
 export function externalRunRouteOwner(store: Store, runId: string): ExternalRunRouteOwner | undefined {

@@ -201,6 +201,8 @@ export class LocalWorkerPool {
 	private store?: Store;
 	private handoff?: PoolStageHandoff;
 	private releaseRoutes?: () => Promise<void>;
+	/** Releases of this pool's route claims on the root's store, per pooled run. */
+	private readonly routeClaims = new Map<string, () => void>();
 	private sources: WorkerDefinitionSource[] = [];
 	private queue?: SqlPoolQueue;
 	private lease?: Lease;
@@ -366,9 +368,9 @@ export class LocalWorkerPool {
 				notifyUndeliverable: async (payload) =>
 					!this.closed && (await this.command({ kind: "undeliverable", payload })) === true,
 			};
-			this.handoff = new PoolStageHandoff(this.backend, store, this.queueView(), this.lease, (runId) =>
-				claimExternalRunRoute(store, runId, routeOwner),
-			);
+			this.handoff = new PoolStageHandoff(this.backend, store, this.queueView(), this.lease, (runId) => {
+				this.routeClaims.set(runId, claimExternalRunRoute(store, runId, routeOwner));
+			});
 		}
 		await this.command({
 			kind: "start",
@@ -722,6 +724,9 @@ export class LocalWorkerPool {
 			await coordinator.port.close();
 			this.pids.clear();
 		}
+		// The root's store outlives this pool; a claim left behind would keep the closed pool reachable.
+		for (const release of this.routeClaims.values()) release();
+		this.routeClaims.clear();
 		try {
 			await this.releaseRoutes?.();
 		} catch (error) {
