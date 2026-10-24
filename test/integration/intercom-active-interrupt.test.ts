@@ -825,3 +825,66 @@ for (const kind of ["child", "workflow-stage"] as const) {
 		});
 	}
 }
+
+// #3921 follow-up: a reply context binds only when its message enters the model. A followUp ask A
+// queued while a tool runs is not visible in the continuation after that tool, so an implicit
+// reply there must not answer A; A's own turn then replies to A.
+for (const kind of ["child", "workflow-stage"] as const) {
+	test(`followUp ask queued during an active ${kind} tool is not the reply target of the continuation (#3921)`, async () => {
+		const trackers = new Set<ReplyTracker>();
+		const queueTurnContext = ReplyTracker.prototype.queueTurnContext;
+		const spy = vi.spyOn(ReplyTracker.prototype, "queueTurnContext").mockImplementation(function (
+			this: ReplyTracker,
+			context,
+		) {
+			trackers.add(this);
+			queueTurnContext.call(this, context);
+		});
+		const peerA: SessionInfo = { ...peer, id: "peer-a", name: "peer-a" };
+		const record = { calls: 0, completed: 0 } as { calls: number; signal?: AbortSignal; completed: number };
+		const work = cancellableTool(record);
+		const h = await receiver(kind, [work.tool]);
+		const routed: Array<{ visible: boolean; replyTo: string }> = [];
+		const observe = (context: { messages: object[] }, text: string) => {
+			const visible = context.messages.some((m) => getMessageText(m).includes("ASK-A"));
+			let replyTo = "none";
+			try {
+				replyTo = [...trackers][0]!.resolveReplyTarget({}).message.id;
+			} catch {}
+			routed.push({ visible, replyTo });
+			return fauxAssistantMessage(text);
+		};
+		const dispatches = createDispatchCounter([
+			() => fauxAssistantMessage(fauxToolCall("long_work", {}), { stopReason: "toolUse" }),
+			(context) => observe(context, "continued after the tool"),
+			(context) => observe(context, "answered A"),
+		]);
+		h.setResponses(dispatches.steps(6));
+		const execution = h.session.prompt("original task");
+		try {
+			await work.started.promise;
+			await h.deliver({ ...queuedMessage("ask-a", "ask", "ASK-A"), delivery: "followUp" }, peerA);
+			await vi.waitFor(
+				() =>
+					assert.equal(
+						h.sessionManager
+							.getEntries()
+							.filter((e) => e.type === "custom_message" && e.customType === "intercom_message").length,
+						1,
+					),
+				{ timeout: 5000 },
+			);
+			work.cleanup.resolve();
+			await execution;
+			await vi.waitFor(() => assert.equal(routed.length, 2));
+			assert.deepEqual(routed, [
+				{ visible: false, replyTo: "none" },
+				{ visible: true, replyTo: "ask-a" },
+			]);
+		} finally {
+			spy.mockRestore();
+			work.cleanup.resolve();
+			await h.close(execution);
+		}
+	});
+}

@@ -102,6 +102,7 @@ test("successful completed-stage handoff retains the exact pending ask for the r
 	await waitFor(() => delivered);
 
 	tracker.beginTurn();
+	tracker.admitTurnMessage(message.id);
 	const target = tracker.resolveReplyTarget({});
 	assert.equal(target.from.id, sender.id);
 	assert.equal(target.message.id, message.id);

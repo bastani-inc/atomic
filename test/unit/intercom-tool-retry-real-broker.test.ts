@@ -232,6 +232,7 @@ for (const activeAsk of [false, true]) {
 			await unrelated.send(recipient.sessionId!, { text: "active unrelated context", expectsReply: activeAsk });
 			await waitUntil(() => incoming.length === 1, "ordinary context delivery");
 			tracker.beginTurn();
+			tracker.admitTurnMessage(incoming[0]!.id);
 			const cancellation = new AbortController();
 			let answer: ToolResult | undefined;
 			const asking = askerTool
@@ -331,6 +332,7 @@ for (const namesakeTarget of ["ID", "name"]) {
 		await sender.send(recipient.sessionId!, { text: "connected ordinary message" });
 		await waitUntil(() => incoming.length === 1, "connected ordinary context");
 		tracker.beginTurn();
+		tracker.admitTurnMessage(incoming[0]!.id);
 		const connected = await tool.execute(
 			"connected-reply",
 			{
@@ -350,6 +352,7 @@ for (const namesakeTarget of ["ID", "name"]) {
 		await sender.send(recipient.sessionId!, { text: "ordinary message before departure" });
 		await waitUntil(() => incoming.length === 2, "departing sender context");
 		tracker.beginTurn();
+		tracker.admitTurnMessage(incoming[1]!.id);
 		const replyTo = incoming[1]!.id;
 		const originalContext = tracker.resolveReplyTarget({ replyTo });
 		const senderId = sender.sessionId!;
@@ -589,6 +592,7 @@ test("an ask resolves with the answer when its recipient reconnects under a new 
 		recipient.acknowledgeReceived(redelivered.message.id);
 		tracker.queueTurnContext(tracker.recordIncomingMessage(redelivered.from, redelivered.message));
 		tracker.beginTurn();
+		tracker.admitTurnMessage(redelivered.message.id);
 		const reply = await recipientTool.execute(
 			"answer",
 			{ action: "reply", message: "answered after restart" },

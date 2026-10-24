@@ -76,6 +76,7 @@ test("replyTo resolves canonical pending UUIDs before fallback and rejects colli
 	});
 	tracker.queueTurnContext(active);
 	tracker.beginTurn();
+	tracker.admitTurnMessage("other");
 	assert.equal(tracker.resolveReplyTarget({ replyTo: "2603ABCD" }), first);
 	tracker.recordIncomingMessage(sender, {
 		id: "2603abcd-2222-4222-8222-222222222222",

@@ -36,16 +36,20 @@ export class ReplyTracker {
     if (this.currentTurnContext === context) this.currentTurnContext = null;
   }
 
+  /**
+   * A turn starting binds nothing: a queued context's message may not be visible to the model yet
+   * (a followUp waiting behind a tool call, or a continuation with no new input), so only
+   * `admitTurnMessage` makes it the reply target.
+   */
   beginTurn(now = Date.now()): void {
     this.pruneExpired(now);
-    this.currentTurnContext = this.pendingTurnContexts.shift() ?? null;
     this.turnContextAdmitted = false;
   }
 
   /**
    * An inbound message entered this turn's model context. Steer, followUp, and interrupt
    * deliveries reach turns out of arrival order, so the first admitted message with a queued
-   * context becomes the turn's reply target; any context `beginTurn` took early goes back.
+   * context becomes the turn's reply target.
    */
   admitTurnMessage(messageId: string): void {
     if (this.turnContextAdmitted) return;
@@ -56,7 +60,6 @@ export class ReplyTracker {
     const index = this.pendingTurnContexts.findIndex((context) => context.message.id === messageId);
     if (index < 0) return;
     const [admitted] = this.pendingTurnContexts.splice(index, 1);
-    if (this.currentTurnContext) this.pendingTurnContexts.unshift(this.currentTurnContext);
     this.currentTurnContext = admitted!;
     this.turnContextAdmitted = true;
   }
@@ -65,10 +68,12 @@ export class ReplyTracker {
     this.currentTurnContext = null;
   }
 
-  /** A cancelled turn that produced nothing could not have replied; keep its context for the next turn. */
+  /**
+   * A cancelled turn that produced nothing could not have replied. Its message is already in the
+   * model's context and will not be admitted again, so it stays the target for the next turn.
+   */
   restoreTurnContext(): void {
-    if (this.currentTurnContext) this.pendingTurnContexts.unshift(this.currentTurnContext);
-    this.currentTurnContext = null;
+    this.turnContextAdmitted = false;
   }
 
   reset(): void {
@@ -121,11 +126,15 @@ export class ReplyTracker {
       }
       throw new Error(`No pending ask from "${options.to}"`);
     }
-    if (pending.length === 1) {
-      return pending[0]!;
+    // An implicit reply may only answer an ask the model has seen; a queued context is not yet visible.
+    const visible = pending.filter(
+      (context) => !this.pendingTurnContexts.some((queued) => queued.message.id === context.message.id),
+    );
+    if (visible.length === 1) {
+      return visible[0]!;
     }
 
-    if (pending.length === 0) {
+    if (visible.length === 0) {
       throw new Error("No active intercom context to reply to");
     }
 

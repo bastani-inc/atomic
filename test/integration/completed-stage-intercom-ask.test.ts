@@ -121,6 +121,7 @@ test("parallel workflow revives completed A for B's exact correlated ask and ter
 						if (text === "A completes first") return "A initial result";
 						postMortemPrompts.push(text);
 						targetTracker.beginTurn();
+						targetTracker.admitTurnMessage("ask-b-to-a");
 						const pending = targetTracker.resolveReplyTarget({});
 						const waiter = callerWaiter.pending();
 						assert.ok(waiter);

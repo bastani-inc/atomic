@@ -4,6 +4,7 @@ import type { IntercomClient } from "../../intercom/broker/client.js";
 import { registerContactSupervisorTool } from "../../intercom/contact-supervisor-tool.js";
 import { createIncomingMessageSender, type IncomingMessageSender } from "../../intercom/incoming-message-delivery.js";
 import { registerIntercomTool } from "../../intercom/intercom-tool.js";
+import { admittedIntercomMessageId } from "../../intercom/lifecycle.js";
 import { routeIncomingReply } from "../../intercom/reply-routing.js";
 import { ReplyTracker } from "../../intercom/reply-tracker.js";
 import { ReplyWaiterRegistry } from "../../intercom/reply-waiter.js";
@@ -190,6 +191,11 @@ test.each(["need_decision", "interview_request"] as const)(
 						queueTurnContext: (context) => replies.queueTurnContext(context),
 					});
 					pi.on("agent_start", () => replies.beginTurn());
+					// Mirror the Intercom lifecycle: a reply context binds when its message enters the model.
+					pi.on("message_start", (event, ctx) => {
+						const id = admittedIntercomMessageId(event.message, ctx);
+						if (id !== undefined) replies.admitTurnMessage(id);
+					});
 					pi.on("agent_end", () => replies.endTurn());
 					registerIntercomTool(pi, {
 						ensureConnected: async () => parentClient,

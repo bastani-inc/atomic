@@ -8,6 +8,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 - Intercom `send` and `ask` take a `delivery` option, and the default is now `"steer"`: a message to a working subagent or live workflow stage arrives after the recipient's current tool calls finish instead of cancelling its work, so peers in a swarm no longer abort each other's long-running tool calls. `"followUp"` waits until the recipient finishes and stops. `"interrupt"` keeps the previous behavior of cancelling the recipient's current model call or tool call, and is now opt-in ([#3921](https://github.com/bastani-inc/atomic/issues/3921))
 
+### Fixed
+
+- An implicit Intercom `reply` no longer answers a message the agent has not seen yet. Before, a queued message (for example a `"followUp"` ask that arrived while a tool ran) could become the reply target as soon as any new turn started, including the continuation after that tool call, so the reply reached the wrong sender or thread. A message now becomes the reply target only when it enters the agent's context ([#3921](https://github.com/bastani-inc/atomic/issues/3921), follow-up to [#3924](https://github.com/bastani-inc/atomic/pull/3924))
+
 ## [0.9.44-alpha.1] - 2026-10-24
 
 ### Changed

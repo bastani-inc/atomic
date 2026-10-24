@@ -831,6 +831,7 @@ test("explicit invalid and ambiguous reply selectors send nothing and preserve p
 	const tracker = new ReplyTracker();
 	tracker.queueTurnContext(tracker.recordIncomingMessage(sender, ask("first")));
 	tracker.beginTurn();
+	tracker.admitTurnMessage("first");
 	tracker.recordIncomingMessage(sender, ask("second"));
 	const current = toolFixture(tracker, [sender]);
 	for (const selectors of [
