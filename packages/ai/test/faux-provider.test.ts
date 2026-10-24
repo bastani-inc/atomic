@@ -365,11 +365,12 @@ describe("faux provider", () => {
 			)
 				cachedChars++;
 			const cacheRead = Math.ceil(cachedChars / 4);
-			const cacheWrite = Math.ceil((prompt.length - cachedChars) / 4);
+			// Every prompt token is either read from or written to the simulated cache, never also counted as input.
+			const cacheWrite = Math.max(0, Math.ceil(prompt.length / 4) - cacheRead);
 			const result = await complete(registration.getModel(), { messages }, options);
 			assert.equal(result.usage.cacheRead, cacheRead);
 			assert.equal(result.usage.cacheWrite, cacheWrite);
-			assert.equal(result.usage.input, Math.max(0, Math.ceil(prompt.length / 4) - cacheRead));
+			assert.equal(result.usage.input, 0);
 			previous = prompt;
 		}
 	});

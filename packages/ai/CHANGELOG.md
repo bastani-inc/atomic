@@ -11,6 +11,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 ### Fixed
 
 - Claude models with mid-conversation effort no longer fail with `Invalid effort level` on accounts whose organization caps effort below `high`, even at `low` or `medium` thinking: the fixed top-level effort is now `low`, and the per-message effort markers still set the level for each reply ([pi #10063](https://github.com/earendil-works/pi/issues/10063))
+- The faux provider no longer counts newly cached prompt tokens both as `input` and as `cacheWrite` when it simulates prompt caching for a `sessionId`. Every prompt token now goes to either `cacheRead` or `cacheWrite`, and `input` is 0 ([pi f3fa8bd9](https://github.com/earendil-works/pi/commit/f3fa8bd92430a2bf443681027a01c58586f35464))
 
 ## [0.9.42] - 2026-10-23
 
