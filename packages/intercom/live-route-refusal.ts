@@ -67,3 +67,23 @@ export class IntercomLiveRouteRefusedError extends Error {
 		this.transient = isTransientLiveWorkflowStageRouteRefusal(code);
 	}
 }
+
+/**
+ * How long a starting stage keeps waiting out an `owner_missing` refusal. The run's owner
+ * registers its route over its own broker connection, which may still be connecting, backing
+ * off (up to 30 s) or waiting out 10 s connect and acknowledgement timeouts when the stage
+ * starts, so a few quick retries would turn ordinary registration latency into a failed stage
+ * (#3904). Past this bound the refusal surfaces as before.
+ */
+export const LIVE_ROUTE_OWNER_WAIT_MS = 120_000;
+const LIVE_ROUTE_OWNER_RETRY_FIRST_MS = 250;
+const LIVE_ROUTE_OWNER_RETRY_MAX_MS = 2_000;
+
+/** Delay before the next registration attempt while the owner is missing: doubling, capped at 2 s. */
+export function liveRouteOwnerRetryDelayMs(attempt: number): number {
+	return Math.min(LIVE_ROUTE_OWNER_RETRY_FIRST_MS * 2 ** attempt, LIVE_ROUTE_OWNER_RETRY_MAX_MS);
+}
+
+export function isOwnerMissingRefusal(error: unknown): boolean {
+	return error instanceof IntercomLiveRouteRefusedError && error.code === "owner_missing";
+}
