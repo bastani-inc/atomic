@@ -44,10 +44,11 @@ const pool = new LocalWorkerPool(backend, {
 	workers: CHILDREN,
 	definitions: [{ definition: child, path: childPath, exportName }],
 });
-const reportWorkers = setInterval(
-	() => writeFileSync(join(directory, `workers-${mode}.json`), JSON.stringify(pool.workerPids)),
-	50,
-);
+const reportWorkers = setInterval(() => {
+	writeFileSync(join(directory, `workers-${mode}.json`), JSON.stringify(pool.workerPids));
+	if (pool.coordinatorPid !== undefined)
+		writeFileSync(join(directory, `coordinator-${mode}.json`), JSON.stringify(pool.coordinatorPid));
+}, 50);
 const parent = workflow({
 	name: "pool-sigkill-status-root",
 	description: "Root whose host is killed while pooled children hold journaled stage sessions",

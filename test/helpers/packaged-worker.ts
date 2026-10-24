@@ -12,9 +12,9 @@ const childFixture = fileURLToPath(new URL("../fixtures/packaged-worker-child.ts
 
 interface CoordinatorOutput {
 	status: string;
-	outputs: { pid: number; token: string } | null;
+	outputs: { pid: number; parentPid: number; token: string } | null;
 	error: string | null;
-	coordinatorPid: number;
+	rootPid: number;
 }
 
 export function stageChildWorkflow(directory: string): string {
@@ -56,7 +56,12 @@ export function assertWorkerCompletedUnderRoot(directory: string, output: Coordi
 	assert.equal(output.status, "completed", JSON.stringify(output));
 	assert.equal(output.outputs?.token, token);
 	const workerPid = output.outputs?.pid;
-	assert.ok(workerPid !== undefined && workerPid !== output.coordinatorPid, "the child ran on a worker process");
+	assert.ok(workerPid !== undefined && workerPid !== output.rootPid, "the child ran on a worker process");
+	const workerParent = output.outputs?.parentPid;
+	assert.ok(
+		workerParent !== undefined && workerParent !== output.rootPid && workerParent !== workerPid,
+		"the worker is a child of the pool's coordinator process, not of the root",
+	);
 	const database = new TestSqliteDatabase(join(directory, "journal.sqlite"));
 	try {
 		const runs = database.query("SELECT run_id FROM wf_runs").all();

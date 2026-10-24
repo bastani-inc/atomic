@@ -134,9 +134,16 @@ test.skipIf(process.platform === "win32")(
 				crashed,
 			);
 			const orphanedWorkers = workerPids(directory, "start");
+			const orphanedCoordinator = JSON.parse(
+				readTextSync(join(directory, "coordinator-start.json"), "utf8"),
+			) as number;
+			assert.notEqual(orphanedCoordinator, crashed.process.pid, "the pool coordinator is its own process");
 			crashed.process.kill("SIGKILL");
 			await crashed.process.exited;
-			await until("the killed root's workers to exit", () => !orphanedWorkers.some(pidAlive));
+			await until(
+				"the killed root's pool coordinator and workers to exit",
+				() => ![orphanedCoordinator, ...orphanedWorkers].some(pidAlive),
+			);
 
 			const inspected = await inspectStatus(directory);
 			assert.equal(inspected.kind, "found", inspected.kind === "found" ? "" : inspected.message);

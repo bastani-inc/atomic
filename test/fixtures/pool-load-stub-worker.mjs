@@ -383,6 +383,10 @@ try {
 			continue;
 		}
 		await perform(work);
+		// Its child is complete and the root is finishing: once the root run ends it releases its
+		// lease, so further claim and control polls would be refused as stale until the test closes
+		// the pool. Stay connected and idle instead, as a worker with no work left would.
+		if (phase() === "finish") break;
 	}
 } catch (error) {
 	fail(error);
