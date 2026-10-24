@@ -222,4 +222,20 @@ describe("opening a large workflow journal (#3892)", () => {
 			["effect"],
 		);
 	});
+
+	test("a completed run opens by its short id without a caller-supplied catalog (#3892)", async () => {
+		const { journal } = await observedJournal();
+		const store = createStore();
+		opened.push({ close: () => releaseDurableBackendsHeldBy(store) });
+		const runtime = createExtensionRuntime({ journal, store, registry: createRegistry([]), cwd: directory });
+
+		await runtime.prepareDurableCatalog?.();
+		const result = await runtime.openCompletedDurableWorkflow?.(COMPLETED_RUN.slice(0, 8));
+		assert.equal(result?.ok, true, result?.ok === false ? result.message : undefined);
+		const restored = store.runs().find((candidate) => candidate.id === COMPLETED_RUN);
+		assert.deepEqual(
+			restored?.stages.map((stage) => stage.name),
+			["finish"],
+		);
+	});
 });

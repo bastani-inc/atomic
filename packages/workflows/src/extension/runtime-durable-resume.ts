@@ -234,7 +234,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			const finish = workflowObservationRuntime(deps.store).beginRecovery();
 			try {
 				const backend = selectedBackend(workflowId);
-				const entry = resolveCatalogEntry(workflowId, catalog ?? []);
+				const entry = resolveCatalogEntry(workflowId, catalog ?? backend.listCompletedWorkflows());
 				const id = entry?.workflowId ?? workflowId;
 				// The catalog lists a run from its latest snapshot; opening it reads its checkpoints (#3892).
 				if (entry !== undefined || isFullRunId(workflowId)) await backend.hydrateWorkflow(id);
