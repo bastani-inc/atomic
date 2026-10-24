@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, vi } from "vitest";
+import { type MockInstance, test, vi } from "vitest";
+import type { IntercomClient } from "../../packages/intercom/broker/client.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
@@ -68,8 +69,13 @@ function alive(pid: number): boolean {
 /**
  * A root whose children run on protocol stub workers (test/fixtures/pool-load-stub-worker.mjs),
  * with an isolated Intercom broker for the routes of their agent stages.
+ *
+ * `whenBrokerReady` runs once the isolated agent directory is in effect and before the root starts.
+ * Intercom's client fixes its broker socket path when its module loads, so a caller that inspects
+ * the client must import it there; imported earlier, the root's route client would dial the default
+ * agent directory's broker instead of this one.
  */
-async function startPooledRoot(root: string, workers: number) {
+async function startPooledRoot(root: string, workers: number, whenBrokerReady?: () => Promise<void>) {
 	const directory = makeTempDirectory("pool-coordinator-isolation-");
 	const broker = new IntercomBrokerFixture(join(directory, "agent"));
 	broker.overrideAgentDir();
@@ -88,6 +94,7 @@ async function startPooledRoot(root: string, workers: number) {
 		if (performance.now() > brokerDeadline) throw new Error("Intercom broker did not start");
 		await sleep(25);
 	}
+	await whenBrokerReady?.();
 	const path = join(directory, "journal.sqlite");
 	const phaseFile = join(directory, "load-phase");
 	const activeDirectory = join(directory, "active");
@@ -168,11 +175,14 @@ test.skipIf(process.platform === "win32")(
 	"pool coordination runs in the coordinator process and reaches the root store only as rate-bounded summaries (#3903)",
 	async () => {
 		const root = testRunId("pool-coordinator-isolation-root");
-		const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 		const writes = POOL_WRITES.map((method) => [method, vi.spyOn(SqlPoolQueue.prototype, method)] as const);
 		const usageReports = vi.spyOn(SqlPoolUsage.prototype, "report");
-		const routeRegistrations = vi.spyOn(IntercomClient.prototype, "registerPendingStageRouteAcknowledged");
-		const pooled = await startPooledRoot(root, WORKERS);
+		let routeRegistrations: MockInstance<IntercomClient["registerPendingStageRouteAcknowledged"]> | undefined;
+		const pooled = await startPooledRoot(root, WORKERS, async () => {
+			const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
+			routeRegistrations = vi.spyOn(IntercomClient.prototype, "registerPendingStageRouteAcknowledged");
+		});
+		const registeredRuns = () => routeRegistrations!.mock.calls.map(([runId]) => runId);
 		try {
 			await pooled.active();
 
@@ -201,12 +211,9 @@ test.skipIf(process.platform === "win32")(
 				pooled.store.runs().flatMap((entry) => (entry.parentRunId === root ? [entry.id] : [])),
 			);
 			assert.equal(pooledRuns.size, WORKERS, "the root store shows every pooled run");
-			assert.ok(
-				routeRegistrations.mock.calls.some(([runId]) => runId === root),
-				"the root's own route is registered from the root process",
-			);
+			assert.ok(registeredRuns().includes(root), "the root's own route is registered from the root process");
 			assert.deepEqual(
-				routeRegistrations.mock.calls.filter(([runId]) => pooledRuns.has(runId)),
+				registeredRuns().filter((runId) => pooledRuns.has(runId)),
 				[],
 				"the root process registered no route for a pooled run; the coordinator owns them",
 			);
