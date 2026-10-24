@@ -90,11 +90,20 @@ type BackendEvent =
 			DurableWorkflowHandle
 	  >;
 
+/** The handle a snapshot event carries, as written: prompt events nest it beside their reservations. */
+function writtenHandle(event: BackendEvent): JournalHandle | undefined {
+	if (event.type === E.promptAsked || event.type === E.promptReleased) return event.payload.handle as JournalHandle;
+	if (event.type === E.checkpointRecorded || event.type === E.messageSettled || event.type === E.messageDelivered)
+		return undefined;
+	return event.payload as JournalHandle;
+}
+
 function snapshotNeedsHistory(tail: RunSnapshotTail): boolean {
-	const event = tail.snapshot.event;
-	if (event.type !== E.messageQueued) return false;
-	const payload = event.payload as { readonly pendingStageMessages?: readonly JournalPendingStageMessage[] };
-	return hasPendingStageDeliveryDelta(payload.pendingStageMessages);
+	const handle = writtenHandle(tail.snapshot.event as BackendEvent);
+	return (
+		handle !== undefined &&
+		(handle.pendingStageMessageChange !== undefined || hasPendingStageDeliveryDelta(handle.pendingStageMessages))
+	);
 }
 
 function* invoke<T>(action: () => Promise<T>): Operation<T> {
@@ -293,23 +302,19 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 				payload.accounting,
 			);
 		} else if (event.type === E.promptAsked || event.type === E.promptReleased) {
-			this.projection.applyWorkflowSnapshot(event.payload.handle);
+			this.projection.applyWorkflowSnapshot(
+				decodeHandle(
+					event.payload.handle as JournalHandle,
+					this.projection.getWorkflow(entry.runId)?.pendingStageMessages,
+				),
+			);
 			this.prompts.set(
 				entry.runId,
 				new PromptReservationState(event.payload.handle.pendingPrompts, event.payload.prompts),
 			);
 		} else {
 			const previous = this.projection.getWorkflow(entry.runId);
-			const handle =
-				event.type === E.messageQueued && hasPendingStageDeliveryDelta(event.payload.pendingStageMessages)
-					? {
-							...event.payload,
-							pendingStageMessages: decodePendingStageDeliveries(
-								previous?.pendingStageMessages ?? [],
-								event.payload.pendingStageMessages ?? [],
-							),
-						}
-					: event.payload;
+			const handle = decodeHandle(event.payload as JournalHandle, previous?.pendingStageMessages);
 			this.projection.applyWorkflowSnapshot(handle);
 			if (event.type === E.runStarted || previous?.pendingPrompts !== handle.pendingPrompts)
 				this.prompts.delete(entry.runId);
@@ -428,12 +433,38 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		}
 		return failure;
 	}
+	/**
+	 * Append an event. An event carrying the run's handle writes its pending-stage entries as a change to the
+	 * entries folded at the run's current sequence, pinned to that sequence; on a conflict the full entries are
+	 * written instead, unless the caller pinned the sequence itself (#3929).
+	 */
 	private *append(
 		runId: string,
 		event: BackendEvent,
 		options?: { readonly key?: string; readonly expectSeq?: number },
 	): Operation<void> {
 		const lease = yield* this.ownership(runId);
+		const base = this.sequences.get(runId);
+		const pinned = options?.expectSeq;
+		const encoded =
+			base !== undefined && (pinned === undefined || pinned === base) && event.type !== E.runStarted
+				? encodeHandleEvent(event, this.projection.getWorkflow(runId)?.pendingStageMessages)
+				: undefined;
+		if (encoded !== undefined) {
+			try {
+				return yield* this.write(runId, lease, encoded, { ...options, expectSeq: base });
+			} catch (error) {
+				if (!(error instanceof JournalCasConflictError) || pinned !== undefined) throw error;
+			}
+		}
+		yield* this.write(runId, lease, event, options);
+	}
+	private *write(
+		runId: string,
+		lease: Lease,
+		event: BackendEvent,
+		options?: { readonly key?: string; readonly expectSeq?: number },
+	): Operation<void> {
 		try {
 			const outcome = yield* invoke(() => this.journal.append(lease, event, options));
 			const nextSeq = (this.sequences.get(runId) ?? 0) + 1;
@@ -707,21 +738,6 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			),
 			updatedAt: Math.max(Date.now(), handle.updatedAt + 1),
 		};
-		// Write sticky deliveries as a change to the folded entries; the expected sequence pins that base.
-		const encoded = encodePendingStageDeliveries(handle.pendingStageMessages ?? [], next.pendingStageMessages ?? []);
-		const base = this.sequences.get(runId);
-		if (encoded !== undefined && base !== undefined) {
-			try {
-				yield* this.append(
-					runId,
-					{ type: E.messageQueued, payload: { ...next, pendingStageMessages: encoded } as typeof next },
-					{ expectSeq: base },
-				);
-				return true;
-			} catch (error) {
-				if (!(error instanceof JournalCasConflictError)) throw error;
-			}
-		}
 		yield* this.snapshot(next, E.messageQueued);
 		return true;
 	}
@@ -1079,34 +1095,175 @@ function isDeltaEncoded(message: JournalPendingStageMessage): message is DeltaEn
 	return (message as Partial<DeltaEncodedMessage>).deliveryDelta !== undefined;
 }
 
+/** `base`'s deliveries changed into `deliveries`: drop these indexes of the base, then append `add`. */
+function deliveryDelta(
+	base: readonly PendingStageMessageDelivery[],
+	deliveries: readonly PendingStageMessageDelivery[],
+): PendingStageDeliveryDelta {
+	const drop: number[] = [];
+	let kept = 0;
+	base.forEach((delivery, index) => {
+		if (kept < deliveries.length && JSON.stringify(delivery) === JSON.stringify(deliveries[kept])) kept++;
+		else drop.push(index);
+	});
+	const add = deliveries.slice(kept);
+	return drop.length === 0 ? { add } : { drop, add };
+}
+
 /**
- * Encode `next` against `previous`, the pending entries the run's journal holds before this event. Returns
- * undefined when no entry is smaller as a change, so the event keeps the full entries.
+ * An entry written as a change to the previous entry at index `patch`: the fields it sets and removes, and
+ * its deliveries as a change to that entry's deliveries.
  */
-function encodePendingStageDeliveries(
+interface PatchedPendingStageMessage {
+	readonly patch: number;
+	readonly set?: Readonly<Record<string, unknown>>;
+	readonly unset?: readonly string[];
+	readonly deliveryDelta?: PendingStageDeliveryDelta;
+}
+
+/**
+ * A run's pending-stage entries written as a change to the entries folded before the event: `[start, count]`
+ * reuses that run of the previous entries unchanged, a `patch` item changes one previous entry, and any other
+ * item is an entry written in full. Queueing, settling or updating one entry then costs that change, not every
+ * pending entry again (#3929).
+ */
+type PendingStageListItem = readonly [start: number, count: number] | PatchedPendingStageMessage | PendingStageMessage;
+type JournalHandle = Omit<DurableWorkflowHandle, "pendingStageMessages"> & {
+	readonly pendingStageMessages?: readonly JournalPendingStageMessage[];
+	readonly pendingStageMessageChange?: readonly PendingStageListItem[];
+};
+
+/** Serialized entries, kept per object: unchanged entries keep their objects from event to event. */
+const entryJson = new WeakMap<PendingStageMessage, string>();
+function json(message: PendingStageMessage): string {
+	let text = entryJson.get(message);
+	if (text === undefined) {
+		text = JSON.stringify(message);
+		entryJson.set(message, text);
+	}
+	return text;
+}
+
+function patchEntry(
+	index: number,
+	base: PendingStageMessage,
+	message: PendingStageMessage,
+): PatchedPendingStageMessage {
+	const before = base as unknown as Readonly<Record<string, unknown>>;
+	const after = message as unknown as Readonly<Record<string, unknown>>;
+	const set: Record<string, unknown> = {};
+	const unset = Object.keys(before).filter((key) => after[key] === undefined && before[key] !== undefined);
+	for (const [key, value] of Object.entries(after)) {
+		if (value === undefined || key === "deliveries") continue;
+		if (JSON.stringify(value) !== JSON.stringify(before[key])) set[key] = value;
+	}
+	let delta: PendingStageDeliveryDelta | undefined;
+	if (message.deliveries !== undefined) {
+		if (base.deliveries === undefined) set.deliveries = message.deliveries;
+		else if (JSON.stringify(base.deliveries) !== JSON.stringify(message.deliveries))
+			delta = deliveryDelta(base.deliveries, message.deliveries);
+	}
+	return {
+		patch: index,
+		...(Object.keys(set).length === 0 ? {} : { set }),
+		...(unset.length === 0 ? {} : { unset }),
+		...(delta === undefined ? {} : { deliveryDelta: delta }),
+	};
+}
+
+function encodePendingStageList(
 	previous: readonly PendingStageMessage[],
 	next: readonly PendingStageMessage[],
-): readonly JournalPendingStageMessage[] | undefined {
-	const bases = uniqueByIdentity(previous);
-	const nextIdentities = uniqueByIdentity(next);
-	let encodedAny = false;
-	const encoded = next.map((message): JournalPendingStageMessage => {
-		const base = bases.get(identity(message))?.deliveries;
-		const deliveries = message.deliveries;
-		if (base === undefined || deliveries === undefined || !nextIdentities.has(identity(message))) return message;
-		const drop: number[] = [];
-		let kept = 0;
-		base.forEach((delivery, index) => {
-			if (kept < deliveries.length && JSON.stringify(delivery) === JSON.stringify(deliveries[kept])) kept++;
-			else drop.push(index);
-		});
-		const add = deliveries.slice(kept);
-		if (drop.length + add.length >= deliveries.length) return message;
-		encodedAny = true;
-		const { deliveries: _full, ...rest } = message;
-		return { ...rest, deliveryDelta: drop.length === 0 ? { add } : { drop, add } };
+): readonly PendingStageListItem[] | undefined {
+	const positions = new Map<string, number>();
+	const repeated = new Set<string>();
+	previous.forEach((message, index) => {
+		const key = identity(message);
+		if (positions.has(key)) repeated.add(key);
+		positions.set(key, index);
 	});
-	return encodedAny ? encoded : undefined;
+	for (const key of repeated) positions.delete(key);
+	const items: (PendingStageListItem | [number, number])[] = [];
+	let reused = 0;
+	for (const message of next) {
+		const index = positions.get(identity(message));
+		const base = index === undefined ? undefined : previous[index]!;
+		if (base === undefined) {
+			items.push(message);
+			continue;
+		}
+		reused++;
+		const patched = base === message || json(base) === json(message) ? undefined : patchEntry(index!, base, message);
+		if (patched === undefined || Object.keys(patched).length === 1) {
+			const last = items.at(-1);
+			if (Array.isArray(last) && last[0] + last[1] === index) last[1]++;
+			else items.push([index!, 1]);
+			continue;
+		}
+		items.push(JSON.stringify(patched).length < json(message).length ? patched : message);
+	}
+	return reused > 0 ? items : undefined;
+}
+
+function decodePendingStageList(
+	previous: readonly PendingStageMessage[],
+	items: readonly PendingStageListItem[],
+): readonly PendingStageMessage[] {
+	const base = (index: number): PendingStageMessage => {
+		if (!Number.isInteger(index) || index < 0 || index >= previous.length)
+			throw new Error(`atomic-workflows: journal pending-stage change names missing entry ${index}`);
+		return previous[index]!;
+	};
+	const result: PendingStageMessage[] = [];
+	for (const item of items) {
+		if (Array.isArray(item)) {
+			const [start, count] = item as readonly [number, number];
+			for (let index = start; index < start + count; index++) result.push(base(index));
+		} else if (typeof (item as Partial<PatchedPendingStageMessage>).patch === "number") {
+			const { patch, set, unset, deliveryDelta: delta } = item as PatchedPendingStageMessage;
+			const entry: Record<string, unknown> = { ...base(patch), ...set };
+			for (const key of unset ?? []) delete entry[key];
+			if (delta !== undefined) {
+				const dropped = new Set(delta.drop ?? []);
+				const deliveries = base(patch).deliveries ?? [];
+				entry.deliveries = [...deliveries.filter((_, index) => !dropped.has(index)), ...delta.add];
+			}
+			result.push(entry as unknown as PendingStageMessage);
+		} else result.push(item as PendingStageMessage);
+	}
+	return result;
+}
+
+/** The event with its handle's pending-stage entries written as a change, or undefined to write it in full. */
+function encodeHandleEvent(
+	event: BackendEvent,
+	previous: readonly PendingStageMessage[] | undefined,
+): BackendEvent | undefined {
+	const handle = writtenHandle(event) as DurableWorkflowHandle | undefined;
+	if (handle?.pendingStageMessages === undefined || previous === undefined) return undefined;
+	const change = encodePendingStageList(previous, handle.pendingStageMessages);
+	if (change === undefined) return undefined;
+	const { pendingStageMessages: _full, ...rest } = handle;
+	const encoded = { ...rest, pendingStageMessageChange: change };
+	if (event.type === E.promptAsked || event.type === E.promptReleased)
+		return { ...event, payload: { ...event.payload, handle: encoded } } as BackendEvent;
+	return { ...event, payload: encoded } as BackendEvent;
+}
+
+/** The full handle from an event's handle and the run's entries before that event. */
+function decodeHandle(
+	handle: JournalHandle,
+	previous: readonly PendingStageMessage[] | undefined,
+): DurableWorkflowHandle {
+	const { pendingStageMessageChange: change, ...rest } = handle;
+	if (change !== undefined)
+		return { ...rest, pendingStageMessages: decodePendingStageList(previous ?? [], change) } as DurableWorkflowHandle;
+	// Journals written before #3929 hold full entries, possibly with delivery changes (#3920).
+	if (!hasPendingStageDeliveryDelta(handle.pendingStageMessages)) return handle as DurableWorkflowHandle;
+	return {
+		...handle,
+		pendingStageMessages: decodePendingStageDeliveries(previous ?? [], handle.pendingStageMessages ?? []),
+	} as DurableWorkflowHandle;
 }
 
 /** Rebuild full entries from an event's entries and the run's entries before that event. */
