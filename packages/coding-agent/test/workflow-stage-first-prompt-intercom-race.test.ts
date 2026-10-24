@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { fauxAssistantMessage, type TranscriptContext } from "@bastani/pi-ai/compat";
 import { test } from "vitest";
-import { WorkflowStageAdmissionBoundary } from "../src/core/workflow-stage-admission.ts";
-import { createHarness, getMessageText } from "./suite/harness.ts";
+import { WorkflowStageAdmissionBoundary } from "../src/core/workflow-stage-admission.js";
+import { createHarness, getMessageText } from "./suite/harness.js";
 
 function stageContext() {
 	const boundary = new WorkflowStageAdmissionBoundary();
