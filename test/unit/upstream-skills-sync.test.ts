@@ -57,7 +57,7 @@ const cuaDriverCompanionTree: ReadonlyArray<readonly [path: string, sha256: stri
 	["BROWSER.md", "b008c6bfef08beaf030304adee72a297ddc0df436af32ee8fa643c0dff77efbf"],
 	["EMBEDDING.md", "c015a13bfbd6a5102a4984091824215e5e84a868c6f99e504fee794d0a5a3a17"],
 	["LINUX.md", "286f3eae22b70c1dcba90ebb1d0c789546ab5f819baeb3f53c94b2b6588afa7b"],
-	["MACOS.md", "03f91bbaead3e3d058db500bd4b918d30e075aca41dee0d766fd74c9443ba35c"],
+	["MACOS.md", "20aec2edbef6e8f3c603ea4bab8ed4d8145bf99106b0f6e026ef6527e4537b87"],
 	["README.md", "7b561c189ec2f2c38eed3bc7981935ba45c0a3ae03db4788565e3528efc19e3b"],
 	["RECORDING.md", "6d1d5f8ff192f37bd9c67efcda59154f3242b0fae72e86ba7e2ba5a4899fd248"],
 	["RUNTIME.md", "1e425f190abce0f5d52c9e73acfc0903605dffb2acbc181dce70a710aa415411"],
@@ -123,6 +123,11 @@ const cuaDriverAdaptations: ReadonlyArray<readonly [path: string, atomic: string
 		"MACOS.md",
 		"approve it yourself unless `ATOMIC_CUA_AUTO_APPROVE` is `0`, otherwise tell the user to grant it in System Settings",
 		"approve it yourself only when the owner authorized that for this task, otherwise tell the user to grant it in System Settings",
+	],
+	[
+		"MACOS.md",
+		"        out.write(f\"{stamp} host={os.environ['CUA_VNC_SERVER']} {entry}\\n\")",
+		'        out.write(f"{stamp} {entry}\\n")',
 	],
 	[
 		"RUNTIME.md",

@@ -471,7 +471,7 @@ def record(entry):
     path = os.path.expanduser(os.environ.get("CUA_VNC_LOG", "~/.cache/cua-vnc/approvals.log"))
     stamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     with open(path, "a") as out:
-        out.write(f"{stamp} {entry}\n")
+        out.write(f"{stamp} host={os.environ['CUA_VNC_SERVER']} {entry}\n")
 
 
 def main(argv):
