@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.9.43-alpha.1] - 2026-10-24
+
+Local workflow worker pools now survive slow, busy, and crashed workers, and large workflow journals open without running out of memory.
+
+- **Pools that recover instead of failing:** a worker that dies mid-run is replaced and its child replays from the last checkpoint instead of crashing the root with `EPIPE`, a resumed root releases children leased to workers that died with the host, and unconfirmed worker exits are retried rather than failing every waiting child ([#3891](https://github.com/bastani-inc/atomic/pull/3891), [#3893](https://github.com/bastani-inc/atomic/pull/3893), [#3895](https://github.com/bastani-inc/atomic/pull/3895))
+- **Leases that follow worker liveness:** a busy root no longer fences healthy workers with `Stale work lease`, and the new `workflows.localWorkers.leaseMs` setting controls how long an unresponsive worker keeps its child (30000 ms by default) ([#3894](https://github.com/bastani-inc/atomic/pull/3894))
+- **Retry decisions you can make in code:** `WorkflowInfrastructureError` and `isRetryableWorkflowError` tell retryable pool and runtime faults apart from failures of a child's own logic ([#3895](https://github.com/bastani-inc/atomic/pull/3895))
+- **Faster startup on long journals:** workers become ready without reading the whole journal, the readiness timeout is configurable with `workflows.localWorkers.startupTimeoutMs`, and sessions, `/workflow status`, and the `/workflow resume` picker read each run's latest state instead of every event, so large journals no longer exhaust the heap ([#3891](https://github.com/bastani-inc/atomic/pull/3891), [#3896](https://github.com/bastani-inc/atomic/pull/3896))
+- **Easier worker diagnosis:** each worker's standard error is kept under `worker-logs/` next to the journal, and startup and retry-limit errors name the log file and show the end of its output ([#3891](https://github.com/bastani-inc/atomic/pull/3891))
+
 ### Added
 
 - Added `WorkflowInfrastructureError` and `isRetryableWorkflowError` to `@bastani/atomic/workflows`, so workflows can tell local worker pool and runtime faults (which are safe to retry) from failures of a child workflow's own logic ([#3889](https://github.com/bastani-inc/atomic/issues/3889))
