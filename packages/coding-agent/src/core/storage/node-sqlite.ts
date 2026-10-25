@@ -57,8 +57,8 @@ function finalizeReleasedStatements(): void {
 
 /** Default for how long a transaction keeps retrying `BEGIN IMMEDIATE` while another connection holds the write lock. */
 const DEFAULT_NODE_SQLITE_LOCK_WAIT_MS = 30_000;
-const LOCK_RETRY_BASE_DELAY_MS = 25;
-const LOCK_RETRY_MAX_DELAY_MS = 1_000;
+const LOCK_RETRY_BASE_DELAY_MS = 5;
+const LOCK_RETRY_MAX_DELAY_MS = 100;
 
 /** SQLITE_BUSY, including its extended codes: another connection holds the lock this statement needs. */
 function isSqliteBusy(cause: unknown): boolean {
@@ -128,16 +128,43 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	}
 
 	/**
-	 * Takes the write lock. `busy_timeout` waits synchronously, which blocks this process's event loop and cannot
-	 * outlast a writer in another process that holds the lock longer (a loaded workflow journal does). Nothing has
-	 * run yet when `BEGIN IMMEDIATE` reports SQLITE_BUSY, so it is retried after yielding until `lockWaitMs`
-	 * has passed; every other failure, and a lock still held at the deadline, rejects at once with its cause.
+	 * One non-blocking `BEGIN IMMEDIATE`. node:sqlite runs `busy_timeout` synchronously, so a lock held by another
+	 * process would freeze this process's event loop for the whole timeout. The attempt runs with `busy_timeout=0`
+	 * and the connection's own value is restored before returning or throwing, so single statements outside a
+	 * transaction keep it. Callers reach this only through `enqueue` and the transaction gate, so nothing else runs
+	 * on the connection in between.
+	 */
+	private tryBegin(): void {
+		this.driver(() => {
+			const configured = Number(this.connection.prepare("PRAGMA busy_timeout").get()?.timeout ?? 0);
+			this.connection.exec("PRAGMA busy_timeout=0");
+			let began = false;
+			try {
+				this.connection.exec("BEGIN IMMEDIATE");
+				began = true;
+			} finally {
+				try {
+					this.connection.exec(`PRAGMA busy_timeout=${configured}`);
+				} catch (restoreFailure) {
+					// Never hand back a transaction on a connection whose lock wait is no longer the configured one.
+					if (began) this.connection.exec("ROLLBACK");
+					// biome-ignore lint/correctness/noUnsafeFinally: a failed restore must replace the attempt's outcome.
+					throw restoreFailure;
+				}
+			}
+		});
+	}
+
+	/**
+	 * Takes the write lock without blocking the event loop. Nothing has run yet when `BEGIN IMMEDIATE` reports
+	 * SQLITE_BUSY, so the attempt is retried after a jittered timer until `lockWaitMs` has passed; every other
+	 * failure, and a lock still held at the deadline, rejects at once with its cause.
 	 */
 	private async begin(): Promise<void> {
 		const started = Date.now();
 		for (let attempt = 0; ; attempt += 1) {
 			try {
-				await this.executor.exec("BEGIN IMMEDIATE");
+				this.tryBegin();
 				return;
 			} catch (error) {
 				const cause = error instanceof StorageUnavailableError ? error.cause : undefined;

@@ -111,7 +111,49 @@ test(
 			assert.match(error.message, /^Storage unavailable: node-sqlite at .*journal\.sqlite: database is locked/);
 			assert.match((error.cause as Error).message, /database is locked/);
 			assert.ok(Date.now() - started < 5_000, `gave up after ${Date.now() - started} ms`);
+			assert.deepEqual(await database.get("PRAGMA busy_timeout"), { timeout: 100 });
 		} finally {
+			holder?.kill("SIGKILL");
+			await holder?.exited;
+			await database.close();
+			removeTempDirectory(directory);
+		}
+	},
+	LOCK_CONTENTION_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a transaction waiting for another process's write lock leaves the event loop running",
+	async () => {
+		const directory = makeTempDirectory("journal-lock-event-loop-");
+		const path = join(directory, "journal.sqlite");
+		const database = await openNodeSqliteDatabase(path);
+		let holder: SpawnedProcess | undefined;
+		let ticker: ReturnType<typeof setInterval> | undefined;
+		try {
+			await database.exec("CREATE TABLE probe(x)");
+			holder = await holdWriteLock(path, 2_500);
+			let last = performance.now();
+			let maxGapMs = 0;
+			ticker = setInterval(() => {
+				const now = performance.now();
+				maxGapMs = Math.max(maxGapMs, now - last);
+				last = now;
+			}, 20);
+			const started = performance.now();
+			await database.transaction((tx) => tx.run("INSERT INTO probe VALUES (1)"));
+			const finished = performance.now();
+			const waitedMs = finished - started;
+			clearInterval(ticker);
+			// The gap still open at commit counts: a wait that blocks synchronously lets no tick fire at all.
+			maxGapMs = Math.max(maxGapMs, finished - last);
+			assert.ok(waitedMs >= 1_000, `committed after ${waitedMs} ms while the lock was held`);
+			assert.ok(maxGapMs < 500, `event loop stalled for ${Math.round(maxGapMs)} ms while waiting for the lock`);
+			assert.deepEqual(await database.get("SELECT COUNT(*) AS count FROM probe"), { count: 1 });
+			assert.deepEqual(await database.get("PRAGMA busy_timeout"), { timeout: 5_000 });
+			assert.equal(await holder.exited, 0, await readStreamText(holder.stderr));
+		} finally {
+			clearInterval(ticker);
 			holder?.kill("SIGKILL");
 			await holder?.exited;
 			await database.close();

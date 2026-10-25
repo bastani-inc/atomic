@@ -14,8 +14,13 @@ try {
 	process.stdout.write("ready\n");
 	await new Promise((resolve) => process.stdin.once("data", resolve));
 	const exec = DatabaseSync.prototype.exec;
+	let claiming = false;
 	DatabaseSync.prototype.exec = function (sql) {
-		if (sql === "BEGIN IMMEDIATE") process.stdout.write("claiming\n");
+		// A busy lock retries `BEGIN IMMEDIATE`; report only the first attempt.
+		if (sql === "BEGIN IMMEDIATE" && !claiming) {
+			claiming = true;
+			process.stdout.write("claiming\n");
+		}
 		return exec.call(this, sql);
 	};
 	const claim = await pool.claim(JSON.parse(leaseJson), worker, [{ definition: "fixture/child", digest: "sha256:child" }], 60_000);
