@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Updated `undici`, which Atomic uses for HTTP requests, to 8.12.3. A server can no longer crash Atomic by sending more than five `Content-Encoding` values ([GHSA-xjj6-f33q-929c](https://github.com/advisories/GHSA-xjj6-f33q-929c)), Server-Sent Events streams can no longer grow parser memory without bound ([GHSA-4qv8-2p9j-2685](https://github.com/advisories/GHSA-4qv8-2p9j-2685)), and Subresource Integrity checks no longer skip uppercase algorithm names ([GHSA-f72v-6w45-q472](https://github.com/advisories/GHSA-f72v-6w45-q472)).
+- Updated the MCP SDK dependencies in the published lockfile to `zod` 4.6.7 ([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)), `fast-uri` 3.1.9 ([GHSA-w74x-v6f9-j3xg](https://github.com/advisories/GHSA-w74x-v6f9-j3xg), [GHSA-wjr9-j795-jxcr](https://github.com/advisories/GHSA-wjr9-j795-jxcr), [GHSA-xhq7-xmqj-769h](https://github.com/advisories/GHSA-xhq7-xmqj-769h), [GHSA-333x-w4r6-6crp](https://github.com/advisories/GHSA-333x-w4r6-6crp)), and `body-parser` 2.4.0 ([GHSA-27r3-jxmh-p828](https://github.com/advisories/GHSA-27r3-jxmh-p828)).
+- Updated the native module's `tokio` crate to 1.54.1, replacing the yanked 1.54.0 release and its `Interval` race ([GHSA-5wjr-9356-4wc8](https://github.com/advisories/GHSA-5wjr-9356-4wc8)).
+- Updated the gondolin example extension's lockfile to `undici` 6.29.1, resolving [GHSA-xjj6-f33q-929c](https://github.com/advisories/GHSA-xjj6-f33q-929c) and [GHSA-4qv8-2p9j-2685](https://github.com/advisories/GHSA-4qv8-2p9j-2685) in its `@earendil-works/gondolin` dependency.
+
 ## [0.9.44-alpha.2] - 2026-10-24
 
 Workflow swarms now message each other without cancelling each other's work, and stages, replies and session exits behave reliably under fan-out.
