@@ -14,6 +14,9 @@ import { createStageSkillFixture } from "../fixtures/stage-chat-skill-session.js
 
 type StageGenerationSession = AgentSession & { closeWorkflowStageGeneration(): Promise<void> };
 
+/** Only a stranded notice reaches this bound; a queued notice starts its turn immediately. */
+const QUEUED_NOTICE_TURN_TIMEOUT_MS = 5_000;
+
 function quote(text: string): string {
 	return `'${text.replaceAll("'", "'\\''")}'`;
 }
@@ -267,6 +270,8 @@ test.runIf(process.platform !== "win32")(
 			assert.equal(result.value.result.kind, "cancelled");
 			assert.equal(shell.host.resolveTask(shell.taskId).ok, true);
 			await assert.rejects(startBackgroundShell(fixture.stage.session, "printf REFUSED", "Paused launch"), /paused/);
+			// The resumed turn answers the cancelled shell's completion notice, whether the notice is admitted
+			// before, during, or after resume.
 			fixture.stage.setResponses([
 				async () => {
 					responseStarted.resolve();
@@ -308,6 +313,43 @@ test.runIf(process.platform !== "win32")(
 		}
 	},
 );
+
+test("a completion notice whose durable card is still being written when a paused stage resumes starts its turn", async () => {
+	const harness = await createHarness();
+	bindStageAdmission(harness.session, "notice-run", "notice-stage");
+	const manager = harness.session.sessionManager;
+	const append = manager.appendCustomMessageEntry.bind(manager);
+	const appendStarted = Promise.withResolvers<void>();
+	const finishAppend = Promise.withResolvers<void>();
+	let turnStarted = false;
+	try {
+		harness.setResponses([
+			() => {
+				turnStarted = true;
+				return fauxAssistantMessage("Saw the completion notice");
+			},
+		]);
+		vi.spyOn(manager, "appendCustomMessageEntry").mockImplementationOnce(async (...args) => {
+			appendStarted.resolve();
+			await finishAppend.promise;
+			return append(...args);
+		});
+		harness.session.pauseQueuedMessages();
+		const delivery = harness.session.sendCustomMessage(
+			{ customType: "task-completion", content: "Shell finished", display: true },
+			{ triggerTurn: true, persistWhenStreaming: true, stageAdmissionKey: "notice-completion" },
+		);
+		await appendStarted.promise;
+		assert.equal(await harness.session.resumeQueuedMessages(), false, "the notice is not queued yet");
+		finishAppend.resolve();
+		await delivery;
+		await vi.waitFor(() => assert.equal(turnStarted, true), { timeout: QUEUED_NOTICE_TURN_TIMEOUT_MS });
+		await harness.session.agent.waitForIdle();
+	} finally {
+		finishAppend.resolve();
+		await harness.cleanup();
+	}
+});
 
 test("closing one workflow-stage admission cancels only that owner's remaining tasks", async () => {
 	const first = new WorkflowStageAdmissionBoundary();
