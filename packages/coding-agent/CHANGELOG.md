@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.9.44-alpha.6] - 2026-10-25
+
+Large workflow fan-outs stay fast for the whole run and recover cleanly from a crash, even with hundreds of pooled child workflows messaging each other.
+
+- **Journal writes that keep up:** transactions queued behind a commit share it, delivery receipts are batched, and pending-message changes for a run are written once per batch, so Intercom sends no longer time out behind journal traffic ([#3942](https://github.com/bastani-inc/atomic/pull/3942), [#3943](https://github.com/bastani-inc/atomic/pull/3943), [#3947](https://github.com/bastani-inc/atomic/pull/3947))
+- **Costs that stay flat as a run grows:** pool commits, delivery transitions, route announcements and receipt bookkeeping now cost what changed rather than the run's whole history, and each sticky delivery receipt is written once instead of repeatedly ([#3944](https://github.com/bastani-inc/atomic/pull/3944), [#3945](https://github.com/bastani-inc/atomic/pull/3945), [#3948](https://github.com/bastani-inc/atomic/pull/3948), [#3951](https://github.com/bastani-inc/atomic/pull/3951), [#3952](https://github.com/bastani-inc/atomic/pull/3952))
+- **Fast, reliable recovery:** `/workflow status` and resume load large journals in seconds, resume no longer rebuilds every child's history, and resumed pooled children no longer fail with `Pool checkpoint identity conflict` or a spurious `Storage unavailable` ([#3950](https://github.com/bastani-inc/atomic/pull/3950), [#3951](https://github.com/bastani-inc/atomic/pull/3951), [#3954](https://github.com/bastani-inc/atomic/pull/3954), [#3955](https://github.com/bastani-inc/atomic/pull/3955))
+- **Bounded delivery states:** route announcements, `intercom list`, `/workflow status` and inspect show at most 5 sticky delivery states per row plus totals ([#3951](https://github.com/bastani-inc/atomic/pull/3951))
+- **Paused stages resume their work:** a background completion that arrives while a paused stage resumes now starts its next turn ([#3953](https://github.com/bastani-inc/atomic/pull/3953))
+
 ### Fixed
 
 - Under heavy write load a local SQLite store (`node-sqlite`, including the workflow journal) commits transactions in groups: transactions requested while another is committing share one `BEGIN IMMEDIATE … COMMIT`, each in its own savepoint and in request order. A transaction that fails rolls back only its own writes, and every caller still settles only after the shared commit. In a 480-child pooled workflow the pool coordinator was committing about 60 transcript transactions a second, each taking the write lock and syncing on its own, which starved the workflow host's writes until Intercom sends timed out and worker leases expired.

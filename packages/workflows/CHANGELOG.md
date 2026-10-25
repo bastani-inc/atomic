@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.44-alpha.6] - 2026-10-25
+
 ### Fixed
 
 - After a pooled root was killed and resumed, some child workflows no longer fail with `Extension startup failed: …intercom…: Storage unavailable: custom at custom journal`. While a resumed root and its workers were busy, a worker's lease could run out a moment before the pool extended it. When the root then recorded that a queued Intercom message had reached the worker's stage, it refused the write as if the attempt had been replaced and reported the refusal as unavailable storage, so the stage failed at startup. In a 640-child run this failed 21 children. The pool already keeps a live worker's child when its lease runs out (#3888), and the root now does the same when recording deliveries. Only a reassigned attempt or a new root epoch is refused, with `Stale work lease` or the session reason, and the replaced attempt's child is replayed. A failure of a custom journal now also names the cause's error class and code, though not its message, which may contain credentials.
