@@ -844,3 +844,40 @@ test.each(["completed", "failed"] as const)(
 		}
 	},
 );
+
+test("a replacement generation re-recording a checkpoint at a later time keeps the first write", async () => {
+	const f = await fixture();
+	try {
+		const { sessionId: _session, ...cached } = stage;
+		const replayed = {
+			...cached,
+			checkpointId: `${work.scope}:stage-replay-meta:h0`,
+			completedAt: Date.now() - 1_000,
+			output: "draft",
+		};
+		const first = await f.pool.commit(f.lease, f.attempt, "replay", { kind: "checkpoint", checkpoint: replayed });
+		await f.database.run("UPDATE wf_runs_work SET expires_at = 0 WHERE id = ?", f.attempt.id);
+		assert.equal(await f.pool.expire(f.lease, f.attempt), true);
+		const replacement = await f.pool.claim(f.lease, "replacement", [work], 60_000);
+		assert.ok(replacement);
+		const later = { ...replayed, completedAt: Date.now() };
+		assert.deepEqual(
+			await f.pool.commit(f.lease, replacement, "replay-again", { kind: "checkpoint", checkpoint: later }),
+			{ seq: first.seq, at: first.at },
+		);
+		await assert.rejects(
+			f.pool.commit(f.lease, replacement, "diverged", {
+				kind: "checkpoint",
+				checkpoint: { ...later, output: "different" },
+			}),
+			/Pool checkpoint identity conflict/,
+		);
+		await f.backend.hydrateWorkflow("root");
+		const recorded = f.backend
+			.listCheckpoints("root")
+			.filter((entry) => entry.checkpointId === replayed.checkpointId);
+		assert.deepEqual(recorded, [replayed]);
+	} finally {
+		await f.close();
+	}
+});
