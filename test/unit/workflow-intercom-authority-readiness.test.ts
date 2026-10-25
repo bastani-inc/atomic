@@ -156,6 +156,8 @@ async function authorityFixture(
 }
 
 const drainRunnableWork = () => new Promise<void>((resolve) => setImmediate(resolve));
+/** Route publications go out in batches; this outlasts one batch window. */
+const routesPublished = () => new Promise<void>((resolve) => setTimeout(resolve, 60));
 
 test("a rejected claimed publication fails the waiting stage without creating a session", async () => {
 	const publication = Promise.withResolvers<void>();
@@ -185,6 +187,7 @@ test("a publication rejected before admission is not mistaken for an absent cons
 		},
 		{
 			async beforePrompt() {
+				await routesPublished();
 				publication.reject(new Error("authority already refused"));
 				await drainRunnableWork();
 			},
@@ -295,7 +298,7 @@ test("replacement cannot lend authority to old waiters and old disposal cannot r
 	}
 });
 
-test("a later roster publication is immediate but does not extend an admitted stage's snapshot wait", async () => {
+test("a later roster publication goes out but does not extend an admitted stage's snapshot wait", async () => {
 	const first = Promise.withResolvers<void>();
 	const later = Promise.withResolvers<void>();
 	let current = first.promise;
@@ -317,6 +320,7 @@ test("a later roster publication is immediate but does not extend an admitted st
 			toolEvents: [],
 			pendingStageDeliveryAvailable: true,
 		});
+		await routesPublished();
 		assert.equal(announcements, before + 1, "changed rosters publish even while authority is outstanding");
 		assert.equal(fixture.creations(), 0);
 		first.resolve();

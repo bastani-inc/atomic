@@ -28,6 +28,7 @@ const CHILD_RUN_ID = "5bd82a35-c563-4f60-9a74-3546832210a8";
 const GROUP = `workflow:${RUN_ID}`;
 const TARGET = `workflow:${RUN_ID}/reviewer`;
 const EXPENSIVE_ROUTE_ANNOUNCEMENT_MS = 10;
+const ROUTE_BATCH_SETTLE_MS = 60;
 
 const tempDirs: string[] = [];
 
@@ -778,6 +779,9 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 	// run, so tool events, attachment toggles, and notices each cost a broker round trip
 	// whose `listSessions()` barrier can expire on its own 5s timer.
 	const turn = (): Promise<void> => new Promise<void>((resolve) => setImmediate(resolve));
+	/** Store invalidations publish in batches; this outlasts one batch window. */
+	const routesPublished = (): Promise<void> =>
+		new Promise<void>((resolve) => setTimeout(resolve, ROUTE_BATCH_SETTLE_MS));
 	/** Observable route payload, without the acknowledgement the consumer attaches. */
 	const routeData = (payload: Record<string, unknown>): Record<string, unknown> =>
 		Object.fromEntries(Object.entries(payload).filter(([key]) => key !== "completion"));
@@ -815,14 +819,17 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		// 1,000 attachment toggles leave the route projection identical. Before the fix
 		// this measured 1,001 announcements — one broker directory request each.
 		toggleAttachment(store, 1000);
+		await routesPublished();
 		assert.equal(routes.length, 1);
 		assert.deepEqual(routes[0]?.stages, pendingReviewerStages);
 		claims[0]?.resolve();
 		await turn();
 		toggleAttachment(store, 1000);
+		await routesPublished();
 		assert.equal(routes.length, 1);
 		// A genuine routing change is never debounced behind the acknowledged claim.
 		store.recordStageSession(RUN_ID, "reviewer-id", { sessionId: "reviewer-session" });
+		await routesPublished();
 		assert.equal(routes.length, 2);
 		assert.deepEqual(routes[1]?.stages, runningReviewerStages);
 		dispose();
@@ -837,10 +844,12 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		claims[0]?.reject(new Error("relay failed"));
 		await turn();
 		toggleAttachment(store, 1);
+		await routesPublished();
 		assert.equal(routes.length, 2);
 		assert.deepEqual(routeData(routes[1]!), routeData(routes[0]!));
 		// The retry is claimed, so the unchanged route stops republishing again.
 		toggleAttachment(store, 2);
+		await routesPublished();
 		assert.equal(routes.length, 2);
 		dispose();
 	});
@@ -853,18 +862,21 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		const initialRun = structuredClone(store.runs()[0]!);
 		assert.equal(routes.length, 1);
 		assert.deepEqual(routes[0]?.stages, pendingReviewerStages);
-		// B publishes immediately even though A is still unacknowledged.
+		// B publishes in the next batch even though A is still unacknowledged.
 		store.recordStageSession(RUN_ID, "reviewer-id", { sessionId: "reviewer-session" });
+		await routesPublished();
 		assert.equal(routes.length, 2);
 		assert.deepEqual(routes[1]?.stages, runningReviewerStages);
 		// A again, from the pre-session snapshot of the same run.
 		store.removeRun(RUN_ID);
 		store.recordRunStart(initialRun);
+		await routesPublished();
 		assert.equal(routes.length, 3);
 		assert.deepEqual(routeData(routes[2]!), routeData(routes[0]!));
 		claims[0]?.reject(new Error("relay failed"));
 		await turn();
 		toggleAttachment(store, 1);
+		await routesPublished();
 		assert.equal(routes.length, 3);
 		dispose();
 	});
@@ -881,10 +893,12 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		// Nobody claimed the initial emission, so it is not proof of publication.
 		acknowledging = true;
 		toggleAttachment(store, 1);
+		await routesPublished();
 		assert.equal(routes.length, 2);
 		assert.deepEqual(routeData(routes[1]!), routeData(routes[0]!));
 		assert.deepEqual(routes[1]?.stages, pendingReviewerStages);
 		toggleAttachment(store, 2);
+		await routesPublished();
 		assert.equal(routes.length, 2);
 		dispose();
 	});
@@ -904,6 +918,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		claims[0]?.reject(new Error("relay failed"));
 		await turn();
 		toggleAttachment(store, 1);
+		await routesPublished();
 		assert.equal(routes.length, 2);
 		replacement();
 	});
@@ -1396,7 +1411,8 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 			listeners.get("atomic:workflow-pending-stage-message")?.(payload);
 			return payload.completion === undefined ? undefined : await payload.completion;
 		};
-		const routePayload = () => {
+		const routePayload = async () => {
+			await new Promise((resolve) => setTimeout(resolve, ROUTE_BATCH_SETTLE_MS));
 			const routes = emitted.filter(({ event }) => event === "atomic:workflow-pending-stage-route");
 			return routes.at(-1)?.payload;
 		};
@@ -1409,7 +1425,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 		});
 		// "reviewer" is a glob-free entry whose stage is route-eligible materialized: it is
 		// announced as a materialized roster row and must not be double-listed as future.
-		assert.deepEqual(routePayload()?.possibleStages, [
+		assert.deepEqual((await routePayload())?.possibleStages, [
 			{ target: `workflow:${RUN_ID}/setup`, queuedCount: 0 },
 			{ target: `workflow:${RUN_ID}/orchestrator-*`, queuedCount: 0 },
 			{ target: `workflow:${RUN_ID}/child-boundary/inner-stage`, queuedCount: 0 },
@@ -1423,7 +1439,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 			possibleStages: ["orchestrator-*"],
 			extraStages: [{ id: "orch-1-id", name: "orchestrator-1", status: "running" }],
 		});
-		const rows = (routePayload()?.possibleStages ?? []) as { target: string; queuedCount: number }[];
+		const rows = ((await routePayload())?.possibleStages ?? []) as { target: string; queuedCount: number }[];
 		assert.deepEqual(
 			rows.filter((row) => row.target.endsWith("/**")),
 			[{ target: `workflow:${RUN_ID}/**`, queuedCount: 0 }],
@@ -1451,7 +1467,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 			outcome: "queued",
 			position: 1,
 		});
-		assert.deepEqual(routePayload()?.possibleStages, [
+		assert.deepEqual((await routePayload())?.possibleStages, [
 			{ target: `workflow:${RUN_ID}/orchestrator-*`, queuedCount: 2 },
 			{ target: `workflow:${RUN_ID}/setup`, queuedCount: 0 },
 			{
@@ -1489,7 +1505,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 					pendingStageDeliveryAvailable: true,
 				});
 			}
-			const rows = routePayload()?.possibleStages as {
+			const rows = (await routePayload())?.possibleStages as {
 				target: string;
 				deliveryOnly?: true;
 				deliveryStates?: { messageId: string; state: string }[];
@@ -1527,7 +1543,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 					requireStoreDurableBackend(store),
 				);
 			}
-			const deliveredRows = routePayload()?.possibleStages as {
+			const deliveredRows = (await routePayload())?.possibleStages as {
 				deliveryOnly?: true;
 				queuedCount: number;
 				deliveryStates?: { state: string }[];
@@ -1685,9 +1701,9 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 
 	test("rows disappear when the owning run reaches a terminal status", async () => {
 		const { store, routePayload, dispose } = await rowHarness({ possibleStages: ["setup"] });
-		assert.equal(((routePayload()?.possibleStages ?? []) as unknown[]).length, 2);
+		assert.equal((((await routePayload())?.possibleStages ?? []) as unknown[]).length, 2);
 		store.recordRunEnd(RUN_ID, "completed");
-		assert.deepEqual(routePayload()?.possibleStages, []);
+		assert.deepEqual((await routePayload())?.possibleStages, []);
 		dispose();
 	});
 

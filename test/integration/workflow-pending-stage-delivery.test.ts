@@ -20,6 +20,8 @@ const GROUP = `workflow:${RUN_ID}`;
 const TARGET = `workflow:${RUN_ID}/reviewer`;
 const BROKER_FRAME_TIMEOUT_MS = 5_000;
 const BROKER_STARTUP_TIMEOUT_MS = 10_000;
+/** Store changes publish routes in batches; this outlasts one batch window. */
+const routesPublished = () => new Promise<void>((resolve) => setTimeout(resolve, 60));
 const BROKER_SHUTDOWN_TIMEOUT_MS = 5_000;
 const STORE_EVENT_TIMEOUT_MS = 5_000;
 const repoRoot = resolve(import.meta.dirname, "../..");
@@ -1843,6 +1845,7 @@ test.each([
 				store.recordRunStart(snapshot(true));
 			}
 			assert.equal(store.runs().length, 1, "one authoritative snapshot must survive owner/broker replay");
+			await routesPublished();
 			await owner.waitForEventCompletion("atomic:workflow-pending-stage-route");
 			await assertEndpoints(first, "still-connected");
 			await first.shutdown();
@@ -4426,6 +4429,7 @@ for (const scenario of ["startup replacement", "durable acknowledgment replay"] 
 				createdAt: 1,
 			});
 			const result = await run(definition, {}, { runId: RUN_ID, store, adapters });
+			await disposeBridge.flush();
 			assert.equal(result.status, "completed", JSON.stringify(result));
 			assert.equal(stages.length, 3);
 			const later = stages[2];

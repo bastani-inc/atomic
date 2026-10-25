@@ -45,7 +45,7 @@ const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliv
 const STICKY_LIVE_DELIVERED_EVENT = "atomic:workflow-sticky-live-delivered";
 const PENDING_STAGE_ASK_REFUSAL =
 	"Cannot ask a workflow stage whose session has not initialized. Use send; Atomic will queue the message until the stage session initializes.";
-const ROUTE_ANNOUNCEMENT_IMMEDIATE_COST_MS = 5;
+const ROUTE_ANNOUNCEMENT_BATCH_MS = 25;
 const ROUTE_ANNOUNCEMENT_EVENT_LOOP_SHARE = 0.2;
 
 interface WorkflowEventSurface {
@@ -309,22 +309,15 @@ export function registerPendingStageIntercomBridge(
 	function announceIfPending(): void {
 		if (announcementPending) announceNow();
 	}
-	// Each announcement rebuilds every owned run's route. While that is cheap every invalidation announces at
-	// once; once it is not, invalidations wait until announcing stays under a fixed share of the event loop and
-	// a burst collapses into one announcement. Readiness, flush and refresh announce a pending burst first.
+	// Each announcement rebuilds every owned run's route, so store invalidations are batched: a burst becomes one
+	// announcement after a short window, stretched when needed so announcing stays under a fixed share of the
+	// event loop. Readiness, flush and refresh announce a pending batch first.
 	const scheduleAnnouncement = (): void => {
-		if (disposed) return;
-		const idle =
-			announcementCost < ROUTE_ANNOUNCEMENT_IMMEDIATE_COST_MS
-				? 0
-				: announcementCost / ROUTE_ANNOUNCEMENT_EVENT_LOOP_SHARE - announcementCost;
-		const wait = announcedAt + idle - performance.now();
-		if (wait <= 0 && announcementTimer === undefined) {
-			announceNow();
-			return;
-		}
+		if (disposed || announcementTimer !== undefined) return;
+		const idle = announcementCost / ROUTE_ANNOUNCEMENT_EVENT_LOOP_SHARE - announcementCost;
+		const wait = Math.max(ROUTE_ANNOUNCEMENT_BATCH_MS, announcedAt + idle - performance.now());
 		announcementPending = true;
-		announcementTimer ??= setTimeout(announceNow, Math.max(0, wait));
+		announcementTimer = setTimeout(announceNow, wait);
 		announcementTimer.unref?.();
 	};
 	const unsubscribeStore = activeStore.subscribeInvalidation(scheduleAnnouncement);
