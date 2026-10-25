@@ -905,6 +905,9 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	) {
 		return this.projection.getPendingStageMessageDeliveryCount(...args);
 	}
+	pendingStageDeliveryCountVersion(runId: string): number {
+		return this.projection.pendingStageDeliveryCountVersion(runId);
+	}
 	hasPendingStageDeliveryReceipt(
 		...args: Parameters<NonNullable<DurableWorkflowBackend["hasPendingStageDeliveryReceipt"]>>
 	) {
@@ -1167,8 +1170,15 @@ type DeltaEncodedMessage = Omit<PendingStageMessage, "deliveries"> & {
 };
 type JournalPendingStageMessage = PendingStageMessage | DeltaEncodedMessage;
 
+/** Identities, kept per object like `entryJson`: an entry's run and id never change. */
+const entryIdentity = new WeakMap<Pick<PendingStageMessage, "runId" | "id">, string>();
 function identity(message: Pick<PendingStageMessage, "runId" | "id">): string {
-	return JSON.stringify([message.runId, message.id]);
+	let key = entryIdentity.get(message);
+	if (key === undefined) {
+		key = JSON.stringify([message.runId, message.id]);
+		entryIdentity.set(message, key);
+	}
+	return key;
 }
 
 /** Entries whose identity occurs once; a duplicated identity cannot name its base unambiguously. */

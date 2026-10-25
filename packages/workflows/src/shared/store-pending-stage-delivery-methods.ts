@@ -16,9 +16,10 @@ import {
 	settleStickyPendingStageMessageDelivered,
 } from "./pending-stage-delivery.js";
 import { retainPendingStageMessages } from "./pending-stage-retention.js";
+import { isCompactingBackend, PendingStageTransitionLedger } from "./pending-stage-transition-ledger.js";
 import type { StoreContext } from "./store-internal.js";
 import type { Store } from "./store-public-types.js";
-import type { LiveStageMessageValidationResult, PendingStickyStageMessageInput } from "./store-types.js";
+import type { LiveStageMessageValidationResult, PendingStickyStageMessageInput, RunSnapshot } from "./store-types.js";
 
 type PendingStageDeliveryStoreMethods = Pick<
 	Store,
@@ -35,6 +36,7 @@ type PendingStageDeliveryStoreMethods = Pick<
 
 export function createPendingStageDeliveryStoreMethods(context: StoreContext): PendingStageDeliveryStoreMethods {
 	const transitions = new Map<string, Promise<void>>();
+	const ledgers = new PendingStageLedgers();
 	const serialize = async <T>(runId: string, transition: () => Promise<T>): Promise<T> => {
 		const previous = transitions.get(runId) ?? Promise.resolve();
 		const result = previous.catch(() => undefined).then(transition);
@@ -71,7 +73,7 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 					stageIdentity,
 				);
 				if (result.ok && !result.deduplicated) {
-					const messages = await persistTransition(backend, input.runId, result.messages, context);
+					const messages = await persistTransition(backend, input.runId, result.messages, context, ledgers);
 					const live = context.findRun(input.runId) ?? run;
 					live.pendingStageMessages = [...messages];
 					context.bumpAndNotify();
@@ -150,7 +152,7 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 					resolvePendingStageIdentity(run, stageKey),
 				);
 				if (next === current) return false;
-				const messages = await persistTransition(backend, runId, next, context);
+				const messages = await persistTransition(backend, runId, next, context, ledgers);
 				const live = context.findRun(runId) ?? run;
 				live.pendingStageMessages = [...messages];
 				context.bumpAndNotify();
@@ -178,7 +180,7 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 					resolvePendingStageIdentity(run, stageKey),
 				);
 				if (next === current) return false;
-				const messages = await persistTransition(backend, runId, next, context);
+				const messages = await persistTransition(backend, runId, next, context, ledgers);
 				const live = context.findRun(runId) ?? run;
 				live.pendingStageMessages = [...messages];
 				context.bumpAndNotify();
@@ -207,7 +209,7 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 					notifiedAt,
 				);
 				if (next === current) return false;
-				const messages = await persistTransition(backend, runId, next, context);
+				const messages = await persistTransition(backend, runId, next, context, ledgers);
 				const live = context.findRun(runId) ?? run;
 				live.pendingStageMessages = [...messages];
 				context.bumpAndNotify();
@@ -233,7 +235,7 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 					runGroup,
 				);
 				if (result.ok && !result.deduplicated) {
-					const messages = await persistTransition(backend, input.runId, result.messages, context);
+					const messages = await persistTransition(backend, input.runId, result.messages, context, ledgers);
 					const live = context.findRun(input.runId) ?? run;
 					live.pendingStageMessages = [...messages];
 					context.bumpAndNotify();
@@ -261,7 +263,7 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 				const run = context.findRun(runId);
 				if (run === undefined) return false;
 				if (records.length === 0) await backend.readPendingStageMessageDeliveryCount?.(runId, messageId, runId);
-				let current = reconcileDeliveryCounts(backend, runId, run.pendingStageMessages ?? []);
+				let current = ledgers.reconcile(backend, run);
 				const unconfirmedRecords = [];
 				for (const record of records) {
 					const contextReceipt =
@@ -283,7 +285,7 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 						unconfirmedRecords.push(record);
 					}
 				}
-				current = reconcileDeliveryCounts(backend, runId, current);
+				current = ledgers.for(run).reconcile(backend, runId, current);
 				if (current !== run.pendingStageMessages) {
 					run.pendingStageMessages = [...current];
 					context.bumpAndNotify();
@@ -296,7 +298,7 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 					deliveredAt,
 				);
 				if (next === current) return false;
-				const messages = await persistTransition(backend, runId, next, context);
+				const messages = await persistTransition(backend, runId, next, context, ledgers);
 				const live = context.findRun(runId) ?? run;
 				live.pendingStageMessages = [...messages];
 				context.bumpAndNotify();
@@ -314,10 +316,10 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 				const run = context.findRun(runId);
 				if (run === undefined) return false;
 				await backend.readPendingStageMessageDeliveryCount?.(runId, messageId, runId);
-				const current = reconcileDeliveryCounts(backend, runId, run.pendingStageMessages ?? []);
+				const current = ledgers.reconcile(backend, run);
 				const next = settleStickyPendingStageMessageDelivered(current, runId, messageId, settledAt);
 				if (next === current) return false;
-				const messages = await persistTransition(backend, runId, next, context);
+				const messages = await persistTransition(backend, runId, next, context, ledgers);
 				const live = context.findRun(runId) ?? run;
 				live.pendingStageMessages = [...messages];
 				context.bumpAndNotify();
@@ -349,90 +351,64 @@ async function persistTransition(
 	runId: string,
 	messages: readonly PendingStageMessage[],
 	context: StoreContext,
+	ledgers: PendingStageLedgers,
 ): Promise<readonly PendingStageMessage[]> {
-	let retained = reconcileDeliveryCounts(backend, runId, messages);
+	const run = context.findRun(runId);
+	const ledger = run === undefined ? new PendingStageTransitionLedger() : ledgers.for(run);
+	let retained = ledger.reconcile(backend, runId, messages);
 	try {
-		if (
-			backend.archivePendingStageDeliveryReceipt !== undefined &&
-			backend.hasPendingStageDeliveryReceipt !== undefined
-		) {
-			const compacted: PendingStageMessage[] = [];
-			for (const entry of retained) {
-				if (entry.sticky !== true || entry.deliveries === undefined) {
-					compacted.push(entry);
-					continue;
-				}
-				const latest = new Map<string, number>();
-				entry.deliveries.forEach((delivery, index) => {
-					latest.set(JSON.stringify([delivery.runId, delivery.stageId, delivery.admission]), index);
-				});
-				const deliveries = [];
-				let archivedThrough = -1;
-				for (let index = 0; index < entry.deliveries.length; index++) {
-					const delivery = entry.deliveries[index]!;
-					const stage = context.state.runs
-						.find((run) => run.id === delivery.runId)
-						?.stages.find((stage) => stage.id === delivery.stageId);
-					if (
-						entry.status !== "queued" ||
-						stage?.status === "completed" ||
-						stage?.status === "skipped" ||
-						stage?.status === "failed" ||
-						(latest.get(JSON.stringify([delivery.runId, delivery.stageId, delivery.admission])) !== index &&
-							delivery.sessionId !== undefined)
-					) {
-						while (archivedThrough < index) {
-							const prefixIndex = archivedThrough + 1;
-							await backend.archivePendingStageDeliveryReceipt(runId, entry.id, entry.deliveries[prefixIndex]!, {
-								messageRunId: entry.runId,
-								deliveryCount:
-									(entry.deliveryCount ?? entry.deliveries.length) - entry.deliveries.length + prefixIndex + 1,
-							});
-							archivedThrough = prefixIndex;
-						}
-					} else {
-						deliveries.push(delivery);
-					}
-				}
-				compacted.push(deliveries.length === entry.deliveries.length ? entry : { ...entry, deliveries });
-			}
-			retained = compacted;
-		}
-		retained = compactStickyStageMessageDeliveries(retained, context.state.runs);
-		if (backend.archivePendingStageMessage !== undefined && backend.readSettledPendingStageMessage !== undefined) {
-			retained = await retainPendingStageMessages(retained, (entry) =>
-				backend.archivePendingStageMessage!(runId, entry),
-			);
+		const archiveSettled =
+			backend.archivePendingStageMessage !== undefined && backend.readSettledPendingStageMessage !== undefined
+				? (entry: PendingStageMessage) => backend.archivePendingStageMessage!(runId, entry)
+				: undefined;
+		let commit: (() => void) | undefined;
+		if (isCompactingBackend(backend)) {
+			// Receipt compaction already drops every completed or skipped stage's deliveries, so the
+			// full-list sticky compaction below cannot change the result and is skipped.
+			const compacted = await ledger.compact(backend, runId, retained, context.state.runs, archiveSettled);
+			retained = compacted.messages;
+			commit = compacted.commit;
+		} else {
+			retained = compactStickyStageMessageDeliveries(retained, context.state.runs);
+			if (archiveSettled !== undefined) retained = await retainPendingStageMessages(retained, archiveSettled);
+			if (run !== undefined) ledgers.reset(run);
 		}
 		if (!(await backend.persistPendingStageMessages(runId, retained))) {
 			throw new Error(`atomic-workflows: durable workflow ${runId} is unavailable for pending-stage persistence`);
 		}
+		commit?.();
 		return retained;
 	} finally {
-		const run = context.findRun(runId);
-		if (run !== undefined) {
-			const current = run.pendingStageMessages ?? [];
-			const recovered = reconcileDeliveryCounts(backend, runId, current);
-			if (recovered !== current) {
-				run.pendingStageMessages = [...recovered];
+		const current = context.findRun(runId);
+		if (current !== undefined) {
+			const messages = current.pendingStageMessages ?? [];
+			const recovered = ledgers.for(current).reconcile(backend, runId, messages);
+			if (recovered !== messages) {
+				current.pendingStageMessages = [...recovered];
 				context.bumpAndNotify();
 			}
 		}
 	}
 }
 
-function reconcileDeliveryCounts(
-	backend: DurableWorkflowBackend,
-	runId: string,
-	messages: readonly PendingStageMessage[],
-): readonly PendingStageMessage[] {
-	let changed = false;
-	const recovered = messages.map((entry) => {
-		if (entry.sticky !== true) return entry;
-		const count = backend.getPendingStageMessageDeliveryCount?.(runId, entry.id, entry.runId) ?? 0;
-		if (count <= (entry.deliveryCount ?? entry.deliveries?.length ?? 0)) return entry;
-		changed = true;
-		return { ...entry, deliveryCount: count };
-	});
-	return changed ? recovered : messages;
+/** One transition ledger per live run snapshot; a replaced snapshot starts from a full pass. */
+class PendingStageLedgers {
+	private readonly ledgers = new WeakMap<RunSnapshot, PendingStageTransitionLedger>();
+
+	for(run: RunSnapshot): PendingStageTransitionLedger {
+		let ledger = this.ledgers.get(run);
+		if (ledger === undefined) {
+			ledger = new PendingStageTransitionLedger();
+			this.ledgers.set(run, ledger);
+		}
+		return ledger;
+	}
+
+	reset(run: RunSnapshot): void {
+		this.ledgers.delete(run);
+	}
+
+	reconcile(backend: DurableWorkflowBackend, run: RunSnapshot): readonly PendingStageMessage[] {
+		return this.for(run).reconcile(backend, run.id, run.pendingStageMessages ?? []);
+	}
 }

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { afterEach, test } from "vitest";
+import type { SqliteDatabase, SqliteExecutor } from "../../packages/coding-agent/src/core/storage/database.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import type {
@@ -17,8 +18,12 @@ import {
 
 const RECEIPTS = 2_000;
 const CALLERS = 160;
-/** A pending-stage message queued mid-burst must persist well inside Intercom's 10 s send acknowledgement. */
-const QUEUED_PERSIST_BOUND_MS = 2_000;
+/**
+ * Journal write transactions the root may issue while a mid-burst pending-stage message waits to persist. One
+ * transaction per receipt would put it behind every queued receipt (about one per caller); batching leaves only the
+ * batch already in flight, the batch it queues behind, and its own write.
+ */
+const QUEUED_PERSIST_TRANSACTION_BOUND = 4;
 /** Lock holder: one fsync'd write transaction holding the write lock for this long, then a gap. */
 const LOCK_HOLD_MS = 30;
 const LOCK_GAP_MS = 1;
@@ -97,7 +102,15 @@ test(
 		const dir = makeTempDirectory("journal-receipt-burst-");
 		cleanups.push(() => removeTempDirectory(dir));
 		const path = join(dir, "journal.sqlite");
-		const backend = await JournalDurableBackend.open(await openSqlRunJournal(path));
+		const journal = await openSqlRunJournal(path);
+		const { database } = journal as unknown as { readonly database: SqliteDatabase };
+		const transaction = database.transaction.bind(database);
+		let transactions = 0;
+		database.transaction = <T>(callback: (tx: SqliteExecutor) => Promise<T>): Promise<T> => {
+			transactions++;
+			return transaction(callback);
+		};
+		const backend = await JournalDurableBackend.open(journal);
 		cleanups.push(() => backend.close());
 		await backend.commitWorkflowRegistration({
 			workflowId: "run",
@@ -129,12 +142,12 @@ test(
 		const callers = Array.from({ length: CALLERS }, caller);
 		try {
 			await reachedMidBurst;
-			const started = performance.now();
+			const before = transactions;
 			assert.equal(await backend.persistPendingStageMessages("run", [sticky, message("pattern", 2)]), true);
-			const elapsed = performance.now() - started;
+			const waitedBehind = transactions - before;
 			assert.ok(
-				elapsed < QUEUED_PERSIST_BOUND_MS,
-				`pending-stage message took ${Math.round(elapsed)} ms to persist behind ${CALLERS} receipt callers`,
+				waitedBehind <= QUEUED_PERSIST_TRANSACTION_BOUND,
+				`pending-stage message waited behind ${waitedBehind} journal transactions from ${CALLERS} receipt callers`,
 			);
 			await Promise.all(callers);
 		} finally {

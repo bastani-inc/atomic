@@ -139,6 +139,12 @@ export interface DurableWorkflowBackend {
 	): Promise<PendingStageMessage | undefined>;
 
 	getPendingStageMessageDeliveryCount?(workflowId: string, messageId: string, logicalRunId?: string): number;
+	/**
+	 * A token that changes whenever any delivery count under `workflowId` may have changed. Equal tokens
+	 * from the same backend promise every count read in between is unchanged, so callers can skip
+	 * re-reading counts for entries they already reconciled. `undefined` means counts are not versioned.
+	 */
+	pendingStageDeliveryCountVersion?(workflowId: string): number | undefined;
 	readPendingStageMessageDeliveryCount?(workflowId: string, messageId: string, logicalRunId?: string): Promise<number>;
 	archivePendingStageDeliveryReceipt?(
 		workflowId: string,
@@ -411,10 +417,19 @@ class JournalProjection {
 		return this.pendingReceipts.get(workflowId)?.get(JSON.stringify([logicalRunId, messageId]));
 	}
 
-	private readonly stickyDeliveryCounts = new Map<string, Map<string, number>>();
+	private readonly stickyDeliveryCounts = new Map<string, Map<string, Map<string, number>>>();
+	private readonly stickyDeliveryCountVersions = new Map<string, number>();
 
 	getPendingStageMessageDeliveryCount(workflowId: string, messageId: string, logicalRunId = workflowId): number {
-		return this.stickyDeliveryCounts.get(workflowId)?.get(JSON.stringify([logicalRunId, messageId])) ?? 0;
+		return this.stickyDeliveryCounts.get(workflowId)?.get(logicalRunId)?.get(messageId) ?? 0;
+	}
+
+	pendingStageDeliveryCountVersion(workflowId: string): number {
+		return this.stickyDeliveryCountVersions.get(workflowId) ?? 0;
+	}
+
+	private bumpDeliveryCountVersion(workflowId: string): void {
+		this.stickyDeliveryCountVersions.set(workflowId, ++deliveryCountEpoch);
 	}
 
 	async archivePendingStageDeliveryReceipt(
@@ -428,28 +443,47 @@ class JournalProjection {
 			receipts = new Set();
 			this.stickyReceipts.set(workflowId, receipts);
 		}
-		const receiptKey = pendingDeliveryReceiptKey(messageId, delivery, accounting?.messageRunId);
+		const logicalRunId = accounting?.messageRunId;
+		const receiptKey = pendingDeliveryReceiptKey(
+			messageId,
+			delivery.runId,
+			delivery.stageId,
+			delivery.sessionId,
+			delivery.admission,
+			logicalRunId,
+		);
 		const existing = receipts.has(receiptKey);
 		receipts.add(receiptKey);
 		receipts.add(
-			pendingDeliveryReceiptKey(
-				messageId,
-				{ ...delivery, sessionId: undefined, admission: undefined },
-				accounting?.messageRunId,
-			),
+			pendingDeliveryReceiptKey(messageId, delivery.runId, delivery.stageId, undefined, undefined, logicalRunId),
 		);
 		if (delivery.admission === "context" && delivery.sessionId !== undefined)
 			receipts.add(
-				`${pendingDeliveryReceiptKey(messageId, { ...delivery, sessionId: undefined }, accounting?.messageRunId)}:context-any-session`,
+				anySessionReceiptKey(
+					pendingDeliveryReceiptKey(
+						messageId,
+						delivery.runId,
+						delivery.stageId,
+						undefined,
+						"context",
+						logicalRunId,
+					),
+				),
 			);
 		if (accounting !== undefined && !existing) {
-			let counts = this.stickyDeliveryCounts.get(workflowId);
+			let byRun = this.stickyDeliveryCounts.get(workflowId);
+			if (byRun === undefined) {
+				byRun = new Map();
+				this.stickyDeliveryCounts.set(workflowId, byRun);
+			}
+			let counts = byRun.get(accounting.messageRunId);
 			if (counts === undefined) {
 				counts = new Map();
-				this.stickyDeliveryCounts.set(workflowId, counts);
+				byRun.set(accounting.messageRunId, counts);
 			}
-			const key = JSON.stringify([accounting.messageRunId, messageId]);
-			counts.set(key, Math.max(counts.get(key) ?? 0, accounting.deliveryCount));
+			const previous = counts.get(messageId) ?? 0;
+			counts.set(messageId, Math.max(previous, accounting.deliveryCount));
+			if (accounting.deliveryCount > previous) this.bumpDeliveryCountVersion(workflowId);
 		}
 	}
 
@@ -459,10 +493,12 @@ class JournalProjection {
 		delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
 		logicalRunId = workflowId,
 	): Promise<boolean> {
-		return [logicalRunId, undefined].some(
-			(logicalId) =>
-				this.stickyReceipts.get(workflowId)?.has(pendingDeliveryReceiptKey(messageId, delivery, logicalId)) ??
-				false,
+		const receipts = this.stickyReceipts.get(workflowId);
+		if (receipts === undefined) return false;
+		const { runId, stageId, sessionId, admission } = delivery;
+		return (
+			receipts.has(pendingDeliveryReceiptKey(messageId, runId, stageId, sessionId, admission, logicalRunId)) ||
+			receipts.has(pendingDeliveryReceiptKey(messageId, runId, stageId, sessionId, admission, undefined))
 		);
 	}
 
@@ -473,13 +509,27 @@ class JournalProjection {
 		anySession = false,
 		logicalRunId = workflowId,
 	): boolean {
-		return [logicalRunId, undefined].some((logicalId) => {
-			const name =
-				anySession && delivery.admission === "context"
-					? `${pendingDeliveryReceiptKey(messageId, { ...delivery, sessionId: undefined }, logicalId)}:context-any-session`
-					: pendingDeliveryReceiptKey(messageId, delivery, logicalId);
-			return this.stickyReceipts.get(workflowId)?.has(name) ?? false;
-		});
+		const receipts = this.stickyReceipts.get(workflowId);
+		if (receipts === undefined) return false;
+		const { runId, stageId, admission } = delivery;
+		if (anySession && admission === "context")
+			return (
+				receipts.has(
+					anySessionReceiptKey(
+						pendingDeliveryReceiptKey(messageId, runId, stageId, undefined, admission, logicalRunId),
+					),
+				) ||
+				receipts.has(
+					anySessionReceiptKey(
+						pendingDeliveryReceiptKey(messageId, runId, stageId, undefined, admission, undefined),
+					),
+				)
+			);
+		const { sessionId } = delivery;
+		return (
+			receipts.has(pendingDeliveryReceiptKey(messageId, runId, stageId, sessionId, admission, logicalRunId)) ||
+			receipts.has(pendingDeliveryReceiptKey(messageId, runId, stageId, sessionId, admission, undefined))
+		);
 	}
 
 	recordCheckpoint(recorded: DurableCheckpoint): void {
@@ -670,6 +720,7 @@ class JournalProjection {
 		this.pendingReceipts.delete(workflowId);
 		this.stickyReceipts.delete(workflowId);
 		this.stickyDeliveryCounts.delete(workflowId);
+		this.bumpDeliveryCountVersion(workflowId);
 		this.deletedWorkflowIds.add(workflowId);
 	}
 
@@ -682,6 +733,7 @@ class JournalProjection {
 		this.pendingReceipts.clear();
 		this.stickyReceipts.clear();
 		this.stickyDeliveryCounts.clear();
+		for (const workflowId of this.stickyDeliveryCountVersions.keys()) this.bumpDeliveryCountVersion(workflowId);
 		this.deletedWorkflowIds.clear();
 	}
 }
@@ -760,11 +812,29 @@ function toResumableEntry(handle: DurableWorkflowHandle): ResumableWorkflowEntry
 	};
 }
 
+/** Count-version tokens are unique across projections, so tokens from different backends never compare equal. */
+let deliveryCountEpoch = 0;
+
+/**
+ * An injective receipt key built by concatenation: each part is length-prefixed and an absent part is `-`,
+ * which no length prefix starts with. Counted receipts carry their logical run; uncounted ones do not.
+ */
 function pendingDeliveryReceiptKey(
 	messageId: string,
-	delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
-	logicalRunId?: string,
+	runId: string,
+	stageId: string,
+	sessionId: string | undefined,
+	admission: string | undefined,
+	logicalRunId: string | undefined,
 ): string {
-	const identity = [messageId, delivery.runId, delivery.stageId, delivery.sessionId, delivery.admission];
-	return JSON.stringify(logicalRunId === undefined ? identity : ["counted", logicalRunId, ...identity]);
+	return `${logicalRunId === undefined ? "u" : `c${receiptKeyPart(logicalRunId)}`}${receiptKeyPart(messageId)}${receiptKeyPart(runId)}${receiptKeyPart(stageId)}${receiptKeyPart(sessionId)}${receiptKeyPart(admission)}`;
+}
+
+function receiptKeyPart(value: string | undefined): string {
+	return value === undefined ? "-" : `${value.length}:${value}`;
+}
+
+/** A context admission receipt that matches any session of its stage. */
+function anySessionReceiptKey(receiptKey: string): string {
+	return `${receiptKey}*`;
 }
