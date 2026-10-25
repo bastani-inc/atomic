@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { JsonValue } from "../src/types.ts";
 import { parseStreamingJson, parseToolCallArguments } from "../src/utils/json-parse.ts";
 import { type JsonChange, StreamingJsonParser, ToolCallArgumentsStream } from "../src/utils/streaming-json.ts";
-import { allocatedBytes, collectGarbage, collectGarbageUntil } from "./memory-helpers.ts";
+import { allocatedBytes, collectGarbageUntil } from "./memory-helpers.ts";
 
 // #9265: streamed tool-call arguments were re-parsed in full on every delta.
 
