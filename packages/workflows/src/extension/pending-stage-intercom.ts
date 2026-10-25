@@ -45,6 +45,8 @@ const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliv
 const STICKY_LIVE_DELIVERED_EVENT = "atomic:workflow-sticky-live-delivered";
 const PENDING_STAGE_ASK_REFUSAL =
 	"Cannot ask a workflow stage whose session has not initialized. Use send; Atomic will queue the message until the stage session initializes.";
+const ROUTE_ANNOUNCEMENT_IMMEDIATE_COST_MS = 5;
+const ROUTE_ANNOUNCEMENT_EVENT_LOOP_SHARE = 0.2;
 
 interface WorkflowEventSurface {
 	readonly events?: {
@@ -142,9 +144,10 @@ export function registerPendingStageIntercomBridge(
 	// Keep rejected completions separate from the publication cache: failure is not
 	// an absent optional consumer, even if it settled before a stage began waiting.
 	const routeCompletions = new Map<string, Promise<void>>();
-	const disposeReadiness = registerWorkflowPendingStageRouteReadiness(activeStore, (runId) =>
-		routeCompletions.get(runId),
-	);
+	const disposeReadiness = registerWorkflowPendingStageRouteReadiness(activeStore, (runId) => {
+		announceIfPending();
+		return routeCompletions.get(runId);
+	});
 	const announceRoutes = (): void => {
 		if (disposed) return;
 		const ownedRunIds = new Set<string>();
@@ -290,11 +293,45 @@ export function registerPendingStageIntercomBridge(
 				reportWarning(`atomic-workflows: pending stage delivery sweep failed: ${error.message}`),
 			);
 	};
-	const unsubscribeStore = activeStore.subscribeInvalidation(announceRoutes);
-	announceRoutes();
+	let announcementPending = false;
+	let announcementTimer: ReturnType<typeof setTimeout> | undefined;
+	let announcedAt = Number.NEGATIVE_INFINITY;
+	let announcementCost = 0;
+	const announceNow = (): void => {
+		if (announcementTimer !== undefined) clearTimeout(announcementTimer);
+		announcementTimer = undefined;
+		announcementPending = false;
+		const started = performance.now();
+		announceRoutes();
+		announcedAt = performance.now();
+		announcementCost = announcedAt - started;
+	};
+	function announceIfPending(): void {
+		if (announcementPending) announceNow();
+	}
+	// Each announcement rebuilds every owned run's route. While that is cheap every invalidation announces at
+	// once; once it is not, invalidations wait until announcing stays under a fixed share of the event loop and
+	// a burst collapses into one announcement. Readiness, flush and refresh announce a pending burst first.
+	const scheduleAnnouncement = (): void => {
+		if (disposed) return;
+		const idle =
+			announcementCost < ROUTE_ANNOUNCEMENT_IMMEDIATE_COST_MS
+				? 0
+				: announcementCost / ROUTE_ANNOUNCEMENT_EVENT_LOOP_SHARE - announcementCost;
+		const wait = announcedAt + idle - performance.now();
+		if (wait <= 0 && announcementTimer === undefined) {
+			announceNow();
+			return;
+		}
+		announcementPending = true;
+		announcementTimer ??= setTimeout(announceNow, Math.max(0, wait));
+		announcementTimer.unref?.();
+	};
+	const unsubscribeStore = activeStore.subscribeInvalidation(scheduleAnnouncement);
+	announceNow();
 	pi.on?.("session_start", () => {
 		announcedRoutes.clear();
-		announceRoutes();
+		announceNow();
 	});
 	const routePendingStageMessage = (payload: unknown): void => {
 		if (disposed || !isPendingStageMessageEvent(payload) || payload.handled) return;
@@ -393,6 +430,9 @@ export function registerPendingStageIntercomBridge(
 	});
 	const dispose = (): void => {
 		disposed = true;
+		if (announcementTimer !== undefined) clearTimeout(announcementTimer);
+		announcementTimer = undefined;
+		announcementPending = false;
 		disposeReadiness();
 		disposeRouter();
 		routeCompletions.clear();
@@ -406,10 +446,11 @@ export function registerPendingStageIntercomBridge(
 	pi.on?.("session_shutdown", dispose);
 	return Object.assign(dispose, {
 		async flush() {
+			announceIfPending();
 			await Promise.allSettled(routeCompletions.values());
 			await sweepPromise;
 		},
-		refresh: announceRoutes,
+		refresh: announceNow,
 	});
 }
 

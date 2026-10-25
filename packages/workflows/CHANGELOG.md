@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- A large workflow fan-out no longer pins the workflow host's main thread rebuilding Intercom routes. Every store change re-announced the route of every run (480 children in a load test), so under a stream of messages and delivery receipts the host spent most of its time on announcements and Intercom sends began to time out. Announcements stay immediate while they are cheap; once one becomes expensive, further changes are batched so announcing takes at most about a fifth of the host's time, and a stage that waits for its route still sees the latest one.
+
 ## [0.9.44-alpha.4] - 2026-10-25
 
 ### Fixed

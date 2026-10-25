@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import type net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, test } from "vitest";
+import { afterEach, describe, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager-core.ts";
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-message-cache.js";
@@ -18,6 +18,7 @@ import { StorageUnavailableError } from "../../packages/workflows/src/durable/jo
 import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import { registerPendingStageIntercomBridge } from "../../packages/workflows/src/extension/pending-stage-intercom.js";
 import { createWorkflowPendingStageDelivery } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
+import { workflowPendingStageRouteReady } from "../../packages/workflows/src/shared/pending-stage-route-readiness.js";
 import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
@@ -26,6 +27,7 @@ const RUN_ID = "4ac72924-c452-4e5f-9e63-2435722109f7";
 const CHILD_RUN_ID = "5bd82a35-c563-4f60-9a74-3546832210a8";
 const GROUP = `workflow:${RUN_ID}`;
 const TARGET = `workflow:${RUN_ID}/reviewer`;
+const EXPENSIVE_ROUTE_ANNOUNCEMENT_MS = 10;
 
 const tempDirs: string[] = [];
 
@@ -904,6 +906,46 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		toggleAttachment(store, 1);
 		assert.equal(routes.length, 2);
 		replacement();
+	});
+
+	const expensiveRouteHarness = async (routes: Record<string, unknown>[]) => {
+		let now = 1_000;
+		vi.spyOn(performance, "now").mockImplementation(() => now);
+		return await harness((payload) => {
+			routes.push(payload);
+			now += EXPENSIVE_ROUTE_ANNOUNCEMENT_MS;
+		});
+	};
+
+	test("once announcing is expensive, a route change waits its turn and still publishes on its own", async () => {
+		const routes: Record<string, unknown>[] = [];
+		const { store, dispose } = await expensiveRouteHarness(routes);
+		try {
+			assert.equal(routes.length, 1);
+			store.recordStageSession(RUN_ID, "reviewer-id", { sessionId: "reviewer-session" });
+			assert.equal(routes.length, 1, "the change must not re-announce every run synchronously");
+			await new Promise((resolve) => setTimeout(resolve, EXPENSIVE_ROUTE_ANNOUNCEMENT_MS * 10));
+			assert.equal(routes.length, 2);
+			assert.deepEqual(routes[1]?.stages, runningReviewerStages);
+		} finally {
+			dispose();
+			vi.restoreAllMocks();
+		}
+	});
+
+	test("a stage asking for route readiness publishes a pending route change first", async () => {
+		const routes: Record<string, unknown>[] = [];
+		const { store, dispose } = await expensiveRouteHarness(routes);
+		try {
+			store.recordStageSession(RUN_ID, "reviewer-id", { sessionId: "reviewer-session" });
+			assert.equal(routes.length, 1);
+			workflowPendingStageRouteReady(store, RUN_ID);
+			assert.equal(routes.length, 2);
+			assert.deepEqual(routes[1]?.stages, runningReviewerStages);
+		} finally {
+			dispose();
+			vi.restoreAllMocks();
+		}
 	});
 });
 
