@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Changed
+
+- `intercom list` lists at most 20 sticky delivery states per workflow row: states that still need action first, then the most recent deliveries. A final line reports how many were omitted and the total in each state, and the row details carry the same totals as `deliveryStateCounts` and `omittedDeliveryStates`. In a 640-child workflow, each list result had stored about 3 MB of delivery states in the session transcript. The broker applies the same bound to rows announced by older workflow hosts.
+
 ## [0.9.44-alpha.5] - 2026-10-25
 
 ### Fixed

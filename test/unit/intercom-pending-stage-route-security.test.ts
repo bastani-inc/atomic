@@ -1919,6 +1919,41 @@ test("delivery-only sticky listing preserves group isolation and clears with the
 	assert.deepEqual((await member.listDirectory()).workflowFutureStages, []);
 });
 
+test("the broker bounds an unbounded delivery-state row from an older host to exemplars, counts and an omission marker (#3406)", async () => {
+	const runId = "d70000b1-0000-4000-8000-0000000000b1";
+	const group = `workflow:${runId}`;
+	const owner = new IntercomClient();
+	const member = new IntercomClient();
+	for (const client of [owner, member]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("bounded-owner", group));
+	await member.connect(productionRegistration("bounded-member", group));
+	const deliveryStates = Array.from({ length: 8_000 }, (_, index) => ({
+		messageId: `sticky-${index}`,
+		runId,
+		stageId: `worker-${index % 640}`,
+		state: index % 4 === 0 ? "queued" : "delivered",
+		reason: "Startup must drain",
+	}));
+	owner.registerPendingStageRoute(
+		runId,
+		group,
+		"bounded-capability",
+		[],
+		[{ target: `workflow:${runId}/child-*/**`, queuedCount: 8_000, deliveryOnly: true, deliveryStates }],
+	);
+	await owner.listSessions();
+	const [row] = (await member.listDirectory()).workflowFutureStages;
+	assert.ok(row !== undefined);
+	assert.equal(row.deliveryStates?.length, 20);
+	assert.deepEqual(row.deliveryStateCounts, { queued: 2_000, delivered: 6_000 });
+	assert.equal(row.omittedDeliveryStates, 7_980);
+	// Unresolved states lead the exemplars.
+	assert.ok(row.deliveryStates?.every((delivery) => delivery.state === "queued"));
+});
+
 test("a nested run's re-announcement preserves the root's possible-stage rows", async () => {
 	const rootId = "d7000002-0000-4000-8000-000000000002";
 	const childRunId = "d7000003-0000-4000-8000-000000000003";

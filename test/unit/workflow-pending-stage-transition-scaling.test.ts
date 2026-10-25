@@ -11,7 +11,7 @@ import { closeMemoryTestBackends, createMemoryTestBackend } from "../helpers/wor
 const ROOT_RUN_ID = testRunId("pending-transition-scaling-root");
 const CHILD_RUNS = 480;
 const MEASURED_TRANSITIONS = 41;
-/** Ten times as many sticky entries may cost at most this many times as much per transition. */
+/** Ten times as many sticky entries may read at most this many times as many delivery counts per transition. */
 const SCALING_RATIO_LIMIT = 3;
 /** One fixture builds 3,000 durable entries across 480 runs and measures 50 transitions twice. */
 const SCALING_TEST_TIMEOUT_MS = 120_000;
@@ -108,11 +108,27 @@ async function fixture(entries: number) {
 }
 
 /** Median wall time of one sticky delivery transition at the given list size. */
-async function medianTransitionMs(entries: number): Promise<number> {
+/**
+ * Delivery counts one sticky delivery transition reads, and its median wall time for the log. Reconciling
+ * every pending entry on every transition read one count per entry; the count is the load-independent
+ * measure of that cost.
+ */
+async function transitionCost(entries: number): Promise<{ readonly countReads: number; readonly medianMs: number }> {
 	const { store, backend } = await fixture(entries);
+	const getCount = backend.getPendingStageMessageDeliveryCount.bind(backend);
+	let countReads = 0;
+	backend.getPendingStageMessageDeliveryCount = (...args) => {
+		countReads++;
+		return getCount(...args);
+	};
 	const samples: number[] = [];
-	for (let round = 0; round < MEASURED_TRANSITIONS; round++) {
-		const index = (round * 7) % entries;
+	// The first transition reconciles the whole list once; later ones reconcile what changed.
+	for (let round = -1; round < MEASURED_TRANSITIONS; round++) {
+		if (round === 0) {
+			countReads = 0;
+			samples.length = 0;
+		}
+		const index = ((round + entries) * 7) % entries;
 		const child = index % CHILD_RUNS;
 		const started = performance.now();
 		const recorded = await store.recordPendingStageMessageDeliveries(
@@ -127,21 +143,21 @@ async function medianTransitionMs(entries: number): Promise<number> {
 	}
 	assert.equal(store.runs().find((run) => run.id === ROOT_RUN_ID)?.pendingStageMessages?.length, entries);
 	samples.sort((left, right) => left - right);
-	return samples[Math.floor(samples.length / 2)]!;
+	return { countReads: countReads / MEASURED_TRANSITIONS, medianMs: samples[Math.floor(samples.length / 2)]! };
 }
 
 describe("pending-stage delivery transition scaling", () => {
 	test(
 		"one sticky delivery transition stays roughly flat as the pending list grows",
 		async () => {
-			// Warm the code paths so the first measurement does not pay for JIT compilation.
-			await medianTransitionMs(300);
-			const small = await medianTransitionMs(300);
-			const large = await medianTransitionMs(3_000);
-			console.log(`transition median: 300 entries ${small.toFixed(3)} ms, 3000 entries ${large.toFixed(3)} ms`);
+			const small = await transitionCost(300);
+			const large = await transitionCost(3_000);
+			console.log(
+				`transition: 300 entries ${small.countReads} count reads, ${small.medianMs.toFixed(3)} ms; 3000 entries ${large.countReads} count reads, ${large.medianMs.toFixed(3)} ms`,
+			);
 			assert.ok(
-				large < small * SCALING_RATIO_LIMIT,
-				`3,000-entry transition took ${large.toFixed(3)} ms; 300-entry transition took ${small.toFixed(3)} ms`,
+				large.countReads <= Math.max(small.countReads, 1) * SCALING_RATIO_LIMIT,
+				`3,000-entry transition read ${large.countReads} delivery counts; 300-entry transition read ${small.countReads}`,
 			);
 		},
 		SCALING_TEST_TIMEOUT_MS,

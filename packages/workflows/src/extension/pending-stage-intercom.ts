@@ -1,4 +1,3 @@
-import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { outsideWorkflowExecutions } from "../durable/execution-context-boundary.js";
 import { durableBackendForRun, durableRootRunIdForRun } from "../durable/run-owner-backend.js";
 import { availableStoreDurableBackend, requireStoreDurableBackend } from "../durable/store-backend.js";
@@ -14,7 +13,7 @@ import {
 	type WorkflowBoundarySegmentsResolver,
 	workflowBoundarySegments,
 } from "../shared/pending-stage-status.js";
-import { type StickyStageDeliveryStatus, stickyStageDeliveryStatuses } from "../shared/sticky-stage-delivery-status.js";
+import { type PossibleStageRow, PossibleStageRowsIndex, WorkflowTopologyIndex } from "../shared/possible-stage-rows.js";
 import type { Store } from "../shared/store.js";
 import { isTerminalRunStatus } from "../shared/store-internal.js";
 import type {
@@ -26,11 +25,7 @@ import type {
 	StageSnapshot,
 } from "../shared/store-types.js";
 import { reciprocalWorkflowRootRunId } from "../shared/workflow-run-ownership.js";
-import {
-	matchStagePathSegments,
-	splitStagePathSegments,
-	targetSegmentsInPossibleStages,
-} from "../shared/workflow-stage-path-matching.js";
+import { targetSegmentsInPossibleStages } from "../shared/workflow-stage-path-matching.js";
 import {
 	formatWorkflowStageTarget,
 	parseWorkflowStageTarget,
@@ -149,10 +144,34 @@ export function registerPendingStageIntercomBridge(
 		announceIfPending();
 		return routeCompletions.get(runId);
 	});
+	// Root ownership, boundary hops and possible-stage rows carry over between announcements and
+	// recompute only what changed; a root run's rows and their delivery states keep their identity
+	// while unchanged, so its announcement is compared by row identity rather than re-serialized.
+	const topology = new WorkflowTopologyIndex();
+	const possibleStageRowIndexes = new Map<string, PossibleStageRowsIndex>();
+	const rowIdentities = new WeakMap<PossibleStageRow, number>();
+	let nextRowIdentity = 0;
+	const rowIdentity = (row: PossibleStageRow): number => {
+		let identity = rowIdentities.get(row);
+		if (identity === undefined) {
+			identity = nextRowIdentity++;
+			rowIdentities.set(row, identity);
+		}
+		return identity;
+	};
+	const possibleStageRowsIndex = (rootRunId: string): PossibleStageRowsIndex => {
+		let index = possibleStageRowIndexes.get(rootRunId);
+		if (index === undefined) {
+			index = new PossibleStageRowsIndex(rootRunId, topology);
+			possibleStageRowIndexes.set(rootRunId, index);
+		}
+		return index;
+	};
 	const announceRoutes = (): void => {
 		if (disposed) return;
 		const ownedRunIds = new Set<string>();
 		const runs = activeStore.runs();
+		topology.refresh(runs);
 		const runById = new Map(runs.map((run) => [run.id, run]));
 		const childrenByBoundary = new Map<string, ReturnType<Store["runs"]>[number][]>();
 		for (const run of runs) {
@@ -166,7 +185,7 @@ export function registerPendingStageIntercomBridge(
 		for (const run of runs) {
 			// Externally routed (pooled) runs are announced by their coordinator, never from here.
 			if (externalRunRouteOwner(activeStore, run.id) !== undefined || !ownsRun(run.id)) continue;
-			const rootRunId = reciprocalWorkflowRootRunId(runById, run.id);
+			const rootRunId = topology.rootOf(run.id);
 			if (rootRunId === undefined) continue;
 			ownedRunIds.add(run.id);
 			const parentRun = run.parentRunId === undefined ? undefined : runById.get(run.parentRunId);
@@ -180,6 +199,10 @@ export function registerPendingStageIntercomBridge(
 								(key) => resolveIndexedChildRun(childrenByBoundary, parentRun, key)?.id === run.id,
 							),
 						};
+			const possibleStages =
+				run.id === rootRunId
+					? possibleStageRowsIndex(rootRunId).rows(runs, run, availableStoreDurableBackend(activeStore, rootRunId))
+					: undefined;
 			const announcement: PendingStageRouteEvent = {
 				runId: run.id,
 				group: workflowInvocationIntercomGroup(rootRunId),
@@ -225,20 +248,15 @@ export function registerPendingStageIntercomBridge(
 				// D7 (slice 4): only the root run's roster registration carries the invocation's
 				// possible-future rows. Presence replaces, so a terminal root publishes `[]` and
 				// the broker drops the rows.
-				...(run.id === rootRunId
-					? {
-							possibleStages: possibleStageRows(
-								runs,
-								rootRunId,
-								run,
-								availableStoreDurableBackend(activeStore, rootRunId),
-							),
-						}
-					: {}),
+				...(possibleStages === undefined ? {} : { possibleStages }),
 			};
 			// Compute the signature *before* emitting: the consumer mutates the payload
 			// by attaching `completion`, so a post-emit projection would never match.
-			const signature = JSON.stringify(announcement);
+			// Possible-stage rows keep their identity exactly while their content is unchanged.
+			const signature =
+				possibleStages === undefined
+					? JSON.stringify(announcement)
+					: `${JSON.stringify({ ...announcement, possibleStages: undefined })}\u0000${possibleStages.map(rowIdentity).join(",")}`;
 			if (announcedRoutes.get(run.id)?.signature === signature) continue;
 			// Different snapshots are never debounced or serialized: A → B → A publishes
 			// all three immediately, even while an earlier completion is outstanding.
@@ -282,6 +300,9 @@ export function registerPendingStageIntercomBridge(
 		}
 		for (const runId of routeCompletions.keys()) {
 			if (!ownedRunIds.has(runId)) routeCompletions.delete(runId);
+		}
+		for (const rootRunId of possibleStageRowIndexes.keys()) {
+			if (!ownedRunIds.has(rootRunId)) possibleStageRowIndexes.delete(rootRunId);
 		}
 		sweepPromise = sweepPromise
 			.then(() =>
@@ -478,138 +499,6 @@ function stageRouteTarget(
 ): string {
 	const boundarySegments = runId === rootRunId ? [] : resolveBoundarySegments(runId);
 	return formatWorkflowStageTarget(rootRunId, ...(boundarySegments ?? [runId]), stageId);
-}
-
-/**
- * D7 (slice 4): possible-future rows for `intercom list`, derived from the persisted
- * scan (D10) plus the root run's sticky queue. Glob-free scan entries that already
- * name a route-eligible materialized stage are suppressed (they are announced as
- * materialized roster rows); pattern entries stay listed because future occurrences
- * still match them (D2/D3). The run-wide `workflow:<root>/**` broadcast row (D6) is
- * present whenever the root run is non-terminal, even with an empty scan; a terminal
- * root yields `[]` so the broker drops every future row.
- */
-function possibleStageRows(
-	runs: ReturnType<Store["runs"]>,
-	rootRunId: string,
-	rootRun: ReturnType<Store["runs"]>[number],
-	backend?: DurableWorkflowBackend,
-): {
-	readonly target: string;
-	readonly queuedCount: number;
-	readonly deliveryOnly?: true;
-	readonly deliveryStates?: readonly StickyStageDeliveryStatus[];
-}[] {
-	if (isTerminalRunStatus(rootRun.status)) return [];
-	const stickyQueued = (rootRun.pendingStageMessages ?? []).filter(
-		(entry) => entry.sticky === true && entry.status === "queued",
-	);
-	// Parse each distinct sticky target once per publication, not once per row and entry.
-	const segmentsByTarget = new Map<string, readonly string[] | undefined>();
-	const stickySegments = (entry: PendingStageMessage): readonly string[] | undefined => {
-		const target = entry.targetPath ?? entry.stageKey;
-		if (segmentsByTarget.has(target)) return segmentsByTarget.get(target);
-		const parsed = parseWorkflowStageTarget(target);
-		const segments = parsed?.rootRunId === rootRunId ? parsed.segments : undefined;
-		segmentsByTarget.set(target, segments);
-		return segments;
-	};
-	// The run-wide broadcast bucket (`workflow:<root>/**`) is its own target (D6): its
-	// entries are counted on the broadcast row only, never on the scan rows below — a
-	// bidirectional glob match would otherwise inflate every row with the same count.
-	const scanEntries = stickyQueued.filter((entry) => {
-		const segments = stickySegments(entry);
-		return !(segments !== undefined && segments.length === 1 && segments[0] === "**");
-	});
-	const liveStageMatches = materializedStageMatcher(runs, rootRunId);
-	const rows: {
-		readonly target: string;
-		readonly queuedCount: number;
-		readonly deliveryOnly?: true;
-		readonly deliveryStates?: readonly StickyStageDeliveryStatus[];
-	}[] = [];
-	for (const scanEntry of rootRun.possibleStages ?? []) {
-		const rowSegments = splitStagePathSegments(scanEntry);
-		if (rowSegments.length === 0 || rowSegments.some((segment) => segment.length === 0)) continue;
-		if (!rowSegments.some((segment) => segment.includes("*")) && liveStageMatches(rowSegments)) {
-			continue;
-		}
-		rows.push({
-			target: formatWorkflowStageTarget(rootRunId, ...rowSegments),
-			queuedCount: scanEntries.filter((entry) => {
-				const segments = stickySegments(entry);
-				if (segments === undefined) return false;
-				return matchStagePathSegments(rowSegments, segments) || matchStagePathSegments(segments, rowSegments);
-			}).length,
-		});
-	}
-	rows.push({
-		target: formatWorkflowStageTarget(rootRunId, "**"),
-		queuedCount: stickyQueued.filter((entry) => {
-			const segments = stickySegments(entry);
-			return segments !== undefined && segments.length === 1 && segments[0] === "**";
-		}).length,
-	});
-	const statuses = stickyStageDeliveryStatuses(runs, rootRunId, backend);
-	const statusesByTarget = new Map<string, StickyStageDeliveryStatus[]>();
-	for (const status of statuses) {
-		const forTarget = statusesByTarget.get(status.target);
-		if (forTarget === undefined) statusesByTarget.set(status.target, [status]);
-		else forTarget.push(status);
-	}
-	const queuedByTarget = new Map<string, number>();
-	for (const entry of stickyQueued) {
-		const target = entry.targetPath ?? entry.stageKey;
-		queuedByTarget.set(target, (queuedByTarget.get(target) ?? 0) + 1);
-	}
-	const rowTargets = new Set(rows.map((row) => row.target));
-	for (const target of statusesByTarget.keys()) {
-		if (rowTargets.has(target)) continue;
-		rowTargets.add(target);
-		rows.push({ target, queuedCount: queuedByTarget.get(target) ?? 0, deliveryOnly: true });
-	}
-	for (let index = 0; index < rows.length; index++) {
-		const row = rows[index]!;
-		const deliveryStates = statusesByTarget.get(row.target);
-		if (deliveryStates !== undefined) rows[index] = { ...row, deliveryStates };
-	}
-	return rows;
-}
-
-/** Whether a glob-free scan entry names a route-eligible materialized stage of the invocation. */
-function materializedStageMatcher(
-	runs: ReturnType<Store["runs"]>,
-	rootRunId: string,
-): (entrySegments: readonly string[]) => boolean {
-	const runById = new Map(runs.map((run) => [run.id, run]));
-	const hopsFor = createWorkflowBoundaryHopsResolver(runs);
-	const invocationRuns = runs.filter((run) => reciprocalWorkflowRootRunId(runById, run.id) === rootRunId);
-	return (entrySegments) => materializedStageMatches(invocationRuns, hopsFor, entrySegments);
-}
-
-function materializedStageMatches(
-	invocationRuns: ReturnType<Store["runs"]>,
-	hopsFor: ReturnType<typeof createWorkflowBoundaryHopsResolver>,
-	entrySegments: readonly string[],
-): boolean {
-	for (const run of invocationRuns) {
-		const hops = hopsFor(run.id);
-		if (hops === undefined) continue;
-		for (const stage of run.stages) {
-			if (stage.pendingStageDeliveryAvailable !== true) continue;
-			if (
-				stage.status !== "pending" &&
-				stage.status !== "running" &&
-				stage.status !== "awaiting_input" &&
-				stage.status !== "paused" &&
-				stage.status !== "blocked"
-			) {
-				continue;
-			}
-			if (stageMatchesPathPattern(entrySegments, hops, [stage.id, stage.name])) return true;
-		}
-	}
-	return false;
 }
 
 function isPendingStageMessageEvent(value: unknown): value is PendingStageMessageEvent &

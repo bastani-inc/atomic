@@ -1508,6 +1508,7 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 						reason: "No delivery receipt; stage startup must drain before its first turn",
 					},
 				],
+				deliveryStateCounts: { queued: 1 },
 			},
 		]);
 		dispose();

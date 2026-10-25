@@ -3,6 +3,11 @@ import { closeSync, openSync, readSync } from "node:fs";
 
 import type { PendingStageMessage, PendingStageMessageDelivery } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
+import {
+	type PendingStageReceiptChanges,
+	type PendingStageReceiptCursor,
+	PendingStageReceiptIndex,
+} from "./pending-stage-receipts.js";
 import type { PromptReservationToken } from "./prompt-reservation-state.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import type {
@@ -159,6 +164,14 @@ export interface DurableWorkflowBackend {
 		anySession?: boolean,
 		logicalRunId?: string,
 	): boolean;
+	/**
+	 * Messages whose cached delivery receipts changed since `cursor`, so a caller that caches receipt
+	 * lookups can refresh only those messages. `messageIds` is `undefined` when any message may have changed.
+	 */
+	pendingStageDeliveryReceiptChanges?(
+		workflowId: string,
+		cursor: PendingStageReceiptCursor | undefined,
+	): PendingStageReceiptChanges | undefined;
 	hasPendingStageDeliveryReceipt?(
 		workflowId: string,
 		messageId: string,
@@ -305,7 +318,7 @@ class JournalProjection {
 	private readonly workflows = new Map<string, JournalWorkflowRecord>();
 	private readonly deletedWorkflowIds = new Set<string>();
 	private readonly pendingReceipts = new Map<string, Map<string, PendingStageMessage>>();
-	private readonly stickyReceipts = new Map<string, Set<string>>();
+	private readonly stickyReceipts = new PendingStageReceiptIndex();
 
 	registerWorkflow(handle: WorkflowRegistrationInput, authoritativeOwner = false): void {
 		this.deletedWorkflowIds.delete(handle.workflowId);
@@ -438,39 +451,8 @@ class JournalProjection {
 		delivery: PendingStageMessageDelivery,
 		accounting?: { readonly messageRunId: string; readonly deliveryCount: number },
 	): Promise<void> {
-		let receipts = this.stickyReceipts.get(workflowId);
-		if (receipts === undefined) {
-			receipts = new Set();
-			this.stickyReceipts.set(workflowId, receipts);
-		}
-		const logicalRunId = accounting?.messageRunId;
-		const receiptKey = pendingDeliveryReceiptKey(
-			messageId,
-			delivery.runId,
-			delivery.stageId,
-			delivery.sessionId,
-			delivery.admission,
-			logicalRunId,
-		);
-		const existing = receipts.has(receiptKey);
-		receipts.add(receiptKey);
-		receipts.add(
-			pendingDeliveryReceiptKey(messageId, delivery.runId, delivery.stageId, undefined, undefined, logicalRunId),
-		);
-		if (delivery.admission === "context" && delivery.sessionId !== undefined)
-			receipts.add(
-				anySessionReceiptKey(
-					pendingDeliveryReceiptKey(
-						messageId,
-						delivery.runId,
-						delivery.stageId,
-						undefined,
-						"context",
-						logicalRunId,
-					),
-				),
-			);
-		if (accounting !== undefined && !existing) {
+		const added = this.stickyReceipts.add(workflowId, messageId, delivery, accounting?.messageRunId);
+		if (accounting !== undefined && added) {
 			let byRun = this.stickyDeliveryCounts.get(workflowId);
 			if (byRun === undefined) {
 				byRun = new Map();
@@ -493,13 +475,7 @@ class JournalProjection {
 		delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
 		logicalRunId = workflowId,
 	): Promise<boolean> {
-		const receipts = this.stickyReceipts.get(workflowId);
-		if (receipts === undefined) return false;
-		const { runId, stageId, sessionId, admission } = delivery;
-		return (
-			receipts.has(pendingDeliveryReceiptKey(messageId, runId, stageId, sessionId, admission, logicalRunId)) ||
-			receipts.has(pendingDeliveryReceiptKey(messageId, runId, stageId, sessionId, admission, undefined))
-		);
+		return this.stickyReceipts.has(workflowId, messageId, delivery, logicalRunId);
 	}
 
 	hasCachedPendingStageDeliveryReceipt(
@@ -509,27 +485,14 @@ class JournalProjection {
 		anySession = false,
 		logicalRunId = workflowId,
 	): boolean {
-		const receipts = this.stickyReceipts.get(workflowId);
-		if (receipts === undefined) return false;
-		const { runId, stageId, admission } = delivery;
-		if (anySession && admission === "context")
-			return (
-				receipts.has(
-					anySessionReceiptKey(
-						pendingDeliveryReceiptKey(messageId, runId, stageId, undefined, admission, logicalRunId),
-					),
-				) ||
-				receipts.has(
-					anySessionReceiptKey(
-						pendingDeliveryReceiptKey(messageId, runId, stageId, undefined, admission, undefined),
-					),
-				)
-			);
-		const { sessionId } = delivery;
-		return (
-			receipts.has(pendingDeliveryReceiptKey(messageId, runId, stageId, sessionId, admission, logicalRunId)) ||
-			receipts.has(pendingDeliveryReceiptKey(messageId, runId, stageId, sessionId, admission, undefined))
-		);
+		return this.stickyReceipts.has(workflowId, messageId, delivery, logicalRunId, anySession);
+	}
+
+	pendingStageDeliveryReceiptChanges(
+		workflowId: string,
+		cursor: PendingStageReceiptCursor | undefined,
+	): PendingStageReceiptChanges {
+		return this.stickyReceipts.changesSince(workflowId, cursor);
 	}
 
 	recordCheckpoint(recorded: DurableCheckpoint): void {
@@ -814,27 +777,3 @@ function toResumableEntry(handle: DurableWorkflowHandle): ResumableWorkflowEntry
 
 /** Count-version tokens are unique across projections, so tokens from different backends never compare equal. */
 let deliveryCountEpoch = 0;
-
-/**
- * An injective receipt key built by concatenation: each part is length-prefixed and an absent part is `-`,
- * which no length prefix starts with. Counted receipts carry their logical run; uncounted ones do not.
- */
-function pendingDeliveryReceiptKey(
-	messageId: string,
-	runId: string,
-	stageId: string,
-	sessionId: string | undefined,
-	admission: string | undefined,
-	logicalRunId: string | undefined,
-): string {
-	return `${logicalRunId === undefined ? "u" : `c${receiptKeyPart(logicalRunId)}`}${receiptKeyPart(messageId)}${receiptKeyPart(runId)}${receiptKeyPart(stageId)}${receiptKeyPart(sessionId)}${receiptKeyPart(admission)}`;
-}
-
-function receiptKeyPart(value: string | undefined): string {
-	return value === undefined ? "-" : `${value.length}:${value}`;
-}
-
-/** A context admission receipt that matches any session of its stage. */
-function anySessionReceiptKey(receiptKey: string): string {
-	return `${receiptKey}*`;
-}

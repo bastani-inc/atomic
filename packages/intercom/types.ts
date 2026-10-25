@@ -52,7 +52,12 @@ export interface WorkflowPossibleStageAnnouncement {
 	readonly target: string;
 	/** Current number of queued sticky entries matching this target. */
 	readonly queuedCount: number;
+	/** At most a fixed number of exemplar states: unresolved states first, then the latest delivered. */
 	readonly deliveryStates?: readonly WorkflowStickyDeliveryState[];
+	/** Delivery states per state, over every state of this row, including omitted ones. */
+	readonly deliveryStateCounts?: Readonly<Record<string, number>>;
+	/** Delivery states left out of `deliveryStates`. */
+	readonly omittedDeliveryStates?: number;
 	readonly deliveryOnly?: true;
 }
 
@@ -63,6 +68,8 @@ export interface WorkflowFutureStageRosterEntry {
 	readonly queuedCount: number;
 	readonly group: string;
 	readonly deliveryStates?: readonly WorkflowStickyDeliveryState[];
+	readonly deliveryStateCounts?: Readonly<Record<string, number>>;
+	readonly omittedDeliveryStates?: number;
 	readonly deliveryOnly?: true;
 }
 

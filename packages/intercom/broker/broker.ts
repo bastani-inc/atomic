@@ -15,6 +15,7 @@ import {
   writeMessageIfOpen,
   writeMessageWithOutcome,
 } from "./socket-writes.js";
+import { boundWorkflowPossibleStageRow } from "../workflow-delivery-states.js";
 import { isSocketAnswering } from "./socket-liveness.js";
 import { acquireSocketReplacementLock } from "./socket-replacement-lock.js";
 import { startBrokerWatchdog } from "./watchdog.js";
@@ -303,6 +304,14 @@ function isWorkflowPossibleStageAnnouncements(
 				Number.isInteger(announcement.queuedCount) &&
 				announcement.queuedCount >= 0 &&
 				(announcement.deliveryOnly === undefined || announcement.deliveryOnly === true) &&
+				(announcement.omittedDeliveryStates === undefined ||
+					(Number.isInteger(announcement.omittedDeliveryStates) && announcement.omittedDeliveryStates >= 0)) &&
+				(announcement.deliveryStateCounts === undefined ||
+					(typeof announcement.deliveryStateCounts === "object" &&
+						announcement.deliveryStateCounts !== null &&
+						Object.values(announcement.deliveryStateCounts).every(
+							(count) => Number.isInteger(count) && count >= 0,
+						))) &&
 				(announcement.deliveryStates === undefined || (Array.isArray(announcement.deliveryStates) && announcement.deliveryStates.every((delivery) =>
 					delivery !== null && typeof delivery === "object" &&
 					typeof delivery.messageId === "string" && typeof delivery.runId === "string" &&
@@ -724,6 +733,8 @@ class IntercomBroker {
 					target: row.target,
 					queuedCount: row.queuedCount,
 					...(row.deliveryStates === undefined ? {} : { deliveryStates: row.deliveryStates }),
+					...(row.deliveryStateCounts === undefined ? {} : { deliveryStateCounts: row.deliveryStateCounts }),
+					...(row.omittedDeliveryStates === undefined ? {} : { omittedDeliveryStates: row.omittedDeliveryStates }),
 					...(row.deliveryOnly === undefined ? {} : { deliveryOnly: row.deliveryOnly }),
 					group: roster.group,
 				});
@@ -1913,9 +1924,10 @@ class IntercomBroker {
         // D7 (slice 4): presence replaces, absence keeps — a terminal root publishes `[]`
         // so the broker drops every future row, while nested runs' re-announcements (which
         // never carry the field) preserve the root's rows.
+        // Rows from hosts that announce every delivery state are bounded like current hosts' rows.
         const possibleStages =
           clientMessage.possibleStages !== undefined
-            ? clientMessage.possibleStages
+            ? clientMessage.possibleStages.map((row) => boundWorkflowPossibleStageRow(row))
             : this.workflowRosters.get(clientMessage.runId)?.possibleStages;
 		// Optional path metadata is advisory for old hosts; omission retains a
 		// previously announced edge during two-session route replay.
