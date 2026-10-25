@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.45-alpha.1] - 2026-10-25
+
 ### Added
 
 - A run journal from a storage adapter, or any custom `RunJournal`, can now opt into the faster `/workflow status`, resume and batched delivery receipts that the built-in SQL journal uses, by implementing the optional `changeToken()`, `runVersions()`, `snapshotTail()` and `appendMany()` members. `registerRunJournalConformance` checks them when present ([#3964](https://github.com/bastani-inc/atomic/issues/3964))

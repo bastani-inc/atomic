@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.9.45-alpha.1] - 2026-10-25
+
+Custom storage adapters now plug into workflow journals as first-class citizens, and large local worker pools start reliably on busy machines.
+
+- **Journal adapters that build on Atomic's own journal:** a storage adapter loaded by path can import `@bastani/atomic/workflows` and get the running Atomic's module, so `SqlRunJournal` subclasses and journal errors such as `StaleLeaseError` work instead of failing with `Storage unavailable` ([#3963](https://github.com/bastani-inc/atomic/issues/3963), [#3969](https://github.com/bastani-inc/atomic/pull/3969))
+- **Fast status, resume and receipts for custom journals:** a run journal that implements the optional `changeToken()`, `runVersions()`, `snapshotTail()` and `appendMany()` members gets the same faster `/workflow status`, resume and batched delivery receipts as the built-in SQL journal ([#3964](https://github.com/bastani-inc/atomic/issues/3964), [#3968](https://github.com/bastani-inc/atomic/pull/3968))
+- **Worker pools that start on small or busy machines:** without an explicit `workflows.localWorkers.startupTimeoutMs`, the startup deadline scales with pool size and machine load instead of failing after 30 s ([#3962](https://github.com/bastani-inc/atomic/issues/3962), [#3965](https://github.com/bastani-inc/atomic/pull/3965))
+
 ### Added
 
 - `StorageProvider` journal factories accept `hostModules`, and `loadStorageAdapter()` takes an optional third `hostModules` argument, to give adapter modules extra live host modules by specifier ([#3963](https://github.com/bastani-inc/atomic/issues/3963))
