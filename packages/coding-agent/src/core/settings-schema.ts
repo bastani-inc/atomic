@@ -396,7 +396,8 @@ const WorkflowsSettingsSchema = Type.Union(
 							Type.Integer({
 								minimum: 1,
 								maximum: 2_147_483_647,
-								description: "Milliseconds each worker process may take to become ready. Default: 30000.",
+								description:
+									"Milliseconds each worker process may take to become ready. Default: 30000, scaled up when workers plus load exceed CPU cores (at most 600000).",
 							}),
 						),
 						leaseMs: Type.Optional(

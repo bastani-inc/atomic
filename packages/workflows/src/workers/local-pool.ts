@@ -52,11 +52,11 @@ import { PoolCoordinator, projectRootRun } from "./pool-coordinator.js";
 import { WORKER_HEARTBEAT_INTERVAL_MS } from "./protocol.js";
 import type { AdmissionConfiguration } from "./resource-admission.js";
 import { PoolStageHandoff, type PoolStageQueue } from "./stage-handoff.js";
+import { defaultStartupTimeoutMs } from "./startup-timeout.js";
 
 const INTERNAL_WORKFLOW_WORKER_ARG = "--internal-workflow-worker";
 const DEFAULT_WORK_LEASE_MS = 30_000;
 const MINIMUM_WORK_LEASE_MS = 2 * WORKER_HEARTBEAT_INTERVAL_MS;
-const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const COORDINATOR_STDERR_TAIL_CHARACTERS = 8192;
 const COORDINATOR_EXIT_GRACE_MS = 5_000;
@@ -293,7 +293,7 @@ export class LocalWorkerPool {
 				journalPath: this.options.journalPath,
 				workers: this.options.workers,
 				leaseMs: this.leaseMs,
-				startupTimeoutMs: this.options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS,
+				startupTimeoutMs: this.options.startupTimeoutMs ?? defaultStartupTimeoutMs(this.options.workers),
 				...(this.options.admission === undefined ? {} : { admission: this.options.admission }),
 				...(workerEntry === undefined ? {} : { workerEntry }),
 			},

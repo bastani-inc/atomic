@@ -19,17 +19,12 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { loadWorkerWorkflow } from "../../packages/workflows/src/workers/definitions.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 import { testRunId } from "../helpers/run-id.js";
-import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
+import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { untilOrRunEnds } from "../helpers/until-run.js";
 
 const WORKER_INTERCOM_TIMEOUT_MS = 120_000;
 const BROKER_STARTUP_TIMEOUT_MS = 60_000;
-async function until(condition: () => Promise<boolean>) {
-	const signal = AbortSignal.timeout(60_000);
-	while (!(await condition())) {
-		signal.throwIfAborted();
-		await sleep(25);
-	}
-}
+const CONDITION_TIMEOUT_MS = 60_000;
 
 test.skipIf(process.platform === "win32")(
 	"public SDK root delivers direct and sticky steering after worker replacement and pause (#3869)",
@@ -96,10 +91,12 @@ test.skipIf(process.platform === "win32")(
 					localWorkers: { count: 2, definitions: [{ path: childPath, exportName: "child" }] },
 				},
 			);
-			await until(
+			await untilOrRunEnds(
 				async () =>
 					(await client.listDirectory()).workflowStages.filter((stage) => stage.stageName === "agent").length ===
 					2,
+				execution,
+				CONDITION_TIMEOUT_MS,
 			);
 			await controls.runControl(root)!.pause();
 			assert.equal((await journal.getRun(root))!.status, "paused");
@@ -122,8 +119,11 @@ test.skipIf(process.platform === "win32")(
 				);
 			assert.ok(pid?.kind === "tool");
 			process.kill(Number(pid.output), "SIGKILL");
-			await until(async () =>
-				(await queue.inspect(root)).some((entry) => entry.id === work.id && entry.generation > work.generation),
+			await untilOrRunEnds(
+				async () =>
+					(await queue.inspect(root)).some((entry) => entry.id === work.id && entry.generation > work.generation),
+				execution,
+				CONDITION_TIMEOUT_MS,
 			);
 			await database.run("UPDATE test_pool_gate SET released = 1");
 			assert.equal((await execution).status, "completed");
