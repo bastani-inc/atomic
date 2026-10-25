@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.44-alpha.4] - 2026-10-25
+
+Workflow journals stay small even when many stages write to the same run at once.
+
+- **No more full-list rewrites under contention:** a pending-message write that loses a race with another writer rebuilds its change and retries instead of storing the whole pending list. Those rewrites drove journal growth and workflow host load under heavy fan-out ([#3929](https://github.com/bastani-inc/atomic/issues/3929), [#3937](https://github.com/bastani-inc/atomic/pull/3937))
+
 ## [0.9.44-alpha.3] - 2026-10-25
 
 Chatty workflow swarms stay fast and their journals stay small, and Atomic picks up a round of dependency security fixes.
