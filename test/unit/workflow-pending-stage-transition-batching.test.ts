@@ -1,20 +1,16 @@
 import assert from "node:assert/strict";
-import { performance } from "node:perf_hooks";
 import { afterEach, describe, test } from "vitest";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { PENDING_STAGE_TRANSITION_BATCH_LIMIT } from "../../packages/workflows/src/shared/store-pending-stage-delivery-methods.js";
 import type { PendingStageMessage, RunSnapshot, StageStatus } from "../../packages/workflows/src/shared/store-types.js";
 import { testRunId } from "../helpers/run-id.js";
-import { sleep } from "../helpers/runtime.js";
 import { closeMemoryTestBackends, createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const ROOT_RUN_ID = testRunId("pending-transition-batching-root");
 const GROUP = `workflow:${ROOT_RUN_ID}`;
 const WAVE_STAGES = 160;
 const STICKY_ENTRIES = 40;
-/** A deliberately slow durable write, so each serialized persist is visible in the send's latency. */
-const SLOW_PERSIST_MS = 40;
 /** The burst may write the pending list at most this many times. */
 const BURST_PERSIST_LIMIT = 4;
 
@@ -94,12 +90,14 @@ async function fixture() {
 	assert.equal(await backend.persistPendingStageMessages(ROOT_RUN_ID, pendingStageMessages), true);
 	let persists = 0;
 	let failNext = false;
+	const holds: ((release: () => void) => void)[] = [];
 	const persist = backend.persistPendingStageMessages.bind(backend);
 	backend.persistPendingStageMessages = async (...args) => {
 		persists++;
 		const fail = failNext;
 		failNext = false;
-		await sleep(SLOW_PERSIST_MS);
+		const hold = holds.shift();
+		if (hold !== undefined) await new Promise<void>((release) => hold(() => release()));
 		if (fail) throw new Error("injected metadata fault");
 		return await persist(...args);
 	};
@@ -110,21 +108,23 @@ async function fixture() {
 		failNextPersist: () => {
 			failNext = true;
 		},
+		/** Hold the next pending-list write once it starts; resolves with the function that releases it. */
+		holdNextPersist: () => new Promise<() => void>((started) => holds.push(started)),
 	};
 }
 
 describe("pending-stage transition batching", () => {
 	test("a send queued during a wave-start delivery burst waits for a few persists, not the whole burst", async () => {
-		const { store, backend, persists } = await fixture();
+		const { store, backend, persists, holdNextPersist } = await fixture();
+		const firstWrite = holdNextPersist();
 		const deliveries: Promise<boolean>[] = [];
 		let sticky: Promise<unknown> | undefined;
 		let stickyPersists = Number.NaN;
-		let stickyMs = Number.NaN;
-		const started = performance.now();
+		let releaseFirstWrite: (() => void) | undefined;
 		for (let index = 0; index < WAVE_STAGES; index++) {
 			if (index === WAVE_STAGES / 2) {
-				// Let the first half's write start, so the send and the second half queue behind it.
-				await sleep(SLOW_PERSIST_MS / 4);
+				// Hold the first half's write, so the send and the second half queue behind it.
+				releaseFirstWrite = await firstWrite;
 				sticky = store
 					.queueStickyStageMessage(
 						{
@@ -141,7 +141,6 @@ describe("pending-stage transition batching", () => {
 					)
 					.then((result) => {
 						stickyPersists = persists();
-						stickyMs = performance.now() - started;
 						return result;
 					});
 			}
@@ -156,18 +155,13 @@ describe("pending-stage transition batching", () => {
 				),
 			);
 		}
+		releaseFirstWrite!();
 		const queued = (await sticky) as { readonly ok: boolean; readonly deduplicated?: boolean };
 		assert.equal(queued.ok, true);
 		assert.equal(queued.deduplicated, false);
 		assert.deepEqual(await Promise.all(deliveries), Array(WAVE_STAGES).fill(true));
-		console.log(
-			`burst: ${persists()} persists; mid-burst send resolved after ${stickyPersists} persists, ${stickyMs.toFixed(0)} ms`,
-		);
+		// One write for the held first half, one for the send and the second half that queued behind it.
 		assert.ok(stickyPersists <= 2, `the mid-burst send resolved after ${stickyPersists} persists`);
-		assert.ok(
-			stickyMs < SLOW_PERSIST_MS * (BURST_PERSIST_LIMIT + 2),
-			`the mid-burst send resolved after ${stickyMs.toFixed(0)} ms`,
-		);
 		assert.ok(persists() <= BURST_PERSIST_LIMIT, `the burst wrote the pending list ${persists()} times`);
 		const persisted = backend.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages ?? [];
 		assert.equal(persisted.length, STICKY_ENTRIES + 1);
@@ -179,7 +173,8 @@ describe("pending-stage transition batching", () => {
 	});
 
 	test("a failed shared persist rejects every caller that depended on it and leaves the run as persisted", async () => {
-		const { store, backend, persists, failNextPersist } = await fixture();
+		const { store, backend, persists, failNextPersist, holdNextPersist } = await fixture();
+		const firstWrite = holdNextPersist();
 		const record = (index: number) =>
 			store.recordPendingStageMessageDeliveries(
 				ROOT_RUN_ID,
@@ -189,12 +184,13 @@ describe("pending-stage transition batching", () => {
 				backend,
 			);
 		const first = record(0);
-		await sleep(SLOW_PERSIST_MS / 4);
+		const releaseFirstWrite = await firstWrite;
 		failNextPersist();
 		// Queued behind the first write: an unchanged settle, then a change, then a duplicate of that change.
 		const unchanged = store.settleStickyPendingStageMessageDelivered(ROOT_RUN_ID, "sticky-1", "now", backend);
 		const changed = record(1);
 		const duplicate = record(1);
+		releaseFirstWrite();
 		assert.equal(await first, true);
 		assert.equal(await unchanged, false);
 		await assert.rejects(changed, /injected metadata fault/);
@@ -215,7 +211,8 @@ describe("pending-stage transition batching", () => {
 	});
 
 	test("bounds each batch and keeps transitions in arrival order", async () => {
-		const { store, backend, persists } = await fixture();
+		const { store, backend, persists, holdNextPersist } = await fixture();
+		const firstWrite = holdNextPersist();
 		const sends = PENDING_STAGE_TRANSITION_BATCH_LIMIT + 44;
 		const queue = (index: number) =>
 			store.queueStickyStageMessage(
@@ -232,8 +229,9 @@ describe("pending-stage transition batching", () => {
 				backend,
 			);
 		const first = queue(0);
-		await sleep(SLOW_PERSIST_MS / 4);
+		const releaseFirstWrite = await firstWrite;
 		const rest = Array.from({ length: sends - 1 }, (_, index) => queue(index + 1));
+		releaseFirstWrite();
 		await first;
 		await Promise.all(rest);
 		// One write for the first send, one per full batch behind it, one for the remainder.

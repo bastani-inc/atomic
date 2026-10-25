@@ -828,6 +828,23 @@ describe("incremental pending-stage transitions", () => {
 	);
 });
 
+/** Every this-many-th delivery-receipt archive fails, so faults land mid-compaction after earlier archives. */
+const ARCHIVE_FAULT_PERIOD = 9;
+
+/**
+ * Fail a fixed subset of receipt archives by call index. Batched and sequential execution archive the same
+ * receipts in the same order, so the same archives fail in both worlds.
+ */
+function failSomeArchives(backend: DurableWorkflowBackend): void {
+	const archive = backend.archivePendingStageDeliveryReceipt!.bind(backend);
+	let calls = 0;
+	backend.archivePendingStageDeliveryReceipt = async (...args) => {
+		calls++;
+		if (calls % ARCHIVE_FAULT_PERIOD === 0) throw new Error("injected receipt archive fault");
+		return await archive(...args);
+	};
+}
+
 /** Store transitions that may run concurrently; the rest change runs or inject faults and run alone. */
 const CONCURRENT_KINDS = new Set<Operation["kind"]>([
 	"queue-sticky",
@@ -841,11 +858,12 @@ const CONCURRENT_KINDS = new Set<Operation["kind"]>([
 
 describe("batched pending-stage transitions", () => {
 	test(
-		"concurrent queue, deliver, settle and notify calls match sequential execution for every caller",
+		"concurrent queue, deliver, settle and notify calls match sequential execution for every caller, under archive faults",
 		async () => {
 			let concurrentCalls = 0;
 			let subjectPersists = 0;
 			let referencePersists = 0;
+			let archiveFaults = 0;
 			for (let seed = 1; seed <= SEEDS; seed++) {
 				const next = random(seed * 7919);
 				const sleepRandomly = async () => {
@@ -864,6 +882,8 @@ describe("batched pending-stage transitions", () => {
 					referencePersists++;
 					return await referencePersist(...args);
 				};
+				failSomeArchives(subject.backend);
+				failSomeArchives(reference.backend);
 				const ids = new Set<string>();
 				const script = operations(seed);
 				let step = 0;
@@ -892,6 +912,9 @@ describe("batched pending-stage transitions", () => {
 					}
 					if (group.length > 1) concurrentCalls += group.length;
 					const results = await Promise.all(pending);
+					archiveFaults += results.filter(
+						(result) => (result as { error?: string }).error === "injected receipt archive fault",
+					).length;
 					for (const [offset, [index, operation]] of group.entries()) {
 						const where = `seed ${seed} step ${index} ${operation.kind}`;
 						const expected = await reference.apply(operation, index).then(
@@ -921,6 +944,8 @@ describe("batched pending-stage transitions", () => {
 				await subject.backend.close();
 				await reference.backend.close();
 			}
+			// Callers must actually fail mid-compaction, after earlier receipts were archived (Greptile #3947).
+			assert.ok(archiveFaults > SEEDS, `only ${archiveFaults} callers hit an archive fault`);
 			assert.ok(concurrentCalls > SEEDS * 100, `only ${concurrentCalls} calls ran concurrently`);
 			// Batching must actually have shared persists between transitions.
 			assert.ok(

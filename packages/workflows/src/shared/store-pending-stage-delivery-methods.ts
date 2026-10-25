@@ -455,15 +455,24 @@ class PendingStageTransitionBatch {
 			this.pending = { backend, messages: compacted.messages, commit: compacted.commit, run };
 			return compacted.messages;
 		} catch (error) {
-			reconcileLive(backend, runId, this.context, this.ledgers);
+			// Alone, a failed transition recovers archived counts into the live list. In a batch the list a
+			// caller would see is the unpersisted one, so the counts are recovered there and published with it.
+			if (this.changed && this.list !== undefined) {
+				const ledger = run === undefined ? new PendingStageTransitionLedger() : this.ledgers.for(run);
+				this.list = ledger.reconcile(backend, runId, this.list);
+			} else reconcileLive(backend, runId, this.context, this.ledgers);
 			throw error;
 		}
 	}
 
-	/** Persist the batch's final list once, then publish it to the live run. */
+	/**
+	 * Persist the last applied transition's list once, then publish the batch's list to the live run. The
+	 * published list also carries counts recovered by later transitions, as the live list would alone.
+	 */
 	async persist(): Promise<void> {
 		if (this.pending === undefined) return;
 		const { backend, messages, commit, run } = this.pending;
+		const published = this.list ?? messages;
 		try {
 			if (!(await backend.persistPendingStageMessages(this.runId, messages))) {
 				throw new Error(
@@ -475,7 +484,7 @@ class PendingStageTransitionBatch {
 			reconcileLive(backend, this.runId, this.context, this.ledgers);
 		}
 		const live = this.context.findRun(this.runId) ?? run;
-		if (live !== undefined) live.pendingStageMessages = [...messages];
+		if (live !== undefined) live.pendingStageMessages = [...published];
 		this.context.bumpAndNotify();
 	}
 }
