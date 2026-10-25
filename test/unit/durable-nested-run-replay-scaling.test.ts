@@ -83,26 +83,16 @@ async function completedPool(children: number): Promise<{ backend: MemoryJournal
 	return { backend, rootId };
 }
 
-/** The backend, counting every checkpoint its `listCheckpoints` hands out. */
-function countingCheckpointReads(backend: MemoryJournalBackend): {
-	readonly backend: MemoryJournalBackend;
-	readonly checkpointsRead: () => number;
-} {
+/** Count every checkpoint the backend's `listCheckpoints` hands out from now on. */
+function countCheckpointReads(backend: MemoryJournalBackend): () => number {
 	let checkpointsRead = 0;
-	const counted = new Proxy(backend, {
-		get(target, key) {
-			if (key === "listCheckpoints") {
-				return (workflowId: string) => {
-					const checkpoints = target.listCheckpoints(workflowId);
-					checkpointsRead += checkpoints.length;
-					return checkpoints;
-				};
-			}
-			const value: unknown = Reflect.get(target, key, target);
-			return typeof value === "function" ? value.bind(target) : value;
-		},
-	});
-	return { backend: counted, checkpointsRead: () => checkpointsRead };
+	const listCheckpoints: MemoryJournalBackend["listCheckpoints"] = backend.listCheckpoints.bind(backend);
+	backend.listCheckpoints = (workflowId) => {
+		const checkpoints = listCheckpoints(workflowId);
+		checkpointsRead += checkpoints.length;
+		return checkpoints;
+	};
+	return () => checkpointsRead;
 }
 
 /**
@@ -137,14 +127,15 @@ test(
 	"replaying cached child boundaries reads the checkpoint journal a bounded number of times",
 	async () => {
 		const pool = await completedPool(POOL_SIZE);
-		const counted = countingCheckpointReads(pool.backend);
-		const replayed = await replayCachedBoundaries(counted.backend, pool.rootId);
+		const checkpointsRead = countCheckpointReads(pool.backend);
+		const replayed = await replayCachedBoundaries(pool.backend, pool.rootId);
+		const read = checkpointsRead();
 		assert.equal(replayed, POOL_SIZE);
 		const journalSize = pool.backend.listCheckpoints(pool.rootId).length;
-		const journalReads = counted.checkpointsRead() / journalSize;
+		const journalReads = read / journalSize;
 		assert.ok(
 			journalReads <= MAX_JOURNAL_READS,
-			`replaying ${POOL_SIZE} cached children read ${counted.checkpointsRead()} checkpoints, ` +
+			`replaying ${POOL_SIZE} cached children read ${read} checkpoints, ` +
 				`${journalReads.toFixed(1)} times the ${journalSize}-checkpoint journal (at most ${MAX_JOURNAL_READS})`,
 		);
 	},
