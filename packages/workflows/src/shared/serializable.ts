@@ -88,9 +88,10 @@ function firstError(schema: TSchema, value: unknown): { instancePath: string } |
 
 /**
  * Fast, sound pre-check: true only for values the schema certainly accepts (strings, finite numbers, booleans,
- * null, dense arrays and plain objects whose own properties are all enumerable string keys, nested without
- * cycles). Anything else falls back to the schema, so edge cases keep their exact behavior. The schema's
- * recursive `$ref` evaluation dominated large workflow payloads (session transcripts) in the pool coordinator.
+ * null, dense plain arrays read by index, and plain objects whose own properties are all enumerable string keys,
+ * nested without cycles). Anything else, including array subclasses and cycles, falls back to the schema, so edge
+ * cases keep their exact behavior. The schema's recursive `$ref` evaluation dominated large workflow payloads
+ * (session transcripts) in the pool coordinator.
  */
 function certainlySerializable(root: unknown, rootMustBeObject: boolean): boolean {
 	if (rootMustBeObject && (root === null || typeof root !== "object" || Array.isArray(root))) return false;
@@ -114,8 +115,9 @@ function certainlySerializable(root: unknown, rootMustBeObject: boolean): boolea
 		const names = Object.getOwnPropertyNames(value);
 		let children: unknown[];
 		if (Array.isArray(value)) {
-			if (names.length !== value.length + 1) return false;
-			children = value;
+			if (Object.getPrototypeOf(value) !== Array.prototype || names.length !== value.length + 1) return false;
+			children = [];
+			for (let index = 0; index < value.length; index++) children.push(value[index]);
 		} else {
 			const proto = Object.getPrototypeOf(value);
 			if (proto !== Object.prototype && proto !== null) return false;
