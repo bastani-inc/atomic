@@ -6,9 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.44-alpha.3] - 2026-10-25
+
 ### Fixed
 
 - A workflow whose stages send many Intercom messages to stage patterns (for example `workflow:<rootRunId>/child-*/**`) no longer saturates the workflow host. The host matched every queued pattern message against every stage on each change; it now indexes the patterns and each stage's paths once. In a 150-child fan-out test, delivered sends went from 566 of 900 to 900 of 900 and host event-loop lag p99 from about 1 s to under 200 ms ([#3931](https://github.com/bastani-inc/atomic/issues/3931))
+- Workflow journal events no longer store a run's whole list of pending stage messages each time. Pattern sends stay queued until the root run ends, so every queued message rewrote the growing list and the journal grew quadratically with the number of sends. Each event now records only what changed; older journals still read as before ([#3929](https://github.com/bastani-inc/atomic/issues/3929))
 
 ## [0.9.44-alpha.2] - 2026-10-24
 
