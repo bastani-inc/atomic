@@ -711,12 +711,19 @@ test.skipIf(process.platform === "win32")(
 					index % PATTERN_BROADCAST_EVERY === 0
 						? `${rootGroup}/**`
 						: `${rootGroup}/child-c${String((index + 1) % PATTERN_CHILDREN).padStart(3, "0")}/**`;
-				const stageRun = runPatternStage(stage, Array(PATTERN_SENDS_PER_STAGE).fill(target), rootGroup).then(
-					(outcome) => {
+				const stageRun = runPatternStage(stage, Array(PATTERN_SENDS_PER_STAGE).fill(target), rootGroup)
+					.catch(
+						(error: unknown): PatternSendOutcome => ({
+							sends: 0,
+							failures: [
+								`stage ${stage.sessionId} start: ${error instanceof Error ? error.message : String(error)}`,
+							],
+						}),
+					)
+					.then((outcome) => {
 						outcomes.push(outcome);
 						socket.end(`${JSON.stringify({ done: true })}\n`);
-					},
-				);
+					});
 				stageRuns.add(stageRun);
 			});
 		});
