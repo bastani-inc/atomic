@@ -44,6 +44,7 @@ import { POOL_SUMMARY_INTERVAL_MS } from "./coordinator-protocol.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
 import type { WorkerRequest } from "./protocol.js";
 import { SqlResourceAdmission } from "./resource-admission.js";
+import { startupTimeoutMessage } from "./startup-timeout.js";
 
 const CONTROL_ACKNOWLEDGEMENT_TIMEOUT_MS = 5_000;
 const RECOVERY_INTERVAL_MS = 500;
@@ -684,9 +685,7 @@ export class PoolCoordinator {
 				void Promise.race([closed, delay(STDERR_DRAIN_GRACE_MS)]).then(() =>
 					reject(
 						diagnosed(
-							timedOut
-								? `Local worker startup timed out after ${startupTimeoutMs} ms`
-								: "Local worker exited before readiness",
+							timedOut ? startupTimeoutMessage(startupTimeoutMs) : "Local worker exited before readiness",
 						),
 					),
 				);

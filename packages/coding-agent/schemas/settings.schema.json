@@ -564,7 +564,7 @@
                   "type": "integer",
                   "minimum": 1,
                   "maximum": 2147483647,
-                  "description": "Milliseconds each worker process may take to become ready. Default: 30000."
+                  "description": "Milliseconds each worker process may take to become ready. Default: 30000, scaled up when workers plus load exceed CPU cores (at most 600000)."
                 },
                 "leaseMs": {
                   "type": "integer",
