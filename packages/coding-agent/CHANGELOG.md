@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Under heavy write load a local SQLite store (`node-sqlite`, including the workflow journal) commits transactions in groups: transactions requested while another is committing share one `BEGIN IMMEDIATE … COMMIT`, each in its own savepoint and in request order. A transaction that fails rolls back only its own writes, and every caller still settles only after the shared commit. In a 480-child pooled workflow the pool coordinator was committing about 60 transcript transactions a second, each taking the write lock and syncing on its own, which starved the workflow host's writes until Intercom sends timed out and worker leases expired.
+
 ## [0.9.44-alpha.5] - 2026-10-25
 
 Large workflow fan-outs keep their Intercom routes and journal writes responsive under load.

@@ -59,6 +59,18 @@ function finalizeReleasedStatements(): void {
 const DEFAULT_NODE_SQLITE_LOCK_WAIT_MS = 30_000;
 const LOCK_RETRY_BASE_DELAY_MS = 5;
 const LOCK_RETRY_MAX_DELAY_MS = 100;
+/** Most transactions one group commit carries, so a batch cannot keep the write lock from other processes for long. */
+const MAX_GROUP_COMMIT_TRANSACTIONS = 128;
+
+interface QueuedTransaction {
+	readonly callback: (transaction: SqliteExecutor) => Promise<unknown>;
+	readonly resolve: (value: unknown) => void;
+	readonly reject: (error: unknown) => void;
+}
+
+type TransactionOutcome =
+	| { readonly ok: true; readonly value: unknown }
+	| { readonly ok: false; readonly error: unknown };
 
 /** SQLITE_BUSY, including its extended codes: another connection holds the lock this statement needs. */
 function isSqliteBusy(cause: unknown): boolean {
@@ -96,6 +108,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	readonly descriptor: StorageDescriptor;
 	private readonly connection: DatabaseSync;
 	private tail: Promise<void> = Promise.resolve();
+	private openBatch?: QueuedTransaction[];
 	private closing = false;
 	private closePromise?: Promise<void>;
 	private readonly executor: SqliteExecutor;
@@ -226,47 +239,163 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		return result;
 	}
 
+	/** A statement queued after open transactions runs after them, so later transactions start a new batch. */
+	private enqueueStatement<T>(operation: () => Promise<T>): Promise<T> {
+		this.openBatch = undefined;
+		return this.enqueue(operation);
+	}
+
 	exec(sql: string): Promise<void> {
-		return this.enqueue(() => this.executor.exec(sql));
+		return this.enqueueStatement(() => this.executor.exec(sql));
 	}
 
 	run(sql: string, ...params: readonly SqliteValue[]) {
 		const bound = snapshotParams(params);
-		return this.enqueue(() => this.executor.run(sql, ...bound));
+		return this.enqueueStatement(() => this.executor.run(sql, ...bound));
 	}
 
 	get<T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]): Promise<T | undefined> {
 		const bound = snapshotParams(params);
-		return this.enqueue(() => this.executor.get<T>(sql, ...bound));
+		return this.enqueueStatement(() => this.executor.get<T>(sql, ...bound));
 	}
 
 	all<T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]): Promise<T[]> {
 		const bound = snapshotParams(params);
-		return this.enqueue(() => this.executor.all<T>(sql, ...bound));
+		return this.enqueueStatement(() => this.executor.all<T>(sql, ...bound));
 	}
 
+	/**
+	 * Group commit: transactions queued while earlier work holds the connection join one `BEGIN IMMEDIATE … COMMIT`,
+	 * each inside its own savepoint and in the order they were requested. A transaction that throws rolls back only
+	 * its savepoint and rejects only its caller; every caller settles after the shared commit, so durability is the
+	 * same as a transaction of its own. Under load one lock acquisition and one sync serve the whole batch.
+	 */
 	transaction<T>(callback: (transaction: SqliteExecutor) => Promise<T>): Promise<T> {
-		return this.enqueue(() =>
-			gateTransaction(this.transactionIdentity, async () => {
-				await this.begin();
-				let active = true;
-				const transaction = this.createExecutor(() => active);
-				try {
-					const result = await callback(transaction);
-					active = false;
-					await this.executor.exec("COMMIT");
-					return result;
-				} catch (cause) {
-					active = false;
-					try {
-						await this.executor.exec("ROLLBACK");
-					} catch (rollbackCause) {
-						throw new StorageRollbackError(cause as StorageFailureCause, rollbackCause as StorageFailureCause);
-					}
-					throw cause;
-				}
-			}),
+		if (this.closing) return Promise.reject(new StoreClosedError(this.descriptor));
+		return new Promise<T>((resolve, reject) => {
+			const queued: QueuedTransaction = { callback, resolve: resolve as (value: unknown) => void, reject };
+			if (this.openBatch !== undefined && this.openBatch.length < MAX_GROUP_COMMIT_TRANSACTIONS) {
+				this.openBatch.push(queued);
+				return;
+			}
+			this.startBatch([queued]);
+		});
+	}
+
+	private startBatch(batch: QueuedTransaction[]): void {
+		this.openBatch = batch;
+		void this.enqueue(() => this.commitBatch(batch));
+	}
+
+	private commitBatch(batch: QueuedTransaction[]): Promise<void> {
+		if (this.openBatch === batch) this.openBatch = undefined;
+		return gateTransaction(this.transactionIdentity, () =>
+			batch.length === 1 ? this.commitAlone(batch[0]!) : this.commitMembers(batch),
 		);
+	}
+
+	/** A transaction with nobody queued behind it commits on its own, without savepoints. */
+	private async commitAlone(queued: QueuedTransaction): Promise<void> {
+		try {
+			await this.begin();
+		} catch (cause) {
+			queued.reject(cause);
+			return;
+		}
+		let active = true;
+		try {
+			const value = await queued.callback(this.createExecutor(() => active));
+			active = false;
+			await this.executor.exec("COMMIT");
+			queued.resolve(value);
+		} catch (cause) {
+			active = false;
+			try {
+				await this.executor.exec("ROLLBACK");
+			} catch (rollbackCause) {
+				queued.reject(new StorageRollbackError(cause as StorageFailureCause, rollbackCause as StorageFailureCause));
+				return;
+			}
+			queued.reject(cause);
+		}
+	}
+
+	private async commitMembers(batch: QueuedTransaction[]): Promise<void> {
+		try {
+			await this.begin();
+		} catch (cause) {
+			for (const queued of batch) queued.reject(cause);
+			return;
+		}
+		const outcomes: TransactionOutcome[] = [];
+		for (const queued of batch) {
+			const savepoint = `atomic_group_${outcomes.length}`;
+			let active = true;
+			try {
+				await this.executor.exec(`SAVEPOINT ${savepoint}`);
+				const value = await queued.callback(this.createExecutor(() => active));
+				active = false;
+				await this.executor.exec(`RELEASE ${savepoint}`);
+				outcomes.push({ ok: true, value });
+			} catch (cause) {
+				active = false;
+				try {
+					await this.executor.exec(`ROLLBACK TO ${savepoint}`);
+					await this.executor.exec(`RELEASE ${savepoint}`);
+				} catch (rollbackCause) {
+					await this.abandonMembers(batch, outcomes, cause, rollbackCause);
+					return;
+				}
+				outcomes.push({ ok: false, error: cause });
+			}
+		}
+		try {
+			await this.executor.exec("COMMIT");
+		} catch (commitCause) {
+			await this.rollbackQuietly();
+			batch.forEach((queued, index) => {
+				const outcome = outcomes[index]!;
+				queued.reject(outcome.ok ? commitCause : outcome.error);
+			});
+			return;
+		}
+		batch.forEach((queued, index) => {
+			const outcome = outcomes[index]!;
+			if (outcome.ok) queued.resolve(outcome.value);
+			else queued.reject(outcome.error);
+		});
+	}
+
+	/**
+	 * A savepoint that cannot be rolled back leaves the whole transaction unusable: earlier members lose their
+	 * uncommitted writes and fail, the failing member reports both causes, and members that have not run yet get a
+	 * fresh transaction right away, still ahead of anything queued after them, because nothing of theirs has happened.
+	 */
+	private async abandonMembers(
+		batch: QueuedTransaction[],
+		outcomes: TransactionOutcome[],
+		cause: unknown,
+		rollbackCause: unknown,
+	): Promise<void> {
+		await this.rollbackQuietly();
+		const failed = outcomes.length;
+		batch.slice(0, failed).forEach((queued, index) => {
+			const outcome = outcomes[index]!;
+			queued.reject(outcome.ok ? unavailable(this.descriptor, rollbackCause) : outcome.error);
+		});
+		batch[failed]!.reject(
+			new StorageRollbackError(cause as StorageFailureCause, rollbackCause as StorageFailureCause),
+		);
+		const remaining = batch.slice(failed + 1);
+		if (remaining.length > 0) await this.commitMembers(remaining);
+	}
+
+	private async rollbackQuietly(): Promise<void> {
+		try {
+			await this.executor.exec("ROLLBACK");
+		} catch {
+			// SQLite already rolled the transaction back; there is nothing left to undo.
+		}
 	}
 
 	close(): Promise<void> {
