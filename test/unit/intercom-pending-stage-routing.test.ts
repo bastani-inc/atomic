@@ -962,6 +962,31 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			vi.restoreAllMocks();
 		}
 	});
+
+	test("a batched announcement after its session closed stops the bridge instead of throwing from a timer", async () => {
+		const routes: Record<string, unknown>[] = [];
+		let closed = false;
+		const { store, dispose } = await harness((payload) => {
+			if (closed) throw Object.assign(new Error("SessionClosed"), { code: "SessionClosed" });
+			routes.push(payload);
+		});
+		const uncaught: unknown[] = [];
+		const recordUncaught = (error: unknown) => uncaught.push(error);
+		process.prependListener("uncaughtException", recordUncaught);
+		try {
+			closed = true;
+			store.recordStageSession(RUN_ID, "reviewer-id", { sessionId: "reviewer-session" });
+			await routesPublished();
+			assert.deepEqual(uncaught, []);
+			closed = false;
+			store.recordStageSession(RUN_ID, "reviewer-id", { sessionId: "another-session" });
+			await routesPublished();
+			assert.equal(routes.length, 1, "a bridge whose session closed publishes nothing further");
+		} finally {
+			process.removeListener("uncaughtException", recordUncaught);
+			dispose();
+		}
+	});
 });
 
 test("reloads and drains aliases by durable deposit order rather than sender timestamp exactly once", async () => {

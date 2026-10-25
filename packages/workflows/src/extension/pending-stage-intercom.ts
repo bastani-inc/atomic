@@ -2,6 +2,7 @@ import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { outsideWorkflowExecutions } from "../durable/execution-context-boundary.js";
 import { durableBackendForRun, durableRootRunIdForRun } from "../durable/run-owner-backend.js";
 import { availableStoreDurableBackend, requireStoreDurableBackend } from "../durable/store-backend.js";
+import { isSessionClosedError } from "../engine/session-closed-error.js";
 import { externalRunRouteOwner, registerPendingStageMessageRouter } from "../shared/external-run-routes.js";
 import { workflowInvocationIntercomGroup, workflowInvocationOwnsGroup } from "../shared/intercom-group.js";
 import { workflowPendingStageRouteCapability } from "../shared/pending-stage-route-capability.js";
@@ -309,6 +310,21 @@ export function registerPendingStageIntercomBridge(
 	function announceIfPending(): void {
 		if (announcementPending) announceNow();
 	}
+	const announceBatch = (): void => {
+		try {
+			announceNow();
+		} catch (error) {
+			if (error instanceof Error && isSessionClosedError(error)) {
+				dispose();
+				return;
+			}
+			try {
+				reportWarning(`atomic-workflows: pending stage route announcement failed: ${String(error)}`);
+			} catch {
+				dispose();
+			}
+		}
+	};
 	// Each announcement rebuilds every owned run's route, so store invalidations are batched: a burst becomes one
 	// announcement after a short window, stretched when needed so announcing stays under a fixed share of the
 	// event loop. Readiness, flush and refresh announce a pending batch first.
@@ -317,7 +333,7 @@ export function registerPendingStageIntercomBridge(
 		const idle = announcementCost / ROUTE_ANNOUNCEMENT_EVENT_LOOP_SHARE - announcementCost;
 		const wait = Math.max(ROUTE_ANNOUNCEMENT_BATCH_MS, announcedAt + idle - performance.now());
 		announcementPending = true;
-		announcementTimer = setTimeout(announceNow, wait);
+		announcementTimer = setTimeout(announceBatch, wait);
 		announcementTimer.unref?.();
 	};
 	const unsubscribeStore = activeStore.subscribeInvalidation(scheduleAnnouncement);
