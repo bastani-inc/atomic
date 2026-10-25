@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- A pending-message write that loses a race with another writer to the same run (for example a stage's delivery receipt) no longer stores the run's whole list of pending stage messages in the journal. It is rebuilt as a change on top of the other writer's entry and retried, and only falls back to the full list after repeated conflicts. In a 160-worker fan-out, 2% of queued events had fallen back and written 93% of their bytes, up to 1.5 MB each and growing with the list ([#3929](https://github.com/bastani-inc/atomic/issues/3929))
+
 ## [0.9.44-alpha.3] - 2026-10-25
 
 ### Fixed
