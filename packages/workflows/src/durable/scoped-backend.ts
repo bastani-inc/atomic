@@ -25,6 +25,8 @@ import type {
 	DurableInactiveDeleteResult,
 	DurableWorkflowBackend,
 	DurableWorkflowCatalogEntries,
+	PendingStageReceiptChanges,
+	PendingStageReceiptCursor,
 	WorkflowRegistrationInput,
 } from "./backend.js";
 import {
@@ -84,6 +86,13 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 
 	getPendingStageMessageDeliveryCount(workflowId: string, messageId: string, logicalRunId = workflowId): number {
 		return this.inner.getPendingStageMessageDeliveryCount?.(this.scope.rootWorkflowId, messageId, logicalRunId) ?? 0;
+	}
+
+	pendingStageDeliveryReceiptChanges(
+		_workflowId: string,
+		cursor: PendingStageReceiptCursor | undefined,
+	): PendingStageReceiptChanges | undefined {
+		return this.inner.pendingStageDeliveryReceiptChanges?.(this.scope.rootWorkflowId, cursor);
 	}
 
 	pendingStageDeliveryCountVersion(_workflowId: string): number | undefined {

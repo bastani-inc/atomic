@@ -743,6 +743,34 @@ describe("intercom list renders possible future stage rows (D7)", () => {
 		assert.doesNotMatch(text, /\[future\]/);
 	});
 
+	test("list says how many delivery states a bounded row omits, with every state's total (#3406)", async () => {
+		const deliveryStates = Array.from({ length: 5 }, (_, index) => ({
+			messageId: `sticky-${index}`,
+			runId: futureRow.runId,
+			stageId: `orchestrator-${index}`,
+			state: "queued",
+			reason: "No delivery receipt",
+		}));
+		const row = {
+			...futureRow,
+			deliveryOnly: true,
+			deliveryStates,
+			deliveryStateCounts: { queued: 25, delivered: 7_975 },
+			omittedDeliveryStates: 7_995,
+		};
+		const { tool } = futureFixture({
+			sessions: [session("self-session-id", "self")],
+			workflowStages: [],
+			workflowFutureStages: [row],
+		});
+		const result = await tool.execute("list-call", { action: "list" }, undefined, undefined, context);
+		const text = result.content[0]?.text ?? "";
+		assert.equal(text.match(/\n {2}delivery sticky-/g)?.length, 5);
+		assert.match(text, /\n {2}… 7995 more delivery states omitted \(all: 25 queued, 7975 delivered\)/);
+		const details = (result as unknown as { details?: { workflowFutureStages?: unknown[] } }).details;
+		assert.deepEqual(details?.workflowFutureStages, [row]);
+	});
+
 	test("the singular count form renders without the plural suffix", async () => {
 		const self = session("self-session-id", "self");
 		const { tool } = futureFixture({

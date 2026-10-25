@@ -99,6 +99,161 @@ export function pendingStageMessagesForDurableRun(
 	);
 }
 
+/** A position in one workflow's receipt change log; a reset workflow starts a new log. */
+export interface PendingStageReceiptCursor {
+	readonly log: object;
+	readonly length: number;
+}
+
+/** Messages whose delivery receipts changed since a cursor; `undefined` when any message may have changed. */
+export interface PendingStageReceiptChanges {
+	readonly cursor: PendingStageReceiptCursor;
+	readonly messageIds: readonly string[] | undefined;
+}
+
+type Admissions = Set<string | undefined>;
+
+/**
+ * One stage's receipts for one message. A receipt is keyed by its logical run (`undefined` for receipts
+ * recorded without accounting), its session and its admission, each possibly absent. A context admission
+ * with a session also records a receipt that matches any session of the stage.
+ */
+class StageReceipts {
+	private readonly exact = new Map<string | undefined, Map<string | undefined, Admissions>>();
+	private readonly anySession = new Map<string | undefined, Admissions>();
+
+	has(logicalRunId: string | undefined, sessionId: string | undefined, admission: string | undefined): boolean {
+		return this.exact.get(logicalRunId)?.get(sessionId)?.has(admission) ?? false;
+	}
+
+	hasAnySession(logicalRunId: string | undefined, admission: string | undefined): boolean {
+		return this.anySession.get(logicalRunId)?.has(admission) ?? false;
+	}
+
+	/** Add a receipt; returns whether it was new. */
+	add(logicalRunId: string | undefined, sessionId: string | undefined, admission: string | undefined): boolean {
+		let bySession = this.exact.get(logicalRunId);
+		if (bySession === undefined) {
+			bySession = new Map();
+			this.exact.set(logicalRunId, bySession);
+		}
+		let admissions = bySession.get(sessionId);
+		if (admissions === undefined) {
+			admissions = new Set();
+			bySession.set(sessionId, admissions);
+		}
+		if (admissions.has(admission)) return false;
+		admissions.add(admission);
+		return true;
+	}
+
+	addAnySession(logicalRunId: string | undefined, admission: string | undefined): boolean {
+		let admissions = this.anySession.get(logicalRunId);
+		if (admissions === undefined) {
+			admissions = new Set();
+			this.anySession.set(logicalRunId, admissions);
+		}
+		if (admissions.has(admission)) return false;
+		admissions.add(admission);
+		return true;
+	}
+}
+
+interface WorkflowReceipts {
+	/** message → delivery run → stage → receipts */
+	readonly byMessage: Map<string, Map<string, Map<string, StageReceipts>>>;
+	/** Message ids in the order their receipts changed. */
+	readonly log: string[];
+}
+
+/** Archived sticky delivery receipts per durable workflow, looked up through nested maps without key building. */
+class PendingStageReceiptIndex {
+	private readonly workflows = new Map<string, WorkflowReceipts>();
+
+	/**
+	 * Record one archived delivery. Returns whether the exact receipt was new, which decides whether its
+	 * accounting may raise the delivery count.
+	 */
+	add(workflowId: string, messageId: string, delivery: PendingStageMessageDelivery, logicalRunId?: string): boolean {
+		let workflow = this.workflows.get(workflowId);
+		if (workflow === undefined) {
+			workflow = { byMessage: new Map(), log: [] };
+			this.workflows.set(workflowId, workflow);
+		}
+		let byRun = workflow.byMessage.get(messageId);
+		if (byRun === undefined) {
+			byRun = new Map();
+			workflow.byMessage.set(messageId, byRun);
+		}
+		let byStage = byRun.get(delivery.runId);
+		if (byStage === undefined) {
+			byStage = new Map();
+			byRun.set(delivery.runId, byStage);
+		}
+		let receipts = byStage.get(delivery.stageId);
+		if (receipts === undefined) {
+			receipts = new StageReceipts();
+			byStage.set(delivery.stageId, receipts);
+		}
+		const added = receipts.add(logicalRunId, delivery.sessionId, delivery.admission);
+		let changed = added;
+		if (receipts.add(logicalRunId, undefined, undefined)) changed = true;
+		if (
+			delivery.admission === "context" &&
+			delivery.sessionId !== undefined &&
+			receipts.addAnySession(logicalRunId, "context")
+		)
+			changed = true;
+		if (changed) workflow.log.push(messageId);
+		return added;
+	}
+
+	/** Whether a receipt exists for the delivery, counted under `logicalRunId` or recorded without accounting. */
+	has(
+		workflowId: string,
+		messageId: string,
+		delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
+		logicalRunId: string,
+		anySession = false,
+	): boolean {
+		const receipts = this.workflows
+			.get(workflowId)
+			?.byMessage.get(messageId)
+			?.get(delivery.runId)
+			?.get(delivery.stageId);
+		if (receipts === undefined) return false;
+		if (anySession && delivery.admission === "context")
+			return (
+				receipts.hasAnySession(logicalRunId, delivery.admission) ||
+				receipts.hasAnySession(undefined, delivery.admission)
+			);
+		return (
+			receipts.has(logicalRunId, delivery.sessionId, delivery.admission) ||
+			receipts.has(undefined, delivery.sessionId, delivery.admission)
+		);
+	}
+
+	changesSince(workflowId: string, cursor: PendingStageReceiptCursor | undefined): PendingStageReceiptChanges {
+		let workflow = this.workflows.get(workflowId);
+		if (workflow === undefined) {
+			workflow = { byMessage: new Map(), log: [] };
+			this.workflows.set(workflowId, workflow);
+		}
+		const next = { log: workflow.log, length: workflow.log.length };
+		if (cursor === undefined || cursor.log !== workflow.log || cursor.length > workflow.log.length)
+			return { cursor: next, messageIds: undefined };
+		return { cursor: next, messageIds: workflow.log.slice(cursor.length) };
+	}
+
+	delete(workflowId: string): void {
+		this.workflows.delete(workflowId);
+	}
+
+	clear(): void {
+		this.workflows.clear();
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Backend interface
 // ---------------------------------------------------------------------------
@@ -161,6 +316,14 @@ export interface DurableWorkflowBackend {
 		anySession?: boolean,
 		logicalRunId?: string,
 	): boolean;
+	/**
+	 * Messages whose cached delivery receipts changed since `cursor`, so a caller that caches receipt
+	 * lookups can refresh only those messages. `messageIds` is `undefined` when any message may have changed.
+	 */
+	pendingStageDeliveryReceiptChanges?(
+		workflowId: string,
+		cursor: PendingStageReceiptCursor | undefined,
+	): PendingStageReceiptChanges | undefined;
 	hasPendingStageDeliveryReceipt?(
 		workflowId: string,
 		messageId: string,
@@ -459,7 +622,7 @@ class JournalProjection {
 	private readonly workflows = new Map<string, JournalWorkflowRecord>();
 	private readonly deletedWorkflowIds = new Set<string>();
 	private readonly pendingReceipts = new Map<string, Map<string, PendingStageMessage>>();
-	private readonly stickyReceipts = new Map<string, Set<string>>();
+	private readonly stickyReceipts = new PendingStageReceiptIndex();
 
 	registerWorkflow(handle: WorkflowRegistrationInput, authoritativeOwner = false): void {
 		this.deletedWorkflowIds.delete(handle.workflowId);
@@ -593,39 +756,8 @@ class JournalProjection {
 		delivery: PendingStageMessageDelivery,
 		accounting?: { readonly messageRunId: string; readonly deliveryCount: number },
 	): Promise<void> {
-		let receipts = this.stickyReceipts.get(workflowId);
-		if (receipts === undefined) {
-			receipts = new Set();
-			this.stickyReceipts.set(workflowId, receipts);
-		}
-		const logicalRunId = accounting?.messageRunId;
-		const receiptKey = pendingDeliveryReceiptKey(
-			messageId,
-			delivery.runId,
-			delivery.stageId,
-			delivery.sessionId,
-			delivery.admission,
-			logicalRunId,
-		);
-		const existing = receipts.has(receiptKey);
-		receipts.add(receiptKey);
-		receipts.add(
-			pendingDeliveryReceiptKey(messageId, delivery.runId, delivery.stageId, undefined, undefined, logicalRunId),
-		);
-		if (delivery.admission === "context" && delivery.sessionId !== undefined)
-			receipts.add(
-				anySessionReceiptKey(
-					pendingDeliveryReceiptKey(
-						messageId,
-						delivery.runId,
-						delivery.stageId,
-						undefined,
-						"context",
-						logicalRunId,
-					),
-				),
-			);
-		if (accounting !== undefined && !existing) {
+		const added = this.stickyReceipts.add(workflowId, messageId, delivery, accounting?.messageRunId);
+		if (accounting !== undefined && added) {
 			let byRun = this.stickyDeliveryCounts.get(workflowId);
 			if (byRun === undefined) {
 				byRun = new Map();
@@ -648,13 +780,7 @@ class JournalProjection {
 		delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
 		logicalRunId = workflowId,
 	): Promise<boolean> {
-		const receipts = this.stickyReceipts.get(workflowId);
-		if (receipts === undefined) return false;
-		const { runId, stageId, sessionId, admission } = delivery;
-		return (
-			receipts.has(pendingDeliveryReceiptKey(messageId, runId, stageId, sessionId, admission, logicalRunId)) ||
-			receipts.has(pendingDeliveryReceiptKey(messageId, runId, stageId, sessionId, admission, undefined))
-		);
+		return this.stickyReceipts.has(workflowId, messageId, delivery, logicalRunId);
 	}
 
 	hasCachedPendingStageDeliveryReceipt(
@@ -664,27 +790,14 @@ class JournalProjection {
 		anySession = false,
 		logicalRunId = workflowId,
 	): boolean {
-		const receipts = this.stickyReceipts.get(workflowId);
-		if (receipts === undefined) return false;
-		const { runId, stageId, admission } = delivery;
-		if (anySession && admission === "context")
-			return (
-				receipts.has(
-					anySessionReceiptKey(
-						pendingDeliveryReceiptKey(messageId, runId, stageId, undefined, admission, logicalRunId),
-					),
-				) ||
-				receipts.has(
-					anySessionReceiptKey(
-						pendingDeliveryReceiptKey(messageId, runId, stageId, undefined, admission, undefined),
-					),
-				)
-			);
-		const { sessionId } = delivery;
-		return (
-			receipts.has(pendingDeliveryReceiptKey(messageId, runId, stageId, sessionId, admission, logicalRunId)) ||
-			receipts.has(pendingDeliveryReceiptKey(messageId, runId, stageId, sessionId, admission, undefined))
-		);
+		return this.stickyReceipts.has(workflowId, messageId, delivery, logicalRunId, anySession);
+	}
+
+	pendingStageDeliveryReceiptChanges(
+		workflowId: string,
+		cursor: PendingStageReceiptCursor | undefined,
+	): PendingStageReceiptChanges {
+		return this.stickyReceipts.changesSince(workflowId, cursor);
 	}
 
 	recordCheckpoint(recorded: DurableCheckpoint): void {
@@ -974,27 +1087,3 @@ function toResumableEntry(handle: DurableWorkflowHandle): ResumableWorkflowEntry
 
 /** Count-version tokens are unique across projections, so tokens from different backends never compare equal. */
 let deliveryCountEpoch = 0;
-
-/**
- * An injective receipt key built by concatenation: each part is length-prefixed and an absent part is `-`,
- * which no length prefix starts with. Counted receipts carry their logical run; uncounted ones do not.
- */
-function pendingDeliveryReceiptKey(
-	messageId: string,
-	runId: string,
-	stageId: string,
-	sessionId: string | undefined,
-	admission: string | undefined,
-	logicalRunId: string | undefined,
-): string {
-	return `${logicalRunId === undefined ? "u" : `c${receiptKeyPart(logicalRunId)}`}${receiptKeyPart(messageId)}${receiptKeyPart(runId)}${receiptKeyPart(stageId)}${receiptKeyPart(sessionId)}${receiptKeyPart(admission)}`;
-}
-
-function receiptKeyPart(value: string | undefined): string {
-	return value === undefined ? "-" : `${value.length}:${value}`;
-}
-
-/** A context admission receipt that matches any session of its stage. */
-function anySessionReceiptKey(receiptKey: string): string {
-	return `${receiptKey}*`;
-}

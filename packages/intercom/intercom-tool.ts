@@ -176,7 +176,17 @@ function formatWorkflowStageRow(stage: WorkflowStageRosterEntry): string {
 function formatWorkflowFutureStageRow(stage: WorkflowFutureStageRosterEntry): string {
 	return `- \`${stage.target}\` [${stage.deliveryOnly === true ? "delivery" : "future"}] ${stage.queuedCount} queued message${
 		stage.queuedCount === 1 ? "" : "s"
-	}${(stage.deliveryStates ?? []).map((delivery) => `\n  delivery ${delivery.messageId} stage ${delivery.runId}/${delivery.stageId}${delivery.sessionId === undefined ? "" : ` session ${delivery.sessionId}`} ${delivery.state} — ${delivery.reason}`).join("")}`;
+	}${(stage.deliveryStates ?? []).map((delivery) => `\n  delivery ${delivery.messageId} stage ${delivery.runId}/${delivery.stageId}${delivery.sessionId === undefined ? "" : ` session ${delivery.sessionId}`} ${delivery.state} — ${delivery.reason}`).join("")}${formatDeliveryStateSummary(stage)}`;
+}
+
+/** Per-state totals of a row whose delivery states were bounded, and how many the row omits. */
+function formatDeliveryStateSummary(stage: WorkflowFutureStageRosterEntry): string {
+	const omitted = stage.omittedDeliveryStates ?? 0;
+	if (omitted === 0 || stage.deliveryStateCounts === undefined) return "";
+	const counts = Object.entries(stage.deliveryStateCounts)
+		.map(([state, count]) => `${count} ${state}`)
+		.join(", ");
+	return `\n  … ${omitted} more delivery state${omitted === 1 ? "" : "s"} omitted (all: ${counts})`;
 }
 
 interface IntercomToolDeps {

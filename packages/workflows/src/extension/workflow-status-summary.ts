@@ -28,6 +28,7 @@ import type {
 import { pendingWorkflowStageStatuses } from "../shared/pending-stage-status.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { observeRunExecution, type RunExecutionObservation } from "../shared/run-execution-state.js";
+import { boundStickyDeliveryStates } from "../shared/sticky-delivery-state-bound.js";
 import { type StickyStageDeliveryStatus, stickyStageDeliveryStatuses } from "../shared/sticky-stage-delivery-status.js";
 import type {
 	PendingPrompt,
@@ -106,7 +107,10 @@ export interface WorkflowRunStatusSummary extends RunExecutionObservation {
 	readonly activeStages: readonly WorkflowStatusActiveStage[];
 	/** Materialized pending stages with canonical identity and truthful pre-start delivery capability. */
 	readonly pendingStages: readonly PendingWorkflowStageStatus[];
+	/** At most a few exemplar delivery states; see {@link boundStickyDeliveryStates}. */
 	readonly deliveryStates?: readonly StickyStageDeliveryStatus[];
+	readonly deliveryStateCounts?: Readonly<Record<string, number>>;
+	readonly omittedDeliveryStates?: number;
 	/** Durable, non-attachable ctx.tool graph nodes in authored order. */
 	readonly tools: readonly WorkflowStatusToolNode[];
 	readonly awaitingInputCount: number;
@@ -277,7 +281,9 @@ export function summarizeRunSnapshot(
 			...(stage.rateLimits !== undefined ? { rateLimits: stage.rateLimits } : {}),
 		})),
 		pendingStages: pendingWorkflowStageStatuses(run, options?.owningRunStatus, options?.resolveBoundarySegments),
-		deliveryStates: stickyStageDeliveryStatuses(options?.allRuns ?? [run], run.id, options?.durableBackend),
+		...boundStickyDeliveryStates(
+			stickyStageDeliveryStatuses(options?.allRuns ?? [run], run.id, options?.durableBackend),
+		),
 		tools: run.toolNodes.map((tool) => {
 			const owner = tool as typeof tool & {
 				readonly runId?: string;

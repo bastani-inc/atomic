@@ -88,6 +88,8 @@ The `[future]` queued count is the number of retained sticky messages, not the n
 
 `[delivery]` rows retain per-stage evidence for sticky targets missing from the future-target list, including exact targets after materialization. They do not indicate that a stage is still in the future or currently live. Use the per-stage state to decide what to do; an ended stage without confirmed context admission shows `stage-terminal`, even when transport delivery was acknowledged.
 
+Each row in `intercom list`, and each run in `workflow` status, lists at most 5 delivery states. When there are more, the states that still need action come first (`queued`, `receipt-unverified`, `session-replaced`, `delivery-unavailable`, `root-unresolved`, `stage-terminal`), followed by the most recent `delivered` ones. A final line reports how many states were omitted and the total in each state. The `deliveryStateCounts` and `omittedDeliveryStates` fields carry the same totals.
+
 | State | What to do |
 | --- | --- |
 | `queued` | Wait for the matching stage to finish startup. |
