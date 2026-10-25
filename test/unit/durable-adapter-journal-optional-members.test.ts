@@ -5,7 +5,11 @@ import { afterEach, test } from "vitest";
 import { registerRunJournalConformance } from "../../packages/workflows/src/durable/journal/conformance.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import { RUN_EVENT_TYPES, type RunJournal } from "../../packages/workflows/src/durable/journal/types.js";
+import {
+	type AppendOutcome,
+	RUN_EVENT_TYPES,
+	type RunJournal,
+} from "../../packages/workflows/src/durable/journal/types.js";
 import type { PendingStageMessage } from "../../packages/workflows/src/shared/store-types.js";
 import { observeJournalRead } from "../helpers/journal-read-observation.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -133,6 +137,43 @@ registerRunJournalConformance(
 		return observeJournalRead(backing);
 	},
 );
+
+test("conformance rejects an adapter whose appendMany drops valid neighbours of a failed append (#3964)", async () => {
+	const cases = new Map<string, () => Promise<void>>();
+	registerRunJournalConformance(
+		(name, body) => cases.set(name, body),
+		"whole-batch",
+		async () => {
+			const { journal, backing } = adapterJournal(await openBacking());
+			const wholeBatch: RunJournal = {
+				...journal,
+				appendMany: async (lease, appends) => {
+					const results: PromiseSettledResult<AppendOutcome>[] = [];
+					for (const { event, key } of appends) {
+						const failure = results.find((result) => result.status === "rejected");
+						if (failure !== undefined) {
+							results.push(failure);
+							continue;
+						}
+						const [result] = await Promise.allSettled([backing.append(lease, event, { key })]);
+						results.push(result);
+					}
+					return results;
+				},
+			};
+			backings.set(wholeBatch, backing);
+			return wholeBatch;
+		},
+		(journal) => {
+			const backing = backings.get(journal);
+			assert.ok(backing);
+			return observeJournalRead(backing);
+		},
+	);
+	const isolation = [...cases].find(([name]) => name.includes("isolates a failed append"));
+	assert.ok(isolation, "no appendMany failure-isolation conformance case");
+	await assert.rejects(isolation[1]());
+});
 
 test("an adapter journal's appendMany batches delivery receipts (#3964)", async () => {
 	const { journal, calls } = adapterJournal(await openBacking());

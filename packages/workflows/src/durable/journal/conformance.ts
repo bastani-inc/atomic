@@ -520,6 +520,32 @@ export function registerRunJournalConformance(
 		);
 		assert.equal((await entries(journal)).length, 2);
 	});
+	check("optional appendMany isolates a failed append from its valid neighbours", async (journal) => {
+		if (journal.appendMany === undefined) return;
+		await journal.createRun(header);
+		const held = await lease(journal);
+		const context = <R>(action: () => R): R => action();
+		const results = await journal.appendMany(held, [
+			{ event: { type: "RunStarted", payload: null }, context },
+			{ event: { type: "StatusChanged", payload: { status: "bad\u0000status" } }, context },
+			{ event: { type: "StatusChanged", payload: { status: "waiting" } }, context },
+		]);
+		assert.deepEqual(
+			results.map((result) => result.status),
+			["fulfilled", "rejected", "fulfilled"],
+		);
+		const [started, invalid, waiting] = results;
+		assert.ok(invalid?.status === "rejected" && invalid.reason instanceof JournalInvalidTextError);
+		assert.deepEqual(
+			[started, waiting].map((result) => (result?.status === "fulfilled" ? result.value.entry.seq : undefined)),
+			[1, 2],
+		);
+		assert.deepEqual(
+			(await entries(journal)).map((entry) => entry.event.type),
+			["RunStarted", "StatusChanged"],
+		);
+		assert.equal((await journal.getRun(header.runId))?.status, "waiting");
+	});
 	check("optional change tracking reports run versions and snapshot tails", async (journal) => {
 		const members = [journal.changeToken, journal.runVersions, journal.snapshotTail];
 		if (members.every((member) => member === undefined)) return;
