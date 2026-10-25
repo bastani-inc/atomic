@@ -1501,7 +1501,6 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 				deliveryStates: [
 					{
 						messageId: "s3",
-						target: `workflow:${RUN_ID}/**`,
 						runId: RUN_ID,
 						stageId: "reviewer-id",
 						state: "queued",
@@ -1597,6 +1596,9 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 	test("terminal sticky stages give terminal guidance unless context receipt is confirmed (#3406)", async () => {
 		const { requireStoreDurableBackend } = await import("../../packages/workflows/src/durable/store-backend.js");
 		const { inspectRun } = await import("../../packages/workflows/src/runs/background/run-inspect.js");
+		const { stickyStageDeliveryStatuses } = await import(
+			"../../packages/workflows/src/shared/sticky-stage-delivery-status.js"
+		);
 		const { store, queueSticky, dispose } = await rowHarness({});
 		try {
 			await queueSticky("terminal-3406", `workflow:${RUN_ID}/**`);
@@ -1624,9 +1626,16 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 							requireStoreDurableBackend(store),
 						);
 					}
+					// Inspection lists a bounded set of exemplar states, so the stage's state comes from the full
+					// computation; the inspected counts must cover every state.
 					const detail = inspectRun(RUN_ID, { store });
 					assert.ok(detail.ok);
-					const state = detail.detail.deliveryStates?.find((delivery) => delivery.stageId === stageId);
+					const all = stickyStageDeliveryStatuses(store.runs(), RUN_ID, requireStoreDurableBackend(store));
+					assert.equal(
+						Object.values(detail.detail.deliveryStateCounts ?? {}).reduce((total, count) => total + count, 0),
+						all.length,
+					);
+					const state = all.find((delivery) => delivery.stageId === stageId);
 					actual.push({
 						stageId,
 						state: state?.state,

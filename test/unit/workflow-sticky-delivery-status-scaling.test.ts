@@ -14,8 +14,12 @@ import { createJournalProjection } from "../../packages/workflows/src/durable/ba
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import { registerPendingStageIntercomBridge } from "../../packages/workflows/src/extension/pending-stage-intercom.js";
+import { buildWorkflowStatusListing } from "../../packages/workflows/src/extension/workflow-status-summary.js";
+import { renderWorkflowToolContent } from "../../packages/workflows/src/extension/workflow-tool-content.js";
+import { inspectRun } from "../../packages/workflows/src/runs/background/run-inspect.js";
 import type { PossibleStageRow } from "../../packages/workflows/src/shared/possible-stage-rows.js";
 import { STICKY_DELIVERY_STATE_EXEMPLAR_LIMIT } from "../../packages/workflows/src/shared/sticky-delivery-state-bound.js";
+import { stickyStageDeliveryStatuses } from "../../packages/workflows/src/shared/sticky-stage-delivery-status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { PendingStageMessage, RunSnapshot, StageStatus } from "../../packages/workflows/src/shared/store-types.js";
 import { possibleStageRows } from "../helpers/reference-possible-stage-rows/possible-stage-rows.js";
@@ -278,6 +282,41 @@ describe("sticky delivery status scaling", () => {
 				);
 			console.log(
 				`${LARGE_ENTRIES} entries, ${rows.length} rows: announcement possibleStages ${Buffer.byteLength(JSON.stringify(unboundedRows))} bytes unbounded, ${Buffer.byteLength(JSON.stringify(rows))} bytes bounded; list details ${listBytes(unboundedRows)} bytes unbounded, ${listBytes(rows)} bytes bounded`,
+			);
+		},
+		SCALING_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"workflow status and run inspection list a bounded number of delivery states at 8,000 entries",
+		async () => {
+			const { store, backend } = await invocation(LARGE_ENTRIES);
+			const root = store.runs().find((run) => run.id === ROOT_RUN_ID)!;
+			const states = stickyStageDeliveryStatuses(store.runs(), ROOT_RUN_ID, backend);
+			const total = states.length;
+			assert.ok(total > LARGE_ENTRIES, `only ${total} delivery states`);
+			const inspected = inspectRun(ROOT_RUN_ID, { store });
+			assert.ok(inspected.ok);
+			const listing = buildWorkflowStatusListing([root], "all", Date.now(), {
+				allRuns: store.runs(),
+				durableBackend: backend,
+			});
+			for (const bounded of [inspected.detail, listing.runs[0]!]) {
+				assert.equal(bounded.deliveryStates?.length, STICKY_DELIVERY_STATE_EXEMPLAR_LIMIT);
+				assert.equal(bounded.omittedDeliveryStates, total - STICKY_DELIVERY_STATE_EXEMPLAR_LIMIT);
+				assert.equal(
+					Object.values(bounded.deliveryStateCounts ?? {}).reduce((sum, count) => sum + count, 0),
+					total,
+				);
+			}
+			const text = renderWorkflowToolContent({ action: "status", ...listing }, { action: "status" });
+			assert.equal(text.match(/Intercom delivery /g)?.length, STICKY_DELIVERY_STATE_EXEMPLAR_LIMIT);
+			assert.match(
+				text,
+				new RegExp(`… ${total - STICKY_DELIVERY_STATE_EXEMPLAR_LIMIT} more delivery states omitted \\(all: `),
+			);
+			console.log(
+				`${LARGE_ENTRIES} entries, ${total} delivery states (${Buffer.byteLength(JSON.stringify(states))} bytes unbounded): inspect detail ${Buffer.byteLength(JSON.stringify(inspected.detail))} bytes, status text ${Buffer.byteLength(text)} bytes`,
 			);
 		},
 		SCALING_TEST_TIMEOUT_MS,

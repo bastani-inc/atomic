@@ -744,7 +744,7 @@ describe("intercom list renders possible future stage rows (D7)", () => {
 	});
 
 	test("list says how many delivery states a bounded row omits, with every state's total (#3406)", async () => {
-		const deliveryStates = Array.from({ length: 20 }, (_, index) => ({
+		const deliveryStates = Array.from({ length: 5 }, (_, index) => ({
 			messageId: `sticky-${index}`,
 			runId: futureRow.runId,
 			stageId: `orchestrator-${index}`,
@@ -756,7 +756,7 @@ describe("intercom list renders possible future stage rows (D7)", () => {
 			deliveryOnly: true,
 			deliveryStates,
 			deliveryStateCounts: { queued: 25, delivered: 7_975 },
-			omittedDeliveryStates: 7_980,
+			omittedDeliveryStates: 7_995,
 		};
 		const { tool } = futureFixture({
 			sessions: [session("self-session-id", "self")],
@@ -765,8 +765,8 @@ describe("intercom list renders possible future stage rows (D7)", () => {
 		});
 		const result = await tool.execute("list-call", { action: "list" }, undefined, undefined, context);
 		const text = result.content[0]?.text ?? "";
-		assert.equal(text.match(/\n {2}delivery sticky-/g)?.length, 20);
-		assert.match(text, /\n {2}… 7980 more delivery states omitted \(all: 25 queued, 7975 delivered\)/);
+		assert.equal(text.match(/\n {2}delivery sticky-/g)?.length, 5);
+		assert.match(text, /\n {2}… 7995 more delivery states omitted \(all: 25 queued, 7975 delivered\)/);
 		const details = (result as unknown as { details?: { workflowFutureStages?: unknown[] } }).details;
 		assert.deepEqual(details?.workflowFutureStages, [row]);
 	});

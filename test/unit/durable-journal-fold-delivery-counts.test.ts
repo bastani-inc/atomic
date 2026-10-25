@@ -88,8 +88,13 @@ test("folded sticky entries carry their archived delivery counts, live and after
 					} as PendingStageMessage,
 				];
 				assert.equal(await backend.persistPendingStageMessages(ROOT_RUN_ID, list), true);
-			} else if (roll < 0.45) {
+			} else if (roll < 0.4) {
 				list = list.filter((_, index) => index !== Math.floor(next() * list.length));
+				assert.equal(await backend.persistPendingStageMessages(ROOT_RUN_ID, list), true);
+			} else if (roll < 0.45) {
+				// Retention drops an entry while a send appends one: same length, every later entry shifted.
+				const index = Math.floor(next() * list.length);
+				list = [...list.filter((_, position) => position !== index), list[index]!];
 				assert.equal(await backend.persistPendingStageMessages(ROOT_RUN_ID, list), true);
 			} else if (roll < 0.55) {
 				// The writer persists a stale count, as a store that missed a recovery would.

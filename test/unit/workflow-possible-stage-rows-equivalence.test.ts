@@ -13,11 +13,11 @@ import { setDurableBackend } from "../../packages/workflows/src/durable/factory.
 import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import { registerPendingStageIntercomBridge } from "../../packages/workflows/src/extension/pending-stage-intercom.js";
 import {
+	boundPossibleStageDeliveryStates,
 	type PossibleStageRow,
 	PossibleStageRowsIndex,
 	WorkflowTopologyIndex,
 } from "../../packages/workflows/src/shared/possible-stage-rows.js";
-import { boundStickyDeliveryStates } from "../../packages/workflows/src/shared/sticky-delivery-state-bound.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type {
 	PendingStageMessage,
@@ -297,7 +297,7 @@ class History {
 /** The reference rows with each row's delivery states bounded, as announcements carry them. */
 function bounded(rows: ReturnType<typeof possibleStageRows>): PossibleStageRow[] {
 	return rows.map(({ deliveryStates, ...row }) =>
-		deliveryStates === undefined ? row : { ...row, ...boundStickyDeliveryStates(deliveryStates) },
+		deliveryStates === undefined ? row : { ...row, ...boundPossibleStageDeliveryStates(deliveryStates) },
 	);
 }
 

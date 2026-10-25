@@ -19,10 +19,26 @@ export interface PossibleStageRow {
 	readonly target: string;
 	readonly queuedCount: number;
 	readonly deliveryOnly?: true;
-	/** Bounded delivery states with their counts and the number omitted; see {@link boundStickyDeliveryStates}. */
-	readonly deliveryStates?: readonly StickyStageDeliveryStatus[];
+	/**
+	 * Bounded delivery states with their counts and the number omitted; see {@link boundStickyDeliveryStates}.
+	 * Each state leaves out its target, which is the row's.
+	 */
+	readonly deliveryStates?: readonly PossibleStageDeliveryState[];
 	readonly deliveryStateCounts?: Readonly<Record<string, number>>;
 	readonly omittedDeliveryStates?: number;
+}
+
+export type PossibleStageDeliveryState = Omit<StickyStageDeliveryStatus, "target">;
+
+/** One row's delivery states bounded, each without the target the row already names. */
+export function boundPossibleStageDeliveryStates(
+	states: readonly StickyStageDeliveryStatus[],
+): BoundedStickyDeliveryStates<PossibleStageDeliveryState> {
+	const bounded = boundStickyDeliveryStates(states);
+	return {
+		...bounded,
+		deliveryStates: bounded.deliveryStates.map(({ target: _target, ...state }) => state),
+	};
 }
 
 /**
@@ -168,7 +184,10 @@ export class PossibleStageRowsIndex {
 		string,
 		{ readonly row: PossibleStageRow; readonly statuses: readonly StickyStageDeliveryStatus[] | undefined }
 	>();
-	private readonly boundedStates = new WeakMap<readonly StickyStageDeliveryStatus[], BoundedStickyDeliveryStates>();
+	private readonly boundedStates = new WeakMap<
+		readonly StickyStageDeliveryStatus[],
+		BoundedStickyDeliveryStates<PossibleStageDeliveryState>
+	>();
 	private readonly deliveriesByEntry = new WeakMap<PendingStageMessage, Map<string, PendingStageMessageDelivery[]>>();
 	/** Each entry's last status per stage, valid while the stage's fields and the message's receipts hold. */
 	private readonly statusCache = new WeakMap<PendingStageMessage, Map<StageSnapshot, CachedStatus>>();
@@ -645,28 +664,34 @@ export class PossibleStageRowsIndex {
 		deliveryOnly?: true,
 	): PossibleStageRow {
 		const cached = this.rowCache.get(slot);
-		if (
+		const same =
 			cached !== undefined &&
 			cached.row.target === target &&
 			cached.row.queuedCount === queuedCount &&
-			cached.row.deliveryOnly === deliveryOnly &&
-			cached.statuses === deliveryStates
-		)
+			cached.row.deliveryOnly === deliveryOnly;
+		if (same && cached.statuses === deliveryStates) return cached.row;
+		const bounded = deliveryStates === undefined ? undefined : this.bounded(deliveryStates);
+		// A change the bound hides (an omitted state) leaves the announced row as it was.
+		if (same && sameBoundedRow(cached.row, bounded)) {
+			this.rowCache.set(slot, { row: cached.row, statuses: deliveryStates });
 			return cached.row;
+		}
 		const row: PossibleStageRow = {
 			target,
 			queuedCount,
 			...(deliveryOnly === true ? { deliveryOnly } : {}),
-			...(deliveryStates === undefined ? {} : this.bounded(deliveryStates)),
+			...bounded,
 		};
 		this.rowCache.set(slot, { row, statuses: deliveryStates });
 		return row;
 	}
 
-	private bounded(states: readonly StickyStageDeliveryStatus[]): BoundedStickyDeliveryStates {
+	private bounded(
+		states: readonly StickyStageDeliveryStatus[],
+	): BoundedStickyDeliveryStates<PossibleStageDeliveryState> {
 		let bounded = this.boundedStates.get(states);
 		if (bounded === undefined) {
-			bounded = boundStickyDeliveryStates(states);
+			bounded = boundPossibleStageDeliveryStates(states);
 			this.boundedStates.set(states, bounded);
 		}
 		return bounded;
@@ -703,14 +728,31 @@ export class PossibleStageRowsIndex {
 	}
 }
 
+function sameBoundedRow(
+	row: PossibleStageRow,
+	bounded: BoundedStickyDeliveryStates<PossibleStageDeliveryState> | undefined,
+): boolean {
+	if (bounded === undefined) return row.deliveryStates === undefined;
+	if (row.deliveryStates === undefined || row.omittedDeliveryStates !== bounded.omittedDeliveryStates) return false;
+	const counts = Object.entries(row.deliveryStateCounts ?? {});
+	const boundedCounts = Object.entries(bounded.deliveryStateCounts ?? {});
+	if (
+		counts.length !== boundedCounts.length ||
+		counts.some(([state, count], index) => boundedCounts[index]![0] !== state || boundedCounts[index]![1] !== count)
+	)
+		return false;
+	return sameStatuses(row.deliveryStates, bounded.deliveryStates);
+}
+
+/** Field-by-field equality of two status lists; a list without targets compares equal targets as absent. */
 function sameStatuses(
-	left: readonly StickyStageDeliveryStatus[],
-	right: readonly StickyStageDeliveryStatus[],
+	left: readonly PossibleStageDeliveryState[],
+	right: readonly PossibleStageDeliveryState[],
 ): boolean {
 	if (left.length !== right.length) return false;
 	for (let index = 0; index < left.length; index++) {
-		const a = left[index]!;
-		const b = right[index]!;
+		const a = left[index]! as Partial<StickyStageDeliveryStatus>;
+		const b = right[index]! as Partial<StickyStageDeliveryStatus>;
 		if (
 			a.messageId !== b.messageId ||
 			a.target !== b.target ||

@@ -22,6 +22,7 @@ import {
 	structuredRecoverableWorkflowFailureText,
 } from "../../shared/returned-run-status.js";
 import { observeRunExecution, type RunExecutionObservation } from "../../shared/run-execution-state.js";
+import { boundStickyDeliveryStates } from "../../shared/sticky-delivery-state-bound.js";
 import {
 	type StickyStageDeliveryStatus,
 	stickyStageDeliveryStatuses,
@@ -60,7 +61,10 @@ export interface RunDetail extends RunExecutionObservation {
 	readonly inputs: Readonly<WorkflowInputValues>;
 	readonly stages: readonly RunSnapshot["stages"][number][];
 	readonly tools: readonly RunSnapshot["toolNodes"][number][];
+	/** At most a few exemplar delivery states; see {@link boundStickyDeliveryStates}. */
 	readonly deliveryStates?: readonly StickyStageDeliveryStatus[];
+	readonly deliveryStateCounts?: Readonly<Record<string, number>>;
+	readonly omittedDeliveryStates?: number;
 	readonly result?: WorkflowOutputValues;
 	readonly error?: string;
 	readonly exited?: boolean;
@@ -140,11 +144,13 @@ export function inspectRun(
 		inputs: copy.inputs,
 		stages: expandedStages.map((stage) => structuredClone(stage)),
 		tools: expandedGraph.tools.map((tool) => structuredClone(tool)),
-		deliveryStates: stickyStageDeliveryStatuses(
-			activeStore.runs(),
-			copy.rootRunId ?? copy.id,
-			availableStoreDurableBackend(activeStore, copy.id),
-		).filter((delivery) => copy.id === (copy.rootRunId ?? copy.id) || delivery.runId === copy.id),
+		...boundStickyDeliveryStates(
+			stickyStageDeliveryStatuses(
+				activeStore.runs(),
+				copy.rootRunId ?? copy.id,
+				availableStoreDurableBackend(activeStore, copy.id),
+			).filter((delivery) => copy.id === (copy.rootRunId ?? copy.id) || delivery.runId === copy.id),
+		),
 		result: copy.result,
 		error:
 			copy.error ??

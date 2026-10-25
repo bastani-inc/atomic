@@ -1,7 +1,7 @@
 import type { WorkflowPossibleStageAnnouncement, WorkflowStickyDeliveryState } from "./types.js";
 
 /** Most delivery states one possible-stage row carries; the rest are counted, not listed. */
-export const WORKFLOW_DELIVERY_STATE_EXEMPLAR_LIMIT = 20;
+export const WORKFLOW_DELIVERY_STATE_EXEMPLAR_LIMIT = 5;
 
 /** States that still need action, in the order exemplars are chosen; `delivered` follows, most recent first. */
 const UNRESOLVED_STATES = [

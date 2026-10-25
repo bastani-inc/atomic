@@ -1947,9 +1947,9 @@ test("the broker bounds an unbounded delivery-state row from an older host to ex
 	await owner.listSessions();
 	const [row] = (await member.listDirectory()).workflowFutureStages;
 	assert.ok(row !== undefined);
-	assert.equal(row.deliveryStates?.length, 20);
+	assert.equal(row.deliveryStates?.length, 5);
 	assert.deepEqual(row.deliveryStateCounts, { queued: 2_000, delivered: 6_000 });
-	assert.equal(row.omittedDeliveryStates, 7_980);
+	assert.equal(row.omittedDeliveryStates, 7_995);
 	// Unresolved states lead the exemplars.
 	assert.ok(row.deliveryStates?.every((delivery) => delivery.state === "queued"));
 });

@@ -216,8 +216,14 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	 * The receipts and settlements queued last for each run, not yet started: one more appended before any other
 	 * operation of the run joins them, so they are written together in their queue order.
 	 */
-	/** Each run's pending-stage list as last reconciled against archived delivery counts while folding. */
-	private readonly reconciledPendingStageLists = new Map<string, readonly PendingStageMessage[]>();
+	/**
+	 * Each run's pending-stage list as last reconciled against archived delivery counts while folding, and
+	 * the positions of each message id in it once a receipt needed them.
+	 */
+	private readonly reconciledPendingStages = new Map<
+		string,
+		{ readonly list: readonly PendingStageMessage[]; positions: Map<string, number[]> | undefined }
+	>();
 	private readonly appendBatches = new Map<string, QueuedAppend[]>();
 	private readonly catalogQueue = Symbol("catalog");
 	private readonly lost = new Map<string, Error>();
@@ -354,7 +360,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	/**
 	 * Raise each folded sticky entry's delivery count to its archived count, as re-reading every entry's
 	 * count after each event would. Only entries the last fold did not already reconcile are read: entries
-	 * new to the run's list, and the entries of a message whose count this event raised.
+	 * new to the run's list, and the entries of a message whose count this event raised. Live appends and
+	 * replay both fold through here, so hydrating a journal reads counts in proportion to its events.
 	 */
 	private reconcileFoldedDeliveryCounts(
 		runId: string,
@@ -363,34 +370,70 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		const handle = this.projection.getWorkflow(runId);
 		const list = handle?.pendingStageMessages;
 		if (handle === undefined || list === undefined) {
-			this.reconciledPendingStageLists.delete(runId);
+			this.reconciledPendingStages.delete(runId);
 			return;
 		}
-		const previous = this.reconciledPendingStageLists.get(runId);
+		let state = this.reconciledPendingStages.get(runId);
 		let next: PendingStageMessage[] | undefined;
-		const reconcile = (index: number): void => {
-			const message = list[index]!;
-			if (message.sticky !== true) return;
-			const count = this.projection.getPendingStageMessageDeliveryCount(runId, message.id, message.runId);
+		const raise = (index: number, count: number): void => {
+			const message = (next ?? list)[index]!;
 			if (count <= (message.deliveryCount ?? message.deliveries?.length ?? 0)) return;
 			next ??= [...list];
 			next[index] = { ...message, deliveryCount: count };
 		};
-		if (previous !== list) {
-			const reconciled = previous === undefined ? undefined : new Set(previous);
-			for (let index = 0; index < list.length; index++) if (!reconciled?.has(list[index]!)) reconcile(index);
+		const reconcile = (index: number): void => {
+			const message = list[index]!;
+			if (message.sticky !== true) return;
+			raise(index, this.projection.getPendingStageMessageDeliveryCount(runId, message.id, message.runId));
+		};
+		if (state?.list !== list) {
+			const previous = state?.list ?? [];
+			// Entries at their previous position were reconciled. When the list only replaced entries in place
+			// or appended, every other position is new; after a shift, membership in the previous list decides.
+			let aligned = list.length >= previous.length;
+			const changed: number[] = [];
+			for (let index = 0; index < list.length; index++) {
+				const message = list[index]!;
+				if (previous[index] === message) continue;
+				if (index < previous.length && previous[index]!.id !== message.id) aligned = false;
+				changed.push(index);
+			}
+			const reconciled = aligned ? undefined : new Set(previous);
+			for (const index of changed) if (!reconciled?.has(list[index]!)) reconcile(index);
+			// Replacing an entry with the same message, or appending, keeps every earlier message's position.
+			const positions = aligned ? state?.positions : undefined;
+			if (positions !== undefined) {
+				for (let index = previous.length; index < list.length; index++) {
+					const indexes = positions.get(list[index]!.id);
+					if (indexes === undefined) positions.set(list[index]!.id, [index]);
+					else indexes.push(index);
+				}
+			}
+			state = { list, positions };
 		}
 		if (raisedCount !== undefined) {
-			for (const index of pendingStageMessageIndexes(list).get(raisedCount.messageId) ?? []) {
-				if (list[index]!.runId === raisedCount.messageRunId) reconcile(index);
+			const count = this.projection.getPendingStageMessageDeliveryCount(
+				runId,
+				raisedCount.messageId,
+				raisedCount.messageRunId,
+			);
+			state.positions ??= messagePositions(list);
+			for (const index of state.positions.get(raisedCount.messageId) ?? []) {
+				const message = list[index]!;
+				if (message.sticky === true && message.runId === raisedCount.messageRunId) raise(index, count);
 			}
 		}
 		if (next === undefined) {
-			this.reconciledPendingStageLists.set(runId, list);
+			this.reconciledPendingStages.set(runId, state);
 			return;
 		}
 		this.projection.applyWorkflowSnapshot({ ...handle, pendingStageMessages: next });
-		this.reconciledPendingStageLists.set(runId, this.projection.getWorkflow(runId)?.pendingStageMessages ?? next);
+		const applied = this.projection.getWorkflow(runId)?.pendingStageMessages ?? next;
+		// A raise replaces entries in place, so positions carry over to the new list.
+		this.reconciledPendingStages.set(runId, {
+			list: applied,
+			positions: applied.length === list.length ? state.positions : undefined,
+		});
 	}
 	/**
 	 * Record a run's handle from its latest snapshot without folding its history. Each snapshot already counts
@@ -421,6 +464,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	private *rebuild(runId: string): Operation<void> {
 		const entries = yield* this.entries(runId);
 		void this.projection.deleteWorkflow(runId);
+		this.reconciledPendingStages.delete(runId);
 		this.sequences.delete(runId);
 		this.foldedAt.delete(runId);
 		this.summarized.delete(runId);
@@ -1214,20 +1258,15 @@ type DeltaEncodedMessage = Omit<PendingStageMessage, "deliveries"> & {
 };
 type JournalPendingStageMessage = PendingStageMessage | DeltaEncodedMessage;
 
-/** Positions of each message id in a pending-stage list, built once per list object. */
-const messageIndexes = new WeakMap<readonly PendingStageMessage[], Map<string, number[]>>();
-function pendingStageMessageIndexes(list: readonly PendingStageMessage[]): Map<string, number[]> {
-	let indexes = messageIndexes.get(list);
-	if (indexes === undefined) {
-		indexes = new Map();
-		list.forEach((message, index) => {
-			const positions = indexes!.get(message.id);
-			if (positions === undefined) indexes!.set(message.id, [index]);
-			else positions.push(index);
-		});
-		messageIndexes.set(list, indexes);
-	}
-	return indexes;
+/** Positions of each message id in a pending-stage list. */
+function messagePositions(list: readonly PendingStageMessage[]): Map<string, number[]> {
+	const positions = new Map<string, number[]>();
+	list.forEach((message, index) => {
+		const indexes = positions.get(message.id);
+		if (indexes === undefined) positions.set(message.id, [index]);
+		else indexes.push(index);
+	});
+	return positions;
 }
 
 /** Identities, kept per object like `entryJson`: an entry's run and id never change. */
