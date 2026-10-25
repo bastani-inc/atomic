@@ -358,3 +358,136 @@ test("a sticky message the broker could not forward to a disconnected stage is d
 		await fire("session_shutdown");
 	}
 });
+
+test("a reconnect during the stage's second startup drain still delivers a message queued while disconnected", async () => {
+	const runId = "39580000-0000-4000-8000-000000000003";
+	const group = `workflow:${runId}`;
+	const store = createStore();
+	const backend = await createMemoryTestBackend();
+	bindStoreDurableBackend(store, backend);
+	await backend.commitWorkflowRegistration({
+		workflowId: runId,
+		name: "flow",
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+	});
+	store.recordRunStart({
+		id: runId,
+		name: "flow",
+		inputs: {},
+		status: "running",
+		startedAt: 1,
+		toolNodes: [],
+		stages: [{ id: "review", name: "review", status: "running", parentIds: [], toolEvents: [] }],
+	});
+	const enqueue = async (id: string) => {
+		const queued = await store.queueStickyStageMessage(
+			{
+				runId,
+				stageKey: `workflow:${runId}/**`,
+				targetPath: `workflow:${runId}/**`,
+				from: { id: "planner", name: "planner", group },
+				message: { id, timestamp: 1, content: { text: id } },
+				queuedAt: new Date().toISOString(),
+			},
+			group,
+			group,
+			backend,
+		);
+		assert.equal(queued?.ok, true);
+	};
+	const clients: (IntercomClient | undefined)[] = [];
+	const connect = vi.spyOn(IntercomClient.prototype, "connect").mockImplementation(async function (
+		this: IntercomClient,
+	) {
+		// The first registration races a sticky send, so the second startup drain has a receipt to commit.
+		if (clients.length === 0) await enqueue("during-registration");
+		clients.push(this);
+	});
+	vi.spyOn(IntercomClient.prototype, "isConnected").mockImplementation(function (this: IntercomClient) {
+		return clients.at(-1) === this;
+	});
+	vi.spyOn(IntercomClient.prototype, "registerLiveWorkflowStageRoute").mockResolvedValue();
+	vi.spyOn(IntercomClient.prototype, "disconnect").mockResolvedValue();
+	// Hold the second startup drain at its receipt commit, after it took its queue snapshot.
+	const commitEntered = Promise.withResolvers<void>();
+	const releaseCommit = Promise.withResolvers<void>();
+	let commits = 0;
+	const delivery = createWorkflowPendingStageDelivery(store, runId, "review", "review", async (action) => {
+		commits += 1;
+		if (commits === 1) {
+			commitEntered.resolve();
+			await releaseCommit.promise;
+		}
+		return action();
+	});
+	const handlers = new Map<string, Array<(event: never, ctx: ExtensionContext) => void | Promise<void>>>();
+	const admitted: string[] = [];
+	const branch: Array<{ type: "custom_message"; customType: string; details: { message: { id: string } } }> = [];
+	intercomHeavy({
+		on(name: string, handler: (event: never, ctx: ExtensionContext) => void | Promise<void>) {
+			handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+		},
+		registerTool() {},
+		registerCommand() {},
+		registerShortcut() {},
+		registerMessageRenderer() {},
+		appendEntry() {},
+		getSessionName: () => undefined,
+		events: createEventBus(),
+		sendMessage(message: { customType: string; details: { message: { id: string } } }) {
+			admitted.push(message.details.message.id);
+			branch.push({ type: "custom_message", ...message });
+		},
+	} as never);
+	const ctx = {
+		hasUI: false,
+		cwd: process.cwd(),
+		isIdle: () => true,
+		ui: { notify() {} },
+		sessionManager: { getSessionId: () => "stage-session", getBranch: () => branch },
+		orchestrationContext: {
+			kind: "workflow-stage",
+			workflowRunId: runId,
+			workflowStageId: "review",
+			workflowStageName: "review",
+			intercomGroup: group,
+			pendingStageDelivery: delivery,
+		},
+	};
+	const fire = async (name: string) => {
+		for (const handler of handlers.get(name) ?? []) await handler({} as never, ctx as never);
+	};
+	const contextReceipts = (id: string) =>
+		store
+			.runs()[0]
+			?.pendingStageMessages?.find((entry) => entry.message.id === id)
+			?.deliveries?.filter((record) => record.sessionId === "stage-session" && record.admission === "context")
+			.length ?? 0;
+	let startup: Promise<void> | undefined;
+	try {
+		startup = fire("session_start");
+		await commitEntered.promise;
+		assert.deepEqual(admitted, ["during-registration"]);
+		// While the second startup drain waits on its receipt, the stage drops its connection, a sticky send
+		// reaches no live session, and the stage reconnects.
+		const dropped = clients.at(-1)!;
+		clients.push(undefined);
+		dropped.emit("disconnected", new Error("socket closed"));
+		await enqueue("while-disconnected");
+		for (let waited = 0; connect.mock.calls.length < 2 && waited < 5_000; waited += 25) await sleep(25);
+		assert.equal(connect.mock.calls.length, 2, "the stage reconnected during the startup drain");
+		releaseCommit.resolve();
+		await startup;
+		for (let waited = 0; contextReceipts("while-disconnected") === 0 && waited < 2_000; waited += 25) await sleep(25);
+		await sleep(50);
+		assert.deepEqual(admitted, ["during-registration", "while-disconnected"], "each message is admitted once");
+		assert.equal(contextReceipts("during-registration"), 1);
+		assert.equal(contextReceipts("while-disconnected"), 1);
+	} finally {
+		releaseCommit.resolve();
+		await startup?.catch(() => {});
+		await fire("session_shutdown");
+	}
+});

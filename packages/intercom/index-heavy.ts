@@ -507,8 +507,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     return plan.notices ?? [];
   }
   /**
-   * Re-runs a started workflow stage's pending-stage drain. Set once the stage's startup drains are done and
-   * called after every later reconnect: a sticky message the broker could not forward while this stage was
+   * Re-runs a workflow stage's pending-stage drain after every reconnect (a reconnect during the startup drains
+   * runs it once they finish): a sticky message the broker could not forward while this stage was
    * disconnected stays queued for it, and this drain delivers it. Messages already in the session's branch
    * are skipped, so nothing is delivered twice.
    */
@@ -1570,15 +1570,28 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         { sessionId: ctx.sessionManager.getSessionId(), receivedMessageIds },
       );
     };
-    redrainPendingStage = null;
-    await deliverPending();
-    await ensureConnected("startup");
-    await deliverPending();
-    redrainPendingStage = () => {
+    // A reconnect while the startup drains still run is remembered, not dropped: the second startup drain's queue
+    // snapshot can predate a sticky message the broker could not forward while this stage was disconnected.
+    let startupDrained = false;
+    let redrainRequested = false;
+    const redrain = (): void => {
       if (!getLiveContext(ctx, generation)) return;
+      if (!startupDrained) {
+        redrainRequested = true;
+        return;
+      }
       // A failed drain leaves its entries queued for the next reconnect or stage start.
       void deliverPending(true).catch(() => {});
     };
+    redrainPendingStage = redrain;
+    await deliverPending();
+    await ensureConnected("startup");
+    await deliverPending();
+    startupDrained = true;
+    if (redrainRequested) {
+      redrainRequested = false;
+      redrain();
+    }
   });
 
 

@@ -199,54 +199,86 @@ export function createWorkflowPendingStageDelivery(
 		}
 		return readyPromise;
 	};
+	type Deliver = Parameters<WorkflowPendingStageDelivery["deliverPending"]>[0];
+	/** One coalesced drain that runs after the current one settles, with the latest caller's sink. */
+	let followUp:
+		| { deliver: Deliver; recipient: WorkflowPendingStageRecipient; settled: PromiseWithResolvers<void> }
+		| undefined;
+	const startDrain = (deliver: Deliver, recipient: WorkflowPendingStageRecipient): Promise<void> => {
+		// After a terminal failure the queue is left exactly as it is: consuming
+		// entries for a stage that will not run would mark this stage's steering
+		// delivered to nobody. Resolving rather than rejecting keeps a late
+		// replay silent, which is the whole point of the terminal signal.
+		if (terminalError !== undefined) return Promise.resolve();
+		drainError = undefined;
+		progress();
+		const attempt = deliverPendingStageMessages(
+			activeStore,
+			runId,
+			stageId,
+			stageName,
+			async (from, message) => {
+				progress();
+				await deliver(from, message);
+				progress();
+			},
+			progressingCommit,
+			recipient,
+		);
+		const drain = attempt.then(
+			() => {
+				progress();
+				drainedSessionId = recipient?.sessionId;
+				resolveReady?.();
+				readyPromise = undefined;
+				resolveReady = undefined;
+				rejectReady = undefined;
+				if (drainPromise === drain) drainPromise = undefined;
+			},
+			(error: Error) => {
+				progress();
+				drainError = error;
+				rejectReady?.(error);
+				readyPromise = undefined;
+				resolveReady = undefined;
+				rejectReady = undefined;
+				if (drainPromise === drain) drainPromise = undefined;
+				throw error;
+			},
+		);
+		drainPromise = drain;
+		return boundedDrain(drain, recipient?.sessionId);
+	};
+	/**
+	 * A drain requested while another runs is never folded into it: that drain's queue snapshot predates the
+	 * request, so an entry queued since (for example while the stage was disconnected) would be skipped. One
+	 * follow-up drain runs once the current drain settles; further requests meanwhile share it.
+	 */
+	const requestDrain = (deliver: Deliver, recipient: WorkflowPendingStageRecipient): Promise<void> => {
+		const running = drainPromise;
+		if (running === undefined) return startDrain(deliver, recipient);
+		if (followUp !== undefined) {
+			followUp.deliver = deliver;
+			followUp.recipient = recipient;
+			return boundedDrain(followUp.settled.promise, recipient?.sessionId);
+		}
+		const next = { deliver, recipient, settled: Promise.withResolvers<void>() };
+		next.settled.promise.catch(() => {});
+		followUp = next;
+		void running
+			.catch(() => {})
+			.then(() => {
+				if (followUp === next) followUp = undefined;
+				return requestDrain(next.deliver, next.recipient);
+			})
+			.then(next.settled.resolve, next.settled.reject);
+		return boundedDrain(next.settled.promise, recipient?.sessionId);
+	};
 	return {
 		routeCapability: workflowPendingStageRouteCapability(activeStore, runId),
 		deliverPending(deliver, recipient) {
 			currentRecipient = recipient;
-			if (drainPromise !== undefined) return boundedDrain(drainPromise, recipient?.sessionId);
-			// After a terminal failure the queue is left exactly as it is: consuming
-			// entries for a stage that will not run would mark this stage's steering
-			// delivered to nobody. Resolving rather than rejecting keeps a late
-			// replay silent, which is the whole point of the terminal signal.
-			if (terminalError !== undefined) return Promise.resolve();
-			drainError = undefined;
-			progress();
-			const attempt = deliverPendingStageMessages(
-				activeStore,
-				runId,
-				stageId,
-				stageName,
-				async (from, message) => {
-					progress();
-					await deliver(from, message);
-					progress();
-				},
-				progressingCommit,
-				recipient,
-			);
-			const drain = attempt.then(
-				() => {
-					progress();
-					drainedSessionId = recipient?.sessionId;
-					resolveReady?.();
-					readyPromise = undefined;
-					resolveReady = undefined;
-					rejectReady = undefined;
-					if (drainPromise === drain) drainPromise = undefined;
-				},
-				(error: Error) => {
-					progress();
-					drainError = error;
-					rejectReady?.(error);
-					readyPromise = undefined;
-					resolveReady = undefined;
-					rejectReady = undefined;
-					if (drainPromise === drain) drainPromise = undefined;
-					throw error;
-				},
-			);
-			drainPromise = drain;
-			return boundedDrain(drain, recipient?.sessionId);
+			return requestDrain(deliver, recipient);
 		},
 		ready(sessionId) {
 			if (!hasUndelivered(sessionId)) {

@@ -338,4 +338,35 @@ describe("workflow pending-stage delivery liveness", () => {
 		assert.equal(ready, true);
 		assert.deepEqual(warnings, []);
 	});
+
+	test("a drain requested while another runs schedules one follow-up drain instead of joining it", async () => {
+		const { store, backend } = await fixtureWithQueuedMessage("first-1");
+		const releaseCommit = Promise.withResolvers<void>();
+		const commitEntered = Promise.withResolvers<void>();
+		let commits = 0;
+		const delivery = createWorkflowPendingStageDelivery(store, RUN_ID, STAGE_ID, STAGE_NAME, async (action) => {
+			commits += 1;
+			if (commits === 1) {
+				commitEntered.resolve();
+				await releaseCommit.promise;
+			}
+			return action();
+		});
+		const delivered: string[] = [];
+		const sink = (_from: unknown, message: { readonly id: string }) => {
+			delivered.push(message.id);
+		};
+		const recipient = { sessionId: "session-a", receivedMessageIds: [] };
+		const first = delivery.deliverPending(sink, recipient);
+		await commitEntered.promise;
+		// Queued after the running drain took its snapshot.
+		assert.equal((await store.queueStageMessage(queuedInput("later-1"), GROUP, GROUP, backend))?.ok, true);
+		const second = delivery.deliverPending(sink, recipient);
+		const third = delivery.deliverPending(sink, recipient);
+		releaseCommit.resolve();
+		await Promise.all([first, second, third]);
+		assert.deepEqual(delivered, ["first-1", "later-1"], "the follow-up delivers the later entry exactly once");
+		assert.equal(commits, 2, "the two requests made during the drain share one follow-up drain");
+		assert.equal(store.pendingStageMessagesFor(RUN_ID, STAGE_NAME).length, 0);
+	});
 });
