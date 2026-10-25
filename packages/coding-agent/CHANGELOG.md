@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- An Intercom message sent to one specific workflow stage while that stage is paused and has not started yet is now queued for that stage and reaches it when it starts. Previously the send was accepted as a message for a possible future stage (`notInKnownSet`) and matched only the stage's old id, so it was lost when the stage started under a new id, as it does when a pooled worker is replaced. Messages sent to the whole run (`workflow:<rootRunId>/**`) were not affected.
+- An Intercom message sent to one specific workflow stage while that stage is paused, blocked or awaiting input and has not started yet is now queued for that stage and reaches it when it starts. Previously the send was accepted as a message for a possible future stage (`notInKnownSet`) and matched only the stage's old id, so it was lost when the stage started under a new id, as it does when a pooled worker is replaced. Messages sent to the whole run (`workflow:<rootRunId>/**`) were not affected ([#3869](https://github.com/bastani-inc/atomic/issues/3869))
 
 ## [0.9.44-alpha.6] - 2026-10-25
 

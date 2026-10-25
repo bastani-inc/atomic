@@ -6,6 +6,7 @@ import { canonicalDirectory } from "../durable/sdk-recovery-scope.js";
 import { workflowInvocationIntercomGroup } from "../shared/intercom-group.js";
 import { queueStageMessage, queueStickyStageMessage } from "../shared/pending-stage-delivery.js";
 import { workflowPendingStageRouteCapability } from "../shared/pending-stage-route-capability.js";
+import { isAddressableStageStatus } from "../shared/pending-stage-status.js";
 import { type SessionEntry, scanInFlightRuns } from "../shared/persistence-restore.js";
 import type { Store } from "../shared/store.js";
 import { isTerminalRunStatus } from "../shared/store-internal.js";
@@ -32,13 +33,6 @@ const PENDING_STAGE_ROUTE_REVOKED_EVENT = "atomic:workflow-pending-stage-route-r
 const DORMANT_RUN_SUBAGENT_HOLD_EVENT = "atomic:workflow-dormant-run-subagent-hold";
 /** How often a run whose crashed owner's lease has not expired yet is checked again. */
 const DORMANT_RUN_RECHECK_MS = 15_000;
-const ADDRESSABLE_STAGE_STATUSES: ReadonlySet<string> = new Set([
-	"pending",
-	"running",
-	"awaiting_input",
-	"paused",
-	"blocked",
-]);
 const DORMANT_ASK_REFUSAL =
 	"Cannot ask a stage of an interrupted workflow run. Use send; Atomic will queue the message until the run is resumed.";
 
@@ -429,7 +423,7 @@ function queueRefusal(result: Extract<PendingStageQueueResult, { ok: false }>, t
 
 function isAddressableStage(stage: StageSnapshot): boolean {
 	return (
-		ADDRESSABLE_STAGE_STATUSES.has(stage.status) &&
+		isAddressableStageStatus(stage.status) &&
 		stage.nodeKind !== "tool" &&
 		stage.replayKey?.startsWith("prompt:") !== true
 	);
