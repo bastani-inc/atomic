@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.9.44-alpha.3] - 2026-10-25
+
+Chatty workflow swarms stay fast and their journals stay small, and Atomic picks up a round of dependency security fixes.
+
+- **Pattern sends at fan-out scale:** stages that message each other through `workflow:<rootRunId>/...` patterns no longer saturate the workflow host or time out their sends, so every send in a 150-child fan-out is delivered ([#3931](https://github.com/bastani-inc/atomic/issues/3931), [#3932](https://github.com/bastani-inc/atomic/pull/3932))
+- **Journals that grow with the work, not the message count:** journal events record only what changed in a run's pending messages instead of the whole list ([#3929](https://github.com/bastani-inc/atomic/issues/3929), [#3930](https://github.com/bastani-inc/atomic/pull/3930))
+- **Security updates:** `undici` 8.12.3, `zod` 4.6.7, `fast-uri` 3.1.9, `body-parser` 2.4.0 and `tokio` 1.54.1 close the published advisories against them ([#3935](https://github.com/bastani-inc/atomic/pull/3935))
+
 ### Fixed
 
 - Updated `undici`, which Atomic uses for HTTP requests, to 8.12.3. A server can no longer crash Atomic by sending more than five `Content-Encoding` values ([GHSA-xjj6-f33q-929c](https://github.com/advisories/GHSA-xjj6-f33q-929c)), Server-Sent Events streams can no longer grow parser memory without bound ([GHSA-4qv8-2p9j-2685](https://github.com/advisories/GHSA-4qv8-2p9j-2685)), and Subresource Integrity checks no longer skip uppercase algorithm names ([GHSA-f72v-6w45-q472](https://github.com/advisories/GHSA-f72v-6w45-q472)).
