@@ -3,14 +3,18 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "vitest";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
+import { StorageRollbackError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { wrapNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const directories: string[] = [];
-const databases: SqliteDatabase[] = [];
+const databases: { readonly database: SqliteDatabase; readonly connection: DatabaseSync }[] = [];
 
 afterEach(async () => {
-	for (const database of databases.splice(0)) await database.close();
+	for (const { database, connection } of databases.splice(0)) {
+		await database.close();
+		connection.close();
+	}
 	for (const directory of directories.splice(0)) removeTempDirectory(directory);
 });
 
@@ -34,7 +38,7 @@ function countingDatabase(failCommits = 0) {
 		return exec(sql);
 	};
 	const database = wrapNodeSqliteDatabase(connection);
-	databases.push(database);
+	databases.push({ database, connection });
 	return { database, counts, connection };
 }
 
@@ -113,4 +117,24 @@ test("no grouped caller resolves before the shared commit, and a failed commit f
 	assert.deepEqual(await rows(failing.database), []);
 	await failing.database.transaction((tx) => tx.run("INSERT INTO items VALUES ('after')"));
 	assert.deepEqual(await rows(failing.database), ["after"]);
+});
+
+test("a member that ends the shared transaction fails the members before it and the rest still commit in order", async () => {
+	const { database } = countingDatabase();
+	await database.exec("CREATE TABLE items (value TEXT NOT NULL UNIQUE)");
+	await database.run("INSERT INTO items VALUES ('taken')");
+	const outcomes = await Promise.allSettled([
+		database.transaction((tx) => tx.run("INSERT INTO items VALUES ('before')")),
+		database.transaction((tx) => tx.run("INSERT OR ROLLBACK INTO items VALUES ('taken')")),
+		database.transaction((tx) => tx.run("INSERT INTO items VALUES ('behind')")),
+		database.run("INSERT INTO items VALUES ('statement')"),
+	]);
+	assert.deepEqual(
+		outcomes.map((outcome) => outcome.status),
+		["rejected", "rejected", "fulfilled", "fulfilled"],
+	);
+	assert.ok((outcomes[1] as PromiseRejectedResult).reason instanceof StorageRollbackError);
+	assert.deepEqual(await rows(database), ["taken", "behind", "statement"]);
+	await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('later')"));
+	assert.deepEqual(await rows(database), ["taken", "behind", "statement", "later"]);
 });
