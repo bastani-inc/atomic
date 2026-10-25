@@ -662,7 +662,7 @@ export class SqlPoolQueue {
  */
 function isRecordedCheckpoint(stored: string, payload: string): boolean {
 	if (stored === payload) return true;
-	const { completedAt } = JSON.parse(stored) as { readonly completedAt?: unknown };
+	const { completedAt } = JSON.parse(stored) as { readonly completedAt?: number };
 	if (typeof completedAt !== "number") return false;
 	return serializeJson({ ...(JSON.parse(payload) as { readonly completedAt: number }), completedAt }) === stored;
 }
