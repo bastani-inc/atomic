@@ -513,25 +513,21 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
    * are skipped, so nothing is delivered twice.
    */
   let redrainPendingStage: (() => void) | null = null;
-  /** A message delivered by a later drain is ordinary inbound traffic for a stage that has already started. */
-  function redeliverPendingStageMessage(ctx: ExtensionContext, generation: number, from: SessionInfo, message: Message): Promise<void> {
-    if (!getLiveContext(ctx, generation)) {
-      return Promise.reject(new Error("Intercom session retired before pending-stage delivery; message remains queued"));
-    }
-    const delivery = message.delivery === "followUp" ? "triggerFollowUp" : "trigger";
-    return sendIncomingMessage(buildInboundEntry(from, message), delivery, generation, false);
-  }
   function handleIncomingMessage(
     ctx: ExtensionContext,
     from: SessionInfo,
     message: Message,
     channel?: "supervisor",
     receivedBeforeStageStart = false,
+    // A message a started stage's later drain recovered (one the broker could not forward while it was
+    // disconnected). It takes the live path, keeping its delivery mode and reply context, and the returned
+    // promise settles once the session admitted it, so the drain records its receipt only then.
+    recoveredAfterStageStart = false,
   ): void | Promise<void> {
     const messageGeneration = runtimeGeneration;
     const liveContext = getLiveContext(ctx, messageGeneration);
     if (!liveContext) {
-      if (receivedBeforeStageStart) throw new Error("Intercom session retired before pending-stage delivery; message remains queued");
+      if (receivedBeforeStageStart || recoveredAfterStageStart) throw new Error("Intercom session retired before pending-stage delivery; message remains queued");
       return;
     }
     replyTracker = bindWorkflowReplyTracker(liveContext, replyTracker);
@@ -616,6 +612,15 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       release,
     );
     if (activeDelivery !== false) {
+      if (recoveredAfterStageStart) {
+        // A recovered message that was not admitted stays queued for the next drain, so the sender gets no
+        // failure reply and the reservation is released for that redelivery.
+        return activeDelivery.then(commit, (error: unknown) => {
+          replyTracker.forgetIncomingMessage(replyContext);
+          inboundDeliveries.release(reservation, toError(error));
+          throw error;
+        });
+      }
       void activeDelivery.then(commit, release);
       return;
     }
@@ -1560,7 +1565,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       await pendingStageDelivery.deliverPending(
         (from, message) =>
           started
-            ? redeliverPendingStageMessage(ctx, generation, from as SessionInfo, message as Message)
+            ? handleIncomingMessage(ctx, from as SessionInfo, message as Message, undefined, false, true)
             : handleIncomingMessage(ctx, from as SessionInfo, message as Message, undefined, true),
         { sessionId: ctx.sessionManager.getSessionId(), receivedMessageIds },
       );
