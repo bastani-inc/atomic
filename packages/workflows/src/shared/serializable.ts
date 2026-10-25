@@ -86,8 +86,58 @@ function firstError(schema: TSchema, value: unknown): { instancePath: string } |
 	return undefined;
 }
 
+/**
+ * Fast, sound pre-check: true only for values the schema certainly accepts (strings, finite numbers, booleans,
+ * null, dense plain arrays read by index, and plain objects whose own properties are all enumerable string keys,
+ * nested without cycles). Anything else, including array subclasses and cycles, falls back to the schema, so edge
+ * cases keep their exact behavior. The schema's recursive `$ref` evaluation dominated large workflow payloads
+ * (session transcripts) in the pool coordinator.
+ */
+function certainlySerializable(root: unknown, rootMustBeObject: boolean): boolean {
+	if (rootMustBeObject && (root === null || typeof root !== "object" || Array.isArray(root))) return false;
+	const pending: unknown[] = [root];
+	const ancestors = new Set<object>();
+	const exits: (object | undefined)[] = [undefined];
+	while (pending.length > 0) {
+		const exit = exits.pop();
+		const value = pending.pop();
+		if (exit !== undefined) {
+			ancestors.delete(exit);
+			continue;
+		}
+		if (value === null || typeof value === "string" || typeof value === "boolean") continue;
+		if (typeof value === "number") {
+			if (!Number.isFinite(value)) return false;
+			continue;
+		}
+		if (typeof value !== "object" || ancestors.has(value)) return false;
+		if (Object.getOwnPropertySymbols(value).length > 0) return false;
+		const names = Object.getOwnPropertyNames(value);
+		let children: unknown[];
+		if (Array.isArray(value)) {
+			if (Object.getPrototypeOf(value) !== Array.prototype || names.length !== value.length + 1) return false;
+			children = [];
+			for (let index = 0; index < value.length; index++) children.push(value[index]);
+		} else {
+			const proto = Object.getPrototypeOf(value);
+			if (proto !== Object.prototype && proto !== null) return false;
+			const keys = Object.keys(value);
+			if (keys.length !== names.length) return false;
+			children = keys.map((key) => (value as Record<string, unknown>)[key]);
+		}
+		ancestors.add(value);
+		pending.push(value);
+		exits.push(value);
+		for (const child of children) {
+			pending.push(child);
+			exits.push(undefined);
+		}
+	}
+	return true;
+}
+
 export function workflowSerializableValidationError(value: unknown, label: string): string | undefined {
-	if (Value.Check(workflowSerializableValueSchema, value)) return undefined;
+	if (certainlySerializable(value, false) || Value.Check(workflowSerializableValueSchema, value)) return undefined;
 	const issue = firstError(workflowSerializableValueSchema, value);
 	const issuePath = issue === undefined ? "" : formatInstancePath(issue.instancePath);
 	const location = issuePath.length > 0 ? ` at ${issuePath}` : "";
@@ -96,7 +146,7 @@ export function workflowSerializableValidationError(value: unknown, label: strin
 }
 
 export function workflowSerializableObjectValidationError(value: unknown, label: string): string | undefined {
-	if (Value.Check(workflowSerializableObjectSchema, value)) return undefined;
+	if (certainlySerializable(value, true) || Value.Check(workflowSerializableObjectSchema, value)) return undefined;
 	const issue = firstError(workflowSerializableObjectSchema, value);
 	const issuePath = issue === undefined ? "" : formatInstancePath(issue.instancePath);
 	const location = issuePath.length > 0 ? ` at ${issuePath}` : "";
