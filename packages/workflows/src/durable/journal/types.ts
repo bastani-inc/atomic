@@ -39,7 +39,10 @@ export type {
 	RunEventType,
 	RunHeader,
 	RunJournal,
+	RunJournalBatchAppend,
+	RunSnapshotTail,
 	RunSummary,
+	RunVersion,
 } from "@bastani/atomic/storage";
 export { RUN_EVENT_TYPES } from "@bastani/atomic/storage";
 

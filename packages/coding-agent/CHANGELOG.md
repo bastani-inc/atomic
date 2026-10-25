@@ -5,6 +5,7 @@
 ### Added
 
 - `StorageProvider` journal factories accept `hostModules`, and `loadStorageAdapter()` takes an optional third `hostModules` argument, to give adapter modules extra live host modules by specifier ([#3963](https://github.com/bastani-inc/atomic/issues/3963))
+- The `RunJournal` interface in `@bastani/atomic/storage` has optional `changeToken()`, `runVersions()`, `snapshotTail()` and `appendMany()` members, with the `RunVersion`, `RunSnapshotTail` and `RunJournalBatchAppend` types. A storage adapter's run journal that implements them gets the same faster `/workflow status`, resume and batched delivery receipts as the built-in SQL journal ([#3964](https://github.com/bastani-inc/atomic/issues/3964))
 
 ### Fixed
 

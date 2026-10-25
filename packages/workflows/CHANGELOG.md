@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- A run journal from a storage adapter, or any custom `RunJournal`, can now opt into the faster `/workflow status`, resume and batched delivery receipts that the built-in SQL journal uses, by implementing the optional `changeToken()`, `runVersions()`, `snapshotTail()` and `appendMany()` members. `registerRunJournalConformance` checks them when present ([#3964](https://github.com/bastani-inc/atomic/issues/3964))
+
 ### Fixed
 
 - Journal adapters loaded by path (`ATOMIC_WORKFLOWS_JOURNAL`, `workflows.journal`, or a run's `journal: { adapter }`) can import `@bastani/atomic/workflows` and receive the workflows module that opened the journal, including its `SqlRunJournal` and journal error classes ([#3963](https://github.com/bastani-inc/atomic/issues/3963))

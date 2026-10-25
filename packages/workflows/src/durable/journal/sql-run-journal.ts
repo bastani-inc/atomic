@@ -17,8 +17,6 @@ import {
 	NON_SNAPSHOT_EVENT_TYPES,
 	type RunSnapshotTail,
 	type RunVersion,
-	registerRunJournalAppendMany,
-	registerRunJournalVersions,
 	registerSqlPoolStorage,
 } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
@@ -90,12 +88,6 @@ export class SqlRunJournal implements RunJournal {
 		this.database = database;
 		this.tables = tables;
 		this.legacy = legacy;
-		registerRunJournalVersions(this, {
-			changeToken: () => this.changeToken(),
-			runVersions: () => this.runVersions(),
-			snapshotTail: (runId) => this.snapshotTail(runId),
-		});
-		registerRunJournalAppendMany(this, (lease, appends) => this.appendMany(lease, appends));
 		registerSqlPoolStorage(this, {
 			transaction: (body) => this.operation(() => this.database.transaction(body)),
 			withAppendGuard: (guard, action) => this.appendGuard.run(guard, action),
@@ -226,7 +218,7 @@ export class SqlRunJournal implements RunJournal {
 	 * `data_version` moves when another connection commits and `total_changes()` when this one writes; the
 	 * table aggregates also catch run changes if the adapter does not serve every statement from one connection.
 	 */
-	private async changeToken(): Promise<string> {
+	async changeToken(): Promise<string> {
 		this.assertOpen();
 		return this.operation(async () => {
 			const row = await this.database.get<SqliteRow>(
@@ -239,7 +231,7 @@ export class SqlRunJournal implements RunJournal {
 		});
 	}
 
-	private async runVersions(): Promise<ReadonlyMap<string, RunVersion>> {
+	async runVersions(): Promise<ReadonlyMap<string, RunVersion>> {
 		this.assertOpen();
 		return this.operation(async () => {
 			const rows = await this.database.all<RunVersionRow>(
@@ -259,7 +251,7 @@ export class SqlRunJournal implements RunJournal {
 	 * The latest snapshot event is found by walking the run's `(run_id, seq)` key back from its last event, so
 	 * only the events after it are visited and only its payload is read.
 	 */
-	private async snapshotTail(runId: string): Promise<RunSnapshotTail | undefined> {
+	async snapshotTail(runId: string): Promise<RunSnapshotTail | undefined> {
 		this.assertOpen();
 		validateText("runId", runId);
 		return this.operation(async () => {
@@ -471,7 +463,7 @@ export class SqlRunJournal implements RunJournal {
 	 * one append's guard or payload failure is reported for it alone and the rest still commit. A lease or storage
 	 * failure rejects the whole batch, with nothing written.
 	 */
-	private async appendMany(
+	async appendMany(
 		lease: Lease,
 		appends: readonly JournalBatchAppend[],
 	): Promise<readonly PromiseSettledResult<AppendOutcome>[]> {
