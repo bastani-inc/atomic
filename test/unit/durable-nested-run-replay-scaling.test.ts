@@ -17,13 +17,14 @@ import {
 afterEach(closeMemoryTestBackends);
 
 const POOL_WIDTH = 8;
-const SMALL_POOL = 64;
-const LARGE_POOL = 640;
-/** Ten times the children and checkpoints; linear replay grows about 10×, the quadratic one about 100×. */
-const MAX_GROWTH = 15;
-const SMALL_REPETITIONS = 3;
-/** Structural: records a 640-child pooled root through the real engine before timing its replay. */
-const LARGE_POOL_TIMEOUT_MS = 180_000;
+const POOL_SIZE = 128;
+/**
+ * Whole-journal reads replay may make for the entire pool. Linear replay rebuilds the nested runs a constant number
+ * of times; the quadratic replay this guards against reads the journal twice per cached child (256 times here).
+ */
+const MAX_JOURNAL_READS = 4;
+/** Structural: records a 128-child pooled root through the real engine before replaying it. */
+const POOL_TIMEOUT_MS = 60_000;
 
 const child = workflow({
 	name: "pooled-child",
@@ -82,24 +83,29 @@ async function completedPool(children: number): Promise<{ backend: MemoryJournal
 	return { backend, rootId };
 }
 
+/** Count every checkpoint the backend's `listCheckpoints` hands out from now on. */
+function countCheckpointReads(backend: MemoryJournalBackend): () => number {
+	let checkpointsRead = 0;
+	const listCheckpoints: MemoryJournalBackend["listCheckpoints"] = backend.listCheckpoints.bind(backend);
+	backend.listCheckpoints = (workflowId) => {
+		const checkpoints = listCheckpoints(workflowId);
+		checkpointsRead += checkpoints.length;
+		return checkpoints;
+	};
+	return () => checkpointsRead;
+}
+
 /**
  * Replay every cached child boundary the way resume does: look up the child's
  * completed subtree, then record the replay metadata for the boundary stage.
- * Returns elapsed milliseconds, or `undefined` once `budgetMs` is exceeded.
  */
-async function replayCachedBoundaries(
-	backend: MemoryJournalBackend,
-	rootId: string,
-	budgetMs: number,
-): Promise<number | undefined> {
-	const terminals = backend
-		.listCheckpoints(rootId)
-		.filter(
-			(checkpoint): checkpoint is DurableStageCheckpoint =>
-				checkpoint.kind === "stage" && checkpoint.topology?.boundary?.event === "terminal",
-		);
-	let completedAt = Math.max(...backend.listCheckpoints(rootId).map((checkpoint) => checkpoint.completedAt));
-	const started = performance.now();
+async function replayCachedBoundaries(backend: MemoryJournalBackend, rootId: string): Promise<number> {
+	const checkpoints = backend.listCheckpoints(rootId);
+	const terminals = checkpoints.filter(
+		(checkpoint): checkpoint is DurableStageCheckpoint =>
+			checkpoint.kind === "stage" && checkpoint.topology?.boundary?.event === "terminal",
+	);
+	let completedAt = Math.max(...checkpoints.map((checkpoint) => checkpoint.completedAt));
 	for (const [index, terminal] of terminals.entries()) {
 		const { boundary, ...topology } = terminal.topology!;
 		assert.ok(durableCompletedNestedRunSubtree(backend, rootId, boundary!.child.runId), `child ${index} replays`);
@@ -113,29 +119,25 @@ async function replayCachedBoundaries(
 			completedAt,
 			topology,
 		});
-		if (performance.now() - started > budgetMs) return undefined;
 	}
-	return performance.now() - started;
+	return terminals.length;
 }
 
 test(
-	"replaying cached child boundaries grows about linearly with the pool",
+	"replaying cached child boundaries reads the checkpoint journal a bounded number of times",
 	async () => {
-		// The first replay warms the JIT; the slowest of the rest is the baseline, so load cannot shrink it.
-		const smallRuns: number[] = [];
-		for (let repetition = 0; repetition <= SMALL_REPETITIONS; repetition++) {
-			const small = await completedPool(SMALL_POOL);
-			const elapsed = await replayCachedBoundaries(small.backend, small.rootId, Number.POSITIVE_INFINITY);
-			if (repetition > 0) smallRuns.push(elapsed!);
-		}
-		const smallMs = Math.max(1, ...smallRuns);
-		const large = await completedPool(LARGE_POOL);
-		const budgetMs = smallMs * MAX_GROWTH;
-		const largeMs = await replayCachedBoundaries(large.backend, large.rootId, budgetMs);
+		const pool = await completedPool(POOL_SIZE);
+		const checkpointsRead = countCheckpointReads(pool.backend);
+		const replayed = await replayCachedBoundaries(pool.backend, pool.rootId);
+		const read = checkpointsRead();
+		assert.equal(replayed, POOL_SIZE);
+		const journalSize = pool.backend.listCheckpoints(pool.rootId).length;
+		const journalReads = read / journalSize;
 		assert.ok(
-			largeMs !== undefined,
-			`${LARGE_POOL} cached children did not replay within ${MAX_GROWTH}× the ${SMALL_POOL}-child time (${smallMs.toFixed(1)} ms)`,
+			journalReads <= MAX_JOURNAL_READS,
+			`replaying ${POOL_SIZE} cached children read ${read} checkpoints, ` +
+				`${journalReads.toFixed(1)} times the ${journalSize}-checkpoint journal (at most ${MAX_JOURNAL_READS})`,
 		);
 	},
-	LARGE_POOL_TIMEOUT_MS,
+	POOL_TIMEOUT_MS,
 );

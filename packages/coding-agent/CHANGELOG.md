@@ -5,6 +5,7 @@
 ### Fixed
 
 - Under heavy write load a local SQLite store (`node-sqlite`, including the workflow journal) commits transactions in groups: transactions requested while another is committing share one `BEGIN IMMEDIATE … COMMIT`, each in its own savepoint and in request order. A transaction that fails rolls back only its own writes, and every caller still settles only after the shared commit. In a 480-child pooled workflow the pool coordinator was committing about 60 transcript transactions a second, each taking the write lock and syncing on its own, which starved the workflow host's writes until Intercom sends timed out and worker leases expired.
+- A background task completion that arrives just as a paused workflow stage is resumed now starts the stage's next turn. Pausing a stage cancels its background shells, and their completion notices are written to the session before the stage acts on them. If the stage was resumed during that write, the notice was queued after the resume had already released the stage's held messages, so the stage sat idle with the notice unanswered until something else started a turn.
 
 ## [0.9.44-alpha.5] - 2026-10-25
 
