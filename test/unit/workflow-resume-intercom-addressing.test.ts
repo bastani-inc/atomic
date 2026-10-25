@@ -45,6 +45,8 @@ function laneTarget(routes: readonly RouteAnnouncement[]) {
 		.flatMap((route) => route.stages ?? [])
 		.find((stage) => stage.stageName === "lane");
 }
+/** Route announcements go out in batches; this outlasts one batch window. */
+const routesPublished = () => new Promise<void>((resolve) => setTimeout(resolve, 60));
 
 test("a resumed workflow run keeps its stage addresses and delivers messages queued while it was down exactly once (#3760)", async () => {
 	const writer = await JournalTestBackend.create();
@@ -73,6 +75,7 @@ test("a resumed workflow run keeps its stage addresses and delivers messages que
 		{ runId: ROOT_RUN_ID, store: firstStore, durableBackend: writer, signal: firstController.signal, adapters },
 	);
 	await stageStarted.promise;
+	await routesPublished();
 	const before = laneTarget(first.routes);
 	assert.ok(before);
 	assert.equal(before.group, GROUP);
@@ -113,6 +116,7 @@ test("a resumed workflow run keeps its stage addresses and delivers messages que
 	const resumed = announcedRoutes(resumedStore);
 	const resumedRun = run(flow, {}, { runId: ROOT_RUN_ID, store: resumedStore, durableBackend: reader, adapters });
 	await stageStarted.promise;
+	await routesPublished();
 
 	const after = laneTarget(resumed.routes);
 	assert.deepEqual(after, before);

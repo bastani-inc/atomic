@@ -2,6 +2,7 @@ import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { outsideWorkflowExecutions } from "../durable/execution-context-boundary.js";
 import { durableBackendForRun, durableRootRunIdForRun } from "../durable/run-owner-backend.js";
 import { availableStoreDurableBackend, requireStoreDurableBackend } from "../durable/store-backend.js";
+import { isSessionClosedError } from "../engine/session-closed-error.js";
 import { externalRunRouteOwner, registerPendingStageMessageRouter } from "../shared/external-run-routes.js";
 import { workflowInvocationIntercomGroup, workflowInvocationOwnsGroup } from "../shared/intercom-group.js";
 import { workflowPendingStageRouteCapability } from "../shared/pending-stage-route-capability.js";
@@ -45,6 +46,8 @@ const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliv
 const STICKY_LIVE_DELIVERED_EVENT = "atomic:workflow-sticky-live-delivered";
 const PENDING_STAGE_ASK_REFUSAL =
 	"Cannot ask a workflow stage whose session has not initialized. Use send; Atomic will queue the message until the stage session initializes.";
+const ROUTE_ANNOUNCEMENT_BATCH_MS = 25;
+const ROUTE_ANNOUNCEMENT_EVENT_LOOP_SHARE = 0.2;
 
 interface WorkflowEventSurface {
 	readonly events?: {
@@ -142,9 +145,10 @@ export function registerPendingStageIntercomBridge(
 	// Keep rejected completions separate from the publication cache: failure is not
 	// an absent optional consumer, even if it settled before a stage began waiting.
 	const routeCompletions = new Map<string, Promise<void>>();
-	const disposeReadiness = registerWorkflowPendingStageRouteReadiness(activeStore, (runId) =>
-		routeCompletions.get(runId),
-	);
+	const disposeReadiness = registerWorkflowPendingStageRouteReadiness(activeStore, (runId) => {
+		announceIfPending();
+		return routeCompletions.get(runId);
+	});
 	const announceRoutes = (): void => {
 		if (disposed) return;
 		const ownedRunIds = new Set<string>();
@@ -290,11 +294,53 @@ export function registerPendingStageIntercomBridge(
 				reportWarning(`atomic-workflows: pending stage delivery sweep failed: ${error.message}`),
 			);
 	};
-	const unsubscribeStore = activeStore.subscribeInvalidation(announceRoutes);
-	announceRoutes();
+	let announcementPending = false;
+	let announcementTimer: ReturnType<typeof setTimeout> | undefined;
+	let announcedAt = Number.NEGATIVE_INFINITY;
+	let announcementCost = 0;
+	const announceNow = (): void => {
+		if (announcementTimer !== undefined) clearTimeout(announcementTimer);
+		announcementTimer = undefined;
+		announcementPending = false;
+		const started = performance.now();
+		announceRoutes();
+		announcedAt = performance.now();
+		announcementCost = announcedAt - started;
+	};
+	function announceIfPending(): void {
+		if (announcementPending) announceNow();
+	}
+	const announceBatch = (): void => {
+		try {
+			announceNow();
+		} catch (error) {
+			if (error instanceof Error && isSessionClosedError(error)) {
+				dispose();
+				return;
+			}
+			try {
+				reportWarning(`atomic-workflows: pending stage route announcement failed: ${String(error)}`);
+			} catch {
+				dispose();
+			}
+		}
+	};
+	// Each announcement rebuilds every owned run's route, so store invalidations are batched: a burst becomes one
+	// announcement after a short window, stretched when needed so announcing stays under a fixed share of the
+	// event loop. Readiness, flush and refresh announce a pending batch first.
+	const scheduleAnnouncement = (): void => {
+		if (disposed || announcementTimer !== undefined) return;
+		const idle = announcementCost / ROUTE_ANNOUNCEMENT_EVENT_LOOP_SHARE - announcementCost;
+		const wait = Math.max(ROUTE_ANNOUNCEMENT_BATCH_MS, announcedAt + idle - performance.now());
+		announcementPending = true;
+		announcementTimer = setTimeout(announceBatch, wait);
+		announcementTimer.unref?.();
+	};
+	const unsubscribeStore = activeStore.subscribeInvalidation(scheduleAnnouncement);
+	announceNow();
 	pi.on?.("session_start", () => {
 		announcedRoutes.clear();
-		announceRoutes();
+		announceNow();
 	});
 	const routePendingStageMessage = (payload: unknown): void => {
 		if (disposed || !isPendingStageMessageEvent(payload) || payload.handled) return;
@@ -393,6 +439,9 @@ export function registerPendingStageIntercomBridge(
 	});
 	const dispose = (): void => {
 		disposed = true;
+		if (announcementTimer !== undefined) clearTimeout(announcementTimer);
+		announcementTimer = undefined;
+		announcementPending = false;
 		disposeReadiness();
 		disposeRouter();
 		routeCompletions.clear();
@@ -406,10 +455,11 @@ export function registerPendingStageIntercomBridge(
 	pi.on?.("session_shutdown", dispose);
 	return Object.assign(dispose, {
 		async flush() {
+			announceIfPending();
 			await Promise.allSettled(routeCompletions.values());
 			await sweepPromise;
 		},
-		refresh: announceRoutes,
+		refresh: announceNow,
 	});
 }
 
