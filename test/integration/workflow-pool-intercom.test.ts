@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
@@ -23,6 +22,7 @@ import { testRunId } from "../helpers/run-id.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
 const WORKER_INTERCOM_TIMEOUT_MS = 120_000;
+const BROKER_STARTUP_TIMEOUT_MS = 60_000;
 async function until(condition: () => Promise<boolean>) {
 	const signal = AbortSignal.timeout(60_000);
 	while (!(await condition())) {
@@ -41,12 +41,6 @@ test.skipIf(process.platform === "win32")(
 		const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js");
 		const { getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
 		const intercomPath = fileURLToPath(new URL("../../packages/intercom", import.meta.url));
-		broker.trackBroker(
-			spawn(process.execPath, [getJitiCliPath(intercomPath), join(intercomPath, "broker/broker.ts")], {
-				env: process.env,
-				stdio: "ignore",
-			}),
-		);
 		const path = join(directory, "journal.sqlite");
 		const database = await openNodeSqliteDatabase(path);
 		const journal = await SqlRunJournal.open(database);
@@ -62,10 +56,14 @@ test.skipIf(process.platform === "win32")(
 		client.on("error", () => {});
 		let execution: ReturnType<typeof run> | undefined;
 		try {
-			await until(async () => {
-				broker.assertRunning();
-				return existsSync(getBrokerSocketPath());
-			});
+			broker.trackBroker(
+				spawn(process.execPath, [getJitiCliPath(intercomPath), join(intercomPath, "broker/broker.ts")], {
+					env: process.env,
+					stdio: "ignore",
+				}),
+			);
+			// The broker retires after an idle window with no session; hold one from the moment it answers.
+			await broker.holdSession(getBrokerSocketPath(), BROKER_STARTUP_TIMEOUT_MS);
 			await client.connect({
 				cwd: directory,
 				model: "fixture",

@@ -1,8 +1,11 @@
 import type { ChildProcess } from "node:child_process";
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
+import net from "node:net";
+import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 
 const BROKER_TERMINATE_GRACE_MS = 1_000;
 const BROKER_CLEANUP_TIMEOUT_MS = 5_000;
+const BROKER_READY_POLL_MS = 25;
 
 async function bounded<T>(operation: Promise<T>, message: string): Promise<T> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
@@ -65,6 +68,76 @@ export class IntercomBrokerFixture {
 				`Broker exited during startup: code ${this.broker?.exitCode}, signal ${this.broker?.signalCode}`,
 			);
 		}
+	}
+
+	/**
+	 * Resolves once the broker has registered a session the fixture holds until cleanup.
+	 *
+	 * A broker retires once no session has been connected for its idle window, and its clock starts when it
+	 * listens. A suite that spawns the broker, then spends that window on its own setup or between tests
+	 * before any client registers, would otherwise lose it to that retirement under load. The held session
+	 * is a non-agent "control" connection made straight to `socketPath`, so it is neither a message recipient
+	 * nor visible to a proxy or a spy in front of the suite's own clients.
+	 */
+	async holdSession(socketPath: string, timeoutMs: number): Promise<void> {
+		const deadline = performance.now() + timeoutMs;
+		for (;;) {
+			this.assertRunning();
+			if (performance.now() > deadline) throw new Error("Intercom broker did not register a session in time");
+			const remainingMs = Math.max(0, deadline - performance.now());
+			const socket = existsSync(socketPath) ? await this.registerHeldSession(socketPath, remainingMs) : undefined;
+			if (socket !== undefined) {
+				this.cleanups.push(() => {
+					socket.destroy();
+				});
+				return;
+			}
+			await new Promise((resolve) => setTimeout(resolve, BROKER_READY_POLL_MS));
+		}
+	}
+
+	/** The registered socket, or undefined when the broker closed or refused it before registering. */
+	private registerHeldSession(socketPath: string, timeoutMs: number): Promise<net.Socket | undefined> {
+		return new Promise((resolve) => {
+			const socket = net.connect(socketPath);
+			let registered = false;
+			const timer = setTimeout(() => fail(), timeoutMs);
+			const fail = () => {
+				clearTimeout(timer);
+				socket.destroy();
+				resolve(undefined);
+			};
+			socket.on("error", fail);
+			socket.once("close", fail);
+			socket.on(
+				"data",
+				createMessageReader((message) => {
+					// Later frames (presence broadcasts and the like) are drained and ignored.
+					if (registered) return;
+					if (typeof message !== "object" || message === null || Array.isArray(message)) return fail();
+					if (message.type !== "registered") return fail();
+					registered = true;
+					clearTimeout(timer);
+					socket.off("close", fail);
+					resolve(socket);
+				}, fail),
+			);
+			socket.once("connect", () => {
+				const now = Date.now();
+				writeMessage(socket, {
+					type: "register",
+					session: {
+						cwd: this.agentDir,
+						model: "intercom-broker-fixture",
+						pid: process.pid,
+						startedAt: now,
+						lastActivity: now,
+						group: "intercom-broker-fixture",
+						recipientPurpose: "control",
+					},
+				});
+			});
+		});
 	}
 
 	private async stopBroker(): Promise<void> {
