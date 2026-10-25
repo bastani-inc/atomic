@@ -13,9 +13,11 @@ import {
 import {
 	JOURNAL_READ_PAGE_SIZE,
 	type JournalAppendGuard,
+	type JournalBatchAppend,
 	NON_SNAPSHOT_EVENT_TYPES,
 	type RunSnapshotTail,
 	type RunVersion,
+	registerRunJournalAppendMany,
 	registerRunJournalVersions,
 	registerSqlPoolStorage,
 } from "./internal.js";
@@ -61,6 +63,7 @@ type LeaseRow = SqliteRow & JournalLeaseRow & { [c.renewedAt]: number };
 type HeaderRow = SqliteRow & { [c.headerJson]: string; [c.status]: string };
 const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 const EVENT_COLUMNS = [c.runId, c.seq, c.epoch, c.key, c.type, c.payload, c.at] as const;
+const APPEND_SAVEPOINT = "journal_append";
 
 function entryFromRow(row: EventRow): JournalEntry {
 	const key = row[c.key];
@@ -92,6 +95,7 @@ export class SqlRunJournal implements RunJournal {
 			runVersions: () => this.runVersions(),
 			snapshotTail: (runId) => this.snapshotTail(runId),
 		});
+		registerRunJournalAppendMany(this, (lease, appends) => this.appendMany(lease, appends));
 		registerSqlPoolStorage(this, {
 			transaction: (body) => this.operation(() => this.database.transaction(body)),
 			withAppendGuard: (guard, action) => this.appendGuard.run(guard, action),
@@ -449,17 +453,77 @@ export class SqlRunJournal implements RunJournal {
 		this.assertOpen();
 		validateText("runId", lease.runId);
 		validateText("holderId", lease.holderId);
-		if (options?.key !== undefined) validateText("key", options.key);
 		const owned = { ...lease };
-		const key = options?.key;
+		const prepared = this.prepare(event, options?.key, this.appendGuard.getStore());
 		const expected = options?.expectSeq;
+		return this.operation(() =>
+			this.database.transaction(async (tx) => {
+				await this.checkLease(tx, owned);
+				return this.insert(tx, owned, prepared, expected);
+			}),
+		);
+	}
+
+	/**
+	 * Append several events to one run in one transaction, checking the lease once and assigning consecutive
+	 * sequences in order. Each append is checked by the pool append guard of the context that issued it, or by none
+	 * when that context had none, whatever guard the batch itself runs under. Each runs in its own savepoint, so
+	 * one append's guard or payload failure is reported for it alone and the rest still commit. A lease or storage
+	 * failure rejects the whole batch, with nothing written.
+	 */
+	private async appendMany(
+		lease: Lease,
+		appends: readonly JournalBatchAppend[],
+	): Promise<readonly PromiseSettledResult<AppendOutcome>[]> {
+		this.assertOpen();
+		validateText("runId", lease.runId);
+		validateText("holderId", lease.holderId);
+		const owned = { ...lease };
+		const prepared = appends.map((append) => {
+			try {
+				// Exactly the guard the append's own caller had, none included: never the batch's ambient guard.
+				return this.prepare(
+					append.event,
+					append.key,
+					append.context(() => this.appendGuard.getStore()),
+				);
+			} catch (error) {
+				return error as Error;
+			}
+		});
+		return this.operation(() =>
+			this.database.transaction(async (tx) => {
+				await this.checkLease(tx, owned);
+				const results: PromiseSettledResult<AppendOutcome>[] = [];
+				for (const append of prepared) {
+					if (append instanceof Error) {
+						results.push({ status: "rejected", reason: append });
+						continue;
+					}
+					await tx.exec(`SAVEPOINT ${APPEND_SAVEPOINT}`);
+					try {
+						results.push({ status: "fulfilled", value: await this.insert(tx, owned, append) });
+					} catch (error) {
+						await tx.exec(`ROLLBACK TO ${APPEND_SAVEPOINT}`);
+						results.push({ status: "rejected", reason: error });
+					}
+					await tx.exec(`RELEASE ${APPEND_SAVEPOINT}`);
+				}
+				return results;
+			}),
+		);
+	}
+
+	/** Validate an append outside any transaction; its payload error is raised where `append` always raised it. */
+	private prepare(event: RunEvent, key: string | undefined, appendGuard: JournalAppendGuard | undefined) {
+		if (key !== undefined) validateText("key", key);
 		const type = event.type;
 		const payload = this.snapshotJson(event.payload);
 		const guard =
 			type === RUN_EVENT_TYPES.messageQueued ||
 			type === RUN_EVENT_TYPES.messageDelivered ||
 			type === RUN_EVENT_TYPES.messageSettled
-				? this.appendGuard.getStore()
+				? appendGuard
 				: undefined;
 		const status =
 			type === RUN_EVENT_TYPES.statusChanged && !(payload instanceof StorageUnavailableError)
@@ -467,43 +531,47 @@ export class SqlRunJournal implements RunJournal {
 				: undefined;
 		if (type === RUN_EVENT_TYPES.statusChanged && !(payload instanceof StorageUnavailableError))
 			validateText("status", status!);
-		return this.operation(() =>
-			this.database.transaction(async (tx) => {
-				await this.checkLease(tx, owned);
-				await guard?.(tx, owned.runId);
-				if (key !== undefined) {
-					const row = await tx.get<EventRow>(
-						`SELECT * FROM ${this.tables.events} WHERE ${c.runId} = ? AND ${c.key} = ?`,
-						owned.runId,
-						key,
-					);
-					if (row) return { status: "exists", entry: entryFromRow(row) };
-				}
-				const actual = await this.sequence(tx, owned.runId);
-				if (expected !== undefined && expected !== actual)
-					throw new JournalCasConflictError(owned.runId, expected, actual);
-				const seq = journalCounter(owned.runId, "seq", actual + 1, "overflow");
-				if (payload instanceof StorageUnavailableError) throw payload;
-				await tx.run(
-					`INSERT INTO ${this.tables.events} VALUES (?, ?, ?, ?, ?, ?, ${STORE_NOW})`,
-					owned.runId,
-					seq,
-					owned.epoch,
-					key ?? null,
-					type,
-					payload,
-				);
-				if (status !== undefined)
-					await tx.run(`UPDATE ${this.tables.runs} SET ${c.status} = ? WHERE ${c.runId} = ?`, status, owned.runId);
-				const row = await tx.get<EventRow>(
-					`SELECT * FROM ${this.tables.events} WHERE ${c.runId} = ? AND ${c.seq} = ?`,
-					owned.runId,
-					seq,
-				);
-				await guard?.(tx, owned.runId);
-				return { status: "appended", entry: entryFromRow(row!) };
-			}),
+		return { key, type, payload, guard, status };
+	}
+
+	private async insert(
+		tx: SqliteExecutor,
+		owned: Lease,
+		{ key, type, payload, guard, status }: ReturnType<SqlRunJournal["prepare"]>,
+		expected?: number,
+	): Promise<AppendOutcome> {
+		await guard?.(tx, owned.runId);
+		if (key !== undefined) {
+			const row = await tx.get<EventRow>(
+				`SELECT * FROM ${this.tables.events} WHERE ${c.runId} = ? AND ${c.key} = ?`,
+				owned.runId,
+				key,
+			);
+			if (row) return { status: "exists", entry: entryFromRow(row) };
+		}
+		const actual = await this.sequence(tx, owned.runId);
+		if (expected !== undefined && expected !== actual)
+			throw new JournalCasConflictError(owned.runId, expected, actual);
+		const seq = journalCounter(owned.runId, "seq", actual + 1, "overflow");
+		if (payload instanceof StorageUnavailableError) throw payload;
+		await tx.run(
+			`INSERT INTO ${this.tables.events} VALUES (?, ?, ?, ?, ?, ?, ${STORE_NOW})`,
+			owned.runId,
+			seq,
+			owned.epoch,
+			key ?? null,
+			type,
+			payload,
 		);
+		if (status !== undefined)
+			await tx.run(`UPDATE ${this.tables.runs} SET ${c.status} = ? WHERE ${c.runId} = ?`, status, owned.runId);
+		const row = await tx.get<EventRow>(
+			`SELECT * FROM ${this.tables.events} WHERE ${c.runId} = ? AND ${c.seq} = ?`,
+			owned.runId,
+			seq,
+		);
+		await guard?.(tx, owned.runId);
+		return { status: "appended", entry: entryFromRow(row!) };
 	}
 
 	async *read(runId: string, fromSeq = 1): AsyncIterable<JournalEntry> {
