@@ -523,7 +523,8 @@ export class SqlPoolQueue {
 			lease.runId,
 			key,
 		);
-		if (existing && existing.payload !== payload) throw new Error("Pool checkpoint identity conflict");
+		if (existing && !isRecordedCheckpoint(existing.payload, payload))
+			throw new Error("Pool checkpoint identity conflict");
 		if (existing && mutation.kind !== "checkpoint") throw new Error("Pool session checkpoint identity conflict");
 		const lastSeq =
 			mutation.kind === "checkpoint"
@@ -651,6 +652,19 @@ export class SqlPoolQueue {
 			),
 		);
 	}
+}
+
+/**
+ * Whether the checkpoint serialized as `payload` is the one already stored as `stored`, so re-recording it keeps the first write.
+ * Only the record time may differ: a later work generation that replays a cached stage re-records its
+ * `stage-replay-meta:` checkpoint under the same content-derived id, stamped with that replay's time.
+ * Any other difference is a different checkpoint and still conflicts.
+ */
+function isRecordedCheckpoint(stored: string, payload: string): boolean {
+	if (stored === payload) return true;
+	const { completedAt } = JSON.parse(stored) as { readonly completedAt?: number };
+	if (typeof completedAt !== "number") return false;
+	return serializeJson({ ...(JSON.parse(payload) as { readonly completedAt: number }), completedAt }) === stored;
 }
 
 export function openSqlPoolQueue(journal: RunJournal): Promise<SqlPoolQueue> {
