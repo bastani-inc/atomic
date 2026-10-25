@@ -34,6 +34,15 @@ import { assertLeaseStateUnchanged } from "../helpers/journal-lease-state.js";
 import { bunExecutable, makeTempDirectory, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
+/** The journal shape of one pending-stage list change item, as asserted by these tests. */
+type PendingStageListChangeItem =
+	| readonly [start: number, count: number]
+	| {
+			readonly patch: number;
+			readonly set?: Readonly<Record<string, string | number | boolean>>;
+			readonly unset?: readonly string[];
+	  };
+
 async function entries(journal: RunJournal): Promise<JournalEntry[]> {
 	const result: JournalEntry[] = [];
 	for await (const entry of journal.read("run")) result.push(entry);
@@ -787,7 +796,7 @@ test("pending entries that drop optional fields write unset patches that replay 
 	assert.equal(await backend.persistPendingStageMessages("run", messages), true);
 	const latest = (await entries(backend.journal)).at(-1)!;
 	assert.equal(latest.event.type, RUN_EVENT_TYPES.messageQueued);
-	const change = (latest.event.payload as { pendingStageMessageChange?: readonly unknown[] })
+	const change = (latest.event.payload as { pendingStageMessageChange?: readonly PendingStageListChangeItem[] })
 		.pendingStageMessageChange;
 	assert.deepEqual(change, [
 		[0, 1],
@@ -1020,11 +1029,7 @@ for (const extra of [0, 1]) {
 		assert.equal(latest.event.type, RUN_EVENT_TYPES.statusChanged);
 		// The status change writes the recreated run's handle; its pending entries may be written as a change.
 		const { pendingStageMessages: _list, ...expected } = JSON.parse(JSON.stringify(fresh.getWorkflow("run")));
-		const {
-			pendingStageMessages: _written,
-			pendingStageMessageChange: _change,
-			...payload
-		} = latest.event.payload as Record<string, unknown>;
+		const { pendingStageMessages: _written, pendingStageMessageChange: _change, ...payload } = latest.event.payload;
 		assert.deepEqual(payload, expected);
 		assert.equal(await observer.pendingPromptToken("run", "old prompt"), undefined);
 		await observer.releasePendingPrompt("run", "new prompt", token);
