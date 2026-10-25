@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Large workflow fan-outs no longer saturate the local worker pool's coordinator. Every pool commit, including each batch of session transcript entries, was checked for JSON-serializability with a recursive schema whose `$ref` evaluation cost far more than the write itself, so with 160 workers the coordinator spent about 90% of its time validating and stages stopped starting. Plain JSON values now pass a direct structural check; anything unusual still goes through the schema, with the same errors.
+- Intercom sends to stage patterns no longer time out while a large workflow fan-out records delivery receipts. The workflow host wrote each receipt in its own journal transaction, one after another, and a pattern message waited behind every receipt queued before it. When another process also held the journal's write lock, that wait exceeded the 10-second send acknowledgement, and in a 480-child load test delivery fell to 0–2%. Receipts and settlements queued back to back for a run are now written together in one transaction, in the same order and with the same durability. In a test that queues a pattern message halfway through 2,000 receipts from 160 callers while a second process holds the write lock, the message persisted in under 30 ms instead of more than 4 seconds.
 
 ## [0.9.44-alpha.5] - 2026-10-25
 
