@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { StorageError } from "@bastani/atomic/storage";
+import { StorageError, type StorageFailureCause } from "@bastani/atomic/storage";
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../../runs/foreground/stage-session-heartbeat.js";
 import type { PendingStageMessage, PendingStageMessageDelivery } from "../../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../../shared/types.js";
@@ -120,7 +120,7 @@ function* invoke<T>(action: () => Promise<T>): Operation<T> {
 		return value!;
 	} catch (error) {
 		if (error instanceof JournalError || error instanceof StorageError) throw error;
-		throw customJournalUnavailable(error);
+		throw customJournalUnavailable(error as StorageFailureCause);
 	}
 }
 
@@ -131,11 +131,17 @@ const CUSTOM_JOURNAL = { adapter: "custom", location: "custom journal" } as cons
  * relay only `message`, so it names the cause's class and code; not its message, which a custom driver may fill
  * with a connection string.
  */
-function customJournalUnavailable(error: unknown): StorageUnavailableError {
-	const cause = error instanceof Error ? error : new Error(String(error));
-	const code = (cause as { code?: unknown }).code;
-	const detail = typeof code === "string" || typeof code === "number" ? `${cause.name} (${String(code)})` : cause.name;
+function customJournalUnavailable(failure: StorageFailureCause): StorageUnavailableError {
+	const cause = failure instanceof Error ? failure : new Error(String(failure));
+	const code = hasErrorCode(cause) ? cause.code : undefined;
+	const detail = code === undefined ? cause.name : `${cause.name} (${String(code)})`;
 	return new StorageUnavailableError(CUSTOM_JOURNAL, cause, detail);
+}
+
+/** A driver error that names its failure with a string or numeric `code`, as Node system errors do. */
+function hasErrorCode(error: Error): error is Error & { readonly code: string | number } {
+	const code = (error as Error & { readonly code?: StorageFailureCause }).code;
+	return typeof code === "string" || typeof code === "number";
 }
 
 async function execute<T>(operation: Operation<T>): Promise<T> {
@@ -278,7 +284,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 				error instanceof DurableNestedTopologyError
 			)
 				throw error;
-			throw customJournalUnavailable(error);
+			throw customJournalUnavailable(error as StorageFailureCause);
 		}
 	}
 
