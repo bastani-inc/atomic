@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { assertStorageSchemaVersion, type SqliteExecutor, type SqliteRow } from "@bastani/atomic/storage";
+import { assertStorageSchemaVersion, type SqliteExecutor, type SqliteRow, StorageError } from "@bastani/atomic/storage";
 import { assertWorkflowSerializableObject } from "../../shared/serializable.js";
 import type { WorkflowSerializableObject } from "../../shared/types.js";
 import { validateCheckpointInvocationFingerprint } from "../boundary-topology.js";
@@ -20,7 +20,7 @@ import {
 	validatePoolMutation,
 } from "./pool-mutations.js";
 import { poolCheckpointUsage, poolUsageSchema, upsertPoolUsage } from "./pool-stage-usage.js";
-import { type Lease, RUN_EVENT_TYPES, type RunJournal, StaleLeaseError } from "./types.js";
+import { JournalError, type Lease, RUN_EVENT_TYPES, type RunJournal, StaleLeaseError } from "./types.js";
 import { journalCounter, serializeJson, validateText } from "./values.js";
 
 export type { PoolMutation } from "./pool-mutations.js";
@@ -32,6 +32,18 @@ const MAX_WORKER_CLOCK_SKEW_MS = 1_000;
 /** Version 2 keeps no lease renewal rows and stores a digest, not the full request, per pool operation. */
 const POOL_SCHEMA_VERSION = 2;
 export const STALE_WORK_LEASE = "Stale work lease";
+
+/**
+ * A pool delivery receipt refused because its attempt no longer owns the work or the stage session. It is a
+ * journal error, so the root's journal backend passes it on with its own message instead of reporting the refusal
+ * as unavailable storage, and the message is what a worker receives across the process boundary.
+ */
+export class PoolAppendRefusedError extends JournalError {
+	constructor(message: string, options?: ErrorOptions) {
+		super(message, options);
+		this.name = "PoolAppendRefusedError";
+	}
+}
 
 /** A retried operation must repeat its request exactly; its digest is enough to prove that. */
 function requestIdentity(request: string): string {
@@ -264,14 +276,23 @@ export class SqlPoolQueue {
 		lease = snapshotLease(lease);
 		token = { ...token };
 		return this.storage.withAppendGuard(async (tx, runId) => {
-			if (runId !== lease.runId) throw new Error("Pool delivery cannot write another root");
-			const { now } = await this.authority(tx, lease).catch((error: Error) => {
-				if (error instanceof StaleLeaseError) throw new Error("Stale pool coordinator authority", { cause: error });
-				throw error;
-			});
-			const row = await this.current(tx, lease, token);
-			if (row.epoch !== lease.epoch || row.expires_at < now) throw new Error(STALE_WORK_LEASE);
-			assertSession();
+			try {
+				if (runId !== lease.runId) throw new Error("Pool delivery cannot write another root");
+				await this.authority(tx, lease).catch((error: Error) => {
+					if (error instanceof StaleLeaseError)
+						throw new Error("Stale pool coordinator authority", { cause: error });
+					throw error;
+				});
+				// The attempt's identity fences it, not the clock: a lapsed lease whose worker is alive stays current
+				// until the coordinator extends it, and only reassignment or an epoch change replaces it (#3888).
+				const row = await this.current(tx, lease, token);
+				if (row.epoch !== lease.epoch) throw new Error(STALE_WORK_LEASE);
+				assertSession();
+			} catch (error) {
+				if (error instanceof JournalError || error instanceof StorageError || !(error instanceof Error))
+					throw error;
+				throw new PoolAppendRefusedError(error.message, { cause: error });
+			}
 		}, action);
 	}
 

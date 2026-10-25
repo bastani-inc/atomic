@@ -278,6 +278,22 @@ test("custom journal open failures retain the adapter error as a typed storage c
 	await journal.close();
 });
 
+test("a custom journal failure names its cause's class and code but not its message, which relays may forward", async () => {
+	const cause = Object.assign(new TypeError("connect postgres://user:secret@db failed"), { code: "ECONNREFUSED" });
+	class UnavailableJournal extends MemoryRunJournal {
+		override async listRuns(): Promise<never> {
+			throw cause;
+		}
+	}
+	const journal = new UnavailableJournal();
+	await assert.rejects(initializeDurableBackend({ journal }), (error: Error) => {
+		assert.equal(error.message, "Storage unavailable: custom at custom journal: TypeError (ECONNREFUSED)");
+		assert.equal(error.cause, cause);
+		return true;
+	});
+	await journal.close();
+});
+
 test("custom journal catalog and close failures retain typed storage causes", async () => {
 	const cause = new Error("adapter unavailable");
 	class UnavailableJournal extends MemoryRunJournal {

@@ -120,11 +120,22 @@ function* invoke<T>(action: () => Promise<T>): Operation<T> {
 		return value!;
 	} catch (error) {
 		if (error instanceof JournalError || error instanceof StorageError) throw error;
-		throw new StorageUnavailableError(
-			{ adapter: "custom", location: "custom journal" },
-			error instanceof Error ? error : new Error(String(error)),
-		);
+		throw customJournalUnavailable(error);
 	}
+}
+
+const CUSTOM_JOURNAL = { adapter: "custom", location: "custom journal" } as const;
+
+/**
+ * A failure of a journal this backend does not know, as unavailable storage. Workers and the pool coordinator
+ * relay only `message`, so it names the cause's class and code; not its message, which a custom driver may fill
+ * with a connection string.
+ */
+function customJournalUnavailable(error: unknown): StorageUnavailableError {
+	const cause = error instanceof Error ? error : new Error(String(error));
+	const code = (cause as { code?: unknown }).code;
+	const detail = typeof code === "string" || typeof code === "number" ? `${cause.name} (${String(code)})` : cause.name;
+	return new StorageUnavailableError(CUSTOM_JOURNAL, cause, detail);
 }
 
 async function execute<T>(operation: Operation<T>): Promise<T> {
@@ -267,10 +278,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 				error instanceof DurableNestedTopologyError
 			)
 				throw error;
-			throw new StorageUnavailableError(
-				{ adapter: "custom", location: "custom journal" },
-				error instanceof Error ? error : new Error(String(error)),
-			);
+			throw customJournalUnavailable(error);
 		}
 	}
 

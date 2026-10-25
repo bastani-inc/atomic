@@ -12,6 +12,7 @@ import type { DurableStageCheckpoint } from "../../packages/workflows/src/durabl
 import { workflowPendingStageRouteCapability } from "../../packages/workflows/src/shared/pending-stage-route-capability.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { asWorkflowInfrastructureError } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
 import { PoolStageHandoff } from "../../packages/workflows/src/workers/stage-handoff.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { testRunId } from "../helpers/run-id.js";
@@ -1052,6 +1053,85 @@ test("completing the work ends projections a replaying successor never republish
 		);
 		assert.equal(f.store.activeRunId(), ROOT);
 	} finally {
+		await f.close();
+	}
+});
+
+test("a live worker whose work lease lapsed before the coordinator extended it still records its stage's delivery", async () => {
+	const f = await fixture();
+	try {
+		// The coordinator's attempt view, as the local pool answers it: a lapse alone does not fence a live worker (#3888).
+		const handoff = new PoolStageHandoff(
+			f.backend,
+			f.store,
+			{
+				assertCurrent: async () => {},
+				withCurrentAppend: (lease, work, assertSession, action) =>
+					f.queue.withCurrentAppend(lease, work, assertSession, action),
+				result: (root, id) => f.queue.result(root, id),
+			},
+			f.lease,
+		);
+		await handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueDirect("stage", "after-resume");
+		await f.database.run("UPDATE wf_runs_work SET expires_at = 0 WHERE id = ?", f.first.id);
+		const received: string[] = [];
+		await handoff.deliver(
+			f.first,
+			descriptor.childRunId,
+			"stage",
+			"stage",
+			{ sessionId: "session-a", receivedMessageIds: [] },
+			async (_from, delivered) => {
+				received.push(delivered.id);
+			},
+		);
+		assert.deepEqual(received, ["after-resume"]);
+		await f.backend.hydrateWorkflow(ROOT);
+		assert.equal(pendingStageMessagesForDurableRun(f.backend, descriptor.childRunId, ROOT)[0]?.status, "delivered");
+	} finally {
+		await f.close();
+	}
+});
+
+test("a receipt refused for a replaced attempt reaches the worker as a stale work lease, not as unavailable storage", async () => {
+	const f = await fixture();
+	let delivery: Promise<void> | undefined;
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueDirect("stage", "fenced-receipt");
+		const markDelivered = f.store.markPendingStageMessageDelivered.bind(f.store);
+		vi.spyOn(f.store, "markPendingStageMessageDelivered").mockImplementationOnce(async (...args) => {
+			entered.resolve();
+			await release.promise;
+			return markDelivered(...args);
+		});
+		delivery = f.handoff.deliver(
+			f.first,
+			descriptor.childRunId,
+			"stage",
+			"stage",
+			{ sessionId: "session-a", receivedMessageIds: [] },
+			async () => {},
+		);
+		const outcome = delivery.then(
+			() => undefined,
+			(error: Error) => error,
+		);
+		await entered.promise;
+		await f.replacement();
+		release.resolve();
+		const error = await outcome;
+		assert.ok(error);
+		// The worker IPC relays only the message, so the message itself must name the refusal.
+		assert.equal(error.message, "Stale work lease");
+		assert.equal(asWorkflowInfrastructureError(new Error(error.message))?.code, "stale_work_lease");
+	} finally {
+		release.resolve();
+		await delivery?.catch(() => {});
+		vi.restoreAllMocks();
 		await f.close();
 	}
 });
