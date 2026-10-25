@@ -199,6 +199,8 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
   const retryIdentities = new RetryIdentityReservations({ maxEntries: deps.retryIdentityMaxEntries });
   const { childOrchestratorMetadata, ensureConnected, syncPresenceIdentity, beginReplyWait } = deps;
   const resolveTarget = deps.resolveSessionTarget ?? resolveSessionTargetId;
+  const resolveRecipient = async (client: IntercomClient, target: string): Promise<string> =>
+    parseWorkflowStageTarget(target) === undefined ? (await resolveTarget(client, target)) ?? target : target;
   const getMetadata = typeof childOrchestratorMetadata === "function"
     ? childOrchestratorMetadata
     : () => childOrchestratorMetadata ?? null;
@@ -585,7 +587,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 details: { error: true, delivered: false, reason: goneChild },
               };
             }
-            const sendTo = await resolveTarget(connectedClient, to) ?? to;
+            const sendTo = await resolveRecipient(connectedClient, to);
             if (_signal?.aborted) {
               const retained = retainInconclusiveRetry(retryIdentities, retryIdentity);
               retryIdentity = undefined;
@@ -784,8 +786,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 details: { error: true, delivered: false, reason: goneChild },
               };
             }
-            const listedTarget = await resolveTarget(connectedClient, to);
-            const sendTo = listedTarget ?? to;
+            const sendTo = await resolveRecipient(connectedClient, to);
             if (_signal?.aborted) {
               const retained = retryIdentity === undefined
                 ? undefined

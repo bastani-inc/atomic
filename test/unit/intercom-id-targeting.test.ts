@@ -134,6 +134,52 @@ describe("Intercom full session ID targeting", () => {
 		assert.equal(typeof current.sent[0]?.messageId, "string");
 	});
 
+	test("a workflow-stage send reaches the broker without a session directory round trip (#3931)", async () => {
+		const stagePattern = "workflow:39310001-0000-4000-8000-000000000001/child-c001/**";
+		let listCalls = 0;
+		let tool: Tool | undefined;
+		const sent: string[] = [];
+		const client = {
+			sessionId: "self-session-id",
+			async listSessions(): Promise<SessionInfo[]> {
+				listCalls += 1;
+				throw new Error("List sessions timeout");
+			},
+			async send(to: string, message: { messageId?: string }) {
+				sent.push(to);
+				return { id: message.messageId ?? "pattern-message", delivered: false, queued: true };
+			},
+		};
+		registerIntercomTool(
+			{
+				registerTool(value: Tool) {
+					tool = value;
+				},
+				async appendEntry() {},
+			} as never,
+			{
+				ensureConnected: async () => client,
+				syncPresenceIdentity() {},
+				confirmSend: false,
+				beginReplyWait: () => undefined,
+				replyTracker: new ReplyTracker(),
+			} as never,
+		);
+		assert.ok(tool);
+
+		const result = await tool.execute(
+			"pattern-send",
+			{ action: "send", to: stagePattern, message: "hello" },
+			undefined,
+			undefined,
+			context,
+		);
+
+		assert.equal(result.isError, false, result.content[0]?.text);
+		assert.equal(listCalls, 0);
+		assert.deepEqual(sent, [stagePattern]);
+	});
+
 	test("ask by a workflow stage name alias keys its reply waiter on the live stage session", async () => {
 		// Regression: #2784 — the broker registers BOTH `<runId>:<stageId>` and `<runId>:<stageName>`
 		// as live aliases, but the roster publishes only the id form. Matching the id form alone left a
