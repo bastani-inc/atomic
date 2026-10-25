@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- `StorageProvider` journal factories accept `hostModules`, and `loadStorageAdapter()` takes an optional third `hostModules` argument, to give adapter modules extra live host modules by specifier ([#3963](https://github.com/bastani-inc/atomic/issues/3963))
+
+### Fixed
+
+- A storage adapter loaded by path to open a workflow journal can now import `@bastani/atomic/workflows`. It gets the running Atomic's workflows module, so an `openRunJournal` hook can build on `SqlRunJournal` and its errors, such as `StaleLeaseError`, pass Atomic's `instanceof` checks. Before, the import resolved to a path inside `dist/index.js` and the journal failed with `Storage unavailable` ([#3963](https://github.com/bastani-inc/atomic/issues/3963))
+
 ## [0.9.44] - 2026-10-25
 
 Large agent swarms and pooled workflow fan-outs now run for hours without freezing the TUI, dropping messages or slowing down, and recover cleanly from a crash.

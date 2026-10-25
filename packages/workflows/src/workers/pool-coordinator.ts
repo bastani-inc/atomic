@@ -5,6 +5,7 @@ import { mkdir, rm, rmdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { resolveRunJournal } from "../durable/journal/resolution.js";
+import "../durable/journal/workflows-host-module.js";
 import {
 	openSqlPoolQueue,
 	type PoolControl,

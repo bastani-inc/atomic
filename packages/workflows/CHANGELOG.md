@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Journal adapters loaded by path (`ATOMIC_WORKFLOWS_JOURNAL`, `workflows.journal`, or a run's `journal: { adapter }`) can import `@bastani/atomic/workflows` and receive the workflows module that opened the journal, including its `SqlRunJournal` and journal error classes ([#3963](https://github.com/bastani-inc/atomic/issues/3963))
+
 ## [0.9.44] - 2026-10-25
 
 ### Fixed

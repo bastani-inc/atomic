@@ -59,6 +59,8 @@ export interface StorageAdapterModule {
 export interface JournalFactories {
 	memory(descriptor: StorageDescriptor): RunJournal;
 	sql(database: SqliteDatabase, options: { readonly prefix?: string }): Promise<RunJournal>;
+	/** Live modules a journal adapter imports by specifier, such as the running `@bastani/atomic/workflows`. */
+	readonly hostModules?: Readonly<Record<string, object>>;
 }
 
 const databaseIds = new WeakMap<SqliteDatabase, number>();
@@ -100,10 +102,15 @@ export function storageSelectionKey(selection: StorageSelection, agentDir?: stri
 /**
  * Loads an adapter module the way the extension loader loads extensions: `@bastani/atomic/storage` (and
  * `@bastani/atomic`) resolve to this host's own modules, so adapters need no installed copy of Atomic and share its
- * error classes. A package name selects an adapter listed by an installed Atomic package; other specifiers, and
- * package names no installed package lists, resolve from the agent directory.
+ * error classes. `hostModules` adds live modules by specifier; run journals pass the running
+ * `@bastani/atomic/workflows`. A package name selects an adapter listed by an installed Atomic package; other
+ * specifiers, and package names no installed package lists, resolve from the agent directory.
  */
-export async function loadStorageAdapter(module: string, context: StorageOpenContext): Promise<StorageAdapterModule> {
+export async function loadStorageAdapter(
+	module: string,
+	context: StorageOpenContext,
+	hostModules: Readonly<Record<string, object>> = {},
+): Promise<StorageAdapterModule> {
 	try {
 		const [{ createHostModuleJiti }, { getStorageAdapterHostModules }, { resolvePackageStorageAdapter }] =
 			await Promise.all([
@@ -113,7 +120,7 @@ export async function loadStorageAdapter(module: string, context: StorageOpenCon
 			]);
 		const loader = await createHostModuleJiti(
 			pathToFileURL(join(context.agentDir, "storage-adapter.js")).href,
-			await getStorageAdapterHostModules(),
+			{ ...(await getStorageAdapterHostModules()), ...hostModules },
 			// JS adapters must also pass through virtual host modules, not native-import a second host copy.
 			{ interopDefault: true, tryNative: false },
 		);
@@ -227,6 +234,7 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 		if (!journals) throw new StorageConfigError("sdk", "journal", "adapter-domain-unsupported");
 		return this.open<RunJournal>(selection, context, {
 			memory: () => journals.memory({ adapter: "memory", location: ":memory:" }),
+			hostModules: journals.hostModules,
 			direct: (adapter, options, storage) => adapter.openRunJournal?.(options, context, storage),
 			sql: async (database, options) => {
 				const journal = await journals.sql(database, options);
@@ -248,6 +256,7 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 				options: AdapterOptions,
 				storage: { readonly prefix?: string },
 			): Promise<T> | undefined;
+			hostModules?: Readonly<Record<string, object>>;
 			sql(database: SqliteDatabase, options: { readonly prefix?: string }): Promise<T>;
 		},
 	): Promise<T> {
@@ -291,7 +300,7 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 		validateStoragePrefix(selection.prefix);
 		let openDatabase: () => Promise<SqliteDatabase>;
 		if (selection.kind === "adapter") {
-			const adapter = await loadStorageAdapter(selection.module, context);
+			const adapter = await loadStorageAdapter(selection.module, context, factories.hostModules);
 			const options = await resolveAdapterOptions(selection, context);
 			try {
 				const direct = factories.direct(adapter, options, { prefix: selection.prefix });
