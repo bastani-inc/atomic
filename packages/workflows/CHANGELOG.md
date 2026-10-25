@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- A long-running workflow fan-out whose stages keep sending Intercom messages to stage patterns (for example `workflow:<rootRunId>/child-*/**`) no longer slows down with every message it has sent. Pattern messages stay queued until the root run ends, and each delivery receipt made the workflow host re-check every queued message and every recorded delivery against every run. In a 480-child load test this saturated the host, Intercom sends timed out after 10 s, and about half of them were never delivered. A delivery now re-checks only the messages it changed and the messages delivered to stages that have since ended: with 3,000 queued messages, recording one delivery takes about 1.2 ms instead of 6.7 ms. Delivery results are unchanged.
+
 ## [0.9.44-alpha.5] - 2026-10-25
 
 ### Fixed
