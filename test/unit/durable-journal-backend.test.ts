@@ -34,6 +34,15 @@ import { assertLeaseStateUnchanged } from "../helpers/journal-lease-state.js";
 import { bunExecutable, makeTempDirectory, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
+/** The journal shape of one pending-stage list change item, as asserted by these tests. */
+type PendingStageListChangeItem =
+	| readonly [start: number, count: number]
+	| {
+			readonly patch: number;
+			readonly set?: Readonly<Record<string, string | number | boolean>>;
+			readonly unset?: readonly string[];
+	  };
+
 async function entries(journal: RunJournal): Promise<JournalEntry[]> {
 	const result: JournalEntry[] = [];
 	for await (const entry of journal.read("run")) result.push(entry);
@@ -702,6 +711,109 @@ test("sticky delivery records append O(change) journal bytes and reopen to the s
 	assert.deepEqual(resumed.getWorkflow("run")?.pendingStageMessages, messages);
 });
 
+test("pending pattern sends and status changes append O(change) journal bytes as the pending list grows (#3929)", async () => {
+	const path = database();
+	const backend = await open(path);
+	await register(backend);
+	const sticky = (index: number): PendingStageMessage => ({
+		id: `message-${index}`,
+		runId: "run",
+		stageKey: index % 20 === 0 ? "workflow:run/**" : `workflow:run/child-c${index % 160}/**`,
+		targetPath: index % 20 === 0 ? "workflow:run/**" : `workflow:run/child-c${index % 160}/**`,
+		notInKnownSet: true,
+		from: { id: `sender-${index}`, name: `subagent-chat-${index}`, cwd: "/repo", groups: ["workflow:run"] },
+		message: { id: `message-${index}`, timestamp: index, content: { text: `hello from child ${index}` } },
+		queuedAt: "2026-10-24T23:26:06.916Z",
+		admissionOrder: 1,
+		status: "queued",
+		sticky: true,
+		deliveryCount: 0,
+	});
+	const handleBytes = () => {
+		const { pendingStageMessages: _messages, ...handle } = backend.getWorkflow("run")!;
+		return JSON.stringify(handle).length;
+	};
+	let messages: PendingStageMessage[] = [];
+	let changed = 0;
+	let headers = 0;
+	for (let send = 0; send < 300; send++) {
+		const queued = sticky(send);
+		// Each send queues one message and records a delivery count on one earlier sticky entry.
+		messages = [...messages, queued].map((entry, index) =>
+			index === Math.floor(send / 2) ? { ...entry, deliveryCount: (entry.deliveryCount ?? 0) + 1 } : entry,
+		);
+		changed += JSON.stringify(queued).length + JSON.stringify(messages[Math.floor(send / 2)]).length;
+		headers += handleBytes();
+		assert.equal(await backend.persistPendingStageMessages("run", messages), true);
+		if (send % 50 === 49) {
+			headers += handleBytes();
+			await backend.commitWorkflowStatus("run", send % 100 === 49 ? "paused" : "running");
+		}
+	}
+	const snapshots = (await entries(backend.journal)).filter(
+		(entry) =>
+			entry.event.type === RUN_EVENT_TYPES.messageQueued || entry.event.type === RUN_EVENT_TYPES.statusChanged,
+	);
+	const written = snapshots.reduce((sum, entry) => sum + JSON.stringify(entry.event.payload).length, 0);
+	// The journal should grow by the queued and changed entries, not by the whole pending list on every event.
+	const bound = 2 * (changed + headers);
+	assert.ok(written < bound, `wrote ${written} bytes of handle snapshots; linear bound ${bound}`);
+	assert.deepEqual(backend.getWorkflow("run")?.pendingStageMessages, messages);
+	await backend.close();
+	// The resume catalog lists a run from its latest snapshot without folding its history.
+	const listed = await JournalDurableBackend.open(await openSqlRunJournal(path), { runs: [] });
+	opened.push(listed);
+	await listed.prepareWorkflowCatalog();
+	assert.deepEqual(listed.getWorkflow("run")?.pendingStageMessages, messages);
+	const resumed = await open(path);
+	await resumed.hydrateWorkflow("run");
+	assert.deepEqual(resumed.getWorkflow("run")?.pendingStageMessages, messages);
+});
+
+test("pending entries that drop optional fields write unset patches that replay to the live list (#3929)", async () => {
+	const path = database();
+	const backend = await open(path);
+	await register(backend);
+	const entry = (index: number): PendingStageMessage => ({
+		id: `message-${index}`,
+		runId: "run",
+		stageKey: "workflow:run/**",
+		targetPath: "workflow:run/**",
+		notInKnownSet: true,
+		from: { id: `sender-${index}`, name: `sender-${index}`, cwd: "/repo", groups: ["workflow:run"] },
+		message: { id: `message-${index}`, timestamp: index, content: { text: `a long enough message body ${index}` } },
+		queuedAt: "2026-10-24T23:26:06.916Z",
+		admissionOrder: index,
+		status: "queued",
+		sticky: true,
+		deliveries: [{ runId: "run", stageId: `stage-${index}`, deliveredAt: "2026-10-24T23:26:07.000Z" }],
+		deliveryCount: 1,
+	});
+	const initial = [entry(0), entry(1), entry(2)];
+	assert.equal(await backend.persistPendingStageMessages("run", initial), true);
+	const { deliveries: _deliveries, notInKnownSet: _known, ...cleared } = initial[1]!;
+	const messages = [initial[0]!, { ...cleared, deliveryCount: 0 }, initial[2]!];
+	assert.equal(await backend.persistPendingStageMessages("run", messages), true);
+	const latest = (await entries(backend.journal)).at(-1)!;
+	assert.equal(latest.event.type, RUN_EVENT_TYPES.messageQueued);
+	const change = (latest.event.payload as { pendingStageMessageChange?: readonly PendingStageListChangeItem[] })
+		.pendingStageMessageChange;
+	assert.deepEqual(change, [
+		[0, 1],
+		{ patch: 1, set: { deliveryCount: 0 }, unset: ["notInKnownSet", "deliveries"] },
+		[2, 1],
+	]);
+	assert.deepEqual(backend.getWorkflow("run")?.pendingStageMessages, messages);
+	await backend.close();
+	const listed = await JournalDurableBackend.open(await openSqlRunJournal(path), { runs: [] });
+	opened.push(listed);
+	await listed.prepareWorkflowCatalog();
+	assert.deepEqual(listed.getWorkflow("run")?.pendingStageMessages, messages);
+	const resumed = await open(path);
+	await resumed.hydrateWorkflow("run");
+	assert.deepEqual(resumed.getWorkflow("run")?.pendingStageMessages, messages);
+});
+
 test("additive checkpoints propagate typed counter violations instead of hiding them", async () => {
 	const journal = await openSqlRunJournal(database());
 	let fail = false;
@@ -915,7 +1027,10 @@ for (const extra of [0, 1]) {
 		assert.deepEqual(observer.listCheckpoints("run"), fresh.listCheckpoints("run"));
 		const latest = (await entries(observer.journal)).at(-1)!;
 		assert.equal(latest.event.type, RUN_EVENT_TYPES.statusChanged);
-		assert.deepEqual(latest.event.payload, JSON.parse(JSON.stringify(fresh.getWorkflow("run"))));
+		// The status change writes the recreated run's handle; its pending entries may be written as a change.
+		const { pendingStageMessages: _list, ...expected } = JSON.parse(JSON.stringify(fresh.getWorkflow("run")));
+		const { pendingStageMessages: _written, pendingStageMessageChange: _change, ...payload } = latest.event.payload;
+		assert.deepEqual(payload, expected);
 		assert.equal(await observer.pendingPromptToken("run", "old prompt"), undefined);
 		await observer.releasePendingPrompt("run", "new prompt", token);
 		assert.equal(observer.getWorkflow("run")!.pendingPrompts, 0);
