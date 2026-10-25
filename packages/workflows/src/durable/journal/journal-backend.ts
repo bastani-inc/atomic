@@ -31,6 +31,7 @@ import {
 	type RunJournalVersions,
 	type RunSnapshotTail,
 	type RunVersion,
+	runJournalAppendMany,
 	runJournalVersions,
 } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
@@ -50,6 +51,8 @@ import {
 
 const PROCESS_HOLDER_ID = randomUUID();
 const CHANGE_APPEND_ATTEMPTS = 4;
+/** Most receipts and settlements one journal transaction writes for a run. */
+const APPEND_BATCH_LIMIT = 256;
 const processExitCleanups = new Set<() => void>();
 
 function runProcessExitCleanups(): void {
@@ -177,6 +180,15 @@ export class JournalMessageScopeError extends JournalError {
 		this.name = "JournalMessageScopeError";
 	}
 }
+/** A delivery receipt or settlement waiting in a run's queue, settled with its own outcome. */
+interface QueuedAppend {
+	readonly event: BackendEvent;
+	readonly key?: string;
+	/** Runs a function in the async context the append was issued from, which carries its pool append guard. */
+	readonly context: <R>(action: () => R) => R;
+	resolve(): void;
+	reject(error: Error): void;
+}
 interface WorkflowLeaseExecution {
 	lease?: Lease;
 	users: number;
@@ -200,6 +212,11 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	private readonly executions = new Map<string, WorkflowLeaseExecution>();
 	private readonly executionContext = new AsyncLocalStorage<ReadonlyMap<string, WorkflowLeaseExecution>>();
 	private readonly pending = new Map<string | symbol, Promise<void>>();
+	/**
+	 * The receipts and settlements queued last for each run, not yet started: one more appended before any other
+	 * operation of the run joins them, so they are written together in their queue order.
+	 */
+	private readonly appendBatches = new Map<string, QueuedAppend[]>();
 	private readonly catalogQueue = Symbol("catalog");
 	private readonly lost = new Map<string, Error>();
 	private readonly prompts = new Map<string, PromptReservationState>();
@@ -272,6 +289,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		action: () => Operation<T>,
 		admitted = this.mutationContext.getStore() ?? new Set<WorkflowLeaseExecution>(),
 	): Promise<T> {
+		if (typeof runId === "string") this.appendBatches.delete(runId);
 		const prior = this.pending.get(runId) ?? Promise.resolve();
 		const result = prior.then(() => this.mutationContext.run(admitted, () => execute(action())));
 		const settled = result.then(
@@ -468,9 +486,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		lease: Lease,
 		event: BackendEvent,
 		options?: { readonly key?: string; readonly expectSeq?: number },
+		context: <R>(action: () => R) => R = (action) => action(),
 	): Operation<void> {
 		try {
-			const outcome = yield* invoke(() => this.journal.append(lease, event, options));
+			const outcome = yield* invoke(() => context(() => this.journal.append(lease, event, options)));
 			const nextSeq = (this.sequences.get(runId) ?? 0) + 1;
 			if (outcome.entry.seq > nextSeq) {
 				for (const entry of yield* this.entries(runId, nextSeq)) this.fold(entry);
@@ -746,12 +765,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		return true;
 	}
 	async archivePendingStageMessage(runId: string, message: PendingStageMessage): Promise<void> {
-		await this.serialize(runId, () =>
-			this.append(
-				runId,
-				{ type: E.messageSettled, payload: { message } },
-				{ key: JSON.stringify([E.messageSettled, message.runId, message.id]) },
-			),
+		await this.queueAppend(
+			runId,
+			{ type: E.messageSettled, payload: { message } },
+			JSON.stringify([E.messageSettled, message.runId, message.id]),
 		);
 	}
 	async archivePendingStageDeliveryReceipt(
@@ -760,12 +777,86 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		delivery: PendingStageMessageDelivery,
 		accounting?: { readonly messageRunId: string; readonly deliveryCount: number },
 	): Promise<void> {
-		await this.serialize(runId, () =>
-			this.append(runId, {
-				type: E.messageDelivered,
-				payload: { messageId, delivery, ...(accounting === undefined ? {} : { accounting }) },
-			}),
-		);
+		await this.queueAppend(runId, {
+			type: E.messageDelivered,
+			payload: { messageId, delivery, ...(accounting === undefined ? {} : { accounting }) },
+		});
+	}
+	/**
+	 * Queue a receipt or settlement on the run, as `serialize` would. While the run is busy, the ones queued
+	 * back to back with nothing between them are written in one journal transaction when their turn comes, so a
+	 * burst of receipts costs one commit rather than one each and an operation queued behind it, such as a
+	 * pending-stage message, waits for that one commit. Their order, and their order against every other
+	 * operation of the run, is the order they were queued in.
+	 */
+	private queueAppend(runId: string, event: BackendEvent, key?: string): Promise<void> {
+		try {
+			this.ensureOpen();
+			this.assertExecutionActive();
+		} catch (error) {
+			return Promise.reject(error);
+		}
+		const open = this.appendBatches.get(runId);
+		const batch = open !== undefined && open.length < APPEND_BATCH_LIMIT ? open : [];
+		const queued = new Promise<void>((resolve, reject) => {
+			batch.push({
+				event,
+				...(key === undefined ? {} : { key }),
+				context: AsyncLocalStorage.snapshot(),
+				resolve,
+				reject,
+			});
+		});
+		if (batch !== open) {
+			this.serialize(runId, () => this.appendBatch(runId, batch)).catch((error: Error) => {
+				for (const append of batch) append.reject(error);
+			});
+			this.appendBatches.set(runId, batch);
+		}
+		return queued;
+	}
+	private *appendBatch(runId: string, batch: QueuedAppend[]): Operation<void> {
+		if (this.appendBatches.get(runId) === batch) this.appendBatches.delete(runId);
+		const appendMany = runJournalAppendMany(this.journal);
+		if (appendMany === undefined || batch.length === 1) {
+			for (const append of batch) {
+				try {
+					const lease = yield* this.ownership(runId);
+					yield* this.write(
+						runId,
+						lease,
+						append.event,
+						append.key === undefined ? undefined : { key: append.key },
+						append.context,
+					);
+					append.resolve();
+				} catch (error) {
+					append.reject(error as Error);
+				}
+			}
+			return;
+		}
+		let settled = 0;
+		try {
+			const lease = yield* this.ownership(runId);
+			const results = yield* invoke(() => appendMany(lease, batch));
+			for (const result of results) {
+				const append = batch[settled]!;
+				if (result.status === "rejected") {
+					append.reject(yield* this.mapOwnership(result.reason as Error, runId));
+				} else {
+					const nextSeq = (this.sequences.get(runId) ?? 0) + 1;
+					if (result.value.entry.seq > nextSeq)
+						for (const entry of yield* this.entries(runId, nextSeq)) this.fold(entry);
+					this.fold(result.value.entry);
+					append.resolve();
+				}
+				settled++;
+			}
+		} catch (error) {
+			const failure = error instanceof Error ? yield* this.mapOwnership(error, runId) : (error as Error);
+			for (const append of batch.slice(settled)) append.reject(failure);
+		}
 	}
 
 	getToolOutput(...args: Parameters<DurableWorkflowBackend["getToolOutput"]>) {

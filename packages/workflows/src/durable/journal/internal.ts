@@ -1,5 +1,12 @@
 import type { SqliteExecutor } from "@bastani/atomic/storage";
-import { type JournalEntry, RUN_EVENT_TYPES, type RunJournal } from "./types.js";
+import {
+	type AppendOutcome,
+	type JournalEntry,
+	type Lease,
+	RUN_EVENT_TYPES,
+	type RunEvent,
+	type RunJournal,
+} from "./types.js";
 
 export const JOURNAL_READ_PAGE_SIZE = 256;
 
@@ -48,6 +55,30 @@ export function registerRunJournalVersions(journal: RunJournal, versions: RunJou
 /** Change tracking for a journal that registered it; other journals are re-read in full. */
 export function runJournalVersions(journal: RunJournal): RunJournalVersions | undefined {
 	return versionReaders.get(journal);
+}
+
+/** One append of a batch. `context` runs a function in the async context the append was issued from. */
+export interface JournalBatchAppend {
+	readonly event: RunEvent;
+	readonly key?: string;
+	readonly context?: <R>(action: () => R) => R;
+}
+
+/** Appends to one run in one transaction; each append is settled on its own. Kept off the public journal shape. */
+export type RunJournalAppendMany = (
+	lease: Lease,
+	appends: readonly JournalBatchAppend[],
+) => Promise<readonly PromiseSettledResult<AppendOutcome>[]>;
+
+const appendManyWriters = new WeakMap<RunJournal, RunJournalAppendMany>();
+
+export function registerRunJournalAppendMany(journal: RunJournal, appendMany: RunJournalAppendMany): void {
+	appendManyWriters.set(journal, appendMany);
+}
+
+/** Batched appends for a journal that registered them; other journals append one event at a time. */
+export function runJournalAppendMany(journal: RunJournal): RunJournalAppendMany | undefined {
+	return appendManyWriters.get(journal);
 }
 
 export type JournalAppendGuard = (tx: SqliteExecutor, runId: string) => Promise<void>;
