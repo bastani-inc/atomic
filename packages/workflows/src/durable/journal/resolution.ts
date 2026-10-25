@@ -24,9 +24,19 @@ export interface RunJournalSettings {
 	storage?: StorageSettingsSelection;
 }
 
+let hostModules: Readonly<Record<string, object>> = {};
+
+/** Sets the live modules a journal adapter imports by specifier; the workflows entry modules provide themselves. */
+export function provideRunJournalHostModules(modules: Readonly<Record<string, object>>): void {
+	hostModules = modules;
+}
+
 const provider = new StorageProvider({
 	memory: (descriptor) => new MemoryRunJournal(descriptor),
 	sql: SqlRunJournal.open,
+	get hostModules() {
+		return hostModules;
+	},
 });
 const origins = new WeakMap<StorageSelection, { source: "settings" | "cli" | "env"; field?: string }>();
 

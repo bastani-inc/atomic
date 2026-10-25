@@ -14,6 +14,7 @@ import {
 	selectRunJournal,
 	withRunJournalConfigSource,
 } from "./journal/resolution.js";
+import "./journal/workflows-host-module.js";
 
 /** Internal test injection, captured only when an owning store is constructed. */
 

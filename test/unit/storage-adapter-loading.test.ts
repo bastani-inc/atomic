@@ -67,6 +67,62 @@ test("single-file builds give adapters the live host modules through virtual mod
 	loadAdapterWithBuiltHost({ ATOMIC_BUNDLED_BUILD: "1" });
 });
 
+function openJournalAdapterWithBuiltHost(env: Record<string, string | undefined>): void {
+	const agentDir = makeTempDirectory("storage-workflows-host-module-");
+	const adapterDir = makeTempDirectory("storage-workflows-adapter-");
+	const adapterPath = join(adapterDir, "adapter.mjs");
+	writeFileSync(
+		adapterPath,
+		[
+			'import { MemoryRunJournal, SqlRunJournal, StaleLeaseError } from "@bastani/atomic/workflows";',
+			"export default {",
+			"\tatomicStorageAdapter: 1,",
+			"\tasync openRunJournal() {",
+			'\t\treturn Object.assign(new MemoryRunJournal({ adapter: "custom", location: ":memory:" }), {',
+			"\t\t\tSqlRunJournal,",
+			"\t\t\tStaleLeaseError,",
+			"\t\t});",
+			"\t},",
+			"};",
+			"",
+		].join("\n"),
+	);
+	try {
+		const result = spawnSyncCollect(
+			[
+				process.execPath,
+				"--input-type=module",
+				"-e",
+				`
+			import assert from 'node:assert/strict';
+			import * as workflows from '@bastani/atomic/workflows';
+			const journal = await workflows.resolveRunJournal({
+				agentDir: ${JSON.stringify(agentDir)},
+				journal: { adapter: ${JSON.stringify(adapterPath)} },
+			});
+			assert.ok(journal instanceof workflows.MemoryRunJournal);
+			assert.equal(journal.SqlRunJournal, workflows.SqlRunJournal);
+			assert.equal(journal.StaleLeaseError, workflows.StaleLeaseError);
+			await journal.close();
+		`,
+			],
+			{ cwd: join(moduleDir(import.meta.url), "../../packages/coding-agent"), env: { ...process.env, ...env } },
+		);
+		assert.equal(result.exitCode, 0, result.stdout.toString() + result.stderr.toString());
+	} finally {
+		removeTempDirectory(agentDir);
+		removeTempDirectory(adapterDir);
+	}
+}
+
+test("journal adapters loaded by path share the running @bastani/atomic/workflows module (#3963)", () => {
+	openJournalAdapterWithBuiltHost({ ATOMIC_BUNDLED_BUILD: undefined });
+});
+
+test("single-file builds give journal adapters the live @bastani/atomic/workflows module (#3963)", () => {
+	openJournalAdapterWithBuiltHost({ ATOMIC_BUNDLED_BUILD: "1" });
+});
+
 test("the standalone broker loads host modules from the app bundle on first import only (#3856)", async () => {
 	const storage = { name: "storage" };
 	const atomic = { name: "atomic" };

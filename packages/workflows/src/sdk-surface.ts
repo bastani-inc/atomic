@@ -73,3 +73,5 @@ export type { LocalWorkerOptions, WorkflowAdmissionOptions } from "./workers/pub
 export { normalizeWorkflowName, workflowNamesEqual } from "./workflows/identity.js";
 export type { WorkflowRegistry } from "./workflows/registry.js";
 export { createRegistry } from "./workflows/registry.js";
+
+import "./durable/journal/workflows-host-module.js";

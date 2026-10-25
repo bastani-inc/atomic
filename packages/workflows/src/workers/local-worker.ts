@@ -6,6 +6,7 @@ import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
 import { JournalDurableBackend } from "../durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../durable/journal/resolution.js";
+import "../durable/journal/workflows-host-module.js";
 import type { PoolCommitReceipt, PoolControl, PoolMutation, PoolWork } from "../durable/journal/sql-pool-queue.js";
 import { run } from "../engine/run.js";
 import { createToolControlRegistry } from "../engine/run-tool-control-registry.js";
