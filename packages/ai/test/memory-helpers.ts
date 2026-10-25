@@ -14,6 +14,19 @@ export async function collectGarbage(): Promise<void> {
 }
 
 /**
+ * Collect garbage until `released()` holds or `rounds` collections have run. A platform can keep the last references
+ * a little longer (a pending timer or I/O callback), so a fixed number of collections races it; a real leak still
+ * fails once the rounds run out.
+ */
+export async function collectGarbageUntil(released: () => boolean, rounds = 40): Promise<void> {
+	for (let round = 0; round < rounds; round++) {
+		await new Promise((resolve) => setTimeout(resolve, round < 4 ? 0 : 10));
+		gc();
+		if (released()) return;
+	}
+}
+
+/**
  * Bytes `run` allocates on the JavaScript heap, including garbage collected while it ran: the heap growth plus what
  * every collection during the run freed.
  */

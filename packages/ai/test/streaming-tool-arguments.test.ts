@@ -9,7 +9,7 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "../src/provide
 import type { AssistantMessage, AssistantMessageEvent, Model, TranscriptContext } from "../src/types.ts";
 import { AssistantMessageEventStream } from "../src/utils/event-stream.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
-import { allocatedBytes, collectGarbage } from "./memory-helpers.ts";
+import { allocatedBytes, collectGarbage, collectGarbageUntil } from "./memory-helpers.ts";
 
 // #9265: every provider re-parsed the accumulated tool-call arguments on each delta and kept the raw text on the
 // content block, where it reached partial messages, Durable commits and transcripts.
@@ -383,7 +383,7 @@ describe.each(PATHS)("$name tool-call argument streaming", (path) => {
 				if (call?.type === "toolCall") references.push(new WeakRef(call.arguments));
 			});
 		})();
-		await collectGarbage();
+		await collectGarbageUntil(() => references.every((reference) => reference.deref() === undefined));
 		expect(references.filter((reference) => reference.deref() !== undefined)).toHaveLength(0);
 	});
 });

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { JsonValue } from "../src/types.ts";
 import { parseStreamingJson, parseToolCallArguments } from "../src/utils/json-parse.ts";
 import { type JsonChange, StreamingJsonParser, ToolCallArgumentsStream } from "../src/utils/streaming-json.ts";
-import { allocatedBytes, collectGarbage } from "./memory-helpers.ts";
+import { allocatedBytes, collectGarbage, collectGarbageUntil } from "./memory-helpers.ts";
 
 // #9265: streamed tool-call arguments were re-parsed in full on every delta.
 
@@ -842,7 +842,7 @@ describe("ToolCallArgumentsStream", () => {
 			for (let index = 0; index < 100; index++) references.push(new WeakRef(args.append(`{"a${index}":"${index}`)));
 			references.push(new WeakRef(args));
 		})();
-		await collectGarbage();
+		await collectGarbageUntil(() => references.every((reference) => reference.deref() === undefined));
 		expect(references.filter((reference) => reference.deref() !== undefined)).toEqual([]);
 	});
 });
