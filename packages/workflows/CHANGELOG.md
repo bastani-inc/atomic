@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Intercom sends to stage patterns no longer time out while a large workflow fan-out records delivery receipts. The workflow host wrote each receipt in its own journal transaction, one after another, and a pattern message waited behind every receipt queued before it. When another process also held the journal's write lock, that wait exceeded the 10-second send acknowledgement, and in a 480-child load test delivery fell to 0–2%. Receipts and settlements queued back to back for a run are now written together in one transaction, in the same order and with the same durability. In a test that queues a pattern message halfway through 2,000 receipts from 160 callers while a second process holds the write lock, the message persisted in under 30 ms instead of more than 4 seconds.
+
 ## [0.9.44-alpha.5] - 2026-10-25
 
 ### Fixed
