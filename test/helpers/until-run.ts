@@ -7,28 +7,30 @@ export interface EndedRun {
 
 const POLL_INTERVAL_MS = 25;
 
+function rejectWhenRunEnds(execution: Promise<EndedRun>): Promise<never> {
+	const ended = execution.then((run): never => {
+		throw new Error(`The run ended with status ${run.status} before the condition held: ${run.error ?? "no error"}`);
+	});
+	ended.catch(() => {});
+	return ended;
+}
+
+function rejectWhenAborted(signal: AbortSignal): Promise<never> {
+	const aborted = new Promise<never>((_resolve, reject) => {
+		signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+	});
+	aborted.catch(() => {});
+	return aborted;
+}
+
 export async function untilOrRunEnds(
 	condition: () => Promise<boolean>,
 	execution: Promise<EndedRun>,
 	timeoutMs: number,
 ): Promise<void> {
-	let ended: { readonly run: EndedRun } | { readonly failure: Error } | undefined;
-	execution.then(
-		(run) => {
-			ended = { run };
-		},
-		(error: Error) => {
-			ended = { failure: error };
-		},
-	);
-	const signal = AbortSignal.timeout(timeoutMs);
-	while (!(await condition())) {
-		if (ended && "failure" in ended) throw ended.failure;
-		if (ended)
-			throw new Error(
-				`The run ended with status ${ended.run.status} before the condition held: ${ended.run.error ?? "no error"}`,
-			);
-		signal.throwIfAborted();
-		await sleep(POLL_INTERVAL_MS);
+	const runEnded = rejectWhenRunEnds(execution);
+	const timedOut = rejectWhenAborted(AbortSignal.timeout(timeoutMs));
+	while (!(await Promise.race([condition(), runEnded, timedOut]))) {
+		await Promise.race([sleep(POLL_INTERVAL_MS), runEnded, timedOut]);
 	}
 }

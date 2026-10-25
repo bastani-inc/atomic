@@ -49,3 +49,27 @@ test("waiting on a pooled run resolves once the condition holds while the run co
 	await untilOrRunEnds(async () => ++polls >= 3, new Promise<never>(() => {}), 60_000);
 	assert.equal(polls, 3);
 });
+
+test("waiting on a pooled run surfaces the run's error while a condition check is still pending (#3962)", async () => {
+	let failRun: (run: { status: string; error: string }) => void = () => {};
+	const execution = new Promise<{ status: string; error: string }>((resolve) => {
+		failRun = resolve;
+	});
+	let rejectCondition: (error: Error) => void = () => {};
+	const condition = () =>
+		new Promise<boolean>((_resolve, reject) => {
+			rejectCondition = reject;
+			failRun({ status: "failed", error: "Local worker startup timed out after 30000 ms" });
+		});
+	const waiting = untilOrRunEnds(condition, execution, 60_000);
+	await assert.rejects(waiting, /run ended with status failed before the condition held: Local worker startup/);
+	rejectCondition(new Error("List sessions timeout"));
+});
+
+test("waiting on a pooled run surfaces a run rejection while a condition check is still pending (#3962)", async () => {
+	const condition = () => new Promise<boolean>(() => {});
+	await assert.rejects(
+		untilOrRunEnds(condition, Promise.reject(new Error("coordinator exited")), 60_000),
+		/coordinator exited/,
+	);
+});
