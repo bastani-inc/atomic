@@ -19,7 +19,7 @@
  */
 
 import assert from "node:assert/strict";
-import { afterEach, describe, test } from "vitest";
+import { afterEach, describe, test, vi } from "vitest";
 import { IntercomClientDisconnectedError } from "../../packages/intercom/recoverable-disconnect.js";
 import { IntercomWarmUpExhaustedError } from "../../packages/intercom/warm-up-exhaustion.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
@@ -27,6 +27,7 @@ import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/st
 import {
 	createWorkflowPendingStageDelivery,
 	isWorkflowPendingStageDeliveryFailure,
+	PENDING_STAGE_READY_STALL_MS,
 	WorkflowPendingStageDeliveryFailedError,
 } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
 import {
@@ -51,7 +52,10 @@ const GROUP = `workflow:${RUN_ID}`;
 const STAGE_ID = "reviewer-id";
 const STAGE_NAME = "reviewer";
 
-afterEach(() => setDurableBackend(undefined));
+afterEach(() => {
+	vi.useRealTimers();
+	setDurableBackend(undefined);
+});
 
 async function fixture() {
 	const store = createStore();
@@ -256,5 +260,113 @@ describe("workflow pending-stage delivery terminal failure", () => {
 		assert.equal(isWorkflowPendingStageDeliveryFailure(new Error("unrelated")), false);
 		assert.equal(isWorkflowPendingStageDeliveryFailure(undefined), false);
 		assert.equal(isWorkflowPendingStageDeliveryFailure(null), false);
+	});
+});
+
+describe("workflow pending-stage delivery liveness", () => {
+	test("a drain that never settles holds the stage's startup only until the stall bound, without consuming its message", async () => {
+		const { store } = await fixtureWithQueuedMessage("hung-1");
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		const warnings: string[] = [];
+		const delivery = createWorkflowPendingStageDelivery(store, RUN_ID, STAGE_ID, STAGE_NAME, undefined, {
+			reportStall: (message) => warnings.push(message),
+		});
+		const handed: string[] = [];
+		const transport = Promise.withResolvers<void>();
+		let drained = false;
+		void delivery
+			.deliverPending(
+				async (_from, message) => {
+					handed.push(message.id);
+					await transport.promise;
+				},
+				{ sessionId: "session-a", receivedMessageIds: [] },
+			)
+			.then(() => {
+				drained = true;
+			});
+		let ready = false;
+		void delivery.ready("session-a")?.then(() => {
+			ready = true;
+		});
+
+		await vi.advanceTimersByTimeAsync(PENDING_STAGE_READY_STALL_MS - 1);
+		assert.equal(ready, false, "a drain still inside its bound keeps the stage waiting");
+		await vi.advanceTimersByTimeAsync(1);
+		assert.equal(ready, true, "the stage starts once the drain made no progress for the bound");
+		assert.equal(drained, true, "the session's startup replay is released too");
+		assert.equal(warnings.length, 1);
+		assert.match(warnings[0]!, /stage "reviewer" \(reviewer-id\)/);
+		assert.match(warnings[0]!, /running but hung/);
+		assert.match(warnings[0]!, /hung-1 \(direct → reviewer\)/);
+		assert.equal(store.pendingStageMessagesFor(RUN_ID, STAGE_NAME)[0]?.status, "queued", "nothing was consumed");
+
+		await delivery.ready("session-a");
+		await vi.advanceTimersByTimeAsync(PENDING_STAGE_READY_STALL_MS);
+		assert.equal(warnings.length, 1, "the stall is reported once per stage");
+
+		vi.useRealTimers();
+		transport.resolve();
+		await sleep(20);
+		assert.deepEqual(handed, ["hung-1"], "the late acknowledgement records the one delivery; nothing is redelivered");
+		assert.equal(store.runs().find((run) => run.id === RUN_ID)?.pendingStageMessages?.[0]?.status, "delivered");
+	});
+
+	test("a drain that keeps making progress is not cut short by the stall bound", async () => {
+		const { store, backend } = await fixtureWithQueuedMessage("slow-1");
+		await store.queueStageMessage(queuedInput("slow-2"), GROUP, GROUP, backend);
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		const warnings: string[] = [];
+		const delivery = createWorkflowPendingStageDelivery(store, RUN_ID, STAGE_ID, STAGE_NAME, undefined, {
+			reportStall: (message) => warnings.push(message),
+		});
+		const gates = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+		let index = 0;
+		void delivery.deliverPending(() => gates[index++]!.promise, { sessionId: "session-a", receivedMessageIds: [] });
+		let ready = false;
+		void delivery.ready("session-a")?.then(() => {
+			ready = true;
+		});
+		await vi.advanceTimersByTimeAsync(PENDING_STAGE_READY_STALL_MS - 10);
+		gates[0]!.resolve();
+		await vi.advanceTimersByTimeAsync(PENDING_STAGE_READY_STALL_MS - 10);
+		assert.equal(ready, false, "the bound counts from the drain's last progress");
+		gates[1]!.resolve();
+		await vi.advanceTimersByTimeAsync(0);
+		vi.useRealTimers();
+		await sleep(20);
+		assert.equal(ready, true);
+		assert.deepEqual(warnings, []);
+	});
+
+	test("a drain requested while another runs schedules one follow-up drain instead of joining it", async () => {
+		const { store, backend } = await fixtureWithQueuedMessage("first-1");
+		const releaseCommit = Promise.withResolvers<void>();
+		const commitEntered = Promise.withResolvers<void>();
+		let commits = 0;
+		const delivery = createWorkflowPendingStageDelivery(store, RUN_ID, STAGE_ID, STAGE_NAME, async (action) => {
+			commits += 1;
+			if (commits === 1) {
+				commitEntered.resolve();
+				await releaseCommit.promise;
+			}
+			return action();
+		});
+		const delivered: string[] = [];
+		const sink = (_from: unknown, message: { readonly id: string }) => {
+			delivered.push(message.id);
+		};
+		const recipient = { sessionId: "session-a", receivedMessageIds: [] };
+		const first = delivery.deliverPending(sink, recipient);
+		await commitEntered.promise;
+		// Queued after the running drain took its snapshot.
+		assert.equal((await store.queueStageMessage(queuedInput("later-1"), GROUP, GROUP, backend))?.ok, true);
+		const second = delivery.deliverPending(sink, recipient);
+		const third = delivery.deliverPending(sink, recipient);
+		releaseCommit.resolve();
+		await Promise.all([first, second, third]);
+		assert.deepEqual(delivered, ["first-1", "later-1"], "the follow-up delivers the later entry exactly once");
+		assert.equal(commits, 2, "the two requests made during the drain share one follow-up drain");
+		assert.equal(store.pendingStageMessagesFor(RUN_ID, STAGE_NAME).length, 0);
 	});
 });

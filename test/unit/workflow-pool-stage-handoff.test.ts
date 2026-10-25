@@ -894,6 +894,38 @@ test("a sticky root broadcast reaches the replacement worker's stage session (#3
 	}
 });
 
+test("a sticky message queued after the stage's startup drain does not hold its readiness", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueBroadcast("before-start");
+		const received: string[] = [];
+		await f.handoff.deliver(
+			f.first,
+			descriptor.childRunId,
+			"stage",
+			"stage",
+			{ sessionId: "session-a", receivedMessageIds: [] },
+			async (_from, delivered) => {
+				received.push(delivered.id);
+			},
+		);
+		// Arrives between Intercom's last startup replay and the stage asking for readiness: the broker
+		// forwards it to the registered session, and nothing drains this stage's queue again.
+		await f.queueBroadcast("after-drain");
+		let settled = false;
+		const ready = f.handoff.ready(f.first, descriptor.childRunId, "stage", "stage", "session-a").then(() => {
+			settled = true;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.equal(settled, true, "stage readiness parked on a message it receives live");
+		await ready;
+		assert.deepEqual(received, ["before-start"]);
+	} finally {
+		await f.close();
+	}
+});
+
 test("a fresh coordinator restores pending stage messages, receipts and control intent (#3869)", async () => {
 	const f = await fixture();
 	let recovered: JournalDurableBackend | undefined;

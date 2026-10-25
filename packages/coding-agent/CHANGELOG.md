@@ -5,6 +5,9 @@
 ### Fixed
 
 - An Intercom message sent to one specific workflow stage while that stage is paused, blocked or awaiting input and has not started yet is now queued for that stage and reaches it when it starts. Previously the send was accepted as a message for a possible future stage (`notInKnownSet`) and matched only the stage's old id, so it was lost when the stage started under a new id, as it does when a pooled worker is replaced. Messages sent to the whole run (`workflow:<rootRunId>/**`) were not affected ([#3869](https://github.com/bastani-inc/atomic/issues/3869))
+- A workflow stage no longer waits forever before its first turn when an Intercom message to a pattern target such as `workflow:<run>/child-a/**` is queued just after the stage's queued messages were delivered at startup. The stage now starts once that startup delivery has finished, and later messages reach it as ordinary live messages. Before, the stage waited for a second delivery that never ran, so its prompt was never sent and its pooled work stayed leased with its lease still renewed. In a 640-child pooled load test this left 7 children (about 1%) stuck for 20–45 minutes.
+- A workflow stage never waits more than 60 seconds without delivery progress for its queued Intercom messages before it starts. If a startup delivery stops making progress, the stage logs one warning that names the undelivered messages and whether the delivery is still running. It then starts, and the messages stay queued: they arrive live or on the stage's next delivery.
+- A sticky Intercom message that could not reach a workflow stage while the stage was disconnected from the broker is now delivered when the stage reconnects, exactly as it would have arrived live: an `interrupt` still cancels the stage's running operation, and an ask becomes the stage's reply target. Messages the stage already has are not delivered again.
 
 ## [0.9.44-alpha.6] - 2026-10-25
 
