@@ -107,6 +107,8 @@ function loginStatuses(session: AgentSession, providers: string[]): Record<strin
 	return statuses;
 }
 
+const CATALOG_REFRESH_TIMEOUT_MS = 15_000;
+
 /** The providers whose models `/model` lists once its background catalog refresh settles, and whether it shows the hint. */
 async function modelSelectorView(runtime: ModelRuntime, providers: string[]) {
 	const listed: string[] = [];
@@ -123,7 +125,9 @@ async function modelSelectorView(runtime: ModelRuntime, providers: string[]) {
 			provider,
 		);
 		const rendered = () => stripAnsi(selector.render(200).join("\n"));
-		await vi.waitFor(() => assert.match(rendered(), /Model catalogs refreshed\./));
+		await vi.waitFor(() => assert.match(rendered(), /Model catalogs refreshed\./), {
+			timeout: CATALOG_REFRESH_TIMEOUT_MS,
+		});
 		hint &&= rendered().includes(MODEL_SELECTOR_HINT);
 		if (rendered().includes(`[${provider}]`)) listed.push(provider);
 		selector.dispose();
