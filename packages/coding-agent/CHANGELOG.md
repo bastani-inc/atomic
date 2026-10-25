@@ -5,6 +5,8 @@
 ### Fixed
 
 - A workflow stage no longer waits forever before its first turn when an Intercom message to a pattern target such as `workflow:<run>/child-a/**` is queued just after the stage's queued messages were delivered at startup. The stage now starts once that startup delivery has finished, and later messages reach it as ordinary live messages. Before, the stage waited for a second delivery that never ran, so its prompt was never sent and its pooled work stayed leased with its lease still renewed. In a 640-child pooled load test this left 7 children (about 1%) stuck for 20–45 minutes.
+- A workflow stage never waits more than 60 seconds without delivery progress for its queued Intercom messages before it starts. If a startup delivery stops making progress, the stage logs one warning that names the undelivered messages and whether the delivery is still running. It then starts, and the messages stay queued: they arrive live or on the stage's next delivery.
+- A sticky Intercom message that could not reach a workflow stage while the stage was disconnected from the broker is now delivered when the stage reconnects. Messages the stage already has are not delivered again.
 
 ## [0.9.44-alpha.6] - 2026-10-25
 

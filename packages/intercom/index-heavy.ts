@@ -506,6 +506,21 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     if (queued > 0) scheduleInboundFlush();
     return plan.notices ?? [];
   }
+  /**
+   * Re-runs a started workflow stage's pending-stage drain. Set once the stage's startup drains are done and
+   * called after every later reconnect: a sticky message the broker could not forward while this stage was
+   * disconnected stays queued for it, and this drain delivers it. Messages already in the session's branch
+   * are skipped, so nothing is delivered twice.
+   */
+  let redrainPendingStage: (() => void) | null = null;
+  /** A message delivered by a later drain is ordinary inbound traffic for a stage that has already started. */
+  function redeliverPendingStageMessage(ctx: ExtensionContext, generation: number, from: SessionInfo, message: Message): Promise<void> {
+    if (!getLiveContext(ctx, generation)) {
+      return Promise.reject(new Error("Intercom session retired before pending-stage delivery; message remains queued"));
+    }
+    const delivery = message.delivery === "followUp" ? "triggerFollowUp" : "trigger";
+    return sendIncomingMessage(buildInboundEntry(from, message), delivery, generation, false);
+  }
   function handleIncomingMessage(
     ctx: ExtensionContext,
     from: SessionInfo,
@@ -1281,6 +1296,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
             if (nextClient.sessionId && nextClient.sessionId !== preferredSessionId) {
               await recordIntercomSessionIdentity(sessionIdAtStart, nextClient.sessionId);
             }
+            if (reason !== "startup") redrainPendingStage?.();
             return nextClient;
           } catch (error) {
             if (client === nextClient) {
@@ -1534,20 +1550,30 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       if (ctx.subagentPolicy?.intercom !== undefined) await ensureConnected("startup");
       return;
     }
-    const deliverPending = async (): Promise<void> => {
+    const generation = runtimeGeneration;
+    const deliverPending = async (started = false): Promise<void> => {
       const receivedMessageIds = ctx.sessionManager.getBranch().flatMap((entry) => {
         if (entry.type !== "custom_message" || entry.customType !== "intercom_message") return [];
         const id = (entry.details as { message?: { id?: string } } | undefined)?.message?.id;
         return typeof id === "string" ? [id] : [];
       });
       await pendingStageDelivery.deliverPending(
-        (from, message) => handleIncomingMessage(ctx, from as SessionInfo, message as Message, undefined, true),
+        (from, message) =>
+          started
+            ? redeliverPendingStageMessage(ctx, generation, from as SessionInfo, message as Message)
+            : handleIncomingMessage(ctx, from as SessionInfo, message as Message, undefined, true),
         { sessionId: ctx.sessionManager.getSessionId(), receivedMessageIds },
       );
     };
+    redrainPendingStage = null;
     await deliverPending();
     await ensureConnected("startup");
     await deliverPending();
+    redrainPendingStage = () => {
+      if (!getLiveContext(ctx, generation)) return;
+      // A failed drain leaves its entries queued for the next reconnect or stage start.
+      void deliverPending(true).catch(() => {});
+    };
   });
 
 

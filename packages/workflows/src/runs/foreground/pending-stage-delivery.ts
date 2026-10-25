@@ -71,12 +71,26 @@ export function isWorkflowPendingStageDeliveryFailure(error: unknown): boolean {
 	return (error as { code?: unknown } | null | undefined)?.code === "pending_stage_delivery_failed";
 }
 
+/**
+ * How long a stage's startup may wait on pending-stage delivery without any progress before the stage
+ * starts anyway. Progress is a drain starting, handing a message to the session, recording a receipt, or
+ * finishing. Nothing is consumed when the bound expires: undelivered entries stay queued and arrive live or
+ * on the stage's next drain.
+ */
+export const PENDING_STAGE_READY_STALL_MS = 60_000;
+
+export interface WorkflowPendingStageDeliveryOptions {
+	/** Receives the one stall warning per stage; defaults to `console.warn`. */
+	readonly reportStall?: (message: string) => void;
+}
+
 export function createWorkflowPendingStageDelivery(
 	activeStore: Store,
 	runId: string,
 	stageId: string,
 	stageName: string,
 	commit: PendingStageDeliveryCommit = (action) => action(),
+	options: WorkflowPendingStageDeliveryOptions = {},
 ): WorkflowPendingStageDelivery {
 	let resolveReady: (() => void) | undefined;
 	let rejectReady: ((error: Error) => void) | undefined;
@@ -89,6 +103,81 @@ export function createWorkflowPendingStageDelivery(
 	// after the drain and reaches the session as live traffic: it must not hold the stage before its first turn.
 	let drainedSessionId: string | undefined;
 	let currentRecipient: WorkflowPendingStageRecipient;
+	let lastProgressAt = Date.now();
+	let stallReported = false;
+	const progress = (): void => {
+		lastProgressAt = Date.now();
+	};
+	const progressingCommit: PendingStageDeliveryCommit = async (action) => {
+		try {
+			return await commit(action);
+		} finally {
+			progress();
+		}
+	};
+	const reportStall = (sessionId: string | undefined): void => {
+		if (stallReported) return;
+		stallReported = true;
+		const undelivered = [
+			...activeStore.pendingStageMessagesFor(runId, stageId),
+			...(stageId === stageName ? [] : activeStore.pendingStageMessagesFor(runId, stageName)),
+		]
+			.map((entry) => `${entry.message.id} (direct → ${entry.stageKey})`)
+			.concat(
+				stickyPendingStageEntriesForStage(
+					activeStore,
+					runId,
+					stageId,
+					stageName,
+					sessionId === undefined ? undefined : { sessionId },
+				).map((entry) => `${entry.message.id} (sticky → ${entry.targetPath ?? entry.stageKey})`),
+			);
+		const listed = undelivered.slice(0, 10).join(", ");
+		const more = undelivered.length > 10 ? `, and ${undelivered.length - 10} more` : "";
+		const message =
+			`atomic-workflows: stage "${stageName}" (${stageId}) is starting without its queued Intercom messages: ` +
+			`no delivery progress for ${PENDING_STAGE_READY_STALL_MS / 1000}s; ` +
+			`drain ${drainPromise === undefined ? "not running" : "running but hung"}; ` +
+			`undelivered: ${listed.length === 0 ? "none" : `${listed}${more}`}. ` +
+			"They stay queued and arrive live or on the stage's next drain.";
+		try {
+			(options.reportStall ?? console.warn)(message);
+		} catch {
+			// A broken reporter must not keep the stage from starting.
+		}
+	};
+	/** Calls `onStall` once delivery has made no progress for the stall bound, unless `pending` settles first. */
+	const watchStall = (pending: Promise<unknown>, sessionId: string | undefined, onStall: () => void): void => {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let settled = false;
+		const check = (): void => {
+			if (settled) return;
+			const remaining = lastProgressAt + PENDING_STAGE_READY_STALL_MS - Date.now();
+			if (remaining > 0) {
+				timer = setTimeout(check, remaining);
+				timer.unref?.();
+				return;
+			}
+			reportStall(sessionId);
+			onStall();
+		};
+		const stop = (): void => {
+			settled = true;
+			clearTimeout(timer);
+		};
+		pending.then(stop, stop);
+		check();
+	};
+	/** Settles with a drain, or resolves once it has made no progress for the stall bound; the drain keeps running. */
+	const boundedDrain = (drain: Promise<void>, sessionId: string | undefined): Promise<void> => {
+		const waiting = new Promise<void>((resolve, reject) => {
+			drain.then(resolve, reject);
+			watchStall(drain, sessionId, resolve);
+		});
+		// A caller that has not reached its `await` yet must not raise an unhandled rejection.
+		waiting.catch(() => {});
+		return waiting;
+	};
 	const hasUndeliveredExact = (): boolean =>
 		activeStore.pendingStageMessagesFor(runId, stageId).length > 0 ||
 		(stageId !== stageName && activeStore.pendingStageMessagesFor(runId, stageName).length > 0);
@@ -114,24 +203,30 @@ export function createWorkflowPendingStageDelivery(
 		routeCapability: workflowPendingStageRouteCapability(activeStore, runId),
 		deliverPending(deliver, recipient) {
 			currentRecipient = recipient;
-			if (drainPromise !== undefined) return drainPromise;
+			if (drainPromise !== undefined) return boundedDrain(drainPromise, recipient?.sessionId);
 			// After a terminal failure the queue is left exactly as it is: consuming
 			// entries for a stage that will not run would mark this stage's steering
 			// delivered to nobody. Resolving rather than rejecting keeps a late
 			// replay silent, which is the whole point of the terminal signal.
 			if (terminalError !== undefined) return Promise.resolve();
 			drainError = undefined;
+			progress();
 			const attempt = deliverPendingStageMessages(
 				activeStore,
 				runId,
 				stageId,
 				stageName,
-				deliver,
-				commit,
+				async (from, message) => {
+					progress();
+					await deliver(from, message);
+					progress();
+				},
+				progressingCommit,
 				recipient,
 			);
 			const drain = attempt.then(
 				() => {
+					progress();
 					drainedSessionId = recipient?.sessionId;
 					resolveReady?.();
 					readyPromise = undefined;
@@ -140,6 +235,7 @@ export function createWorkflowPendingStageDelivery(
 					if (drainPromise === drain) drainPromise = undefined;
 				},
 				(error: Error) => {
+					progress();
 					drainError = error;
 					rejectReady?.(error);
 					readyPromise = undefined;
@@ -150,7 +246,7 @@ export function createWorkflowPendingStageDelivery(
 				},
 			);
 			drainPromise = drain;
-			return drainPromise;
+			return boundedDrain(drain, recipient?.sessionId);
 		},
 		ready(sessionId) {
 			if (!hasUndelivered(sessionId)) {
@@ -205,6 +301,13 @@ export function createWorkflowPendingStageDelivery(
 					},
 				);
 			}
+			watchStall(ready, sessionId, () => {
+				if (readyPromise !== ready) return;
+				resolveReady?.();
+				readyPromise = undefined;
+				resolveReady = undefined;
+				rejectReady = undefined;
+			});
 			return ready;
 		},
 		fail(reason) {
