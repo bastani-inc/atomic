@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- A large local worker pool no longer fails at startup with `Local worker startup timed out after 30000 ms` on a small or busy machine. When `localWorkers.startupTimeoutMs` is not set, the readiness deadline now scales with the number of workers and the 1-minute load average per CPU core, from 30000 ms up to 600000 ms; on an idle machine with spare cores it stays 30000 ms. If workers still miss the deadline, the error now says they were too slow to start and names `workflows.localWorkers.startupTimeoutMs` ([#3962](https://github.com/bastani-inc/atomic/issues/3962))
+
 ## [0.9.44] - 2026-10-25
 
 ### Fixed
