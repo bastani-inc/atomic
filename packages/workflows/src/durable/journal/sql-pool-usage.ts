@@ -6,6 +6,7 @@ import {
 	type PoolUsage,
 	poolUsageSchema,
 	poolUsageTable,
+	poolUsageTotalsTable,
 	upsertPoolUsage,
 } from "./pool-stage-usage.js";
 import { openSqlPoolQueue } from "./sql-pool-queue.js";
@@ -36,13 +37,22 @@ function validate(report: PoolUsageReport): void {
 	}
 }
 
+/** One Kahan-Babuska-Neumaier step, as SQLite's `SUM()` and the usage-total triggers take it. */
+function addCompensated(total: { sum: number; error: number }, value: number): void {
+	const sum = total.sum + value;
+	total.error += Math.abs(total.sum) > Math.abs(value) ? total.sum - sum + value : value - sum + total.sum;
+	total.sum = sum;
+}
+
 export class SqlPoolUsage {
 	private readonly table: string;
+	private readonly totals: string;
 	private constructor(
 		private readonly transaction: SqlPoolStorage["transaction"],
 		private readonly journal: SqlPoolStorage["tables"],
 	) {
 		this.table = poolUsageTable(journal.runs);
+		this.totals = poolUsageTotalsTable(journal.runs);
 	}
 	static async open(
 		transaction: SqlPoolStorage["transaction"],
@@ -52,13 +62,43 @@ export class SqlPoolUsage {
 		await transaction((tx) => tx.exec(poolUsageSchema(journal.runs)));
 		return usage;
 	}
+	/**
+	 * The root's running total, which triggers keep equal to `SUM()` over its usage rows. A root without one gets it
+	 * once, from its rows, provided the root has a pool for the total to belong to.
+	 */
 	private async totalIn(tx: SqliteExecutor, root: string): Promise<PoolUsage> {
+		const columns = FIELDS.map((field) => field.toLowerCase());
+		const kept = await tx.get(`SELECT * FROM ${this.totals} WHERE root = ?`, root);
+		if (kept)
+			return Object.fromEntries(
+				FIELDS.map((field, index) => [
+					field,
+					Number(kept[columns[index]!]) + Number(kept[`${columns[index]}_err`]),
+				]),
+			) as PoolUsage;
 		const row = await tx.get(
 			`SELECT ${FIELDS.map((field) => `COALESCE(SUM(u.${field.toLowerCase()}), 0) AS ${field}`).join(", ")}
 			 FROM ${this.table} u JOIN ${this.journal.runs}_work w ON w.id = u.work WHERE w.root = ?`,
 			root,
 		);
-		return Object.fromEntries(FIELDS.map((field) => [field, Number(row?.[field] ?? 0)])) as PoolUsage;
+		const total = Object.fromEntries(FIELDS.map((field) => [field, Number(row?.[field] ?? 0)])) as PoolUsage;
+		if (!(await tx.get(`SELECT 1 FROM ${this.journal.runs}_pool WHERE root = ?`, root))) return total;
+		// SUM() returns its compensated sum rounded once; later steps need the sum and its error term both.
+		const sums = columns.map(() => ({ sum: 0, error: 0 }));
+		const rows = await tx.all(
+			`SELECT ${columns.map((column) => `u.${column}`).join(", ")}
+			 FROM ${this.table} u JOIN ${this.journal.runs}_work w ON w.id = u.work WHERE w.root = ?`,
+			root,
+		);
+		for (const usage of rows)
+			for (const [index, column] of columns.entries()) addCompensated(sums[index]!, Number(usage[column]));
+		await tx.run(
+			`INSERT INTO ${this.totals}(root, ${columns.map((column) => `${column}, ${column}_err`).join(", ")})
+			 VALUES (?, ${columns.map(() => "?, ?").join(", ")})`,
+			root,
+			...sums.flatMap(({ sum, error }) => [sum, error]),
+		);
+		return total;
 	}
 	async report(lease: Lease, token: UsageToken, reports: readonly PoolUsageReport[]): Promise<PoolUsage> {
 		validateText("runId", lease.runId);

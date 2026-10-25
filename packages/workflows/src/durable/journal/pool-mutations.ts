@@ -1,12 +1,12 @@
 import { type SessionStore, type SqliteDatabase, type SqliteExecutor, StorageProvider } from "@bastani/atomic/storage";
 import { boundaryTransitionError } from "../boundary-lifecycle.js";
 import { validateCheckpointInvocationFingerprint } from "../boundary-topology.js";
-import { directChildTopologyError, sameRun, sameStrings } from "../stage-topology-validation.js";
+import { directChildTopologyError, durableStageGroupKey, sameRun, sameStrings } from "../stage-topology-validation.js";
 import { DURABLE_TOOL_TOPOLOGY_VERSION, type DurableCheckpoint, type DurableStageCheckpoint } from "../types.js";
 import { parseWorkflowChildResult } from "../workflow-child-result.js";
 import type { SqlPoolStorage } from "./internal.js";
+import { type IndexedStage, inKeyOrder, type PoolCheckpointRead } from "./pool-checkpoint-index.js";
 import type { PoolWork } from "./sql-pool-queue.js";
-import { RUN_EVENT_TYPES } from "./types.js";
 
 /** Creating or replacing a pool session binds it to its stage with one checkpoint. */
 export type PoolSessionMutation = {
@@ -35,12 +35,18 @@ export type PoolCheckpointMutation =
 	| PoolSessionMutation;
 export type PoolMutation = PoolCheckpointMutation | PoolSessionAppend;
 
+/**
+ * Validate one pool checkpoint mutation against the root's recorded checkpoints. Only the checkpoints the checks
+ * can consult are read from the index: those of the mutated child run, its owning boundary start, its stage groups,
+ * and the boundary records related to a boundary transition, in the order a scan of every checkpoint returns them.
+ */
 export async function validatePoolMutation(
 	tx: SqliteExecutor,
 	journal: SqlPoolStorage["tables"],
 	root: string,
 	work: PoolWork,
 	mutation: PoolCheckpointMutation,
+	checkpoints: PoolCheckpointRead,
 ): Promise<void> {
 	if (!["checkpoint", "session-create", "session-replace"].includes(mutation.kind))
 		throw new Error("Invalid pool mutation");
@@ -69,20 +75,12 @@ export async function validatePoolMutation(
 			throw new Error("Pool session scope mismatch");
 	}
 	if (checkpoint.kind === "ui") return;
-	const rows = await tx.all(
-		`SELECT payload FROM ${journal.events} WHERE run_id = ? AND type = ?`,
-		root,
-		RUN_EVENT_TYPES.checkpointRecorded,
-	);
-	const records = rows.map((row) => JSON.parse(String(row.payload)) as DurableCheckpoint);
-	const stages = records.filter((entry): entry is DurableStageCheckpoint => entry.kind === "stage");
+	const view = await checkpoints.read(tx, journal.events);
 	const topology = checkpoint.topology;
 	const run = topology?.run;
 	if (!topology || !run || run.rootRunId !== root || run.runId === root)
 		throw new Error("Pool topology scope mismatch");
-	const owner = stages.find(
-		(entry) => entry.topology?.boundary?.event === "start" && entry.topology.boundary.child.runId === run.runId,
-	)?.topology?.boundary;
+	const owner = inKeyOrder(view.entries("startsByChild", run.runId))[0]?.topology?.boundary;
 	if (
 		!owner ||
 		!sameRun(run, owner.child) ||
@@ -99,12 +97,10 @@ export async function validatePoolMutation(
 			mutation.header.workflow.stageId !== ("stageId" in topology ? topology.stageId : undefined))
 	)
 		throw new Error("Pool session scope mismatch");
+	const runEntries = view.entries("byRun", run.runId);
 	if (checkpoint.kind === "tool") {
 		const tool = checkpoint.topology!;
-		const peers = records.filter(
-			(entry): entry is Exclude<DurableCheckpoint, { kind: "ui" }> =>
-				entry.kind !== "ui" && entry.topology?.run?.runId === run.runId,
-		);
+		const peers = runEntries.map((entry) => entry.checkpoint);
 		const ids = new Set(
 			peers.map((entry) => (entry.kind === "tool" ? entry.topology!.nodeId : entry.topology!.stageId)),
 		);
@@ -123,22 +119,39 @@ export async function validatePoolMutation(
 			throw new Error("Pool tool topology scope mismatch");
 		return;
 	}
-	const next = [...stages.filter((entry) => entry.checkpointId !== checkpoint.checkpointId), checkpoint];
+	// Every recorded stage either check can reach: the run's own stages and every stage sharing one of their groups.
+	const runStages = runEntries.filter((entry): entry is IndexedStage => entry.checkpoint.kind === "stage");
+	const relevant: IndexedStage[] = [...runStages];
+	const groups = new Set(
+		[...runStages.map((entry) => entry.checkpoint), checkpoint]
+			.filter((entry) => entry === checkpoint || entry.checkpointId !== checkpoint.checkpointId)
+			.map(durableStageGroupKey),
+	);
+	for (const group of groups) relevant.push(...view.entries("stagesByGroup", group));
+	const boundary = checkpoint.topology?.boundary;
+	let start: DurableStageCheckpoint | undefined;
+	if (boundary) {
+		const replayed = view.entries("stagesByReplayKey", checkpoint.replayKey);
+		start = [...stagesExcept(replayed, checkpoint), checkpoint].find(
+			(entry) => entry.replayKey === checkpoint.replayKey && entry.topology?.boundary?.event === "start",
+		);
+		relevant.push(...replayed);
+		if (start) {
+			const startTopology = start.topology!;
+			relevant.push(...view.entries("boundariesByStageId", startTopology.stageId));
+			relevant.push(...view.entries("boundariesByChild", startTopology.boundary!.child.runId));
+		}
+	}
+	const next = [...stagesExcept(relevant, checkpoint), checkpoint];
 	const tools = new Set(
-		records.flatMap((entry) =>
-			entry.kind === "tool" && entry.topology?.run?.runId === run.runId ? [entry.topology.nodeId] : [],
-		),
+		runEntries.flatMap((entry) => (entry.checkpoint.kind === "tool" ? [entry.checkpoint.topology!.nodeId] : [])),
 	);
 	const stageError = directChildTopologyError(next, owner.replayScope, run, tools);
 	if (stageError) throw new Error(`Pool topology scope: ${stageError}`);
-	const boundary = checkpoint.topology?.boundary;
 	if (!boundary) {
 		if (parseWorkflowChildResult(checkpoint.output)) throw new Error("Pool boundary output without ownership");
 		return;
 	}
-	const start = next.find(
-		(entry) => entry.replayKey === checkpoint.replayKey && entry.topology?.boundary?.event === "start",
-	);
 	const boundaryError = start ? boundaryTransitionError(start, next, false) : "missing start";
 	if (
 		!boundary.replayScope.startsWith(`${owner.replayScope}:`) ||
@@ -147,6 +160,11 @@ export async function validatePoolMutation(
 		boundaryError
 	)
 		throw new Error(`Pool boundary scope: ${boundaryError ?? "invalid child"}`);
+}
+
+/** Recorded stages in key order, without the one `checkpoint` records again. */
+function stagesExcept(entries: readonly IndexedStage[], checkpoint: DurableStageCheckpoint): DurableStageCheckpoint[] {
+	return inKeyOrder(entries).filter((entry) => entry.checkpointId !== checkpoint.checkpointId);
 }
 
 async function sessionStore(tx: SqliteExecutor, prefix: string): Promise<SessionStore> {
