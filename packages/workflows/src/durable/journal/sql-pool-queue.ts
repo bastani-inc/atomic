@@ -11,6 +11,7 @@ import {
 } from "../types.js";
 import { type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
+import { PoolCheckpointIndex, type PoolCheckpointRead } from "./pool-checkpoint-index.js";
 import {
 	applyPoolSession,
 	type PoolCheckpointMutation,
@@ -111,6 +112,7 @@ export class SqlPoolQueue {
 	private readonly operations: string;
 	private readonly transaction: Transaction;
 	private readonly journal: JournalTables;
+	private readonly checkpoints = new PoolCheckpointIndex();
 	private constructor(private readonly storage: SqlPoolStorage) {
 		const { transaction, tables: journal } = storage;
 		this.transaction = transaction;
@@ -457,7 +459,8 @@ export class SqlPoolQueue {
 		const request = serializeJson({ epoch: token.epoch, worker: token.worker, mutation });
 		const identity = requestIdentity(request);
 		mutation = JSON.parse(request).mutation as PoolMutation;
-		return this.transaction(async (tx) => {
+		const checkpoints = this.checkpoints.begin(lease.runId);
+		const receipt = await this.transaction(async (tx) => {
 			const { now, status } = await this.authority(tx, lease);
 			const row = await this.current(tx, lease, token);
 			if (row.epoch !== lease.epoch) throw new Error(STALE_WORK_LEASE);
@@ -476,7 +479,7 @@ export class SqlPoolQueue {
 			const receipt =
 				mutation.kind === "session-append"
 					? await this.appendSession(tx, row, mutation, now)
-					: await this.recordCheckpoint(tx, lease, token, row, mutation, now);
+					: await this.recordCheckpoint(tx, lease, token, row, mutation, now, checkpoints);
 			await tx.run(
 				`INSERT INTO ${this.operations} VALUES (?, ?, ?, ?, ?)`,
 				token.id,
@@ -487,6 +490,9 @@ export class SqlPoolQueue {
 			);
 			return receipt;
 		});
+		// Only now has the transaction committed what validation read; a rolled-back read never reaches the index.
+		checkpoints.commit();
+		return receipt;
 	}
 	private async appendSession(
 		tx: SqliteExecutor,
@@ -503,9 +509,10 @@ export class SqlPoolQueue {
 		row: WorkRow,
 		mutation: PoolCheckpointMutation,
 		now: number,
+		checkpoints: PoolCheckpointRead,
 	): Promise<PoolCommitReceipt> {
 		const checkpoint = mutation.checkpoint;
-		await validatePoolMutation(tx, this.journal, lease.runId, fromRow(row), mutation);
+		await validatePoolMutation(tx, this.journal, lease.runId, fromRow(row), mutation, checkpoints);
 		if (checkpoint.completedAt > Math.max(now, Date.now()) + MAX_WORKER_CLOCK_SKEW_MS)
 			throw new Error("Pool checkpoint timestamp is in the future");
 		assertWorkflowSerializableObject(checkpoint, "Pool checkpoint");
